@@ -55,15 +55,12 @@ function Resolve-Target {
 # --- Helper: Confirm-Target ---
 function Confirm-Target {
     param([string]$PaneId)
-    try {
-        $result = & psmux display-message -t $PaneId -p '#{pane_id}' 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Stop-WithError "invalid target: $PaneId"
-        }
-        return ($result | Out-String).Trim()
-    } catch {
+    # display-message -t ignores the -t flag in psmux v3.3.1, so validate via list-panes
+    $allPanes = (& psmux list-panes -a -F '#{pane_id}' | Out-String).Trim() -split "`n" | ForEach-Object { $_.Trim() }
+    if ($PaneId -notin $allPanes) {
         Stop-WithError "invalid target: $PaneId"
     }
+    return $PaneId
 }
 
 # --- Helper: Read Mark ---
