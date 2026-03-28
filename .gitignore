@@ -1,0 +1,79 @@
+# =========================
+# Secrets & credentials
+# =========================
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.secret
+credentials.json
+secrets.json
+token.json
+**/tokens/
+
+# =========================
+# Internal dev docs
+# =========================
+docs/internal/
+INTERNAL*.md
+HANDOFF.md
+DEV-NOTES*.md
+*-private.*
+*.private.*
+
+# =========================
+# Personal / user-specific
+# =========================
+.claude/
+.codex/
+.gemini/
+*.local
+.vscode/settings.json
+.idea/
+
+# =========================
+# OS artifacts
+# =========================
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+.DS_Store
+
+# =========================
+# Node.js
+# =========================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+.yarn/cache/
+.pnp.*
+
+# =========================
+# Build output
+# =========================
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# =========================
+# Test & coverage
+# =========================
+coverage/
+.nyc_output/
+
+# =========================
+# Misc
+# =========================
+*.log
+*.bak
+*.swp
+*.swo
+*~
