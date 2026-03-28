@@ -44,9 +44,9 @@ winsmux/
 | Phase | 内容 | 状態 |
 |-------|------|------|
 | 0 | psmux インストール・検証 | ✅ 完了 |
-| 1 | psmux-bridge.ps1 + CLAUDE.md + tests | 🔄 進行中 |
-| 2 | install.ps1 + .psmux.conf | ⬜ 未着手 |
-| 3 | SKILL.md + references | ⬜ 未着手 |
+| 1 | psmux-bridge.ps1 + CLAUDE.md + tests | ✅ 完了 |
+| 2 | install.ps1 + .psmux.conf | ✅ 完了 |
+| 3 | SKILL.md + references | ✅ 完了 |
 
 ## Testing
 psmux セッション内で `tests/test-bridge.ps1` を実行。
