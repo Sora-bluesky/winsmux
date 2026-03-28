@@ -1,0 +1,299 @@
+# psmux-bridge reference
+
+> Version: 1.0.0
+
+psmux-bridge is a PowerShell CLI that wraps psmux (tmux-compatible multiplexer) with label resolution, Read Guard safety, and inter-agent messaging.
+
+## Commands
+
+### id
+
+Show the current pane ID.
+
+```powershell
+psmux-bridge id
+```
+
+If `$env:TMUX_PANE` is set, returns it directly. Otherwise queries psmux for the active pane ID.
+
+**Output:**
+
+```
+%0
+```
+
+---
+
+### list
+
+List all panes with their ID, PID, current command, dimensions, title, child process, and label.
+
+```powershell
+psmux-bridge list
+```
+
+For each pane, the command also detects the first child process (via `Win32_Process` parent PID lookup) and appends it in parentheses. If a label is assigned, it is appended in brackets.
+
+**Output format:**
+
+```
+%0 12345 pwsh 120x30 pane %0 (claude.exe) [claude]
+%1 67890 pwsh 120x30 pane %1
+```
+
+Fields: `pane_id pane_pid pane_current_command pane_widthxpane_height pane_title (child_process) [label]`
+
+---
+
+### read
+
+Capture recent output from a pane. Sets the Read Guard mark for that pane.
+
+```powershell
+psmux-bridge read <target> [lines]
+```
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `target`  | Yes      | --      | Pane ID, label, or coordinate |
+| `lines`   | No       | `50`    | Number of lines to capture |
+
+**Examples:**
+
+```powershell
+psmux-bridge read %1           # Last 50 lines from pane %1
+psmux-bridge read %1 100       # Last 100 lines from pane %1
+psmux-bridge read claude       # Read from pane labeled "claude"
+```
+
+Uses `psmux capture-pane -t <paneId> -p -J -S -<lines>` internally.
+
+---
+
+### type
+
+Send literal text to a pane. Requires Read Guard.
+
+```powershell
+psmux-bridge type <target> <text>
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `target`  | Yes      | Pane ID, label, or coordinate |
+| `text`    | Yes      | Literal text to send (all remaining args joined by space) |
+
+**Examples:**
+
+```powershell
+psmux-bridge type %1 echo hello world
+psmux-bridge type claude ls -la
+```
+
+Uses `psmux send-keys -t <paneId> -l -- "<text>"` internally. The `-l` flag sends the text literally (no key name interpretation). Clears the Read Guard mark after sending.
+
+---
+
+### keys
+
+Send key sequences (named keys) to a pane. Requires Read Guard.
+
+```powershell
+psmux-bridge keys <target> <key>...
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `target`  | Yes      | Pane ID, label, or coordinate |
+| `key`     | Yes      | One or more key names (e.g. `Enter`, `C-c`, `Tab`) |
+
+**Examples:**
+
+```powershell
+psmux-bridge keys %1 Enter                  # Press Enter
+psmux-bridge keys %1 C-c                    # Send Ctrl+C
+psmux-bridge keys %1 C-c Enter              # Ctrl+C then Enter
+psmux-bridge keys claude Up Up Enter         # Arrow up twice, then Enter
+```
+
+Each key argument is sent as a separate `psmux send-keys` call (without `-l`, so key names are interpreted). Clears the Read Guard mark after sending.
+
+---
+
+### message
+
+Send a tagged inter-agent message to a pane. Requires Read Guard.
+
+```powershell
+psmux-bridge message <target> <text>
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `target`  | Yes      | Pane ID, label, or coordinate |
+| `text`    | Yes      | Message body (all remaining args joined by space) |
+
+**Examples:**
+
+```powershell
+psmux-bridge message %2 please run the tests
+psmux-bridge message claude check the build output
+```
+
+The message is prefixed with a structured header:
+
+```
+[psmux-bridge from:<agent_name> pane:<my_pane_id> at:<session>:<window>.<pane> -- load the winsmux skill to reply] <text>
+```
+
+- `agent_name` is taken from `$env:WINSMUX_AGENT_NAME` (defaults to `"unknown"`)
+- `my_pane_id` and coordinates are resolved from the sender's current pane
+
+Clears the Read Guard mark after sending.
+
+---
+
+### name
+
+Assign a label to a pane. Also sets the pane title (best-effort).
+
+```powershell
+psmux-bridge name <target> <label>
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `target`  | Yes      | Pane ID or coordinate to label |
+| `label`   | Yes      | Label string (first extra arg only) |
+
+**Examples:**
+
+```powershell
+psmux-bridge name %0 claude
+psmux-bridge name %1 codex
+```
+
+**Output:**
+
+```
+Labeled pane %0 as 'claude'
+```
+
+Labels are persisted to `labels.json`. Also calls `psmux select-pane -t <paneId> -T "<label>"` to set the pane title (errors are silently ignored).
+
+---
+
+### resolve
+
+Resolve a label to its pane ID.
+
+```powershell
+psmux-bridge resolve <label>
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `label`   | Yes      | Label to look up |
+
+**Examples:**
+
+```powershell
+psmux-bridge resolve claude    # Output: %0
+psmux-bridge resolve codex     # Output: %1
+```
+
+Exits with error if the label is not found.
+
+---
+
+### doctor
+
+Run environment diagnostics.
+
+```powershell
+psmux-bridge doctor
+```
+
+**Output example:**
+
+```
+=== psmux-bridge doctor ===
+psmux: psmux 0.5.0
+TMUX_PANE: %0
+WINSMUX_AGENT_NAME: claude
+Panes: 3
+Labels: 2 in C:\Users\komei\AppData\Roaming\winsmux\labels.json
+Read marks: 1 in C:\Users\komei\AppData\Local\Temp\winsmux\read_marks
+```
+
+Checks performed:
+- psmux installation and version
+- `TMUX_PANE` environment variable
+- `WINSMUX_AGENT_NAME` environment variable
+- Total pane count
+- Label count and file path
+- Read mark count and directory path
+
+---
+
+### version
+
+Show the bridge version.
+
+```powershell
+psmux-bridge version
+```
+
+**Output:**
+
+```
+psmux-bridge 1.0.0
+```
+
+---
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `WINSMUX_AGENT_NAME` | Agent name used in `message` command headers. Defaults to `"unknown"` if not set. |
+| `TMUX_PANE` | Current pane ID. If set, `id` command returns this value directly without querying psmux. Set by psmux on pane creation. |
+
+## File Locations
+
+| Path | Purpose |
+|------|---------|
+| `$env:APPDATA\winsmux\labels.json` | Pane label-to-ID mappings (JSON object). Created on first `name` command. |
+| `$env:TEMP\winsmux\read_marks\` | Read Guard state files. One empty file per pane (with `%` and `:` replaced by `_`). |
+
+## Read Guard
+
+Read Guard is a safety mechanism that prevents blind interaction with panes. It enforces a **read-before-write** discipline:
+
+1. **`read`** sets a mark file in `$env:TEMP\winsmux\read_marks\` for the target pane.
+2. **`type`**, **`keys`**, and **`message`** require the mark to exist (via `Assert-ReadMark`). If the mark is missing, the command fails with:
+   ```
+   error: must read the pane before interacting. Run: psmux-bridge read <paneId>
+   ```
+3. After a successful write operation (`type`, `keys`, `message`), the mark is **cleared**, requiring another `read` before the next interaction.
+
+This ensures agents always observe the current pane state before sending input, preventing stale-state mistakes.
+
+**Mark file naming:** The pane ID has `%` and `:` characters replaced with `_` to form a safe filename (e.g., `%0` becomes `_0`).
+
+## Target Resolution
+
+The `<target>` parameter in commands supports 4 formats, resolved in order:
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| **Label** | `claude` | Looked up in `labels.json`. If a matching key exists, its value (pane ID) is used. |
+| **Pane ID** | `%0` | Direct psmux pane identifier. |
+| **Coordinate** | `main:0.1` | psmux target format: `session:window.pane`. |
+| **Window.Pane** | `0.1` | Short coordinate within the current session. |
+
+Resolution flow:
+1. Check if the target string is a key in `labels.json` (via `Resolve-Target`).
+2. If found, substitute with the mapped pane ID.
+3. If not found, pass the string through as-is (assumed to be a pane ID or coordinate).
+4. Validate the resolved target by calling `psmux display-message -t <target> -p '#{pane_id}'` (via `Confirm-Target`). If this fails, exit with `"invalid target"` error.
