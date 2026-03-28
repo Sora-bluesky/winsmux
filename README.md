@@ -1,3 +1,5 @@
+[English](README.md) | [日本語](README.ja.md)
+
 # winsmux
 
 Native Windows terminal multiplexer with cross-pane AI agent communication — no WSL2 required.
@@ -9,7 +11,7 @@ Native Windows terminal multiplexer with cross-pane AI agent communication — n
 ```powershell
 psmux-bridge read codex 20              # read the pane
 psmux-bridge type codex "review src/auth.ts"  # type into it
-psmux-bridge keys codex Enter           # press enter
+psmux-bridge keys codex Enter           # press Enter
 ```
 
 ## Install
@@ -24,6 +26,26 @@ This installs:
 - **.psmux.conf** with Alt-key bindings, mouse support, and pane labels
 
 Everything lives in `~\.winsmux\`.
+
+## Quick Start
+
+```powershell
+# 1. Start a session
+psmux new-session -s work
+
+# 2. Split a pane (Alt+n also works)
+psmux split-window -h
+
+# 3. Label the panes
+psmux-bridge name %1 claude
+psmux-bridge name %2 codex
+
+# 4. Send a message
+psmux-bridge read codex 20
+psmux-bridge message codex "review src/auth.ts"
+psmux-bridge read codex 20
+psmux-bridge keys codex Enter
+```
 
 ## Keybindings
 
@@ -57,6 +79,12 @@ All keybindings use **Alt** with no prefix required.
 | `Shift+I/K` | Half-page up/down |
 | `q` or `Escape` | Exit scroll mode |
 
+### Mouse
+
+- Click to select panes
+- Drag to select text (auto-copies to clipboard)
+- Scroll wheel to scroll
+
 ## psmux-bridge
 
 A CLI for cross-pane communication on Windows. Any tool that can run shell commands can use it — Claude Code, Codex, Gemini CLI, or a plain PowerShell script.
@@ -72,6 +100,53 @@ A CLI for cross-pane communication on Windows. Any tool that can run shell comma
 | `psmux-bridge resolve <label>` | Look up a pane by label |
 | `psmux-bridge id` | Print this pane's ID |
 | `psmux-bridge doctor` | Check environment and diagnostics |
+| `psmux-bridge version` | Show version |
+
+### Read Guard
+
+The CLI enforces a **read-before-act** rule. You cannot `type` or `keys` to a pane unless you have read it first. After each `type`/`keys`, the mark clears and you must read again.
+
+```powershell
+psmux-bridge type codex "hello"
+# error: must read the pane before interacting. Run: psmux-bridge read codex
+```
+
+This prevents agents from blindly typing into the wrong pane.
+
+### Targeting
+
+Panes can be addressed by:
+- **Pane ID** — `%3`, `%5` (psmux native IDs)
+- **Label** — any name set via `psmux-bridge name`
+
+Labels are resolved automatically in every command. Stored in `$env:APPDATA\winsmux\labels.json`.
+
+## Commander Orchestration
+
+The Commander workflow uses a 4-pane layout where Claude Code orchestrates builder/reviewer agents:
+
+```
+┌──────────────┬──────────────┐
+│  commander   │   builder    │
+│ (Claude Code)│  (Codex CLI) │
+├──────────────┼──────────────┤
+│  reviewer    │   monitor    │
+│  (Codex CLI) │  (shell)     │
+└──────────────┴──────────────┘
+```
+
+| Pane | Role | Responsibility |
+|---|---|---|
+| commander | Design & orchestrate | Task decomposition, instructions, git operations |
+| builder | Implement | Code implementation, fix reviewer findings |
+| reviewer | Review | Security, architecture, and quality review |
+| monitor | Observe | Test runner, dev server, build logs |
+
+The workflow cycle: **Plan → Build → Poll → Review → Poll → Judge → Commit → Next**.
+
+Commander never writes code directly — it delegates to builder and sends reviewer findings back to builder for fixes.
+
+See [SKILL.md](skills/winsmux/SKILL.md) for the full Commander workflow, poll patterns, and auto-approval rules.
 
 ## AI Agent Skills
 
@@ -80,6 +155,8 @@ Install the winsmux skill to teach your agents how to use psmux-bridge:
 ```powershell
 npx skills add Sora-bluesky/winsmux
 ```
+
+Works with Claude Code, Codex, Cursor, Copilot, and [other agents](https://skills.sh).
 
 ## Update
 
@@ -101,7 +178,7 @@ winsmux uninstall
 
 ## Acknowledgments
 
-This project is the Windows-native counterpart of [smux](https://github.com/ShawnPana/smux) by [@ShawnPana](https://github.com/ShawnPana). smux provides the same terminal multiplexer + AI agent communication workflow for macOS/Linux using tmux. winsmux brings that experience to Windows natively via psmux, without requiring WSL2.
+winsmux is the Windows-native counterpart of [smux](https://github.com/ShawnPana/smux) by [@ShawnPana](https://github.com/ShawnPana). smux provides the same terminal multiplexer + AI agent communication workflow for macOS/Linux using tmux. winsmux brings that experience to Windows natively via psmux, without requiring WSL2.
 
 ## License
 
