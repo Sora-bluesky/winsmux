@@ -6,7 +6,7 @@ param(
 )
 
 # --- Config ---
-$VERSION = "1.0.0"
+$VERSION = "1.1.0"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
@@ -324,6 +324,133 @@ function Invoke-Doctor {
     } else {
         Write-Output "Read marks: 0 (directory not created yet)"
     }
+
+    # IME diagnostics
+    Write-Output ""
+    Write-Output "=== IME diagnostics ==="
+
+    # escape-time check
+    try {
+        $escTime = (& psmux show-options -g -v escape-time 2>&1 | Out-String).Trim()
+        if ($escTime -match '^\d+$' -and [int]$escTime -gt 50) {
+            Write-Output "escape-time: $escTime ms [WARNING: >50ms causes IME lag. Set to 0 in .psmux.conf]"
+        } else {
+            Write-Output "escape-time: $escTime ms [OK]"
+        }
+    } catch {
+        Write-Output "escape-time: (could not read)"
+    }
+
+    # Windows Terminal atlas engine check
+    $wtSettingsPath = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+    if (Test-Path $wtSettingsPath) {
+        try {
+            $wtSettings = Get-Content -Path $wtSettingsPath -Raw | ConvertFrom-Json
+            $atlasEngine = $wtSettings.profiles.defaults.useAtlasEngine
+            if ($null -eq $atlasEngine) {
+                Write-Output "WT useAtlasEngine: not set [TIP: set to false for better CJK IME]"
+            } elseif ($atlasEngine -eq $true) {
+                Write-Output "WT useAtlasEngine: true [WARNING: disable for better CJK IME]"
+            } else {
+                Write-Output "WT useAtlasEngine: false [OK]"
+            }
+        } catch {
+            Write-Output "WT settings: (parse error)"
+        }
+    } else {
+        Write-Output "WT settings: not found (not using Windows Terminal?)"
+    }
+
+    # Clipboard image test
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        $img = [System.Windows.Forms.Clipboard]::GetImage()
+        if ($img) {
+            Write-Output "Clipboard image: available ($($img.Width)x$($img.Height))"
+            $img.Dispose()
+        } else {
+            Write-Output "Clipboard image: none"
+        }
+    } catch {
+        Write-Output "Clipboard image: (check failed)"
+    }
+}
+
+function Invoke-ImeInput {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge ime-input <target>" }
+
+    $paneId = Resolve-Target $Target
+    $paneId = Confirm-Target $paneId
+
+    Assert-ReadMark $paneId
+
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName Microsoft.VisualBasic
+
+    $text = [Microsoft.VisualBasic.Interaction]::InputBox(
+        "psmux ペイン $paneId に送信するテキストを入力してください",
+        "winsmux IME Input",
+        ""
+    )
+
+    if ([string]::IsNullOrEmpty($text)) {
+        Write-Output "cancelled"
+        return
+    }
+
+    & psmux send-keys -t $paneId -l -- "$text"
+    Clear-ReadMark $paneId
+    Write-Output "sent to $paneId"
+}
+
+function Invoke-ImagePaste {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge image-paste <target>" }
+
+    $paneId = Resolve-Target $Target
+    $paneId = Confirm-Target $paneId
+
+    Assert-ReadMark $paneId
+
+    Add-Type -AssemblyName System.Windows.Forms
+
+    $img = [System.Windows.Forms.Clipboard]::GetImage()
+    if (-not $img) {
+        Stop-WithError "no image in clipboard"
+    }
+
+    $imgDir = Join-Path $env:TEMP "winsmux\images"
+    if (-not (Test-Path $imgDir)) {
+        New-Item -ItemType Directory -Path $imgDir -Force | Out-Null
+    }
+
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $imgPath = Join-Path $imgDir "$timestamp.png"
+    $img.Save($imgPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    $img.Dispose()
+
+    # Send file path as text to the target pane
+    & psmux send-keys -t $paneId -l -- "$imgPath"
+    Clear-ReadMark $paneId
+    Write-Output "image saved: $imgPath"
+    Write-Output "path sent to $paneId"
+}
+
+function Invoke-ClipboardPaste {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge clipboard-paste <target>" }
+
+    $paneId = Resolve-Target $Target
+    $paneId = Confirm-Target $paneId
+
+    Assert-ReadMark $paneId
+
+    $text = Get-Clipboard -Raw
+    if ([string]::IsNullOrEmpty($text)) {
+        Stop-WithError "clipboard is empty"
+    }
+
+    & psmux send-keys -t $paneId -l -- "$text"
+    Clear-ReadMark $paneId
+    Write-Output "sent to $paneId"
 }
 
 function Invoke-Version {
@@ -344,24 +471,30 @@ Commands:
   send <target> <text>      Send a tagged message AND press Enter (recommended)
   name <target> <label>     Label a pane
   resolve <label>           Resolve label to pane ID
-  doctor                    Check environment
+  ime-input <target>        Open GUI dialog for Japanese IME input
+  image-paste <target>      Save clipboard image and send path to pane
+  clipboard-paste <target>  Send clipboard text to pane
+  doctor                    Check environment and IME diagnostics
   version                   Show version
 "@
 }
 
 # --- Dispatch ---
 switch ($Command) {
-    'id'       { Invoke-Id }
-    'list'     { Invoke-List }
-    'read'     { Invoke-Read }
-    'type'     { Invoke-Type }
-    'keys'     { Invoke-Keys }
-    'message'  { Invoke-Message }
-    'send'     { Invoke-Send }
-    'name'     { Invoke-Name }
-    'resolve'  { Invoke-Resolve }
-    'doctor'   { Invoke-Doctor }
-    'version'  { Invoke-Version }
-    ''         { Show-Usage }
-    default    { Stop-WithError "unknown command: $Command. Run without arguments for usage." }
+    'id'              { Invoke-Id }
+    'list'            { Invoke-List }
+    'read'            { Invoke-Read }
+    'type'            { Invoke-Type }
+    'keys'            { Invoke-Keys }
+    'message'         { Invoke-Message }
+    'send'            { Invoke-Send }
+    'name'            { Invoke-Name }
+    'resolve'         { Invoke-Resolve }
+    'ime-input'       { Invoke-ImeInput }
+    'image-paste'     { Invoke-ImagePaste }
+    'clipboard-paste' { Invoke-ClipboardPaste }
+    'doctor'          { Invoke-Doctor }
+    'version'         { Invoke-Version }
+    ''                { Show-Usage }
+    default           { Stop-WithError "unknown command: $Command. Run without arguments for usage." }
 }
