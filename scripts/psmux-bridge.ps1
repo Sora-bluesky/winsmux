@@ -215,6 +215,39 @@ function Invoke-Message {
     Clear-ReadMark $paneId
 }
 
+function Invoke-Send {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge send <target> <text>" }
+    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge send <target> <text>" }
+
+    $text = $Rest -join ' '
+    $paneId = Resolve-Target $Target
+    $paneId = Confirm-Target $paneId
+
+    # Step 1: READ (satisfy read guard)
+    $output = & psmux capture-pane -t $paneId -p -J -S "-5"
+    Set-ReadMark $paneId
+
+    # Step 2: MESSAGE (type header + text)
+    $myId = (& psmux display-message -p '#{pane_id}' | Out-String).Trim()
+    $myCoord = (& psmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' | Out-String).Trim()
+    $agentName = if ($env:WINSMUX_AGENT_NAME) { $env:WINSMUX_AGENT_NAME } else { "unknown" }
+
+    $header = "[psmux-bridge from:$agentName pane:$myId at:$myCoord -- load the winsmux skill to reply]"
+    & psmux send-keys -t $paneId -l -- "$header $text"
+    Clear-ReadMark $paneId
+
+    # Step 3: READ (verify text landed)
+    Start-Sleep -Milliseconds 200
+    $verify = & psmux capture-pane -t $paneId -p -J -S "-3"
+    Set-ReadMark $paneId
+
+    # Step 4: KEYS Enter (submit)
+    & psmux send-keys -t $paneId Enter
+    Clear-ReadMark $paneId
+
+    Write-Output "sent to $paneId"
+}
+
 function Invoke-Name {
     if (-not $Target) { Stop-WithError "usage: psmux-bridge name <target> <label>" }
     if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge name <target> <label>" }
@@ -307,7 +340,8 @@ Commands:
   read <target> [lines]     Capture pane output (default 50 lines)
   type <target> <text>      Send literal text to pane
   keys <target> <key>...    Send key sequences to pane
-  message <target> <text>   Send a tagged message to pane
+  message <target> <text>   Send a tagged message to pane (no Enter)
+  send <target> <text>      Send a tagged message AND press Enter (recommended)
   name <target> <label>     Label a pane
   resolve <label>           Resolve label to pane ID
   doctor                    Check environment
@@ -323,6 +357,7 @@ switch ($Command) {
     'type'     { Invoke-Type }
     'keys'     { Invoke-Keys }
     'message'  { Invoke-Message }
+    'send'     { Invoke-Send }
     'name'     { Invoke-Name }
     'resolve'  { Invoke-Resolve }
     'doctor'   { Invoke-Doctor }
