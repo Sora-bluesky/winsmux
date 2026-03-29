@@ -47,7 +47,8 @@ The ONLY reasons to read a target pane in Agent Mode:
 | `psmux-bridge list` | Show all panes with target, pid, command, size, label | `psmux-bridge list` |
 | `psmux-bridge read <target> [lines]` | Read last N lines (default 50), sets Read Guard mark | `psmux-bridge read codex 100` |
 | `psmux-bridge type <target> <text>` | Type literal text (no Enter), requires Read Guard | `psmux-bridge type codex "hello"` |
-| `psmux-bridge message <target> <text>` | Type text with auto sender header and reply target | `psmux-bridge message codex "review src/auth.ts"` |
+| `psmux-bridge send <target> <text>` | **Recommended.** Send tagged message + auto Enter in one step | `psmux-bridge send codex "review src/auth.ts"` |
+| `psmux-bridge message <target> <text>` | Type text with sender header (no Enter -- use `send` instead) | `psmux-bridge message codex "review src/auth.ts"` |
 | `psmux-bridge keys <target> <key>...` | Send special keys, requires Read Guard | `psmux-bridge keys codex Enter` |
 | `psmux-bridge name <target> <label>` | Label a pane | `psmux-bridge name %3 codex` |
 | `psmux-bridge resolve <label>` | Print pane ID for a label | `psmux-bridge resolve codex` |
