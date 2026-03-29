@@ -152,10 +152,33 @@ The Orchestra workflow uses a 2×2 grid where Claude Code orchestrates multiple 
 psmux
 
 # 2. From another terminal, run the orchestra setup
-pwsh scripts/start-orchestra.ps1 C:\path\to\your\project
+pwsh scripts/start-orchestra.ps1 -ProjectDir C:\path\to\your\project
 ```
 
+Commander auto-receives its role, pane assignments, and workflow rules via `--append-system-prompt`.
+
 > **Important:** Always start psmux manually in a terminal first. Do not launch psmux via `Start-Process` — it breaks color rendering.
+
+### Customization
+
+All roles are configurable via parameters:
+
+```powershell
+pwsh scripts/start-orchestra.ps1 `
+  -ProjectDir C:\my\project `
+  -Commander "claude --model opus" `
+  -Researcher "claude --model sonnet" `
+  -Builder "codex" `
+  -Reviewer "claude --model haiku"
+```
+
+| Parameter | Default |
+|---|---|
+| `-ProjectDir` | Current directory |
+| `-Commander` | `claude --model opus --channels plugin:telegram@claude-plugins-official` |
+| `-Researcher` | `claude --model sonnet` |
+| `-Builder` | `codex` |
+| `-Reviewer` | `codex` |
 
 The workflow cycle: **Plan → Build → Poll → Review → Poll → Judge → Commit → Next**.
 
