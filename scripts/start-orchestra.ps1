@@ -86,52 +86,11 @@ You are the COMMANDER in a 4-pane winsmux Orchestra. Load the winsmux skill imme
 
 $escapedPrompt = $commanderPrompt -replace "'","''"
 
-# --- Codex MCP URL quarantine (workaround: v0.117.0 "url not supported for stdio") ---
-# HTTP (non-HTTPS) URL-based MCP servers cause Codex startup failure.
-# HTTPS URLs (stitch, vercel etc.) work fine — only quarantine HTTP ones.
-$codexConfigPath = Join-Path $HOME ".codex" "config.toml"
-$codexConfigBackup = $null
-
-if (($Builder -match 'codex' -or $Reviewer -match 'codex') -and (Test-Path $codexConfigPath)) {
-    $codexConfigBackup = Get-Content $codexConfigPath -Raw
-    $quarantined = @()
-    $currentSection = $null
-
-    foreach ($line in (Get-Content $codexConfigPath)) {
-        if ($line -match '^\[mcp_servers\.([^\]]+)\]') {
-            $currentSection = $Matches[1]
-        }
-        elseif ($currentSection -and $line -match '^\s*url\s*=\s*"http://') {
-            $quarantined += $currentSection
-            $currentSection = $null
-        }
-        elseif ($line -match '^\[' -and $line -notmatch '\.env_http_headers') {
-            $currentSection = $null
-        }
-    }
-
-    if ($quarantined.Count -gt 0) {
-        foreach ($s in $quarantined) {
-            codex mcp remove $s 2>$null | Out-Null
-            Write-Output "[codex-mcp] Quarantined '$s' (http:// URL not supported for stdio)"
-        }
-    } else {
-        $codexConfigBackup = $null
-    }
-}
-
 # --- Start agents ---
 psmux send-keys -t $cmdPane "cd $ProjectDir && $Commander --append-system-prompt '$escapedPrompt'" Enter
 psmux send-keys -t $resPane "cd $ProjectDir && $Researcher" Enter
 psmux send-keys -t $bldPane "cd $ProjectDir && $Builder" Enter
 psmux send-keys -t $revPane "cd $ProjectDir && $Reviewer" Enter
-
-# --- Restore Codex MCP config ---
-if ($codexConfigBackup) {
-    Start-Sleep -Seconds 3  # Allow Codex to read config before restoring
-    Set-Content -Path $codexConfigPath -Value $codexConfigBackup -Encoding UTF8 -NoNewline
-    Write-Output "[codex-mcp] Config restored (quarantined servers back in place)"
-}
 
 # --- Summary ---
 Write-Output ""
@@ -145,11 +104,3 @@ if ($shieldActive) {
 } else {
     Write-Output "  Shield:     OFF (manual approval mode)"
 }
-
-$bridgePath = Join-Path $PSScriptRoot "psmux-bridge.ps1"
-Write-Output ""
-Write-Output "Navigation (pane switching from outside psmux):"
-Write-Output "  pwsh $bridgePath focus commander"
-Write-Output "  pwsh $bridgePath focus researcher"
-Write-Output "  pwsh $bridgePath focus builder"
-Write-Output "  pwsh $bridgePath focus reviewer"
