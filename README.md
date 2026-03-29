@@ -179,6 +179,19 @@ pwsh scripts/start-orchestra.ps1 `
 | `-Researcher` | `claude --model sonnet` |
 | `-Builder` | `codex` |
 | `-Reviewer` | `codex` |
+| `-ShieldHarness` | Off (switch) |
+
+### Approval-Free Mode (Shield Harness)
+
+Add `-ShieldHarness` to enable approval-free operation for Commander and Researcher. [Shield Harness](https://github.com/Sora-bluesky/shield-harness) provides 22 security hooks, deny rules, and evidence recording — so agents operate without approval dialogs while dangerous operations are automatically blocked.
+
+```powershell
+pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -ShieldHarness
+```
+
+- First run: auto-initializes shield-harness in the project (`npx shield-harness init --profile standard`)
+- Subsequent runs: detects existing installation and skips init
+- Without `-ShieldHarness`: works exactly as before (manual approval mode)
 
 The workflow cycle: **Plan → Build → Poll → Review → Poll → Judge → Commit → Next**.
 

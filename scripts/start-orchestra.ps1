@@ -10,12 +10,38 @@ param(
     [string]$Commander  = "claude --model opus --channels plugin:telegram@claude-plugins-official",
     [string]$Researcher = "claude --model sonnet",
     [string]$Builder    = "codex",
-    [string]$Reviewer   = "codex"
+    [string]$Reviewer   = "codex",
+    [switch]$ShieldHarness
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-# Detect running session
+# --- Shield Harness (opt-in) ---
+$shieldActive = $false
+if ($ShieldHarness) {
+    $markerFile = Join-Path $ProjectDir ".claude\hooks\sh-gate.js"
+    if (Test-Path $markerFile) {
+        Write-Output "[shield-harness] Detected in $ProjectDir"
+        $shieldActive = $true
+    } else {
+        Write-Output "[shield-harness] Initializing in $ProjectDir ..."
+        Push-Location $ProjectDir
+        try {
+            npx shield-harness init --profile standard
+            if ($LASTEXITCODE -eq 0) {
+                Write-Output "[shield-harness] Initialized successfully"
+                $shieldActive = $true
+            } else {
+                Write-Warning "[shield-harness] Init failed (exit code $LASTEXITCODE). Continuing without shield-harness."
+            }
+        } catch {
+            Write-Warning "[shield-harness] Init failed: $_. Continuing without shield-harness."
+        }
+        Pop-Location
+    }
+}
+
+# --- Detect running session ---
 $session = (psmux list-sessions -F '#{session_name}' 2>$null | Select-Object -First 1)
 if (-not $session) {
     Write-Error "No psmux session found. Start psmux first, then run this script."
@@ -23,14 +49,14 @@ if (-not $session) {
 }
 $session = $session.Trim()
 
-# Create 2x2 grid
+# --- Create 2x2 grid ---
 psmux split-window -h -t $session -c $ProjectDir
 psmux split-window -v -t "${session}:0.0" -c $ProjectDir
 psmux split-window -v -t "${session}:0.2" -c $ProjectDir
 
 Start-Sleep -Milliseconds 500
 
-# Get pane IDs
+# --- Get pane IDs ---
 $panes = psmux list-panes -t $session -F '#{pane_id}' 2>$null
 $paneIds = ($panes | Out-String).Trim() -split "`n" | ForEach-Object { $_.Trim() }
 
@@ -39,7 +65,7 @@ $resPane  = $paneIds[1]  # Bottom-left
 $bldPane  = $paneIds[2]  # Top-right
 $revPane  = $paneIds[3]  # Bottom-right
 
-# Commander system prompt with dynamic pane assignments
+# --- Commander system prompt ---
 $commanderPrompt = @"
 You are the COMMANDER in a 4-pane winsmux Orchestra. Load the winsmux skill immediately.
 
@@ -60,14 +86,21 @@ You are the COMMANDER in a 4-pane winsmux Orchestra. Load the winsmux skill imme
 
 $escapedPrompt = $commanderPrompt -replace "'","''"
 
-# Start agents
+# --- Start agents ---
 psmux send-keys -t $cmdPane "cd $ProjectDir && $Commander --append-system-prompt '$escapedPrompt'" Enter
 psmux send-keys -t $resPane "cd $ProjectDir && $Researcher" Enter
 psmux send-keys -t $bldPane "cd $ProjectDir && $Builder" Enter
 psmux send-keys -t $revPane "cd $ProjectDir && $Reviewer" Enter
 
+# --- Summary ---
+Write-Output ""
 Write-Output "Orchestra started in session '$session'"
 Write-Output "  Commander:  $cmdPane  ($Commander)"
 Write-Output "  Researcher: $resPane  ($Researcher)"
 Write-Output "  Builder:    $bldPane  ($Builder)"
 Write-Output "  Reviewer:   $revPane  ($Reviewer)"
+if ($shieldActive) {
+    Write-Output "  Shield:     ACTIVE (approval-free mode with 22 security hooks)"
+} else {
+    Write-Output "  Shield:     OFF (manual approval mode)"
+}

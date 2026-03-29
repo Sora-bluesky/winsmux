@@ -179,6 +179,19 @@ pwsh scripts/start-orchestra.ps1 `
 | `-Researcher` | `claude --model sonnet` |
 | `-Builder` | `codex` |
 | `-Reviewer` | `codex` |
+| `-ShieldHarness` | Off（スイッチ） |
+
+### 承認レスモード（Shield Harness）
+
+`-ShieldHarness` を追加すると Commander と Researcher が承認ダイアログなしで動作する。[Shield Harness](https://github.com/Sora-bluesky/shield-harness) が 22 のセキュリティフック、deny ルール、エビデンス記録を提供するため、危険な操作は自動でブロックされる。
+
+```powershell
+pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -ShieldHarness
+```
+
+- 初回: プロジェクトに shield-harness を自動初期化（`npx shield-harness init --profile standard`）
+- 2回目以降: 既存のインストールを検出してスキップ
+- `-ShieldHarness` なし: 従来通り（手動承認モード）
 
 ワークフローの流れ: **Plan → Build → Poll → Review → Poll → Judge → Commit → Next**
 
