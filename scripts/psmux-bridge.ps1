@@ -6,12 +6,13 @@ param(
 )
 
 # --- Config ---
-$VERSION = "0.4.0"
+$VERSION = "0.5.0"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
-$ReadMarkDir = Join-Path $env:TEMP "winsmux\read_marks"
-$LabelsFile  = Join-Path $env:APPDATA "winsmux\labels.json"
+$ReadMarkDir    = Join-Path $env:TEMP "winsmux\read_marks"
+$WatermarkDir   = Join-Path $env:TEMP "winsmux\watermarks"
+$LabelsFile     = Join-Path $env:APPDATA "winsmux\labels.json"
 
 # --- Helper: Stop-WithError ---
 function Stop-WithError {
@@ -95,6 +96,48 @@ function Clear-ReadMark {
     }
 }
 
+# --- Helper: Watermark (change detection for read-after-send) ---
+function Get-WatermarkPath {
+    param([string]$PaneId)
+    $safe = $PaneId -replace '[%:]', '_'
+    return Join-Path $WatermarkDir $safe
+}
+
+function Save-Watermark {
+    param([string]$PaneId, [string]$Content)
+    if (-not (Test-Path $WatermarkDir)) {
+        New-Item -ItemType Directory -Path $WatermarkDir -Force | Out-Null
+    }
+    $hash = [System.BitConverter]::ToString(
+        [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+            [System.Text.Encoding]::UTF8.GetBytes($Content)
+        )
+    ) -replace '-', ''
+    $path = Get-WatermarkPath $PaneId
+    Set-Content -Path $path -Value $hash -Encoding UTF8 -NoNewline
+}
+
+function Test-WatermarkChanged {
+    param([string]$PaneId, [string]$CurrentContent)
+    $path = Get-WatermarkPath $PaneId
+    if (-not (Test-Path $path)) { return $true }
+    $savedHash = Get-Content -Path $path -Raw -Encoding UTF8
+    $currentHash = [System.BitConverter]::ToString(
+        [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+            [System.Text.Encoding]::UTF8.GetBytes($CurrentContent)
+        )
+    ) -replace '-', ''
+    return $currentHash -ne $savedHash
+}
+
+function Clear-Watermark {
+    param([string]$PaneId)
+    $path = Get-WatermarkPath $PaneId
+    if (Test-Path $path) {
+        Remove-Item -Path $path -Force
+    }
+}
+
 # --- Commands ---
 
 function Invoke-Id {
@@ -150,7 +193,7 @@ function Invoke-List {
 function Invoke-Read {
     if (-not $Target) { Stop-WithError "usage: psmux-bridge read <target> [lines]" }
 
-    $lines = 50
+    $lines = 200
     if ($Rest -and $Rest.Count -gt 0) {
         $lines = [int]$Rest[0]
     }
@@ -159,8 +202,22 @@ function Invoke-Read {
     $paneId = Confirm-Target $paneId
 
     $output = & psmux capture-pane -t $paneId -p -J -S "-$lines"
-    Write-Output ($output | Out-String).TrimEnd()
+    $currentText = ($output | Out-String).TrimEnd()
 
+    # Watermark-based change detection: if a watermark exists (set by send),
+    # only return content when the pane buffer has actually changed.
+    $wmPath = Get-WatermarkPath $paneId
+    if (Test-Path $wmPath) {
+        if (-not (Test-WatermarkChanged $paneId $currentText)) {
+            Write-Output "[psmux-bridge] waiting for response..."
+            Set-ReadMark $paneId
+            return
+        }
+        # Buffer changed — agent has produced new output
+        Clear-Watermark $paneId
+    }
+
+    Write-Output $currentText
     Set-ReadMark $paneId
 }
 
@@ -223,27 +280,23 @@ function Invoke-Send {
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
 
-    # Step 1: READ (satisfy read guard)
-    $output = & psmux capture-pane -t $paneId -p -J -S "-5"
-    Set-ReadMark $paneId
+    # Step 1: Type text directly (no header — headers break TUI agents like Claude Code)
+    & psmux send-keys -t $paneId -l -- "$text"
 
-    # Step 2: MESSAGE (type header + text)
-    $myId = (& psmux display-message -p '#{pane_id}' | Out-String).Trim()
-    $myCoord = (& psmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' | Out-String).Trim()
-    $agentName = if ($env:WINSMUX_AGENT_NAME) { $env:WINSMUX_AGENT_NAME } else { "unknown" }
+    # Step 2: Verify text landed
+    Start-Sleep -Milliseconds 300
 
-    $header = "[psmux-bridge from:$agentName pane:$myId at:$myCoord -- load the winsmux skill to reply]"
-    & psmux send-keys -t $paneId -l -- "$header $text"
-    Clear-ReadMark $paneId
-
-    # Step 3: READ (verify text landed)
-    Start-Sleep -Milliseconds 200
-    $verify = & psmux capture-pane -t $paneId -p -J -S "-3"
-    Set-ReadMark $paneId
-
-    # Step 4: KEYS Enter (submit)
+    # Step 3: Submit with Enter
     & psmux send-keys -t $paneId Enter
-    Clear-ReadMark $paneId
+
+    # Step 4: Save watermark for change detection in subsequent read calls
+    Start-Sleep -Milliseconds 800
+    $snapshot = & psmux capture-pane -t $paneId -p -J -S "-200"
+    $snapshotText = ($snapshot | Out-String).TrimEnd()
+    Save-Watermark $paneId $snapshotText
+
+    # Reset read mark so next read works without guard error
+    Set-ReadMark $paneId
 
     Write-Output "sent to $paneId"
 }
@@ -453,6 +506,16 @@ function Invoke-ClipboardPaste {
     Write-Output "sent to $paneId"
 }
 
+function Invoke-Focus {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge focus <label|target>" }
+
+    $paneId = Resolve-Target $Target
+    $paneId = Confirm-Target $paneId
+
+    & psmux select-pane -t $paneId
+    Write-Output "Focused pane $paneId ($Target)"
+}
+
 function Invoke-Version {
     Write-Output "psmux-bridge $VERSION"
 }
@@ -474,6 +537,7 @@ Commands:
   ime-input <target>        Open GUI dialog for Japanese IME input
   image-paste <target>      Save clipboard image and send path to pane
   clipboard-paste <target>  Send clipboard text to pane
+  focus <label|target>      Switch active pane (use from outside psmux)
   doctor                    Check environment and IME diagnostics
   version                   Show version
 "@
@@ -493,6 +557,7 @@ switch ($Command) {
     'ime-input'       { Invoke-ImeInput }
     'image-paste'     { Invoke-ImagePaste }
     'clipboard-paste' { Invoke-ClipboardPaste }
+    'focus'           { Invoke-Focus }
     'doctor'          { Invoke-Doctor }
     'version'         { Invoke-Version }
     ''                { Show-Usage }
