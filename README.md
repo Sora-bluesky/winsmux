@@ -99,7 +99,10 @@ A CLI for cross-pane communication on Windows. Any tool that can run shell comma
 | `psmux-bridge name <target> <label>` | Label a pane for easy addressing |
 | `psmux-bridge resolve <label>` | Look up a pane by label |
 | `psmux-bridge id` | Print this pane's ID |
-| `psmux-bridge doctor` | Check environment and diagnostics |
+| `psmux-bridge ime-input <target>` | Open GUI dialog for Japanese IME input |
+| `psmux-bridge image-paste <target>` | Save clipboard image and send path to pane |
+| `psmux-bridge clipboard-paste <target>` | Send clipboard text to pane |
+| `psmux-bridge doctor` | Check environment and IME diagnostics |
 | `psmux-bridge version` | Show version |
 
 ### Read Guard
@@ -121,26 +124,38 @@ Panes can be addressed by:
 
 Labels are resolved automatically in every command. Stored in `$env:APPDATA\winsmux\labels.json`.
 
-## Commander Orchestration
+## Orchestra (4-Pane Setup)
 
-The Commander workflow uses a 4-pane layout where Claude Code orchestrates builder/reviewer agents:
+The Orchestra workflow uses a 2×2 grid where Claude Code orchestrates multiple agents:
 
 ```
 ┌──────────────┬──────────────┐
-│  commander   │   builder    │
-│ (Claude Code)│  (Codex CLI) │
+│  Commander   │   Builder    │
+│ Claude Opus  │  Codex CLI   │
 ├──────────────┼──────────────┤
-│  reviewer    │   monitor    │
-│  (Codex CLI) │  (shell)     │
+│  Researcher  │   Reviewer   │
+│ Claude Sonnet│  Codex CLI   │
 └──────────────┴──────────────┘
 ```
 
 | Pane | Role | Responsibility |
 |---|---|---|
-| commander | Design & orchestrate | Task decomposition, instructions, git operations |
-| builder | Implement | Code implementation, fix reviewer findings |
-| reviewer | Review | Security, architecture, and quality review |
-| monitor | Observe | Test runner, dev server, build logs |
+| Commander | Design & orchestrate | Task decomposition, instructions, git operations |
+| Builder | Implement | Code implementation, fix reviewer findings |
+| Researcher | Investigate | Research, test, lint, documentation |
+| Reviewer | Review | Security, architecture, and quality review |
+
+### Quick launch
+
+```powershell
+# 1. Open a terminal and start psmux
+psmux
+
+# 2. From another terminal, run the orchestra setup
+pwsh scripts/start-orchestra.ps1 C:\path\to\your\project
+```
+
+> **Important:** Always start psmux manually in a terminal first. Do not launch psmux via `Start-Process` — it breaks color rendering.
 
 The workflow cycle: **Plan → Build → Poll → Review → Poll → Judge → Commit → Next**.
 
