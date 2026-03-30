@@ -92,16 +92,17 @@ A CLI for cross-pane communication on Windows. Any tool that can run shell comma
 | Command | Description |
 |---|---|
 | `psmux-bridge list` | Show all panes with target, process, label |
-| `psmux-bridge read <target> [lines]` | Read last N lines from a pane (default 50) |
+| `psmux-bridge read <target> [lines]` | Read last N lines from a pane (default 200) |
 | `psmux-bridge type <target> <text>` | Type text into a pane (no Enter) |
 | `psmux-bridge keys <target> <key>...` | Send keys (Enter, Escape, C-c, etc.) |
 | `psmux-bridge message <target> <text>` | Send tagged message with sender info |
-| `psmux-bridge name <target> <label>` | Label a pane for easy addressing |
+| `psmux-bridge name <target> <label>` | Label a pane (auto-enables border display) |
 | `psmux-bridge resolve <label>` | Look up a pane by label |
 | `psmux-bridge id` | Print this pane's ID |
 | `psmux-bridge ime-input <target>` | Open GUI dialog for Japanese IME input |
 | `psmux-bridge image-paste <target>` | Save clipboard image and send path to pane |
 | `psmux-bridge clipboard-paste <target>` | Send clipboard text to pane |
+| `psmux-bridge focus <label\|target>` | Switch active pane (use from outside psmux) |
 | `psmux-bridge doctor` | Check environment and IME diagnostics |
 | `psmux-bridge version` | Show version |
 
