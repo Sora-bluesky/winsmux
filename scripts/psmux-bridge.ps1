@@ -6,7 +6,7 @@ param(
 )
 
 # --- Config ---
-$VERSION = "0.5.1"
+$VERSION = "0.5.2"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
@@ -301,14 +301,18 @@ function Invoke-Send {
     Write-Output "sent to $paneId"
 }
 
-function Enable-PaneBorderLabels {
-    # Auto-enable pane border labels if not already set
+function Enable-PaneLabels {
+    # Auto-enable pane label display in status bar and terminal tab title.
+    # pane-border-status is accepted but not rendered in psmux v3.x (Issue #22),
+    # so we use status-right and set-titles as a workaround.
     try {
-        $current = (& psmux show-options -g -v pane-border-status 2>&1 | Out-String).Trim()
-        if ($current -ne 'top' -and $current -ne 'bottom') {
-            & psmux set-option -g pane-border-status top 2>$null
-            & psmux set-option -g pane-border-format ' #{?#{pane_title},#{pane_title},#{b:pane_current_path}} ' 2>$null
+        $currentRight = (& psmux show-options -g -v status-right 2>&1 | Out-String).Trim()
+        if ($currentRight -notmatch 'pane_title') {
+            & psmux set-option -g status-right '← #{pane_title} → %H:%M' 2>$null
+            & psmux set-option -g status-right-length 50 2>$null
         }
+        & psmux set-option -g set-titles on 2>$null
+        & psmux set-option -g set-titles-string '#{pane_title} - #{session_name}' 2>$null
     } catch { }
 }
 
@@ -324,8 +328,8 @@ function Invoke-Name {
     $labels[$label] = $paneId
     Save-Labels $labels
 
-    # Enable border labels and set pane title
-    Enable-PaneBorderLabels
+    # Enable pane label display and set pane title
+    Enable-PaneLabels
     try {
         & psmux select-pane -t $paneId -T "$label" 2>$null
     } catch { }
