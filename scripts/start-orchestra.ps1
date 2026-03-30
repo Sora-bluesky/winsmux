@@ -65,13 +65,6 @@ $resPane  = $paneIds[1]  # Bottom-left
 $bldPane  = $paneIds[2]  # Top-right
 $revPane  = $paneIds[3]  # Bottom-right
 
-# --- Label panes (auto-enables border display) ---
-$bridgePath = Join-Path $PSScriptRoot "psmux-bridge.ps1"
-& pwsh $bridgePath name $cmdPane commander
-& pwsh $bridgePath name $resPane researcher
-& pwsh $bridgePath name $bldPane builder
-& pwsh $bridgePath name $revPane reviewer
-
 # --- Commander system prompt ---
 $commanderPrompt = @"
 You are the COMMANDER in a 4-pane winsmux Orchestra. Load the winsmux skill immediately.
@@ -88,6 +81,7 @@ You are the COMMANDER in a 4-pane winsmux Orchestra. Load the winsmux skill imme
 3. Use Reviewer ($revPane) for code review after Builder completes.
 4. Follow the Commander workflow: Plan -> Build -> Poll -> Review -> Poll -> Judge -> Commit -> Next.
 5. Use psmux-bridge commands for all cross-pane communication.
+6. Label panes on first use: psmux-bridge name $resPane researcher && psmux-bridge name $bldPane builder && psmux-bridge name $revPane reviewer
 "@
 
 $escapedPrompt = $commanderPrompt -replace "'","''"
