@@ -301,6 +301,17 @@ function Invoke-Send {
     Write-Output "sent to $paneId"
 }
 
+function Enable-PaneBorderLabels {
+    # Auto-enable pane border labels if not already set
+    try {
+        $current = (& psmux show-options -g -v pane-border-status 2>&1 | Out-String).Trim()
+        if ($current -ne 'top' -and $current -ne 'bottom') {
+            & psmux set-option -g pane-border-status top 2>$null
+            & psmux set-option -g pane-border-format ' #{?#{pane_title},#{pane_title},#{b:pane_current_path}} ' 2>$null
+        }
+    } catch { }
+}
+
 function Invoke-Name {
     if (-not $Target) { Stop-WithError "usage: psmux-bridge name <target> <label>" }
     if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge name <target> <label>" }
@@ -313,7 +324,8 @@ function Invoke-Name {
     $labels[$label] = $paneId
     Save-Labels $labels
 
-    # Also set pane title (best-effort)
+    # Enable border labels and set pane title
+    Enable-PaneBorderLabels
     try {
         & psmux select-pane -t $paneId -T "$label" 2>$null
     } catch { }
