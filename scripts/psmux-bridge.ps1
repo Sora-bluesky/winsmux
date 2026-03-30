@@ -6,7 +6,7 @@ param(
 )
 
 # --- Config ---
-$VERSION = "0.5.2"
+$VERSION = "0.5.0"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
@@ -301,21 +301,6 @@ function Invoke-Send {
     Write-Output "sent to $paneId"
 }
 
-function Enable-PaneLabels {
-    # Auto-enable pane label display in status bar and terminal tab title.
-    # pane-border-status is accepted but not rendered in psmux v3.x (Issue #22),
-    # so we use status-right and set-titles as a workaround.
-    try {
-        $currentRight = (& psmux show-options -g -v status-right 2>&1 | Out-String).Trim()
-        if ($currentRight -notmatch 'pane_title') {
-            & psmux set-option -g status-right '← #{pane_title} → %H:%M' 2>$null
-            & psmux set-option -g status-right-length 50 2>$null
-        }
-        & psmux set-option -g set-titles on 2>$null
-        & psmux set-option -g set-titles-string '#{pane_title} - #{session_name}' 2>$null
-    } catch { }
-}
-
 function Invoke-Name {
     if (-not $Target) { Stop-WithError "usage: psmux-bridge name <target> <label>" }
     if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge name <target> <label>" }
@@ -328,8 +313,7 @@ function Invoke-Name {
     $labels[$label] = $paneId
     Save-Labels $labels
 
-    # Enable pane label display and set pane title
-    Enable-PaneLabels
+    # Also set pane title (best-effort)
     try {
         & psmux select-pane -t $paneId -T "$label" 2>$null
     } catch { }
