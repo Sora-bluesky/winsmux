@@ -1,16 +1,44 @@
 # bump-version.ps1 — Sync version across all winsmux files from VERSION (Single Source of Truth)
 # Usage:
-#   pwsh scripts/bump-version.ps1                  # Sync all files to VERSION file value
-#   pwsh scripts/bump-version.ps1 -Version 0.9.0   # Set new version and sync all files
+#   pwsh scripts/bump-version.ps1                            # Sync all files to VERSION file value
+#   pwsh scripts/bump-version.ps1 -Version 0.9.0             # Set new version and sync all files
+#   pwsh scripts/bump-version.ps1 -Version 0.9.0 -Release    # Bump + commit + tag + push + GitHub Release
 
 [CmdletBinding()]
 param(
-    [string]$Version
+    [string]$Version,
+    [switch]$Release
 )
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 $VersionFile = Join-Path $Root "VERSION"
+
+# --- Release requires -Version ---
+if ($Release -and -not $Version) {
+    Write-Error "-Release requires -Version. Usage: bump-version.ps1 -Version X.Y.Z -Release"
+    exit 1
+}
+
+# --- Release requires gh CLI ---
+if ($Release) {
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        Write-Error "GitHub CLI (gh) is required for -Release. Install: winget install GitHub.cli"
+        exit 1
+    }
+}
+
+# --- Release requires clean working tree ---
+if ($Release) {
+    Push-Location $Root
+    $status = git status --porcelain 2>&1
+    if ($status) {
+        Write-Error "Working tree is not clean. Commit or stash changes before releasing."
+        Pop-Location
+        exit 1
+    }
+    Pop-Location
+}
 
 # --- Resolve version ---
 if ($Version) {
@@ -83,4 +111,40 @@ if ($changed -eq 0) {
     Write-Host "[bump] All $($targets.Count) files are in sync at v$Version" -ForegroundColor Green
 } else {
     Write-Host "[bump] Updated $changed file(s), $synced already in sync." -ForegroundColor Yellow
+}
+
+# --- Release flow ---
+if (-not $Release) { return }
+
+Write-Host ""
+Write-Host "[release] Starting release flow for v$Version ..." -ForegroundColor Cyan
+
+Push-Location $Root
+try {
+    # Stage and commit
+    $filesToAdd = @("VERSION", "install.ps1", "scripts/psmux-bridge.ps1", "skills/winsmux/SKILL.md", "skills/winsmux/references/psmux-bridge.md")
+    git add $filesToAdd
+    git commit -m "chore: bump version to $Version"
+    Write-Host "[release] Committed"
+
+    # Tag
+    git tag "v$Version"
+    Write-Host "[release] Tagged v$Version"
+
+    # Push commit and tag
+    git push origin HEAD
+    git push origin "v$Version"
+    Write-Host "[release] Pushed to origin"
+
+    # GitHub Release
+    gh release create "v$Version" --title "v$Version" --generate-notes --latest
+    Write-Host "[release] GitHub Release created" -ForegroundColor Green
+
+    Write-Host ""
+    Write-Host "[release] Done! https://github.com/Sora-bluesky/winsmux/releases/tag/v$Version" -ForegroundColor Green
+} catch {
+    Write-Error "[release] Failed: $_"
+    exit 1
+} finally {
+    Pop-Location
 }
