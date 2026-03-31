@@ -14,6 +14,45 @@ $ReadMarkDir    = Join-Path $env:TEMP "winsmux\read_marks"
 $WatermarkDir   = Join-Path $env:TEMP "winsmux\watermarks"
 $LabelsFile     = Join-Path $env:APPDATA "winsmux\labels.json"
 
+# --- Windows Credential Manager P/Invoke ---
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public class WinCred {
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool CredWrite(ref CREDENTIAL credential, uint flags);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool CredRead(string target, uint type, uint flags, out IntPtr credential);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool CredFree(IntPtr credential);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool CredEnumerate(string filter, uint flags, out int count, out IntPtr credentials);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct CREDENTIAL {
+        public uint Flags;
+        public uint Type;
+        public string TargetName;
+        public string Comment;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+        public int CredentialBlobSize;
+        public IntPtr CredentialBlob;
+        public uint Persist;
+        public int AttributeCount;
+        public IntPtr Attributes;
+        public string TargetAlias;
+        public string UserName;
+    }
+
+    public const uint CRED_TYPE_GENERIC = 1;
+    public const uint CRED_PERSIST_LOCAL_MACHINE = 2;
+}
+'@ -ErrorAction SilentlyContinue
+
 # --- Helper: Stop-WithError ---
 function Stop-WithError {
     param([string]$Message)
@@ -621,6 +660,207 @@ function Invoke-Focus {
     Write-Output "Focused pane $paneId ($Target)"
 }
 
+function Invoke-Profile {
+    $fragmentDir = Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\Fragments\winsmux"
+    $fragmentFile = Join-Path $fragmentDir "winsmux.json"
+
+    if (-not $Target) {
+        # Show current fragment
+        if (Test-Path $fragmentFile) {
+            Get-Content $fragmentFile -Raw
+        } else {
+            Write-Host "No Windows Terminal fragment registered. Run: winsmux install"
+        }
+        return
+    }
+
+    # Generate custom profile fragment
+    # $Target = profile name, $Rest = agent definitions like "builder:codex" "reviewer:claude"
+    $profileName = $Target
+    $agents = @()
+    if ($Rest -and $Rest.Count -gt 0) {
+        foreach ($def in $Rest) {
+            $agents += $def
+        }
+    }
+
+    $agentComment = ""
+    if ($agents.Count -gt 0) {
+        $agentComment = " # agents: $($agents -join ', ')"
+    }
+
+    if (-not (Test-Path $fragmentDir)) {
+        New-Item -ItemType Directory -Path $fragmentDir -Force | Out-Null
+    }
+
+    $fragment = @{
+        profiles = @(
+            @{
+                name             = "winsmux $profileName"
+                commandline      = "pwsh -NoProfile -Command `"& '%USERPROFILE%\.winsmux\bin\psmux-bridge.ps1' doctor; psmux new-session -s $profileName; pwsh '%USERPROFILE%\.winsmux\bin\start-orchestra.ps1'`""
+                icon             = "`u{1F3BC}"
+                startingDirectory = "%USERPROFILE%"
+                tabTitle         = "winsmux $profileName"
+            }
+        )
+    }
+
+    $json = $fragment | ConvertTo-Json -Depth 4
+    Set-Content -Path $fragmentFile -Value $json -Encoding UTF8
+    Write-Output "Registered WT profile: winsmux $profileName"
+    Write-Output "Fragment: $fragmentFile"
+    if ($agents.Count -gt 0) {
+        Write-Output "Agents: $($agents -join ', ')"
+    }
+}
+
+# --- Vault Commands ---
+
+function Invoke-VaultSet {
+    $key = $Target
+    $value = if ($Rest) { $Rest -join ' ' } else { '' }
+    if (-not $key) { Stop-WithError "usage: psmux-bridge vault set <key> [value]" }
+    if (-not $value) {
+        $secure = Read-Host -AsSecureString "Enter value for '$key'"
+        $value = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+            [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure))
+    }
+
+    $credTarget = "winsmux:$key"
+    $valueBytes = [System.Text.Encoding]::Unicode.GetBytes($value)
+    $blobPtr = [Runtime.InteropServices.Marshal]::AllocHGlobal($valueBytes.Length)
+    [Runtime.InteropServices.Marshal]::Copy($valueBytes, 0, $blobPtr, $valueBytes.Length)
+
+    $cred = New-Object WinCred+CREDENTIAL
+    $cred.Type = [WinCred]::CRED_TYPE_GENERIC
+    $cred.TargetName = $credTarget
+    $cred.UserName = "winsmux"
+    $cred.CredentialBlobSize = $valueBytes.Length
+    $cred.CredentialBlob = $blobPtr
+    $cred.Persist = [WinCred]::CRED_PERSIST_LOCAL_MACHINE
+
+    try {
+        $ok = [WinCred]::CredWrite([ref]$cred, 0)
+        if (-not $ok) {
+            $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            Stop-WithError "CredWrite failed (error $errCode)"
+        }
+        Write-Host "Stored credential: $key"
+    } finally {
+        [Runtime.InteropServices.Marshal]::FreeHGlobal($blobPtr)
+    }
+}
+
+function Invoke-VaultGet {
+    $key = $Target
+    if (-not $key) { Stop-WithError "usage: psmux-bridge vault get <key>" }
+
+    $credTarget = "winsmux:$key"
+    $credPtr = [IntPtr]::Zero
+
+    $ok = [WinCred]::CredRead($credTarget, [WinCred]::CRED_TYPE_GENERIC, 0, [ref]$credPtr)
+    if (-not $ok) {
+        $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($errCode -eq 1168) {
+            Stop-WithError "credential not found: $key"
+        }
+        Stop-WithError "CredRead failed (error $errCode)"
+    }
+
+    try {
+        $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($credPtr, [Type][WinCred+CREDENTIAL])
+        if ($cred.CredentialBlobSize -gt 0) {
+            $bytes = New-Object byte[] $cred.CredentialBlobSize
+            [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
+            $value = [System.Text.Encoding]::Unicode.GetString($bytes)
+            Write-Output $value
+        }
+    } finally {
+        [WinCred]::CredFree($credPtr) | Out-Null
+    }
+}
+
+function Invoke-VaultList {
+    $filter = "winsmux:*"
+    $count = 0
+    $credsPtr = [IntPtr]::Zero
+
+    $ok = [WinCred]::CredEnumerate($filter, 0, [ref]$count, [ref]$credsPtr)
+    if (-not $ok) {
+        $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($errCode -eq 1168) {
+            Write-Output "(no credentials stored)"
+            return
+        }
+        Stop-WithError "CredEnumerate failed (error $errCode)"
+    }
+
+    try {
+        $ptrSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][IntPtr])
+        for ($i = 0; $i -lt $count; $i++) {
+            $entryPtr = [Runtime.InteropServices.Marshal]::ReadIntPtr($credsPtr, $i * $ptrSize)
+            $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($entryPtr, [Type][WinCred+CREDENTIAL])
+            $name = $cred.TargetName -replace '^winsmux:', ''
+            Write-Output $name
+        }
+    } finally {
+        [WinCred]::CredFree($credsPtr) | Out-Null
+    }
+}
+
+function Invoke-VaultInject {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge vault inject <pane>" }
+
+    $paneId = Resolve-Target $Target
+    $paneId = Confirm-Target $paneId
+    Assert-ReadMark $paneId
+
+    # Enumerate all winsmux:* credentials
+    $filter = "winsmux:*"
+    $count = 0
+    $credsPtr = [IntPtr]::Zero
+
+    $ok = [WinCred]::CredEnumerate($filter, 0, [ref]$count, [ref]$credsPtr)
+    if (-not $ok) {
+        $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        if ($errCode -eq 1168) {
+            Write-Output "no credentials to inject"
+            return
+        }
+        Stop-WithError "CredEnumerate failed (error $errCode)"
+    }
+
+    $injected = 0
+    try {
+        $ptrSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][IntPtr])
+        for ($i = 0; $i -lt $count; $i++) {
+            $entryPtr = [Runtime.InteropServices.Marshal]::ReadIntPtr($credsPtr, $i * $ptrSize)
+            $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($entryPtr, [Type][WinCred+CREDENTIAL])
+            $envName = $cred.TargetName -replace '^winsmux:', ''
+
+            $value = ''
+            if ($cred.CredentialBlobSize -gt 0) {
+                $bytes = New-Object byte[] $cred.CredentialBlobSize
+                [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
+                $value = [System.Text.Encoding]::Unicode.GetString($bytes)
+            }
+
+            # Escape single quotes in value for safe injection
+            $escapedValue = $value -replace "'", "''"
+            $setCmd = "`$env:$envName = '$escapedValue'"
+            & psmux send-keys -t $paneId -l -- "$setCmd"
+            & psmux send-keys -t $paneId Enter
+            Start-Sleep -Milliseconds 100
+            $injected++
+        }
+    } finally {
+        [WinCred]::CredFree($credsPtr) | Out-Null
+    }
+
+    Clear-ReadMark $paneId
+    Write-Output "injected $injected credential(s) into $paneId"
+}
+
 function Invoke-Version {
     Write-Output "psmux-bridge $VERSION"
 }
@@ -646,6 +886,11 @@ Commands:
   wait <channel> [timeout]  Block until signal received (replaces polling)
   signal <channel>          Send signal to unblock a waiting process
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
+  vault set <key> [value]   Store a credential securely (DPAPI)
+  vault get <key>           Retrieve a stored credential
+  vault inject <pane>       Inject all credentials as env vars into a pane
+  vault list                List stored credential keys
+  profile [name] [agents]   Show or register WT dropdown profile
   doctor                    Check environment and IME diagnostics
   version                   Show version
 "@
@@ -666,9 +911,19 @@ switch ($Command) {
     'image-paste'     { Invoke-ImagePaste }
     'clipboard-paste' { Invoke-ClipboardPaste }
     'focus'           { Invoke-Focus }
+    'vault'           {
+        switch ($Target) {
+            'set'    { $Target = $Rest[0]; $Rest = @($Rest | Select-Object -Skip 1); Invoke-VaultSet }
+            'get'    { $Target = $Rest[0]; Invoke-VaultGet }
+            'inject' { $Target = $Rest[0]; Invoke-VaultInject }
+            'list'   { Invoke-VaultList }
+            default  { Stop-WithError "usage: psmux-bridge vault [set|get|inject|list]" }
+        }
+    }
     'wait'            { Invoke-Wait }
     'signal'          { Invoke-Signal }
     'watch'           { Invoke-Watch }
+    'profile'         { Invoke-Profile }
     'doctor'          { Invoke-Doctor }
     'version'         { Invoke-Version }
     ''                { Show-Usage }
