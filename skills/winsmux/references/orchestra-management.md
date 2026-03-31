@@ -194,18 +194,35 @@ Read at 10-second intervals. Maximum 12 rounds (about 120 seconds).
 
 ### State Detection Patterns
 
-| Output contains                                | State            | Commander action                               |
-| ---------------------------------------------- | ---------------- | ---------------------------------------------- |
-| `Do you want to proceed?` / `1. Yes`           | Approval needed  | Auto-approve (see below)                       |
-| `2. Yes, and don't ask again`                  | Approval needed  | `type "2"` to skip future prompts of same kind |
-| `> Implement` / `> Write` / `> Improve`        | Complete (idle)  | End POLL, next step                            |
-| `gpt-5.4 high` / `100% left`                   | Complete (idle)  | End POLL, next step                            |
-| `Editing...` / `Running...` / `Reading...`     | Working          | Do nothing, next POLL                          |
-| `"type": "error"` / `API error` / `rate limit` | API error        | Report to user. Suggest model change           |
-| `error` / `failed` / `Error`                   | Execution error  | Read error details, decide action              |
-| `Esc to cancel`                                | Approval needed  | Verify content, then `keys Enter`              |
-| `[Y/n]` / `[y/N]`                              | Shell confirm    | `type "y"` + `keys Enter`                      |
-| `Sandbox`                                      | Sandbox approval | `type "1"` + `keys Enter`                      |
+| Output contains                                    | State            | Commander action                               |
+| -------------------------------------------------- | ---------------- | ---------------------------------------------- |
+| `Do you want to proceed?` / `1. Yes`               | Approval needed  | Auto-approve (see below)                       |
+| `2. Yes, and don't ask again`                      | Approval needed  | `type "2"` to skip future prompts of same kind |
+| Line starts with `› ` (U+203A) or `> ` suggestions | Complete (idle)  | End POLL, next step                            |
+| `gpt-5.4 high` / `100% left` / model status line   | Complete (idle)  | End POLL, next step                            |
+| `Editing...` / `Running...` / `Reading...`         | Working          | Do nothing, next POLL                          |
+| `"type": "error"` / `API error` / `rate limit`     | API error        | Report to user. Suggest model change           |
+| `error` / `failed` / `Error`                       | Execution error  | Read error details, decide action              |
+| `Esc to cancel`                                    | Approval needed  | Verify content, then `keys Enter`              |
+| `[Y/n]` / `[y/N]`                                  | Shell confirm    | `type "y"` + `keys Enter`                      |
+| `Sandbox`                                          | Sandbox approval | `type "1"` + `keys Enter`                      |
+
+### Idle Detection Pitfall
+
+Agent CLIs show dynamic suggestion text when idle (e.g., Codex: `› Summarize recent commits`, Claude: `> ` prompt). Do NOT interpret these as pending tasks or unsent messages. If the pane shows suggestion-style text and no progress indicators (`Editing...`, `Running...`), the agent is idle and the task is complete.
+
+To avoid false negatives in polling, prefer signal-based detection (Method 1) over pattern matching. For agents that cannot send signals, use `watch` (v0.8.3+) for time-based completion detection.
+
+### Completion Verification (when unsure)
+
+If read output is ambiguous, verify completion via file changes instead of pane output:
+
+```powershell
+git diff --name-only           # files changed since last commit
+git diff --stat                # change summary
+```
+
+**File state is authoritative. Pane output is advisory.**
 
 ### Auto-Approve Procedure
 
