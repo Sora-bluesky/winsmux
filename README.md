@@ -21,6 +21,7 @@ irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | ie
 ```
 
 This installs:
+
 - **psmux** if not already installed (via winget, scoop, cargo, or chocolatey)
 - **psmux-bridge** CLI for cross-pane agent communication
 - **.psmux.conf** with Alt-key bindings, mouse support, and pane labels
@@ -53,31 +54,31 @@ All keybindings use **Alt** with no prefix required.
 
 ### Panes
 
-| Key | Action |
-|---|---|
-| `Alt+i/k/j/l` | Navigate up/down/left/right |
-| `Alt+n` | New pane (split + auto-tile) |
-| `Alt+w` | Close pane |
-| `Alt+o` | Cycle layouts |
-| `Alt+g` | Mark pane |
-| `Alt+y` | Swap with marked pane |
+| Key           | Action                       |
+| ------------- | ---------------------------- |
+| `Alt+i/k/j/l` | Navigate up/down/left/right  |
+| `Alt+n`       | New pane (split + auto-tile) |
+| `Alt+w`       | Close pane                   |
+| `Alt+o`       | Cycle layouts                |
+| `Alt+g`       | Mark pane                    |
+| `Alt+y`       | Swap with marked pane        |
 
 ### Windows
 
-| Key | Action |
-|---|---|
-| `Alt+m` | New window |
-| `Alt+u` | Next window |
+| Key     | Action          |
+| ------- | --------------- |
+| `Alt+m` | New window      |
+| `Alt+u` | Next window     |
 | `Alt+h` | Previous window |
 
 ### Scrolling
 
-| Key | Action |
-|---|---|
-| `Alt+Tab` | Toggle scroll mode |
-| `i/k` | Scroll up/down |
-| `Shift+I/K` | Half-page up/down |
-| `q` or `Escape` | Exit scroll mode |
+| Key             | Action             |
+| --------------- | ------------------ |
+| `Alt+Tab`       | Toggle scroll mode |
+| `i/k`           | Scroll up/down     |
+| `Shift+I/K`     | Half-page up/down  |
+| `q` or `Escape` | Exit scroll mode   |
 
 ### Mouse
 
@@ -89,21 +90,23 @@ All keybindings use **Alt** with no prefix required.
 
 A CLI for cross-pane communication on Windows. Any tool that can run shell commands can use it — Claude Code, Codex, Gemini CLI, or a plain PowerShell script.
 
-| Command | Description |
-|---|---|
-| `psmux-bridge list` | Show all panes with target, process, label |
-| `psmux-bridge read <target> [lines]` | Read last N lines from a pane (default 50) |
-| `psmux-bridge type <target> <text>` | Type text into a pane (no Enter) |
-| `psmux-bridge keys <target> <key>...` | Send keys (Enter, Escape, C-c, etc.) |
-| `psmux-bridge message <target> <text>` | Send tagged message with sender info |
-| `psmux-bridge name <target> <label>` | Label a pane for easy addressing |
-| `psmux-bridge resolve <label>` | Look up a pane by label |
-| `psmux-bridge id` | Print this pane's ID |
-| `psmux-bridge ime-input <target>` | Open GUI dialog for Japanese IME input |
-| `psmux-bridge image-paste <target>` | Save clipboard image and send path to pane |
-| `psmux-bridge clipboard-paste <target>` | Send clipboard text to pane |
-| `psmux-bridge doctor` | Check environment and IME diagnostics |
-| `psmux-bridge version` | Show version |
+| Command                                 | Description                                |
+| --------------------------------------- | ------------------------------------------ |
+| `psmux-bridge list`                     | Show all panes with target, process, label |
+| `psmux-bridge read <target> [lines]`    | Read last N lines from a pane (default 50) |
+| `psmux-bridge type <target> <text>`     | Type text into a pane (no Enter)           |
+| `psmux-bridge keys <target> <key>...`   | Send keys (Enter, Escape, C-c, etc.)       |
+| `psmux-bridge message <target> <text>`  | Send tagged message with sender info       |
+| `psmux-bridge name <target> <label>`    | Label a pane for easy addressing           |
+| `psmux-bridge resolve <label>`          | Look up a pane by label                    |
+| `psmux-bridge id`                       | Print this pane's ID                       |
+| `psmux-bridge ime-input <target>`       | Open GUI dialog for Japanese IME input     |
+| `psmux-bridge image-paste <target>`     | Save clipboard image and send path to pane |
+| `psmux-bridge clipboard-paste <target>` | Send clipboard text to pane                |
+| `psmux-bridge send <target> <text>`     | Send text and press Enter (recommended)    |
+| `psmux-bridge focus <label\|target>`    | Switch active pane (from outside psmux)    |
+| `psmux-bridge doctor`                   | Check environment and IME diagnostics      |
+| `psmux-bridge version`                  | Show version                               |
 
 ### Read Guard
 
@@ -119,85 +122,87 @@ This prevents agents from blindly typing into the wrong pane.
 ### Targeting
 
 Panes can be addressed by:
+
 - **Pane ID** — `%3`, `%5` (psmux native IDs)
 - **Label** — any name set via `psmux-bridge name`
 
 Labels are resolved automatically in every command. Stored in `$env:APPDATA\winsmux\labels.json`.
 
-## Orchestra (4-Pane Setup)
+## Orchestra
 
-The Orchestra workflow uses a 2×2 grid where Claude Code orchestrates multiple agents:
+The Orchestra workflow uses a Commander (in a separate terminal) orchestrating background agents in psmux panes. Supports any grid size and mixed CLI agents (Claude Code, Codex, Gemini CLI).
 
-```
-┌──────────────┬──────────────┐
-│  Commander   │   Builder    │
-│ Claude Opus  │  Codex CLI   │
-├──────────────┼──────────────┤
-│  Researcher  │   Reviewer   │
-│ Claude Sonnet│  Codex CLI   │
-└──────────────┴──────────────┘
-```
-
-| Pane | Role | Responsibility |
-|---|---|---|
-| Commander | Design & orchestrate | Task decomposition, instructions, git operations |
-| Builder | Implement | Code implementation, fix reviewer findings |
-| Researcher | Investigate | Research, test, lint, documentation |
-| Reviewer | Review | Security, architecture, and quality review |
-
-### Quick launch
+### Default (2×2)
 
 ```powershell
 # 1. Open a terminal and start psmux
 psmux
 
 # 2. From another terminal, run the orchestra setup
-pwsh scripts/start-orchestra.ps1 -ProjectDir C:\path\to\your\project
+pwsh scripts/start-orchestra.ps1 -ProjectDir C:\path\to\project
 ```
 
-Commander auto-receives its role, pane assignments, and workflow rules via `--append-system-prompt`.
-
-> **Important:** Always start psmux manually in a terminal first. Do not launch psmux via `Start-Process` — it breaks color rendering.
-
-### Customization
-
-All roles are configurable via parameters:
+### Custom (e.g. 3×2 with 6 agents)
 
 ```powershell
-pwsh scripts/start-orchestra.ps1 `
-  -ProjectDir C:\my\project `
-  -Commander "claude --model opus" `
-  -Researcher "claude --model sonnet" `
-  -Builder "codex" `
-  -Reviewer "claude --model haiku"
+pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -Rows 2 -Cols 3 -Agents @(
+  @{label="builder-1"; command="codex"},
+  @{label="researcher"; command="claude --model sonnet"},
+  @{label="builder-2"; command="codex"},
+  @{label="builder-3"; command="gemini --model gemini-3.1-pro-preview"},
+  @{label="builder-4"; command="gemini --model gemini-3-flash-preview"},
+  @{label="reviewer"; command="codex"}
+) -ShieldHarness
 ```
 
-| Parameter | Default |
-|---|---|
-| `-ProjectDir` | Current directory |
-| `-Commander` | `claude --model opus --channels plugin:telegram@claude-plugins-official` |
-| `-Researcher` | `claude --model sonnet` |
-| `-Builder` | `codex` |
-| `-Reviewer` | `codex` |
-| `-ShieldHarness` | Off (switch) |
+```
+┌──────────┬──────────┬──────────┐
+│builder-1 │builder-2 │builder-3 │
+├──────────┼──────────┼──────────┤
+│researcher│builder-4 │reviewer  │
+└──────────┴──────────┴──────────┘
+```
+
+The Commander runs in a separate terminal with full keyboard access:
+
+```powershell
+cd C:\my\project
+claude --model claude-opus-4-6 --permission-mode bypassPermissions --append-system-prompt-file .commander-prompt.txt
+```
+
+| Parameter        | Default           | Description                       |
+| ---------------- | ----------------- | --------------------------------- |
+| `-ProjectDir`    | Current directory | Working directory for all panes   |
+| `-Rows`          | 2                 | Grid rows                         |
+| `-Cols`          | 2                 | Grid columns                      |
+| `-Agents`        | 4-pane default    | Array of `@{label; command}` maps |
+| `-ShieldHarness` | Off               | Enable approval-free mode         |
 
 ### Approval-Free Mode (Shield Harness)
 
-Add `-ShieldHarness` to enable approval-free operation for Commander and Researcher. [Shield Harness](https://github.com/Sora-bluesky/shield-harness) provides 22 security hooks, deny rules, and evidence recording — so agents operate without approval dialogs while dangerous operations are automatically blocked.
+Add `-ShieldHarness` to enable approval-free operation. [Shield Harness](https://github.com/Sora-bluesky/shield-harness) provides security hooks so agents operate without approval dialogs while dangerous operations are blocked.
 
-```powershell
-pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -ShieldHarness
-```
+When enabled, the script automatically appends the appropriate flag per CLI:
 
-- First run: auto-initializes shield-harness in the project (`npx shield-harness init --profile standard`)
-- Subsequent runs: detects existing installation and skips init
-- Without `-ShieldHarness`: works exactly as before (manual approval mode)
+| CLI         | Flag added                            |
+| ----------- | ------------------------------------- |
+| Claude Code | `--permission-mode bypassPermissions` |
+| Codex CLI   | `--full-auto`                         |
+| Gemini CLI  | `--yolo`                              |
 
-The workflow cycle: **Plan → Build → Poll → Review → Poll → Judge → Commit → Next**.
+Without `-ShieldHarness`: no flags are added (manual approval mode).
 
-Commander never writes code directly — it delegates to builder and sends reviewer findings back to builder for fixes.
+### Multi-Builder Coordination
 
-See [SKILL.md](skills/winsmux/SKILL.md) for the full Commander workflow, poll patterns, and auto-approval rules.
+The Commander follows a strict protocol for parallel builders:
+
+1. **Split** — Assign independent file sets per builder (avoid overlapping files)
+2. **Poll** — Cycle `psmux-bridge read builder-1`, `read builder-2`, etc.
+3. **Review** — Send completed work to reviewer as each builder finishes
+4. **Conflict check** — `git diff --name-only` before merging
+5. **Commit** — Merge and commit after review passes
+
+See [SKILL.md](skills/winsmux/SKILL.md) for the full Commander workflow.
 
 ## AI Agent Skills
 

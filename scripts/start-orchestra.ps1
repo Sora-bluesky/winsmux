@@ -1,5 +1,17 @@
-# start-orchestra.ps1 — 4-pane orchestra setup (run AFTER psmux is started)
-# Usage: pwsh scripts/start-orchestra.ps1 [options]
+# start-orchestra.ps1 — Flexible N-pane orchestra setup (run AFTER psmux is started)
+# Usage:
+#   # Default 2x2 (backward compatible):
+#   pwsh scripts/start-orchestra.ps1
+#
+#   # Custom 3x2 with mixed agents:
+#   pwsh scripts/start-orchestra.ps1 -Rows 2 -Cols 3 -Agents @(
+#     @{label="builder-1"; command="codex --full-auto"},
+#     @{label="builder-2"; command="codex --full-auto"},
+#     @{label="builder-3"; command="gemini --model gemini-3.1-pro-preview --yolo"},
+#     @{label="researcher"; command="claude --model sonnet"},
+#     @{label="builder-4"; command="gemini --model gemini-3-flash-preview --yolo"},
+#     @{label="reviewer"; command="codex --full-auto"}
+#   ) -ShieldHarness
 #
 # Prerequisite: user has already started psmux in their terminal.
 # This script splits panes and launches agents into the running session.
@@ -7,14 +19,31 @@
 [CmdletBinding()]
 param(
     [string]$ProjectDir = (Get-Location).Path,
-    [string]$Commander  = "claude --model opus --channels plugin:telegram@claude-plugins-official",
-    [string]$Researcher = "claude --model sonnet",
-    [string]$Builder    = "codex",
-    [string]$Reviewer   = "codex",
+    [int]$Rows = 2,
+    [int]$Cols = 2,
+    [hashtable[]]$Agents,
+    [string]$CommanderPromptFile,
     [switch]$ShieldHarness
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+# --- Default agents (backward compatible 2x2) ---
+if (-not $Agents -or $Agents.Count -eq 0) {
+    $Agents = @(
+        @{ label = "builder";    command = "codex" },
+        @{ label = "researcher"; command = "claude --model sonnet" },
+        @{ label = "reviewer";   command = "codex" },
+        @{ label = "monitor";    command = "pwsh" }
+    )
+}
+
+# --- Validate grid ---
+$expectedPanes = $Rows * $Cols
+if ($Agents.Count -ne $expectedPanes) {
+    Write-Error "Grid is ${Rows}x${Cols} ($expectedPanes panes) but $($Agents.Count) agents provided."
+    exit 1
+}
 
 # --- Shield Harness (opt-in) ---
 $shieldActive = $false
@@ -41,6 +70,23 @@ if ($ShieldHarness) {
     }
 }
 
+# --- Approval-free mode flags (only with ShieldHarness) ---
+function Get-ApprovalFreeCommand {
+    param([string]$Cmd)
+    if (-not $shieldActive) { return $Cmd }
+
+    if ($Cmd -match '^claude\b' -and $Cmd -notmatch '--permission-mode') {
+        return "$Cmd --permission-mode bypassPermissions"
+    }
+    if ($Cmd -match '^codex\b' -and $Cmd -notmatch '--full-auto') {
+        return "$Cmd --full-auto"
+    }
+    if ($Cmd -match '^gemini\b' -and $Cmd -notmatch '--yolo') {
+        return "$Cmd --yolo"
+    }
+    return $Cmd
+}
+
 # --- Detect running session ---
 $session = (psmux list-sessions -F '#{session_name}' 2>$null | Select-Object -First 1)
 if (-not $session) {
@@ -49,50 +95,105 @@ if (-not $session) {
 }
 $session = $session.Trim()
 
-# --- Create 2x2 grid ---
-psmux split-window -h -t $session -c $ProjectDir
-psmux split-window -v -t "${session}:0.0" -c $ProjectDir
-psmux split-window -v -t "${session}:0.2" -c $ProjectDir
+# --- Create dynamic grid ---
+# Step 1: Horizontal splits to create columns
+for ($c = 0; $c -lt $Cols - 1; $c++) {
+    psmux split-window -h -t $session -c $ProjectDir
+}
+
+# Step 2: Even out column widths
+psmux select-layout -t $session even-horizontal
+
+Start-Sleep -Milliseconds 300
+
+# Step 3: Vertical splits within each column
+$colPanes = psmux list-panes -t $session -F '#{pane_id}' 2>$null
+$colPaneIds = ($colPanes | Out-String).Trim() -split "`n" | ForEach-Object { $_.Trim() }
+
+foreach ($colPane in $colPaneIds) {
+    for ($r = 0; $r -lt $Rows - 1; $r++) {
+        psmux split-window -v -t $colPane -c $ProjectDir
+    }
+}
 
 Start-Sleep -Milliseconds 500
 
-# --- Get pane IDs ---
+# --- Get final pane IDs ---
 $panes = psmux list-panes -t $session -F '#{pane_id}' 2>$null
 $paneIds = ($panes | Out-String).Trim() -split "`n" | ForEach-Object { $_.Trim() }
 
-$cmdPane  = $paneIds[0]  # Top-left
-$resPane  = $paneIds[1]  # Bottom-left
-$bldPane  = $paneIds[2]  # Top-right
-$revPane  = $paneIds[3]  # Bottom-right
+if ($paneIds.Count -ne $expectedPanes) {
+    Write-Warning "Expected $expectedPanes panes but got $($paneIds.Count). Layout may be incorrect."
+}
 
-# --- Commander system prompt ---
-$commanderPrompt = @"
-You are the COMMANDER in a 4-pane winsmux Orchestra. Load the winsmux skill immediately.
+# --- Assign labels ---
+$bridgePath = Join-Path $PSScriptRoot "psmux-bridge.ps1"
+$paneMap = @{}
 
-## Pane Assignments
-- $cmdPane (top-left) = YOU (Commander)
-- $resPane (bottom-left) = Researcher — Agent Mode
-- $bldPane (top-right) = Builder — Non-Agent Mode, POLL required
-- $revPane (bottom-right) = Reviewer — Non-Agent Mode, POLL required
+for ($i = 0; $i -lt [Math]::Min($Agents.Count, $paneIds.Count); $i++) {
+    $label = $Agents[$i].label
+    $paneId = $paneIds[$i]
+    $paneMap[$label] = $paneId
+    pwsh $bridgePath name $paneId $label 2>$null | Out-Null
+}
+
+# --- Generate commander prompt ---
+$promptFile = $CommanderPromptFile
+if (-not $promptFile) {
+    $promptFile = Join-Path $ProjectDir ".commander-prompt.txt"
+}
+
+$builderLabels = ($Agents | Where-Object { $_.label -match 'builder' } | ForEach-Object { $_.label }) -join ', '
+$researcherLabels = ($Agents | Where-Object { $_.label -match 'researcher' } | ForEach-Object { $_.label }) -join ', '
+$reviewerLabels = ($Agents | Where-Object { $_.label -match 'reviewer' } | ForEach-Object { $_.label }) -join ', '
+
+$agentRows = $Agents | ForEach-Object {
+    "| $($_.label) | $($paneMap[$_.label]) | $($_.command) |"
+}
+
+$promptContent = @"
+You are the COMMANDER in a winsmux Orchestra. You run directly in the user's terminal. $($Agents.Count) background agents run in psmux panes.
+
+## Background Agents
+
+| Label | Pane | Command |
+|-------|------|---------|
+$($agentRows -join "`n")
+
+## Communication (psmux-bridge)
+
+``````powershell
+# Send task to an agent
+pwsh $bridgePath send <label> "<instruction>"
+
+# Read agent output (polling)
+pwsh $bridgePath read <label>
+``````
 
 ## Rules
-1. NEVER write code yourself. Delegate to Builder ($bldPane).
-2. Use Researcher ($resPane) for investigation, test, lint, docs.
-3. Use Reviewer ($revPane) for code review after Builder completes.
-4. Follow the Commander workflow: Plan -> Build -> Poll -> Review -> Poll -> Judge -> Commit -> Next.
-5. Use psmux-bridge commands for all cross-pane communication.
-6. Label panes on first use: psmux-bridge name $resPane researcher && psmux-bridge name $bldPane builder && psmux-bridge name $revPane reviewer
+1. NEVER write code yourself. Delegate to builders ($builderLabels).
+2. Use researchers ($researcherLabels) for investigation, testing, docs.
+3. Use reviewers ($reviewerLabels) for code review after builders complete.
+4. Assign each builder INDEPENDENT file sets to avoid conflicts.
+5. Poll all agents with ``read`` to check progress. Agents cannot push to you.
+
+## Multi-Builder Coordination Protocol
+1. SPLIT: Assign independent tasks with explicit file boundaries per builder.
+2. POLL: Cycle through all builders. "waiting for response..." = still working.
+3. REVIEW: Send completed work to reviewer as each builder finishes (don't wait for all).
+4. CONFLICT CHECK: After all builders complete, run ``git diff --name-only`` to detect overlaps.
+5. MERGE: If no conflicts, commit. If conflicts, resolve manually then commit.
 "@
 
-$escapedPrompt = $commanderPrompt -replace "'","''"
+Set-Content -Path $promptFile -Value $promptContent -Encoding UTF8
+Write-Output "[orchestra] Commander prompt written to $promptFile"
 
 # --- Codex MCP URL quarantine (workaround: v0.117.0 "url not supported for stdio") ---
-# HTTP (non-HTTPS) URL-based MCP servers cause Codex startup failure.
-# HTTPS URLs (stitch, vercel etc.) work fine — only quarantine HTTP ones.
+$hasCodex = ($Agents | Where-Object { $_.command -match 'codex' }).Count -gt 0
 $codexConfigPath = Join-Path $HOME ".codex" "config.toml"
 $codexConfigBackup = $null
 
-if (($Builder -match 'codex' -or $Reviewer -match 'codex') -and (Test-Path $codexConfigPath)) {
+if ($hasCodex -and (Test-Path $codexConfigPath)) {
     $codexConfigBackup = Get-Content $codexConfigPath -Raw
     $quarantined = @()
     $currentSection = $null
@@ -121,35 +222,49 @@ if (($Builder -match 'codex' -or $Reviewer -match 'codex') -and (Test-Path $code
 }
 
 # --- Start agents ---
-psmux send-keys -t $cmdPane "cd $ProjectDir && $Commander --append-system-prompt '$escapedPrompt'" Enter
-psmux send-keys -t $resPane "cd $ProjectDir && $Researcher" Enter
-psmux send-keys -t $bldPane "cd $ProjectDir && $Builder" Enter
-psmux send-keys -t $revPane "cd $ProjectDir && $Reviewer" Enter
+for ($i = 0; $i -lt $Agents.Count; $i++) {
+    $agent = $Agents[$i]
+    $paneId = $paneIds[$i]
+    $cmd = Get-ApprovalFreeCommand $agent.command
+    psmux send-keys -t $paneId "cd $ProjectDir && $cmd" Enter
+}
 
 # --- Restore Codex MCP config ---
 if ($codexConfigBackup) {
-    Start-Sleep -Seconds 3  # Allow Codex to read config before restoring
+    Start-Sleep -Seconds 3
     Set-Content -Path $codexConfigPath -Value $codexConfigBackup -Encoding UTF8 -NoNewline
     Write-Output "[codex-mcp] Config restored (quarantined servers back in place)"
 }
 
 # --- Summary ---
 Write-Output ""
-Write-Output "Orchestra started in session '$session'"
-Write-Output "  Commander:  $cmdPane  ($Commander)"
-Write-Output "  Researcher: $resPane  ($Researcher)"
-Write-Output "  Builder:    $bldPane  ($Builder)"
-Write-Output "  Reviewer:   $revPane  ($Reviewer)"
+Write-Output "Orchestra started in session '$session' (${Rows}x${Cols} grid)"
+foreach ($agent in $Agents) {
+    $pad = ($agent.label).PadRight(14)
+    Write-Output "  ${pad} $($paneMap[$agent.label])  ($($agent.command))"
+}
 if ($shieldActive) {
-    Write-Output "  Shield:     ACTIVE (approval-free mode with 22 security hooks)"
+    Write-Output "  Shield:        ACTIVE (approval-free mode with security hooks)"
 } else {
-    Write-Output "  Shield:     OFF (manual approval mode)"
+    Write-Output "  Shield:        OFF (manual approval mode)"
 }
 
-$bridgePath = Join-Path $PSScriptRoot "psmux-bridge.ps1"
+# --- Gemini cleanup hint ---
+$hasGemini = ($Agents | Where-Object { $_.command -match 'gemini' }).Count -gt 0
+
 Write-Output ""
 Write-Output "Navigation (pane switching from outside psmux):"
-Write-Output "  pwsh $bridgePath focus commander"
-Write-Output "  pwsh $bridgePath focus researcher"
-Write-Output "  pwsh $bridgePath focus builder"
-Write-Output "  pwsh $bridgePath focus reviewer"
+foreach ($agent in $Agents) {
+    Write-Output "  pwsh $bridgePath focus $($agent.label)"
+}
+
+Write-Output ""
+Write-Output "Commander:"
+Write-Output "  cd $ProjectDir"
+Write-Output "  claude --model claude-opus-4-6 --permission-mode bypassPermissions --append-system-prompt-file $promptFile"
+
+if ($hasGemini) {
+    Write-Output ""
+    Write-Output "Cleanup (if gemini processes linger after session end):"
+    Write-Output "  taskkill /F /IM node.exe /FI `"WINDOWTITLE eq gemini*`" 2>`$null"
+}
