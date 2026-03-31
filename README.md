@@ -1,5 +1,9 @@
 [English](README.md) | [日本語](README.ja.md)
 
+<p align="center">
+  <img src="docs/banner.png" alt="WINSMUX" width="600">
+</p>
+
 # winsmux
 
 Native Windows terminal multiplexer with cross-pane AI agent communication — no WSL2 required.

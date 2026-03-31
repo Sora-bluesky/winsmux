@@ -1,5 +1,9 @@
 [English](README.md) | [日本語](README.ja.md)
 
+<p align="center">
+  <img src="docs/banner.png" alt="WINSMUX" width="600">
+</p>
+
 # winsmux
 
 Windows ネイティブのターミナルマルチプレクサ。AI エージェント間のクロスペイン通信を実現する。WSL2 不要。
