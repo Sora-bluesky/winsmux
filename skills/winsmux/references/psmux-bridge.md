@@ -1,6 +1,6 @@
 # psmux-bridge reference
 
-> Version: 1.0.0
+> Version: 1.1.0
 
 psmux-bridge is a PowerShell CLI that wraps psmux (tmux-compatible multiplexer) with label resolution, Read Guard safety, and inter-agent messaging.
 
@@ -53,10 +53,10 @@ Capture recent output from a pane. Sets the Read Guard mark for that pane.
 psmux-bridge read <target> [lines]
 ```
 
-| Parameter | Required | Default | Description |
-|-----------|----------|---------|-------------|
+| Parameter | Required | Default | Description                   |
+| --------- | -------- | ------- | ----------------------------- |
 | `target`  | Yes      | --      | Pane ID, label, or coordinate |
-| `lines`   | No       | `50`    | Number of lines to capture |
+| `lines`   | No       | `50`    | Number of lines to capture    |
 
 **Examples:**
 
@@ -78,9 +78,9 @@ Send literal text to a pane. Requires Read Guard.
 psmux-bridge type <target> <text>
 ```
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `target`  | Yes      | Pane ID, label, or coordinate |
+| Parameter | Required | Description                                               |
+| --------- | -------- | --------------------------------------------------------- |
+| `target`  | Yes      | Pane ID, label, or coordinate                             |
 | `text`    | Yes      | Literal text to send (all remaining args joined by space) |
 
 **Examples:**
@@ -102,9 +102,9 @@ Send key sequences (named keys) to a pane. Requires Read Guard.
 psmux-bridge keys <target> <key>...
 ```
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `target`  | Yes      | Pane ID, label, or coordinate |
+| Parameter | Required | Description                                        |
+| --------- | -------- | -------------------------------------------------- |
+| `target`  | Yes      | Pane ID, label, or coordinate                      |
 | `key`     | Yes      | One or more key names (e.g. `Enter`, `C-c`, `Tab`) |
 
 **Examples:**
@@ -128,9 +128,9 @@ Send a tagged inter-agent message to a pane. Requires Read Guard.
 psmux-bridge message <target> <text>
 ```
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `target`  | Yes      | Pane ID, label, or coordinate |
+| Parameter | Required | Description                                       |
+| --------- | -------- | ------------------------------------------------- |
+| `target`  | Yes      | Pane ID, label, or coordinate                     |
 | `text`    | Yes      | Message body (all remaining args joined by space) |
 
 **Examples:**
@@ -161,9 +161,9 @@ Assign a label to a pane. Also sets the pane title (best-effort).
 psmux-bridge name <target> <label>
 ```
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
-| `target`  | Yes      | Pane ID or coordinate to label |
+| Parameter | Required | Description                         |
+| --------- | -------- | ----------------------------------- |
+| `target`  | Yes      | Pane ID or coordinate to label      |
 | `label`   | Yes      | Label string (first extra arg only) |
 
 **Examples:**
@@ -191,8 +191,8 @@ Resolve a label to its pane ID.
 psmux-bridge resolve <label>
 ```
 
-| Parameter | Required | Description |
-|-----------|----------|-------------|
+| Parameter | Required | Description      |
+| --------- | -------- | ---------------- |
 | `label`   | Yes      | Label to look up |
 
 **Examples:**
@@ -222,11 +222,12 @@ psmux: psmux 0.5.0
 TMUX_PANE: %0
 WINSMUX_AGENT_NAME: claude
 Panes: 3
-Labels: 2 in C:\Users\komei\AppData\Roaming\winsmux\labels.json
-Read marks: 1 in C:\Users\komei\AppData\Local\Temp\winsmux\read_marks
+Labels: 2 in %APPDATA%\winsmux\labels.json
+Read marks: 1 in %TEMP%\winsmux\read_marks
 ```
 
 Checks performed:
+
 - psmux installation and version
 - `TMUX_PANE` environment variable
 - `WINSMUX_AGENT_NAME` environment variable
@@ -252,19 +253,78 @@ psmux-bridge 1.0.0
 
 ---
 
+### wait
+
+Block until a signal is received on the named channel. Used for instant completion detection instead of polling.
+
+```powershell
+psmux-bridge wait <channel> [timeout_seconds]
+```
+
+| Parameter         | Required | Default | Description                          |
+| ----------------- | -------- | ------- | ------------------------------------ |
+| `channel`         | Yes      | --      | Signal channel name (any string)     |
+| `timeout_seconds` | No       | `120`   | Seconds to wait before timeout error |
+
+**Examples:**
+
+```powershell
+psmux-bridge wait builder-1-done          # Wait up to 120s
+psmux-bridge wait builder-1-done 60       # Wait up to 60s
+```
+
+Uses file-based signaling (`$env:TEMP\winsmux\signals\`). Polls at 100ms intervals for <200ms latency. If the signal file already exists when `wait` is called, it returns immediately.
+
+**On timeout:**
+
+```
+error: timeout waiting for signal: builder-1-done (120s)
+```
+
+---
+
+### signal
+
+Send a signal to unblock a waiting process on the named channel.
+
+```powershell
+psmux-bridge signal <channel>
+```
+
+| Parameter | Required | Description                      |
+| --------- | -------- | -------------------------------- |
+| `channel` | Yes      | Signal channel name (any string) |
+
+**Examples:**
+
+```powershell
+psmux-bridge signal builder-1-done        # Unblock whoever is waiting
+```
+
+Creates a signal file in `$env:TEMP\winsmux\signals\` with a timestamp. The corresponding `wait` command detects the file and returns.
+
+**Output:**
+
+```
+sent signal: builder-1-done
+```
+
+---
+
 ## Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `WINSMUX_AGENT_NAME` | Agent name used in `message` command headers. Defaults to `"unknown"` if not set. |
-| `TMUX_PANE` | Current pane ID. If set, `id` command returns this value directly without querying psmux. Set by psmux on pane creation. |
+| Variable             | Description                                                                                                              |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `WINSMUX_AGENT_NAME` | Agent name used in `message` command headers. Defaults to `"unknown"` if not set.                                        |
+| `TMUX_PANE`          | Current pane ID. If set, `id` command returns this value directly without querying psmux. Set by psmux on pane creation. |
 
 ## File Locations
 
-| Path | Purpose |
-|------|---------|
-| `$env:APPDATA\winsmux\labels.json` | Pane label-to-ID mappings (JSON object). Created on first `name` command. |
-| `$env:TEMP\winsmux\read_marks\` | Read Guard state files. One empty file per pane (with `%` and `:` replaced by `_`). |
+| Path                               | Purpose                                                                             |
+| ---------------------------------- | ----------------------------------------------------------------------------------- |
+| `$env:APPDATA\winsmux\labels.json` | Pane label-to-ID mappings (JSON object). Created on first `name` command.           |
+| `$env:TEMP\winsmux\read_marks\`    | Read Guard state files. One empty file per pane (with `%` and `:` replaced by `_`). |
+| `$env:TEMP\winsmux\signals\`       | Signal files for wait/signal coordination. One file per channel.                    |
 
 ## Read Guard
 
@@ -285,14 +345,15 @@ This ensures agents always observe the current pane state before sending input, 
 
 The `<target>` parameter in commands supports 4 formats, resolved in order:
 
-| Format | Example | Description |
-|--------|---------|-------------|
-| **Label** | `claude` | Looked up in `labels.json`. If a matching key exists, its value (pane ID) is used. |
-| **Pane ID** | `%0` | Direct psmux pane identifier. |
-| **Coordinate** | `main:0.1` | psmux target format: `session:window.pane`. |
-| **Window.Pane** | `0.1` | Short coordinate within the current session. |
+| Format          | Example    | Description                                                                        |
+| --------------- | ---------- | ---------------------------------------------------------------------------------- |
+| **Label**       | `claude`   | Looked up in `labels.json`. If a matching key exists, its value (pane ID) is used. |
+| **Pane ID**     | `%0`       | Direct psmux pane identifier.                                                      |
+| **Coordinate**  | `main:0.1` | psmux target format: `session:window.pane`.                                        |
+| **Window.Pane** | `0.1`      | Short coordinate within the current session.                                       |
 
 Resolution flow:
+
 1. Check if the target string is a key in `labels.json` (via `Resolve-Target`).
 2. If found, substitute with the mapped pane ID.
 3. If not found, pass the string through as-is (assumed to be a pane ID or coordinate).
