@@ -130,26 +130,50 @@ Labels are resolved automatically in every command. Stored in `$env:APPDATA\wins
 
 ## Orchestra
 
-The Orchestra workflow uses a Commander (in a separate terminal) orchestrating background agents in psmux panes. Supports any grid size and mixed CLI agents (Claude Code, Codex, Gemini CLI).
+Orchestra lets one Commander manage multiple AI agents in parallel. The Commander runs in your terminal (full keyboard access); background agents run in psmux panes. You tell the Commander what to build — it splits the work across builders, polls for completion, sends finished work to reviewers, and checks for conflicts before committing.
 
-### Default (2×2)
+### What the Commander does for you
+
+1. **Splits work** — Assigns independent file sets to each builder so they don't step on each other
+2. **Polls progress** — Cycles `psmux-bridge read` across all agents to detect completion
+3. **Reviews incrementally** — Sends completed work to the reviewer as each builder finishes (no waiting for all)
+4. **Detects conflicts** — Runs `git diff --name-only` before merging to catch overlapping changes
+5. **Commits safely** — Only after review passes and no conflicts
+
+### Multi-vendor support
+
+Mix different CLI agents in the same Orchestra. The script auto-detects each CLI and handles their differences:
+
+| CLI         | Approval-free flag (with `-ShieldHarness`) |
+| ----------- | ------------------------------------------ |
+| Claude Code | `--permission-mode bypassPermissions`      |
+| Codex CLI   | `--full-auto`                              |
+| Gemini CLI  | `--yolo`                                   |
+
+Without `-ShieldHarness`: no approval-free flags are added.
+
+### Quick start
 
 ```powershell
 # 1. Open a terminal and start psmux
 psmux
 
-# 2. From another terminal, run the orchestra setup
+# 2. From another terminal, set up the Orchestra
 pwsh scripts/start-orchestra.ps1 -ProjectDir C:\path\to\project
+
+# 3. Launch the Commander (in yet another terminal)
+cd C:\path\to\project
+claude --model claude-opus-4-6 --append-system-prompt-file .commander-prompt.txt
 ```
 
-### Custom (e.g. 3×2 with 6 agents)
+### Scaling up (e.g. 4 builders + researcher + reviewer)
 
 ```powershell
 pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -Rows 2 -Cols 3 -Agents @(
   @{label="builder-1"; command="codex"},
-  @{label="researcher"; command="claude --model sonnet"},
   @{label="builder-2"; command="codex"},
   @{label="builder-3"; command="gemini --model gemini-3.1-pro-preview"},
+  @{label="researcher"; command="claude --model sonnet"},
   @{label="builder-4"; command="gemini --model gemini-3-flash-preview"},
   @{label="reviewer"; command="codex"}
 ) -ShieldHarness
@@ -163,44 +187,15 @@ pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -Rows 2 -Cols 3 -Agen
 └──────────┴──────────┴──────────┘
 ```
 
-The Commander runs in a separate terminal with full keyboard access:
+The `.commander-prompt.txt` is auto-generated with actual pane IDs, agent labels, and the coordination protocol — the Commander always knows exactly who to talk to.
 
-```powershell
-cd C:\my\project
-claude --model claude-opus-4-6 --permission-mode bypassPermissions --append-system-prompt-file .commander-prompt.txt
-```
-
-| Parameter        | Default           | Description                       |
-| ---------------- | ----------------- | --------------------------------- |
-| `-ProjectDir`    | Current directory | Working directory for all panes   |
-| `-Rows`          | 2                 | Grid rows                         |
-| `-Cols`          | 2                 | Grid columns                      |
-| `-Agents`        | 4-pane default    | Array of `@{label; command}` maps |
-| `-ShieldHarness` | Off               | Enable approval-free mode         |
-
-### Approval-Free Mode (Shield Harness)
-
-Add `-ShieldHarness` to enable approval-free operation. [Shield Harness](https://github.com/Sora-bluesky/shield-harness) provides security hooks so agents operate without approval dialogs while dangerous operations are blocked.
-
-When enabled, the script automatically appends the appropriate flag per CLI:
-
-| CLI         | Flag added                            |
-| ----------- | ------------------------------------- |
-| Claude Code | `--permission-mode bypassPermissions` |
-| Codex CLI   | `--full-auto`                         |
-| Gemini CLI  | `--yolo`                              |
-
-Without `-ShieldHarness`: no flags are added (manual approval mode).
-
-### Multi-Builder Coordination
-
-The Commander follows a strict protocol for parallel builders:
-
-1. **Split** — Assign independent file sets per builder (avoid overlapping files)
-2. **Poll** — Cycle `psmux-bridge read builder-1`, `read builder-2`, etc.
-3. **Review** — Send completed work to reviewer as each builder finishes
-4. **Conflict check** — `git diff --name-only` before merging
-5. **Commit** — Merge and commit after review passes
+| Parameter        | Default           | Description                                                                                     |
+| ---------------- | ----------------- | ----------------------------------------------------------------------------------------------- |
+| `-ProjectDir`    | Current directory | Working directory for all panes                                                                 |
+| `-Rows`          | 2                 | Grid rows                                                                                       |
+| `-Cols`          | 2                 | Grid columns                                                                                    |
+| `-Agents`        | 4-pane default    | Array of `@{label; command}` maps                                                               |
+| `-ShieldHarness` | Off               | Enable approval-free mode with [Shield Harness](https://github.com/Sora-bluesky/shield-harness) |
 
 See [SKILL.md](skills/winsmux/SKILL.md) for the full Commander workflow.
 
