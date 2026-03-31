@@ -26,6 +26,11 @@ DEV-NOTES*.md
 *.private.*
 
 # =========================
+# Orchestra runtime (generated)
+# =========================
+.commander-prompt.txt
+
+# =========================
 # Personal / user-specific
 # =========================
 CLAUDE.md

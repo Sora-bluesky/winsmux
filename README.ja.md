@@ -272,6 +272,8 @@ winsmux uninstall
 
 winsmux は [smux](https://github.com/ShawnPana/smux)（[@ShawnPana](https://github.com/ShawnPana) 作）の Windows ネイティブ版だ。smux は macOS/Linux 向けに tmux を使った同様のターミナルマルチプレクサ + AI エージェント通信ワークフローを提供している。winsmux はその体験を psmux 経由で Windows にネイティブに持ち込む。WSL2 は不要。
 
+ターミナルバナーは [oh-my-logo](https://github.com/shinshin86/oh-my-logo)（MIT AND CC0-1.0）を使用。
+
 ## ライセンス
 
 MIT

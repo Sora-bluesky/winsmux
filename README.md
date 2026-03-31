@@ -272,6 +272,8 @@ winsmux uninstall
 
 winsmux is the Windows-native counterpart of [smux](https://github.com/ShawnPana/smux) by [@ShawnPana](https://github.com/ShawnPana). smux provides the same terminal multiplexer + AI agent communication workflow for macOS/Linux using tmux. winsmux brings that experience to Windows natively via psmux, without requiring WSL2.
 
+Terminal banner powered by [oh-my-logo](https://github.com/shinshin86/oh-my-logo) (MIT AND CC0-1.0).
+
 ## License
 
 MIT
