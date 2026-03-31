@@ -130,9 +130,29 @@ psmux-bridge type codex "hello"
 
 ## Orchestra
 
-Orchestra ワークフローは Commander（別ターミナル）がバックグラウンドの psmux ペインにいるエージェントを指揮する構成。任意のグリッドサイズ、混合 CLI（Claude Code、Codex、Gemini CLI）に対応。
+Orchestra は1人の Commander が複数の AI エージェントを並列管理する仕組みだ。Commander はユーザーのターミナルで動作（キーボード直接入力可能）、バックグラウンドのエージェントは psmux ペインで動く。やりたいことを Commander に伝えれば、ビルダーへの作業分割・完了ポーリング・レビュー依頼・競合チェック・コミットまでを自動で進める。
 
-### デフォルト（2×2）
+### Commander がやること
+
+1. **作業分割** — ビルダーごとに担当ファイルを割り当て、互いに干渉させない
+2. **完了ポーリング** — 全エージェントを `psmux-bridge read` で巡回し、完了を検知
+3. **段階的レビュー** — ビルダーが完了した順にレビュアーへ送信（全員を待たない）
+4. **競合検知** — マージ前に `git diff --name-only` で変更ファイルの重複をチェック
+5. **安全なコミット** — レビュー通過＋競合なしの場合のみコミット
+
+### マルチベンダー対応
+
+異なる CLI エージェントを同じ Orchestra に混在できる。スクリプトが CLI の種類を自動判定して差異を吸収する:
+
+| CLI         | 承認レスフラグ（`-ShieldHarness` 有効時） |
+| ----------- | ----------------------------------------- |
+| Claude Code | `--permission-mode bypassPermissions`     |
+| Codex CLI   | `--full-auto`                             |
+| Gemini CLI  | `--yolo`                                  |
+
+`-ShieldHarness` なし: フラグは付与されない（手動承認モード）。
+
+### クイック起動
 
 ```powershell
 # 1. ターミナルを開いて psmux を起動
@@ -140,16 +160,20 @@ psmux
 
 # 2. 別のターミナルから Orchestra セットアップを実行
 pwsh scripts/start-orchestra.ps1 -ProjectDir C:\path\to\project
+
+# 3. さらに別のターミナルで Commander を起動
+cd C:\path\to\project
+claude --model claude-opus-4-6 --append-system-prompt-file .commander-prompt.txt
 ```
 
-### カスタム（例: 3×2 で 6 エージェント）
+### スケールアップ（例: ビルダー4 + リサーチャー + レビュアー）
 
 ```powershell
 pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -Rows 2 -Cols 3 -Agents @(
   @{label="builder-1"; command="codex"},
-  @{label="researcher"; command="claude --model sonnet"},
   @{label="builder-2"; command="codex"},
   @{label="builder-3"; command="gemini --model gemini-3.1-pro-preview"},
+  @{label="researcher"; command="claude --model sonnet"},
   @{label="builder-4"; command="gemini --model gemini-3-flash-preview"},
   @{label="reviewer"; command="codex"}
 ) -ShieldHarness
@@ -163,44 +187,15 @@ pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -Rows 2 -Cols 3 -Agen
 └──────────┴──────────┴──────────┘
 ```
 
-Commander は別ターミナルで直接キーボード入力可能な状態で起動:
+`.commander-prompt.txt` は実際のペインID・ラベル・協調プロトコル付きで自動生成される。Commander は誰にどう話しかければいいか常に把握している。
 
-```powershell
-cd C:\my\project
-claude --model claude-opus-4-6 --permission-mode bypassPermissions --append-system-prompt-file .commander-prompt.txt
-```
-
-| パラメータ       | デフォルト        | 説明                       |
-| ---------------- | ----------------- | -------------------------- |
-| `-ProjectDir`    | カレント          | 全ペインの作業ディレクトリ |
-| `-Rows`          | 2                 | グリッドの行数             |
-| `-Cols`          | 2                 | グリッドの列数             |
-| `-Agents`        | 4ペインデフォルト | `@{label; command}` の配列 |
-| `-ShieldHarness` | Off               | 承認レスモード有効化       |
-
-### 承認レスモード（Shield Harness）
-
-`-ShieldHarness` を追加すると承認ダイアログなしで動作する。[Shield Harness](https://github.com/Sora-bluesky/shield-harness) がセキュリティフックを提供し、危険な操作を自動ブロックする。
-
-有効時、スクリプトが各 CLI に応じたフラグを自動付与:
-
-| CLI         | 自動付与されるフラグ                  |
-| ----------- | ------------------------------------- |
-| Claude Code | `--permission-mode bypassPermissions` |
-| Codex CLI   | `--full-auto`                         |
-| Gemini CLI  | `--yolo`                              |
-
-`-ShieldHarness` なし: フラグは付与されない（手動承認モード）。
-
-### 並列ビルダー管理
-
-Commander は複数ビルダーを以下のプロトコルで管理する:
-
-1. **Split** — ビルダーごとに独立したファイル領域を割り当て
-2. **Poll** — `psmux-bridge read builder-1`, `read builder-2` で巡回確認
-3. **Review** — 完了したビルダーから順にレビュアーへ
-4. **Conflict check** — マージ前に `git diff --name-only` で競合検知
-5. **Commit** — レビュー通過後にコミット
+| パラメータ       | デフォルト        | 説明                                                                                        |
+| ---------------- | ----------------- | ------------------------------------------------------------------------------------------- |
+| `-ProjectDir`    | カレント          | 全ペインの作業ディレクトリ                                                                  |
+| `-Rows`          | 2                 | グリッドの行数                                                                              |
+| `-Cols`          | 2                 | グリッドの列数                                                                              |
+| `-Agents`        | 4ペインデフォルト | `@{label; command}` の配列                                                                  |
+| `-ShieldHarness` | Off               | [Shield Harness](https://github.com/Sora-bluesky/shield-harness) による承認レスモード有効化 |
 
 詳細は [SKILL.md](skills/winsmux/SKILL.md) を参照。
 
