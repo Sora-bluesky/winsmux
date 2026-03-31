@@ -1,6 +1,6 @@
 # psmux-bridge reference
 
-> Version: 0.9.2
+> Version: 0.9.3
 
 psmux-bridge is a PowerShell CLI that wraps psmux (tmux-compatible multiplexer) with label resolution, Read Guard safety, and inter-agent messaging.
 
