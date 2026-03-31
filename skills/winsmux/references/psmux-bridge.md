@@ -206,6 +206,241 @@ Exits with error if the label is not found.
 
 ---
 
+### send
+
+Send text to a pane and auto-press Enter in one step. Unlike `message`, no header is prepended (headers break TUI agents like Claude Code). After sending, a watermark is saved for change detection in subsequent `read` calls.
+
+```powershell
+psmux-bridge send <target> <text>
+```
+
+| Parameter | Required | Description                                       |
+| --------- | -------- | ------------------------------------------------- |
+| `target`  | Yes      | Pane ID, label, or coordinate                     |
+| `text`    | Yes      | Text to send (all remaining args joined by space) |
+
+**Examples:**
+
+```powershell
+psmux-bridge send codex "review src/auth.ts"
+psmux-bridge send builder implement rate limiting
+```
+
+Does NOT require Read Guard (sets the mark after sending). This is the **recommended** way to send a task to another agent.
+
+**Output:**
+
+```
+sent to %1
+```
+
+---
+
+### focus
+
+Switch pane focus to the specified target.
+
+```powershell
+psmux-bridge focus <target>
+```
+
+| Parameter | Required | Description                   |
+| --------- | -------- | ----------------------------- |
+| `target`  | Yes      | Pane ID, label, or coordinate |
+
+**Examples:**
+
+```powershell
+psmux-bridge focus codex
+psmux-bridge focus %2
+```
+
+**Output:**
+
+```
+Focused pane %2 (codex)
+```
+
+---
+
+### ime-input
+
+Open a GUI input dialog (Windows Forms) for IME text entry and send the result to a pane. Requires Read Guard.
+
+```powershell
+psmux-bridge ime-input <target>
+```
+
+| Parameter | Required | Description                   |
+| --------- | -------- | ----------------------------- |
+| `target`  | Yes      | Pane ID, label, or coordinate |
+
+Useful for entering Japanese/CJK text that cannot be typed via `send-keys`. If the dialog is cancelled, outputs `cancelled` and no text is sent.
+
+---
+
+### image-paste
+
+Save the clipboard image to a temp file and send the file path to a pane. Requires Read Guard.
+
+```powershell
+psmux-bridge image-paste <target>
+```
+
+| Parameter | Required | Description                   |
+| --------- | -------- | ----------------------------- |
+| `target`  | Yes      | Pane ID, label, or coordinate |
+
+The image is saved as `$env:TEMP\winsmux\images\<timestamp>.png`. Errors if no image is in the clipboard.
+
+**Output:**
+
+```
+image saved: C:\Users\...\winsmux\images\20260331_120000.png
+path sent to %1
+```
+
+---
+
+### clipboard-paste
+
+Paste clipboard text content to a pane. Requires Read Guard.
+
+```powershell
+psmux-bridge clipboard-paste <target>
+```
+
+| Parameter | Required | Description                   |
+| --------- | -------- | ----------------------------- |
+| `target`  | Yes      | Pane ID, label, or coordinate |
+
+Errors if the clipboard is empty.
+
+---
+
+### vault set
+
+Store a credential securely using Windows Credential Manager (DPAPI backend).
+
+```powershell
+psmux-bridge vault set <key> [value]
+```
+
+| Parameter | Required | Description                                                |
+| --------- | -------- | ---------------------------------------------------------- |
+| `key`     | Yes      | Credential name (stored as `winsmux:<key>`)                |
+| `value`   | No       | Value to store. If omitted, prompts securely via Read-Host |
+
+**Examples:**
+
+```powershell
+psmux-bridge vault set OPENAI_API_KEY sk-...
+psmux-bridge vault set SECRET_TOKEN              # interactive secure input
+```
+
+**Output:**
+
+```
+Stored credential: OPENAI_API_KEY
+```
+
+---
+
+### vault get
+
+Retrieve a stored credential by key.
+
+```powershell
+psmux-bridge vault get <key>
+```
+
+| Parameter | Required | Description     |
+| --------- | -------- | --------------- |
+| `key`     | Yes      | Credential name |
+
+Outputs the credential value to stdout. Errors if the key is not found.
+
+---
+
+### vault list
+
+List all stored credential keys (with `winsmux:` prefix removed).
+
+```powershell
+psmux-bridge vault list
+```
+
+**Output:**
+
+```
+OPENAI_API_KEY
+SECRET_TOKEN
+```
+
+Or `(no credentials stored)` if empty.
+
+---
+
+### vault inject
+
+Inject all stored credentials as environment variables (`$env:NAME = 'value'`) into a target pane. Requires Read Guard.
+
+```powershell
+psmux-bridge vault inject <pane>
+```
+
+| Parameter | Required | Description                   |
+| --------- | -------- | ----------------------------- |
+| `pane`    | Yes      | Pane ID, label, or coordinate |
+
+**Examples:**
+
+```powershell
+psmux-bridge vault inject builder
+```
+
+For each credential, sends `$env:KEY = 'value'` + Enter to the target pane with 100ms intervals. Single quotes in values are escaped (`'` → `''`).
+
+**Output:**
+
+```
+injected 3 credentials into %2
+```
+
+---
+
+### profile
+
+Show or register a Windows Terminal dropdown profile via the Fragments extension point.
+
+```powershell
+psmux-bridge profile [name] [agents...]
+```
+
+| Parameter | Required | Description                                              |
+| --------- | -------- | -------------------------------------------------------- |
+| `name`    | No       | Profile name. If omitted, shows current fragment JSON    |
+| `agents`  | No       | Agent definitions (e.g. `builder:codex reviewer:claude`) |
+
+**Examples:**
+
+```powershell
+psmux-bridge profile                                    # Show current fragment
+psmux-bridge profile mysetup builder:codex reviewer:claude
+```
+
+The fragment is written to `$env:LOCALAPPDATA\Microsoft\Windows Terminal\Fragments\winsmux\winsmux.json`. The generated profile launches `psmux-bridge doctor`, creates a psmux session, and starts the orchestra script.
+
+**Output:**
+
+```
+Registered WT profile: winsmux mysetup
+Fragment: C:\Users\...\Fragments\winsmux\winsmux.json
+Agents: builder:codex, reviewer:claude
+```
+
+---
+
 ### doctor
 
 Run environment diagnostics.
@@ -360,11 +595,13 @@ Note: Silence detection is not the same as completion detection. An agent waitin
 
 ## File Locations
 
-| Path                               | Purpose                                                                             |
-| ---------------------------------- | ----------------------------------------------------------------------------------- |
-| `$env:APPDATA\winsmux\labels.json` | Pane label-to-ID mappings (JSON object). Created on first `name` command.           |
-| `$env:TEMP\winsmux\read_marks\`    | Read Guard state files. One empty file per pane (with `%` and `:` replaced by `_`). |
-| `$env:TEMP\winsmux\signals\`       | Signal files for wait/signal coordination. One file per channel.                    |
+| Path                                                                     | Purpose                                                                             |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `$env:APPDATA\winsmux\labels.json`                                       | Pane label-to-ID mappings (JSON object). Created on first `name` command.           |
+| `$env:TEMP\winsmux\read_marks\`                                          | Read Guard state files. One empty file per pane (with `%` and `:` replaced by `_`). |
+| `$env:TEMP\winsmux\signals\`                                             | Signal files for wait/signal coordination. One file per channel.                    |
+| `$env:TEMP\winsmux\images\`                                              | Clipboard images saved by `image-paste` command.                                    |
+| `$env:LOCALAPPDATA\Microsoft\Windows Terminal\Fragments\winsmux\`        | Windows Terminal Fragment JSON for dropdown profile registration.                   |
 
 ## Read Guard
 

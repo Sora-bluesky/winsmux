@@ -25,6 +25,7 @@ This installs:
 - **psmux** if not already installed (via winget, scoop, cargo, or chocolatey)
 - **psmux-bridge** CLI for cross-pane agent communication
 - **.psmux.conf** with Alt-key bindings, mouse support, and pane labels
+- **Windows Terminal Fragment** — adds a "winsmux Orchestra" profile to the WT dropdown menu
 
 Everything lives in `~\.winsmux\`.
 
@@ -108,6 +109,11 @@ A CLI for cross-pane communication on Windows. Any tool that can run shell comma
 | `psmux-bridge wait <channel> [timeout]` | Block until signal received (replaces polling) |
 | `psmux-bridge signal <channel>`         | Send signal to unblock a waiting process       |
 | `psmux-bridge watch <label> [sil] [to]` | Block until pane output is silent              |
+| `psmux-bridge vault set <key> [value]`  | Store a credential securely (DPAPI)            |
+| `psmux-bridge vault get <key>`          | Retrieve a stored credential                   |
+| `psmux-bridge vault inject <pane>`      | Inject all credentials as env vars into a pane |
+| `psmux-bridge vault list`               | List stored credential keys                    |
+| `psmux-bridge profile [name] [agents]`  | Show or register WT dropdown profile           |
 | `psmux-bridge doctor`                   | Check environment and IME diagnostics          |
 | `psmux-bridge version`                  | Show version                                   |
 
@@ -130,6 +136,32 @@ Panes can be addressed by:
 - **Label** — any name set via `psmux-bridge name`
 
 Labels are resolved automatically in every command. Stored in `$env:APPDATA\winsmux\labels.json`.
+
+## Credential Vault
+
+Store secrets securely and inject them into agent panes — no `.env` files in your repo.
+
+```powershell
+# Store credentials (DPAPI-encrypted, Windows Credential Manager)
+psmux-bridge vault set OPENAI_API_KEY sk-...
+psmux-bridge vault set ANTHROPIC_API_KEY sk-ant-...
+
+# Inject all credentials into a builder pane as $env: variables
+psmux-bridge read builder 10
+psmux-bridge vault inject builder
+```
+
+Credentials are stored per-machine using Windows DPAPI. `vault inject` sends `$env:KEY = 'value'` commands into the target pane, so the agent process gets them as environment variables without ever touching disk.
+
+## Windows Terminal Integration
+
+The installer registers a **winsmux Orchestra** profile in the Windows Terminal dropdown via [Fragments](https://learn.microsoft.com/en-us/windows/terminal/json-fragment-extensions). One click launches `psmux-bridge doctor`, creates a psmux session, and starts the Orchestra script.
+
+Create custom profiles:
+
+```powershell
+psmux-bridge profile mysetup builder:codex reviewer:claude
+```
 
 ## Orchestra
 
