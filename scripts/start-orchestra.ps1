@@ -28,6 +28,18 @@ param(
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+function Show-WinsmuxBanner {
+    $bannerScript = Join-Path $PSScriptRoot "banner.mjs"
+    if ((Get-Command node -ErrorAction SilentlyContinue) -and (Test-Path $bannerScript)) {
+        node $bannerScript 2>$null
+    } else {
+        $esc = [char]27
+        Write-Host "${esc}[38;2;29;161;242mWINSMUX${esc}[0m — Orchestra bootstrap"
+    }
+}
+
+Show-WinsmuxBanner
+
 # --- Default agents (backward compatible 2x2) ---
 if (-not $Agents -or $Agents.Count -eq 0) {
     $Agents = @(
@@ -95,6 +107,47 @@ if (-not $session) {
 }
 $session = $session.Trim()
 
+function Get-ColumnMajorPaneIds {
+    param([string]$TargetSession)
+
+    return @(psmux list-panes -t $TargetSession -F '#{pane_id},#{pane_left},#{pane_top}' 2>$null |
+        ForEach-Object {
+            $line = $_.Trim()
+            if (-not $line) { return }
+
+            $parts = $line -split ','
+            if ($parts.Count -ne 3) { return }
+
+            [PSCustomObject]@{
+                Id   = $parts[0]
+                Left = [int]$parts[1]
+                Top  = [int]$parts[2]
+            }
+        } |
+        Sort-Object Left, Top |
+        ForEach-Object { $_.Id })
+}
+
+# --- Reset state before creating the grid ---
+$labelsFile = Join-Path $env:APPDATA "winsmux\labels.json"
+$labelsDir = Split-Path -Path $labelsFile -Parent
+if (-not (Test-Path $labelsDir)) {
+    New-Item -ItemType Directory -Path $labelsDir -Force | Out-Null
+}
+Set-Content -Path $labelsFile -Value '{}' -Encoding UTF8
+Write-Output "[orchestra] Cleared labels.json"
+
+$existingPaneIds = @(psmux list-panes -t $session -F '#{pane_id}' 2>$null |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { $_ })
+if ($existingPaneIds.Count -gt 1) {
+    Write-Output "[orchestra] Cleaning up $($existingPaneIds.Count - 1) existing pane(s)..."
+    foreach ($paneId in ($existingPaneIds | Select-Object -Skip 1)) {
+        psmux kill-pane -t $paneId 2>$null
+    }
+    Start-Sleep -Milliseconds 300
+}
+
 # --- Create dynamic grid ---
 # Step 1: Horizontal splits to create columns
 for ($c = 0; $c -lt $Cols - 1; $c++) {
@@ -118,9 +171,8 @@ foreach ($colPane in $colPaneIds) {
 
 Start-Sleep -Milliseconds 500
 
-# --- Get final pane IDs ---
-$panes = psmux list-panes -t $session -F '#{pane_id}' 2>$null
-$paneIds = ($panes | Out-String).Trim() -split "`n" | ForEach-Object { $_.Trim() }
+# --- Get final pane IDs (sorted by visual position: column-major) ---
+$paneIds = Get-ColumnMajorPaneIds -TargetSession $session
 
 if ($paneIds.Count -ne $expectedPanes) {
     Write-Warning "Expected $expectedPanes panes but got $($paneIds.Count). Layout may be incorrect."
@@ -228,6 +280,11 @@ for ($i = 0; $i -lt $Agents.Count; $i++) {
     $cmd = Get-ApprovalFreeCommand $agent.command
     psmux send-keys -t $paneId "cd $ProjectDir && $cmd" Enter
 }
+
+# --- Startup verification ---
+Write-Output ""
+Write-Output "Waiting for agents to start..."
+Start-Sleep -Seconds 5
 
 # --- Restore Codex MCP config ---
 if ($codexConfigBackup) {
