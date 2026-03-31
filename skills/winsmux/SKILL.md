@@ -14,7 +14,7 @@ description: |
   and dangerous-command protection.
 metadata:
   author: Sora-bluesky
-  version: "1.3.0"
+  version: "0.8.3"
   os: win32
   requires: psmux, psmux-bridge
 ---
