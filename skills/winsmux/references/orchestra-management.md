@@ -99,6 +99,31 @@ psmux-bridge send builder-2 "Implement feature B. Your files: src/api/ only. Do 
 
 ### Completion Detection
 
+**Method 1: Signal-based (recommended, v0.8.0+)**
+
+Use `wait` / `signal` for instant completion detection (<100ms latency):
+
+```powershell
+# Commander: block until builder-1 completes
+psmux-bridge wait builder-1-done 120    # timeout 120s
+
+# Builder-1 (at end of task): signal completion
+psmux-bridge signal builder-1-done
+```
+
+To wait for multiple builders, run waits in parallel:
+
+```powershell
+# Wait for any builder to complete, then process
+Start-Job { psmux-bridge wait builder-1-done 120 }
+Start-Job { psmux-bridge wait builder-2-done 120 }
+# First to complete unblocks immediately
+```
+
+**Method 2: Polling (fallback)**
+
+Use when agents cannot send signals (e.g., plain shell, agents without winsmux skill):
+
 ```powershell
 # Cycle through all builders
 psmux-bridge read builder-1  # output returned -> complete
@@ -152,9 +177,9 @@ psmux-bridge send reviewer "src/auth.ts diff: [paste diff here]. Check: is the t
 2. RECON   -- Send researcher to investigate target code (MANDATORY)
 3. SPLIT   -- Based on recon, assign independent file sets to builders
 4. BUILD   -- Send instructions to all builders (parallel)
-5. POLL    -- Cycle through builders (30s intervals)
+5. WAIT    -- Wait for builder signals (v0.8.0+) or poll (fallback)
 6. REVIEW  -- Send each completed builder's work to reviewer
-7. POLL    -- Wait for reviewer (30s intervals)
+7. WAIT    -- Wait for reviewer signal or poll
 8. JUDGE   -- OK -> COMMIT. NG -> send fix to builder (back to 4)
 9. CONFLICT CHECK -- git diff --name-only for overlapping changes
 10. COMMIT -- git add + git commit
