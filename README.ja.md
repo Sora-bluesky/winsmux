@@ -197,7 +197,7 @@ pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -Rows 2 -Cols 3 -Agen
 | `-Agents`        | 4ペインデフォルト | `@{label; command}` の配列                                                                  |
 | `-ShieldHarness` | Off               | [Shield Harness](https://github.com/Sora-bluesky/shield-harness) による承認レスモード有効化 |
 
-詳細は [SKILL.md](skills/winsmux/SKILL.md) を参照。
+詳細は [SKILL.md](skills/winsmux/SKILL.md) を参照。管理プロトコル（パイプライン運用、researcher 偵察、reviewer 小分け、エージェント選定）はスキルの references/ に同梱され、エージェントがオンデマンドで読み込む。
 
 ## AI Agent Skills
 
@@ -206,6 +206,12 @@ winsmux スキルをインストールすると、エージェントが psmux-br
 ```powershell
 npx skills add Sora-bluesky/winsmux
 ```
+
+スキルに含まれるもの:
+
+- psmux-bridge の使い方（[SKILL.md](skills/winsmux/SKILL.md)）
+- Orchestra 管理プロトコル（[references/orchestra-management.md](skills/winsmux/references/orchestra-management.md)）
+- エージェント選定ガイド（[references/agent-selection.md](skills/winsmux/references/agent-selection.md)）
 
 Claude Code、Codex、Cursor、Copilot、[その他のエージェント](https://skills.sh)で動作する。
 
