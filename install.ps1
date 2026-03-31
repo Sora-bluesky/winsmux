@@ -155,6 +155,28 @@ switch ($Action) {
 }
 '@ | Set-Content -Path $winsmuxPs1 -Encoding UTF8
 
+    # 7.5. Register Windows Terminal Fragments
+    $fragmentDir = Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\Fragments\winsmux"
+    if (-not (Test-Path $fragmentDir)) {
+        New-Item -ItemType Directory -Path $fragmentDir -Force | Out-Null
+    }
+    $fragmentJson = @'
+{
+  "profiles": [
+    {
+      "name": "winsmux Orchestra",
+      "commandline": "pwsh -NoProfile -Command \"& '%USERPROFILE%\\.winsmux\\bin\\psmux-bridge.ps1' doctor; psmux new-session -s orchestra; pwsh '%USERPROFILE%\\.winsmux\\bin\\start-orchestra.ps1'\"",
+      "icon": "🎼",
+      "startingDirectory": "%USERPROFILE%",
+      "tabTitle": "winsmux Orchestra"
+    }
+  ]
+}
+'@
+    $fragmentFile = Join-Path $fragmentDir "winsmux.json"
+    $fragmentJson | Set-Content -Path $fragmentFile -Encoding UTF8
+    Write-Status "Registered Windows Terminal fragment: $fragmentFile"
+
     # 8. Add to PATH via $PROFILE
     $profileLine = "`$env:PATH = `"$BIN_DIR;`$env:PATH`""
     $profilePath = $PROFILE.CurrentUserAllHosts
@@ -225,14 +247,21 @@ function Invoke-Uninstall {
         Write-Status "Cleaned $profilePath"
     }
 
-    # 4. Remove %APPDATA%\winsmux
+    # 4. Remove Windows Terminal Fragments
+    $fragmentDir = Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\Fragments\winsmux"
+    if (Test-Path $fragmentDir) {
+        Remove-Item $fragmentDir -Recurse -Force
+        Write-Status "Removed Windows Terminal fragment: $fragmentDir"
+    }
+
+    # 5. Remove %APPDATA%\winsmux
     $appDataDir = Join-Path $env:APPDATA "winsmux"
     if (Test-Path $appDataDir) {
         Remove-Item $appDataDir -Recurse -Force
         Write-Status "Removed $appDataDir"
     }
 
-    # 5. Done (psmux itself is NOT uninstalled)
+    # 6. Done (psmux itself is NOT uninstalled)
     Write-Host ""
     Write-Status "Uninstalled."
     Write-Host "  Note: psmux itself was NOT removed. Manage it separately if needed."
