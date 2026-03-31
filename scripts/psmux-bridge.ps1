@@ -6,7 +6,7 @@ param(
 )
 
 # --- Config ---
-$VERSION = "0.7.0"
+$VERSION = "0.8.0"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
@@ -506,6 +506,62 @@ function Invoke-ClipboardPaste {
     Write-Output "sent to $paneId"
 }
 
+function Get-SignalDir {
+    $dir = Join-Path $env:TEMP "winsmux\signals"
+    if (-not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    return $dir
+}
+
+function Invoke-Wait {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge wait <channel> [timeout_seconds]" }
+
+    $channel = $Target
+    $timeoutSec = 120
+    if ($Rest -and $Rest.Count -gt 0) {
+        $timeoutSec = [int]$Rest[0]
+    }
+
+    $signalDir = Get-SignalDir
+    $signalFile = Join-Path $signalDir "$channel.signal"
+
+    # Check if already signaled
+    if (Test-Path $signalFile) {
+        Remove-Item $signalFile -Force
+        Write-Output "received signal: $channel"
+        return
+    }
+
+    # Poll at 100ms intervals
+    $elapsed = 0
+    $intervalMs = 100
+    $timeoutMs = $timeoutSec * 1000
+
+    while ($elapsed -lt $timeoutMs) {
+        if (Test-Path $signalFile) {
+            Remove-Item $signalFile -Force
+            Write-Output "received signal: $channel"
+            return
+        }
+        Start-Sleep -Milliseconds $intervalMs
+        $elapsed += $intervalMs
+    }
+
+    Stop-WithError "timeout waiting for signal: $channel (${timeoutSec}s)"
+}
+
+function Invoke-Signal {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge signal <channel>" }
+
+    $channel = $Target
+    $signalDir = Get-SignalDir
+    $signalFile = Join-Path $signalDir "$channel.signal"
+
+    Set-Content -Path $signalFile -Value (Get-Date -Format o) -Encoding UTF8
+    Write-Output "sent signal: $channel"
+}
+
 function Invoke-Focus {
     if (-not $Target) { Stop-WithError "usage: psmux-bridge focus <label|target>" }
 
@@ -538,6 +594,8 @@ Commands:
   image-paste <target>      Save clipboard image and send path to pane
   clipboard-paste <target>  Send clipboard text to pane
   focus <label|target>      Switch active pane (use from outside psmux)
+  wait <channel> [timeout]  Block until signal received (replaces polling)
+  signal <channel>          Send signal to unblock a waiting process
   doctor                    Check environment and IME diagnostics
   version                   Show version
 "@
@@ -558,6 +616,8 @@ switch ($Command) {
     'image-paste'     { Invoke-ImagePaste }
     'clipboard-paste' { Invoke-ClipboardPaste }
     'focus'           { Invoke-Focus }
+    'wait'            { Invoke-Wait }
+    'signal'          { Invoke-Signal }
     'doctor'          { Invoke-Doctor }
     'version'         { Invoke-Version }
     ''                { Show-Usage }
