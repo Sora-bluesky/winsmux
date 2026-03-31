@@ -21,6 +21,7 @@ irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | ie
 ```
 
 インストールされるもの:
+
 - **psmux** — 未インストールの場合は自動インストール（winget, scoop, cargo, chocolatey のいずれか）
 - **psmux-bridge** — クロスペイン通信用 CLI
 - **.psmux.conf** — Alt キーバインド、マウスサポート、ペインラベルの設定
@@ -53,31 +54,31 @@ psmux-bridge keys codex Enter
 
 ### ペイン
 
-| キー | 動作 |
-|---|---|
-| `Alt+i/k/j/l` | 上/下/左/右に移動 |
-| `Alt+n` | 新しいペイン（分割 + 自動タイル） |
-| `Alt+w` | ペインを閉じる |
-| `Alt+o` | レイアウトを切り替え |
-| `Alt+g` | ペインをマーク |
-| `Alt+y` | マークしたペインと入れ替え |
+| キー          | 動作                              |
+| ------------- | --------------------------------- |
+| `Alt+i/k/j/l` | 上/下/左/右に移動                 |
+| `Alt+n`       | 新しいペイン（分割 + 自動タイル） |
+| `Alt+w`       | ペインを閉じる                    |
+| `Alt+o`       | レイアウトを切り替え              |
+| `Alt+g`       | ペインをマーク                    |
+| `Alt+y`       | マークしたペインと入れ替え        |
 
 ### ウィンドウ
 
-| キー | 動作 |
-|---|---|
+| キー    | 動作             |
+| ------- | ---------------- |
 | `Alt+m` | 新しいウィンドウ |
-| `Alt+u` | 次のウィンドウ |
-| `Alt+h` | 前のウィンドウ |
+| `Alt+u` | 次のウィンドウ   |
+| `Alt+h` | 前のウィンドウ   |
 
 ### スクロール
 
-| キー | 動作 |
-|---|---|
-| `Alt+Tab` | スクロールモードの切り替え |
-| `i/k` | 上/下にスクロール |
-| `Shift+I/K` | 半ページ上/下 |
-| `q` または `Escape` | スクロールモード終了 |
+| キー                | 動作                       |
+| ------------------- | -------------------------- |
+| `Alt+Tab`           | スクロールモードの切り替え |
+| `i/k`               | 上/下にスクロール          |
+| `Shift+I/K`         | 半ページ上/下              |
+| `q` または `Escape` | スクロールモード終了       |
 
 ### マウス
 
@@ -89,21 +90,23 @@ psmux-bridge keys codex Enter
 
 Windows 向けのクロスペイン通信 CLI。シェルコマンドを実行できるツールなら何でも使える — Claude Code、Codex、Gemini CLI、PowerShell スクリプトなど。
 
-| コマンド | 説明 |
-|---|---|
-| `psmux-bridge list` | 全ペインをターゲット・プロセス・ラベル付きで表示 |
-| `psmux-bridge read <target> [lines]` | ペインの末尾 N 行を読み取り（デフォルト 50） |
-| `psmux-bridge type <target> <text>` | ペインにテキストを入力（Enter なし） |
-| `psmux-bridge keys <target> <key>...` | キーを送信（Enter, Escape, C-c 等） |
-| `psmux-bridge message <target> <text>` | 送信者情報付きのタグ付きメッセージを送信 |
-| `psmux-bridge name <target> <label>` | ペインにラベルを付ける |
-| `psmux-bridge resolve <label>` | ラベルからペインを検索 |
-| `psmux-bridge id` | 自分のペイン ID を表示 |
-| `psmux-bridge ime-input <target>` | GUI ダイアログで日本語 IME 入力 |
-| `psmux-bridge image-paste <target>` | クリップボード画像を保存してパスを送信 |
-| `psmux-bridge clipboard-paste <target>` | クリップボードテキストをペインに送信 |
-| `psmux-bridge doctor` | 環境チェックと IME 診断 |
-| `psmux-bridge version` | バージョンを表示 |
+| コマンド                                | 説明                                             |
+| --------------------------------------- | ------------------------------------------------ |
+| `psmux-bridge list`                     | 全ペインをターゲット・プロセス・ラベル付きで表示 |
+| `psmux-bridge read <target> [lines]`    | ペインの末尾 N 行を読み取り（デフォルト 50）     |
+| `psmux-bridge type <target> <text>`     | ペインにテキストを入力（Enter なし）             |
+| `psmux-bridge keys <target> <key>...`   | キーを送信（Enter, Escape, C-c 等）              |
+| `psmux-bridge message <target> <text>`  | 送信者情報付きのタグ付きメッセージを送信         |
+| `psmux-bridge name <target> <label>`    | ペインにラベルを付ける                           |
+| `psmux-bridge resolve <label>`          | ラベルからペインを検索                           |
+| `psmux-bridge id`                       | 自分のペイン ID を表示                           |
+| `psmux-bridge ime-input <target>`       | GUI ダイアログで日本語 IME 入力                  |
+| `psmux-bridge image-paste <target>`     | クリップボード画像を保存してパスを送信           |
+| `psmux-bridge clipboard-paste <target>` | クリップボードテキストをペインに送信             |
+| `psmux-bridge send <target> <text>`     | テキスト送信 + Enter（推奨）                     |
+| `psmux-bridge focus <label\|target>`    | アクティブペイン切替（psmux 外から操作）         |
+| `psmux-bridge doctor`                   | 環境チェックと IME 診断                          |
+| `psmux-bridge version`                  | バージョンを表示                                 |
 
 ### Read Guard
 
@@ -119,85 +122,87 @@ psmux-bridge type codex "hello"
 ### ターゲット指定
 
 ペインは以下の方法で指定できる:
+
 - **ペイン ID** — `%3`, `%5`（psmux ネイティブ ID）
 - **ラベル** — `psmux-bridge name` で設定した任意の名前
 
 ラベルはすべてのコマンドで自動解決される。保存先は `$env:APPDATA\winsmux\labels.json`。
 
-## Orchestra（4 ペイン構成）
+## Orchestra
 
-Orchestra ワークフローは 2×2 グリッドで、Claude Code が複数エージェントを指揮する:
+Orchestra ワークフローは Commander（別ターミナル）がバックグラウンドの psmux ペインにいるエージェントを指揮する構成。任意のグリッドサイズ、混合 CLI（Claude Code、Codex、Gemini CLI）に対応。
 
-```
-┌──────────────┬──────────────┐
-│  Commander   │   Builder    │
-│ Claude Opus  │  Codex CLI   │
-├──────────────┼──────────────┤
-│  Researcher  │   Reviewer   │
-│ Claude Sonnet│  Codex CLI   │
-└──────────────┴──────────────┘
-```
-
-| ペイン | 役割 | 担当 |
-|---|---|---|
-| Commander | 設計・指揮 | タスク分解、指示送信、git 操作 |
-| Builder | 実装 | コード実装、Reviewer の指摘を修正 |
-| Researcher | 調査 | リサーチ、テスト、lint、ドキュメント |
-| Reviewer | レビュー | セキュリティ・アーキテクチャ・品質のレビュー |
-
-### クイック起動
+### デフォルト（2×2）
 
 ```powershell
 # 1. ターミナルを開いて psmux を起動
 psmux
 
 # 2. 別のターミナルから Orchestra セットアップを実行
-pwsh scripts/start-orchestra.ps1 -ProjectDir C:\path\to\your\project
+pwsh scripts/start-orchestra.ps1 -ProjectDir C:\path\to\project
 ```
 
-Commander は起動時に `--append-system-prompt` でロール・ペイン割り当て・ワークフロールールが自動注入される。
-
-> **重要:** psmux は必ず手動でターミナルを開いて起動すること。`Start-Process` 経由だとカラーレンダリングが壊れる。
-
-### カスタマイズ
-
-全ロールをパラメータで変更可能:
+### カスタム（例: 3×2 で 6 エージェント）
 
 ```powershell
-pwsh scripts/start-orchestra.ps1 `
-  -ProjectDir C:\my\project `
-  -Commander "claude --model opus" `
-  -Researcher "claude --model sonnet" `
-  -Builder "codex" `
-  -Reviewer "claude --model haiku"
+pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -Rows 2 -Cols 3 -Agents @(
+  @{label="builder-1"; command="codex"},
+  @{label="researcher"; command="claude --model sonnet"},
+  @{label="builder-2"; command="codex"},
+  @{label="builder-3"; command="gemini --model gemini-3.1-pro-preview"},
+  @{label="builder-4"; command="gemini --model gemini-3-flash-preview"},
+  @{label="reviewer"; command="codex"}
+) -ShieldHarness
 ```
 
-| パラメータ | デフォルト |
-|---|---|
-| `-ProjectDir` | カレントディレクトリ |
-| `-Commander` | `claude --model opus --channels plugin:telegram@claude-plugins-official` |
-| `-Researcher` | `claude --model sonnet` |
-| `-Builder` | `codex` |
-| `-Reviewer` | `codex` |
-| `-ShieldHarness` | Off（スイッチ） |
+```
+┌──────────┬──────────┬──────────┐
+│builder-1 │builder-2 │builder-3 │
+├──────────┼──────────┼──────────┤
+│researcher│builder-4 │reviewer  │
+└──────────┴──────────┴──────────┘
+```
+
+Commander は別ターミナルで直接キーボード入力可能な状態で起動:
+
+```powershell
+cd C:\my\project
+claude --model claude-opus-4-6 --permission-mode bypassPermissions --append-system-prompt-file .commander-prompt.txt
+```
+
+| パラメータ       | デフォルト        | 説明                       |
+| ---------------- | ----------------- | -------------------------- |
+| `-ProjectDir`    | カレント          | 全ペインの作業ディレクトリ |
+| `-Rows`          | 2                 | グリッドの行数             |
+| `-Cols`          | 2                 | グリッドの列数             |
+| `-Agents`        | 4ペインデフォルト | `@{label; command}` の配列 |
+| `-ShieldHarness` | Off               | 承認レスモード有効化       |
 
 ### 承認レスモード（Shield Harness）
 
-`-ShieldHarness` を追加すると Commander と Researcher が承認ダイアログなしで動作する。[Shield Harness](https://github.com/Sora-bluesky/shield-harness) が 22 のセキュリティフック、deny ルール、エビデンス記録を提供するため、危険な操作は自動でブロックされる。
+`-ShieldHarness` を追加すると承認ダイアログなしで動作する。[Shield Harness](https://github.com/Sora-bluesky/shield-harness) がセキュリティフックを提供し、危険な操作を自動ブロックする。
 
-```powershell
-pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -ShieldHarness
-```
+有効時、スクリプトが各 CLI に応じたフラグを自動付与:
 
-- 初回: プロジェクトに shield-harness を自動初期化（`npx shield-harness init --profile standard`）
-- 2回目以降: 既存のインストールを検出してスキップ
-- `-ShieldHarness` なし: 従来通り（手動承認モード）
+| CLI         | 自動付与されるフラグ                  |
+| ----------- | ------------------------------------- |
+| Claude Code | `--permission-mode bypassPermissions` |
+| Codex CLI   | `--full-auto`                         |
+| Gemini CLI  | `--yolo`                              |
 
-ワークフローの流れ: **Plan → Build → Poll → Review → Poll → Judge → Commit → Next**
+`-ShieldHarness` なし: フラグは付与されない（手動承認モード）。
 
-Commander はコードを直接書かない。実装は Builder に委任し、Reviewer の指摘も Builder に修正指示を送る。
+### 並列ビルダー管理
 
-詳細は [SKILL.md](skills/winsmux/SKILL.md) を参照。Commander ワークフローの全手順、Poll パターン、自動承認ルールが記載されている。
+Commander は複数ビルダーを以下のプロトコルで管理する:
+
+1. **Split** — ビルダーごとに独立したファイル領域を割り当て
+2. **Poll** — `psmux-bridge read builder-1`, `read builder-2` で巡回確認
+3. **Review** — 完了したビルダーから順にレビュアーへ
+4. **Conflict check** — マージ前に `git diff --name-only` で競合検知
+5. **Commit** — レビュー通過後にコミット
+
+詳細は [SKILL.md](skills/winsmux/SKILL.md) を参照。
 
 ## AI Agent Skills
 
