@@ -28,6 +28,7 @@ DEV-NOTES*.md
 # =========================
 # Personal / user-specific
 # =========================
+CLAUDE.md
 .claude/
 .codex/
 .gemini/
