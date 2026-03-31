@@ -40,6 +40,30 @@ function Show-WinsmuxBanner {
 
 Show-WinsmuxBanner
 
+$currentBranch = $null
+try {
+    $currentBranch = (git -C $ProjectDir rev-parse --abbrev-ref HEAD 2>$null | Select-Object -First 1)
+    if ($currentBranch) {
+        $currentBranch = $currentBranch.Trim()
+    }
+} catch {
+    $currentBranch = $null
+}
+
+if ($currentBranch -eq 'main') {
+    $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $orchestraBranch = "orchestra/$timestamp"
+    Write-Output "[orchestra] Current branch is main. Creating and switching to $orchestraBranch"
+    git -C $ProjectDir checkout -b $orchestraBranch | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Failed to create orchestra branch from main."
+        exit 1
+    }
+    $currentBranch = $orchestraBranch
+} elseif (-not $currentBranch) {
+    $currentBranch = '(unknown)'
+}
+
 # --- Default agents (backward compatible 2x2) ---
 if (-not $Agents -or $Agents.Count -eq 0) {
     $Agents = @(
@@ -223,11 +247,12 @@ pwsh $bridgePath read <label>
 ``````
 
 ## Rules
-1. NEVER write code yourself. Delegate to builders ($builderLabels).
-2. Use researchers ($researcherLabels) for investigation, testing, docs.
-3. Use reviewers ($reviewerLabels) for code review after builders complete.
-4. Assign each builder INDEPENDENT file sets to avoid conflicts.
-5. Poll all agents with ``read`` to check progress. Agents cannot push to you.
+1. You are on branch $currentBranch. All commits go here. Create PR to merge to main.
+2. NEVER write code yourself. Delegate to builders ($builderLabels).
+3. Use researchers ($researcherLabels) for investigation, testing, docs.
+4. Use reviewers ($reviewerLabels) for code review after builders complete.
+5. Assign each builder INDEPENDENT file sets to avoid conflicts.
+6. Poll all agents with ``read`` to check progress. Agents cannot push to you.
 
 ## Multi-Builder Coordination Protocol
 1. SPLIT: Assign independent tasks with explicit file boundaries per builder.

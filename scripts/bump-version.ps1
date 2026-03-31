@@ -1,35 +1,33 @@
 # bump-version.ps1 — Sync version across all winsmux files from VERSION (Single Source of Truth)
 # Usage:
 #   pwsh scripts/bump-version.ps1                            # Sync all files to VERSION file value
-#   pwsh scripts/bump-version.ps1 -Version 0.9.0             # Set new version and sync all files
-#   pwsh scripts/bump-version.ps1 -Version 0.9.0 -Release    # Bump + commit + tag + push + GitHub Release
+#   pwsh scripts/bump-version.ps1 -Version 0.9.0             # Bump + commit + tag + push + GitHub Release (DEFAULT)
+#   pwsh scripts/bump-version.ps1 -Version 0.9.0 -SyncOnly   # Only sync files, no release flow
 
 [CmdletBinding()]
 param(
     [string]$Version,
-    [switch]$Release
+    [switch]$SyncOnly
 )
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 $VersionFile = Join-Path $Root "VERSION"
 
-# --- Release requires -Version ---
-if ($Release -and -not $Version) {
-    Write-Error "-Release requires -Version. Usage: bump-version.ps1 -Version X.Y.Z -Release"
-    exit 1
-}
+# --- Determine if release flow is active ---
+# Release is the DEFAULT when -Version is specified. Use -SyncOnly to suppress.
+$DoRelease = $Version -and -not $SyncOnly
 
 # --- Release requires gh CLI ---
-if ($Release) {
+if ($DoRelease) {
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-        Write-Error "GitHub CLI (gh) is required for -Release. Install: winget install GitHub.cli"
+        Write-Error "GitHub CLI (gh) is required for release. Install: winget install GitHub.cli"
         exit 1
     }
 }
 
 # --- Release requires clean working tree ---
-if ($Release) {
+if ($DoRelease) {
     Push-Location $Root
     $status = git status --porcelain 2>&1
     if ($status) {
@@ -114,7 +112,7 @@ if ($changed -eq 0) {
 }
 
 # --- Release flow ---
-if (-not $Release) { return }
+if (-not $DoRelease) { return }
 
 Write-Host ""
 Write-Host "[release] Starting release flow for v$Version ..." -ForegroundColor Cyan
@@ -138,7 +136,7 @@ try {
     Write-Host "[release] Pushed branch"
 
     # Create and merge PR
-    $prUrl = gh pr create --title "chore: bump version to $Version" --body "Automated release via ``bump-version.ps1 -Release``" --head $branch
+    $prUrl = gh pr create --title "chore: bump version to $Version" --body "Automated release via ``bump-version.ps1 -Version $Version``" --head $branch
     Write-Host "[release] PR created: $prUrl"
 
     gh pr merge $prUrl --squash --delete-branch

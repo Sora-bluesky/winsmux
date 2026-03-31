@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  ps-syntax:
+    name: PowerShell Syntax Check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Parse PowerShell files
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path . -Recurse -Filter *.ps1 -File | Sort-Object FullName
+          if ($files.Count -eq 0) {
+            Write-Host 'No .ps1 files found.'
+            exit 0
+          }
+
+          $hasErrors = $false
+
+          foreach ($file in $files) {
+            $tokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $file.FullName,
+              [ref]$tokens,
+              [ref]$parseErrors
+            ) | Out-Null
+
+            if ($parseErrors.Count -gt 0) {
+              $hasErrors = $true
+              Write-Host "Syntax errors in $($file.FullName):"
+              foreach ($parseError in $parseErrors) {
+                Write-Host "  Line $($parseError.Extent.StartLineNumber), Column $($parseError.Extent.StartColumnNumber): $($parseError.Message)"
+              }
+            }
+          }
+
+          if ($hasErrors) {
+            Write-Error 'PowerShell syntax check failed.'
+            exit 1
+          }
+
+  conflict-markers:
+    name: Conflict Markers Check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect conflict markers
+        shell: pwsh
+        run: |
+          $markers = @('<<<<<<<', '=======', '>>>>>>>')
+          $found = $false
+          foreach ($marker in $markers) {
+            $result = git grep -rn $marker -- ':!*.yml' ':!*.yaml' 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              $found = $true
+              Write-Host "Found conflict marker '$marker':"
+              Write-Host $result
+            }
+          }
+          if ($found) {
+            Write-Error 'Conflict markers found.'
+            exit 1
+          }
+
+  psmux-bridge-smoke:
+    name: psmux-bridge Smoke Test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run version command
+        shell: pwsh
+        run: pwsh ./scripts/psmux-bridge.ps1 version

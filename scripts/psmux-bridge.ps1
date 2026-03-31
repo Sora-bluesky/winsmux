@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 
 $ReadMarkDir    = Join-Path $env:TEMP "winsmux\read_marks"
 $WatermarkDir   = Join-Path $env:TEMP "winsmux\watermarks"
+$LockDir        = Join-Path $env:TEMP "winsmux\locks"
 $LabelsFile     = Join-Path $env:APPDATA "winsmux\labels.json"
 
 # --- Windows Credential Manager P/Invoke ---
@@ -174,6 +175,190 @@ function Clear-Watermark {
     $path = Get-WatermarkPath $PaneId
     if (Test-Path $path) {
         Remove-Item -Path $path -Force
+    }
+}
+
+# --- Helper: File Locks ---
+function Ensure-LockDir {
+    if (-not (Test-Path $LockDir)) {
+        New-Item -ItemType Directory -Path $LockDir -Force | Out-Null
+    }
+}
+
+function Resolve-LockFileTarget {
+    param([string]$FilePath)
+
+    if ([string]::IsNullOrWhiteSpace($FilePath)) {
+        Stop-WithError "lock target file must not be empty"
+    }
+
+    try {
+        $resolved = Resolve-Path -LiteralPath $FilePath -ErrorAction Stop
+        return $resolved.ProviderPath
+    } catch {
+        return [System.IO.Path]::GetFullPath($FilePath)
+    }
+}
+
+function Get-LockHash {
+    param([string]$FilePath)
+
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($FilePath.ToLowerInvariant())
+    return ([System.BitConverter]::ToString(
+        [System.Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+    ) -replace '-', '').ToLowerInvariant()
+}
+
+function Get-LockPath {
+    param([string]$FilePath)
+
+    $resolvedFile = Resolve-LockFileTarget $FilePath
+    $hash = Get-LockHash $resolvedFile
+    return Join-Path $LockDir "$hash.lock"
+}
+
+function Read-LockInfo {
+    param([string]$LockPath)
+
+    if (-not (Test-Path $LockPath)) { return $null }
+    try {
+        return (Get-Content -Path $LockPath -Raw -Encoding UTF8 | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Remove-ExpiredLocks {
+    Ensure-LockDir
+    $now = Get-Date
+    $expired = @()
+
+    foreach ($item in Get-ChildItem -Path $LockDir -Filter '*.lock' -File -ErrorAction SilentlyContinue) {
+        $info = Read-LockInfo $item.FullName
+        if ($null -eq $info) {
+            Remove-Item -Path $item.FullName -Force -ErrorAction SilentlyContinue
+            continue
+        }
+
+        try {
+            $acquiredAt = [DateTimeOffset]::Parse($info.acquiredAt)
+        } catch {
+            Remove-Item -Path $item.FullName -Force -ErrorAction SilentlyContinue
+            continue
+        }
+
+        if (($now - $acquiredAt.LocalDateTime).TotalMinutes -ge 30) {
+            Remove-Item -Path $item.FullName -Force -ErrorAction SilentlyContinue
+            $expired += [PSCustomObject]@{
+                Label      = $info.label
+                File       = $info.file
+                AcquiredAt = $acquiredAt.ToString("o")
+            }
+        }
+    }
+
+    return $expired
+}
+
+function Invoke-Lock {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge lock <label> <file>..." }
+    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge lock <label> <file>..." }
+
+    $label = $Target
+    $expired = Remove-ExpiredLocks
+    foreach ($entry in $expired) {
+        Write-Warning "expired lock released: $($entry.File) [$($entry.Label)]"
+    }
+
+    $pending = @()
+    foreach ($file in $Rest) {
+        $resolvedFile = Resolve-LockFileTarget $file
+        $lockPath = Get-LockPath $resolvedFile
+        $info = Read-LockInfo $lockPath
+
+        if ($null -ne $info -and $info.label -ne $label) {
+            Stop-WithError "lock denied: $resolvedFile is already locked by $($info.label)"
+        }
+
+        $pending += [PSCustomObject]@{
+            File     = $resolvedFile
+            LockPath = $lockPath
+        }
+    }
+
+    Ensure-LockDir
+    $timestamp = (Get-Date).ToString("o")
+    foreach ($entry in $pending) {
+        $payload = [ordered]@{
+            label      = $label
+            file       = $entry.File
+            acquiredAt = $timestamp
+        }
+        $json = $payload | ConvertTo-Json
+        # Atomic lock acquisition: CreateNew fails if file already exists (race-safe)
+        try {
+            $fs = [IO.File]::Open($entry.LockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            $writer = [IO.StreamWriter]::new($fs, [Text.Encoding]::UTF8)
+            $writer.Write($json)
+            $writer.Close()
+            $fs.Close()
+            Write-Output "locked $($entry.File) [$label]"
+        } catch [IO.IOException] {
+            # File was created by another process between check and write
+            $rival = Read-LockInfo $entry.LockPath
+            $rivalLabel = if ($rival) { $rival.label } else { "unknown" }
+            Stop-WithError "lock denied (race): $($entry.File) is already locked by $rivalLabel"
+        }
+    }
+}
+
+function Invoke-Unlock {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge unlock <label> <file>..." }
+    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge unlock <label> <file>..." }
+
+    $label = $Target
+    foreach ($file in $Rest) {
+        $resolvedFile = Resolve-LockFileTarget $file
+        $lockPath = Get-LockPath $resolvedFile
+
+        if (-not (Test-Path $lockPath)) {
+            Write-Output "not locked: $resolvedFile"
+            continue
+        }
+
+        $info = Read-LockInfo $lockPath
+        if ($null -eq $info) {
+            Remove-Item -Path $lockPath -Force -ErrorAction SilentlyContinue
+            Write-Output "unlocked $resolvedFile [$label]"
+            continue
+        }
+
+        if ($info.label -ne $label) {
+            Stop-WithError "unlock denied: $resolvedFile is locked by $($info.label)"
+        }
+
+        Remove-Item -Path $lockPath -Force
+        Write-Output "unlocked $resolvedFile [$label]"
+    }
+}
+
+function Invoke-Locks {
+    $expired = Remove-ExpiredLocks
+    foreach ($entry in $expired) {
+        Write-Warning "expired lock released: $($entry.File) [$($entry.Label)]"
+    }
+
+    Ensure-LockDir
+    $locks = Get-ChildItem -Path $LockDir -Filter '*.lock' -File -ErrorAction SilentlyContinue | Sort-Object Name
+    if (-not $locks -or $locks.Count -eq 0) {
+        Write-Output "(no locks)"
+        return
+    }
+
+    foreach ($item in $locks) {
+        $info = Read-LockInfo $item.FullName
+        if ($null -eq $info) { continue }
+        Write-Output "$($info.label)`t$($info.file)`t$($info.acquiredAt)"
     }
 }
 
@@ -883,6 +1068,9 @@ Commands:
   image-paste <target>      Save clipboard image and send path to pane
   clipboard-paste <target>  Send clipboard text to pane
   focus <label|target>      Switch active pane (use from outside psmux)
+  lock <label> <file>...    Acquire file lock(s) for a label
+  unlock <label> <file>...  Release file lock(s) for a label
+  locks                     List active file locks
   wait <channel> [timeout]  Block until signal received (replaces polling)
   signal <channel>          Send signal to unblock a waiting process
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
@@ -911,6 +1099,9 @@ switch ($Command) {
     'image-paste'     { Invoke-ImagePaste }
     'clipboard-paste' { Invoke-ClipboardPaste }
     'focus'           { Invoke-Focus }
+    'lock'            { Invoke-Lock }
+    'unlock'          { Invoke-Unlock }
+    'locks'           { Invoke-Locks }
     'vault'           {
         switch ($Target) {
             'set'    { $Target = $Rest[0]; $Rest = @($Rest | Select-Object -Skip 1); Invoke-VaultSet }
