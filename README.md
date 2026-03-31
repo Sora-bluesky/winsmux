@@ -107,6 +107,7 @@ A CLI for cross-pane communication on Windows. Any tool that can run shell comma
 | `psmux-bridge focus <label\|target>`    | Switch active pane (from outside psmux)        |
 | `psmux-bridge wait <channel> [timeout]` | Block until signal received (replaces polling) |
 | `psmux-bridge signal <channel>`         | Send signal to unblock a waiting process       |
+| `psmux-bridge watch <label> [sil] [to]` | Block until pane output is silent              |
 | `psmux-bridge doctor`                   | Check environment and IME diagnostics          |
 | `psmux-bridge version`                  | Show version                                   |
 

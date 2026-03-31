@@ -133,6 +133,27 @@ psmux-bridge read builder-3  # output returned -> complete
 psmux-bridge send reviewer "Review builder-1 changes: git diff"
 ```
 
+**Method 3: Silence-based (v0.8.3+)**
+
+Use `watch` when agents cannot send signals and you want automatic completion detection without manual polling. The command monitors pane output and returns when the agent stops producing output for the specified duration.
+
+```powershell
+# Commander: block until builder-1 is silent for 10 seconds
+psmux-bridge watch builder-1 10 120    # 10s silence, 120s timeout
+
+# Watch multiple builders in parallel
+Start-Job { psmux-bridge watch builder-1 10 120 }
+Start-Job { psmux-bridge watch builder-2 10 120 }
+```
+
+Recommended silence thresholds:
+
+- Codex CLI: 10-15 seconds (fast responses, brief pauses between steps)
+- Build/test processes: 15-20 seconds (longer pauses during compilation)
+- Large file generation: 20-30 seconds
+
+Note: `watch` detects silence, not completion. An agent waiting for approval input is also silent. When `watch` returns, read the pane to confirm the agent is idle (not blocked on a prompt).
+
 ### Conflict Detection (before commit)
 
 ```powershell
