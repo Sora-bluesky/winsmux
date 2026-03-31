@@ -121,20 +121,38 @@ Write-Host "[release] Starting release flow for v$Version ..." -ForegroundColor 
 
 Push-Location $Root
 try {
+    $branch = "release/v$Version"
+
+    # Create release branch
+    git checkout -b $branch
+    Write-Host "[release] Created branch $branch"
+
     # Stage and commit
     $filesToAdd = @("VERSION", "install.ps1", "scripts/psmux-bridge.ps1", "skills/winsmux/SKILL.md", "skills/winsmux/references/psmux-bridge.md")
     git add $filesToAdd
     git commit -m "chore: bump version to $Version"
     Write-Host "[release] Committed"
 
-    # Tag
-    git tag "v$Version"
-    Write-Host "[release] Tagged v$Version"
+    # Push branch
+    git push -u origin $branch
+    Write-Host "[release] Pushed branch"
 
-    # Push commit and tag
-    git push origin HEAD
+    # Create and merge PR
+    $prUrl = gh pr create --title "chore: bump version to $Version" --body "Automated release via ``bump-version.ps1 -Release``" --head $branch
+    Write-Host "[release] PR created: $prUrl"
+
+    gh pr merge $prUrl --squash --delete-branch
+    Write-Host "[release] PR merged"
+
+    # Switch back to main and pull
+    git checkout main
+    git pull origin main
+    Write-Host "[release] Main updated"
+
+    # Tag the merge commit and push
+    git tag "v$Version"
     git push origin "v$Version"
-    Write-Host "[release] Pushed to origin"
+    Write-Host "[release] Tagged v$Version"
 
     # GitHub Release
     gh release create "v$Version" --title "v$Version" --generate-notes --latest
@@ -144,6 +162,7 @@ try {
     Write-Host "[release] Done! https://github.com/Sora-bluesky/winsmux/releases/tag/v$Version" -ForegroundColor Green
 } catch {
     Write-Error "[release] Failed: $_"
+    Pop-Location
     exit 1
 } finally {
     Pop-Location
