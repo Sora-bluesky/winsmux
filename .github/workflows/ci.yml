@@ -55,13 +55,19 @@ jobs:
       - name: Detect conflict markers
         shell: pwsh
         run: |
-          git grep -rn '<<<<<<<'
-          if ($LASTEXITCODE -eq 0) {
+          $markers = @('<<<<<<<', '=======', '>>>>>>>')
+          $found = $false
+          foreach ($marker in $markers) {
+            $result = git grep -rn $marker -- ':!*.yml' ':!*.yaml' 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              $found = $true
+              Write-Host "Found conflict marker '$marker':"
+              Write-Host $result
+            }
+          }
+          if ($found) {
             Write-Error 'Conflict markers found.'
             exit 1
-          }
-          if ($LASTEXITCODE -ne 1) {
-            exit $LASTEXITCODE
           }
 
   psmux-bridge-smoke:

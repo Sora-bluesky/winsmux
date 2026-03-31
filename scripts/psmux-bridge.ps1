@@ -294,8 +294,21 @@ function Invoke-Lock {
             file       = $entry.File
             acquiredAt = $timestamp
         }
-        $payload | ConvertTo-Json | Set-Content -Path $entry.LockPath -Encoding UTF8
-        Write-Output "locked $($entry.File) [$label]"
+        $json = $payload | ConvertTo-Json
+        # Atomic lock acquisition: CreateNew fails if file already exists (race-safe)
+        try {
+            $fs = [IO.File]::Open($entry.LockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            $writer = [IO.StreamWriter]::new($fs, [Text.Encoding]::UTF8)
+            $writer.Write($json)
+            $writer.Close()
+            $fs.Close()
+            Write-Output "locked $($entry.File) [$label]"
+        } catch [IO.IOException] {
+            # File was created by another process between check and write
+            $rival = Read-LockInfo $entry.LockPath
+            $rivalLabel = if ($rival) { $rival.label } else { "unknown" }
+            Stop-WithError "lock denied (race): $($entry.File) is already locked by $rivalLabel"
+        }
     }
 }
 

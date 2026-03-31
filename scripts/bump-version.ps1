@@ -136,7 +136,7 @@ try {
     Write-Host "[release] Pushed branch"
 
     # Create and merge PR
-    $prUrl = gh pr create --title "chore: bump version to $Version" --body "Automated release via ``bump-version.ps1 -Release``" --head $branch
+    $prUrl = gh pr create --title "chore: bump version to $Version" --body "Automated release via ``bump-version.ps1 -Version $Version``" --head $branch
     Write-Host "[release] PR created: $prUrl"
 
     gh pr merge $prUrl --squash --delete-branch
