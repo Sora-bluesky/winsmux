@@ -197,7 +197,7 @@ The `.commander-prompt.txt` is auto-generated with actual pane IDs, agent labels
 | `-Agents`        | 4-pane default    | Array of `@{label; command}` maps                                                               |
 | `-ShieldHarness` | Off               | Enable approval-free mode with [Shield Harness](https://github.com/Sora-bluesky/shield-harness) |
 
-See [SKILL.md](skills/winsmux/SKILL.md) for the full Commander workflow.
+See [SKILL.md](skills/winsmux/SKILL.md) for the full Commander workflow. Management protocols (pipeline operation, researcher recon, reviewer batching, agent selection) are bundled as skill references and loaded on-demand by agents.
 
 ## AI Agent Skills
 
@@ -206,6 +206,12 @@ Install the winsmux skill to teach your agents how to use psmux-bridge:
 ```powershell
 npx skills add Sora-bluesky/winsmux
 ```
+
+The skill includes:
+
+- Core psmux-bridge usage ([SKILL.md](skills/winsmux/SKILL.md))
+- Orchestra management protocol ([references/orchestra-management.md](skills/winsmux/references/orchestra-management.md))
+- Agent selection guide ([references/agent-selection.md](skills/winsmux/references/agent-selection.md))
 
 Works with Claude Code, Codex, Cursor, Copilot, and [other agents](https://skills.sh).
 
