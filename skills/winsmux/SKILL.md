@@ -7,11 +7,12 @@ description: |
   psmux sessions, or multi-agent orchestration on Windows.
   Triggered by "psmux-bridge", "cross-pane", "pane communication",
   "winsmux", "agent orchestration", "multi-pane", "commander workflow",
-  or "pane read/type/keys".
+  "pane read/type/keys", "credential vault", or "WT profile".
   Key capabilities: read-guard-enforced pane I/O, labeled pane targeting,
   structured inter-agent messaging, commander orchestration workflow
   with builder/reviewer/monitor roles, POLL loop with auto-approve,
-  and dangerous-command protection.
+  dangerous-command protection, DPAPI credential vault with pane injection,
+  and Windows Terminal Fragment profile management.
 metadata:
   author: Sora-bluesky
   version: "0.9.0"
@@ -57,6 +58,15 @@ The ONLY reasons to read a target pane in Agent Mode:
 | `psmux-bridge wait <channel> [timeout]` | Block until signal received (default 120s timeout)            | `psmux-bridge wait builder-1-done 60`             |
 | `psmux-bridge signal <channel>`         | Send signal to unblock a waiting process                      | `psmux-bridge signal builder-1-done`              |
 | `psmux-bridge watch <label> [sil] [to]` | Block until pane output is silent (default 10s silence)       | `psmux-bridge watch builder-1 10 120`             |
+| `psmux-bridge focus <target>`           | Switch pane focus                                             | `psmux-bridge focus codex`                        |
+| `psmux-bridge ime-input <target>`       | Open GUI dialog for IME text input, send to pane              | `psmux-bridge ime-input codex`                    |
+| `psmux-bridge image-paste <target>`     | Save clipboard image to file, send path to pane               | `psmux-bridge image-paste codex`                  |
+| `psmux-bridge clipboard-paste <target>` | Paste clipboard text to pane                                  | `psmux-bridge clipboard-paste codex`              |
+| `psmux-bridge vault set <key> [value]`  | Store a credential securely (DPAPI)                           | `psmux-bridge vault set OPENAI_API_KEY`           |
+| `psmux-bridge vault get <key>`          | Retrieve a stored credential                                  | `psmux-bridge vault get OPENAI_API_KEY`           |
+| `psmux-bridge vault inject <pane>`      | Inject all credentials as `$env:` vars into a pane            | `psmux-bridge vault inject builder`               |
+| `psmux-bridge vault list`               | List stored credential keys                                   | `psmux-bridge vault list`                         |
+| `psmux-bridge profile [name] [agents]`  | Show or register Windows Terminal dropdown profile            | `psmux-bridge profile mysetup builder:codex`      |
 | `psmux-bridge doctor`                   | Run environment diagnostics                                   | `psmux-bridge doctor`                             |
 
 For full parameter details, see [psmux-bridge CLI Reference](references/psmux-bridge.md).
