@@ -6,7 +6,7 @@ param(
 )
 
 # --- Config ---
-$VERSION = "0.8.2"
+$VERSION = "0.8.3"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 
@@ -562,6 +562,55 @@ function Invoke-Signal {
     Write-Output "sent signal: $channel"
 }
 
+function Invoke-Watch {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge watch <label> [silence_seconds] [timeout_seconds]" }
+
+    $paneId = Resolve-Target $Target
+    $paneId = Confirm-Target $paneId
+
+    $silenceSec = 10
+    $timeoutSec = 120
+    if ($Rest -and $Rest.Count -gt 0) { $silenceSec = [int]$Rest[0] }
+    if ($Rest -and $Rest.Count -gt 1) { $timeoutSec = [int]$Rest[1] }
+
+    # Initial snapshot
+    $output = & psmux capture-pane -t $paneId -p -J -S -50
+    $prevHash = [System.BitConverter]::ToString(
+        [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+            [System.Text.Encoding]::UTF8.GetBytes(($output | Out-String))
+        )
+    ) -replace '-', ''
+
+    $silenceCounter = 0
+    $elapsed = 0
+
+    while ($elapsed -lt $timeoutSec) {
+        Start-Sleep -Seconds 1
+        $elapsed++
+
+        $output = & psmux capture-pane -t $paneId -p -J -S -50
+        $currentHash = [System.BitConverter]::ToString(
+            [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+                [System.Text.Encoding]::UTF8.GetBytes(($output | Out-String))
+            )
+        ) -replace '-', ''
+
+        if ($currentHash -eq $prevHash) {
+            $silenceCounter++
+        } else {
+            $silenceCounter = 0
+            $prevHash = $currentHash
+        }
+
+        if ($silenceCounter -ge $silenceSec) {
+            Write-Output "silence detected: $Target (no output for ${silenceSec}s)"
+            return
+        }
+    }
+
+    Stop-WithError "timeout watching $Target (${timeoutSec}s, needed ${silenceSec}s silence)"
+}
+
 function Invoke-Focus {
     if (-not $Target) { Stop-WithError "usage: psmux-bridge focus <label|target>" }
 
@@ -596,6 +645,7 @@ Commands:
   focus <label|target>      Switch active pane (use from outside psmux)
   wait <channel> [timeout]  Block until signal received (replaces polling)
   signal <channel>          Send signal to unblock a waiting process
+  watch <label> [silence_s] [timeout_s]  Block until pane output is silent
   doctor                    Check environment and IME diagnostics
   version                   Show version
 "@
@@ -618,6 +668,7 @@ switch ($Command) {
     'focus'           { Invoke-Focus }
     'wait'            { Invoke-Wait }
     'signal'          { Invoke-Signal }
+    'watch'           { Invoke-Watch }
     'doctor'          { Invoke-Doctor }
     'version'         { Invoke-Version }
     ''                { Show-Usage }

@@ -14,7 +14,7 @@ description: |
   and dangerous-command protection.
 metadata:
   author: Sora-bluesky
-  version: "1.2.0"
+  version: "1.3.0"
   os: win32
   requires: psmux, psmux-bridge
 ---
@@ -56,6 +56,7 @@ The ONLY reasons to read a target pane in Agent Mode:
 | `psmux-bridge id`                       | Print this pane's ID                                          | `psmux-bridge id`                                 |
 | `psmux-bridge wait <channel> [timeout]` | Block until signal received (default 120s timeout)            | `psmux-bridge wait builder-1-done 60`             |
 | `psmux-bridge signal <channel>`         | Send signal to unblock a waiting process                      | `psmux-bridge signal builder-1-done`              |
+| `psmux-bridge watch <label> [sil] [to]` | Block until pane output is silent (default 10s silence)       | `psmux-bridge watch builder-1 10 120`             |
 | `psmux-bridge doctor`                   | Run environment diagnostics                                   | `psmux-bridge doctor`                             |
 
 For full parameter details, see [psmux-bridge CLI Reference](references/psmux-bridge.md).

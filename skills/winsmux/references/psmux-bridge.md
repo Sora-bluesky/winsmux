@@ -1,6 +1,6 @@
 # psmux-bridge reference
 
-> Version: 1.1.0
+> Version: 1.2.0
 
 psmux-bridge is a PowerShell CLI that wraps psmux (tmux-compatible multiplexer) with label resolution, Read Guard safety, and inter-agent messaging.
 
@@ -308,6 +308,46 @@ Creates a signal file in `$env:TEMP\winsmux\signals\` with a timestamp. The corr
 ```
 sent signal: builder-1-done
 ```
+
+---
+
+### watch
+
+Monitor a pane and block until its output is silent for a specified duration. Useful for detecting completion of agents that cannot send signals.
+
+```powershell
+psmux-bridge watch <label> [silence_seconds] [timeout_seconds]
+```
+
+| Parameter         | Required | Default | Description                               |
+| ----------------- | -------- | ------- | ----------------------------------------- |
+| `label`           | Yes      | --      | Pane label or ID to monitor               |
+| `silence_seconds` | No       | `10`    | Seconds of no output to consider "silent" |
+| `timeout_seconds` | No       | `120`   | Overall timeout before giving up          |
+
+**Examples:**
+
+```powershell
+psmux-bridge watch builder-1              # 10s silence, 120s timeout
+psmux-bridge watch builder-1 15           # 15s silence, 120s timeout
+psmux-bridge watch builder-1 10 60        # 10s silence, 60s timeout
+```
+
+Internally captures the pane output every 1 second and compares SHA256 hashes. When the hash remains unchanged for `silence_seconds` consecutive checks, the command returns.
+
+**On success:**
+
+```
+silence detected: builder-1 (no output for 10s)
+```
+
+**On timeout:**
+
+```
+error: timeout watching builder-1 (120s, needed 10s silence)
+```
+
+Note: Silence detection is not the same as completion detection. An agent waiting for approval input is also silent. After `watch` returns, read the pane to confirm the agent's state.
 
 ---
 
