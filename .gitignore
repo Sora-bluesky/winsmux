@@ -35,6 +35,10 @@ DEV-NOTES*.md
 # =========================
 CLAUDE.md
 .claude/
+!.claude/rules/
+!.claude/rules/**
+!.claude/skills/
+!.claude/skills/**
 .codex/
 .gemini/
 *.local
