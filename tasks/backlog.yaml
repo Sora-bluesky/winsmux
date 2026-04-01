@@ -1,6 +1,6 @@
-version: 1
+version: 2
 tasks:
-  # === v0.9.6: psmux stability ===
+  # === v0.9.6: psmux stability + orchestra infrastructure ===
   - id: TASK-001
     title: "Fix resize-pane -x/-y routing to ResizePaneAbsolute"
     status: backlog
@@ -8,7 +8,7 @@ tasks:
     target_version: "v0.9.6"
     repo: sora-psmux
     labels: [psmux, bug]
-    depends_on: []
+    depends_on: ["TASK-017"]
     created: "2026-04-02"
     updated: "2026-04-02"
 
@@ -19,7 +19,7 @@ tasks:
     target_version: "v0.9.6"
     repo: sora-psmux
     labels: [psmux, bug]
-    depends_on: []
+    depends_on: ["TASK-017"]
     created: "2026-04-02"
     updated: "2026-04-02"
 
@@ -30,7 +30,7 @@ tasks:
     target_version: "v0.9.6"
     repo: sora-psmux
     labels: [psmux, bug]
-    depends_on: []
+    depends_on: ["TASK-017"]
     created: "2026-04-02"
     updated: "2026-04-02"
 
@@ -41,7 +41,7 @@ tasks:
     target_version: "v0.9.6"
     repo: sora-psmux
     labels: [psmux, bug]
-    depends_on: []
+    depends_on: ["TASK-017"]
     created: "2026-04-02"
     updated: "2026-04-02"
 
@@ -52,7 +52,7 @@ tasks:
     target_version: "v0.9.6"
     repo: sora-psmux
     labels: [psmux, bug]
-    depends_on: []
+    depends_on: ["TASK-017"]
     created: "2026-04-02"
     updated: "2026-04-02"
 
@@ -63,7 +63,7 @@ tasks:
     target_version: "v0.9.6"
     repo: sora-psmux
     labels: [psmux, bug]
-    depends_on: []
+    depends_on: ["TASK-017"]
     created: "2026-04-02"
     updated: "2026-04-02"
 
@@ -91,12 +91,45 @@ tasks:
 
   - id: TASK-009
     title: "Create ROADMAP.md, backlog.yaml, and sync workflow"
-    status: in_progress
+    status: done
     priority: P1
     target_version: "v0.9.6"
     repo: winsmux
     labels: [chore, docs]
     depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-016
+    title: "Sync all public docs to v0.9.5 and add version-drift pre-commit gate"
+    status: done
+    priority: P1
+    target_version: "v0.9.6"
+    repo: winsmux
+    labels: [docs, gate]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-017
+    title: "Implement Orchestra builder isolation (worktree + diff gate)"
+    status: backlog
+    priority: P0
+    target_version: "v0.9.6"
+    repo: winsmux
+    labels: [feat, orchestra, blocker]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-018
+    title: "Orchestra dispatch reliability (Issue #67)"
+    status: backlog
+    priority: P1
+    target_version: "v0.9.6"
+    repo: winsmux
+    labels: [feat, orchestra]
+    depends_on: ["TASK-017"]
     created: "2026-04-02"
     updated: "2026-04-02"
 
