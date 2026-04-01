@@ -158,7 +158,7 @@ Clears the Read Guard mark after sending.
 Create a Named Pipe mailbox channel and start listening.
 
 ```powershell
-psmux-bridge mailbox create <channel>
+psmux-bridge mailbox-create <channel>
 ```
 
 | Parameter | Required | Description                             |
@@ -168,7 +168,7 @@ psmux-bridge mailbox create <channel>
 **Examples:**
 
 ```powershell
-psmux-bridge mailbox create builder-events
+psmux-bridge mailbox-create builder-events
 ```
 
 Creates the Named Pipe channel and begins listening for mailbox traffic on that channel.
@@ -180,7 +180,7 @@ Creates the Named Pipe channel and begins listening for mailbox traffic on that 
 Send a JSON message to a mailbox channel.
 
 ```powershell
-psmux-bridge mailbox send <channel> <message>
+psmux-bridge mailbox-send <channel> <message>
 ```
 
 | Parameter | Required | Description                                    |
@@ -191,7 +191,7 @@ psmux-bridge mailbox send <channel> <message>
 **Examples:**
 
 ```powershell
-psmux-bridge mailbox send builder-events '{"type":"done","task":"lint"}'
+psmux-bridge mailbox-send builder-events '{"type":"done","task":"lint"}'
 ```
 
 Sends the specified JSON payload to the target channel.
@@ -203,7 +203,7 @@ Sends the specified JSON payload to the target channel.
 Receive a message from a mailbox channel. Blocks until a message arrives.
 
 ```powershell
-psmux-bridge mailbox listen <channel>
+psmux-bridge mailbox-listen <channel>
 ```
 
 | Parameter | Required | Description             |
@@ -213,7 +213,7 @@ psmux-bridge mailbox listen <channel>
 **Examples:**
 
 ```powershell
-psmux-bridge mailbox listen builder-events
+psmux-bridge mailbox-listen builder-events
 ```
 
 Waits on the channel and returns the next received message.
