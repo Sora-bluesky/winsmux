@@ -7,7 +7,8 @@ description: |
   psmux sessions, or multi-agent orchestration on Windows.
   Triggered by "psmux-bridge", "cross-pane", "pane communication",
   "winsmux", "agent orchestration", "multi-pane", "commander workflow",
-  "pane read/type/keys", "credential vault", or "WT profile".
+  "pane read/type/keys", "credential vault", "WT profile",
+  "wait-ready", "health-check", or "agent readiness".
   Key capabilities: read-guard-enforced pane I/O, labeled pane targeting,
   structured inter-agent messaging, commander orchestration workflow
   with builder/reviewer/monitor roles, POLL loop with auto-approve,
@@ -15,7 +16,7 @@ description: |
   and Windows Terminal Fragment profile management.
 metadata:
   author: Sora-bluesky
-  version: "0.9.4"
+  version: "0.9.5"
   os: win32
   requires: psmux, psmux-bridge
 ---
@@ -66,6 +67,8 @@ The ONLY reasons to read a target pane in Agent Mode:
 | `psmux-bridge vault get <key>`          | Retrieve a stored credential                                  | `psmux-bridge vault get OPENAI_API_KEY`           |
 | `psmux-bridge vault inject <pane>`      | Inject all credentials as `$env:` vars into a pane            | `psmux-bridge vault inject builder`               |
 | `psmux-bridge vault list`               | List stored credential keys                                   | `psmux-bridge vault list`                         |
+| `psmux-bridge wait-ready <target> [to]` | Wait for agent idle prompt (default 30s timeout)              | `psmux-bridge wait-ready codex 60`                |
+| `psmux-bridge health-check`             | Report READY/BUSY/HUNG/DEAD status for all labeled panes      | `psmux-bridge health-check`                       |
 | `psmux-bridge profile [name] [agents]`  | Show or register Windows Terminal dropdown profile            | `psmux-bridge profile mysetup builder:codex`      |
 | `psmux-bridge doctor`                   | Run environment diagnostics                                   | `psmux-bridge doctor`                             |
 
