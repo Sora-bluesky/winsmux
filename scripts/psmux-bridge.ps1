@@ -512,6 +512,12 @@ function Invoke-Send {
 
     # Step 3: Submit with Enter
     & psmux send-keys -t $paneId Enter
+    Start-Sleep -Milliseconds 500
+    $postEnterSnapshot = & psmux capture-pane -t $paneId -p -J -S "-200"
+    $postEnterText = ($postEnterSnapshot | Out-String).TrimEnd()
+    if ($postEnterText -match '\[Pasted Content') {
+        & psmux send-keys -t $paneId Enter
+    }
 
     # Step 4: Save watermark for change detection in subsequent read calls
     Start-Sleep -Milliseconds 800
@@ -1079,9 +1085,120 @@ Commands:
   vault inject <pane>       Inject all credentials as env vars into a pane
   vault list                List stored credential keys
   profile [name] [agents]   Show or register WT dropdown profile
+  mailbox-create <ch>       Create Named Pipe mailbox listener
+  mailbox-send <ch> <json>  Send JSON message to mailbox channel
+  mailbox-listen <ch>       Alias for mailbox-create
   doctor                    Check environment and IME diagnostics
   version                   Show version
 "@
+}
+
+# --- Named Pipe Mailbox ---
+function Get-MailboxPipeName {
+    param([string]$Channel)
+
+    if ([string]::IsNullOrWhiteSpace($Channel)) {
+        Stop-WithError "mailbox channel must not be empty"
+    }
+    # Sanitize: allow only alphanumeric, hyphen, underscore
+    if ($Channel -notmatch '^[a-zA-Z0-9_-]+$') {
+        Stop-WithError "mailbox channel name must be alphanumeric (with - and _ allowed)"
+    }
+
+    return "winsmux-mailbox-$Channel"
+}
+
+function Invoke-MailboxCreate {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge mailbox-create <channel>" }
+
+    $pipeName = Get-MailboxPipeName $Target
+    Write-Output "mailbox listening: $pipeName"
+
+    while ($true) {
+        $server = $null
+        try {
+            $server = [System.IO.Pipes.NamedPipeServerStream]::new(
+                $pipeName,
+                [System.IO.Pipes.PipeDirection]::In,
+                [System.IO.Pipes.NamedPipeServerStream]::MaxAllowedServerInstances,
+                [System.IO.Pipes.PipeTransmissionMode]::Byte,
+                [System.IO.Pipes.PipeOptions]::None
+            )
+
+            $server.WaitForConnection()
+            $reader = [System.IO.StreamReader]::new($server, [System.Text.Encoding]::UTF8)
+            try {
+                $payload = $reader.ReadToEnd()
+            } finally {
+                $reader.Dispose()
+            }
+
+            if ([string]::IsNullOrWhiteSpace($payload)) {
+                continue
+            }
+
+            try {
+                $message = $payload | ConvertFrom-Json -ErrorAction Stop
+                [ordered]@{
+                    from      = $message.from
+                    to        = $message.to
+                    content   = $message.content
+                    timestamp = $message.timestamp
+                } | ConvertTo-Json -Compress | Write-Output
+            } catch {
+                Write-Warning "invalid mailbox payload on $pipeName"
+            }
+        } catch {
+            Write-Warning "mailbox connection error on ${pipeName}: $($_.Exception.Message)"
+            Start-Sleep -Milliseconds 500
+        } finally {
+            if ($server) { $server.Dispose() }
+        }
+    }
+}
+
+function Invoke-MailboxSend {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge mailbox-send <channel> <json>" }
+    if (-not $Rest -or $Rest.Count -eq 0) {
+        Stop-WithError "usage: psmux-bridge mailbox-send <channel> <json>"
+    }
+
+    $pipeName = Get-MailboxPipeName $Target
+    $payload = $Rest -join ' '
+
+    # Validate JSON
+    try {
+        $null = $payload | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Stop-WithError "mailbox-send: payload must be valid JSON"
+    }
+
+    $client = [System.IO.Pipes.NamedPipeClientStream]::new(
+        ".",
+        $pipeName,
+        [System.IO.Pipes.PipeDirection]::Out
+    )
+
+    try {
+        $client.Connect(5000)
+        $writer = [System.IO.StreamWriter]::new($client, [System.Text.Encoding]::UTF8)
+        try {
+            $writer.AutoFlush = $true
+            $writer.Write($payload)
+        } finally {
+            $writer.Dispose()
+        }
+    } catch {
+        Stop-WithError "failed to send mailbox message to ${pipeName}: $($_.Exception.Message)"
+    } finally {
+        $client.Dispose()
+    }
+
+    Write-Output "mailbox sent: $pipeName"
+}
+
+function Invoke-MailboxListen {
+    Invoke-MailboxCreate
 }
 
 # --- Dispatch ---
@@ -1113,6 +1230,9 @@ switch ($Command) {
     }
     'wait'            { Invoke-Wait }
     'signal'          { Invoke-Signal }
+    'mailbox-create'  { Invoke-MailboxCreate }
+    'mailbox-send'    { Invoke-MailboxSend }
+    'mailbox-listen'  { Invoke-MailboxListen }
     'watch'           { Invoke-Watch }
     'profile'         { Invoke-Profile }
     'doctor'          { Invoke-Doctor }

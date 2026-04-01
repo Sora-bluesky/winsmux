@@ -76,3 +76,13 @@ jobs:
       - name: Run version command
         shell: pwsh
         run: pwsh ./scripts/psmux-bridge.ps1 version
+
+  mailbox-smoke:
+    name: mailbox-smoke
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run minimal mailbox smoke check
+        shell: pwsh
+        run: pwsh ./scripts/psmux-bridge.ps1 version
