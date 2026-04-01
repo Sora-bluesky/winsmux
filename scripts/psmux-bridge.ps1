@@ -178,6 +178,98 @@ function Clear-Watermark {
     }
 }
 
+function Get-LastNonEmptyLine {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $null
+    }
+
+    $lines = $Text -split "\r?\n"
+    for ($i = $lines.Length - 1; $i -ge 0; $i--) {
+        $line = $lines[$i]
+        if (-not [string]::IsNullOrWhiteSpace($line)) {
+            return $line
+        }
+    }
+
+    return $null
+}
+
+function Get-TextHash {
+    param([AllowNull()][string]$Text)
+
+    if ($null -eq $Text) {
+        $Text = ''
+    }
+
+    return [System.BitConverter]::ToString(
+        [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+            [System.Text.Encoding]::UTF8.GetBytes($Text)
+        )
+    ) -replace '-', ''
+}
+
+function Test-CodexReadyPromptText {
+    param([string]$Text)
+
+    $lastLine = Get-LastNonEmptyLine $Text
+    if ($null -eq $lastLine) {
+        return $false
+    }
+
+    return $lastLine.TrimStart().StartsWith('>')
+}
+
+function Test-CodexReadyPrompt {
+    param([string]$PaneId)
+
+    $output = & psmux capture-pane -t $PaneId -p -J -S -50
+    return Test-CodexReadyPromptText (($output | Out-String).TrimEnd())
+}
+
+function Get-PaneRuntimeMap {
+    $paneMap = @{}
+    $raw = & psmux list-panes -a -F '#{pane_id} #{pane_pid}'
+    $lines = ($raw | Out-String).Trim() -split "`n"
+
+    foreach ($line in $lines) {
+        $trimmed = $line.Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed)) { continue }
+
+        $parts = $trimmed -split '\s+', 3
+        if ($parts.Count -lt 2) { continue }
+
+        $paneId = $parts[0]
+        $panePid = $parts[1]
+        $isRunning = $false
+
+        if ($panePid -match '^\d+$') {
+            try {
+                $null = Get-Process -Id ([int]$panePid) -ErrorAction Stop
+                $isRunning = $true
+            } catch {
+                $isRunning = $false
+            }
+        }
+
+        $paneMap[$paneId] = [PSCustomObject]@{
+            PaneId    = $paneId
+            PanePid   = $panePid
+            IsRunning = $isRunning
+        }
+    }
+
+    return $paneMap
+}
+
+function Get-PaneSnapshotText {
+    param([string]$PaneId, [int]$Lines = 50)
+
+    $output = & psmux capture-pane -t $PaneId -p -J -S "-$Lines"
+    return ($output | Out-String).TrimEnd()
+}
+
 # --- Helper: File Locks ---
 function Ensure-LockDir {
     if (-not (Test-Path $LockDir)) {
@@ -841,6 +933,100 @@ function Invoke-Watch {
     Stop-WithError "timeout watching $Target (${timeoutSec}s, needed ${silenceSec}s silence)"
 }
 
+function Invoke-WaitReady {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge wait-ready <target> [timeout_seconds]" }
+
+    $paneId = Resolve-Target $Target
+    $paneId = Confirm-Target $paneId
+
+    $timeoutSec = 60
+    if ($Rest -and $Rest.Count -gt 0) { $timeoutSec = [int]$Rest[0] }
+
+    $intervalSec = 2
+    $deadline = (Get-Date).AddSeconds($timeoutSec)
+    $printedDot = $false
+
+    while ((Get-Date) -lt $deadline) {
+        if (Test-CodexReadyPrompt $paneId) {
+            if ($printedDot) { Write-Host "" }
+            exit 0
+        }
+
+        Write-Host "." -NoNewline
+        $printedDot = $true
+        Start-Sleep -Seconds $intervalSec
+    }
+
+    if (Test-CodexReadyPrompt $paneId) {
+        if ($printedDot) { Write-Host "" }
+        exit 0
+    }
+
+    if ($printedDot) { Write-Host "" }
+    exit 1
+}
+
+function Invoke-HealthCheck {
+    if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
+        Stop-WithError "usage: psmux-bridge health-check"
+    }
+
+    $labels = Get-Labels
+    if ($labels.Count -eq 0) {
+        return
+    }
+
+    $orderedLabels = $labels.Keys | Sort-Object
+    $initialRuntime = Get-PaneRuntimeMap
+    $firstSnapshots = @{}
+
+    foreach ($label in $orderedLabels) {
+        $paneId = $labels[$label]
+        if (-not $initialRuntime.ContainsKey($paneId) -or -not $initialRuntime[$paneId].IsRunning) {
+            continue
+        }
+
+        try {
+            $firstSnapshots[$label] = Get-PaneSnapshotText -PaneId $paneId
+        } catch {
+            $firstSnapshots[$label] = $null
+        }
+    }
+
+    Start-Sleep -Seconds 10
+
+    $finalRuntime = Get-PaneRuntimeMap
+
+    foreach ($label in $orderedLabels) {
+        $paneId = $labels[$label]
+        $status = 'DEAD'
+
+        if ($finalRuntime.ContainsKey($paneId) -and $finalRuntime[$paneId].IsRunning) {
+            try {
+                $secondSnapshot = Get-PaneSnapshotText -PaneId $paneId
+                if (Test-CodexReadyPromptText $secondSnapshot) {
+                    $status = 'READY'
+                } else {
+                    $firstSnapshot = $null
+                    if ($firstSnapshots.ContainsKey($label)) {
+                        $firstSnapshot = $firstSnapshots[$label]
+                    }
+
+                    if ((Get-TextHash $firstSnapshot) -eq (Get-TextHash $secondSnapshot)) {
+                        $status = 'HUNG'
+                    } else {
+                        $status = 'BUSY'
+                    }
+                }
+            } catch {
+                $status = 'DEAD'
+            }
+        }
+
+        Write-Output "$label $paneId $status"
+    }
+}
+
 function Invoke-Focus {
     if (-not $Target) { Stop-WithError "usage: psmux-bridge focus <label|target>" }
 
@@ -1078,6 +1264,8 @@ Commands:
   unlock <label> <file>...  Release file lock(s) for a label
   locks                     List active file locks
   wait <channel> [timeout]  Block until signal received (replaces polling)
+  wait-ready <target> [timeout_seconds]  Wait for Codex prompt in pane
+  health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
   signal <channel>          Send signal to unblock a waiting process
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
   vault set <key> [value]   Store a credential securely (DPAPI)
@@ -1229,6 +1417,8 @@ switch ($Command) {
         }
     }
     'wait'            { Invoke-Wait }
+    'wait-ready'      { Invoke-WaitReady }
+    'health-check'    { Invoke-HealthCheck }
     'signal'          { Invoke-Signal }
     'mailbox-create'  { Invoke-MailboxCreate }
     'mailbox-send'    { Invoke-MailboxSend }

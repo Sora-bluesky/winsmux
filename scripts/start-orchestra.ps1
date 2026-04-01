@@ -266,6 +266,11 @@ All builder tasks must target files within the project directory. Do not instruc
 3. REVIEW: Send completed work to reviewer as each builder finishes (don't wait for all).
 4. CONFLICT CHECK: After all builders complete, run ``git diff --name-only`` to detect overlaps.
 5. MERGE: If no conflicts, commit. If conflicts, resolve manually then commit.
+
+## POLL Guard (anti-hang protocol)
+1. Before sending any task via psmux-bridge send, ALWAYS run ``psmux-bridge read <label>`` first and verify the last line shows Codex idle prompt.
+2. If ``wait-ready`` command is available, use it: ``psmux-bridge wait-ready <label> 60``.
+3. If an agent appears hung (no output change after 30 seconds), run ``respawn-pane -k`` and restart codex.
 "@
 
 Set-Content -Path $promptFile -Value $promptContent -Encoding UTF8
