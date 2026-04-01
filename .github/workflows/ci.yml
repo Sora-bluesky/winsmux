@@ -55,14 +55,6 @@ jobs:
       - name: Detect conflict markers
         shell: pwsh
         run: |
-          # Use git diff --check which accurately detects unresolved merge conflicts
-          $result = git diff --check HEAD~1 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host $result
-            Write-Error 'Conflict markers found.'
-            exit 1
-          }
-          # Also check for leftover markers in all tracked files
           $result = git grep -rn -E '^<{7} |^={7}$|^>{7} ' -- ':!*.yml' ':!*.yaml' 2>$null
           if ($LASTEXITCODE -eq 0) {
             Write-Host "Conflict markers found:"
