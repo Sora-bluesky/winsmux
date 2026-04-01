@@ -1,0 +1,169 @@
+version: 1
+tasks:
+  # === v0.9.6: psmux stability ===
+  - id: TASK-001
+    title: "Fix resize-pane -x/-y routing to ResizePaneAbsolute"
+    status: backlog
+    priority: P1
+    target_version: "v0.9.6"
+    repo: sora-psmux
+    labels: [psmux, bug]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-002
+    title: "Separate split-window -l (cells) from -p (percent)"
+    status: backlog
+    priority: P1
+    target_version: "v0.9.6"
+    repo: sora-psmux
+    labels: [psmux, bug]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-003
+    title: "Fix select-layout tiled pane redistribution"
+    status: backlog
+    priority: P2
+    target_version: "v0.9.6"
+    repo: sora-psmux
+    labels: [psmux, bug]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-004
+    title: "Fix pane_index using pane id instead of actual index"
+    status: backlog
+    priority: P2
+    target_version: "v0.9.6"
+    repo: sora-psmux
+    labels: [psmux, bug]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-005
+    title: "Fix select-pane -T empty string title clear"
+    status: backlog
+    priority: P2
+    target_version: "v0.9.6"
+    repo: sora-psmux
+    labels: [psmux, bug]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-006
+    title: "Fix remote client label last-row clipping"
+    status: backlog
+    priority: P2
+    target_version: "v0.9.6"
+    repo: sora-psmux
+    labels: [psmux, bug]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-007
+    title: "Sync VERSION and install.ps1 to v0.9.5"
+    status: done
+    priority: P1
+    target_version: "v0.9.6"
+    repo: winsmux
+    labels: [chore, release]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-008
+    title: "Add orchestra-layout skill and dispatch scripts"
+    status: done
+    priority: P1
+    target_version: "v0.9.6"
+    repo: winsmux
+    labels: [feat, orchestra]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-009
+    title: "Create ROADMAP.md, backlog.yaml, and sync workflow"
+    status: in_progress
+    priority: P1
+    target_version: "v0.9.6"
+    repo: winsmux
+    labels: [chore, docs]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  # === v0.9.7: agent readiness ===
+  - id: TASK-010
+    title: "Integrate wait-ready into send command"
+    status: backlog
+    priority: P1
+    target_version: "v0.9.7"
+    repo: winsmux
+    labels: [feat, reliability]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-011
+    title: "Add Codex idle prompt detection"
+    status: backlog
+    priority: P1
+    target_version: "v0.9.7"
+    repo: winsmux
+    labels: [feat, reliability]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-012
+    title: "Add agent crash/exit detection"
+    status: backlog
+    priority: P2
+    target_version: "v0.9.7"
+    repo: winsmux
+    labels: [feat, reliability]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-013
+    title: "Add approval prompt detection"
+    status: backlog
+    priority: P2
+    target_version: "v0.9.7"
+    repo: winsmux
+    labels: [feat, reliability]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  # === v0.10.0: shield-harness integration ===
+  - id: TASK-014
+    title: "Integrate shield-harness hooks into winsmux"
+    status: backlog
+    priority: P1
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [feat, security]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-015
+    title: "Installer overhaul with shield-harness bundling"
+    status: backlog
+    priority: P2
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [feat, installer]
+    depends_on: ["TASK-014"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
