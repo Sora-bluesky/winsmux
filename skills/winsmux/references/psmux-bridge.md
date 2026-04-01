@@ -153,6 +153,73 @@ Clears the Read Guard mark after sending.
 
 ---
 
+### mailbox create
+
+Create a Named Pipe mailbox channel and start listening.
+
+```powershell
+psmux-bridge mailbox create <channel>
+```
+
+| Parameter | Required | Description                             |
+| --------- | -------- | --------------------------------------- |
+| `channel` | Yes      | Named Pipe channel name to create/listen |
+
+**Examples:**
+
+```powershell
+psmux-bridge mailbox create builder-events
+```
+
+Creates the Named Pipe channel and begins listening for mailbox traffic on that channel.
+
+---
+
+### mailbox send
+
+Send a JSON message to a mailbox channel.
+
+```powershell
+psmux-bridge mailbox send <channel> <message>
+```
+
+| Parameter | Required | Description                                    |
+| --------- | -------- | ---------------------------------------------- |
+| `channel` | Yes      | Named Pipe channel name                        |
+| `message` | Yes      | JSON message body (all remaining args joined)  |
+
+**Examples:**
+
+```powershell
+psmux-bridge mailbox send builder-events '{"type":"done","task":"lint"}'
+```
+
+Sends the specified JSON payload to the target channel.
+
+---
+
+### mailbox listen
+
+Receive a message from a mailbox channel. Blocks until a message arrives.
+
+```powershell
+psmux-bridge mailbox listen <channel>
+```
+
+| Parameter | Required | Description             |
+| --------- | -------- | ----------------------- |
+| `channel` | Yes      | Named Pipe channel name |
+
+**Examples:**
+
+```powershell
+psmux-bridge mailbox listen builder-events
+```
+
+Waits on the channel and returns the next received message.
+
+---
+
 ### name
 
 Assign a label to a pane. Also sets the pane title (best-effort).
