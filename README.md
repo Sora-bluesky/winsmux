@@ -118,6 +118,8 @@ A CLI for cross-pane communication on Windows. Any tool that can run shell comma
 | `psmux-bridge vault inject <pane>`      | Inject all credentials as env vars into a pane |
 | `psmux-bridge vault list`               | List stored credential keys                    |
 | `psmux-bridge profile [name] [agents]`  | Show or register WT dropdown profile           |
+| `psmux-bridge wait-ready <target> [to]` | Wait for agent idle prompt (default 30s)       |
+| `psmux-bridge health-check`             | Report READY/BUSY/HUNG/DEAD for labeled panes  |
 | `psmux-bridge doctor`                   | Check environment and IME diagnostics          |
 | `psmux-bridge version`                  | Show version                                   |
 
@@ -143,7 +145,7 @@ Labels are resolved automatically in every command. Stored in `$env:APPDATA\wins
 
 ### Pane Border Labels
 
-Coming in v0.9.5, winsmux will document and rely on two psmux features for visible pane labels:
+In v0.9.5, winsmux supports two psmux features for visible pane labels:
 
 - `pane-border-format` controls the text rendered in each pane border
 - `pane-border-status` enables that border text and places it at the `top` or `bottom`
@@ -273,6 +275,15 @@ The skill includes:
 - Agent selection guide ([references/agent-selection.md](skills/winsmux/references/agent-selection.md))
 
 Works with Claude Code, Codex, Cursor, Copilot, and [other agents](https://skills.sh).
+
+### Orchestra Layout Skill
+
+For Claude Code users, the `orchestra-layout` skill creates deterministic psmux grid layouts in one command, eliminating manual split-window trial-and-error:
+
+```bash
+bash .claude/skills/orchestra-layout/scripts/orchestra-layout.sh 4b1r1v
+# Creates 2x3 grid: 4 builders + 1 researcher + 1 reviewer
+```
 
 ## Update
 
