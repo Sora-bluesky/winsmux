@@ -254,6 +254,12 @@ pwsh $bridgePath read <label>
 5. Assign each builder INDEPENDENT file sets to avoid conflicts.
 6. Poll all agents with ``read`` to check progress. Agents cannot push to you.
 
+## Git Operations
+Builders NEVER run git commands. Commander handles all staging, committing, and pushing sequentially.
+
+## Codex Builders
+All builder tasks must target files within the project directory. Do not instruct builders to clone, cd, or operate outside the project root.
+
 ## Multi-Builder Coordination Protocol
 1. SPLIT: Assign independent tasks with explicit file boundaries per builder.
 2. POLL: Cycle through all builders. "waiting for response..." = still working.
