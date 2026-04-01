@@ -29,6 +29,7 @@ DEV-NOTES*.md
 # Orchestra runtime (generated)
 # =========================
 .commander-prompt.txt
+.orchestra-prompts/
 
 # =========================
 # Personal / user-specific
