@@ -141,6 +141,26 @@ psmux-bridge type codex "hello"
 
 ラベルはすべてのコマンドで自動解決される。保存先は `$env:APPDATA\winsmux\labels.json`。
 
+### ペイン境界ラベル
+
+v0.9.5 では、ペイン境界に見えるラベルを出すための psmux 機能として次の 2 つを案内する予定:
+
+- `pane-border-format` は各ペイン境界に描画する文字列を制御する
+- `pane-border-status` はその境界文字列の表示を有効にし、位置を `top` または `bottom` にする
+
+`pane-border-format` に `#{pane_title}` を入れると、ペインラベルを表示できる。このタイトルは `select-pane -T` で直接設定することも、`psmux-bridge name` 経由で設定することもできる。
+
+設定例:
+
+```tmux
+set -g pane-border-status top
+set -g pane-border-format " #{pane_index} #{pane_title} "
+
+# どちらのコマンドでも境界に表示するラベルを設定できる。
+select-pane -T claude
+psmux-bridge name %2 codex
+```
+
 ## Credential Vault
 
 シークレットをセキュアに保管し、エージェントのペインに注入する。リポジトリに `.env` ファイルを置く必要はない。

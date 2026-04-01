@@ -141,6 +141,26 @@ Panes can be addressed by:
 
 Labels are resolved automatically in every command. Stored in `$env:APPDATA\winsmux\labels.json`.
 
+### Pane Border Labels
+
+Coming in v0.9.5, winsmux will document and rely on two psmux features for visible pane labels:
+
+- `pane-border-format` controls the text rendered in each pane border
+- `pane-border-status` enables that border text and places it at the `top` or `bottom`
+
+Use `#{pane_title}` inside `pane-border-format` to show the pane label. That title can be set directly with `select-pane -T` or through `psmux-bridge name`.
+
+Example config:
+
+```tmux
+set -g pane-border-status top
+set -g pane-border-format " #{pane_index} #{pane_title} "
+
+# Either command below will set the label shown in the border.
+select-pane -T claude
+psmux-bridge name %2 codex
+```
+
 ## Credential Vault
 
 Store secrets securely and inject them into agent panes — no `.env` files in your repo.
