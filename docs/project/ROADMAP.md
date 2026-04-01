@@ -1,13 +1,13 @@
 # Roadmap
 
 > Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-02 01:16 (+09:00)
+> Last sync: 2026-04-02 02:00 (+09:00)
 
 ## Version Summary
 
 | Version | Tasks | Progress |
 |---------|-------|----------|
-| v0.9.6 | 9 | [====----------------] 22% (2/9) |
+| v0.9.6 | 12 | [=======-------------] 33% (4/12) |
 | v0.9.7 | 4 | [--------------------] 0% (0/4) |
 | v0.10.0 | 2 | [--------------------] 0% (0/2) |
 
@@ -17,11 +17,14 @@
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
+| [ ] | TASK-017 | Implement Orchestra builder isolation (worktree + diff gate) | P0 | winsmux | backlog |
 | [ ] | TASK-001 | Fix resize-pane -x/-y routing to ResizePaneAbsolute | P1 | sora-psmux | backlog |
 | [ ] | TASK-002 | Separate split-window -l (cells) from -p (percent) | P1 | sora-psmux | backlog |
 | [x] | TASK-007 | Sync VERSION and install.ps1 to v0.9.5 | P1 | winsmux | done |
 | [x] | TASK-008 | Add orchestra-layout skill and dispatch scripts | P1 | winsmux | done |
-| [-] | TASK-009 | Create ROADMAP.md, backlog.yaml, and sync workflow | P1 | winsmux | in_progress |
+| [x] | TASK-009 | Create ROADMAP.md, backlog.yaml, and sync workflow | P1 | winsmux | done |
+| [x] | TASK-016 | Sync all public docs to v0.9.5 and add version-drift pre-commit gate | P1 | winsmux | done |
+| [ ] | TASK-018 | Orchestra dispatch reliability (Issue #67) | P1 | winsmux | backlog |
 | [ ] | TASK-003 | Fix select-layout tiled pane redistribution | P2 | sora-psmux | backlog |
 | [ ] | TASK-004 | Fix pane_index using pane id instead of actual index | P2 | sora-psmux | backlog |
 | [ ] | TASK-005 | Fix select-pane -T empty string title clear | P2 | sora-psmux | backlog |
