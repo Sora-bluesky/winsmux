@@ -1,14 +1,14 @@
 # Roadmap
 
 > Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-02 14:32 (+09:00)
+> Last sync: 2026-04-02 15:14 (+09:00)
 
 ## Version Summary
 
 | Version | Tasks | Progress |
 |---------|-------|----------|
 | v0.9.6 | 10 | [====================] 100% (10/10) |
-| v0.10.0 | 36 | [=========-----------] 47% (17/36) |
+| v0.10.0 | 36 | [============--------] 58% (21/36) |
 | v1.0.0 | 1 | [--------------------] 0% (0/1) |
 
 ## Work Breakdown
@@ -37,12 +37,12 @@
 | [x] | TASK-053 | Document and enforce operational role definitions (Commander/Builder/Researcher/Reviewer) | P0 | winsmux | done |
 | [x] | TASK-028 | Add PreToolUse hook for Commander-side gate (sh-orchestra-gate.js) | P0 | winsmux | done |
 | [ ] | TASK-060 | Write integration tests verifying gate enforcement (deny paths end-to-end) | P0 | winsmux | backlog |
-| [ ] | TASK-059 | Fix task-hooks.ps1: notify Commander instead of auto-assigning work | P0 | winsmux | backlog |
-| [ ] | TASK-058 | Eliminate raw send-keys from orchestra-start, mailbox-router, agent-lifecycle | P0 | winsmux | backlog |
+| [x] | TASK-059 | Fix task-hooks.ps1: notify Commander instead of auto-assigning work | P0 | winsmux | done |
+| [x] | TASK-058 | Eliminate raw send-keys from orchestra-start, mailbox-router, agent-lifecycle | P0 | winsmux | done |
 | [x] | TASK-033 | Implement Shared Task List with file-lock self-claiming and dependency auto-resolve | P0 | winsmux | done |
 | [ ] | TASK-057 | Fix rpc-server.ps1: remove client-supplied role trust, bind to process identity | P0 | winsmux | backlog |
-| [ ] | TASK-056 | Fix role-gate.ps1 to deny unknown commands (fail-open → fail-close) | P0 | winsmux | backlog |
-| [ ] | TASK-054 | Fix vault inject to use psmux set-environment instead of send-keys | P0 | winsmux | backlog |
+| [x] | TASK-056 | Fix role-gate.ps1 to deny unknown commands (fail-open → fail-close) | P0 | winsmux | done |
+| [x] | TASK-054 | Fix vault inject to use psmux set-environment instead of send-keys | P0 | winsmux | done |
 | [ ] | TASK-044 | Prepare and submit PR to psmux-plugins upstream | P1 | winsmux | backlog |
 | [x] | TASK-052 | Rewrite README.md/README.ja.md to reflect platform positioning and 3 unique strengths | P1 | winsmux | done |
 | [x] | TASK-025 | Extract psmux-bridge CLI as PPM plugin (winsmux remains as platform) | P1 | winsmux | done |

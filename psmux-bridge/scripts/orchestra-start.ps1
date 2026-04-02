@@ -131,23 +131,32 @@ function Get-CanonicalRole {
     }
 }
 
-function New-PaneEnvCommand {
+function Set-OrchestraSessionEnvironment {
     param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][string]$Value
     )
 
-    return "`$env:${Name}=$(ConvertTo-PowerShellLiteral -Value $Value)"
+    Invoke-Psmux -Arguments @('set-environment', '-t', $SessionName, $Name, $Value)
 }
 
-function Invoke-PaneCommand {
+function Clear-OrchestraSessionEnvironment {
     param(
-        [Parameter(Mandatory = $true)][string]$PaneId,
-        [Parameter(Mandatory = $true)][string]$CommandText
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$Name
     )
 
-    Invoke-Psmux -Arguments @('send-keys', '-t', $PaneId, '-l', '--', $CommandText)
-    Invoke-Psmux -Arguments @('send-keys', '-t', $PaneId, 'Enter')
+    Invoke-Psmux -Arguments @('set-environment', '-u', '-t', $SessionName, $Name)
+}
+
+function Send-OrchestraBridgeCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Target,
+        [Parameter(Mandatory = $true)][string]$Text
+    )
+
+    Invoke-Bridge -Arguments @('send', $Target, $Text)
 }
 
 function Get-AgentLaunchCommand {
@@ -328,9 +337,20 @@ try {
         $paneId = [string]$pane.PaneId
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
-        Invoke-PaneCommand -PaneId $paneId -CommandText (New-PaneEnvCommand -Name 'WINSMUX_ROLE' -Value $canonicalRole)
-        Invoke-PaneCommand -PaneId $paneId -CommandText (New-PaneEnvCommand -Name 'WINSMUX_PANE_ID' -Value $paneId)
-        Invoke-PaneCommand -PaneId $paneId -CommandText $launchCommand
+        try {
+            Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_ROLE' -Value $canonicalRole
+            Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_PANE_ID' -Value $paneId
+            Invoke-Psmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $projectDir)
+            Start-Sleep -Seconds 1
+            Send-OrchestraBridgeCommand -Target $paneId -Text $launchCommand
+        } finally {
+            foreach ($envName in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {
+                try {
+                    Clear-OrchestraSessionEnvironment -SessionName $sessionName -Name $envName
+                } catch {
+                }
+            }
+        }
 
         $paneSummaries.Add([PSCustomObject]@{
             Label = $label

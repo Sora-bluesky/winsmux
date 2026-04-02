@@ -8,7 +8,6 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 . "$PSScriptRoot/shared-task-list.ps1"
-. "$PSScriptRoot/agent-lifecycle.ps1"
 . "$PSScriptRoot/role-gate.ps1"
 
 $script:TaskHooksWatcher = $null
@@ -144,80 +143,6 @@ function Get-TaskHooksTaskDescriptor {
     return ('{0} {1}' -f [string]$Task.id, [string]$Task.title).Trim()
 }
 
-function Get-TaskDispatchRole {
-    param([Parameter(Mandatory = $true)]$Task)
-
-    $parts = [System.Collections.Generic.List[string]]::new()
-    foreach ($propertyName in @('title', 'type', 'kind', 'category', 'description')) {
-        if ($Task.PSObject.Properties.Match($propertyName).Count -gt 0) {
-            $value = [string]$Task.$propertyName
-            if (-not [string]::IsNullOrWhiteSpace($value)) {
-                $parts.Add($value)
-            }
-        }
-    }
-
-    $text = $parts -join ' '
-    if ($text -match '(?i)\b(analysis|analyze|research|investigat|spike|spec|design|review|audit|plan|document(?:ation)?)\b') {
-        return 'Researcher'
-    }
-
-    return 'Builder'
-}
-
-function Get-ClaimedAgents {
-    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Tasks)
-
-    $claimed = @{}
-    foreach ($task in $Tasks) {
-        $claimedBy = [string]$task.claimed_by
-        if ($task.status -eq 'claimed' -and -not [string]::IsNullOrWhiteSpace($claimedBy)) {
-            $claimed[$claimedBy] = $true
-        }
-    }
-
-    return $claimed
-}
-
-function Get-AvailableAgentForRole {
-    param(
-        [Parameter(Mandatory = $true)][string]$Role,
-        [hashtable]$ReservedAgents = @{},
-        [AllowEmptyCollection()][object[]]$Tasks = @()
-    )
-
-    $claimedAgents = Get-ClaimedAgents -Tasks $Tasks
-    $assignments = @(
-        Get-LabeledPaneAssignments |
-            Where-Object { (ConvertTo-InferredWinsmuxRole $_.Label) -eq $Role } |
-            Sort-Object Label
-    )
-
-    foreach ($assignment in $assignments) {
-        $label = [string]$assignment.Label
-        if ([string]::IsNullOrWhiteSpace($label)) {
-            continue
-        }
-
-        if ($claimedAgents.ContainsKey($label) -or $ReservedAgents.ContainsKey($label)) {
-            continue
-        }
-
-        try {
-            $health = Get-AgentHealth -PaneId ([string]$assignment.PaneId)
-        } catch {
-            Write-TaskHooksLog -Event 'agent-health-error' -Details "$label :: $($_.Exception.Message)"
-            continue
-        }
-
-        if ($health.State -eq 'READY') {
-            return $assignment
-        }
-    }
-
-    return $null
-}
-
 function Invoke-BridgeSend {
     param(
         [Parameter(Mandatory = $true)][string]$Target,
@@ -236,154 +161,6 @@ function Invoke-BridgeSend {
     }
 
     return ($output | Out-String).Trim()
-}
-
-function Reset-SharedTaskClaim {
-    param(
-        [Parameter(Mandatory = $true)][string]$TaskId,
-        [Parameter(Mandatory = $true)][string]$AgentName
-    )
-
-    return Invoke-SharedTaskLock {
-        $tasks = @(Read-SharedTasksInternal)
-        $task = $tasks | Where-Object { $_.id -eq $TaskId } | Select-Object -First 1
-
-        if ($null -eq $task) {
-            return $null
-        }
-
-        if ($task.status -eq 'claimed' -and [string]$task.claimed_by -eq $AgentName) {
-            $task.status = if (Test-SharedTaskDependenciesSatisfied -Tasks $tasks -Task $task) { 'open' } else { 'blocked' }
-            $task.claimed_by = $null
-            Write-SharedTasksInternal -Tasks $tasks
-        }
-
-        return $task
-    }
-}
-
-function New-TaskDispatchMessage {
-    param(
-        [Parameter(Mandatory = $true)]$Task,
-        [Parameter(Mandatory = $true)][string]$Role
-    )
-
-    $taskId = [string]$Task.id
-    $taskTitle = [string]$Task.title
-    $completionSnippet = ". '$PSScriptRoot/shared-task-list.ps1'; Complete-SharedTask -TaskId '$taskId'"
-
-    return "Auto-dispatched $Role task ${taskId}: $taskTitle. When the work is complete, run: $completionSnippet"
-}
-
-function Invoke-TaskDispatch {
-    param(
-        [Parameter(Mandatory = $true)]$Task,
-        [Parameter(Mandatory = $true)]$Assignment
-    )
-
-    $agentName = [string]$Assignment.Label
-    $role = Get-TaskDispatchRole -Task $Task
-    $claimResult = Claim-SharedTask -TaskId ([string]$Task.id) -AgentName $agentName
-
-    if ($claimResult -eq 'blocked') {
-        Write-TaskHooksLog -Event 'dispatch-skipped' -Details "$agentName :: blocked :: $(Get-TaskHooksTaskDescriptor -Task $Task)"
-        return $null
-    }
-
-    if ($null -eq $claimResult) {
-        return $null
-    }
-
-    if ($claimResult.status -eq 'done') {
-        return $null
-    }
-
-    if ($claimResult.status -ne 'claimed' -or [string]$claimResult.claimed_by -ne $agentName) {
-        Write-TaskHooksLog -Event 'dispatch-race' -Details "$agentName :: $(Get-TaskHooksTaskDescriptor -Task $claimResult)"
-        return $null
-    }
-
-    try {
-        $message = New-TaskDispatchMessage -Task $claimResult -Role $role
-        Invoke-BridgeSend -Target $agentName -Text $message | Out-Null
-        Write-TaskHooksLog -Event 'dispatch' -Details "$agentName :: $(Get-TaskHooksTaskDescriptor -Task $claimResult)"
-
-        return [PSCustomObject]@{
-            TaskId = [string]$claimResult.id
-            Title  = [string]$claimResult.title
-            Agent  = $agentName
-            Role   = $role
-        }
-    } catch {
-        Reset-SharedTaskClaim -TaskId ([string]$Task.id) -AgentName $agentName | Out-Null
-        Write-TaskHooksLog -Event 'dispatch-error' -Details "$agentName :: $(Get-TaskHooksTaskDescriptor -Task $Task) :: $($_.Exception.Message)"
-        throw
-    }
-}
-
-function Get-DispatchQueue {
-    param(
-        [AllowEmptyCollection()][object[]]$PreferredTasks = @(),
-        [AllowEmptyCollection()][object[]]$OpenTasks = @()
-    )
-
-    $queue = [System.Collections.Generic.List[object]]::new()
-    $seen = @{}
-
-    foreach ($task in @($PreferredTasks) + @($OpenTasks)) {
-        if ($null -eq $task) {
-            continue
-        }
-
-        $taskId = [string]$task.id
-        if ([string]::IsNullOrWhiteSpace($taskId) -or $seen.ContainsKey($taskId)) {
-            continue
-        }
-
-        $seen[$taskId] = $true
-        $queue.Add($task)
-    }
-
-    return @($queue)
-}
-
-function Dispatch-ReadyTasks {
-    param([AllowEmptyCollection()][object[]]$PreferredTasks = @())
-
-    $tasks = @(Get-SharedTasks)
-    $openTasks = @($tasks | Where-Object { $_.status -eq 'open' })
-    if ($openTasks.Count -eq 0) {
-        return @()
-    }
-
-    $reservedAgents = @{}
-    $dispatches = [System.Collections.Generic.List[object]]::new()
-    $queue = Get-DispatchQueue -PreferredTasks $PreferredTasks -OpenTasks $openTasks
-
-    foreach ($task in $queue) {
-        $role = Get-TaskDispatchRole -Task $task
-        $assignment = Get-AvailableAgentForRole -Role $role -ReservedAgents $reservedAgents -Tasks $tasks
-        if ($null -eq $assignment) {
-            continue
-        }
-
-        try {
-            $dispatch = Invoke-TaskDispatch -Task $task -Assignment $assignment
-        } catch {
-            continue
-        }
-
-        if ($null -eq $dispatch) {
-            $tasks = @(Get-SharedTasks)
-            continue
-        }
-
-        $reservedAgents[[string]$dispatch.Agent] = $true
-        $dispatches.Add($dispatch)
-        $tasks = @(Get-SharedTasks)
-    }
-
-    return @($dispatches)
 }
 
 function Get-CommanderTargets {
@@ -408,26 +185,25 @@ function Get-CommanderTargets {
     return @($targets | Sort-Object -Unique)
 }
 
-function New-CompletionSummary {
+function New-TaskCreatedSummary {
+    param([Parameter(Mandatory = $true)]$Task)
+
+    return 'New task available: {0} (ID: {1})' -f [string]$Task.title, [string]$Task.id
+}
+
+function New-TaskCompletedSummary {
     param(
         [Parameter(Mandatory = $true)]$Task,
-        [AllowEmptyCollection()][object[]]$UnblockedTasks = @(),
-        [AllowEmptyCollection()][object[]]$Dispatches = @()
+        [AllowEmptyCollection()][object[]]$UnblockedTasks = @()
     )
 
     $unblockedSummary = if ($UnblockedTasks.Count -gt 0) {
-        ($UnblockedTasks | ForEach-Object { Get-TaskHooksTaskDescriptor -Task $_ }) -join '; '
+        ($UnblockedTasks | ForEach-Object { [string]$_.id } | Sort-Object -Unique) -join ', '
     } else {
         'none'
     }
 
-    $dispatchSummary = if ($Dispatches.Count -gt 0) {
-        ($Dispatches | ForEach-Object { '{0} -> {1}' -f $_.Agent, $_.TaskId }) -join '; '
-    } else {
-        'none'
-    }
-
-    return "Shared task completed: $(Get-TaskHooksTaskDescriptor -Task $Task). Unblocked: $unblockedSummary. Dispatched: $dispatchSummary."
+    return 'Task completed: {0}. Newly unblocked: {1}' -f [string]$Task.title, $unblockedSummary
 }
 
 function Notify-Commander {
@@ -457,38 +233,30 @@ function OnTaskCreated {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)]$Task)
 
-    $dispatches = Dispatch-ReadyTasks -PreferredTasks @($Task)
-    return $dispatches | Where-Object { $_.TaskId -eq [string]$Task.id } | Select-Object -First 1
+    $summary = New-TaskCreatedSummary -Task $Task
+    $notified = Notify-Commander -Summary $summary
+
+    return [PSCustomObject]@{
+        Task     = $Task
+        Notified = $notified
+    }
 }
 
 function OnTaskCompleted {
     [CmdletBinding()]
-    param([Parameter(Mandatory = $true)]$Task)
-
-    $beforeTasks = @(Get-SharedTasks)
-    $beforeMap = Get-TaskHooksTaskMap -Tasks $beforeTasks
-    $completedTask = Complete-SharedTask -TaskId ([string]$Task.id)
-    $afterTasks = @(Get-SharedTasks)
-
-    $newlyUnblocked = @(
-        foreach ($candidate in $afterTasks) {
-            $candidateId = [string]$candidate.id
-            $beforeTask = if ($beforeMap.ContainsKey($candidateId)) { $beforeMap[$candidateId] } else { $null }
-
-            if ($candidate.status -eq 'open' -and $null -ne $beforeTask -and $beforeTask.status -eq 'blocked') {
-                $candidate
-            }
-        }
+    param(
+        [Parameter(Mandatory = $true)]$Task,
+        [AllowEmptyCollection()][object[]]$NewlyUnblocked = @()
     )
 
-    $dispatches = Dispatch-ReadyTasks -PreferredTasks $newlyUnblocked
-    $summary = New-CompletionSummary -Task $completedTask -UnblockedTasks $newlyUnblocked -Dispatches $dispatches
-    Notify-Commander -Summary $summary | Out-Null
+    $completedTask = Complete-SharedTask -TaskId ([string]$Task.id)
+    $summary = New-TaskCompletedSummary -Task $completedTask -UnblockedTasks $NewlyUnblocked
+    $notified = Notify-Commander -Summary $summary
 
     return [PSCustomObject]@{
         Task       = $completedTask
-        Unblocked  = @($newlyUnblocked)
-        Dispatched = @($dispatches)
+        Unblocked  = @($NewlyUnblocked)
+        Notified   = $notified
     }
 }
 
@@ -523,8 +291,24 @@ function Process-TaskHookChanges {
     }
 
     foreach ($task in $completedTasks) {
+        $newlyUnblocked = @(
+            foreach ($candidate in $newTasks) {
+                $candidateId = [string]$candidate.id
+                $previousTask = if ($oldMap.ContainsKey($candidateId)) { $oldMap[$candidateId] } else { $null }
+
+                if (
+                    $candidate.status -eq 'open' -and
+                    $null -ne $previousTask -and
+                    $previousTask.status -eq 'blocked' -and
+                    @($candidate.depends_on) -contains ([string]$task.id)
+                ) {
+                    $candidate
+                }
+            }
+        )
+
         try {
-            OnTaskCompleted -Task $task | Out-Null
+            OnTaskCompleted -Task $task -NewlyUnblocked $newlyUnblocked | Out-Null
         } catch {
             Write-TaskHooksLog -Event 'task-completed-error' -Details "$(Get-TaskHooksTaskDescriptor -Task $task) :: $($_.Exception.Message)"
         }
