@@ -1,5 +1,10 @@
 Set-StrictMode -Version Latest
 
+if ($null -eq (Get-Variable -Name PesterPreference -ValueOnly -ErrorAction SilentlyContinue)) {
+    $PesterPreference = New-PesterConfiguration
+}
+$PesterPreference.TestRegistry.Enabled = $false
+
 Describe 'Orchestra end-to-end workflow' {
     BeforeAll {
         $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
@@ -159,14 +164,14 @@ Describe 'Orchestra end-to-end workflow' {
 
             $result = Invoke-TestOrchestraStartup -ProjectDir 'C:\repo'
 
-            $result.Settings.builders | Should Be 2
-            $result.Layout.Total | Should Be 4
-            $result.VaultValues.Keys.Count | Should Be 2
-            ((@($result.RoleAssignments.Values) -contains 'Builder')) | Should Be $true
-            ((@($result.RoleAssignments.Values) -contains 'Researcher')) | Should Be $true
-            ((@($result.RoleAssignments.Values) -contains 'Reviewer')) | Should Be $true
-            $script:DeliveredMessages.Count | Should Be 4
-            $script:DeliveredMessages[0].Text | Should Match '^codex -c model=gpt-5\.4'
+            $result.Settings.builders | Should -Be 2
+            $result.Layout.Total | Should -Be 4
+            $result.VaultValues.Keys.Count | Should -Be 2
+            ((@($result.RoleAssignments.Values) -contains 'Builder')) | Should -Be $true
+            ((@($result.RoleAssignments.Values) -contains 'Researcher')) | Should -Be $true
+            ((@($result.RoleAssignments.Values) -contains 'Reviewer')) | Should -Be $true
+            $script:DeliveredMessages.Count | Should -Be 4
+            $script:DeliveredMessages[0].Text | Should -Match '^codex -c model=gpt-5\.4'
             Assert-MockCalled Get-BridgeSettings -Times 2 -Exactly
             Assert-MockCalled Get-VaultValue -Times 2 -Exactly
         }
@@ -196,14 +201,14 @@ Describe 'Orchestra end-to-end workflow' {
             Invoke-TestRoleMessage -Role 'Commander' -FromPane '%1' -Command 'dispatch' -Target 'reviewer-1' -Text "Review $($task.id)"
             Invoke-TestRoleMessage -Role 'Reviewer' -FromPane '%3' -Command 'send' -Target 'commander' -Text "PASS $($task.id)"
 
-            ((@($script:DeliveredMessages.Target) -contains 'builder-1')) | Should Be $true
-            ((@($script:DeliveredMessages.Text) -contains "Build $($task.id)")) | Should Be $true
-            $completion.Notified | Should Be $true
-            ((@($script:DeliveredMessages.Target) -contains 'commander')) | Should Be $true
-            ((@($script:DeliveredMessages.Text | Where-Object { $_ -like 'Task completed:*' }).Count) -ge 1) | Should Be $true
-            ((@($script:DeliveredMessages.Target) -contains 'reviewer-1')) | Should Be $true
-            ((@($script:DeliveredMessages.Text) -contains "Review $($task.id)")) | Should Be $true
-            ((@($script:DeliveredMessages.Text) -contains "PASS $($task.id)")) | Should Be $true
+            ((@($script:DeliveredMessages.Target) -contains 'builder-1')) | Should -Be $true
+            ((@($script:DeliveredMessages.Text) -contains "Build $($task.id)")) | Should -Be $true
+            $completion.Notified | Should -Be $true
+            ((@($script:DeliveredMessages.Target) -contains 'commander')) | Should -Be $true
+            ((@($script:DeliveredMessages.Text | Where-Object { $_ -like 'Task completed:*' }).Count) -ge 1) | Should -Be $true
+            ((@($script:DeliveredMessages.Target) -contains 'reviewer-1')) | Should -Be $true
+            ((@($script:DeliveredMessages.Text) -contains "Review $($task.id)")) | Should -Be $true
+            ((@($script:DeliveredMessages.Text) -contains "PASS $($task.id)")) | Should -Be $true
         }
     }
 
@@ -211,16 +216,16 @@ Describe 'Orchestra end-to-end workflow' {
         It 'blocks cross-pane reads, vault access, and unauthorized dispatch' {
             $env:WINSMUX_ROLE = 'Builder'
             $env:WINSMUX_PANE_ID = '%2'
-            $builderReadOther = Assert-Role -Command 'read' -TargetPane 'reviewer-1'
-            $builderVault = Assert-Role -Command 'vault'
+            $builderReadOther = & { Assert-Role -Command 'read' -TargetPane 'reviewer-1' } 2>$null
+            $builderVault = & { Assert-Role -Command 'vault' } 2>$null
 
             $env:WINSMUX_ROLE = 'Researcher'
             $env:WINSMUX_PANE_ID = '%4'
-            $researcherDispatch = Assert-Role -Command 'dispatch' -TargetPane 'builder-1'
+            $researcherDispatch = & { Assert-Role -Command 'dispatch' -TargetPane 'builder-1' } 2>$null
 
-            $builderReadOther | Should Be $false
-            $builderVault | Should Be $false
-            $researcherDispatch | Should Be $false
+            $builderReadOther | Should -Be $false
+            $builderVault | Should -Be $false
+            $researcherDispatch | Should -Be $false
         }
     }
 
@@ -260,9 +265,9 @@ Describe 'Orchestra end-to-end workflow' {
             Invoke-AgentMonitorPass -IntervalSeconds 0
 
             Assert-MockCalled Restart-Agent -Times 1 -Exactly
-            $script:DeliveredMessages.Count | Should Be 2
-            ((@($script:DeliveredMessages.Target) -contains 'commander')) | Should Be $true
-            ((@($script:DeliveredMessages.Text) -contains 'Agent restarted: builder-1 (%2) after DEAD')) | Should Be $true
+            $script:DeliveredMessages.Count | Should -Be 2
+            ((@($script:DeliveredMessages.Target) -contains 'commander')) | Should -Be $true
+            ((@($script:DeliveredMessages.Text) -contains 'Agent restarted: builder-1 (%2) after DEAD')) | Should -Be $true
         }
     }
 }
