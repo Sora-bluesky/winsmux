@@ -143,22 +143,6 @@ function ConvertTo-CanonicalWinsmuxRole {
     }
 }
 
-function ConvertTo-InferredWinsmuxRole {
-    param([AllowNull()][string]$Value)
-
-    if ([string]::IsNullOrWhiteSpace($Value)) {
-        return $null
-    }
-
-    switch -Regex ($Value.Trim()) {
-        '^(?i)Commander(?:$|[-_:/\s])' { return 'Commander' }
-        '^(?i)Builder(?:$|[-_:/\s])' { return 'Builder' }
-        '^(?i)Researcher(?:$|[-_:/\s])' { return 'Researcher' }
-        '^(?i)Reviewer(?:$|[-_:/\s])' { return 'Reviewer' }
-        default { return $null }
-    }
-}
-
 function Get-RoleGateLabels {
     if (-not (Test-Path $script:RoleGateLabelsFile)) {
         return @{}
@@ -190,42 +174,6 @@ function Resolve-RoleGateTargetPane {
     return $TargetPane
 }
 
-function Get-RoleGatePaneLabel {
-    param([AllowNull()][string]$TargetPane)
-
-    if ([string]::IsNullOrWhiteSpace($TargetPane)) {
-        return $null
-    }
-
-    $resolvedPane = Resolve-RoleGateTargetPane $TargetPane
-    $labels = Get-RoleGateLabels
-
-    foreach ($label in $labels.Keys) {
-        if ($labels[$label] -eq $resolvedPane) {
-            return $label
-        }
-    }
-
-    return $null
-}
-
-function Get-RoleGatePaneTitle {
-    param([AllowNull()][string]$TargetPane)
-
-    if ([string]::IsNullOrWhiteSpace($TargetPane)) {
-        return $null
-    }
-
-    $resolvedPane = Resolve-RoleGateTargetPane $TargetPane
-
-    try {
-        $title = & psmux display-message -p -t $resolvedPane '#{pane_title}' 2>$null
-        return ($title | Out-String).Trim()
-    } catch {
-        return $null
-    }
-}
-
 function Test-RoleGateOwnPane {
     param([AllowNull()][string]$TargetPane)
 
@@ -243,6 +191,96 @@ function Test-RoleGateOwnPane {
     return $resolvedPane -eq $ownPane
 }
 
+function Get-RoleGateRoleMap {
+    $raw = $env:WINSMUX_ROLE_MAP
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return @{}
+    }
+
+    try {
+        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Write-Error "Invalid WINSMUX_ROLE_MAP JSON: $($_.Exception.Message)" -ErrorAction Continue
+        return $null
+    }
+
+    $roleMap = @{}
+    foreach ($property in $obj.PSObject.Properties) {
+        $canonicalRole = ConvertTo-CanonicalWinsmuxRole ([string]$property.Value)
+        if ($null -eq $canonicalRole) {
+            Write-Error "Invalid WINSMUX_ROLE_MAP role for pane $($property.Name): $($property.Value)" -ErrorAction Continue
+            return $null
+        }
+
+        $roleMap[[string]$property.Name] = $canonicalRole
+    }
+
+    return $roleMap
+}
+
+function Get-RoleGateCurrentRole {
+    $role = ConvertTo-CanonicalWinsmuxRole $env:WINSMUX_ROLE
+    if ([string]::IsNullOrWhiteSpace($env:WINSMUX_ROLE)) {
+        Write-Error "WINSMUX_ROLE not set" -ErrorAction Continue
+        return $null
+    }
+    if ($null -eq $role) {
+        Write-Error "Invalid WINSMUX_ROLE: $($env:WINSMUX_ROLE)" -ErrorAction Continue
+        return $null
+    }
+
+    $roleMap = Get-RoleGateRoleMap
+    if ($null -eq $roleMap) {
+        return $null
+    }
+
+    if ($roleMap.Count -eq 0) {
+        return $role
+    }
+
+    if ([string]::IsNullOrWhiteSpace($env:WINSMUX_PANE_ID)) {
+        Write-Error "WINSMUX_PANE_ID not set" -ErrorAction Continue
+        return $null
+    }
+
+    if (-not $roleMap.ContainsKey($env:WINSMUX_PANE_ID)) {
+        Write-Error "WINSMUX_ROLE_MAP missing entry for pane $($env:WINSMUX_PANE_ID)" -ErrorAction Continue
+        return $null
+    }
+
+    $mappedRole = $roleMap[$env:WINSMUX_PANE_ID]
+    if ($mappedRole -ne $role) {
+        Write-Error "WINSMUX_ROLE mismatch for pane $($env:WINSMUX_PANE_ID): expected $mappedRole, got $role" -ErrorAction Continue
+        return $null
+    }
+
+    return $mappedRole
+}
+
+function Get-RoleGateTargetRole {
+    param([AllowNull()][string]$TargetPane)
+
+    if ([string]::IsNullOrWhiteSpace($TargetPane)) {
+        return $null
+    }
+
+    $roleMap = Get-RoleGateRoleMap
+    if ($null -eq $roleMap -or $roleMap.Count -eq 0) {
+        return $null
+    }
+
+    $resolvedPane = Resolve-RoleGateTargetPane $TargetPane
+    if ([string]::IsNullOrWhiteSpace($resolvedPane)) {
+        return $null
+    }
+
+    if (-not $roleMap.ContainsKey($resolvedPane)) {
+        return $null
+    }
+
+    return $roleMap[$resolvedPane]
+}
+
 function Test-RoleGateCommanderTarget {
     param([AllowNull()][string]$TargetPane)
 
@@ -250,19 +288,7 @@ function Test-RoleGateCommanderTarget {
         return $false
     }
 
-    $candidates = @(
-        $TargetPane
-        (Get-RoleGatePaneLabel $TargetPane)
-        (Get-RoleGatePaneTitle $TargetPane)
-    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
-
-    foreach ($candidate in $candidates) {
-        if ((ConvertTo-InferredWinsmuxRole $candidate) -eq 'Commander') {
-            return $true
-        }
-    }
-
-    return $false
+    return (Get-RoleGateTargetRole $TargetPane) -eq 'Commander'
 }
 
 function Deny-RoleCommand {
@@ -281,13 +307,8 @@ function Assert-Role {
         [string]$TargetPane
     )
 
-    $role = ConvertTo-CanonicalWinsmuxRole $env:WINSMUX_ROLE
-    if ([string]::IsNullOrWhiteSpace($env:WINSMUX_ROLE)) {
-        Write-Error "WINSMUX_ROLE not set" -ErrorAction Continue
-        return $false
-    }
+    $role = Get-RoleGateCurrentRole
     if ($null -eq $role) {
-        Write-Error "Invalid WINSMUX_ROLE: $($env:WINSMUX_ROLE)" -ErrorAction Continue
         return $false
     }
 
