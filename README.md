@@ -11,6 +11,7 @@ Native Windows terminal multiplexer with cross-pane AI agent communication — n
 - **For you** — keyboard-driven pane management with Alt-key bindings on PowerShell
 - **For agents** — `psmux-bridge` CLI lets any agent read, type, and send keys to any pane
 - **Agent-to-agent** — Claude Code can prompt Codex in the next pane, and Codex replies back. Any agent that can run shell commands can participate.
+- **Platform** — the runtime and orchestration layer that Claude Code provides, minus the model lock-in. Vendor-agnostic by design.
 
 ```powershell
 psmux-bridge read codex 20              # read the pane

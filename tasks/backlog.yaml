@@ -387,6 +387,17 @@ tasks:
     created: "2026-04-02"
     updated: "2026-04-02"
 
+  - id: TASK-052
+    title: "Rewrite README.md/README.ja.md to reflect platform positioning and 3 unique strengths"
+    status: backlog
+    priority: P1
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [docs, branding]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
   - id: TASK-048
     title: "Write DETAILED_DESIGN.md (hook I/O specs, regex, branch logic, test templates)"
     status: backlog
