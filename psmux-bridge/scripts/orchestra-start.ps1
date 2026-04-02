@@ -88,6 +88,11 @@ function ConvertTo-PowerShellLiteral {
 }
 
 function Get-ProjectDir {
+    $scriptProjectDir = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+    if (-not [string]::IsNullOrWhiteSpace($scriptProjectDir)) {
+        return $scriptProjectDir
+    }
+
     try {
         $currentPath = Invoke-Psmux -Arguments @('display-message', '-p', '#{pane_current_path}') -CaptureOutput
         $resolved = ($currentPath | Out-String).Trim()
