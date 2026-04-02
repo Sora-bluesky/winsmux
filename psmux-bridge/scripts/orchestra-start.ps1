@@ -118,7 +118,7 @@ function Get-GitWorktreeDir {
     }
 
     if (Test-Path $dotGitPath -PathType Container) {
-        return (Get-Item -LiteralPath $dotGitPath).FullName
+        return (Get-Item -LiteralPath $dotGitPath -Force).FullName
     }
 
     return $ProjectDir
