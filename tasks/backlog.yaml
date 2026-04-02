@@ -127,7 +127,7 @@ tasks:
 
   - id: TASK-026
     title: "Implement hierarchical settings system (project > global > wizard)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.10.0"
     repo: winsmux
@@ -139,7 +139,7 @@ tasks:
   # Phase B: Role enforcement (MOST IMPORTANT)
   - id: TASK-027
     title: "Add role-based command gate to psmux-bridge (Assert-Role)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.10.0"
     repo: winsmux
@@ -148,9 +148,20 @@ tasks:
     created: "2026-04-02"
     updated: "2026-04-02"
 
+  - id: TASK-053
+    title: "Document and enforce operational role definitions (Commander/Builder/Researcher/Reviewer)"
+    status: done
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [docs, security, governance]
+    depends_on: ["TASK-027"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
   - id: TASK-028
     title: "Add PreToolUse hook for Commander-side gate (sh-orchestra-gate.js)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.10.0"
     repo: winsmux
@@ -162,7 +173,7 @@ tasks:
   # Phase C: Automation
   - id: TASK-029
     title: "Implement Orchestra start automation (Prefix+O full lifecycle)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.10.0"
     repo: winsmux
@@ -183,7 +194,7 @@ tasks:
 
   - id: TASK-030
     title: "Add channel event detection and severity boost to sh-user-prompt.js"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.10.0"
     repo: winsmux
@@ -194,7 +205,7 @@ tasks:
 
   - id: TASK-031
     title: "Enhance evidence-ledger with command-trace recording and integrity check"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.10.0"
     repo: winsmux
@@ -207,7 +218,7 @@ tasks:
 
   - id: TASK-032
     title: "Implement Mailbox-compatible async message router (mailbox-router.ps1)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.10.0"
     repo: winsmux
@@ -218,7 +229,7 @@ tasks:
 
   - id: TASK-033
     title: "Implement Shared Task List with file-lock self-claiming and dependency auto-resolve"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.10.0"
     repo: winsmux
@@ -229,7 +240,7 @@ tasks:
 
   - id: TASK-034
     title: "Add TaskCreated / TaskCompleted hook integration for auto-dispatch"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.10.0"
     repo: winsmux
@@ -240,7 +251,7 @@ tasks:
 
   - id: TASK-035
     title: "Implement agent idle/crash detection with auto-respawn (TeammateIdle compat)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.10.0"
     repo: winsmux
@@ -264,7 +275,7 @@ tasks:
 
   - id: TASK-037
     title: "Set up Pester 5 test framework with AAA pattern for psmux-bridge.ps1"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.10.0"
     repo: winsmux
@@ -275,7 +286,7 @@ tasks:
 
   - id: TASK-038
     title: "Write unit tests for all 11 CLI commands (44+ test cases, coverage >= 75%)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.10.0"
     repo: winsmux
@@ -286,7 +297,7 @@ tasks:
 
   - id: TASK-039
     title: "Make STG3 gate CI-aware (auto-run Pester, deny on coverage < 80%)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.10.0"
     repo: winsmux
@@ -321,7 +332,7 @@ tasks:
 
   - id: TASK-042
     title: "Implement JSON-RPC 2.0 endpoint for psmux-bridge (psmux-bridge-rpc.ps1)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.10.0"
     repo: winsmux
@@ -389,7 +400,7 @@ tasks:
 
   - id: TASK-052
     title: "Rewrite README.md/README.ja.md to reflect platform positioning and 3 unique strengths"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.10.0"
     repo: winsmux
@@ -409,7 +420,88 @@ tasks:
     created: "2026-04-02"
     updated: "2026-04-02"
 
-  # --- Phase S6: Integration & GA ---
+  # --- Hotfix: Reviewer Audit Findings (BLOCKS S6) ---
+  # All P0 — must be resolved before integration testing or GA release.
+  # Root cause: gate is fail-open + internal code bypasses the gate.
+
+  - id: TASK-054
+    title: "Fix vault inject to use psmux set-environment instead of send-keys"
+    status: backlog
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [fix, security]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-055
+    title: "Auto-update backlog.yaml status when tasks complete (Commander automation)"
+    status: backlog
+    priority: P1
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [feat, automation, governance]
+    depends_on: ["TASK-034"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-056
+    title: "Fix role-gate.ps1 to deny unknown commands (fail-open → fail-close)"
+    status: backlog
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [fix, security]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-057
+    title: "Fix rpc-server.ps1: remove client-supplied role trust, bind to process identity"
+    status: backlog
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [fix, security]
+    depends_on: ["TASK-056"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-058
+    title: "Eliminate raw send-keys from orchestra-start, mailbox-router, agent-lifecycle"
+    status: backlog
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [fix, security]
+    depends_on: ["TASK-054"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-059
+    title: "Fix task-hooks.ps1: notify Commander instead of auto-assigning work"
+    status: backlog
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [fix, governance]
+    depends_on: ["TASK-056"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-060
+    title: "Write integration tests verifying gate enforcement (deny paths end-to-end)"
+    status: backlog
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [test, security]
+    depends_on: ["TASK-056", "TASK-057", "TASK-058", "TASK-059"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  # --- Phase S6: Integration & GA (blocked by Hotfix) ---
 
   - id: TASK-049
     title: "Run 15-agent 15min load test (crash rate < 0.1%, evidence integrity 100%)"
@@ -418,7 +510,7 @@ tasks:
     target_version: "v0.10.0"
     repo: winsmux
     labels: [test, integration, release]
-    depends_on: ["TASK-041", "TASK-043"]
+    depends_on: ["TASK-041", "TASK-043", "TASK-060"]
     created: "2026-04-02"
     updated: "2026-04-02"
 
