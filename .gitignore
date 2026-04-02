@@ -29,6 +29,8 @@ tasks/
 skills/
 tests/
 hooks/
+!psmux-bridge/hooks/
+!psmux-bridge/hooks/**
 .githooks/
 .worktrees/
 scripts/sync-*.ps1
