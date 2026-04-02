@@ -116,7 +116,7 @@ tasks:
   # Phase A: Foundation
   - id: TASK-025
     title: "Extract psmux-bridge CLI as PPM plugin (winsmux remains as platform)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.10.0"
     repo: winsmux
