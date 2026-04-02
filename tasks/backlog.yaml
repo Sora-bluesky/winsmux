@@ -459,7 +459,7 @@ tasks:
 
   - id: TASK-057
     title: "Fix rpc-server.ps1: remove client-supplied role trust, bind to process identity"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.10.0"
     repo: winsmux
@@ -492,7 +492,7 @@ tasks:
 
   - id: TASK-060
     title: "Write integration tests verifying gate enforcement (deny paths end-to-end)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.10.0"
     repo: winsmux
