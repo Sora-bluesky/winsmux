@@ -66,6 +66,11 @@ Hooks are in `.claude/hooks/` (git-tracked). Registration:
 
 `orchestra-start.ps1` auto-registers Commander hooks in settings.local.json.
 
+## Git Rules
+
+- **`git rm` 禁止。`git rm --cached` を使う。** bare `git rm` はローカルファイルも削除する（PR #79, #101 で2回事故）
+- ブランチは feature branch で作業、main 直コミットは pre-commit hook がブロック
+
 ## Conventions
 
 - Commit messages: English, conventional commits (`feat:`, `fix:`, `chore:`)

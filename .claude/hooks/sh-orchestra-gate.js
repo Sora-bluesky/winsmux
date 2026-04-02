@@ -56,6 +56,13 @@ try {
     }
   }
 
+  // Rule 6: Block bare git rm (allow only git rm --cached)
+  if (toolName === "Bash") {
+    if (/git\s+rm\s/.test(rawCommand) && !/--cached/.test(rawCommand)) {
+      deny("Use git rm --cached to untrack files. Bare git rm deletes local files.");
+    }
+  }
+
   process.exit(0);
 } catch (e) {
   deny("Hook parse error: " + e.message);
