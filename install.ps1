@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$VERSION      = "0.9.6"
+$VERSION      = "0.10.0"
 $WINSMUX_DIR  = Join-Path $HOME ".winsmux"
 $BIN_DIR      = Join-Path $WINSMUX_DIR "bin"
 $BACKUP_DIR   = Join-Path $WINSMUX_DIR "backups"
@@ -35,31 +35,58 @@ function Install-Psmux {
         Write-Status "psmux found: $ver"
         return
     }
-    Write-Status "psmux not found. Attempting auto-install..."
+    Write-Status "psmux not found. Downloading sora-psmux fork..."
 
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Write-Status "Installing via winget..."
-        winget install psmux --accept-package-agreements --accept-source-agreements
-        return
+    $localBin = Join-Path $HOME ".local/bin"
+    $psmuxExe = Join-Path $localBin "psmux.exe"
+    $releaseUrl = "https://api.github.com/repos/Sora-bluesky/psmux/releases/latest"
+    $headers = @{ "User-Agent" = "winsmux-installer/$VERSION" }
+
+    try {
+        if (-not (Test-Path $localBin)) {
+            New-Item -ItemType Directory -Path $localBin -Force | Out-Null
+        }
+
+        Write-Status "Fetching latest sora-psmux release..."
+        $release = Invoke-RestMethod -Uri $releaseUrl -Headers $headers -ErrorAction Stop
+        $asset = $release.assets | Where-Object { $_.name -eq "psmux.exe" } | Select-Object -First 1
+        if (-not $asset) {
+            throw "psmux.exe asset not found in release $($release.tag_name)"
+        }
+
+        Write-Status "Downloading $($asset.name) from $($release.tag_name)..."
+        Invoke-RestMethod -Uri $asset.browser_download_url -Headers $headers -OutFile $psmuxExe -ErrorAction Stop
+
+        $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+        $userPaths = @()
+        if ($userPath) {
+            $userPaths = $userPath -split ';' | Where-Object { $_ }
+        }
+
+        $hasLocalBin = $false
+        foreach ($pathEntry in $userPaths) {
+            if ($pathEntry.TrimEnd('\') -ieq $localBin.TrimEnd('\')) {
+                $hasLocalBin = $true
+                break
+            }
+        }
+
+        if (-not $hasLocalBin) {
+            $newUserPath = if ($userPath) { "$userPath;$localBin" } else { $localBin }
+            [Environment]::SetEnvironmentVariable("Path", $newUserPath, "User")
+            Write-Status "Added $localBin to user PATH"
+        }
+
+        if (-not (($env:Path -split ';' | Where-Object { $_.TrimEnd('\') -ieq $localBin.TrimEnd('\') }))) {
+            $env:Path = if ($env:Path) { "$env:Path;$localBin" } else { $localBin }
+        }
+
+        $ver = (& $psmuxExe -V 2>&1 | Out-String).Trim()
+        Write-Status "Installed psmux: $ver"
+    } catch {
+        Write-Error "[winsmux] Failed to install sora-psmux: $_"
+        exit 1
     }
-    if (Get-Command scoop -ErrorAction SilentlyContinue) {
-        Write-Status "Installing via scoop..."
-        scoop bucket add psmux https://github.com/psmux/scoop-psmux 2>$null
-        scoop install psmux
-        return
-    }
-    if (Get-Command cargo -ErrorAction SilentlyContinue) {
-        Write-Status "Installing via cargo..."
-        cargo install psmux
-        return
-    }
-    if (Get-Command choco -ErrorAction SilentlyContinue) {
-        Write-Status "Installing via chocolatey..."
-        choco install psmux -y
-        return
-    }
-    Write-Error "[winsmux] Could not install psmux. Install manually: https://github.com/psmux/psmux"
-    exit 1
 }
 
 function Backup-File($path) {
