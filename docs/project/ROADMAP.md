@@ -1,7 +1,7 @@
 # Roadmap
 
 > Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-02 12:49 (+09:00)
+> Last sync: 2026-04-02 13:10 (+09:00)
 
 ## Version Summary
 
@@ -36,7 +36,7 @@
 | [ ] | TASK-028 | Add PreToolUse hook for Commander-side gate (sh-orchestra-gate.js) | P0 | winsmux | backlog |
 | [ ] | TASK-032 | Implement Mailbox-compatible async message router (mailbox-router.ps1) | P0 | winsmux | backlog |
 | [ ] | TASK-033 | Implement Shared Task List with file-lock self-claiming and dependency auto-resolve | P0 | winsmux | backlog |
-| [ ] | TASK-025 | Convert psmux-bridge to PPM-compliant plugin format | P1 | winsmux | backlog |
+| [ ] | TASK-025 | Extract psmux-bridge CLI as PPM plugin (winsmux remains as platform) | P1 | winsmux | backlog |
 | [ ] | TASK-049 | Run 15-agent 15min load test (crash rate < 0.1%, evidence integrity 100%) | P1 | winsmux | backlog |
 | [ ] | TASK-044 | Prepare and submit PR to psmux-plugins upstream | P1 | winsmux | backlog |
 | [ ] | TASK-043 | Expose psmux-bridge as MCP Server for Claude Code Agent Teams integration | P1 | winsmux | backlog |
@@ -64,7 +64,7 @@
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-024 | Upstream merge confirmed — update README and archive winsmux | P1 | winsmux | backlog |
+| [ ] | TASK-024 | Full integration test → GA release → winsmux v1.0.0 publish | P1 | winsmux | backlog |
 
 ## Legend
 

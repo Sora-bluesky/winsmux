@@ -111,16 +111,16 @@ tasks:
     created: "2026-04-02"
     updated: "2026-04-02"
 
-  # === v0.10.0: psmux-bridge plugin + role enforcement ===
+  # === v0.10.0: Agent Team Grade Upgrade ===
 
   # Phase A: Foundation
   - id: TASK-025
-    title: "Convert psmux-bridge to PPM-compliant plugin format"
+    title: "Extract psmux-bridge CLI as PPM plugin (winsmux remains as platform)"
     status: backlog
     priority: P1
     target_version: "v0.10.0"
     repo: winsmux
-    labels: [feat, plugin]
+    labels: [feat, plugin, refactor]
     depends_on: []
     created: "2026-04-02"
     updated: "2026-04-02"
@@ -433,14 +433,14 @@ tasks:
     created: "2026-04-02"
     updated: "2026-04-02"
 
-  # === v1.0.0: upstream merge complete, archive ===
+  # === v1.0.0: winsmux GA Release ===
   - id: TASK-024
-    title: "Upstream merge confirmed — update README and archive winsmux"
+    title: "Full integration test → GA release → winsmux v1.0.0 publish"
     status: backlog
     priority: P1
     target_version: "v1.0.0"
     repo: winsmux
-    labels: [chore, archive]
-    depends_on: ["TASK-020", "TASK-044"]
+    labels: [release, milestone]
+    depends_on: ["TASK-051"]
     created: "2026-04-02"
     updated: "2026-04-02"
