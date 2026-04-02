@@ -196,6 +196,101 @@ function Get-VaultValue {
     return ($result.Output | Out-String).TrimEnd()
 }
 
+function Test-VaultKeyExists {
+    param([Parameter(Mandatory = $true)][string]$Key)
+
+    $credTarget = "winsmux:$Key"
+    $credPtr = [IntPtr]::Zero
+    $ok = [WinCred]::CredRead($credTarget, [WinCred]::CRED_TYPE_GENERIC, 0, [ref]$credPtr)
+    if ($ok) {
+        [WinCred]::CredFree($credPtr) | Out-Null
+        return $true
+    }
+
+    return $false
+}
+
+function Set-VaultKey {
+    param(
+        [Parameter(Mandatory = $true)][string]$Key,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+
+    $credTarget = "winsmux:$Key"
+    $valueBytes = [System.Text.Encoding]::Unicode.GetBytes($Value)
+    $blobPtr = [Runtime.InteropServices.Marshal]::AllocHGlobal($valueBytes.Length)
+    [Runtime.InteropServices.Marshal]::Copy($valueBytes, 0, $blobPtr, $valueBytes.Length)
+
+    $cred = New-Object WinCred+CREDENTIAL
+    $cred.Type = [WinCred]::CRED_TYPE_GENERIC
+    $cred.TargetName = $credTarget
+    $cred.UserName = 'winsmux'
+    $cred.CredentialBlobSize = $valueBytes.Length
+    $cred.CredentialBlob = $blobPtr
+    $cred.Persist = [WinCred]::CRED_PERSIST_LOCAL_MACHINE
+
+    try {
+        $ok = [WinCred]::CredWrite([ref]$cred, 0)
+        if (-not $ok) {
+            $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            throw "CredWrite failed for '$Key' (error $errCode)"
+        }
+    } finally {
+        [Runtime.InteropServices.Marshal]::FreeHGlobal($blobPtr)
+    }
+}
+
+function Invoke-VaultPreflight {
+    param([Parameter(Mandatory = $true)]$Settings)
+
+    foreach ($key in @($Settings.vault_keys)) {
+        if (Test-VaultKeyExists -Key $key) {
+            continue
+        }
+
+        if ($key -eq 'GH_TOKEN') {
+            try {
+                $token = (& gh auth token 2>&1 | Out-String).Trim()
+                if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($token)) {
+                    throw 'gh auth token returned empty or failed'
+                }
+
+                Set-VaultKey -Key 'GH_TOKEN' -Value $token
+                Write-Output 'Preflight: auto-set GH_TOKEN from gh auth'
+            } catch {
+                Write-Warning "Preflight: failed to auto-set GH_TOKEN: $($_.Exception.Message)"
+            }
+        }
+    }
+}
+
+function Invoke-CodexTrustPreflight {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $configPath = Join-Path $env:USERPROFILE '.codex' 'config.toml'
+    if (-not (Test-Path $configPath)) {
+        return
+    }
+
+    $normalizedDir = $ProjectDir.TrimEnd('\', '/')
+    # In TOML double-quoted keys, each literal backslash is written as \\
+    # The UNC prefix \\?\ becomes \\\\?\\ in TOML source text
+    # Use [string]::Replace (not regex -replace) to double each backslash
+    $tomlPath = $normalizedDir.Replace('\', '\\')
+    $sectionHeader = '[projects."\\\\?\\' + $tomlPath + '"]'
+
+    $content = Get-Content -Raw -Path $configPath -Encoding UTF8
+    if ($content -match [regex]::Escape($sectionHeader)) {
+        return
+    }
+
+    $newSection = "`n$sectionHeader`ntrust_level = `"trusted`"`n"
+    $content = $content.TrimEnd() + "`n" + $newSection
+    Set-Content -Path $configPath -Value $content -Encoding UTF8 -NoNewline
+
+    Write-Output "Preflight: registered Codex trust for $ProjectDir"
+}
+
 function Get-LastNonEmptyLine {
     param([AllowNull()][string]$Text)
 
@@ -279,6 +374,10 @@ try {
     $settings = Get-BridgeSettings
     $projectDir = Get-ProjectDir
     $gitWorktreeDir = Get-GitWorktreeDir -ProjectDir $projectDir
+
+    Invoke-VaultPreflight -Settings $settings
+    Invoke-CodexTrustPreflight -ProjectDir $projectDir
+
     $vaultValues = [ordered]@{}
 
     foreach ($key in @($settings.vault_keys)) {
