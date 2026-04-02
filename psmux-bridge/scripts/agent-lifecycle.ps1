@@ -8,6 +8,7 @@ $script:AgentMonitorJobName = 'winsmux-agent-monitor'
 $script:AgentLifecycleState = @{}
 $script:AgentConfigCache = @{}
 $script:AgentLifecycleScriptPath = $PSCommandPath
+$script:AgentLifecycleBridgeScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\psmux-bridge.ps1'))
 $script:WorkspaceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $script:LifecycleDir = Join-Path $script:WorkspaceRoot '.winsmux'
 $script:LifecycleLog = Join-Path $script:LifecycleDir 'lifecycle.log'
@@ -136,6 +137,73 @@ function Get-LabeledPaneAssignments {
             } |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_.PaneId) }
     )
+}
+
+function Get-AgentLifecycleCommanderTargets {
+    $targets = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($entry in (Get-AgentLabels).GetEnumerator()) {
+        if ([string]$entry.Key -match '^(?i)commander(?:$|[-_:/\s])') {
+            $targets.Add([string]$entry.Key)
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_COMMANDER_TARGET)) {
+        foreach ($value in ($env:WINSMUX_COMMANDER_TARGET -split ',')) {
+            $trimmed = $value.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($trimmed)) {
+                $targets.Add($trimmed)
+            }
+        }
+    }
+
+    return @($targets | Sort-Object -Unique)
+}
+
+function Send-AgentLifecycleBridgeMessage {
+    param(
+        [Parameter(Mandatory)][string]$Target,
+        [Parameter(Mandatory)][string]$Text
+    )
+
+    $output = & pwsh -NoProfile -File $script:AgentLifecycleBridgeScriptPath 'send' $Target $Text 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $message = ($output | Out-String).Trim()
+        if ([string]::IsNullOrWhiteSpace($message)) {
+            $message = "psmux-bridge send failed for $Target"
+        }
+
+        throw $message
+    }
+}
+
+function Notify-AgentLifecycleCommanderRestart {
+    param(
+        [Parameter(Mandatory)][string]$PaneId,
+        [string]$Label,
+        [Parameter(Mandatory)][string]$PreviousState
+    )
+
+    $targets = Get-AgentLifecycleCommanderTargets
+    if ($targets.Count -eq 0) {
+        Write-AgentLifecycleLog -Event 'restart-notify-skipped' -PaneId $PaneId -Label $Label -State $PreviousState -Details 'No commander targets registered.'
+        return $false
+    }
+
+    $summary = 'Agent restarted: {0} ({1}) after {2}' -f $Label, $PaneId, $PreviousState
+    $notified = $false
+
+    foreach ($target in $targets) {
+        try {
+            Send-AgentLifecycleBridgeMessage -Target $target -Text $summary
+            Write-AgentLifecycleLog -Event 'restart-notify' -PaneId $PaneId -Label $Label -State $PreviousState -Details "$target :: $summary"
+            $notified = $true
+        } catch {
+            Write-AgentLifecycleLog -Event 'restart-notify-error' -PaneId $PaneId -Label $Label -State $PreviousState -Details "$target :: $($_.Exception.Message)"
+        }
+    }
+
+    return $notified
 }
 
 function Get-PaneRuntimeMap {
@@ -549,6 +617,7 @@ function Invoke-AgentMonitorPass {
                 }
 
                 Restart-Agent -PaneId $paneId -AgentConfig $agentConfig | Out-Null
+                Notify-AgentLifecycleCommanderRestart -PaneId $paneId -Label $label -PreviousState $health.State | Out-Null
             }
         } catch {
             Write-AgentLifecycleLog -Event 'monitor-error' -PaneId $paneId -Label $label -Details $_.Exception.Message
@@ -642,3 +711,4 @@ function Stop-AgentMonitor {
 
     return $finalState
 }
+
