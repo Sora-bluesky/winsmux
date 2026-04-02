@@ -54,7 +54,7 @@ package-lock.json
 # =========================
 # Orchestra runtime (generated)
 # =========================
-.commander-prompt.txt
+.commander-prompt*.txt
 .orchestra-prompts/
 
 # =========================
@@ -112,4 +112,4 @@ coverage/
 *.swo
 *~
 .shield-harness/
-.research-fork-verdict.md
+.research-*.md
