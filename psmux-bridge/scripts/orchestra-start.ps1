@@ -621,6 +621,12 @@ try {
         exit 1
     }
 
+    $sessionRoleMap = [ordered]@{}
+    foreach ($pane in @($layout.Panes)) {
+        $sessionRoleMap[[string]$pane.PaneId] = Get-CanonicalRole -AssignmentRole ([string]$pane.Role)
+    }
+    Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_ROLE_MAP' -Value (($sessionRoleMap | ConvertTo-Json -Compress))
+
     $paneSummaries = [System.Collections.Generic.List[object]]::new()
     $builderIndex = 0
 
