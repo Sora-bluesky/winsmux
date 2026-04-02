@@ -654,6 +654,83 @@ function Invoke-Resolve {
     }
 }
 
+function Invoke-Verify {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge verify <pr-number>" }
+    if ($Rest -and $Rest.Count -gt 0) { Stop-WithError "usage: psmux-bridge verify <pr-number>" }
+
+    $prNumber = $Target
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $testsDir = Join-Path $repoRoot 'tests'
+
+    if (-not (Get-Command Invoke-Pester -ErrorAction SilentlyContinue)) {
+        Stop-WithError "Invoke-Pester not found. Install/import Pester before running verify."
+    }
+
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        Stop-WithError "gh CLI not found. Install GitHub CLI before running verify."
+    }
+
+    if (-not (Test-Path -LiteralPath $testsDir -PathType Container)) {
+        Stop-WithError "tests directory not found: $testsDir"
+    }
+
+    $testFiles = Get-ChildItem -Path $testsDir -Recurse -File -Include '*.Tests.ps1','*.ps1' |
+        Sort-Object FullName
+
+    if (-not $testFiles -or $testFiles.Count -eq 0) {
+        Stop-WithError "no test files found under $testsDir"
+    }
+
+    Write-Output "Running Pester tests from $testsDir"
+    $result = Invoke-Pester -Path ($testFiles.FullName) -PassThru
+
+    if ($null -eq $result) {
+        Stop-WithError "Invoke-Pester returned no result."
+    }
+
+    $failedTests = @()
+    if ($result.PSObject.Properties.Name -contains 'Failed' -and $result.Failed) {
+        $failedTests = @($result.Failed)
+    } elseif ($result.PSObject.Properties.Name -contains 'TestResult' -and $result.TestResult) {
+        $failedTests = @($result.TestResult | Where-Object { -not $_.Passed })
+    }
+
+    $failedCount = 0
+    if ($result.PSObject.Properties.Name -contains 'FailedCount') {
+        $failedCount = [int]$result.FailedCount
+    } elseif ($failedTests) {
+        $failedCount = $failedTests.Count
+    }
+
+    if ($failedCount -gt 0) {
+        Write-Error "Pester verify failed. Failed tests:"
+        foreach ($failedTest in $failedTests) {
+            $failedName = $null
+            foreach ($propertyName in 'ExpandedPath','Path','Name') {
+                if ($failedTest.PSObject.Properties.Name -contains $propertyName) {
+                    $failedName = $failedTest.$propertyName
+                    if (-not [string]::IsNullOrWhiteSpace($failedName)) {
+                        break
+                    }
+                }
+            }
+
+            if ([string]::IsNullOrWhiteSpace($failedName)) {
+                $failedName = ($failedTest | Out-String).Trim()
+            }
+
+            Write-Error " - $failedName"
+        }
+        exit 1
+    }
+
+    Write-Output "Pester PASS. Merging PR #$prNumber"
+    & gh pr merge $prNumber
+    if ($LASTEXITCODE -ne 0) {
+        exit $LASTEXITCODE
+    }
+}
+
 function Invoke-Doctor {
     Write-Output "=== psmux-bridge doctor ==="
 
@@ -1263,6 +1340,7 @@ Commands:
   lock <label> <file>...    Acquire file lock(s) for a label
   unlock <label> <file>...  Release file lock(s) for a label
   locks                     List active file locks
+  verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
   wait <channel> [timeout]  Block until signal received (replaces polling)
   wait-ready <target> [timeout_seconds]  Wait for Codex prompt in pane
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
@@ -1407,6 +1485,7 @@ switch ($Command) {
     'lock'            { Invoke-Lock }
     'unlock'          { Invoke-Unlock }
     'locks'           { Invoke-Locks }
+    'verify'          { Invoke-Verify }
     'vault'           {
         switch ($Target) {
             'set'    { $Target = $Rest[0]; $Rest = @($Rest | Select-Object -Skip 1); Invoke-VaultSet }

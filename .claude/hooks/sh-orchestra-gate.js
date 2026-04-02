@@ -63,6 +63,13 @@ try {
     }
   }
 
+  // Rule 7: Block direct gh pr merge (allow only via psmux-bridge verify)
+  if (toolName === "Bash") {
+    if (/gh\s+pr\s+merge/.test(rawCommand) && !/psmux-bridge/.test(rawCommand)) {
+      deny("Run psmux-bridge verify before merging. Direct gh pr merge is blocked.");
+    }
+  }
+
   process.exit(0);
 } catch (e) {
   deny("Hook parse error: " + e.message);
