@@ -17,6 +17,8 @@ try {
   const toolInput = event.tool_input || {};
   const rawCommand = typeof toolInput.command === "string" ? toolInput.command : "";
 
+  logCommand(toolName, rawCommand);
+
   // Rule 1: Commander cannot write/edit code files
   if (toolName === "Write" || toolName === "Edit") {
     const filePath = toolInput.file_path || toolInput.file || "";
@@ -61,7 +63,6 @@ try {
     }
   }
 
-  logCommand(toolName, rawCommand);
   process.exit(0);
 } catch (e) {
   deny("Hook parse error: " + e.message);
