@@ -222,7 +222,7 @@ function Remove-OrchestraZombieProcesses {
                 ForEach-Object { [int]$_ }
         )
 
-        if ($paneRootIds.Count -gt 0) {
+        if (@($paneRootIds).Count -gt 0) {
             $descendantIds = Get-DescendantProcessIds -Snapshot $snapshot -RootProcessIds $paneRootIds
             foreach ($descendantId in $descendantIds) {
                 if (-not $snapshot.ById.ContainsKey($descendantId)) {
@@ -743,7 +743,7 @@ try {
         }
 
         $builderPaneSummaries = @($paneSummaries | Where-Object { $_.Role -eq 'Builder' -and -not [string]::IsNullOrWhiteSpace($_.BuilderWorktreePath) })
-        if ($builderPaneSummaries.Count -gt 0) {
+        if (@($builderPaneSummaries).Count -gt 0) {
             Write-Output ''
             Write-Output 'Cleanup: remove Builder worktrees after the session ends.'
             foreach ($paneSummary in $builderPaneSummaries) {
