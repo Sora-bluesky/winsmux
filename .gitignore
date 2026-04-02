@@ -64,6 +64,7 @@ package-lock.json
 # =========================
 CLAUDE.md
 .claude/*
+!.claude/CLAUDE.md
 !.claude/hooks/
 !.claude/settings.json
 .codex/
