@@ -6,18 +6,55 @@
 
 # winsmux
 
-Native Windows terminal multiplexer with cross-pane AI agent communication — no WSL2 required.
+**winsmux is the runtime and orchestration layer that Claude Code provides, minus the model lock-in.**
 
-- **For you** — keyboard-driven pane management with Alt-key bindings on PowerShell
-- **For agents** — `psmux-bridge` CLI lets any agent read, type, and send keys to any pane
-- **Agent-to-agent** — Claude Code can prompt Codex in the next pane, and Codex replies back. Any agent that can run shell commands can participate.
-- **Platform** — the runtime and orchestration layer that Claude Code provides, minus the model lock-in. Vendor-agnostic by design.
+winsmux is a multi-vendor agent orchestration platform for Windows. It gives you a Windows-native runtime for running Claude, Codex, Gemini, and your own CLI agents side by side, with live pane-level visibility, enforced read-before-act control, and enterprise-grade governance.
+
+- **Multi-vendor orchestration**: run Claude, Codex, and Gemini simultaneously in one coordinated workspace
+- **Visual real-time orchestration**: supervise agents through live `psmux` panes with `Read Guard` enforcing observe-before-act
+- **Enterprise-grade security governance**: combine Shield Harness, Credential Vault, and Evidence Ledger patterns for controlled, auditable execution
 
 ```powershell
-psmux-bridge read codex 20              # read the pane
-psmux-bridge type codex "review src/auth.ts"  # type into it
-psmux-bridge keys codex Enter           # press Enter
+psmux-bridge read codex 20                    # inspect the pane state
+psmux-bridge type codex "review src/auth.ts" # type into it
+psmux-bridge keys codex Enter                # press Enter
 ```
+
+## Why winsmux
+
+Most agent tooling gives you one vendor's runtime with one vendor's operating model. winsmux gives you the runtime and orchestration layer itself:
+
+- **Windows-native**: no WSL2, no Linux detour, no hidden tmux dependency
+- **Vendor-neutral**: Claude Code, Codex CLI, Gemini CLI, and custom shell-based agents can share the same workflow
+- **Operator-visible**: every agent runs in a real pane you can read, inspect, interrupt, and redirect in real time
+- **Governable**: safety hooks, read-before-act controls, DPAPI-backed secret handling, and audit-oriented workflows fit enterprise teams
+
+## Platform Architecture
+
+```text
+winsmux (platform)
+├── psmux-bridge CLI
+├── Shield Harness (22 hooks)
+├── Orchestra (Commander/Builder/Reviewer)
+├── Credential Vault (DPAPI)
+└── MCP Server (planned)
+```
+
+- **`psmux-bridge` CLI**: pane targeting, pane I/O, signaling, health checks, and operator controls
+- **Shield Harness**: policy hooks and guarded approval-free execution
+- **Orchestra**: Commander/Builder/Reviewer coordination across multiple agents
+- **Credential Vault**: machine-local secret storage and pane injection via Windows DPAPI
+- **MCP Server (planned)**: expose winsmux as a vendor-neutral orchestration substrate for external agent runtimes
+
+## Competitive Positioning
+
+| Product | Core position | Vendor model | Orchestration model | Visual supervision | Governance posture |
+| ------- | ------------- | ------------ | ------------------- | ------------------ | ------------------ |
+| **winsmux** | Multi-vendor orchestration platform for Windows | Claude + Codex + Gemini + custom CLIs | Pane-native Commander/Builder/Reviewer orchestration | Live `psmux` panes + `Read Guard` | Shield Harness + Evidence Ledger + DPAPI vault |
+| **Codex App** | OpenAI-native coding surface | OpenAI-centric | OpenAI agent workflows | App-level task UI | OpenAI-native controls |
+| **Claude Code** | Anthropic-native terminal coding runtime | Anthropic-centric | Strong single-vendor terminal workflow | Terminal-native, but not a Windows pane orchestration platform | Anthropic-native controls |
+
+winsmux is not trying to replace model-specific coding tools. It sits underneath them as the Windows runtime, coordination fabric, and governance layer when you need multiple vendors to work together in one operator-controlled environment.
 
 ## Install
 
@@ -94,7 +131,7 @@ All keybindings use **Alt** with no prefix required.
 
 ## psmux-bridge
 
-A CLI for cross-pane communication on Windows. Any tool that can run shell commands can use it — Claude Code, Codex, Gemini CLI, or a plain PowerShell script.
+A CLI for cross-pane communication on Windows. Any tool that can run shell commands can use it: Claude Code, Codex, Gemini CLI, or a plain PowerShell script.
 
 | Command                                 | Description                                    |
 | --------------------------------------- | ---------------------------------------------- |
@@ -126,14 +163,14 @@ A CLI for cross-pane communication on Windows. Any tool that can run shell comma
 
 ### Read Guard
 
-The CLI enforces a **read-before-act** rule. You cannot `type` or `keys` to a pane unless you have read it first. After each `type`/`keys`, the mark clears and you must read again.
+`Read Guard` is the core operator safety rule behind winsmux's visual orchestration model. You cannot `type` or `keys` to a pane unless you have read it first. After each `type` or `keys`, the mark clears and you must read again.
 
 ```powershell
 psmux-bridge type codex "hello"
 # error: must read the pane before interacting. Run: psmux-bridge read codex
 ```
 
-This prevents agents from blindly typing into the wrong pane.
+This prevents agents from blindly typing into the wrong pane and gives human operators a clear inspection point before every action.
 
 ### Targeting
 
@@ -164,9 +201,18 @@ select-pane -T claude
 psmux-bridge name %2 codex
 ```
 
-## Credential Vault
+## Security Governance
 
-Store secrets securely and inject them into agent panes — no `.env` files in your repo.
+winsmux is designed for environments where agent execution has to be observable, controllable, and defensible.
+
+- **Shield Harness (22 hooks)** adds policy enforcement around approval-free execution paths
+- **Read Guard** forces read-before-act interactions on every pane
+- **Credential Vault** stores secrets with Windows DPAPI and injects them into target panes without writing `.env` files into the repo
+- **Evidence Ledger** is the governance pattern for capturing prompts, approvals, outputs, and review evidence around agent work
+
+### Credential Vault
+
+Store secrets securely and inject them into agent panes with no `.env` files in your repo.
 
 ```powershell
 # Store credentials (DPAPI-encrypted, Windows Credential Manager)
@@ -192,13 +238,13 @@ psmux-bridge profile mysetup builder:codex reviewer:claude
 
 ## Orchestra
 
-Orchestra lets one Commander manage multiple AI agents in parallel. The Commander runs in your terminal (full keyboard access); background agents run in psmux panes. You tell the Commander what to build — it splits the work across builders, polls for completion, sends finished work to reviewers, and checks for conflicts before committing.
+Orchestra is winsmux's role-based coordination layer. One Commander manages multiple AI agents in parallel while builders and reviewers run in visible `psmux` panes. You tell the Commander what to build; Orchestra splits the work, tracks progress, routes finished work to review, and checks for conflicts before committing.
 
 ### What the Commander does for you
 
-1. **Splits work** — Assigns independent file sets to each builder so they don't step on each other
+1. **Splits work** — Assigns independent file sets to each builder so they do not step on each other
 2. **Polls progress** — Cycles `psmux-bridge read` across all agents to detect completion
-3. **Reviews incrementally** — Sends completed work to the reviewer as each builder finishes (no waiting for all)
+3. **Reviews incrementally** — Sends completed work to the reviewer as each builder finishes instead of waiting for the whole batch
 4. **Detects conflicts** — Runs `git diff --name-only` before merging to catch overlapping changes
 5. **Commits safely** — Only after review passes and no conflicts
 
@@ -206,13 +252,13 @@ Orchestra lets one Commander manage multiple AI agents in parallel. The Commande
 
 Mix different CLI agents in the same Orchestra. The script auto-detects each CLI and handles their differences:
 
-| CLI         | Approval-free flag (with `-ShieldHarness`) |
-| ----------- | ------------------------------------------ |
-| Claude Code | `--permission-mode bypassPermissions`      |
-| Codex CLI   | `--full-auto`                              |
-| Gemini CLI  | `--yolo`                                   |
+| CLI | Approval-free flag (with `-ShieldHarness`) |
+| --- | ------------------------------------------ |
+| Claude Code | `--permission-mode bypassPermissions` |
+| Codex CLI | `--full-auto` |
+| Gemini CLI | `--yolo` |
 
-Without `-ShieldHarness`: no approval-free flags are added.
+Without `-ShieldHarness`, no approval-free flags are added.
 
 ### Quick start
 
@@ -228,7 +274,7 @@ cd C:\path\to\project
 claude --model claude-opus-4-6 --append-system-prompt-file .commander-prompt.txt
 ```
 
-### Scaling up (e.g. 4 builders + researcher + reviewer)
+### Scaling up (for example, 4 builders + researcher + reviewer)
 
 ```powershell
 pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -Rows 2 -Cols 3 -Agents @(
@@ -241,7 +287,7 @@ pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -Rows 2 -Cols 3 -Agen
 ) -ShieldHarness
 ```
 
-```
+```text
 ┌──────────┬──────────┬──────────┐
 │builder-1 │builder-2 │builder-3 │
 ├──────────┼──────────┼──────────┤
@@ -249,21 +295,21 @@ pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -Rows 2 -Cols 3 -Agen
 └──────────┴──────────┴──────────┘
 ```
 
-The `.commander-prompt.txt` is auto-generated with actual pane IDs, agent labels, and the coordination protocol — the Commander always knows exactly who to talk to.
+The `.commander-prompt.txt` is auto-generated with actual pane IDs, agent labels, and the coordination protocol so the Commander always knows exactly who to talk to.
 
-| Parameter        | Default           | Description                                                                                     |
-| ---------------- | ----------------- | ----------------------------------------------------------------------------------------------- |
-| `-ProjectDir`    | Current directory | Working directory for all panes                                                                 |
-| `-Rows`          | 2                 | Grid rows                                                                                       |
-| `-Cols`          | 2                 | Grid columns                                                                                    |
-| `-Agents`        | 4-pane default    | Array of `@{label; command}` maps                                                               |
-| `-ShieldHarness` | Off               | Enable approval-free mode with [Shield Harness](https://github.com/Sora-bluesky/shield-harness) |
+| Parameter | Default | Description |
+| --------- | ------- | ----------- |
+| `-ProjectDir` | Current directory | Working directory for all panes |
+| `-Rows` | 2 | Grid rows |
+| `-Cols` | 2 | Grid columns |
+| `-Agents` | 4-pane default | Array of `@{label; command}` maps |
+| `-ShieldHarness` | Off | Enable approval-free mode with [Shield Harness](https://github.com/Sora-bluesky/shield-harness) |
 
-See [SKILL.md](skills/winsmux/SKILL.md) for the full Commander workflow. Management protocols (pipeline operation, researcher recon, reviewer batching, agent selection) are bundled as skill references and loaded on-demand by agents.
+See [SKILL.md](skills/winsmux/SKILL.md) for the full Commander workflow. Management protocols such as pipeline operation, researcher recon, reviewer batching, and agent selection are bundled as skill references and loaded on demand by agents.
 
 ## AI Agent Skills
 
-Install the winsmux skill to teach your agents how to use psmux-bridge:
+Install the winsmux skill to teach your agents how to use `psmux-bridge`:
 
 ```powershell
 npx skills add Sora-bluesky/winsmux
@@ -271,7 +317,7 @@ npx skills add Sora-bluesky/winsmux
 
 The skill includes:
 
-- Core psmux-bridge usage ([SKILL.md](skills/winsmux/SKILL.md))
+- Core `psmux-bridge` usage ([SKILL.md](skills/winsmux/SKILL.md))
 - Orchestra management protocol ([references/orchestra-management.md](skills/winsmux/references/orchestra-management.md))
 - Agent selection guide ([references/agent-selection.md](skills/winsmux/references/agent-selection.md))
 
@@ -279,7 +325,7 @@ Works with Claude Code, Codex, Cursor, Copilot, and [other agents](https://skill
 
 ### Orchestra Layout Skill
 
-For Claude Code users, the `orchestra-layout` skill creates deterministic psmux grid layouts in one command, eliminating manual split-window trial-and-error:
+For Claude Code users, the `orchestra-layout` skill creates deterministic `psmux` grid layouts in one command, eliminating manual split-window trial and error:
 
 ```bash
 bash .claude/skills/orchestra-layout/scripts/orchestra-layout.sh 4b1r1v
@@ -301,12 +347,12 @@ winsmux uninstall
 ## Requirements
 
 - Windows 10/11
-- PowerShell 7+ (pwsh)
+- PowerShell 7+ (`pwsh`)
 - [psmux](https://github.com/psmux/psmux) (installed automatically)
 
 ## Acknowledgments
 
-winsmux is the Windows-native counterpart of [smux](https://github.com/ShawnPana/smux) by [@ShawnPana](https://github.com/ShawnPana). smux provides the same terminal multiplexer + AI agent communication workflow for macOS/Linux using tmux. winsmux brings that experience to Windows natively via psmux, without requiring WSL2.
+winsmux is the Windows-native counterpart of [smux](https://github.com/ShawnPana/smux) by [@ShawnPana](https://github.com/ShawnPana). smux provides the same terminal multiplexer and AI agent communication workflow for macOS and Linux using tmux. winsmux brings that experience to Windows natively via psmux, without requiring WSL2.
 
 Terminal banner powered by [oh-my-logo](https://github.com/shinshin86/oh-my-logo) (MIT AND CC0-1.0).
 
