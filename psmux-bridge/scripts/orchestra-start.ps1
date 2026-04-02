@@ -657,7 +657,7 @@ try {
         }
     }
 
-    if ($null -eq $layout -or $null -eq $layout.Panes -or $layout.Panes.Count -lt 1) {
+    if ($null -eq $layout -or $null -eq $layout.Panes -or @($layout.Panes).Count -lt 1) {
         Write-Error 'orchestra-layout did not return any panes.'
         exit 1
     }
