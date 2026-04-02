@@ -15,9 +15,38 @@ $script:RpcServerState = @{
     IsRunning     = $false
     CurrentServer = $null
 }
+$script:ServerRole = $null
+$script:IsRpcServerDotSourced = $MyInvocation.InvocationName -eq '.'
 
 . $script:RpcRoleGateScriptPath
 . $script:RpcSharedTaskScriptPath
+
+function Stop-RpcServerStartup {
+    param([Parameter(Mandatory)][string]$Message)
+
+    Write-Error $Message
+    if ($script:IsRpcServerDotSourced) {
+        throw [System.InvalidOperationException]::new($Message)
+    }
+
+    exit 1
+}
+
+function Initialize-RpcServerRole {
+    $configuredRole = $env:WINSMUX_ROLE
+    if ([string]::IsNullOrWhiteSpace($configuredRole)) {
+        Stop-RpcServerStartup -Message 'WINSMUX_ROLE not set, RPC server cannot start'
+    }
+
+    $canonicalRole = ConvertTo-CanonicalWinsmuxRole $configuredRole
+    if ($null -eq $canonicalRole) {
+        Stop-RpcServerStartup -Message "Invalid WINSMUX_ROLE: $configuredRole"
+    }
+
+    $script:ServerRole = $canonicalRole
+}
+
+Initialize-RpcServerRole
 
 function Get-RpcPowerShellPath {
     $currentProcess = Get-Process -Id $PID -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -182,24 +211,17 @@ function New-RpcErrorResponse {
 
 function Assert-RpcRole {
     param(
-        [AllowNull()][string]$Role,
         [Parameter(Mandatory)][string]$Command,
         [AllowNull()][string]$TargetPane
     )
 
-    $resolvedRole = if ([string]::IsNullOrWhiteSpace($Role)) { $env:WINSMUX_ROLE } else { $Role }
-    if ([string]::IsNullOrWhiteSpace($resolvedRole)) {
+    if ([string]::IsNullOrWhiteSpace($script:ServerRole)) {
         throw [System.UnauthorizedAccessException]::new('WINSMUX_ROLE not set.')
-    }
-
-    $canonicalRole = ConvertTo-CanonicalWinsmuxRole $resolvedRole
-    if ($null -eq $canonicalRole) {
-        throw [System.UnauthorizedAccessException]::new("Invalid WINSMUX_ROLE: $resolvedRole")
     }
 
     $originalRole = $env:WINSMUX_ROLE
     try {
-        $env:WINSMUX_ROLE = $canonicalRole
+        $env:WINSMUX_ROLE = $script:ServerRole
         $allowed = & { Assert-Role -Command $Command -TargetPane $TargetPane } 2>$null
     } finally {
         if ($null -eq $originalRole) {
@@ -210,16 +232,15 @@ function Assert-RpcRole {
     }
 
     if (-not $allowed) {
-        throw [System.UnauthorizedAccessException]::new("DENIED: [$canonicalRole] cannot execute [$Command]")
+        throw [System.UnauthorizedAccessException]::new("DENIED: [$script:ServerRole] cannot execute [$Command]")
     }
 
-    return $canonicalRole
+    return $script:ServerRole
 }
 
 function Invoke-RpcBridgeCli {
     param(
-        [Parameter(Mandatory)][string[]]$Arguments,
-        [AllowNull()][string]$Role
+        [Parameter(Mandatory)][string[]]$Arguments
     )
 
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -236,9 +257,7 @@ function Invoke-RpcBridgeCli {
         $startInfo.ArgumentList.Add([string]$argument) | Out-Null
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($Role)) {
-        $startInfo.Environment['WINSMUX_ROLE'] = $Role
-    }
+    $startInfo.Environment['WINSMUX_ROLE'] = $script:ServerRole
 
     $process = [System.Diagnostics.Process]::Start($startInfo)
     $stdout = ''
@@ -293,10 +312,9 @@ function Invoke-RpcBridgeRead {
 
     $target = Get-RequiredRpcString -Params $Params -Name 'target'
     $lines = Get-OptionalRpcInt -Params $Params -Name 'lines' -Default 200
-    $role = if (Test-RpcHasProperty -Hashtable $Params -Name 'role') { [string]$Params['role'] } else { $null }
 
-    $resolvedRole = Assert-RpcRole -Role $role -Command 'read' -TargetPane $target
-    $cliResult = Invoke-RpcBridgeCli -Arguments @('read', $target, [string]$lines) -Role $resolvedRole
+    $resolvedRole = Assert-RpcRole -Command 'read' -TargetPane $target
+    $cliResult = Invoke-RpcBridgeCli -Arguments @('read', $target, [string]$lines)
     $result = ConvertFrom-RpcCliResult -CliResult $cliResult
     $result.target = $target
     $result.text = $cliResult.StdOut
@@ -308,10 +326,9 @@ function Invoke-RpcBridgeSend {
 
     $target = Get-RequiredRpcString -Params $Params -Name 'target'
     $text = Get-RequiredRpcString -Params $Params -Name 'text'
-    $role = if (Test-RpcHasProperty -Hashtable $Params -Name 'role') { [string]$Params['role'] } else { $null }
 
-    $resolvedRole = Assert-RpcRole -Role $role -Command 'send' -TargetPane $target
-    $cliResult = Invoke-RpcBridgeCli -Arguments @('send', $target, $text) -Role $resolvedRole
+    $resolvedRole = Assert-RpcRole -Command 'send' -TargetPane $target
+    $cliResult = Invoke-RpcBridgeCli -Arguments @('send', $target, $text)
     $result = ConvertFrom-RpcCliResult -CliResult $cliResult
     $result.target = $target
     return $result
@@ -346,43 +363,26 @@ function ConvertFrom-RpcHealthCliResult {
 function Invoke-RpcBridgeHealth {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Params)
 
-    $role = if (Test-RpcHasProperty -Hashtable $Params -Name 'role') { [string]$Params['role'] } else { $null }
-    $resolvedRole = Assert-RpcRole -Role $role -Command 'health-check' -TargetPane $null
-    $cliResult = Invoke-RpcBridgeCli -Arguments @('health-check') -Role $resolvedRole
+    $resolvedRole = Assert-RpcRole -Command 'health-check' -TargetPane $null
+    $cliResult = Invoke-RpcBridgeCli -Arguments @('health-check')
     return ConvertFrom-RpcHealthCliResult -CliResult $cliResult
 }
 
 function Invoke-RpcBridgeList {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Params)
 
-    $role = if (Test-RpcHasProperty -Hashtable $Params -Name 'role') { [string]$Params['role'] } else { $null }
-    $resolvedRole = Assert-RpcRole -Role $role -Command 'list' -TargetPane $null
-    $cliResult = Invoke-RpcBridgeCli -Arguments @('list') -Role $resolvedRole
+    $resolvedRole = Assert-RpcRole -Command 'list' -TargetPane $null
+    $cliResult = Invoke-RpcBridgeCli -Arguments @('list')
     return ConvertFrom-RpcCliResult -CliResult $cliResult
-}
-
-function Invoke-RpcBridgeVaultGet {
-    param([Parameter(Mandatory)][System.Collections.IDictionary]$Params)
-
-    $key = Get-RequiredRpcString -Params $Params -Name 'key'
-    $role = if (Test-RpcHasProperty -Hashtable $Params -Name 'role') { [string]$Params['role'] } else { $null }
-
-    $resolvedRole = Assert-RpcRole -Role $role -Command 'vault' -TargetPane $null
-    $cliResult = Invoke-RpcBridgeCli -Arguments @('vault', 'get', $key) -Role $resolvedRole
-    $result = ConvertFrom-RpcCliResult -CliResult $cliResult
-    $result.key = $key
-    $result.value = $cliResult.StdOut
-    return $result
 }
 
 function Invoke-RpcBridgeVaultInject {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Params)
 
     $target = Get-RequiredRpcString -Params $Params -Name 'target'
-    $role = if (Test-RpcHasProperty -Hashtable $Params -Name 'role') { [string]$Params['role'] } else { $null }
 
-    $resolvedRole = Assert-RpcRole -Role $role -Command 'vault' -TargetPane $target
-    $cliResult = Invoke-RpcBridgeCli -Arguments @('vault', 'inject', $target) -Role $resolvedRole
+    $resolvedRole = Assert-RpcRole -Command 'vault' -TargetPane $target
+    $cliResult = Invoke-RpcBridgeCli -Arguments @('vault', 'inject', $target)
     $result = ConvertFrom-RpcCliResult -CliResult $cliResult
     $result.target = $target
     return $result
@@ -391,10 +391,9 @@ function Invoke-RpcBridgeVaultInject {
 function Invoke-RpcBridgeDispatch {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Params)
 
-    $role = if (Test-RpcHasProperty -Hashtable $Params -Name 'role') { [string]$Params['role'] } else { $null }
     $target = if (Test-RpcHasProperty -Hashtable $Params -Name 'target') { [string]$Params['target'] } else { $null }
 
-    $resolvedRole = Assert-RpcRole -Role $role -Command 'dispatch' -TargetPane $target
+    $resolvedRole = Assert-RpcRole -Command 'dispatch' -TargetPane $target
 
     $arguments = @('dispatch')
     if (Test-RpcHasProperty -Hashtable $Params -Name 'args') {
@@ -416,15 +415,14 @@ function Invoke-RpcBridgeDispatch {
         }
     }
 
-    $cliResult = Invoke-RpcBridgeCli -Arguments $arguments -Role $resolvedRole
+    $cliResult = Invoke-RpcBridgeCli -Arguments $arguments
     return ConvertFrom-RpcCliResult -CliResult $cliResult
 }
 
 function Invoke-RpcTaskList {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Params)
 
-    $role = if (Test-RpcHasProperty -Hashtable $Params -Name 'role') { [string]$Params['role'] } else { $null }
-    $resolvedRole = Assert-RpcRole -Role $role -Command 'tasks.list' -TargetPane $null
+    $resolvedRole = Assert-RpcRole -Command 'tasks.list' -TargetPane $null
     return [ordered]@{
         role  = $resolvedRole
         tasks = @(Get-SharedTasks)
@@ -436,9 +434,8 @@ function Invoke-RpcTaskClaim {
 
     $taskId = Get-RequiredRpcString -Params $Params -Name 'taskId'
     $agent = Get-RequiredRpcString -Params $Params -Name 'agent'
-    $role = if (Test-RpcHasProperty -Hashtable $Params -Name 'role') { [string]$Params['role'] } else { $null }
 
-    $resolvedRole = Assert-RpcRole -Role $role -Command 'tasks.claim' -TargetPane $null
+    $resolvedRole = Assert-RpcRole -Command 'tasks.claim' -TargetPane $null
     $claimResult = Claim-SharedTask -TaskId $taskId -AgentName $agent
 
     return [ordered]@{
@@ -452,9 +449,8 @@ function Invoke-RpcTaskComplete {
     param([Parameter(Mandatory)][System.Collections.IDictionary]$Params)
 
     $taskId = Get-RequiredRpcString -Params $Params -Name 'taskId'
-    $role = if (Test-RpcHasProperty -Hashtable $Params -Name 'role') { [string]$Params['role'] } else { $null }
 
-    $resolvedRole = Assert-RpcRole -Role $role -Command 'tasks.complete' -TargetPane $null
+    $resolvedRole = Assert-RpcRole -Command 'tasks.complete' -TargetPane $null
     $task = Complete-SharedTask -TaskId $taskId
 
     return [ordered]@{
@@ -474,7 +470,6 @@ function Invoke-RpcMethod {
         'bridge.send'           { return Invoke-RpcBridgeSend -Params $Params }
         'bridge.health'         { return Invoke-RpcBridgeHealth -Params $Params }
         'bridge.list'           { return Invoke-RpcBridgeList -Params $Params }
-        'bridge.vault.get'      { return Invoke-RpcBridgeVaultGet -Params $Params }
         'bridge.vault.inject'   { return Invoke-RpcBridgeVaultInject -Params $Params }
         'bridge.dispatch'       { return Invoke-RpcBridgeDispatch -Params $Params }
         'bridge.tasks.list'     { return Invoke-RpcTaskList -Params $Params }
@@ -525,6 +520,10 @@ function Invoke-RpcRequest {
             }
         }
 
+        if (Test-RpcHasProperty -Hashtable $params -Name 'role') {
+            [void]$params.Remove('role')
+        }
+
         $result = Invoke-RpcMethod -Method $method -Params $params
         return New-RpcSuccessResponse -Id $requestId -Result $result
     } catch [System.Management.Automation.ItemNotFoundException] {
@@ -533,7 +532,9 @@ function Invoke-RpcRequest {
         $code = if ($_.Exception.Message -like 'Invalid Request:*' -or $_.Exception.Message -eq 'Request must be a JSON object.' -or $_.Exception.Message -eq 'Request must not be empty.') { -32600 } else { -32602 }
         return New-RpcErrorResponse -Id $requestId -Code $code -Message $_.Exception.Message -Data $null
     } catch [System.UnauthorizedAccessException] {
-        return New-RpcErrorResponse -Id $requestId -Code -32001 -Message $_.Exception.Message -Data $null
+        $deniedRole = if ([string]::IsNullOrWhiteSpace($script:ServerRole)) { 'Unknown' } else { $script:ServerRole }
+        $message = if ([string]::IsNullOrWhiteSpace($method)) { $_.Exception.Message } else { "DENIED: [$deniedRole] cannot execute [$method]" }
+        return New-RpcErrorResponse -Id $requestId -Code -32003 -Message $message -Data $null
     } catch {
         return New-RpcErrorResponse -Id $requestId -Code -32603 -Message $_.Exception.Message -Data $null
     }
