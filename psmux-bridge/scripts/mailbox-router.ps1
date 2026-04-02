@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 
 $script:MailboxRouterJobPrefix = 'winsmux-mailbox-router'
+$script:MailboxRouterBridgeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\psmux-bridge.ps1'))
 
 function Test-MailboxRouterChannel {
     param([Parameter(Mandatory)][string]$Channel)
@@ -70,12 +71,16 @@ function Start-MailboxRouter {
     }
 
     $pipeNames = Get-MailboxRouterPipeNames -Channel $Channel
+    if (-not (Test-Path -LiteralPath $script:MailboxRouterBridgeScript)) {
+        throw "Bridge CLI not found: $script:MailboxRouterBridgeScript"
+    }
 
     $jobParameters = @{
         Name         = $jobName
         ArgumentList = @(
             $Channel,
             $pipeNames,
+            $script:MailboxRouterBridgeScript,
             $env:APPDATA,
             $env:PATH
         )
@@ -83,6 +88,7 @@ function Start-MailboxRouter {
         param(
             [string]$JobChannel,
             [string[]]$JobPipeNames,
+            [string]$BridgeScriptPath,
             [string]$AppDataPath,
             [string]$PathValue
         )
@@ -240,8 +246,15 @@ function Start-MailboxRouter {
                 [Parameter(Mandatory)][string]$Text
             )
 
-            & $script:PsmuxBin send-keys -t $PaneId -l -- $Text | Out-Null
-            & $script:PsmuxBin send-keys -t $PaneId Enter | Out-Null
+            $output = & pwsh -NoProfile -File $BridgeScriptPath send $PaneId $Text 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                $message = ($output | Out-String).Trim()
+                if ([string]::IsNullOrWhiteSpace($message)) {
+                    $message = "psmux-bridge send failed for $PaneId"
+                }
+
+                throw $message
+            }
         }
 
         function Route-Message {

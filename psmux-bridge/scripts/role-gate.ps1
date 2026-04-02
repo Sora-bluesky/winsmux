@@ -1,79 +1,127 @@
 $RolePermissions = @{
     Commander = @{
-        ReadOwn      = $true
-        ReadOther    = $true
-        SendAny      = $true
+        ReadOwn       = $true
+        ReadOther     = $true
+        SendAny       = $true
         SendCommander = $true
-        HealthCheck  = $true
-        Watch        = $true
-        WaitReady    = $true
-        Vault        = $true
-        Dispatch     = $true
-        TypeOwn      = $true
-        TypeOther    = $false
-        KeysOwn      = $true
-        KeysOther    = $false
-        List         = $true
-        Id           = $true
-        Version      = $true
-        Doctor       = $true
+        HealthCheck   = $true
+        Watch         = $true
+        WaitReady     = $true
+        Vault         = $true
+        Dispatch      = $true
+        TypeOwn       = $true
+        TypeOther     = $false
+        KeysOwn       = $true
+        KeysOther     = $false
+        List          = $true
+        Name          = $true
+        Resolve       = $true
+        Focus         = $true
+        Signal        = $true
+        Wait          = $true
+        Profile       = $true
+        Lock          = $true
+        Unlock        = $true
+        Locks         = $true
+        MailboxCreate = $true
+        MailboxSend   = $true
+        MailboxListen = $true
+        Id            = $true
+        Version       = $true
+        Doctor        = $true
     }
     Builder = @{
-        ReadOwn      = $true
-        ReadOther    = $false
-        SendAny      = $false
+        ReadOwn       = $true
+        ReadOther     = $false
+        SendAny       = $false
         SendCommander = $true
-        HealthCheck  = $false
-        Watch        = $false
-        WaitReady    = $false
-        Vault        = $false
-        Dispatch     = $false
-        TypeOwn      = $true
-        TypeOther    = $false
-        KeysOwn      = $true
-        KeysOther    = $false
-        List         = $true
-        Id           = $true
-        Version      = $true
-        Doctor       = $true
+        HealthCheck   = $false
+        Watch         = $false
+        WaitReady     = $false
+        Vault         = $false
+        Dispatch      = $false
+        TypeOwn       = $true
+        TypeOther     = $false
+        KeysOwn       = $true
+        KeysOther     = $false
+        List          = $true
+        Name          = $true
+        Resolve       = $true
+        Focus         = $false
+        Signal        = $true
+        Wait          = $true
+        Profile       = $false
+        Lock          = $false
+        Unlock        = $false
+        Locks         = $true
+        MailboxCreate = $false
+        MailboxSend   = $true
+        MailboxListen = $false
+        Id            = $true
+        Version       = $true
+        Doctor        = $true
     }
     Researcher = @{
-        ReadOwn      = $true
-        ReadOther    = $false
-        SendAny      = $false
+        ReadOwn       = $true
+        ReadOther     = $false
+        SendAny       = $false
         SendCommander = $true
-        HealthCheck  = $false
-        Watch        = $false
-        WaitReady    = $false
-        Vault        = $false
-        Dispatch     = $false
-        TypeOwn      = $true
-        TypeOther    = $false
-        KeysOwn      = $true
-        KeysOther    = $false
-        List         = $true
-        Id           = $true
-        Version      = $true
-        Doctor       = $true
+        HealthCheck   = $false
+        Watch         = $false
+        WaitReady     = $false
+        Vault         = $false
+        Dispatch      = $false
+        TypeOwn       = $true
+        TypeOther     = $false
+        KeysOwn       = $true
+        KeysOther     = $false
+        List          = $true
+        Name          = $true
+        Resolve       = $true
+        Focus         = $false
+        Signal        = $false
+        Wait          = $false
+        Profile       = $false
+        Lock          = $false
+        Unlock        = $false
+        Locks         = $true
+        MailboxCreate = $false
+        MailboxSend   = $true
+        MailboxListen = $false
+        Id            = $true
+        Version       = $true
+        Doctor        = $true
     }
     Reviewer = @{
-        ReadOwn      = $true
-        ReadOther    = $false
-        SendAny      = $false
+        ReadOwn       = $true
+        ReadOther     = $false
+        SendAny       = $false
         SendCommander = $true
-        HealthCheck  = $false
-        Watch        = $false
-        WaitReady    = $false
-        Vault        = $false
-        Dispatch     = $false
-        TypeOwn      = $true
-        TypeOther    = $false
-        KeysOwn      = $true
-        KeysOther    = $false
-        List         = $true
-        Id           = $true
-        Version      = $true
-        Doctor       = $true
+        HealthCheck   = $false
+        Watch         = $false
+        WaitReady     = $false
+        Vault         = $false
+        Dispatch      = $false
+        TypeOwn       = $true
+        TypeOther     = $false
+        KeysOwn       = $true
+        KeysOther     = $false
+        List          = $true
+        Name          = $true
+        Resolve       = $true
+        Focus         = $false
+        Signal        = $false
+        Wait          = $false
+        Profile       = $false
+        Lock          = $false
+        Unlock        = $false
+        Locks         = $true
+        MailboxCreate = $false
+        MailboxSend   = $true
+        MailboxListen = $false
+        Id            = $true
+        Version       = $true
+        Doctor        = $true
     }
 }
 
@@ -313,6 +361,54 @@ function Assert-Role {
             if ($permissions.List) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
+        'name' {
+            if ($permissions.Name) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'resolve' {
+            if ($permissions.Resolve) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'focus' {
+            if ($permissions.Focus) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'signal' {
+            if ($permissions.Signal) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'wait' {
+            if ($permissions.Wait) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'profile' {
+            if ($permissions.Profile) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'lock' {
+            if ($permissions.Lock) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'unlock' {
+            if ($permissions.Unlock) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'locks' {
+            if ($permissions.Locks) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'mailbox-create' {
+            if ($permissions.MailboxCreate) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'mailbox-send' {
+            if ($permissions.MailboxSend) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'mailbox-listen' {
+            if ($permissions.MailboxListen) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
         'id' {
             if ($permissions.Id) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
@@ -325,6 +421,8 @@ function Assert-Role {
             if ($permissions.Doctor) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
-        default { return $true }
+        default { # fail-close: unknown commands are denied
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
     }
 }

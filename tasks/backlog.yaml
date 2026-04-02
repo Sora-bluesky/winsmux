@@ -426,7 +426,7 @@ tasks:
 
   - id: TASK-054
     title: "Fix vault inject to use psmux set-environment instead of send-keys"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.10.0"
     repo: winsmux
@@ -448,7 +448,7 @@ tasks:
 
   - id: TASK-056
     title: "Fix role-gate.ps1 to deny unknown commands (fail-open → fail-close)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.10.0"
     repo: winsmux
@@ -470,7 +470,7 @@ tasks:
 
   - id: TASK-058
     title: "Eliminate raw send-keys from orchestra-start, mailbox-router, agent-lifecycle"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.10.0"
     repo: winsmux
@@ -481,7 +481,7 @@ tasks:
 
   - id: TASK-059
     title: "Fix task-hooks.ps1: notify Commander instead of auto-assigning work"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.10.0"
     repo: winsmux

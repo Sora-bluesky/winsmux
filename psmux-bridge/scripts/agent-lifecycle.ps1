@@ -1,6 +1,9 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+$script:AgentLifecycleSettingsScriptPath = Join-Path $PSScriptRoot 'settings.ps1'
+. $script:AgentLifecycleSettingsScriptPath
+
 $script:AgentMonitorJobName = 'winsmux-agent-monitor'
 $script:AgentLifecycleState = @{}
 $script:AgentConfigCache = @{}
@@ -28,6 +31,18 @@ function Initialize-AgentLifecycleLog {
     if (-not (Test-Path $script:LifecycleDir)) {
         New-Item -ItemType Directory -Path $script:LifecycleDir -Force | Out-Null
     }
+}
+
+function Redact-SensitiveArgs {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $Text
+    }
+
+    $Text = $Text -replace '(gho_|ghp_|sk-|glpat-)[A-Za-z0-9_\-]+', '$1[REDACTED]'
+    $Text = $Text -replace '(GITHUB_TOKEN|GH_TOKEN|API_KEY|SECRET_KEY|OPENAI_API_KEY)=\S+', '$1=[REDACTED]'
+    return $Text
 }
 
 function Write-AgentLifecycleLog {
@@ -58,7 +73,7 @@ function Write-AgentLifecycleLog {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($Details)) {
-        $singleLineDetails = $Details -replace '\r?\n', ' '
+        $singleLineDetails = (Redact-SensitiveArgs -Text $Details) -replace '\r?\n', ' '
         $parts.Add("details=$singleLineDetails")
     }
 
@@ -244,116 +259,70 @@ function Test-AgentReadySnapshot {
     return $false
 }
 
-function Get-ProcessCommandArguments {
-    param([AllowNull()][string]$CommandLine)
+function ConvertTo-AgentLifecyclePowerShellLiteral {
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Value)
 
-    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
-        return ''
-    }
+    return "'" + ($Value -replace "'", "''") + "'"
+}
 
-    $trimmed = $CommandLine.Trim()
-    if ($trimmed.StartsWith('"')) {
-        $quotedMatch = [regex]::Match($trimmed, '^"[^"]+"\s*(?<args>.*)$')
-        if ($quotedMatch.Success) {
-            return $quotedMatch.Groups['args'].Value
+function Get-AgentLifecycleGitWorktreeDir {
+    param([Parameter(Mandatory)][string]$ProjectDir)
+
+    $dotGitPath = Join-Path $ProjectDir '.git'
+
+    if (Test-Path $dotGitPath -PathType Leaf) {
+        $raw = (Get-Content -Path $dotGitPath -Raw -Encoding UTF8).Trim()
+        if ($raw -match '^gitdir:\s*(.+)$') {
+            return [System.IO.Path]::GetFullPath($Matches[1].Trim())
         }
     }
 
-    $plainMatch = [regex]::Match($trimmed, '^\S+\s*(?<args>.*)$')
-    if ($plainMatch.Success) {
-        return $plainMatch.Groups['args'].Value
+    if (Test-Path $dotGitPath -PathType Container) {
+        return (Get-Item -LiteralPath $dotGitPath).FullName
     }
 
-    return ''
+    return $ProjectDir
 }
 
-function Get-AgentChildProcess {
-    param([Parameter(Mandatory)][int]$ParentProcessId)
+function Get-AgentLifecycleSettings {
+    param([Parameter(Mandatory)][string]$ProjectDir)
+
+    Push-Location -LiteralPath $ProjectDir
+    try {
+        return Get-BridgeSettings
+    } finally {
+        Pop-Location
+    }
+}
+
+function Get-AgentLaunchCommandFromSettings {
+    param([string]$ProjectDir)
+
+    if ([string]::IsNullOrWhiteSpace($ProjectDir)) {
+        return $null
+    }
 
     try {
-        $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $ParentProcessId" -ErrorAction Stop)
+        $settings = Get-AgentLifecycleSettings -ProjectDir $ProjectDir
     } catch {
         return $null
     }
 
-    if (-not $children -or $children.Count -eq 0) {
-        return $null
-    }
+    $agent = [string]$settings.agent
+    $model = [string]$settings.model
+    $gitWorktreeDir = Get-AgentLifecycleGitWorktreeDir -ProjectDir $ProjectDir
 
-    $scored = foreach ($child in $children) {
-        $commandLine = [string]$child.CommandLine
-        $name = [string]$child.Name
-        $score = 0
-
-        if ($commandLine -match '(?i)\bcodex\b' -or $name -match '(?i)^codex') { $score += 30 }
-        if ($commandLine -match '(?i)\bclaude\b' -or $name -match '(?i)^claude') { $score += 30 }
-        if ($commandLine -match '(?i)\bgemini\b') { $score += 30 }
-        if ($name -match '(?i)^(pwsh|powershell|conhost|cmd)(\.exe)?$') { $score -= 20 }
-        if (-not [string]::IsNullOrWhiteSpace($commandLine)) { $score += 5 }
-
-        [PSCustomObject]@{
-            Score   = $score
-            Process = $child
+    switch ($agent.Trim().ToLowerInvariant()) {
+        'codex' {
+            return "codex -c model=$model --full-auto -C $(ConvertTo-AgentLifecyclePowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-AgentLifecyclePowerShellLiteral -Value $gitWorktreeDir)"
+        }
+        'claude' {
+            return 'claude --permission-mode bypassPermissions'
+        }
+        default {
+            return $null
         }
     }
-
-    return ($scored | Sort-Object -Property @{ Expression = 'Score'; Descending = $true } | Select-Object -First 1).Process
-}
-
-function ConvertTo-AgentLaunchCommand {
-    param($ProcessInfo)
-
-    if ($null -eq $ProcessInfo) {
-        return $null
-    }
-
-    $commandLine = [string]$ProcessInfo.CommandLine
-    $executablePath = [string]$ProcessInfo.ExecutablePath
-    $processName = [System.IO.Path]::GetFileNameWithoutExtension([string]$ProcessInfo.Name)
-
-    if (-not [string]::IsNullOrWhiteSpace($executablePath)) {
-        $escapedExecutable = $executablePath -replace "'", "''"
-        $arguments = Get-ProcessCommandArguments -CommandLine $commandLine
-        if ([string]::IsNullOrWhiteSpace($arguments)) {
-            return "& '$escapedExecutable'"
-        }
-
-        return ("& '{0}' {1}" -f $escapedExecutable, $arguments.Trim()).Trim()
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($commandLine)) {
-        return $commandLine.Trim()
-    }
-
-    if (-not [string]::IsNullOrWhiteSpace($processName)) {
-        return $processName
-    }
-
-    return $null
-}
-
-function Get-AgentLaunchFallback {
-    param(
-        [string]$Label,
-        [string[]]$Lines
-    )
-
-    $labelText = if ($Label) { $Label.ToLowerInvariant() } else { '' }
-    $joined = if ($Lines) { ($Lines -join "`n").ToLowerInvariant() } else { '' }
-
-    if ($labelText -match 'codex' -or $joined -match 'codex>' -or $joined -match 'tokens used') {
-        return 'codex'
-    }
-
-    if ($labelText -match 'claude' -or $joined -match 'claude>' -or $joined -match '(?m)^\$\s*$') {
-        return 'claude'
-    }
-
-    if ($labelText -match 'gemini' -or $joined -match 'gemini>' -or $joined -match '(?m)^>\s*$') {
-        return 'gemini'
-    }
-
-    return $null
 }
 
 function Get-AgentConfig {
@@ -362,29 +331,14 @@ function Get-AgentConfig {
     $label = Get-AgentLabelByPaneId -PaneId $PaneId
     $record = Get-PaneRuntimeRecord -PaneId $PaneId
     $knownConfig = if ($script:AgentConfigCache.ContainsKey($PaneId)) { $script:AgentConfigCache[$PaneId] } else { $null }
-    $lines = @()
-    $launchCommand = $null
-
-    if ($record -and $record.IsRunning -and $record.PanePid -match '^\d+$') {
-        $processInfo = Get-AgentChildProcess -ParentProcessId ([int]$record.PanePid)
-        $launchCommand = ConvertTo-AgentLaunchCommand -ProcessInfo $processInfo
-    }
-
-    if ([string]::IsNullOrWhiteSpace($launchCommand)) {
-        try {
-            $lines = Get-PaneOutputLines -PaneId $PaneId -Lines 5
-        } catch {
-            $lines = @()
-        }
-
-        $launchCommand = Get-AgentLaunchFallback -Label $label -Lines $lines
-    }
+    $workingDirectory = if ($record -and -not [string]::IsNullOrWhiteSpace($record.CurrentPath)) { $record.CurrentPath } elseif ($knownConfig) { $knownConfig.WorkingDirectory } else { $null }
+    $launchCommand = Get-AgentLaunchCommandFromSettings -ProjectDir $workingDirectory
 
     $config = [PSCustomObject]@{
         PaneId           = $PaneId
         Label            = $label
         LaunchCommand    = if (-not [string]::IsNullOrWhiteSpace($launchCommand)) { $launchCommand } elseif ($knownConfig) { $knownConfig.LaunchCommand } else { $null }
-        WorkingDirectory = if ($record -and -not [string]::IsNullOrWhiteSpace($record.CurrentPath)) { $record.CurrentPath } elseif ($knownConfig) { $knownConfig.WorkingDirectory } else { $null }
+        WorkingDirectory = $workingDirectory
         CapturedAt       = (Get-Date).ToString('o')
     }
 

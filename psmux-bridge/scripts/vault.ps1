@@ -146,55 +146,133 @@ function Invoke-VaultList {
     }
 }
 
+function Invoke-PsmuxCommand {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$Arguments
+    )
+
+    $global:LASTEXITCODE = 0
+    try {
+        $output = & psmux @Arguments 2>&1
+    } catch {
+        return [PSCustomObject]@{
+            Success  = $false
+            ExitCode = if ($null -eq $LASTEXITCODE) { 1 } else { $LASTEXITCODE }
+            Output   = $_.Exception.Message
+        }
+    }
+
+    $exitCode = if ($null -eq $LASTEXITCODE) { 0 } else { $LASTEXITCODE }
+    return [PSCustomObject]@{
+        Success  = ($exitCode -eq 0)
+        ExitCode = $exitCode
+        Output   = ($output | Out-String).Trim()
+    }
+}
+
+function ConvertTo-PsmuxConfigString {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    $escaped = $Value.Replace('\', '\\').Replace('"', '\"')
+    return '"' + $escaped + '"'
+}
+
+function Get-PsmuxSessionNameForPane {
+    param([Parameter(Mandatory = $true)][string]$PaneId)
+
+    $result = Invoke-PsmuxCommand -Arguments @('display-message', '-p', '-t', $PaneId, '#{session_name}')
+    if (-not $result.Success) {
+        Stop-WithError "Unable to resolve the psmux session for pane $PaneId."
+    }
+
+    $sessionName = $result.Output.Trim()
+    if ([string]::IsNullOrWhiteSpace($sessionName)) {
+        Stop-WithError "psmux returned an empty session name for pane $PaneId."
+    }
+
+    return $sessionName
+}
+
+function Invoke-PsmuxSourceFile {
+    param([Parameter(Mandatory = $true)][string[]]$Commands)
+
+    $tempConf = [System.IO.Path]::GetTempFileName()
+    try {
+        Set-Content -Path $tempConf -Value ($Commands -join [Environment]::NewLine) -NoNewline -Encoding utf8
+        return Invoke-PsmuxCommand -Arguments @('source-file', $tempConf)
+    } finally {
+        Remove-Item -LiteralPath $tempConf -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Invoke-VaultInject {
     if (-not $Target) { Stop-WithError "usage: psmux-bridge vault inject <pane>" }
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
     Assert-ReadMark $paneId
-
-    # Enumerate all winsmux:* credentials
-    $filter = "winsmux:*"
-    $count = 0
-    $credsPtr = [IntPtr]::Zero
-
-    $ok = [WinCred]::CredEnumerate($filter, 0, [ref]$count, [ref]$credsPtr)
-    if (-not $ok) {
-        $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        if ($errCode -eq 1168) {
-            Write-Output "no credentials to inject"
-            return
-        }
-        Stop-WithError "CredEnumerate failed (error $errCode)"
-    }
-
-    $injected = 0
     try {
-        $ptrSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][IntPtr])
-        for ($i = 0; $i -lt $count; $i++) {
-            $entryPtr = [Runtime.InteropServices.Marshal]::ReadIntPtr($credsPtr, $i * $ptrSize)
-            $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($entryPtr, [Type][WinCred+CREDENTIAL])
-            $envName = $cred.TargetName -replace '^winsmux:', ''
+        # Enumerate all winsmux:* credentials
+        $filter = "winsmux:*"
+        $count = 0
+        $credsPtr = [IntPtr]::Zero
 
-            $value = ''
-            if ($cred.CredentialBlobSize -gt 0) {
-                $bytes = New-Object byte[] $cred.CredentialBlobSize
-                [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
-                $value = [System.Text.Encoding]::Unicode.GetString($bytes)
+        $ok = [WinCred]::CredEnumerate($filter, 0, [ref]$count, [ref]$credsPtr)
+        if (-not $ok) {
+            $errCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+            if ($errCode -eq 1168) {
+                Write-Output "no credentials to inject"
+                return
             }
-
-            # Escape single quotes in value for safe injection
-            $escapedValue = $value -replace "'", "''"
-            $setCmd = "`$env:$envName = '$escapedValue'"
-            & psmux send-keys -t $paneId -l -- "$setCmd"
-            & psmux send-keys -t $paneId Enter
-            Start-Sleep -Milliseconds 100
-            $injected++
+            Stop-WithError "CredEnumerate failed (error $errCode)"
         }
-    } finally {
-        [WinCred]::CredFree($credsPtr) | Out-Null
-    }
 
-    Clear-ReadMark $paneId
-    Write-Output "injected $injected credential(s) into $paneId"
+        $entries = [System.Collections.Generic.List[object]]::new()
+        try {
+            $ptrSize = [Runtime.InteropServices.Marshal]::SizeOf([Type][IntPtr])
+            for ($i = 0; $i -lt $count; $i++) {
+                $entryPtr = [Runtime.InteropServices.Marshal]::ReadIntPtr($credsPtr, $i * $ptrSize)
+                $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($entryPtr, [Type][WinCred+CREDENTIAL])
+                $envName = $cred.TargetName -replace '^winsmux:', ''
+
+                $value = ''
+                if ($cred.CredentialBlobSize -gt 0) {
+                    $bytes = New-Object byte[] $cred.CredentialBlobSize
+                    [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
+                    $value = [System.Text.Encoding]::Unicode.GetString($bytes)
+                }
+
+                $entries.Add([PSCustomObject]@{
+                    Name  = $envName
+                    Value = $value
+                }) | Out-Null
+            }
+        } finally {
+            [WinCred]::CredFree($credsPtr) | Out-Null
+        }
+
+        $sessionName = Get-PsmuxSessionNameForPane -PaneId $paneId
+        $commands = foreach ($entry in $entries) {
+            'set-environment -t {0} {1} {2}' -f `
+                (ConvertTo-PsmuxConfigString -Value $sessionName), `
+                (ConvertTo-PsmuxConfigString -Value $entry.Name), `
+                (ConvertTo-PsmuxConfigString -Value $entry.Value)
+        }
+
+        $sourceResult = Invoke-PsmuxSourceFile -Commands $commands
+        if (-not $sourceResult.Success) {
+            # source-file keeps secrets out of argv; direct set-environment remains a last-resort fallback.
+            foreach ($entry in $entries) {
+                $setResult = Invoke-PsmuxCommand -Arguments @('set-environment', '-t', $sessionName, $entry.Name, $entry.Value)
+                if (-not $setResult.Success) {
+                    Stop-WithError "psmux set-environment failed while injecting credentials into $paneId."
+                }
+            }
+        }
+
+        Write-Output "injected $($entries.Count) credential(s) into $paneId"
+    } finally {
+        Clear-ReadMark $paneId
+    }
 }

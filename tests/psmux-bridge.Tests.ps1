@@ -774,5 +774,119 @@ builders: 9
             # Assert
             $action | Should Throw 'invalid target: %99'
         }
+
+        It 'VaultInject prefers source-file so secrets are not passed in argv' {
+            # Arrange
+            $script:Target = 'GH_TOKEN'
+            $script:Rest = @('ghs_example')
+            Invoke-VaultSet | Out-Null
+            $script:Target = 'OPENAI_API_KEY'
+            $script:Rest = @('sk-example')
+            Invoke-VaultSet | Out-Null
+            $script:Target = '%1'
+            $script:Rest = @()
+
+            $script:PsmuxCalls = [System.Collections.Generic.List[object]]::new()
+            $script:SourceFilePath = $null
+            $script:SourceFileContent = $null
+            $script:MarkedPane = $null
+            $script:ClearedPane = $null
+
+            Mock Resolve-Target { param($RawTarget) $RawTarget }
+            Mock Confirm-Target { param($PaneId) $PaneId }
+            Mock Assert-ReadMark { param($PaneId) $script:MarkedPane = $PaneId }
+            Mock Clear-ReadMark { param($PaneId) $script:ClearedPane = $PaneId }
+
+            function psmux {
+                param([Parameter(ValueFromRemainingArguments = $true)][object[]]$Args)
+
+                $script:PsmuxCalls.Add([string[]]$Args) | Out-Null
+                switch ($Args[0]) {
+                    'display-message' {
+                        'winsmux-session'
+                        return
+                    }
+                    'source-file' {
+                        $script:SourceFilePath = [string]$Args[1]
+                        $script:SourceFileContent = Get-Content -Path $script:SourceFilePath -Raw -Encoding UTF8
+                        return
+                    }
+                    default {
+                        throw "unexpected psmux command: $($Args -join ' ')"
+                    }
+                }
+            }
+
+            try {
+                # Act
+                $result = Invoke-VaultInject
+            } finally {
+                Remove-Item Function:\psmux -ErrorAction SilentlyContinue
+            }
+
+            # Assert
+            $result | Should Be 'injected 2 credential(s) into %1'
+            $script:MarkedPane | Should Be '%1'
+            $script:ClearedPane | Should Be '%1'
+            $script:PsmuxCalls.Count | Should Be 2
+            $script:PsmuxCalls[0][0] | Should Be 'display-message'
+            $script:PsmuxCalls[1][0] | Should Be 'source-file'
+            (($script:PsmuxCalls | ForEach-Object { $_ -join ' ' }) -join "`n") | Should Not Match 'ghs_example|sk-example'
+            $script:SourceFileContent | Should Match 'set-environment -t "winsmux-session" "GH_TOKEN" "ghs_example"'
+            $script:SourceFileContent | Should Match 'set-environment -t "winsmux-session" "OPENAI_API_KEY" "sk-example"'
+            (Test-Path -LiteralPath $script:SourceFilePath) | Should Be $false
+        }
+
+        It 'VaultInject falls back to set-environment when source-file fails' {
+            # Arrange
+            $script:Target = 'GH_TOKEN'
+            $script:Rest = @('ghs_example')
+            Invoke-VaultSet | Out-Null
+            $script:Target = '%1'
+            $script:Rest = @()
+
+            $script:PsmuxCalls = [System.Collections.Generic.List[object]]::new()
+
+            Mock Resolve-Target { param($RawTarget) $RawTarget }
+            Mock Confirm-Target { param($PaneId) $PaneId }
+            function psmux {
+                param([Parameter(ValueFromRemainingArguments = $true)][object[]]$Args)
+
+                $script:PsmuxCalls.Add([string[]]$Args) | Out-Null
+                switch ($Args[0]) {
+                    'display-message' {
+                        'winsmux-session'
+                        return
+                    }
+                    'source-file' {
+                        throw 'source-file unavailable'
+                    }
+                    'set-environment' {
+                        return
+                    }
+                    default {
+                        throw "unexpected psmux command: $($Args -join ' ')"
+                    }
+                }
+            }
+
+            try {
+                # Act
+                $result = Invoke-VaultInject
+            } finally {
+                Remove-Item Function:\psmux -ErrorAction SilentlyContinue
+            }
+
+            # Assert
+            $result | Should Be 'injected 1 credential(s) into %1'
+            $script:PsmuxCalls.Count | Should Be 3
+            $script:PsmuxCalls[0][0] | Should Be 'display-message'
+            $script:PsmuxCalls[1][0] | Should Be 'source-file'
+            $script:PsmuxCalls[2][0] | Should Be 'set-environment'
+            $script:PsmuxCalls[2][1] | Should Be '-t'
+            $script:PsmuxCalls[2][2] | Should Be 'winsmux-session'
+            $script:PsmuxCalls[2][3] | Should Be 'GH_TOKEN'
+            $script:PsmuxCalls[2][4] | Should Be 'ghs_example'
+        }
     }
 }
