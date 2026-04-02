@@ -147,7 +147,7 @@ if ($rows -gt 1) {
     Split-Equal -Target $newPaneId -PaneCount $rows -Direction '-v'
 }
 
-$rowIds = Get-PaneIds -Target $newWindowId
+$rowIds = @(Get-PaneIds -Target $newWindowId)
 if ($rowIds.Count -lt $rows) {
     throw "Expected at least $rows row panes but found $($rowIds.Count)."
 }
@@ -165,7 +165,7 @@ if ($cols -gt 1) {
 
 Start-Sleep -Milliseconds 300
 
-$allIds = Get-PaneIds -Target $newWindowId
+$allIds = @(Get-PaneIds -Target $newWindowId)
 if ($allIds.Count -lt $total) {
     throw "Expected at least $total panes but found $($allIds.Count)."
 }
