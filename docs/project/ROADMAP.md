@@ -1,15 +1,15 @@
 # Roadmap
 
 > Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-02 02:00 (+09:00)
+> Last sync: 2026-04-02 12:49 (+09:00)
 
 ## Version Summary
 
 | Version | Tasks | Progress |
 |---------|-------|----------|
-| v0.9.6 | 12 | [=======-------------] 33% (4/12) |
-| v0.9.7 | 4 | [--------------------] 0% (0/4) |
-| v0.10.0 | 2 | [--------------------] 0% (0/2) |
+| v0.9.6 | 10 | [====================] 100% (10/10) |
+| v0.10.0 | 27 | [--------------------] 0% (0/27) |
+| v1.0.0 | 1 | [--------------------] 0% (0/1) |
 
 ## Work Breakdown
 
@@ -17,34 +17,54 @@
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-017 | Implement Orchestra builder isolation (worktree + diff gate) | P0 | winsmux | backlog |
-| [ ] | TASK-001 | Fix resize-pane -x/-y routing to ResizePaneAbsolute | P1 | sora-psmux | backlog |
-| [ ] | TASK-002 | Separate split-window -l (cells) from -p (percent) | P1 | sora-psmux | backlog |
+| [x] | TASK-001 | Fix resize-pane -x/-y routing to ResizePaneAbsolute | P1 | psmux/psmux | done |
+| [x] | TASK-002 | Separate split-window -l (cells) from -p (percent) | P1 | psmux/psmux | done |
 | [x] | TASK-007 | Sync VERSION and install.ps1 to v0.9.5 | P1 | winsmux | done |
 | [x] | TASK-008 | Add orchestra-layout skill and dispatch scripts | P1 | winsmux | done |
 | [x] | TASK-009 | Create ROADMAP.md, backlog.yaml, and sync workflow | P1 | winsmux | done |
 | [x] | TASK-016 | Sync all public docs to v0.9.5 and add version-drift pre-commit gate | P1 | winsmux | done |
-| [ ] | TASK-018 | Orchestra dispatch reliability (Issue #67) | P1 | winsmux | backlog |
-| [ ] | TASK-003 | Fix select-layout tiled pane redistribution | P2 | sora-psmux | backlog |
-| [ ] | TASK-004 | Fix pane_index using pane id instead of actual index | P2 | sora-psmux | backlog |
-| [ ] | TASK-005 | Fix select-pane -T empty string title clear | P2 | sora-psmux | backlog |
-| [ ] | TASK-006 | Fix remote client label last-row clipping | P2 | sora-psmux | backlog |
-
-### v0.9.7
-
-| | ID | Title | Priority | Repo | Status |
-|-|-----|-------|----------|------|--------|
-| [ ] | TASK-010 | Integrate wait-ready into send command | P1 | winsmux | backlog |
-| [ ] | TASK-011 | Add Codex idle prompt detection | P1 | winsmux | backlog |
-| [ ] | TASK-012 | Add agent crash/exit detection | P2 | winsmux | backlog |
-| [ ] | TASK-013 | Add approval prompt detection | P2 | winsmux | backlog |
+| [x] | TASK-019 | Sync sora-psmux fork with upstream (commit 1861eb7) | P1 | sora-psmux | done |
+| [x] | TASK-020 | Submit fork patches as upstream PR (psmux/psmux#175) | P1 | sora-psmux | done |
+| [x] | TASK-003 | Fix select-layout tiled pane redistribution | P2 | psmux/psmux | done |
+| [x] | TASK-023 | File upstream Issues for remaining bugs (#176, #177, #178) | P2 | psmux/psmux | done |
 
 ### v0.10.0
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-014 | Integrate shield-harness hooks into winsmux | P1 | winsmux | backlog |
-| [ ] | TASK-015 | Installer overhaul with shield-harness bundling | P2 | winsmux | backlog |
+| [ ] | TASK-027 | Add role-based command gate to psmux-bridge (Assert-Role) | P0 | winsmux | backlog |
+| [ ] | TASK-028 | Add PreToolUse hook for Commander-side gate (sh-orchestra-gate.js) | P0 | winsmux | backlog |
+| [ ] | TASK-032 | Implement Mailbox-compatible async message router (mailbox-router.ps1) | P0 | winsmux | backlog |
+| [ ] | TASK-033 | Implement Shared Task List with file-lock self-claiming and dependency auto-resolve | P0 | winsmux | backlog |
+| [ ] | TASK-025 | Convert psmux-bridge to PPM-compliant plugin format | P1 | winsmux | backlog |
+| [ ] | TASK-049 | Run 15-agent 15min load test (crash rate < 0.1%, evidence integrity 100%) | P1 | winsmux | backlog |
+| [ ] | TASK-044 | Prepare and submit PR to psmux-plugins upstream | P1 | winsmux | backlog |
+| [ ] | TASK-043 | Expose psmux-bridge as MCP Server for Claude Code Agent Teams integration | P1 | winsmux | backlog |
+| [ ] | TASK-042 | Implement JSON-RPC 2.0 endpoint for psmux-bridge (psmux-bridge-rpc.ps1) | P1 | winsmux | backlog |
+| [ ] | TASK-039 | Make STG3 gate CI-aware (auto-run Pester, deny on coverage < 80%) | P1 | winsmux | backlog |
+| [ ] | TASK-050 | Security audit against THREAT_MODEL.md (22 threats, pen-test all mitigations) | P1 | winsmux | backlog |
+| [ ] | TASK-037 | Set up Pester 5 test framework with AAA pattern for psmux-bridge.ps1 | P1 | winsmux | backlog |
+| [ ] | TASK-038 | Write unit tests for all 11 CLI commands (44+ test cases, coverage >= 75%) | P1 | winsmux | backlog |
+| [ ] | TASK-035 | Implement agent idle/crash detection with auto-respawn (TeammateIdle compat) | P1 | winsmux | backlog |
+| [ ] | TASK-034 | Add TaskCreated / TaskCompleted hook integration for auto-dispatch | P1 | winsmux | backlog |
+| [ ] | TASK-031 | Enhance evidence-ledger with command-trace recording and integrity check | P1 | winsmux | backlog |
+| [ ] | TASK-030 | Add channel event detection and severity boost to sh-user-prompt.js | P1 | winsmux | backlog |
+| [ ] | TASK-029 | Implement Orchestra start automation (Prefix+O full lifecycle) | P1 | winsmux | backlog |
+| [ ] | TASK-026 | Implement hierarchical settings system (project > global > wizard) | P1 | winsmux | backlog |
+| [ ] | TASK-051 | Release v0.10.0 GA (release notes, migration guide, install wizard, version bump) | P1 | winsmux | backlog |
+| [ ] | TASK-040 | Add GitHub Actions CI workflow (Pester on push, coverage badge) | P2 | winsmux | backlog |
+| [ ] | TASK-041 | Write multi-agent integration test (orchestra end-to-end scenario) | P2 | winsmux | backlog |
+| [ ] | TASK-045 | Write REQUIREMENTS.md (functional reqs, NFR, acceptance criteria, traceability matrix) | P2 | winsmux | backlog |
+| [ ] | TASK-046 | Write THREAT_MODEL.md (22 threat IDs mapped to injection-patterns.json, OCSF classification) | P2 | winsmux | backlog |
+| [ ] | TASK-047 | Write ARCHITECTURE.md (4-layer diagram, 22 hooks, data flow, component diagram) | P2 | winsmux | backlog |
+| [ ] | TASK-048 | Write DETAILED_DESIGN.md (hook I/O specs, regex, branch logic, test templates) | P2 | winsmux | backlog |
+| [ ] | TASK-036 | Extend agent-readiness patterns beyond prompt detection (Codex/Gemini/Claude) | P2 | winsmux | backlog |
+
+### v1.0.0
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
+| [ ] | TASK-024 | Upstream merge confirmed — update README and archive winsmux | P1 | winsmux | backlog |
 
 ## Legend
 
