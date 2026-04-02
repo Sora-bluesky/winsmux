@@ -72,6 +72,19 @@ Hooks are in `.claude/hooks/` (git-tracked). Registration:
 - PowerShell: strict mode, UTF-8, `$ErrorActionPreference = 'Stop'`
 - Settings files (`settings.json`, `.claude.json`): edit via `python -c` (not Edit/Write tools — race condition)
 
+## Task Status Rules
+
+Allowed transitions: `backlog` → `wip` → `review` → `done`
+
+| Status | Meaning | Gate |
+|--------|---------|------|
+| backlog | Not started or code exists but untested/gitignored | — |
+| wip | Branch created, active development | git branch exists |
+| review | PR open, code git-tracked, tests pass | `git ls-files` confirms tracked |
+| done | PR merged + runtime test passed | merge commit on main |
+
+**Never set `review` if the script is gitignored.** Run `sync-roadmap.ps1` to auto-detect and fix violations.
+
 ## Key Files
 
 | File | Purpose |
