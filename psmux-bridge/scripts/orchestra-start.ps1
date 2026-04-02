@@ -312,6 +312,43 @@ function New-BuilderWorktree {
     }
 }
 
+function Remove-BuilderWorktree {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$WorktreePath,
+        [Parameter(Mandatory = $true)][string]$BranchName
+    )
+
+    $errors = [System.Collections.Generic.List[string]]::new()
+
+    if (Test-Path -LiteralPath $WorktreePath) {
+        $output = (& git -C $ProjectDir worktree remove --force $WorktreePath 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            if ([string]::IsNullOrWhiteSpace($output)) {
+                $output = 'unknown git worktree remove error'
+            }
+
+            $errors.Add("worktree remove failed for ${WorktreePath}: $output")
+        }
+    }
+
+    $existingBranch = (& git -C $ProjectDir branch --list --format '%(refname:short)' $BranchName 2>$null | Out-String).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($existingBranch)) {
+        $output = (& git -C $ProjectDir branch -D $BranchName 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            if ([string]::IsNullOrWhiteSpace($output)) {
+                $output = 'unknown git branch delete error'
+            }
+
+            $errors.Add("branch delete failed for ${BranchName}: $output")
+        }
+    }
+
+    if ($errors.Count -gt 0) {
+        throw ($errors -join '; ')
+    }
+}
+
 function Get-CanonicalRole {
     param([Parameter(Mandatory = $true)][string]$AssignmentRole)
 
@@ -570,6 +607,10 @@ try {
 
     Invoke-VaultPreflight -Settings $settings
     Invoke-CodexTrustPreflight -ProjectDir $projectDir
+    $syncScript = Join-Path $PSScriptRoot 'sync-roadmap.ps1'
+    if (Test-Path $syncScript) {
+        & $syncScript
+    }
 
     $vaultValues = [ordered]@{}
 
@@ -628,82 +669,110 @@ try {
     Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_ROLE_MAP' -Value (($sessionRoleMap | ConvertTo-Json -Compress))
 
     $paneSummaries = [System.Collections.Generic.List[object]]::new()
+    $createdBuilderWorktrees = [System.Collections.Generic.List[object]]::new()
     $builderIndex = 0
+    $startupSucceeded = $false
 
-    foreach ($pane in @($layout.Panes)) {
-        $assignmentLabel = [string]$pane.Role
-        $canonicalRole = Get-CanonicalRole -AssignmentRole $assignmentLabel
-        $label = $assignmentLabel.ToLowerInvariant()
-        $paneId = [string]$pane.PaneId
-        $launchDir = $projectDir
-        $launchGitWorktreeDir = $gitWorktreeDir
-        $builderBranch = $null
-        $builderWorktreePath = $null
+    try {
+        foreach ($pane in @($layout.Panes)) {
+            $assignmentLabel = [string]$pane.Role
+            $canonicalRole = Get-CanonicalRole -AssignmentRole $assignmentLabel
+            $label = $assignmentLabel.ToLowerInvariant()
+            $paneId = [string]$pane.PaneId
+            $launchDir = $projectDir
+            $launchGitWorktreeDir = $gitWorktreeDir
+            $builderBranch = $null
+            $builderWorktreePath = $null
 
-        if ($canonicalRole -eq 'Builder') {
-            $builderIndex++
-            $builderWorktree = New-BuilderWorktree -ProjectDir $projectDir -BuilderIndex $builderIndex
-            $launchDir = $builderWorktree.WorktreePath
-            $launchGitWorktreeDir = $builderWorktree.GitWorktreeDir
-            $builderBranch = $builderWorktree.BranchName
-            $builderWorktreePath = $builderWorktree.WorktreePath
+            if ($canonicalRole -eq 'Builder') {
+                $builderIndex++
+                $builderWorktree = New-BuilderWorktree -ProjectDir $projectDir -BuilderIndex $builderIndex
+                $launchDir = $builderWorktree.WorktreePath
+                $launchGitWorktreeDir = $builderWorktree.GitWorktreeDir
+                $builderBranch = $builderWorktree.BranchName
+                $builderWorktreePath = $builderWorktree.WorktreePath
+                $createdBuilderWorktrees.Add($builderWorktree)
+            }
+
+            $launchCommand = Get-AgentLaunchCommand -Agent $settings.agent -Model $settings.model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir
+
+            Invoke-Bridge -Arguments @('name', $paneId, $label)
+            try {
+                Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_ROLE' -Value $canonicalRole
+                Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_PANE_ID' -Value $paneId
+                Invoke-Psmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
+                Start-Sleep -Seconds 1
+                Send-OrchestraBridgeCommand -Target $paneId -Text $launchCommand
+            } finally {
+                foreach ($envName in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {
+                    try {
+                        Clear-OrchestraSessionEnvironment -SessionName $sessionName -Name $envName
+                    } catch {
+                    }
+                }
+            }
+
+            $paneSummaries.Add([PSCustomObject]@{
+                Label = $label
+                PaneId = $paneId
+                Role = $canonicalRole
+                LaunchDir = $launchDir
+                BuilderBranch = $builderBranch
+                BuilderWorktreePath = $builderWorktreePath
+            })
         }
 
-        $launchCommand = Get-AgentLaunchCommand -Agent $settings.agent -Model $settings.model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir
-
-        Invoke-Bridge -Arguments @('name', $paneId, $label)
-        try {
-            Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_ROLE' -Value $canonicalRole
-            Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_PANE_ID' -Value $paneId
-            Invoke-Psmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
-            Start-Sleep -Seconds 1
-            Send-OrchestraBridgeCommand -Target $paneId -Text $launchCommand
-        } finally {
-            foreach ($envName in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {
-                try {
-                    Clear-OrchestraSessionEnvironment -SessionName $sessionName -Name $envName
-                } catch {
-                }
+        foreach ($paneSummary in $paneSummaries) {
+            try {
+                Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $settings.agent -TimeoutSeconds 60
+            } catch {
+                Write-Error "Agent readiness timeout for $($paneSummary.Label) [$($paneSummary.PaneId)]: $($_.Exception.Message)"
+                exit 1
             }
         }
 
-        $paneSummaries.Add([PSCustomObject]@{
-            Label = $label
-            PaneId = $paneId
-            Role = $canonicalRole
-            LaunchDir = $launchDir
-            BuilderBranch = $builderBranch
-            BuilderWorktreePath = $builderWorktreePath
-        })
-    }
-
-    foreach ($paneSummary in $paneSummaries) {
-        try {
-            Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $settings.agent -TimeoutSeconds 60
-        } catch {
-            Write-Error "Agent readiness timeout for $($paneSummary.Label) [$($paneSummary.PaneId)]: $($_.Exception.Message)"
-            exit 1
-        }
-    }
-
-    Write-Output "Orchestra session: $sessionName"
-    Write-Output "Agent: $($settings.agent)"
-    Write-Output "Model: $($settings.model)"
-    Write-Output "ProjectDir: $projectDir"
-    Write-Output "GitWorktreeDir: $gitWorktreeDir"
-    Write-Output ''
-    Write-Output 'Panes:'
-    foreach ($paneSummary in $paneSummaries) {
-        Write-Output ("  {0,-14} {1,-8} {2}" -f $paneSummary.Label, $paneSummary.PaneId, $paneSummary.Role)
-    }
-
-    $builderPaneSummaries = @($paneSummaries | Where-Object { $_.Role -eq 'Builder' -and -not [string]::IsNullOrWhiteSpace($_.BuilderWorktreePath) })
-    if ($builderPaneSummaries.Count -gt 0) {
+        Write-Output "Orchestra session: $sessionName"
+        Write-Output "Agent: $($settings.agent)"
+        Write-Output "Model: $($settings.model)"
+        Write-Output "ProjectDir: $projectDir"
+        Write-Output "GitWorktreeDir: $gitWorktreeDir"
         Write-Output ''
-        Write-Output 'Cleanup: remove Builder worktrees after the session ends.'
-        foreach ($paneSummary in $builderPaneSummaries) {
-            $relativeWorktree = [System.IO.Path]::GetRelativePath($projectDir, $paneSummary.BuilderWorktreePath)
-            Write-Output ("  git -C {0} worktree remove {1} ; git -C {0} branch -D {2}" -f $projectDir, $relativeWorktree, $paneSummary.BuilderBranch)
+        Write-Output 'Panes:'
+        foreach ($paneSummary in $paneSummaries) {
+            Write-Output ("  {0,-14} {1,-8} {2}" -f $paneSummary.Label, $paneSummary.PaneId, $paneSummary.Role)
+        }
+
+        $builderPaneSummaries = @($paneSummaries | Where-Object { $_.Role -eq 'Builder' -and -not [string]::IsNullOrWhiteSpace($_.BuilderWorktreePath) })
+        if ($builderPaneSummaries.Count -gt 0) {
+            Write-Output ''
+            Write-Output 'Cleanup: remove Builder worktrees after the session ends.'
+            foreach ($paneSummary in $builderPaneSummaries) {
+                $relativeWorktree = [System.IO.Path]::GetRelativePath($projectDir, $paneSummary.BuilderWorktreePath)
+                Write-Output ("  git -C {0} worktree remove {1} ; git -C {0} branch -D {2}" -f $projectDir, $relativeWorktree, $paneSummary.BuilderBranch)
+            }
+        }
+
+        $startupSucceeded = $true
+    } finally {
+        if (-not $startupSucceeded) {
+            & $psmuxBin has-session -t $sessionName 1>$null 2>$null
+            if ($LASTEXITCODE -eq 0) {
+                try {
+                    Invoke-Psmux -Arguments @('kill-session', '-t', $sessionName)
+                } catch {
+                    Write-Warning "Cleanup: failed to kill session ${sessionName}: $($_.Exception.Message)"
+                }
+            }
+
+            for ($index = $createdBuilderWorktrees.Count - 1; $index -ge 0; $index--) {
+                $builderWorktree = $createdBuilderWorktrees[$index]
+                try {
+                    Remove-BuilderWorktree -ProjectDir $projectDir -WorktreePath $builderWorktree.WorktreePath -BranchName $builderWorktree.BranchName
+                    Write-Warning "Cleanup: removed stale Builder worktree $($builderWorktree.WorktreePath)"
+                } catch {
+                    Write-Warning "Cleanup: failed to remove stale Builder worktree $($builderWorktree.WorktreePath): $($_.Exception.Message)"
+                }
+            }
         }
     }
 } catch {
