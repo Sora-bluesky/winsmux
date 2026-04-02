@@ -124,6 +124,194 @@ function Get-GitWorktreeDir {
     return $ProjectDir
 }
 
+function Get-ProcessSnapshot {
+    $processes = @(Get-CimInstance Win32_Process)
+    $byId = @{}
+    $childrenByParent = @{}
+
+    foreach ($process in $processes) {
+        $byId[[int]$process.ProcessId] = $process
+        $parentId = [int]$process.ParentProcessId
+        if (-not $childrenByParent.ContainsKey($parentId)) {
+            $childrenByParent[$parentId] = [System.Collections.Generic.List[object]]::new()
+        }
+
+        $childrenByParent[$parentId].Add($process)
+    }
+
+    return [PSCustomObject]@{
+        Processes        = $processes
+        ById             = $byId
+        ChildrenByParent = $childrenByParent
+    }
+}
+
+function Get-AncestorProcessIds {
+    param(
+        [Parameter(Mandatory = $true)]$Snapshot,
+        [Parameter(Mandatory = $true)][int]$ProcessId
+    )
+
+    $ids = [System.Collections.Generic.HashSet[int]]::new()
+    $currentId = $ProcessId
+
+    while ($currentId -gt 0 -and $Snapshot.ById.ContainsKey($currentId)) {
+        if (-not $ids.Add($currentId)) {
+            break
+        }
+
+        $currentId = [int]$Snapshot.ById[$currentId].ParentProcessId
+    }
+
+    return $ids
+}
+
+function Get-DescendantProcessIds {
+    param(
+        [Parameter(Mandatory = $true)]$Snapshot,
+        [Parameter(Mandatory = $true)][int[]]$RootProcessIds
+    )
+
+    $ids = [System.Collections.Generic.HashSet[int]]::new()
+    $queue = [System.Collections.Generic.Queue[int]]::new()
+
+    foreach ($rootId in $RootProcessIds) {
+        if ($rootId -gt 0) {
+            $queue.Enqueue($rootId)
+        }
+    }
+
+    while ($queue.Count -gt 0) {
+        $currentId = $queue.Dequeue()
+        if (-not $ids.Add($currentId)) {
+            continue
+        }
+
+        if (-not $Snapshot.ChildrenByParent.ContainsKey($currentId)) {
+            continue
+        }
+
+        foreach ($child in $Snapshot.ChildrenByParent[$currentId]) {
+            $queue.Enqueue([int]$child.ProcessId)
+        }
+    }
+
+    return $ids
+}
+
+function Remove-OrchestraZombieProcesses {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
+        [Parameter(Mandatory = $true)][string]$BridgeScript,
+        [Parameter(Mandatory = $true)][string]$PsmuxBin
+    )
+
+    $snapshot = Get-ProcessSnapshot
+    $protectedIds = Get-AncestorProcessIds -Snapshot $snapshot -ProcessId $PID
+    $candidateIds = [System.Collections.Generic.HashSet[int]]::new()
+
+    & $PsmuxBin has-session -t $SessionName 1>$null 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $panePidOutput = & $PsmuxBin list-panes -t $SessionName -F '#{pane_pid}' 2>$null
+        $paneRootIds = @(
+            $panePidOutput |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { $_ -match '^\d+$' } |
+                ForEach-Object { [int]$_ }
+        )
+
+        if ($paneRootIds.Count -gt 0) {
+            $descendantIds = Get-DescendantProcessIds -Snapshot $snapshot -RootProcessIds $paneRootIds
+            foreach ($descendantId in $descendantIds) {
+                if (-not $snapshot.ById.ContainsKey($descendantId)) {
+                    continue
+                }
+
+                $process = $snapshot.ById[$descendantId]
+                if ($process.Name -in @('codex.exe', 'node.exe')) {
+                    [void]$candidateIds.Add($descendantId)
+                }
+            }
+        }
+    }
+
+    foreach ($process in $snapshot.Processes) {
+        if ($process.Name -notin @('codex.exe', 'node.exe')) {
+            continue
+        }
+
+        $processId = [int]$process.ProcessId
+        $commandLine = [string]$process.CommandLine
+        $parentId = [int]$process.ParentProcessId
+        $parentMissing = ($parentId -le 0) -or (-not $snapshot.ById.ContainsKey($parentId))
+        $matchesOrchestraContext =
+            $commandLine.IndexOf($ProjectDir, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $commandLine.IndexOf($GitWorktreeDir, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $commandLine.IndexOf($BridgeScript, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
+            $commandLine.IndexOf($SessionName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+
+        if ($parentMissing -and $matchesOrchestraContext) {
+            [void]$candidateIds.Add($processId)
+        }
+    }
+
+    $victims = @(
+        $candidateIds |
+            Where-Object { $_ -ne $PID -and -not $protectedIds.Contains($_) -and $snapshot.ById.ContainsKey($_) } |
+            Sort-Object -Unique |
+            ForEach-Object { $snapshot.ById[$_] }
+    )
+
+    foreach ($victim in $victims) {
+        try {
+            Stop-Process -Id ([int]$victim.ProcessId) -Force -ErrorAction Stop
+            Write-Output ("Preflight: killed zombie process {0} ({1})" -f $victim.Name, $victim.ProcessId)
+        } catch {
+            Write-Warning ("Preflight: failed to kill zombie process {0} ({1}): {2}" -f $victim.Name, $victim.ProcessId, $_.Exception.Message)
+        }
+    }
+}
+
+function New-BuilderWorktree {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][int]$BuilderIndex
+    )
+
+    $branchName = "worktree-builder-$BuilderIndex"
+    $worktreeRoot = Join-Path $ProjectDir '.worktrees'
+    $worktreeRelativePath = ".worktrees/builder-$BuilderIndex"
+    $worktreePath = Join-Path $ProjectDir '.worktrees' "builder-$BuilderIndex"
+
+    New-Item -ItemType Directory -Path $worktreeRoot -Force | Out-Null
+
+    if (Test-Path -LiteralPath $worktreePath) {
+        throw "Builder worktree path already exists: $worktreePath. Clean it up before restarting orchestra."
+    }
+
+    $existingBranch = (& git -C $ProjectDir branch --list --format '%(refname:short)' $branchName 2>$null | Out-String).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($existingBranch)) {
+        throw "Builder worktree branch already exists: $branchName. Clean it up before restarting orchestra."
+    }
+
+    $output = (& git -C $ProjectDir worktree add $worktreeRelativePath -b $branchName 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        if ([string]::IsNullOrWhiteSpace($output)) {
+            $output = 'unknown git worktree error'
+        }
+
+        throw "Failed to create Builder worktree $branchName at ${worktreePath}: $output"
+    }
+
+    return [PSCustomObject]@{
+        BranchName     = $branchName
+        WorktreePath   = $worktreePath
+        GitWorktreeDir = Get-GitWorktreeDir -ProjectDir $worktreePath
+    }
+}
+
 function Get-CanonicalRole {
     param([Parameter(Mandatory = $true)][string]$AssignmentRole)
 
@@ -394,6 +582,8 @@ try {
         }
     }
 
+    Remove-OrchestraZombieProcesses -SessionName $sessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -PsmuxBin $psmuxBin
+
     & $psmuxBin has-session -t $sessionName 1>$null 2>$null
     if ($LASTEXITCODE -eq 0) {
         Invoke-Psmux -Arguments @('kill-session', '-t', $sessionName)
@@ -411,7 +601,7 @@ try {
     $env:WINSMUX_ORCHESTRA_PROJECT_DIR = $projectDir
 
     try {
-        $layout = . $layoutScript -Builders $settings.builders -Researchers $settings.researchers -Reviewers $settings.reviewers
+        $layout = . $layoutScript -SessionName $sessionName -Builders $settings.builders -Researchers $settings.researchers -Reviewers $settings.reviewers
     } finally {
         if ($null -eq $previousTargetSession) {
             Remove-Item Env:WINSMUX_ORCHESTRA_SESSION -ErrorAction SilentlyContinue
@@ -431,20 +621,35 @@ try {
         exit 1
     }
 
-    $launchCommand = Get-AgentLaunchCommand -Agent $settings.agent -Model $settings.model -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir
     $paneSummaries = [System.Collections.Generic.List[object]]::new()
+    $builderIndex = 0
 
     foreach ($pane in @($layout.Panes)) {
         $assignmentLabel = [string]$pane.Role
         $canonicalRole = Get-CanonicalRole -AssignmentRole $assignmentLabel
         $label = $assignmentLabel.ToLowerInvariant()
         $paneId = [string]$pane.PaneId
+        $launchDir = $projectDir
+        $launchGitWorktreeDir = $gitWorktreeDir
+        $builderBranch = $null
+        $builderWorktreePath = $null
+
+        if ($canonicalRole -eq 'Builder') {
+            $builderIndex++
+            $builderWorktree = New-BuilderWorktree -ProjectDir $projectDir -BuilderIndex $builderIndex
+            $launchDir = $builderWorktree.WorktreePath
+            $launchGitWorktreeDir = $builderWorktree.GitWorktreeDir
+            $builderBranch = $builderWorktree.BranchName
+            $builderWorktreePath = $builderWorktree.WorktreePath
+        }
+
+        $launchCommand = Get-AgentLaunchCommand -Agent $settings.agent -Model $settings.model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
             Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_ROLE' -Value $canonicalRole
             Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_PANE_ID' -Value $paneId
-            Invoke-Psmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $projectDir)
+            Invoke-Psmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
             Start-Sleep -Seconds 1
             Send-OrchestraBridgeCommand -Target $paneId -Text $launchCommand
         } finally {
@@ -460,6 +665,9 @@ try {
             Label = $label
             PaneId = $paneId
             Role = $canonicalRole
+            LaunchDir = $launchDir
+            BuilderBranch = $builderBranch
+            BuilderWorktreePath = $builderWorktreePath
         })
     }
 
@@ -481,6 +689,16 @@ try {
     Write-Output 'Panes:'
     foreach ($paneSummary in $paneSummaries) {
         Write-Output ("  {0,-14} {1,-8} {2}" -f $paneSummary.Label, $paneSummary.PaneId, $paneSummary.Role)
+    }
+
+    $builderPaneSummaries = @($paneSummaries | Where-Object { $_.Role -eq 'Builder' -and -not [string]::IsNullOrWhiteSpace($_.BuilderWorktreePath) })
+    if ($builderPaneSummaries.Count -gt 0) {
+        Write-Output ''
+        Write-Output 'Cleanup: remove Builder worktrees after the session ends.'
+        foreach ($paneSummary in $builderPaneSummaries) {
+            $relativeWorktree = [System.IO.Path]::GetRelativePath($projectDir, $paneSummary.BuilderWorktreePath)
+            Write-Output ("  git -C {0} worktree remove {1} ; git -C {0} branch -D {2}" -f $projectDir, $relativeWorktree, $paneSummary.BuilderBranch)
+        }
     }
 } catch {
     Write-Error $_.Exception.Message
