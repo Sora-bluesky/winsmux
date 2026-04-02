@@ -6,7 +6,7 @@ param(
 )
 
 # --- Config ---
-$VERSION = "0.9.5"
+$VERSION = "0.9.6"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 

@@ -16,7 +16,7 @@ description: |
   and Windows Terminal Fragment profile management.
 metadata:
   author: Sora-bluesky
-  version: "0.9.5"
+  version: "0.9.6"
   os: win32
   requires: psmux, psmux-bridge
 ---
