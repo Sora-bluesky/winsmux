@@ -29,11 +29,10 @@ tasks/
 skills/
 tests/
 hooks/
-!psmux-bridge/hooks/
-!psmux-bridge/hooks/**
 .githooks/
 .worktrees/
 scripts/sync-*.ps1
+psmux-bridge/scripts/sync-*.ps1
 scripts/bump-*.ps1
 scripts/start-*.ps1
 scripts/run-*.ps1
