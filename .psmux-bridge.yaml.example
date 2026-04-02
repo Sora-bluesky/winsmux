@@ -1,0 +1,11 @@
+# Project-level psmux-bridge settings.
+# Priority: project (.psmux-bridge.yaml) > global (@bridge-*) > built-in defaults.
+
+agent: codex
+model: gpt-5.4
+builders: 4
+researchers: 1
+reviewers: 1
+vault_keys:
+  - GH_TOKEN
+terminal: background
