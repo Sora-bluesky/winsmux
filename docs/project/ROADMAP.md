@@ -1,14 +1,14 @@
 # Roadmap
 
 > Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-02 13:10 (+09:00)
+> Last sync: 2026-04-02 13:16 (+09:00)
 
 ## Version Summary
 
 | Version | Tasks | Progress |
 |---------|-------|----------|
 | v0.9.6 | 10 | [====================] 100% (10/10) |
-| v0.10.0 | 27 | [--------------------] 0% (0/27) |
+| v0.10.0 | 28 | [--------------------] 0% (0/28) |
 | v1.0.0 | 1 | [--------------------] 0% (0/1) |
 
 ## Work Breakdown
@@ -38,12 +38,12 @@
 | [ ] | TASK-033 | Implement Shared Task List with file-lock self-claiming and dependency auto-resolve | P0 | winsmux | backlog |
 | [ ] | TASK-025 | Extract psmux-bridge CLI as PPM plugin (winsmux remains as platform) | P1 | winsmux | backlog |
 | [ ] | TASK-049 | Run 15-agent 15min load test (crash rate < 0.1%, evidence integrity 100%) | P1 | winsmux | backlog |
+| [ ] | TASK-052 | Rewrite README.md/README.ja.md to reflect platform positioning and 3 unique strengths | P1 | winsmux | backlog |
 | [ ] | TASK-044 | Prepare and submit PR to psmux-plugins upstream | P1 | winsmux | backlog |
 | [ ] | TASK-043 | Expose psmux-bridge as MCP Server for Claude Code Agent Teams integration | P1 | winsmux | backlog |
 | [ ] | TASK-042 | Implement JSON-RPC 2.0 endpoint for psmux-bridge (psmux-bridge-rpc.ps1) | P1 | winsmux | backlog |
 | [ ] | TASK-039 | Make STG3 gate CI-aware (auto-run Pester, deny on coverage < 80%) | P1 | winsmux | backlog |
 | [ ] | TASK-050 | Security audit against THREAT_MODEL.md (22 threats, pen-test all mitigations) | P1 | winsmux | backlog |
-| [ ] | TASK-037 | Set up Pester 5 test framework with AAA pattern for psmux-bridge.ps1 | P1 | winsmux | backlog |
 | [ ] | TASK-038 | Write unit tests for all 11 CLI commands (44+ test cases, coverage >= 75%) | P1 | winsmux | backlog |
 | [ ] | TASK-035 | Implement agent idle/crash detection with auto-respawn (TeammateIdle compat) | P1 | winsmux | backlog |
 | [ ] | TASK-034 | Add TaskCreated / TaskCompleted hook integration for auto-dispatch | P1 | winsmux | backlog |
@@ -51,14 +51,15 @@
 | [ ] | TASK-030 | Add channel event detection and severity boost to sh-user-prompt.js | P1 | winsmux | backlog |
 | [ ] | TASK-029 | Implement Orchestra start automation (Prefix+O full lifecycle) | P1 | winsmux | backlog |
 | [ ] | TASK-026 | Implement hierarchical settings system (project > global > wizard) | P1 | winsmux | backlog |
+| [ ] | TASK-037 | Set up Pester 5 test framework with AAA pattern for psmux-bridge.ps1 | P1 | winsmux | backlog |
 | [ ] | TASK-051 | Release v0.10.0 GA (release notes, migration guide, install wizard, version bump) | P1 | winsmux | backlog |
+| [ ] | TASK-036 | Extend agent-readiness patterns beyond prompt detection (Codex/Gemini/Claude) | P2 | winsmux | backlog |
 | [ ] | TASK-040 | Add GitHub Actions CI workflow (Pester on push, coverage badge) | P2 | winsmux | backlog |
 | [ ] | TASK-041 | Write multi-agent integration test (orchestra end-to-end scenario) | P2 | winsmux | backlog |
 | [ ] | TASK-045 | Write REQUIREMENTS.md (functional reqs, NFR, acceptance criteria, traceability matrix) | P2 | winsmux | backlog |
 | [ ] | TASK-046 | Write THREAT_MODEL.md (22 threat IDs mapped to injection-patterns.json, OCSF classification) | P2 | winsmux | backlog |
 | [ ] | TASK-047 | Write ARCHITECTURE.md (4-layer diagram, 22 hooks, data flow, component diagram) | P2 | winsmux | backlog |
 | [ ] | TASK-048 | Write DETAILED_DESIGN.md (hook I/O specs, regex, branch logic, test templates) | P2 | winsmux | backlog |
-| [ ] | TASK-036 | Extend agent-readiness patterns beyond prompt detection (Codex/Gemini/Claude) | P2 | winsmux | backlog |
 
 ### v1.0.0
 
