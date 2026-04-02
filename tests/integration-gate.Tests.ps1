@@ -2,8 +2,7 @@ $script:RoleGateScript = Join-Path $PSScriptRoot '..\psmux-bridge\scripts\role-g
 $script:AllRoles = @('Commander', 'Builder', 'Researcher', 'Reviewer')
 
 function psmux {
-    param([Parameter(ValueFromRemainingArguments = $true)][object[]]$Args)
-    throw "psmux should be mocked in tests: $($Args -join ' ')"
+    throw "psmux should be mocked in tests: $($args -join ' ')"
 }
 
 function Invoke-CommandAction {
@@ -48,17 +47,18 @@ function Invoke-GateEnforcedCommand {
 
     Set-TestWinsmuxRole -Role $Role
 
-    $gateErrors = @()
-    $allowed = Assert-Role -Command $Command -TargetPane $TargetPane -ErrorAction SilentlyContinue -ErrorVariable gateErrors
+    if ([string]::IsNullOrWhiteSpace($env:WINSMUX_ROLE)) {
+        throw 'WINSMUX_ROLE not set'
+    }
 
+    $canonicalRole = ConvertTo-CanonicalWinsmuxRole $env:WINSMUX_ROLE
+    if ($null -eq $canonicalRole) {
+        throw "Invalid WINSMUX_ROLE: $($env:WINSMUX_ROLE)"
+    }
+
+    $allowed = (& { Assert-Role -Command $Command -TargetPane $TargetPane }) 2>$null
     if (-not $allowed) {
-        $message = if ($gateErrors.Count -gt 0) {
-            ($gateErrors | Select-Object -Last 1 | ForEach-Object { $_.ToString() })
-        } else {
-            "DENIED: [$Role] cannot execute [$Command]"
-        }
-
-        throw $message
+        throw "DENIED: [$canonicalRole] cannot execute [$Command]"
     }
 
     return Invoke-CommandAction -Command $Command -TargetPane $TargetPane -Arguments $Arguments
@@ -84,12 +84,10 @@ Describe 'integration gate enforcement' {
         }
 
         Mock psmux {
-            param([Parameter(ValueFromRemainingArguments = $true)][object[]]$Args)
-
-            switch ($Args[0]) {
+            switch ($args[0]) {
                 'display-message' {
-                    if ($Args[-1] -eq '#{pane_title}') {
-                        switch ($Args[3]) {
+                    if ($args[-1] -eq '#{pane_title}') {
+                        switch ($args[3]) {
                             '%1' { return 'Builder-1' }
                             '%3' { return 'Reviewer-1' }
                             '%5' { return 'Researcher-1' }
@@ -113,7 +111,7 @@ Describe 'integration gate enforcement' {
                     return
                 }
                 default {
-                    throw "unexpected psmux command: $($Args -join ' ')"
+                    throw "unexpected psmux command: $($args -join ' ')"
                 }
             }
         }
@@ -127,22 +125,22 @@ Describe 'integration gate enforcement' {
 
             switch ($Command) {
                 'read' {
-                    return (& psmux capture-pane -t $TargetPane -p -J -S '-20' | Out-String).Trim()
+                    return (& psmux @('capture-pane', '-t', $TargetPane, '-p', '-J', '-S', '-20') | Out-String).Trim()
                 }
                 'send' {
-                    & psmux send-keys -t $TargetPane -l -- ($Arguments -join ' ')
-                    & psmux send-keys -t $TargetPane Enter
+                    & psmux @('send-keys', '-t', $TargetPane, '-l', '--', ($Arguments -join ' '))
+                    & psmux @('send-keys', '-t', $TargetPane, 'Enter')
                     return "sent to $TargetPane"
                 }
                 'vault' {
-                    & psmux source-file 'vault.ps1'
+                    & psmux @('source-file', 'vault.ps1')
                     return 'vault ok'
                 }
                 'health-check' {
-                    return (& psmux list-panes -a -F '#{pane_id}' | Out-String).Trim()
+                    return (& psmux @('list-panes', '-a', '-F', '#{pane_id}') | Out-String).Trim()
                 }
                 'list' {
-                    return (& psmux list-panes -a -F '#{pane_id}' | Out-String).Trim()
+                    return (& psmux @('list-panes', '-a', '-F', '#{pane_id}') | Out-String).Trim()
                 }
                 'version' {
                     return 'psmux-bridge 0.9.6'
@@ -173,53 +171,55 @@ Describe 'integration gate enforcement' {
             $env:APPDATA = $script:OriginalAppData
         }
 
-        $script:RoleGateLabelsFile = Join-Path $env:APPDATA 'winsmux\labels.json'
+        if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
+            $script:RoleGateLabelsFile = Join-Path $env:APPDATA 'winsmux\labels.json'
+        }
     }
 
     Context 'deny paths' {
         It 'test_gate_builder_vault_denied' {
-            { Invoke-GateEnforcedCommand -Role 'Builder' -Command 'vault' } | Should -Throw '*DENIED*'
-            Should -Invoke Invoke-CommandAction -Times 0 -Exactly
+            { Invoke-GateEnforcedCommand -Role 'Builder' -Command 'vault' } | Should Throw 'DENIED'
+            Assert-MockCalled Invoke-CommandAction -Times 0 -Exactly -Scope It
         }
 
         It 'test_gate_builder_health_check_denied' {
-            { Invoke-GateEnforcedCommand -Role 'Builder' -Command 'health-check' } | Should -Throw '*DENIED*'
-            Should -Invoke Invoke-CommandAction -Times 0 -Exactly
+            { Invoke-GateEnforcedCommand -Role 'Builder' -Command 'health-check' } | Should Throw 'DENIED'
+            Assert-MockCalled Invoke-CommandAction -Times 0 -Exactly -Scope It
         }
 
         It 'test_gate_builder_dispatch_denied' {
-            { Invoke-GateEnforcedCommand -Role 'Builder' -Command 'dispatch' } | Should -Throw '*DENIED*'
-            Should -Invoke Invoke-CommandAction -Times 0 -Exactly
+            { Invoke-GateEnforcedCommand -Role 'Builder' -Command 'dispatch' } | Should Throw 'DENIED'
+            Assert-MockCalled Invoke-CommandAction -Times 0 -Exactly -Scope It
         }
 
         It 'test_gate_builder_read_other_pane_denied' {
-            { Invoke-GateEnforcedCommand -Role 'Builder' -Command 'read' -TargetPane 'reviewer' } | Should -Throw '*DENIED*'
-            Should -Invoke Invoke-CommandAction -Times 0 -Exactly
+            { Invoke-GateEnforcedCommand -Role 'Builder' -Command 'read' -TargetPane 'reviewer' } | Should Throw 'DENIED'
+            Assert-MockCalled Invoke-CommandAction -Times 0 -Exactly -Scope It
         }
 
         It 'test_gate_researcher_vault_denied' {
-            { Invoke-GateEnforcedCommand -Role 'Researcher' -Command 'vault' } | Should -Throw '*DENIED*'
-            Should -Invoke Invoke-CommandAction -Times 0 -Exactly
+            { Invoke-GateEnforcedCommand -Role 'Researcher' -Command 'vault' } | Should Throw 'DENIED'
+            Assert-MockCalled Invoke-CommandAction -Times 0 -Exactly -Scope It
         }
 
         It 'test_gate_reviewer_send_non_commander_denied' {
-            { Invoke-GateEnforcedCommand -Role 'Reviewer' -Command 'send' -TargetPane 'reviewer' -Arguments @('status') } | Should -Throw '*DENIED*'
-            Should -Invoke Invoke-CommandAction -Times 0 -Exactly
+            { Invoke-GateEnforcedCommand -Role 'Reviewer' -Command 'send' -TargetPane 'reviewer' -Arguments @('status') } | Should Throw 'DENIED'
+            Assert-MockCalled Invoke-CommandAction -Times 0 -Exactly -Scope It
         }
 
         It 'test_gate_missing_role_denied' {
-            { Invoke-GateEnforcedCommand -Role $null -Command 'read' -TargetPane 'builder' } | Should -Throw '*WINSMUX_ROLE not set*'
-            Should -Invoke Invoke-CommandAction -Times 0 -Exactly
+            { Invoke-GateEnforcedCommand -Role $null -Command 'read' -TargetPane 'builder' } | Should Throw 'WINSMUX_ROLE not set'
+            Assert-MockCalled Invoke-CommandAction -Times 0 -Exactly -Scope It
         }
 
         It 'test_gate_unknown_role_denied' {
-            { Invoke-GateEnforcedCommand -Role 'admin' -Command 'read' -TargetPane 'builder' } | Should -Throw '*Invalid WINSMUX_ROLE*'
-            Should -Invoke Invoke-CommandAction -Times 0 -Exactly
+            { Invoke-GateEnforcedCommand -Role 'admin' -Command 'read' -TargetPane 'builder' } | Should Throw 'Invalid WINSMUX_ROLE'
+            Assert-MockCalled Invoke-CommandAction -Times 0 -Exactly -Scope It
         }
 
         It 'test_gate_unknown_command_denied' {
-            { Invoke-GateEnforcedCommand -Role 'Commander' -Command 'foobar' -TargetPane 'builder' } | Should -Throw '*DENIED*'
-            Should -Invoke Invoke-CommandAction -Times 0 -Exactly
+            { Invoke-GateEnforcedCommand -Role 'Commander' -Command 'foobar' -TargetPane 'builder' } | Should Throw 'DENIED'
+            Assert-MockCalled Invoke-CommandAction -Times 0 -Exactly -Scope It
         }
     }
 
@@ -227,74 +227,80 @@ Describe 'integration gate enforcement' {
         It 'test_gate_commander_read_any_pane_allowed' {
             $result = Invoke-GateEnforcedCommand -Role 'Commander' -Command 'read' -TargetPane 'reviewer'
 
-            $result | Should -Be 'captured pane output'
-            Should -Invoke Invoke-CommandAction -Times 1 -Exactly
-            Should -Invoke psmux -Times 1 -Exactly -ParameterFilter { $Args[0] -eq 'capture-pane' }
+            $result | Should Be 'captured pane output'
+            Assert-MockCalled Invoke-CommandAction -Times 1 -Exactly -Scope It
+            Assert-MockCalled psmux -Times 1 -Exactly -ParameterFilter { $args[0] -eq 'capture-pane' } -Scope It
         }
 
         It 'test_gate_commander_send_any_pane_allowed' {
             $result = Invoke-GateEnforcedCommand -Role 'Commander' -Command 'send' -TargetPane 'reviewer' -Arguments @('run tests')
 
-            $result | Should -Be 'sent to reviewer'
-            Should -Invoke Invoke-CommandAction -Times 1 -Exactly
-            Should -Invoke psmux -Times 2 -Exactly -ParameterFilter { $Args[0] -eq 'send-keys' }
+            $result | Should Be 'sent to reviewer'
+            Assert-MockCalled Invoke-CommandAction -Times 1 -Exactly -Scope It
+            Assert-MockCalled psmux -Times 2 -Exactly -ParameterFilter { $args[0] -eq 'send-keys' } -Scope It
         }
 
         It 'test_gate_commander_vault_allowed' {
             $result = Invoke-GateEnforcedCommand -Role 'Commander' -Command 'vault'
 
-            $result | Should -Be 'vault ok'
-            Should -Invoke Invoke-CommandAction -Times 1 -Exactly
-            Should -Invoke psmux -Times 1 -Exactly -ParameterFilter { $Args[0] -eq 'source-file' }
+            $result | Should Be 'vault ok'
+            Assert-MockCalled Invoke-CommandAction -Times 1 -Exactly -Scope It
+            Assert-MockCalled psmux -Times 1 -Exactly -ParameterFilter { $args[0] -eq 'source-file' } -Scope It
         }
 
         It 'test_gate_builder_read_own_pane_allowed' {
             $result = Invoke-GateEnforcedCommand -Role 'Builder' -Command 'read' -TargetPane 'builder'
 
-            $result | Should -Be 'captured pane output'
-            Should -Invoke Invoke-CommandAction -Times 1 -Exactly
-            Should -Invoke psmux -Times 1 -Exactly -ParameterFilter { $Args[0] -eq 'capture-pane' }
+            $result | Should Be 'captured pane output'
+            Assert-MockCalled Invoke-CommandAction -Times 1 -Exactly -Scope It
+            Assert-MockCalled psmux -Times 1 -Exactly -ParameterFilter { $args[0] -eq 'capture-pane' } -Scope It
         }
 
         It 'test_gate_builder_send_commander_allowed' {
             $result = Invoke-GateEnforcedCommand -Role 'Builder' -Command 'send' -TargetPane 'commander' -Arguments @('done')
 
-            $result | Should -Be 'sent to commander'
-            Should -Invoke Invoke-CommandAction -Times 1 -Exactly
-            Should -Invoke psmux -Times 2 -Exactly -ParameterFilter { $Args[0] -eq 'send-keys' }
+            $result | Should Be 'sent to commander'
+            Assert-MockCalled Invoke-CommandAction -Times 1 -Exactly -Scope It
+            Assert-MockCalled psmux -Times 2 -Exactly -ParameterFilter { $args[0] -eq 'send-keys' } -Scope It
         }
 
-        It 'test_gate_all_roles_version_allowed' -ForEach $script:AllRoles {
-            $result = Invoke-GateEnforcedCommand -Role $_ -Command 'version'
+        foreach ($role in $script:AllRoles) {
+            $currentRole = $role
 
-            $result | Should -Be 'psmux-bridge 0.9.6'
-            Should -Invoke Invoke-CommandAction -Times 1 -Exactly
-            Should -Invoke psmux -Times 0 -Exactly -ParameterFilter { $Args[0] -eq 'capture-pane' -or $Args[0] -eq 'send-keys' -or $Args[0] -eq 'list-panes' -or $Args[0] -eq 'source-file' }
+            It "test_gate_${currentRole}_version_allowed" {
+                $result = Invoke-GateEnforcedCommand -Role $currentRole -Command 'version'
+
+                $result | Should Be 'psmux-bridge 0.9.6'
+                Assert-MockCalled Invoke-CommandAction -Times 1 -Exactly -Scope It
+                Assert-MockCalled psmux -Times 0 -Exactly -ParameterFilter { $args[0] -eq 'capture-pane' -or $args[0] -eq 'send-keys' -or $args[0] -eq 'list-panes' -or $args[0] -eq 'source-file' } -Scope It
+            }
         }
 
-        It 'test_gate_all_roles_list_allowed' -ForEach $script:AllRoles {
-            $result = Invoke-GateEnforcedCommand -Role $_ -Command 'list'
+        foreach ($role in $script:AllRoles) {
+            $currentRole = $role
 
-            $result | Should -Match '%1'
-            Should -Invoke Invoke-CommandAction -Times 1 -Exactly
-            Should -Invoke psmux -Times 1 -Exactly -ParameterFilter { $Args[0] -eq 'list-panes' }
+            It "test_gate_${currentRole}_list_allowed" {
+                $result = Invoke-GateEnforcedCommand -Role $currentRole -Command 'list'
+
+                $result | Should Match '%1'
+                Assert-MockCalled Invoke-CommandAction -Times 1 -Exactly -Scope It
+                Assert-MockCalled psmux -Times 1 -Exactly -ParameterFilter { $args[0] -eq 'list-panes' } -Scope It
+            }
         }
     }
 
     Context 'fail close' {
         It 'test_gate_fake_command_not_in_switch_denied' {
-            { Invoke-GateEnforcedCommand -Role 'Commander' -Command 'future-command' -TargetPane 'builder' } | Should -Throw '*DENIED*'
-            Should -Invoke Invoke-CommandAction -Times 0 -Exactly
+            { Invoke-GateEnforcedCommand -Role 'Commander' -Command 'future-command' -TargetPane 'builder' } | Should Throw 'DENIED'
+            Assert-MockCalled Invoke-CommandAction -Times 0 -Exactly -Scope It
         }
 
         It 'test_gate_default_branch_returns_false' {
             Set-TestWinsmuxRole -Role 'Commander'
 
-            $gateErrors = @()
-            $result = Assert-Role -Command 'future-command' -TargetPane 'builder' -ErrorAction SilentlyContinue -ErrorVariable gateErrors
+            $result = (& { Assert-Role -Command 'future-command' -TargetPane 'builder' }) 2>$null
 
-            $result | Should -BeFalse
-            ($gateErrors | Select-Object -Last 1 | ForEach-Object { $_.ToString() }) | Should -Match 'DENIED'
+            $result | Should Be $false
         }
     }
 }
