@@ -1494,10 +1494,13 @@ switch ($Command) {
         & $routerScript -Text ($fullText -join ' ')
     }
     'pipeline' {
-        $pipelineScript = Join-Path $PSScriptRoot '..\psmux-bridge\scripts\team-pipeline.ps1'
-        $pipelineArgs = @()
-        if ($Target) { $pipelineArgs += '-Task'; $pipelineArgs += ($Target + ' ' + ($Rest -join ' ')).Trim() }
-        & $pipelineScript @pipelineArgs
+        $pipelineScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\team-pipeline.ps1'))
+        $taskText = (@($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
+        if ($taskText) {
+            & pwsh -NoProfile -File $pipelineScript -Task $taskText
+        } else {
+            & pwsh -NoProfile -File $pipelineScript
+        }
     }
     'vault'           {
         switch ($Target) {
