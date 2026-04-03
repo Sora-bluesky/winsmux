@@ -7,6 +7,7 @@
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const {
   readHookInput,
@@ -19,7 +20,8 @@ const {
 } = require("./lib/sh-utils");
 
 const HOOK_NAME = "sh-postcompact";
-const BACKUP_DIR = path.join(SH_DIR, "compact-backup");
+const SAFE_SH_DIR = typeof SH_DIR === "string" && SH_DIR ? SH_DIR : os.tmpdir();
+const BACKUP_DIR = path.join(SAFE_SH_DIR, "compact-backup");
 const CLAUDE_MD = "CLAUDE.md";
 
 // ---------------------------------------------------------------------------
