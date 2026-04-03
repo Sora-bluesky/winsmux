@@ -6,8 +6,7 @@ $scriptDir = $PSScriptRoot
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$legacyDetachedSessionName = 'winsmux-orchestra'
-$sessionName = $null
+$sessionName = 'winsmux-orchestra'
 $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\psmux-bridge.ps1'))
 $layoutScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir 'orchestra-layout.ps1'))
 $psmuxBin = Get-PsmuxBin
@@ -104,19 +103,6 @@ function Get-ProjectDir {
     }
 
     return (Get-Location).Path
-}
-
-function Get-CurrentSessionName {
-    try {
-        $sessionOutput = Invoke-Psmux -Arguments @('display-message', '-p', '#{session_name}') -CaptureOutput
-        $resolved = ($sessionOutput | Out-String).Trim()
-        if (-not [string]::IsNullOrWhiteSpace($resolved)) {
-            return $resolved
-        }
-    } catch {
-    }
-
-    throw 'Could not determine the current psmux session. Run orchestra-start from inside an attached psmux client.'
 }
 
 function Get-GitWorktreeDir {
@@ -530,6 +516,74 @@ function Get-TailPreview {
     return ($lines[($lines.Length - $LineCount)..($lines.Length - 1)] -join [Environment]::NewLine)
 }
 
+function ConvertTo-YamlScalar {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return 'null'
+    }
+
+    if ($Value -is [bool]) {
+        if ($Value) {
+            return 'true'
+        }
+
+        return 'false'
+    }
+
+    $text = [string]$Value
+    if ($text.Length -eq 0) {
+        return "''"
+    }
+
+    return "'" + $text.Replace("'", "''") + "'"
+}
+
+function Get-OrchestraManifestPath {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    return (Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml')
+}
+
+function Save-OrchestraSessionState {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)]$Settings,
+        [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
+        [Parameter(Mandatory = $true)][System.Collections.IEnumerable]$PaneSummaries
+    )
+
+    $manifestPath = Get-OrchestraManifestPath -ProjectDir $ProjectDir
+    $manifestDir = Split-Path -Parent $manifestPath
+    New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.Add('version: 1') | Out-Null
+    $lines.Add(('saved_at: {0}' -f (ConvertTo-YamlScalar -Value (Get-Date -Format o)))) | Out-Null
+    $lines.Add('session:') | Out-Null
+    $lines.Add(('  name: {0}' -f (ConvertTo-YamlScalar -Value $SessionName))) | Out-Null
+    $lines.Add("  status: 'running'") | Out-Null
+    $lines.Add(('  agent: {0}' -f (ConvertTo-YamlScalar -Value $Settings.agent))) | Out-Null
+    $lines.Add(('  model: {0}' -f (ConvertTo-YamlScalar -Value $Settings.model))) | Out-Null
+    $lines.Add(('  project_dir: {0}' -f (ConvertTo-YamlScalar -Value $ProjectDir))) | Out-Null
+    $lines.Add(('  git_worktree_dir: {0}' -f (ConvertTo-YamlScalar -Value $GitWorktreeDir))) | Out-Null
+    $lines.Add('panes:') | Out-Null
+
+    foreach ($paneSummary in @($PaneSummaries)) {
+        $lines.Add(('  - label: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.Label))) | Out-Null
+        $lines.Add(('    pane_id: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.PaneId))) | Out-Null
+        $lines.Add(('    role: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.Role))) | Out-Null
+        $lines.Add(('    launch_dir: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.LaunchDir))) | Out-Null
+        $lines.Add(('    builder_branch: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.BuilderBranch))) | Out-Null
+        $lines.Add(('    builder_worktree_path: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.BuilderWorktreePath))) | Out-Null
+        $lines.Add("    task: null") | Out-Null
+    }
+
+    Set-Content -Path $manifestPath -Value ($lines -join [Environment]::NewLine) -Encoding UTF8 -NoNewline
+    return $manifestPath
+}
+
 function Test-AgentPromptText {
     param(
         [AllowNull()][string]$Text,
@@ -596,14 +650,14 @@ try {
         }
     }
 
-    Remove-OrchestraZombieProcesses -SessionName $legacyDetachedSessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -PsmuxBin $psmuxBin
+    Remove-OrchestraZombieProcesses -SessionName $sessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -PsmuxBin $psmuxBin
 
-    & $psmuxBin has-session -t $legacyDetachedSessionName 1>$null 2>$null
+    & $psmuxBin has-session -t $sessionName 1>$null 2>$null
     if ($LASTEXITCODE -eq 0) {
-        Invoke-Psmux -Arguments @('kill-session', '-t', $legacyDetachedSessionName)
+        Invoke-Psmux -Arguments @('kill-session', '-t', $sessionName)
     }
 
-    $sessionName = Get-CurrentSessionName
+    Invoke-Psmux -Arguments @('new-session', '-d', '-s', $sessionName)
 
     foreach ($entry in $vaultValues.GetEnumerator()) {
         Invoke-Psmux -Arguments @('set-environment', '-t', $sessionName, $entry.Key, $entry.Value)
@@ -720,6 +774,10 @@ try {
             Write-Output ("  git -C {0} worktree remove {1} ; git -C {0} branch -D {2}" -f $projectDir, $relativeWorktree, $paneSummary.BuilderBranch)
         }
     }
+
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $paneSummaries
+    Write-Output ''
+    Write-Output "Manifest: $manifestPath"
 } catch {
     Write-Error $_.Exception.Message
     exit 1
