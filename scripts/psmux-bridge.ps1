@@ -1489,7 +1489,8 @@ switch ($Command) {
     'verify'          { Invoke-Verify }
     'dispatch-route'  {
         $routerScript = Join-Path $PSScriptRoot '..\psmux-bridge\scripts\dispatch-router.ps1'
-        & $routerScript -Text ($Rest -join ' ')
+        $fullText = @($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+        & $routerScript -Text ($fullText -join ' ')
     }
     'vault'           {
         switch ($Target) {

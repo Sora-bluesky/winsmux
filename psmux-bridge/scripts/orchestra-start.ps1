@@ -657,7 +657,13 @@ try {
         Invoke-Psmux -Arguments @('kill-session', '-t', $sessionName)
     }
 
-    Invoke-Psmux -Arguments @('new-session', '-d', '-s', $sessionName)
+    $currentSessionOutput = Invoke-Psmux -Arguments @('display-message', '-p', '#{session_name}') -CaptureOutput
+    $currentSession = ($currentSessionOutput | Out-String).Trim()
+    if ([string]::IsNullOrWhiteSpace($currentSession)) {
+        Invoke-Psmux -Arguments @('new-session', '-d', '-s', $sessionName)
+    } else {
+        $sessionName = $currentSession
+    }
 
     foreach ($entry in $vaultValues.GetEnumerator()) {
         Invoke-Psmux -Arguments @('set-environment', '-t', $sessionName, $entry.Key, $entry.Value)

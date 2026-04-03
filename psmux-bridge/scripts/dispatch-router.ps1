@@ -16,20 +16,24 @@ function Get-DispatchRouterKeywordMap {
         Builder = @(
             'implement', 'implementation', 'build', 'builder', 'fix', 'bug', 'patch',
             'code', 'coding', 'refactor', 'write', 'edit', 'change', 'feature',
-            'script', 'function', 'test', 'tests'
+            'script', 'function', 'test', 'tests',
+            '実装', '作って', '書いて', '修正', 'バグ', 'ビルド', 'コード', 'リファクタ', '機能'
         )
         Reviewer = @(
             'review', 'reviewer', 'audit', 'verify', 'verification', 'regression',
-            'security review', 'inspect', 'check', 'qa'
+            'security review', 'inspect', 'check', 'qa',
+            'レビュー', '確認', 'チェック', '検査', '監査'
         )
         Researcher = @(
             'research', 'researcher', 'investigate', 'investigation', 'analyze',
             'analysis', 'summarize', 'summary', 'explore', 'compare', 'find',
-            'lookup', 'document', 'docs'
+            'lookup', 'document', 'docs',
+            '調査', 'リサーチ', '分析', '探して', '比較', '要約', '検索'
         )
         Commander = @(
             'plan', 'planner', 'backlog', 'triage', 'coordinate', 'orchestrate',
-            'dispatch', 'assign', 'commit', 'merge', 'branch', 'release', 'session'
+            'dispatch', 'assign', 'commit', 'merge', 'branch', 'release', 'session',
+            'マージ', 'デプロイ', 'リリース', '承認', '計画'
         )
     }
 }
@@ -52,20 +56,21 @@ function Get-DispatchRouterKeywordMatches {
         [Parameter(Mandatory = $true)][string[]]$Keywords
     )
 
-    $matches = [System.Collections.Generic.List[string]]::new()
+    $foundKeywords = [System.Collections.Generic.List[string]]::new()
     foreach ($keyword in $Keywords) {
-        $pattern = if ($keyword.Contains(' ')) {
-            [regex]::Escape($keyword)
+        $escaped = [regex]::Escape($keyword)
+        $pattern = if ($keyword.Contains(' ') -or $keyword -match '[^\x00-\x7F]') {
+            $escaped
         } else {
-            '\b' + [regex]::Escape($keyword) + '\b'
+            '\b' + $escaped + '\b'
         }
 
         if ([regex]::IsMatch($Text, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
-            $matches.Add($keyword) | Out-Null
+            $foundKeywords.Add($keyword) | Out-Null
         }
     }
 
-    return @($matches)
+    return @($foundKeywords)
 }
 
 function Get-DispatchRouterPreferredLabel {
