@@ -146,6 +146,47 @@ terminal: tab
         $settings.terminal | Should -Be 'tab'
         $settings.vault_keys | Should -Be @('GH_TOKEN', 'OPENAI_API_KEY')
     }
+
+    It 'parses per-role agent and model overrides and falls back to global settings' {
+        @'
+agent: codex
+model: gpt-5.4
+roles:
+  builder:
+    agent: codex
+    model: gpt-5.4-codex
+  researcher:
+    agent: claude
+    model: sonnet
+  reviewer:
+    agent: codex
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.psmux-bridge.yaml') -Encoding UTF8
+
+        Mock Get-PsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+
+        $settings.roles.builder.agent | Should -Be 'codex'
+        $settings.roles.builder.model | Should -Be 'gpt-5.4-codex'
+        $settings.roles.researcher.agent | Should -Be 'claude'
+        $settings.roles.reviewer.agent | Should -Be 'codex'
+
+        $builderConfig = Get-RoleAgentConfig -Role 'Builder' -Settings $settings
+        $builderConfig.Agent | Should -Be 'codex'
+        $builderConfig.Model | Should -Be 'gpt-5.4-codex'
+
+        $researcherConfig = Get-RoleAgentConfig -Role 'Researcher' -Settings $settings
+        $researcherConfig.Agent | Should -Be 'claude'
+        $researcherConfig.Model | Should -Be 'sonnet'
+
+        $reviewerConfig = Get-RoleAgentConfig -Role 'Reviewer' -Settings $settings
+        $reviewerConfig.Agent | Should -Be 'codex'
+        $reviewerConfig.Model | Should -Be 'gpt-5.4'
+
+        $commanderConfig = Get-RoleAgentConfig -Role 'Commander' -Settings $settings
+        $commanderConfig.Agent | Should -Be 'codex'
+        $commanderConfig.Model | Should -Be 'gpt-5.4'
+    }
 }
 
 Describe 'Vault helpers' {
@@ -227,5 +268,97 @@ Describe 'Vault helpers' {
         $listedKeys = @(Invoke-VaultList | Sort-Object)
         $listedKeys | Should -Contain 'alpha'
         $listedKeys | Should -Contain 'beta'
+    }
+}
+
+Describe 'team-pipeline helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\team-pipeline.ps1')
+    }
+
+    It 'parses the orchestra manifest list format and resolves builder worktree paths' {
+        $manifest = ConvertFrom-TeamPipelineManifestContent -Content @'
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    launch_dir: C:\repo\.worktrees\builder-1
+    builder_worktree_path: C:\repo\.worktrees\builder-1
+  - label: reviewer
+    pane_id: %4
+    role: Reviewer
+    launch_dir: C:\repo
+'@
+
+        $manifest.Session.project_dir | Should -Be 'C:\repo'
+        $manifest.Panes['builder-1'].pane_id | Should -Be '%2'
+        $manifest.Panes['builder-1'].builder_worktree_path | Should -Be 'C:\repo\.worktrees\builder-1'
+
+        $context = Resolve-TeamPipelineBuilderContext -BuilderLabel 'builder-1' -Manifest $manifest
+        $context.ProjectDir | Should -Be 'C:\repo'
+        $context.BuilderWorktreePath | Should -Be 'C:\repo\.worktrees\builder-1'
+    }
+
+    It 'supports the dictionary pane format used by the manifest helper module' {
+        $manifest = ConvertFrom-TeamPipelineManifestContent -Content @'
+version: 1
+session:
+  project_dir: C:\repo
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    builder_worktree_path: C:\repo\.worktrees\builder-1
+  reviewer:
+    pane_id: %4
+    role: Reviewer
+    builder_worktree_path: ""
+'@
+
+        $manifest.Panes['builder-1'].role | Should -Be 'Builder'
+        $manifest.Panes['reviewer'].pane_id | Should -Be '%4'
+    }
+
+    It 'extracts the last STATUS marker and strips it from the summary' {
+        $output = @'
+Work finished.
+STATUS: EXEC_DONE
+
+Follow-up note.
+STATUS: VERIFY_PASS
+'@
+
+        (Get-TeamPipelineStatusFromOutput -Text $output) | Should -Be 'VERIFY_PASS'
+        (Get-TeamPipelineSummaryFromOutput -Text $output) | Should -Be "Work finished.`n`nFollow-up note."
+    }
+
+    It 'detects approval prompts and blocks dangerous confirmations' {
+        $typeEnter = Get-TeamPipelineApprovalAction -Text "Do you want to proceed?`n1. Yes"
+        $typeEnter.Kind | Should -Be 'TypeEnter'
+        $typeEnter.Value | Should -Be '1'
+
+        $shellConfirm = Get-TeamPipelineApprovalAction -Text 'Continue [Y/n]'
+        $shellConfirm.Value | Should -Be 'y'
+
+        { Get-TeamPipelineApprovalAction -Text 'Approve command: git reset --hard origin/main' } | Should -Throw
+    }
+
+    It 'selects sensible planning and verification targets from the available roles' {
+        $defaultTargets = Get-TeamPipelineStageTargets -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel 'reviewer'
+        $defaultTargets.PlanTarget | Should -Be 'researcher'
+        $defaultTargets.BuildTarget | Should -Be 'builder-1'
+        $defaultTargets.VerifyTarget | Should -Be 'reviewer'
+
+        $fallbackTargets = Get-TeamPipelineStageTargets -BuilderLabel 'builder-1' -ResearcherLabel '' -ReviewerLabel ''
+        $fallbackTargets.PlanTarget | Should -Be 'builder-1'
+        $fallbackTargets.VerifyTarget | Should -Be 'builder-1'
+
+        $skipTargets = Get-TeamPipelineStageTargets -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel 'reviewer' -SkipPlan -SkipVerify
+        $skipTargets.PlanTarget | Should -BeNullOrEmpty
+        $skipTargets.VerifyTarget | Should -BeNullOrEmpty
     }
 }

@@ -22,6 +22,7 @@ $script:BridgeSettingsSchema = [ordered]@{
     reviewers   = @{ Type = 'int';      Default = 1;            Option = '@bridge-reviewers' }
     vault_keys  = @{ Type = 'string[]'; Default = @('GH_TOKEN'); Option = '@bridge-vault-keys' }
     terminal    = @{ Type = 'string';   Default = 'background'; Option = '@bridge-terminal' }
+    roles       = @{ Type = 'map';      Default = [ordered]@{}; Option = $null }
 }
 
 if (-not (Get-Command Get-PsmuxBin -ErrorAction SilentlyContinue)) {
@@ -83,6 +84,11 @@ function Get-BridgeSettingsDefaults {
         $defaultValue = $script:BridgeSettingsSchema[$key].Default
         if ($defaultValue -is [System.Array]) {
             $defaults[$key] = @($defaultValue)
+        } elseif ($defaultValue -is [System.Collections.IDictionary]) {
+            $defaults[$key] = [ordered]@{}
+            foreach ($entry in $defaultValue.GetEnumerator()) {
+                $defaults[$key][$entry.Key] = $entry.Value
+            }
         } else {
             $defaults[$key] = $defaultValue
         }
@@ -171,6 +177,8 @@ function ConvertFrom-BridgeManualYaml {
 
     $settings = [ordered]@{}
     $currentListKey = $null
+    $currentMapKey = $null
+    $currentMapEntryKey = $null
     $lineNumber = 0
 
     foreach ($rawLine in ($Content -split "\r?\n")) {
@@ -190,6 +198,23 @@ function ConvertFrom-BridgeManualYaml {
         }
 
         $currentListKey = $null
+        if ($null -ne $currentMapKey -and $line -match '^\s{2}([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*$') {
+            $currentMapEntryKey = $Matches[1] -replace '-', '_'
+            if (-not $settings[$currentMapKey].Contains($currentMapEntryKey)) {
+                $settings[$currentMapKey][$currentMapEntryKey] = [ordered]@{}
+            }
+            continue
+        }
+
+        if ($null -ne $currentMapKey -and $null -ne $currentMapEntryKey -and $line -match '^\s{4}([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$') {
+            $nestedKey = $Matches[1] -replace '-', '_'
+            $nestedValue = ConvertFrom-BridgeYamlScalar $Matches[2]
+            $settings[$currentMapKey][$currentMapEntryKey][$nestedKey] = $nestedValue
+            continue
+        }
+
+        $currentMapKey = $null
+        $currentMapEntryKey = $null
         if ($line -notmatch '^\s*([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$') {
             continue
         }
@@ -201,8 +226,13 @@ function ConvertFrom-BridgeManualYaml {
         }
 
         if ([string]::IsNullOrWhiteSpace($value)) {
-            $settings[$key] = @()
-            $currentListKey = $key
+            if ($script:BridgeSettingsSchema[$key].Type -eq 'map') {
+                $settings[$key] = [ordered]@{}
+                $currentMapKey = $key
+            } else {
+                $settings[$key] = @()
+                $currentListKey = $key
+            }
             continue
         }
 
@@ -315,6 +345,63 @@ function Test-BridgeSettingValue {
             $NormalizedValue.Value = @($items)
             return $true
         }
+        'map' {
+            $map = [ordered]@{}
+            $entries = @()
+
+            if ($Value -is [System.Collections.IDictionary]) {
+                $entries = $Value.GetEnumerator()
+            } elseif ($null -ne $Value -and $null -ne $Value.PSObject) {
+                $entries = $Value.PSObject.Properties | ForEach-Object {
+                    [PSCustomObject]@{
+                        Key = $_.Name
+                        Value = $_.Value
+                    }
+                }
+            } else {
+                return $false
+            }
+
+            foreach ($entry in $entries) {
+                $roleKey = ConvertFrom-BridgeYamlScalar $entry.Key
+                if ([string]::IsNullOrWhiteSpace($roleKey)) {
+                    continue
+                }
+
+                $roleConfig = [ordered]@{}
+                $rolePairs = @()
+
+                if ($entry.Value -is [System.Collections.IDictionary]) {
+                    $rolePairs = $entry.Value.GetEnumerator()
+                } elseif ($null -ne $entry.Value -and $null -ne $entry.Value.PSObject) {
+                    $rolePairs = $entry.Value.PSObject.Properties | ForEach-Object {
+                        [PSCustomObject]@{
+                            Key = $_.Name
+                            Value = $_.Value
+                        }
+                    }
+                }
+
+                foreach ($rolePair in $rolePairs) {
+                    $propertyKey = $rolePair.Key.ToString() -replace '-', '_'
+                    if ($propertyKey -notin @('agent', 'model')) {
+                        continue
+                    }
+
+                    $text = ConvertFrom-BridgeYamlScalar $rolePair.Value
+                    if ([string]::IsNullOrWhiteSpace($text)) {
+                        continue
+                    }
+
+                    $roleConfig[$propertyKey] = $text
+                }
+
+                $map[$roleKey] = $roleConfig
+            }
+
+            $NormalizedValue.Value = $map
+            return $true
+        }
         default {
             return $false
         }
@@ -362,6 +449,10 @@ function Read-BridgeGlobalSettings {
 
     foreach ($key in $script:BridgeSettingsSchema.Keys) {
         $optionName = $script:BridgeSettingsSchema[$key].Option
+        if ([string]::IsNullOrWhiteSpace($optionName)) {
+            continue
+        }
+
         $rawValue = Get-PsmuxOption -Name $optionName -Default $null
         if ($null -eq $rawValue -or [string]::IsNullOrWhiteSpace($rawValue)) {
             continue
@@ -416,6 +507,54 @@ function Get-BridgeSettings {
     return $settings
 }
 
+function Get-RoleAgentConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$Role,
+        $Settings = (Get-BridgeSettings)
+    )
+
+    if ($null -eq $Settings) {
+        throw 'Settings cannot be null.'
+    }
+
+    $resolvedRoleConfig = $null
+    $roles = $Settings.roles
+    if ($roles -is [System.Collections.IDictionary]) {
+        foreach ($entry in $roles.GetEnumerator()) {
+            if ([string]::Equals([string]$entry.Key, $Role, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $resolvedRoleConfig = $entry.Value
+                break
+            }
+        }
+    }
+
+    $agent = $Settings.agent
+    $model = $Settings.model
+
+    if ($resolvedRoleConfig -is [System.Collections.IDictionary]) {
+        if ($resolvedRoleConfig.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['agent'])) {
+            $agent = [string]$resolvedRoleConfig['agent']
+        }
+
+        if ($resolvedRoleConfig.Contains('model') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['model'])) {
+            $model = [string]$resolvedRoleConfig['model']
+        }
+    } elseif ($null -ne $resolvedRoleConfig -and $null -ne $resolvedRoleConfig.PSObject) {
+        if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'agent' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.agent)) {
+            $agent = [string]$resolvedRoleConfig.agent
+        }
+
+        if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'model' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.model)) {
+            $model = [string]$resolvedRoleConfig.model
+        }
+    }
+
+    return [PSCustomObject]@{
+        Agent = [string]$agent
+        Model = [string]$model
+    }
+}
+
 function Get-BridgeSetting {
     param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -465,6 +604,21 @@ function Save-BridgeSettings {
                 foreach ($item in $value) {
                     $lines.Add("  - $(ConvertTo-BridgeYamlScalar $item)")
                 }
+            } elseif ($value -is [System.Collections.IDictionary]) {
+                $lines.Add("${key}:")
+                foreach ($entry in $value.GetEnumerator()) {
+                    $lines.Add("  $($entry.Key):")
+                    $roleConfig = $entry.Value
+                    if ($roleConfig -is [System.Collections.IDictionary]) {
+                        foreach ($roleEntry in $roleConfig.GetEnumerator()) {
+                            $lines.Add("    $($roleEntry.Key): $(ConvertTo-BridgeYamlScalar $roleEntry.Value)")
+                        }
+                    } elseif ($null -ne $roleConfig -and $null -ne $roleConfig.PSObject) {
+                        foreach ($property in $roleConfig.PSObject.Properties) {
+                            $lines.Add("    $($property.Name): $(ConvertTo-BridgeYamlScalar $property.Value)")
+                        }
+                    }
+                }
             } else {
                 $lines.Add("${key}: $(ConvertTo-BridgeYamlScalar $value)")
             }
@@ -482,6 +636,10 @@ function Save-BridgeSettings {
 
     foreach ($key in $normalized.Keys) {
         $optionName = $script:BridgeSettingsSchema[$key].Option
+        if ([string]::IsNullOrWhiteSpace($optionName)) {
+            continue
+        }
+
         $value = $normalized[$key]
         $serializedValue = if ($value -is [System.Array]) { $value -join ',' } else { $value.ToString() }
         Set-PsmuxOption -PsmuxBin $psmuxBin -OptionName $optionName -OptionValue $serializedValue
