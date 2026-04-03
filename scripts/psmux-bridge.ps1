@@ -1347,6 +1347,7 @@ Commands:
   signal <channel>          Send signal to unblock a waiting process
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
   dispatch-route <text>   Route text to appropriate pane by keyword detection
+  pipeline <task>       Run plan-exec-verify-fix loop for a task
   vault set <key> [value]   Store a credential securely (DPAPI)
   vault get <key>           Retrieve a stored credential
   vault inject <pane>       Inject all credentials as env vars into a pane
@@ -1491,6 +1492,12 @@ switch ($Command) {
         $routerScript = Join-Path $PSScriptRoot '..\psmux-bridge\scripts\dispatch-router.ps1'
         $fullText = @($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }
         & $routerScript -Text ($fullText -join ' ')
+    }
+    'pipeline' {
+        $pipelineScript = Join-Path $PSScriptRoot '..\psmux-bridge\scripts\team-pipeline.ps1'
+        $pipelineArgs = @()
+        if ($Target) { $pipelineArgs += '-Task'; $pipelineArgs += ($Target + ' ' + ($Rest -join ' ')).Trim() }
+        & $pipelineScript @pipelineArgs
     }
     'vault'           {
         switch ($Target) {
