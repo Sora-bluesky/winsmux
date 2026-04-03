@@ -333,7 +333,7 @@ STATUS: VERIFY_PASS
 '@
 
         (Get-TeamPipelineStatusFromOutput -Text $output) | Should -Be 'VERIFY_PASS'
-        (Get-TeamPipelineSummaryFromOutput -Text $output) | Should -Be "Work finished.`n`nFollow-up note."
+        ((Get-TeamPipelineSummaryFromOutput -Text $output) -replace "`r`n", "`n") | Should -Be "Work finished.`n`nFollow-up note."
     }
 
     It 'detects approval prompts and blocks dangerous confirmations' {
