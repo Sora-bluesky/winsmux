@@ -725,7 +725,7 @@ function Invoke-Verify {
     }
 
     Write-Output "Pester PASS. Merging PR #$prNumber"
-    & gh pr merge $prNumber
+    & gh pr merge $prNumber --squash --delete-branch
     if ($LASTEXITCODE -ne 0) {
         exit $LASTEXITCODE
     }
