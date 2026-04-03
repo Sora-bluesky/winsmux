@@ -333,7 +333,7 @@ STATUS: VERIFY_PASS
 '@
 
         (Get-TeamPipelineStatusFromOutput -Text $output) | Should -Be 'VERIFY_PASS'
-        ((Get-TeamPipelineSummaryFromOutput -Text $output) -replace "`r`n", "`n") | Should -Be "Work finished.`n`nFollow-up note."
+        (Get-TeamPipelineSummaryFromOutput -Text $output) | Should -Be "Work finished.`n`nFollow-up note."
     }
 
     It 'detects approval prompts and blocks dangerous confirmations' {
@@ -360,5 +360,57 @@ STATUS: VERIFY_PASS
         $skipTargets = Get-TeamPipelineStageTargets -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel 'reviewer' -SkipPlan -SkipVerify
         $skipTargets.PlanTarget | Should -BeNullOrEmpty
         $skipTargets.VerifyTarget | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'logger helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\logger.ps1')
+    }
+
+    BeforeEach {
+        $script:loggerTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-logger-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:loggerTempRoot -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:loggerTempRoot -and (Test-Path $script:loggerTempRoot)) {
+            Remove-Item -Path $script:loggerTempRoot -Recurse -Force
+        }
+    }
+
+    It 'resolves the orchestra log path under .winsmux logs' {
+        $path = Get-OrchestraLogPath -ProjectDir $script:loggerTempRoot -SessionName 'winsmux-orchestra'
+        $path | Should -Be (Join-Path $script:loggerTempRoot '.winsmux\logs\winsmux-orchestra.jsonl')
+    }
+
+    It 'initializes the log file and appends structured jsonl records' {
+        $logPath = Initialize-OrchestraLogger -ProjectDir $script:loggerTempRoot -SessionName 'session-a'
+        Test-Path $logPath | Should -Be $true
+
+        $record = Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-a' -Event 'pane.started' -Message 'builder booted' -Role 'Builder' -PaneId '%2' -Target 'builder-1' -Data ([ordered]@{ agent = 'codex'; model = 'gpt-5.4' })
+        $record.session | Should -Be 'session-a'
+        $record.event | Should -Be 'pane.started'
+        $record.role | Should -Be 'Builder'
+        $record.data.agent | Should -Be 'codex'
+
+        $lines = @(Get-Content -Path $logPath -Encoding UTF8)
+        $lines.Count | Should -Be 1
+        $parsed = $lines[0] | ConvertFrom-Json
+        $parsed.message | Should -Be 'builder booted'
+        $parsed.target | Should -Be 'builder-1'
+        $parsed.data.model | Should -Be 'gpt-5.4'
+    }
+
+    It 'reads back structured log records in order' {
+        Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-b' -Event 'session.started' -Data ([ordered]@{ panes = 3 }) | Out-Null
+        Write-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-b' -Event 'review.failed' -Level 'warn' -Data ([ordered]@{ finding_count = 2 }) | Out-Null
+
+        $records = Read-OrchestraLog -ProjectDir $script:loggerTempRoot -SessionName 'session-b'
+        $records.Count | Should -Be 2
+        $records[0].event | Should -Be 'session.started'
+        $records[0].data.panes | Should -Be 3
+        $records[1].level | Should -Be 'warn'
+        $records[1].data.finding_count | Should -Be 2
     }
 }
