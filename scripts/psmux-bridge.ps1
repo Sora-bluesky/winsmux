@@ -1346,6 +1346,7 @@ Commands:
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
   signal <channel>          Send signal to unblock a waiting process
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
+  dispatch-route <text>   Route text to appropriate pane by keyword detection
   vault set <key> [value]   Store a credential securely (DPAPI)
   vault get <key>           Retrieve a stored credential
   vault inject <pane>       Inject all credentials as env vars into a pane
@@ -1486,6 +1487,10 @@ switch ($Command) {
     'unlock'          { Invoke-Unlock }
     'locks'           { Invoke-Locks }
     'verify'          { Invoke-Verify }
+    'dispatch-route'  {
+        $routerScript = Join-Path $PSScriptRoot '..\psmux-bridge\scripts\dispatch-router.ps1'
+        & $routerScript -Text ($Rest -join ' ')
+    }
     'vault'           {
         switch ($Target) {
             'set'    { $Target = $Rest[0]; $Rest = @($Rest | Select-Object -Skip 1); Invoke-VaultSet }
