@@ -5,11 +5,13 @@
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { execSync } = require("child_process");
 const { commandExists, SH_DIR } = require("./sh-utils");
 
-const CACHE_DIR = path.join(SH_DIR, "state");
+const SAFE_SH_DIR = typeof SH_DIR === "string" && SH_DIR ? SH_DIR : os.tmpdir();
+const CACHE_DIR = path.join(SAFE_SH_DIR, "state");
 const CACHE_FILE = path.join(CACHE_DIR, "openshell-version-cache.json");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const CMD_TIMEOUT = 3000; // 3 seconds

@@ -6,6 +6,7 @@
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const {
   readHookInput,
@@ -17,8 +18,9 @@ const {
 } = require("./lib/sh-utils");
 
 const HOOK_NAME = "sh-elicitation";
+const SAFE_SH_DIR = typeof SH_DIR === "string" && SH_DIR ? SH_DIR : os.tmpdir();
 const ALLOWED_MCP_FILE = path.join(
-  SH_DIR,
+  SAFE_SH_DIR,
   "config",
   "allowed-mcp-servers.json",
 );

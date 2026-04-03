@@ -7,6 +7,7 @@
 "use strict";
 
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { execSync } = require("child_process");
 const {
@@ -22,7 +23,12 @@ const {
 } = require("./lib/sh-utils");
 
 const HOOK_NAME = "sh-pipeline";
-const PIPELINE_CONFIG = path.join(SH_DIR, "config", "pipeline-config.json");
+const SAFE_SH_DIR = typeof SH_DIR === "string" && SH_DIR ? SH_DIR : os.tmpdir();
+const PIPELINE_CONFIG = path.join(
+  SAFE_SH_DIR,
+  "config",
+  "pipeline-config.json",
+);
 const BACKLOG_FILE = path.join("tasks", "backlog.yaml");
 
 // ---------------------------------------------------------------------------
