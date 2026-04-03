@@ -3,8 +3,8 @@ param(
     [Parameter(Position = 0)]
     [string]$Task,
     [string]$Builder = 'builder-1',
-    [string]$Researcher = 'researcher',
-    [string]$Reviewer = 'reviewer',
+    [string]$Researcher = 'researcher-1',
+    [string]$Reviewer = 'reviewer-1',
     [string]$ManifestPath,
     [string]$BuilderWorktreePath,
     [int]$PollIntervalSeconds = 10,
