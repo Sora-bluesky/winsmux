@@ -657,13 +657,7 @@ try {
         Invoke-Psmux -Arguments @('kill-session', '-t', $sessionName)
     }
 
-    $currentSessionOutput = Invoke-Psmux -Arguments @('display-message', '-p', '#{session_name}') -CaptureOutput
-    $currentSession = ($currentSessionOutput | Out-String).Trim()
-    if ([string]::IsNullOrWhiteSpace($currentSession)) {
-        Invoke-Psmux -Arguments @('new-session', '-d', '-s', $sessionName)
-    } else {
-        $sessionName = $currentSession
-    }
+    Invoke-Psmux -Arguments @('new-session', '-d', '-s', $sessionName)
 
     foreach ($entry in $vaultValues.GetEnumerator()) {
         Invoke-Psmux -Arguments @('set-environment', '-t', $sessionName, $entry.Key, $entry.Value)
@@ -723,7 +717,8 @@ try {
             $builderWorktreePath = $builderWorktree.WorktreePath
         }
 
-        $launchCommand = Get-AgentLaunchCommand -Agent $settings.agent -Model $settings.model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir
+        $roleAgentConfig = Get-RoleAgentConfig -Role $canonicalRole -Settings $settings
+        $launchCommand = Get-AgentLaunchCommand -Agent $roleAgentConfig.Agent -Model $roleAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
@@ -753,7 +748,8 @@ try {
 
     foreach ($paneSummary in $paneSummaries) {
         try {
-            Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $settings.agent -TimeoutSeconds 60
+            $roleAgentConfig = Get-RoleAgentConfig -Role $paneSummary.Role -Settings $settings
+            Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $roleAgentConfig.Agent -TimeoutSeconds 60
         } catch {
             Write-Error "Agent readiness timeout for $($paneSummary.Label) [$($paneSummary.PaneId)]: $($_.Exception.Message)"
             exit 1
