@@ -10,10 +10,13 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$VERSION      = "0.10.0"
+$VERSION      = "0.11.0"
 $WINSMUX_DIR  = Join-Path $HOME ".winsmux"
 $BIN_DIR      = Join-Path $WINSMUX_DIR "bin"
 $BACKUP_DIR   = Join-Path $WINSMUX_DIR "backups"
+$SCRIPT_DIR   = Join-Path $WINSMUX_DIR "scripts"
+$BRIDGE_DIR   = Join-Path $WINSMUX_DIR "psmux-bridge"
+$BRIDGE_SCRIPTS_DIR = Join-Path $BRIDGE_DIR "scripts"
 $VERSION_FILE = Join-Path $WINSMUX_DIR "version"
 $BASE_URL     = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/main"
 
@@ -171,7 +174,7 @@ function Invoke-Install {
     Install-Psmux
 
     # 4. Create directories
-    foreach ($dir in @($WINSMUX_DIR, $BIN_DIR, $BACKUP_DIR, (Join-Path $env:APPDATA "winsmux"))) {
+    foreach ($dir in @($WINSMUX_DIR, $BIN_DIR, $BACKUP_DIR, $SCRIPT_DIR, $BRIDGE_DIR, $BRIDGE_SCRIPTS_DIR, (Join-Path $env:APPDATA "winsmux"))) {
         if (-not (Test-Path $dir)) {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
         }
@@ -180,6 +183,16 @@ function Invoke-Install {
     # 5. Download & place files
     # psmux-bridge.ps1
     Download-File "scripts/psmux-bridge.ps1" (Join-Path $BIN_DIR "psmux-bridge.ps1")
+    Download-File "scripts/psmux-bridge.ps1" (Join-Path $SCRIPT_DIR "psmux-bridge.ps1")
+
+    # winsmux.ps1 CLI
+    Download-File "winsmux.ps1" (Join-Path $BIN_DIR "winsmux.ps1")
+
+    # Orchestra support scripts
+    Download-File "psmux-bridge/scripts/orchestra-start.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-start.ps1")
+    Download-File "psmux-bridge/scripts/orchestra-layout.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-layout.ps1")
+    Download-File "psmux-bridge/scripts/settings.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "settings.ps1")
+    Download-File "psmux-bridge/scripts/vault.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "vault.ps1")
 
     # .psmux.conf (backup existing)
     $confDest = Join-Path $HOME ".psmux.conf"
@@ -199,27 +212,6 @@ pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\psmux-bridge.ps1" %*
 pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux.ps1" %*
 "@ | Set-Content -Path $winsmuxCmd -Encoding ASCII
 
-    # 7. Create winsmux.ps1 CLI wrapper
-    $winsmuxPs1 = Join-Path $BIN_DIR "winsmux.ps1"
-    @'
-# winsmux.ps1 — winsmux CLI wrapper
-param([Parameter(Position=0)][string]$Action = "help")
-$installer = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1"
-switch ($Action) {
-    "update"    { Invoke-RestMethod $installer | Invoke-Expression }
-    "uninstall" { & pwsh -Command "& { $(Invoke-RestMethod $installer) } uninstall" }
-    "version"   { Get-Content "$HOME\.winsmux\version" -ErrorAction SilentlyContinue }
-    default     {
-        Write-Host "winsmux — Windows terminal multiplexer for AI agents"
-        Write-Host ""
-        Write-Host "Commands:"
-        Write-Host "  winsmux update      Update winsmux to latest"
-        Write-Host "  winsmux uninstall   Remove winsmux"
-        Write-Host "  winsmux version     Show version"
-    }
-}
-'@ | Set-Content -Path $winsmuxPs1 -Encoding UTF8
-
     # 7.5. Register Windows Terminal Fragments
     $fragmentDir = Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\Fragments\winsmux"
     if (-not (Test-Path $fragmentDir)) {
@@ -230,7 +222,7 @@ switch ($Action) {
   "profiles": [
     {
       "name": "winsmux Orchestra",
-      "commandline": "pwsh -NoProfile -Command \"& '%USERPROFILE%\\.winsmux\\bin\\psmux-bridge.ps1' doctor; psmux new-session -s orchestra; pwsh '%USERPROFILE%\\.winsmux\\bin\\start-orchestra.ps1'\"",
+      "commandline": "pwsh -NoProfile -Command \"$dir = Read-Host 'Project dir'; if ([string]::IsNullOrWhiteSpace($dir)) { Write-Error 'Project dir is required.'; exit 1 }; & '%USERPROFILE%\\.winsmux\\bin\\winsmux.ps1' start -C $dir\"",
       "icon": "🎼",
       "startingDirectory": "%USERPROFILE%",
       "tabTitle": "winsmux Orchestra"
