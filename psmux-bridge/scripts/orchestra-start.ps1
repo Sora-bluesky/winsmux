@@ -6,7 +6,8 @@ $scriptDir = $PSScriptRoot
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$sessionName = 'winsmux-orchestra'
+$legacyDetachedSessionName = 'winsmux-orchestra'
+$sessionName = $null
 $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\psmux-bridge.ps1'))
 $layoutScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir 'orchestra-layout.ps1'))
 $psmuxBin = Get-PsmuxBin
@@ -103,6 +104,19 @@ function Get-ProjectDir {
     }
 
     return (Get-Location).Path
+}
+
+function Get-CurrentSessionName {
+    try {
+        $sessionOutput = Invoke-Psmux -Arguments @('display-message', '-p', '#{session_name}') -CaptureOutput
+        $resolved = ($sessionOutput | Out-String).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($resolved)) {
+            return $resolved
+        }
+    } catch {
+    }
+
+    throw 'Could not determine the current psmux session. Run orchestra-start from inside an attached psmux client.'
 }
 
 function Get-GitWorktreeDir {
@@ -582,14 +596,14 @@ try {
         }
     }
 
-    Remove-OrchestraZombieProcesses -SessionName $sessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -PsmuxBin $psmuxBin
+    Remove-OrchestraZombieProcesses -SessionName $legacyDetachedSessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -PsmuxBin $psmuxBin
 
-    & $psmuxBin has-session -t $sessionName 1>$null 2>$null
+    & $psmuxBin has-session -t $legacyDetachedSessionName 1>$null 2>$null
     if ($LASTEXITCODE -eq 0) {
-        Invoke-Psmux -Arguments @('kill-session', '-t', $sessionName)
+        Invoke-Psmux -Arguments @('kill-session', '-t', $legacyDetachedSessionName)
     }
 
-    Invoke-Psmux -Arguments @('new-session', '-d', '-s', $sessionName)
+    $sessionName = Get-CurrentSessionName
 
     foreach ($entry in $vaultValues.GetEnumerator()) {
         Invoke-Psmux -Arguments @('set-environment', '-t', $sessionName, $entry.Key, $entry.Value)
