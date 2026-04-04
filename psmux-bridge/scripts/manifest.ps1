@@ -102,6 +102,7 @@ function New-WinsmuxManifest {
         }
         panes     = [ordered]@{}
         tasks     = [PSCustomObject]@{
+            queued      = @()
             in_progress = @()
             completed   = @()
         }
@@ -247,6 +248,20 @@ function ConvertTo-ManifestYaml {
     # tasks
     $lines.Add('tasks:')
 
+    $lines.Add('  queued:')
+    $queued = @()
+    if ($null -ne $Manifest.tasks -and $null -ne $Manifest.tasks.queued) {
+        $queued = @($Manifest.tasks.queued)
+    }
+
+    if ($queued.Count -gt 0) {
+        foreach ($task in $queued) {
+            $lines.Add("    - $(ConvertTo-ManifestYamlScalar $task)")
+        }
+    } else {
+        $lines[$lines.Count - 1] = '  queued: []'
+    }
+
     $lines.Add('  in_progress:')
     $inProgress = @()
     if ($null -ne $Manifest.tasks -and $null -ne $Manifest.tasks.in_progress) {
@@ -314,7 +329,7 @@ function ConvertFrom-ManifestYaml {
         version   = 1
         session   = [PSCustomObject]@{ started = ''; ended = '' }
         panes     = [ordered]@{}
-        tasks     = [PSCustomObject]@{ in_progress = @(); completed = @() }
+        tasks     = [PSCustomObject]@{ queued = @(); in_progress = @(); completed = @() }
         worktrees = [ordered]@{}
     }
 
@@ -367,11 +382,13 @@ function ConvertFrom-ManifestYaml {
                     }
                 }
                 'tasks' {
-                    if ($inner -match '^(in_progress|completed):\s*(\[?\]?)\s*$') {
+                    if ($inner -match '^(queued|in_progress|completed):\s*(\[?\]?)\s*$') {
                         $taskListKey = $Matches[1]
                     } elseif ($inner -match '^-\s+(.+?)\s*$' -and $taskListKey) {
                         $value = ConvertFrom-ManifestYamlScalar $Matches[1]
-                        if ($taskListKey -eq 'in_progress') {
+                        if ($taskListKey -eq 'queued') {
+                            $manifest.tasks.queued = @($manifest.tasks.queued) + @($value)
+                        } elseif ($taskListKey -eq 'in_progress') {
                             $manifest.tasks.in_progress = @($manifest.tasks.in_progress) + @($value)
                         } else {
                             $manifest.tasks.completed = @($manifest.tasks.completed) + @($value)

@@ -52,6 +52,22 @@ function ConvertFrom-BuilderQueueEntry {
     }
 }
 
+function Ensure-ManifestTasksShape {
+    param([Parameter(Mandatory = $true)]$Manifest)
+    if (-not $Manifest.PSObject.Properties['tasks']) {
+        $Manifest | Add-Member -NotePropertyName 'tasks' -NotePropertyValue ([PSCustomObject]@{
+            queued      = @()
+            in_progress = @()
+            completed   = @()
+        })
+    } else {
+        $t = $Manifest.tasks
+        if (-not $t.PSObject.Properties['queued'])      { $t | Add-Member -NotePropertyName 'queued'      -NotePropertyValue @() }
+        if (-not $t.PSObject.Properties['in_progress']) { $t | Add-Member -NotePropertyName 'in_progress' -NotePropertyValue @() }
+        if (-not $t.PSObject.Properties['completed'])   { $t | Add-Member -NotePropertyName 'completed'   -NotePropertyValue @() }
+    }
+}
+
 function Get-BuilderQueueManifest {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
@@ -135,7 +151,7 @@ function Add-BuilderQueueTask {
 
     $manifest = Get-BuilderQueueManifest -ProjectDir $ProjectDir
     $entry = ConvertTo-BuilderQueueEntry -BuilderLabel $BuilderLabel -Task $Task
-    Set-ManifestObjectProperty -Object $manifest.tasks -Name 'queued' -Value (@($manifest.tasks.queued) + @($entry))
+    $manifest.tasks.queued = @($manifest.tasks.queued) + @($entry)
     Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest
 
     return [PSCustomObject]@{
@@ -188,7 +204,7 @@ function Invoke-BuilderQueueDispatch {
             $text = 'unknown psmux-bridge error'
         }
 
-        throw "Failed to dispatch queued task to $BuilderLabel: $text"
+        throw "Failed to dispatch queued task to ${BuilderLabel}: $text"
     }
 
     return [PSCustomObject]@{
@@ -237,8 +253,8 @@ function Dispatch-NextBuilderQueueTask {
         Invoke-BuilderQueueDispatch -BuilderLabel $BuilderLabel -Task $nextEntry.Task -Prompt $prompt
     }
 
-    Set-ManifestObjectProperty -Object $manifest.tasks -Name 'queued' -Value (Remove-BuilderQueueRawEntry -Entries $manifest.tasks.queued -RawEntry $nextEntry.RawEntry)
-    Set-ManifestObjectProperty -Object $manifest.tasks -Name 'in_progress' -Value (@($manifest.tasks.in_progress) + @($nextEntry.RawEntry))
+    $manifest.tasks.queued = (Remove-BuilderQueueRawEntry -Entries $manifest.tasks.queued -RawEntry $nextEntry.RawEntry)
+    $manifest.tasks.in_progress = (@($manifest.tasks.in_progress) + @($nextEntry.RawEntry))
     Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest
 
     return [PSCustomObject]@{
@@ -271,9 +287,9 @@ function Complete-BuilderQueueTask {
         throw "No in-progress task found for $BuilderLabel."
     }
 
-    Set-ManifestObjectProperty -Object $manifest.tasks -Name 'in_progress' -Value (Remove-BuilderQueueRawEntry -Entries $manifest.tasks.in_progress -RawEntry $completedEntry.RawEntry)
+    $manifest.tasks.in_progress = (Remove-BuilderQueueRawEntry -Entries $manifest.tasks.in_progress -RawEntry $completedEntry.RawEntry)
     if (@($manifest.tasks.completed | Where-Object { [string]$_ -eq $completedEntry.RawEntry }).Count -eq 0) {
-        Set-ManifestObjectProperty -Object $manifest.tasks -Name 'completed' -Value (@($manifest.tasks.completed) + @($completedEntry.RawEntry))
+        $manifest.tasks.completed = (@($manifest.tasks.completed) + @($completedEntry.RawEntry))
     }
     Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest
 
