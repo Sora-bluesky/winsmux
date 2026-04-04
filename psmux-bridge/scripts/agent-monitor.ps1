@@ -162,6 +162,31 @@ function Get-MonitorPropertyValue {
     return $Default
 }
 
+function Test-CodexApprovalPromptText {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $false
+    }
+
+    $hasPrimaryYes = $Text -match '(?im)^[>\s\u203A\u276F\u25B6]*1\.\s*Yes\b'
+    $hasSecondaryOption = $Text -match '(?im)^[>\s\u203A\u276F\u25B6]*2\.\s*'
+    $hasPersistentYes = $Text -match "(?im)^[>\s\u203A\u276F\u25B6]*2\.\s*Yes,\s*and don't ask again\b"
+    $hasProceedQuestion = $Text -match '(?im)Do you want to proceed\?'
+    $hasCancelHint = $Text -match '(?im)Esc to cancel'
+    $hasShellConfirm = $Text -match '(?im)\[(?:Y/n|y/N)\]'
+
+    if ($hasShellConfirm -or $hasPersistentYes) {
+        return $true
+    }
+
+    if ($hasPrimaryYes -and ($hasProceedQuestion -or $hasCancelHint -or $hasSecondaryOption)) {
+        return $true
+    }
+
+    return $hasProceedQuestion -and $hasCancelHint
+}
+
 # ---------------------------------------------------------------------------
 # 1. Get-PaneAgentStatus
 # ---------------------------------------------------------------------------
@@ -225,6 +250,14 @@ function Get-PaneAgentStatus {
         $text
     } else {
         ($lines[($lines.Length - 12)..($lines.Length - 1)] -join [Environment]::NewLine)
+    }
+
+    if (Test-CodexApprovalPromptText -Text $text) {
+        return [PSCustomObject]@{
+            Status       = 'busy'
+            PaneId       = $PaneId
+            SnapshotTail = $tail
+        }
     }
 
     # ready: Codex prompt visible (> or U+203A) or "% left" model indicator

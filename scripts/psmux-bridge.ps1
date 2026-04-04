@@ -1550,6 +1550,7 @@ Commands:
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
   dispatch-route <text>   Route text to appropriate pane by keyword detection
   pipeline <task>       Run plan-exec-verify-fix loop for a task
+  builder-queue <action> [args]  Manage Builder queue and auto-dispatch next work
   vault set <key> [value]   Store a credential securely (DPAPI)
   vault get <key>           Retrieve a stored credential
   vault inject <pane>       Inject all credentials as env vars into a pane
@@ -1704,6 +1705,47 @@ switch ($Command) {
             & pwsh -NoProfile -File $pipelineScript -Task $taskText
         } else {
             & pwsh -NoProfile -File $pipelineScript
+        }
+    }
+    'builder-queue' {
+        $queueScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\builder-queue.ps1'))
+        switch ($Target) {
+            'add' {
+                if (-not $Rest -or $Rest.Count -lt 2) {
+                    Stop-WithError "usage: psmux-bridge builder-queue add <builder-label> <task>"
+                }
+
+                $builderLabel = $Rest[0]
+                $taskText = (@($Rest | Select-Object -Skip 1) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
+                & pwsh -NoProfile -File $queueScript -Action add -ProjectDir (Get-Location).Path -BuilderLabel $builderLabel -Task $taskText
+            }
+            'list' {
+                $builderLabel = if ($Rest -and $Rest.Count -gt 0) { $Rest[0] } else { '' }
+                & pwsh -NoProfile -File $queueScript -Action list -ProjectDir (Get-Location).Path -BuilderLabel $builderLabel
+            }
+            'dispatch-next' {
+                if (-not $Rest -or $Rest.Count -lt 1) {
+                    Stop-WithError "usage: psmux-bridge builder-queue dispatch-next <builder-label>"
+                }
+
+                & pwsh -NoProfile -File $queueScript -Action 'dispatch-next' -ProjectDir (Get-Location).Path -BuilderLabel $Rest[0]
+            }
+            'complete' {
+                if (-not $Rest -or $Rest.Count -lt 1) {
+                    Stop-WithError "usage: psmux-bridge builder-queue complete <builder-label> [task]"
+                }
+
+                $builderLabel = $Rest[0]
+                $taskText = (@($Rest | Select-Object -Skip 1) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
+                if ($taskText) {
+                    & pwsh -NoProfile -File $queueScript -Action complete -ProjectDir (Get-Location).Path -BuilderLabel $builderLabel -Task $taskText
+                } else {
+                    & pwsh -NoProfile -File $queueScript -Action complete -ProjectDir (Get-Location).Path -BuilderLabel $builderLabel
+                }
+            }
+            default {
+                Stop-WithError "usage: psmux-bridge builder-queue [add|list|dispatch-next|complete] ..."
+            }
         }
     }
     'vault'           {
