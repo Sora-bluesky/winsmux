@@ -1030,6 +1030,49 @@ function Invoke-Doctor {
     } catch {
         Write-Output "Clipboard image: (check failed)"
     }
+
+    # TASK-116: Startup diagnostics
+    Write-Output ""
+    Write-Output "=== Startup diagnostics ==="
+
+    # Codex sandbox
+    $codexConfig = Join-Path $env:USERPROFILE '.codex' 'config.toml'
+    if (Test-Path $codexConfig) {
+        $sandbox = (Select-String -Path $codexConfig -Pattern 'sandbox\s*=\s*"([^"]+)"' -ErrorAction SilentlyContinue)
+        if ($sandbox) {
+            $val = $sandbox.Matches[0].Groups[1].Value
+            if ($val -eq 'elevated') {
+                Write-Output "Codex sandbox: $val [WARNING: use 'unelevated' to fix --full-auto]"
+            } else {
+                Write-Output "Codex sandbox: $val [OK]"
+            }
+        }
+    } else {
+        Write-Output "Codex config: not found"
+    }
+
+    # Manifest
+    $manifestPath = Join-Path (Get-Location).Path '.winsmux' 'manifest.yaml'
+    Write-Output "Manifest: $(if (Test-Path $manifestPath) { 'exists' } else { 'not found' })"
+
+    # Lock file
+    $lockFile = Join-Path (Get-Location).Path '.winsmux' 'orchestra.lock'
+    if (Test-Path $lockFile) {
+        Write-Output "Startup lock: EXISTS [WARNING: stale lock? Remove to unblock]"
+    } else {
+        Write-Output "Startup lock: none [OK]"
+    }
+
+    # Shield harness
+    $shDir = Join-Path (Get-Location).Path '.shield-harness'
+    Write-Output "Shield-harness: $(if (Test-Path $shDir) { 'initialized' } else { 'not found' })"
+
+    # Hooks count
+    $hooksDir = Join-Path (Get-Location).Path '.claude' 'hooks'
+    if (Test-Path $hooksDir) {
+        $hookCount = @(Get-ChildItem $hooksDir -Filter '*.js').Count
+        Write-Output "Hooks: $hookCount scripts"
+    }
 }
 
 function Invoke-ImeInput {

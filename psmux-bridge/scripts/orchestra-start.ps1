@@ -462,6 +462,47 @@ function Invoke-VaultPreflight {
     }
 }
 
+function Invoke-VaultHealthCheck {
+    <# TASK-119: Credential and vault health preflight with redacted diagnostics #>
+    param([Parameter(Mandatory = $true)]$Settings)
+
+    $results = @()
+    foreach ($key in @($Settings.vault_keys)) {
+        $exists = Test-VaultKeyExists -Key $key
+        $redacted = if ($exists) {
+            $val = (Get-VaultValue -Key $key)
+            if ($val.Length -gt 4) { $val.Substring(0, 4) + '****' } else { '****' }
+        } else { '(missing)' }
+
+        $results += [PSCustomObject]@{
+            Key      = $key
+            Status   = if ($exists) { 'OK' } else { 'MISSING' }
+            Preview  = $redacted
+        }
+    }
+
+    # Check gh auth
+    $ghAuth = 'UNKNOWN'
+    try {
+        $null = & gh auth status 2>&1
+        $ghAuth = if ($LASTEXITCODE -eq 0) { 'OK' } else { 'FAILED' }
+    } catch { $ghAuth = 'ERROR' }
+
+    $results += [PSCustomObject]@{ Key = 'gh-auth'; Status = $ghAuth; Preview = '(cli)' }
+
+    $missing = @($results | Where-Object { $_.Status -ne 'OK' })
+    if ($missing.Count -gt 0) {
+        Write-Warning "[vault-health] $($missing.Count) issue(s) detected:"
+        foreach ($m in $missing) {
+            Write-Warning "  $($m.Key): $($m.Status)"
+        }
+    } else {
+        Write-Output "Preflight: vault health OK ($($results.Count) keys verified)"
+    }
+
+    return $results
+}
+
 function Invoke-CodexTrustPreflight {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
@@ -682,6 +723,7 @@ try {
     $vaultValues = [ordered]@{}
 
     Write-WinsmuxLog -Level INFO -Event 'preflight.vault_values.start' -Message 'Resolving required vault values.' -Data @{ key_count = @($settings.vault_keys).Count } | Out-Null
+    Invoke-VaultHealthCheck -Settings $settings | Out-Null
     foreach ($key in @($settings.vault_keys)) {
         try {
             $vaultValues[$key] = Get-VaultValue -Key $key
