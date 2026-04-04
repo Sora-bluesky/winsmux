@@ -91,7 +91,7 @@ function Update-ReleaseBacklogStatus {
         }
         $isReleaseTask = ($targetVersion -eq $releaseTag) -or ($targetVersion -eq $Version)
 
-        if ($isReleaseTask -and $status -notin @('done', 'cancelled')) {
+        if ($isReleaseTask -and $status -in @('wip', 'review') ) {
             $updatedTaskBlock = $taskBlock -replace '(?m)^(\s*)status:\s*[^\r\n]*$', '${1}status: done'
             if ($updatedTaskBlock -match '(?m)^(\s*)updated:\s*[^\r\n]*$') {
                 $updatedTaskBlock = $updatedTaskBlock -replace '(?m)^(\s*)updated:\s*[^\r\n]*$', ('${1}updated: "' + $today + '"')
