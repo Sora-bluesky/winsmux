@@ -358,7 +358,33 @@ if (require.main === module) {
       }
     }
 
-    // --- Step 3: All checks passed ---
+    // --- Step 3: SSRF / Internal host check (#172) ---
+    {
+      let hostsToCheck = [];
+      if (toolName === "Bash") {
+        hostsToCheck = extractHostsFromCommand((toolInput.command || "").trim());
+      } else if (toolName === "WebFetch") {
+        const host = extractHostFromUrl(toolInput.url || "");
+        if (host) hostsToCheck = [host];
+      }
+
+      for (const host of hostsToCheck) {
+        if (isInternalHost(host)) {
+          appendEvidence({
+            event: "data_boundary_deny",
+            hook: "sh-data-boundary",
+            tool: toolName,
+            host: host,
+            reason: "ssrf_internal_host",
+            is_channel: isChannel,
+          });
+          deny(`[sh-data-boundary] Internal/metadata host access blocked: ${host}`);
+          return;
+        }
+      }
+    }
+
+    // --- Step 4: All checks passed ---
     allow();
   } catch (err) {
     // fail-close: any uncaught error = deny
