@@ -20,7 +20,12 @@ Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $script:TeamPipelineBridgeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\psmux-bridge.ps1'))
+$script:TeamPipelineLoggerScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'logger.ps1'))
 $script:TeamPipelineDangerousApprovalPattern = '(?im)(rm\s+-rf|Remove-Item\s+.+-Recurse.+-Force|git\s+push\s+--force|git\s+reset\s+--hard|DROP\s+TABLE|DELETE\s+FROM)'
+
+if (Test-Path $script:TeamPipelineLoggerScript -PathType Leaf) {
+    . $script:TeamPipelineLoggerScript
+}
 
 function ConvertFrom-TeamPipelineYamlScalar {
     param([AllowNull()]$Value)
@@ -209,6 +214,19 @@ function Resolve-TeamPipelineBuilderContext {
         ProjectDir        = $projectDir
         BuilderWorktreePath = $worktreePath
     }
+}
+
+function Get-TeamPipelineSessionName {
+    param([AllowNull()]$Manifest)
+
+    if ($null -ne $Manifest -and $null -ne $Manifest.Session -and $Manifest.Session.Contains('name')) {
+        $sessionName = [string]$Manifest.Session.name
+        if (-not [string]::IsNullOrWhiteSpace($sessionName)) {
+            return $sessionName
+        }
+    }
+
+    return 'winsmux-orchestra'
 }
 
 function Get-TeamPipelineStageTargets {
@@ -405,6 +423,25 @@ function Wait-TeamPipelineStage {
     throw "Timed out waiting for $StageName on target '$Target'. Last output:`n$lastOutput"
 }
 
+function Write-TeamPipelineEvent {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$Event,
+        [string]$Message,
+        [string]$Role,
+        [string]$PaneId,
+        [string]$Target,
+        [AllowNull()]$Data
+    )
+
+    if (-not (Get-Command -Name 'Write-OrchestraLog' -ErrorAction SilentlyContinue)) {
+        return $null
+    }
+
+    return Write-OrchestraLog -ProjectDir $ProjectDir -SessionName $SessionName -Event $Event -Level 'info' -Message $Message -Role $Role -PaneId $PaneId -Target $Target -Data $Data
+}
+
 function New-TeamPipelinePlanPrompt {
     param([Parameter(Mandatory = $true)][string]$Task)
 
@@ -461,12 +498,61 @@ STATUS: BLOCKED
 "@
 }
 
+function New-TeamPipelineBuilderCompletionNotification {
+    param(
+        [Parameter(Mandatory = $true)][string]$Task,
+        [Parameter(Mandatory = $true)][string]$BuilderLabel,
+        [Parameter(Mandatory = $true)][string]$BuilderWorktreePath,
+        [Parameter(Mandatory = $true)][int]$Attempt,
+        [string]$BuildSummary,
+        [string]$VerifyTarget
+    )
+
+    $summaryBlock = if ([string]::IsNullOrWhiteSpace($BuildSummary)) {
+        'Builder did not provide a summary.'
+    } else {
+        $BuildSummary.Trim()
+    }
+
+    $nextStep = if ([string]::IsNullOrWhiteSpace($VerifyTarget)) {
+        'Next step: no reviewer target is configured.'
+    } else {
+        "Next step: auto-dispatch review to $VerifyTarget."
+    }
+
+    $message = @"
+Builder completed implementation and is ready for review.
+
+Task:
+$Task
+
+Builder label: $BuilderLabel
+Builder worktree: $BuilderWorktreePath
+Attempt: $Attempt
+
+Builder summary:
+$summaryBlock
+
+$nextStep
+"@
+
+    return [PSCustomObject]@{
+        Attempt            = $Attempt
+        BuilderLabel       = $BuilderLabel
+        BuilderWorktreePath = $BuilderWorktreePath
+        VerifyTarget       = $VerifyTarget
+        Summary            = $summaryBlock
+        Message            = $message.Trim()
+    }
+}
+
 function New-TeamPipelineVerifyPrompt {
     param(
         [Parameter(Mandatory = $true)][string]$Task,
         [Parameter(Mandatory = $true)][string]$BuilderLabel,
         [Parameter(Mandatory = $true)][string]$BuilderWorktreePath,
-        [string]$PlanSummary
+        [string]$PlanSummary,
+        [string]$BuilderCompletionMessage
     )
 
     $planBlock = if ([string]::IsNullOrWhiteSpace($PlanSummary)) {
@@ -475,14 +561,25 @@ function New-TeamPipelineVerifyPrompt {
         $PlanSummary
     }
 
+    $completionBlock = if ([string]::IsNullOrWhiteSpace($BuilderCompletionMessage)) {
+        'No explicit builder completion notification was recorded.'
+    } else {
+        $BuilderCompletionMessage.Trim()
+    }
+
     return @"
 Verify the latest builder result without editing code.
+
+This review was auto-dispatched after the builder reported completion.
 
 Task:
 $Task
 
 Builder label: $BuilderLabel
 Builder worktree: $BuilderWorktreePath
+
+Builder completion notification:
+$completionBlock
 
 Plan guidance:
 $planBlock
@@ -565,12 +662,14 @@ function Invoke-TeamPipeline {
 
     $manifest = Read-TeamPipelineManifest -Path $resolvedManifestPath
     $builderContext = Resolve-TeamPipelineBuilderContext -BuilderLabel $Builder -Manifest $manifest -OverrideWorktreePath $BuilderWorktreePath
+    $sessionName = Get-TeamPipelineSessionName -Manifest $manifest
     $targets = Get-TeamPipelineStageTargets -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -SkipPlan:$SkipPlan -SkipVerify:$SkipVerify
 
     $result = [ordered]@{
         Task                = $Task
         ManifestPath        = if ($manifest) { $resolvedManifestPath } else { $null }
         ProjectDir          = $builderContext.ProjectDir
+        SessionName         = $sessionName
         Builder             = $Builder
         BuilderPaneId       = $builderContext.BuilderPaneId
         BuilderWorktreePath = $builderContext.BuilderWorktreePath
@@ -599,9 +698,11 @@ function Invoke-TeamPipeline {
     $attemptLimit = 1 + [Math]::Max(0, $MaxFixRounds)
     for ($attemptIndex = 1; $attemptIndex -le $attemptLimit; $attemptIndex++) {
         $attempt = [ordered]@{
-            Attempt = $attemptIndex
-            Build   = $null
-            Verify  = $null
+            Attempt           = $attemptIndex
+            Build             = $null
+            BuildNotification = $null
+            VerifyDispatch    = $null
+            Verify            = $null
         }
 
         $buildPrompt = if ($attemptIndex -eq 1) {
@@ -621,6 +722,17 @@ function Invoke-TeamPipeline {
             return [PSCustomObject]$result
         }
 
+        $buildNotification = New-TeamPipelineBuilderCompletionNotification -Task $Task -BuilderLabel $Builder -BuilderWorktreePath $builderContext.BuilderWorktreePath -Attempt $attemptIndex -BuildSummary $buildStage.Summary -VerifyTarget $targets.VerifyTarget
+        $attempt.BuildNotification = $buildNotification
+        Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.builder.completed' -Message "Builder $Builder completed attempt $attemptIndex." -Role 'Builder' -PaneId $builderContext.BuilderPaneId -Target $Builder -Data ([ordered]@{
+            attempt              = $attemptIndex
+            task                 = $Task
+            status               = $buildStage.Status
+            builder_worktree_path = $builderContext.BuilderWorktreePath
+            verify_target        = $targets.VerifyTarget
+            summary              = $buildNotification.Summary
+        }) | Out-Null
+
         if ([string]::IsNullOrWhiteSpace($targets.VerifyTarget)) {
             $result.Attempts += [PSCustomObject]$attempt
             $result.Success = $true
@@ -628,7 +740,20 @@ function Invoke-TeamPipeline {
             return [PSCustomObject]$result
         }
 
-        $verifyPrompt = New-TeamPipelineVerifyPrompt -Task $Task -BuilderLabel $Builder -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary
+        $verifyPrompt = New-TeamPipelineVerifyPrompt -Task $Task -BuilderLabel $Builder -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -BuilderCompletionMessage $buildNotification.Message
+        $attempt.VerifyDispatch = [PSCustomObject]@{
+            Target            = $targets.VerifyTarget
+            Automatic         = $true
+            Prompt            = $verifyPrompt
+            Notification      = $buildNotification.Message
+        }
+        Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.reviewer.dispatched' -Message "Auto-dispatched review to $($targets.VerifyTarget) after builder completion." -Role 'Reviewer' -Target $targets.VerifyTarget -Data ([ordered]@{
+            attempt              = $attemptIndex
+            task                 = $Task
+            builder              = $Builder
+            builder_worktree_path = $builderContext.BuilderWorktreePath
+            summary              = $buildNotification.Summary
+        }) | Out-Null
         Invoke-TeamPipelineBridge -Arguments @('send', $targets.VerifyTarget, $verifyPrompt) | Out-Null
         $verifyStage = Wait-TeamPipelineStage -Target $targets.VerifyTarget -StageName 'VERIFY' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds
         $attempt.Verify = $verifyStage
