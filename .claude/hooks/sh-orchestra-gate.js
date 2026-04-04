@@ -44,7 +44,7 @@ try {
 
   // Rule 4: No direct codex exec (use orchestra-start)
   if (toolName === "Bash") {
-    if (/codex\s+(exec|e)\s/.test(rawCommand) && !/psmux\s+send-keys/.test(rawCommand)) {
+    if (/codex\s+(exec|e)\s/.test(rawCommand) && !/psmux\s+send-keys/.test(rawCommand) && !/psmux-bridge/.test(rawCommand)) {
       deny("Use orchestra-start or psmux send-keys to dispatch Codex, not direct codex exec.");
     }
   }

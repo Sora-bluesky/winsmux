@@ -60,11 +60,13 @@ pwsh scripts/bump-version.ps1 -Version X.Y.Z
 
 ## Hook System
 
-Hooks are in `.claude/hooks/` (git-tracked). Registration:
-- **settings.json**: hooks for all users (security, data-boundary)
-- **settings.local.json**: Commander-specific hooks (orchestra-gate)
+Hooks are in `.claude/hooks/` (git-tracked, 25 files). Two registration layers:
+- **settings.json** (git-tracked): all-user hooks (security baseline). Currently: sh-evidence.js のみ
+- **settings.local.json** (gitignored): Commander-specific hooks (sh-orchestra-gate.js)
 
-`orchestra-start.ps1` auto-registers Commander hooks in settings.local.json.
+**Current status (v0.12.1)**: 25 hooks exist but only 2 are registered and functional.
+21 hooks crash on require due to missing sh-utils.js functions. Restoration planned in v0.13.0-v0.16.0.
+See `tasks/backlog.yaml` TASK-089~097 for hook revival plan.
 
 ## Git Rules
 
