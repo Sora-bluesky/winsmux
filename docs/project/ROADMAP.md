@@ -1,7 +1,7 @@
 # Roadmap
 
 > Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-04 20:02 (+09:00)
+> Last sync: 2026-04-04 20:08 (+09:00)
 
 ## Version Summary
 
@@ -18,12 +18,22 @@
 | v0.14.0 | 2 | [====================] 100% (2/2) |
 | v0.15.0 | 4 | [====================] 100% (4/4) |
 | v0.16.0 | 4 | [====================] 100% (4/4) |
-| v0.17.0 | 11 | [--------------------] 0% (0/11) |
-| v0.18.0 | 4 | [--------------------] 0% (0/4) |
-| v0.19.0 | 7 | [--------------------] 0% (0/7) |
-| v0.20.0 | 2 | [--------------------] 0% (0/2) |
+| v0.17.0 | 2 | [--------------------] 0% (0/2) |
+| v0.17.1 | 2 | [--------------------] 0% (0/2) |
+| v0.17.2 | 2 | [--------------------] 0% (0/2) |
+| v0.17.3 | 2 | [--------------------] 0% (0/2) |
+| v0.17.4 | 2 | [--------------------] 0% (0/2) |
+| v0.18.0 | 1 | [--------------------] 0% (0/1) |
+| v0.18.1 | 2 | [--------------------] 0% (0/2) |
+| v0.18.2 | 2 | [--------------------] 0% (0/2) |
+| v0.19.0 | 3 | [--------------------] 0% (0/3) |
+| v0.19.1 | 2 | [--------------------] 0% (0/2) |
+| v0.19.2 | 2 | [--------------------] 0% (0/2) |
+| v0.20.0 | 1 | [--------------------] 0% (0/1) |
+| v0.20.1 | 1 | [--------------------] 0% (0/1) |
 | v0.21.0 | 1 | [--------------------] 0% (0/1) |
-| v0.22.0 | 2 | [--------------------] 0% (0/2) |
+| v0.21.1 | 1 | [--------------------] 0% (0/1) |
+| v0.21.2 | 1 | [--------------------] 0% (0/1) |
 | cancelled | 22 | [--------------------] 0% (0/22) |
 | post-v1.0.0 | 7 | [--------------------] 0% (0/7) |
 
@@ -139,24 +149,54 @@
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-098 | Tauri scaffold + sidebar + Focus Policy + notification inbox | P0 | winsmux | backlog |
 | [ ] | TASK-109 | Builder work queue — auto-dispatch next task on completion | P0 | winsmux | backlog |
 | [ ] | TASK-111 | Builder completion notification + auto-Reviewer dispatch | P0 | winsmux | backlog |
+
+### v0.17.1
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
 | [ ] | TASK-117 | Serialize orchestra-start phases with startup lock, retry, and idempotent preflight | P0 | winsmux | backlog |
 | [ ] | TASK-112 | Idle pane auto-role-switch for optimal resource utilization | P1 | winsmux | backlog |
+
+### v0.17.2
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
 | [ ] | TASK-116 | Remove interactive startup prompts and add startup-doctor remediation | P1 | winsmux | backlog |
-| [ ] | TASK-118 | Add startup rollback and recovery journal for partial initialization | P1 | winsmux | backlog |
 | [ ] | TASK-119 | Credential and vault health preflight with redacted diagnostics | P1 | winsmux | backlog |
+
+### v0.17.3
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
 | [ ] | TASK-039 | Make STG3 gate CI-aware (auto-run Pester, deny on coverage < 80%) | P2 | winsmux | backlog |
 | [ ] | TASK-082 | Triage 96 startup audit findings to responsible tasks | P2 | winsmux | backlog |
+
+### v0.17.4
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
+| [ ] | TASK-118 | Add startup rollback and recovery journal for partial initialization | P1 | winsmux | backlog |
 | [ ] | TASK-120 | Write startup troubleshooting guide and verification matrix | P2 | winsmux | backlog |
 
 ### v0.18.0
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
+| [ ] | TASK-098 | Tauri scaffold + sidebar + Focus Policy + notification inbox | P0 | winsmux | backlog |
+
+### v0.18.1
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
 | [ ] | TASK-099 | Multi-pane layout + Orchestra integration in Tauri | P0 | winsmux | backlog |
 | [ ] | TASK-102 | Fix Codex context exhaustion in Builder worktrees | P1 | winsmux | backlog |
+
+### v0.18.2
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
 | [ ] | TASK-110 | Automatic task splitting for parallel Builder dispatch | P1 | winsmux | backlog |
 | [ ] | TASK-113 | Dynamic pane scaling — auto add/remove panes based on workload | P1 | winsmux | backlog |
 
@@ -165,18 +205,33 @@
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-104 | Sync sora-psmux fork with upstream before rendering work | P0 | sora-psmux | cancelled |
-| [ ] | TASK-070 | Implement Event Stream (pub/sub event bus for Orchestra) | P1 | winsmux | backlog |
 | [ ] | TASK-100 | Explorer + Dashboard panels in Tauri | P1 | winsmux | backlog |
-| [ ] | TASK-101 | Theme engine + Nerd Font + TrueColor in Tauri | P1 | winsmux | backlog |
 | [ ] | TASK-103 | Implement P14-Ph2 psmux rendering improvements (TrueColor, Nerd Font, GPU) | P1 | sora-psmux | cancelled |
-| [ ] | TASK-114 | Orchestra event capture + SQLite FTS5 search layer | P1 | winsmux | backlog |
+
+### v0.19.1
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
+| [ ] | TASK-101 | Theme engine + Nerd Font + TrueColor in Tauri | P1 | winsmux | backlog |
 | [ ] | TASK-078 | Pane border metadata display (git branch, timestamp, idle time) | P2 | winsmux | backlog |
+
+### v0.19.2
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
+| [ ] | TASK-070 | Implement Event Stream (pub/sub event bus for Orchestra) | P1 | winsmux | backlog |
+| [ ] | TASK-114 | Orchestra event capture + SQLite FTS5 search layer | P1 | winsmux | backlog |
 
 ### v0.20.0
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-105 | JSON-RPC backend + SDK integration in Tauri | P0 | winsmux | backlog |
+
+### v0.20.1
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
 | [ ] | TASK-115 | Installer profile design (core/orchestra/security/full) | P2 | winsmux | backlog |
 
 ### v0.21.0
@@ -185,11 +240,16 @@
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-106 | Relay Auth + remote pane support in Tauri | P1 | winsmux | backlog |
 
-### v0.22.0
+### v0.21.1
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-107 | Editor panel + drag-and-drop layout + polish | P1 | winsmux | backlog |
+
+### v0.21.2
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
 | [ ] | TASK-108 | Pane pop-out and multi-display support | P1 | winsmux | backlog |
 
 ### cancelled
