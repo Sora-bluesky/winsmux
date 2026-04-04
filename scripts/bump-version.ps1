@@ -297,7 +297,7 @@ try {
         }
         Write-Host "[release] ROADMAP refreshed after backlog update"
 
-        git add -- "tasks/backlog.yaml" "docs/project/ROADMAP.md"
+        git add -f -- "tasks/backlog.yaml" "docs/project/ROADMAP.md"
         git diff --cached --quiet -- "tasks/backlog.yaml" "docs/project/ROADMAP.md"
         if ($LASTEXITCODE -ne 0) {
             git commit -m "chore: close release task for $Version"
