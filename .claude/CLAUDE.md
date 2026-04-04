@@ -64,9 +64,14 @@ Hooks are in `.claude/hooks/` (git-tracked, 25 files). Two registration layers:
 - **settings.json** (git-tracked): all-user hooks (security baseline). Currently: sh-evidence.js のみ
 - **settings.local.json** (gitignored): Commander-specific hooks (sh-orchestra-gate.js)
 
-**Current status (v0.12.1)**: 25 hooks exist but only 2 are registered and functional.
-21 hooks crash on require due to missing sh-utils.js functions. Restoration planned in v0.13.0-v0.16.0.
-See `tasks/backlog.yaml` TASK-089~097 for hook revival plan.
+**Current status (v0.13.0)**: 25 hooks exist, 2 registered (orchestra-gate + evidence).
+sh-utils.js 15関数実装済み (v0.13.0)。残り21本は v0.14.0〜v0.16.0 で段階的に有効化予定。
+shield-harness init 復元済み（session.json + config テンプレート自動生成）。
+
+## ROADMAP Sync
+
+- `sync-roadmap.ps1` 実行後、`git add -f docs/project/ROADMAP.md` が必要（gitignore 例外）
+- `git pull --rebase` 後は ROADMAP.md が古い状態に戻る場合あり → 再 sync 必要
 
 ## Git Rules
 

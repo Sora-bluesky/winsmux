@@ -1,7 +1,7 @@
 # Roadmap
 
 > Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-04 16:03 (+09:00)
+> Last sync: 2026-04-04 16:16 (+09:00)
 
 ## Version Summary
 
@@ -14,8 +14,8 @@
 | v0.10.3 | 2 | [====================] 100% (2/2) |
 | v0.11.0 | 3 | [====================] 100% (3/3) |
 | v0.12.0 | 3 | [====================] 100% (3/3) |
-| v0.13.0 | 4 | [--------------------] 0% (0/4) |
-| v0.14.0 | 2 | [--------------------] 0% (0/2) |
+| v0.13.0 | 3 | [====================] 100% (3/3) |
+| v0.14.0 | 3 | [--------------------] 0% (0/3) |
 | v0.15.0 | 5 | [--------------------] 0% (0/5) |
 | v0.16.0 | 4 | [--------------------] 0% (0/4) |
 | v0.17.0 | 1 | [--------------------] 0% (0/1) |
@@ -106,10 +106,9 @@
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-089 | Implement 15 missing functions in sh-utils.js | P0 | winsmux | backlog |
-| [ ] | TASK-090 | Restore Shield-Harness init in orchestra-start.ps1 | P0 | winsmux | backlog |
-| [ ] | TASK-091 | Create .claude/settings.json and register hooks | P0 | winsmux | backlog |
-| [ ] | TASK-082 | Triage 96 startup audit findings to responsible tasks | P2 | winsmux | backlog |
+| [x] | TASK-089 | Implement 15 missing functions in sh-utils.js | P0 | winsmux | done |
+| [x] | TASK-090 | Restore Shield-Harness init in orchestra-start.ps1 | P0 | winsmux | done |
+| [x] | TASK-091 | Create .claude/settings.json and register hooks | P0 | winsmux | done |
 
 ### v0.14.0
 
@@ -117,6 +116,7 @@
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-092 | Activate Tier 1 Hooks (8 hooks: session, gate, injection, permission, output) | P0 | winsmux | backlog |
 | [ ] | TASK-093 | Fix injection-patterns.json schema (Array to Object with categories) | P1 | winsmux | backlog |
+| [ ] | TASK-082 | Triage 96 startup audit findings to responsible tasks | P2 | winsmux | backlog |
 
 ### v0.15.0
 
