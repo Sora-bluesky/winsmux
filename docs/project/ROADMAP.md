@@ -1,12 +1,12 @@
-# Roadmap
+# ロードマップ
 
-> Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-04 20:56 (+09:00)
+> `tasks/backlog.yaml` から自動生成 — 手動編集禁止
+> 最終同期: 2026-04-04 22:03 (+09:00)
 
-## Version Summary
+## バージョン概要
 
-| Version | Tasks | Progress |
-|---------|-------|----------|
+| バージョン | タスク数 | 進捗 |
+|-----------|---------|------|
 | v0.9.6 | 10 | [====================] 100% (10/10) |
 | v0.10.0 | 11 | [====================] 100% (11/11) |
 | v0.10.1 | 7 | [====================] 100% (7/7) |
@@ -37,7 +37,7 @@
 | cancelled | 22 | [--------------------] 0% (0/22) |
 | post-v1.0.0 | 7 | [--------------------] 0% (0/7) |
 
-## Work Breakdown
+## タスク詳細
 
 ### v0.9.6
 
@@ -145,7 +145,7 @@
 | [x] | TASK-031 | Enhance evidence-ledger with command-trace recording and integrity check | P2 | winsmux | done |
 | [x] | TASK-036 | Extend agent-readiness patterns beyond prompt detection (Codex/Gemini/Claude) | P2 | winsmux | done |
 
-### v0.17.0
+### v0.17.0 — Orchestra 自動ディスパッチ
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -153,55 +153,55 @@
 | [ ] | TASK-111 | Builder completion notification + auto-Reviewer dispatch | P0 | winsmux | backlog |
 | [ ] | TASK-121 | Commander auto-detect Codex approval prompts in Builder panes | P0 | winsmux | backlog |
 
-### v0.17.1
+### v0.17.1 — アイドルペイン切替 + 起動シリアライズ
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-117 | Serialize orchestra-start phases with startup lock, retry, and idempotent preflight | P0 | winsmux | backlog |
 | [ ] | TASK-112 | Idle pane auto-role-switch for optimal resource utilization | P1 | winsmux | backlog |
 
-### v0.17.2
+### v0.17.2 — 起動 UX + Vault 堅牢化
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-116 | Remove interactive startup prompts and add startup-doctor remediation | P1 | winsmux | backlog |
 | [ ] | TASK-119 | Credential and vault health preflight with redacted diagnostics | P1 | winsmux | backlog |
 
-### v0.17.3
+### v0.17.3 — CI ゲート + 監査トリアージ
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-039 | Make STG3 gate CI-aware (auto-run Pester, deny on coverage < 80%) | P2 | winsmux | backlog |
 | [ ] | TASK-082 | Triage 96 startup audit findings to responsible tasks | P2 | winsmux | backlog |
 
-### v0.17.4
+### v0.17.4 — ロールバック + ドキュメント
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-118 | Add startup rollback and recovery journal for partial initialization | P1 | winsmux | backlog |
 | [ ] | TASK-120 | Write startup troubleshooting guide and verification matrix | P2 | winsmux | backlog |
 
-### v0.18.0
+### v0.18.0 — Tauri scaffold
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-098 | Tauri scaffold + sidebar + Focus Policy + notification inbox | P0 | winsmux | backlog |
 
-### v0.18.1
+### v0.18.1 — マルチペイン + Codex 改善
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-099 | Multi-pane layout + Orchestra integration in Tauri | P0 | winsmux | backlog |
 | [ ] | TASK-102 | Fix Codex context exhaustion in Builder worktrees | P1 | winsmux | backlog |
 
-### v0.18.2
+### v0.18.2 — タスク分割 + 動的スケーリング
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-110 | Automatic task splitting for parallel Builder dispatch | P1 | winsmux | backlog |
 | [ ] | TASK-113 | Dynamic pane scaling — auto add/remove panes based on workload | P1 | winsmux | backlog |
 
-### v0.19.0
+### v0.19.0 — Explorer + Dashboard
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -209,45 +209,45 @@
 | [ ] | TASK-100 | Explorer + Dashboard panels in Tauri | P1 | winsmux | backlog |
 | [ ] | TASK-103 | Implement P14-Ph2 psmux rendering improvements (TrueColor, Nerd Font, GPU) | P1 | sora-psmux | cancelled |
 
-### v0.19.1
+### v0.19.1 — テーマエンジン + ペインメタデータ
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-101 | Theme engine + Nerd Font + TrueColor in Tauri | P1 | winsmux | backlog |
 | [ ] | TASK-078 | Pane border metadata display (git branch, timestamp, idle time) | P2 | winsmux | backlog |
 
-### v0.19.2
+### v0.19.2 — イベントキャプチャ + 検索
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-070 | Implement Event Stream (pub/sub event bus for Orchestra) | P1 | winsmux | backlog |
 | [ ] | TASK-114 | Orchestra event capture + SQLite FTS5 search layer | P1 | winsmux | backlog |
 
-### v0.20.0
+### v0.20.0 — JSON-RPC + SDK
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-105 | JSON-RPC backend + SDK integration in Tauri | P0 | winsmux | backlog |
 
-### v0.20.1
+### v0.20.1 — インストーラプロファイル
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-115 | Installer profile design (core/orchestra/security/full) | P2 | winsmux | backlog |
 
-### v0.21.0
+### v0.21.0 — Relay Auth
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-106 | Relay Auth + remote pane support in Tauri | P1 | winsmux | backlog |
 
-### v0.21.1
+### v0.21.1 — Editor パネル
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-107 | Editor panel + drag-and-drop layout + polish | P1 | winsmux | backlog |
 
-### v0.21.2
+### v0.21.2 — ペイン分離 + マルチディスプレイ
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -292,18 +292,18 @@
 | [ ] | TASK-073 | Implement Command Orchestrator (per-command approval pipeline) | P2 | winsmux | backlog |
 | [ ] | TASK-076 | Implement deferred network approval pattern | P2 | winsmux | backlog |
 
-## Legend
+## 凡例
 
-| Symbol | Meaning |
-|--------|---------|
-| [x] | Done |
-| [-] | In progress |
-| [R] | In review |
-| [ ] | Backlog / Ready |
+| 記号 | 意味 |
+|------|------|
+| [x] | 完了 |
+| [-] | 作業中 |
+| [R] | レビュー中 |
+| [ ] | 未着手 |
 
-| Priority | Meaning |
-|----------|---------|
-| P0 | Critical / Blocker |
-| P1 | High |
-| P2 | Medium |
-| P3 | Low |
+| 優先度 | 意味 |
+|--------|------|
+| P0 | 最重要 |
+| P1 | 高 |
+| P2 | 中 |
+| P3 | 低 |
