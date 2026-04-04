@@ -19,6 +19,7 @@ token.json
 # =========================
 docs/internal/
 docs/project/
+!docs/project/ROADMAP.md
 docs/*-research*.md
 docs/review-notes*.md
 docs/ci-checklist*.md
