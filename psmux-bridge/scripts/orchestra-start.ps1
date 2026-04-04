@@ -4,6 +4,7 @@ $scriptDir = $PSScriptRoot
 . "$scriptDir/vault.ps1"
 . "$scriptDir/builder-worktree.ps1"
 . "$scriptDir/logger.ps1"
+. "$scriptDir/agent-readiness.ps1"
 
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -526,23 +527,6 @@ function Invoke-ShieldHarnessInit {
     Write-WinsmuxLog -Level INFO -Event 'preflight.shield_harness.init' -Message "Shield-Harness initialized at $shDir." -Data @{ shield_dir = $shDir } | Out-Null
 }
 
-function Get-LastNonEmptyLine {
-    param([AllowNull()][string]$Text)
-
-    if ([string]::IsNullOrWhiteSpace($Text)) {
-        return $null
-    }
-
-    $lines = $Text -split "\r?\n"
-    for ($index = $lines.Length - 1; $index -ge 0; $index--) {
-        if (-not [string]::IsNullOrWhiteSpace($lines[$index])) {
-            return $lines[$index]
-        }
-    }
-
-    return $null
-}
-
 function Get-TailPreview {
     param([AllowNull()][string]$Text, [int]$LineCount = 12)
 
@@ -653,30 +637,6 @@ function Save-OrchestraSessionState {
 
     Set-Content -Path $manifestPath -Value ($lines -join [Environment]::NewLine) -Encoding UTF8 -NoNewline
     return $manifestPath
-}
-
-function Test-AgentPromptText {
-    param(
-        [AllowNull()][string]$Text,
-        [Parameter(Mandatory = $true)][string]$Agent
-    )
-
-    $lastLine = Get-LastNonEmptyLine -Text $Text
-    if ($null -eq $lastLine) {
-        return $false
-    }
-
-    $trimmed = $lastLine.TrimStart()
-    $rightChevron = [string][char]8250
-    if ($trimmed.StartsWith('>') -or $trimmed.StartsWith($rightChevron)) {
-        return $true
-    }
-
-    if ($Agent.Trim().ToLowerInvariant() -eq 'codex' -and $Text -match '(?im)\bgpt-[A-Za-z0-9._-]+\b.*\b\d+% left\b') {
-        return $true
-    }
-
-    return $false
 }
 
 function Wait-AgentReady {

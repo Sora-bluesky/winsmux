@@ -791,15 +791,7 @@ function Invoke-Role {
     while ("$newRole-$nextNum" -in $existingLabels) { $nextNum++ }
     $newLabel = "$newRole-$nextNum"
 
-    # Kill current agent (Ctrl+C twice, then exit)
-    & psmux send-keys -t $paneId C-c
-    Start-Sleep -Milliseconds 300
-    & psmux send-keys -t $paneId C-c
-    Start-Sleep -Milliseconds 500
-    & psmux send-keys -t $paneId 'exit' Enter
-    Start-Sleep -Seconds 2
-
-    # Rename pane
+    # Rename pane first (before respawn)
     & psmux select-pane -t $paneId -T $newLabel
 
     # Update labels
@@ -807,7 +799,7 @@ function Invoke-Role {
     if ($labels.ContainsKey($oldLabel)) { $labels.Remove($oldLabel) }
     Save-Labels $labels
 
-    # Respawn pane
+    # Respawn pane (kills current process + restarts shell in one step, #174)
     & psmux respawn-pane -k -t $paneId
 
     # Wait for shell ready (poll for PS prompt)
