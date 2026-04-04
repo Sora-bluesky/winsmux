@@ -1,7 +1,7 @@
 # ロードマップ
 
 > `tasks/backlog.yaml` から自動生成 — 手動編集禁止
-> 最終同期: 2026-04-05 07:04 (+09:00)
+> 最終同期: 2026-04-05 08:30 (+09:00)
 
 ## バージョン概要
 
@@ -24,8 +24,8 @@
 | v0.17.3 | 2 | [====================] 100% (2/2) |
 | v0.17.4 | 2 | [====================] 100% (2/2) |
 | v0.18.0 | 1 | [====================] 100% (1/1) |
-| v0.18.1 | 2 | [--------------------] 0% (0/2) |
-| v0.18.2 | 2 | [--------------------] 0% (0/2) |
+| v0.18.1 | 10 | [--------------------] 0% (0/10) |
+| v0.18.2 | 3 | [--------------------] 0% (0/3) |
 | v0.19.0 | 3 | [--------------------] 0% (0/3) |
 | v0.19.1 | 2 | [--------------------] 0% (0/2) |
 | v0.19.2 | 2 | [--------------------] 0% (0/2) |
@@ -192,7 +192,15 @@
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-099 | Multi-pane layout + Orchestra integration in Tauri | P0 | winsmux | backlog |
+| [ ] | TASK-122 | Fix orchestra-start pane duplication on restart | P0 | winsmux | backlog |
+| [ ] | TASK-123 | Replace Get-CimInstance Win32_Process with Get-Process globally | P0 | winsmux | backlog |
+| [ ] | TASK-124 | Add psmux-bridge kill/restart subcommands for Builder panes | P0 | winsmux | backlog |
 | [ ] | TASK-102 | Fix Codex context exhaustion in Builder worktrees | P1 | winsmux | backlog |
+| [ ] | TASK-125 | Auto-inject cmd /c workaround for Codex constrained language mode | P1 | winsmux | backlog |
+| [ ] | TASK-126 | Fix sh-worktree.js hook (no output on worktree create) | P1 | winsmux | backlog |
+| [ ] | TASK-127 | Fix builder-queue manifest queued property error | P1 | winsmux | backlog |
+| [ ] | TASK-128 | Fix role switch killing pane instead of respawning | P1 | winsmux | backlog |
+| [ ] | TASK-129 | Fix pane border labels not displayed | P2 | winsmux | backlog |
 
 ### v0.18.2 — タスク分割 + 動的スケーリング
 
@@ -200,6 +208,7 @@
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-110 | Automatic task splitting for parallel Builder dispatch | P1 | winsmux | backlog |
 | [ ] | TASK-113 | Dynamic pane scaling — auto add/remove panes based on workload | P1 | winsmux | backlog |
+| [ ] | TASK-130 | Commander auto-detect Builder stall and alert | P1 | winsmux | backlog |
 
 ### v0.19.0 — Explorer + Dashboard
 

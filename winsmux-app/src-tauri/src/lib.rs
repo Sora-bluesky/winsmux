@@ -1,15 +1,20 @@
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
-struct PtyState {
+struct SinglePty {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
 }
 
+struct PtyManager {
+    panes: Arc<Mutex<HashMap<String, SinglePty>>>,
+}
+
 #[tauri::command]
-async fn pty_spawn(app: AppHandle, cols: u16, rows: u16) -> Result<(), String> {
+async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
     let pty_system = native_pty_system();
 
     let pair = pty_system
@@ -39,15 +44,20 @@ async fn pty_spawn(app: AppHandle, cols: u16, rows: u16) -> Result<(), String> {
         .try_clone_reader()
         .map_err(|e| format!("Failed to get reader: {e}"))?;
 
-    let state = PtyState {
+    let single = SinglePty {
         writer: Arc::new(Mutex::new(writer)),
         master: Arc::new(Mutex::new(pair.master)),
     };
 
-    app.manage(state);
+    let manager = app.state::<PtyManager>();
+    {
+        let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
+        panes.insert(pane_id.clone(), single);
+    }
 
     // Read PTY output in background thread
     let app_handle = app.clone();
+    let pane_id_clone = pane_id.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
@@ -55,7 +65,7 @@ async fn pty_spawn(app: AppHandle, cols: u16, rows: u16) -> Result<(), String> {
                 Ok(0) => break,
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = app_handle.emit("pty-output", data);
+                    let _ = app_handle.emit("pty-output", serde_json::json!({"pane_id": pane_id_clone, "data": data}));
                 }
                 Err(_) => break,
             }
@@ -66,9 +76,11 @@ async fn pty_spawn(app: AppHandle, cols: u16, rows: u16) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn pty_write(app: AppHandle, data: String) -> Result<(), String> {
-    let state = app.state::<PtyState>();
-    let mut writer = state.writer.lock().map_err(|e| e.to_string())?;
+async fn pty_write(app: AppHandle, pane_id: String, data: String) -> Result<(), String> {
+    let manager = app.state::<PtyManager>();
+    let panes = manager.panes.lock().map_err(|e| e.to_string())?;
+    let pty = panes.get(&pane_id).ok_or_else(|| format!("Pane {} not found", pane_id))?;
+    let mut writer = pty.writer.lock().map_err(|e| e.to_string())?;
     writer
         .write_all(data.as_bytes())
         .map_err(|e| format!("Write failed: {e}"))?;
@@ -77,9 +89,11 @@ async fn pty_write(app: AppHandle, data: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn pty_resize(app: AppHandle, cols: u16, rows: u16) -> Result<(), String> {
-    let state = app.state::<PtyState>();
-    let master = state.master.lock().map_err(|e| e.to_string())?;
+async fn pty_resize(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
+    let manager = app.state::<PtyManager>();
+    let panes = manager.panes.lock().map_err(|e| e.to_string())?;
+    let pty = panes.get(&pane_id).ok_or_else(|| format!("Pane {} not found", pane_id))?;
+    let master = pty.master.lock().map_err(|e| e.to_string())?;
     master
         .resize(PtySize {
             rows,
@@ -91,11 +105,22 @@ async fn pty_resize(app: AppHandle, cols: u16, rows: u16) -> Result<(), String> 
     Ok(())
 }
 
+#[tauri::command]
+async fn pty_close(app: AppHandle, pane_id: String) -> Result<(), String> {
+    let manager = app.state::<PtyManager>();
+    let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
+    panes.remove(&pane_id).ok_or_else(|| format!("Pane {} not found", pane_id))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize])
+        .manage(PtyManager {
+            panes: Arc::new(Mutex::new(HashMap::new())),
+        })
+        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
