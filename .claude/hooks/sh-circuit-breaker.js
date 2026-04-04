@@ -96,9 +96,11 @@ try {
     // Evidence failure is non-blocking
   }
 
-  deny(
-    `[sh-circuit-breaker] リトライ ${currentRetry}/${MAX_RETRIES}。まだ停止しないでください。別のアプローチを試してください。`,
+  // Stop hooks use "block"/"approve", not "deny"/"allow"
+  process.stdout.write(
+    `${JSON.stringify({ decision: "block", reason: `[sh-circuit-breaker] リトライ ${currentRetry}/${MAX_RETRIES}。まだ停止しないでください。別のアプローチを試してください。` })}\n`,
   );
+  process.exit(2);
 } catch (_err) {
   // Control hook — fail-open (allow stop on error)
   allow();
