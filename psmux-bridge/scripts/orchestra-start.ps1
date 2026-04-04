@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
 . "$scriptDir/settings.ps1"
 . "$scriptDir/vault.ps1"
+. "$scriptDir/builder-worktree.ps1"
 . "$scriptDir/logger.ps1"
 
 Set-StrictMode -Version Latest
@@ -739,6 +740,21 @@ try {
     if ($LASTEXITCODE -eq 0) {
         Write-WinsmuxLog -Level INFO -Event 'preflight.session.kill' -Message "Removing existing session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
         Invoke-Psmux -Arguments @('kill-session', '-t', $sessionName)
+    }
+
+    Write-WinsmuxLog -Level INFO -Event 'preflight.builder_worktree_cleanup.start' -Message 'Cleaning stale Builder worktrees.' | Out-Null
+    $builderCleanup = Invoke-StaleBuilderWorktreeCleanup -ProjectDir $projectDir
+    foreach ($removedWorktreePath in @($builderCleanup.RemovedWorktreePaths)) {
+        Write-Output "Preflight: removed stale Builder worktree $removedWorktreePath"
+        Write-WinsmuxLog -Level INFO -Event 'preflight.builder_worktree_cleanup.worktree_removed' -Message "Removed stale Builder worktree $removedWorktreePath." -Data @{ worktree_path = $removedWorktreePath } | Out-Null
+    }
+    foreach ($removedDirectoryPath in @($builderCleanup.RemovedDirectoryPaths)) {
+        Write-Output "Preflight: removed stale Builder directory $removedDirectoryPath"
+        Write-WinsmuxLog -Level INFO -Event 'preflight.builder_worktree_cleanup.directory_removed' -Message "Removed stale Builder directory $removedDirectoryPath." -Data @{ directory_path = $removedDirectoryPath } | Out-Null
+    }
+    foreach ($removedBranch in @($builderCleanup.RemovedBranches)) {
+        Write-Output "Preflight: removed stale Builder branch $removedBranch"
+        Write-WinsmuxLog -Level INFO -Event 'preflight.builder_worktree_cleanup.branch_removed' -Message "Removed stale Builder branch $removedBranch." -Data @{ branch_name = $removedBranch } | Out-Null
     }
 
     Write-WinsmuxLog -Level INFO -Event 'preflight.session.create' -Message "Creating session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
