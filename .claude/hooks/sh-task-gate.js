@@ -67,6 +67,46 @@ function runTests() {
   }
 }
 
+/**
+ * Check if Pester test files exist.
+ * @returns {boolean}
+ */
+function hasPesterTests() {
+  try {
+    const files = fs.readdirSync("tests").filter((f) => f.endsWith(".Tests.ps1"));
+    return files.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Run Pester tests and return the result.
+ * @returns {{ passed: boolean, output: string, total: number, failed: number }}
+ */
+function runPesterTests() {
+  try {
+    const output = execSync(
+      'pwsh -NoProfile -Command "$env:NO_COLOR=1; Invoke-Pester tests/ -Output Minimal -PassThru | Select-Object -Property TotalCount,FailedCount | ConvertTo-Json"',
+      { encoding: "utf8", timeout: 120000, stdio: ["pipe", "pipe", "pipe"] },
+    );
+    try {
+      const result = JSON.parse(output.trim());
+      return {
+        passed: (result.FailedCount || 0) === 0,
+        output: `Pester: ${result.TotalCount} tests, ${result.FailedCount} failed`,
+        total: result.TotalCount || 0,
+        failed: result.FailedCount || 0,
+      };
+    } catch {
+      return { passed: true, output: output.slice(-300), total: 0, failed: 0 };
+    }
+  } catch (err) {
+    const output = (err.stdout || "") + (err.stderr || "");
+    return { passed: false, output: output.slice(-300), total: 0, failed: -1 };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -77,19 +117,39 @@ try {
   // Step 1: Check test configuration
   const config = checkTestConfig();
 
-  // No package.json — no tests to run
+  // Step 2: Run Pester tests if available (TASK-039)
+  if (hasPesterTests()) {
+    const pester = runPesterTests();
+    if (!pester.passed) {
+      try {
+        appendEvidence({
+          hook: HOOK_NAME,
+          event: "TaskCompleted",
+          decision: "deny",
+          reason: "pester_failed",
+          output: pester.output,
+          session_id: input.sessionId,
+        });
+      } catch {}
+      deny(`[${HOOK_NAME}] Pester テスト失敗。${pester.output}`);
+      return;
+    }
+    // Pester passed — continue to npm test check
+  }
+
+  // No package.json — no npm tests to run
   if (!config.hasPackageJson) {
-    allow();
+    allow(hasPesterTests() ? `[${HOOK_NAME}] Pester 通過。` : undefined);
     return;
   }
 
-  // No test script defined — skip testing
+  // No test script defined — skip npm testing
   if (!config.hasTestScript) {
-    allow();
+    allow(hasPesterTests() ? `[${HOOK_NAME}] Pester 通過。` : undefined);
     return;
   }
 
-  // Step 2: Run tests
+  // Step 3: Run npm tests
   const result = runTests();
 
   if (result.passed) {
