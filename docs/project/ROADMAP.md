@@ -1,7 +1,7 @@
 # Roadmap
 
 > Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-04 18:37 (+09:00)
+> Last sync: 2026-04-04 18:40 (+09:00)
 
 ## Version Summary
 
@@ -15,8 +15,8 @@
 | v0.11.0 | 3 | [====================] 100% (3/3) |
 | v0.12.0 | 3 | [====================] 100% (3/3) |
 | v0.13.0 | 3 | [====================] 100% (3/3) |
-| v0.14.0 | 3 | [--------------------] 0% (0/3) |
-| v0.15.0 | 5 | [--------------------] 0% (0/5) |
+| v0.14.0 | 3 | [=============-------] 67% (2/3) |
+| v0.15.0 | 5 | [============--------] 60% (3/5) |
 | v0.16.0 | 4 | [--------------------] 0% (0/4) |
 | v0.17.0 | 1 | [--------------------] 0% (0/1) |
 | v0.18.0 | 2 | [--------------------] 0% (0/2) |
@@ -114,18 +114,18 @@
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-092 | Activate Tier 1 Hooks (8 hooks: session, gate, injection, permission, output) | P0 | winsmux | backlog |
-| [ ] | TASK-093 | Fix injection-patterns.json schema (Array to Object with categories) | P1 | winsmux | backlog |
+| [x] | TASK-092 | Activate Tier 1 Hooks (8 hooks: session, gate, injection, permission, output) | P0 | winsmux | done |
+| [x] | TASK-093 | Fix injection-patterns.json schema (Array to Object with categories) | P1 | winsmux | done |
 | [ ] | TASK-082 | Triage 96 startup audit findings to responsible tasks | P2 | winsmux | backlog |
 
 ### v0.15.0
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-094 | Activate Tier 2 Hooks (9 hooks: quiet, circuit, subagent, worktree, lint, compact) | P0 | winsmux | backlog |
+| [x] | TASK-094 | Activate Tier 2 Hooks (9 hooks: quiet, circuit, subagent, worktree, lint, compact) | P0 | winsmux | done |
 | [R] | TASK-029 | Implement Orchestra start automation (Prefix+O full lifecycle) | P1 | winsmux | review |
-| [ ] | TASK-095 | Implement P17 Focus Policy Stack (focus-lock/unlock) | P1 | winsmux | backlog |
-| [ ] | TASK-096 | Auto-cleanup stale worktrees and branches on Orchestra start | P1 | winsmux | backlog |
+| [x] | TASK-095 | Implement P17 Focus Policy Stack (focus-lock/unlock) | P1 | winsmux | done |
+| [x] | TASK-096 | Auto-cleanup stale worktrees and branches on Orchestra start | P1 | winsmux | done |
 | [ ] | TASK-036 | Extend agent-readiness patterns beyond prompt detection (Codex/Gemini/Claude) | P2 | winsmux | backlog |
 
 ### v0.16.0
