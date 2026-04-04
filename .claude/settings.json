@@ -33,6 +33,14 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-injection-guard.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-channel-detect.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-quiet-inject.js"
           }
         ]
       },
@@ -66,6 +74,81 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-output-control.js"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/lint-on-save.js"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-user-prompt.js"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-circuit-breaker.js"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-subagent.js"
+          }
+        ]
+      }
+    ],
+    "WorktreeCreate": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-worktree.js"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-precompact.js"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-postcompact.js"
           }
         ]
       }

@@ -13,6 +13,7 @@ $ErrorActionPreference = 'Stop'
 $ReadMarkDir    = Join-Path $env:TEMP "winsmux\read_marks"
 $WatermarkDir   = Join-Path $env:TEMP "winsmux\watermarks"
 $LockDir        = Join-Path $env:TEMP "winsmux\locks"
+$FocusPolicyFile = Join-Path $env:TEMP "winsmux\focus-policy-stack.json"
 $LabelsFile     = Join-Path $env:APPDATA "winsmux\labels.json"
 
 # --- Windows Credential Manager P/Invoke ---
@@ -268,6 +269,108 @@ function Get-PaneSnapshotText {
 
     $output = & psmux capture-pane -t $PaneId -p -J -S "-$Lines"
     return ($output | Out-String).TrimEnd()
+}
+
+# --- Helper: Focus Policy Stack ---
+function Get-FocusPolicyStack {
+    if (-not (Test-Path $FocusPolicyFile)) {
+        return @()
+    }
+
+    $raw = Get-Content -Path $FocusPolicyFile -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return @()
+    }
+
+    try {
+        $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Stop-WithError "invalid focus policy stack: $FocusPolicyFile"
+    }
+
+    if ($parsed -is [System.Array]) {
+        return @($parsed)
+    }
+
+    return @($parsed)
+}
+
+function Save-FocusPolicyStack {
+    param([object[]]$Stack)
+
+    $dir = Split-Path $FocusPolicyFile -Parent
+    if (-not (Test-Path $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+
+    if ($null -eq $Stack -or $Stack.Count -eq 0) {
+        if (Test-Path $FocusPolicyFile) {
+            Remove-Item -Path $FocusPolicyFile -Force
+        }
+        return
+    }
+
+    $Stack | ConvertTo-Json -Depth 4 | Set-Content -Path $FocusPolicyFile -Encoding UTF8
+}
+
+function Get-ActiveFocusPolicy {
+    $stack = Get-FocusPolicyStack
+    if (-not $stack -or $stack.Count -eq 0) {
+        return $null
+    }
+
+    return $stack[$stack.Count - 1]
+}
+
+function Push-FocusPolicy {
+    param(
+        [string]$PaneId,
+        [string]$TargetName
+    )
+
+    $stack = @(Get-FocusPolicyStack)
+    $entry = [PSCustomObject]@{
+        paneId      = $PaneId
+        target      = $TargetName
+        lockedBy    = $env:WINSMUX_PANE_ID
+        lockedAt    = (Get-Date).ToString("o")
+    }
+
+    $stack += $entry
+    Save-FocusPolicyStack -Stack $stack
+    return $entry
+}
+
+function Pop-FocusPolicy {
+    $stack = @(Get-FocusPolicyStack)
+    if (-not $stack -or $stack.Count -eq 0) {
+        return $null
+    }
+
+    $entry = $stack[$stack.Count - 1]
+    if ($stack.Count -eq 1) {
+        Save-FocusPolicyStack -Stack @()
+    } else {
+        Save-FocusPolicyStack -Stack $stack[0..($stack.Count - 2)]
+    }
+
+    return $entry
+}
+
+function Assert-FocusAllowed {
+    param(
+        [string]$PaneId,
+        [string]$RawTarget
+    )
+
+    $policy = Get-ActiveFocusPolicy
+    if ($null -eq $policy) {
+        return
+    }
+
+    if ($policy.paneId -ne $PaneId) {
+        Stop-WithError "focus denied: locked to $($policy.paneId) ($($policy.target)). Run: psmux-bridge focus-unlock"
+    }
 }
 
 # --- Helper: File Locks ---
@@ -1176,13 +1279,47 @@ function Invoke-HealthCheck {
 }
 
 function Invoke-Focus {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge focus <label|target>" }
+    param([string]$FocusTarget = $Target)
 
-    $paneId = Resolve-Target $Target
+    if (-not $FocusTarget) { Stop-WithError "usage: psmux-bridge focus <label|target>" }
+
+    $paneId = Resolve-Target $FocusTarget
     $paneId = Confirm-Target $paneId
+    Assert-FocusAllowed -PaneId $paneId -RawTarget $FocusTarget
 
     & psmux select-pane -t $paneId
-    Write-Output "Focused pane $paneId ($Target)"
+    Write-Output "Focused pane $paneId ($FocusTarget)"
+}
+
+function Invoke-FocusLock {
+    param([string]$FocusTarget = $Target)
+
+    if (-not $FocusTarget) { Stop-WithError "usage: psmux-bridge focus-lock <label|target>" }
+
+    $paneId = Resolve-Target $FocusTarget
+    $paneId = Confirm-Target $paneId
+    $entry = Push-FocusPolicy -PaneId $paneId -TargetName $FocusTarget
+
+    Write-Output "Focus locked to $($entry.paneId) ($($entry.target))"
+}
+
+function Invoke-FocusUnlock {
+    param(
+        [string]$FocusTarget = $Target,
+        [string[]]$ExtraArgs = $Rest
+    )
+
+    if ($FocusTarget -or ($ExtraArgs -and $ExtraArgs.Count -gt 0)) {
+        Stop-WithError "usage: psmux-bridge focus-unlock"
+    }
+
+    $entry = Pop-FocusPolicy
+    if ($null -eq $entry) {
+        Write-Output "(no focus lock)"
+        return
+    }
+
+    Write-Output "Focus unlocked $($entry.paneId) ($($entry.target))"
 }
 
 function Invoke-Profile {
@@ -1408,6 +1545,8 @@ Commands:
   image-paste <target>      Save clipboard image and send path to pane
   clipboard-paste <target>  Send clipboard text to pane
   focus <label|target>      Switch active pane (use from outside psmux)
+  focus-lock <target>       Push a focus lock for a pane target
+  focus-unlock              Pop the latest focus lock
   lock <label> <file>...    Acquire file lock(s) for a label
   unlock <label> <file>...  Release file lock(s) for a label
   locks                     List active file locks
@@ -1555,6 +1694,8 @@ switch ($Command) {
     'image-paste'     { Invoke-ImagePaste }
     'clipboard-paste' { Invoke-ClipboardPaste }
     'focus'           { Invoke-Focus }
+    'focus-lock'      { Invoke-FocusLock }
+    'focus-unlock'    { Invoke-FocusUnlock }
     'lock'            { Invoke-Lock }
     'unlock'          { Invoke-Unlock }
     'locks'           { Invoke-Locks }
