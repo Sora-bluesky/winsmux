@@ -128,7 +128,18 @@ function Get-GitWorktreeDir {
 }
 
 function Get-ProcessSnapshot {
-    $processes = @(Get-CimInstance Win32_Process)
+    try {
+        $processes = @(Get-CimInstance Win32_Process -OperationTimeoutSec 10)
+    } catch {
+        $processes = @(Get-Process | ForEach-Object {
+            [PSCustomObject]@{
+                ProcessId       = $_.Id
+                ParentProcessId = if ($_.Parent) { $_.Parent.Id } else { 0 }
+                CommandLine     = $_.ProcessName
+                Name            = $_.ProcessName
+            }
+        })
+    }
     $byId = @{}
     $childrenByParent = @{}
 
