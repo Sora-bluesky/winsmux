@@ -1522,6 +1522,10 @@ switch ($Command) {
     'profile'         { Invoke-Profile }
     'doctor'          { Invoke-Doctor }
     'version'         { Invoke-Version }
+    'monitor' {
+        $monitorScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\agent-monitor.ps1'))
+        & pwsh -NoProfile -File $monitorScript
+    }
     ''                { Show-Usage }
     default           { Stop-WithError "unknown command: $Command. Run without arguments for usage." }
 }
