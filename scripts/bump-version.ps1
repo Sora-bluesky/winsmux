@@ -13,6 +13,111 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 $VersionFile = Join-Path $Root "VERSION"
+$BacklogPath = Join-Path $Root "tasks\backlog.yaml"
+$RoadmapPath = Join-Path $Root "docs\project\ROADMAP.md"
+$SyncRoadmapScript = Join-Path $Root "psmux-bridge\scripts\sync-roadmap.ps1"
+
+function ConvertFrom-QuotedYamlScalar {
+    param(
+        [AllowNull()]
+        [string]$Value
+    )
+
+    if ($null -eq $Value) {
+        return ''
+    }
+
+    $trimmed = $Value.Trim()
+    if ($trimmed.Length -ge 2) {
+        if (($trimmed.StartsWith('"') -and $trimmed.EndsWith('"')) -or ($trimmed.StartsWith("'") -and $trimmed.EndsWith("'"))) {
+            return $trimmed.Substring(1, $trimmed.Length - 2)
+        }
+    }
+
+    return $trimmed
+}
+
+function Update-ReleaseBacklogStatus {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    if (-not (Test-Path $Path)) {
+        return @()
+    }
+
+    $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+    $content = [System.IO.File]::ReadAllText($Path, $utf8NoBom)
+    $matches = [regex]::Matches($content, '(?ms)^[ \t]*-[ \t]+id:[ \t]*(?<id>TASK-\d+)[ \t]*\r?\n(?<body>.*?)(?=^[ \t]*-[ \t]+id:[ \t]*TASK-\d+[ \t]*\r?\n|\z)')
+    if ($matches.Count -eq 0) {
+        return @()
+    }
+
+    $releaseTag = "v$Version"
+    $today = Get-Date -Format 'yyyy-MM-dd'
+    $updatedTaskIds = New-Object System.Collections.Generic.List[string]
+    $builder = New-Object System.Text.StringBuilder
+    $cursor = 0
+
+    foreach ($match in $matches) {
+        [void]$builder.Append($content.Substring($cursor, $match.Index - $cursor))
+
+        $taskBlock = $match.Value
+        $taskId = $match.Groups['id'].Value
+        $taskBody = $match.Groups['body'].Value
+
+        $title = ''
+        if ($taskBody -match '(?m)^[ \t]*title:[ \t]*(?<value>.+)$') {
+            $title = ConvertFrom-QuotedYamlScalar -Value $Matches['value']
+        }
+
+        $status = ''
+        if ($taskBody -match '(?m)^[ \t]*status:[ \t]*(?<value>[^\r\n#]+)') {
+            $status = $Matches['value'].Trim()
+        }
+
+        $labels = ''
+        if ($taskBody -match '(?m)^[ \t]*labels:[ \t]*\[(?<value>[^\]]*)\]') {
+            $labels = $Matches['value']
+        }
+
+        $isReleaseTask = ($title -match [regex]::Escape($releaseTag)) -and (
+            ($title -match '(?i)\brelease\b') -or
+            ($title -match '(?i)\bpublish\b') -or
+            ($title -match '(?i)\bversion bump\b') -or
+            ($labels -match '(?i)\brelease\b') -or
+            ($labels -match '(?i)\bmilestone\b')
+        )
+
+        if ($isReleaseTask -and $status -notin @('done', 'cancelled')) {
+            $updatedTaskBlock = $taskBlock -replace '(?m)^(\s*)status:\s*[^\r\n]*$', '${1}status: done'
+            if ($updatedTaskBlock -match '(?m)^(\s*)updated:\s*[^\r\n]*$') {
+                $updatedTaskBlock = $updatedTaskBlock -replace '(?m)^(\s*)updated:\s*[^\r\n]*$', ('${1}updated: "' + $today + '"')
+            } else {
+                $lineEnding = if ($updatedTaskBlock -match "`r`n") { "`r`n" } else { "`n" }
+                $updatedTaskBlock = $updatedTaskBlock.TrimEnd("`r", "`n") + $lineEnding + '    updated: "' + $today + '"' + $lineEnding
+            }
+
+            $taskBlock = $updatedTaskBlock
+            $updatedTaskIds.Add($taskId)
+        }
+
+        [void]$builder.Append($taskBlock)
+        $cursor = $match.Index + $match.Length
+    }
+
+    [void]$builder.Append($content.Substring($cursor))
+
+    if ($updatedTaskIds.Count -gt 0) {
+        [System.IO.File]::WriteAllText($Path, $builder.ToString(), $utf8NoBom)
+    }
+
+    return @($updatedTaskIds.ToArray())
+}
 
 # --- Determine if release flow is active ---
 # Release is the DEFAULT when -Version is specified. Use -SyncOnly to suppress.
@@ -36,6 +141,21 @@ if ($DoRelease) {
         exit 1
     }
     Pop-Location
+}
+
+# --- Release requires backlog + roadmap assets ---
+if ($DoRelease) {
+    $requiredPaths = @($BacklogPath, $RoadmapPath, $SyncRoadmapScript)
+    $missingPaths = @(
+        $requiredPaths |
+            Where-Object { -not (Test-Path $_) } |
+            ForEach-Object { [IO.Path]::GetRelativePath($Root, $_) }
+    )
+
+    if ($missingPaths.Count -gt 0) {
+        Write-Error "[release] Preflight failed. Missing required files: $($missingPaths -join ', ')"
+        exit 1
+    }
 }
 
 # --- Resolve version ---
@@ -131,13 +251,12 @@ try {
     if ($existingFiles) { git add $existingFiles }
 
     # Sync ROADMAP from backlog
-    $syncScript = Join-Path $PSScriptRoot "..\psmux-bridge\scripts\sync-roadmap.ps1"
-    if (Test-Path $syncScript) {
-        & pwsh $syncScript
-        $roadmap = Join-Path $Root "docs\project\ROADMAP.md"
-        if (Test-Path $roadmap) { git add -f $roadmap }
-        Write-Host "[release] ROADMAP synced"
+    & pwsh $SyncRoadmapScript -BacklogPath $BacklogPath -RoadmapPath $RoadmapPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "ROADMAP sync failed."
     }
+    if (Test-Path $RoadmapPath) { git add -f $RoadmapPath }
+    Write-Host "[release] ROADMAP synced"
 
     git commit -m "chore: bump version to $Version"
     Write-Host "[release] Committed"
@@ -169,6 +288,29 @@ try {
     # GitHub Release
     gh release create "v$Version" --title "v$Version" --generate-notes --latest
     Write-Host "[release] GitHub Release created" -ForegroundColor Green
+
+    # Close the release task in backlog and refresh ROADMAP.
+    $updatedTaskIds = Update-ReleaseBacklogStatus -Path $BacklogPath -Version $Version
+    if ($updatedTaskIds.Count -gt 0) {
+        Write-Host "[release] Backlog updated: $($updatedTaskIds -join ', ')"
+        & pwsh $SyncRoadmapScript -BacklogPath $BacklogPath -RoadmapPath $RoadmapPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "ROADMAP sync failed after backlog update."
+        }
+        Write-Host "[release] ROADMAP refreshed after backlog update"
+
+        git add -- "tasks/backlog.yaml" "docs/project/ROADMAP.md"
+        git diff --cached --quiet -- "tasks/backlog.yaml" "docs/project/ROADMAP.md"
+        if ($LASTEXITCODE -ne 0) {
+            git commit -m "chore: close release task for $Version"
+            git push origin main
+            Write-Host "[release] Backlog status committed"
+        } else {
+            Write-Host "[release] Backlog files already up to date"
+        }
+    } else {
+        Write-Warning "[release] No matching release task found in tasks/backlog.yaml for v$Version"
+    }
 
     Write-Host ""
     Write-Host "[release] Done! https://github.com/Sora-bluesky/winsmux/releases/tag/v$Version" -ForegroundColor Green
