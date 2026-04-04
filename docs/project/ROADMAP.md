@@ -1,7 +1,7 @@
 # Roadmap
 
 > Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-04 15:50 (+09:00)
+> Last sync: 2026-04-04 16:03 (+09:00)
 
 ## Version Summary
 
@@ -23,7 +23,7 @@
 | v0.19.0 | 6 | [--------------------] 0% (0/6) |
 | v0.20.0 | 1 | [--------------------] 0% (0/1) |
 | v0.21.0 | 1 | [--------------------] 0% (0/1) |
-| v0.22.0 | 1 | [--------------------] 0% (0/1) |
+| v0.22.0 | 2 | [--------------------] 0% (0/2) |
 | cancelled | 22 | [--------------------] 0% (0/22) |
 | post-v1.0.0 | 7 | [--------------------] 0% (0/7) |
 
@@ -178,6 +178,7 @@
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-107 | Editor panel + drag-and-drop layout + polish | P1 | winsmux | backlog |
+| [ ] | TASK-108 | Pane pop-out and multi-display support | P1 | winsmux | backlog |
 
 ### cancelled
 
