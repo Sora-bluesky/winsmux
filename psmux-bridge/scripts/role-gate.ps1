@@ -394,6 +394,14 @@ function Assert-Role {
             if ($permissions.Focus) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
+        'focus-lock' {
+            if ($permissions.Focus) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'focus-unlock' {
+            if ($permissions.Focus) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
         'signal' {
             if ($permissions.Signal) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
