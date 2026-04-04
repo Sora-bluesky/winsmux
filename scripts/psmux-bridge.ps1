@@ -654,6 +654,77 @@ function Invoke-Resolve {
     }
 }
 
+function Invoke-Role {
+    if (-not $Target -or -not $Rest -or $Rest.Count -lt 1) {
+        Stop-WithError "usage: psmux-bridge role <pane_label_or_id> <new_role>`n  roles: builder, researcher, reviewer"
+    }
+
+    $newRole = $Rest[0].Trim().ToLowerInvariant()
+    if ($newRole -notin @('builder', 'researcher', 'reviewer')) {
+        Stop-WithError "invalid role: $newRole. Must be builder, researcher, or reviewer."
+    }
+
+    # Resolve pane ID
+    $paneId = $Target
+    $labels = Get-Labels
+    if ($labels.ContainsKey($Target)) {
+        $paneId = $labels[$Target]
+    } elseif ($Target -notmatch '^%\d+$') {
+        Stop-WithError "unknown pane: $Target"
+    }
+
+    # Read manifest to find current label
+    $projectDir = (Get-Location).Path
+    $manifestPath = Join-Path $projectDir ".winsmux\manifest.yaml"
+    $oldLabel = $Target
+
+    # Count existing panes with new role to generate label number
+    $existingLabels = @()
+    if (Test-Path $manifestPath) {
+        $manifestContent = Get-Content $manifestPath -Raw
+        $existingLabels = @([regex]::Matches($manifestContent, "label:\s*'($newRole-\d+)'") | ForEach-Object { $_.Groups[1].Value })
+    }
+    $nextNum = 1
+    while ("$newRole-$nextNum" -in $existingLabels) { $nextNum++ }
+    $newLabel = "$newRole-$nextNum"
+
+    # Kill current agent (Ctrl+C twice, then exit)
+    & psmux send-keys -t $paneId C-c
+    Start-Sleep -Milliseconds 300
+    & psmux send-keys -t $paneId C-c
+    Start-Sleep -Milliseconds 500
+    & psmux send-keys -t $paneId 'exit' Enter
+    Start-Sleep -Seconds 2
+
+    # Rename pane
+    & psmux select-pane -t $paneId -T $newLabel
+
+    # Update labels
+    $labels[$newLabel] = $paneId
+    if ($labels.ContainsKey($oldLabel)) { $labels.Remove($oldLabel) }
+    Save-Labels $labels
+
+    # Respawn pane
+    & psmux respawn-pane -k -t $paneId
+
+    # Wait for shell ready (poll for PS prompt)
+    $deadline = (Get-Date).AddSeconds(15)
+    while ((Get-Date) -lt $deadline) {
+        $snapshot = (& psmux capture-pane -t $paneId -p 2>$null | Out-String).TrimEnd()
+        $lastLine = ($snapshot -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)
+        if ($lastLine -and $lastLine.Trim() -match '^PS ') { break }
+        Start-Sleep -Milliseconds 500
+    }
+
+    # Launch Codex agent
+    $gitDir = Join-Path $projectDir ".git"
+    $launchCmd = "codex --full-auto -C '$projectDir' --add-dir '$gitDir'"
+    & psmux send-keys -t $paneId -l $launchCmd
+    & psmux send-keys -t $paneId Enter
+
+    Write-Output "Role changed: $oldLabel -> $newLabel ($paneId)"
+}
+
 function Invoke-Verify {
     if (-not $Target) { Stop-WithError "usage: psmux-bridge verify <pr-number>" }
     if ($Rest -and $Rest.Count -gt 0) { Stop-WithError "usage: psmux-bridge verify <pr-number>" }
@@ -1526,6 +1597,7 @@ switch ($Command) {
         $monitorScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\agent-monitor.ps1'))
         & pwsh -NoProfile -File $monitorScript
     }
+    'role'            { Invoke-Role }
     ''                { Show-Usage }
     default           { Stop-WithError "unknown command: $Command. Run without arguments for usage." }
 }
