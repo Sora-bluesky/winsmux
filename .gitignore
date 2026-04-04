@@ -70,6 +70,7 @@ CLAUDE.md
 !.claude/CLAUDE.md
 !.claude/hooks/
 !.claude/settings.json
+!.claude/patterns/
 .codex/
 .gemini/
 *.local

@@ -15,10 +15,15 @@ const {
   writeSession,
   appendEvidence,
 } = require("./lib/sh-utils");
-const { detectOpenShell } = require("./lib/openshell-detect");
-const { checkPolicyCompatibility } = require("./lib/policy-compat");
-const { checkPolicyDrift } = require("./lib/policy-drift");
-const { detectAutoMode } = require("./lib/automode-detect");
+// Enterprise libs — soft-disable with try-catch (Tier 3, not yet validated)
+let detectOpenShell = () => ({ available: false, reason: "module_not_loaded" });
+let checkPolicyCompatibility = () => ({ compatible: null, reason: "module_not_loaded" });
+let checkPolicyDrift = () => ({ has_drift: false, warnings: [] });
+let detectAutoMode = () => ({ detected: false, danger_level: "none", soft_deny_count: 0, soft_allow_count: 0 });
+try { detectOpenShell = require("./lib/openshell-detect").detectOpenShell; } catch {}
+try { checkPolicyCompatibility = require("./lib/policy-compat").checkPolicyCompatibility; } catch {}
+try { checkPolicyDrift = require("./lib/policy-drift").checkPolicyDrift; } catch {}
+try { detectAutoMode = require("./lib/automode-detect").detectAutoMode; } catch {}
 
 const HOOK_NAME = "sh-session-start";
 const CLAUDE_MD = "CLAUDE.md";

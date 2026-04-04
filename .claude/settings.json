@@ -1,5 +1,60 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-session-start.js"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-session-end.js"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-gate.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-injection-guard.js"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|Read|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-injection-guard.js"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-permission.js"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "",
@@ -7,6 +62,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-evidence.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-output-control.js"
           }
         ]
       }
