@@ -702,6 +702,27 @@ try {
         Invoke-Psmux -Arguments @('kill-session', '-t', $sessionName)
     }
 
+    # --- Startup lock (TASK-117) ---
+    $lockFile = Join-Path $projectDir '.winsmux' 'orchestra.lock'
+    if (Test-Path $lockFile) {
+        try {
+            $lockData = Get-Content $lockFile -Raw | ConvertFrom-Json
+            $lockAge = ((Get-Date) - [datetime]$lockData.started_at).TotalSeconds
+            $lockPid = $lockData.pid
+            $processAlive = $null -ne (Get-Process -Id $lockPid -ErrorAction SilentlyContinue)
+            if ($processAlive -and $lockAge -lt 300) {
+                throw "Orchestra already starting (lock PID=$lockPid, age=${lockAge}s). Remove $lockFile to force."
+            }
+        } catch [System.Management.Automation.RuntimeException] {
+            throw
+        } catch {
+            # Stale/corrupt lock — overwrite
+        }
+    }
+    $lockDir = Split-Path $lockFile -Parent
+    if (-not (Test-Path $lockDir)) { New-Item -ItemType Directory -Path $lockDir -Force | Out-Null }
+    @{ pid = $PID; started_at = (Get-Date).ToString('o') } | ConvertTo-Json | Set-Content $lockFile -Encoding UTF8
+
     Write-WinsmuxLog -Level INFO -Event 'preflight.builder_worktree_cleanup.start' -Message 'Cleaning stale Builder worktrees.' | Out-Null
     $builderCleanup = Invoke-StaleBuilderWorktreeCleanup -ProjectDir $projectDir
     foreach ($removedWorktreePath in @($builderCleanup.RemovedWorktreePaths)) {
@@ -845,4 +866,8 @@ try {
 } catch {
     Write-Error $_.Exception.Message
     exit 1
+} finally {
+    # Release startup lock (TASK-117)
+    $lockFile = Join-Path (Get-Location).Path '.winsmux' 'orchestra.lock'
+    if (Test-Path $lockFile) { Remove-Item $lockFile -Force -ErrorAction SilentlyContinue }
 }

@@ -757,6 +757,44 @@ function Invoke-Resolve {
     }
 }
 
+function Invoke-AutoRebalance {
+    $projectDir = (Get-Location).Path
+    $manifestPath = Join-Path $projectDir ".winsmux\manifest.yaml"
+    if (-not (Test-Path $manifestPath)) {
+        Stop-WithError "manifest not found: $manifestPath"
+    }
+
+    $labels = Get-Labels
+    $builderLabels = @($labels.Keys | Where-Object { $_ -match '^builder-' })
+
+    $idleBuilders = @()
+    foreach ($label in $builderLabels) {
+        $paneId = $labels[$label]
+        $snapshot = (& psmux capture-pane -t $paneId -p 2>$null | Out-String).TrimEnd()
+        $lastLine = ($snapshot -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)
+        $isIdle = $lastLine -and ($lastLine.Trim() -match '\d+% left' -or $lastLine.Trim() -match '^[>›]')
+        if ($isIdle) { $idleBuilders += $label }
+    }
+
+    $queueDepth = 0
+    try {
+        $queueScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\builder-queue.ps1'))
+        if (Test-Path $queueScript) {
+            $out = & pwsh -NoProfile -File $queueScript -Action list -ProjectDir $projectDir -BuilderLabel '' -AsJson 2>$null
+            if ($out) { $parsed = $out | ConvertFrom-Json -ErrorAction SilentlyContinue; if ($parsed) { $queueDepth = @($parsed.Queued).Count } }
+        }
+    } catch {}
+
+    $suggestion = if ($queueDepth -gt 0) { "キューにタスクあり — Builder 維持" }
+                  elseif ($idleBuilders.Count -gt 0) { "アイドル $($idleBuilders.Count) 台を Researcher に切替可能" }
+                  else { "全 Builder 稼働中" }
+
+    Write-Output "アイドル Builder: $($idleBuilders.Count)/$($builderLabels.Count)"
+    Write-Output "キュー深度: $queueDepth"
+    Write-Output "提案: $suggestion"
+    if ($idleBuilders.Count -gt 0) { Write-Output "アイドル: $($idleBuilders -join ', ')" }
+}
+
 function Invoke-Role {
     if (-not $Target -or -not $Rest -or $Rest.Count -lt 1) {
         Stop-WithError "usage: psmux-bridge role <pane_label_or_id> <new_role>`n  roles: builder, researcher, reviewer"
@@ -1773,6 +1811,7 @@ switch ($Command) {
         & pwsh -NoProfile -File $monitorScript
     }
     'role'            { Invoke-Role }
+    'auto-rebalance'  { Invoke-AutoRebalance }
     ''                { Show-Usage }
     default           { Stop-WithError "unknown command: $Command. Run without arguments for usage." }
 }
