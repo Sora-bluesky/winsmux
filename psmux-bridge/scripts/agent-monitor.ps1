@@ -136,6 +136,32 @@ function Get-ContentHash {
     ) -replace '-', ''
 }
 
+function Get-MonitorPropertyValue {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Default = $null
+    )
+
+    if ($null -eq $InputObject) {
+        return $Default
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        if ($InputObject.Contains($Name)) {
+            return $InputObject[$Name]
+        }
+
+        return $Default
+    }
+
+    if ($null -ne $InputObject.PSObject -and ($InputObject.PSObject.Properties.Name -contains $Name)) {
+        return $InputObject.$Name
+    }
+
+    return $Default
+}
+
 # ---------------------------------------------------------------------------
 # 1. Get-PaneAgentStatus
 # ---------------------------------------------------------------------------
@@ -404,8 +430,8 @@ function Invoke-AgentMonitorCycle {
 
     foreach ($label in $manifest.Panes.Keys) {
         $pane = $manifest.Panes[$label]
-        $paneId = [string]$pane.pane_id
-        $role = [string]$pane.role
+        $paneId = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'pane_id' -Default '')
+        $role = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'role' -Default '')
 
         if ([string]::IsNullOrWhiteSpace($paneId)) {
             continue
@@ -445,7 +471,7 @@ function Invoke-AgentMonitorCycle {
                     -Event 'monitor.status' -Level 'debug' `
                     -Message "Pane $label ($paneId): $($status.Status)" `
                     -Role $role -PaneId $paneId `
-                    -Data ([ordered]@{ status = $status.Status })
+                    -Data ([ordered]@{ status = $status.Status }) | Out-Null
             } catch {
             }
         }
@@ -456,15 +482,10 @@ function Invoke-AgentMonitorCycle {
             # Determine launch directory and git worktree dir
             $launchDir = $projectDir
             $launchGitWorktreeDir = $null
-            if ($manifest.Session.ContainsKey('git_worktree_dir')) {
-                $launchGitWorktreeDir = $manifest.Session['git_worktree_dir']
-            }
+            $launchGitWorktreeDir = [string](Get-MonitorPropertyValue -InputObject $manifest.Session -Name 'git_worktree_dir' -Default '')
 
             # Builder panes use their worktree path
-            $builderWorktreePath = $null
-            if ($null -ne $pane.PSObject -and ($pane.PSObject.Properties.Name -contains 'builder_worktree_path')) {
-                $builderWorktreePath = [string]$pane.builder_worktree_path
-            }
+            $builderWorktreePath = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'builder_worktree_path' -Default '')
 
             if (-not [string]::IsNullOrWhiteSpace($builderWorktreePath) -and (Test-Path $builderWorktreePath -PathType Container)) {
                 $launchDir = $builderWorktreePath
@@ -491,7 +512,7 @@ function Invoke-AgentMonitorCycle {
                         -Event 'monitor.respawn.start' -Level 'warn' `
                         -Message "Respawning crashed agent in pane $label ($paneId)" `
                         -Role $role -PaneId $paneId `
-                        -Data ([ordered]@{ agent = $agentName; model = $modelName; launch_dir = $launchDir })
+                        -Data ([ordered]@{ agent = $agentName; model = $modelName; launch_dir = $launchDir }) | Out-Null
                 } catch {
                 }
             }
@@ -518,7 +539,7 @@ function Invoke-AgentMonitorCycle {
                         -Event 'monitor.respawn.result' -Level $logLevel `
                         -Message $respawnResult.Message `
                         -Role $role -PaneId $paneId `
-                        -Data ([ordered]@{ success = $respawnResult.Success })
+                        -Data ([ordered]@{ success = $respawnResult.Success }) | Out-Null
                 } catch {
                 }
             }
@@ -533,7 +554,7 @@ function Invoke-AgentMonitorCycle {
             Write-OrchestraLog -ProjectDir $projectDir -SessionName $SessionName `
                 -Event 'monitor.cycle' -Level 'info' `
                 -Message "Monitor cycle: checked=$checkedCount crashed=$crashedCount respawned=$respawnedCount" `
-                -Data ([ordered]@{ checked = $checkedCount; crashed = $crashedCount; respawned = $respawnedCount })
+                -Data ([ordered]@{ checked = $checkedCount; crashed = $crashedCount; respawned = $respawnedCount }) | Out-Null
         } catch {
         }
     }
