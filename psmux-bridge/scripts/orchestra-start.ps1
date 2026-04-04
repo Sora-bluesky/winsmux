@@ -906,7 +906,27 @@ try {
     Write-Output ''
     Write-Output "Manifest: $manifestPath"
 } catch {
-    Write-Error $_.Exception.Message
+    # TASK-118: Rollback on failure
+    $journalPath = Join-Path $projectDir '.winsmux' 'startup-journal.log'
+    $journalDir = Split-Path $journalPath -Parent
+    if (-not (Test-Path $journalDir)) { New-Item -ItemType Directory -Path $journalDir -Force | Out-Null }
+    $timestamp = Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz'
+    Add-Content -Path $journalPath -Value "[$timestamp] FAILED: $($_.Exception.Message)" -Encoding UTF8
+
+    # Kill partially created session
+    try { Invoke-Psmux -Arguments @('kill-session', '-t', $sessionName) } catch {}
+
+    # Remove worktrees created during this attempt
+    for ($i = 1; $i -le 4; $i++) {
+        $wtPath = Join-Path $projectDir ".worktrees\builder-$i"
+        $branch = "worktree-builder-$i"
+        if (Test-Path $wtPath) {
+            try { & git -C $projectDir worktree remove $wtPath --force 2>$null } catch {}
+            try { & git -C $projectDir branch -D $branch 2>$null } catch {}
+        }
+    }
+
+    Write-Error "Orchestra startup failed (rollback complete): $($_.Exception.Message)"
     exit 1
 } finally {
     # Release startup lock (TASK-117)
