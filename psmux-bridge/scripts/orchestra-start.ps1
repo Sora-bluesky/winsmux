@@ -488,6 +488,43 @@ function Invoke-CodexTrustPreflight {
     Write-WinsmuxLog -Level INFO -Event 'preflight.codex_trust.registered' -Message "Registered Codex trust for $ProjectDir." -Data @{ project_dir = $ProjectDir } | Out-Null
 }
 
+function Invoke-ShieldHarnessInit {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $shDir = Join-Path $ProjectDir '.shield-harness'
+    $sessionFile = Join-Path $shDir 'session.json'
+
+    foreach ($sub in @('config', 'state', 'logs')) {
+        $p = Join-Path $shDir $sub
+        if (-not (Test-Path $p)) {
+            New-Item -Path $p -ItemType Directory -Force | Out-Null
+        }
+    }
+
+    $configDir = Join-Path $shDir 'config'
+    $prodHosts = Join-Path $configDir 'production-hosts.json'
+    if (-not (Test-Path $prodHosts)) {
+        '{"blocked":["localhost","127.0.0.1","169.254.169.254"],"patterns":[]}' | Set-Content -Path $prodHosts -Encoding UTF8
+    }
+
+    $jurisdictions = Join-Path $configDir 'allowed-jurisdictions.json'
+    if (-not (Test-Path $jurisdictions)) {
+        '{"allowed":["JP"],"default_action":"warn"}' | Set-Content -Path $jurisdictions -Encoding UTF8
+    }
+
+    $session = [ordered]@{
+        session_id     = [guid]::NewGuid().ToString()
+        started_at     = (Get-Date -Format o)
+        hook_count     = 0
+        deny_count     = 0
+        evidence_count = 0
+    }
+    ($session | ConvertTo-Json -Depth 2) | Set-Content -Path $sessionFile -Encoding UTF8
+
+    Write-Output "Preflight: shield-harness initialized at $shDir"
+    Write-WinsmuxLog -Level INFO -Event 'preflight.shield_harness.init' -Message "Shield-Harness initialized at $shDir." -Data @{ shield_dir = $shDir } | Out-Null
+}
+
 function Get-LastNonEmptyLine {
     param([AllowNull()][string]$Text)
 
@@ -650,6 +687,7 @@ try {
     Invoke-VaultPreflight -Settings $settings
     Write-WinsmuxLog -Level INFO -Event 'preflight.codex_trust.start' -Message 'Running Codex trust preflight.' | Out-Null
     Invoke-CodexTrustPreflight -ProjectDir $projectDir
+    Invoke-ShieldHarnessInit -ProjectDir $projectDir
 
     $vaultValues = [ordered]@{}
 
