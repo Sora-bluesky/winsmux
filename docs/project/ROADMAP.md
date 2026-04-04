@@ -1,7 +1,7 @@
 # Roadmap
 
 > Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-04 17:00 (+09:00)
+> Last sync: 2026-04-04 18:37 (+09:00)
 
 ## Version Summary
 
