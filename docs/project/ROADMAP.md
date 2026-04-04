@@ -1,7 +1,7 @@
 # ロードマップ
 
 > `tasks/backlog.yaml` から自動生成 — 手動編集禁止
-> 最終同期: 2026-04-05 00:59 (+09:00)
+> 最終同期: 2026-04-05 07:04 (+09:00)
 
 ## バージョン概要
 
@@ -18,12 +18,12 @@
 | v0.14.0 | 2 | [====================] 100% (2/2) |
 | v0.15.0 | 4 | [====================] 100% (4/4) |
 | v0.16.0 | 4 | [====================] 100% (4/4) |
-| v0.17.0 | 3 | [--------------------] 0% (0/3) |
-| v0.17.1 | 2 | [--------------------] 0% (0/2) |
-| v0.17.2 | 2 | [--------------------] 0% (0/2) |
-| v0.17.3 | 2 | [--------------------] 0% (0/2) |
-| v0.17.4 | 2 | [--------------------] 0% (0/2) |
-| v0.18.0 | 1 | [--------------------] 0% (0/1) |
+| v0.17.0 | 3 | [====================] 100% (3/3) |
+| v0.17.1 | 2 | [====================] 100% (2/2) |
+| v0.17.2 | 2 | [====================] 100% (2/2) |
+| v0.17.3 | 2 | [====================] 100% (2/2) |
+| v0.17.4 | 2 | [====================] 100% (2/2) |
+| v0.18.0 | 1 | [====================] 100% (1/1) |
 | v0.18.1 | 2 | [--------------------] 0% (0/2) |
 | v0.18.2 | 2 | [--------------------] 0% (0/2) |
 | v0.19.0 | 3 | [--------------------] 0% (0/3) |
@@ -149,43 +149,43 @@
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-109 | Builder work queue — auto-dispatch next task on completion | P0 | winsmux | backlog |
-| [ ] | TASK-111 | Builder completion notification + auto-Reviewer dispatch | P0 | winsmux | backlog |
-| [ ] | TASK-121 | Commander auto-detect Codex approval prompts in Builder panes | P0 | winsmux | backlog |
+| [x] | TASK-109 | Builder work queue — auto-dispatch next task on completion | P0 | winsmux | done |
+| [x] | TASK-111 | Builder completion notification + auto-Reviewer dispatch | P0 | winsmux | done |
+| [x] | TASK-121 | Commander auto-detect Codex approval prompts in Builder panes | P0 | winsmux | done |
 
 ### v0.17.1 — アイドルペイン切替 + 起動シリアライズ
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-117 | Serialize orchestra-start phases with startup lock, retry, and idempotent preflight | P0 | winsmux | backlog |
-| [ ] | TASK-112 | Idle pane auto-role-switch for optimal resource utilization | P1 | winsmux | backlog |
+| [x] | TASK-117 | Serialize orchestra-start phases with startup lock, retry, and idempotent preflight | P0 | winsmux | done |
+| [x] | TASK-112 | Idle pane auto-role-switch for optimal resource utilization | P1 | winsmux | done |
 
 ### v0.17.2 — 起動 UX + Vault 堅牢化
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-116 | Remove interactive startup prompts and add startup-doctor remediation | P1 | winsmux | backlog |
-| [ ] | TASK-119 | Credential and vault health preflight with redacted diagnostics | P1 | winsmux | backlog |
+| [x] | TASK-116 | Remove interactive startup prompts and add startup-doctor remediation | P1 | winsmux | done |
+| [x] | TASK-119 | Credential and vault health preflight with redacted diagnostics | P1 | winsmux | done |
 
 ### v0.17.3 — CI ゲート + 監査トリアージ
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-039 | Make STG3 gate CI-aware (auto-run Pester, deny on coverage < 80%) | P2 | winsmux | backlog |
-| [ ] | TASK-082 | Triage 96 startup audit findings to responsible tasks | P2 | winsmux | backlog |
+| [x] | TASK-039 | Make STG3 gate CI-aware (auto-run Pester, deny on coverage < 80%) | P2 | winsmux | done |
+| [x] | TASK-082 | Triage 96 startup audit findings to responsible tasks | P2 | winsmux | done |
 
 ### v0.17.4 — ロールバック + ドキュメント
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-118 | Add startup rollback and recovery journal for partial initialization | P1 | winsmux | backlog |
-| [ ] | TASK-120 | Write startup troubleshooting guide and verification matrix | P2 | winsmux | backlog |
+| [x] | TASK-118 | Add startup rollback and recovery journal for partial initialization | P1 | winsmux | done |
+| [x] | TASK-120 | Write startup troubleshooting guide and verification matrix | P2 | winsmux | done |
 
 ### v0.18.0 — Tauri scaffold
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-098 | Tauri scaffold + sidebar + Focus Policy + notification inbox | P0 | winsmux | backlog |
+| [x] | TASK-098 | Tauri scaffold + sidebar + Focus Policy + notification inbox | P0 | winsmux | done |
 
 ### v0.18.1 — マルチペイン + Codex 改善
 
