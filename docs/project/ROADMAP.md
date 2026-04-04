@@ -1,7 +1,7 @@
 # Roadmap
 
 > Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-04 20:08 (+09:00)
+> Last sync: 2026-04-04 20:56 (+09:00)
 
 ## Version Summary
 
@@ -18,7 +18,7 @@
 | v0.14.0 | 2 | [====================] 100% (2/2) |
 | v0.15.0 | 4 | [====================] 100% (4/4) |
 | v0.16.0 | 4 | [====================] 100% (4/4) |
-| v0.17.0 | 2 | [--------------------] 0% (0/2) |
+| v0.17.0 | 3 | [--------------------] 0% (0/3) |
 | v0.17.1 | 2 | [--------------------] 0% (0/2) |
 | v0.17.2 | 2 | [--------------------] 0% (0/2) |
 | v0.17.3 | 2 | [--------------------] 0% (0/2) |
@@ -151,6 +151,7 @@
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-109 | Builder work queue — auto-dispatch next task on completion | P0 | winsmux | backlog |
 | [ ] | TASK-111 | Builder completion notification + auto-Reviewer dispatch | P0 | winsmux | backlog |
+| [ ] | TASK-121 | Commander auto-detect Codex approval prompts in Builder panes | P0 | winsmux | backlog |
 
 ### v0.17.1
 
