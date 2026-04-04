@@ -58,6 +58,9 @@ package-lock.json
 # =========================
 .commander-prompt*.txt
 .orchestra-prompts/
+.winsmux/
+.tmp-appdata/
+.tmp-settings/
 
 # =========================
 # Claude Code / AI agent config
