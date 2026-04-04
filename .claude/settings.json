@@ -45,6 +45,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-data-boundary.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-issue-gate.js"
           }
         ]
       },
