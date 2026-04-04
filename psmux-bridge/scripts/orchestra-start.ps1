@@ -557,6 +557,35 @@ function Get-TailPreview {
     return ($lines[($lines.Length - $LineCount)..($lines.Length - 1)] -join [Environment]::NewLine)
 }
 
+function Wait-PaneShellReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [int]$TimeoutSeconds = 15
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $snapshot = Invoke-Psmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+            $text = ($snapshot | Out-String).TrimEnd()
+            if ($null -ne (Get-LastNonEmptyLine -Text $text)) {
+                return
+            }
+        } catch {
+        }
+
+        Start-Sleep -Milliseconds 250
+    }
+
+    try {
+        $finalSnapshot = Invoke-Psmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+        $finalText = ($finalSnapshot | Out-String).TrimEnd()
+        throw "Timed out waiting for pane $PaneId shell prompt after respawn. Last output:`n$(Get-TailPreview -Text $finalText)"
+    } catch {
+        throw "Timed out waiting for pane $PaneId shell prompt after respawn: $($_.Exception.Message)"
+    }
+}
+
 function ConvertTo-YamlScalar {
     param([AllowNull()]$Value)
 
@@ -782,7 +811,7 @@ try {
             Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_ROLE' -Value $canonicalRole
             Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_PANE_ID' -Value $paneId
             Invoke-Psmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
-            Start-Sleep -Seconds 1
+            Wait-PaneShellReady -PaneId $paneId
             Send-OrchestraBridgeCommand -Target $paneId -Text $launchCommand
         } finally {
             foreach ($envName in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {
