@@ -1,7 +1,7 @@
 # Roadmap
 
 > Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-04 19:49 (+09:00)
+> Last sync: 2026-04-04 19:53 (+09:00)
 
 ## Version Summary
 
@@ -17,7 +17,7 @@
 | v0.13.0 | 3 | [====================] 100% (3/3) |
 | v0.14.0 | 2 | [====================] 100% (2/2) |
 | v0.15.0 | 4 | [====================] 100% (4/4) |
-| v0.16.0 | 11 | [=========-----------] 45% (5/11) |
+| v0.16.0 | 11 | [=======-------------] 36% (4/11) |
 | v0.17.0 | 4 | [--------------------] 0% (0/4) |
 | v0.18.0 | 4 | [--------------------] 0% (0/4) |
 | v0.19.0 | 7 | [--------------------] 0% (0/7) |
@@ -139,7 +139,7 @@
 | [x] | TASK-031 | Enhance evidence-ledger with command-trace recording and integrity check | P2 | winsmux | done |
 | [x] | TASK-036 | Extend agent-readiness patterns beyond prompt detection (Codex/Gemini/Claude) | P2 | winsmux | done |
 | [ ] | TASK-039 | Make STG3 gate CI-aware (auto-run Pester, deny on coverage < 80%) | P2 | winsmux | backlog |
-| [x] | TASK-082 | Triage 96 startup audit findings to responsible tasks | P2 | winsmux | done |
+| [ ] | TASK-082 | Triage 96 startup audit findings to responsible tasks | P2 | winsmux | backlog |
 | [ ] | TASK-120 | Write startup troubleshooting guide and verification matrix | P2 | winsmux | backlog |
 
 ### v0.17.0
