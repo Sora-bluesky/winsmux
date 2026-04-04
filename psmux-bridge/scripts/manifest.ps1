@@ -419,7 +419,9 @@ function ConvertFrom-ManifestYaml {
             if ($section -eq 'tasks' -and $taskListKey) {
                 if ($inner -match '^-\s+(.+?)\s*$') {
                     $value = ConvertFrom-ManifestYamlScalar $Matches[1]
-                    if ($taskListKey -eq 'in_progress') {
+                    if ($taskListKey -eq 'queued') {
+                        $manifest.tasks.queued = @($manifest.tasks.queued) + @($value)
+                    } elseif ($taskListKey -eq 'in_progress') {
                         $manifest.tasks.in_progress = @($manifest.tasks.in_progress) + @($value)
                     } else {
                         $manifest.tasks.completed = @($manifest.tasks.completed) + @($value)
