@@ -22,7 +22,12 @@ function deny(reason) {
   process.exit(2);
 }
 
-function allow() {
+function allow(additionalContext) {
+  if (additionalContext) {
+    process.stderr.write(
+      `${JSON.stringify({ hookSpecificOutput: { additionalContext } })}\n`,
+    );
+  }
   process.exit(0);
 }
 

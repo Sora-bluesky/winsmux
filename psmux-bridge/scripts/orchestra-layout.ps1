@@ -65,7 +65,7 @@ function Split-Equal {
 
     for ($i = 0; $i -lt ($PaneCount - 1); $i++) {
         $remaining = $PaneCount - $i
-        $percent = [int](100 * ($remaining - 1) / $remaining)
+        $percent = [int](100 / $remaining)
         & psmux split-window -t $Target $Direction -p $percent | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw "psmux split-window failed while creating $PaneCount panes in direction $Direction."

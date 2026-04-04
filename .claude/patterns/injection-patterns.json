@@ -1,0 +1,51 @@
+{
+  "categories": {
+    "instruction_override": {
+      "severity": "high",
+      "description": "Attempts to discard or override the active instruction hierarchy.",
+      "patterns": [
+        "ignore\\s+previous\\s+instructions",
+        "disregard.*(?:above|prior|previous)",
+        "forget.*(?:rules|instructions|guidelines)"
+      ]
+    },
+    "role_hijack": {
+      "severity": "high",
+      "description": "Attempts to redefine the assistant's role or identity.",
+      "patterns": [
+        "you\\s+are\\s+now",
+        "act\\s+as",
+        "pretend\\s+(?:to\\s+be|you(?:'re|\\s+are))",
+        "roleplay\\s+as"
+      ]
+    },
+    "prompt_extraction": {
+      "severity": "critical",
+      "description": "Attempts to extract system prompt, hidden instructions, or internal state.",
+      "patterns": [
+        "system\\s+prompt",
+        "reveal\\s+your",
+        "show\\s+(?:me\\s+)?your\\s+(?:instructions|prompt|rules)",
+        "what\\s+(?:are|were)\\s+your\\s+(?:instructions|rules)"
+      ]
+    },
+    "context_manipulation": {
+      "severity": "medium",
+      "description": "Indirect manipulation via fabricated context or authority claims.",
+      "patterns": [
+        "(?:previous|earlier)\\s+(?:context|conversation)\\s+(?:said|stated|indicated)",
+        "(?:user|admin|developer)\\s+(?:said|wants|requested)\\s+(?:you|to)"
+      ]
+    },
+    "encoding_evasion": {
+      "severity": "high",
+      "description": "Attempts to use encoding or eval to bypass security patterns.",
+      "patterns": [
+        "base64\\s+decode",
+        "eval\\s*\\(",
+        "\\\\x[0-9a-f]{2}",
+        "\\\\u[0-9a-f]{4}"
+      ]
+    }
+  }
+}
