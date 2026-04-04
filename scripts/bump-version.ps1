@@ -85,13 +85,11 @@ function Update-ReleaseBacklogStatus {
             $labels = $Matches['value']
         }
 
-        $isReleaseTask = ($title -match [regex]::Escape($releaseTag)) -and (
-            ($title -match '(?i)\brelease\b') -or
-            ($title -match '(?i)\bpublish\b') -or
-            ($title -match '(?i)\bversion bump\b') -or
-            ($labels -match '(?i)\brelease\b') -or
-            ($labels -match '(?i)\bmilestone\b')
-        )
+        $targetVersion = ''
+        if ($taskBody -match '(?m)^[ \t]*target_version:[ \t]*(?<value>[^\r\n#]+)') {
+            $targetVersion = ($Matches['value'].Trim() -replace '^["'']|["'']$', '')
+        }
+        $isReleaseTask = ($targetVersion -eq $releaseTag) -or ($targetVersion -eq $Version)
 
         if ($isReleaseTask -and $status -notin @('done', 'cancelled')) {
             $updatedTaskBlock = $taskBlock -replace '(?m)^(\s*)status:\s*[^\r\n]*$', '${1}status: done'
