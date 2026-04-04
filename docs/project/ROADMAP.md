@@ -1,7 +1,7 @@
 # Roadmap
 
 > Auto-generated from `tasks/backlog.yaml` — do not edit manually.
-> Last sync: 2026-04-04 19:22 (+09:00)
+> Last sync: 2026-04-04 19:28 (+09:00)
 
 ## Version Summary
 
@@ -19,9 +19,9 @@
 | v0.15.0 | 4 | [====================] 100% (4/4) |
 | v0.16.0 | 6 | [--------------------] 0% (0/6) |
 | v0.17.0 | 4 | [--------------------] 0% (0/4) |
-| v0.18.0 | 3 | [--------------------] 0% (0/3) |
-| v0.19.0 | 6 | [--------------------] 0% (0/6) |
-| v0.20.0 | 1 | [--------------------] 0% (0/1) |
+| v0.18.0 | 4 | [--------------------] 0% (0/4) |
+| v0.19.0 | 7 | [--------------------] 0% (0/7) |
+| v0.20.0 | 2 | [--------------------] 0% (0/2) |
 | v0.21.0 | 1 | [--------------------] 0% (0/1) |
 | v0.22.0 | 2 | [--------------------] 0% (0/2) |
 | cancelled | 22 | [--------------------] 0% (0/22) |
@@ -153,6 +153,7 @@
 | [ ] | TASK-099 | Multi-pane layout + Orchestra integration in Tauri | P0 | winsmux | backlog |
 | [ ] | TASK-102 | Fix Codex context exhaustion in Builder worktrees | P1 | winsmux | backlog |
 | [ ] | TASK-110 | Automatic task splitting for parallel Builder dispatch | P1 | winsmux | backlog |
+| [ ] | TASK-113 | Dynamic pane scaling — auto add/remove panes based on workload | P1 | winsmux | backlog |
 
 ### v0.19.0
 
@@ -163,6 +164,7 @@
 | [ ] | TASK-100 | Explorer + Dashboard panels in Tauri | P1 | winsmux | backlog |
 | [ ] | TASK-101 | Theme engine + Nerd Font + TrueColor in Tauri | P1 | winsmux | backlog |
 | [ ] | TASK-103 | Implement P14-Ph2 psmux rendering improvements (TrueColor, Nerd Font, GPU) | P1 | sora-psmux | cancelled |
+| [ ] | TASK-114 | Orchestra event capture + SQLite FTS5 search layer | P1 | winsmux | backlog |
 | [ ] | TASK-078 | Pane border metadata display (git branch, timestamp, idle time) | P2 | winsmux | backlog |
 
 ### v0.20.0
@@ -170,6 +172,7 @@
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-105 | JSON-RPC backend + SDK integration in Tauri | P0 | winsmux | backlog |
+| [ ] | TASK-115 | Installer profile design (core/orchestra/security/full) | P2 | winsmux | backlog |
 
 ### v0.21.0
 
