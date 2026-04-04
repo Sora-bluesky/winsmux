@@ -21,6 +21,8 @@ Set-StrictMode -Version Latest
 
 $script:OrchestraLogDirName = '.winsmux\logs'
 $script:OrchestraLogExtension = '.jsonl'
+$script:WinsmuxLogProjectDir = (Get-Location).Path
+$script:WinsmuxLogSessionName = 'winsmux-orchestra'
 
 function Get-OrchestraLogDir {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
@@ -60,6 +62,18 @@ function Initialize-OrchestraLogger {
     }
 
     return $logPath
+}
+
+function Initialize-WinsmuxLog {
+    param(
+        [string]$ProjectDir = (Get-Location).Path,
+        [string]$SessionName = 'winsmux-orchestra'
+    )
+
+    $script:WinsmuxLogProjectDir = $ProjectDir
+    $script:WinsmuxLogSessionName = $SessionName
+
+    return Initialize-OrchestraLogger -ProjectDir $ProjectDir -SessionName $SessionName
 }
 
 function ConvertTo-OrchestraLogData {
@@ -137,6 +151,43 @@ function Write-OrchestraLog {
     $line = ($record | ConvertTo-Json -Compress -Depth 10)
     Add-Content -Path $logPath -Value $line -Encoding UTF8
     return [PSCustomObject]$record
+}
+
+function Write-WinsmuxLog {
+    param(
+        [Parameter(Mandatory = $true)][string]$Level,
+        [Parameter(Mandatory = $true)][string]$Event,
+        [string]$Message,
+        [string]$Role,
+        [string]$PaneId,
+        [string]$Target,
+        [AllowNull()]$Data,
+        [string]$ProjectDir,
+        [string]$SessionName
+    )
+
+    $resolvedProjectDir = if ([string]::IsNullOrWhiteSpace($ProjectDir)) {
+        $script:WinsmuxLogProjectDir
+    } else {
+        $ProjectDir
+    }
+
+    $resolvedSessionName = if ([string]::IsNullOrWhiteSpace($SessionName)) {
+        $script:WinsmuxLogSessionName
+    } else {
+        $SessionName
+    }
+
+    $normalizedLevel = switch ($Level.Trim().ToLowerInvariant()) {
+        'debug' { 'debug' }
+        'info' { 'info' }
+        'warn' { 'warn' }
+        'warning' { 'warn' }
+        'error' { 'error' }
+        default { throw "Unsupported log level: $Level" }
+    }
+
+    return Write-OrchestraLog -ProjectDir $resolvedProjectDir -SessionName $resolvedSessionName -Event $Event -Level $normalizedLevel -Message $Message -Role $Role -PaneId $PaneId -Target $Target -Data $Data
 }
 
 function Read-OrchestraLog {

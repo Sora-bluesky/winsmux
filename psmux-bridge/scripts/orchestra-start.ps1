@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
 . "$scriptDir/settings.ps1"
 . "$scriptDir/vault.ps1"
+. "$scriptDir/logger.ps1"
 
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -268,6 +269,7 @@ function Remove-OrchestraZombieProcesses {
         try {
             Stop-Process -Id ([int]$victim.ProcessId) -Force -ErrorAction Stop
             Write-Output ("Preflight: killed zombie process {0} ({1})" -f $victim.Name, $victim.ProcessId)
+            Write-WinsmuxLog -Level INFO -Event 'preflight.zombie_process.killed' -Message ("Killed zombie process {0} ({1})." -f $victim.Name, $victim.ProcessId) -Data @{ process_name = $victim.Name; process_id = [int]$victim.ProcessId } | Out-Null
         } catch {
             Write-Warning ("Preflight: failed to kill zombie process {0} ({1}): {2}" -f $victim.Name, $victim.ProcessId, $_.Exception.Message)
         }
@@ -450,6 +452,7 @@ function Invoke-VaultPreflight {
 
                 Set-VaultKey -Key 'GH_TOKEN' -Value $token
                 Write-Output 'Preflight: auto-set GH_TOKEN from gh auth'
+                Write-WinsmuxLog -Level INFO -Event 'preflight.vault.gh_token.auto_set' -Message 'Auto-set GH_TOKEN from gh auth.' -Data @{ key = 'GH_TOKEN' } | Out-Null
             } catch {
                 Write-Warning "Preflight: failed to auto-set GH_TOKEN: $($_.Exception.Message)"
             }
@@ -482,6 +485,7 @@ function Invoke-CodexTrustPreflight {
     Set-Content -Path $configPath -Value $content -Encoding UTF8 -NoNewline
 
     Write-Output "Preflight: registered Codex trust for $ProjectDir"
+    Write-WinsmuxLog -Level INFO -Event 'preflight.codex_trust.registered' -Message "Registered Codex trust for $ProjectDir." -Data @{ project_dir = $ProjectDir } | Out-Null
 }
 
 function Get-LastNonEmptyLine {
@@ -634,31 +638,46 @@ function Wait-AgentReady {
 try {
     $settings = Get-BridgeSettings
     $projectDir = Get-ProjectDir
+    Initialize-WinsmuxLog -ProjectDir $projectDir -SessionName $sessionName | Out-Null
+    Write-WinsmuxLog -Level INFO -Event 'preflight.settings.loaded' -Message 'Loaded orchestra settings.' -Data @{ agent = $settings.agent; model = $settings.model } | Out-Null
+    Write-WinsmuxLog -Level INFO -Event 'preflight.psmux_bin.ready' -Message "Using psmux binary: $psmuxBin." -Data @{ psmux_bin = $psmuxBin } | Out-Null
+    Write-WinsmuxLog -Level INFO -Event 'preflight.bridge_script.ready' -Message "Using bridge script: $bridgeScript." -Data @{ bridge_script = $bridgeScript } | Out-Null
+    Write-WinsmuxLog -Level INFO -Event 'preflight.project_dir.resolved' -Message "Resolved project directory: $projectDir." -Data @{ project_dir = $projectDir } | Out-Null
     $gitWorktreeDir = Get-GitWorktreeDir -ProjectDir $projectDir
+    Write-WinsmuxLog -Level INFO -Event 'preflight.git_worktree.resolved' -Message "Resolved git worktree directory: $gitWorktreeDir." -Data @{ git_worktree_dir = $gitWorktreeDir } | Out-Null
 
+    Write-WinsmuxLog -Level INFO -Event 'preflight.vault.start' -Message 'Running vault preflight.' | Out-Null
     Invoke-VaultPreflight -Settings $settings
+    Write-WinsmuxLog -Level INFO -Event 'preflight.codex_trust.start' -Message 'Running Codex trust preflight.' | Out-Null
     Invoke-CodexTrustPreflight -ProjectDir $projectDir
 
     $vaultValues = [ordered]@{}
 
+    Write-WinsmuxLog -Level INFO -Event 'preflight.vault_values.start' -Message 'Resolving required vault values.' -Data @{ key_count = @($settings.vault_keys).Count } | Out-Null
     foreach ($key in @($settings.vault_keys)) {
         try {
             $vaultValues[$key] = Get-VaultValue -Key $key
+            Write-WinsmuxLog -Level INFO -Event 'preflight.vault_value.loaded' -Message "Resolved vault key $key." -Data @{ key = $key } | Out-Null
         } catch {
             Write-Error "Missing required vault key '$key': $($_.Exception.Message)"
             exit 1
         }
     }
 
+    Write-WinsmuxLog -Level INFO -Event 'preflight.zombie_cleanup.start' -Message 'Removing orchestra zombie processes.' | Out-Null
     Remove-OrchestraZombieProcesses -SessionName $sessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -PsmuxBin $psmuxBin
 
+    Write-WinsmuxLog -Level INFO -Event 'preflight.session.check' -Message "Checking for existing session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
     & $psmuxBin has-session -t $sessionName 1>$null 2>$null
     if ($LASTEXITCODE -eq 0) {
+        Write-WinsmuxLog -Level INFO -Event 'preflight.session.kill' -Message "Removing existing session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
         Invoke-Psmux -Arguments @('kill-session', '-t', $sessionName)
     }
 
+    Write-WinsmuxLog -Level INFO -Event 'preflight.session.create' -Message "Creating session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
     Invoke-Psmux -Arguments @('new-session', '-d', '-s', $sessionName)
 
+    Write-WinsmuxLog -Level INFO -Event 'preflight.session_env.start' -Message 'Publishing vault values to session environment.' -Data @{ key_count = $vaultValues.Count } | Out-Null
     foreach ($entry in $vaultValues.GetEnumerator()) {
         Invoke-Psmux -Arguments @('set-environment', '-t', $sessionName, $entry.Key, $entry.Value)
     }
