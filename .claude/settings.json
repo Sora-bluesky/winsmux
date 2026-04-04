@@ -41,11 +41,28 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-quiet-inject.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-data-boundary.js"
           }
         ]
       },
       {
-        "matcher": "Edit|Write|Read|WebFetch",
+        "matcher": "WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-injection-guard.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-data-boundary.js"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|Read",
         "hooks": [
           {
             "type": "command",
@@ -83,6 +100,15 @@
           {
             "type": "command",
             "command": "node .claude/hooks/lint-on-save.js"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-dep-audit.js"
           }
         ]
       }
@@ -149,6 +175,65 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-postcompact.js"
+          }
+        ]
+      }
+    ],
+    "Elicitation": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-elicitation.js"
+          }
+        ]
+      }
+    ],
+    "ConfigChange": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-config-guard.js"
+          }
+        ]
+      }
+    ],
+    "InstructionsLoaded": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-instructions.js"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-permission-learn.js"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-pipeline.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-task-gate.js"
           }
         ]
       }
