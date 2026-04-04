@@ -1,0 +1,16 @@
+{
+  "name": "winsmux-mcp",
+  "version": "0.1.0",
+  "description": "MCP server exposing psmux-bridge commands as tools",
+  "main": "mcp-server.js",
+  "bin": {
+    "winsmux-mcp": "mcp-server.js"
+  },
+  "scripts": {
+    "start": "node mcp-server.js"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
