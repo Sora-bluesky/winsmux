@@ -57,7 +57,7 @@ irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | ie
 
 The installer:
 
-- installs the `sora-psmux` fork if `psmux` is not already available
+- installs the `winsmux-core` fork if `winsmux` is not already available
 - installs `winsmux` and `winsmux` command wrappers into `~\.winsmux\bin`
 - configures `.winsmux.conf`
 - registers a **winsmux Orchestra** profile in Windows Terminal

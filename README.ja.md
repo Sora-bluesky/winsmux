@@ -302,7 +302,7 @@ winsmux uninstall
 
 - Windows 10/11
 - PowerShell 7+（pwsh）
-- [psmux (fork)](https://github.com/Sora-bluesky/psmux)（自動インストール）
+- [winsmux-core (fork)](https://github.com/Sora-bluesky/winsmux-core)（自動インストール）
 
 ## 謝辞
 

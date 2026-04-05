@@ -15,7 +15,7 @@ winsmux must be running before orchestra-start. If not running, user starts it m
 
 - **winsmux-core/**: CLI core — vault, settings, role-gate, orchestra scripts — vault, settings, role-gate, orchestra scripts
 - **.claude/hooks/**: PreToolUse hooks for governance enforcement (git-tracked)
-- **install.ps1**: Downloads sora-psmux fork binary from GitHub Releases
+- **install.ps1**: Downloads winsmux-core binary from GitHub Releases
 
 ## Roles (Orchestra)
 

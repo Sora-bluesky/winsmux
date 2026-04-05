@@ -38,11 +38,11 @@ function Install-Psmux {
         Write-Status "winsmux found: $ver"
         return
     }
-    Write-Status "psmux not found. Downloading sora-psmux fork..."
+    Write-Status "winsmux binary not found. Downloading winsmux-core..."
 
     $localBin = Join-Path $HOME ".local/bin"
     $winsmuxExe = Join-Path $localBin "winsmux.exe"
-    $releaseUrl = "https://api.github.com/repos/Sora-bluesky/psmux/releases/latest"
+    $releaseUrl = "https://api.github.com/repos/Sora-bluesky/winsmux-core/releases/latest"
     $headers = @{ "User-Agent" = "winsmux-installer/$VERSION" }
 
     try {
@@ -50,7 +50,7 @@ function Install-Psmux {
             New-Item -ItemType Directory -Path $localBin -Force | Out-Null
         }
 
-        Write-Status "Fetching latest sora-psmux release..."
+        Write-Status "Fetching latest winsmux-core release..."
         $release = Invoke-RestMethod -Uri $releaseUrl -Headers $headers -ErrorAction Stop
         $asset = $release.assets | Where-Object { $_.name -eq "winsmux.exe" } | Select-Object -First 1
         if (-not $asset) {
@@ -125,7 +125,7 @@ function Install-Psmux {
         $ver = (& $winsmuxExe -V 2>&1 | Out-String).Trim()
         Write-Status "Installed winsmux: $ver"
     } catch {
-        Write-Error "[winsmux] Failed to install sora-psmux: $_"
+        Write-Error "[winsmux] Failed to install winsmux-core: $_"
         exit 1
     }
 }
