@@ -28,6 +28,8 @@ Set-StrictMode -Version Latest
 
 $scriptDir = $PSScriptRoot
 . "$scriptDir/settings.ps1"
+. "$scriptDir/agent-launch.ps1"
+. "$scriptDir/agent-readiness.ps1"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -187,6 +189,42 @@ function Test-CodexApprovalPromptText {
     return $hasProceedQuestion -and $hasCancelHint
 }
 
+function Wait-MonitorPaneShellReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [int]$TimeoutSeconds = 15
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $snapshot = Invoke-MonitorPsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+            $text = ($snapshot | Out-String).TrimEnd()
+            if ($null -ne (Get-LastNonEmptyLine -Text $text)) {
+                return
+            }
+        } catch {
+        }
+
+        Start-Sleep -Milliseconds 250
+    }
+
+    throw "Timed out waiting for pane $PaneId shell prompt after respawn."
+}
+
+function Send-MonitorBridgeCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Text
+    )
+
+    $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\psmux-bridge.ps1'))
+    & pwsh -NoProfile -File $bridgeScript 'send' $PaneId $Text 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to send command to pane $PaneId"
+    }
+}
+
 # ---------------------------------------------------------------------------
 # 1. Get-PaneAgentStatus
 # ---------------------------------------------------------------------------
@@ -336,48 +374,32 @@ function Invoke-AgentRespawn {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
         [Parameter(Mandatory = $true)][string]$Agent,
+        [Parameter(Mandatory = $true)][string]$Role,
         [Parameter(Mandatory = $true)][string]$Model,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [int]$ReadyTimeoutSeconds = 60
     )
 
-    # Build launch command (same logic as orchestra-start Get-AgentLaunchCommand)
-    $launchCommand = $null
-    switch ($Agent.Trim().ToLowerInvariant()) {
-        'codex' {
-            $escapedProject = "'" + ($ProjectDir -replace "'", "''") + "'"
-            $escapedWorktree = "'" + ($GitWorktreeDir -replace "'", "''") + "'"
-            $launchCommand = "codex -c model=$Model --full-auto -C $escapedProject --add-dir $escapedWorktree"
-        }
-        'claude' {
-            $launchCommand = 'claude --permission-mode bypassPermissions'
-        }
-        default {
-            return [PSCustomObject]@{
-                Success = $false
-                PaneId  = $PaneId
-                Message = "Unsupported agent: $Agent"
-            }
-        }
-    }
-
-    # Send launch command via psmux-bridge send
-    $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\psmux-bridge.ps1'))
     try {
-        & pwsh -NoProfile -File $bridgeScript 'send' $PaneId $launchCommand 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            return [PSCustomObject]@{
-                Success = $false
-                PaneId  = $PaneId
-                Message = "Failed to send launch command to pane $PaneId"
-            }
-        }
+        $launchCommand = Get-AgentLaunchCommand -Agent $Agent -Model $Model -ProjectDir $ProjectDir -GitWorktreeDir $GitWorktreeDir
     } catch {
         return [PSCustomObject]@{
             Success = $false
             PaneId  = $PaneId
-            Message = "Exception sending to pane ${PaneId}: $($_.Exception.Message)"
+            Message = $_.Exception.Message
+        }
+    }
+
+    try {
+        Invoke-MonitorPsmux -Arguments @('respawn-pane', '-k', '-t', $PaneId, '-c', $ProjectDir)
+        Wait-MonitorPaneShellReady -PaneId $PaneId
+        Send-MonitorBridgeCommand -PaneId $PaneId -Text $launchCommand
+    } catch {
+        return [PSCustomObject]@{
+            Success = $false
+            PaneId  = $PaneId
+            Message = "Exception respawning pane ${PaneId}: $($_.Exception.Message)"
         }
     }
 
@@ -387,6 +409,38 @@ function Invoke-AgentRespawn {
         Start-Sleep -Seconds 3
         $status = Get-PaneAgentStatus -PaneId $PaneId -Agent $Agent
         if ($status.Status -eq 'ready') {
+            $bootstrapPrompt = Get-AgentBootstrapPrompt -Agent $Agent -Role $Role
+            if (-not [string]::IsNullOrWhiteSpace($bootstrapPrompt)) {
+                try {
+                    Send-MonitorBridgeCommand -PaneId $PaneId -Text $bootstrapPrompt
+                } catch {
+                    return [PSCustomObject]@{
+                        Success = $false
+                        PaneId  = $PaneId
+                        Message = "Exception sending Codex CLM workaround to pane ${PaneId}: $($_.Exception.Message)"
+                    }
+                }
+
+                $bootstrapDeadline = (Get-Date).AddSeconds($ReadyTimeoutSeconds)
+                while ((Get-Date) -lt $bootstrapDeadline) {
+                    Start-Sleep -Seconds 3
+                    $bootstrapStatus = Get-PaneAgentStatus -PaneId $PaneId -Agent $Agent
+                    if ($bootstrapStatus.Status -eq 'ready') {
+                        return [PSCustomObject]@{
+                            Success = $true
+                            PaneId  = $PaneId
+                            Message = "Agent respawned successfully in pane $PaneId"
+                        }
+                    }
+                }
+
+                return [PSCustomObject]@{
+                    Success = $false
+                    PaneId  = $PaneId
+                    Message = "Timed out waiting for Codex CLM workaround acknowledgement in pane $PaneId after ${ReadyTimeoutSeconds}s"
+                }
+            }
+
             return [PSCustomObject]@{
                 Success = $true
                 PaneId  = $PaneId
@@ -553,6 +607,7 @@ function Invoke-AgentMonitorCycle {
             $respawnResult = Invoke-AgentRespawn `
                 -PaneId $paneId `
                 -Agent $agentName `
+                -Role $role `
                 -Model $modelName `
                 -ProjectDir $launchDir `
                 -GitWorktreeDir $launchGitWorktreeDir

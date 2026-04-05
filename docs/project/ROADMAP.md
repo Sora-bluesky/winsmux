@@ -1,7 +1,7 @@
 # ロードマップ
 
 > `tasks/backlog.yaml` から自動生成 — 手動編集禁止
-> 最終同期: 2026-04-05 08:30 (+09:00)
+> 最終同期: 2026-04-05 14:22 (+09:00)
 
 ## バージョン概要
 
@@ -24,9 +24,9 @@
 | v0.17.3 | 2 | [====================] 100% (2/2) |
 | v0.17.4 | 2 | [====================] 100% (2/2) |
 | v0.18.0 | 1 | [====================] 100% (1/1) |
-| v0.18.1 | 10 | [--------------------] 0% (0/10) |
-| v0.18.2 | 3 | [--------------------] 0% (0/3) |
-| v0.19.0 | 3 | [--------------------] 0% (0/3) |
+| v0.18.1 | 15 | [=-------------------] 7% (1/15) |
+| v0.18.2 | 5 | [--------------------] 0% (0/5) |
+| v0.19.0 | 6 | [--------------------] 0% (0/6) |
 | v0.19.1 | 2 | [--------------------] 0% (0/2) |
 | v0.19.2 | 2 | [--------------------] 0% (0/2) |
 | v0.20.0 | 1 | [--------------------] 0% (0/1) |
@@ -191,10 +191,15 @@
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-099 | Multi-pane layout + Orchestra integration in Tauri | P0 | winsmux | backlog |
+| [x] | TASK-099 | Multi-pane layout + Orchestra integration in Tauri | P0 | winsmux | done |
 | [ ] | TASK-122 | Fix orchestra-start pane duplication on restart | P0 | winsmux | backlog |
 | [ ] | TASK-123 | Replace Get-CimInstance Win32_Process with Get-Process globally | P0 | winsmux | backlog |
 | [ ] | TASK-124 | Add psmux-bridge kill/restart subcommands for Builder panes | P0 | winsmux | backlog |
+| [ ] | TASK-131 | Fix pty_close: stop reader thread and kill child process | P0 | winsmux | backlog |
+| [ ] | TASK-132 | Fix orchestra-start blocked by zombie pwsh/worktree locks | P0 | winsmux | backlog |
+| [ ] | TASK-133 | Fix sh-orchestra-gate.js: block git add/commit from Commander | P0 | winsmux | backlog |
+| [ ] | TASK-135 | Integrate v0.17.0 auto-dispatch features into orchestra-start | P0 | winsmux | backlog |
+| [ ] | TASK-136 | Prevent idle panes: Commander × dispatch-router/builder-queue/agent-monitor | P0 | winsmux | backlog |
 | [ ] | TASK-102 | Fix Codex context exhaustion in Builder worktrees | P1 | winsmux | backlog |
 | [ ] | TASK-125 | Auto-inject cmd /c workaround for Codex constrained language mode | P1 | winsmux | backlog |
 | [ ] | TASK-126 | Fix sh-worktree.js hook (no output on worktree create) | P1 | winsmux | backlog |
@@ -206,9 +211,11 @@
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
+| [ ] | TASK-140 | Switch Builder agents from persistent session to codex exec per task + shell templates | P0 | winsmux | backlog |
 | [ ] | TASK-110 | Automatic task splitting for parallel Builder dispatch | P1 | winsmux | backlog |
 | [ ] | TASK-113 | Dynamic pane scaling — auto add/remove panes based on workload | P1 | winsmux | backlog |
 | [ ] | TASK-130 | Commander auto-detect Builder stall and alert | P1 | winsmux | backlog |
+| [ ] | TASK-134 | Commander approval gate for Builder sandbox prompts | P1 | winsmux | backlog |
 
 ### v0.19.0 — Explorer + Dashboard
 
@@ -217,6 +224,9 @@
 | [ ] | TASK-104 | Sync sora-psmux fork with upstream before rendering work | P0 | sora-psmux | cancelled |
 | [ ] | TASK-100 | Explorer + Dashboard panels in Tauri | P1 | winsmux | backlog |
 | [ ] | TASK-103 | Implement P14-Ph2 psmux rendering improvements (TrueColor, Nerd Font, GPU) | P1 | sora-psmux | cancelled |
+| [ ] | TASK-137 | Audit dead code and missing integration across v0.9.6–v0.18.0 | P1 | winsmux | backlog |
+| [ ] | TASK-138 | Source control panel in Tauri UI Explorer (worktree-aware) | P1 | winsmux | backlog |
+| [ ] | TASK-139 | Rename psmux-bridge to winsmux-core + adapter layer separation | P1 | winsmux | backlog |
 
 ### v0.19.1 — テーマエンジン + ペインメタデータ
 
