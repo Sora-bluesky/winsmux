@@ -130,12 +130,13 @@ Describe 'sh-orchestra-gate integration' {
         $result.StdErr | Should -Be ''
     }
 
-    It 'denies direct gh pr merge usage' {
+    It 'Rule 7 removed verify command not yet implemented' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
             command = 'gh pr merge 112 --squash --delete-branch'
         }
 
-        & $script:AssertDenyResult -Result $result
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
     }
 
     It 'allows a normal bash command' {
