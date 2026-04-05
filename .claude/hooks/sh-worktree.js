@@ -7,15 +7,15 @@
 
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 const {
   readHookInput,
   allow,
-  deny,
   appendEvidence,
-  EVIDENCE_FILE,
 } = require("./lib/sh-utils");
 
 const HOOK_NAME = "sh-worktree";
+const WORKTREE_ROOT = ".worktrees";
 
 // Files/directories to copy to worktree
 const COPY_TARGETS = [
@@ -143,23 +143,128 @@ function mergeEvidence(worktreePath) {
   return merged;
 }
 
+function getHookEventName(input) {
+  return (
+    input.hook_event_name ||
+    input.hookEventName ||
+    input.hookType ||
+    ""
+  );
+}
+
+function getSessionId(input) {
+  return input.session_id || input.sessionId || "";
+}
+
+function resolveProjectRoot(input) {
+  const cwd = typeof input.cwd === "string" && input.cwd.trim() ? input.cwd : process.cwd();
+  return path.resolve(cwd);
+}
+
+function sanitizeWorktreeName(name) {
+  return String(name || "")
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "-")
+    .replace(/\s+/g, "-");
+}
+
+function resolveRequestedWorktreePath(input, projectRoot) {
+  const explicitPath =
+    input.worktree_path ||
+    input.path ||
+    (input.toolInput && (input.toolInput.worktree_path || input.toolInput.path)) ||
+    "";
+
+  if (typeof explicitPath === "string" && explicitPath.trim()) {
+    return path.isAbsolute(explicitPath)
+      ? path.resolve(explicitPath)
+      : path.resolve(projectRoot, explicitPath);
+  }
+
+  const safeName = sanitizeWorktreeName(input.name);
+  if (!safeName) {
+    throw new Error("WorktreeCreate hook requires a non-empty name.");
+  }
+
+  return path.join(projectRoot, WORKTREE_ROOT, safeName);
+}
+
+function ensurePathWithinRoot(targetPath, rootPath) {
+  const resolvedTarget = path.resolve(targetPath);
+  const resolvedRoot = path.resolve(rootPath);
+  const relative = path.relative(resolvedRoot, resolvedTarget);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function runGit(projectRoot, args) {
+  try {
+    return execFileSync("git", ["-C", projectRoot, ...args], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch (error) {
+    const stderr =
+      typeof error.stderr === "string" && error.stderr.trim()
+        ? error.stderr.trim()
+        : "";
+    const stdout =
+      typeof error.stdout === "string" && error.stdout.trim()
+        ? error.stdout.trim()
+        : "";
+    const detail = stderr || stdout || error.message;
+    throw new Error(`git ${args.join(" ")} failed: ${detail}`);
+  }
+}
+
+function createWorktree(projectRoot, worktreePath) {
+  const worktreeRoot = path.join(projectRoot, WORKTREE_ROOT);
+  if (!ensurePathWithinRoot(worktreePath, worktreeRoot)) {
+    throw new Error(`Refusing to create worktree outside ${worktreeRoot}: ${worktreePath}`);
+  }
+
+  if (fs.existsSync(worktreePath)) {
+    throw new Error(`Worktree path already exists: ${worktreePath}`);
+  }
+
+  fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+  runGit(projectRoot, ["worktree", "add", "--detach", worktreePath, "HEAD"]);
+  return path.resolve(worktreePath);
+}
+
+function removeWorktree(projectRoot, worktreePath) {
+  const worktreeRoot = path.join(projectRoot, WORKTREE_ROOT);
+  if (!ensurePathWithinRoot(worktreePath, worktreeRoot)) {
+    throw new Error(`Refusing to remove worktree outside ${worktreeRoot}: ${worktreePath}`);
+  }
+
+  if (!fs.existsSync(worktreePath)) {
+    return false;
+  }
+
+  try {
+    runGit(projectRoot, ["worktree", "remove", "--force", worktreePath]);
+  } catch (error) {
+    fs.rmSync(worktreePath, { recursive: true, force: true });
+    return true;
+  }
+
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 try {
   const input = readHookInput();
-  const { hookType } = input;
-  const worktreePath =
-    input.toolInput.worktree_path || input.toolInput.path || "";
-
-  if (!worktreePath) {
-    allow();
-    return;
-  }
+  const hookType = getHookEventName(input);
+  const projectRoot = resolveProjectRoot(input);
 
   if (hookType === "WorktreeCreate") {
-    // Propagate security config to new worktree
+    const worktreePath = createWorktree(
+      projectRoot,
+      resolveRequestedWorktreePath(input, projectRoot),
+    );
     const filesCopied = propagateConfig(worktreePath);
 
     try {
@@ -169,51 +274,51 @@ try {
         decision: "allow",
         worktree_path: worktreePath,
         files_copied: filesCopied,
-        session_id: input.sessionId,
+        session_id: getSessionId(input),
       });
     } catch {
       // Non-blocking
     }
 
-    allow(
-      `[${HOOK_NAME}] Shield Harness 設定を worktree にコピーしました (${filesCopied} files)`,
-    );
-    return;
+    process.stdout.write(`${worktreePath}\n`);
+    process.exit(0);
   }
 
   if (hookType === "WorktreeRemove") {
-    // Merge evidence from worktree
-    const entriesMerged = mergeEvidence(worktreePath);
+    const worktreePath =
+      input.worktree_path ||
+      input.path ||
+      (input.toolInput && (input.toolInput.worktree_path || input.toolInput.path)) ||
+      "";
+
+    if (!worktreePath) {
+      process.exit(0);
+    }
+
+    const resolvedWorktreePath = path.resolve(worktreePath);
+    const entriesMerged = mergeEvidence(resolvedWorktreePath);
+    removeWorktree(projectRoot, resolvedWorktreePath);
 
     try {
       appendEvidence({
         hook: HOOK_NAME,
         event: "WorktreeRemove",
         decision: "allow",
-        worktree_path: worktreePath,
+        worktree_path: resolvedWorktreePath,
         entries_merged: entriesMerged,
-        session_id: input.sessionId,
+        session_id: getSessionId(input),
       });
     } catch {
       // Non-blocking
     }
 
-    allow(
-      `[${HOOK_NAME}] Worktree 証跡をマージしました (${entriesMerged} entries)`,
-    );
-    return;
+    process.exit(0);
   }
 
-  // Unknown event type — allow passthrough
   allow();
 } catch (err) {
-  // SECURITY hook — fail-close
-  process.stdout.write(
-    JSON.stringify({
-      reason: `[${HOOK_NAME}] Hook error (fail-close): ${err.message}`,
-    }),
-  );
-  process.exit(2);
+  process.stderr.write(`[${HOOK_NAME}] Hook error: ${err.message}\n`);
+  process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +330,10 @@ module.exports = {
   COPY_DIRS,
   propagateConfig,
   mergeEvidence,
+  sanitizeWorktreeName,
+  resolveRequestedWorktreePath,
+  createWorktree,
+  removeWorktree,
   copyFileToWorktree,
   copyDirToWorktree,
 };
