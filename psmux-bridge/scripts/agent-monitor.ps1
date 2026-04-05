@@ -35,6 +35,7 @@ $scriptDir = $PSScriptRoot
 # ---------------------------------------------------------------------------
 
 $script:HungSnapshotDir = Join-Path $env:TEMP 'winsmux\monitor_snapshots'
+$script:IdleStateDir = Join-Path $env:TEMP 'winsmux\monitor_idle'
 $script:AgentMonitorDefaultHungThreshold = 60
 
 # ---------------------------------------------------------------------------
@@ -121,6 +122,120 @@ function Save-MonitorSnapshot {
     }
 
     ($record | ConvertTo-Json -Compress) | Set-Content -Path $path -Encoding UTF8 -NoNewline
+}
+
+function Get-MonitorIdleStatePath {
+    param([Parameter(Mandatory = $true)][string]$PaneId)
+
+    return Join-Path $script:IdleStateDir "$PaneId.json"
+}
+
+function Get-MonitorIdleState {
+    param([Parameter(Mandatory = $true)][string]$PaneId)
+
+    if ([string]::IsNullOrWhiteSpace($script:IdleStateDir)) {
+        return $null
+    }
+
+    $path = Get-MonitorIdleStatePath -PaneId $PaneId
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return $null
+        }
+
+        return ($raw | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Save-MonitorIdleState {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)]$ReadySince,
+        [Parameter(Mandatory = $true)][bool]$AlertSent
+    )
+
+    if ([string]::IsNullOrWhiteSpace($script:IdleStateDir)) {
+        throw 'IdleStateDir is not configured.'
+    }
+
+    if (-not (Test-Path -LiteralPath $script:IdleStateDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $script:IdleStateDir -Force | Out-Null
+    }
+
+    $readySinceValue = if ($ReadySince -is [datetime]) {
+        $ReadySince.ToString('o')
+    } else {
+        [string]$ReadySince
+    }
+
+    $record = [ordered]@{
+        ReadySince = $readySinceValue
+        AlertSent  = $AlertSent
+    }
+
+    $path = Get-MonitorIdleStatePath -PaneId $PaneId
+    ($record | ConvertTo-Json -Compress) | Set-Content -LiteralPath $path -Encoding UTF8 -NoNewline
+}
+
+function Update-MonitorIdleAlertState {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)][string]$Status,
+        [AllowNull()][string]$SnapshotTail,
+        [Parameter(Mandatory = $true)][int]$IdleThresholdSeconds,
+        [Parameter(Mandatory = $true)][datetime]$Now
+    )
+
+    $result = [ordered]@{
+        ShouldAlert = $false
+        Message     = ''
+    }
+
+    if ($Status -ne 'ready') {
+        $path = Get-MonitorIdleStatePath -PaneId $PaneId
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            Remove-Item -LiteralPath $path -Force
+        }
+
+        return $result
+    }
+
+    $state = Get-MonitorIdleState -PaneId $PaneId
+    $readySince = $Now
+    $alertSent = $false
+
+    if ($null -ne $state) {
+        $alertSent = [bool](Get-MonitorPropertyValue -InputObject $state -Name 'AlertSent' -Default $false)
+        $savedReadySince = [string](Get-MonitorPropertyValue -InputObject $state -Name 'ReadySince' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($savedReadySince)) {
+            try {
+                $readySince = [System.DateTimeOffset]::Parse($savedReadySince).DateTime
+            } catch {
+                $readySince = $Now
+            }
+        }
+    }
+
+    $elapsedSeconds = ($Now - $readySince).TotalSeconds
+    if (($elapsedSeconds -ge $IdleThresholdSeconds) -and (-not $alertSent)) {
+        $message = "Commander alert: idle pane $Label ($PaneId, role=$Role)"
+        Save-MonitorIdleState -PaneId $PaneId -ReadySince $readySince -AlertSent $true
+        $result.ShouldAlert = $true
+        $result.Message = $message
+        return $result
+    }
+
+    Save-MonitorIdleState -PaneId $PaneId -ReadySince $readySince -AlertSent $alertSent
+    return $result
 }
 
 function Get-ContentHash {
@@ -251,6 +366,12 @@ function Send-MonitorBridgeCommand {
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to send command to pane $PaneId"
     }
+}
+
+function Send-MonitorTelegramAlert {
+    param([Parameter(Mandatory = $true)][string]$Message)
+
+    return $false
 }
 
 # ---------------------------------------------------------------------------
@@ -474,7 +595,8 @@ function Invoke-AgentMonitorCycle {
         [Parameter(Mandatory = $true)]$Settings,
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [string]$SessionName = 'winsmux-orchestra',
-        [int]$HungThreshold = $script:AgentMonitorDefaultHungThreshold
+        [Alias('HungThreshold')]
+        [int]$IdleThreshold = $script:AgentMonitorDefaultHungThreshold
     )
 
     $projectDir = Split-Path (Split-Path $ManifestPath -Parent) -Parent
@@ -516,6 +638,8 @@ function Invoke-AgentMonitorCycle {
     $checkedCount = 0
     $crashedCount = 0
     $respawnedCount = 0
+    $idleAlertCount = 0
+    $cycleNow = Get-Date
 
     foreach ($label in $manifest.Panes.Keys) {
         $pane = $manifest.Panes[$label]
@@ -542,31 +666,55 @@ function Invoke-AgentMonitorCycle {
         $modelName = [string]$roleAgentConfig.Model
 
         $checkedCount++
-        $status = Get-PaneAgentStatus -PaneId $paneId -Agent $agentName -HungThreshold $HungThreshold
+        $status = Get-PaneAgentStatus -PaneId $paneId -Agent $agentName -HungThreshold $IdleThreshold
+        $statusName = [string](Get-MonitorPropertyValue -InputObject $status -Name 'Status' -Default '')
+        $statusExitReason = [string](Get-MonitorPropertyValue -InputObject $status -Name 'ExitReason' -Default '')
+        $statusSnapshotTail = [string](Get-MonitorPropertyValue -InputObject $status -Name 'SnapshotTail' -Default '')
 
         $result = [PSCustomObject]@{
             Label      = $label
             PaneId     = $paneId
             Role       = $role
-            Status     = $status.Status
-            ExitReason = $status.ExitReason
+            Status     = $statusName
+            ExitReason = $statusExitReason
             Respawned  = $false
+            IdleAlerted = $false
             Message    = ''
+        }
+
+        $idleAlert = Update-MonitorIdleAlertState `
+            -PaneId $paneId `
+            -Label $label `
+            -Role $role `
+            -Status $statusName `
+            -SnapshotTail $statusSnapshotTail `
+            -IdleThresholdSeconds $IdleThreshold `
+            -Now $cycleNow
+
+        if ($idleAlert.ShouldAlert) {
+            $idleAlertCount++
+            $result.IdleAlerted = $true
+            $result.Message = $idleAlert.Message
+            Write-Output $idleAlert.Message
+            try {
+                Send-MonitorTelegramAlert -Message $idleAlert.Message | Out-Null
+            } catch {
+            }
         }
 
         # Log the status check
         if ($loggerAvailable) {
             try {
-                Write-OrchestraLog -ProjectDir $projectDir -SessionName $SessionName `
+                    Write-OrchestraLog -ProjectDir $projectDir -SessionName $SessionName `
                     -Event 'monitor.status' -Level 'debug' `
-                    -Message "Pane $label ($paneId): $($status.Status)" `
+                    -Message "Pane $label ($paneId): $statusName" `
                     -Role $role -PaneId $paneId `
-                    -Data ([ordered]@{ status = $status.Status; exit_reason = $status.ExitReason }) | Out-Null
+                    -Data ([ordered]@{ status = $statusName; exit_reason = $statusExitReason }) | Out-Null
             } catch {
             }
         }
 
-        if ($status.Status -eq 'crashed') {
+        if ($statusName -eq 'crashed') {
             $crashedCount++
 
             # Determine launch directory and git worktree dir
@@ -598,7 +746,7 @@ function Invoke-AgentMonitorCycle {
             # Log respawn attempt
             if ($loggerAvailable) {
                 try {
-                    $respawnMessage = if ($status.ExitReason -eq 'context_exhausted' -and $role -eq 'Builder') {
+                    $respawnMessage = if ($statusExitReason -eq 'context_exhausted' -and $role -eq 'Builder') {
                         "Respawning Builder worktree after context exhaustion in pane $label ($paneId)"
                     } else {
                         "Respawning crashed agent in pane $label ($paneId)"
@@ -607,7 +755,7 @@ function Invoke-AgentMonitorCycle {
                         -Event 'monitor.respawn.start' -Level 'warn' `
                         -Message $respawnMessage `
                         -Role $role -PaneId $paneId `
-                        -Data ([ordered]@{ agent = $agentName; model = $modelName; launch_dir = $launchDir; exit_reason = $status.ExitReason }) | Out-Null
+                        -Data ([ordered]@{ agent = $agentName; model = $modelName; launch_dir = $launchDir; exit_reason = $statusExitReason }) | Out-Null
                 } catch {
                 }
             }
@@ -646,10 +794,10 @@ function Invoke-AgentMonitorCycle {
     # Log cycle summary
     if ($loggerAvailable) {
         try {
-            Write-OrchestraLog -ProjectDir $projectDir -SessionName $SessionName `
-                -Event 'monitor.cycle' -Level 'info' `
-                -Message "Monitor cycle: checked=$checkedCount crashed=$crashedCount respawned=$respawnedCount" `
-                -Data ([ordered]@{ checked = $checkedCount; crashed = $crashedCount; respawned = $respawnedCount }) | Out-Null
+                Write-OrchestraLog -ProjectDir $projectDir -SessionName $SessionName `
+                    -Event 'monitor.cycle' -Level 'info' `
+                -Message "Monitor cycle: checked=$checkedCount crashed=$crashedCount respawned=$respawnedCount idle_alerts=$idleAlertCount" `
+                -Data ([ordered]@{ checked = $checkedCount; crashed = $crashedCount; respawned = $respawnedCount; idle_alerts = $idleAlertCount }) | Out-Null
         } catch {
         }
     }
@@ -658,6 +806,7 @@ function Invoke-AgentMonitorCycle {
         Checked   = $checkedCount
         Crashed   = $crashedCount
         Respawned = $respawnedCount
+        IdleAlerts = $idleAlertCount
         Results   = @($results)
     }
 }
