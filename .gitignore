@@ -30,6 +30,13 @@ docs/REQUIREMENTS.md
 tasks/
 skills/
 tests/
+!tests/
+tests/*
+!tests/Integration.GateEnforcement.Tests.ps1
+!tests/Integration.MultiAgent.Tests.ps1
+!tests/Runtime.VaultInject.Tests.ps1
+!tests/psmux-bridge.Tests.ps1
+!tests/OrchestraPreflight.Tests.ps1
 hooks/
 .githooks/
 .worktrees/
