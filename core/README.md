@@ -34,75 +34,75 @@
 
 ---
 
-# psmux
+# winsmux
 
 **The real tmux for Windows.** Not a port, not a wrapper, not a workaround.
 
-psmux is a **native Windows terminal multiplexer** built from the ground up in Rust. It uses Windows ConPTY directly, speaks the tmux command language, reads your `.tmux.conf`, and supports tmux themes. All without WSL, Cygwin, or MSYS2.
+winsmux is a **native Windows terminal multiplexer** built from the ground up in Rust. It uses Windows ConPTY directly, speaks the tmux command language, reads your `.tmux.conf`, and supports tmux themes. All without WSL, Cygwin, or MSYS2.
 
-> 💡 **Tip:** psmux ships with `tmux` and `pmux` aliases. Just type `tmux` and it works!
+> 💡 **Tip:** winsmux ships with `tmux` and `pmux` aliases. Just type `tmux` and it works!
 
 👀 On Windows 👇
 
-![psmux in action](demo.gif)
+![winsmux in action](demo.gif)
 
 ## Installation
 
 ### Using WinGet
 
 ```powershell
-winget install psmux
+winget install winsmux
 ```
 
 ### Using Cargo
 
 ```powershell
-cargo install psmux
+cargo install winsmux
 ```
 
-This installs `psmux`, `pmux`, and `tmux` binaries to your Cargo bin directory.
+This installs `winsmux`, `pmux`, and `tmux` binaries to your Cargo bin directory.
 
 ### Using Scoop
 
 ```powershell
-scoop bucket add psmux https://github.com/psmux/scoop-psmux
-scoop install psmux
+scoop bucket add winsmux https://github.com/winsmux/scoop-winsmux
+scoop install winsmux
 ```
 
 ### Using Chocolatey
 
 ```powershell
-choco install psmux
+choco install winsmux
 ```
 
 ### From GitHub Releases
 
-Download the latest `.zip` from [GitHub Releases](https://github.com/psmux/psmux/releases) and add to your PATH.
+Download the latest `.zip` from [GitHub Releases](https://github.com/winsmux/winsmux/releases) and add to your PATH.
 
 ### From Source
 
 ```powershell
-git clone https://github.com/psmux/psmux.git
-cd psmux
+git clone https://github.com/winsmux/winsmux.git
+cd winsmux
 cargo build --release
 ```
 
 Built binaries:
 
 ```text
-target\release\psmux.exe
+target\release\winsmux.exe
 target\release\pmux.exe
 target\release\tmux.exe
 ```
 
 ### Docker (build environment)
 
-A ready-made Windows container with Rust + MSVC + SSH for building psmux:
+A ready-made Windows container with Rust + MSVC + SSH for building winsmux:
 
 ```powershell
 cd docker
-docker build -t psmux-dev .
-docker run -d --name psmux-dev -p 127.0.0.1:2222:22 -e ADMIN_PASSWORD=YourPass123! psmux-dev
+docker build -t winsmux-dev .
+docker run -d --name winsmux-dev -p 127.0.0.1:2222:22 -e ADMIN_PASSWORD=YourPass123! winsmux-dev
 ssh ContainerAdministrator@localhost -p 2222
 ```
 
@@ -115,28 +115,28 @@ See [docker/README.md](docker/README.md) for full details.
   - Download PowerShell: `winget install --id Microsoft.PowerShell`
   - Or visit: https://aka.ms/powershell
 
-## Why psmux?
+## Why winsmux?
 
 If you've used tmux on Linux/macOS and wished you had something like it on Windows, **this is it**. Split panes, multiple windows, session persistence, full mouse support, tmux themes, 76 commands, 126+ format variables, 53 vim copy-mode keys. Your existing `.tmux.conf` works. Full details: **[docs/features.md](docs/features.md)** · **[docs/compatibility.md](docs/compatibility.md)**
 
 ## Usage
 
-Use `psmux`, `pmux`, or `tmux` — they're identical:
+Use `winsmux`, `pmux`, or `tmux` — they're identical:
 
 ```powershell
-psmux                        # Start a new session
-psmux new-session -s work    # Named session
-psmux ls                     # List sessions
-psmux attach -t work         # Attach to a session
-psmux --help                 # Show help
+winsmux                        # Start a new session
+winsmux new-session -s work    # Named session
+winsmux ls                     # List sessions
+winsmux attach -t work         # Attach to a session
+winsmux --help                 # Show help
 ```
 
 ## Claude Code Agent Teams
 
-psmux has first-class support for Claude Code agent teams. When Claude Code runs inside a psmux session, teammate agents automatically spawn in separate tmux panes instead of running in-process.
+winsmux has first-class support for Claude Code agent teams. When Claude Code runs inside a winsmux session, teammate agents automatically spawn in separate tmux panes instead of running in-process.
 
 ```powershell
-psmux new-session -s work    # Start a psmux session
+winsmux new-session -s work    # Start a winsmux session
 claude                       # Run Claude Code — agent teams just work
 ```
 
@@ -162,16 +162,16 @@ No extra configuration needed. Full guide: **[docs/claude-code.md](docs/claude-c
 <table>
   <tr>
     <td align="center" width="50%">
-      <a href="https://github.com/psmux/pstop">
-        <img src="https://raw.githubusercontent.com/psmux/pstop/master/pstop-demo.gif" width="400" alt="pstop demo" /><br/>
+      <a href="https://github.com/winsmux/pstop">
+        <img src="https://raw.githubusercontent.com/winsmux/pstop/master/pstop-demo.gif" width="400" alt="pstop demo" /><br/>
         <b>pstop</b>
       </a><br/>
       <sub>htop for Windows — real-time system monitor with per-core CPU bars, tree view, 7 color schemes</sub><br/>
       <code>cargo install pstop</code>
     </td>
     <td align="center" width="50%">
-      <a href="https://github.com/psmux/psnet">
-        <img src="https://raw.githubusercontent.com/psmux/psnet/master/image.png" width="400" alt="psnet screenshot" /><br/>
+      <a href="https://github.com/winsmux/psnet">
+        <img src="https://raw.githubusercontent.com/winsmux/psnet/master/image.png" width="400" alt="psnet screenshot" /><br/>
         <b>psnet</b>
       </a><br/>
       <sub>Real-time TUI network monitor — live speed graphs, connections, traffic log, packet sniffer</sub><br/>
@@ -180,16 +180,16 @@ No extra configuration needed. Full guide: **[docs/claude-code.md](docs/claude-c
   </tr>
   <tr>
     <td align="center" width="50%">
-      <a href="https://github.com/psmux/Tmux-Plugin-Panel">
-        <img src="https://raw.githubusercontent.com/psmux/Tmux-Plugin-Panel/master/screenshot.png" width="400" alt="Tmux Plugin Panel screenshot" /><br/>
+      <a href="https://github.com/winsmux/Tmux-Plugin-Panel">
+        <img src="https://raw.githubusercontent.com/winsmux/Tmux-Plugin-Panel/master/screenshot.png" width="400" alt="Tmux Plugin Panel screenshot" /><br/>
         <b>Tmux Plugin Panel</b>
       </a><br/>
-      <sub>TUI plugin & theme manager for tmux and psmux — browse, install, update from your terminal</sub><br/>
+      <sub>TUI plugin & theme manager for tmux and winsmux — browse, install, update from your terminal</sub><br/>
       <code>cargo install tmuxpanel</code>
     </td>
     <td align="center" width="50%">
-      <a href="https://github.com/psmux/omp-manager">
-        <img src="https://raw.githubusercontent.com/psmux/omp-manager/master/screenshot.png" width="400" alt="OMP Manager screenshot" /><br/>
+      <a href="https://github.com/winsmux/omp-manager">
+        <img src="https://raw.githubusercontent.com/winsmux/omp-manager/master/screenshot.png" width="400" alt="OMP Manager screenshot" /><br/>
         <b>OMP Manager</b>
       </a><br/>
       <sub>Oh My Posh setup wizard — browse 100+ themes, install fonts, configure shells automatically</sub><br/>
@@ -204,13 +204,13 @@ MIT
 
 ## Contributing
 
-Contributions welcome — bug reports, PRs, docs, and test scripts via [GitHub Issues](https://github.com/psmux/psmux/issues).
+Contributions welcome — bug reports, PRs, docs, and test scripts via [GitHub Issues](https://github.com/winsmux/winsmux/issues).
 
-If psmux helps your Windows workflow, consider giving it a ⭐ on GitHub!
+If winsmux helps your Windows workflow, consider giving it a ⭐ on GitHub!
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/image?repos=psmux/psmux&type=date&legend=top-left)](https://www.star-history.com/?repos=psmux%2Fpsmux&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/image?repos=winsmux/winsmux&type=date&legend=top-left)](https://www.star-history.com/?repos=winsmux%2Fwinsmux&type=date&legend=top-left)
 
 ---
 

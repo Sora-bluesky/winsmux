@@ -1,6 +1,6 @@
 # tmux Compatibility
 
-psmux is the most tmux-compatible terminal multiplexer on Windows.
+winsmux is the most tmux-compatible terminal multiplexer on Windows.
 
 ## Overview
 
@@ -19,11 +19,11 @@ psmux is the most tmux-compatible terminal multiplexer on Windows.
 | `if-shell` / `run-shell` | ✅ Conditional config logic |
 | Paste buffers | ✅ Full buffer management |
 
-**Your existing `.tmux.conf` works.** psmux reads it automatically. Just install and go.
+**Your existing `.tmux.conf` works.** winsmux reads it automatically. Just install and go.
 
 ## Comparison
 
-| | psmux | Windows Terminal tabs | WSL + tmux |
+| | winsmux | Windows Terminal tabs | WSL + tmux |
 |---|:---:|:---:|:---:|
 | Session persist (detach/reattach) | ✅ | ❌ | ⚠️ WSL only |
 | Synchronized panes | ✅ | ❌ | ✅ |
@@ -41,7 +41,7 @@ For the full list of supported tmux commands and arguments, see [tmux_args_refer
 
 ## Format Variables
 
-psmux supports 126+ format variables with full modifier support, including:
+winsmux supports 126+ format variables with full modifier support, including:
 
 - Session/window/pane variables (`#S`, `#W`, `#P`, `#{pane_current_path}`, etc.)
 - Style and color modifiers

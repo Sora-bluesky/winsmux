@@ -1,20 +1,20 @@
 # Control Mode
 
-Control mode lets external programs drive psmux programmatically over a structured text protocol. Instead of rendering a TUI, psmux sends machine-readable notifications and accepts commands over stdin/stdout, making it the foundation for building plugins, IDE integrations, custom dashboards, session monitors, and any tooling that needs to interact with terminal sessions.
+Control mode lets external programs drive winsmux programmatically over a structured text protocol. Instead of rendering a TUI, winsmux sends machine-readable notifications and accepts commands over stdin/stdout, making it the foundation for building plugins, IDE integrations, custom dashboards, session monitors, and any tooling that needs to interact with terminal sessions.
 
-This is the same protocol that tmux uses for its control mode (`tmux -C` / `tmux -CC`), so existing knowledge and many client libraries transfer directly to psmux.
+This is the same protocol that tmux uses for its control mode (`tmux -C` / `tmux -CC`), so existing knowledge and many client libraries transfer directly to winsmux.
 
 ## Quick Start
 
 ```powershell
 # 1. Create a detached session
-psmux new-session -d -s work -x 120 -y 30
+winsmux new-session -d -s work -x 120 -y 30
 
 # 2. Attach in control mode (no-echo)
-psmux -CC
+winsmux -CC
 ```
 
-psmux connects to the running session and enters a command/response loop. You type commands on stdin, and psmux responds on stdout with structured output.
+winsmux connects to the running session and enters a command/response loop. You type commands on stdin, and winsmux responds on stdout with structured output.
 
 ```
 list-windows
@@ -34,11 +34,11 @@ To exit, close stdin (Ctrl+D / EOF) or send `kill-server`.
 
 ## Session Targeting
 
-By default, control mode connects to the session stored in `PSMUX_SESSION_NAME`. You can set it before launching:
+By default, control mode connects to the session stored in `WINSMUX_SESSION_NAME`. You can set it before launching:
 
 ```powershell
-$env:PSMUX_SESSION_NAME = "my-session"
-psmux -CC
+$env:WINSMUX_SESSION_NAME = "my-session"
+winsmux -CC
 ```
 
 ## Wire Protocol
@@ -73,7 +73,7 @@ Command response blocks never interleave with each other. Notifications (describ
 
 ### Notifications
 
-Notifications are asynchronous lines that psmux sends whenever something happens in the session. They always start with `%` and arrive between command response blocks.
+Notifications are asynchronous lines that winsmux sends whenever something happens in the session. They always start with `%` and arrive between command response blocks.
 
 #### Window Notifications
 
@@ -152,7 +152,7 @@ Example: `hello\r\n` becomes `%output %0 hello\015\012`.
 
 ## Supported Commands
 
-All standard psmux/tmux commands work in control mode. Here are the most useful ones for plugin development:
+All standard winsmux/tmux commands work in control mode. Here are the most useful ones for plugin development:
 
 ### Session and Window Management
 
@@ -207,9 +207,9 @@ server-info        # Server information
 kill-server        # Shut down the server
 ```
 
-### psmux Extension Commands
+### winsmux Extension Commands
 
-These commands are available in psmux but do not exist in tmux:
+These commands are available in winsmux but do not exist in tmux:
 
 | Command | Description |
 |---|---|
@@ -231,12 +231,12 @@ import subprocess
 import threading
 
 proc = subprocess.Popen(
-    ["psmux", "-CC"],
+    ["winsmux", "-CC"],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
     text=True,
-    env={**__import__("os").environ, "PSMUX_SESSION_NAME": "work"},
+    env={**__import__("os").environ, "WINSMUX_SESSION_NAME": "work"},
 )
 
 def read_notifications():
@@ -280,9 +280,9 @@ proc.wait()
 ### Minimal PowerShell Example
 
 ```powershell
-$env:PSMUX_SESSION_NAME = "work"
+$env:WINSMUX_SESSION_NAME = "work"
 $psi = [System.Diagnostics.ProcessStartInfo]::new()
-$psi.FileName = (Get-Command psmux).Source
+$psi.FileName = (Get-Command winsmux).Source
 $psi.Arguments = "-CC"
 $psi.RedirectStandardInput = $true
 $psi.RedirectStandardOutput = $true
@@ -310,8 +310,8 @@ $proc.WaitForExit(5000)
 ```javascript
 const { spawn } = require("child_process");
 
-const proc = spawn("psmux", ["-CC"], {
-  env: { ...process.env, PSMUX_SESSION_NAME: "work" },
+const proc = spawn("winsmux", ["-CC"], {
+  env: { ...process.env, WINSMUX_SESSION_NAME: "work" },
   stdio: ["pipe", "pipe", "pipe"],
 });
 
@@ -353,7 +353,7 @@ setTimeout(() => {
 
 ## Differences from tmux
 
-psmux control mode is wire-compatible with tmux's protocol. A few features that exist in tmux but are not yet implemented in psmux:
+winsmux control mode is wire-compatible with tmux's protocol. A few features that exist in tmux but are not yet implemented in winsmux:
 
 | Feature | Status | Notes |
 |---------|--------|-------|
@@ -363,15 +363,15 @@ psmux control mode is wire-compatible with tmux's protocol. A few features that 
 | `refresh-client -C WxH` | Planned | Client-side size override |
 | `%extended-output` | Planned | Output with age info for flow control |
 | `%subscription-changed` | Planned | Subscription value change events |
-| Unlinked window notifications | N/A | psmux uses one session per server |
+| Unlinked window notifications | N/A | winsmux uses one session per server |
 
-The core protocol (framing, notifications, escaping, IDs, command dispatch) is fully compatible. Plugins targeting the basic tmux control mode protocol will work identically on psmux.
+The core protocol (framing, notifications, escaping, IDs, command dispatch) is fully compatible. Plugins targeting the basic tmux control mode protocol will work identically on winsmux.
 
 ### Windows ConPTY Considerations
 
-If you are porting a Unix tmux plugin to psmux, be aware of these ConPTY behaviors:
+If you are porting a Unix tmux plugin to winsmux, be aware of these ConPTY behaviors:
 
-- **SMCUP/RMCUP consumed internally.** ConPTY processes alternate screen buffer switches before the output reaches psmux. The `alternate_on` flag is always false. psmux uses a heuristic (last row content analysis) to detect fullscreen TUI applications.
+- **SMCUP/RMCUP consumed internally.** ConPTY processes alternate screen buffer switches before the output reaches winsmux. The `alternate_on` flag is always false. winsmux uses a heuristic (last row content analysis) to detect fullscreen TUI applications.
 - **Output normalization.** ConPTY may normalize line endings and process certain cursor movement sequences internally. `%output` data may look slightly different from what a Unix tmux session would produce for the same shell command.
 - **`capture-pane` always reflects the primary screen buffer.** There is no reliable way to detect whether a pane is showing the alternate screen.
 - **Ctrl+C propagation.** `GenerateConsoleCtrlEvent` sends to ALL processes sharing the console, not just the foreground process. When testing TUI apps via `send-keys`, prefer using the app's quit key (e.g. `q`) rather than `C-c`.
@@ -379,15 +379,15 @@ If you are porting a Unix tmux plugin to psmux, be aware of these ConPTY behavio
 
 ### Namespace Isolation
 
-Use `-L` to run multiple independent psmux servers on the same machine:
+Use `-L` to run multiple independent winsmux servers on the same machine:
 
 ```powershell
-psmux -L dev new-session -d -s myapp -x 120 -y 30
-$env:PSMUX_SESSION_NAME = "dev__myapp"
-psmux -CC
+winsmux -L dev new-session -d -s myapp -x 120 -y 30
+$env:WINSMUX_SESSION_NAME = "dev__myapp"
+winsmux -CC
 ```
 
-The `PSMUX_SESSION_NAME` value follows the format `<namespace>__<session>` when using `-L`. The double underscore is the separator.
+The `WINSMUX_SESSION_NAME` value follows the format `<namespace>__<session>` when using `-L`. The double underscore is the separator.
 
 ## Format Variables
 

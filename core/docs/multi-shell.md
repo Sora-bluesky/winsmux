@@ -1,6 +1,6 @@
 # Multi-Shell Workflows
 
-psmux lets you run **any combination of shells** side by side in the same session.
+winsmux lets you run **any combination of shells** side by side in the same session.
 PowerShell, Git Bash, cmd.exe, WSL, Nushell, or any other shell or program,
 each in its own pane, window, or session. Switch between them instantly.
 
@@ -19,7 +19,7 @@ each in its own pane, window, or session. Switch between them instantly.
 
 ## Setting Your Default Shell
 
-Add one line to `~/.psmux.conf`:
+Add one line to `~/.winsmux.conf`:
 
 ```tmux
 # Git Bash
@@ -53,7 +53,7 @@ backslashes are supported.
 
 ## Changing the Shell at Runtime
 
-You don't need to restart psmux to switch shells. Press `Prefix + :` (default
+You don't need to restart winsmux to switch shells. Press `Prefix + :` (default
 `Ctrl+B` then `:`) to open the command prompt, then type:
 
 ```tmux
@@ -65,7 +65,7 @@ Existing panes keep their current shell.
 
 ## Mix and Match: Different Shells in Different Panes
 
-This is where psmux really shines. You can override the default shell for
+This is where winsmux really shines. You can override the default shell for
 any individual window or pane by passing the shell as a command:
 
 ### From the command prompt (`Prefix + :`)
@@ -91,19 +91,19 @@ new-window node
 
 ```powershell
 # Create a bash window in an existing session
-psmux new-window -- "C:/Program Files/Git/bin/bash.exe"
+winsmux new-window -- "C:/Program Files/Git/bin/bash.exe"
 
 # Split with cmd.exe
-psmux split-window -- cmd.exe
+winsmux split-window -- cmd.exe
 
 # Create a whole new session running WSL
-psmux new-session -s linux -- wsl
+winsmux new-session -s linux -- wsl
 
 # Launch a Python REPL in a split pane
-psmux split-window -- python
+winsmux split-window -- python
 ```
 
-### From your config file (`~/.psmux.conf`)
+### From your config file (`~/.winsmux.conf`)
 
 ```tmux
 # Default shell is PowerShell
@@ -130,7 +130,7 @@ Your default shell is PowerShell for project management, but you need bash
 for your build tools and Node scripts:
 
 ```tmux
-# ~/.psmux.conf
+# ~/.winsmux.conf
 set -g default-shell pwsh
 
 # Quick access to bash for npm/node
@@ -188,25 +188,25 @@ You can also create entirely separate sessions, each with its own default shell:
 
 ```powershell
 # Session for PowerShell work
-psmux new-session -d -s work
+winsmux new-session -d -s work
 
 # Session for Linux/bash work
-psmux new-session -d -s linux -- wsl
+winsmux new-session -d -s linux -- wsl
 
 # Session for a specific project using bash
-psmux new-session -d -s webapp -- "C:/Program Files/Git/bin/bash.exe" --login
+winsmux new-session -d -s webapp -- "C:/Program Files/Git/bin/bash.exe" --login
 ```
 
 Switch between sessions with `Prefix + s` (session picker) or `Prefix + (` / `)`.
 
 ## Supported Shells
 
-psmux works with any program that reads from stdin and writes to stdout.
+winsmux works with any program that reads from stdin and writes to stdout.
 Here are common shells and how to configure them:
 
 | Shell | Config Value | Notes |
 |-------|-------------|-------|
-| PowerShell 7 | `pwsh` | Default. Fastest startup with psmux optimizations |
+| PowerShell 7 | `pwsh` | Default. Fastest startup with winsmux optimizations |
 | Windows PowerShell 5 | `powershell` | Built into Windows |
 | Git Bash | `"C:/Program Files/Git/bin/bash.exe"` | Quotes required (path has spaces) |
 | Git Bash (login) | `"C:/Program Files/Git/bin/bash.exe" --login` | Loads `.bash_profile` |
@@ -226,4 +226,4 @@ Here are common shells and how to configure them:
 - **Extra arguments** go after the path: `"C:/Program Files/Git/bin/bash.exe" --login`
 - **Changing default-shell at runtime** only affects new panes/windows. Existing ones keep their shell
 - **Each pane is independent**. Closing a bash pane does not affect your pwsh panes
-- **Environment variables** (`TMUX`, `PSMUX_SESSION`, `TERM`) are set correctly in all shell types
+- **Environment variables** (`TMUX`, `WINSMUX_SESSION`, `TERM`) are set correctly in all shell types

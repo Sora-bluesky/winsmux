@@ -1,23 +1,23 @@
 # Plugins & Themes
 
-psmux has a full plugin ecosystem — ports of the most popular tmux plugins, reimplemented in PowerShell for Windows.
+winsmux has a full plugin ecosystem — ports of the most popular tmux plugins, reimplemented in PowerShell for Windows.
 
 ## Plugin Repository
 
-**Browse available plugins and themes:** [**psmux-plugins**](https://github.com/psmux/psmux-plugins)
+**Browse available plugins and themes:** [**winsmux-plugins**](https://github.com/winsmux/winsmux-plugins)
 
-**Install & manage plugins with a TUI:** [**Tmux Plugin Panel**](https://github.com/psmux/Tmux-Plugin-Panel) — a terminal UI for browsing, installing, updating, and removing plugins and themes.
+**Install & manage plugins with a TUI:** [**Tmux Plugin Panel**](https://github.com/winsmux/Tmux-Plugin-Panel) — a terminal UI for browsing, installing, updating, and removing plugins and themes.
 
 ## Available Plugins
 
 | Plugin | Description |
 |--------|-------------|
-| [psmux-sensible](https://github.com/psmux/psmux-plugins/tree/main/psmux-sensible) | Sensible defaults for psmux |
-| [psmux-yank](https://github.com/psmux/psmux-plugins/tree/main/psmux-yank) | Windows clipboard integration |
-| [psmux-resurrect](https://github.com/psmux/psmux-plugins/tree/main/psmux-resurrect) | Save/restore sessions |
-| [psmux-pain-control](https://github.com/psmux/psmux-plugins/tree/main/psmux-pain-control) | Better pane navigation |
-| [psmux-prefix-highlight](https://github.com/psmux/psmux-plugins/tree/main/psmux-prefix-highlight) | Prefix key indicator |
-| [ppm](https://github.com/psmux/psmux-plugins/tree/main/ppm) | Plugin manager (like tpm) |
+| [winsmux-sensible](https://github.com/winsmux/winsmux-plugins/tree/main/winsmux-sensible) | Sensible defaults for winsmux |
+| [winsmux-yank](https://github.com/winsmux/winsmux-plugins/tree/main/winsmux-yank) | Windows clipboard integration |
+| [winsmux-resurrect](https://github.com/winsmux/winsmux-plugins/tree/main/winsmux-resurrect) | Save/restore sessions |
+| [winsmux-pain-control](https://github.com/winsmux/winsmux-plugins/tree/main/winsmux-pain-control) | Better pane navigation |
+| [winsmux-prefix-highlight](https://github.com/winsmux/winsmux-plugins/tree/main/winsmux-prefix-highlight) | Prefix key indicator |
+| [ppm](https://github.com/winsmux/winsmux-plugins/tree/main/ppm) | Plugin manager (like tpm) |
 
 ## Themes
 
@@ -27,17 +27,17 @@ Catppuccin · Dracula · Nord · Tokyo Night · Gruvbox
 
 ```powershell
 # Install the plugin manager
-git clone https://github.com/psmux/psmux-plugins.git "$env:TEMP\psmux-plugins"
-Copy-Item "$env:TEMP\psmux-plugins\ppm" "$env:USERPROFILE\.psmux\plugins\ppm" -Recurse
-Remove-Item "$env:TEMP\psmux-plugins" -Recurse -Force
+git clone https://github.com/winsmux/winsmux-plugins.git "$env:TEMP\winsmux-plugins"
+Copy-Item "$env:TEMP\winsmux-plugins\ppm" "$env:USERPROFILE\.winsmux\plugins\ppm" -Recurse
+Remove-Item "$env:TEMP\winsmux-plugins" -Recurse -Force
 ```
 
-Then add to your `~/.psmux.conf`:
+Then add to your `~/.winsmux.conf`:
 
 ```tmux
-set -g @plugin 'psmux-plugins/ppm'
-set -g @plugin 'psmux-plugins/psmux-sensible'
-run '~/.psmux/plugins/ppm/ppm.ps1'
+set -g @plugin 'winsmux-plugins/ppm'
+set -g @plugin 'winsmux-plugins/winsmux-sensible'
+run '~/.winsmux/plugins/ppm/ppm.ps1'
 ```
 
-Press `Prefix + I` inside psmux to install the declared plugins.
+Press `Prefix + I` inside winsmux to install the declared plugins.

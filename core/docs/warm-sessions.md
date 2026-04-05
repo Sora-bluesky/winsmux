@@ -1,10 +1,10 @@
 # Warm Sessions
 
-psmux uses a background **warm session** (`__warm__`) to make new session creation nearly instant. This page explains how it works and how to interact with it if needed.
+winsmux uses a background **warm session** (`__warm__`) to make new session creation nearly instant. This page explains how it works and how to interact with it if needed.
 
 ## What is a Warm Session?
 
-When you create a session, psmux pre-spawns a hidden standby server called `__warm__`. This server loads your config, initializes a shell, and waits. When you run `psmux new-session` next time, psmux **claims** this warm server (renames it to your requested session name) instead of cold-starting a new process. This skips the entire server startup + config load + shell spawn cycle.
+When you create a session, winsmux pre-spawns a hidden standby server called `__warm__`. This server loads your config, initializes a shell, and waits. When you run `winsmux new-session` next time, winsmux **claims** this warm server (renames it to your requested session name) instead of cold-starting a new process. This skips the entire server startup + config load + shell spawn cycle.
 
 **Result:** New session creation drops from ~400-1000ms (shell startup) to near-instant.
 
@@ -12,7 +12,7 @@ When you create a session, psmux pre-spawns a hidden standby server called `__wa
 
 The `__warm__` session is an internal implementation detail. It is hidden from:
 
-- `psmux ls` / `psmux list-sessions`
+- `winsmux ls` / `winsmux list-sessions`
 - `prefix + s` (choose-session)
 - `prefix + w` (choose-tree)
 - `prefix + (` / `)` (session navigation)
@@ -34,7 +34,7 @@ If you prefer every session, window, and pane to start with a completely fresh s
 
 ### Via config file
 
-Add this to your `.psmux.conf`, `.tmux.conf`, or `~/.config/psmux/psmux.conf`:
+Add this to your `.winsmux.conf`, `.tmux.conf`, or `~/.config/winsmux/winsmux.conf`:
 
 ```
 set -g warm off
@@ -43,7 +43,7 @@ set -g warm off
 ### Via environment variable
 
 ```powershell
-$env:PSMUX_NO_WARM = "1"
+$env:WINSMUX_NO_WARM = "1"
 ```
 
 When warm is disabled:
@@ -60,25 +60,25 @@ If you need to inspect or manage the warm session directly (debugging, developme
 
 ```powershell
 # Check if a warm session is running
-Test-Path "$HOME\.psmux\__warm__.port"
+Test-Path "$HOME\.winsmux\__warm__.port"
 
 # List all sessions including warm (raw port files)
-Get-ChildItem "$HOME\.psmux\*.port" | Select-Object Name
+Get-ChildItem "$HOME\.winsmux\*.port" | Select-Object Name
 
 # Send a command to the warm server
-psmux -t __warm__ list-windows
+winsmux -t __warm__ list-windows
 
 # Kill just the warm session
-psmux -t __warm__ kill-session
+winsmux -t __warm__ kill-session
 
 # With -L namespace: warm session is stored as "<namespace>____warm__"
-Test-Path "$HOME\.psmux\myns____warm__.port"
+Test-Path "$HOME\.winsmux\myns____warm__.port"
 ```
 
 ## File Layout
 
 | File | Purpose |
 |------|---------|
-| `~\.psmux\__warm__.port` | TCP port of the warm server |
-| `~\.psmux\__warm__.key` | Auth key for the warm server |
-| `~\.psmux\<ns>____warm__.port` | Warm server under `-L <ns>` namespace |
+| `~\.winsmux\__warm__.port` | TCP port of the warm server |
+| `~\.winsmux\__warm__.key` | Auth key for the warm server |
+| `~\.winsmux\<ns>____warm__.port` | Warm server under `-L <ns>` namespace |

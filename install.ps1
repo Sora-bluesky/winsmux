@@ -32,7 +32,7 @@ function Test-Administrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Install-Psmux {
+function Install-WinsmuxBinary {
     if (Get-Command winsmux -ErrorAction SilentlyContinue) {
         $ver = (winsmux -V 2>&1 | Out-String).Trim()
         Write-Status "winsmux found: $ver"
@@ -42,7 +42,7 @@ function Install-Psmux {
 
     $localBin = Join-Path $HOME ".local/bin"
     $winsmuxExe = Join-Path $localBin "winsmux.exe"
-    $releaseUrl = "https://api.github.com/repos/Sora-bluesky/winsmux-core/releases/latest"
+    $releaseUrl = "https://api.github.com/repos/Sora-bluesky/winsmux/releases/latest"
     $headers = @{ "User-Agent" = "winsmux-installer/$VERSION" }
 
     try {
@@ -171,7 +171,7 @@ function Invoke-Install {
     }
 
     # 3. winsmux detection / install
-    Install-Psmux
+    Install-WinsmuxBinary
 
     # 4. Create directories
     foreach ($dir in @($WINSMUX_DIR, $BIN_DIR, $BACKUP_DIR, $SCRIPT_DIR, $BRIDGE_DIR, $BRIDGE_SCRIPTS_DIR, (Join-Path $env:APPDATA "winsmux"))) {

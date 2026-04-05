@@ -1284,7 +1284,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c33a9471896f1c69cecef8d20cbe2f7accd12527ce60845ff44c153bb2a21b49"
 
 [[package]]
-name = "portable-pty-psmux"
+name = "portable-pty-winsmux"
 version = "0.9.2"
 dependencies = [
  "anyhow",
@@ -1340,19 +1340,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "psmux"
+name = "winsmux"
 version = "3.3.1"
 dependencies = [
  "chrono",
  "crossterm",
  "glob",
- "portable-pty-psmux",
+ "portable-pty-winsmux",
  "ratatui",
  "regex",
  "serde",
  "serde_json",
  "unicode-width",
- "vt100-psmux",
+ "vt100-winsmux",
  "which",
  "windows-sys",
 ]
@@ -2032,7 +2032,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "vt100-psmux"
+name = "vt100-winsmux"
 version = "0.16.5"
 dependencies = [
  "itoa",

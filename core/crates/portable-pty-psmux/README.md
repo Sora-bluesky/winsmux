@@ -1,12 +1,12 @@
 # portable-pty-patched
 
-Patched version of [portable-pty](https://crates.io/crates/portable-pty) v0.9.0 (originally from [wez/wezterm](https://github.com/wez/wezterm)) with ConPTY flag support required by [psmux](https://github.com/psmux/psmux).
+Patched version of [portable-pty](https://crates.io/crates/portable-pty) v0.9.0 (originally from [wez/wezterm](https://github.com/wez/wezterm)) with ConPTY flag support required by [winsmux](https://github.com/winsmux/winsmux).
 
 ## Why this exists
 
 `portable-pty` is not published as a standalone repo — it lives inside the wezterm monorepo, making a proper GitHub fork impractical (we'd be forking an entire terminal emulator project just for one file change).
 
-The upstream crate does not pass modern ConPTY creation flags that psmux needs for correct terminal behavior on Windows 10/11.
+The upstream crate does not pass modern ConPTY creation flags that winsmux needs for correct terminal behavior on Windows 10/11.
 
 ## Patches (`src/win/psuedocon.rs`)
 
@@ -29,7 +29,7 @@ Added `libloaderapi` and `winnt` features to `winapi` dependency for `GetModuleH
 
 In your `Cargo.toml`:
 ```toml
-portable-pty = { git = "https://github.com/psmux/portable-pty-patched.git", branch = "main" }
+portable-pty = { git = "https://github.com/winsmux/portable-pty-patched.git", branch = "main" }
 ```
 
 ## Keeping up to date

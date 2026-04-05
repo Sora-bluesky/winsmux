@@ -1,18 +1,18 @@
 # Claude Code Agent Teams
 
-psmux has first-class support for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agent teams. When Claude Code runs inside a psmux session, it automatically spawns teammate agents in separate tmux panes instead of running them in-process — giving you full visibility into what each agent is doing.
+winsmux has first-class support for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agent teams. When Claude Code runs inside a winsmux session, it automatically spawns teammate agents in separate tmux panes instead of running them in-process — giving you full visibility into what each agent is doing.
 
 ## Quick Start
 
-1. **Install psmux** (see [README](../README.md#installation))
+1. **Install winsmux** (see [README](../README.md#installation))
 
-2. **Start a psmux session:**
+2. **Start a winsmux session:**
 
    ```powershell
-   psmux new-session -s work
+   winsmux new-session -s work
    ```
 
-3. **Run Claude Code inside the psmux pane:**
+3. **Run Claude Code inside the winsmux pane:**
 
    ```powershell
    claude
@@ -20,31 +20,31 @@ psmux has first-class support for [Claude Code](https://docs.anthropic.com/en/do
 
 4. **Ask Claude to create a team.** Claude Code will automatically split panes for each teammate agent.
 
-That's it. No extra configuration needed — psmux handles everything automatically.
+That's it. No extra configuration needed — winsmux handles everything automatically.
 
 ## How It Works
 
-When a pane spawns inside psmux, several environment variables are set automatically:
+When a pane spawns inside winsmux, several environment variables are set automatically:
 
 | Variable | Value | Purpose |
 |----------|-------|---------|
-| `TMUX` | `/tmp/psmux-{pid}/...` | Tells Claude Code it's inside tmux |
+| `TMUX` | `/tmp/winsmux-{pid}/...` | Tells Claude Code it's inside tmux |
 | `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` | `1` | Enables the agent teams feature gate |
-| `PSMUX_CLAUDE_TEAMMATE_MODE` | `tmux` | Triggers the `--teammate-mode tmux` CLI injection |
+| `WINSMUX_CLAUDE_TEAMMATE_MODE` | `tmux` | Triggers the `--teammate-mode tmux` CLI injection |
 
 Claude Code detects the `TMUX` environment variable, recognizes it's inside a tmux-compatible multiplexer, and uses the **TmuxBackend** to spawn teammate agents via `split-window` and `send-keys` — the same mechanism it uses on Linux/macOS tmux.
 
-### The Two Things psmux Fixes
+### The Two Things winsmux Fixes
 
-Claude Code's standalone binary (the Bun SFE `claude.exe`) has two issues on Windows that psmux works around:
+Claude Code's standalone binary (the Bun SFE `claude.exe`) has two issues on Windows that winsmux works around:
 
-1. **Agent teams feature gate**: The entire teammate tool-set (spawnTeam, spawnTeammate) is gated behind `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`. Without this env var, Claude only has the in-process "Agent" tool and never creates separate panes. psmux sets this automatically.
+1. **Agent teams feature gate**: The entire teammate tool-set (spawnTeam, spawnTeammate) is gated behind `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`. Without this env var, Claude only has the in-process "Agent" tool and never creates separate panes. winsmux sets this automatically.
 
-2. **`teammateMode` config ignored**: The standalone binary ignores `teammateMode: "tmux"` from `~/.claude/settings.json`. psmux injects `--teammate-mode tmux` via a PowerShell wrapper function that's loaded in every pane.
+2. **`teammateMode` config ignored**: The standalone binary ignores `teammateMode: "tmux"` from `~/.claude/settings.json`. winsmux injects `--teammate-mode tmux` via a PowerShell wrapper function that's loaded in every pane.
 
 ## Configuration Options
 
-These options can be set in `~/.psmux.conf` or at runtime:
+These options can be set in `~/.winsmux.conf` or at runtime:
 
 ```tmux
 # Auto-inject --teammate-mode tmux for Claude Code (default: on)
@@ -58,21 +58,21 @@ set -g claude-code-fix-tty off
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `claude-code-fix-tty` | `on` | Sets `PSMUX_CLAUDE_TEAMMATE_MODE=tmux` and defines a `claude` wrapper function that injects `--teammate-mode tmux` into every `claude` invocation |
+| `claude-code-fix-tty` | `on` | Sets `WINSMUX_CLAUDE_TEAMMATE_MODE=tmux` and defines a `claude` wrapper function that injects `--teammate-mode tmux` into every `claude` invocation |
 
 The `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env var is always set (not gated by any option) since it's required for the feature to work at all.
 
 ## Two Agent Systems in Claude Code
 
-Claude Code has **two completely separate agent systems**. Understanding both is critical because psmux can only control one of them.
+Claude Code has **two completely separate agent systems**. Understanding both is critical because winsmux can only control one of them.
 
 ### 1. Teammate Agents (tmux panes) ✅
 
-The **teammate system** spawns agents in visible tmux panes. This is the system psmux fully supports.
+The **teammate system** spawns agents in visible tmux panes. This is the system winsmux fully supports.
 
 - Triggered when the model passes `team_name` + `name` to the subagent tool
-- Gated by `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` (psmux sets this)
-- Controlled by `--teammate-mode tmux` (psmux injects this)
+- Gated by `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` (winsmux sets this)
+- Controlled by `--teammate-mode tmux` (winsmux injects this)
 - Each agent gets its own pane with full terminal visibility
 - Lower-tier models (Haiku, Sonnet) tend to prefer this path
 
@@ -126,18 +126,18 @@ claude -p "do something"
 
 ## Verifying the Setup
 
-To confirm everything is configured correctly inside a psmux pane:
+To confirm everything is configured correctly inside a winsmux pane:
 
 ```powershell
 # Check environment variables
 Write-Host "TMUX: $env:TMUX"
 Write-Host "AGENT_TEAMS: $env:CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"
-Write-Host "TEAMMATE_MODE: $env:PSMUX_CLAUDE_TEAMMATE_MODE"
+Write-Host "TEAMMATE_MODE: $env:WINSMUX_CLAUDE_TEAMMATE_MODE"
 ```
 
 Expected output:
 ```
-TMUX: /tmp/psmux-{pid}/default,{port},0
+TMUX: /tmp/winsmux-{pid}/default,{port},0
 AGENT_TEAMS: 1
 TEAMMATE_MODE: tmux
 ```
@@ -191,6 +191,6 @@ For the curious — here's what happens under the hood when Claude Code spawns a
 2. `BackendRegistry.detectAndGetBackend()` checks `isInProcessEnabled`:
    - If non-interactive → true → in-process (by design)
    - If interactive → checks `teammateMode` → `"tmux"` → false → uses TmuxBackend
-3. `TmuxBackend` runs `tmux split-window` via psmux's tmux compatibility
+3. `TmuxBackend` runs `tmux split-window` via winsmux's tmux compatibility
 4. Sends `cd <workdir> && claude.exe --agent-id <id> --agent-name <name> ...` via `tmux send-keys`
 5. The teammate agent starts in its own pane with full terminal access

@@ -1,11 +1,11 @@
 # Configuration
 
-psmux reads its config on startup from the **first file found** (in order):
+winsmux reads its config on startup from the **first file found** (in order):
 
-1. `~/.psmux.conf`
-2. `~/.psmuxrc`
+1. `~/.winsmux.conf`
+2. `~/.winsmuxrc`
 3. `~/.tmux.conf`
-4. `~/.config/psmux/psmux.conf`
+4. `~/.config/winsmux/winsmux.conf`
 
 Config syntax is **tmux-compatible**. Most `.tmux.conf` lines work as-is.
 
@@ -13,17 +13,17 @@ You can also specify a custom config file path with the `-f` flag:
 
 ```powershell
 # Use a specific config file instead of default search
-psmux -f ~/.config/psmux/custom.conf
+winsmux -f ~/.config/winsmux/custom.conf
 
 # Use an empty config (no settings loaded)
-psmux -f NUL
+winsmux -f NUL
 ```
 
-This sets the `PSMUX_CONFIG_FILE` environment variable internally, which the server checks before searching the default locations.
+This sets the `WINSMUX_CONFIG_FILE` environment variable internally, which the server checks before searching the default locations.
 
 ## Basic Config Example
 
-Create `~/.psmux.conf`:
+Create `~/.winsmux.conf`:
 
 ```tmux
 # Change prefix key to Ctrl+a
@@ -57,7 +57,7 @@ bind-key -T prefix v split-window -v
 
 ## Choosing a Shell
 
-psmux launches **PowerShell 7 (pwsh)** by default. You can change this:
+winsmux launches **PowerShell 7 (pwsh)** by default. You can change this:
 
 ```tmux
 # Use cmd.exe
@@ -82,9 +82,9 @@ set -g default-shell wsl
 You can also launch a window with a specific command without changing the default:
 
 ```powershell
-psmux new-window -- cmd /K echo hello
-psmux new-session -s py -- python
-psmux split-window -- "C:/Program Files/Git/bin/bash.exe"
+winsmux new-window -- cmd /K echo hello
+winsmux new-session -s py -- python
+winsmux split-window -- "C:/Program Files/Git/bin/bash.exe"
 ```
 
 ## All Set Options
@@ -167,7 +167,7 @@ psmux split-window -- "C:/Program Files/Git/bin/bash.exe"
 
 ### Bell
 
-When a program inside a pane emits BEL (`\x07`), psmux forwards the bell character to your host terminal so you hear the audible beep. The `bell-action` option controls when this happens and when the status bar tab gets a bell flag (`!`):
+When a program inside a pane emits BEL (`\x07`), winsmux forwards the bell character to your host terminal so you hear the audible beep. The `bell-action` option controls when this happens and when the status bar tab gets a bell flag (`!`):
 
 ```tmux
 # Forward bell from any window (default)
@@ -192,13 +192,13 @@ set -g window-status-bell-style "fg=red,bold"
 PowerShell example to test:
 
 ```powershell
-# These should all produce an audible beep inside psmux:
+# These should all produce an audible beep inside winsmux:
 Write-Host "`a"
 [Console]::Beep()
 [char]7
 ```
 
-### psmux Extensions (Windows-specific)
+### winsmux Extensions (Windows-specific)
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
@@ -217,18 +217,18 @@ Colours: `default`, `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`
 
 ```powershell
 # Default session name used when not explicitly provided
-$env:PSMUX_DEFAULT_SESSION = "work"
+$env:WINSMUX_DEFAULT_SESSION = "work"
 
 # Enable prediction dimming (off by default; dims predictive/speculative text)
-$env:PSMUX_DIM_PREDICTIONS = "1"
+$env:WINSMUX_DIM_PREDICTIONS = "1"
 
 # Disable warm pane pre-spawning (same as set -g warm off)
-$env:PSMUX_NO_WARM = "1"
+$env:WINSMUX_NO_WARM = "1"
 
 # Override the config file path (same effect as -f flag)
-$env:PSMUX_CONFIG_FILE = "C:\Users\me\.psmux-alt.conf"
+$env:WINSMUX_CONFIG_FILE = "C:\Users\me\.winsmux-alt.conf"
 
-# These are set INSIDE psmux panes (tmux-compatible):
+# These are set INSIDE winsmux panes (tmux-compatible):
 # TMUX       - socket path and server info
 # TMUX_PANE  - current pane ID (%0, %1, etc.)
 ```
@@ -239,24 +239,24 @@ Use `set-environment` to set env vars that are inherited by newly created panes:
 
 ```powershell
 # Set a global env var (inherited by all new panes)
-psmux set-environment -g EDITOR vim
+winsmux set-environment -g EDITOR vim
 
 # Set a session-scoped env var
-psmux set-environment MY_VAR value
+winsmux set-environment MY_VAR value
 
 # Unset an env var
-psmux set-environment -gu MY_VAR
+winsmux set-environment -gu MY_VAR
 
 # Show all environment variables
-psmux show-environment
-psmux show-environment -g
+winsmux show-environment
+winsmux show-environment -g
 ```
 
 Environment variables set this way are injected at the process level when new panes spawn, so they are completely invisible (no commands echoed in the shell).
 
 ## PSReadLine Predictions (Intellisense / Autocompletion)
 
-By default, psmux disables PSReadLine inline predictions (the grayed-out autocompletion/intellisense suggestions that appear as you type) to avoid additional unexpected bugs caused by the interaction between predictions and ConPTY. This means `PredictionSource` defaults to `None` inside psmux, even if your profile sets it to `HistoryAndPlugin` ([#150](https://github.com/psmux/psmux/issues/150)).
+By default, winsmux disables PSReadLine inline predictions (the grayed-out autocompletion/intellisense suggestions that appear as you type) to avoid additional unexpected bugs caused by the interaction between predictions and ConPTY. This means `PredictionSource` defaults to `None` inside winsmux, even if your profile sets it to `HistoryAndPlugin` ([#150](https://github.com/winsmux/winsmux/issues/150)).
 
 If enough people test predictions and the community supports enabling them by default, this will be changed in a future release.
 
@@ -267,12 +267,12 @@ set -g allow-predictions on
 ```
 
 With this enabled:
-- If your profile sets `PredictionSource`, psmux respects your choice
-- If your profile does not set it, psmux restores the system default (typically `HistoryAndPlugin`)
+- If your profile sets `PredictionSource`, winsmux respects your choice
+- If your profile does not set it, winsmux restores the system default (typically `HistoryAndPlugin`)
 
 ## Prediction Dimming
 
-Prediction dimming is off by default. If you want psmux to dim predictive/speculative text (e.g. shell autosuggestions), you can enable it in `~/.psmux.conf`:
+Prediction dimming is off by default. If you want winsmux to dim predictive/speculative text (e.g. shell autosuggestions), you can enable it in `~/.winsmux.conf`:
 
 ```tmux
 set -g prediction-dimming on
@@ -281,12 +281,12 @@ set -g prediction-dimming on
 You can also enable it for the current shell only:
 
 ```powershell
-$env:PSMUX_DIM_PREDICTIONS = "1"
-psmux
+$env:WINSMUX_DIM_PREDICTIONS = "1"
+winsmux
 ```
 
 To make it persistent for new shells:
 
 ```powershell
-setx PSMUX_DIM_PREDICTIONS 1
+setx WINSMUX_DIM_PREDICTIONS 1
 ```

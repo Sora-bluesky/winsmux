@@ -1,43 +1,43 @@
 # Scripting & Automation
 
-psmux supports tmux-compatible commands for scripting and automation.
+winsmux supports tmux-compatible commands for scripting and automation.
 
 ## Window & Pane Control
 
 ```powershell
 # Create a new window
-psmux new-window
+winsmux new-window
 
 # Split panes
-psmux split-window -v          # Split vertically (top/bottom)
-psmux split-window -h          # Split horizontally (side by side)
+winsmux split-window -v          # Split vertically (top/bottom)
+winsmux split-window -h          # Split horizontally (side by side)
 
 # Navigate panes
-psmux select-pane -U           # Select pane above
-psmux select-pane -D           # Select pane below
-psmux select-pane -L           # Select pane to the left
-psmux select-pane -R           # Select pane to the right
+winsmux select-pane -U           # Select pane above
+winsmux select-pane -D           # Select pane below
+winsmux select-pane -L           # Select pane to the left
+winsmux select-pane -R           # Select pane to the right
 
 # Navigate windows
-psmux select-window -t 1       # Select window by index (default base-index is 1)
-psmux next-window              # Go to next window
-psmux previous-window          # Go to previous window
-psmux last-window              # Go to last active window
+winsmux select-window -t 1       # Select window by index (default base-index is 1)
+winsmux next-window              # Go to next window
+winsmux previous-window          # Go to previous window
+winsmux last-window              # Go to last active window
 
 # Kill panes and windows
-psmux kill-pane
-psmux kill-window
-psmux kill-session
+winsmux kill-pane
+winsmux kill-window
+winsmux kill-session
 ```
 
 ## Sending Keys
 
 ```powershell
 # Send text directly
-psmux send-keys "ls -la" Enter
+winsmux send-keys "ls -la" Enter
 
 # Send keys literally (no parsing)
-psmux send-keys -l "literal text"
+winsmux send-keys -l "literal text"
 
 # Special keys supported:
 # Enter, Tab, Escape, Space, Backspace
@@ -50,85 +50,85 @@ psmux send-keys -l "literal text"
 
 ```powershell
 # List all panes in current window
-psmux list-panes
+winsmux list-panes
 
 # List all windows
-psmux list-windows
+winsmux list-windows
 
 # Capture pane content
-psmux capture-pane
+winsmux capture-pane
 
 # Display formatted message with variables
-psmux display-message "#S:#I:#W"   # Session:Window Index:Window Name
+winsmux display-message "#S:#I:#W"   # Session:Window Index:Window Name
 ```
 
 ## Paste Buffers
 
 ```powershell
 # Set paste buffer content
-psmux set-buffer "text to paste"
+winsmux set-buffer "text to paste"
 
 # Paste buffer to active pane
-psmux paste-buffer
+winsmux paste-buffer
 
 # List all buffers
-psmux list-buffers
+winsmux list-buffers
 
 # Show buffer content
-psmux show-buffer
+winsmux show-buffer
 
 # Delete buffer
-psmux delete-buffer
+winsmux delete-buffer
 ```
 
 ## Pane Layout
 
 ```powershell
 # Resize panes
-psmux resize-pane -U 5         # Resize up by 5
-psmux resize-pane -D 5         # Resize down by 5
-psmux resize-pane -L 10        # Resize left by 10
-psmux resize-pane -R 10        # Resize right by 10
+winsmux resize-pane -U 5         # Resize up by 5
+winsmux resize-pane -D 5         # Resize down by 5
+winsmux resize-pane -L 10        # Resize left by 10
+winsmux resize-pane -R 10        # Resize right by 10
 
 # Swap panes
-psmux swap-pane -U             # Swap with pane above
-psmux swap-pane -D             # Swap with pane below
+winsmux swap-pane -U             # Swap with pane above
+winsmux swap-pane -D             # Swap with pane below
 
 # Rotate panes in window
-psmux rotate-window
+winsmux rotate-window
 
 # Toggle pane zoom
-psmux zoom-pane
+winsmux zoom-pane
 ```
 
 ## Session Management
 
 ```powershell
 # Check if session exists (exit code 0 = exists)
-psmux has-session -t mysession
+winsmux has-session -t mysession
 
 # Rename session
-psmux rename-session newname
+winsmux rename-session newname
 
 # Respawn pane (restart shell)
-psmux respawn-pane
+winsmux respawn-pane
 ```
 
 ## Environment Variables
 
 ```powershell
 # Set a global env var (inherited by all new panes)
-psmux set-environment -g EDITOR vim
+winsmux set-environment -g EDITOR vim
 
 # Set a session-scoped env var
-psmux set-environment MY_VAR value
+winsmux set-environment MY_VAR value
 
 # Unset a global env var
-psmux set-environment -gu MY_VAR
+winsmux set-environment -gu MY_VAR
 
 # Show all environment variables
-psmux show-environment
-psmux show-environment -g
+winsmux show-environment
+winsmux show-environment -g
 ```
 
 ## Format Variables
@@ -148,43 +148,43 @@ The `display-message` command supports these variables:
 
 ```powershell
 # Discover supported commands
-psmux list-commands
+winsmux list-commands
 
 # Server/session management
-psmux kill-server
-psmux list-clients
-psmux switch-client -t other-session
+winsmux kill-server
+winsmux list-clients
+winsmux switch-client -t other-session
 
 # Config at runtime
-psmux source-file ~/.psmux.conf
-psmux show-options
-psmux set-option -g status-left "[#S]"
+winsmux source-file ~/.winsmux.conf
+winsmux show-options
+winsmux set-option -g status-left "[#S]"
 
 # Layout/history/stream control
-psmux next-layout
-psmux previous-layout
-psmux clear-history
-psmux pipe-pane -o "cat > pane.log"
+winsmux next-layout
+winsmux previous-layout
+winsmux clear-history
+winsmux pipe-pane -o "cat > pane.log"
 
 # Hooks
-psmux set-hook -g after-new-window "display-message created"
-psmux show-hooks
+winsmux set-hook -g after-new-window "display-message created"
+winsmux show-hooks
 ```
 
 ## Target Syntax (`-t`)
 
-psmux supports tmux-style targets:
+winsmux supports tmux-style targets:
 
 ```powershell
 # window by index in session
-psmux select-window -t work:2
+winsmux select-window -t work:2
 
 # specific pane by index
-psmux send-keys -t work:2.1 "echo hi" Enter
+winsmux send-keys -t work:2.1 "echo hi" Enter
 
 # pane by pane id
-psmux send-keys -t %3 "pwd" Enter
+winsmux send-keys -t %3 "pwd" Enter
 
 # window by window id
-psmux select-window -t @4
+winsmux select-window -t @4
 ```
