@@ -506,3 +506,38 @@ Describe 'agent-monitor helpers' {
         (Test-BuilderStall -PaneId '%2' -Role 'Builder' -Status 'busy' -SnapshotHash 'hash-1') | Should -Be $false
     }
 }
+
+Describe 'agent-watchdog helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\agent-watchdog.ps1')
+    }
+
+    It 'runs a watchdog cycle through Invoke-AgentMonitorCycle with the requested thresholds' {
+        Mock Get-BridgeSettings {
+            [ordered]@{
+                agent = 'codex'
+                model = 'gpt-5.4'
+                roles = [ordered]@{}
+            }
+        }
+        Mock Invoke-AgentMonitorCycle {
+            [PSCustomObject]@{
+                Checked   = 1
+                Crashed   = 0
+                Respawned = 0
+                IdleAlerts = 0
+                Stalls    = 0
+                Results   = @()
+            }
+        }
+
+        $result = Invoke-AgentWatchdogCycle -ManifestPath 'C:\repo\.winsmux\manifest.yaml' -SessionName 'winsmux-orchestra' -IdleThreshold 120
+
+        $result.Checked | Should -Be 1
+        Should -Invoke Invoke-AgentMonitorCycle -Times 1 -Exactly -ParameterFilter {
+            $ManifestPath -eq 'C:\repo\.winsmux\manifest.yaml' -and
+            $SessionName -eq 'winsmux-orchestra' -and
+            $IdleThreshold -eq 120
+        }
+    }
+}

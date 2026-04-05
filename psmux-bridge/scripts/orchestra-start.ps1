@@ -559,6 +559,21 @@ function Wait-AgentReady {
     throw "Timed out waiting for pane $PaneId to become ready. Last output:`n$(Get-TailPreview -Text $finalText)"
 }
 
+function Start-AgentWatchdogJob {
+    param(
+        [Parameter(Mandatory = $true)][string]$WatchdogScriptPath,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [int]$IdleThreshold = 120,
+        [int]$PollInterval = 30
+    )
+
+    return (Start-Job -Name ("winsmux-watchdog-{0}" -f $SessionName) -ScriptBlock {
+        param($ScriptPath, $ManifestFile, $OrchestraSession, $Threshold, $Interval)
+        & $ScriptPath -ManifestPath $ManifestFile -SessionName $OrchestraSession -IdleThreshold $Threshold -PollInterval $Interval
+    } -ArgumentList $WatchdogScriptPath, $ManifestPath, $SessionName, $IdleThreshold, $PollInterval)
+}
+
 try {
     $settings = Get-BridgeSettings
     $projectDir = Get-ProjectDir
@@ -773,6 +788,11 @@ try {
         }
     }
 
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $paneSummaries
+    $watchdogScriptPath = Join-Path $scriptDir 'agent-watchdog.ps1'
+    $watchdogJob = Start-AgentWatchdogJob -WatchdogScriptPath $watchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName
+    Write-WinsmuxLog -Level INFO -Event 'preflight.watchdog.started' -Message "Started agent watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; job_id = $watchdogJob.Id; job_name = $watchdogJob.Name } | Out-Null
+
     Write-Output "Orchestra session: $sessionName"
     Write-Output "Agent: $($settings.agent)"
     Write-Output "Model: $($settings.model)"
@@ -794,7 +814,6 @@ try {
         }
     }
 
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $paneSummaries
     Write-Output ''
     Write-Output "Manifest: $manifestPath"
 } catch {
