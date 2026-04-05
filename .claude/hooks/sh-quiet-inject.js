@@ -117,7 +117,12 @@ function injectQuietFlag(command) {
 
 try {
   const input = readHookInput();
-  const command = (input.toolInput.command || "").trim();
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
+  void toolName;
+  void sessionId;
+  const command = (toolInput.command || "").trim();
 
   // Empty command — nothing to inject
   if (!command) {

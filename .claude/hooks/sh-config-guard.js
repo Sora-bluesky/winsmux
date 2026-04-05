@@ -347,6 +347,9 @@ function detectDangerousMutations(stored, current) {
 if (require.main === module) {
   try {
     const input = readHookInput();
+    const toolName = input.tool_name || input.toolName || "";
+    const toolInput = input.tool_input || input.toolInput || {};
+    const sessionId = input.session_id || input.sessionId || "";
 
     const settings = readSettings();
     if (!settings) {
@@ -374,7 +377,7 @@ if (require.main === module) {
           decision: "allow",
           action: "baseline_recorded",
           settings_hash: `sha256:${currentHash}`,
-          session_id: input.sessionId,
+          session_id: sessionId,
         });
       } catch {
         // Non-blocking
@@ -396,7 +399,7 @@ if (require.main === module) {
           reasons: mutations.reasons,
           settings_hash: `sha256:${currentHash}`,
           previous_hash: `sha256:${stored.hash}`,
-          session_id: input.sessionId,
+          session_id: sessionId,
         });
       } catch {
         // Non-blocking
@@ -422,7 +425,7 @@ if (require.main === module) {
         action: "config_updated",
         settings_hash: `sha256:${currentHash}`,
         previous_hash: stored ? `sha256:${stored.hash}` : null,
-        session_id: input.sessionId,
+        session_id: sessionId,
       });
     } catch {
       // Non-blocking

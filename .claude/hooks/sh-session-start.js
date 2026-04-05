@@ -60,6 +60,11 @@ const DEFAULT_TOKEN_BUDGET = {
 
 try {
   const input = readHookInput();
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
+  void toolName;
+  void toolInput;
   const contextParts = [];
 
   // --- Module 1: Gate Check (§5.1.1) ---
@@ -340,7 +345,7 @@ try {
             container_running: openshellResult.container_running,
           }
         : { available: false, reason: openshellResult.reason },
-      session_id: input.sessionId,
+      session_id: sessionId,
       sandbox_state: openshellResult.available ? "active" : "inactive",
       sandbox_version: openshellResult.version || null,
       sandbox_policy_enforced:

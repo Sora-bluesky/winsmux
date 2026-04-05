@@ -90,7 +90,11 @@ function computeStats(sessionId) {
 
 try {
   const input = readHookInput();
-  const { sessionId } = input;
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
+  void toolName;
+  void toolInput;
 
   // Compute session stats
   const stats = computeStats(sessionId);
