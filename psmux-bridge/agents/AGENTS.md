@@ -1,0 +1,54 @@
+# psmux-bridge Agent Templates
+
+This directory contains bash wrappers that generate fixed user prompts for winsmux orchestration roles.
+
+## Files
+
+- `builder.sh`
+  - Purpose: emit a Builder prompt for implementation work in a dedicated worktree.
+  - Guardrails: requires `WORKTREE`, tells the agent to `cd` into it, mirrors the current `New-BuilderQueueDispatchPrompt` format from `psmux-bridge/scripts/builder-queue.ps1`, requires tests or checks before finishing, and requires Conventional Commits if a commit is created.
+  - Completion markers: `STATUS: EXEC_DONE` or `STATUS: BLOCKED`
+
+- `reviewer.sh`
+  - Purpose: emit a Reviewer prompt for diff-based review without editing code.
+  - Guardrails: requires `WORKTREE`, tells the agent to `cd` into it, review `git diff`, and explicitly check for security issues.
+  - Completion markers: `REVIEW_PASS` or `REVIEW_FAIL`
+  - Optional env var: `DIFF_BASE` to override the diff target. Defaults to `HEAD`.
+  - Safety contract for `DIFF_BASE`: it must be a trusted, single-line Git diff target such as `HEAD`, `HEAD~1`, or `origin/main...HEAD`. Do not pass shell fragments, command substitutions, or newline-delimited content. The script renders `DIFF_BASE` as shell-escaped display text only.
+
+- `researcher.sh`
+  - Purpose: emit a Researcher prompt for codebase or task investigation.
+  - Guardrails: requires `WORKTREE`, tells the agent to `cd` into it, asks for structured findings, separates confirmed facts from assumptions, and pushes toward actionable output for builders or reviewers.
+  - Completion markers: `STATUS: RESEARCH_DONE` or `STATUS: BLOCKED`
+
+## Usage
+
+Builder:
+
+```bash
+WORKTREE=/path/to/worktree ./builder.sh "Implement TASK-140"
+```
+
+Reviewer:
+
+```bash
+WORKTREE=/path/to/worktree DIFF_BASE=HEAD ./reviewer.sh "Review TASK-140"
+```
+
+Researcher:
+
+```bash
+WORKTREE=/path/to/worktree ./researcher.sh "Investigate TASK-140 prompt format"
+```
+
+All three scripts also accept input from stdin:
+
+```bash
+printf '%s\n' "Implement TASK-140" | WORKTREE=/path/to/worktree ./builder.sh
+```
+
+## Notes
+
+- `WORKTREE` is required for all three roles. Dispatchers must provide a trusted, single-line workspace path.
+- These scripts generate prompts only. They do not dispatch panes on their own.
+- `builder.sh` attempts to source `psmux-bridge/scripts/builder-queue.ps1` through `pwsh` to stay aligned with the current Builder queue prompt. If that is not available, it falls back to an embedded prompt with the same structure.

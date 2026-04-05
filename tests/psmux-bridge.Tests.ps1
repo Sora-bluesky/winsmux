@@ -542,6 +542,29 @@ Describe 'agent-watchdog helpers' {
     }
 }
 
+Describe 'orchestra-start watchdog contract' {
+    BeforeAll {
+        $script:orchestraStartPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\orchestra-start.ps1'
+        $script:orchestraStartContent = Get-Content -Path $script:orchestraStartPath -Raw -Encoding UTF8
+    }
+
+    It 'launches the watchdog with Start-Process so it survives script exit' {
+        $script:orchestraStartContent | Should -Match 'function Start-AgentWatchdogJob \{'
+        $script:orchestraStartContent | Should -Match 'Start-Process\s+-FilePath\s+''pwsh'''
+        $script:orchestraStartContent | Should -Match "'-NoProfile'"
+        $script:orchestraStartContent | Should -Match "'-File'"
+        $script:orchestraStartContent | Should -Match '-WindowStyle\s+Hidden\s+-PassThru'
+        $script:orchestraStartContent | Should -Not -Match 'Start-Job\s+-Name\s+\("winsmux-watchdog-'
+    }
+
+    It 'persists watchdog_pid and prints watchdog cleanup guidance' {
+        $script:orchestraStartContent | Should -Match 'watchdog_pid:'
+        $script:orchestraStartContent | Should -Match '-WatchdogPid \$watchdogProcess\.Id'
+        $script:orchestraStartContent | Should -Match 'Watchdog PID: \$\(\$watchdogProcess\.Id\)'
+        $script:orchestraStartContent | Should -Match 'Stop-Process -Id'
+    }
+}
+
 Describe 'pane scaler helpers' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\pane-scaler.ps1')
