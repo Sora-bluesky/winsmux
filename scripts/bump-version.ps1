@@ -15,7 +15,7 @@ $Root = Split-Path $PSScriptRoot -Parent
 $VersionFile = Join-Path $Root "VERSION"
 $BacklogPath = Join-Path $Root "tasks\backlog.yaml"
 $RoadmapPath = Join-Path $Root "docs\project\ROADMAP.md"
-$SyncRoadmapScript = Join-Path $Root "psmux-bridge\scripts\sync-roadmap.ps1"
+$SyncRoadmapScript = Join-Path $Root "winsmux-core\scripts\sync-roadmap.ps1"
 
 function ConvertFrom-QuotedYamlScalar {
     param(
@@ -181,7 +181,7 @@ $targets = @(
         Replace = "`${1}$Version`${2}"
     },
     @{
-        Path    = Join-Path $Root "scripts\psmux-bridge.ps1"
+        Path    = Join-Path $Root "scripts\winsmux-core.ps1"
         Pattern = '(\$VERSION\s*=\s*")[^"]*(")'
         Replace = "`${1}$Version`${2}"
     },
@@ -191,7 +191,7 @@ $targets = @(
         Replace = "`${1}$Version`${2}"
     },
     @{
-        Path    = Join-Path $Root "skills\winsmux\references\psmux-bridge.md"
+        Path    = Join-Path $Root "skills\winsmux\references\winsmux-core.md"
         Pattern = '(> Version:\s*)\S+'
         Replace = "`${1}$Version"
     }
@@ -244,7 +244,7 @@ try {
     Write-Host "[release] Created branch $branch"
 
     # Stage and commit (filter to existing files only — #154)
-    $filesToAdd = @("VERSION", "install.ps1", "scripts/psmux-bridge.ps1", "skills/winsmux/SKILL.md", "skills/winsmux/references/psmux-bridge.md")
+    $filesToAdd = @("VERSION", "install.ps1", "scripts/winsmux-core.ps1", "skills/winsmux/SKILL.md", "skills/winsmux/references/winsmux-core.md")
     $existingFiles = $filesToAdd | Where-Object { Test-Path (Join-Path $Root $_) }
     if ($existingFiles) { git add $existingFiles }
 
@@ -269,7 +269,7 @@ try {
 
     # Extract PR number and merge via verify gate
     $prNumber = if ($prUrl -match '/(\d+)$') { $Matches[1] } else { $prUrl }
-    $bridgeScript = Join-Path $PSScriptRoot "psmux-bridge.ps1"
+    $bridgeScript = Join-Path $PSScriptRoot "winsmux-core.ps1"
     & pwsh $bridgeScript verify $prNumber
     Write-Host "[release] PR merged (verified)"
 
