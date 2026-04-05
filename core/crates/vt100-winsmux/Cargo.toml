@@ -12,7 +12,7 @@
 [package]
 edition = "2021"
 rust-version = "1.70"
-name = "vt100-psmux"
+name = "vt100-winsmux"
 version = "0.16.5"
 authors = ["Jesse Luehrs <doy@tozt.net>"]
 build = false
@@ -27,7 +27,7 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Library for parsing terminal data (psmux fork with blink/hidden/strikethrough SGR + CSI cursor patches)"
+description = "Library for parsing terminal data (winsmux fork with blink/hidden/strikethrough SGR + CSI cursor patches)"
 homepage = "https://github.com/psmux/vt100-rust-patched"
 readme = "README.md"
 keywords = [
@@ -42,7 +42,7 @@ license = "MIT"
 repository = "https://github.com/psmux/vt100-rust-patched"
 
 [lib]
-name = "vt100_psmux"
+name = "vt100_winsmux"
 path = "src/lib.rs"
 
 [dependencies.itoa]
