@@ -1372,7 +1372,7 @@ tasks:
 
   - id: TASK-110
     title: "Automatic task splitting for parallel Builder dispatch"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.18.2"
     repo: winsmux
@@ -1414,7 +1414,7 @@ tasks:
 
   - id: TASK-113
     title: "Dynamic pane scaling — auto add/remove panes based on workload"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.18.2"
     repo: winsmux
@@ -1594,7 +1594,7 @@ tasks:
 
   - id: TASK-134
     title: "Commander approval gate for Builder sandbox prompts"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.18.2"
     repo: winsmux
@@ -1742,7 +1742,7 @@ tasks:
 
   - id: TASK-149
     title: "Agent-monitor background daemon for continuous pane monitoring"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.18.2"
     repo: winsmux

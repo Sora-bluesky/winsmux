@@ -1,7 +1,7 @@
 # ロードマップ
 
 > `tasks/backlog.yaml` から自動生成 — 手動編集禁止
-> 最終同期: 2026-04-05 16:13 (+09:00)
+> 最終同期: 2026-04-05 17:51 (+09:00)
 
 ## バージョン概要
 
@@ -25,7 +25,7 @@
 | v0.17.4 | 2 | [====================] 100% (2/2) |
 | v0.18.0 | 1 | [====================] 100% (1/1) |
 | v0.18.1 | 15 | [====================] 100% (15/15) |
-| v0.18.2 | 8 | [===-----------------] 13% (1/8) |
+| v0.18.2 | 9 | [==================--] 89% (8/9) |
 | v0.19.0 | 6 | [--------------------] 0% (0/6) |
 | v0.19.1 | 2 | [--------------------] 0% (0/2) |
 | v0.19.2 | 2 | [--------------------] 0% (0/2) |
@@ -212,13 +212,14 @@
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-140 | Switch Builder agents from persistent session to codex exec per task + shell templates | P0 | winsmux | backlog |
-| [ ] | TASK-141 | Dispatch-router file-level task boundary enforcement | P0 | winsmux | backlog |
+| [x] | TASK-141 | Dispatch-router file-level task boundary enforcement | P0 | winsmux | done |
 | [x] | TASK-142 | Fix orchestra-start crash when zombie processes are killed (Write-Output pipeline pollution) | P0 | winsmux | done |
-| [R] | TASK-148 | Set GIT_EDITOR=true in orchestra session to prevent vim stall | P0 | winsmux | review |
-| [ ] | TASK-110 | Automatic task splitting for parallel Builder dispatch | P1 | winsmux | backlog |
-| [ ] | TASK-113 | Dynamic pane scaling — auto add/remove panes based on workload | P1 | winsmux | backlog |
-| [ ] | TASK-130 | Commander auto-detect Builder stall and alert | P1 | winsmux | backlog |
-| [ ] | TASK-134 | Commander approval gate for Builder sandbox prompts | P1 | winsmux | backlog |
+| [x] | TASK-148 | Set GIT_EDITOR=true in orchestra session to prevent vim stall | P0 | winsmux | done |
+| [x] | TASK-149 | Agent-monitor background daemon for continuous pane monitoring | P0 | winsmux | done |
+| [x] | TASK-110 | Automatic task splitting for parallel Builder dispatch | P1 | winsmux | done |
+| [x] | TASK-113 | Dynamic pane scaling — auto add/remove panes based on workload | P1 | winsmux | done |
+| [x] | TASK-130 | Commander auto-detect Builder stall and alert | P1 | winsmux | done |
+| [x] | TASK-134 | Commander approval gate for Builder sandbox prompts | P1 | winsmux | done |
 
 ### v0.19.0 — Explorer + Dashboard
 
