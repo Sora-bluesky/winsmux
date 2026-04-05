@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 Describe 'orchestra cleanup helpers' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\orchestra-cleanup.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-cleanup.ps1')
     }
 
     It 'matches orchestra-managed pane titles only' {
@@ -34,7 +34,7 @@ Describe 'orchestra cleanup helpers' {
 
 Describe 'Get-BridgeSettings defaults' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\settings.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\settings.ps1')
     }
 
     BeforeEach {
@@ -69,7 +69,7 @@ Describe 'Get-BridgeSettings defaults' {
 
 Describe 'Get-RoleAgentConfig with fallback' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\settings.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\settings.ps1')
     }
 
     BeforeEach {
@@ -116,7 +116,7 @@ Describe 'Get-RoleAgentConfig with fallback' {
 
 Describe 'agent launch helpers' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\agent-launch.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\agent-launch.ps1')
     }
 
     It 'builds the Codex launch command with quoted project and worktree paths' {
@@ -138,7 +138,7 @@ Describe 'agent launch helpers' {
 
 Describe 'manifest round-trip' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\manifest.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\manifest.ps1')
     }
 
     BeforeEach {
@@ -180,7 +180,7 @@ Describe 'manifest round-trip' {
 
 Describe 'logger Initialize, Write, and Summary' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\logger.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\logger.ps1')
     }
 
     BeforeEach {
@@ -238,7 +238,7 @@ Describe 'logger Initialize, Write, and Summary' {
 
 Describe 'agent monitor idle alerts' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\agent-monitor.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\agent-monitor.ps1')
     }
 
     BeforeEach {

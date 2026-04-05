@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 Describe 'Assert-Role' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\role-gate.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\role-gate.ps1')
     }
 
     BeforeEach {
@@ -81,7 +81,7 @@ Describe 'Assert-Role' {
 
 Describe 'Get-BridgeSettings' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\settings.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\settings.ps1')
     }
 
     BeforeEach {
@@ -214,7 +214,7 @@ Describe 'Vault helpers' {
             param([string]$PaneId)
         }
 
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\vault.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\vault.ps1')
     }
 
     BeforeEach {
@@ -273,7 +273,7 @@ Describe 'Vault helpers' {
 
 Describe 'team-pipeline helpers' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\team-pipeline.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\team-pipeline.ps1')
     }
 
     It 'parses the orchestra manifest list format and resolves builder worktree paths' {
@@ -365,7 +365,7 @@ STATUS: VERIFY_PASS
 
 Describe 'logger helpers' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\logger.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\logger.ps1')
     }
 
     BeforeEach {
@@ -417,7 +417,7 @@ Describe 'logger helpers' {
 
 Describe 'agent-monitor helpers' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\agent-monitor.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\agent-monitor.ps1')
     }
 
     It 'treats Codex context exhaustion followed by a PowerShell prompt as a crash reason' {
@@ -509,7 +509,7 @@ Describe 'agent-monitor helpers' {
 
 Describe 'agent-watchdog helpers' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\agent-watchdog.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\agent-watchdog.ps1')
     }
 
     It 'runs a watchdog cycle through Invoke-AgentMonitorCycle with the requested thresholds' {
@@ -544,7 +544,7 @@ Describe 'agent-watchdog helpers' {
 
 Describe 'orchestra-start watchdog contract' {
     BeforeAll {
-        $script:orchestraStartPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\orchestra-start.ps1'
+        $script:orchestraStartPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1'
         $script:orchestraStartContent = Get-Content -Path $script:orchestraStartPath -Raw -Encoding UTF8
     }
 
@@ -567,7 +567,7 @@ Describe 'orchestra-start watchdog contract' {
 
 Describe 'pane scaler helpers' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\pane-scaler.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\pane-scaler.ps1')
     }
 
     BeforeEach {

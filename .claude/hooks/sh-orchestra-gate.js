@@ -29,7 +29,7 @@ try {
 
   // Rule 2: No direct psmux send-keys (use psmux-bridge send)
   if (toolName === "Bash") {
-    if (/psmux\s+send-keys/.test(rawCommand) && !/psmux-bridge/.test(rawCommand)) {
+    if (/psmux\s+send-keys/.test(rawCommand) && !/winsmux-core/.test(rawCommand)) {
       deny("Use psmux-bridge send instead of direct psmux send-keys.");
     }
   }
@@ -44,7 +44,7 @@ try {
 
   // Rule 4: No direct codex exec (use orchestra-start)
   if (toolName === "Bash") {
-    if (/codex\s+(exec|e)\s/.test(rawCommand) && !/psmux\s+send-keys/.test(rawCommand) && !/psmux-bridge/.test(rawCommand)) {
+    if (/codex\s+(exec|e)\s/.test(rawCommand) && !/psmux\s+send-keys/.test(rawCommand) && !/winsmux-core/.test(rawCommand)) {
       deny("Use orchestra-start or psmux send-keys to dispatch Codex, not direct codex exec.");
     }
   }
@@ -65,7 +65,7 @@ try {
 
   // Rule 7: Block direct gh pr merge (allow only via psmux-bridge verify)
   if (toolName === "Bash") {
-    if (/gh\s+pr\s+merge/.test(rawCommand) && !/psmux-bridge/.test(rawCommand)) {
+    if (/gh\s+pr\s+merge/.test(rawCommand) && !/winsmux-core/.test(rawCommand)) {
       deny("Run psmux-bridge verify before merging. Direct gh pr merge is blocked.");
     }
   }

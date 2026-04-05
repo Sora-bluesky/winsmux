@@ -25,7 +25,7 @@ Describe 'Runtime vault helpers' {
             param([string]$PaneId)
         }
 
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\vault.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\vault.ps1')
 
         if (-not ('WinCredDeleteNative' -as [type])) {
             Add-Type -TypeDefinition @'
