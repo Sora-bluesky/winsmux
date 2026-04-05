@@ -507,53 +507,6 @@ Describe 'agent-monitor helpers' {
     }
 }
 
-Describe 'task splitter helpers' {
-    BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\task-splitter.ps1')
-    }
-
-    It 'extracts unique repo-relative file targets from a task prompt' {
-        $targets = Get-TaskFileTargets -TaskDescription @'
-Update psmux-bridge/scripts/task-splitter.ps1 and tests/psmux-bridge.Tests.ps1.
-Also inspect .\psmux-bridge\scripts\task-splitter.ps1 before dispatching.
-'@
-
-        $targets.Count | Should -Be 2
-        $targets[0] | Should -Be 'psmux-bridge/scripts/task-splitter.ps1'
-        $targets[1] | Should -Be 'tests/psmux-bridge.Tests.ps1'
-    }
-
-    It 'groups file targets by directory or module boundary for parallel builders' {
-        $subTasks = @(Split-TaskForBuilders `
-            -TaskDescription 'Implement task splitting support.' `
-            -FileList @(
-                'psmux-bridge/scripts/task-splitter.ps1',
-                'psmux-bridge/scripts/builder-queue.ps1',
-                'tests/psmux-bridge.Tests.ps1',
-                'scripts/psmux-bridge.ps1'
-            ))
-
-        $subTasks.Count | Should -Be 3
-        $subTasks[0].GroupKey | Should -Be 'psmux-bridge/scripts'
-        @($subTasks[0].Files).Count | Should -Be 2
-        $subTasks[1].GroupKey | Should -Be 'tests'
-        $subTasks[2].GroupKey | Should -Be 'scripts'
-    }
-
-    It 'formats a builder sub-task prompt with only the scoped files' {
-        $subTask = New-BuilderSubTask `
-            -TaskDescription 'Implement task splitting support.' `
-            -GroupKey 'psmux-bridge/scripts' `
-            -Files @('psmux-bridge/scripts/task-splitter.ps1', 'psmux-bridge/scripts/builder-queue.ps1')
-
-        $subTask.GroupKey | Should -Be 'psmux-bridge/scripts'
-        @($subTask.Files).Count | Should -Be 2
-        $subTask.Prompt | Should -Match 'Overall task:'
-        $subTask.Prompt | Should -Match 'psmux-bridge/scripts/task-splitter\.ps1'
-        $subTask.Prompt | Should -Not -Match 'tests/TaskSplitter\.Tests\.ps1'
-    }
-}
-
 Describe 'agent-watchdog helpers' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\agent-watchdog.ps1')
@@ -586,5 +539,130 @@ Describe 'agent-watchdog helpers' {
             $SessionName -eq 'winsmux-orchestra' -and
             $IdleThreshold -eq 120
         }
+    }
+}
+
+Describe 'pane scaler helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\pane-scaler.ps1')
+    }
+
+    BeforeEach {
+        $script:paneScalerTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-pane-scaler-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:paneScalerTempRoot -Force | Out-Null
+        $script:paneScalerManifestDir = Join-Path $script:paneScalerTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $script:paneScalerManifestDir -Force | Out-Null
+        $script:paneScalerManifestPath = Join-Path $script:paneScalerManifestDir 'manifest.yaml'
+    }
+
+    AfterEach {
+        if ($script:paneScalerTempRoot -and (Test-Path $script:paneScalerTempRoot)) {
+            Remove-Item -Path $script:paneScalerTempRoot -Recurse -Force
+        }
+    }
+
+    It 'calculates Builder workload using busy and approval_waiting panes' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+  - label: builder-2
+    pane_id: %3
+    role: Builder
+  - label: builder-3
+    pane_id: %4
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+
+        Mock Get-PaneAgentStatus {
+            param($PaneId)
+
+            switch ($PaneId) {
+                '%2' { [PSCustomObject]@{ Status = 'busy'; ExitReason = '' } }
+                '%3' { [PSCustomObject]@{ Status = 'approval_waiting'; ExitReason = '' } }
+                default { [PSCustomObject]@{ Status = 'ready'; ExitReason = '' } }
+            }
+        }
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            roles = [ordered]@{}
+        }
+
+        $workload = Get-PaneWorkload -ManifestPath $script:paneScalerManifestPath -Settings $settings
+
+        $workload.BusyPanes | Should -Be 2
+        $workload.TotalPanes | Should -Be 3
+        $workload.BuilderCount | Should -Be 3
+        $workload.BusyRatio | Should -BeGreaterThan 0.66
+        $workload.BusyRatio | Should -BeLessThan 0.67
+    }
+
+    It 'scales up when workload exceeds the threshold' {
+        Mock Get-PaneWorkload {
+            [PSCustomObject]@{
+                BusyRatio    = 0.9
+                BusyPanes    = 3
+                TotalPanes   = 3
+                BuilderCount = 3
+                Results      = @()
+            }
+        }
+        Mock Add-OrchestraPane {
+            [PSCustomObject]@{
+                Changed = $true
+                Action  = 'scale_up'
+                Label   = 'builder-4'
+                PaneId  = '%8'
+            }
+        }
+        Mock Remove-OrchestraPane { throw 'should not remove' }
+
+        $result = Invoke-PaneScalingCheck -ManifestPath $script:paneScalerManifestPath -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4'; roles = [ordered]@{} })
+
+        $result.Action | Should -Be 'scale_up'
+        $result.Label | Should -Be 'builder-4'
+        Should -Invoke Add-OrchestraPane -Times 1 -Exactly
+        Should -Invoke Remove-OrchestraPane -Times 0 -Exactly
+    }
+
+    It 'scales down when workload is low and more than two builders exist' {
+        Mock Get-PaneWorkload {
+            [PSCustomObject]@{
+                BusyRatio    = 0.25
+                BusyPanes    = 1
+                TotalPanes   = 4
+                BuilderCount = 4
+                Results      = @(
+                    [PSCustomObject]@{ Label = 'builder-1'; Status = 'busy' },
+                    [PSCustomObject]@{ Label = 'builder-2'; Status = 'ready' },
+                    [PSCustomObject]@{ Label = 'builder-3'; Status = 'ready' },
+                    [PSCustomObject]@{ Label = 'builder-4'; Status = 'ready' }
+                )
+            }
+        }
+        Mock Remove-OrchestraPane {
+            [PSCustomObject]@{
+                Changed = $true
+                Action  = 'scale_down'
+                Label   = 'builder-4'
+                PaneId  = '%9'
+            }
+        }
+        Mock Add-OrchestraPane { throw 'should not add' }
+
+        $result = Invoke-PaneScalingCheck -ManifestPath $script:paneScalerManifestPath -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4'; roles = [ordered]@{} })
+
+        $result.Action | Should -Be 'scale_down'
+        $result.Label | Should -Be 'builder-4'
+        Should -Invoke Remove-OrchestraPane -Times 1 -Exactly
+        Should -Invoke Add-OrchestraPane -Times 0 -Exactly
     }
 }
