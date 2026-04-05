@@ -16,14 +16,6 @@ struct PtyManager {
 
 #[tauri::command]
 async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
-    let manager = app.state::<PtyManager>();
-    {
-        let panes = manager.panes.lock().map_err(|e| e.to_string())?;
-        if panes.contains_key(&pane_id) {
-            return Err(format!("Pane {} already exists", pane_id));
-        }
-    }
-
     let pty_system = native_pty_system();
 
     let pair = pty_system
@@ -59,8 +51,12 @@ async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Res
         child: Arc::new(Mutex::new(child)),
     };
 
+    let manager = app.state::<PtyManager>();
     {
         let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
+        if panes.contains_key(&pane_id) {
+            return Err(format!("Pane {} already exists", pane_id));
+        }
         panes.insert(pane_id.clone(), single);
     }
 
@@ -74,10 +70,7 @@ async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Res
                 Ok(0) => break,
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
-                    let _ = app_handle.emit(
-                        "pty-output",
-                        serde_json::json!({"pane_id": pane_id_clone, "data": data}),
-                    );
+                    let _ = app_handle.emit("pty-output", serde_json::json!({"pane_id": pane_id_clone, "data": data}));
                 }
                 Err(_) => break,
             }
@@ -91,9 +84,7 @@ async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Res
 async fn pty_write(app: AppHandle, pane_id: String, data: String) -> Result<(), String> {
     let manager = app.state::<PtyManager>();
     let panes = manager.panes.lock().map_err(|e| e.to_string())?;
-    let pty = panes
-        .get(&pane_id)
-        .ok_or_else(|| format!("Pane {} not found", pane_id))?;
+    let pty = panes.get(&pane_id).ok_or_else(|| format!("Pane {} not found", pane_id))?;
     let mut writer = pty.writer.lock().map_err(|e| e.to_string())?;
     writer
         .write_all(data.as_bytes())
@@ -106,9 +97,7 @@ async fn pty_write(app: AppHandle, pane_id: String, data: String) -> Result<(), 
 async fn pty_resize(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
     let manager = app.state::<PtyManager>();
     let panes = manager.panes.lock().map_err(|e| e.to_string())?;
-    let pty = panes
-        .get(&pane_id)
-        .ok_or_else(|| format!("Pane {} not found", pane_id))?;
+    let pty = panes.get(&pane_id).ok_or_else(|| format!("Pane {} not found", pane_id))?;
     let master = pty.master.lock().map_err(|e| e.to_string())?;
     master
         .resize(PtySize {
@@ -125,26 +114,14 @@ async fn pty_resize(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Re
 async fn pty_close(app: AppHandle, pane_id: String) -> Result<(), String> {
     let manager = app.state::<PtyManager>();
     let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
-    let entry = panes
-        .remove(&pane_id)
-        .ok_or_else(|| format!("Pane {} not found", pane_id))?;
-    drop(panes);
-
-    let SinglePty {
-        writer,
-        master,
-        child,
-    } = entry;
-
-    // Stop the process before closing the PTY handles it owns.
-    if let Ok(mut child) = child.lock() {
+    let entry = panes.remove(&pane_id).ok_or_else(|| format!("Pane {} not found", pane_id))?;
+    // Kill child process
+    if let Ok(mut child) = entry.child.lock() {
         let _ = child.kill();
     }
-
-    // Drop PTY handles so the reader thread observes EOF and exits.
-    drop(master);
-    drop(writer);
-    drop(child);
+    // Drop master to signal EOF to reader thread
+    drop(entry.master);
+    drop(entry.writer);
     Ok(())
 }
 
@@ -155,9 +132,7 @@ pub fn run() {
         .manage(PtyManager {
             panes: Arc::new(Mutex::new(HashMap::new())),
         })
-        .invoke_handler(tauri::generate_handler![
-            pty_spawn, pty_write, pty_resize, pty_close
-        ])
+        .invoke_handler(tauri::generate_handler![pty_spawn, pty_write, pty_resize, pty_close])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

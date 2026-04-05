@@ -2,11 +2,10 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
 . "$scriptDir/settings.ps1"
 . "$scriptDir/vault.ps1"
-. "$scriptDir/agent-launch.ps1"
 . "$scriptDir/builder-worktree.ps1"
 . "$scriptDir/logger.ps1"
 . "$scriptDir/agent-readiness.ps1"
-. "$scriptDir/orchestra-cleanup.ps1"
+. "$scriptDir/orchestra-preflight.ps1"
 
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -86,6 +85,12 @@ function Invoke-Bridge {
     }
 }
 
+function ConvertTo-PowerShellLiteral {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    return "'" + ($Value -replace "'", "''") + "'"
+}
+
 function Get-ProjectDir {
     $scriptProjectDir = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
     if (-not [string]::IsNullOrWhiteSpace($scriptProjectDir)) {
@@ -121,170 +126,6 @@ function Get-GitWorktreeDir {
     }
 
     return $ProjectDir
-}
-
-function Get-ProcessSnapshot {
-    $processes = @(Get-Process | ForEach-Object {
-        $processName = [string]$_.ProcessName
-        if ($processName -notmatch '\.exe$') {
-            $processName = "$processName.exe"
-        }
-
-        [PSCustomObject]@{
-            ProcessId       = $_.Id
-            ParentProcessId = if ($_.Parent) { $_.Parent.Id } else { 0 }
-            CommandLine     = if ([string]::IsNullOrWhiteSpace($_.CommandLine)) { $processName } else { $_.CommandLine }
-            Name            = $processName
-        }
-    })
-
-    $byId = @{}
-    $childrenByParent = @{}
-
-    foreach ($process in $processes) {
-        $byId[[int]$process.ProcessId] = $process
-        $parentId = [int]$process.ParentProcessId
-        if (-not $childrenByParent.ContainsKey($parentId)) {
-            $childrenByParent[$parentId] = [System.Collections.Generic.List[object]]::new()
-        }
-
-        $childrenByParent[$parentId].Add($process)
-    }
-
-    return [PSCustomObject]@{
-        Processes        = $processes
-        ById             = $byId
-        ChildrenByParent = $childrenByParent
-    }
-}
-
-function Get-AncestorProcessIds {
-    param(
-        [Parameter(Mandatory = $true)]$Snapshot,
-        [Parameter(Mandatory = $true)][int]$ProcessId
-    )
-
-    $ids = [System.Collections.Generic.HashSet[int]]::new()
-    $currentId = $ProcessId
-
-    while ($currentId -gt 0 -and $Snapshot.ById.ContainsKey($currentId)) {
-        if (-not $ids.Add($currentId)) {
-            break
-        }
-
-        $currentId = [int]$Snapshot.ById[$currentId].ParentProcessId
-    }
-
-    return $ids
-}
-
-function Get-DescendantProcessIds {
-    param(
-        [Parameter(Mandatory = $true)]$Snapshot,
-        [Parameter(Mandatory = $true)][int[]]$RootProcessIds
-    )
-
-    $ids = [System.Collections.Generic.HashSet[int]]::new()
-    $queue = [System.Collections.Generic.Queue[int]]::new()
-
-    foreach ($rootId in $RootProcessIds) {
-        if ($rootId -gt 0) {
-            $queue.Enqueue($rootId)
-        }
-    }
-
-    while ($queue.Count -gt 0) {
-        $currentId = $queue.Dequeue()
-        if (-not $ids.Add($currentId)) {
-            continue
-        }
-
-        if (-not $Snapshot.ChildrenByParent.ContainsKey($currentId)) {
-            continue
-        }
-
-        foreach ($child in $Snapshot.ChildrenByParent[$currentId]) {
-            $queue.Enqueue([int]$child.ProcessId)
-        }
-    }
-
-    return $ids
-}
-
-function Remove-OrchestraZombieProcesses {
-    param(
-        [Parameter(Mandatory = $true)][string]$SessionName,
-        [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
-        [Parameter(Mandatory = $true)][string]$BridgeScript,
-        [Parameter(Mandatory = $true)][string]$PsmuxBin
-    )
-
-    $snapshot = Get-ProcessSnapshot
-    $protectedIds = Get-AncestorProcessIds -Snapshot $snapshot -ProcessId $PID
-    $candidateIds = [System.Collections.Generic.HashSet[int]]::new()
-
-    & $PsmuxBin has-session -t $SessionName 1>$null 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        $panePidOutput = & $PsmuxBin list-panes -t $SessionName -F '#{pane_pid}' 2>$null
-        $paneRootIds = @(
-            $panePidOutput |
-                ForEach-Object { $_.Trim() } |
-                Where-Object { $_ -match '^\d+$' } |
-                ForEach-Object { [int]$_ }
-        )
-
-        if ($paneRootIds.Count -gt 0) {
-            $descendantIds = Get-DescendantProcessIds -Snapshot $snapshot -RootProcessIds $paneRootIds
-            foreach ($descendantId in $descendantIds) {
-                if (-not $snapshot.ById.ContainsKey($descendantId)) {
-                    continue
-                }
-
-                $process = $snapshot.ById[$descendantId]
-                if ($process.Name -in @('codex.exe', 'node.exe')) {
-                    [void]$candidateIds.Add($descendantId)
-                }
-            }
-        }
-    }
-
-    foreach ($process in $snapshot.Processes) {
-        if ($process.Name -notin @('codex.exe', 'node.exe')) {
-            continue
-        }
-
-        $processId = [int]$process.ProcessId
-        $commandLine = [string]$process.CommandLine
-        $parentId = [int]$process.ParentProcessId
-        $parentMissing = ($parentId -le 0) -or (-not $snapshot.ById.ContainsKey($parentId))
-        $matchesOrchestraContext =
-            $commandLine.IndexOf($ProjectDir, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-            $commandLine.IndexOf($GitWorktreeDir, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-            $commandLine.IndexOf($BridgeScript, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-            $commandLine.IndexOf($SessionName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0
-
-        if ($parentMissing -and $matchesOrchestraContext) {
-            [void]$candidateIds.Add($processId)
-        }
-    }
-
-    $victims = @(
-        $candidateIds |
-            Where-Object { $_ -ne $PID -and -not $protectedIds.Contains($_) -and $snapshot.ById.ContainsKey($_) } |
-            Sort-Object -Unique |
-            ForEach-Object { $snapshot.ById[$_] }
-    )
-
-    foreach ($victim in $victims) {
-        try {
-            Stop-Process -Id ([int]$victim.ProcessId) -Force -ErrorAction Stop
-            Write-Output ("Preflight: killed zombie process {0} ({1})" -f $victim.Name, $victim.ProcessId)
-            Write-WinsmuxLog -Level INFO -Event 'preflight.zombie_process.killed' -Message ("Killed zombie process {0} ({1})." -f $victim.Name, $victim.ProcessId) -Data @{ process_name = $victim.Name; process_id = [int]$victim.ProcessId } | Out-Null
-        } catch {
-            Write-Warning ("Preflight: failed to kill zombie process {0} ({1}): {2}" -f $victim.Name, $victim.ProcessId, $_.Exception.Message)
-        }
-    }
 }
 
 function New-BuilderWorktree {
@@ -363,6 +204,27 @@ function Send-OrchestraBridgeCommand {
     )
 
     Invoke-Bridge -Arguments @('send', $Target, $Text)
+}
+
+function Get-AgentLaunchCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$Agent,
+        [Parameter(Mandatory = $true)][string]$Model,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$GitWorktreeDir
+    )
+
+    switch ($Agent.Trim().ToLowerInvariant()) {
+        'codex' {
+            return "codex -c model=$Model --full-auto -C $(ConvertTo-PowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PowerShellLiteral -Value $GitWorktreeDir)"
+        }
+        'claude' {
+            return 'claude --permission-mode bypassPermissions'
+        }
+        default {
+            throw "Unsupported agent setting: $Agent"
+        }
+    }
 }
 
 function Get-VaultValue {
@@ -723,14 +585,31 @@ try {
     }
 
     Write-WinsmuxLog -Level INFO -Event 'preflight.zombie_cleanup.start' -Message 'Removing orchestra zombie processes.' | Out-Null
-    Remove-OrchestraZombieProcesses -SessionName $sessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -PsmuxBin $psmuxBin
+    $zombieCleanup = Remove-OrchestraZombieProcesses -SessionName $sessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -PsmuxBin $psmuxBin
+    if (@($zombieCleanup.Killed).Count -gt 0) {
+        Write-WinsmuxLog -Level INFO -Event 'preflight.git_worktree.prune_after_zombie_cleanup' -Message 'Pruning git worktree metadata after zombie cleanup.' -Data @{ killed_count = @($zombieCleanup.Killed).Count } | Out-Null
+        Invoke-BuilderWorktreeGit -ProjectDir $projectDir -Arguments @('worktree', 'prune') | Out-Null
+    }
 
-    # Clean up any leftover orchestra panes outside the orchestra session (#213)
+    # Clean up any leftover orchestra panes in default session (#213)
     try {
-        $existingPanes = Invoke-Psmux -Arguments @('list-panes', '-a', '-F', "#{session_name}`t#{pane_id}`t#{pane_title}") -CaptureOutput
-        foreach ($pane in @(Get-StaleOrchestraPaneTargets -PaneRecords $existingPanes -SessionName $sessionName)) {
-            Write-WinsmuxLog -Level INFO -Event 'preflight.default_pane.kill' -Message "Removing leftover orchestra pane $($pane.PaneId) ($($pane.Title)) from session $($pane.SessionName)." -Data @{ pane_id = $pane.PaneId; title = $pane.Title; session_name = $pane.SessionName } | Out-Null
-            Invoke-Psmux -Arguments @('kill-pane', '-t', $pane.PaneId)
+        $existingPanes = & $psmuxBin list-panes -F '#{pane_id} #{pane_title}' 2>$null
+        if ($LASTEXITCODE -eq 0 -and $existingPanes) {
+            $orchestraLabels = @('builder-', 'researcher-', 'reviewer-')
+            foreach ($line in ($existingPanes -split "`n")) {
+                $parts = $line.Trim() -split '\s+', 2
+                if ($parts.Count -ge 2) {
+                    $paneId = $parts[0]
+                    $title = $parts[1]
+                    foreach ($label in $orchestraLabels) {
+                        if ($title -like "$label*") {
+                            Write-WinsmuxLog -Level INFO -Event 'preflight.default_pane.kill' -Message "Removing leftover orchestra pane $paneId ($title) from default session." -Data @{ pane_id = $paneId; title = $title } | Out-Null
+                            & $psmuxBin kill-pane -t $paneId 2>$null
+                            break
+                        }
+                    }
+                }
+            }
         }
     } catch { }
 
@@ -872,13 +751,6 @@ try {
         try {
             $roleAgentConfig = Get-RoleAgentConfig -Role $paneSummary.Role -Settings $settings
             Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $roleAgentConfig.Agent -TimeoutSeconds 60
-
-            $bootstrapPrompt = Get-AgentBootstrapPrompt -Agent $roleAgentConfig.Agent -Role $paneSummary.Role
-            if (-not [string]::IsNullOrWhiteSpace($bootstrapPrompt)) {
-                Write-WinsmuxLog -Level INFO -Event 'pane.bootstrap.dispatched' -Message "Dispatched Codex CLM workaround bootstrap to $($paneSummary.Label)." -Role $paneSummary.Role -PaneId $paneSummary.PaneId -Target $paneSummary.Label | Out-Null
-                Send-OrchestraBridgeCommand -Target $paneSummary.PaneId -Text $bootstrapPrompt
-                Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $roleAgentConfig.Agent -TimeoutSeconds 60
-            }
         } catch {
             Write-Error "Agent readiness timeout for $($paneSummary.Label) [$($paneSummary.PaneId)]: $($_.Exception.Message)"
             exit 1
