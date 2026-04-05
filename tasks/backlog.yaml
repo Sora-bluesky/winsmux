@@ -1652,7 +1652,7 @@ tasks:
 
   - id: TASK-140
     title: "Switch Builder agents from persistent session to codex exec per task + shell templates"
-    status: backlog
+    status: review
     priority: P0
     target_version: "v0.18.2"
     repo: winsmux
@@ -1825,3 +1825,18 @@ tasks:
     notes: >
       P25 (cline-powerup-proposals). ACP サーバーとして任意のエディタから Orchestra を操作可能にする。
       JetBrains/Neovim/Zed 対応。30h見積。
+
+  - id: TASK-150
+    title: "Fix agent-watchdog: Start-Job dies with parent process → Start-Process"
+    status: review
+    priority: P0
+    target_version: "v0.18.2"
+    repo: winsmux
+    labels: [bug, orchestra]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #250. orchestra-start.ps1 の Start-AgentWatchdogJob が Start-Job を使用しており、
+      親プロセス終了時にジョブも消滅。Start-Process に変更して独立プロセス化。
+      watchdog PID を manifest.yaml に記録し、セッション終了時にクリーンアップ。

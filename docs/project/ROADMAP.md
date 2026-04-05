@@ -1,7 +1,7 @@
 # ロードマップ
 
 > `tasks/backlog.yaml` から自動生成 — 手動編集禁止
-> 最終同期: 2026-04-05 18:09 (+09:00)
+> 最終同期: 2026-04-05 18:35 (+09:00)
 
 ## バージョン概要
 
@@ -211,12 +211,12 @@
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-140 | Switch Builder agents from persistent session to codex exec per task + shell templates | P0 | winsmux | backlog |
+| [R] | TASK-140 | Switch Builder agents from persistent session to codex exec per task + shell templates | P0 | winsmux | review |
 | [x] | TASK-141 | Dispatch-router file-level task boundary enforcement | P0 | winsmux | done |
 | [x] | TASK-142 | Fix orchestra-start crash when zombie processes are killed (Write-Output pipeline pollution) | P0 | winsmux | done |
 | [x] | TASK-148 | Set GIT_EDITOR=true in orchestra session to prevent vim stall | P0 | winsmux | done |
 | [x] | TASK-149 | Agent-monitor background daemon for continuous pane monitoring | P0 | winsmux | done |
-| [ ] | TASK-150 | Fix agent-watchdog: Start-Job dies with parent process → Start-Process | P0 | winsmux | wip |
+| [R] | TASK-150 | Fix agent-watchdog: Start-Job dies with parent process → Start-Process | P0 | winsmux | review |
 | [x] | TASK-110 | Automatic task splitting for parallel Builder dispatch | P1 | winsmux | done |
 | [x] | TASK-113 | Dynamic pane scaling — auto add/remove panes based on workload | P1 | winsmux | done |
 | [x] | TASK-130 | Commander auto-detect Builder stall and alert | P1 | winsmux | done |
