@@ -228,9 +228,15 @@ function Update-MonitorIdleAlertState {
     }
 
     $elapsedSeconds = ($Now - $readySince).TotalSeconds
-    if (($elapsedSeconds -ge $IdleThresholdSeconds) -and (-not $alertSent)) {
+    $wasAlertSent = $alertSent
+    if ($alertSent -and ($elapsedSeconds -ge 300)) {
+        $alertSent = $false
+    }
+
+    $alertThresholdSeconds = if ($wasAlertSent) { 300 } else { $IdleThresholdSeconds }
+    if (($elapsedSeconds -ge $alertThresholdSeconds) -and (-not $alertSent)) {
         $message = "Commander alert: idle pane $Label ($PaneId, role=$Role)"
-        Save-MonitorIdleState -PaneId $PaneId -ReadySince $readySince -AlertSent $true
+        Save-MonitorIdleState -PaneId $PaneId -ReadySince $Now -AlertSent $true
         $result.ShouldAlert = $true
         $result.Message = $message
         return $result
@@ -418,7 +424,43 @@ function Send-MonitorBridgeCommand {
 function Send-MonitorTelegramAlert {
     param([Parameter(Mandatory = $true)][string]$Message)
 
-    return $false
+    $telegramEnvPath = 'C:\Users\komei\.claude\channels\telegram\.env'
+    if (-not (Test-Path -LiteralPath $telegramEnvPath -PathType Leaf)) {
+        return $false
+    }
+
+    $token = ''
+    foreach ($line in (Get-Content -LiteralPath $telegramEnvPath -Encoding UTF8)) {
+        if ($line -match '^\s*(?:export\s+)?TELEGRAM_BOT_TOKEN\s*=\s*(.+?)\s*$') {
+            $token = $matches[1].Trim()
+            break
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        return $false
+    }
+
+    if (($token.StartsWith('"') -and $token.EndsWith('"')) -or ($token.StartsWith("'") -and $token.EndsWith("'"))) {
+        $token = $token.Substring(1, $token.Length - 2)
+    }
+
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        return $false
+    }
+
+    $uri = "https://api.telegram.org/bot$token/sendMessage"
+    $body = @{
+        chat_id = '8642321094'
+        text    = $Message
+    }
+
+    try {
+        $null = Invoke-RestMethod -Method Post -Uri $uri -Body $body -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    }
 }
 
 # ---------------------------------------------------------------------------

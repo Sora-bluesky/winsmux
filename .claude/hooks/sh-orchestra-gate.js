@@ -44,8 +44,8 @@ try {
 
   // Rule 4: No direct codex exec (use orchestra-start)
   if (toolName === "Bash") {
-    if (/codex\s+(exec|e)\s/.test(rawCommand) && !/winsmux\s+send-keys/.test(rawCommand) && !/winsmux-core/.test(rawCommand)) {
-      deny("Use orchestra-start or winsmux send-keys to dispatch Codex, not direct codex exec.");
+    if (/codex\s+(exec|e)\s/.test(rawCommand) && !/winsmux\s+send/.test(rawCommand) && !/winsmux-core/.test(rawCommand) && !/^gh\s/.test(rawCommand)) {
+      deny("Use orchestra-start or winsmux send to dispatch Codex, not direct codex exec.");
     }
   }
 
