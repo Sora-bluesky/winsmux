@@ -502,7 +502,8 @@ function Save-OrchestraSessionState {
         [Parameter(Mandatory = $true)][string]$SessionName,
         [Parameter(Mandatory = $true)]$Settings,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
-        [Parameter(Mandatory = $true)][System.Collections.IEnumerable]$PaneSummaries
+        [Parameter(Mandatory = $true)][System.Collections.IEnumerable]$PaneSummaries,
+        [Nullable[int]]$WatchdogPid = $null
     )
 
     $manifestPath = Get-OrchestraManifestPath -ProjectDir $ProjectDir
@@ -519,6 +520,11 @@ function Save-OrchestraSessionState {
     $lines.Add(('  model: {0}' -f (ConvertTo-YamlScalar -Value $Settings.model))) | Out-Null
     $lines.Add(('  project_dir: {0}' -f (ConvertTo-YamlScalar -Value $ProjectDir))) | Out-Null
     $lines.Add(('  git_worktree_dir: {0}' -f (ConvertTo-YamlScalar -Value $GitWorktreeDir))) | Out-Null
+    if ($null -ne $WatchdogPid) {
+        $lines.Add(('  watchdog_pid: {0}' -f $WatchdogPid)) | Out-Null
+    } else {
+        $lines.Add('  watchdog_pid: null') | Out-Null
+    }
     $lines.Add('panes:') | Out-Null
 
     foreach ($paneSummary in @($PaneSummaries)) {
@@ -568,12 +574,22 @@ function Start-AgentWatchdogJob {
         [int]$PollInterval = 30
     )
 
-    return (Start-Job -Name ("winsmux-watchdog-{0}" -f $SessionName) -ScriptBlock {
-        param($ScriptPath, $ManifestFile, $OrchestraSession, $Threshold, $Interval)
-        & $ScriptPath -ManifestPath $ManifestFile -SessionName $OrchestraSession -IdleThreshold $Threshold -PollInterval $Interval
-    } -ArgumentList $WatchdogScriptPath, $ManifestPath, $SessionName, $IdleThreshold, $PollInterval)
+    return (Start-Process -FilePath 'pwsh' -ArgumentList @(
+            '-NoProfile',
+            '-File',
+            $WatchdogScriptPath,
+            '-ManifestPath',
+            $ManifestPath,
+            '-SessionName',
+            $SessionName,
+            '-IdleThreshold',
+            $IdleThreshold,
+            '-PollInterval',
+            $PollInterval
+        ) -WindowStyle Hidden -PassThru)
 }
 
+$watchdogProcess = $null
 try {
     $settings = Get-BridgeSettings
     $projectDir = Get-ProjectDir
@@ -790,8 +806,9 @@ try {
 
     $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $paneSummaries
     $watchdogScriptPath = Join-Path $scriptDir 'agent-watchdog.ps1'
-    $watchdogJob = Start-AgentWatchdogJob -WatchdogScriptPath $watchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName
-    Write-WinsmuxLog -Level INFO -Event 'preflight.watchdog.started' -Message "Started agent watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; job_id = $watchdogJob.Id; job_name = $watchdogJob.Name } | Out-Null
+    $watchdogProcess = Start-AgentWatchdogJob -WatchdogScriptPath $watchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $paneSummaries -WatchdogPid $watchdogProcess.Id
+    Write-WinsmuxLog -Level INFO -Event 'preflight.watchdog.started' -Message "Started agent watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; watchdog_pid = $watchdogProcess.Id; process_name = $watchdogProcess.ProcessName } | Out-Null
 
     Write-Output "Orchestra session: $sessionName"
     Write-Output "Agent: $($settings.agent)"
@@ -816,7 +833,14 @@ try {
 
     Write-Output ''
     Write-Output "Manifest: $manifestPath"
+    Write-Output "Watchdog PID: $($watchdogProcess.Id)"
+    Write-Output 'Cleanup: stop the watchdog after the session ends.'
+    Write-Output ("  Stop-Process -Id {0}" -f $watchdogProcess.Id)
 } catch {
+    if ($null -ne $watchdogProcess) {
+        try { Stop-Process -Id $watchdogProcess.Id -Force -ErrorAction SilentlyContinue } catch {}
+    }
+
     # TASK-118: Rollback on failure
     $journalPath = Join-Path $projectDir '.winsmux' 'startup-journal.log'
     $journalDir = Split-Path $journalPath -Parent
