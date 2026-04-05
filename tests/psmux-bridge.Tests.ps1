@@ -44,6 +44,8 @@ Describe 'Assert-Role' {
         $env:WINSMUX_ROLE = 'Commander'
 
         (Assert-Role -Command 'send' -TargetPane 'reviewer') | Should -Be $true
+        (Assert-Role -Command 'kill' -TargetPane 'builder') | Should -Be $true
+        (Assert-Role -Command 'restart' -TargetPane 'builder') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $true
         (Assert-Role -Command 'type' -TargetPane 'reviewer') | Should -Be $false
     }
@@ -54,6 +56,7 @@ Describe 'Assert-Role' {
 
         (Assert-Role -Command 'send' -TargetPane 'commander') | Should -Be $true
         (Assert-Role -Command 'type' -TargetPane 'self') | Should -Be $true
+        (Assert-Role -Command 'kill' -TargetPane 'reviewer') | Should -Be $false
         (Assert-Role -Command 'send' -TargetPane 'reviewer') | Should -Be $false
         (Assert-Role -Command 'read' -TargetPane 'reviewer') | Should -Be $false
     }
@@ -76,6 +79,99 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'list') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $false
         (Assert-Role -Command 'focus') | Should -Be $false
+    }
+}
+
+Describe 'pane control helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\settings.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\pane-control.ps1')
+    }
+
+    BeforeEach {
+        $script:paneControlTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-pane-control-tests-' + [guid]::NewGuid().ToString('N'))
+        $script:paneControlBuilderPath = Join-Path $script:paneControlTempRoot '.worktrees\builder-1'
+        $script:paneControlGitDir = Join-Path $script:paneControlTempRoot '.git\worktrees\builder-1'
+
+        New-Item -ItemType Directory -Path $script:paneControlBuilderPath -Force | Out-Null
+        New-Item -ItemType Directory -Path $script:paneControlGitDir -Force | Out-Null
+        @"
+gitdir: $script:paneControlGitDir
+"@ | Set-Content -Path (Join-Path $script:paneControlBuilderPath '.git') -Encoding UTF8
+    }
+
+    AfterEach {
+        if ($script:paneControlTempRoot -and (Test-Path $script:paneControlTempRoot)) {
+            Remove-Item -Path $script:paneControlTempRoot -Recurse -Force
+        }
+    }
+
+    It 'parses orchestra list manifests and builds a restart plan for builder panes' {
+        $manifestDir = Join-Path $script:paneControlTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+        @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneControlTempRoot
+  git_worktree_dir: $script:paneControlTempRoot\.git
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    launch_dir: $script:paneControlBuilderPath
+    builder_worktree_path: $script:paneControlBuilderPath
+  - label: reviewer-1
+    pane_id: %4
+    role: Reviewer
+    launch_dir: $script:paneControlTempRoot
+"@ | Set-Content -Path (Join-Path $manifestDir 'manifest.yaml') -Encoding UTF8
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            roles = [ordered]@{
+                builder = [ordered]@{
+                    agent = 'codex'
+                    model = 'gpt-5.4-codex'
+                }
+            }
+        }
+
+        $plan = Get-PaneControlRestartPlan -ProjectDir $script:paneControlTempRoot -PaneId '%2' -Settings $settings
+
+        $plan.Label | Should -Be 'builder-1'
+        $plan.Role | Should -Be 'Builder'
+        $plan.LaunchDir | Should -Be $script:paneControlBuilderPath
+        $plan.GitWorktreeDir | Should -Be $script:paneControlGitDir
+        $plan.Agent | Should -Be 'codex'
+        $plan.Model | Should -Be 'gpt-5.4-codex'
+        $plan.LaunchCommand | Should -Be "codex -c model=gpt-5.4-codex --full-auto -C '$script:paneControlBuilderPath' --add-dir '$script:paneControlGitDir'"
+    }
+
+    It 'supports dictionary pane manifests for restart context lookup' {
+        $manifestDir = Join-Path $script:paneControlTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+        @"
+version: 1
+session:
+  project_dir: $script:paneControlTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    builder_worktree_path: $script:paneControlBuilderPath
+  reviewer-1:
+    pane_id: %4
+    role: Reviewer
+    builder_worktree_path: ""
+"@ | Set-Content -Path (Join-Path $manifestDir 'manifest.yaml') -Encoding UTF8
+
+        $context = Get-PaneControlManifestContext -ProjectDir $script:paneControlTempRoot -PaneId '%2'
+
+        $context.Label | Should -Be 'builder-1'
+        $context.LaunchDir | Should -Be $script:paneControlBuilderPath
+        $context.GitWorktreeDir | Should -Be $script:paneControlGitDir
     }
 }
 

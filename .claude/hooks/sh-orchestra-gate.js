@@ -70,6 +70,13 @@ try {
     }
   }
 
+  // Rule 8: Block direct git add/commit from Commander (delegate via psmux-bridge)
+  if (toolName === "Bash") {
+    if (/\bgit\s+(?:add|commit)\b/.test(rawCommand) && !/psmux-bridge/.test(rawCommand)) {
+      deny("Delegate commits to Builder via psmux-bridge send.");
+    }
+  }
+
   process.exit(0);
 } catch (e) {
   deny("Hook parse error: " + e.message);

@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter, Manager};
 struct SinglePty {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
+    child: Arc<Mutex<Box<dyn portable_pty::Child + Send>>>,
 }
 
 struct PtyManager {
@@ -29,7 +30,7 @@ async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Res
     let mut cmd = CommandBuilder::new("pwsh");
     cmd.arg("-NoLogo");
 
-    let _child = pair
+    let child = pair
         .slave
         .spawn_command(cmd)
         .map_err(|e| format!("Failed to spawn: {e}"))?;
@@ -47,11 +48,15 @@ async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Res
     let single = SinglePty {
         writer: Arc::new(Mutex::new(writer)),
         master: Arc::new(Mutex::new(pair.master)),
+        child: Arc::new(Mutex::new(child)),
     };
 
     let manager = app.state::<PtyManager>();
     {
         let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
+        if panes.contains_key(&pane_id) {
+            return Err(format!("Pane {} already exists", pane_id));
+        }
         panes.insert(pane_id.clone(), single);
     }
 
@@ -109,7 +114,14 @@ async fn pty_resize(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Re
 async fn pty_close(app: AppHandle, pane_id: String) -> Result<(), String> {
     let manager = app.state::<PtyManager>();
     let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
-    panes.remove(&pane_id).ok_or_else(|| format!("Pane {} not found", pane_id))?;
+    let entry = panes.remove(&pane_id).ok_or_else(|| format!("Pane {} not found", pane_id))?;
+    // Kill child process
+    if let Ok(mut child) = entry.child.lock() {
+        let _ = child.kill();
+    }
+    // Drop master to signal EOF to reader thread
+    drop(entry.master);
+    drop(entry.writer);
     Ok(())
 }
 

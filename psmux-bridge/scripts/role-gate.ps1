@@ -26,6 +26,8 @@ $RolePermissions = @{
         MailboxCreate = $true
         MailboxSend   = $true
         MailboxListen = $true
+        Kill          = $true
+        Restart       = $true
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -57,6 +59,8 @@ $RolePermissions = @{
         MailboxCreate = $false
         MailboxSend   = $true
         MailboxListen = $false
+        Kill          = $false
+        Restart       = $false
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -88,6 +92,8 @@ $RolePermissions = @{
         MailboxCreate = $false
         MailboxSend   = $true
         MailboxListen = $false
+        Kill          = $false
+        Restart       = $false
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -119,6 +125,8 @@ $RolePermissions = @{
         MailboxCreate = $false
         MailboxSend   = $true
         MailboxListen = $false
+        Kill          = $false
+        Restart       = $false
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -436,6 +444,14 @@ function Assert-Role {
         }
         'mailbox-listen' {
             if ($permissions.MailboxListen) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'kill' {
+            if ($permissions.Kill) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'restart' {
+            if ($permissions.Restart) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
         'id' {

@@ -1,5 +1,37 @@
 $ErrorActionPreference = 'Stop'
 
+Describe 'orchestra cleanup helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\orchestra-cleanup.ps1')
+    }
+
+    It 'matches orchestra-managed pane titles only' {
+        (Test-OrchestraManagedPaneTitle -Title 'Builder-1') | Should -Be $true
+        (Test-OrchestraManagedPaneTitle -Title 'researcher-2') | Should -Be $true
+        (Test-OrchestraManagedPaneTitle -Title 'Reviewer-3') | Should -Be $true
+        (Test-OrchestraManagedPaneTitle -Title 'Commander') | Should -Be $false
+        (Test-OrchestraManagedPaneTitle -Title 'PowerShell') | Should -Be $false
+    }
+
+    It 'targets stale orchestra panes from non-orchestra sessions only' {
+        $targets = Get-StaleOrchestraPaneTargets -SessionName 'winsmux-orchestra' -PaneRecords @(
+            "default`t%1`tBuilder-1"
+            "default`t%2`tResearcher-1"
+            "winsmux-orchestra`t%3`tBuilder-2"
+            "default`t%4`tPowerShell"
+            "scratch`t%5`tReviewer-1"
+            "malformed line"
+        )
+
+        $targets.Count | Should -Be 3
+        $targets[0].SessionName | Should -Be 'default'
+        $targets[0].PaneId | Should -Be '%1'
+        $targets[1].PaneId | Should -Be '%2'
+        $targets[2].SessionName | Should -Be 'scratch'
+        $targets[2].PaneId | Should -Be '%5'
+    }
+}
+
 Describe 'Get-BridgeSettings defaults' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\settings.ps1')
@@ -179,5 +211,89 @@ Describe 'logger Initialize, Write, and Summary' {
         $summary['review.passed'] | Should -Be 1
         $summary['session.ended'] | Should -Be 1
         $summary.Count | Should -Be 3
+    }
+}
+
+Describe 'agent monitor idle alerts' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\agent-monitor.ps1')
+    }
+
+    BeforeEach {
+        $script:agentMonitorTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $script:agentMonitorIdleStateDir = Join-Path $script:agentMonitorTempRoot 'idle'
+        New-Item -ItemType Directory -Path $script:agentMonitorTempRoot -Force | Out-Null
+        $script:IdleStateDir = $script:agentMonitorIdleStateDir
+    }
+
+    AfterEach {
+        if ($script:agentMonitorTempRoot -and (Test-Path $script:agentMonitorTempRoot)) {
+            Remove-Item -Path $script:agentMonitorTempRoot -Recurse -Force
+        }
+    }
+
+    It 'alerts only once after a pane stays ready past the idle threshold' {
+        $start = [datetime]'2026-04-05T10:00:00+09:00'
+
+        $initial = Update-MonitorIdleAlertState -PaneId '%2' -Label 'builder-1' -Role 'Builder' -Status 'ready' -SnapshotTail '> ' -IdleThresholdSeconds 120 -Now $start
+        $initial.ShouldAlert | Should -Be $false
+
+        $alert = Update-MonitorIdleAlertState -PaneId '%2' -Label 'builder-1' -Role 'Builder' -Status 'ready' -SnapshotTail '> ' -IdleThresholdSeconds 120 -Now $start.AddSeconds(121)
+        $alert.ShouldAlert | Should -Be $true
+        $alert.Message | Should -Match 'Commander alert: idle pane builder-1 \(%2, role=Builder\)'
+
+        $repeat = Update-MonitorIdleAlertState -PaneId '%2' -Label 'builder-1' -Role 'Builder' -Status 'ready' -SnapshotTail '> ' -IdleThresholdSeconds 120 -Now $start.AddSeconds(240)
+        $repeat.ShouldAlert | Should -Be $false
+    }
+
+    It 'clears idle tracking once the pane is no longer ready' {
+        $start = [datetime]'2026-04-05T11:00:00+09:00'
+
+        Update-MonitorIdleAlertState -PaneId '%3' -Label 'reviewer-1' -Role 'Reviewer' -Status 'ready' -SnapshotTail '> ' -IdleThresholdSeconds 120 -Now $start | Out-Null
+        Update-MonitorIdleAlertState -PaneId '%3' -Label 'reviewer-1' -Role 'Reviewer' -Status 'busy' -SnapshotTail 'working' -IdleThresholdSeconds 120 -Now $start.AddSeconds(60) | Out-Null
+
+        $stateAfterBusy = Get-MonitorIdleState -PaneId '%3'
+        $stateAfterBusy | Should -BeNullOrEmpty
+    }
+
+    It 'emits commander alerts to stdout and telegram during a monitor cycle' {
+        $manifestDir = Join-Path $script:agentMonitorTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+        @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:agentMonitorTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    launch_dir: $script:agentMonitorTempRoot
+"@ | Set-Content -Path (Join-Path $manifestDir 'manifest.yaml') -Encoding UTF8
+
+        Save-MonitorIdleState -PaneId '%2' -ReadySince '2026-04-05T09:57:00+09:00' -AlertSent $false
+        Mock Get-PaneAgentStatus {
+            [PSCustomObject]@{
+                Status       = 'ready'
+                PaneId       = '%2'
+                SnapshotTail = '> '
+            }
+        }
+        Mock Send-MonitorTelegramAlert { return $true }
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            roles = [ordered]@{}
+        }
+
+        $output = @(Invoke-AgentMonitorCycle -Settings $settings -ManifestPath (Join-Path $manifestDir 'manifest.yaml') -SessionName 'winsmux-orchestra' -IdleThreshold 120)
+
+        $output.Count | Should -Be 2
+        $output[0] | Should -Match 'Commander alert: idle pane builder-1 \(%2, role=Builder\)'
+        $output[1].IdleAlerts | Should -Be 1
+        $output[1].Results[0].IdleAlerted | Should -Be $true
+        $output[1].Results[0].Message | Should -Match 'Commander alert: idle pane builder-1'
+        Should -Invoke Send-MonitorTelegramAlert -Times 1 -Exactly
     }
 }

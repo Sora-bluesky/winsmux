@@ -19,7 +19,8 @@ Or run directly for a single monitoring cycle:
 param(
     [string]$ProjectDir,
     [string]$SessionName = 'winsmux-orchestra',
-    [int]$HungThresholdSeconds = 60
+    [int]$HungThresholdSeconds = 60,
+    [int]$IdleThresholdSeconds = 120
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,7 +37,241 @@ $scriptDir = $PSScriptRoot
 # ---------------------------------------------------------------------------
 
 $script:HungSnapshotDir = Join-Path $env:TEMP 'winsmux\monitor_snapshots'
+$script:IdleStateDir = Join-Path $env:TEMP 'winsmux\monitor_idle'
 $script:AgentMonitorDefaultHungThreshold = 60
+$script:AgentMonitorDefaultIdleThreshold = 120
+
+# ---------------------------------------------------------------------------
+# Idle state persistence
+# ---------------------------------------------------------------------------
+
+function Get-MonitorIdleStatePath {
+    param([Parameter(Mandatory = $true)][string]$PaneId)
+
+    $safe = $PaneId -replace '[%:]', '_'
+    return Join-Path $script:IdleStateDir "$safe.json"
+}
+
+function Get-MonitorIdleState {
+    param([Parameter(Mandatory = $true)][string]$PaneId)
+
+    $path = Get-MonitorIdleStatePath -PaneId $PaneId
+    if (-not (Test-Path $path -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        $raw = Get-Content -Path $path -Raw -Encoding UTF8
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return $null
+        }
+
+        return ($raw | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+function Save-MonitorIdleState {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$ReadySince,
+        [Parameter(Mandatory = $true)][bool]$AlertSent
+    )
+
+    if (-not (Test-Path $script:IdleStateDir)) {
+        New-Item -ItemType Directory -Path $script:IdleStateDir -Force | Out-Null
+    }
+
+    $path = Get-MonitorIdleStatePath -PaneId $PaneId
+    $record = [ordered]@{
+        ready_since = $ReadySince
+        alert_sent  = $AlertSent
+    }
+
+    ($record | ConvertTo-Json -Compress) | Set-Content -Path $path -Encoding UTF8 -NoNewline
+}
+
+function Clear-MonitorIdleState {
+    param([Parameter(Mandatory = $true)][string]$PaneId)
+
+    $path = Get-MonitorIdleStatePath -PaneId $PaneId
+    if (Test-Path $path -PathType Leaf) {
+        Remove-Item -Path $path -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Update-MonitorIdleAlertState {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)][string]$Status,
+        [AllowNull()][string]$SnapshotTail = '',
+        [int]$IdleThresholdSeconds = $script:AgentMonitorDefaultIdleThreshold,
+        [datetime]$Now = (Get-Date)
+    )
+
+    if ($Status -ne 'ready') {
+        Clear-MonitorIdleState -PaneId $PaneId
+        return [PSCustomObject]@{
+            ShouldAlert = $false
+            IdleSeconds = 0
+            Message     = ''
+        }
+    }
+
+    $state = Get-MonitorIdleState -PaneId $PaneId
+    $readySince = $Now
+    $alertSent = $false
+
+    if ($null -ne $state) {
+        try {
+            $readySince = [System.DateTimeOffset]::Parse([string]$state.ready_since).LocalDateTime
+        } catch {
+            $readySince = $Now
+        }
+
+        $alertSent = [bool](Get-MonitorPropertyValue -InputObject $state -Name 'alert_sent' -Default $false)
+    }
+
+    $idleSeconds = [int][Math]::Floor(($Now - $readySince).TotalSeconds)
+
+    if ($null -eq $state) {
+        Save-MonitorIdleState -PaneId $PaneId -ReadySince ($Now.ToString('o')) -AlertSent $false
+        return [PSCustomObject]@{
+            ShouldAlert = $false
+            IdleSeconds = 0
+            Message     = ''
+        }
+    }
+
+    if ($idleSeconds -lt $IdleThresholdSeconds) {
+        return [PSCustomObject]@{
+            ShouldAlert = $false
+            IdleSeconds = $idleSeconds
+            Message     = ''
+        }
+    }
+
+    if ($alertSent) {
+        return [PSCustomObject]@{
+            ShouldAlert = $false
+            IdleSeconds = $idleSeconds
+            Message     = ''
+        }
+    }
+
+    Save-MonitorIdleState -PaneId $PaneId -ReadySince ($readySince.ToString('o')) -AlertSent $true
+
+    $message = "Commander alert: idle pane $Label ($PaneId, role=$Role) has been ready for ${idleSeconds}s without a new task."
+    if (-not [string]::IsNullOrWhiteSpace($SnapshotTail)) {
+        $message += " Tail: " + (($SnapshotTail -split "\r?\n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 2) -join ' | ')
+    }
+
+    return [PSCustomObject]@{
+        ShouldAlert = $true
+        IdleSeconds = $idleSeconds
+        Message     = $message
+    }
+}
+
+function Get-MonitorCredentialValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$PrimaryEnvName,
+        [string[]]$FallbackEnvNames = @(),
+        [string]$VaultKey = $PrimaryEnvName
+    )
+
+    foreach ($envName in @($PrimaryEnvName) + @($FallbackEnvNames)) {
+        if ([string]::IsNullOrWhiteSpace($envName)) {
+            continue
+        }
+
+        $value = [Environment]::GetEnvironmentVariable($envName)
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            return $value
+        }
+    }
+
+    if (-not ('WinCred' -as [type])) {
+        try {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public class WinCred {
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    public static extern bool CredRead(string target, uint type, uint flags, out IntPtr credential);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool CredFree(IntPtr credential);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct CREDENTIAL {
+        public uint Flags;
+        public uint Type;
+        public string TargetName;
+        public string Comment;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+        public int CredentialBlobSize;
+        public IntPtr CredentialBlob;
+        public uint Persist;
+        public int AttributeCount;
+        public IntPtr Attributes;
+        public string TargetAlias;
+        public string UserName;
+    }
+
+    public const uint CRED_TYPE_GENERIC = 1;
+}
+'@ -ErrorAction Stop
+        } catch {
+            return $null
+        }
+    }
+
+    $credPtr = [IntPtr]::Zero
+    $ok = [WinCred]::CredRead("winsmux:$VaultKey", [WinCred]::CRED_TYPE_GENERIC, 0, [ref]$credPtr)
+    if (-not $ok) {
+        return $null
+    }
+
+    try {
+        $cred = [Runtime.InteropServices.Marshal]::PtrToStructure($credPtr, [Type][WinCred+CREDENTIAL])
+        if ($cred.CredentialBlobSize -le 0) {
+            return $null
+        }
+
+        $bytes = New-Object byte[] $cred.CredentialBlobSize
+        [Runtime.InteropServices.Marshal]::Copy($cred.CredentialBlob, $bytes, 0, $cred.CredentialBlobSize)
+        return [System.Text.Encoding]::Unicode.GetString($bytes)
+    } finally {
+        [WinCred]::CredFree($credPtr) | Out-Null
+    }
+}
+
+function Send-MonitorTelegramAlert {
+    param([Parameter(Mandatory = $true)][string]$Message)
+
+    $botToken = Get-MonitorCredentialValue -PrimaryEnvName 'WINSMUX_TELEGRAM_BOT_TOKEN' -FallbackEnvNames @('TELEGRAM_BOT_TOKEN') -VaultKey 'TELEGRAM_BOT_TOKEN'
+    $chatId = Get-MonitorCredentialValue -PrimaryEnvName 'WINSMUX_TELEGRAM_CHAT_ID' -FallbackEnvNames @('TELEGRAM_CHAT_ID') -VaultKey 'TELEGRAM_CHAT_ID'
+
+    if ([string]::IsNullOrWhiteSpace($botToken) -or [string]::IsNullOrWhiteSpace($chatId)) {
+        return $false
+    }
+
+    try {
+        $payload = @{
+            chat_id = $chatId
+            text    = $Message
+        }
+        Invoke-RestMethod -Method Post -Uri "https://api.telegram.org/bot$botToken/sendMessage" -Body $payload | Out-Null
+        return $true
+    } catch {
+        return $false
+    }
+}
 
 # ---------------------------------------------------------------------------
 # Psmux wrapper (same pattern as orchestra-start.ps1)
@@ -472,7 +707,8 @@ function Invoke-AgentMonitorCycle {
         [Parameter(Mandatory = $true)]$Settings,
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [string]$SessionName = 'winsmux-orchestra',
-        [int]$HungThreshold = $script:AgentMonitorDefaultHungThreshold
+        [int]$HungThreshold = $script:AgentMonitorDefaultHungThreshold,
+        [int]$IdleThreshold = $script:AgentMonitorDefaultIdleThreshold
     )
 
     $projectDir = Split-Path (Split-Path $ManifestPath -Parent) -Parent
@@ -514,6 +750,7 @@ function Invoke-AgentMonitorCycle {
     $checkedCount = 0
     $crashedCount = 0
     $respawnedCount = 0
+    $idleAlertCount = 0
 
     foreach ($label in $manifest.Panes.Keys) {
         $pane = $manifest.Panes[$label]
@@ -548,6 +785,7 @@ function Invoke-AgentMonitorCycle {
             Role       = $role
             Status     = $status.Status
             Respawned  = $false
+            IdleAlerted = $false
             Message    = ''
         }
 
@@ -560,6 +798,33 @@ function Invoke-AgentMonitorCycle {
                     -Role $role -PaneId $paneId `
                     -Data ([ordered]@{ status = $status.Status }) | Out-Null
             } catch {
+            }
+        }
+
+        $idleTransition = Update-MonitorIdleAlertState `
+            -PaneId $paneId `
+            -Label $label `
+            -Role $role `
+            -Status $status.Status `
+            -SnapshotTail $status.SnapshotTail `
+            -IdleThresholdSeconds $IdleThreshold
+
+        if ($idleTransition.ShouldAlert) {
+            $idleAlertCount++
+            $result.IdleAlerted = $true
+            $result.Message = $idleTransition.Message
+            Write-Output $idleTransition.Message
+
+            $telegramSent = Send-MonitorTelegramAlert -Message $idleTransition.Message
+            if ($loggerAvailable) {
+                try {
+                    Write-OrchestraLog -ProjectDir $projectDir -SessionName $SessionName `
+                        -Event 'monitor.idle.alert' -Level 'warn' `
+                        -Message $idleTransition.Message `
+                        -Role $role -PaneId $paneId -Target 'commander' `
+                        -Data ([ordered]@{ idle_seconds = $idleTransition.IdleSeconds; telegram_sent = $telegramSent }) | Out-Null
+                } catch {
+                }
             }
         }
 
@@ -641,8 +906,8 @@ function Invoke-AgentMonitorCycle {
         try {
             Write-OrchestraLog -ProjectDir $projectDir -SessionName $SessionName `
                 -Event 'monitor.cycle' -Level 'info' `
-                -Message "Monitor cycle: checked=$checkedCount crashed=$crashedCount respawned=$respawnedCount" `
-                -Data ([ordered]@{ checked = $checkedCount; crashed = $crashedCount; respawned = $respawnedCount }) | Out-Null
+                -Message "Monitor cycle: checked=$checkedCount crashed=$crashedCount respawned=$respawnedCount idle_alerts=$idleAlertCount" `
+                -Data ([ordered]@{ checked = $checkedCount; crashed = $crashedCount; respawned = $respawnedCount; idle_alerts = $idleAlertCount }) | Out-Null
         } catch {
         }
     }
@@ -651,6 +916,7 @@ function Invoke-AgentMonitorCycle {
         Checked   = $checkedCount
         Crashed   = $crashedCount
         Respawned = $respawnedCount
+        IdleAlerts = $idleAlertCount
         Results   = @($results)
     }
 }
@@ -797,9 +1063,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         -Settings $settings `
         -ManifestPath $manifestPath `
         -SessionName $SessionName `
-        -HungThreshold $HungThresholdSeconds
+        -HungThreshold $HungThresholdSeconds `
+        -IdleThreshold $IdleThresholdSeconds
 
-    Write-Output "Monitor cycle complete: checked=$($result.Checked) crashed=$($result.Crashed) respawned=$($result.Respawned)"
+    Write-Output "Monitor cycle complete: checked=$($result.Checked) crashed=$($result.Crashed) respawned=$($result.Respawned) idle_alerts=$($result.IdleAlerts)"
     foreach ($r in $result.Results) {
         $respawnTag = if ($r.Respawned) { ' [RESPAWNED]' } else { '' }
         $messageTag = if ($r.Message) { " ($($r.Message))" } else { '' }
