@@ -187,6 +187,10 @@ function Get-DispatchLedger {
         }
 
         $parsed = $raw | ConvertFrom-Json
+        if ($null -eq $parsed) {
+            return @()
+        }
+
         if ($parsed -is [System.Array]) {
             return @($parsed)
         }
@@ -207,6 +211,11 @@ function Save-DispatchLedger {
     $dir = Split-Path -Parent $path
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+
+    if (@($Entries).Count -eq 0) {
+        '[]' | Set-Content -LiteralPath $path -Encoding UTF8
+        return
     }
 
     @($Entries) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding UTF8

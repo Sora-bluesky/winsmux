@@ -507,6 +507,53 @@ Describe 'agent-monitor helpers' {
     }
 }
 
+Describe 'task splitter helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\task-splitter.ps1')
+    }
+
+    It 'extracts unique repo-relative file targets from a task prompt' {
+        $targets = Get-TaskFileTargets -TaskDescription @'
+Update psmux-bridge/scripts/task-splitter.ps1 and tests/psmux-bridge.Tests.ps1.
+Also inspect .\psmux-bridge\scripts\task-splitter.ps1 before dispatching.
+'@
+
+        $targets.Count | Should -Be 2
+        $targets[0] | Should -Be 'psmux-bridge/scripts/task-splitter.ps1'
+        $targets[1] | Should -Be 'tests/psmux-bridge.Tests.ps1'
+    }
+
+    It 'groups file targets by directory or module boundary for parallel builders' {
+        $subTasks = @(Split-TaskForBuilders `
+            -TaskDescription 'Implement task splitting support.' `
+            -FileList @(
+                'psmux-bridge/scripts/task-splitter.ps1',
+                'psmux-bridge/scripts/builder-queue.ps1',
+                'tests/psmux-bridge.Tests.ps1',
+                'scripts/psmux-bridge.ps1'
+            ))
+
+        $subTasks.Count | Should -Be 3
+        $subTasks[0].GroupKey | Should -Be 'psmux-bridge/scripts'
+        @($subTasks[0].Files).Count | Should -Be 2
+        $subTasks[1].GroupKey | Should -Be 'tests'
+        $subTasks[2].GroupKey | Should -Be 'scripts'
+    }
+
+    It 'formats a builder sub-task prompt with only the scoped files' {
+        $subTask = New-BuilderSubTask `
+            -TaskDescription 'Implement task splitting support.' `
+            -GroupKey 'psmux-bridge/scripts' `
+            -Files @('psmux-bridge/scripts/task-splitter.ps1', 'psmux-bridge/scripts/builder-queue.ps1')
+
+        $subTask.GroupKey | Should -Be 'psmux-bridge/scripts'
+        @($subTask.Files).Count | Should -Be 2
+        $subTask.Prompt | Should -Match 'Overall task:'
+        $subTask.Prompt | Should -Match 'psmux-bridge/scripts/task-splitter\.ps1'
+        $subTask.Prompt | Should -Not -Match 'tests/TaskSplitter\.Tests\.ps1'
+    }
+}
+
 Describe 'agent-watchdog helpers' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\agent-watchdog.ps1')

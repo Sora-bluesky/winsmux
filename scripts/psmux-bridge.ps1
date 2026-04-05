@@ -1884,6 +1884,15 @@ switch ($Command) {
         $fullText = @($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }
         & $routerScript -Text ($fullText -join ' ')
     }
+    'task-split' {
+        $splitterScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\task-splitter.ps1'))
+        $taskText = (@($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
+        if (-not $taskText) {
+            Stop-WithError "usage: psmux-bridge task-split <task text>"
+        }
+
+        & pwsh -NoProfile -File $splitterScript -Task $taskText -AsJson
+    }
     'pipeline' {
         $pipelineScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\team-pipeline.ps1'))
         $taskText = (@($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
