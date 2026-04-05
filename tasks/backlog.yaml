@@ -1630,6 +1630,8 @@ tasks:
     updated: "2026-04-05"
     notes: >
       #223. 3層設計: dispatch標準化 + queue自動消化 + monitor常駐。
+      PR #238でidle alert関数(Update-MonitorIdleAlertState/Save-MonitorIdleState/Get-MonitorIdleState)実装完了。
+      Pester 51/51通過。
 
   - id: TASK-137
     title: "Audit dead code and missing integration across v0.9.6–v0.18.0"
@@ -1711,7 +1713,7 @@ tasks:
 
   - id: TASK-142
     title: "Fix orchestra-start crash when zombie processes are killed (Write-Output pipeline pollution)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.18.2"
     repo: winsmux
