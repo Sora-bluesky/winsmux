@@ -1,7 +1,8 @@
 $script:AgentReadinessPromptMarkers = @(
     '>',
     ([string][char]8250),
-    ([string][char]0x258C)
+    ([string][char]0x258C),
+    ([string][char]0x276F)
 )
 
 function Get-LastNonEmptyLine {
