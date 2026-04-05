@@ -1,0 +1,1694 @@
+version: 3
+tasks:
+  # === v0.9.6: fork sync + upstream PRs (COMPLETE) ===
+  - id: TASK-001
+    title: "Fix resize-pane -x/-y routing to ResizePaneAbsolute"
+    status: done
+    priority: P1
+    target_version: "v0.9.6"
+    repo: psmux/psmux
+    labels: [psmux, bug]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-002
+    title: "Separate split-window -l (cells) from -p (percent)"
+    status: done
+    priority: P1
+    target_version: "v0.9.6"
+    repo: psmux/psmux
+    labels: [psmux, bug]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-003
+    title: "Fix select-layout tiled pane redistribution"
+    status: done
+    priority: P2
+    target_version: "v0.9.6"
+    repo: psmux/psmux
+    labels: [psmux, bug]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-007
+    title: "Sync VERSION and install.ps1 to v0.9.5"
+    status: done
+    priority: P1
+    target_version: "v0.9.6"
+    repo: winsmux
+    labels: [chore, release]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-008
+    title: "Add orchestra-layout skill and dispatch scripts"
+    status: done
+    priority: P1
+    target_version: "v0.9.6"
+    repo: winsmux
+    labels: [feat, orchestra]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-009
+    title: "Create ROADMAP.md, backlog.yaml, and sync workflow"
+    status: done
+    priority: P1
+    target_version: "v0.9.6"
+    repo: winsmux
+    labels: [chore, docs]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-016
+    title: "Sync all public docs to v0.9.5 and add version-drift pre-commit gate"
+    status: done
+    priority: P1
+    target_version: "v0.9.6"
+    repo: winsmux
+    labels: [docs, gate]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-019
+    title: "Sync sora-psmux fork with upstream (commit 1861eb7)"
+    status: done
+    priority: P1
+    target_version: "v0.9.6"
+    repo: sora-psmux
+    labels: [chore, psmux]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-020
+    title: "Submit fork patches as upstream PR (psmux/psmux#175)"
+    status: done
+    priority: P1
+    target_version: "v0.9.6"
+    repo: sora-psmux
+    labels: [chore, upstream]
+    depends_on: ["TASK-019"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-023
+    title: "File upstream Issues for remaining bugs (#176, #177, #178)"
+    status: done
+    priority: P2
+    target_version: "v0.9.6"
+    repo: psmux/psmux
+    labels: [bug, upstream]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  # === v0.10.0: Agent Team Grade Upgrade ===
+
+  # Phase A: Foundation
+  - id: TASK-025
+    title: "Extract psmux-bridge CLI as PPM plugin (winsmux remains as platform)"
+    status: done
+    priority: P1
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [feat, plugin, refactor]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-026
+    title: "Implement hierarchical settings system (project > global > wizard)"
+    status: done
+    priority: P1
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [feat, plugin]
+    depends_on: ["TASK-025"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  # Phase B: Role enforcement (MOST IMPORTANT)
+  - id: TASK-027
+    title: "Add role-based command gate to psmux-bridge (Assert-Role)"
+    status: done
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [feat, security]
+    depends_on: ["TASK-025"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-053
+    title: "Document and enforce operational role definitions (Commander/Builder/Researcher/Reviewer)"
+    status: done
+    priority: P0
+    target_version: "v0.10.1"
+    repo: winsmux
+    labels: [docs, security, governance]
+    depends_on: ["TASK-027"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-028
+    title: "Add PreToolUse hook for Commander-side gate (sh-orchestra-gate.js)"
+    status: done
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [feat, security, hook]
+    depends_on: ["TASK-027"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  # Phase C: Automation
+  - id: TASK-029
+    title: "Implement Orchestra start automation (Prefix+O full lifecycle)"
+    status: done
+    priority: P1
+    target_version: "v0.15.0"
+    repo: winsmux
+    labels: [feat, automation]
+    depends_on: ["TASK-026", "TASK-027"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: >
+      Partially implemented by TASK-081: preflight (vault, trust, projectDir),
+      agent launch, readiness check all working. Remaining: Prefix+O keybinding,
+      session resume, graceful shutdown.
+
+  # ============================================================
+  # v0.10.0: Agent Team Grade Upgrade (GAP Analysis Tasks)
+  # Source: Claude Code Agent Teams / Codex CLI comparative study
+  # Mapping: TASK-030~032 overwritten, TASK-033~051 new
+  # ============================================================
+
+  # --- Phase S1: Security Hardening ---
+  # NOTE: TASK-028 (sh-orchestra-gate.js) covers the PreToolUse role gate.
+  #       TASK-030 is reassigned to channel security.
+
+  - id: TASK-030
+    title: "Add channel event detection and severity boost to sh-user-prompt.js"
+    status: done
+    priority: P2
+    target_version: "v0.16.0"
+    repo: winsmux
+    labels: [feat, security, channel]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-031
+    title: "Enhance evidence-ledger with command-trace recording and integrity check"
+    status: done
+    priority: P2
+    target_version: "v0.16.0"
+    repo: winsmux
+    labels: [feat, security, observability]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  # --- Phase S2: Async Communication & Task Engine ---
+
+  - id: TASK-032
+    title: "Implement Mailbox-compatible async message router (mailbox-router.ps1)"
+    status: cancelled
+    priority: P0
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [feat, communication, agent-teams]
+    depends_on: ["TASK-030"]
+    notes: "Cancelled: psmux-bridge send is sufficient for personal use"
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-033
+    title: "Implement Shared Task List with file-lock self-claiming and dependency auto-resolve"
+    status: cancelled
+    priority: P0
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [feat, task-management, agent-teams]
+    depends_on: ["TASK-031"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-034
+    title: "Add TaskCreated / TaskCompleted hook integration for auto-dispatch"
+    status: cancelled
+    priority: P1
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [feat, hook, agent-teams]
+    depends_on: ["TASK-029", "TASK-032", "TASK-033"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-035
+    title: "Implement agent idle/crash detection with auto-respawn (TeammateIdle compat)"
+    status: done
+    priority: P2
+    target_version: "v0.12.0"
+    repo: winsmux
+    labels: [feat, lifecycle, agent-teams]
+    depends_on: ["TASK-032"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-036
+    title: "Extend agent-readiness patterns beyond prompt detection (Codex/Gemini/Claude)"
+    status: done
+    priority: P2
+    target_version: "v0.16.0"
+    repo: winsmux
+    labels: [feat, lifecycle]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: >
+      Scope expanded by 2026-04-02 audit: serial blocking wait (should be parallel),
+      fragile heuristic (> chevron / % left), no exponential backoff,
+      capture-pane truncation (-S -80), 60s timeout too rigid.
+      5 CRITICAL/HIGH issues mapped here from audit category "Agent Readiness".
+
+  # --- Phase S3: Test Infrastructure & Quality Gates ---
+
+  - id: TASK-037
+    title: "Set up Pester 5 test framework with AAA pattern for psmux-bridge.ps1"
+    status: done
+    priority: P1
+    target_version: "v0.10.1"
+    repo: winsmux
+    labels: [test, infrastructure]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-038
+    title: "Write unit tests for all 11 CLI commands (44+ test cases, coverage >= 75%)"
+    status: done
+    priority: P1
+    target_version: "v0.10.1"
+    repo: winsmux
+    labels: [test, cli]
+    depends_on: ["TASK-037"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-039
+    title: "Make STG3 gate CI-aware (auto-run Pester, deny on coverage < 80%)"
+    status: done
+    priority: P2
+    target_version: "v0.17.3"
+    repo: winsmux
+    labels: [feat, gate, ci]
+    depends_on: ["TASK-038"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    updated: "2026-04-04"
+  - id: TASK-040
+    title: "Add GitHub Actions CI workflow (Pester on push, coverage badge)"
+    status: done
+    priority: P2
+    target_version: "v0.11.0"
+    repo: winsmux
+    labels: [ci, infrastructure]
+    depends_on: ["TASK-039"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-041
+    title: "Write multi-agent integration test (orchestra end-to-end scenario)"
+    status: done
+    priority: P2
+    target_version: "v0.11.0"
+    repo: winsmux
+    labels: [test, integration, agent-teams]
+    depends_on: ["TASK-035", "TASK-038"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  # --- Phase S4: Plugin Format & RPC Protocol ---
+
+  - id: TASK-042
+    title: "Implement JSON-RPC 2.0 endpoint for psmux-bridge (psmux-bridge-rpc.ps1)"
+    status: cancelled
+    priority: P1
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [feat, rpc, plugin]
+    depends_on: ["TASK-025"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-043
+    title: "Expose psmux-bridge as MCP Server for Claude Code Agent Teams integration"
+    status: done
+    priority: P2
+    target_version: "v0.12.0"
+    repo: winsmux
+    labels: [feat, mcp, agent-teams]
+    depends_on: ["TASK-042"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-044
+    title: "Prepare and submit PR to psmux-plugins upstream"
+    status: cancelled
+    priority: P1
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [chore, upstream, plugin]
+    depends_on: ["TASK-025", "TASK-026", "TASK-042", "TASK-040"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  # --- Phase S5: Documentation & Traceability ---
+
+  - id: TASK-045
+    title: "Write REQUIREMENTS.md (functional reqs, NFR, acceptance criteria, traceability matrix)"
+    status: backlog
+    priority: P2
+    target_version: "post-v1.0.0"
+    repo: winsmux
+    labels: [docs, governance]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: "Deferred to post-v1.0.0 (enterprise scope)"
+
+  - id: TASK-046
+    title: "Write THREAT_MODEL.md (22 threat IDs mapped to injection-patterns.json, OCSF classification)"
+    status: backlog
+    priority: P2
+    target_version: "post-v1.0.0"
+    repo: winsmux
+    labels: [docs, security]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: "Deferred to post-v1.0.0 (enterprise scope)"
+
+  - id: TASK-047
+    title: "Write ARCHITECTURE.md (4-layer diagram, 22 hooks, data flow, component diagram)"
+    status: backlog
+    priority: P2
+    target_version: "post-v1.0.0"
+    repo: winsmux
+    labels: [docs, architecture]
+    depends_on: ["TASK-045"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: "Deferred to post-v1.0.0 (enterprise scope)"
+
+  - id: TASK-052
+    title: "Rewrite README.md/README.ja.md to reflect platform positioning and 3 unique strengths"
+    status: done
+    priority: P1
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [docs, branding]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-048
+    title: "Write DETAILED_DESIGN.md (hook I/O specs, regex, branch logic, test templates)"
+    status: backlog
+    priority: P2
+    target_version: "post-v1.0.0"
+    repo: winsmux
+    labels: [docs, design]
+    depends_on: ["TASK-047"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: "Deferred to post-v1.0.0 (enterprise scope)"
+
+  # --- Hotfix: Reviewer Audit Findings (BLOCKS S6) ---
+  # All P0 — must be resolved before integration testing or GA release.
+  # Root cause: gate is fail-open + internal code bypasses the gate.
+
+  - id: TASK-054
+    title: "Fix vault inject to use psmux set-environment instead of send-keys"
+    status: cancelled
+    priority: P0
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [fix, security]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-055
+    title: "Commander automation: backlog sync + worktree lifecycle gate (collect before cleanup)"
+    status: cancelled
+    priority: P1
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [feat, automation, governance]
+    depends_on: ["TASK-034"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-056
+    title: "Fix role-gate.ps1 to deny unknown commands (fail-open → fail-close)"
+    status: cancelled
+    priority: P0
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [fix, security]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-057
+    title: "Fix rpc-server.ps1: remove client-supplied role trust, bind to process identity"
+    status: cancelled
+    priority: P0
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [fix, security]
+    depends_on: ["TASK-056"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-058
+    title: "Eliminate raw send-keys from orchestra-start, mailbox-router, agent-lifecycle"
+    status: cancelled
+    priority: P0
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [fix, security]
+    depends_on: ["TASK-054"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-059
+    title: "Fix task-hooks.ps1: notify Commander instead of auto-assigning work"
+    status: cancelled
+    priority: P0
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [fix, governance]
+    depends_on: ["TASK-056"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-060
+    title: "Write integration tests verifying gate enforcement (deny paths end-to-end)"
+    status: done
+    priority: P1
+    target_version: "v0.10.1"
+    repo: winsmux
+    labels: [test, security]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  # --- Phase S6: Integration & GA (blocked by Hotfix) ---
+
+  - id: TASK-049
+    title: "Run 15-agent 15min load test (crash rate < 0.1%, evidence integrity 100%)"
+    status: cancelled
+    priority: P1
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [test, integration, release]
+    depends_on: ["TASK-041", "TASK-043", "TASK-060"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-050
+    title: "Security audit against THREAT_MODEL.md (22 threats, pen-test all mitigations)"
+    status: backlog
+    priority: P2
+    target_version: "post-v1.0.0"
+    repo: winsmux
+    labels: [security, audit, release]
+    depends_on: ["TASK-046", "TASK-049"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: "Deferred to post-v1.0.0 (enterprise scope)"
+
+  - id: TASK-051
+    title: "Release v0.10.0 GA (release notes, migration guide, install wizard, version bump)"
+    status: cancelled
+    priority: P1
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [release, chore]
+    depends_on: ["TASK-044", "TASK-049", "TASK-050"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  # === v1.0.0: winsmux GA Release ===
+  - id: TASK-024
+    title: "Full integration test → GA release → winsmux v1.0.0 publish"
+    status: cancelled
+    priority: P1
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [release, milestone]
+    depends_on: ["TASK-051"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-061
+    title: "Fix CI: remove test.yml or make it skip when test files are gitignored"
+    status: done
+    priority: P1
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [fix, ci]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-062
+    title: "Run Pester tests locally and fix all failures before next merge"
+    status: done
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [test, quality-gate]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  # === v0.10.0: Runtime verification ===
+
+  - id: TASK-063
+    title: "Runtime test: role-gate + settings + shared-task-list (no psmux needed)"
+    status: done
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [test, runtime]
+    depends_on: ["TASK-062"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-064
+    title: "Runtime test: vault source-file injection (DPAPI + psmux)"
+    status: done
+    priority: P0
+    target_version: "v0.10.1"
+    repo: winsmux
+    labels: [test, runtime, security]
+    depends_on: ["TASK-062"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-065
+    title: "Runtime test: orchestra-layout.ps1 pane generation (psmux)"
+    status: done
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [test, runtime]
+    depends_on: ["TASK-062"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-066
+    title: "Runtime test: rpc-server + mcp-server mock client verification"
+    status: cancelled
+    priority: P0
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [test, runtime]
+    depends_on: ["TASK-062"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  # === v0.10.1: Integration verification + upstream ===
+
+  - id: TASK-067
+    title: "Integration test: orchestra-start full cycle (settings→vault→layout→agents→health)"
+    status: done
+    priority: P1
+    target_version: "v0.10.1"
+    repo: winsmux
+    labels: [test, integration]
+    depends_on: ["TASK-065"]
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  - id: TASK-068
+    title: "Integration test: mailbox-router + task-hooks + commander-dispatch"
+    status: cancelled
+    priority: P1
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [test, integration]
+    depends_on: ["TASK-066"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  # === v0.10.2: Codex patterns Phase 1 ===
+
+  - id: TASK-069
+    title: "Implement ExecPolicy DSL (declarative TOML command policy)"
+    status: cancelled
+    priority: P1
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [feat, security, policy]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-070
+    title: "Implement Event Stream (pub/sub event bus for Orchestra)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.2"
+    repo: winsmux
+    labels: [feat, communication]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  # === v0.10.3: Codex patterns Phase 2 ===
+
+  - id: TASK-071
+    title: "Implement Guardian sub-agent (AI risk scoring with cross-vendor check)"
+    status: cancelled
+    priority: P1
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [feat, security, agent-teams]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-072
+    title: "Implement Rollout recording (event sourcing + replay)"
+    status: cancelled
+    priority: P2
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [feat, observability]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  # === v0.12.0: SDK + Advanced ===
+
+  - id: TASK-073
+    title: "Implement Command Orchestrator (per-command approval pipeline)"
+    status: backlog
+    priority: P2
+    target_version: "post-v1.0.0"
+    repo: winsmux
+    labels: [feat, security]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: "Deferred to post-v1.0.0 (enterprise scope)"
+
+  - id: TASK-074
+    title: "Implement TypeScript/Python SDK for programmatic Orchestra control"
+    status: done
+    priority: P2
+    target_version: "v0.12.0"
+    repo: winsmux
+    labels: [feat, sdk]
+    depends_on: ["TASK-043"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-075
+    title: "Implement SQLite session persistence (state.db)"
+    status: cancelled
+    notes: "Replaced by TASK-084 manifest.yaml (simpler, OMX-inspired)"
+    priority: P2
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [feat, persistence]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+
+  - id: TASK-076
+    title: "Implement deferred network approval pattern"
+    status: backlog
+    priority: P2
+    target_version: "post-v1.0.0"
+    repo: winsmux
+    labels: [feat, security]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: "Deferred to post-v1.0.0 (enterprise scope)"
+
+  - id: TASK-077
+    title: "Build sora-psmux fork release binary and distribute via install.ps1"
+    status: done
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [fix, installer, release]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+
+  # === cmux/X post powerup proposals (2026-04-02) ===
+  # Source: .references/cmux-xpost-powerup-proposals.md
+  # Commander metacognitive review: 3 rounds completed
+
+  - id: TASK-078
+    title: "Pane border metadata display (git branch, timestamp, idle time)"
+    status: backlog
+    priority: P2
+    target_version: "v0.19.1"
+    repo: winsmux
+    labels: [feat, ux, observability]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: "PROPOSAL-11. Scope reduced: no TASK-033 dependency. Initial impl shows git/timestamp/idle only. Full metadata (TASK ID, context%) deferred to TASK-033 completion."
+
+  - id: TASK-079
+    title: "Scheduled Orchestra (periodic multi-agent execution)"
+    status: cancelled
+    priority: P3
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [feat, automation, agent-teams]
+    depends_on: ["TASK-029", "TASK-034"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: "PROPOSAL-12. Overlaps with Windows Task Scheduler + Claude Code /loop. Demand unproven."
+
+  - id: TASK-080
+    title: "Browser agent integration (Multi-Modal Orchestra with Playwright)"
+    status: cancelled
+    priority: P3
+    target_version: "cancelled"
+    repo: winsmux
+    labels: [feat, agent-teams, browser]
+    depends_on: ["TASK-036", "TASK-042"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: "PROPOSAL-13. Speculative. 25h investment requires proven demand. Playwright-only initial scope."
+
+  # === Startup reliability (2026-04-02 audit) ===
+
+  - id: TASK-081
+    title: "orchestra-start preflight: auto-vault, Codex trust, skill unification"
+    status: done
+    priority: P0
+    target_version: "v0.10.0"
+    repo: winsmux
+    labels: [fix, automation, startup]
+    depends_on: []
+    created: "2026-04-02"
+    updated: "2026-04-02"
+    notes: >
+      4 fixes: (A) preflight in orchestra-start.ps1 — auto-set GH_TOKEN from gh auth if missing,
+      (B) auto-register project dir in ~/.codex/config.toml trust,
+      (C) winsmux-start skill calls orchestra-start only (not layout separately),
+      (D) sh-orchestra-gate.js Rule 5: block git clone --depth.
+      Root cause: every new session fails because prerequisites are not self-healing.
+
+  - id: TASK-082
+    title: "Triage 96 startup audit findings to responsible tasks"
+    status: done
+    priority: P2
+    target_version: "v0.17.3"
+    repo: winsmux
+    labels: [chore, audit, governance]
+    depends_on: ["TASK-081"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: >
+      Source: 2026-04-02 Agent audit (20 categories, 96 issues).
+      Bucket triage completed in .references/startup-audit-triage.md.
+      Existing coverage mapped to TASK-036, 039, 067, 081, 083, 084, 087, 088,
+      089-097, 114, 115. New gap tasks created: TASK-116 (interactive startup UX),
+      TASK-117 (startup race/order/idempotency), TASK-118 (rollback/recovery),
+      TASK-119 (credential/vault preflight), TASK-120 (troubleshooting docs + matrix).
+
+  - id: TASK-083
+    title: "Structured logging infrastructure for Orchestra startup and runtime"
+    status: done
+    priority: P2
+    target_version: "v0.11.0"
+    repo: winsmux
+    labels: [feat, observability, infrastructure]
+    depends_on: ["TASK-081"]
+    created: "2026-04-02"
+    updated: "2026-04-04"
+    notes: >
+      Audit finding: no startup log, no pane output capture on failure,
+      error messages not actionable. Covers: timestamped startup log,
+      pane output capture on timeout, structured error messages with remediation hints.
+
+  # === Global install + project bootstrap (2026-04-03) ===
+
+  - id: TASK-088
+    title: "Global install + winsmux init/start for any project"
+    status: done
+    priority: P0
+    target_version: "v0.10.1"
+    repo: winsmux
+    labels: [feat, installer, ux]
+    depends_on: []
+    created: "2026-04-03"
+    updated: "2026-04-03"
+    notes: >
+      Issue #112. install.ps1 deploys psmux-bridge + hooks to ~/.winsmux/ globally.
+      winsmux init <dir> bootstraps .psmux-bridge.yaml + .claude/hooks in target project.
+      winsmux start -C <dir> launches Orchestra for any project.
+      This is the minimum viable "use winsmux outside its own repo" feature.
+
+  # === OMX-inspired patterns (2026-04-03 strategy review) ===
+
+  - id: TASK-084
+    title: "Implement .winsmux/manifest.yaml persistent session state"
+    status: done
+    priority: P0
+    target_version: "v0.10.2"
+    repo: winsmux
+    labels: [feat, persistence, omx-pattern]
+    depends_on: ["TASK-081"]
+    created: "2026-04-03"
+    updated: "2026-04-04"
+    notes: >
+      OMX-inspired. Replace manual HANDOFF.md with structured manifest.yaml.
+      Auto-save on session end, auto-restore on start. Tracks pane assignments,
+      in-progress tasks, worktree paths. orchestra-start reads manifest to resume.
+
+  - id: TASK-085
+    title: "Implement keyword-based dispatch routing for Commander"
+    status: done
+    priority: P0
+    target_version: "v0.10.2"
+    repo: winsmux
+    labels: [feat, automation, omx-pattern]
+    depends_on: []
+    created: "2026-04-03"
+    updated: "2026-04-04"
+    notes: >
+      OMX-inspired lane routing. Commander input keywords auto-route to correct pane:
+      "調査" → Researcher, "実装" → Builder (with worktree), "レビュー" → Reviewer,
+      "チーム" → parallel dispatch. Implemented as dispatch-router.ps1 or hook.
+
+  - id: TASK-086
+    title: "Implement team pipeline automation (plan→exec→verify→fix loop)"
+    status: done
+    priority: P0
+    target_version: "v0.10.3"
+    repo: winsmux
+    labels: [feat, automation, omx-pattern]
+    depends_on: ["TASK-085"]
+    created: "2026-04-03"
+    updated: "2026-04-04"
+    notes: >
+      OMX-inspired team pipeline. Automate the loop: Commander plan approval →
+      Builder implements in worktree → Reviewer reviews → [FAIL] Builder fixes →
+      [PASS] Commander merges. Integrates with backlog.yaml status transitions.
+
+  - id: TASK-087
+    title: "Implement multi-vendor mixed agent teams (per-role agent config + local LLM)"
+    status: done
+    priority: P1
+    target_version: "v0.10.3"
+    repo: winsmux
+    labels: [feat, agent-teams, omx-pattern, local-llm]
+    depends_on: ["TASK-036"]
+    created: "2026-04-03"
+    updated: "2026-04-04"
+    notes: >
+      OMX-inspired + local LLM vision. Phase 1: per-role agent config in .psmux-bridge.yaml
+      (builder=codex, researcher=claude, reviewer=codex). Phase 2: Ollama/vLLM integration
+      for Gemma/Llama (API cost zero, data stays local, offline capable).
+      Enterprise differentiator: "AI agents on your data without data leaving your network."
+
+  # === v0.12.1~v1.0.0: Shield-Harness Revival + Rust Migration ===
+  # Source: keen-swinging-metcalfe.md release plan (2026-04-04)
+
+  - id: TASK-089
+    title: "Implement 15 missing functions in sh-utils.js"
+    status: done
+    priority: P0
+    target_version: "v0.13.0"
+    repo: winsmux
+    labels: [feat, hook, infrastructure]
+    depends_on: []
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      readHookInput, allowWithUpdate, allowWithResult, readSession, writeSession,
+      appendEvidence, nfkcNormalize, normalizePath, loadPatterns, trackDeny,
+      readYaml, commandExists + constants (SESSION_FILE, SH_DIR, EVIDENCE_FILE).
+      Foundation for all 21 broken hooks.
+
+  - id: TASK-090
+    title: "Restore Shield-Harness init in orchestra-start.ps1"
+    status: done
+    priority: P0
+    target_version: "v0.13.0"
+    repo: winsmux
+    labels: [feat, hook, startup]
+    depends_on: ["TASK-089"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      PR#79 で start-orchestra.ps1 削除時に shield-harness init が移植漏れ。
+      純 PowerShell で session.json, config templates, state/logs dirs を初期化。
+      npx shield-harness 依存は排除。
+
+  - id: TASK-091
+    title: "Create .claude/settings.json and register hooks"
+    status: done
+    priority: P0
+    target_version: "v0.13.0"
+    repo: winsmux
+    labels: [feat, hook, configuration]
+    depends_on: ["TASK-089"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      .claude/settings.json (git-tracked) を新規作成。sh-evidence.js を PostToolUse に登録。
+      settings.local.json は Commander 専用 (orchestra-gate)。二層設計の実現。
+
+  - id: TASK-092
+    title: "Activate Tier 1 Hooks (8 hooks: session, gate, injection, permission, output)"
+    status: done
+    priority: P0
+    target_version: "v0.14.0"
+    repo: winsmux
+    labels: [feat, hook, security]
+    depends_on: ["TASK-089", "TASK-090", "TASK-091"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      sh-session-start, sh-session-end, sh-gate, sh-injection-guard,
+      sh-permission, sh-output-control を settings.json に登録して稼働させる。
+      sh-session-start の lib/ 依存は try-catch で soft-disable。
+
+  - id: TASK-093
+    title: "Fix injection-patterns.json schema (Array to Object with categories)"
+    status: done
+    priority: P1
+    target_version: "v0.14.0"
+    repo: winsmux
+    labels: [fix, hook, security]
+    depends_on: []
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      .claude/patterns/injection-patterns.json が Array 形式だが、
+      sh-injection-guard.js は { categories: {...} } 形式を期待。スキーマ変換。
+
+  - id: TASK-094
+    title: "Activate Tier 2 Hooks (9 hooks: quiet, circuit, subagent, worktree, lint, compact)"
+    status: done
+    priority: P0
+    target_version: "v0.15.0"
+    repo: winsmux
+    labels: [feat, hook, ux]
+    depends_on: ["TASK-092"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      sh-channel-detect, sh-user-prompt, sh-quiet-inject, sh-circuit-breaker,
+      sh-subagent, sh-worktree, lint-on-save, sh-precompact, sh-postcompact。
+      lint-on-save と compact 系は Tier 3 から昇格。
+
+  - id: TASK-095
+    title: "Implement P17 Focus Policy Stack (focus-lock/unlock)"
+    status: done
+    priority: P1
+    target_version: "v0.15.0"
+    repo: winsmux
+    labels: [feat, ux, psmux]
+    depends_on: []
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      cmux TerminalController.swift 由来。psmux-bridge focus-lock / focus-unlock コマンド。
+      orchestra-start.ps1 で自動 focus-lock。ペイン奪取防止。
+
+  - id: TASK-096
+    title: "Auto-cleanup stale worktrees and branches on Orchestra start"
+    status: done
+    priority: P1
+    target_version: "v0.15.0"
+    repo: winsmux
+    labels: [feat, automation, worktree]
+    depends_on: []
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      HANDOFF.md 技術的負債。orchestra-start.ps1 preflight に
+      前セッションの残骸 worktree/branch を自動検出・クリーンアップするロジック追加。
+
+  - id: TASK-097
+    title: "Activate Tier 3 Hooks (8 hooks) + enterprise lib verification"
+    status: done
+    priority: P0
+    target_version: "v0.16.0"
+    repo: winsmux
+    labels: [feat, hook, security, enterprise]
+    depends_on: ["TASK-094"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      sh-data-boundary, sh-elicitation, sh-dep-audit, sh-config-guard,
+      sh-instructions, sh-permission-learn, sh-pipeline, sh-task-gate。
+      lib/ 7本 (automode-detect, openshell-detect, permissions-validator,
+      policy-compat, policy-drift, tier-policy-gen, ocsf-mapper) の検証・修正。
+      shield-harness config テンプレート (production-hosts, jurisdictions, permissions-spec)。
+
+  - id: TASK-098
+    title: "Tauri scaffold + sidebar + Focus Policy + notification inbox"
+    status: done
+    priority: P0
+    target_version: "v0.18.0"
+    repo: winsmux
+    labels: [feat, tauri, ui, conpty, focus-policy]
+    depends_on: []
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      cmux 分析に基づく「認知基盤」リリース。テーマより先にユーザー認知を優先。
+      1) Tauri (Rust + Web) scaffold + 単一 ConPTY ペイン (xterm.js)
+      2) ワークスペースサイドバー（ロール、ブランチ、タスクID、通知、ヘルス状態）
+      3) Focus Policy Stack を Rust バックエンドに実装（NeverActivate/AllowPaneTargetOnly/ExplicitUserIntent）
+      4) 通知インボックス + jump-to-latest-unread
+      5) 安定したペイン/ワークスペース ID + バックエンドイベント配信
+
+
+  # === v0.18.1-pre: bug fixes from session 2026-04-05 ===
+  - id: TASK-122
+    title: "Fix orchestra-start pane duplication on restart"
+    status: backlog
+    priority: P0
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [fix, orchestra]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #213. orchestra-start がデフォルトセッションの残存ペインをクリーンアップせず新規追加する。
+
+  - id: TASK-123
+    title: "Replace Get-CimInstance Win32_Process with Get-Process globally"
+    status: backlog
+    priority: P0
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [fix, infrastructure]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #212. WMI がシステム全体でハング。全スクリプトで Get-Process に統一。
+
+  - id: TASK-124
+    title: "Add psmux-bridge kill/restart subcommands for Builder panes"
+    status: backlog
+    priority: P0
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [feat, orchestra]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #211. Commander が Builder の Codex を停止・再起動できない。
+
+  - id: TASK-125
+    title: "Auto-inject cmd /c workaround for Codex constrained language mode"
+    status: backlog
+    priority: P1
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [feat, orchestra]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #214. Builder プロンプトに自動で constrained language mode 回避指示をプリペンド。
+
+  - id: TASK-126
+    title: "Fix sh-worktree.js hook (no output on worktree create)"
+    status: backlog
+    priority: P1
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [fix, hooks]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #208. Agent worktree isolation 使用時に hook が no output で失敗。
+
+  - id: TASK-127
+    title: "Fix builder-queue manifest queued property error"
+    status: backlog
+    priority: P1
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [fix, manifest]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #192. ConvertTo-ManifestYaml で queued プロパティ不在。CI テスト失敗中。
+
+  - id: TASK-128
+    title: "Fix role switch killing pane instead of respawning"
+    status: backlog
+    priority: P1
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [fix, orchestra]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #174. exit コマンドでシェル終了→ペイン消滅。respawn-pane -k を使うべき。
+
+  - id: TASK-129
+    title: "Fix pane border labels not displayed"
+    status: backlog
+    priority: P2
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [fix, ui]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #144. select-pane -T で設定したラベルがボーダーに表示されない。
+
+  - id: TASK-130
+    title: "Commander auto-detect Builder stall and alert"
+    status: backlog
+    priority: P1
+    target_version: "v0.18.2"
+    repo: winsmux
+    labels: [feat, orchestra]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #210. Builder が停止しても Commander が検知できない。
+
+  - id: TASK-099
+    title: "Multi-pane layout + Orchestra integration in Tauri"
+    status: done
+    priority: P0
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [feat, tauri, ui, orchestra]
+    depends_on: ["TASK-098"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      複数ペイン分割（ユーザー自由配置）+ ドラッグ&ドロップリサイズ。
+      Orchestra ロール（Builder/Researcher/Reviewer）のペインラベル表示。
+      psmux-bridge CLI コマンドを Tauri IPC に移行。
+      UI設計方針: バックグラウンドペイン(Builder/Researcher/Reviewer)はデフォルト非表示。
+      サイドバーでステータスのみ表示。クリックで展開 or ポップアウト（別ウィンドウ）。
+      小画面ユーザーへの配慮。
+
+  - id: TASK-100
+    title: "Explorer + Dashboard panels in Tauri"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.0"
+    repo: winsmux
+    labels: [feat, tauri, ui, dashboard]
+    depends_on: ["TASK-099"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      左サイドバー: ファイルエクスプローラー（プロジェクトツリー）。
+      下部パネル: Orchestra Dashboard（ペイン状態、Timeline、Metrics）。
+      Event Stream をアプリ内通信で実装（ファイルベース不要）。
+
+  - id: TASK-101
+    title: "Theme engine + Nerd Font + TrueColor in Tauri"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.1"
+    repo: winsmux
+    labels: [feat, tauri, ui, theme]
+    depends_on: ["TASK-098"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      Catppuccin, Tokyo Night, Dracula プリセット3種。
+      xterm.js TrueColor + Nerd Font 対応。テーマ切替 UI。
+      v0.17.0 から後退: cmux 分析により認知基盤を優先したため。
+
+  - id: TASK-102
+    title: "Fix Codex context exhaustion in Builder worktrees"
+    status: backlog
+    priority: P1
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [fix, agent-teams, worktree]
+    depends_on: []
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      HANDOFF.md 技術的負債。agent-monitor.ps1 に auto-respawn + コンテキストリセット。
+
+  - id: TASK-103
+    title: "Implement P14-Ph2 psmux rendering improvements (TrueColor, Nerd Font, GPU)"
+    status: cancelled
+    priority: P1
+    target_version: "v0.19.0"
+    repo: sora-psmux
+    labels: [feat, rendering, rust, psmux]
+    depends_on: ["TASK-104"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: "Replaced by Tauri native UI"
+
+  - id: TASK-104
+    title: "Sync sora-psmux fork with upstream before rendering work"
+    status: cancelled
+    priority: P0
+    target_version: "v0.19.0"
+    repo: sora-psmux
+    labels: [chore, psmux, upstream]
+    depends_on: []
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: "No longer needed - psmux independence"
+
+  - id: TASK-105
+    title: "JSON-RPC backend + SDK integration in Tauri"
+    status: backlog
+    priority: P0
+    target_version: "v0.20.0"
+    repo: winsmux
+    labels: [feat, tauri, rust, architecture]
+    depends_on: ["TASK-099"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      Tauri Rust バックエンドに JSON-RPC v2 エンドポイント内蔵。
+      TypeScript/Python SDK が Tauri アプリに接続。
+      MCP Server を Tauri 内蔵に移行。
+
+  - id: TASK-106
+    title: "Relay Auth + remote pane support in Tauri"
+    status: backlog
+    priority: P1
+    target_version: "v0.21.0"
+    repo: winsmux
+    labels: [feat, tauri, security, remote]
+    depends_on: ["TASK-105"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      TCP + HMAC-SHA256 認証でリモート Builder 接続。
+      リモートペインを Tauri UI 内にシームレスに表示。
+
+  - id: TASK-107
+    title: "Editor panel + drag-and-drop layout + polish"
+    status: backlog
+    priority: P1
+    target_version: "v0.21.1"
+    repo: winsmux
+    labels: [feat, tauri, ui, editor]
+    depends_on: ["TASK-100"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      Editor = ファイルビューア（VS Code と同じ）。Explorer でファイル選択 → Editor に表示。
+      エージェント対話履歴ではない（対話は Commander ペインで完結）。
+      Monaco Editor 埋め込み。ペインをドラッグでメインウィンドウから分離 → 別ウィンドウ化。
+      拡張ディスプレイにドラッグして配置可能。分離ペインもサイドバーで状態確認。
+
+  - id: TASK-108
+    title: "Pane pop-out and multi-display support"
+    status: backlog
+    priority: P1
+    target_version: "v0.21.2"
+    repo: winsmux
+    labels: [feat, tauri, ui, multi-display]
+    depends_on: ["TASK-107"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      ペインをメインウィンドウからドラッグで分離 → 別ウィンドウ化。
+      拡張ディスプレイにドラッグして配置可能。分離ペインもサイドバーで状態確認。
+      Tauri の multi-window API を使用。
+
+  - id: TASK-109
+    title: "Builder work queue — auto-dispatch next task on completion"
+    status: done
+    priority: P0
+    target_version: "v0.17.0"
+    repo: winsmux
+    labels: [feat, orchestra, automation]
+    depends_on: []
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      Builder完了時にタスクキューから次タスクを自動取得。
+      dispatch-router.ps1/team-pipeline.ps1を活用。
+      Commanderの手動ディスパッチを不要にする。Issue #175。
+
+  - id: TASK-110
+    title: "Automatic task splitting for parallel Builder dispatch"
+    status: backlog
+    priority: P1
+    target_version: "v0.18.2"
+    repo: winsmux
+    labels: [feat, orchestra, automation]
+    depends_on: ["TASK-109"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      大きなタスクをサブタスクに自動分割し複数Builderに並列ディスパッチ。
+      ファイル境界・関数境界での分割。Issue #176。
+
+  - id: TASK-111
+    title: "Builder completion notification + auto-Reviewer dispatch"
+    status: done
+    priority: P0
+    target_version: "v0.17.0"
+    repo: winsmux
+    labels: [feat, orchestra, automation]
+    depends_on: []
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      Builder完了時にCommanderに自動通知 + 成果物をReviewerに自動ディスパッチ。
+      agent-monitor.ps1/mailboxパターン連携。Issue #162, #177。
+
+  - id: TASK-112
+    title: "Idle pane auto-role-switch for optimal resource utilization"
+    status: done
+    priority: P1
+    target_version: "v0.17.1"
+    repo: winsmux
+    labels: [feat, orchestra, automation]
+    depends_on: ["TASK-109", "TASK-111"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      アイドル状態のBuilderペインを自動的にResearcherやReviewerに切替。
+      psmux-bridge role コマンド(#159)を活用。タスク完了→キュー空→ロール切替の自動化。
+
+  - id: TASK-113
+    title: "Dynamic pane scaling — auto add/remove panes based on workload"
+    status: backlog
+    priority: P1
+    target_version: "v0.18.2"
+    repo: winsmux
+    labels: [feat, orchestra, automation, scaling]
+    depends_on: ["TASK-109", "TASK-112"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      ペイン数を動的に増減。psmux-bridge scale コマンド追加。
+      ワークキュー長に応じた自動スケーリング。
+      Tauri UI(v0.17.0+)ではウィンドウ単位で自由追加。Issue #179。
+
+  - id: TASK-114
+    title: "Orchestra event capture + SQLite FTS5 search layer"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.2"
+    repo: winsmux
+    labels: [feat, memory, search, sqlite]
+    depends_on: ["TASK-111"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      claude-mem分析に基づく設計。HANDOFF.md補完レイヤとして
+      Orchestraイベント(Builder変更/Reviewer指摘/Gate停止等)をsidecar workerで
+      SQLite FTS5に蓄積。search→timeline→detailの3層検索CLI/UI。
+      evidence-ledger.jsonlの進化形。保存抑制タグ(credential除外)必須。
+
+  - id: TASK-115
+    title: "Installer profile design (core/orchestra/security/full)"
+    status: backlog
+    priority: P2
+    target_version: "v0.20.1"
+    repo: winsmux
+    labels: [feat, installer, distribution]
+    depends_on: []
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      everything-claude-code分析に基づく設計。
+      winsmuxを全部入りではなく利用者に必要な面だけ入れられる
+      profile install対応にする。core(最小)/orchestra(ペイン管理)/
+      security(Hook+Gate)/full(全部)の4プロファイル。
+
+  - id: TASK-116
+    title: "Remove interactive startup prompts and add startup-doctor remediation"
+    status: done
+    priority: P1
+    target_version: "v0.17.2"
+    repo: winsmux
+    labels: [fix, startup, ux]
+    depends_on: ["TASK-081", "TASK-088"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      TASK-082 triage gap. 2026-04-02 startup audit の interactive-prompts(4) を担当。
+      orchestra-start/init/preflight 中の対話待ちを禁止し、fail-close + actionable error に統一。
+      `winsmux doctor` / `winsmux doctor --fix` 相当の remediation 導線を追加する。
+    updated: "2026-04-04"
+  - id: TASK-117
+    title: "Serialize orchestra-start phases with startup lock, retry, and idempotent preflight"
+    status: done
+    priority: P0
+    target_version: "v0.17.1"
+    repo: winsmux
+    labels: [fix, startup, reliability]
+    depends_on: ["TASK-083", "TASK-090", "TASK-091", "TASK-096"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      TASK-082 triage gap. race-conditions(7), startup-ordering(5), timeouts-retries(6),
+      idempotency-partial-state(一部)を担当。
+      trust -> vault -> config -> hooks -> layout -> agents -> health の順序を固定し、
+      single-flight lock、bounded retry、timeout classification、再入可能 preflight を実装する。
+    updated: "2026-04-04"
+  - id: TASK-118
+    title: "Add startup rollback and recovery journal for partial initialization"
+    status: done
+    priority: P1
+    target_version: "v0.17.4"
+    repo: winsmux
+    labels: [feat, startup, recovery]
+    depends_on: ["TASK-084", "TASK-117"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      TASK-082 triage gap. rollback(3) と silent-failures(一部) を担当。
+      startup 中に作成した pane/session/worktree/bootstrap artifact を journal 化し、
+      失敗時の rollback または resumable recovery を提供する。
+      `.winsmux/manifest.yaml` と連携し `winsmux recover` 導線を用意する。
+    updated: "2026-04-04"
+  - id: TASK-119
+    title: "Credential and vault health preflight with redacted diagnostics"
+    status: done
+    priority: P1
+    target_version: "v0.17.2"
+    repo: winsmux
+    labels: [fix, startup, security]
+    depends_on: ["TASK-081", "TASK-083", "TASK-088"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      TASK-082 triage gap. credential-mgmt(5) と cross-shell-environment(一部) を担当。
+      GH_TOKEN/gh auth/DPAPI vault/env propagation を startup 前に検証し、
+      redacted diagnostics と remediation hint を返す。ログ/evidence への credential 混入を防ぐ。
+    updated: "2026-04-04"
+  - id: TASK-120
+    title: "Write startup troubleshooting guide and verification matrix"
+    status: done
+    priority: P2
+    target_version: "v0.17.4"
+    repo: winsmux
+    labels: [docs, startup, reliability]
+    depends_on: ["TASK-082", "TASK-083"]
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      TASK-082 triage gap. operator-guidance(5) を担当。
+      20カテゴリ監査の失敗モード、想定ログシグネチャ、対処手順、回帰確認項目を文書化し、
+      TASK-067/TASK-039 の verification matrix と接続する。
+    updated: "2026-04-04"
+
+  - id: TASK-121
+    title: "Commander auto-detect Codex approval prompts in Builder panes"
+    status: done
+    priority: P0
+    target_version: "v0.17.0"
+    repo: winsmux
+    labels: [feat, orchestra, automation, ux]
+    depends_on: []
+    created: "2026-04-04"
+    updated: "2026-04-04"
+    notes: >
+      agent-monitor/completion-watcherにCodex承認待ちパターン検出を追加。
+      Commander に即通知する仕組み。Issue #190。
+
+  # === v0.18.1/v0.18.2: Issues backfill (2026-04-05) ===
+
+  - id: TASK-131
+    title: "Fix pty_close: stop reader thread and kill child process"
+    status: backlog
+    priority: P0
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [fix, tauri, conpty]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #219. pty_close がリーダースレッド停止もchild kill もしない。Builder-2 修正中。
+
+  - id: TASK-132
+    title: "Fix orchestra-start blocked by zombie pwsh/worktree locks"
+    status: backlog
+    priority: P0
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [fix, orchestra, startup]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #221. 前セッションの pwsh ゾンビがワークツリーロックを保持し orchestra-start がブロック。
+
+  - id: TASK-133
+    title: "Fix sh-orchestra-gate.js: block git add/commit from Commander"
+    status: backlog
+    priority: P0
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [fix, hooks, security]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #222. Commander が Bash 経由で git add/commit を実行可能。Builder-1 修正済み。
+
+  - id: TASK-134
+    title: "Commander approval gate for Builder sandbox prompts"
+    status: backlog
+    priority: P1
+    target_version: "v0.18.2"
+    repo: winsmux
+    labels: [feat, orchestra, security]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #215. Builder の sandbox 承認プロンプトを Commander が精査するゲート。
+
+  - id: TASK-135
+    title: "Integrate v0.17.0 auto-dispatch features into orchestra-start"
+    status: backlog
+    priority: P0
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [fix, orchestra, automation]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #216. builder-queue, completion-watcher, auto-rebalance が orchestra-start に未統合。
+
+  - id: TASK-136
+    title: "Prevent idle panes: Commander × dispatch-router/builder-queue/agent-monitor"
+    status: backlog
+    priority: P0
+    target_version: "v0.18.1"
+    repo: winsmux
+    labels: [feat, orchestra, automation]
+    depends_on: ["TASK-135"]
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #223. 3層設計: dispatch標準化 + queue自動消化 + monitor常駐。
+
+  - id: TASK-137
+    title: "Audit dead code and missing integration across v0.9.6–v0.18.0"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.0"
+    repo: winsmux
+    labels: [chore, audit, maintenance]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #217. Researcher調査完了 (.references/audit-dead-code-cleanup.md)。
+      CRITICAL: 25/26 hooks が死コード (5,200+行)。sh-orchestra-gate.js のみ稼働。
+      HIGH: settings.local.json肥大化、VERSION不整合、backlog.yaml不整合。
+      MEDIUM: 空ディレクトリ群、使い捨てプロンプト残骸、lib未使用ファイル、injection-patternsスキーマ不一致。
+      対応: 未登録hookの削除 or 段階的有効化を判断、不要ファイル一括クリーンアップ。
+
+  - id: TASK-140
+    title: "Switch Builder agents from persistent session to codex exec per task + shell templates"
+    status: backlog
+    priority: P0
+    target_version: "v0.18.2"
+    repo: winsmux
+    labels: [feat, orchestra, automation]
+    depends_on: ["TASK-136", "TASK-102"]
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #229. persistent session → codex exec per task。コンテキスト枯渇を原理的に解消。
+      /compactはタイミング競合問題あり廃止。タスク完了→プロセス終了→次タスク自動投入。
+      シェルスクリプトテンプレート方式: psmux-bridge/agents/{builder,reviewer,researcher}.sh。
+      AGENTS.md=システムプロンプト、sh=ユーザープロンプトラッパー。
+      固定ガードレール（cd $WORKTREE、テスト必須、conventional commits）をsh内に埋込み。
+
+  - id: TASK-139
+    title: "Rename psmux-bridge to winsmux-core + adapter layer separation"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.0"
+    repo: winsmux
+    labels: [chore, refactor, tauri]
+    depends_on: ["TASK-100"]
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #224. psmux-bridge/ → winsmux-core/。25+ファイルのリネーム。
+      psmux I/O をadapters/psmux.ps1に分離、Tauri版はadapters/tauri.ps1。
+      関数名・hooks・SDK・CLAUDE.md全参照更新。Tauri IPC移行と連動。
+
+  - id: TASK-138
+    title: "Source control panel in Tauri UI Explorer (worktree-aware)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.0"
+    repo: winsmux
+    labels: [feat, tauri, ui, git]
+    depends_on: ["TASK-100"]
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #170. Explorer サイドバーに Git ソースコントロールパネル追加。worktree 表示対応。
