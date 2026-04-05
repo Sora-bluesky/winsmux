@@ -6,14 +6,14 @@ Windows-native AI agent orchestration platform built on psmux.
 
 ```powershell
 # Session start (vault + trust + layout + agents + readiness check)
-pwsh psmux-bridge/scripts/orchestra-start.ps1
+pwsh winsmux-core/scripts/orchestra-start.ps1
 ```
 
 psmux must be running before orchestra-start. If not running, user starts it manually (Start-Process breaks colors).
 
 ## Architecture
 
-- **psmux-bridge/**: CLI plugin for psmux — vault, settings, role-gate, orchestra scripts
+- **winsmux-core/**: CLI plugin for psmux — vault, settings, role-gate, orchestra scripts
 - **.claude/hooks/**: PreToolUse hooks for governance enforcement (git-tracked)
 - **install.ps1**: Downloads sora-psmux fork binary from GitHub Releases
 
@@ -35,7 +35,7 @@ Commander enforced by `.claude/hooks/sh-orchestra-gate.js` (PreToolUse hook).
 NO_COLOR=1 pwsh -Command "Invoke-Pester tests/ -Output Minimal"
 
 # Syntax check
-pwsh -NoProfile -Command "[System.Management.Automation.Language.Parser]::ParseFile('psmux-bridge/scripts/orchestra-start.ps1', [ref]$null, [ref]$errors); if ($errors.Count -gt 0) { $errors } else { 'OK' }"
+pwsh -NoProfile -Command "[System.Management.Automation.Language.Parser]::ParseFile('winsmux-core/scripts/orchestra-start.ps1', [ref]$null, [ref]$errors); if ($errors.Count -gt 0) { $errors } else { 'OK' }"
 
 # Vault
 pwsh scripts/psmux-bridge.ps1 vault list
@@ -101,9 +101,9 @@ Allowed transitions: `backlog` → `wip` → `review` → `done`
 
 | File | Purpose |
 |------|---------|
-| `psmux-bridge/scripts/orchestra-start.ps1` | Full orchestra lifecycle |
-| `psmux-bridge/scripts/settings.ps1` | Hierarchical settings (project > global > defaults) |
-| `psmux-bridge/scripts/vault.ps1` | Windows Credential Manager integration |
+| `winsmux-core/scripts/orchestra-start.ps1` | Full orchestra lifecycle |
+| `winsmux-core/scripts/settings.ps1` | Hierarchical settings (project > global > defaults) |
+| `winsmux-core/scripts/vault.ps1` | Windows Credential Manager integration |
 | `.claude/hooks/sh-orchestra-gate.js` | Commander role enforcement |
 | `tasks/backlog.yaml` | Task tracking (local only, gitignored) |
 | `HANDOFF.md` | Session state handoff (local only) |

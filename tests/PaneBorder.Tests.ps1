@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 Describe 'pane border helpers' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\pane-border.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\pane-border.ps1')
     }
 
     BeforeEach {

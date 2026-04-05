@@ -74,9 +74,9 @@ const TOOLS = [
 // --- Bridge Invocation ---
 
 function resolveBridgeScript() {
-  // Try sibling first (psmux-bridge/mcp-server.js -> ../scripts/psmux-bridge.ps1)
+  // Try sibling first (winsmux-core/mcp-server.js -> ../scripts/winsmux-core.ps1)
   const candidates = [
-    path.resolve(__dirname, "..", "scripts", "psmux-bridge.ps1"),
+    path.resolve(__dirname, "..", "scripts", "winsmux-core.ps1"),
     path.resolve(__dirname, "psmux-bridge.ps1"),
   ];
   for (const p of candidates) {

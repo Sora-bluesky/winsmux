@@ -72,7 +72,7 @@ psmux-bridge doctor
 psmux new-session -s orchestra
 
 # Launch the default orchestra layout
-pwsh psmux-bridge/scripts/orchestra-start.ps1
+pwsh winsmux-core/scripts/orchestra-start.ps1
 ```
 
 Inside the session, label and inspect panes:

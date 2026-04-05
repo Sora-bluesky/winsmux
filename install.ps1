@@ -189,11 +189,11 @@ function Invoke-Install {
     Download-File "winsmux.ps1" (Join-Path $BIN_DIR "winsmux.ps1")
 
     # Orchestra support scripts
-    Download-File "psmux-bridge/scripts/agent-launch.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-launch.ps1")
-    Download-File "psmux-bridge/scripts/orchestra-start.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-start.ps1")
-    Download-File "psmux-bridge/scripts/orchestra-layout.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-layout.ps1")
-    Download-File "psmux-bridge/scripts/settings.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "settings.ps1")
-    Download-File "psmux-bridge/scripts/vault.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "vault.ps1")
+    Download-File "winsmux-core/scripts/agent-launch.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-launch.ps1")
+    Download-File "winsmux-core/scripts/orchestra-start.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-start.ps1")
+    Download-File "winsmux-core/scripts/orchestra-layout.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-layout.ps1")
+    Download-File "winsmux-core/scripts/settings.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "settings.ps1")
+    Download-File "winsmux-core/scripts/vault.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "vault.ps1")
 
     # .psmux.conf (backup existing)
     $confDest = Join-Path $HOME ".psmux.conf"

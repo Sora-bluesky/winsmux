@@ -2,7 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 Describe 'orchestra preflight zombie detection' {
     BeforeAll {
-        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\orchestra-preflight.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-preflight.ps1')
         $script:NewPreflightSnapshot = {
             param([Parameter(Mandatory = $true)][object[]]$Processes)
 
@@ -35,7 +35,7 @@ Describe 'orchestra preflight zombie detection' {
                 ProcessId       = 101
                 ParentProcessId = 0
                 Name            = 'pwsh.exe'
-                CommandLine     = "pwsh -NoProfile -File C:\repo\scripts\psmux-bridge.ps1 send builder-1 -C C:\repo\.worktrees\builder-1"
+                CommandLine     = "pwsh -NoProfile -File C:\repo\scripts\winsmux-core.ps1 send builder-1 -C C:\repo\.worktrees\builder-1"
             }
             [PSCustomObject]@{
                 ProcessId       = 201
@@ -50,7 +50,7 @@ Describe 'orchestra preflight zombie detection' {
             -ProtectedIds ([System.Collections.Generic.HashSet[int]]::new()) `
             -ProjectDir 'C:\repo' `
             -GitWorktreeDir 'C:\repo\.git' `
-            -BridgeScript 'C:\repo\scripts\psmux-bridge.ps1' `
+            -BridgeScript 'C:\repo\scripts\winsmux-core.ps1' `
             -SessionName 'winsmux-orchestra'
 
         @($victims | ForEach-Object { [int]$_.ProcessId }) | Should -Be @(101)
@@ -71,7 +71,7 @@ Describe 'orchestra preflight zombie detection' {
             -ProtectedIds ([System.Collections.Generic.HashSet[int]]::new()) `
             -ProjectDir 'C:\repo' `
             -GitWorktreeDir 'C:\repo\.git' `
-            -BridgeScript 'C:\repo\scripts\psmux-bridge.ps1' `
+            -BridgeScript 'C:\repo\scripts\winsmux-core.ps1' `
             -SessionName 'winsmux-orchestra'
 
         @($victims).Count | Should -Be 0
@@ -104,7 +104,7 @@ Describe 'orchestra preflight zombie detection' {
             -ProtectedIds ([System.Collections.Generic.HashSet[int]]::new()) `
             -ProjectDir 'C:\repo' `
             -GitWorktreeDir 'C:\repo\.git' `
-            -BridgeScript 'C:\repo\scripts\psmux-bridge.ps1' `
+            -BridgeScript 'C:\repo\scripts\winsmux-core.ps1' `
             -SessionName 'winsmux-orchestra' `
             -PaneRootIds @(401)
 

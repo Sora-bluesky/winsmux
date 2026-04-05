@@ -1,4 +1,4 @@
-# psmux-bridge Agent Templates
+# winsmux-core Agent Templates
 
 This directory contains bash wrappers that generate fixed user prompts for winsmux orchestration roles.
 
@@ -6,7 +6,7 @@ This directory contains bash wrappers that generate fixed user prompts for winsm
 
 - `builder.sh`
   - Purpose: emit a Builder prompt for implementation work in a dedicated worktree.
-  - Guardrails: requires `WORKTREE`, tells the agent to `cd` into it, mirrors the current `New-BuilderQueueDispatchPrompt` format from `psmux-bridge/scripts/builder-queue.ps1`, requires tests or checks before finishing, and requires Conventional Commits if a commit is created.
+  - Guardrails: requires `WORKTREE`, tells the agent to `cd` into it, mirrors the current `New-BuilderQueueDispatchPrompt` format from `winsmux-core/scripts/builder-queue.ps1`, requires tests or checks before finishing, and requires Conventional Commits if a commit is created.
   - Completion markers: `STATUS: EXEC_DONE` or `STATUS: BLOCKED`
 
 - `reviewer.sh`
@@ -51,4 +51,4 @@ printf '%s\n' "Implement TASK-140" | WORKTREE=/path/to/worktree ./builder.sh
 
 - `WORKTREE` is required for all three roles. Dispatchers must provide a trusted, single-line workspace path.
 - These scripts generate prompts only. They do not dispatch panes on their own.
-- `builder.sh` attempts to source `psmux-bridge/scripts/builder-queue.ps1` through `pwsh` to stay aligned with the current Builder queue prompt. If that is not available, it falls back to an embedded prompt with the same structure.
+- `builder.sh` attempts to source `winsmux-core/scripts/builder-queue.ps1` through `pwsh` to stay aligned with the current Builder queue prompt. If that is not available, it falls back to an embedded prompt with the same structure.
