@@ -13,7 +13,7 @@ It provides the runtime and coordination layer for running multiple agent CLIs i
 ## What winsmux does
 
 - **Multi-vendor support**: run Codex, Claude, Gemini, and other CLI agents side by side in the same session
-- **Real-time visibility**: supervise every agent through live `psmux` panes instead of waiting for post-hoc summaries
+- **Real-time visibility**: supervise every agent through live `winsmux` panes instead of waiting for post-hoc summaries
 - **Enterprise governance**: enforce role gates, isolate Builder work in git worktrees, and preserve an evidence trail for review and audit
 
 ```powershell
@@ -27,7 +27,7 @@ winsmux health-check
 Most agent tooling is optimized for a single vendor and a single execution model. winsmux is designed for teams that need to coordinate multiple agents on Windows while keeping the system observable and governable.
 
 - **Vendor-neutral orchestration**: mix Codex for implementation, Claude for review, and Gemini for research in one session
-- **Pane-native operations**: inspect, interrupt, redirect, and relabel live panes through `psmux`
+- **Pane-native operations**: inspect, interrupt, redirect, and relabel live panes through `winsmux`
 - **Controlled execution**: combine read-before-act interaction, role-aware command gates, and isolated Builder workspaces
 - **Windows-first deployment**: no WSL2 dependency, no Linux detour, no hidden tmux requirement
 
@@ -68,8 +68,8 @@ The installer:
 # Verify the environment
 winsmux doctor
 
-# Start a psmux session
-psmux new-session -s orchestra
+# Start a winsmux session
+winsmux new-session -s orchestra
 
 # Launch the default orchestra layout
 pwsh winsmux-core/scripts/orchestra-start.ps1

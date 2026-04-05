@@ -15,7 +15,7 @@ const PROTOCOL_VERSION = "2024-11-05";
 const TOOLS = [
   {
     name: "winsmux_list",
-    description: "List labeled panes in the current psmux session",
+    description: "List labeled panes in the current winsmux session",
     inputSchema: { type: "object", properties: {}, required: [] },
   },
   {

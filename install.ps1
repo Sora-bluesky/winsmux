@@ -34,14 +34,14 @@ function Test-Administrator {
 
 function Install-Psmux {
     if (Get-Command psmux -ErrorAction SilentlyContinue) {
-        $ver = (psmux -V 2>&1 | Out-String).Trim()
+        $ver = (winsmux -V 2>&1 | Out-String).Trim()
         Write-Status "psmux found: $ver"
         return
     }
     Write-Status "psmux not found. Downloading sora-psmux fork..."
 
     $localBin = Join-Path $HOME ".local/bin"
-    $psmuxExe = Join-Path $localBin "psmux.exe"
+    $psmuxExe = Join-Path $localBin "winsmux.exe"
     $releaseUrl = "https://api.github.com/repos/Sora-bluesky/psmux/releases/latest"
     $headers = @{ "User-Agent" = "winsmux-installer/$VERSION" }
 
@@ -52,9 +52,9 @@ function Install-Psmux {
 
         Write-Status "Fetching latest sora-psmux release..."
         $release = Invoke-RestMethod -Uri $releaseUrl -Headers $headers -ErrorAction Stop
-        $asset = $release.assets | Where-Object { $_.name -eq "psmux.exe" } | Select-Object -First 1
+        $asset = $release.assets | Where-Object { $_.name -eq "winsmux.exe" } | Select-Object -First 1
         if (-not $asset) {
-            throw "psmux.exe asset not found in release $($release.tag_name)"
+            throw "winsmux.exe asset not found in release $($release.tag_name)"
         }
 
         Write-Status "Downloading $($asset.name) from $($release.tag_name)..."
@@ -267,7 +267,7 @@ pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux.ps1" %*
         Write-Host "  psmux config:  $confDest"
         Write-Host ""
         Write-Host "Next steps:"
-        Write-Host "  1. Start a psmux session:  psmux new-session -s work"
+        Write-Host "  1. Start a winsmux session:  winsmux new-session -s work"
         Write-Host "  2. Set your agent name:    `$env:WINSMUX_AGENT_NAME = 'claude'"
         Write-Host "  3. Try it out:             winsmux list"
     }

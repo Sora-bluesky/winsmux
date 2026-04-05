@@ -455,7 +455,7 @@ function Add-OrchestraPane {
         $splitOutput = Invoke-MonitorPsmux -Arguments @('split-window', '-t', $seedPaneId, '-h', '-c', $worktree.WorktreePath, '-P', '-F', '#{pane_id}') -CaptureOutput
         $newPaneId = (($splitOutput | Out-String).Trim() -split "\r?\n" | Where-Object { $_ -match '^%\d+$' } | Select-Object -Last 1)
         if ([string]::IsNullOrWhiteSpace($newPaneId)) {
-            throw 'psmux split-window did not return a pane id.'
+            throw 'winsmux split-window did not return a pane id.'
         }
 
         $newLabel = "builder-$nextIndex"

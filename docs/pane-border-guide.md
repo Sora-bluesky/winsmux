@@ -42,7 +42,7 @@ psmux source-file ~/.psmux.conf
 winsmux で普段使う方法はこれです。
 
 ```powershell
-psmux list-panes -a -F '#{pane_id} #{pane_title}'
+winsmux list-panes -a -F '#{pane_id} #{pane_title}'
 winsmux name %1 builder-1
 winsmux name %2 reviewer
 ```
@@ -59,15 +59,15 @@ winsmux name %2 reviewer
 tmux 互換コマンドで直接タイトルだけ付けたい場合はこちらです。
 
 ```powershell
-psmux select-pane -t %1 -T builder-1
-psmux select-pane -t %2 -T reviewer
+winsmux select-pane -t %1 -T builder-1
+winsmux select-pane -t %2 -T reviewer
 ```
 
 確認は次のコマンドでできます。
 
 ```powershell
-psmux list-panes -a -F '#{pane_id} #{pane_title}'
-psmux display-message -t %1 -p '#{pane_title}'
+winsmux list-panes -a -F '#{pane_id} #{pane_title}'
+winsmux display-message -t %1 -p '#{pane_title}'
 ```
 
 border 表示用に必要なのは `pane_title` が空でないことです。`pane-border-format` が `#{pane_title}` を参照していれば、タイトル更新後に border の表示内容も変わります。
@@ -78,13 +78,13 @@ border 表示用に必要なのは `pane_title` が空でないことです。`p
 
 - `pane-border-status` が `top` または `bottom` になっているか確認してください。
 - `pane-border-format` に `#{pane_title}` が入っているか確認してください。
-- `psmux display-message -t %1 -p '#{pane_title}'` で本当にタイトルが入っているか確認してください。
+- `winsmux display-message -t %1 -p '#{pane_title}'` で本当にタイトルが入っているか確認してください。
 - fork 前の psmux だと border text の描画自体が未対応のことがあります。対応済みビルドで再確認してください。
 
 ### `winsmux name` は通るのに表示名が変わらない
 
 - `winsmux name` のラベル保存と `select-pane -T` は別物です。ラベルは保存されても、psmux 側タイトル更新が効いていないと border には出ません。
-- `psmux list-panes -a -F '#{pane_id} #{pane_title}'` で `pane_title` が変わっていなければ、`select-pane -T` を直接試してください。
+- `winsmux list-panes -a -F '#{pane_id} #{pane_title}'` で `pane_title` が変わっていなければ、`select-pane -T` を直接試してください。
 
 ### フォールバック条件式が期待どおり動かない
 
@@ -101,7 +101,7 @@ border 表示用に必要なのは `pane_title` が空でないことです。`p
 - まず一覧を見ます。
 
 ```powershell
-psmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_id} #{pane_title}'
+winsmux list-panes -a -F '#{session_name}:#{window_index}.#{pane_index} #{pane_id} #{pane_title}'
 ```
 
-- そのあと `winsmux name %3 builder-1` または `psmux select-pane -t %3 -T builder-1` を使います。
+- そのあと `winsmux name %3 builder-1` または `winsmux select-pane -t %3 -T builder-1` を使います。

@@ -44,7 +44,7 @@ pwsh scripts/winsmux-core.ps1 doctor  # 診断実行
 
 **原因**: v0.14.0 以前の Split-Equal バグ（修正済み）。
 
-**解決**: `psmux select-layout tiled` または Orchestra 再起動。
+**解決**: `winsmux select-layout tiled` または Orchestra 再起動。
 
 ### ロール切替でペインが消える
 

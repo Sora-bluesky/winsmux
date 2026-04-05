@@ -1,6 +1,6 @@
 # winsmux
 
-Windows-native AI agent orchestration platform built on psmux.
+Windows-native AI agent orchestration platform built on winsmux-core.
 
 ## Quick Start
 
@@ -45,10 +45,10 @@ pwsh scripts/winsmux-core.ps1 vault set KEY value
 pwsh scripts/bump-version.ps1 -Version X.Y.Z
 ```
 
-## psmux send-keys Rules
+## winsmux send-keys Rules
 
 - Always use `-l` flag (literal mode). Without it, commands silently vanish.
-- Send Enter separately: `psmux send-keys -t %ID Enter`
+- Send Enter separately: `winsmux send-keys -t %ID Enter`
 - Wait for agent readiness (poll for `›` prompt) BEFORE sending prompts.
 - Builder panes run pwsh — use PowerShell syntax, not bash.
 

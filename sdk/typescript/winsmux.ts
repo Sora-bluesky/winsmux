@@ -47,7 +47,7 @@ export class WinsmuxClient {
 
   // --- Public API ---
 
-  /** List labeled panes in the current psmux session. */
+  /** List labeled panes in the current winsmux session. */
   async list(): Promise<string> {
     return this.callTool("winsmux_list", {});
   }
@@ -59,7 +59,7 @@ export class WinsmuxClient {
     return this.callTool("winsmux_read", args);
   }
 
-  /** Send text to a pane via psmux-bridge send. */
+  /** Send text to a pane via winsmux-bridge send. */
   async send(target: string, text: string): Promise<string> {
     return this.callTool("winsmux_send", { target, text });
   }

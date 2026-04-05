@@ -6,7 +6,7 @@ function Set-PsmuxWindowOption {
         [Parameter(Mandatory = $true)][string]$WindowId,
         [Parameter(Mandatory = $true)][string]$OptionName,
         [Parameter(Mandatory = $true)][string]$OptionValue,
-        [string]$PsmuxBin = 'psmux'
+        [string]$PsmuxBin = 'winsmux'
     )
 
     $attempts = @(
@@ -28,7 +28,7 @@ function Set-PsmuxWindowOption {
 function Set-OrchestraPaneBorderOptions {
     param(
         [Parameter(Mandatory = $true)][string]$WindowId,
-        [string]$PsmuxBin = 'psmux'
+        [string]$PsmuxBin = 'winsmux'
     )
 
     $options = [ordered]@{

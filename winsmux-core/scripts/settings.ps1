@@ -27,7 +27,7 @@ $script:BridgeSettingsSchema = [ordered]@{
 
 if (-not (Get-Command Get-PsmuxBin -ErrorAction SilentlyContinue)) {
     function Get-PsmuxBin {
-        foreach ($candidate in @('psmux', 'pmux', 'tmux')) {
+        foreach ($candidate in @('winsmux', 'pmux', 'tmux')) {
             $command = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($null -ne $command) {
                 if ($command.Path) {

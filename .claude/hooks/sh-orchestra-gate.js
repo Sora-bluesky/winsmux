@@ -27,10 +27,10 @@ try {
     }
   }
 
-  // Rule 2: No direct psmux send-keys (use winsmux send)
+  // Rule 2: No direct winsmux send-keys (use winsmux send)
   if (toolName === "Bash") {
-    if (/psmux\s+send-keys/.test(rawCommand) && !/winsmux-core/.test(rawCommand)) {
-      deny("Use winsmux send instead of direct psmux send-keys.");
+    if (/winsmux\s+send-keys/.test(rawCommand) && !/winsmux-core/.test(rawCommand)) {
+      deny("Use winsmux send instead of direct winsmux send-keys.");
     }
   }
 
@@ -44,8 +44,8 @@ try {
 
   // Rule 4: No direct codex exec (use orchestra-start)
   if (toolName === "Bash") {
-    if (/codex\s+(exec|e)\s/.test(rawCommand) && !/psmux\s+send-keys/.test(rawCommand) && !/winsmux-core/.test(rawCommand)) {
-      deny("Use orchestra-start or psmux send-keys to dispatch Codex, not direct codex exec.");
+    if (/codex\s+(exec|e)\s/.test(rawCommand) && !/winsmux\s+send-keys/.test(rawCommand) && !/winsmux-core/.test(rawCommand)) {
+      deny("Use orchestra-start or winsmux send-keys to dispatch Codex, not direct codex exec.");
     }
   }
 

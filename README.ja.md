@@ -38,10 +38,10 @@ irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | ie
 
 ```powershell
 # 1. セッションを作成
-psmux new-session -s work
+winsmux new-session -s work
 
 # 2. ペインを分割（Alt+n でも可）
-psmux split-window -h
+winsmux split-window -h
 
 # 3. ペインにラベルを付ける
 winsmux name %1 claude

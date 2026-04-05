@@ -89,9 +89,9 @@ Describe 'sh-orchestra-gate integration' {
         $result.StdErr | Should -Be ''
     }
 
-    It 'denies direct psmux send-keys usage' {
+    It 'denies direct winsmux send-keys usage' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
-            command = 'psmux send-keys -t %1 Enter'
+            command = 'winsmux send-keys -t %1 Enter'
         }
 
         & $script:AssertDenyResult -Result $result

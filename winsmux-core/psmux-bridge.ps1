@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param()
 
-function Get-PsmuxBin { foreach ($n in @('psmux','pmux','tmux')) { $b = Get-Command $n -ErrorAction SilentlyContinue; if ($b) { return $b.Source } }; return 'psmux' }
+function Get-PsmuxBin { foreach ($n in @('winsmux','pmux','tmux')) { $b = Get-Command $n -ErrorAction SilentlyContinue; if ($b) { return $b.Source } }; return 'winsmux' }
 $PSMUX = Get-PsmuxBin
 function Get-PsmuxOption { param([string]$Name, [string]$Default); $val = (& $PSMUX show-options -g -v $Name 2>&1 | Out-String).Trim(); if ($val -and $val -notmatch 'unknown|error|invalid') { return $val }; return $Default }
 

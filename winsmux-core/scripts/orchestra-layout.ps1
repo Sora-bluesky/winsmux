@@ -48,7 +48,7 @@ function Get-PaneIds {
         [string]$Target
     )
 
-    $rawPaneIds = & psmux list-panes -t $Target -F '#{pane_id}' 2>$null
+    $rawPaneIds = & winsmux list-panes -t $Target -F '#{pane_id}' 2>$null
     return @(
         $rawPaneIds |
             ForEach-Object { $_.Trim() } |
@@ -68,9 +68,9 @@ function Split-Equal {
     for ($i = 0; $i -lt ($PaneCount - 1); $i++) {
         $remaining = $PaneCount - $i
         $percent = [int](100 / $remaining)
-        & psmux split-window -t $Target $Direction -p $percent | Out-Null
+        & winsmux split-window -t $Target $Direction -p $percent | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            throw "psmux split-window failed while creating $PaneCount panes in direction $Direction."
+            throw "winsmux split-window failed while creating $PaneCount panes in direction $Direction."
         }
     }
 }
@@ -116,11 +116,11 @@ $grid = Get-GridDimensions -PaneCount $total
 $rows = $grid.Rows
 $cols = $grid.Cols
 
-& psmux has-session -t $SessionName 1>$null 2>$null
+& winsmux has-session -t $SessionName 1>$null 2>$null
 if ($LASTEXITCODE -ne 0) {
-    & psmux new-session -d -s $SessionName | Out-Null
+    & winsmux new-session -d -s $SessionName | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw 'psmux new-session failed.'
+        throw 'winsmux new-session failed.'
     }
 
     Start-Sleep -Milliseconds 500
@@ -145,7 +145,7 @@ if ($newPaneId -notmatch '^%\d+$') {
     throw "psmux new-window returned an unexpected pane id: '$newPaneId'."
 }
 
-if (-not (Set-OrchestraPaneBorderOptions -WindowId $newWindowId -PsmuxBin 'psmux')) {
+if (-not (Set-OrchestraPaneBorderOptions -WindowId $newWindowId -PsmuxBin 'winsmux')) {
     Write-Warning "Could not enable pane border labels for window $newWindowId."
 }
 
@@ -160,9 +160,9 @@ if ($rowIds.Count -lt $rows) {
 
 if ($cols -gt 1) {
     for ($rowIndex = 0; $rowIndex -lt $rows; $rowIndex++) {
-        & psmux select-pane -t $rowIds[$rowIndex] | Out-Null
+        & winsmux select-pane -t $rowIds[$rowIndex] | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            throw "psmux select-pane failed for row pane $($rowIds[$rowIndex])."
+            throw "winsmux select-pane failed for row pane $($rowIds[$rowIndex])."
         }
 
         Split-Equal -Target $rowIds[$rowIndex] -PaneCount $cols -Direction '-h'
@@ -183,9 +183,9 @@ for ($index = 0; $index -lt $total; $index++) {
     $paneId = $allIds[$index]
     $label = $labels[$index]
 
-    & psmux select-pane -t $paneId -T $label | Out-Null
+    & winsmux select-pane -t $paneId -T $label | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw "psmux select-pane -T failed for pane $paneId."
+        throw "winsmux select-pane -T failed for pane $paneId."
     }
 
     $assignments.Add([PSCustomObject]@{
@@ -194,9 +194,9 @@ for ($index = 0; $index -lt $total; $index++) {
     })
 }
 
-& psmux select-pane -t $allIds[0] | Out-Null
+& winsmux select-pane -t $allIds[0] | Out-Null
 if ($LASTEXITCODE -ne 0) {
-    throw "psmux select-pane failed for pane $($allIds[0])."
+    throw "winsmux select-pane failed for pane $($allIds[0])."
 }
 
 [PSCustomObject]@{

@@ -183,7 +183,7 @@ function Get-PsmuxSessionNameForPane {
 
     $result = Invoke-PsmuxCommand -Arguments @('display-message', '-p', '-t', $PaneId, '#{session_name}')
     if (-not $result.Success) {
-        Stop-WithError "Unable to resolve the psmux session for pane $PaneId."
+        Stop-WithError "Unable to resolve the winsmux session for pane $PaneId."
     }
 
     $sessionName = $result.Output.Trim()

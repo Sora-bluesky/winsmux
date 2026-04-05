@@ -36,7 +36,7 @@ class WinsmuxClient:
     # --- Public API ---
 
     def list(self) -> str:
-        """List labeled panes in the current psmux session."""
+        """List labeled panes in the current winsmux session."""
         return self._call_tool("winsmux_list", {})
 
     def read(self, target: str, lines: int = 50) -> str:
@@ -47,7 +47,7 @@ class WinsmuxClient:
         return self._call_tool("winsmux_read", args)
 
     def send(self, target: str, text: str) -> str:
-        """Send text to a pane via psmux-bridge send."""
+        """Send text to a pane via winsmux-bridge send."""
         return self._call_tool("winsmux_send", {"target": target, "text": text})
 
     def dispatch(self, text: str) -> str:

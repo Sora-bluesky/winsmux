@@ -170,8 +170,8 @@ function Resolve-Target {
 # --- Helper: Confirm-Target ---
 function Confirm-Target {
     param([string]$PaneId)
-    # display-message -t ignores the -t flag in psmux v3.3.1, so validate via list-panes
-    $allPanes = (& psmux list-panes -a -F '#{pane_id}' | Out-String).Trim() -split "`n" | ForEach-Object { $_.Trim() }
+    # display-message -t ignores the -t flag in winsmux v3.3.1, so validate via list-panes
+    $allPanes = (& winsmux list-panes -a -F '#{pane_id}' | Out-String).Trim() -split "`n" | ForEach-Object { $_.Trim() }
     if ($PaneId -notin $allPanes) {
         Stop-WithError "invalid target: $PaneId"
     }
@@ -298,7 +298,7 @@ function Test-CodexReadyPromptText {
 function Test-CodexReadyPrompt {
     param([string]$PaneId)
 
-    $output = & psmux capture-pane -t $PaneId -p -J -S -50
+    $output = & winsmux capture-pane -t $PaneId -p -J -S -50
     return Test-CodexReadyPromptText (($output | Out-String).TrimEnd())
 }
 
@@ -307,7 +307,7 @@ function Wait-PaneShellReady {
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        $snapshot = (& psmux capture-pane -t $PaneId -p -J -S -50 2>$null | Out-String).TrimEnd()
+        $snapshot = (& winsmux capture-pane -t $PaneId -p -J -S -50 2>$null | Out-String).TrimEnd()
         $lastLine = Get-LastNonEmptyLine $snapshot
         if ($lastLine -and $lastLine.Trim() -match '^PS ') {
             return
@@ -321,7 +321,7 @@ function Wait-PaneShellReady {
 
 function Get-PaneRuntimeMap {
     $paneMap = @{}
-    $raw = & psmux list-panes -a -F '#{pane_id} #{pane_pid}'
+    $raw = & winsmux list-panes -a -F '#{pane_id} #{pane_pid}'
     $lines = ($raw | Out-String).Trim() -split "`n"
 
     foreach ($line in $lines) {
@@ -357,7 +357,7 @@ function Get-PaneRuntimeMap {
 function Get-PaneSnapshotText {
     param([string]$PaneId, [int]$Lines = 50)
 
-    $output = & psmux capture-pane -t $PaneId -p -J -S "-$Lines"
+    $output = & winsmux capture-pane -t $PaneId -p -J -S "-$Lines"
     return ($output | Out-String).TrimEnd()
 }
 
@@ -653,13 +653,13 @@ function Invoke-Id {
     if ($env:TMUX_PANE) {
         Write-Output $env:TMUX_PANE
     } else {
-        $id = & psmux display-message -p '#{pane_id}'
+        $id = & winsmux display-message -p '#{pane_id}'
         Write-Output ($id | Out-String).Trim()
     }
 }
 
 function Invoke-List {
-    $raw = & psmux list-panes -a -F '#{pane_id} #{pane_pid} #{pane_current_command} #{pane_width}x#{pane_height} #{pane_title}'
+    $raw = & winsmux list-panes -a -F '#{pane_id} #{pane_pid} #{pane_current_command} #{pane_width}x#{pane_height} #{pane_title}'
     $labels = Get-Labels
     # Build reverse lookup: paneId -> label
     $reverseLabels = @{}
@@ -718,7 +718,7 @@ function Invoke-Read {
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
 
-    $output = & psmux capture-pane -t $paneId -p -J -S "-$lines"
+    $output = & winsmux capture-pane -t $paneId -p -J -S "-$lines"
     $currentText = ($output | Out-String).TrimEnd()
 
     # Watermark-based change detection: if a watermark exists (set by send),
@@ -748,7 +748,7 @@ function Invoke-Type {
 
     Assert-ReadMark $paneId
 
-    & psmux send-keys -t $paneId -l -- "$text"
+    & winsmux send-keys -t $paneId -l -- "$text"
 
     Clear-ReadMark $paneId
 }
@@ -763,7 +763,7 @@ function Invoke-Keys {
     Assert-ReadMark $paneId
 
     foreach ($key in $Rest) {
-        & psmux send-keys -t $paneId $key
+        & winsmux send-keys -t $paneId $key
     }
 
     Clear-ReadMark $paneId
@@ -779,12 +779,12 @@ function Invoke-Message {
 
     Assert-ReadMark $paneId
 
-    $myId = (& psmux display-message -p '#{pane_id}' | Out-String).Trim()
-    $myCoord = (& psmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' | Out-String).Trim()
+    $myId = (& winsmux display-message -p '#{pane_id}' | Out-String).Trim()
+    $myCoord = (& winsmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' | Out-String).Trim()
     $agentName = if ($env:WINSMUX_AGENT_NAME) { $env:WINSMUX_AGENT_NAME } else { "unknown" }
 
     $header = "[winsmux from:$agentName pane:$myId at:$myCoord -- load the winsmux skill to reply]"
-    & psmux send-keys -t $paneId -l -- "$header $text"
+    & winsmux send-keys -t $paneId -l -- "$header $text"
 
     Clear-ReadMark $paneId
 }
@@ -799,23 +799,23 @@ function Invoke-Send {
     $paneId = Confirm-Target $paneId
 
     # Step 1: Type text directly (no header — headers break TUI agents like Claude Code)
-    & psmux send-keys -t $paneId -l -- "$text"
+    & winsmux send-keys -t $paneId -l -- "$text"
 
     # Step 2: Verify text landed
     Start-Sleep -Milliseconds 300
 
     # Step 3: Submit with Enter
-    & psmux send-keys -t $paneId Enter
+    & winsmux send-keys -t $paneId Enter
     Start-Sleep -Milliseconds 500
-    $postEnterSnapshot = & psmux capture-pane -t $paneId -p -J -S "-200"
+    $postEnterSnapshot = & winsmux capture-pane -t $paneId -p -J -S "-200"
     $postEnterText = ($postEnterSnapshot | Out-String).TrimEnd()
     if ($postEnterText -match '\[Pasted Content') {
-        & psmux send-keys -t $paneId Enter
+        & winsmux send-keys -t $paneId Enter
     }
 
     # Step 4: Save watermark for change detection in subsequent read calls
     Start-Sleep -Milliseconds 800
-    $snapshot = & psmux capture-pane -t $paneId -p -J -S "-200"
+    $snapshot = & winsmux capture-pane -t $paneId -p -J -S "-200"
     $snapshotText = ($snapshot | Out-String).TrimEnd()
     Save-Watermark $paneId $snapshotText
 
@@ -839,7 +839,7 @@ function Invoke-Name {
 
     # Also set pane title (best-effort)
     try {
-        & psmux select-pane -t $paneId -T "$label" 2>$null
+        & winsmux select-pane -t $paneId -T "$label" 2>$null
     } catch { }
 
     Write-Output "Labeled pane $paneId as '$label'"
@@ -869,7 +869,7 @@ function Invoke-AutoRebalance {
     $idleBuilders = @()
     foreach ($label in $builderLabels) {
         $paneId = $labels[$label]
-        $snapshot = (& psmux capture-pane -t $paneId -p 2>$null | Out-String).TrimEnd()
+        $snapshot = (& winsmux capture-pane -t $paneId -p 2>$null | Out-String).TrimEnd()
         $lastLine = ($snapshot -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)
         $isIdle = $lastLine -and ($lastLine.Trim() -match '\d+% left' -or $lastLine.Trim() -match '^[>›]')
         if ($isIdle) { $idleBuilders += $label }
@@ -929,7 +929,7 @@ function Invoke-Role {
     $newLabel = "$newRole-$nextNum"
 
     # Rename pane first (before respawn)
-    & psmux select-pane -t $paneId -T $newLabel
+    & winsmux select-pane -t $paneId -T $newLabel
 
     # Update labels
     $labels[$newLabel] = $paneId
@@ -937,12 +937,12 @@ function Invoke-Role {
     Save-Labels $labels
 
     # Respawn pane (kills current process + restarts shell in one step, #174)
-    & psmux respawn-pane -k -t $paneId
+    & winsmux respawn-pane -k -t $paneId
 
     # Wait for shell ready (poll for PS prompt)
     $deadline = (Get-Date).AddSeconds(15)
     while ((Get-Date) -lt $deadline) {
-        $snapshot = (& psmux capture-pane -t $paneId -p 2>$null | Out-String).TrimEnd()
+        $snapshot = (& winsmux capture-pane -t $paneId -p 2>$null | Out-String).TrimEnd()
         $lastLine = ($snapshot -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)
         if ($lastLine -and $lastLine.Trim() -match '^PS ') { break }
         Start-Sleep -Milliseconds 500
@@ -951,8 +951,8 @@ function Invoke-Role {
     # Launch Codex agent
     $gitDir = Join-Path $projectDir ".git"
     $launchCmd = "codex --full-auto -C '$projectDir' --add-dir '$gitDir'"
-    & psmux send-keys -t $paneId -l $launchCmd
-    & psmux send-keys -t $paneId Enter
+    & winsmux send-keys -t $paneId -l $launchCmd
+    & winsmux send-keys -t $paneId Enter
 
     Write-Output "Role changed: $oldLabel -> $newLabel ($paneId)"
 }
@@ -1039,7 +1039,7 @@ function Invoke-Doctor {
 
     # psmux install check
     try {
-        $ver = & psmux -V 2>&1
+        $ver = & winsmux -V 2>&1
         Write-Output "psmux: $($ver | Out-String)".Trim()
     } catch {
         Write-Output "psmux: NOT FOUND"
@@ -1061,7 +1061,7 @@ function Invoke-Doctor {
 
     # Pane count
     try {
-        $panes = & psmux list-panes -a -F '#{pane_id}'
+        $panes = & winsmux list-panes -a -F '#{pane_id}'
         $count = (($panes | Out-String).Trim() -split "`n" | Where-Object { $_.Trim() }).Count
         Write-Output "Panes: $count"
     } catch {
@@ -1196,7 +1196,7 @@ function Invoke-ImeInput {
         return
     }
 
-    & psmux send-keys -t $paneId -l -- "$text"
+    & winsmux send-keys -t $paneId -l -- "$text"
     Clear-ReadMark $paneId
     Write-Output "sent to $paneId"
 }
@@ -1227,7 +1227,7 @@ function Invoke-ImagePaste {
     $img.Dispose()
 
     # Send file path as text to the target pane
-    & psmux send-keys -t $paneId -l -- "$imgPath"
+    & winsmux send-keys -t $paneId -l -- "$imgPath"
     Clear-ReadMark $paneId
     Write-Output "image saved: $imgPath"
     Write-Output "path sent to $paneId"
@@ -1246,7 +1246,7 @@ function Invoke-ClipboardPaste {
         Stop-WithError "clipboard is empty"
     }
 
-    & psmux send-keys -t $paneId -l -- "$text"
+    & winsmux send-keys -t $paneId -l -- "$text"
     Clear-ReadMark $paneId
     Write-Output "sent to $paneId"
 }
@@ -1319,7 +1319,7 @@ function Invoke-Watch {
     if ($Rest -and $Rest.Count -gt 1) { $timeoutSec = [int]$Rest[1] }
 
     # Initial snapshot
-    $output = & psmux capture-pane -t $paneId -p -J -S -50
+    $output = & winsmux capture-pane -t $paneId -p -J -S -50
     $prevHash = [System.BitConverter]::ToString(
         [System.Security.Cryptography.SHA256]::Create().ComputeHash(
             [System.Text.Encoding]::UTF8.GetBytes(($output | Out-String))
@@ -1333,7 +1333,7 @@ function Invoke-Watch {
         Start-Sleep -Seconds 1
         $elapsed++
 
-        $output = & psmux capture-pane -t $paneId -p -J -S -50
+        $output = & winsmux capture-pane -t $paneId -p -J -S -50
         $currentHash = [System.BitConverter]::ToString(
             [System.Security.Cryptography.SHA256]::Create().ComputeHash(
                 [System.Text.Encoding]::UTF8.GetBytes(($output | Out-String))
@@ -1459,7 +1459,7 @@ function Invoke-Focus {
     $paneId = Confirm-Target $paneId
     Assert-FocusAllowed -PaneId $paneId -RawTarget $FocusTarget
 
-    & psmux select-pane -t $paneId
+    & winsmux select-pane -t $paneId
     Write-Output "Focused pane $paneId ($FocusTarget)"
 }
 
@@ -1531,7 +1531,7 @@ function Invoke-Profile {
         profiles = @(
             @{
                 name             = "winsmux $profileName"
-                commandline      = "pwsh -NoProfile -Command `"& '%USERPROFILE%\.winsmux\bin\winsmux-core.ps1' doctor; psmux new-session -s $profileName; pwsh '%USERPROFILE%\.winsmux\bin\start-orchestra.ps1'`""
+                commandline      = "pwsh -NoProfile -Command `"& '%USERPROFILE%\.winsmux\bin\winsmux-core.ps1' doctor; winsmux new-session -s $profileName; pwsh '%USERPROFILE%\.winsmux\bin\start-orchestra.ps1'`""
                 icon             = "`u{1F3BC}"
                 startingDirectory = "%USERPROFILE%"
                 tabTitle         = "winsmux $profileName"
@@ -1682,8 +1682,8 @@ function Invoke-VaultInject {
             # Escape single quotes in value for safe injection
             $escapedValue = $value -replace "'", "''"
             $setCmd = "`$env:$envName = '$escapedValue'"
-            & psmux send-keys -t $paneId -l -- "$setCmd"
-            & psmux send-keys -t $paneId Enter
+            & winsmux send-keys -t $paneId -l -- "$setCmd"
+            & winsmux send-keys -t $paneId Enter
             Start-Sleep -Milliseconds 100
             $injected++
         }
@@ -1862,7 +1862,7 @@ function Invoke-Kill {
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
 
-    & psmux respawn-pane -k -t $paneId
+    & winsmux respawn-pane -k -t $paneId
     if ($LASTEXITCODE -ne 0) {
         Stop-WithError "failed to kill pane process: $paneId"
     }
@@ -1887,17 +1887,17 @@ function Invoke-Restart {
 
     $plan = Get-PaneControlRestartPlan -ProjectDir $projectDir -PaneId $paneId -Settings $settings
 
-    & psmux respawn-pane -k -t $paneId -c $plan.LaunchDir
+    & winsmux respawn-pane -k -t $paneId -c $plan.LaunchDir
     if ($LASTEXITCODE -ne 0) {
         Stop-WithError "failed to restart pane shell: $paneId"
     }
 
     Wait-PaneShellReady -PaneId $paneId
-    & psmux send-keys -t $paneId -l -- "$($plan.LaunchCommand)"
+    & winsmux send-keys -t $paneId -l -- "$($plan.LaunchCommand)"
     if ($LASTEXITCODE -ne 0) {
         Stop-WithError "failed to send launch command to $paneId"
     }
-    & psmux send-keys -t $paneId Enter
+    & winsmux send-keys -t $paneId Enter
     if ($LASTEXITCODE -ne 0) {
         Stop-WithError "failed to submit launch command to $paneId"
     }
