@@ -389,6 +389,7 @@ function Get-PaneAgentStatus {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
         [string]$Agent = 'codex',
+        [string]$Role = '',
         [int]$HungThreshold = $script:AgentMonitorDefaultHungThreshold
     )
 
@@ -463,6 +464,16 @@ function Get-PaneAgentStatus {
 
     # crashed: PowerShell prompt visible (PS C:\) - Codex exited
     if ($trimmed -match '^PS [A-Z]:\\') {
+        if ($Role -eq 'Builder') {
+            Save-MonitorSnapshot -PaneId $PaneId -Hash (Get-ContentHash -Text $text) -Timestamp (Get-Date -Format o)
+            return [PSCustomObject]@{
+                Status       = 'ready'
+                PaneId       = $PaneId
+                SnapshotTail = $tail
+                ExitReason   = 'exec_completed'
+            }
+        }
+
         return [PSCustomObject]@{
             Status       = 'crashed'
             PaneId       = $PaneId
@@ -666,7 +677,7 @@ function Invoke-AgentMonitorCycle {
         $modelName = [string]$roleAgentConfig.Model
 
         $checkedCount++
-        $status = Get-PaneAgentStatus -PaneId $paneId -Agent $agentName -HungThreshold $IdleThreshold
+        $status = Get-PaneAgentStatus -PaneId $paneId -Agent $agentName -Role $role -HungThreshold $IdleThreshold
         $statusName = [string](Get-MonitorPropertyValue -InputObject $status -Name 'Status' -Default '')
         $statusExitReason = [string](Get-MonitorPropertyValue -InputObject $status -Name 'ExitReason' -Default '')
         $statusSnapshotTail = [string](Get-MonitorPropertyValue -InputObject $status -Name 'SnapshotTail' -Default '')
