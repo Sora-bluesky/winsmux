@@ -318,4 +318,49 @@ panes:
         $output[1].Results[0].Message | Should -Match 'Commander alert: idle pane builder-1'
         Should -Invoke Send-MonitorTelegramAlert -Times 1 -Exactly
     }
+
+    It 'emits commander alerts when a Builder stays busy with the same snapshot for three cycles' {
+        $script:BuilderStallHistory = @{}
+        $manifestDir = Join-Path $script:agentMonitorTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+        @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:agentMonitorTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    launch_dir: $script:agentMonitorTempRoot
+"@ | Set-Content -Path (Join-Path $manifestDir 'manifest.yaml') -Encoding UTF8
+
+        Mock Get-PaneAgentStatus {
+            [PSCustomObject]@{
+                Status       = 'busy'
+                PaneId       = '%2'
+                SnapshotTail = 'working'
+                SnapshotHash = 'stall-hash'
+                ExitReason   = ''
+            }
+        }
+        Mock Send-MonitorTelegramAlert { return $true }
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            roles = [ordered]@{}
+        }
+
+        @(Invoke-AgentMonitorCycle -Settings $settings -ManifestPath (Join-Path $manifestDir 'manifest.yaml') -SessionName 'winsmux-orchestra' -IdleThreshold 120) | Out-Null
+        @(Invoke-AgentMonitorCycle -Settings $settings -ManifestPath (Join-Path $manifestDir 'manifest.yaml') -SessionName 'winsmux-orchestra' -IdleThreshold 120) | Out-Null
+        $output = @(Invoke-AgentMonitorCycle -Settings $settings -ManifestPath (Join-Path $manifestDir 'manifest.yaml') -SessionName 'winsmux-orchestra' -IdleThreshold 120)
+
+        $output.Count | Should -Be 2
+        $output[0] | Should -Match 'Commander alert: stalled Builder pane builder-1 \(%2\)'
+        $output[1].Stalls | Should -Be 1
+        $output[1].Results[0].StallDetected | Should -Be $true
+        $output[1].Results[0].Message | Should -Match 'Commander alert: stalled Builder pane builder-1'
+        Should -Invoke Send-MonitorTelegramAlert -Times 1 -Exactly
+    }
 }
