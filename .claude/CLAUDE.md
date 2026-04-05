@@ -1,3 +1,4 @@
+<!-- version: 0.19.3 -->
 # winsmux
 
 Windows-native AI agent orchestration platform built on winsmux-core.
@@ -64,18 +65,18 @@ Hooks are in `.claude/hooks/` (git-tracked, 25 files). Two registration layers:
 - **settings.json** (git-tracked): all-user hooks (security baseline). Currently: sh-evidence.js のみ
 - **settings.local.json** (gitignored): Commander-specific hooks (sh-orchestra-gate.js)
 
-**Current status (v0.13.0)**: 25 hooks exist, 2 registered (orchestra-gate + evidence).
+**Current status (v0.19.3)**: 26 hooks exist, 2 registered (orchestra-gate + evidence).
 sh-utils.js 15関数実装済み (v0.13.0)。残り21本は v0.14.0〜v0.16.0 で段階的に有効化予定。
 shield-harness init 復元済み（session.json + config テンプレート自動生成）。
 
 ## ROADMAP Sync
 
 - ROADMAP.md は内部開発資料（gitignored、非公開）
-- `sync-roadmap.ps1` でローカル生成のみ。コミット不要
+- sync-roadmap.ps1 でローカル生成のみ。コミット不要
 
 ## Git Rules
 
-- **`git rm` 禁止。`git rm --cached` を使う。** bare `git rm` はローカルファイルも削除する（PR #79, #101 で2回事故）
+- See [GUARDRAILS.md](GUARDRAILS.md) for recurring failure prevention (git rm, send-keys, worktree rules, etc.)
 - ブランチは feature branch で作業、main 直コミットは pre-commit hook がブロック
 
 ## Conventions
@@ -109,3 +110,16 @@ Allowed transitions: `backlog` → `wip` → `review` → `done`
 | `HANDOFF.md` | Session state handoff (local only) |
 
 @HANDOFF.md
+
+## Changelog
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 0.19.3 | 2026-04-06 | Add version header, changelog table, link to GUARDRAILS.md |
+| 0.19.2 | 2026-04-05 | Monorepo consolidation (core/ added), install.ps1 updated |
+| 0.19.1 | 2026-04-05 | psmux-bridge → winsmux-core rename, doctor.ps1 added |
+| 0.19.0 | 2026-04-05 | /tmp path fix, GlassWorm hardening, dead code audit |
+| 0.18.2 | 2026-04-05 | Agent-monitor daemon, dynamic scaling, task splitting |
+| 0.18.1 | 2026-04-05 | Bug fixes (12), auto-dispatch integration |
+| 0.18.0 | 2026-04-04 | Tauri scaffold, ConPTY, Focus Policy, notification inbox |
+| 0.13.0 | 2026-04-04 | sh-utils.js 15 functions, shield-harness init restored |
