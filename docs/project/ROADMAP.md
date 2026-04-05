@@ -1,7 +1,7 @@
 # ロードマップ
 
 > `tasks/backlog.yaml` から自動生成 — 手動編集禁止
-> 最終同期: 2026-04-05 23:11 (+09:00)
+> 最終同期: 2026-04-05 23:27 (+09:00)
 
 ## バージョン概要
 
@@ -29,6 +29,7 @@
 | v0.19.0 | 3 | [====================] 100% (3/3) |
 | v0.19.1 | 3 | [====================] 100% (3/3) |
 | v0.19.2 | 3 | [--------------------] 0% (0/3) |
+| v0.19.3 | 2 | [--------------------] 0% (0/2) |
 | v0.20.0 | 8 | [--------------------] 0% (0/8) |
 | v0.20.1 | 6 | [--------------------] 0% (0/6) |
 | v0.21.0 | 6 | [--------------------] 0% (0/6) |
@@ -245,6 +246,13 @@
 | [ ] | TASK-155 | GUARDRAILS.md — Signs pattern for recurring failure prevention | P1 | winsmux | backlog |
 | [ ] | TASK-156 | CLAUDE.md version header + changelog table | P2 | winsmux | backlog |
 | [ ] | TASK-160 | Hook cluster SKILL.md generation (manual classification) | P2 | winsmux | backlog |
+
+### v0.19.3 — モノリポ統合
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
+| [ ] | TASK-173 | Consolidate winsmux-core Rust binary into winsmux monorepo | P0 | winsmux | backlog |
+| [ ] | TASK-174 | Add send-keys buffer overflow protection to winsmux send | P1 | winsmux | backlog |
 
 ### v0.20.0 — Tauri Desktop
 
