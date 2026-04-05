@@ -590,12 +590,20 @@ function Invoke-List {
         # Detect child process name
         $childCmd = ""
         try {
-            $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $panePid" -ErrorAction SilentlyContinue
+            $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $panePid" -OperationTimeoutSec 10 -ErrorAction SilentlyContinue)
             if ($children) {
                 $child = $children | Select-Object -First 1
                 $childCmd = $child.Name
             }
-        } catch { }
+        } catch {
+            try {
+                $children = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Parent -and $_.Parent.Id -eq [int]$panePid })
+                if ($children) {
+                    $child = $children | Select-Object -First 1
+                    $childCmd = $child.ProcessName
+                }
+            } catch { }
+        }
 
         # Build output line
         $output = $trimmed
