@@ -1728,7 +1728,7 @@ tasks:
 
   - id: TASK-148
     title: "Set GIT_EDITOR=true in orchestra session to prevent vim stall"
-    status: review
+    status: done
     priority: P0
     target_version: "v0.18.2"
     repo: winsmux
