@@ -590,12 +590,20 @@ function Invoke-List {
         # Detect child process name
         $childCmd = ""
         try {
-            $children = Get-CimInstance Win32_Process -Filter "ParentProcessId = $panePid" -ErrorAction SilentlyContinue
+            $children = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $panePid" -OperationTimeoutSec 10 -ErrorAction SilentlyContinue)
             if ($children) {
                 $child = $children | Select-Object -First 1
                 $childCmd = $child.Name
             }
-        } catch { }
+        } catch {
+            try {
+                $children = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Parent -and $_.Parent.Id -eq [int]$panePid })
+                if ($children) {
+                    $child = $children | Select-Object -First 1
+                    $childCmd = $child.ProcessName
+                }
+            } catch { }
+        }
 
         # Build output line
         $output = $trimmed
@@ -1640,6 +1648,8 @@ Commands:
   mailbox-create <ch>       Create Named Pipe mailbox listener
   mailbox-send <ch> <json>  Send JSON message to mailbox channel
   mailbox-listen <ch>       Alias for mailbox-create
+  kill <target>             Force-kill process in pane (respawn shell)
+  restart <target>           Kill + restore worktree dir from manifest
   doctor                    Check environment and IME diagnostics
   version                   Show version
 "@
@@ -1753,6 +1763,40 @@ function Invoke-MailboxListen {
     Invoke-MailboxCreate
 }
 
+# --- Kill / Restart ---
+function Invoke-Kill {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge kill <target>" }
+    $paneId = Resolve-Target $Target
+    $paneId = Confirm-Target $paneId
+    & psmux respawn-pane -t $paneId -k
+    Write-Output "killed $paneId"
+}
+
+function Invoke-Restart {
+    if (-not $Target) { Stop-WithError "usage: psmux-bridge restart <target>" }
+    $paneId = Resolve-Target $Target
+    $paneId = Confirm-Target $paneId
+
+    # Kill current process
+    & psmux respawn-pane -t $paneId -k
+    Start-Sleep -Seconds 2
+
+    # Try to restore worktree directory from manifest
+    $manifestPath = Join-Path (Get-Location).Path '.winsmux' 'manifest.yaml'
+    if (Test-Path $manifestPath) {
+        $manifestContent = Get-Content $manifestPath -Raw -Encoding UTF8
+        # Find the pane entry matching this pane_id and extract launch_dir
+        if ($manifestContent -match "pane_id:\s*'$([regex]::Escape($paneId))'[\s\S]*?launch_dir:\s*'([^']+)'") {
+            $launchDir = $Matches[1]
+            & psmux send-keys -t $paneId -l "cd `"$launchDir`""
+            & psmux send-keys -t $paneId Enter
+            Start-Sleep -Milliseconds 500
+        }
+    }
+
+    Write-Output "restarted $paneId"
+}
+
 # --- Dispatch ---
 switch ($Command) {
     'id'              { Invoke-Id }
@@ -1855,6 +1899,8 @@ switch ($Command) {
     }
     'role'            { Invoke-Role }
     'auto-rebalance'  { Invoke-AutoRebalance }
+    'kill'            { Invoke-Kill }
+    'restart'         { Invoke-Restart }
     ''                { Show-Usage }
     default           { Stop-WithError "unknown command: $Command. Run without arguments for usage." }
 }
