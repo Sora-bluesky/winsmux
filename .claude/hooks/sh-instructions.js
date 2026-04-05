@@ -123,6 +123,9 @@ function detectChanges(stored, current) {
 
 try {
   const input = readHookInput();
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
   const currentHashes = collectCurrentHashes();
   const storedHashes = loadStoredHashes();
 
@@ -137,7 +140,7 @@ try {
         decision: "allow",
         action: "baseline_recorded",
         file_count: Object.keys(currentHashes).length,
-        session_id: input.sessionId,
+        session_id: sessionId,
       });
     } catch {
       // Non-blocking
@@ -182,7 +185,7 @@ try {
         decision: "allow",
         action: "changes_detected",
         changes,
-        session_id: input.sessionId,
+        session_id: sessionId,
       });
     } catch {
       // Non-blocking

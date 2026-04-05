@@ -54,7 +54,9 @@ function detectInstall(command) {
 
 try {
   const input = readHookInput();
-  const { toolInput, sessionId } = input;
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
   const command = (toolInput.command || "").trim();
 
   // Detect install command

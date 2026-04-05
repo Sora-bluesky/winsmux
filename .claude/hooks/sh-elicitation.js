@@ -114,7 +114,10 @@ function checkExcessiveScopes(scopes) {
 
 try {
   const input = readHookInput();
-  const requestStr = JSON.stringify(input.toolInput);
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
+  const requestStr = JSON.stringify(toolInput);
 
   // Step 1: Extract URLs
   const urls = extractUrls(requestStr);
@@ -134,7 +137,7 @@ try {
           reason: "phishing_detected",
           domain,
           label: phishing.label,
-          session_id: input.sessionId,
+          session_id: sessionId,
         });
       } catch {
         // Non-blocking
@@ -166,7 +169,7 @@ try {
             decision: "deny",
             reason: "unauthorized_mcp",
             domain,
-            session_id: input.sessionId,
+            session_id: sessionId,
           });
         } catch {
           // Non-blocking
@@ -179,7 +182,7 @@ try {
   }
 
   // Step 4: Check OAuth scopes
-  const scopes = input.toolInput.scopes || input.toolInput.scope || [];
+  const scopes = toolInput.scopes || toolInput.scope || [];
   const scopeList = Array.isArray(scopes)
     ? scopes
     : typeof scopes === "string"
@@ -195,7 +198,7 @@ try {
         decision: "allow",
         reason: "excessive_scope_warning",
         scopes: excessive,
-        session_id: input.sessionId,
+        session_id: sessionId,
       });
     } catch {
       // Non-blocking
@@ -214,7 +217,7 @@ try {
       event: "Elicitation",
       decision: "allow",
       url_count: urls.length,
-      session_id: input.sessionId,
+      session_id: sessionId,
     });
   } catch {
     // Non-blocking

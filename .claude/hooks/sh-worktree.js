@@ -169,10 +169,12 @@ function sanitizeWorktreeName(name) {
 }
 
 function resolveRequestedWorktreePath(input, projectRoot) {
+  const toolInput = input.tool_input || input.toolInput || {};
   const explicitPath =
     input.worktree_path ||
     input.path ||
-    (input.toolInput && (input.toolInput.worktree_path || input.toolInput.path)) ||
+    toolInput.worktree_path ||
+    toolInput.path ||
     "";
 
   if (typeof explicitPath === "string" && explicitPath.trim()) {
@@ -257,6 +259,10 @@ function removeWorktree(projectRoot, worktreePath) {
 
 try {
   const input = readHookInput();
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
+  void toolName;
   const hookType = getHookEventName(input);
   const projectRoot = resolveProjectRoot(input);
 
@@ -274,7 +280,7 @@ try {
         decision: "allow",
         worktree_path: worktreePath,
         files_copied: filesCopied,
-        session_id: getSessionId(input),
+        session_id: sessionId || getSessionId(input),
       });
     } catch {
       // Non-blocking
@@ -288,7 +294,8 @@ try {
     const worktreePath =
       input.worktree_path ||
       input.path ||
-      (input.toolInput && (input.toolInput.worktree_path || input.toolInput.path)) ||
+      toolInput.worktree_path ||
+      toolInput.path ||
       "";
 
     if (!worktreePath) {
@@ -306,7 +313,7 @@ try {
         decision: "allow",
         worktree_path: resolvedWorktreePath,
         entries_merged: entriesMerged,
-        session_id: getSessionId(input),
+        session_id: sessionId || getSessionId(input),
       });
     } catch {
       // Non-blocking

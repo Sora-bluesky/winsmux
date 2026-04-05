@@ -39,6 +39,11 @@ function calculateSubagentBudget(session) {
 
 try {
   const input = readHookInput();
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
+  void toolName;
+  void toolInput;
   const session = readSession();
 
   const subagentBudget = calculateSubagentBudget(session);
@@ -50,7 +55,7 @@ try {
       event: "SubagentStart",
       decision: "allow",
       subagent_budget: subagentBudget,
-      session_id: input.sessionId,
+      session_id: sessionId,
     });
   } catch {
     // Non-blocking

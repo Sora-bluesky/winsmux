@@ -131,6 +131,9 @@ function buildRestorationContext(session, integrityCheck) {
 
 try {
   const input = readHookInput();
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
 
   // Restore session state from backup
   const session = restoreSessionState();
@@ -149,7 +152,7 @@ try {
       decision: "allow",
       integrity_valid: integrityCheck.valid,
       integrity_message: integrityCheck.message,
-      session_id: input.sessionId,
+      session_id: sessionId,
     });
   } catch {
     // Evidence failure is non-blocking

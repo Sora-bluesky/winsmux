@@ -281,8 +281,9 @@ function estimateJurisdiction(hostname, tldMap) {
 if (require.main === module) {
   try {
     const input = readHookInput();
-    const toolName = input.toolName;
-    const toolInput = input.toolInput;
+    const toolName = input.tool_name || input.toolName || "";
+    const toolInput = input.tool_input || input.toolInput || {};
+    const sessionId = input.session_id || input.sessionId || "";
 
     // Check channel source for evidence metadata (§8.6.3)
     let isChannel = false;

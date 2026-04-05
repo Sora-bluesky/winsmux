@@ -104,6 +104,12 @@ function writeDeny(decision) {
 
 function main() {
   const input = readHookInput();
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
+  void toolName;
+  void toolInput;
+  void sessionId;
   const prompt = typeof input.prompt === "string" ? input.prompt : "";
   const { normalizedPrompt, isChannel, isChannelEvent } = detectPromptContext(input, prompt);
   const patterns = flattenPatterns(loadPatterns());

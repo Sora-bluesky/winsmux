@@ -79,6 +79,9 @@ function buildContextOutput(session) {
 
 try {
   const input = readHookInput();
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
   const session = readSession();
 
   // Backup state before compaction
@@ -91,7 +94,7 @@ try {
       event: "PreCompact",
       decision: "allow",
       backup_created: true,
-      session_id: input.sessionId,
+      session_id: sessionId,
     });
   } catch {
     // Evidence failure is non-blocking

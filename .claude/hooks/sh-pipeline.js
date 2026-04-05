@@ -240,6 +240,9 @@ function bumpVersion(bumpType) {
 
 try {
   const input = readHookInput();
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
 
   // Step 0: Load pipeline config
   const config = loadPipelineConfig();
@@ -636,7 +639,7 @@ try {
         task_id: taskId,
         stage: stageStatus,
         summary,
-        session_id: input.sessionId,
+        session_id: sessionId,
       });
     } catch {
       // Non-blocking

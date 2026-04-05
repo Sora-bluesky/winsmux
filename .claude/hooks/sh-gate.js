@@ -280,7 +280,10 @@ function recordEvidence(hookName, decision, reason, command, sessionId) {
 if (require.main === module) {
   try {
     const input = readHookInput();
-    const command = (input.toolInput && input.toolInput.command) || "";
+    const toolName = input.tool_name || input.toolName || "";
+    const toolInput = input.tool_input || input.toolInput || {};
+    const sessionId = input.session_id || input.sessionId || "";
+    const command = (toolInput && toolInput.command) || "";
 
     // Empty command = not a Bash tool call or no-op — allow
     if (!command) {
@@ -323,7 +326,7 @@ if (require.main === module) {
         "deny",
         match.label,
         normalizedCommand,
-        input.sessionId,
+        sessionId,
       );
       const tracker = trackDeny(`gate:${match.label}`);
       if (tracker.exceeded) {

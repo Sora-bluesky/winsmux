@@ -114,9 +114,12 @@ function isBlacklisted(permissionPattern) {
 
 try {
   const input = readHookInput();
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
+  void toolName;
   // Permission pattern from the request
-  const permissionPattern =
-    input.toolInput.permission || input.toolInput.tool_pattern || "";
+  const permissionPattern = toolInput.permission || toolInput.tool_pattern || "";
 
   if (!permissionPattern) {
     allow();
@@ -135,7 +138,7 @@ try {
         reason: "deny_rule_conflict",
         pattern: permissionPattern,
         conflicting_rule: conflict,
-        session_id: input.sessionId,
+        session_id: sessionId,
       });
     } catch {
       // Non-blocking
@@ -156,7 +159,7 @@ try {
         decision: "deny",
         reason: "blacklisted_pattern",
         pattern: permissionPattern,
-        session_id: input.sessionId,
+        session_id: sessionId,
       });
     } catch {
       // Non-blocking
@@ -177,7 +180,7 @@ try {
         reason: "learning_limit_exceeded",
         pattern: permissionPattern,
         current_count: currentCount,
-        session_id: input.sessionId,
+        session_id: sessionId,
       });
     } catch {
       // Non-blocking
@@ -196,7 +199,7 @@ try {
       event: "PermissionRequest",
       decision: "allow",
       pattern: permissionPattern,
-      session_id: input.sessionId,
+      session_id: sessionId,
     });
   } catch {
     // Non-blocking

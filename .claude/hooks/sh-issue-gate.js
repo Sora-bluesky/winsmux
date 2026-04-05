@@ -38,7 +38,10 @@ const COMPLEX_PATTERNS = [
 if (require.main === module) {
   try {
     const input = readHookInput();
-    const command = (input.toolInput && input.toolInput.command) || "";
+    const toolName = input.tool_name || input.toolName || "";
+    const toolInput = input.tool_input || input.toolInput || {};
+    const sessionId = input.session_id || input.sessionId || "";
+    const command = (toolInput && toolInput.command) || "";
 
     // Only trigger on gh issue create
     if (!command.match(/\bgh\s+issue\s+create\b/)) {
@@ -72,7 +75,7 @@ if (require.main === module) {
           decision: "allow_with_warning",
           reason: `Trivial pattern detected: ${trivialMatch}`,
           title: title.slice(0, 80),
-          session_id: input.sessionId,
+          session_id: sessionId,
         });
       } catch {}
 

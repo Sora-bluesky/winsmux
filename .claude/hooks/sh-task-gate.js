@@ -113,6 +113,11 @@ function runPesterTests() {
 
 try {
   const input = readHookInput();
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
+  void toolName;
+  void toolInput;
 
   // Step 1: Check test configuration
   const config = checkTestConfig();
@@ -128,7 +133,7 @@ try {
           decision: "deny",
           reason: "pester_failed",
           output: pester.output,
-          session_id: input.sessionId,
+          session_id: sessionId,
         });
       } catch {}
       deny(`[${HOOK_NAME}] Pester テスト失敗。${pester.output}`);
@@ -159,7 +164,7 @@ try {
         event: "TaskCompleted",
         decision: "allow",
         reason: "tests_passed",
-        session_id: input.sessionId,
+        session_id: sessionId,
       });
     } catch {
       // Non-blocking
@@ -177,7 +182,7 @@ try {
       decision: "deny",
       reason: "tests_failed",
       output: result.output.slice(-200),
-      session_id: input.sessionId,
+      session_id: sessionId,
     });
   } catch {
     // Non-blocking

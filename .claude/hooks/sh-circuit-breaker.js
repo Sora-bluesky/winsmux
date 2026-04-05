@@ -23,6 +23,11 @@ const MAX_RETRIES = 3;
 
 try {
   const input = readHookInput();
+  const toolName = input.tool_name || input.toolName || "";
+  const toolInput = input.tool_input || input.toolInput || {};
+  const sessionId = input.session_id || input.sessionId || "";
+  void toolName;
+  void toolInput;
   const session = readSession();
 
   // Step 1: Check stop_hook_active flag (infinite loop prevention)
@@ -38,7 +43,7 @@ try {
         reason:
           "stop_hook_active flag was set — allowing to prevent infinite loop",
         retry_count: session.retry_count || 0,
-        session_id: input.sessionId,
+        session_id: sessionId,
       });
     } catch {
       // Evidence failure is non-blocking
@@ -66,7 +71,7 @@ try {
         decision: "allow",
         reason: `Retry limit reached (${MAX_RETRIES}/${MAX_RETRIES})`,
         retry_count: MAX_RETRIES,
-        session_id: input.sessionId,
+        session_id: sessionId,
       });
     } catch {
       // Evidence failure is non-blocking
@@ -90,7 +95,7 @@ try {
       decision: "deny",
       reason: `Retry ${currentRetry}/${MAX_RETRIES}`,
       retry_count: currentRetry,
-      session_id: input.sessionId,
+      session_id: sessionId,
     });
   } catch {
     // Evidence failure is non-blocking
