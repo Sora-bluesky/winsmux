@@ -211,11 +211,16 @@ function Get-AgentLaunchCommand {
         [Parameter(Mandatory = $true)][string]$Agent,
         [Parameter(Mandatory = $true)][string]$Model,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$GitWorktreeDir
+        [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
+        [bool]$ExecMode = $false
     )
 
     switch ($Agent.Trim().ToLowerInvariant()) {
         'codex' {
+            if ($ExecMode) {
+                return ''
+            }
+
             return "codex -c model=$Model --full-auto -C $(ConvertTo-PowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PowerShellLiteral -Value $GitWorktreeDir)"
         }
         'claude' {
@@ -520,6 +525,7 @@ function Save-OrchestraSessionState {
         $lines.Add(('  - label: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.Label))) | Out-Null
         $lines.Add(('    pane_id: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.PaneId))) | Out-Null
         $lines.Add(('    role: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.Role))) | Out-Null
+        $lines.Add(('    exec_mode: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.ExecMode))) | Out-Null
         $lines.Add(('    launch_dir: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.LaunchDir))) | Out-Null
         $lines.Add(('    builder_branch: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.BuilderBranch))) | Out-Null
         $lines.Add(('    builder_worktree_path: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.BuilderWorktreePath))) | Out-Null
@@ -710,6 +716,7 @@ try {
         $launchGitWorktreeDir = $gitWorktreeDir
         $builderBranch = $null
         $builderWorktreePath = $null
+        $execMode = ($canonicalRole -eq 'Builder')
 
         if ($canonicalRole -eq 'Builder') {
             $builderIndex++
@@ -721,7 +728,7 @@ try {
         }
 
         $roleAgentConfig = Get-RoleAgentConfig -Role $canonicalRole -Settings $settings
-        $launchCommand = Get-AgentLaunchCommand -Agent $roleAgentConfig.Agent -Model $roleAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir
+        $launchCommand = Get-AgentLaunchCommand -Agent $roleAgentConfig.Agent -Model $roleAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -ExecMode $execMode
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
@@ -729,7 +736,9 @@ try {
             Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_PANE_ID' -Value $paneId
             Invoke-Psmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
             Wait-PaneShellReady -PaneId $paneId
-            Send-OrchestraBridgeCommand -Target $paneId -Text $launchCommand
+            if (-not [string]::IsNullOrWhiteSpace($launchCommand)) {
+                Send-OrchestraBridgeCommand -Target $paneId -Text $launchCommand
+            }
         } finally {
             foreach ($envName in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {
                 try {
@@ -743,6 +752,7 @@ try {
             Label = $label
             PaneId = $paneId
             Role = $canonicalRole
+            ExecMode = $execMode
             LaunchDir = $launchDir
             BuilderBranch = $builderBranch
             BuilderWorktreePath = $builderWorktreePath
@@ -750,6 +760,10 @@ try {
     }
 
     foreach ($paneSummary in $paneSummaries) {
+        if ($paneSummary.ExecMode) {
+            continue
+        }
+
         try {
             $roleAgentConfig = Get-RoleAgentConfig -Role $paneSummary.Role -Settings $settings
             Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $roleAgentConfig.Agent -TimeoutSeconds 60
