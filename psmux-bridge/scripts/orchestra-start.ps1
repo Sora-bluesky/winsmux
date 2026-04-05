@@ -663,6 +663,8 @@ try {
     foreach ($entry in $vaultValues.GetEnumerator()) {
         Invoke-Psmux -Arguments @('set-environment', '-t', $sessionName, $entry.Key, $entry.Value)
     }
+    Invoke-Psmux -Arguments @('set-environment', '-t', $sessionName, 'GIT_EDITOR', 'true')
+    Write-WinsmuxLog -Level INFO -Event 'preflight.session_env.git_editor_set' -Message 'Set GIT_EDITOR=true for orchestra session.' -Data @{ session_name = $sessionName; key = 'GIT_EDITOR'; value = 'true' } | Out-Null
 
     $previousTargetSession = $env:WINSMUX_ORCHESTRA_SESSION
     $previousProjectDir = $env:WINSMUX_ORCHESTRA_PROJECT_DIR

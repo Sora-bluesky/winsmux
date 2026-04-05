@@ -1726,6 +1726,20 @@ tasks:
       戻り値が [string, PSCustomObject] 配列になる。.Killed プロパティアクセスが StrictMode で失敗。
       Fix: Write-Output → Write-Host に変更。
 
+  - id: TASK-148
+    title: "Set GIT_EDITOR=true in orchestra session to prevent vim stall"
+    status: review
+    priority: P0
+    target_version: "v0.18.2"
+    repo: winsmux
+    labels: [fix, orchestra, builder]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #240. Builder が git rebase --continue で vim にスタックする。
+      orchestra-start.ps1 のセッション環境に GIT_EDITOR=true を追加。
+
   # === Cline powerup proposals (2026-04-05) ===
 
   - id: TASK-143
