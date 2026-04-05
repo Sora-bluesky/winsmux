@@ -1095,7 +1095,7 @@ tasks:
   # === v0.18.1-pre: bug fixes from session 2026-04-05 ===
   - id: TASK-122
     title: "Fix orchestra-start pane duplication on restart"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.18.1"
     repo: winsmux
@@ -1108,7 +1108,7 @@ tasks:
 
   - id: TASK-123
     title: "Replace Get-CimInstance Win32_Process with Get-Process globally"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.18.1"
     repo: winsmux
@@ -1121,7 +1121,7 @@ tasks:
 
   - id: TASK-124
     title: "Add psmux-bridge kill/restart subcommands for Builder panes"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.18.1"
     repo: winsmux
@@ -1134,7 +1134,7 @@ tasks:
 
   - id: TASK-125
     title: "Auto-inject cmd /c workaround for Codex constrained language mode"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.18.1"
     repo: winsmux
@@ -1147,7 +1147,7 @@ tasks:
 
   - id: TASK-126
     title: "Fix sh-worktree.js hook (no output on worktree create)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.18.1"
     repo: winsmux
@@ -1160,7 +1160,7 @@ tasks:
 
   - id: TASK-127
     title: "Fix builder-queue manifest queued property error"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.18.1"
     repo: winsmux
@@ -1173,7 +1173,7 @@ tasks:
 
   - id: TASK-128
     title: "Fix role switch killing pane instead of respawning"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.18.1"
     repo: winsmux
@@ -1186,7 +1186,7 @@ tasks:
 
   - id: TASK-129
     title: "Fix pane border labels not displayed"
-    status: backlog
+    status: done
     priority: P2
     target_version: "v0.18.1"
     repo: winsmux
@@ -1260,7 +1260,7 @@ tasks:
 
   - id: TASK-102
     title: "Fix Codex context exhaustion in Builder worktrees"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.18.1"
     repo: winsmux
@@ -1555,7 +1555,7 @@ tasks:
 
   - id: TASK-131
     title: "Fix pty_close: stop reader thread and kill child process"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.18.1"
     repo: winsmux
@@ -1568,7 +1568,7 @@ tasks:
 
   - id: TASK-132
     title: "Fix orchestra-start blocked by zombie pwsh/worktree locks"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.18.1"
     repo: winsmux
@@ -1581,7 +1581,7 @@ tasks:
 
   - id: TASK-133
     title: "Fix sh-orchestra-gate.js: block git add/commit from Commander"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.18.1"
     repo: winsmux
@@ -1607,7 +1607,7 @@ tasks:
 
   - id: TASK-135
     title: "Integrate v0.17.0 auto-dispatch features into orchestra-start"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.18.1"
     repo: winsmux
@@ -1620,7 +1620,7 @@ tasks:
 
   - id: TASK-136
     title: "Prevent idle panes: Commander × dispatch-router/builder-queue/agent-monitor"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.18.1"
     repo: winsmux
@@ -1664,6 +1664,20 @@ tasks:
       シェルスクリプトテンプレート方式: psmux-bridge/agents/{builder,reviewer,researcher}.sh。
       AGENTS.md=システムプロンプト、sh=ユーザープロンプトラッパー。
       固定ガードレール（cd $WORKTREE、テスト必須、conventional commits）をsh内に埋込み。
+
+  - id: TASK-141
+    title: "Dispatch-router file-level task boundary enforcement"
+    status: backlog
+    priority: P0
+    target_version: "v0.18.2"
+    repo: winsmux
+    labels: [fix, orchestra, automation]
+    depends_on: ["TASK-135"]
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #232. 同じファイルを複数Builderが同時編集→マージ競合。
+      dispatch-routerにファイル排他ロック追加。影響ファイル宣言→競合チェック→キュー待機。
 
   - id: TASK-139
     title: "Rename psmux-bridge to winsmux-core + adapter layer separation"
