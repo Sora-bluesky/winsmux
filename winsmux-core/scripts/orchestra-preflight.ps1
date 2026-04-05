@@ -233,16 +233,16 @@ function Remove-OrchestraZombieProcesses {
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [Parameter(Mandatory = $true)][string]$BridgeScript,
-        [Parameter(Mandatory = $true)][string]$PsmuxBin
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin
     )
 
     $snapshot = Get-ProcessSnapshot
     $protectedIds = Get-AncestorProcessIds -Snapshot $snapshot -ProcessId $PID
     $paneRootIds = @()
 
-    & $PsmuxBin has-session -t $SessionName 1>$null 2>$null
+    & $WinsmuxBin has-session -t $SessionName 1>$null 2>$null
     if ($LASTEXITCODE -eq 0) {
-        $panePidOutput = & $PsmuxBin list-panes -t $SessionName -F '#{pane_pid}' 2>$null
+        $panePidOutput = & $WinsmuxBin list-panes -t $SessionName -F '#{pane_pid}' 2>$null
         $paneRootIds = @(
             $panePidOutput |
                 ForEach-Object { $_.Trim() } |
