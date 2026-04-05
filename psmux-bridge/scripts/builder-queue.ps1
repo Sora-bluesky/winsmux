@@ -15,11 +15,13 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'manifest.ps1')
 
 $script:BuilderQueueBridgeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\psmux-bridge.ps1'))
+$script:DispatchLedgerRelativePath = '.winsmux\dispatch-ledger.json'
 
 function ConvertTo-BuilderQueueEntry {
     param(
         [Parameter(Mandatory = $true)][string]$BuilderLabel,
-        [Parameter(Mandatory = $true)][string]$Task
+        [Parameter(Mandatory = $true)][string]$Task,
+        [string]$TaskId
     )
 
     if ([string]::IsNullOrWhiteSpace($BuilderLabel)) {
@@ -30,15 +32,35 @@ function ConvertTo-BuilderQueueEntry {
         throw 'Task must not be empty.'
     }
 
+    if ([string]::IsNullOrWhiteSpace($TaskId)) {
+        $TaskId = [guid]::NewGuid().ToString('N')
+    }
+
     $encodedTask = [System.Uri]::EscapeDataString($Task)
-    return "builder=$BuilderLabel;task=$encodedTask"
+    return "id=$TaskId;builder=$BuilderLabel;task=$encodedTask"
 }
 
 function ConvertFrom-BuilderQueueEntry {
     param([Parameter(Mandatory = $true)][string]$Entry)
 
-    if ($Entry -match '^builder=(.*?);task=(.*)$') {
+    if ($Entry -match '^id=(.*?);builder=(.*?);task=(.*)$') {
         return [PSCustomObject]@{
+            TaskId       = $Matches[1]
+            BuilderLabel = $Matches[2]
+            Task         = [System.Uri]::UnescapeDataString($Matches[3])
+            RawEntry     = $Entry
+        }
+    }
+
+    if ($Entry -match '^builder=(.*?);task=(.*)$') {
+        $fallbackTaskId = [System.BitConverter]::ToString(
+            [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+                [System.Text.Encoding]::UTF8.GetBytes($Entry)
+            )
+        ).Replace('-', '').ToLowerInvariant()
+
+        return [PSCustomObject]@{
+            TaskId       = $fallbackTaskId
             BuilderLabel = $Matches[1]
             Task         = [System.Uri]::UnescapeDataString($Matches[2])
             RawEntry     = $Entry
@@ -46,6 +68,7 @@ function ConvertFrom-BuilderQueueEntry {
     }
 
     return [PSCustomObject]@{
+        TaskId       = ''
         BuilderLabel = ''
         Task         = $Entry
         RawEntry     = $Entry
@@ -143,6 +166,186 @@ function Get-BuilderQueueSnapshot {
     }
 }
 
+function Get-DispatchLedgerPath {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    return Join-Path $ProjectDir $script:DispatchLedgerRelativePath
+}
+
+function Get-DispatchLedger {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    $path = Get-DispatchLedgerPath -ProjectDir $ProjectDir
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        return @()
+    }
+
+    try {
+        $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return @()
+        }
+
+        $parsed = $raw | ConvertFrom-Json
+        if ($parsed -is [System.Array]) {
+            return @($parsed)
+        }
+
+        return @($parsed)
+    } catch {
+        return @()
+    }
+}
+
+function Save-DispatchLedger {
+    param(
+        [string]$ProjectDir = (Get-Location).Path,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][array]$Entries
+    )
+
+    $path = Get-DispatchLedgerPath -ProjectDir $ProjectDir
+    $dir = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+
+    @($Entries) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
+function ConvertTo-DispatchLockPath {
+    param(
+        [string]$ProjectDir = (Get-Location).Path,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $candidate = $Path.Trim()
+    $candidate = $candidate.Trim("'`"[](){}.,;:")
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        return $null
+    }
+
+    $rootedCandidate = $candidate
+    if ([System.IO.Path]::IsPathRooted($rootedCandidate)) {
+        try {
+            $projectRoot = [System.IO.Path]::GetFullPath($ProjectDir).TrimEnd('\', '/')
+            $fullCandidate = [System.IO.Path]::GetFullPath($rootedCandidate)
+            if (-not $fullCandidate.StartsWith($projectRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $null
+            }
+
+            $candidate = $fullCandidate.Substring($projectRoot.Length).TrimStart('\', '/')
+        } catch {
+            return $null
+        }
+    }
+
+    $candidate = $candidate -replace '\\', '/'
+    if ($candidate.StartsWith('./')) {
+        $candidate = $candidate.Substring(2)
+    }
+
+    while ($candidate.StartsWith('/')) {
+        $candidate = $candidate.Substring(1)
+    }
+
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        return $null
+    }
+
+    return $candidate
+}
+
+function Get-BuilderQueueTaskFiles {
+    param(
+        [string]$ProjectDir = (Get-Location).Path,
+        [Parameter(Mandatory = $true)][string]$Task
+    )
+
+    $matches = [regex]::Matches($Task, '(?<![\w.-])(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+')
+    $files = [System.Collections.Generic.List[string]]::new()
+    $seen = @{}
+
+    foreach ($match in $matches) {
+        $normalized = ConvertTo-DispatchLockPath -ProjectDir $ProjectDir -Path $match.Value
+        if ([string]::IsNullOrWhiteSpace($normalized)) {
+            continue
+        }
+
+        $key = $normalized.ToLowerInvariant()
+        if ($seen.ContainsKey($key)) {
+            continue
+        }
+
+        $seen[$key] = $true
+        $files.Add($normalized)
+    }
+
+    return @($files)
+}
+
+function Lock-DispatchFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskId,
+        [Parameter(Mandatory = $true)][string]$BuilderLabel,
+        [string[]]$Files,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $normalizedFiles = [System.Collections.Generic.List[string]]::new()
+    $requested = @{}
+    foreach ($file in @($Files)) {
+        $normalized = ConvertTo-DispatchLockPath -ProjectDir $ProjectDir -Path ([string]$file)
+        if ([string]::IsNullOrWhiteSpace($normalized)) {
+            continue
+        }
+
+        $key = $normalized.ToLowerInvariant()
+        if ($requested.ContainsKey($key)) {
+            continue
+        }
+
+        $requested[$key] = $true
+        $normalizedFiles.Add($normalized)
+    }
+
+    $ledger = @(Get-DispatchLedger -ProjectDir $ProjectDir | Where-Object { $_.task_id -ne $TaskId })
+    foreach ($entry in $ledger) {
+        if ([string]$entry.builder_label -eq $BuilderLabel) {
+            continue
+        }
+
+        foreach ($file in @($entry.files)) {
+            if ($requested.ContainsKey(([string]$file).ToLowerInvariant())) {
+                return $false
+            }
+        }
+    }
+
+    if ($normalizedFiles.Count -gt 0) {
+        $ledger = @($ledger) + @([PSCustomObject]@{
+            task_id       = $TaskId
+            builder_label = $BuilderLabel
+            files         = @($normalizedFiles)
+            state         = 'locked'
+        })
+    }
+
+    Save-DispatchLedger -ProjectDir $ProjectDir -Entries $ledger
+    return $true
+}
+
+function Unlock-DispatchFiles {
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskId,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $ledger = @(Get-DispatchLedger -ProjectDir $ProjectDir)
+    $remaining = @($ledger | Where-Object { $_.task_id -ne $TaskId })
+    Save-DispatchLedger -ProjectDir $ProjectDir -Entries $remaining
+    return ($remaining.Count -ne $ledger.Count)
+}
+
 function Add-BuilderQueueTask {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -156,6 +359,7 @@ function Add-BuilderQueueTask {
     Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest
 
     return [PSCustomObject]@{
+        TaskId       = (ConvertFrom-BuilderQueueEntry -Entry $entry).TaskId
         BuilderLabel = $BuilderLabel
         Task         = $Task
         RawEntry     = $entry
@@ -247,11 +451,29 @@ function Dispatch-NextBuilderQueueTask {
     }
 
     $nextEntry = $queued[0]
+    $dispatchFiles = @(Get-BuilderQueueTaskFiles -ProjectDir $ProjectDir -Task $nextEntry.Task)
+    $locked = Lock-DispatchFiles -TaskId $nextEntry.TaskId -BuilderLabel $BuilderLabel -Files $dispatchFiles -ProjectDir $ProjectDir
+    if (-not $locked) {
+        return [PSCustomObject]@{
+            BuilderLabel     = $BuilderLabel
+            Dispatched       = $false
+            Reason           = 'file_conflict'
+            CurrentTask      = $nextEntry.Task
+            DispatchFiles    = @($dispatchFiles)
+            DispatchResult   = $null
+        }
+    }
+
     $prompt = New-BuilderQueueDispatchPrompt -Task $nextEntry.Task
-    $dispatchResult = if ($null -ne $DispatchAction) {
-        & $DispatchAction $BuilderLabel $nextEntry.Task $prompt
-    } else {
-        Invoke-BuilderQueueDispatch -BuilderLabel $BuilderLabel -Task $nextEntry.Task -Prompt $prompt
+    try {
+        $dispatchResult = if ($null -ne $DispatchAction) {
+            & $DispatchAction $BuilderLabel $nextEntry.Task $prompt
+        } else {
+            Invoke-BuilderQueueDispatch -BuilderLabel $BuilderLabel -Task $nextEntry.Task -Prompt $prompt
+        }
+    } catch {
+        Unlock-DispatchFiles -TaskId $nextEntry.TaskId -ProjectDir $ProjectDir | Out-Null
+        throw
     }
 
     $manifest.tasks.queued = (Remove-BuilderQueueRawEntry -Entries $manifest.tasks.queued -RawEntry $nextEntry.RawEntry)
@@ -263,6 +485,7 @@ function Dispatch-NextBuilderQueueTask {
         Dispatched     = $true
         Reason         = 'task_dispatched'
         CurrentTask    = $nextEntry.Task
+        DispatchFiles  = @($dispatchFiles)
         DispatchResult = $dispatchResult
     }
 }
@@ -293,6 +516,7 @@ function Complete-BuilderQueueTask {
         $manifest.tasks.completed = (@($manifest.tasks.completed) + @($completedEntry.RawEntry))
     }
     Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest
+    Unlock-DispatchFiles -TaskId $completedEntry.TaskId -ProjectDir $ProjectDir | Out-Null
 
     $dispatchOutcome = Dispatch-NextBuilderQueueTask -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel -DispatchAction $DispatchAction
 
