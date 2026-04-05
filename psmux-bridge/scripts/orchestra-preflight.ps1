@@ -250,7 +250,7 @@ function Remove-OrchestraZombieProcesses {
         try {
             Stop-Process -Id ([int]$victim.ProcessId) -Force -ErrorAction Stop
             $killed.Add($victim) | Out-Null
-            Write-Output ("Preflight: killed zombie process {0} ({1})" -f $victim.Name, $victim.ProcessId)
+            Write-Host ("Preflight: killed zombie process {0} ({1})" -f $victim.Name, $victim.ProcessId)
             Write-WinsmuxLog -Level INFO -Event 'preflight.zombie_process.killed' -Message ("Killed zombie process {0} ({1})." -f $victim.Name, $victim.ProcessId) -Data @{ process_name = $victim.Name; process_id = [int]$victim.ProcessId } | Out-Null
         } catch {
             Write-Warning ("Preflight: failed to kill zombie process {0} ({1}): {2}" -f $victim.Name, $victim.ProcessId, $_.Exception.Message)
