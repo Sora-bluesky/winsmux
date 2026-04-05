@@ -1652,7 +1652,7 @@ tasks:
 
   - id: TASK-140
     title: "Switch Builder agents from persistent session to codex exec per task + shell templates"
-    status: review
+    status: done
     priority: P0
     target_version: "v0.18.2"
     repo: winsmux
@@ -1828,7 +1828,7 @@ tasks:
 
   - id: TASK-150
     title: "Fix agent-watchdog: Start-Job dies with parent process → Start-Process"
-    status: review
+    status: done
     priority: P0
     target_version: "v0.18.2"
     repo: winsmux
