@@ -398,6 +398,7 @@ function Get-StatusSymbol {
         'in_progress' { return '[-]' }
         'doing' { return '[-]' }
         'active' { return '[-]' }
+        'cancelled' { return '[~]' }
         default { return '[ ]' }
     }
 }
@@ -545,14 +546,12 @@ $versionThemes = @{
     'v0.18.0' = 'Tauri scaffold'
     'v0.18.1' = 'マルチペイン + Codex 改善'
     'v0.18.2' = 'タスク分割 + 動的スケーリング'
-    'v0.19.0' = 'Explorer + Dashboard'
-    'v0.19.1' = 'テーマエンジン + ペインメタデータ'
-    'v0.19.2' = 'イベントキャプチャ + 検索'
-    'v0.20.0' = 'JSON-RPC + SDK'
-    'v0.20.1' = 'インストーラプロファイル'
-    'v0.21.0' = 'Relay Auth'
-    'v0.21.1' = 'Editor パネル'
-    'v0.21.2' = 'ペイン分離 + マルチディスプレイ'
+    'v0.19.0' = '衛生リリース (Cleanup & Hardening)'
+    'v0.19.1' = 'リネーム & ヘルスチェック'
+    'v0.19.2' = 'ドキュメント & ガバナンス'
+    'v0.20.0' = 'Tauri Desktop'
+    'v0.21.0' = 'スマートセッション'
+    'v0.22.0' = 'プロトコル層'
 }
 
 [void]$builder.AppendLine('# ロードマップ')

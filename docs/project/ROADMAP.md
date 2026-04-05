@@ -1,7 +1,7 @@
 # ロードマップ
 
 > `tasks/backlog.yaml` から自動生成 — 手動編集禁止
-> 最終同期: 2026-04-05 18:39 (+09:00)
+> 最終同期: 2026-04-05 20:55 (+09:00)
 
 ## バージョン概要
 
@@ -26,15 +26,13 @@
 | v0.18.0 | 1 | [====================] 100% (1/1) |
 | v0.18.1 | 15 | [====================] 100% (15/15) |
 | v0.18.2 | 10 | [====================] 100% (10/10) |
-| v0.19.0 | 6 | [--------------------] 0% (0/6) |
+| v0.19.0 | 3 | [====================] 100% (3/3) |
 | v0.19.1 | 2 | [--------------------] 0% (0/2) |
-| v0.19.2 | 2 | [--------------------] 0% (0/2) |
-| v0.20.0 | 5 | [--------------------] 0% (0/5) |
-| v0.20.1 | 1 | [--------------------] 0% (0/1) |
-| v0.21.0 | 2 | [--------------------] 0% (0/2) |
-| v0.21.1 | 1 | [--------------------] 0% (0/1) |
-| v0.21.2 | 1 | [--------------------] 0% (0/1) |
-| cancelled | 22 | [--------------------] 0% (0/22) |
+| v0.19.2 | 3 | [--------------------] 0% (0/3) |
+| v0.20.0 | 8 | [--------------------] 0% (0/8) |
+| v0.21.0 | 6 | [--------------------] 0% (0/6) |
+| v0.22.0 | 3 | [--------------------] 0% (0/3) |
+| cancelled | 24 | [--------------------] 0% (0/24) |
 | post-v1.0.0 | 7 | [--------------------] 0% (0/7) |
 
 ## タスク詳細
@@ -222,92 +220,89 @@
 | [x] | TASK-130 | Commander auto-detect Builder stall and alert | P1 | winsmux | done |
 | [x] | TASK-134 | Commander approval gate for Builder sandbox prompts | P1 | winsmux | done |
 
-### v0.19.0 — Explorer + Dashboard
+### v0.19.0 — 衛生リリース (Cleanup & Hardening)
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-104 | Sync sora-psmux fork with upstream before rendering work | P0 | sora-psmux | cancelled |
-| [ ] | TASK-100 | Explorer + Dashboard panels in Tauri | P1 | winsmux | backlog |
-| [ ] | TASK-103 | Implement P14-Ph2 psmux rendering improvements (TrueColor, Nerd Font, GPU) | P1 | sora-psmux | cancelled |
-| [ ] | TASK-137 | Audit dead code and missing integration across v0.9.6–v0.18.0 | P1 | winsmux | backlog |
-| [ ] | TASK-138 | Source control panel in Tauri UI Explorer (worktree-aware) | P1 | winsmux | backlog |
+| [x] | TASK-137 | Audit dead code and missing integration across v0.9.6–v0.18.0 | P0 | winsmux | done |
+| [x] | TASK-151 | Harden against GlassWorm-style invisible Unicode attacks | P0 | winsmux | done |
+| [x] | TASK-152 | Fix /tmp/ path mismatch between bash Commander and pwsh panes | P1 | winsmux | done |
+
+### v0.19.1 — リネーム & ヘルスチェック
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
 | [ ] | TASK-139 | Rename psmux-bridge to winsmux-core + adapter layer separation | P1 | winsmux | backlog |
+| [ ] | TASK-153 | Repo health tooling integrated with doctor + dead code audit | P1 | winsmux | backlog |
 
-### v0.19.1 — テーマエンジン + ペインメタデータ
+### v0.19.2 — ドキュメント & ガバナンス
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-101 | Theme engine + Nerd Font + TrueColor in Tauri | P1 | winsmux | backlog |
-| [ ] | TASK-078 | Pane border metadata display (git branch, timestamp, idle time) | P2 | winsmux | backlog |
+| [ ] | TASK-155 | GUARDRAILS.md — Signs pattern for recurring failure prevention | P1 | winsmux | backlog |
+| [ ] | TASK-156 | CLAUDE.md version header + changelog table | P2 | winsmux | backlog |
+| [ ] | TASK-160 | Hook cluster SKILL.md generation (manual classification) | P2 | winsmux | backlog |
 
-### v0.19.2 — イベントキャプチャ + 検索
+### v0.20.0 — Tauri Desktop
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-070 | Implement Event Stream (pub/sub event bus for Orchestra) | P1 | winsmux | backlog |
+| [ ] | TASK-100 | Explorer + Dashboard panels in Tauri | P1 | winsmux | backlog |
+| [ ] | TASK-101 | Theme engine + Nerd Font + TrueColor in Tauri | P1 | winsmux | backlog |
 | [ ] | TASK-114 | Orchestra event capture + SQLite FTS5 search layer | P1 | winsmux | backlog |
-
-### v0.20.0 — JSON-RPC + SDK
-
-| | ID | Title | Priority | Repo | Status |
-|-|-----|-------|----------|------|--------|
-| [ ] | TASK-105 | JSON-RPC backend + SDK integration in Tauri | P0 | winsmux | backlog |
-| [ ] | TASK-143 | Shadow Git checkpoint for Builder worktrees | P1 | winsmux | backlog |
-| [ ] | TASK-145 | TaskResume hook × manifest.yaml integration | P1 | winsmux | backlog |
-| [ ] | TASK-144 | Hook parallel execution + Notification hook | P2 | winsmux | backlog |
-| [ ] | TASK-146 | PreCompact hook × context usage monitoring | P2 | winsmux | backlog |
-
-### v0.20.1 — インストーラプロファイル
-
-| | ID | Title | Priority | Repo | Status |
-|-|-----|-------|----------|------|--------|
+| [ ] | TASK-138 | Source control panel in Tauri UI Explorer (worktree-aware) | P1 | winsmux | backlog |
+| [ ] | TASK-078 | Pane border metadata display (git branch, timestamp, idle time) | P2 | winsmux | backlog |
 | [ ] | TASK-115 | Installer profile design (core/orchestra/security/full) | P2 | winsmux | backlog |
+| [~] | TASK-146 | PreCompact hook × context usage monitoring | P2 | winsmux | cancelled |
 
-### v0.21.0 — Relay Auth
-
-| | ID | Title | Priority | Repo | Status |
-|-|-----|-------|----------|------|--------|
-| [ ] | TASK-106 | Relay Auth + remote pane support in Tauri | P1 | winsmux | backlog |
-| [ ] | TASK-147 | ACP (Agent Communication Protocol) server support | P1 | winsmux | backlog |
-
-### v0.21.1 — Editor パネル
+### v0.21.0 — スマートセッション
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-107 | Editor panel + drag-and-drop layout + polish | P1 | winsmux | backlog |
+| [ ] | TASK-108 | Pane pop-out and multi-display support | P1 | winsmux | backlog |
+| [ ] | TASK-143 | Shadow Git checkpoint for Builder worktrees | P1 | winsmux | backlog |
+| [~] | TASK-145 | TaskResume hook × manifest.yaml integration | P1 | winsmux | cancelled |
+| [ ] | TASK-154 | Manifest-aware session resume / context injection | P1 | winsmux | backlog |
+| [ ] | TASK-144 | Hook parallel execution + Notification hook | P2 | winsmux | backlog |
 
-### v0.21.2 — ペイン分離 + マルチディスプレイ
+### v0.22.0 — プロトコル層
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-108 | Pane pop-out and multi-display support | P1 | winsmux | backlog |
+| [ ] | TASK-105 | JSON-RPC backend + SDK integration in Tauri | P0 | winsmux | backlog |
+| [ ] | TASK-106 | Relay Auth + remote pane support in Tauri | P1 | winsmux | backlog |
+| [ ] | TASK-147 | ACP (Agent Communication Protocol) server support | P1 | winsmux | backlog |
 
 ### cancelled
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-032 | Implement Mailbox-compatible async message router (mailbox-router.ps1) | P0 | winsmux | cancelled |
-| [ ] | TASK-033 | Implement Shared Task List with file-lock self-claiming and dependency auto-resolve | P0 | winsmux | cancelled |
-| [ ] | TASK-054 | Fix vault inject to use psmux set-environment instead of send-keys | P0 | winsmux | cancelled |
-| [ ] | TASK-056 | Fix role-gate.ps1 to deny unknown commands (fail-open → fail-close) | P0 | winsmux | cancelled |
-| [ ] | TASK-057 | Fix rpc-server.ps1: remove client-supplied role trust, bind to process identity | P0 | winsmux | cancelled |
-| [ ] | TASK-058 | Eliminate raw send-keys from orchestra-start, mailbox-router, agent-lifecycle | P0 | winsmux | cancelled |
-| [ ] | TASK-059 | Fix task-hooks.ps1: notify Commander instead of auto-assigning work | P0 | winsmux | cancelled |
-| [ ] | TASK-066 | Runtime test: rpc-server + mcp-server mock client verification | P0 | winsmux | cancelled |
-| [ ] | TASK-024 | Full integration test → GA release → winsmux v1.0.0 publish | P1 | winsmux | cancelled |
-| [ ] | TASK-034 | Add TaskCreated / TaskCompleted hook integration for auto-dispatch | P1 | winsmux | cancelled |
-| [ ] | TASK-042 | Implement JSON-RPC 2.0 endpoint for psmux-bridge (psmux-bridge-rpc.ps1) | P1 | winsmux | cancelled |
-| [ ] | TASK-044 | Prepare and submit PR to psmux-plugins upstream | P1 | winsmux | cancelled |
-| [ ] | TASK-049 | Run 15-agent 15min load test (crash rate < 0.1%, evidence integrity 100%) | P1 | winsmux | cancelled |
-| [ ] | TASK-051 | Release v0.10.0 GA (release notes, migration guide, install wizard, version bump) | P1 | winsmux | cancelled |
-| [ ] | TASK-055 | Commander automation: backlog sync + worktree lifecycle gate (collect before cleanup) | P1 | winsmux | cancelled |
-| [ ] | TASK-068 | Integration test: mailbox-router + task-hooks + commander-dispatch | P1 | winsmux | cancelled |
-| [ ] | TASK-069 | Implement ExecPolicy DSL (declarative TOML command policy) | P1 | winsmux | cancelled |
-| [ ] | TASK-071 | Implement Guardian sub-agent (AI risk scoring with cross-vendor check) | P1 | winsmux | cancelled |
-| [ ] | TASK-072 | Implement Rollout recording (event sourcing + replay) | P2 | winsmux | cancelled |
-| [ ] | TASK-075 | Implement SQLite session persistence (state.db) | P2 | winsmux | cancelled |
-| [ ] | TASK-079 | Scheduled Orchestra (periodic multi-agent execution) | P3 | winsmux | cancelled |
-| [ ] | TASK-080 | Browser agent integration (Multi-Modal Orchestra with Playwright) | P3 | winsmux | cancelled |
+| [~] | TASK-032 | Implement Mailbox-compatible async message router (mailbox-router.ps1) | P0 | winsmux | cancelled |
+| [~] | TASK-033 | Implement Shared Task List with file-lock self-claiming and dependency auto-resolve | P0 | winsmux | cancelled |
+| [~] | TASK-054 | Fix vault inject to use psmux set-environment instead of send-keys | P0 | winsmux | cancelled |
+| [~] | TASK-056 | Fix role-gate.ps1 to deny unknown commands (fail-open → fail-close) | P0 | winsmux | cancelled |
+| [~] | TASK-057 | Fix rpc-server.ps1: remove client-supplied role trust, bind to process identity | P0 | winsmux | cancelled |
+| [~] | TASK-058 | Eliminate raw send-keys from orchestra-start, mailbox-router, agent-lifecycle | P0 | winsmux | cancelled |
+| [~] | TASK-059 | Fix task-hooks.ps1: notify Commander instead of auto-assigning work | P0 | winsmux | cancelled |
+| [~] | TASK-066 | Runtime test: rpc-server + mcp-server mock client verification | P0 | winsmux | cancelled |
+| [~] | TASK-104 | Sync sora-psmux fork with upstream before rendering work | P0 | sora-psmux | cancelled |
+| [~] | TASK-024 | Full integration test → GA release → winsmux v1.0.0 publish | P1 | winsmux | cancelled |
+| [~] | TASK-034 | Add TaskCreated / TaskCompleted hook integration for auto-dispatch | P1 | winsmux | cancelled |
+| [~] | TASK-042 | Implement JSON-RPC 2.0 endpoint for psmux-bridge (psmux-bridge-rpc.ps1) | P1 | winsmux | cancelled |
+| [~] | TASK-044 | Prepare and submit PR to psmux-plugins upstream | P1 | winsmux | cancelled |
+| [~] | TASK-049 | Run 15-agent 15min load test (crash rate < 0.1%, evidence integrity 100%) | P1 | winsmux | cancelled |
+| [~] | TASK-051 | Release v0.10.0 GA (release notes, migration guide, install wizard, version bump) | P1 | winsmux | cancelled |
+| [~] | TASK-055 | Commander automation: backlog sync + worktree lifecycle gate (collect before cleanup) | P1 | winsmux | cancelled |
+| [~] | TASK-068 | Integration test: mailbox-router + task-hooks + commander-dispatch | P1 | winsmux | cancelled |
+| [~] | TASK-069 | Implement ExecPolicy DSL (declarative TOML command policy) | P1 | winsmux | cancelled |
+| [~] | TASK-071 | Implement Guardian sub-agent (AI risk scoring with cross-vendor check) | P1 | winsmux | cancelled |
+| [~] | TASK-103 | Implement P14-Ph2 psmux rendering improvements (TrueColor, Nerd Font, GPU) | P1 | sora-psmux | cancelled |
+| [~] | TASK-072 | Implement Rollout recording (event sourcing + replay) | P2 | winsmux | cancelled |
+| [~] | TASK-075 | Implement SQLite session persistence (state.db) | P2 | winsmux | cancelled |
+| [~] | TASK-079 | Scheduled Orchestra (periodic multi-agent execution) | P3 | winsmux | cancelled |
+| [~] | TASK-080 | Browser agent integration (Multi-Modal Orchestra with Playwright) | P3 | winsmux | cancelled |
 
 ### post-v1.0.0
 
