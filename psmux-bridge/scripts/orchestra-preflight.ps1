@@ -102,7 +102,7 @@ function Test-OrchestraManagedProcess {
     param($Process)
 
     $processName = Get-OrchestraManagedProcessName -Name ([string]$Process.Name)
-    return $processName -in @('codex', 'node', 'pwsh', 'powershell')
+    return $processName -in @('codex', 'pwsh', 'powershell')
 }
 
 function Test-OrchestraZombieProcessMatch {
@@ -140,6 +140,20 @@ function Test-OrchestraZombieProcessMatch {
             $matchesSharedMarker = $true
             break
         }
+    }
+
+    if ($processName -eq 'node') {
+        if ($matchesSharedMarker) {
+            return $true
+        }
+
+        foreach ($marker in @($ProjectDir, 'winsmux') | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) {
+            if ($commandLine.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                return $true
+            }
+        }
+
+        return $false
     }
 
     if ($processName -in @('pwsh', 'powershell')) {
@@ -187,7 +201,8 @@ function Get-OrchestraZombieVictims {
     }
 
     foreach ($process in $Snapshot.Processes) {
-        if (-not (Test-OrchestraManagedProcess -Process $process)) {
+        $processName = Get-OrchestraManagedProcessName -Name ([string]$process.Name)
+        if (-not (Test-OrchestraManagedProcess -Process $process) -and $processName -ne 'node') {
             continue
         }
 
