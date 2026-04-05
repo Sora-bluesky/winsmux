@@ -808,7 +808,7 @@ function Invoke-AgentMonitorCycle {
             }
         }
 
-        if ($statusName -eq 'crashed') {
+        if ($statusName -eq 'crashed' -or ($statusName -eq 'ready' -and $statusExitReason -eq 'exec_completed')) {
             $crashedCount++
 
             # Determine launch directory and git worktree dir
@@ -840,7 +840,9 @@ function Invoke-AgentMonitorCycle {
             # Log respawn attempt
             if ($loggerAvailable) {
                 try {
-                    $respawnMessage = if ($statusExitReason -eq 'context_exhausted' -and $role -eq 'Builder') {
+                    $respawnMessage = if ($statusExitReason -eq 'exec_completed') {
+                        "Respawning Builder after exec completion in pane $label ($paneId)"
+                    } elseif ($statusExitReason -eq 'context_exhausted' -and $role -eq 'Builder') {
                         "Respawning Builder worktree after context exhaustion in pane $label ($paneId)"
                     } else {
                         "Respawning crashed agent in pane $label ($paneId)"
