@@ -1,0 +1,243 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+# Prevent duplicate runs from overwriting release assets / submitting duplicate PRs
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            label: Windows x64
+            artifact: windows-x64
+            nsis_arch: x64
+          - target: i686-pc-windows-msvc
+            label: Windows x86
+            artifact: windows-x86
+            nsis_arch: x86
+          - target: aarch64-pc-windows-msvc
+            label: Windows ARM64 (Snapdragon)
+            artifact: windows-arm64
+            nsis_arch: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Create release package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ github.ref_name }}"
+          $zipName = "psmux-$version-${{ matrix.artifact }}"
+          $releaseDir = "target/${{ matrix.target }}/release"
+          New-Item -ItemType Directory -Path $zipName -Force
+
+          # Verify all expected binaries exist before copying
+          foreach ($exe in @("psmux.exe", "pmux.exe", "tmux.exe")) {
+            $path = Join-Path $releaseDir $exe
+            if (-not (Test-Path $path)) {
+              Write-Error "FATAL: Expected binary '$path' not found! Build may have failed silently."
+              Get-ChildItem $releaseDir -Filter "*.exe" | ForEach-Object { Write-Output "  Found: $($_.FullName) ($($_.Length) bytes)" }
+              exit 1
+            }
+          }
+
+          Copy-Item "$releaseDir/psmux.exe" "$zipName/psmux.exe" -ErrorAction Stop
+          Copy-Item "$releaseDir/pmux.exe" "$zipName/pmux.exe" -ErrorAction Stop
+          Copy-Item "$releaseDir/tmux.exe" "$zipName/tmux.exe" -ErrorAction Stop
+          Copy-Item "README.md" "$zipName/" -ErrorAction Stop
+          Copy-Item "LICENSE" "$zipName/" -ErrorAction Stop
+          Compress-Archive -Path "$zipName/*" -DestinationPath "$zipName.zip"
+
+          # Verify zip contents
+          $entries = [System.IO.Compression.ZipFile]::OpenRead("$zipName.zip").Entries.Name
+          foreach ($exe in @("psmux.exe", "pmux.exe", "tmux.exe")) {
+            if ($exe -notin $entries) {
+              Write-Error "FATAL: '$exe' missing from zip archive!"
+              exit 1
+            }
+          }
+          Write-Output "Zip contains: $($entries -join ', ')"
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          choco install nsis -y --no-progress
+          # Install EnVar plugin for PATH manipulation
+          $nsisDir = "C:\Program Files (x86)\NSIS"
+          $pluginUrl = "https://nsis.sourceforge.io/mediawiki/images/7/7f/EnVar_plugin.zip"
+          $pluginZip = "$env:TEMP\EnVar_plugin.zip"
+          Invoke-WebRequest -Uri $pluginUrl -OutFile $pluginZip
+          Expand-Archive -Path $pluginZip -DestinationPath "$env:TEMP\EnVar" -Force
+          Copy-Item "$env:TEMP\EnVar\Plugins\x86-ansi\*" "$nsisDir\Plugins\x86-ansi\" -Force
+          Copy-Item "$env:TEMP\EnVar\Plugins\x86-unicode\*" "$nsisDir\Plugins\x86-unicode\" -Force
+
+      - name: Build NSIS installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $nsisVersion = ($version -replace '[^0-9.].*$', '')
+          if (($nsisVersion -split '\.').Count -lt 4) { $nsisVersion += '.0' }
+          $releaseDir = Resolve-Path "target/${{ matrix.target }}/release"
+          $repoDir = Resolve-Path "."
+          New-Item -ItemType Directory -Path "target\installer" -Force | Out-Null
+
+          & "C:\Program Files (x86)\NSIS\makensis.exe" /NOCD `
+            /DVERSION=$nsisVersion `
+            /DARCH=${{ matrix.nsis_arch }} `
+            "/DSOURCE_DIR=$releaseDir" `
+            "/DREPO_DIR=$repoDir" `
+            "installer\psmux.nsi"
+          if ($LASTEXITCODE -ne 0) { Write-Error "NSIS build failed"; exit 1 }
+
+          $setup = "target\installer\psmux-v${nsisVersion}-${{ matrix.nsis_arch }}-setup.exe"
+          if (-not (Test-Path $setup)) { Write-Error "Setup not found: $setup"; exit 1 }
+          $sizeMB = [math]::Round((Get-Item $setup).Length / 1MB, 2)
+          Write-Output "NSIS installer: $setup ($sizeMB MB)"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: psmux-${{ matrix.artifact }}
+          path: |
+            psmux-*-${{ matrix.artifact }}.zip
+            target/installer/*-${{ matrix.nsis_arch }}-setup.exe
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Find the previous tag
+          CURRENT_TAG="${{ github.ref_name }}"
+          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^${CURRENT_TAG}$" | head -n 1)
+
+          if [ -z "$PREV_TAG" ]; then
+            echo "No previous tag found — generating changelog from all commits"
+            LOG=$(git log --pretty=format:"- %s (%h)" --no-merges "$CURRENT_TAG")
+          else
+            echo "Generating changelog: $PREV_TAG → $CURRENT_TAG"
+            LOG=$(git log --pretty=format:"- %s (%h)" --no-merges "${PREV_TAG}..${CURRENT_TAG}")
+          fi
+
+          # Write to file to preserve multiline content
+          echo "$LOG" > /tmp/changelog.md
+          echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
+
+      - name: Build release body
+        id: body
+        run: |
+          CURRENT_TAG="${{ github.ref_name }}"
+          PREV_TAG="${{ steps.changelog.outputs.prev_tag }}"
+
+          {
+            echo "## psmux ${CURRENT_TAG}"
+            echo ""
+            echo "psmux fork for winsmux (upstream + 2 patches)"
+            echo ""
+            if [ -n "$PREV_TAG" ]; then
+              echo "### Changelog (${PREV_TAG} → ${CURRENT_TAG})"
+            else
+              echo "### Changelog"
+            fi
+            echo ""
+            cat /tmp/changelog.md
+            echo ""
+            echo ""
+            echo "### Downloads"
+            echo ""
+            echo "**Portable (zip):**"
+            echo "| Platform | File |"
+            echo "|----------|------|"
+            echo "| Windows x64 (Intel/AMD 64-bit) | \`psmux-${CURRENT_TAG}-windows-x64.zip\` |"
+            echo "| Windows x86 (Intel/AMD 32-bit) | \`psmux-${CURRENT_TAG}-windows-x86.zip\` |"
+            echo "| Windows ARM64 (Snapdragon/Surface Pro X) | \`psmux-${CURRENT_TAG}-windows-arm64.zip\` |"
+            echo ""
+            echo "**Installer (NSIS setup — kills running instances, adds to PATH, warmup):**"
+            echo "| Platform | File |"
+            echo "|----------|------|"
+            VERSION_NO_V="${CURRENT_TAG#v}"
+            echo "| Windows x64 | \`psmux-v${VERSION_NO_V}-x64-setup.exe\` |"
+            echo "| Windows x86 | \`psmux-v${VERSION_NO_V}-x86-setup.exe\` |"
+            echo "| Windows ARM64 | \`psmux-v${VERSION_NO_V}-arm64-setup.exe\` |"
+            echo ""
+            echo "### Installation"
+            echo ""
+            echo "**Via PowerShell:**"
+            echo "\`\`\`powershell"
+            echo "irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | iex"
+            echo "\`\`\`"
+            echo ""
+            echo "**Manual Installation:**"
+            echo "1. Download the zip matching your architecture"
+            echo "2. Extract to a folder in your PATH"
+            echo "3. \`psmux\`, \`pmux\`, and \`tmux\` commands will all be available"
+            echo ""
+            echo "### What's Included"
+            echo "- \`psmux.exe\` - Main executable"
+            echo "- \`pmux.exe\` - Alias"
+            echo "- \`tmux.exe\` - Alias for tmux compatibility"
+          } > /tmp/release_body.md
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: List artifacts
+        run: find . -type f \( -name "*.zip" -o -name "*-setup.exe" \)
+
+      - name: Generate SHA256SUMS
+        run: |
+          for dir in psmux-windows-x64 psmux-windows-x86 psmux-windows-arm64; do
+            find "$dir" -type f \( -name "*.zip" -o -name "*-setup.exe" \) -exec sha256sum {} + >> SHA256SUMS
+          done
+          cat SHA256SUMS
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            SHA256SUMS
+            psmux-windows-x64/*.zip
+            psmux-windows-x86/*.zip
+            psmux-windows-arm64/*.zip
+            psmux-windows-x64/**/*-setup.exe
+            psmux-windows-x86/**/*-setup.exe
+            psmux-windows-arm64/**/*-setup.exe
+          body_path: /tmp/release_body.md
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
