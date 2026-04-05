@@ -11,8 +11,12 @@ const PATTERNS_FILE = path.join(
   "patterns",
   "injection-patterns.json",
 );
+// Zero-width and invisible Unicode ranges removed during normalization:
+// U+00AD, U+034F, U+061C, U+180E, U+200A-U+200F, U+2028-U+2029, U+202A-U+202E,
+// U+205F, U+2060-U+2064, U+2066-U+2069, U+115F-U+1160, U+17B4-U+17B5, U+3000,
+// U+3164, U+FE00-U+FE0F, U+FEFF, U+FFA0, U+E0001-U+E007F, U+E0100-U+E01EF
 const ZERO_WIDTH_RE =
-  /[\u00ad\u034f\u180e\u200a-\u200f\u2028\u2029\u205f\u2060-\u2064\u3000\ufeff]/g;
+  /(?:[\u00ad\u034f\u061c\u180e\u200a-\u200f\u2028\u2029\u202a-\u202e\u205f\u2060-\u2064\u2066-\u2069\u115f-\u1160\u17b4-\u17b5\u3000\u3164\ufe00-\ufe0f\ufeff\uffa0]|\udb40[\udc01-\udc7f\udd00-\uddef])/g;
 const DEFAULT_PATTERNS = { categories: {} };
 const DEFAULT_PREVIOUS_HASH = "genesis";
 const DENY_THRESHOLD = 3;

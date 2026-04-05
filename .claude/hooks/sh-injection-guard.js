@@ -16,18 +16,13 @@ const {
   trackDeny,
 } = require("./lib/sh-utils");
 
-// Zero-width character regex (checked BEFORE pattern matching to prevent bypass)
-// U+00AD: soft hyphen
-// U+034F: combining grapheme joiner
-// U+180E: Mongolian vowel separator
-// U+200A-200F: hair space, zero-width space, non-joiner, joiner, LTR mark, RTL mark
-// U+2028-2029: line separator, paragraph separator
-// U+205F: medium mathematical space
-// U+2060-2064: word joiner, invisible operators
-// U+3000: ideographic space
-// U+FEFF: byte order mark
+// Zero-width and invisible Unicode regex (checked BEFORE pattern matching to prevent bypass)
+// Covered ranges: U+00AD, U+034F, U+061C, U+180E, U+200A-U+200F, U+2028-U+2029,
+// U+202A-U+202E, U+205F, U+2060-U+2064, U+2066-U+2069, U+115F-U+1160,
+// U+17B4-U+17B5, U+3000, U+3164, U+FE00-U+FE0F, U+FEFF, U+FFA0,
+// U+E0001-U+E007F, U+E0100-U+E01EF
 const ZERO_WIDTH_RE =
-  /[\u00ad\u034f\u180e\u200a-\u200f\u2028\u2029\u205f\u2060-\u2064\u3000\ufeff]/;
+  /(?:[\u00ad\u034f\u061c\u180e\u200a-\u200f\u2028\u2029\u202a-\u202e\u205f\u2060-\u2064\u2066-\u2069\u115f-\u1160\u17b4-\u17b5\u3000\u3164\ufe00-\ufe0f\ufeff\uffa0]|\udb40[\udc01-\udc7f\udd00-\uddef])/;
 
 /**
  * Extract the text to scan from tool_input based on tool_name.
@@ -67,7 +62,9 @@ function extractText(toolName, toolInput) {
 if (require.main === module) {
   try {
     const input = readHookInput();
-    const { toolName, toolInput, sessionId } = input;
+    const toolName = input.tool_name || input.toolName || "";
+    const toolInput = input.tool_input || input.toolInput || {};
+    const sessionId = input.session_id || input.sessionId || "";
 
     // Step 0: Extract text to scan
     const rawText = extractText(toolName, toolInput);
@@ -90,7 +87,8 @@ if (require.main === module) {
         tool: toolName,
         category: "zero_width",
         severity: "high",
-        detail: "Zero-width character detected in raw input",
+        detail:
+          "Zero-width or invisible Unicode control detected in raw input",
         session_id: sessionId,
       });
       const zwTracker = trackDeny("injection:zero_width");
@@ -102,8 +100,8 @@ if (require.main === module) {
         );
       } else {
         deny(
-          "[sh-injection-guard] Zero-width character detected. " +
-            "Invisible characters can be used to bypass security patterns. " +
+          "[sh-injection-guard] Zero-width or invisible Unicode character detected. " +
+            "Invisible characters, bidi controls, variation selectors, tag characters, and fillers can be used to bypass security patterns. " +
             "Category: zero_width (severity: high)",
         );
       }
