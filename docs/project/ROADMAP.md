@@ -1,7 +1,7 @@
 # ロードマップ
 
 > `tasks/backlog.yaml` から自動生成 — 手動編集禁止
-> 最終同期: 2026-04-05 21:02 (+09:00)
+> 最終同期: 2026-04-05 21:12 (+09:00)
 
 ## バージョン概要
 
@@ -30,7 +30,9 @@
 | v0.19.1 | 2 | [--------------------] 0% (0/2) |
 | v0.19.2 | 3 | [--------------------] 0% (0/3) |
 | v0.20.0 | 8 | [--------------------] 0% (0/8) |
+| v0.20.1 | 4 | [--------------------] 0% (0/4) |
 | v0.21.0 | 6 | [--------------------] 0% (0/6) |
+| v0.21.1 | 5 | [--------------------] 0% (0/5) |
 | v0.22.0 | 3 | [--------------------] 0% (0/3) |
 | cancelled | 24 | [--------------------] 0% (0/24) |
 | post-v1.0.0 | 7 | [--------------------] 0% (0/7) |
@@ -256,6 +258,15 @@
 | [ ] | TASK-115 | Installer profile design (core/orchestra/security/full) | P2 | winsmux | backlog |
 | [~] | TASK-146 | PreCompact hook × context usage monitoring | P2 | winsmux | cancelled |
 
+### v0.20.1 — Hook ガバナンス & モデル管理
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
+| [ ] | TASK-162 | 3-Tier Governance Mode + per-call cost tracking | P0 | winsmux | backlog |
+| [ ] | TASK-161 | Hook Profile Switching via environment variable | P1 | winsmux | backlog |
+| [ ] | TASK-165 | Agent-Model Tier Matching (role-based model selection) | P1 | winsmux | backlog |
+| [ ] | TASK-166 | 4-Step Model Resolution Chain (override→category→fallback→default) | P2 | winsmux | backlog |
+
 ### v0.21.0 — スマートセッション
 
 | | ID | Title | Priority | Repo | Status |
@@ -266,6 +277,16 @@
 | [~] | TASK-145 | TaskResume hook × manifest.yaml integration | P1 | winsmux | cancelled |
 | [ ] | TASK-154 | Manifest-aware session resume / context injection | P1 | winsmux | backlog |
 | [ ] | TASK-144 | Hook parallel execution + Notification hook | P2 | winsmux | backlog |
+
+### v0.21.1 — Orchestra ワークフロー進化
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
+| [ ] | TASK-163 | Phase-Gated Orchestra Workflow (brainstorm→design→plan→build→review) | P0 | winsmux | backlog |
+| [ ] | TASK-164 | Structured Output Chaining between Orchestra roles | P0 | winsmux | backlog |
+| [ ] | TASK-167 | Provider Hot-Swap Registry (runtime agent switching) | P1 | winsmux | backlog |
+| [ ] | TASK-168 | Plugin Hook Extension Loader (modular hook architecture) | P1 | winsmux | backlog |
+| [ ] | TASK-169 | Hash-Chained Evidence Ledger (tamper detection) | P2 | winsmux | backlog |
 
 ### v0.22.0 — プロトコル層
 
