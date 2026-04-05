@@ -1199,7 +1199,7 @@ tasks:
 
   - id: TASK-130
     title: "Commander auto-detect Builder stall and alert"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.18.2"
     repo: winsmux
@@ -1669,7 +1669,7 @@ tasks:
 
   - id: TASK-141
     title: "Dispatch-router file-level task boundary enforcement"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.18.2"
     repo: winsmux
@@ -1739,6 +1739,20 @@ tasks:
     notes: >
       #240. Builder が git rebase --continue で vim にスタックする。
       orchestra-start.ps1 のセッション環境に GIT_EDITOR=true を追加。
+
+  - id: TASK-149
+    title: "Agent-monitor background daemon for continuous pane monitoring"
+    status: backlog
+    priority: P0
+    target_version: "v0.18.2"
+    repo: winsmux
+    labels: [feat, monitor, daemon]
+    depends_on: ["TASK-130", "TASK-136"]
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #245. idle検出/stall検出/approval gate検出は実装済みだが常駐ループが未実装。
+      orchestra-start完了後にagent-monitorを30秒間隔でバックグラウンド実行する。
 
   # === Cline powerup proposals (2026-04-05) ===
 

@@ -319,6 +319,48 @@ panes:
         Should -Invoke Send-MonitorTelegramAlert -Times 1 -Exactly
     }
 
+    It 'emits approval waiting alerts and counts them during a monitor cycle' {
+        $manifestDir = Join-Path $script:agentMonitorTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+        @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:agentMonitorTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    launch_dir: $script:agentMonitorTempRoot
+"@ | Set-Content -Path (Join-Path $manifestDir 'manifest.yaml') -Encoding UTF8
+
+        Mock Get-PaneAgentStatus {
+            [PSCustomObject]@{
+                Status       = 'approval_waiting'
+                PaneId       = '%2'
+                SnapshotTail = 'Do you want to allow this command?'
+                SnapshotHash = 'approval-hash'
+                ExitReason   = ''
+            }
+        }
+        Mock Send-MonitorTelegramAlert { return $true }
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            roles = [ordered]@{}
+        }
+
+        $output = @(Invoke-AgentMonitorCycle -Settings $settings -ManifestPath (Join-Path $manifestDir 'manifest.yaml') -SessionName 'winsmux-orchestra' -IdleThreshold 120)
+
+        $output.Count | Should -Be 2
+        $output[0] | Should -Be 'Commander alert: builder-1 (%2) awaiting approval'
+        $output[1].ApprovalWaiting | Should -Be 1
+        $output[1].Results[0].Status | Should -Be 'approval_waiting'
+        $output[1].Results[0].Message | Should -Be 'Commander alert: builder-1 (%2) awaiting approval'
+        Should -Invoke Send-MonitorTelegramAlert -Times 1 -Exactly
+    }
+
     It 'emits commander alerts when a Builder stays busy with the same snapshot for three cycles' {
         $script:BuilderStallHistory = @{}
         $manifestDir = Join-Path $script:agentMonitorTempRoot '.winsmux'

@@ -431,7 +431,7 @@ function Get-PaneAgentStatus {
     Captures pane output and returns the agent status.
 
     .OUTPUTS
-    PSCustomObject with: Status (ready|busy|crashed|hung|empty), PaneId, SnapshotTail, ExitReason
+    PSCustomObject with: Status (ready|busy|approval_waiting|crashed|hung|empty), PaneId, SnapshotTail, ExitReason
     #>
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
@@ -488,7 +488,7 @@ function Get-PaneAgentStatus {
 
     if (Test-CodexApprovalPromptText -Text $text) {
         return [PSCustomObject]@{
-            Status       = 'busy'
+            Status       = 'approval_waiting'
             PaneId       = $PaneId
             SnapshotTail = $tail
             SnapshotHash = $snapshotHash
@@ -684,6 +684,7 @@ function Invoke-AgentMonitorCycle {
             Checked   = 0
             Crashed   = 0
             Respawned = 0
+            ApprovalWaiting = 0
             Results   = @()
         }
     }
@@ -703,6 +704,7 @@ function Invoke-AgentMonitorCycle {
     $checkedCount = 0
     $crashedCount = 0
     $respawnedCount = 0
+    $approvalWaitingCount = 0
     $idleAlertCount = 0
     $stallCount = 0
     $cycleNow = Get-Date
@@ -748,6 +750,17 @@ function Invoke-AgentMonitorCycle {
             IdleAlerted = $false
             StallDetected = $false
             Message    = ''
+        }
+
+        if ($statusName -eq 'approval_waiting') {
+            $approvalWaitingCount++
+            $approvalMessage = "Commander alert: $label ($paneId) awaiting approval"
+            $result.Message = $approvalMessage
+            Write-Output $approvalMessage
+            try {
+                Send-MonitorTelegramAlert -Message $approvalMessage | Out-Null
+            } catch {
+            }
         }
 
         $idleAlert = Update-MonitorIdleAlertState `
@@ -877,8 +890,8 @@ function Invoke-AgentMonitorCycle {
         try {
                 Write-OrchestraLog -ProjectDir $projectDir -SessionName $SessionName `
                     -Event 'monitor.cycle' -Level 'info' `
-                -Message "Monitor cycle: checked=$checkedCount crashed=$crashedCount respawned=$respawnedCount idle_alerts=$idleAlertCount stalls=$stallCount" `
-                -Data ([ordered]@{ checked = $checkedCount; crashed = $crashedCount; respawned = $respawnedCount; idle_alerts = $idleAlertCount; stalls = $stallCount }) | Out-Null
+                -Message "Monitor cycle: checked=$checkedCount crashed=$crashedCount respawned=$respawnedCount approval_waiting=$approvalWaitingCount idle_alerts=$idleAlertCount stalls=$stallCount" `
+                -Data ([ordered]@{ checked = $checkedCount; crashed = $crashedCount; respawned = $respawnedCount; approval_waiting = $approvalWaitingCount; idle_alerts = $idleAlertCount; stalls = $stallCount }) | Out-Null
         } catch {
         }
     }
@@ -887,6 +900,7 @@ function Invoke-AgentMonitorCycle {
         Checked   = $checkedCount
         Crashed   = $crashedCount
         Respawned = $respawnedCount
+        ApprovalWaiting = $approvalWaitingCount
         IdleAlerts = $idleAlertCount
         Stalls = $stallCount
         Results   = @($results)
