@@ -20,7 +20,7 @@ $firstRunOption = '@psmux_bridge_first_run_done'
 & $PSMUX set-hook -g after-new-session "run-shell 'pwsh -NoProfile -File $setupWizardScript -FirstRun'"
 
 if ((Get-PsmuxOption -Name $firstRunOption -Default '0') -ne '1') {
-    & $PSMUX display-message "psmux-bridge loaded. Press Prefix+B for setup wizard."
+    & $PSMUX display-message "winsmux loaded. Press Prefix+B for setup wizard."
 }
 
-. "$PSScriptRoot/../scripts/psmux-bridge.ps1" version *> $null
+. "$PSScriptRoot/../scripts/winsmux-core.ps1" version *> $null

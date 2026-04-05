@@ -15,7 +15,7 @@ $WINSMUX_DIR  = Join-Path $HOME ".winsmux"
 $BIN_DIR      = Join-Path $WINSMUX_DIR "bin"
 $BACKUP_DIR   = Join-Path $WINSMUX_DIR "backups"
 $SCRIPT_DIR   = Join-Path $WINSMUX_DIR "scripts"
-$BRIDGE_DIR   = Join-Path $WINSMUX_DIR "psmux-bridge"
+$BRIDGE_DIR   = Join-Path $WINSMUX_DIR "winsmux-core"
 $BRIDGE_SCRIPTS_DIR = Join-Path $BRIDGE_DIR "scripts"
 $VERSION_FILE = Join-Path $WINSMUX_DIR "version"
 $BASE_URL     = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/main"
@@ -181,9 +181,9 @@ function Invoke-Install {
     }
 
     # 5. Download & place files
-    # psmux-bridge.ps1
-    Download-File "scripts/psmux-bridge.ps1" (Join-Path $BIN_DIR "psmux-bridge.ps1")
-    Download-File "scripts/psmux-bridge.ps1" (Join-Path $SCRIPT_DIR "psmux-bridge.ps1")
+    # winsmux-core.ps1
+    Download-File "scripts/winsmux-core.ps1" (Join-Path $BIN_DIR "winsmux-core.ps1")
+    Download-File "scripts/winsmux-core.ps1" (Join-Path $SCRIPT_DIR "winsmux-core.ps1")
 
     # winsmux.ps1 CLI
     Download-File "winsmux.ps1" (Join-Path $BIN_DIR "winsmux.ps1")
@@ -204,7 +204,7 @@ function Invoke-Install {
     $bridgeCmd = Join-Path $BIN_DIR "psmux-bridge.cmd"
     @"
 @echo off
-pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\psmux-bridge.ps1" %*
+pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux-core.ps1" %*
 "@ | Set-Content -Path $bridgeCmd -Encoding ASCII
 
     $winsmuxCmd = Join-Path $BIN_DIR "winsmux.cmd"
@@ -258,18 +258,18 @@ pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux.ps1" %*
     if ($IsUpdate) {
         Write-Host ""
         Write-Status "Updated to v$VERSION!"
-        Write-Host "  psmux-bridge: $(Join-Path $BIN_DIR 'psmux-bridge.ps1')"
+        Write-Host "  psmux-bridge: $(Join-Path $BIN_DIR 'winsmux-core.ps1')"
         Write-Host "  psmux config:  $confDest"
     } else {
         Write-Host ""
         Write-Status "Installed successfully! (v$VERSION)"
-        Write-Host "  psmux-bridge: $(Join-Path $BIN_DIR 'psmux-bridge.ps1')"
+        Write-Host "  psmux-bridge: $(Join-Path $BIN_DIR 'winsmux-core.ps1')"
         Write-Host "  psmux config:  $confDest"
         Write-Host ""
         Write-Host "Next steps:"
         Write-Host "  1. Start a psmux session:  psmux new-session -s work"
         Write-Host "  2. Set your agent name:    `$env:WINSMUX_AGENT_NAME = 'claude'"
-        Write-Host "  3. Try it out:             psmux-bridge list"
+        Write-Host "  3. Try it out:             winsmux list"
     }
 }
 

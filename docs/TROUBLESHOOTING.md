@@ -33,9 +33,9 @@ sandbox = "unelevated"
 
 **解決**:
 ```powershell
-pwsh scripts/psmux-bridge.ps1 vault set KEY value
+pwsh scripts/winsmux-core.ps1 vault set KEY value
 # または
-pwsh scripts/psmux-bridge.ps1 doctor  # 診断実行
+pwsh scripts/winsmux-core.ps1 doctor  # 診断実行
 ```
 
 ## ペインの問題
@@ -50,7 +50,7 @@ pwsh scripts/psmux-bridge.ps1 doctor  # 診断実行
 
 **原因**: v0.17.0 以前の role switch バグ（修正済み）。
 
-**解決**: Orchestra 再起動。`psmux-bridge role` は respawn-pane -k を使用（修正済み）。
+**解決**: Orchestra 再起動。`winsmux role` は respawn-pane -k を使用（修正済み）。
 
 ## リリースの問題
 
@@ -70,19 +70,19 @@ pwsh scripts/psmux-bridge.ps1 doctor  # 診断実行
 
 ```powershell
 # 総合診断
-pwsh scripts/psmux-bridge.ps1 doctor
+pwsh scripts/winsmux-core.ps1 doctor
 
 # vault 状態確認
-pwsh scripts/psmux-bridge.ps1 vault list
+pwsh scripts/winsmux-core.ps1 vault list
 
 # ペイン一覧
-pwsh scripts/psmux-bridge.ps1 list
+pwsh scripts/winsmux-core.ps1 list
 
 # キュー状態
-pwsh scripts/psmux-bridge.ps1 builder-queue list builder-1
+pwsh scripts/winsmux-core.ps1 builder-queue list builder-1
 
 # アイドル Builder 確認
-pwsh scripts/psmux-bridge.ps1 auto-rebalance
+pwsh scripts/winsmux-core.ps1 auto-rebalance
 ```
 
 ## ログファイル

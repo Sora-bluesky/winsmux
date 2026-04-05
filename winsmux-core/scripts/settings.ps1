@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Hierarchical settings loader for psmux-bridge.
+Hierarchical settings loader for winsmux-core.
 
 .DESCRIPTION
 Settings are resolved with per-key precedence:

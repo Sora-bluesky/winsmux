@@ -23,14 +23,14 @@ try {
   if (toolName === "Write" || toolName === "Edit") {
     const filePath = toolInput.file_path || toolInput.file || "";
     if (/\.(ps1|js|rs|ts|py)$/i.test(filePath)) {
-      deny("Commander cannot write code files. Delegate to Builder via psmux-bridge send.");
+      deny("Commander cannot write code files. Delegate to Builder via winsmux send.");
     }
   }
 
-  // Rule 2: No direct psmux send-keys (use psmux-bridge send)
+  // Rule 2: No direct psmux send-keys (use winsmux send)
   if (toolName === "Bash") {
     if (/psmux\s+send-keys/.test(rawCommand) && !/winsmux-core/.test(rawCommand)) {
-      deny("Use psmux-bridge send instead of direct psmux send-keys.");
+      deny("Use winsmux send instead of direct psmux send-keys.");
     }
   }
 
@@ -38,7 +38,7 @@ try {
   if (toolName === "Bash") {
     const commandForSecretScan = stripHeredocBodies(rawCommand);
     if (SECRET_PATTERN.test(commandForSecretScan)) {
-      deny("Use psmux-bridge vault instead of plaintext secrets.");
+      deny("Use winsmux vault instead of plaintext secrets.");
     }
   }
 
@@ -63,10 +63,10 @@ try {
     }
   }
 
-  // Rule 7: Block direct gh pr merge (allow only via psmux-bridge verify)
+  // Rule 7: Block direct gh pr merge (allow only via winsmux verify)
   if (toolName === "Bash") {
     if (/gh\s+pr\s+merge/.test(rawCommand) && !/winsmux-core/.test(rawCommand)) {
-      deny("Run psmux-bridge verify before merging. Direct gh pr merge is blocked.");
+      deny("Run winsmux verify before merging. Direct gh pr merge is blocked.");
     }
   }
 

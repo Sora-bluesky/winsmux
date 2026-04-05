@@ -1,7 +1,7 @@
 {
   "name": "winsmux-mcp",
   "version": "0.1.0",
-  "description": "MCP server exposing psmux-bridge commands as tools",
+  "description": "MCP server exposing winsmux commands as tools",
   "main": "mcp-server.js",
   "bin": {
     "winsmux-mcp": "mcp-server.js"

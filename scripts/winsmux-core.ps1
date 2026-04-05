@@ -15,8 +15,8 @@ $WatermarkDir   = Join-Path $env:TEMP "winsmux\watermarks"
 $LockDir        = Join-Path $env:TEMP "winsmux\locks"
 $FocusPolicyFile = Join-Path $env:TEMP "winsmux\focus-policy-stack.json"
 $LabelsFile     = Join-Path $env:APPDATA "winsmux\labels.json"
-$BridgeSettingsScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\settings.ps1'))
-$PaneControlScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\pane-control.ps1'))
+$BridgeSettingsScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\settings.ps1'))
+$PaneControlScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-control.ps1'))
 
 if (Test-Path $BridgeSettingsScript -PathType Leaf) {
     . $BridgeSettingsScript
@@ -198,7 +198,7 @@ function Assert-ReadMark {
     param([string]$PaneId)
     $path = Get-ReadMarkPath $PaneId
     if (-not (Test-Path $path)) {
-        Stop-WithError "error: must read the pane before interacting. Run: psmux-bridge read $PaneId"
+        Stop-WithError "error: must read the pane before interacting. Run: winsmux read $PaneId"
     }
 }
 
@@ -459,7 +459,7 @@ function Assert-FocusAllowed {
     }
 
     if ($policy.paneId -ne $PaneId) {
-        Stop-WithError "focus denied: locked to $($policy.paneId) ($($policy.target)). Run: psmux-bridge focus-unlock"
+        Stop-WithError "focus denied: locked to $($policy.paneId) ($($policy.target)). Run: winsmux focus-unlock"
     }
 }
 
@@ -546,8 +546,8 @@ function Remove-ExpiredLocks {
 }
 
 function Invoke-Lock {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge lock <label> <file>..." }
-    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge lock <label> <file>..." }
+    if (-not $Target) { Stop-WithError "usage: winsmux lock <label> <file>..." }
+    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: winsmux lock <label> <file>..." }
 
     $label = $Target
     $expired = Remove-ExpiredLocks
@@ -598,8 +598,8 @@ function Invoke-Lock {
 }
 
 function Invoke-Unlock {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge unlock <label> <file>..." }
-    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge unlock <label> <file>..." }
+    if (-not $Target) { Stop-WithError "usage: winsmux unlock <label> <file>..." }
+    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: winsmux unlock <label> <file>..." }
 
     $label = $Target
     foreach ($file in $Rest) {
@@ -708,7 +708,7 @@ function Invoke-List {
 }
 
 function Invoke-Read {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge read <target> [lines]" }
+    if (-not $Target) { Stop-WithError "usage: winsmux read <target> [lines]" }
 
     $lines = 200
     if ($Rest -and $Rest.Count -gt 0) {
@@ -726,7 +726,7 @@ function Invoke-Read {
     $wmPath = Get-WatermarkPath $paneId
     if (Test-Path $wmPath) {
         if (-not (Test-WatermarkChanged $paneId $currentText)) {
-            Write-Output "[psmux-bridge] waiting for response..."
+            Write-Output "[winsmux] waiting for response..."
             Set-ReadMark $paneId
             return
         }
@@ -739,8 +739,8 @@ function Invoke-Read {
 }
 
 function Invoke-Type {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge type <target> <text>" }
-    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge type <target> <text>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux type <target> <text>" }
+    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: winsmux type <target> <text>" }
 
     $text = $Rest -join ' '
     $paneId = Resolve-Target $Target
@@ -754,8 +754,8 @@ function Invoke-Type {
 }
 
 function Invoke-Keys {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge keys <target> <key>..." }
-    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge keys <target> <key>..." }
+    if (-not $Target) { Stop-WithError "usage: winsmux keys <target> <key>..." }
+    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: winsmux keys <target> <key>..." }
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
@@ -770,8 +770,8 @@ function Invoke-Keys {
 }
 
 function Invoke-Message {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge message <target> <text>" }
-    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge message <target> <text>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux message <target> <text>" }
+    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: winsmux message <target> <text>" }
 
     $text = $Rest -join ' '
     $paneId = Resolve-Target $Target
@@ -783,15 +783,15 @@ function Invoke-Message {
     $myCoord = (& psmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' | Out-String).Trim()
     $agentName = if ($env:WINSMUX_AGENT_NAME) { $env:WINSMUX_AGENT_NAME } else { "unknown" }
 
-    $header = "[psmux-bridge from:$agentName pane:$myId at:$myCoord -- load the winsmux skill to reply]"
+    $header = "[winsmux from:$agentName pane:$myId at:$myCoord -- load the winsmux skill to reply]"
     & psmux send-keys -t $paneId -l -- "$header $text"
 
     Clear-ReadMark $paneId
 }
 
 function Invoke-Send {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge send <target> <text>" }
-    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge send <target> <text>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux send <target> <text>" }
+    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: winsmux send <target> <text>" }
 
     # Normalize Git Bash /tmp paths before dispatching PowerShell-oriented commands.
     $text = Normalize-DispatchText -Text ($Rest -join ' ')
@@ -826,8 +826,8 @@ function Invoke-Send {
 }
 
 function Invoke-Name {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge name <target> <label>" }
-    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge name <target> <label>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux name <target> <label>" }
+    if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: winsmux name <target> <label>" }
 
     $label = $Rest[0]
     $paneId = Resolve-Target $Target
@@ -846,7 +846,7 @@ function Invoke-Name {
 }
 
 function Invoke-Resolve {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge resolve <label>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux resolve <label>" }
 
     $labels = Get-Labels
     if ($labels.ContainsKey($Target)) {
@@ -877,7 +877,7 @@ function Invoke-AutoRebalance {
 
     $queueDepth = 0
     try {
-        $queueScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\builder-queue.ps1'))
+        $queueScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\builder-queue.ps1'))
         if (Test-Path $queueScript) {
             $out = & pwsh -NoProfile -File $queueScript -Action list -ProjectDir $projectDir -BuilderLabel '' -AsJson 2>$null
             if ($out) { $parsed = $out | ConvertFrom-Json -ErrorAction SilentlyContinue; if ($parsed) { $queueDepth = @($parsed.Queued).Count } }
@@ -896,7 +896,7 @@ function Invoke-AutoRebalance {
 
 function Invoke-Role {
     if (-not $Target -or -not $Rest -or $Rest.Count -lt 1) {
-        Stop-WithError "usage: psmux-bridge role <pane_label_or_id> <new_role>`n  roles: builder, researcher, reviewer"
+        Stop-WithError "usage: winsmux role <pane_label_or_id> <new_role>`n  roles: builder, researcher, reviewer"
     }
 
     $newRole = $Rest[0].Trim().ToLowerInvariant()
@@ -958,8 +958,8 @@ function Invoke-Role {
 }
 
 function Invoke-Verify {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge verify <pr-number>" }
-    if ($Rest -and $Rest.Count -gt 0) { Stop-WithError "usage: psmux-bridge verify <pr-number>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux verify <pr-number>" }
+    if ($Rest -and $Rest.Count -gt 0) { Stop-WithError "usage: winsmux verify <pr-number>" }
 
     $prNumber = $Target
     $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -1035,7 +1035,7 @@ function Invoke-Verify {
 }
 
 function Invoke-Doctor {
-    Write-Output "=== psmux-bridge doctor ==="
+    Write-Output "=== winsmux doctor ==="
 
     # psmux install check
     try {
@@ -1175,7 +1175,7 @@ function Invoke-Doctor {
 }
 
 function Invoke-ImeInput {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge ime-input <target>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux ime-input <target>" }
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
@@ -1202,7 +1202,7 @@ function Invoke-ImeInput {
 }
 
 function Invoke-ImagePaste {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge image-paste <target>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux image-paste <target>" }
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
@@ -1234,7 +1234,7 @@ function Invoke-ImagePaste {
 }
 
 function Invoke-ClipboardPaste {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge clipboard-paste <target>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux clipboard-paste <target>" }
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
@@ -1260,7 +1260,7 @@ function Get-SignalDir {
 }
 
 function Invoke-Wait {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge wait <channel> [timeout_seconds]" }
+    if (-not $Target) { Stop-WithError "usage: winsmux wait <channel> [timeout_seconds]" }
 
     $channel = $Target
     $timeoutSec = 120
@@ -1297,7 +1297,7 @@ function Invoke-Wait {
 }
 
 function Invoke-Signal {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge signal <channel>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux signal <channel>" }
 
     $channel = $Target
     $signalDir = Get-SignalDir
@@ -1308,7 +1308,7 @@ function Invoke-Signal {
 }
 
 function Invoke-Watch {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge watch <label> [silence_seconds] [timeout_seconds]" }
+    if (-not $Target) { Stop-WithError "usage: winsmux watch <label> [silence_seconds] [timeout_seconds]" }
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
@@ -1357,7 +1357,7 @@ function Invoke-Watch {
 }
 
 function Invoke-WaitReady {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge wait-ready <target> [timeout_seconds]" }
+    if (-not $Target) { Stop-WithError "usage: winsmux wait-ready <target> [timeout_seconds]" }
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
@@ -1391,7 +1391,7 @@ function Invoke-WaitReady {
 
 function Invoke-HealthCheck {
     if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
-        Stop-WithError "usage: psmux-bridge health-check"
+        Stop-WithError "usage: winsmux health-check"
     }
 
     $labels = Get-Labels
@@ -1453,7 +1453,7 @@ function Invoke-HealthCheck {
 function Invoke-Focus {
     param([string]$FocusTarget = $Target)
 
-    if (-not $FocusTarget) { Stop-WithError "usage: psmux-bridge focus <label|target>" }
+    if (-not $FocusTarget) { Stop-WithError "usage: winsmux focus <label|target>" }
 
     $paneId = Resolve-Target $FocusTarget
     $paneId = Confirm-Target $paneId
@@ -1466,7 +1466,7 @@ function Invoke-Focus {
 function Invoke-FocusLock {
     param([string]$FocusTarget = $Target)
 
-    if (-not $FocusTarget) { Stop-WithError "usage: psmux-bridge focus-lock <label|target>" }
+    if (-not $FocusTarget) { Stop-WithError "usage: winsmux focus-lock <label|target>" }
 
     $paneId = Resolve-Target $FocusTarget
     $paneId = Confirm-Target $paneId
@@ -1482,7 +1482,7 @@ function Invoke-FocusUnlock {
     )
 
     if ($FocusTarget -or ($ExtraArgs -and $ExtraArgs.Count -gt 0)) {
-        Stop-WithError "usage: psmux-bridge focus-unlock"
+        Stop-WithError "usage: winsmux focus-unlock"
     }
 
     $entry = Pop-FocusPolicy
@@ -1531,7 +1531,7 @@ function Invoke-Profile {
         profiles = @(
             @{
                 name             = "winsmux $profileName"
-                commandline      = "pwsh -NoProfile -Command `"& '%USERPROFILE%\.winsmux\bin\psmux-bridge.ps1' doctor; psmux new-session -s $profileName; pwsh '%USERPROFILE%\.winsmux\bin\start-orchestra.ps1'`""
+                commandline      = "pwsh -NoProfile -Command `"& '%USERPROFILE%\.winsmux\bin\winsmux-core.ps1' doctor; psmux new-session -s $profileName; pwsh '%USERPROFILE%\.winsmux\bin\start-orchestra.ps1'`""
                 icon             = "`u{1F3BC}"
                 startingDirectory = "%USERPROFILE%"
                 tabTitle         = "winsmux $profileName"
@@ -1553,7 +1553,7 @@ function Invoke-Profile {
 function Invoke-VaultSet {
     $key = $Target
     $value = if ($Rest) { $Rest -join ' ' } else { '' }
-    if (-not $key) { Stop-WithError "usage: psmux-bridge vault set <key> [value]" }
+    if (-not $key) { Stop-WithError "usage: winsmux vault set <key> [value]" }
     if (-not $value) {
         $secure = Read-Host -AsSecureString "Enter value for '$key'"
         $value = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
@@ -1587,7 +1587,7 @@ function Invoke-VaultSet {
 
 function Invoke-VaultGet {
     $key = $Target
-    if (-not $key) { Stop-WithError "usage: psmux-bridge vault get <key>" }
+    if (-not $key) { Stop-WithError "usage: winsmux vault get <key>" }
 
     $credTarget = "winsmux:$key"
     $credPtr = [IntPtr]::Zero
@@ -1643,7 +1643,7 @@ function Invoke-VaultList {
 }
 
 function Invoke-VaultInject {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge vault inject <pane>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux vault inject <pane>" }
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
@@ -1696,12 +1696,12 @@ function Invoke-VaultInject {
 }
 
 function Invoke-Version {
-    Write-Output "psmux-bridge $VERSION"
+    Write-Output "winsmux $VERSION"
 }
 
 function Show-Usage {
     Write-Output @"
-psmux-bridge $VERSION - psmux bridge for winsmux
+winsmux $VERSION - psmux bridge for winsmux
 
 Commands:
   id                        Show current pane ID
@@ -1762,7 +1762,7 @@ function Get-MailboxPipeName {
 }
 
 function Invoke-MailboxCreate {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge mailbox-create <channel>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux mailbox-create <channel>" }
 
     $pipeName = Get-MailboxPipeName $Target
     Write-Output "mailbox listening: $pipeName"
@@ -1811,9 +1811,9 @@ function Invoke-MailboxCreate {
 }
 
 function Invoke-MailboxSend {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge mailbox-send <channel> <json>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux mailbox-send <channel> <json>" }
     if (-not $Rest -or $Rest.Count -eq 0) {
-        Stop-WithError "usage: psmux-bridge mailbox-send <channel> <json>"
+        Stop-WithError "usage: winsmux mailbox-send <channel> <json>"
     }
 
     $pipeName = Get-MailboxPipeName $Target
@@ -1856,8 +1856,8 @@ function Invoke-MailboxListen {
 
 # --- Kill / Restart ---
 function Invoke-Kill {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge kill <target>" }
-    if ($Rest -and $Rest.Count -gt 0) { Stop-WithError "usage: psmux-bridge kill <target>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux kill <target>" }
+    if ($Rest -and $Rest.Count -gt 0) { Stop-WithError "usage: winsmux kill <target>" }
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
@@ -1873,8 +1873,8 @@ function Invoke-Kill {
 }
 
 function Invoke-Restart {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge restart <target>" }
-    if ($Rest -and $Rest.Count -gt 0) { Stop-WithError "usage: psmux-bridge restart <target>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux restart <target>" }
+    if ($Rest -and $Rest.Count -gt 0) { Stop-WithError "usage: winsmux restart <target>" }
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
@@ -1944,21 +1944,21 @@ switch ($Command) {
     'locks'           { Invoke-Locks }
     'verify'          { Invoke-Verify }
     'dispatch-route'  {
-        $routerScript = Join-Path $PSScriptRoot '..\psmux-bridge\scripts\dispatch-router.ps1'
+        $routerScript = Join-Path $PSScriptRoot '..\winsmux-core\scripts\dispatch-router.ps1'
         $fullText = @($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }
         & $routerScript -Text ($fullText -join ' ')
     }
     'task-split' {
-        $splitterScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\task-splitter.ps1'))
+        $splitterScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\task-splitter.ps1'))
         $taskText = (@($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
         if (-not $taskText) {
-            Stop-WithError "usage: psmux-bridge task-split <task text>"
+            Stop-WithError "usage: winsmux task-split <task text>"
         }
 
         & pwsh -NoProfile -File $splitterScript -Task $taskText -AsJson
     }
     'pipeline' {
-        $pipelineScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\team-pipeline.ps1'))
+        $pipelineScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\team-pipeline.ps1'))
         $taskText = (@($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
         if ($taskText) {
             & pwsh -NoProfile -File $pipelineScript -Task $taskText
@@ -1967,11 +1967,11 @@ switch ($Command) {
         }
     }
     'builder-queue' {
-        $queueScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\builder-queue.ps1'))
+        $queueScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\builder-queue.ps1'))
         switch ($Target) {
             'add' {
                 if (-not $Rest -or $Rest.Count -lt 2) {
-                    Stop-WithError "usage: psmux-bridge builder-queue add <builder-label> <task>"
+                    Stop-WithError "usage: winsmux builder-queue add <builder-label> <task>"
                 }
 
                 $builderLabel = $Rest[0]
@@ -1984,14 +1984,14 @@ switch ($Command) {
             }
             'dispatch-next' {
                 if (-not $Rest -or $Rest.Count -lt 1) {
-                    Stop-WithError "usage: psmux-bridge builder-queue dispatch-next <builder-label>"
+                    Stop-WithError "usage: winsmux builder-queue dispatch-next <builder-label>"
                 }
 
                 & pwsh -NoProfile -File $queueScript -Action 'dispatch-next' -ProjectDir (Get-Location).Path -BuilderLabel $Rest[0]
             }
             'complete' {
                 if (-not $Rest -or $Rest.Count -lt 1) {
-                    Stop-WithError "usage: psmux-bridge builder-queue complete <builder-label> [task]"
+                    Stop-WithError "usage: winsmux builder-queue complete <builder-label> [task]"
                 }
 
                 $builderLabel = $Rest[0]
@@ -2003,7 +2003,7 @@ switch ($Command) {
                 }
             }
             default {
-                Stop-WithError "usage: psmux-bridge builder-queue [add|list|dispatch-next|complete] ..."
+                Stop-WithError "usage: winsmux builder-queue [add|list|dispatch-next|complete] ..."
             }
         }
     }
@@ -2013,7 +2013,7 @@ switch ($Command) {
             'get'    { $Target = $Rest[0]; Invoke-VaultGet }
             'inject' { $Target = $Rest[0]; Invoke-VaultInject }
             'list'   { Invoke-VaultList }
-            default  { Stop-WithError "usage: psmux-bridge vault [set|get|inject|list]" }
+            default  { Stop-WithError "usage: winsmux vault [set|get|inject|list]" }
         }
     }
     'wait'            { Invoke-Wait }
@@ -2028,7 +2028,7 @@ switch ($Command) {
     'doctor'          { Invoke-Doctor }
     'version'         { Invoke-Version }
     'monitor' {
-        $monitorScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\agent-monitor.ps1'))
+        $monitorScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\agent-monitor.ps1'))
         & pwsh -NoProfile -File $monitorScript
     }
     'role'            { Invoke-Role }

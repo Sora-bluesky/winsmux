@@ -11,7 +11,7 @@ Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $sessionName = 'winsmux-orchestra'
-$bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\psmux-bridge.ps1'))
+$bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\winsmux-core.ps1'))
 $layoutScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir 'orchestra-layout.ps1'))
 $psmuxBin = Get-PsmuxBin
 
@@ -70,7 +70,7 @@ function Invoke-Bridge {
                 $message = 'unknown bridge error'
             }
 
-            throw "psmux-bridge $($Arguments -join ' ') failed: $message"
+            throw "winsmux $($Arguments -join ' ') failed: $message"
         }
 
         return [PSCustomObject]@{
@@ -81,7 +81,7 @@ function Invoke-Bridge {
 
     & pwsh -NoProfile -File $script:bridgeScript @Arguments | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw "psmux-bridge $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+        throw "winsmux $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
     }
 }
 

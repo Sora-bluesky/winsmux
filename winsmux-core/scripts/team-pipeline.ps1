@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$script:TeamPipelineBridgeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\psmux-bridge.ps1'))
+$script:TeamPipelineBridgeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\winsmux-core.ps1'))
 $script:TeamPipelineLoggerScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'logger.ps1'))
 $script:TeamPipelineDangerousApprovalPattern = '(?im)(rm\s+-rf|Remove-Item\s+.+-Recurse.+-Force|git\s+push\s+--force|git\s+reset\s+--hard|DROP\s+TABLE|DELETE\s+FROM)'
 
@@ -277,10 +277,10 @@ function Invoke-TeamPipelineBridge {
 
     if ($exitCode -ne 0 -and -not $AllowFailure) {
         if ([string]::IsNullOrWhiteSpace($text)) {
-            $text = 'unknown psmux-bridge error'
+            $text = 'unknown winsmux error'
         }
 
-        throw "psmux-bridge $($Arguments -join ' ') failed: $text"
+        throw "winsmux $($Arguments -join ' ') failed: $text"
     }
 
     return [PSCustomObject]@{

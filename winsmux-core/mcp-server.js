@@ -1,4 +1,4 @@
-// mcp-server.js — MCP server exposing psmux-bridge commands as tools
+// mcp-server.js — MCP server exposing winsmux commands as tools
 // Transport: stdio (newline-delimited JSON-RPC 2.0)
 "use strict";
 
@@ -32,7 +32,7 @@ const TOOLS = [
   },
   {
     name: "winsmux_send",
-    description: "Send text to a pane via psmux-bridge send",
+    description: "Send text to a pane via winsmux send",
     inputSchema: {
       type: "object",
       properties: {
@@ -77,7 +77,7 @@ function resolveBridgeScript() {
   // Try sibling first (winsmux-core/mcp-server.js -> ../scripts/winsmux-core.ps1)
   const candidates = [
     path.resolve(__dirname, "..", "scripts", "winsmux-core.ps1"),
-    path.resolve(__dirname, "psmux-bridge.ps1"),
+    path.resolve(__dirname, "winsmux-core.ps1"),
   ];
   for (const p of candidates) {
     try {

@@ -339,7 +339,7 @@ function Test-ZombieProcessesCheck {
     $markerPaths = @(
         $repoRoot,
         (Join-Path $repoRoot '.worktrees'),
-        (Join-Path $repoRoot 'psmux-bridge'),
+        (Join-Path $repoRoot 'winsmux-core'),
         (Join-Path $HOME '.winsmux')
     ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
 

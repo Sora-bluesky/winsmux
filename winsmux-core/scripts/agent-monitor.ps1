@@ -408,7 +408,7 @@ function Send-MonitorBridgeCommand {
         [Parameter(Mandatory = $true)][string]$Text
     )
 
-    $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\psmux-bridge.ps1'))
+    $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\winsmux-core.ps1'))
     & pwsh -NoProfile -File $bridgeScript 'send' $PaneId $Text 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to send command to pane $PaneId"

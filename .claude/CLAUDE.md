@@ -38,8 +38,8 @@ NO_COLOR=1 pwsh -Command "Invoke-Pester tests/ -Output Minimal"
 pwsh -NoProfile -Command "[System.Management.Automation.Language.Parser]::ParseFile('winsmux-core/scripts/orchestra-start.ps1', [ref]$null, [ref]$errors); if ($errors.Count -gt 0) { $errors } else { 'OK' }"
 
 # Vault
-pwsh scripts/psmux-bridge.ps1 vault list
-pwsh scripts/psmux-bridge.ps1 vault set KEY value
+pwsh scripts/winsmux-core.ps1 vault list
+pwsh scripts/winsmux-core.ps1 vault set KEY value
 
 # Version bump
 pwsh scripts/bump-version.ps1 -Version X.Y.Z

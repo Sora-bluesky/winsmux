@@ -1683,7 +1683,7 @@ tasks:
 
   - id: TASK-139
     title: "Rename psmux-bridge to winsmux-core + adapter layer separation"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.19.1"
     repo: winsmux
@@ -2064,7 +2064,7 @@ tasks:
 
   - id: TASK-153
     title: "Repo health tooling integrated with doctor + dead code audit"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.19.1"
     repo: winsmux
@@ -2079,7 +2079,7 @@ tasks:
 
   - id: TASK-170
     title: "Fix orchestra zombie cleanup killing Telegram bun/node process"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.19.1"
     repo: winsmux

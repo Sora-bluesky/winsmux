@@ -14,7 +14,7 @@ Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot 'manifest.ps1')
 
-$script:BuilderQueueBridgeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\psmux-bridge.ps1'))
+$script:BuilderQueueBridgeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\winsmux-core.ps1'))
 $script:DispatchLedgerRelativePath = '.winsmux\dispatch-ledger.json'
 
 function ConvertTo-BuilderQueueEntry {
@@ -415,7 +415,7 @@ function Invoke-BuilderQueueDispatch {
 
     if ($exitCode -ne 0) {
         if ([string]::IsNullOrWhiteSpace($text)) {
-            $text = 'unknown psmux-bridge error'
+            $text = 'unknown winsmux error'
         }
 
         throw "Failed to dispatch queued task to ${BuilderLabel}: $text"

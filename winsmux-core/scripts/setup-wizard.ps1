@@ -1,4 +1,4 @@
-# setup-wizard.ps1 - Interactive setup for first-time psmux-bridge configuration.
+# setup-wizard.ps1 - Interactive setup for first-time winsmux configuration.
 
 [CmdletBinding()]
 param()
@@ -21,7 +21,7 @@ function Get-PsmuxBin {
 }
 
 function Get-BridgeCommand {
-    foreach ($candidate in @('psmux-bridge', 'psmux-bridge.ps1')) {
+    foreach ($candidate in @('winsmux', 'winsmux-core.ps1')) {
         $command = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -ne $command) {
             if ($command.Path) {
@@ -32,7 +32,7 @@ function Get-BridgeCommand {
         }
     }
 
-    $repoBridge = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\psmux-bridge.ps1'))
+    $repoBridge = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\winsmux-core.ps1'))
     if (Test-Path $repoBridge) {
         return $repoBridge
     }
@@ -187,7 +187,7 @@ $vaultStored = $false
 if ($storeVault) {
     $bridgeCommand = Get-BridgeCommand
     if (-not $bridgeCommand) {
-        Write-Warning 'Could not find psmux-bridge. Skipping GH_TOKEN vault setup.'
+        Write-Warning 'Could not find winsmux CLI. Skipping GH_TOKEN vault setup.'
     } else {
         $vaultStored = Set-GitHubTokenVault -BridgeCommand $bridgeCommand
     }

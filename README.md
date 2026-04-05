@@ -17,9 +17,9 @@ It provides the runtime and coordination layer for running multiple agent CLIs i
 - **Enterprise governance**: enforce role gates, isolate Builder work in git worktrees, and preserve an evidence trail for review and audit
 
 ```powershell
-psmux-bridge read builder-1 20
-psmux-bridge send reviewer "Review the latest auth changes."
-psmux-bridge health-check
+winsmux read builder-1 20
+winsmux send reviewer "Review the latest auth changes."
+winsmux health-check
 ```
 
 ## Why teams use it
@@ -35,7 +35,7 @@ Most agent tooling is optimized for a single vendor and a single execution model
 
 ```text
 winsmux
-├── psmux-bridge CLI
+├── winsmux CLI
 ├── Orchestra
 ├── Role Gates
 ├── Builder Worktree Isolation
@@ -66,7 +66,7 @@ The installer:
 
 ```powershell
 # Verify the environment
-psmux-bridge doctor
+winsmux doctor
 
 # Start a psmux session
 psmux new-session -s orchestra
@@ -78,9 +78,9 @@ pwsh winsmux-core/scripts/orchestra-start.ps1
 Inside the session, label and inspect panes:
 
 ```powershell
-psmux-bridge list
-psmux-bridge read builder-1 30
-psmux-bridge send researcher "Summarize the upstream issue."
+winsmux list
+winsmux read builder-1 30
+winsmux send researcher "Summarize the upstream issue."
 ```
 
 ## Governance highlights
@@ -95,12 +95,12 @@ psmux-bridge send researcher "Summarize the upstream issue."
 
 | Command | Purpose |
 | ------- | ------- |
-| `psmux-bridge list` | Show panes, labels, and processes |
-| `psmux-bridge read <target> [lines]` | Read pane output before acting |
-| `psmux-bridge send <target> <text>` | Send text and press Enter |
-| `psmux-bridge health-check` | Report READY/BUSY/HUNG/DEAD for labeled panes |
-| `psmux-bridge vault set <key> [value]` | Store a credential in DPAPI-backed vault |
-| `psmux-bridge vault inject <pane>` | Inject stored credentials into a target pane |
+| `winsmux list` | Show panes, labels, and processes |
+| `winsmux read <target> [lines]` | Read pane output before acting |
+| `winsmux send <target> <text>` | Send text and press Enter |
+| `winsmux health-check` | Report READY/BUSY/HUNG/DEAD for labeled panes |
+| `winsmux vault set <key> [value]` | Store a credential in DPAPI-backed vault |
+| `winsmux vault inject <pane>` | Inject stored credentials into a target pane |
 | `winsmux update` | Update winsmux to the latest version |
 | `winsmux uninstall` | Remove winsmux |
 

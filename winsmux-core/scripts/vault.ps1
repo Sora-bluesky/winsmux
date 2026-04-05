@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Vault commands for psmux-bridge.
+Vault commands for winsmux-core.
 
 .DESCRIPTION
 Dot-source this script to load the vault helpers into the current script scope:
@@ -57,7 +57,7 @@ public class WinCred {
 function Invoke-VaultSet {
     $key = $Target
     $value = if ($Rest) { $Rest -join ' ' } else { '' }
-    if (-not $key) { Stop-WithError "usage: psmux-bridge vault set <key> [value]" }
+    if (-not $key) { Stop-WithError "usage: winsmux vault set <key> [value]" }
     if (-not $value) {
         $secure = Read-Host -AsSecureString "Enter value for '$key'"
         $value = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
@@ -91,7 +91,7 @@ function Invoke-VaultSet {
 
 function Invoke-VaultGet {
     $key = $Target
-    if (-not $key) { Stop-WithError "usage: psmux-bridge vault get <key>" }
+    if (-not $key) { Stop-WithError "usage: winsmux vault get <key>" }
 
     $credTarget = "winsmux:$key"
     $credPtr = [IntPtr]::Zero
@@ -207,7 +207,7 @@ function Invoke-PsmuxSourceFile {
 }
 
 function Invoke-VaultInject {
-    if (-not $Target) { Stop-WithError "usage: psmux-bridge vault inject <pane>" }
+    if (-not $Target) { Stop-WithError "usage: winsmux vault inject <pane>" }
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
