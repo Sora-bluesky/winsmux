@@ -18,6 +18,7 @@ token.json
 # Internal dev (NEVER commit)
 # =========================
 docs/internal/
+docs/audits/
 docs/project/
 !docs/project/ROADMAP.md
 docs/*-research*.md
