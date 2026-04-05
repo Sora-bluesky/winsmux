@@ -86,6 +86,7 @@ function Save-BuilderQueueManifest {
         [Parameter(Mandatory = $true)]$Manifest
     )
 
+    Ensure-ManifestTasksShape -Manifest $Manifest
     Save-WinsmuxManifest -ProjectDir $ProjectDir -Manifest $Manifest
 }
 
