@@ -19,9 +19,7 @@ Or run directly for a single monitoring cycle:
 param(
     [string]$ProjectDir,
     [string]$SessionName = 'winsmux-orchestra',
-    [int]$HungThresholdSeconds = 60,
-    [int]$PollIntervalSeconds = 15,
-    [switch]$Daemon
+    [int]$HungThresholdSeconds = 60
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,16 +28,7 @@ Set-StrictMode -Version Latest
 
 $scriptDir = $PSScriptRoot
 . "$scriptDir/settings.ps1"
-$script:MonitorBridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\psmux-bridge.ps1'))
-$script:MonitorBuilderQueueScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir 'builder-queue.ps1'))
-$script:MonitorLoggerScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir 'logger.ps1'))
-
-if (Test-Path $script:MonitorLoggerScript -PathType Leaf) {
-    try {
-        . $script:MonitorLoggerScript
-    } catch {
-    }
-}
+. "$scriptDir/agent-readiness.ps1"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -174,157 +163,6 @@ function Get-MonitorPropertyValue {
     return $Default
 }
 
-function Write-MonitorEvent {
-    param(
-        [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$SessionName,
-        [Parameter(Mandatory = $true)][string]$Event,
-        [ValidateSet('debug', 'info', 'warn', 'error')]
-        [string]$Level = 'info',
-        [string]$Message,
-        [string]$Role,
-        [string]$PaneId,
-        [string]$Target,
-        [AllowNull()]$Data
-    )
-
-    if (-not (Get-Command -Name 'Write-OrchestraLog' -ErrorAction SilentlyContinue)) {
-        return
-    }
-
-    try {
-        Write-OrchestraLog -ProjectDir $ProjectDir -SessionName $SessionName -Event $Event -Level $Level -Message $Message -Role $Role -PaneId $PaneId -Target $Target -Data $Data | Out-Null
-    } catch {
-    }
-}
-
-function Get-MonitorManifestPath {
-    param([Parameter(Mandatory = $true)][string]$ProjectDir)
-
-    return Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
-}
-
-function Get-MonitorRebalanceStatePath {
-    param([Parameter(Mandatory = $true)][string]$ProjectDir)
-
-    return Join-Path (Join-Path $ProjectDir '.winsmux') 'auto-rebalance.last.txt'
-}
-
-function Read-MonitorManifest {
-    param([Parameter(Mandatory = $true)][string]$ManifestPath)
-
-    if (-not (Test-Path $ManifestPath -PathType Leaf)) {
-        return $null
-    }
-
-    $content = Get-Content -Path $ManifestPath -Raw -Encoding UTF8
-    if ([string]::IsNullOrWhiteSpace($content)) {
-        return $null
-    }
-
-    return ConvertFrom-MonitorManifest -Content $content
-}
-
-function Test-MonitorSessionExists {
-    param([Parameter(Mandatory = $true)][string]$SessionName)
-
-    $psmuxBin = Get-PsmuxBin
-    if (-not $psmuxBin) {
-        return $false
-    }
-
-    & $psmuxBin has-session -t $SessionName 1>$null 2>$null
-    return $LASTEXITCODE -eq 0
-}
-
-function Get-MonitorStatusMarkerFromOutput {
-    param([AllowNull()][string]$Text)
-
-    if ([string]::IsNullOrWhiteSpace($Text)) {
-        return ''
-    }
-
-    $matches = [regex]::Matches($Text, '(?im)^\s*STATUS:\s*([A-Z_]+)\s*$')
-    if ($matches.Count -lt 1) {
-        return ''
-    }
-
-    return $matches[$matches.Count - 1].Groups[1].Value.Trim().ToUpperInvariant()
-}
-
-function Get-MonitorBuilderLabels {
-    param([AllowNull()]$Manifest)
-
-    if ($null -eq $Manifest -or $null -eq $Manifest.Panes) {
-        return @()
-    }
-
-    $labels = [System.Collections.Generic.List[string]]::new()
-    foreach ($label in $Manifest.Panes.Keys) {
-        $pane = $Manifest.Panes[$label]
-        $role = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'role' -Default '')
-        if ($role -eq 'Builder' -or $label -match '^builder-') {
-            $labels.Add([string]$label) | Out-Null
-        }
-    }
-
-    return @($labels)
-}
-
-function Invoke-MonitorBuilderQueueCommand {
-    param(
-        [Parameter(Mandatory = $true)][string[]]$Arguments,
-        [switch]$AllowFailure
-    )
-
-    if (-not (Test-Path $script:MonitorBuilderQueueScript -PathType Leaf)) {
-        throw "Builder queue script not found: $script:MonitorBuilderQueueScript"
-    }
-
-    $output = & pwsh -NoProfile -File $script:MonitorBuilderQueueScript @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
-    $text = ($output | Out-String).TrimEnd()
-
-    if ($exitCode -ne 0 -and -not $AllowFailure) {
-        if ([string]::IsNullOrWhiteSpace($text)) {
-            $text = 'unknown builder-queue error'
-        }
-
-        throw "builder-queue $($Arguments -join ' ') failed: $text"
-    }
-
-    return [PSCustomObject]@{
-        ExitCode = $exitCode
-        Text     = $text
-        Output   = $output
-    }
-}
-
-function Get-MonitorBuilderQueueSnapshot {
-    param(
-        [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [string]$BuilderLabel = ''
-    )
-
-    $result = Invoke-MonitorBuilderQueueCommand -Arguments @(
-        '-Action', 'list',
-        '-ProjectDir', $ProjectDir,
-        '-BuilderLabel', $BuilderLabel,
-        '-AsJson'
-    )
-
-    if ([string]::IsNullOrWhiteSpace($result.Text)) {
-        return [PSCustomObject]@{
-            BuilderLabel = $BuilderLabel
-            Queued       = @()
-            InProgress   = @()
-            Completed    = @()
-        }
-    }
-
-    return ($result.Text | ConvertFrom-Json -ErrorAction Stop)
-}
-
 function Test-CodexApprovalPromptText {
     param([AllowNull()][string]$Text)
 
@@ -350,6 +188,71 @@ function Test-CodexApprovalPromptText {
     return $hasProceedQuestion -and $hasCancelHint
 }
 
+function Test-CodexContextExhaustionText {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $false
+    }
+
+    $tailText = (@(Get-RecentNonEmptyLines -Text $Text -MaxCount 20) -join [Environment]::NewLine)
+    if ([string]::IsNullOrWhiteSpace($tailText)) {
+        return $false
+    }
+
+    $patterns = @(
+        '(?im)\bcontext exhaustion\b',
+        '(?im)\bcontext(?:\s+window)?\s+exhausted\b',
+        '(?im)\bcontext(?:\s+window|\s+length)?\s+limit\s+(?:reached|exceeded)\b',
+        '(?im)\bmaximum\s+context(?:\s+window|\s+length)?\b',
+        '(?im)\binput(?:\s+is)?\s+too\s+long\b'
+    )
+
+    foreach ($pattern in $patterns) {
+        if ($tailText -match $pattern) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Wait-MonitorPaneShellReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [int]$TimeoutSeconds = 15
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $snapshot = Invoke-MonitorPsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+            $text = ($snapshot | Out-String).TrimEnd()
+            if ($null -ne (Get-LastNonEmptyLine -Text $text)) {
+                return
+            }
+        } catch {
+        }
+
+        Start-Sleep -Milliseconds 250
+    }
+
+    throw "Timed out waiting for pane $PaneId shell prompt after respawn."
+}
+
+function Send-MonitorBridgeCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Text
+    )
+
+    $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\psmux-bridge.ps1'))
+    & pwsh -NoProfile -File $bridgeScript 'send' $PaneId $Text 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to send command to pane $PaneId"
+    }
+}
+
 # ---------------------------------------------------------------------------
 # 1. Get-PaneAgentStatus
 # ---------------------------------------------------------------------------
@@ -360,7 +263,7 @@ function Get-PaneAgentStatus {
     Captures pane output and returns the agent status.
 
     .OUTPUTS
-    PSCustomObject with: Status (ready|busy|crashed|hung|empty), PaneId, SnapshotTail
+    PSCustomObject with: Status (ready|busy|crashed|hung|empty), PaneId, SnapshotTail, ExitReason
     #>
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
@@ -376,6 +279,7 @@ function Get-PaneAgentStatus {
             Status       = 'empty'
             PaneId       = $PaneId
             SnapshotTail = ''
+            ExitReason   = ''
         }
     }
 
@@ -387,59 +291,52 @@ function Get-PaneAgentStatus {
             Status       = 'empty'
             PaneId       = $PaneId
             SnapshotTail = ''
+            ExitReason   = ''
         }
     }
 
     # Find last non-empty line
-    $lastLine = $null
-    $lines = $text -split "\r?\n"
-    for ($i = $lines.Length - 1; $i -ge 0; $i--) {
-        if (-not [string]::IsNullOrWhiteSpace($lines[$i])) {
-            $lastLine = $lines[$i]
-            break
-        }
-    }
+    $lastLine = Get-LastNonEmptyLine -Text $text
 
     if ($null -eq $lastLine) {
         return [PSCustomObject]@{
             Status       = 'empty'
             PaneId       = $PaneId
             SnapshotTail = ''
+            ExitReason   = ''
         }
     }
 
+    $lines = $text -split "\r?\n"
     $trimmed = $lastLine.TrimStart()
     $tail = if ($lines.Length -le 12) {
         $text
     } else {
         ($lines[($lines.Length - 12)..($lines.Length - 1)] -join [Environment]::NewLine)
     }
+    $exitReason = ''
 
     if (Test-CodexApprovalPromptText -Text $text) {
         return [PSCustomObject]@{
             Status       = 'busy'
             PaneId       = $PaneId
             SnapshotTail = $tail
+            ExitReason   = ''
         }
     }
 
-    # ready: Codex prompt visible (> or U+203A) or "% left" model indicator
-    $rightChevron = [string][char]8250
-    if ($trimmed.StartsWith('>') -or $trimmed.StartsWith($rightChevron)) {
+    if ($Agent -eq 'codex' -and (Test-CodexContextExhaustionText -Text $tail)) {
+        $exitReason = 'context_exhausted'
+    }
+
+    # ready: agent prompt visible
+    if (Test-AgentPromptText -Text $tail -Agent $Agent) {
         Save-MonitorSnapshot -PaneId $PaneId -Hash (Get-ContentHash -Text $text) -Timestamp (Get-Date -Format o)
         return [PSCustomObject]@{
             Status       = 'ready'
             PaneId       = $PaneId
             SnapshotTail = $tail
-        }
-    }
-
-    if ($Agent -eq 'codex' -and $text -match '(?im)\bgpt-[A-Za-z0-9._-]+\b.*\b\d+% left\b') {
-        Save-MonitorSnapshot -PaneId $PaneId -Hash (Get-ContentHash -Text $text) -Timestamp (Get-Date -Format o)
-        return [PSCustomObject]@{
-            Status       = 'ready'
-            PaneId       = $PaneId
-            SnapshotTail = $tail
+            ExitReason   = ''
         }
     }
 
@@ -449,6 +346,7 @@ function Get-PaneAgentStatus {
             Status       = 'crashed'
             PaneId       = $PaneId
             SnapshotTail = $tail
+            ExitReason   = $exitReason
         }
     }
 
@@ -466,6 +364,7 @@ function Get-PaneAgentStatus {
                     Status       = 'hung'
                     PaneId       = $PaneId
                     SnapshotTail = $tail
+                    ExitReason   = ''
                 }
             }
         } catch {
@@ -481,6 +380,7 @@ function Get-PaneAgentStatus {
         Status       = 'busy'
         PaneId       = $PaneId
         SnapshotTail = $tail
+        ExitReason   = ''
     }
 }
 
@@ -525,22 +425,15 @@ function Invoke-AgentRespawn {
         }
     }
 
-    # Send launch command via psmux-bridge send
-    $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\psmux-bridge.ps1'))
     try {
-        & pwsh -NoProfile -File $bridgeScript 'send' $PaneId $launchCommand 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            return [PSCustomObject]@{
-                Success = $false
-                PaneId  = $PaneId
-                Message = "Failed to send launch command to pane $PaneId"
-            }
-        }
+        Invoke-MonitorPsmux -Arguments @('respawn-pane', '-k', '-t', $PaneId, '-c', $ProjectDir)
+        Wait-MonitorPaneShellReady -PaneId $PaneId
+        Send-MonitorBridgeCommand -PaneId $PaneId -Text $launchCommand
     } catch {
         return [PSCustomObject]@{
             Success = $false
             PaneId  = $PaneId
-            Message = "Exception sending to pane ${PaneId}: $($_.Exception.Message)"
+            Message = "Exception respawning pane ${PaneId}: $($_.Exception.Message)"
         }
     }
 
@@ -656,6 +549,7 @@ function Invoke-AgentMonitorCycle {
             PaneId     = $paneId
             Role       = $role
             Status     = $status.Status
+            ExitReason = $status.ExitReason
             Respawned  = $false
             Message    = ''
         }
@@ -667,7 +561,7 @@ function Invoke-AgentMonitorCycle {
                     -Event 'monitor.status' -Level 'debug' `
                     -Message "Pane $label ($paneId): $($status.Status)" `
                     -Role $role -PaneId $paneId `
-                    -Data ([ordered]@{ status = $status.Status }) | Out-Null
+                    -Data ([ordered]@{ status = $status.Status; exit_reason = $status.ExitReason }) | Out-Null
             } catch {
             }
         }
@@ -704,11 +598,16 @@ function Invoke-AgentMonitorCycle {
             # Log respawn attempt
             if ($loggerAvailable) {
                 try {
+                    $respawnMessage = if ($status.ExitReason -eq 'context_exhausted' -and $role -eq 'Builder') {
+                        "Respawning Builder worktree after context exhaustion in pane $label ($paneId)"
+                    } else {
+                        "Respawning crashed agent in pane $label ($paneId)"
+                    }
                     Write-OrchestraLog -ProjectDir $projectDir -SessionName $SessionName `
                         -Event 'monitor.respawn.start' -Level 'warn' `
-                        -Message "Respawning crashed agent in pane $label ($paneId)" `
+                        -Message $respawnMessage `
                         -Role $role -PaneId $paneId `
-                        -Data ([ordered]@{ agent = $agentName; model = $modelName; launch_dir = $launchDir }) | Out-Null
+                        -Data ([ordered]@{ agent = $agentName; model = $modelName; launch_dir = $launchDir; exit_reason = $status.ExitReason }) | Out-Null
                 } catch {
                 }
             }
@@ -760,243 +659,6 @@ function Invoke-AgentMonitorCycle {
         Crashed   = $crashedCount
         Respawned = $respawnedCount
         Results   = @($results)
-    }
-}
-
-function Invoke-MonitorBuilderCompletionSweep {
-    param(
-        [AllowNull()]$Manifest,
-        [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$SessionName
-    )
-
-    $completedCount = 0
-    $blockedCount = 0
-
-    foreach ($builderLabel in (Get-MonitorBuilderLabels -Manifest $Manifest)) {
-        $pane = $Manifest.Panes[$builderLabel]
-        $paneId = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'pane_id' -Default '')
-        if ([string]::IsNullOrWhiteSpace($paneId)) {
-            continue
-        }
-
-        try {
-            $queueSnapshot = Get-MonitorBuilderQueueSnapshot -ProjectDir $ProjectDir -BuilderLabel $builderLabel
-        } catch {
-            Write-MonitorEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'monitor.builder_queue.snapshot_failed' -Level 'error' -Message "Failed to read builder queue for $builderLabel: $($_.Exception.Message)" -Role 'Builder' -PaneId $paneId -Target $builderLabel
-            continue
-        }
-
-        $inProgress = @($queueSnapshot.InProgress)
-        if ($inProgress.Count -lt 1) {
-            continue
-        }
-
-        try {
-            $snapshot = Invoke-MonitorPsmux -Arguments @('capture-pane', '-t', $paneId, '-p', '-J', '-S', '-80') -CaptureOutput
-            $text = ($snapshot | Out-String).TrimEnd()
-        } catch {
-            continue
-        }
-
-        $statusMarker = Get-MonitorStatusMarkerFromOutput -Text $text
-        if ($statusMarker -eq 'BLOCKED') {
-            $blockedCount++
-            continue
-        }
-
-        if ($statusMarker -ne 'EXEC_DONE') {
-            continue
-        }
-
-        $currentTask = [string]$inProgress[0].Task
-        try {
-            Invoke-MonitorBuilderQueueCommand -Arguments @(
-                '-Action', 'complete',
-                '-ProjectDir', $ProjectDir,
-                '-BuilderLabel', $builderLabel,
-                '-AsJson'
-            ) | Out-Null
-            $completedCount++
-            Write-MonitorEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'monitor.builder_queue.completed' -Level 'info' -Message "Marked completed Builder task for $builderLabel and advanced the queue." -Role 'Builder' -PaneId $paneId -Target $builderLabel -Data ([ordered]@{
-                task   = $currentTask
-                status = $statusMarker
-            })
-        } catch {
-            Write-MonitorEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'monitor.builder_queue.complete_failed' -Level 'error' -Message "Failed to complete Builder queue item for $builderLabel: $($_.Exception.Message)" -Role 'Builder' -PaneId $paneId -Target $builderLabel -Data ([ordered]@{
-                task   = $currentTask
-                status = $statusMarker
-            })
-        }
-    }
-
-    return [PSCustomObject]@{
-        Completed = $completedCount
-        Blocked   = $blockedCount
-    }
-}
-
-function Invoke-MonitorBuilderDispatchSweep {
-    param(
-        [AllowNull()]$Manifest,
-        [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$SessionName,
-        [int]$HungThreshold = $script:AgentMonitorDefaultHungThreshold
-    )
-
-    $dispatchCount = 0
-
-    foreach ($builderLabel in (Get-MonitorBuilderLabels -Manifest $Manifest)) {
-        $pane = $Manifest.Panes[$builderLabel]
-        $paneId = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'pane_id' -Default '')
-        if ([string]::IsNullOrWhiteSpace($paneId)) {
-            continue
-        }
-
-        try {
-            $queueSnapshot = Get-MonitorBuilderQueueSnapshot -ProjectDir $ProjectDir -BuilderLabel $builderLabel
-        } catch {
-            Write-MonitorEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'monitor.builder_queue.snapshot_failed' -Level 'error' -Message "Failed to read builder queue for $builderLabel: $($_.Exception.Message)" -Role 'Builder' -PaneId $paneId -Target $builderLabel
-            continue
-        }
-
-        if (@($queueSnapshot.InProgress).Count -gt 0 -or @($queueSnapshot.Queued).Count -lt 1) {
-            continue
-        }
-
-        $paneStatus = Get-PaneAgentStatus -PaneId $paneId -Agent 'codex' -HungThreshold $HungThreshold
-        if ($paneStatus.Status -ne 'ready') {
-            continue
-        }
-
-        try {
-            Invoke-MonitorBuilderQueueCommand -Arguments @(
-                '-Action', 'dispatch-next',
-                '-ProjectDir', $ProjectDir,
-                '-BuilderLabel', $builderLabel,
-                '-AsJson'
-            ) | Out-Null
-            $dispatchCount++
-            Write-MonitorEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'monitor.builder_queue.dispatched' -Level 'info' -Message "Auto-dispatched the next queued task to $builderLabel." -Role 'Builder' -PaneId $paneId -Target $builderLabel -Data ([ordered]@{
-                queue_depth = @($queueSnapshot.Queued).Count
-            })
-        } catch {
-            Write-MonitorEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'monitor.builder_queue.dispatch_failed' -Level 'error' -Message "Failed to auto-dispatch queued task to $builderLabel: $($_.Exception.Message)" -Role 'Builder' -PaneId $paneId -Target $builderLabel
-        }
-    }
-
-    return [PSCustomObject]@{
-        Dispatched = $dispatchCount
-    }
-}
-
-function Invoke-MonitorAutoRebalanceSweep {
-    param(
-        [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$SessionName
-    )
-
-    if (-not (Test-Path $script:MonitorBridgeScript -PathType Leaf)) {
-        return [PSCustomObject]@{
-            Success  = $false
-            Changed  = $false
-            Summary  = ''
-        }
-    }
-
-    $output = & pwsh -NoProfile -File $script:MonitorBridgeScript 'auto-rebalance' 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        $message = ($output | Out-String).TrimEnd()
-        if (-not [string]::IsNullOrWhiteSpace($message)) {
-            Write-MonitorEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'monitor.auto_rebalance.failed' -Level 'error' -Message $message
-        }
-
-        return [PSCustomObject]@{
-            Success = $false
-            Changed = $false
-            Summary = $message
-        }
-    }
-
-    $summary = ($output | Out-String).TrimEnd()
-    if ([string]::IsNullOrWhiteSpace($summary)) {
-        return [PSCustomObject]@{
-            Success = $true
-            Changed = $false
-            Summary = ''
-        }
-    }
-
-    $statePath = Get-MonitorRebalanceStatePath -ProjectDir $ProjectDir
-    $previous = ''
-    if (Test-Path $statePath -PathType Leaf) {
-        $previous = Get-Content -Path $statePath -Raw -Encoding UTF8
-    }
-
-    $changed = $summary -ne $previous
-    if ($changed) {
-        Set-Content -Path $statePath -Value $summary -Encoding UTF8 -NoNewline
-        Write-MonitorEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'monitor.auto_rebalance.suggested' -Level 'info' -Message 'Updated auto-rebalance suggestion.' -Data ([ordered]@{
-            summary = $summary
-        })
-    }
-
-    return [PSCustomObject]@{
-        Success = $true
-        Changed = $changed
-        Summary = $summary
-    }
-}
-
-function Invoke-AgentMonitorDaemon {
-    param(
-        [Parameter(Mandatory = $true)]$Settings,
-        [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$SessionName,
-        [int]$HungThreshold = $script:AgentMonitorDefaultHungThreshold,
-        [int]$PollInterval = 15
-    )
-
-    $manifestPath = Get-MonitorManifestPath -ProjectDir $ProjectDir
-    Write-MonitorEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'monitor.daemon.started' -Level 'info' -Message "Started auto-dispatch monitor daemon for $SessionName." -Data ([ordered]@{
-        poll_interval_seconds = $PollInterval
-        hung_threshold_seconds = $HungThreshold
-    })
-
-    while ($true) {
-        if (-not (Test-Path $manifestPath -PathType Leaf)) {
-            Write-MonitorEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'monitor.daemon.stopped' -Level 'info' -Message 'Stopping auto-dispatch monitor because the manifest is missing.'
-            break
-        }
-
-        if (-not (Test-MonitorSessionExists -SessionName $SessionName)) {
-            Write-MonitorEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'monitor.daemon.stopped' -Level 'info' -Message "Stopping auto-dispatch monitor because session $SessionName is gone."
-            break
-        }
-
-        try {
-            $cycleResult = Invoke-AgentMonitorCycle -Settings $Settings -ManifestPath $manifestPath -SessionName $SessionName -HungThreshold $HungThreshold
-            $manifest = Read-MonitorManifest -ManifestPath $manifestPath
-            $completionResult = Invoke-MonitorBuilderCompletionSweep -Manifest $manifest -ProjectDir $ProjectDir -SessionName $SessionName
-            $dispatchResult = Invoke-MonitorBuilderDispatchSweep -Manifest $manifest -ProjectDir $ProjectDir -SessionName $SessionName -HungThreshold $HungThreshold
-            $rebalanceResult = Invoke-MonitorAutoRebalanceSweep -ProjectDir $ProjectDir -SessionName $SessionName
-
-            if ($completionResult.Completed -gt 0 -or $dispatchResult.Dispatched -gt 0 -or $rebalanceResult.Changed) {
-                Write-MonitorEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'monitor.daemon.cycle' -Level 'info' -Message 'Auto-dispatch monitor applied queue or rebalance actions.' -Data ([ordered]@{
-                    checked = $cycleResult.Checked
-                    crashed = $cycleResult.Crashed
-                    respawned = $cycleResult.Respawned
-                    completed = $completionResult.Completed
-                    blocked = $completionResult.Blocked
-                    dispatched = $dispatchResult.Dispatched
-                    rebalance_changed = $rebalanceResult.Changed
-                })
-            }
-        } catch {
-            Write-MonitorEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'monitor.daemon.error' -Level 'error' -Message $_.Exception.Message
-        }
-
-        Start-Sleep -Seconds $PollInterval
     }
 }
 
@@ -1131,18 +793,13 @@ if ($MyInvocation.InvocationName -ne '.') {
         $resolvedProjectDir = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
     }
 
-    $manifestPath = Get-MonitorManifestPath -ProjectDir $resolvedProjectDir
+    $manifestPath = Join-Path (Join-Path $resolvedProjectDir '.winsmux') 'manifest.yaml'
     if (-not (Test-Path $manifestPath -PathType Leaf)) {
         Write-Error "No manifest found at $manifestPath. Is an Orchestra session running?"
         exit 1
     }
 
     $settings = Get-BridgeSettings
-    if ($Daemon) {
-        Invoke-AgentMonitorDaemon -Settings $settings -ProjectDir $resolvedProjectDir -SessionName $SessionName -HungThreshold $HungThresholdSeconds -PollInterval $PollIntervalSeconds
-        exit 0
-    }
-
     $result = Invoke-AgentMonitorCycle `
         -Settings $settings `
         -ManifestPath $manifestPath `
@@ -1152,8 +809,9 @@ if ($MyInvocation.InvocationName -ne '.') {
     Write-Output "Monitor cycle complete: checked=$($result.Checked) crashed=$($result.Crashed) respawned=$($result.Respawned)"
     foreach ($r in $result.Results) {
         $respawnTag = if ($r.Respawned) { ' [RESPAWNED]' } else { '' }
+        $reasonTag = if ($r.ExitReason) { " [$($r.ExitReason)]" } else { '' }
         $messageTag = if ($r.Message) { " ($($r.Message))" } else { '' }
-        Write-Output ("  {0,-14} {1,-8} {2,-10} {3}{4}" -f $r.Label, $r.PaneId, $r.Status, $respawnTag, $messageTag)
+        Write-Output ("  {0,-14} {1,-8} {2,-10} {3}{4}{5}" -f $r.Label, $r.PaneId, $r.Status, $respawnTag, $reasonTag, $messageTag)
     }
 
     if ($result.Crashed -gt 0 -and $result.Respawned -lt $result.Crashed) {
