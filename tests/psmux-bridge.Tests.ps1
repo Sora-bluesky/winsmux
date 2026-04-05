@@ -414,3 +414,48 @@ Describe 'logger helpers' {
         $records[1].data.finding_count | Should -Be 2
     }
 }
+
+Describe 'agent-monitor helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\agent-monitor.ps1')
+    }
+
+    It 'respawns the pane shell before sending the agent launch command' {
+        Mock Invoke-MonitorPsmux { } -ParameterFilter {
+            $Arguments[0] -eq 'respawn-pane'
+        }
+        Mock Wait-MonitorPaneShellReady { }
+        Mock Send-MonitorBridgeCommand { }
+        Mock Get-PaneAgentStatus {
+            [PSCustomObject]@{
+                Status       = 'ready'
+                PaneId       = '%2'
+                SnapshotTail = ''
+            }
+        }
+
+        $result = Invoke-AgentRespawn `
+            -PaneId '%2' `
+            -Agent 'codex' `
+            -Model 'gpt-5.4' `
+            -ProjectDir 'C:\repo\.worktrees\builder-1' `
+            -GitWorktreeDir 'C:\repo\.git\worktrees\builder-1'
+
+        $result.Success | Should -Be $true
+        Should -Invoke Invoke-MonitorPsmux -Times 1 -Exactly -ParameterFilter {
+            $Arguments[0] -eq 'respawn-pane' -and
+            $Arguments[1] -eq '-k' -and
+            $Arguments[2] -eq '-t' -and
+            $Arguments[3] -eq '%2' -and
+            $Arguments[4] -eq '-c' -and
+            $Arguments[5] -eq 'C:\repo\.worktrees\builder-1'
+        }
+        Should -Invoke Wait-MonitorPaneShellReady -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2'
+        }
+        Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2' -and
+            $Text -eq "codex -c model=gpt-5.4 --full-auto -C 'C:\repo\.worktrees\builder-1' --add-dir 'C:\repo\.git\worktrees\builder-1'"
+        }
+    }
+}
