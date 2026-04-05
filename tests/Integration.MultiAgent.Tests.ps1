@@ -1,5 +1,37 @@
 $ErrorActionPreference = 'Stop'
 
+Describe 'orchestra cleanup helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\orchestra-cleanup.ps1')
+    }
+
+    It 'matches orchestra-managed pane titles only' {
+        (Test-OrchestraManagedPaneTitle -Title 'Builder-1') | Should -Be $true
+        (Test-OrchestraManagedPaneTitle -Title 'researcher-2') | Should -Be $true
+        (Test-OrchestraManagedPaneTitle -Title 'Reviewer-3') | Should -Be $true
+        (Test-OrchestraManagedPaneTitle -Title 'Commander') | Should -Be $false
+        (Test-OrchestraManagedPaneTitle -Title 'PowerShell') | Should -Be $false
+    }
+
+    It 'targets stale orchestra panes from non-orchestra sessions only' {
+        $targets = Get-StaleOrchestraPaneTargets -SessionName 'winsmux-orchestra' -PaneRecords @(
+            "default`t%1`tBuilder-1"
+            "default`t%2`tResearcher-1"
+            "winsmux-orchestra`t%3`tBuilder-2"
+            "default`t%4`tPowerShell"
+            "scratch`t%5`tReviewer-1"
+            "malformed line"
+        )
+
+        $targets.Count | Should -Be 3
+        $targets[0].SessionName | Should -Be 'default'
+        $targets[0].PaneId | Should -Be '%1'
+        $targets[1].PaneId | Should -Be '%2'
+        $targets[2].SessionName | Should -Be 'scratch'
+        $targets[2].PaneId | Should -Be '%5'
+    }
+}
+
 Describe 'Get-BridgeSettings defaults' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\settings.ps1')
