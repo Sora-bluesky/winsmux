@@ -1037,12 +1037,12 @@ function Invoke-Verify {
 function Invoke-Doctor {
     Write-Output "=== winsmux doctor ==="
 
-    # psmux install check
+    # winsmux binary check
     try {
         $ver = & winsmux -V 2>&1
-        Write-Output "psmux: $($ver | Out-String)".Trim()
+        Write-Output "winsmux: $($ver | Out-String)".Trim()
     } catch {
-        Write-Output "psmux: NOT FOUND"
+        Write-Output "winsmux: NOT FOUND"
     }
 
     # TMUX_PANE
@@ -1086,9 +1086,9 @@ function Invoke-Doctor {
 
     # escape-time check
     try {
-        $escTime = (& psmux show-options -g -v escape-time 2>&1 | Out-String).Trim()
+        $escTime = (& winsmux show-options -g -v escape-time 2>&1 | Out-String).Trim()
         if ($escTime -match '^\d+$' -and [int]$escTime -gt 50) {
-            Write-Output "escape-time: $escTime ms [WARNING: >50ms causes IME lag. Set to 0 in .psmux.conf]"
+            Write-Output "escape-time: $escTime ms [WARNING: >50ms causes IME lag. Set to 0 in .winsmux.conf]"
         } else {
             Write-Output "escape-time: $escTime ms [OK]"
         }
@@ -1186,7 +1186,7 @@ function Invoke-ImeInput {
     Add-Type -AssemblyName Microsoft.VisualBasic
 
     $text = [Microsoft.VisualBasic.Interaction]::InputBox(
-        "psmux ペイン $paneId に送信するテキストを入力してください",
+        "winsmux ペイン $paneId に送信するテキストを入力してください",
         "winsmux IME Input",
         ""
     )
@@ -1701,7 +1701,7 @@ function Invoke-Version {
 
 function Show-Usage {
     Write-Output @"
-winsmux $VERSION - psmux bridge for winsmux
+winsmux $VERSION - winsmux bridge for winsmux
 
 Commands:
   id                        Show current pane ID
@@ -1716,7 +1716,7 @@ Commands:
   ime-input <target>        Open GUI dialog for Japanese IME input
   image-paste <target>      Save clipboard image and send path to pane
   clipboard-paste <target>  Send clipboard text to pane
-  focus <label|target>      Switch active pane (use from outside psmux)
+  focus <label|target>      Switch active pane (use from outside winsmux)
   focus-lock <target>       Push a focus lock for a pane target
   focus-unlock              Pop the latest focus lock
   lock <label> <file>...    Acquire file lock(s) for a label

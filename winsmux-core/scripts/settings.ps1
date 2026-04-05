@@ -4,8 +4,8 @@ Hierarchical settings loader for winsmux-core.
 
 .DESCRIPTION
 Settings are resolved with per-key precedence:
-1. .psmux-bridge.yaml in the current directory
-2. Global psmux options (@bridge-*)
+1. .winsmux.yaml in the current directory
+2. Global winsmux options (@bridge-*)
 3. Built-in defaults
 
 Dot-source this script to load the helpers:
@@ -13,7 +13,7 @@ Dot-source this script to load the helpers:
     . "$PSScriptRoot/settings.ps1"
 #>
 
-$script:BridgeSettingsFileName = '.psmux-bridge.yaml'
+$script:BridgeSettingsFileName = '.winsmux.yaml'
 $script:BridgeSettingsSchema = [ordered]@{
     agent       = @{ Type = 'string';   Default = 'codex';      Option = '@bridge-agent' }
     model       = @{ Type = 'string';   Default = 'gpt-5.4';    Option = '@bridge-model' }
@@ -25,8 +25,8 @@ $script:BridgeSettingsSchema = [ordered]@{
     roles       = @{ Type = 'map';      Default = [ordered]@{}; Option = $null }
 }
 
-if (-not (Get-Command Get-PsmuxBin -ErrorAction SilentlyContinue)) {
-    function Get-PsmuxBin {
+if (-not (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue)) {
+    function Get-WinsmuxBin {
         foreach ($candidate in @('winsmux', 'pmux', 'tmux')) {
             $command = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($null -ne $command) {
@@ -42,20 +42,20 @@ if (-not (Get-Command Get-PsmuxBin -ErrorAction SilentlyContinue)) {
     }
 }
 
-if (-not (Get-Command Get-PsmuxOption -ErrorAction SilentlyContinue)) {
-    function Get-PsmuxOption {
+if (-not (Get-Command Get-WinsmuxOption -ErrorAction SilentlyContinue)) {
+    function Get-WinsmuxOption {
         param(
             [Parameter(Mandatory = $true)][string]$Name,
             [string]$Default
         )
 
-        $psmuxBin = Get-PsmuxBin
-        if (-not $psmuxBin) {
+        $winsmuxBin = Get-WinsmuxBin
+        if (-not $winsmuxBin) {
             return $Default
         }
 
         try {
-            $value = (& $psmuxBin show-options -g -v $Name 2>&1 | Out-String).Trim()
+            $value = (& $winsmuxBin show-options -g -v $Name 2>&1 | Out-String).Trim()
             if ($value -and $value -notmatch 'unknown|error|invalid') {
                 return $value
             }
@@ -69,12 +69,12 @@ if (-not (Get-Command Get-PsmuxOption -ErrorAction SilentlyContinue)) {
 if (-not (Get-Command Set-PsmuxOption -ErrorAction SilentlyContinue)) {
     function Set-PsmuxOption {
         param(
-            [Parameter(Mandatory = $true)][string]$PsmuxBin,
+            [Parameter(Mandatory = $true)][string]$WinsmuxBin,
             [Parameter(Mandatory = $true)][string]$OptionName,
             [Parameter(Mandatory = $true)][string]$OptionValue
         )
 
-        & $PsmuxBin set-option -g $OptionName $OptionValue | Out-Null
+        & $WinsmuxBin set-option -g $OptionName $OptionValue | Out-Null
     }
 }
 
@@ -453,7 +453,7 @@ function Read-BridgeGlobalSettings {
             continue
         }
 
-        $rawValue = Get-PsmuxOption -Name $optionName -Default $null
+        $rawValue = Get-WinsmuxOption -Name $optionName -Default $null
         if ($null -eq $rawValue -or [string]::IsNullOrWhiteSpace($rawValue)) {
             continue
         }
@@ -629,9 +629,9 @@ function Save-BridgeSettings {
         return
     }
 
-    $psmuxBin = Get-PsmuxBin
-    if (-not $psmuxBin) {
-        throw 'Could not find a psmux binary. Tried: psmux, pmux, tmux.'
+    $winsmuxBin = Get-WinsmuxBin
+    if (-not $winsmuxBin) {
+        throw 'Could not find a winsmux binary. Tried: winsmux, pmux, tmux.'
     }
 
     foreach ($key in $normalized.Keys) {
@@ -642,6 +642,6 @@ function Save-BridgeSettings {
 
         $value = $normalized[$key]
         $serializedValue = if ($value -is [System.Array]) { $value -join ',' } else { $value.ToString() }
-        Set-PsmuxOption -PsmuxBin $psmuxBin -OptionName $optionName -OptionValue $serializedValue
+        Set-PsmuxOption -WinsmuxBin $winsmuxBin -OptionName $optionName -OptionValue $serializedValue
     }
 }

@@ -33,15 +33,15 @@ function Test-Administrator {
 }
 
 function Install-Psmux {
-    if (Get-Command psmux -ErrorAction SilentlyContinue) {
+    if (Get-Command winsmux -ErrorAction SilentlyContinue) {
         $ver = (winsmux -V 2>&1 | Out-String).Trim()
-        Write-Status "psmux found: $ver"
+        Write-Status "winsmux found: $ver"
         return
     }
     Write-Status "psmux not found. Downloading sora-psmux fork..."
 
     $localBin = Join-Path $HOME ".local/bin"
-    $psmuxExe = Join-Path $localBin "winsmux.exe"
+    $winsmuxExe = Join-Path $localBin "winsmux.exe"
     $releaseUrl = "https://api.github.com/repos/Sora-bluesky/psmux/releases/latest"
     $headers = @{ "User-Agent" = "winsmux-installer/$VERSION" }
 
@@ -58,7 +58,7 @@ function Install-Psmux {
         }
 
         Write-Status "Downloading $($asset.name) from $($release.tag_name)..."
-        Invoke-RestMethod -Uri $asset.browser_download_url -Headers $headers -OutFile $psmuxExe -ErrorAction Stop
+        Invoke-RestMethod -Uri $asset.browser_download_url -Headers $headers -OutFile $winsmuxExe -ErrorAction Stop
 
         $sha256Asset = $release.assets | Where-Object { $_.name -eq "SHA256SUMS" } | Select-Object -First 1
         if (-not $sha256Asset) {
@@ -82,7 +82,7 @@ function Install-Psmux {
                 if (-not $expectedHash) {
                     Write-Warning "[winsmux] SHA256SUMS does not contain an entry for $($asset.name). Skipping checksum verification."
                 } else {
-                    $actualHash = (Get-FileHash $psmuxExe -Algorithm SHA256).Hash.ToUpperInvariant()
+                    $actualHash = (Get-FileHash $winsmuxExe -Algorithm SHA256).Hash.ToUpperInvariant()
                     if ($actualHash -ne $expectedHash) {
                         throw "Checksum verification failed for $($asset.name)."
                     }
@@ -122,8 +122,8 @@ function Install-Psmux {
             $env:Path = if ($env:Path) { "$env:Path;$localBin" } else { $localBin }
         }
 
-        $ver = (& $psmuxExe -V 2>&1 | Out-String).Trim()
-        Write-Status "Installed psmux: $ver"
+        $ver = (& $winsmuxExe -V 2>&1 | Out-String).Trim()
+        Write-Status "Installed winsmux: $ver"
     } catch {
         Write-Error "[winsmux] Failed to install sora-psmux: $_"
         exit 1
@@ -170,7 +170,7 @@ function Invoke-Install {
         Write-Warning "[winsmux] Running as Administrator is not recommended. Consider running as a normal user."
     }
 
-    # 3. psmux detection / install
+    # 3. winsmux detection / install
     Install-Psmux
 
     # 4. Create directories
@@ -195,13 +195,13 @@ function Invoke-Install {
     Download-File "winsmux-core/scripts/settings.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "settings.ps1")
     Download-File "winsmux-core/scripts/vault.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "vault.ps1")
 
-    # .psmux.conf (backup existing)
-    $confDest = Join-Path $HOME ".psmux.conf"
+    # .winsmux.conf (backup existing)
+    $confDest = Join-Path $HOME ".winsmux.conf"
     Backup-File $confDest
-    Download-File ".psmux.conf" $confDest
+    Download-File ".winsmux.conf" $confDest
 
     # 6. Create .cmd wrappers
-    $bridgeCmd = Join-Path $BIN_DIR "psmux-bridge.cmd"
+    $bridgeCmd = Join-Path $BIN_DIR "winsmux.cmd"
     @"
 @echo off
 pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux-core.ps1" %*
@@ -258,13 +258,13 @@ pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux.ps1" %*
     if ($IsUpdate) {
         Write-Host ""
         Write-Status "Updated to v$VERSION!"
-        Write-Host "  psmux-bridge: $(Join-Path $BIN_DIR 'winsmux-core.ps1')"
-        Write-Host "  psmux config:  $confDest"
+        Write-Host "  winsmux: $(Join-Path $BIN_DIR 'winsmux-core.ps1')"
+        Write-Host "  winsmux config:  $confDest"
     } else {
         Write-Host ""
         Write-Status "Installed successfully! (v$VERSION)"
-        Write-Host "  psmux-bridge: $(Join-Path $BIN_DIR 'winsmux-core.ps1')"
-        Write-Host "  psmux config:  $confDest"
+        Write-Host "  winsmux: $(Join-Path $BIN_DIR 'winsmux-core.ps1')"
+        Write-Host "  winsmux config:  $confDest"
         Write-Host ""
         Write-Host "Next steps:"
         Write-Host "  1. Start a winsmux session:  winsmux new-session -s work"
@@ -282,10 +282,10 @@ function Invoke-Uninstall {
         Write-Status "Removed $WINSMUX_DIR"
     }
 
-    # 2. Remove ~/.psmux.conf
-    $confPath = Join-Path $HOME ".psmux.conf"
+    # 2. Remove ~/.winsmux.conf
+    $confPath = Join-Path $HOME ".winsmux.conf"
     if (Test-Path $confPath) {
-        Write-Host "[winsmux] Remove $confPath ? (psmux config file)" -NoNewline
+        Write-Host "[winsmux] Remove $confPath ? (winsmux config file)" -NoNewline
         Write-Host " [Y/n] " -NoNewline
         $answer = Read-Host
         if ($answer -eq '' -or $answer -match '^[Yy]') {
@@ -319,10 +319,10 @@ function Invoke-Uninstall {
         Write-Status "Removed $appDataDir"
     }
 
-    # 6. Done (psmux itself is NOT uninstalled)
+    # 6. Done (winsmux binary is NOT uninstalled)
     Write-Host ""
     Write-Status "Uninstalled."
-    Write-Host "  Note: psmux itself was NOT removed. Manage it separately if needed."
+    Write-Host "  Note: winsmux itself was NOT removed. Manage it separately if needed."
 }
 
 function Show-Help {

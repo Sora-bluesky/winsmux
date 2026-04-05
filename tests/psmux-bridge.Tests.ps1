@@ -98,7 +98,7 @@ Describe 'Get-BridgeSettings' {
     }
 
     It 'returns built-in defaults when no global or project settings exist' {
-        Mock Get-PsmuxOption { param($Name, $Default) return $null }
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
 
         $settings = Get-BridgeSettings
 
@@ -119,9 +119,9 @@ vault-keys:
   - GH_TOKEN
   - OPENAI_API_KEY
 terminal: tab
-'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.psmux-bridge.yaml') -Encoding UTF8
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
 
-        Mock Get-PsmuxOption {
+        Mock Get-WinsmuxOption {
             param($Name, $Default)
 
             switch ($Name) {
@@ -160,9 +160,9 @@ roles:
     model: sonnet
   reviewer:
     agent: codex
-'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.psmux-bridge.yaml') -Encoding UTF8
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
 
-        Mock Get-PsmuxOption { param($Name, $Default) return $null }
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
 
         $settings = Get-BridgeSettings
 
@@ -421,7 +421,7 @@ Describe 'agent-monitor helpers' {
     }
 
     It 'treats Codex context exhaustion followed by a PowerShell prompt as a crash reason' {
-        Mock Invoke-MonitorPsmux {
+        Mock Invoke-MonitorWinsmux {
             @(
                 'Error: context window exhausted for this session.'
                 'Start a new conversation to continue.'
@@ -436,7 +436,7 @@ Describe 'agent-monitor helpers' {
     }
 
     It 'keeps normal Codex prompts in ready state even when context is low' {
-        Mock Invoke-MonitorPsmux {
+        Mock Invoke-MonitorWinsmux {
             @(
                 'gpt-5.4   0% context left'
                 '⏎ send   Ctrl+J newline'
@@ -450,7 +450,7 @@ Describe 'agent-monitor helpers' {
     }
 
     It 'respawns the pane in the launch directory before sending the agent command' {
-        Mock Invoke-MonitorPsmux { } -ParameterFilter {
+        Mock Invoke-MonitorWinsmux { } -ParameterFilter {
             $Arguments[0] -eq 'respawn-pane'
         }
         Mock Wait-MonitorPaneShellReady { }
@@ -472,7 +472,7 @@ Describe 'agent-monitor helpers' {
             -GitWorktreeDir 'C:\repo\.git\worktrees\builder-1'
 
         $result.Success | Should -Be $true
-        Should -Invoke Invoke-MonitorPsmux -Times 1 -Exactly -ParameterFilter {
+        Should -Invoke Invoke-MonitorWinsmux -Times 1 -Exactly -ParameterFilter {
             $Arguments[0] -eq 'respawn-pane' -and
             $Arguments[1] -eq '-k' -and
             $Arguments[2] -eq '-t' -and

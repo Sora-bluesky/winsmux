@@ -5,7 +5,7 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
-function Get-PsmuxBin {
+function Get-WinsmuxBin {
     foreach ($candidate in @('winsmux', 'pmux', 'tmux')) {
         $command = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($null -ne $command) {
@@ -127,12 +127,12 @@ function ConvertTo-PlainText {
 
 function Set-PsmuxOption {
     param(
-        [Parameter(Mandatory = $true)][string]$PsmuxBin,
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin,
         [Parameter(Mandatory = $true)][string]$OptionName,
         [Parameter(Mandatory = $true)][string]$OptionValue
     )
 
-    & $PsmuxBin set-option -g $OptionName $OptionValue | Out-Null
+    & $WinsmuxBin set-option -g $OptionName $OptionValue | Out-Null
 }
 
 function Set-GitHubTokenVault {
@@ -159,15 +159,15 @@ function Set-GitHubTokenVault {
     }
 }
 
-$psmuxBin = Get-PsmuxBin
-if (-not $psmuxBin) {
-    Write-Error "Could not find a psmux binary. Tried: psmux, pmux, tmux."
+$winsmuxBin = Get-WinsmuxBin
+if (-not $winsmuxBin) {
+    Write-Error "Could not find a winsmux binary. Tried: winsmux, pmux, tmux."
     exit 1
 }
 
 Write-Host 'winsmux setup wizard'
 Write-Host ''
-Write-Host "Using multiplexer binary: $psmuxBin"
+Write-Host "Using multiplexer binary: $winsmuxBin"
 Write-Host ''
 
 $agentCli = Read-AgentCli -Default 'codex'
@@ -177,11 +177,11 @@ $researchers = Read-PositiveInt -Prompt 'Researchers count' -Default 1
 $reviewers = Read-PositiveInt -Prompt 'Reviewers count' -Default 1
 $storeVault = Read-YesNo -Prompt 'Store GH_TOKEN in the winsmux vault?' -Default $false
 
-Set-PsmuxOption -PsmuxBin $psmuxBin -OptionName '@bridge-agent' -OptionValue $agentCli
-Set-PsmuxOption -PsmuxBin $psmuxBin -OptionName '@bridge-model' -OptionValue $model
-Set-PsmuxOption -PsmuxBin $psmuxBin -OptionName '@bridge-builders' -OptionValue $builders.ToString()
-Set-PsmuxOption -PsmuxBin $psmuxBin -OptionName '@bridge-researchers' -OptionValue $researchers.ToString()
-Set-PsmuxOption -PsmuxBin $psmuxBin -OptionName '@bridge-reviewers' -OptionValue $reviewers.ToString()
+Set-PsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-agent' -OptionValue $agentCli
+Set-PsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-model' -OptionValue $model
+Set-PsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-builders' -OptionValue $builders.ToString()
+Set-PsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-researchers' -OptionValue $researchers.ToString()
+Set-PsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-reviewers' -OptionValue $reviewers.ToString()
 
 $vaultStored = $false
 if ($storeVault) {
@@ -195,7 +195,7 @@ if ($storeVault) {
 
 Write-Host ''
 Write-Host 'Saved settings:'
-Write-Host "  psmux binary:         $psmuxBin"
+Write-Host "  winsmux binary:         $winsmuxBin"
 Write-Host "  @bridge-agent:        $agentCli"
 Write-Host "  @bridge-model:        $model"
 Write-Host "  @bridge-builders:     $builders"

@@ -103,7 +103,7 @@ export class WinsmuxClient {
 
   private resolveDefaultServerPath(): string {
     // Relative to this file: ../../winsmux-core/mcp-server.js
-    return resolve(dirname(__filename), "..", "..", "psmux-bridge", "mcp-server.js");
+    return resolve(dirname(__filename), "..", "..", "winsmux", "mcp-server.js");
   }
 
   private ensureProcess(): void {

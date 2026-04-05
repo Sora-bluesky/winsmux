@@ -8,7 +8,7 @@ No external dependencies required -- TypeScript uses Node.js built-ins, Python u
 
 | Method | Description |
 |--------|-------------|
-| `list()` | List labeled panes in the current psmux session |
+| `list()` | List labeled panes in the current winsmux session |
 | `read(target, lines?)` | Read recent output from a pane |
 | `send(target, text)` | Send text to a pane |
 | `dispatch(text)` | Route text to the appropriate pane by keyword |

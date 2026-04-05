@@ -13,10 +13,10 @@ Set-StrictMode -Version Latest
 $sessionName = 'winsmux-orchestra'
 $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\winsmux-core.ps1'))
 $layoutScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir 'orchestra-layout.ps1'))
-$psmuxBin = Get-PsmuxBin
+$winsmuxBin = Get-WinsmuxBin
 
-if (-not $psmuxBin) {
-    Write-Error 'Could not find a psmux binary. Tried: psmux, pmux, tmux.'
+if (-not $winsmuxBin) {
+    Write-Error 'Could not find a winsmux binary. Tried: winsmux, pmux, tmux.'
     exit 1
 }
 
@@ -25,7 +25,7 @@ if (-not (Test-Path $bridgeScript)) {
     exit 1
 }
 
-function Invoke-Psmux {
+function Invoke-Winsmux {
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$Arguments,
@@ -33,23 +33,23 @@ function Invoke-Psmux {
     )
 
     if ($CaptureOutput) {
-        $output = & $script:psmuxBin @Arguments 2>&1
+        $output = & $script:winsmuxBin @Arguments 2>&1
         $exitCode = $LASTEXITCODE
         if ($exitCode -ne 0) {
             $message = ($output | Out-String).Trim()
             if ([string]::IsNullOrWhiteSpace($message)) {
-                $message = 'unknown psmux error'
+                $message = 'unknown winsmux error'
             }
 
-            throw "psmux $($Arguments -join ' ') failed: $message"
+            throw "winsmux $($Arguments -join ' ') failed: $message"
         }
 
         return $output
     }
 
-    & $script:psmuxBin @Arguments | Out-Null
+    & $script:winsmuxBin @Arguments | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw "psmux $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+        throw "winsmux $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
     }
 }
 
@@ -98,7 +98,7 @@ function Get-ProjectDir {
     }
 
     try {
-        $currentPath = Invoke-Psmux -Arguments @('display-message', '-p', '#{pane_current_path}') -CaptureOutput
+        $currentPath = Invoke-Winsmux -Arguments @('display-message', '-p', '#{pane_current_path}') -CaptureOutput
         $resolved = ($currentPath | Out-String).Trim()
         if (-not [string]::IsNullOrWhiteSpace($resolved)) {
             return $resolved
@@ -185,7 +185,7 @@ function Set-OrchestraSessionEnvironment {
         [Parameter(Mandatory = $true)][string]$Value
     )
 
-    Invoke-Psmux -Arguments @('set-environment', '-t', $SessionName, $Name, $Value)
+    Invoke-Winsmux -Arguments @('set-environment', '-t', $SessionName, $Name, $Value)
 }
 
 function Clear-OrchestraSessionEnvironment {
@@ -194,7 +194,7 @@ function Clear-OrchestraSessionEnvironment {
         [Parameter(Mandatory = $true)][string]$Name
     )
 
-    Invoke-Psmux -Arguments @('set-environment', '-u', '-t', $SessionName, $Name)
+    Invoke-Winsmux -Arguments @('set-environment', '-u', '-t', $SessionName, $Name)
 }
 
 function Send-OrchestraBridgeCommand {
@@ -447,7 +447,7 @@ function Wait-PaneShellReady {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         try {
-            $snapshot = Invoke-Psmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+            $snapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
             $text = ($snapshot | Out-String).TrimEnd()
             if ($null -ne (Get-LastNonEmptyLine -Text $text)) {
                 return
@@ -459,7 +459,7 @@ function Wait-PaneShellReady {
     }
 
     try {
-        $finalSnapshot = Invoke-Psmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+        $finalSnapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
         $finalText = ($finalSnapshot | Out-String).TrimEnd()
         throw "Timed out waiting for pane $PaneId shell prompt after respawn. Last output:`n$(Get-TailPreview -Text $finalText)"
     } catch {
@@ -551,7 +551,7 @@ function Wait-AgentReady {
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        $snapshot = Invoke-Psmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+        $snapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
         $text = ($snapshot | Out-String).TrimEnd()
         if (Test-AgentPromptText -Text $text -Agent $Agent) {
             return
@@ -560,7 +560,7 @@ function Wait-AgentReady {
         Start-Sleep -Seconds 2
     }
 
-    $finalSnapshot = Invoke-Psmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+    $finalSnapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
     $finalText = ($finalSnapshot | Out-String).TrimEnd()
     throw "Timed out waiting for pane $PaneId to become ready. Last output:`n$(Get-TailPreview -Text $finalText)"
 }
@@ -595,7 +595,7 @@ try {
     $projectDir = Get-ProjectDir
     Initialize-WinsmuxLog -ProjectDir $projectDir -SessionName $sessionName | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'preflight.settings.loaded' -Message 'Loaded orchestra settings.' -Data @{ agent = $settings.agent; model = $settings.model } | Out-Null
-    Write-WinsmuxLog -Level INFO -Event 'preflight.psmux_bin.ready' -Message "Using psmux binary: $psmuxBin." -Data @{ psmux_bin = $psmuxBin } | Out-Null
+    Write-WinsmuxLog -Level INFO -Event 'preflight.winsmux_bin.ready' -Message "Using winsmux binary: $winsmuxBin." -Data @{ winsmux_bin = $winsmuxBin } | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'preflight.bridge_script.ready' -Message "Using bridge script: $bridgeScript." -Data @{ bridge_script = $bridgeScript } | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'preflight.project_dir.resolved' -Message "Resolved project directory: $projectDir." -Data @{ project_dir = $projectDir } | Out-Null
     $gitWorktreeDir = Get-GitWorktreeDir -ProjectDir $projectDir
@@ -622,7 +622,7 @@ try {
     }
 
     Write-WinsmuxLog -Level INFO -Event 'preflight.zombie_cleanup.start' -Message 'Removing orchestra zombie processes.' | Out-Null
-    $zombieCleanup = Remove-OrchestraZombieProcesses -SessionName $sessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -PsmuxBin $psmuxBin
+    $zombieCleanup = Remove-OrchestraZombieProcesses -SessionName $sessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -WinsmuxBin $winsmuxBin
     if (@($zombieCleanup.Killed).Count -gt 0) {
         Write-WinsmuxLog -Level INFO -Event 'preflight.git_worktree.prune_after_zombie_cleanup' -Message 'Pruning git worktree metadata after zombie cleanup.' -Data @{ killed_count = @($zombieCleanup.Killed).Count } | Out-Null
         Invoke-BuilderWorktreeGit -ProjectDir $projectDir -Arguments @('worktree', 'prune') | Out-Null
@@ -630,7 +630,7 @@ try {
 
     # Clean up any leftover orchestra panes in default session (#213)
     try {
-        $existingPanes = & $psmuxBin list-panes -F '#{pane_id} #{pane_title}' 2>$null
+        $existingPanes = & $winsmuxBin list-panes -F '#{pane_id} #{pane_title}' 2>$null
         if ($LASTEXITCODE -eq 0 -and $existingPanes) {
             $orchestraLabels = @('builder-', 'researcher-', 'reviewer-')
             foreach ($line in ($existingPanes -split "`n")) {
@@ -641,7 +641,7 @@ try {
                     foreach ($label in $orchestraLabels) {
                         if ($title -like "$label*") {
                             Write-WinsmuxLog -Level INFO -Event 'preflight.default_pane.kill' -Message "Removing leftover orchestra pane $paneId ($title) from default session." -Data @{ pane_id = $paneId; title = $title } | Out-Null
-                            & $psmuxBin kill-pane -t $paneId 2>$null
+                            & $winsmuxBin kill-pane -t $paneId 2>$null
                             break
                         }
                     }
@@ -651,10 +651,10 @@ try {
     } catch { }
 
     Write-WinsmuxLog -Level INFO -Event 'preflight.session.check' -Message "Checking for existing session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
-    & $psmuxBin has-session -t $sessionName 1>$null 2>$null
+    & $winsmuxBin has-session -t $sessionName 1>$null 2>$null
     if ($LASTEXITCODE -eq 0) {
         Write-WinsmuxLog -Level INFO -Event 'preflight.session.kill' -Message "Removing existing session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
-        Invoke-Psmux -Arguments @('kill-session', '-t', $sessionName)
+        Invoke-Winsmux -Arguments @('kill-session', '-t', $sessionName)
     }
 
     # --- Startup lock (TASK-117) ---
@@ -694,13 +694,13 @@ try {
     }
 
     Write-WinsmuxLog -Level INFO -Event 'preflight.session.create' -Message "Creating session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
-    Invoke-Psmux -Arguments @('new-session', '-d', '-s', $sessionName)
+    Invoke-Winsmux -Arguments @('new-session', '-d', '-s', $sessionName)
 
     Write-WinsmuxLog -Level INFO -Event 'preflight.session_env.start' -Message 'Publishing vault values to session environment.' -Data @{ key_count = $vaultValues.Count } | Out-Null
     foreach ($entry in $vaultValues.GetEnumerator()) {
-        Invoke-Psmux -Arguments @('set-environment', '-t', $sessionName, $entry.Key, $entry.Value)
+        Invoke-Winsmux -Arguments @('set-environment', '-t', $sessionName, $entry.Key, $entry.Value)
     }
-    Invoke-Psmux -Arguments @('set-environment', '-t', $sessionName, 'GIT_EDITOR', 'true')
+    Invoke-Winsmux -Arguments @('set-environment', '-t', $sessionName, 'GIT_EDITOR', 'true')
     Write-WinsmuxLog -Level INFO -Event 'preflight.session_env.git_editor_set' -Message 'Set GIT_EDITOR=true for orchestra session.' -Data @{ session_name = $sessionName; key = 'GIT_EDITOR'; value = 'true' } | Out-Null
 
     $previousTargetSession = $env:WINSMUX_ORCHESTRA_SESSION
@@ -765,7 +765,7 @@ try {
         try {
             Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_ROLE' -Value $canonicalRole
             Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_PANE_ID' -Value $paneId
-            Invoke-Psmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
+            Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
             Wait-PaneShellReady -PaneId $paneId
             if (-not [string]::IsNullOrWhiteSpace($launchCommand)) {
                 Send-OrchestraBridgeCommand -Target $paneId -Text $launchCommand
@@ -849,7 +849,7 @@ try {
     Add-Content -Path $journalPath -Value "[$timestamp] FAILED: $($_.Exception.Message)" -Encoding UTF8
 
     # Kill partially created session
-    try { Invoke-Psmux -Arguments @('kill-session', '-t', $sessionName) } catch {}
+    try { Invoke-Winsmux -Arguments @('kill-session', '-t', $sessionName) } catch {}
 
     # Remove worktrees created during this attempt
     for ($i = 1; $i -le 4; $i++) {

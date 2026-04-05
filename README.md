@@ -43,7 +43,7 @@ winsmux
 └── Evidence Ledger
 ```
 
-- **`psmux-bridge`** handles pane targeting, messaging, health checks, vault injection, and operator controls
+- **`winsmux`** handles pane targeting, messaging, health checks, vault injection, and operator controls
 - **Orchestra** coordinates Commander, Builder, Researcher, and Reviewer panes
 - **Role gates** restrict which actions each role can perform
 - **Builder worktree isolation** gives each Builder pane a separate git worktree to reduce cross-agent collisions
@@ -58,8 +58,8 @@ irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | ie
 The installer:
 
 - installs the `sora-psmux` fork if `psmux` is not already available
-- installs `psmux-bridge` and `winsmux` command wrappers into `~\.winsmux\bin`
-- configures `.psmux.conf`
+- installs `winsmux` and `winsmux` command wrappers into `~\.winsmux\bin`
+- configures `.winsmux.conf`
 - registers a **winsmux Orchestra** profile in Windows Terminal
 
 ## Quick start

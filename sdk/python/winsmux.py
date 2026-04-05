@@ -91,7 +91,7 @@ class WinsmuxClient:
     def _resolve_default_server_path() -> str:
         # Relative to this file: ../../winsmux-core/mcp-server.js
         here = Path(__file__).resolve().parent
-        return str(here / ".." / ".." / "psmux-bridge" / "mcp-server.js")
+        return str(here / ".." / ".." / "winsmux" / "mcp-server.js")
 
     def _ensure_process(self) -> subprocess.Popen[bytes]:
         if self._process is None or self._process.poll() is not None:

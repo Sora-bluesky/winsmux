@@ -146,7 +146,7 @@ function Invoke-VaultList {
     }
 }
 
-function Invoke-PsmuxCommand {
+function Invoke-WinsmuxCommand {
     param(
         [Parameter(Mandatory = $true)]
         [string[]]$Arguments
@@ -154,7 +154,7 @@ function Invoke-PsmuxCommand {
 
     $global:LASTEXITCODE = 0
     try {
-        $output = & psmux @Arguments 2>&1
+        $output = & winsmux @Arguments 2>&1
     } catch {
         return [PSCustomObject]@{
             Success  = $false
@@ -181,26 +181,26 @@ function ConvertTo-PsmuxConfigString {
 function Get-PsmuxSessionNameForPane {
     param([Parameter(Mandatory = $true)][string]$PaneId)
 
-    $result = Invoke-PsmuxCommand -Arguments @('display-message', '-p', '-t', $PaneId, '#{session_name}')
+    $result = Invoke-WinsmuxCommand -Arguments @('display-message', '-p', '-t', $PaneId, '#{session_name}')
     if (-not $result.Success) {
         Stop-WithError "Unable to resolve the winsmux session for pane $PaneId."
     }
 
     $sessionName = $result.Output.Trim()
     if ([string]::IsNullOrWhiteSpace($sessionName)) {
-        Stop-WithError "psmux returned an empty session name for pane $PaneId."
+        Stop-WithError "winsmux returned an empty session name for pane $PaneId."
     }
 
     return $sessionName
 }
 
-function Invoke-PsmuxSourceFile {
+function Invoke-WinsmuxSourceFile {
     param([Parameter(Mandatory = $true)][string[]]$Commands)
 
     $tempConf = [System.IO.Path]::GetTempFileName()
     try {
         Set-Content -Path $tempConf -Value ($Commands -join [Environment]::NewLine) -NoNewline -Encoding utf8
-        return Invoke-PsmuxCommand -Arguments @('source-file', $tempConf)
+        return Invoke-WinsmuxCommand -Arguments @('source-file', $tempConf)
     } finally {
         Remove-Item -LiteralPath $tempConf -Force -ErrorAction SilentlyContinue
     }
@@ -260,13 +260,13 @@ function Invoke-VaultInject {
                 (ConvertTo-PsmuxConfigString -Value $entry.Value)
         }
 
-        $sourceResult = Invoke-PsmuxSourceFile -Commands $commands
+        $sourceResult = Invoke-WinsmuxSourceFile -Commands $commands
         if (-not $sourceResult.Success) {
             # source-file keeps secrets out of argv; direct set-environment remains a last-resort fallback.
             foreach ($entry in $entries) {
-                $setResult = Invoke-PsmuxCommand -Arguments @('set-environment', '-t', $sessionName, $entry.Name, $entry.Value)
+                $setResult = Invoke-WinsmuxCommand -Arguments @('set-environment', '-t', $sessionName, $entry.Name, $entry.Value)
                 if (-not $setResult.Success) {
-                    Stop-WithError "psmux set-environment failed while injecting credentials into $paneId."
+                    Stop-WithError "winsmux set-environment failed while injecting credentials into $paneId."
                 }
             }
         }

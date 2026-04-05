@@ -13,7 +13,7 @@ function Convert-ToForwardSlashPath {
 
 $orchestraScript = Convert-ToForwardSlashPath (Join-Path $PSScriptRoot "../scripts/orchestra-start.ps1")
 $setupWizardScript = Convert-ToForwardSlashPath (Join-Path $PSScriptRoot "../scripts/setup-wizard.ps1")
-$firstRunOption = '@psmux_bridge_first_run_done'
+$firstRunOption = '@winsmux_first_run_done'
 
 & $PSMUX bind-key O run-shell "pwsh -NoProfile -File '$orchestraScript'"
 & $PSMUX bind-key B run-shell "pwsh -NoProfile -File '$setupWizardScript'"

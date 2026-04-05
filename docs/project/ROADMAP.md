@@ -58,14 +58,14 @@
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [x] | TASK-027 | Add role-based command gate to psmux-bridge (Assert-Role) | P0 | winsmux | done |
+| [x] | TASK-027 | Add role-based command gate to winsmux (Assert-Role) | P0 | winsmux | done |
 | [x] | TASK-028 | Add PreToolUse hook for Commander-side gate (sh-orchestra-gate.js) | P0 | winsmux | done |
 | [x] | TASK-062 | Run Pester tests locally and fix all failures before next merge | P0 | winsmux | done |
-| [x] | TASK-063 | Runtime test: role-gate + settings + shared-task-list (no psmux needed) | P0 | winsmux | done |
-| [x] | TASK-065 | Runtime test: orchestra-layout.ps1 pane generation (psmux) | P0 | winsmux | done |
+| [x] | TASK-063 | Runtime test: role-gate + settings + shared-task-list (no winsmux needed) | P0 | winsmux | done |
+| [x] | TASK-065 | Runtime test: orchestra-layout.ps1 pane generation (winsmux) | P0 | winsmux | done |
 | [x] | TASK-077 | Build sora-psmux fork release binary and distribute via install.ps1 | P0 | winsmux | done |
 | [x] | TASK-081 | orchestra-start preflight: auto-vault, Codex trust, skill unification | P0 | winsmux | done |
-| [x] | TASK-025 | Extract psmux-bridge CLI as PPM plugin (winsmux remains as platform) | P1 | winsmux | done |
+| [x] | TASK-025 | Extract winsmux CLI as PPM plugin (winsmux remains as platform) | P1 | winsmux | done |
 | [x] | TASK-026 | Implement hierarchical settings system (project > global > wizard) | P1 | winsmux | done |
 | [x] | TASK-052 | Rewrite README.md/README.ja.md to reflect platform positioning and 3 unique strengths | P1 | winsmux | done |
 | [x] | TASK-061 | Fix CI: remove test.yml or make it skip when test files are gitignored | P1 | winsmux | done |
@@ -77,7 +77,7 @@
 | [x] | TASK-053 | Document and enforce operational role definitions (Commander/Builder/Researcher/Reviewer) | P0 | winsmux | done |
 | [x] | TASK-064 | Runtime test: vault source-file injection (DPAPI + psmux) | P0 | winsmux | done |
 | [x] | TASK-088 | Global install + winsmux init/start for any project | P0 | winsmux | done |
-| [x] | TASK-037 | Set up Pester 5 test framework with AAA pattern for psmux-bridge.ps1 | P1 | winsmux | done |
+| [x] | TASK-037 | Set up Pester 5 test framework with AAA pattern for winsmux-core.ps1 | P1 | winsmux | done |
 | [x] | TASK-038 | Write unit tests for all 11 CLI commands (44+ test cases, coverage >= 75%) | P1 | winsmux | done |
 | [x] | TASK-060 | Write integration tests verifying gate enforcement (deny paths end-to-end) | P1 | winsmux | done |
 | [x] | TASK-067 | Integration test: orchestra-start full cycle (settings→vault→layout→agents→health) | P1 | winsmux | done |
@@ -109,7 +109,7 @@
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [x] | TASK-035 | Implement agent idle/crash detection with auto-respawn (TeammateIdle compat) | P2 | winsmux | done |
-| [x] | TASK-043 | Expose psmux-bridge as MCP Server for Claude Code Agent Teams integration | P2 | winsmux | done |
+| [x] | TASK-043 | Expose winsmux as MCP Server for Claude Code Agent Teams integration | P2 | winsmux | done |
 | [x] | TASK-074 | Implement TypeScript/Python SDK for programmatic Orchestra control | P2 | winsmux | done |
 
 ### v0.13.0
@@ -194,7 +194,7 @@
 | [x] | TASK-099 | Multi-pane layout + Orchestra integration in Tauri | P0 | winsmux | done |
 | [x] | TASK-122 | Fix orchestra-start pane duplication on restart | P0 | winsmux | done |
 | [x] | TASK-123 | Replace Get-CimInstance Win32_Process with Get-Process globally | P0 | winsmux | done |
-| [x] | TASK-124 | Add psmux-bridge kill/restart subcommands for Builder panes | P0 | winsmux | done |
+| [x] | TASK-124 | Add winsmux kill/restart subcommands for Builder panes | P0 | winsmux | done |
 | [x] | TASK-131 | Fix pty_close: stop reader thread and kill child process | P0 | winsmux | done |
 | [x] | TASK-132 | Fix orchestra-start blocked by zombie pwsh/worktree locks | P0 | winsmux | done |
 | [x] | TASK-133 | Fix sh-orchestra-gate.js: block git add/commit from Commander | P0 | winsmux | done |
@@ -235,7 +235,7 @@
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [x] | TASK-170 | Fix orchestra zombie cleanup killing Telegram bun/node process | P0 | winsmux | done |
-| [x] | TASK-139 | Rename psmux-bridge to winsmux-core + adapter layer separation | P1 | winsmux | done |
+| [x] | TASK-139 | Rename winsmux to winsmux-core + adapter layer separation | P1 | winsmux | done |
 | [x] | TASK-153 | Repo health tooling integrated with doctor + dead code audit | P1 | winsmux | done |
 
 ### v0.19.2 — ドキュメント & ガバナンス
@@ -305,7 +305,7 @@
 |-|-----|-------|----------|------|--------|
 | [~] | TASK-032 | Implement Mailbox-compatible async message router (mailbox-router.ps1) | P0 | winsmux | cancelled |
 | [~] | TASK-033 | Implement Shared Task List with file-lock self-claiming and dependency auto-resolve | P0 | winsmux | cancelled |
-| [~] | TASK-054 | Fix vault inject to use psmux set-environment instead of send-keys | P0 | winsmux | cancelled |
+| [~] | TASK-054 | Fix vault inject to use winsmux set-environment instead of send-keys | P0 | winsmux | cancelled |
 | [~] | TASK-056 | Fix role-gate.ps1 to deny unknown commands (fail-open → fail-close) | P0 | winsmux | cancelled |
 | [~] | TASK-057 | Fix rpc-server.ps1: remove client-supplied role trust, bind to process identity | P0 | winsmux | cancelled |
 | [~] | TASK-058 | Eliminate raw send-keys from orchestra-start, mailbox-router, agent-lifecycle | P0 | winsmux | cancelled |
@@ -314,7 +314,7 @@
 | [~] | TASK-104 | Sync sora-psmux fork with upstream before rendering work | P0 | sora-psmux | cancelled |
 | [~] | TASK-024 | Full integration test → GA release → winsmux v1.0.0 publish | P1 | winsmux | cancelled |
 | [~] | TASK-034 | Add TaskCreated / TaskCompleted hook integration for auto-dispatch | P1 | winsmux | cancelled |
-| [~] | TASK-042 | Implement JSON-RPC 2.0 endpoint for psmux-bridge (psmux-bridge-rpc.ps1) | P1 | winsmux | cancelled |
+| [~] | TASK-042 | Implement JSON-RPC 2.0 endpoint for winsmux (winsmux-rpc.ps1) | P1 | winsmux | cancelled |
 | [~] | TASK-044 | Prepare and submit PR to psmux-plugins upstream | P1 | winsmux | cancelled |
 | [~] | TASK-049 | Run 15-agent 15min load test (crash rate < 0.1%, evidence integrity 100%) | P1 | winsmux | cancelled |
 | [~] | TASK-051 | Release v0.10.0 GA (release notes, migration guide, install wizard, version bump) | P1 | winsmux | cancelled |
@@ -322,7 +322,7 @@
 | [~] | TASK-068 | Integration test: mailbox-router + task-hooks + commander-dispatch | P1 | winsmux | cancelled |
 | [~] | TASK-069 | Implement ExecPolicy DSL (declarative TOML command policy) | P1 | winsmux | cancelled |
 | [~] | TASK-071 | Implement Guardian sub-agent (AI risk scoring with cross-vendor check) | P1 | winsmux | cancelled |
-| [~] | TASK-103 | Implement P14-Ph2 psmux rendering improvements (TrueColor, Nerd Font, GPU) | P1 | sora-psmux | cancelled |
+| [~] | TASK-103 | Implement P14-Ph2 winsmux rendering improvements (TrueColor, Nerd Font, GPU) | P1 | sora-psmux | cancelled |
 | [~] | TASK-072 | Implement Rollout recording (event sourcing + replay) | P2 | winsmux | cancelled |
 | [~] | TASK-075 | Implement SQLite session persistence (state.db) | P2 | winsmux | cancelled |
 | [~] | TASK-079 | Scheduled Orchestra (periodic multi-agent execution) | P3 | winsmux | cancelled |

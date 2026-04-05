@@ -6,15 +6,15 @@ Describe 'pane border helpers' {
     }
 
     BeforeEach {
-        $script:FakePsmuxCalls = [System.Collections.Generic.List[string]]::new()
-        $script:FakePsmuxExitCodes = [System.Collections.Generic.Queue[int]]::new()
+        $script:FakeWinsmuxCalls = [System.Collections.Generic.List[string]]::new()
+        $script:FakeWinsmuxExitCodes = [System.Collections.Generic.Queue[int]]::new()
 
-        function Invoke-FakePsmux {
+        function Invoke-FakeWinsmux {
             param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
 
-            $script:FakePsmuxCalls.Add(($Arguments -join '|')) | Out-Null
-            if ($script:FakePsmuxExitCodes.Count -gt 0) {
-                $global:LASTEXITCODE = $script:FakePsmuxExitCodes.Dequeue()
+            $script:FakeWinsmuxCalls.Add(($Arguments -join '|')) | Out-Null
+            if ($script:FakeWinsmuxExitCodes.Count -gt 0) {
+                $global:LASTEXITCODE = $script:FakeWinsmuxExitCodes.Dequeue()
             } else {
                 $global:LASTEXITCODE = 0
             }
@@ -22,28 +22,28 @@ Describe 'pane border helpers' {
     }
 
     It 'sets pane border options on the first window-option command path' {
-        $script:FakePsmuxExitCodes.Enqueue(0)
-        $script:FakePsmuxExitCodes.Enqueue(0)
+        $script:FakeWinsmuxExitCodes.Enqueue(0)
+        $script:FakeWinsmuxExitCodes.Enqueue(0)
 
-        $ok = Set-OrchestraPaneBorderOptions -WindowId '@7' -PsmuxBin 'Invoke-FakePsmux'
+        $ok = Set-OrchestraPaneBorderOptions -WindowId '@7' -WinsmuxBin 'Invoke-FakeWinsmux'
 
         $ok | Should -Be $true
-        @($script:FakePsmuxCalls) | Should -Be @(
+        @($script:FakeWinsmuxCalls) | Should -Be @(
             'set-option|-t|@7|pane-border-status|top'
             'set-option|-t|@7|pane-border-format| #{pane_title} '
         )
     }
 
     It 'falls back to window-scoped compatibility commands when needed' {
-        $script:FakePsmuxExitCodes.Enqueue(1)
-        $script:FakePsmuxExitCodes.Enqueue(0)
-        $script:FakePsmuxExitCodes.Enqueue(1)
-        $script:FakePsmuxExitCodes.Enqueue(0)
+        $script:FakeWinsmuxExitCodes.Enqueue(1)
+        $script:FakeWinsmuxExitCodes.Enqueue(0)
+        $script:FakeWinsmuxExitCodes.Enqueue(1)
+        $script:FakeWinsmuxExitCodes.Enqueue(0)
 
-        $ok = Set-OrchestraPaneBorderOptions -WindowId '@8' -PsmuxBin 'Invoke-FakePsmux'
+        $ok = Set-OrchestraPaneBorderOptions -WindowId '@8' -WinsmuxBin 'Invoke-FakeWinsmux'
 
         $ok | Should -Be $true
-        @($script:FakePsmuxCalls) | Should -Be @(
+        @($script:FakeWinsmuxCalls) | Should -Be @(
             'set-option|-t|@8|pane-border-status|top'
             'set-option|-w|-t|@8|pane-border-status|top'
             'set-option|-t|@8|pane-border-format| #{pane_title} '
@@ -52,12 +52,12 @@ Describe 'pane border helpers' {
     }
 
     It 'returns false when no supported option command succeeds' {
-        1..3 | ForEach-Object { $script:FakePsmuxExitCodes.Enqueue(1) }
+        1..3 | ForEach-Object { $script:FakeWinsmuxExitCodes.Enqueue(1) }
 
-        $ok = Set-OrchestraPaneBorderOptions -WindowId '@9' -PsmuxBin 'Invoke-FakePsmux'
+        $ok = Set-OrchestraPaneBorderOptions -WindowId '@9' -WinsmuxBin 'Invoke-FakeWinsmux'
 
         $ok | Should -Be $false
-        @($script:FakePsmuxCalls).Count | Should -Be 3
-        $script:FakePsmuxCalls[2] | Should -Be 'set-window-option|-t|@9|pane-border-status|top'
+        @($script:FakeWinsmuxCalls).Count | Should -Be 3
+        $script:FakeWinsmuxCalls[2] | Should -Be 'set-window-option|-t|@9|pane-border-status|top'
     }
 }

@@ -44,34 +44,34 @@ $script:BuilderStallThresholdCycles = 3
 # Psmux wrapper (same pattern as orchestra-start.ps1)
 # ---------------------------------------------------------------------------
 
-function Invoke-MonitorPsmux {
+function Invoke-MonitorWinsmux {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments,
         [switch]$CaptureOutput
     )
 
-    $psmuxBin = Get-PsmuxBin
-    if (-not $psmuxBin) {
-        throw 'Could not find a psmux binary. Tried: psmux, pmux, tmux.'
+    $winsmuxBin = Get-WinsmuxBin
+    if (-not $winsmuxBin) {
+        throw 'Could not find a winsmux binary. Tried: winsmux, pmux, tmux.'
     }
 
     if ($CaptureOutput) {
-        $output = & $psmuxBin @Arguments 2>&1
+        $output = & $winsmuxBin @Arguments 2>&1
         if ($LASTEXITCODE -ne 0) {
             $message = ($output | Out-String).Trim()
             if ([string]::IsNullOrWhiteSpace($message)) {
-                $message = 'unknown psmux error'
+                $message = 'unknown winsmux error'
             }
 
-            throw "psmux $($Arguments -join ' ') failed: $message"
+            throw "winsmux $($Arguments -join ' ') failed: $message"
         }
 
         return $output
     }
 
-    & $psmuxBin @Arguments | Out-Null
+    & $winsmuxBin @Arguments | Out-Null
     if ($LASTEXITCODE -ne 0) {
-        throw "psmux $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+        throw "winsmux $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
     }
 }
 
@@ -388,7 +388,7 @@ function Wait-MonitorPaneShellReady {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         try {
-            $snapshot = Invoke-MonitorPsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+            $snapshot = Invoke-MonitorWinsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
             $text = ($snapshot | Out-String).TrimEnd()
             if ($null -ne (Get-LastNonEmptyLine -Text $text)) {
                 return
@@ -442,7 +442,7 @@ function Get-PaneAgentStatus {
 
     $snapshot = $null
     try {
-        $snapshot = Invoke-MonitorPsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+        $snapshot = Invoke-MonitorWinsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
     } catch {
         return [PSCustomObject]@{
             Status       = 'empty'
@@ -612,7 +612,7 @@ function Invoke-AgentRespawn {
     }
 
     try {
-        Invoke-MonitorPsmux -Arguments @('respawn-pane', '-k', '-t', $PaneId, '-c', $ProjectDir)
+        Invoke-MonitorWinsmux -Arguments @('respawn-pane', '-k', '-t', $PaneId, '-c', $ProjectDir)
         Wait-MonitorPaneShellReady -PaneId $PaneId
         Send-MonitorBridgeCommand -PaneId $PaneId -Text $launchCommand
     } catch {

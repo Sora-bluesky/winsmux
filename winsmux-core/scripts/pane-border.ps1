@@ -1,12 +1,12 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-function Set-PsmuxWindowOption {
+function Set-WinsmuxWindowOption {
     param(
         [Parameter(Mandatory = $true)][string]$WindowId,
         [Parameter(Mandatory = $true)][string]$OptionName,
         [Parameter(Mandatory = $true)][string]$OptionValue,
-        [string]$PsmuxBin = 'winsmux'
+        [string]$WinsmuxBin = 'winsmux'
     )
 
     $attempts = @(
@@ -16,7 +16,7 @@ function Set-PsmuxWindowOption {
     )
 
     foreach ($attempt in $attempts) {
-        & $PsmuxBin @attempt 1>$null 2>$null
+        & $WinsmuxBin @attempt 1>$null 2>$null
         if ($LASTEXITCODE -eq 0) {
             return $true
         }
@@ -28,7 +28,7 @@ function Set-PsmuxWindowOption {
 function Set-OrchestraPaneBorderOptions {
     param(
         [Parameter(Mandatory = $true)][string]$WindowId,
-        [string]$PsmuxBin = 'winsmux'
+        [string]$WinsmuxBin = 'winsmux'
     )
 
     $options = [ordered]@{
@@ -37,7 +37,7 @@ function Set-OrchestraPaneBorderOptions {
     }
 
     foreach ($entry in $options.GetEnumerator()) {
-        $ok = Set-PsmuxWindowOption -WindowId $WindowId -OptionName $entry.Key -OptionValue $entry.Value -PsmuxBin $PsmuxBin
+        $ok = Set-WinsmuxWindowOption -WindowId $WindowId -OptionName $entry.Key -OptionValue $entry.Value -WinsmuxBin $WinsmuxBin
         if (-not $ok) {
             return $false
         }

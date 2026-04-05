@@ -9,11 +9,11 @@ Windows-native AI agent orchestration platform built on winsmux-core.
 pwsh winsmux-core/scripts/orchestra-start.ps1
 ```
 
-psmux must be running before orchestra-start. If not running, user starts it manually (Start-Process breaks colors).
+winsmux must be running before orchestra-start. If not running, user starts it manually (Start-Process breaks colors).
 
 ## Architecture
 
-- **winsmux-core/**: CLI plugin for psmux — vault, settings, role-gate, orchestra scripts
+- **winsmux-core/**: CLI core — vault, settings, role-gate, orchestra scripts — vault, settings, role-gate, orchestra scripts
 - **.claude/hooks/**: PreToolUse hooks for governance enforcement (git-tracked)
 - **install.ps1**: Downloads sora-psmux fork binary from GitHub Releases
 

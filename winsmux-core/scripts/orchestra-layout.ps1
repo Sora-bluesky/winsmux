@@ -1,4 +1,4 @@
-# orchestra-layout.ps1 - Deterministic psmux grid layout for Orchestra on PowerShell 7
+# orchestra-layout.ps1 - Deterministic winsmux grid layout for Orchestra on PowerShell 7
 # Creates a fresh window, lays out panes with chained percentage splits, labels them by role,
 # and returns pane assignments as PowerShell objects.
 
@@ -126,26 +126,26 @@ if ($LASTEXITCODE -ne 0) {
     Start-Sleep -Milliseconds 500
 }
 
-$windowMetadata = (& psmux new-window -t $SessionName -P -F '#{window_id} #{pane_id}' 2>$null | Out-String).Trim()
+$windowMetadata = (& winsmux new-window -t $SessionName -P -F '#{window_id} #{pane_id}' 2>$null | Out-String).Trim()
 if ($LASTEXITCODE -ne 0) {
-    throw 'psmux new-window failed.'
+    throw 'winsmux new-window failed.'
 }
 
 $windowParts = @($windowMetadata -split '\s+')
 if ($windowParts.Count -lt 2) {
-    throw "psmux new-window returned unexpected metadata: '$windowMetadata'."
+    throw "winsmux new-window returned unexpected metadata: '$windowMetadata'."
 }
 
 $newWindowId = $windowParts[0]
 $newPaneId = $windowParts[1]
 if ($newWindowId -notmatch '^@\d+$') {
-    throw "psmux new-window returned an unexpected window id: '$newWindowId'."
+    throw "winsmux new-window returned an unexpected window id: '$newWindowId'."
 }
 if ($newPaneId -notmatch '^%\d+$') {
-    throw "psmux new-window returned an unexpected pane id: '$newPaneId'."
+    throw "winsmux new-window returned an unexpected pane id: '$newPaneId'."
 }
 
-if (-not (Set-OrchestraPaneBorderOptions -WindowId $newWindowId -PsmuxBin 'winsmux')) {
+if (-not (Set-OrchestraPaneBorderOptions -WindowId $newWindowId -WinsmuxBin 'winsmux')) {
     Write-Warning "Could not enable pane border labels for window $newWindowId."
 }
 

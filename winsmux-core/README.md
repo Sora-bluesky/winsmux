@@ -1,15 +1,15 @@
-# psmux-bridge
+# winsmux
 
 Cross-pane AI agent communication CLI — a core component of [winsmux](https://github.com/Sora-bluesky/winsmux).
 
-Also available as a standalone psmux plugin.
+Also available as a standalone winsmux plugin.
 
-## Install (as psmux plugin)
+## Install (as winsmux plugin)
 
-Add this to `.psmux.conf`:
+Add this to `.winsmux.conf`:
 
 ```tmux
-set -g @plugin 'psmux-plugins/psmux-bridge'
+set -g @plugin 'winsmux-plugins/winsmux'
 ```
 
 ## Install (as part of winsmux)

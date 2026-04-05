@@ -1,5 +1,5 @@
 // sh-orchestra-gate.js — PreToolUse hook
-// Prevents Commander from writing code or bypassing psmux-bridge
+// Prevents Commander from writing code or bypassing winsmux CLI
 "use strict";
 
 const fs = require("fs");

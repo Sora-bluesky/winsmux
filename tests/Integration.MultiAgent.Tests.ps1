@@ -51,7 +51,7 @@ Describe 'Get-BridgeSettings defaults' {
     }
 
     It 'returns correct built-in defaults for all keys' {
-        Mock Get-PsmuxOption { param($Name, $Default) return $null }
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
 
         $settings = Get-BridgeSettings
 

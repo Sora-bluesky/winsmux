@@ -392,13 +392,13 @@ function Test-ZombieProcessesCheck {
 
 function Test-BridgeConfigCheck {
     $repoRoot = Get-DoctorRepoRoot
-    $configPath = Join-Path $repoRoot '.psmux-bridge.yaml'
+    $configPath = Join-Path $repoRoot '.winsmux.yaml'
 
     if (-not (Test-Path $configPath)) {
-        return New-DoctorResult -Status fail -Label '.psmux-bridge.yaml' -Detail 'not found'
+        return New-DoctorResult -Status fail -Label '.winsmux.yaml' -Detail 'not found'
     }
 
-    return New-DoctorResult -Status pass -Label '.psmux-bridge.yaml' -Detail 'found'
+    return New-DoctorResult -Status pass -Label '.winsmux.yaml' -Detail 'found'
 }
 
 function Write-DoctorResult {
