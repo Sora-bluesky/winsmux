@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
 . "$scriptDir/settings.ps1"
 . "$scriptDir/vault.ps1"
+. "$scriptDir/agent-launch.ps1"
 . "$scriptDir/builder-worktree.ps1"
 . "$scriptDir/logger.ps1"
 . "$scriptDir/agent-readiness.ps1"
@@ -82,12 +83,6 @@ function Invoke-Bridge {
     if ($LASTEXITCODE -ne 0) {
         throw "psmux-bridge $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
     }
-}
-
-function ConvertTo-PowerShellLiteral {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
-
-    return "'" + ($Value -replace "'", "''") + "'"
 }
 
 function Get-ProjectDir {
@@ -365,27 +360,6 @@ function Send-OrchestraBridgeCommand {
     )
 
     Invoke-Bridge -Arguments @('send', $Target, $Text)
-}
-
-function Get-AgentLaunchCommand {
-    param(
-        [Parameter(Mandatory = $true)][string]$Agent,
-        [Parameter(Mandatory = $true)][string]$Model,
-        [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$GitWorktreeDir
-    )
-
-    switch ($Agent.Trim().ToLowerInvariant()) {
-        'codex' {
-            return "codex -c model=$Model --full-auto -C $(ConvertTo-PowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PowerShellLiteral -Value $GitWorktreeDir)"
-        }
-        'claude' {
-            return 'claude --permission-mode bypassPermissions'
-        }
-        default {
-            throw "Unsupported agent setting: $Agent"
-        }
-    }
 }
 
 function Get-VaultValue {
@@ -908,6 +882,13 @@ try {
         try {
             $roleAgentConfig = Get-RoleAgentConfig -Role $paneSummary.Role -Settings $settings
             Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $roleAgentConfig.Agent -TimeoutSeconds 60
+
+            $bootstrapPrompt = Get-AgentBootstrapPrompt -Agent $roleAgentConfig.Agent -Role $paneSummary.Role
+            if (-not [string]::IsNullOrWhiteSpace($bootstrapPrompt)) {
+                Write-WinsmuxLog -Level INFO -Event 'pane.bootstrap.dispatched' -Message "Dispatched Codex CLM workaround bootstrap to $($paneSummary.Label)." -Role $paneSummary.Role -PaneId $paneSummary.PaneId -Target $paneSummary.Label | Out-Null
+                Send-OrchestraBridgeCommand -Target $paneSummary.PaneId -Text $bootstrapPrompt
+                Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $roleAgentConfig.Agent -TimeoutSeconds 60
+            }
         } catch {
             Write-Error "Agent readiness timeout for $($paneSummary.Label) [$($paneSummary.PaneId)]: $($_.Exception.Message)"
             exit 1

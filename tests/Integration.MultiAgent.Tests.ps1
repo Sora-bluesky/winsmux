@@ -82,6 +82,28 @@ Describe 'Get-RoleAgentConfig with fallback' {
     }
 }
 
+Describe 'agent launch helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\agent-launch.ps1')
+    }
+
+    It 'builds the Codex launch command with quoted project and worktree paths' {
+        $command = Get-AgentLaunchCommand -Agent 'codex' -Model 'gpt-5.4' -ProjectDir "C:\repo path\builder-1" -GitWorktreeDir "C:\repo path\.git"
+
+        $command | Should -Be "codex -c model=gpt-5.4 --full-auto -C 'C:\repo path\builder-1' --add-dir 'C:\repo path\.git'"
+    }
+
+    It 'returns a CLM workaround bootstrap only for Codex builders' {
+        $builderPrompt = Get-AgentBootstrapPrompt -Agent 'codex' -Role 'Builder'
+        $builderPrompt | Should -Match 'ConstrainedLanguageMode'
+        $builderPrompt | Should -Match 'apply_patch'
+        $builderPrompt | Should -Match 'cmd /c'
+
+        (Get-AgentBootstrapPrompt -Agent 'codex' -Role 'Reviewer') | Should -BeNullOrEmpty
+        (Get-AgentBootstrapPrompt -Agent 'claude' -Role 'Builder') | Should -BeNullOrEmpty
+    }
+}
+
 Describe 'manifest round-trip' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'psmux-bridge\scripts\manifest.ps1')
