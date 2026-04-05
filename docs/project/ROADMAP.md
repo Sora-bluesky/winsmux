@@ -1,7 +1,7 @@
 # ロードマップ
 
 > `tasks/backlog.yaml` から自動生成 — 手動編集禁止
-> 最終同期: 2026-04-05 21:12 (+09:00)
+> 最終同期: 2026-04-05 21:42 (+09:00)
 
 ## バージョン概要
 
@@ -27,10 +27,10 @@
 | v0.18.1 | 15 | [====================] 100% (15/15) |
 | v0.18.2 | 10 | [====================] 100% (10/10) |
 | v0.19.0 | 3 | [====================] 100% (3/3) |
-| v0.19.1 | 2 | [--------------------] 0% (0/2) |
+| v0.19.1 | 3 | [--------------------] 0% (0/3) |
 | v0.19.2 | 3 | [--------------------] 0% (0/3) |
 | v0.20.0 | 8 | [--------------------] 0% (0/8) |
-| v0.20.1 | 4 | [--------------------] 0% (0/4) |
+| v0.20.1 | 6 | [--------------------] 0% (0/6) |
 | v0.21.0 | 6 | [--------------------] 0% (0/6) |
 | v0.21.1 | 5 | [--------------------] 0% (0/5) |
 | v0.22.0 | 3 | [--------------------] 0% (0/3) |
@@ -234,6 +234,7 @@
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
+| [ ] | TASK-170 | Fix orchestra zombie cleanup killing Telegram bun/node process | P0 | winsmux | backlog |
 | [ ] | TASK-139 | Rename psmux-bridge to winsmux-core + adapter layer separation | P1 | winsmux | backlog |
 | [ ] | TASK-153 | Repo health tooling integrated with doctor + dead code audit | P1 | winsmux | backlog |
 
@@ -266,6 +267,8 @@
 | [ ] | TASK-161 | Hook Profile Switching via environment variable | P1 | winsmux | backlog |
 | [ ] | TASK-165 | Agent-Model Tier Matching (role-based model selection) | P1 | winsmux | backlog |
 | [ ] | TASK-166 | 4-Step Model Resolution Chain (override→category→fallback→default) | P2 | winsmux | backlog |
+| [ ] | TASK-171 | Agent-monitor auto-approve trust prompt for Claude Code panes | P2 | winsmux | backlog |
+| [ ] | TASK-172 | Document Codex worktree git ops sandbox limitation | P2 | winsmux | backlog |
 
 ### v0.21.0 — スマートセッション
 
