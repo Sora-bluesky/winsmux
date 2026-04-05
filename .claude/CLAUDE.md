@@ -1,4 +1,3 @@
-<!-- version: 0.19.3 -->
 # winsmux
 
 Windows-native AI agent orchestration platform built on winsmux-core.
@@ -14,9 +13,9 @@ winsmux must be running before orchestra-start. If not running, user starts it m
 
 ## Architecture
 
-- **winsmux-core/**: CLI core — vault, settings, role-gate, orchestra scripts — vault, settings, role-gate, orchestra scripts
-- **.claude/hooks/**: PreToolUse hooks for governance enforcement (git-tracked)
-- **install.ps1**: Downloads winsmux-core binary from GitHub Releases
+- `winsmux-core/`: CLI core for vault, settings, role gates, orchestra scripts.
+- `.claude/hooks/`: PreToolUse hooks for governance enforcement.
+- `install.ps1`: Downloads the winsmux-core binary from GitHub Releases.
 
 ## Roles (Orchestra)
 
@@ -27,7 +26,13 @@ winsmux must be running before orchestra-start. If not running, user starts it m
 | Reviewer | Codex | review diffs | implement |
 | Researcher | Claude Sonnet | investigate, report, git add/commit/push | implement |
 
-Commander enforced by `.claude/hooks/sh-orchestra-gate.js` (PreToolUse hook).
+Roles are advisory. Hard enforcement is via hooks (`sh-orchestra-gate.js` for Commander). Other roles need per-role gate hooks (#284).
+
+**Enforcement**: CLAUDE.md is advisory, not enforced. Use hooks for deterministic enforcement. See GUARDRAILS.md for recurring failures.
+
+## Rules
+
+Topic-specific rules are in `.claude/rules/`. Path-specific rules use `paths:` frontmatter.
 
 ## Commands
 
@@ -48,78 +53,40 @@ pwsh scripts/bump-version.ps1 -Version X.Y.Z
 
 ## winsmux send-keys Rules
 
-- Always use `-l` flag (literal mode). Without it, commands silently vanish.
-- Send Enter separately: `winsmux send-keys -t %ID Enter`
-- Wait for agent readiness (poll for `›` prompt) BEFORE sending prompts.
-- Builder panes run pwsh — use PowerShell syntax, not bash.
+- Always use `-l` (literal mode). Without it, commands silently vanish.
+- Send Enter separately: `winsmux send-keys -t %ID Enter`.
+- Wait for agent readiness (`›` prompt) before sending prompts.
+- Builder panes run pwsh; use PowerShell syntax, not bash.
 
 ## Worktree Rules
 
-- Builders MUST work in `git worktree` (physical isolation from main repo).
-- Never use `git clone --depth` (shallow clones break worktree creation).
-- Collect output from worktree BEFORE deleting it.
-
-## Hook System
-
-Hooks are in `.claude/hooks/` (git-tracked, 25 files). Two registration layers:
-- **settings.json** (git-tracked): all-user hooks (security baseline). Currently: sh-evidence.js のみ
-- **settings.local.json** (gitignored): Commander-specific hooks (sh-orchestra-gate.js)
-
-**Current status (v0.19.3)**: 26 hooks exist, 2 registered (orchestra-gate + evidence).
-sh-utils.js 15関数実装済み (v0.13.0)。残り21本は v0.14.0〜v0.16.0 で段階的に有効化予定。
-shield-harness init 復元済み（session.json + config テンプレート自動生成）。
-
-## ROADMAP Sync
-
-- ROADMAP.md は内部開発資料（gitignored、非公開）
-- sync-roadmap.ps1 でローカル生成のみ。コミット不要
+- Builders must work in `git worktree` isolation, never the main repo.
+- Never use `git clone --depth`; shallow clones break worktree creation.
+- Collect output from the worktree before deleting it.
 
 ## Git Rules
 
-- See [GUARDRAILS.md](GUARDRAILS.md) for recurring failure prevention (git rm, send-keys, worktree rules, etc.)
-- ブランチは feature branch で作業、main 直コミットは pre-commit hook がブロック
+- See [GUARDRAILS.md](GUARDRAILS.md) for recurring failure prevention.
+- Use feature branches; direct commits to `main` are blocked by hooks.
 
 ## Conventions
 
-- Commit messages: English, conventional commits (`feat:`, `fix:`, `chore:`)
-- PowerShell: strict mode, UTF-8, `$ErrorActionPreference = 'Stop'`
-- Settings files (`settings.json`, `.claude.json`): edit via `python -c` (not Edit/Write tools — race condition)
+- Commit messages: English, conventional commits (`feat:`, `fix:`, `chore:`).
+- PowerShell: strict mode, UTF-8, `$ErrorActionPreference = 'Stop'`.
+- Settings files (`settings.json`, `.claude.json`): edit via `python -c` to avoid race conditions.
 
 ## Task Status Rules
 
-Allowed transitions: `backlog` → `wip` → `review` → `done`
+Allowed transitions: `backlog` -> `wip` -> `review` -> `done`
 
-| Status | Meaning | Gate |
-|--------|---------|------|
-| backlog | Not started or code exists but untested/gitignored | — |
-| wip | Branch created, active development | git branch exists |
-| review | PR open, code git-tracked, tests pass | `git ls-files` confirms tracked |
-| done | PR merged + runtime test passed | merge commit on main |
+- `backlog`: not started, or code exists but is untested/gitignored.
+- `wip`: branch exists and active development is in progress.
+- `review`: PR is open, code is git-tracked, and tests pass.
+- `done`: PR is merged and runtime verification passed.
+- Never set `review` if the script is gitignored; run `sync-roadmap.ps1` to auto-correct violations.
 
-**Never set `review` if the script is gitignored.** Run `sync-roadmap.ps1` to auto-detect and fix violations.
+## ROADMAP Sync
 
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `winsmux-core/scripts/orchestra-start.ps1` | Full orchestra lifecycle |
-| `winsmux-core/scripts/settings.ps1` | Hierarchical settings (project > global > defaults) |
-| `winsmux-core/scripts/vault.ps1` | Windows Credential Manager integration |
-| `.claude/hooks/sh-orchestra-gate.js` | Commander role enforcement |
-| `tasks/backlog.yaml` | Task tracking (local only, gitignored) |
-| `HANDOFF.md` | Session state handoff (local only) |
+`ROADMAP.md` is local-only and gitignored; generate it with `sync-roadmap.ps1`.
 
 @HANDOFF.md
-
-## Changelog
-
-| Version | Date | Changes |
-|---------|------|---------|
-| 0.19.3 | 2026-04-06 | Add version header, changelog table, link to GUARDRAILS.md |
-| 0.19.2 | 2026-04-05 | Monorepo consolidation (core/ added), install.ps1 updated |
-| 0.19.1 | 2026-04-05 | psmux-bridge → winsmux-core rename, doctor.ps1 added |
-| 0.19.0 | 2026-04-05 | /tmp path fix, GlassWorm hardening, dead code audit |
-| 0.18.2 | 2026-04-05 | Agent-monitor daemon, dynamic scaling, task splitting |
-| 0.18.1 | 2026-04-05 | Bug fixes (12), auto-dispatch integration |
-| 0.18.0 | 2026-04-04 | Tauri scaffold, ConPTY, Focus Policy, notification inbox |
-| 0.13.0 | 2026-04-04 | sh-utils.js 15 functions, shield-harness init restored |
