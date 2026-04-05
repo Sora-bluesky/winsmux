@@ -19,12 +19,12 @@ psmux must be running before orchestra-start. If not running, user starts it man
 
 ## Roles (Orchestra)
 
-| Role | Allowed | Forbidden |
-|------|---------|-----------|
-| Commander | plan, dispatch, git ops, backlog | write/edit code, review code |
-| Builder | implement in worktree | push, merge, direct main repo work |
-| Reviewer | review diffs | implement |
-| Researcher | investigate, report | implement |
+| Role | Agent | Allowed | Forbidden |
+|------|-------|---------|-----------|
+| Commander | Claude Code | plan, dispatch, git ops, backlog | write/edit code, review code |
+| Builder | Codex | implement in worktree | git add/commit/push, merge, direct main repo work |
+| Reviewer | Codex | review diffs | implement |
+| Researcher | Claude Sonnet | investigate, report, git add/commit/push | implement |
 
 Commander enforced by `.claude/hooks/sh-orchestra-gate.js` (PreToolUse hook).
 
