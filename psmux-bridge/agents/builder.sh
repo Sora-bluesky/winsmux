@@ -131,6 +131,7 @@ Additional fixed guardrails for this builder run:
 - Do not finish until you have run the relevant tests or checks from that workspace, unless you are blocked.
 - In the verification summary, include the exact commands you ran and whether they passed or failed.
 - If you create a commit, use a Conventional Commits message.
+- Do NOT run git add, git commit, git push, or any git write commands. Your role is code editing only. Git operations are handled by the Researcher or Commander.
 
 Respond with:
 - implementation summary
