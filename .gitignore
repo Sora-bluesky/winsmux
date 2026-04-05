@@ -137,3 +137,4 @@ coverage/
 *-output.txt
 *-prompt.txt
 .commander-prompt.txt
+.tmp-worktree-hook-tests/
