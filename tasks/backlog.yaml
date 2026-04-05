@@ -2118,6 +2118,36 @@ tasks:
       #260. Codex --full-auto sandbox が .git/worktrees/ への index.lock 作成を拒否。
       暫定対策(2ステップ方式)をドキュメント化。Codex upstream への報告を検討。
 
+  # === v0.19.3: Monorepo consolidation (2026-04-05) ===
+
+  - id: TASK-173
+    title: "Consolidate winsmux-core Rust binary into winsmux monorepo"
+    status: backlog
+    priority: P0
+    target_version: "v0.19.3"
+    repo: winsmux
+    labels: [chore, architecture, monorepo]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #270. Sora-bluesky/winsmux-core (Rust バイナリ、旧 psmux フォーク) を
+      winsmux リポの core/ に git subtree で統合。CI統一、フォーク関係解消。
+
+  - id: TASK-174
+    title: "Add send-keys buffer overflow protection to winsmux send"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.3"
+    repo: winsmux
+    labels: [bug, orchestration]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #265. 長いコマンドがsend-keysバッファに収まらず無音で消える。
+      閾値超過時はtempファイルに書き出して実行。
+
   - id: TASK-154
     title: "Manifest-aware session resume / context injection"
     status: backlog
