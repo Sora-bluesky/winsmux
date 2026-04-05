@@ -72,6 +72,69 @@ function Stop-WithError {
     exit 1
 }
 
+# --- Helper: Dispatch prompt paths ---
+function Get-DispatchPromptDirectory {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    return Join-Path $ProjectDir '.winsmux\dispatch-prompts'
+}
+
+function New-DispatchPromptFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Content,
+        [string]$ProjectDir = (Get-Location).Path,
+        [string]$Prefix = 'dispatch-prompt'
+    )
+
+    $promptDir = Get-DispatchPromptDirectory -ProjectDir $ProjectDir
+    if (-not (Test-Path $promptDir)) {
+        New-Item -ItemType Directory -Path $promptDir -Force | Out-Null
+    }
+
+    $fileName = '{0}-{1}.txt' -f $Prefix, ([guid]::NewGuid().ToString('N'))
+    $path = Join-Path $promptDir $fileName
+    $Content | Set-Content -LiteralPath $path -Encoding UTF8
+    return $path
+}
+
+function Convert-MsysTmpPathToWindowsPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ($Path -notmatch '^/tmp(?:/|$)') {
+        return $Path
+    }
+
+    $tempRoot = [System.IO.Path]::GetTempPath().TrimEnd('\')
+    $relative = $Path.Substring(4).TrimStart('/')
+    if ([string]::IsNullOrWhiteSpace($relative)) {
+        return $tempRoot
+    }
+
+    return Join-Path $tempRoot ($relative -replace '/', '\')
+}
+
+function Normalize-DispatchText {
+    param([AllowEmptyString()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $Text
+    }
+
+    if ($Text -notmatch '/tmp(?:/|$)') {
+        return $Text
+    }
+
+    return [regex]::Replace($Text, '(?<quote>["''])(?<path>/tmp(?:/|$)(?:(?!\k<quote>).)*)\k<quote>|(?<path>/tmp(?:/[^''"`\s|;,)]*)?)', {
+        param($match)
+        $normalizedPath = Convert-MsysTmpPathToWindowsPath -Path $match.Groups['path'].Value
+        if ($match.Groups['quote'].Success) {
+            return $match.Groups['quote'].Value + $normalizedPath + $match.Groups['quote'].Value
+        }
+
+        return $normalizedPath
+    })
+}
+
 # --- Helper: Labels ---
 function Get-Labels {
     if (Test-Path $LabelsFile) {
@@ -730,7 +793,8 @@ function Invoke-Send {
     if (-not $Target) { Stop-WithError "usage: psmux-bridge send <target> <text>" }
     if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: psmux-bridge send <target> <text>" }
 
-    $text = $Rest -join ' '
+    # Normalize Git Bash /tmp paths before dispatching PowerShell-oriented commands.
+    $text = Normalize-DispatchText -Text ($Rest -join ' ')
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
 
