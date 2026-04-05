@@ -1,7 +1,7 @@
 # ロードマップ
 
 > `tasks/backlog.yaml` から自動生成 — 手動編集禁止
-> 最終同期: 2026-04-05 14:43 (+09:00)
+> 最終同期: 2026-04-05 15:53 (+09:00)
 
 ## バージョン概要
 
@@ -25,13 +25,13 @@
 | v0.17.4 | 2 | [====================] 100% (2/2) |
 | v0.18.0 | 1 | [====================] 100% (1/1) |
 | v0.18.1 | 15 | [====================] 100% (15/15) |
-| v0.18.2 | 6 | [--------------------] 0% (0/6) |
+| v0.18.2 | 7 | [===-----------------] 14% (1/7) |
 | v0.19.0 | 6 | [--------------------] 0% (0/6) |
 | v0.19.1 | 2 | [--------------------] 0% (0/2) |
 | v0.19.2 | 2 | [--------------------] 0% (0/2) |
-| v0.20.0 | 1 | [--------------------] 0% (0/1) |
+| v0.20.0 | 5 | [--------------------] 0% (0/5) |
 | v0.20.1 | 1 | [--------------------] 0% (0/1) |
-| v0.21.0 | 1 | [--------------------] 0% (0/1) |
+| v0.21.0 | 2 | [--------------------] 0% (0/2) |
 | v0.21.1 | 1 | [--------------------] 0% (0/1) |
 | v0.21.2 | 1 | [--------------------] 0% (0/1) |
 | cancelled | 22 | [--------------------] 0% (0/22) |
@@ -213,6 +213,7 @@
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-140 | Switch Builder agents from persistent session to codex exec per task + shell templates | P0 | winsmux | backlog |
 | [ ] | TASK-141 | Dispatch-router file-level task boundary enforcement | P0 | winsmux | backlog |
+| [x] | TASK-142 | Fix orchestra-start crash when zombie processes are killed (Write-Output pipeline pollution) | P0 | winsmux | done |
 | [ ] | TASK-110 | Automatic task splitting for parallel Builder dispatch | P1 | winsmux | backlog |
 | [ ] | TASK-113 | Dynamic pane scaling — auto add/remove panes based on workload | P1 | winsmux | backlog |
 | [ ] | TASK-130 | Commander auto-detect Builder stall and alert | P1 | winsmux | backlog |
@@ -248,6 +249,10 @@
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-105 | JSON-RPC backend + SDK integration in Tauri | P0 | winsmux | backlog |
+| [ ] | TASK-143 | Shadow Git checkpoint for Builder worktrees | P1 | winsmux | backlog |
+| [ ] | TASK-145 | TaskResume hook × manifest.yaml integration | P1 | winsmux | backlog |
+| [ ] | TASK-144 | Hook parallel execution + Notification hook | P2 | winsmux | backlog |
+| [ ] | TASK-146 | PreCompact hook × context usage monitoring | P2 | winsmux | backlog |
 
 ### v0.20.1 — インストーラプロファイル
 
@@ -260,6 +265,7 @@
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-106 | Relay Auth + remote pane support in Tauri | P1 | winsmux | backlog |
+| [ ] | TASK-147 | ACP (Agent Communication Protocol) server support | P1 | winsmux | backlog |
 
 ### v0.21.1 — Editor パネル
 

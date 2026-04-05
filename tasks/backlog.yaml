@@ -1630,6 +1630,8 @@ tasks:
     updated: "2026-04-05"
     notes: >
       #223. 3層設計: dispatch標準化 + queue自動消化 + monitor常駐。
+      PR #238でidle alert関数(Update-MonitorIdleAlertState/Save-MonitorIdleState/Get-MonitorIdleState)実装完了。
+      Pester 51/51通過。
 
   - id: TASK-137
     title: "Audit dead code and missing integration across v0.9.6–v0.18.0"
@@ -1706,3 +1708,92 @@ tasks:
     updated: "2026-04-05"
     notes: >
       #170. Explorer サイドバーに Git ソースコントロールパネル追加。worktree 表示対応。
+
+  # === v0.18.2: orchestra-start bug (2026-04-05) ===
+
+  - id: TASK-142
+    title: "Fix orchestra-start crash when zombie processes are killed (Write-Output pipeline pollution)"
+    status: done
+    priority: P0
+    target_version: "v0.18.2"
+    repo: winsmux
+    labels: [fix, orchestra, preflight]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      #235. Remove-OrchestraZombieProcesses の Write-Output がパイプラインを汚染し、
+      戻り値が [string, PSCustomObject] 配列になる。.Killed プロパティアクセスが StrictMode で失敗。
+      Fix: Write-Output → Write-Host に変更。
+
+  # === Cline powerup proposals (2026-04-05) ===
+
+  - id: TASK-143
+    title: "Shadow Git checkpoint for Builder worktrees"
+    status: backlog
+    priority: P1
+    target_version: "v0.20.0"
+    repo: winsmux
+    labels: [feat, checkpoint, safety]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      P21 (cline-powerup-proposals). shadow git でエージェント作業のスナップショットを取り、
+      Reviewer reject 時に即座にロールバック可能にする。25h見積。
+
+  - id: TASK-144
+    title: "Hook parallel execution + Notification hook"
+    status: backlog
+    priority: P2
+    target_version: "v0.20.0"
+    repo: winsmux
+    labels: [feat, hooks, notification]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      P22 (cline-powerup-proposals). 25本の hook を Promise.all で並列実行 + Notification hook で
+      Builder 入力待ちを Commander に自動通知。15h見積。
+
+  - id: TASK-145
+    title: "TaskResume hook × manifest.yaml integration"
+    status: backlog
+    priority: P1
+    target_version: "v0.20.0"
+    repo: winsmux
+    labels: [feat, hooks, manifest]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      P23 (cline-powerup-proposals). セッション再開時に manifest.yaml から前回の状態を各エージェントに
+      自動注入する TaskResume hook。8h見積。
+
+  - id: TASK-146
+    title: "PreCompact hook × context usage monitoring"
+    status: backlog
+    priority: P2
+    target_version: "v0.20.0"
+    repo: winsmux
+    labels: [feat, hooks, context]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      P24 (cline-powerup-proposals). エージェントのコンテキスト使用率を監視し、80%超で
+      自動圧縮戦略を適用。12h見積。
+
+  - id: TASK-147
+    title: "ACP (Agent Communication Protocol) server support"
+    status: backlog
+    priority: P1
+    target_version: "v0.21.0"
+    repo: winsmux
+    labels: [feat, acp, protocol]
+    depends_on: []
+    created: "2026-04-05"
+    updated: "2026-04-05"
+    notes: >
+      P25 (cline-powerup-proposals). ACP サーバーとして任意のエディタから Orchestra を操作可能にする。
+      JetBrains/Neovim/Zed 対応。30h見積。
