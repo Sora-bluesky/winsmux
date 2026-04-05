@@ -37,6 +37,9 @@ $scriptDir = $PSScriptRoot
 $script:HungSnapshotDir = Join-Path $env:TEMP 'winsmux\monitor_snapshots'
 $script:IdleStateDir = Join-Path $env:TEMP 'winsmux\monitor_idle'
 $script:AgentMonitorDefaultHungThreshold = 60
+$script:IdleAlertRepeatSeconds = 300
+$script:MonitorTelegramEnvPath = 'C:\Users\komei\.claude\channels\telegram\.env'
+$script:MonitorTelegramChatId = '8642321094'
 $script:BuilderStallHistory = @{}
 $script:BuilderStallThresholdCycles = 3
 
@@ -160,7 +163,8 @@ function Save-MonitorIdleState {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
         [Parameter(Mandatory = $true)]$ReadySince,
-        [Parameter(Mandatory = $true)][bool]$AlertSent
+        [Parameter(Mandatory = $true)][bool]$AlertSent,
+        [AllowNull()]$LastAlertAt = $null
     )
 
     if ([string]::IsNullOrWhiteSpace($script:IdleStateDir)) {
@@ -177,9 +181,19 @@ function Save-MonitorIdleState {
         [string]$ReadySince
     }
 
+    $lastAlertAtValue = ''
+    if ($null -ne $LastAlertAt) {
+        $lastAlertAtValue = if ($LastAlertAt -is [datetime]) {
+            $LastAlertAt.ToString('o')
+        } else {
+            [string]$LastAlertAt
+        }
+    }
+
     $record = [ordered]@{
         ReadySince = $readySinceValue
         AlertSent  = $AlertSent
+        LastAlertAt = $lastAlertAtValue
     }
 
     $path = Get-MonitorIdleStatePath -PaneId $PaneId
@@ -214,10 +228,12 @@ function Update-MonitorIdleAlertState {
     $state = Get-MonitorIdleState -PaneId $PaneId
     $readySince = $Now
     $alertSent = $false
+    $lastAlertAt = $null
 
     if ($null -ne $state) {
         $alertSent = [bool](Get-MonitorPropertyValue -InputObject $state -Name 'AlertSent' -Default $false)
         $savedReadySince = [string](Get-MonitorPropertyValue -InputObject $state -Name 'ReadySince' -Default '')
+        $savedLastAlertAt = [string](Get-MonitorPropertyValue -InputObject $state -Name 'LastAlertAt' -Default '')
         if (-not [string]::IsNullOrWhiteSpace($savedReadySince)) {
             try {
                 $readySince = [System.DateTimeOffset]::Parse($savedReadySince).DateTime
@@ -225,24 +241,38 @@ function Update-MonitorIdleAlertState {
                 $readySince = $Now
             }
         }
+
+        if (-not [string]::IsNullOrWhiteSpace($savedLastAlertAt)) {
+            try {
+                $lastAlertAt = [System.DateTimeOffset]::Parse($savedLastAlertAt).DateTime
+            } catch {
+                $lastAlertAt = $null
+            }
+        }
+    }
+
+    $repeatAlertDue = $false
+    if ($alertSent) {
+        if ($null -eq $lastAlertAt) {
+            $repeatAlertDue = $true
+            $alertSent = $false
+        } elseif ((($Now - $lastAlertAt).TotalSeconds) -ge $script:IdleAlertRepeatSeconds) {
+            $repeatAlertDue = $true
+            $alertSent = $false
+            $lastAlertAt = $null
+        }
     }
 
     $elapsedSeconds = ($Now - $readySince).TotalSeconds
-    $wasAlertSent = $alertSent
-    if ($alertSent -and ($elapsedSeconds -ge 300)) {
-        $alertSent = $false
-    }
-
-    $alertThresholdSeconds = if ($wasAlertSent) { 300 } else { $IdleThresholdSeconds }
-    if (($elapsedSeconds -ge $alertThresholdSeconds) -and (-not $alertSent)) {
+    if (($elapsedSeconds -ge $IdleThresholdSeconds) -and ((-not $alertSent) -or $repeatAlertDue)) {
         $message = "Commander alert: idle pane $Label ($PaneId, role=$Role)"
-        Save-MonitorIdleState -PaneId $PaneId -ReadySince $Now -AlertSent $true
+        Save-MonitorIdleState -PaneId $PaneId -ReadySince $readySince -AlertSent $true -LastAlertAt $Now
         $result.ShouldAlert = $true
         $result.Message = $message
         return $result
     }
 
-    Save-MonitorIdleState -PaneId $PaneId -ReadySince $readySince -AlertSent $alertSent
+    Save-MonitorIdleState -PaneId $PaneId -ReadySince $readySince -AlertSent $alertSent -LastAlertAt $lastAlertAt
     return $result
 }
 
@@ -424,15 +454,24 @@ function Send-MonitorBridgeCommand {
 function Send-MonitorTelegramAlert {
     param([Parameter(Mandatory = $true)][string]$Message)
 
-    $telegramEnvPath = 'C:\Users\komei\.claude\channels\telegram\.env'
-    if (-not (Test-Path -LiteralPath $telegramEnvPath -PathType Leaf)) {
+    if ([string]::IsNullOrWhiteSpace($Message)) {
         return $false
     }
 
-    $token = ''
-    foreach ($line in (Get-Content -LiteralPath $telegramEnvPath -Encoding UTF8)) {
-        if ($line -match '^\s*(?:export\s+)?TELEGRAM_BOT_TOKEN\s*=\s*(.+?)\s*$') {
-            $token = $matches[1].Trim()
+    if (-not (Test-Path -LiteralPath $script:MonitorTelegramEnvPath -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $envLines = Get-Content -LiteralPath $script:MonitorTelegramEnvPath -Encoding UTF8
+    } catch {
+        return $false
+    }
+
+    $token = $null
+    foreach ($line in $envLines) {
+        if ($line -match '^\s*TELEGRAM_BOT_TOKEN\s*=\s*(.+?)\s*$') {
+            $token = $Matches[1].Trim()
             break
         }
     }
@@ -445,19 +484,15 @@ function Send-MonitorTelegramAlert {
         $token = $token.Substring(1, $token.Length - 2)
     }
 
-    if ([string]::IsNullOrWhiteSpace($token)) {
-        return $false
-    }
-
     $uri = "https://api.telegram.org/bot$token/sendMessage"
     $body = @{
-        chat_id = '8642321094'
+        chat_id = $script:MonitorTelegramChatId
         text    = $Message
     }
 
     try {
-        $null = Invoke-RestMethod -Method Post -Uri $uri -Body $body -ErrorAction Stop
-        return $true
+        $response = Invoke-RestMethod -Method Post -Uri $uri -Body $body -ErrorAction Stop
+        return [bool](Get-MonitorPropertyValue -InputObject $response -Name 'ok' -Default $true)
     } catch {
         return $false
     }

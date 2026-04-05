@@ -63,12 +63,8 @@ try {
     }
   }
 
-  // Rule 7: Block direct gh pr merge (allow only via winsmux verify)
-  if (toolName === "Bash") {
-    if (/gh\s+pr\s+merge/.test(rawCommand) && !/winsmux-core/.test(rawCommand)) {
-      deny("Run winsmux verify before merging. Direct gh pr merge is blocked.");
-    }
-  }
+  // Rule 7: REMOVED - winsmux verify not yet implemented.
+  // Will be re-added when verify command exists. See #277.
 
   process.exit(0);
 } catch (e) {
