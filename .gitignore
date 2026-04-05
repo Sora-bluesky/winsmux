@@ -37,6 +37,7 @@ tests/*
 !tests/Runtime.VaultInject.Tests.ps1
 !tests/psmux-bridge.Tests.ps1
 !tests/OrchestraPreflight.Tests.ps1
+!tests/PaneBorder.Tests.ps1
 hooks/
 .githooks/
 .worktrees/

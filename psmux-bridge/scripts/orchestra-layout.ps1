@@ -7,11 +7,13 @@ param(
     [string]$SessionName = $env:WINSMUX_ORCHESTRA_SESSION,
     [int]$Builders = 4,
     [int]$Researchers = 1,
-    [int]$Reviewers = 1
+[int]$Reviewers = 1
 )
 
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$scriptDir = $PSScriptRoot
+. "$scriptDir/pane-border.ps1"
 
 function Test-PositiveCount {
     param(
@@ -141,6 +143,10 @@ if ($newWindowId -notmatch '^@\d+$') {
 }
 if ($newPaneId -notmatch '^%\d+$') {
     throw "psmux new-window returned an unexpected pane id: '$newPaneId'."
+}
+
+if (-not (Set-OrchestraPaneBorderOptions -WindowId $newWindowId -PsmuxBin 'psmux')) {
+    Write-Warning "Could not enable pane border labels for window $newWindowId."
 }
 
 if ($rows -gt 1) {
