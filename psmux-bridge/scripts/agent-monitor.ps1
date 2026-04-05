@@ -37,6 +37,8 @@ $scriptDir = $PSScriptRoot
 $script:HungSnapshotDir = Join-Path $env:TEMP 'winsmux\monitor_snapshots'
 $script:IdleStateDir = Join-Path $env:TEMP 'winsmux\monitor_idle'
 $script:AgentMonitorDefaultHungThreshold = 60
+$script:BuilderStallHistory = @{}
+$script:BuilderStallThresholdCycles = 3
 
 # ---------------------------------------------------------------------------
 # Psmux wrapper (same pattern as orchestra-start.ps1)
@@ -238,6 +240,51 @@ function Update-MonitorIdleAlertState {
     return $result
 }
 
+function Clear-BuilderStallState {
+    param([Parameter(Mandatory = $true)][string]$PaneId)
+
+    if ($script:BuilderStallHistory.ContainsKey($PaneId)) {
+        $script:BuilderStallHistory.Remove($PaneId)
+    }
+}
+
+function Test-BuilderStall {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)][string]$Status,
+        [AllowNull()][string]$SnapshotHash,
+        [int]$RequiredCycles = $script:BuilderStallThresholdCycles
+    )
+
+    if ($Role -ne 'Builder' -or $Status -ne 'busy' -or [string]::IsNullOrWhiteSpace($SnapshotHash)) {
+        Clear-BuilderStallState -PaneId $PaneId
+        return $false
+    }
+
+    if (-not $script:BuilderStallHistory.ContainsKey($PaneId)) {
+        $script:BuilderStallHistory[$PaneId] = [System.Collections.Generic.List[string]]::new()
+    }
+
+    $hashHistory = [System.Collections.Generic.List[string]]$script:BuilderStallHistory[$PaneId]
+    $hashHistory.Add($SnapshotHash)
+    while ($hashHistory.Count -gt $RequiredCycles) {
+        $hashHistory.RemoveAt(0)
+    }
+
+    if ($hashHistory.Count -lt $RequiredCycles) {
+        return $false
+    }
+
+    foreach ($hash in $hashHistory) {
+        if ($hash -ne $SnapshotHash) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
 function Get-ContentHash {
     param([AllowNull()][string]$Text)
 
@@ -437,12 +484,14 @@ function Get-PaneAgentStatus {
         ($lines[($lines.Length - 12)..($lines.Length - 1)] -join [Environment]::NewLine)
     }
     $exitReason = ''
+    $snapshotHash = Get-ContentHash -Text $text
 
     if (Test-CodexApprovalPromptText -Text $text) {
         return [PSCustomObject]@{
             Status       = 'busy'
             PaneId       = $PaneId
             SnapshotTail = $tail
+            SnapshotHash = $snapshotHash
             ExitReason   = ''
         }
     }
@@ -458,6 +507,7 @@ function Get-PaneAgentStatus {
             Status       = 'ready'
             PaneId       = $PaneId
             SnapshotTail = $tail
+            SnapshotHash = $snapshotHash
             ExitReason   = ''
         }
     }
@@ -470,6 +520,7 @@ function Get-PaneAgentStatus {
                 Status       = 'ready'
                 PaneId       = $PaneId
                 SnapshotTail = $tail
+                SnapshotHash = $snapshotHash
                 ExitReason   = 'exec_completed'
             }
         }
@@ -478,12 +529,13 @@ function Get-PaneAgentStatus {
             Status       = 'crashed'
             PaneId       = $PaneId
             SnapshotTail = $tail
+            SnapshotHash = $snapshotHash
             ExitReason   = $exitReason
         }
     }
 
     # hung: no output change for threshold seconds
-    $currentHash = Get-ContentHash -Text $text
+    $currentHash = $snapshotHash
     $now = Get-Date
     $previous = Get-MonitorSnapshot -PaneId $PaneId
 
@@ -496,6 +548,7 @@ function Get-PaneAgentStatus {
                     Status       = 'hung'
                     PaneId       = $PaneId
                     SnapshotTail = $tail
+                    SnapshotHash = $snapshotHash
                     ExitReason   = ''
                 }
             }
@@ -512,6 +565,7 @@ function Get-PaneAgentStatus {
         Status       = 'busy'
         PaneId       = $PaneId
         SnapshotTail = $tail
+        SnapshotHash = $snapshotHash
         ExitReason   = ''
     }
 }
@@ -600,7 +654,7 @@ function Invoke-AgentMonitorCycle {
     Runs one monitoring cycle: check all panes, respawn crashed ones.
 
     .OUTPUTS
-    PSCustomObject with: Checked (int), Crashed (int), Respawned (int), Results (array)
+    PSCustomObject with: Checked (int), Crashed (int), Respawned (int), IdleAlerts (int), Stalls (int), Results (array)
     #>
     param(
         [Parameter(Mandatory = $true)]$Settings,
@@ -650,6 +704,7 @@ function Invoke-AgentMonitorCycle {
     $crashedCount = 0
     $respawnedCount = 0
     $idleAlertCount = 0
+    $stallCount = 0
     $cycleNow = Get-Date
 
     foreach ($label in $manifest.Panes.Keys) {
@@ -681,6 +736,7 @@ function Invoke-AgentMonitorCycle {
         $statusName = [string](Get-MonitorPropertyValue -InputObject $status -Name 'Status' -Default '')
         $statusExitReason = [string](Get-MonitorPropertyValue -InputObject $status -Name 'ExitReason' -Default '')
         $statusSnapshotTail = [string](Get-MonitorPropertyValue -InputObject $status -Name 'SnapshotTail' -Default '')
+        $statusSnapshotHash = [string](Get-MonitorPropertyValue -InputObject $status -Name 'SnapshotHash' -Default '')
 
         $result = [PSCustomObject]@{
             Label      = $label
@@ -690,6 +746,7 @@ function Invoke-AgentMonitorCycle {
             ExitReason = $statusExitReason
             Respawned  = $false
             IdleAlerted = $false
+            StallDetected = $false
             Message    = ''
         }
 
@@ -709,6 +766,19 @@ function Invoke-AgentMonitorCycle {
             Write-Output $idleAlert.Message
             try {
                 Send-MonitorTelegramAlert -Message $idleAlert.Message | Out-Null
+            } catch {
+            }
+        }
+
+        $stallDetected = Test-BuilderStall -PaneId $paneId -Role $role -Status $statusName -SnapshotHash $statusSnapshotHash
+        if ($stallDetected) {
+            $stallCount++
+            $result.StallDetected = $true
+            $stallMessage = "Commander alert: stalled Builder pane $label ($paneId)"
+            $result.Message = $stallMessage
+            Write-Output $stallMessage
+            try {
+                Send-MonitorTelegramAlert -Message $stallMessage | Out-Null
             } catch {
             }
         }
@@ -807,8 +877,8 @@ function Invoke-AgentMonitorCycle {
         try {
                 Write-OrchestraLog -ProjectDir $projectDir -SessionName $SessionName `
                     -Event 'monitor.cycle' -Level 'info' `
-                -Message "Monitor cycle: checked=$checkedCount crashed=$crashedCount respawned=$respawnedCount idle_alerts=$idleAlertCount" `
-                -Data ([ordered]@{ checked = $checkedCount; crashed = $crashedCount; respawned = $respawnedCount; idle_alerts = $idleAlertCount }) | Out-Null
+                -Message "Monitor cycle: checked=$checkedCount crashed=$crashedCount respawned=$respawnedCount idle_alerts=$idleAlertCount stalls=$stallCount" `
+                -Data ([ordered]@{ checked = $checkedCount; crashed = $crashedCount; respawned = $respawnedCount; idle_alerts = $idleAlertCount; stalls = $stallCount }) | Out-Null
         } catch {
         }
     }
@@ -818,6 +888,7 @@ function Invoke-AgentMonitorCycle {
         Crashed   = $crashedCount
         Respawned = $respawnedCount
         IdleAlerts = $idleAlertCount
+        Stalls = $stallCount
         Results   = @($results)
     }
 }
