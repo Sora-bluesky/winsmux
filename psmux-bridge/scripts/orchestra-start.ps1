@@ -748,6 +748,28 @@ try {
     Write-WinsmuxLog -Level INFO -Event 'preflight.zombie_cleanup.start' -Message 'Removing orchestra zombie processes.' | Out-Null
     Remove-OrchestraZombieProcesses -SessionName $sessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -PsmuxBin $psmuxBin
 
+    # Clean up any leftover orchestra panes in default session (#213)
+    try {
+        $existingPanes = & $psmuxBin list-panes -F '#{pane_id} #{pane_title}' 2>$null
+        if ($LASTEXITCODE -eq 0 -and $existingPanes) {
+            $orchestraLabels = @('builder-', 'researcher-', 'reviewer-')
+            foreach ($line in ($existingPanes -split "`n")) {
+                $parts = $line.Trim() -split '\s+', 2
+                if ($parts.Count -ge 2) {
+                    $paneId = $parts[0]
+                    $title = $parts[1]
+                    foreach ($label in $orchestraLabels) {
+                        if ($title -like "$label*") {
+                            Write-WinsmuxLog -Level INFO -Event 'preflight.default_pane.kill' -Message "Removing leftover orchestra pane $paneId ($title) from default session." -Data @{ pane_id = $paneId; title = $title } | Out-Null
+                            & $psmuxBin kill-pane -t $paneId 2>$null
+                            break
+                        }
+                    }
+                }
+            }
+        }
+    } catch { }
+
     Write-WinsmuxLog -Level INFO -Event 'preflight.session.check' -Message "Checking for existing session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
     & $psmuxBin has-session -t $sessionName 1>$null 2>$null
     if ($LASTEXITCODE -eq 0) {
