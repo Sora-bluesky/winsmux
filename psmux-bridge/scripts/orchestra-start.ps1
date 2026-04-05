@@ -224,7 +224,7 @@ function Get-AgentLaunchCommand {
             return "codex -c model=$Model --full-auto -C $(ConvertTo-PowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PowerShellLiteral -Value $GitWorktreeDir)"
         }
         'claude' {
-            return 'claude --permission-mode bypassPermissions'
+            return "claude --model $Model --permission-mode bypassPermissions"
         }
         default {
             throw "Unsupported agent setting: $Agent"

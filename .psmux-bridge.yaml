@@ -1,0 +1,10 @@
+agent: codex
+model: gpt-5.4
+builders: 4
+researchers: 1
+reviewers: 1
+
+roles:
+  Researcher:
+    agent: claude
+    model: sonnet
