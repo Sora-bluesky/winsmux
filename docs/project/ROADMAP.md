@@ -1,7 +1,7 @@
 # ロードマップ
 
 > `tasks/backlog.yaml` から自動生成 — 手動編集禁止
-> 最終同期: 2026-04-05 22:14 (+09:00)
+> 最終同期: 2026-04-05 22:52 (+09:00)
 
 ## バージョン概要
 
@@ -27,7 +27,7 @@
 | v0.18.1 | 15 | [====================] 100% (15/15) |
 | v0.18.2 | 10 | [====================] 100% (10/10) |
 | v0.19.0 | 3 | [====================] 100% (3/3) |
-| v0.19.1 | 3 | [--------------------] 0% (0/3) |
+| v0.19.1 | 3 | [====================] 100% (3/3) |
 | v0.19.2 | 3 | [--------------------] 0% (0/3) |
 | v0.20.0 | 8 | [--------------------] 0% (0/8) |
 | v0.20.1 | 6 | [--------------------] 0% (0/6) |
@@ -234,9 +234,9 @@
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-170 | Fix orchestra zombie cleanup killing Telegram bun/node process | P0 | winsmux | backlog |
-| [ ] | TASK-139 | Rename psmux-bridge to winsmux-core + adapter layer separation | P1 | winsmux | backlog |
-| [ ] | TASK-153 | Repo health tooling integrated with doctor + dead code audit | P1 | winsmux | backlog |
+| [x] | TASK-170 | Fix orchestra zombie cleanup killing Telegram bun/node process | P0 | winsmux | done |
+| [x] | TASK-139 | Rename psmux-bridge to winsmux-core + adapter layer separation | P1 | winsmux | done |
+| [x] | TASK-153 | Repo health tooling integrated with doctor + dead code audit | P1 | winsmux | done |
 
 ### v0.19.2 — ドキュメント & ガバナンス
 
