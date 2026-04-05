@@ -70,6 +70,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node .claude/hooks/sh-invisible-char-scan.js"
+          },
+          {
+            "type": "command",
             "command": "node .claude/hooks/sh-injection-guard.js"
           }
         ]

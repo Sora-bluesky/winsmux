@@ -13,6 +13,7 @@ const {
   readSession,
   writeSession,
 } = require("./lib/sh-utils");
+const { ZERO_WIDTH_RE } = require("./sh-injection-guard");
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -50,6 +51,8 @@ const DANGEROUS_TAGS_RE = new RegExp(
   "gi",
 );
 
+const INVISIBLE_UNICODE_GLOBAL_RE = new RegExp(ZERO_WIDTH_RE.source, "g");
+
 // ---------------------------------------------------------------------------
 // Helper Functions
 // ---------------------------------------------------------------------------
@@ -73,6 +76,43 @@ function getLimits(toolName) {
 function stripDangerousTags(text) {
   if (!text || typeof text !== "string") return text;
   return text.replace(DANGEROUS_TAGS_RE, "[REDACTED]");
+}
+
+/**
+ * Detect invisible Unicode characters and capture their raw positions.
+ * @param {string} text
+ * @returns {Array<{ index: number, codePoint: string }>}
+ */
+function detectInvisibleUnicode(text) {
+  if (!text || typeof text !== "string") return [];
+  INVISIBLE_UNICODE_GLOBAL_RE.lastIndex = 0;
+
+  return Array.from(text.matchAll(INVISIBLE_UNICODE_GLOBAL_RE), (match) => ({
+    index: match.index,
+    codePoint: `U+${match[0].codePointAt(0).toString(16).toUpperCase().padStart(4, "0")}`,
+  }));
+}
+
+/**
+ * Build a warning marker for invisible Unicode characters found in output.
+ * @param {Array<{ index: number, codePoint: string }>} matches
+ * @returns {string|null}
+ */
+function buildInvisibleUnicodeWarning(matches) {
+  if (!Array.isArray(matches) || matches.length === 0) return null;
+
+  const maxReported = 8;
+  const summary = matches
+    .slice(0, maxReported)
+    .map(({ index, codePoint }) => `${index}:${codePoint}`)
+    .join(", ");
+  const remaining = matches.length - Math.min(matches.length, maxReported);
+  const extra = remaining > 0 ? `, +${remaining} more` : "";
+
+  return (
+    `[INVISIBLE_CHAR_DETECTED] raw_offsets(0-based)=${summary}${extra}. ` +
+    "Invisible Unicode characters were detected in Builder output."
+  );
 }
 
 /**
@@ -162,6 +202,10 @@ if (require.main === module) {
     const resultStr =
       typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult);
 
+    // Detect invisible Unicode in raw output before sanitization so positions
+    // still refer to the original Builder output.
+    const invisibleMatches = detectInvisibleUnicode(resultStr);
+
     // Strip dangerous system tags before any further processing
     const sanitized = stripDangerousTags(resultStr);
 
@@ -173,6 +217,10 @@ if (require.main === module) {
 
     // Build context messages
     const context = [];
+    const invisibleWarning = buildInvisibleUnicodeWarning(invisibleMatches);
+    if (invisibleWarning) {
+      context.push(invisibleWarning);
+    }
     if (truncated) {
       context.push(
         `[${HOOK_NAME}] ${toolName} の出力を切り詰めました（制限超過）。`,
@@ -183,7 +231,7 @@ if (require.main === module) {
     }
 
     // Output result
-    if (truncated) {
+    if (truncated || invisibleWarning) {
       // Must use allowWithResult to replace the tool output
       if (context.length > 0) {
         // allowWithResult doesn't support additionalContext, so prepend warnings to the result
@@ -210,6 +258,9 @@ if (require.main === module) {
 module.exports = {
   TRUNCATION_LIMITS,
   stripDangerousTags,
+  INVISIBLE_UNICODE_GLOBAL_RE,
+  detectInvisibleUnicode,
+  buildInvisibleUnicodeWarning,
   truncateOutput,
   estimateTokens,
   getLimits,

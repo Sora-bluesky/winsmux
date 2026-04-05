@@ -132,3 +132,8 @@ coverage/
 *~
 .shield-harness/
 .research-*.md
+
+# Runtime agent output files
+*-output.txt
+*-prompt.txt
+.commander-prompt.txt
