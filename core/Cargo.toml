@@ -10,7 +10,7 @@ keywords = ["terminal", "multiplexer", "tmux", "windows", "powershell"]
 categories = ["command-line-utilities"]
 
 [workspace]
-members = [".", "crates/portable-pty-psmux", "crates/vt100-psmux"]
+members = [".", "crates/portable-pty-winsmux", "crates/vt100-winsmux"]
 exclude = [
     "target/",
     "release/",
@@ -66,10 +66,10 @@ path = "src/main.rs"
 [dependencies]
 ratatui = "0.30"
 crossterm = "0.29"
-portable-pty = { version = "0.9.2", path = "crates/portable-pty-psmux", package = "portable-pty-psmux" }
+portable-pty = { version = "0.9.2", path = "crates/portable-pty-winsmux", package = "portable-pty-winsmux" }
 which = "8"
 chrono = "0.4"
-vt100 = { version = "0.16.5", path = "crates/vt100-psmux", package = "vt100-psmux" }
+vt100 = { version = "0.16.5", path = "crates/vt100-winsmux", package = "vt100-winsmux" }
 unicode-width = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

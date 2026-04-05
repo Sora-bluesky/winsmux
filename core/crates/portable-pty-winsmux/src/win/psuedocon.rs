@@ -45,7 +45,7 @@ fn load_conpty() -> ConPtyFuncs {
     // Always use the system kernel32.dll ConPTY implementation.
     // Do NOT try to sideload conpty.dll — terminal emulators like WezTerm
     // bundle their own conpty.dll + OpenConsole.exe, and the DLL search order
-    // can pick those up when psmux runs inside such a terminal.  Using a
+    // can pick those up when winsmux runs inside such a terminal.  Using a
     // foreign conpty.dll causes blank panes and broken I/O because the
     // bundled OpenConsole.exe may not be compatible with our ConPTY flags
     // (PASSTHROUGH_MODE, WIN32_INPUT_MODE, etc.).
