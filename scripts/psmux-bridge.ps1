@@ -15,6 +15,16 @@ $WatermarkDir   = Join-Path $env:TEMP "winsmux\watermarks"
 $LockDir        = Join-Path $env:TEMP "winsmux\locks"
 $FocusPolicyFile = Join-Path $env:TEMP "winsmux\focus-policy-stack.json"
 $LabelsFile     = Join-Path $env:APPDATA "winsmux\labels.json"
+$BridgeSettingsScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\settings.ps1'))
+$PaneControlScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\psmux-bridge\scripts\pane-control.ps1'))
+
+if (Test-Path $BridgeSettingsScript -PathType Leaf) {
+    . $BridgeSettingsScript
+}
+
+if (Test-Path $PaneControlScript -PathType Leaf) {
+    . $PaneControlScript
+}
 
 # --- Windows Credential Manager P/Invoke ---
 Add-Type -TypeDefinition @'
@@ -227,6 +237,23 @@ function Test-CodexReadyPrompt {
 
     $output = & psmux capture-pane -t $PaneId -p -J -S -50
     return Test-CodexReadyPromptText (($output | Out-String).TrimEnd())
+}
+
+function Wait-PaneShellReady {
+    param([string]$PaneId, [int]$TimeoutSeconds = 15)
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $snapshot = (& psmux capture-pane -t $PaneId -p -J -S -50 2>$null | Out-String).TrimEnd()
+        $lastLine = Get-LastNonEmptyLine $snapshot
+        if ($lastLine -and $lastLine.Trim() -match '^PS ') {
+            return
+        }
+
+        Start-Sleep -Milliseconds 500
+    }
+
+    Stop-WithError "timed out waiting for shell prompt in $PaneId"
 }
 
 function Get-PaneRuntimeMap {
@@ -1648,8 +1675,8 @@ Commands:
   mailbox-create <ch>       Create Named Pipe mailbox listener
   mailbox-send <ch> <json>  Send JSON message to mailbox channel
   mailbox-listen <ch>       Alias for mailbox-create
-  kill <target>             Force-kill process in pane (respawn shell)
-  restart <target>           Kill + restore worktree dir from manifest
+  kill <target>             Stop pane process and respawn its shell
+  restart <target>          Restart the pane agent using manifest context
   doctor                    Check environment and IME diagnostics
   version                   Show version
 "@
@@ -1766,35 +1793,69 @@ function Invoke-MailboxListen {
 # --- Kill / Restart ---
 function Invoke-Kill {
     if (-not $Target) { Stop-WithError "usage: psmux-bridge kill <target>" }
+    if ($Rest -and $Rest.Count -gt 0) { Stop-WithError "usage: psmux-bridge kill <target>" }
+
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
-    & psmux respawn-pane -t $paneId -k
+
+    & psmux respawn-pane -k -t $paneId
+    if ($LASTEXITCODE -ne 0) {
+        Stop-WithError "failed to kill pane process: $paneId"
+    }
+
+    Clear-ReadMark $paneId
+    Clear-Watermark $paneId
     Write-Output "killed $paneId"
 }
 
 function Invoke-Restart {
     if (-not $Target) { Stop-WithError "usage: psmux-bridge restart <target>" }
+    if ($Rest -and $Rest.Count -gt 0) { Stop-WithError "usage: psmux-bridge restart <target>" }
+
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
+    $projectDir = (Get-Location).Path
 
-    # Kill current process
-    & psmux respawn-pane -t $paneId -k
-    Start-Sleep -Seconds 2
-
-    # Try to restore worktree directory from manifest
-    $manifestPath = Join-Path (Get-Location).Path '.winsmux' 'manifest.yaml'
-    if (Test-Path $manifestPath) {
-        $manifestContent = Get-Content $manifestPath -Raw -Encoding UTF8
-        # Find the pane entry matching this pane_id and extract launch_dir
-        if ($manifestContent -match "pane_id:\s*'$([regex]::Escape($paneId))'[\s\S]*?launch_dir:\s*'([^']+)'") {
-            $launchDir = $Matches[1]
-            & psmux send-keys -t $paneId -l "cd `"$launchDir`""
-            & psmux send-keys -t $paneId Enter
-            Start-Sleep -Milliseconds 500
-        }
+    $settings = $null
+    if (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue) {
+        $settings = Get-BridgeSettings
     }
 
-    Write-Output "restarted $paneId"
+    $plan = Get-PaneControlRestartPlan -ProjectDir $projectDir -PaneId $paneId -Settings $settings
+
+    & psmux respawn-pane -k -t $paneId -c $plan.LaunchDir
+    if ($LASTEXITCODE -ne 0) {
+        Stop-WithError "failed to restart pane shell: $paneId"
+    }
+
+    Wait-PaneShellReady -PaneId $paneId
+    & psmux send-keys -t $paneId -l -- "$($plan.LaunchCommand)"
+    if ($LASTEXITCODE -ne 0) {
+        Stop-WithError "failed to send launch command to $paneId"
+    }
+    & psmux send-keys -t $paneId Enter
+    if ($LASTEXITCODE -ne 0) {
+        Stop-WithError "failed to submit launch command to $paneId"
+    }
+
+    Clear-ReadMark $paneId
+    Clear-Watermark $paneId
+
+    if ($plan.Agent.Trim().ToLowerInvariant() -eq 'codex') {
+        $deadline = (Get-Date).AddSeconds(60)
+        while ((Get-Date) -lt $deadline) {
+            if (Test-CodexReadyPrompt $paneId) {
+                Write-Output "restarted $paneId ($($plan.Label))"
+                return
+            }
+
+            Start-Sleep -Seconds 2
+        }
+
+        Stop-WithError "timed out waiting for Codex after restart in $paneId"
+    }
+
+    Write-Output "restarted $paneId ($($plan.Label))"
 }
 
 # --- Dispatch ---
