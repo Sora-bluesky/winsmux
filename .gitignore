@@ -28,7 +28,7 @@ docs/REQUIREMENTS.md
 .references/
 .tmp-hook-*
 tasks/
-skills/
+/skills/
 tests/
 !tests/
 tests/*
