@@ -40,7 +40,7 @@ tests/*
 !tests/PaneBorder.Tests.ps1
 !tests/Integration.WorktreeHook.Tests.ps1
 !tests/README.md
-hooks/
+/hooks/
 .githooks/
 .worktrees/
 INTERNAL*.md

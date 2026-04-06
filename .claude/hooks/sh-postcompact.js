@@ -23,6 +23,7 @@ const HOOK_NAME = "sh-postcompact";
 const SAFE_SH_DIR = typeof SH_DIR === "string" && SH_DIR ? SH_DIR : os.tmpdir();
 const BACKUP_DIR = path.join(SAFE_SH_DIR, "compact-backup");
 const CLAUDE_MD = "CLAUDE.md";
+const BACKLOG_FILE = path.join("tasks", "backlog.yaml");
 
 // ---------------------------------------------------------------------------
 // Restore Logic
@@ -118,7 +119,9 @@ function buildRestorationContext(session, integrityCheck) {
   parts.push("Key files to re-read if needed:");
   parts.push("  - CLAUDE.md (project instructions)");
   parts.push("  - .claude/rules/ (security & coding rules)");
-  parts.push("  - tasks/backlog.yaml (task SoT)");
+  if (fs.existsSync(BACKLOG_FILE)) {
+    parts.push("  - tasks/backlog.yaml (task SoT)");
+  }
   parts.push("  - docs/DETAILED_DESIGN.md (hook specifications)");
   parts.push("==========================================");
 

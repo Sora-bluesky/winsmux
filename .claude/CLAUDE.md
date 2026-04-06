@@ -73,7 +73,7 @@ pwsh scripts/bump-version.ps1 -Version X.Y.Z
 
 - Commit messages: English, conventional commits (`feat:`, `fix:`, `chore:`).
 - PowerShell: strict mode, UTF-8, `$ErrorActionPreference = 'Stop'`.
-- Settings files (`settings.json`, `.claude.json`): edit via `python -c` to avoid race conditions.
+- Settings file (`.claude/settings.json`): edit via `python -c` to avoid race conditions.
 
 ## Task Status Rules
 
@@ -83,11 +83,10 @@ Allowed transitions: `backlog` -> `wip` -> `review` -> `done`
 - `wip`: branch exists and active development is in progress.
 - `review`: PR is open, code is git-tracked, and tests pass.
 - `done`: PR is merged and runtime verification passed.
-- Never set `review` if the script is gitignored; run `sync-roadmap.ps1` to auto-correct violations.
+- Never set `review` if the script is gitignored; run the local-only `sync-roadmap.ps1` to auto-correct violations.
 
 ## ROADMAP Sync
 
-`ROADMAP.md` is local-only and gitignored; generate it with `sync-roadmap.ps1`.
+`ROADMAP.md` is local-only and gitignored; generate it with the local-only `sync-roadmap.ps1`.
 
-@AGENTS.md
 @HANDOFF.md

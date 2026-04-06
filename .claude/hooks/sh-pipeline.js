@@ -201,12 +201,12 @@ function findNextTask() {
 }
 
 /**
- * Bump version in package.json and return the new version string.
+ * Bump version in the package manifest when one exists.
  * @param {string} bumpType - "patch" | "minor" | "major"
- * @returns {string|null} New version string, or null if package.json not found.
+ * @returns {string|null} New version string, or null if no package manifest exists.
  */
 function bumpVersion(bumpType) {
-  const pkgPath = "package.json";
+  const pkgPath = path.join(process.cwd(), "package.json");
   if (!fs.existsSync(pkgPath)) return null;
 
   const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
@@ -553,7 +553,7 @@ try {
               executeTrusted(taskId, `git push origin "${tag}"`);
               summary = `STG6 passed: PR #${prNumberStr} merged, tagged ${tag} [${taskId}]`;
             } else {
-              summary = `STG6 passed: PR #${prNumberStr} merged [${taskId}] (tag skipped: no package.json)`;
+              summary = `STG6 passed: PR #${prNumberStr} merged [${taskId}] (tag skipped: no package manifest)`;
             }
           } catch (tagErr) {
             summary = `STG6 passed: PR #${prNumberStr} merged [${taskId}] (tag failed: ${tagErr.message})`;
