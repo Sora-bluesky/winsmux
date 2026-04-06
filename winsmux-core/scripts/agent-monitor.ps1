@@ -267,8 +267,8 @@ function Update-MonitorIdleAlertState {
     if (($elapsedSeconds -ge $IdleThresholdSeconds) -and ((-not $alertSent) -or $repeatAlertDue)) {
         $message = "Commander alert: idle pane $Label ($PaneId, role=$Role)"
         Save-MonitorIdleState -PaneId $PaneId -ReadySince $readySince -AlertSent $true -LastAlertAt $Now
-        $result.ShouldAlert = $true
-        $result.Message = $message
+        $result['ShouldAlert'] = $true
+        $result['Message'] = $message
         return $result
     }
 
@@ -569,7 +569,7 @@ function Get-PaneAgentStatus {
     try {
         $snapshot = Invoke-MonitorWinsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
     } catch {
-        return [PSCustomObject]@{
+        return [ordered]@{
             Status       = 'empty'
             PaneId       = $PaneId
             SnapshotTail = ''
@@ -581,7 +581,7 @@ function Get-PaneAgentStatus {
 
     # empty: pane has no content
     if ([string]::IsNullOrWhiteSpace($text)) {
-        return [PSCustomObject]@{
+        return [ordered]@{
             Status       = 'empty'
             PaneId       = $PaneId
             SnapshotTail = ''
@@ -593,7 +593,7 @@ function Get-PaneAgentStatus {
     $lastLine = Get-LastNonEmptyLine -Text $text
 
     if ($null -eq $lastLine) {
-        return [PSCustomObject]@{
+        return [ordered]@{
             Status       = 'empty'
             PaneId       = $PaneId
             SnapshotTail = ''
@@ -612,7 +612,7 @@ function Get-PaneAgentStatus {
     $snapshotHash = Get-ContentHash -Text $text
 
     if (Test-CodexApprovalPromptText -Text $text) {
-        return [PSCustomObject]@{
+        return [ordered]@{
             Status       = 'approval_waiting'
             PaneId       = $PaneId
             SnapshotTail = $tail
@@ -628,7 +628,7 @@ function Get-PaneAgentStatus {
     # ready: agent prompt visible
     if (Test-AgentPromptText -Text $tail -Agent $Agent) {
         Save-MonitorSnapshot -PaneId $PaneId -Hash (Get-ContentHash -Text $text) -Timestamp (Get-Date -Format o)
-        return [PSCustomObject]@{
+        return [ordered]@{
             Status       = 'ready'
             PaneId       = $PaneId
             SnapshotTail = $tail
@@ -641,7 +641,7 @@ function Get-PaneAgentStatus {
     if (Test-PowerShellPromptText -Text $text) {
         if ($ExecMode) {
             Save-MonitorSnapshot -PaneId $PaneId -Hash (Get-ContentHash -Text $text) -Timestamp (Get-Date -Format o)
-            return [PSCustomObject]@{
+            return [ordered]@{
                 Status       = 'waiting_for_dispatch'
                 PaneId       = $PaneId
                 SnapshotTail = $tail
@@ -652,7 +652,7 @@ function Get-PaneAgentStatus {
 
         if ($Role -eq 'Builder') {
             Save-MonitorSnapshot -PaneId $PaneId -Hash (Get-ContentHash -Text $text) -Timestamp (Get-Date -Format o)
-            return [PSCustomObject]@{
+            return [ordered]@{
                 Status       = 'ready'
                 PaneId       = $PaneId
                 SnapshotTail = $tail
@@ -661,7 +661,7 @@ function Get-PaneAgentStatus {
             }
         }
 
-        return [PSCustomObject]@{
+        return [ordered]@{
             Status       = 'crashed'
             PaneId       = $PaneId
             SnapshotTail = $tail
@@ -680,7 +680,7 @@ function Get-PaneAgentStatus {
             $previousTime = [System.DateTimeOffset]::Parse($previous.timestamp)
             $elapsed = ($now - $previousTime.LocalDateTime).TotalSeconds
             if ($elapsed -ge $HungThreshold) {
-                return [PSCustomObject]@{
+                return [ordered]@{
                     Status       = 'hung'
                     PaneId       = $PaneId
                     SnapshotTail = $tail
@@ -697,7 +697,7 @@ function Get-PaneAgentStatus {
     }
 
     # busy: Codex running a task (no prompt, output changing)
-    return [PSCustomObject]@{
+    return [ordered]@{
         Status       = 'busy'
         PaneId       = $PaneId
         SnapshotTail = $tail
@@ -742,7 +742,7 @@ function Invoke-AgentRespawn {
             $launchCommand = 'claude --permission-mode bypassPermissions'
         }
         default {
-            return [PSCustomObject]@{
+            return [ordered]@{
                 Success = $false
                 PaneId  = $PaneId
                 Message = "Unsupported agent: $Agent"
@@ -773,7 +773,7 @@ function Invoke-AgentRespawn {
     if ($paneExecMode) {
         $currentStatus = Get-PaneAgentStatus -PaneId $PaneId -Agent $Agent -Role $paneRole -ExecMode $true
         if ($currentStatus.Status -eq 'waiting_for_dispatch') {
-            return [PSCustomObject]@{
+            return [ordered]@{
                 Success = $true
                 PaneId  = $PaneId
                 Message = "Pane $PaneId is waiting for dispatch in exec_mode; skipping respawn"
@@ -788,7 +788,7 @@ function Invoke-AgentRespawn {
             Send-MonitorBridgeCommand -PaneId $PaneId -Text $launchCommand
         }
     } catch {
-        return [PSCustomObject]@{
+        return [ordered]@{
             Success = $false
             PaneId  = $PaneId
             Message = "Exception respawning pane ${PaneId}: $($_.Exception.Message)"
@@ -806,7 +806,7 @@ function Invoke-AgentRespawn {
             } else {
                 "Agent respawned successfully in pane $PaneId"
             }
-            return [PSCustomObject]@{
+            return [ordered]@{
                 Success = $true
                 PaneId  = $PaneId
                 Message = $successMessage
@@ -814,7 +814,7 @@ function Invoke-AgentRespawn {
         }
     }
 
-    return [PSCustomObject]@{
+    return [ordered]@{
         Success = $false
         PaneId  = $PaneId
         Message = "Timed out waiting for agent ready in pane $PaneId after ${ReadyTimeoutSeconds}s"
@@ -857,7 +857,7 @@ function Invoke-AgentMonitorCycle {
     $manifest = ConvertFrom-MonitorManifest -Content $content
 
     if ($null -eq $manifest -or $manifest.Panes.Count -eq 0) {
-        return [PSCustomObject]@{
+        return [ordered]@{
             Checked   = 0
             Crashed   = 0
             Respawned = 0
@@ -902,7 +902,7 @@ function Invoke-AgentMonitorCycle {
             $roleAgentConfig = Get-RoleAgentConfig -Role $role -Settings $Settings
         } catch {
             # Fallback to default settings
-            $roleAgentConfig = [PSCustomObject]@{
+            $roleAgentConfig = [ordered]@{
                 Agent = [string]$Settings.agent
                 Model = [string]$Settings.model
             }
@@ -918,7 +918,7 @@ function Invoke-AgentMonitorCycle {
         $statusSnapshotTail = [string](Get-MonitorPropertyValue -InputObject $status -Name 'SnapshotTail' -Default '')
         $statusSnapshotHash = [string](Get-MonitorPropertyValue -InputObject $status -Name 'SnapshotHash' -Default '')
 
-        $result = [PSCustomObject]@{
+        $result = [ordered]@{
             Label      = $label
             PaneId     = $paneId
             Role       = $role
@@ -933,7 +933,7 @@ function Invoke-AgentMonitorCycle {
         if ($statusName -eq 'approval_waiting') {
             $approvalWaitingCount++
             $approvalMessage = "Commander alert: $label ($paneId) awaiting approval"
-            $result.Message = $approvalMessage
+            $result['Message'] = $approvalMessage
             Write-Output $approvalMessage
         }
 
@@ -948,17 +948,17 @@ function Invoke-AgentMonitorCycle {
 
         if ($idleAlert.ShouldAlert) {
             $idleAlertCount++
-            $result.IdleAlerted = $true
-            $result.Message = $idleAlert.Message
+            $result['IdleAlerted'] = $true
+            $result['Message'] = $idleAlert.Message
             Write-Output $idleAlert.Message
         }
 
         $stallDetected = Test-BuilderStall -PaneId $paneId -Role $role -Status $statusName -SnapshotHash $statusSnapshotHash
         if ($stallDetected) {
             $stallCount++
-            $result.StallDetected = $true
+            $result['StallDetected'] = $true
             $stallMessage = "Commander alert: stalled Builder pane $label ($paneId)"
-            $result.Message = $stallMessage
+            $result['Message'] = $stallMessage
             Write-Output $stallMessage
         }
 
@@ -1035,8 +1035,8 @@ function Invoke-AgentMonitorCycle {
                 -GitWorktreeDir $launchGitWorktreeDir `
                 -ManifestPath $ManifestPath
 
-            $result.Respawned = $respawnResult.Success
-            $result.Message = $respawnResult.Message
+            $result['Respawned'] = $respawnResult.Success
+            $result['Message'] = $respawnResult.Message
 
             if ($respawnResult.Success) {
                 $respawnedCount++
@@ -1070,7 +1070,7 @@ function Invoke-AgentMonitorCycle {
         }
     }
 
-    return [PSCustomObject]@{
+    return [ordered]@{
         Checked   = $checkedCount
         Crashed   = $crashedCount
         Respawned = $respawnedCount
@@ -1092,13 +1092,33 @@ function ConvertFrom-MonitorManifest {
     #>
     param([Parameter(Mandatory = $true)][string]$Content)
 
-    $manifest = [PSCustomObject]@{
+    $manifest = [ordered]@{
         Session = [ordered]@{}
         Panes   = [ordered]@{}
     }
 
     $section = $null
     $currentPane = $null
+
+    function Save-MonitorManifestPane {
+        param($Pane)
+
+        if ($null -eq $Pane) {
+            return
+        }
+
+        $label = [string]$Pane.label
+        if ([string]::IsNullOrWhiteSpace($label)) {
+            return
+        }
+
+        $paneObj = [ordered]@{}
+        foreach ($entry in $Pane.GetEnumerator()) {
+            $paneObj[$entry.Key] = $entry.Value
+        }
+
+        $manifest.Panes[$label] = $paneObj
+    }
 
     foreach ($rawLine in ($Content -split "\r?\n")) {
         $line = $rawLine.TrimEnd()
@@ -1113,14 +1133,7 @@ function ConvertFrom-MonitorManifest {
 
         if ($line -match '^(session|panes):\s*$') {
             if ($section -eq 'panes' -and $null -ne $currentPane) {
-                $label = [string]$currentPane.label
-                if (-not [string]::IsNullOrWhiteSpace($label)) {
-                    $paneObj = [PSCustomObject]@{}
-                    foreach ($entry in $currentPane.GetEnumerator()) {
-                        Add-Member -InputObject $paneObj -MemberType NoteProperty -Name $entry.Key -Value $entry.Value
-                    }
-                    $manifest.Panes[$label] = $paneObj
-                }
+                Save-MonitorManifestPane -Pane $currentPane
                 $currentPane = $null
             }
 
@@ -1145,14 +1158,7 @@ function ConvertFrom-MonitorManifest {
         # Pane list item start
         if ($section -eq 'panes' -and $line -match '^\s{2}-\s+label:\s*(.*?)\s*$') {
             if ($null -ne $currentPane) {
-                $label = [string]$currentPane.label
-                if (-not [string]::IsNullOrWhiteSpace($label)) {
-                    $paneObj = [PSCustomObject]@{}
-                    foreach ($entry in $currentPane.GetEnumerator()) {
-                        Add-Member -InputObject $paneObj -MemberType NoteProperty -Name $entry.Key -Value $entry.Value
-                    }
-                    $manifest.Panes[$label] = $paneObj
-                }
+                Save-MonitorManifestPane -Pane $currentPane
             }
 
             $value = $Matches[1]
@@ -1189,14 +1195,7 @@ function ConvertFrom-MonitorManifest {
 
     # Save last pane
     if ($section -eq 'panes' -and $null -ne $currentPane) {
-        $label = [string]$currentPane.label
-        if (-not [string]::IsNullOrWhiteSpace($label)) {
-            $paneObj = [PSCustomObject]@{}
-            foreach ($entry in $currentPane.GetEnumerator()) {
-                Add-Member -InputObject $paneObj -MemberType NoteProperty -Name $entry.Key -Value $entry.Value
-            }
-            $manifest.Panes[$label] = $paneObj
-        }
+        Save-MonitorManifestPane -Pane $currentPane
     }
 
     return $manifest
