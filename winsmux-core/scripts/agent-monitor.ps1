@@ -415,6 +415,21 @@ function Test-CodexContextExhaustionText {
     return $false
 }
 
+function Test-PowerShellPromptText {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $false
+    }
+
+    $lastLine = Get-LastNonEmptyLine -Text $Text
+    if ($null -eq $lastLine) {
+        return $false
+    }
+
+    return $lastLine.TrimStart() -match '^PS [A-Z]:\\'
+}
+
 function Wait-MonitorPaneShellReady {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
@@ -540,12 +555,13 @@ function Get-PaneAgentStatus {
     Captures pane output and returns the agent status.
 
     .OUTPUTS
-    PSCustomObject with: Status (ready|busy|approval_waiting|crashed|hung|empty), PaneId, SnapshotTail, ExitReason
+    PSCustomObject with: Status (ready|waiting_for_dispatch|busy|approval_waiting|crashed|hung|empty), PaneId, SnapshotTail, ExitReason
     #>
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
         [string]$Agent = 'codex',
         [string]$Role = '',
+        [bool]$ExecMode = $false,
         [int]$HungThreshold = $script:AgentMonitorDefaultHungThreshold
     )
 
@@ -622,7 +638,18 @@ function Get-PaneAgentStatus {
     }
 
     # crashed: PowerShell prompt visible (PS C:\) - Codex exited
-    if ($trimmed -match '^PS [A-Z]:\\') {
+    if (Test-PowerShellPromptText -Text $text) {
+        if ($ExecMode) {
+            Save-MonitorSnapshot -PaneId $PaneId -Hash (Get-ContentHash -Text $text) -Timestamp (Get-Date -Format o)
+            return [PSCustomObject]@{
+                Status       = 'waiting_for_dispatch'
+                PaneId       = $PaneId
+                SnapshotTail = $tail
+                SnapshotHash = $snapshotHash
+                ExitReason   = ''
+            }
+        }
+
         if ($Role -eq 'Builder') {
             Save-MonitorSnapshot -PaneId $PaneId -Hash (Get-ContentHash -Text $text) -Timestamp (Get-Date -Format o)
             return [PSCustomObject]@{
@@ -743,6 +770,17 @@ function Invoke-AgentRespawn {
         }
     }
 
+    if ($paneExecMode) {
+        $currentStatus = Get-PaneAgentStatus -PaneId $PaneId -Agent $Agent -Role $paneRole -ExecMode $true
+        if ($currentStatus.Status -eq 'waiting_for_dispatch') {
+            return [PSCustomObject]@{
+                Success = $true
+                PaneId  = $PaneId
+                Message = "Pane $PaneId is waiting for dispatch in exec_mode; skipping respawn"
+            }
+        }
+    }
+
     try {
         Invoke-MonitorWinsmux -Arguments @('respawn-pane', '-k', '-t', $PaneId, '-c', $ProjectDir)
         Wait-MonitorPaneShellReady -PaneId $PaneId
@@ -761,7 +799,7 @@ function Invoke-AgentRespawn {
     $deadline = (Get-Date).AddSeconds($ReadyTimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 3
-        $status = Get-PaneAgentStatus -PaneId $PaneId -Agent $Agent -Role $paneRole
+        $status = Get-PaneAgentStatus -PaneId $PaneId -Agent $Agent -Role $paneRole -ExecMode $paneExecMode
         if ($status.Status -eq 'ready') {
             $successMessage = if ($paneExecMode) {
                 "Pane respawned successfully in exec_mode for pane $PaneId"
@@ -852,6 +890,7 @@ function Invoke-AgentMonitorCycle {
         $pane = $manifest.Panes[$label]
         $paneId = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'pane_id' -Default '')
         $role = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'role' -Default '')
+        $paneExecMode = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'exec_mode' -Default '').Trim().ToLowerInvariant() -eq 'true'
 
         if ([string]::IsNullOrWhiteSpace($paneId)) {
             continue
@@ -873,7 +912,7 @@ function Invoke-AgentMonitorCycle {
         $modelName = [string]$roleAgentConfig.Model
 
         $checkedCount++
-        $status = Get-PaneAgentStatus -PaneId $paneId -Agent $agentName -Role $role -HungThreshold $IdleThreshold
+        $status = Get-PaneAgentStatus -PaneId $paneId -Agent $agentName -Role $role -ExecMode $paneExecMode -HungThreshold $IdleThreshold
         $statusName = [string](Get-MonitorPropertyValue -InputObject $status -Name 'Status' -Default '')
         $statusExitReason = [string](Get-MonitorPropertyValue -InputObject $status -Name 'ExitReason' -Default '')
         $statusSnapshotTail = [string](Get-MonitorPropertyValue -InputObject $status -Name 'SnapshotTail' -Default '')
@@ -896,10 +935,6 @@ function Invoke-AgentMonitorCycle {
             $approvalMessage = "Commander alert: $label ($paneId) awaiting approval"
             $result.Message = $approvalMessage
             Write-Output $approvalMessage
-            try {
-                Send-MonitorTelegramAlert -Message $approvalMessage | Out-Null
-            } catch {
-            }
         }
 
         $idleAlert = Update-MonitorIdleAlertState `
@@ -916,10 +951,6 @@ function Invoke-AgentMonitorCycle {
             $result.IdleAlerted = $true
             $result.Message = $idleAlert.Message
             Write-Output $idleAlert.Message
-            try {
-                Send-MonitorTelegramAlert -Message $idleAlert.Message -AlertType 'idle' -ProjectDir $projectDir | Out-Null
-            } catch {
-            }
         }
 
         $stallDetected = Test-BuilderStall -PaneId $paneId -Role $role -Status $statusName -SnapshotHash $statusSnapshotHash
@@ -929,10 +960,6 @@ function Invoke-AgentMonitorCycle {
             $stallMessage = "Commander alert: stalled Builder pane $label ($paneId)"
             $result.Message = $stallMessage
             Write-Output $stallMessage
-            try {
-                Send-MonitorTelegramAlert -Message $stallMessage | Out-Null
-            } catch {
-            }
         }
 
         # Log the status check
@@ -947,7 +974,12 @@ function Invoke-AgentMonitorCycle {
             }
         }
 
-        if ($statusName -eq 'crashed' -or ($statusName -eq 'ready' -and $statusExitReason -eq 'exec_completed')) {
+        $shouldRespawn = $statusName -eq 'crashed' -or ($statusName -eq 'ready' -and $statusExitReason -eq 'exec_completed')
+        if ($paneExecMode -and $statusName -eq 'waiting_for_dispatch') {
+            $shouldRespawn = $false
+        }
+
+        if ($shouldRespawn) {
             $crashedCount++
 
             # Determine launch directory and git worktree dir

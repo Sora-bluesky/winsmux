@@ -758,8 +758,8 @@ try {
             $builderWorktreePath = $builderWorktree.WorktreePath
         }
 
-        $roleAgentConfig = Get-RoleAgentConfig -Role $canonicalRole -Settings $settings
-        $launchCommand = Get-AgentLaunchCommand -Agent $roleAgentConfig.Agent -Model $roleAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -ExecMode $execMode
+        # TASK-186: Removed agent launch — panes stay at pwsh prompt
+
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
@@ -767,9 +767,8 @@ try {
             Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_PANE_ID' -Value $paneId
             Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
             Wait-PaneShellReady -PaneId $paneId
-            if (-not [string]::IsNullOrWhiteSpace($launchCommand)) {
-                Send-OrchestraBridgeCommand -Target $paneId -Text $launchCommand
-            }
+            # TASK-186: No agent launch. Dispatch per-task via codex exec.
+
         } finally {
             foreach ($envName in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {
                 try {
@@ -790,19 +789,7 @@ try {
         })
     }
 
-    foreach ($paneSummary in $paneSummaries) {
-        if ($paneSummary.ExecMode) {
-            continue
-        }
-
-        try {
-            $roleAgentConfig = Get-RoleAgentConfig -Role $paneSummary.Role -Settings $settings
-            Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $roleAgentConfig.Agent -TimeoutSeconds 60
-        } catch {
-            Write-Error "Agent readiness timeout for $($paneSummary.Label) [$($paneSummary.PaneId)]: $($_.Exception.Message)"
-            exit 1
-        }
-    }
+    # TASK-186: Skip agent readiness check — panes are plain pwsh prompts.
 
     $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $paneSummaries
     $watchdogScriptPath = Join-Path $scriptDir 'agent-watchdog.ps1'
