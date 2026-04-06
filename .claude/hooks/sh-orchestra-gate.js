@@ -45,7 +45,8 @@ try {
 
   // Rule 4: No direct codex exec (use orchestra-start)
   if (toolName === "Bash") {
-    if (/codex\s+(exec|e)\s/.test(rawCommand) && !/winsmux\s+send/.test(rawCommand) && !/winsmux-core/.test(rawCommand) && !/^gh\s/.test(rawCommand)) {
+    const commandForRule4 = stripHeredocBodies(rawCommand);
+    if (/codex\s+(exec|e)\s/.test(commandForRule4) && !/winsmux\s+send/.test(commandForRule4) && !/winsmux-core/.test(commandForRule4) && !/^gh\s/.test(commandForRule4)) {
       deny("Use orchestra-start or winsmux send to dispatch Codex, not direct codex exec.");
     }
   }
@@ -61,6 +62,14 @@ try {
   if (toolName === "Bash") {
     if (/git\s+rm\s/.test(rawCommand) && !/--cached/.test(rawCommand)) {
       deny("Use git rm --cached to untrack files. Bare git rm deletes local files.");
+    }
+  }
+
+  // Rule 9: Block Commander from using bypassPermissions on Agent subagents
+  if (toolName === "Agent") {
+    const mode = toolInput.mode || "";
+    if (mode === "bypassPermissions") {
+      deny("Commander cannot use bypassPermissions mode. Use default or plan mode for subagents.");
     }
   }
 
