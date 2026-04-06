@@ -1,3 +1,8 @@
+---
+name: builder-worktree
+description: Guidance for Builder agents working inside isolated git worktrees
+---
+
 # builder-worktree
 
 ## Purpose

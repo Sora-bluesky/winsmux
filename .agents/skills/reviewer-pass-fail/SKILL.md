@@ -1,3 +1,8 @@
+---
+name: reviewer-pass-fail
+description: Produce a clear PASS or FAIL decision on requested changes
+---
+
 # Reviewer Pass Fail
 
 Use this skill when acting as the Reviewer for winsmux tasks.
