@@ -29,7 +29,8 @@ try {
 
   // Rule 2: No direct winsmux send-keys (use winsmux send)
   if (toolName === "Bash") {
-    if (/winsmux\s+send-keys/.test(rawCommand) && !/winsmux-core/.test(rawCommand)) {
+    const commandForRule2 = stripHeredocBodies(rawCommand);
+    if (/winsmux\s+send-keys/.test(commandForRule2) && !/winsmux-core/.test(commandForRule2)) {
       deny("Use winsmux send instead of direct winsmux send-keys.");
     }
   }
