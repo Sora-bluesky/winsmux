@@ -38,15 +38,11 @@ tests/*
 !tests/psmux-bridge.Tests.ps1
 !tests/OrchestraPreflight.Tests.ps1
 !tests/PaneBorder.Tests.ps1
+!tests/Integration.WorktreeHook.Tests.ps1
+!tests/README.md
 hooks/
 .githooks/
 .worktrees/
-scripts/sync-*.ps1
-winsmux-core/scripts/sync-*.ps1
-scripts/bump-*.ps1
-scripts/start-*.ps1
-scripts/run-*.ps1
-scripts/banner.*
 INTERNAL*.md
 HANDOFF.md
 DEV-NOTES*.md
@@ -126,6 +122,5 @@ coverage/
 # Runtime agent output files
 *-output.txt
 *-prompt.txt
-.commander-prompt.txt
 .tmp-worktree-hook-tests/
 core/target/
