@@ -1,3 +1,8 @@
+---
+name: researcher-source-search
+description: Gather source-backed findings before implementation or review
+---
+
 # Researcher Source Search
 
 Use this skill when acting as the Researcher for winsmux tasks.

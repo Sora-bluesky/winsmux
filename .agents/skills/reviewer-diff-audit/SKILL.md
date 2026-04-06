@@ -1,3 +1,8 @@
+---
+name: reviewer-diff-audit
+description: Guidance for Reviewer agents auditing code diffs for correctness and risk
+---
+
 # reviewer-diff-audit
 
 ## Purpose

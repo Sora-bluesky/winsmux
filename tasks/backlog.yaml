@@ -2501,3 +2501,60 @@ tasks:
       PROPOSAL-26 (obsidian-mind-powerup-proposals) + TASK-145 (TaskResume hook) を統合。
       SessionStart hookでmanifest.yaml/backlog.yamlから状態を注入。
       hook表面のクリーンアップ(TASK-137)後に着手。
+
+  - id: TASK-198
+    title: "Hook Rule 2 scans heredoc body, blocks unrelated commands (#300)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, hooks]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #300. sh-orchestra-gate.js Rule 2がheredoc本文もスキャンし、
+      gh issue create等の無関係コマンドをブロック。
+      stripHeredocBodies()をRule 2にも適用する。
+
+  - id: TASK-200
+    title: "agent-monitor bidirectional communication + idle recovery (#302)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [enhancement, orchestra]
+    depends_on: ["TASK-199"]
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #302. Reviewer監査FAIL: agent-monitorに双方向通信なし、idle検出するが回復アクションなし、
+      exec_modeのステータス誤判定。TASK-199(dispatch基盤修正)完了後に着手。
+
+  - id: TASK-201
+    title: "Auto-clear Codex panes at 10% context remaining (#303)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [enhancement, orchestra]
+    depends_on: ["TASK-200"]
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #303. Reviewer設計: 10%閾値, 15分cooldown, capture-paneからXX% leftを検出,
+      Send-MonitorBridgeCommandで/clear送信。agent-monitor統合。
+
+  - id: TASK-199
+    title: "Dispatch workflow 3 structural failures — agent-type, send+Enter, target validation (#301)"
+    status: backlog
+    priority: P0
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, orchestra]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #301. Reviewer監査FAIL: (1) pane agent-type未記載 (2) send+Enter 2ステップ不整合
+      (3) dispatch先role/agent検証なし。#286/#288と関連。
