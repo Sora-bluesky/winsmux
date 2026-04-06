@@ -38,29 +38,18 @@ tests/*
 !tests/psmux-bridge.Tests.ps1
 !tests/OrchestraPreflight.Tests.ps1
 !tests/PaneBorder.Tests.ps1
-hooks/
+!tests/Integration.WorktreeHook.Tests.ps1
+!tests/README.md
+/hooks/
 .githooks/
 .worktrees/
-scripts/sync-*.ps1
-winsmux-core/scripts/sync-*.ps1
-scripts/bump-*.ps1
-scripts/start-*.ps1
-scripts/run-*.ps1
-scripts/banner.*
-winsmux-core/scripts/agent-lifecycle.ps1
-winsmux-core/scripts/commander-dispatch.ps1
-winsmux-core/scripts/mailbox-router.ps1
-winsmux-core/scripts/mcp-server.ps1
-winsmux-core/scripts/rpc-server.ps1
-winsmux-core/scripts/shared-task-list.ps1
-winsmux-core/scripts/task-hooks.ps1
 INTERNAL*.md
 HANDOFF.md
 DEV-NOTES*.md
 *-private.*
 *.private.*
-package.json
-package-lock.json
+/package.json
+/package-lock.json
 
 # =========================
 # Orchestra runtime (generated)
@@ -75,13 +64,11 @@ package-lock.json
 # Claude Code / AI agent config
 # =========================
 CLAUDE.md
-.claude/*
-!.claude/CLAUDE.md
-!.claude/hooks/
-!.claude/settings.json
-!.claude/patterns/
-.codex/
-.gemini/
+.claude/settings.local.json
+.claude/logs/
+.claude/worktrees/
+# .codex/ and .gemini/ are tracked (agent project config)
+# Exclude only runtime/local files if they appear
 *.local
 .vscode/settings.json
 .idea/
@@ -135,6 +122,5 @@ coverage/
 # Runtime agent output files
 *-output.txt
 *-prompt.txt
-.commander-prompt.txt
 .tmp-worktree-hook-tests/
 core/target/
