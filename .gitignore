@@ -47,13 +47,6 @@ scripts/bump-*.ps1
 scripts/start-*.ps1
 scripts/run-*.ps1
 scripts/banner.*
-winsmux-core/scripts/agent-lifecycle.ps1
-winsmux-core/scripts/commander-dispatch.ps1
-winsmux-core/scripts/mailbox-router.ps1
-winsmux-core/scripts/mcp-server.ps1
-winsmux-core/scripts/rpc-server.ps1
-winsmux-core/scripts/shared-task-list.ps1
-winsmux-core/scripts/task-hooks.ps1
 INTERNAL*.md
 HANDOFF.md
 DEV-NOTES*.md
