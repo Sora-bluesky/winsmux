@@ -75,11 +75,9 @@ package-lock.json
 # Claude Code / AI agent config
 # =========================
 CLAUDE.md
-.claude/*
-!.claude/CLAUDE.md
-!.claude/hooks/
-!.claude/settings.json
-!.claude/patterns/
+.claude/settings.local.json
+.claude/logs/
+.claude/worktrees/
 .codex/
 .gemini/
 *.local
