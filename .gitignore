@@ -27,6 +27,7 @@ docs/ROLE-DEFINITIONS.md
 docs/REQUIREMENTS.md
 .references/
 .tmp-hook-*
+.review-*
 tasks/
 /skills/
 tests/

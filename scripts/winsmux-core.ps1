@@ -798,31 +798,104 @@ function Invoke-Send {
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
 
-    # Step 1: Type text directly (no header — headers break TUI agents like Claude Code)
-    & winsmux send-keys -t $paneId -l -- "$text"
+    $sendCommandToPane = {
+        param([Parameter(Mandatory = $true)][string]$CommandText)
 
-    # Step 2: Verify text landed
-    Start-Sleep -Milliseconds 300
+        # Type text directly (no header; headers break TUI agents like Claude Code)
+        & winsmux send-keys -t $paneId -l -- "$CommandText"
 
-    # Step 3: Submit with Enter
-    & winsmux send-keys -t $paneId Enter
-    Start-Sleep -Milliseconds 500
-    $postEnterSnapshot = & winsmux capture-pane -t $paneId -p -J -S "-200"
-    $postEnterText = ($postEnterSnapshot | Out-String).TrimEnd()
-    if ($postEnterText -match '\[Pasted Content') {
+        Start-Sleep -Milliseconds 300
+
         & winsmux send-keys -t $paneId Enter
+        Start-Sleep -Milliseconds 500
+        $postEnterSnapshot = & winsmux capture-pane -t $paneId -p -J -S "-200"
+        $postEnterText = ($postEnterSnapshot | Out-String).TrimEnd()
+        if ($postEnterText -match '\[Pasted Content') {
+            & winsmux send-keys -t $paneId Enter
+        }
+
+        Start-Sleep -Milliseconds 800
+        $snapshot = & winsmux capture-pane -t $paneId -p -J -S "-200"
+        $snapshotText = ($snapshot | Out-String).TrimEnd()
+        Save-Watermark $paneId $snapshotText
+
+        Set-ReadMark $paneId
+
+        Write-Output "sent to $paneId"
     }
 
-    # Step 4: Save watermark for change detection in subsequent read calls
-    Start-Sleep -Milliseconds 800
-    $snapshot = & winsmux capture-pane -t $paneId -p -J -S "-200"
-    $snapshotText = ($snapshot | Out-String).TrimEnd()
-    Save-Watermark $paneId $snapshotText
+    try {
+        if (Test-Path $PaneControlScript -PathType Leaf) {
+            . $PaneControlScript
+        }
 
-    # Reset read mark so next read works without guard error
-    Set-ReadMark $paneId
+        if (Test-Path $BridgeSettingsScript -PathType Leaf) {
+            . $BridgeSettingsScript
+        }
 
-    Write-Output "sent to $paneId"
+        $hasManifestHelper = Get-Command Get-PaneControlManifestContext -ErrorAction SilentlyContinue
+        $hasRoleConfigHelper = Get-Command Get-RoleAgentConfig -ErrorAction SilentlyContinue
+        if ($null -ne $hasManifestHelper -and $null -ne $hasRoleConfigHelper) {
+            $projectDir = (Get-Location).Path
+            $context = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId $paneId
+            if ($null -ne $context -and -not [string]::IsNullOrWhiteSpace([string]$context.ManifestPath)) {
+                $manifestContent = Get-Content -LiteralPath $context.ManifestPath -Raw -Encoding UTF8
+                $manifest = ConvertFrom-PaneControlManifestContent -Content $manifestContent
+                $manifestPane = $null
+                if ($null -ne $manifest -and $null -ne $manifest.Panes -and $manifest.Panes.Contains([string]$context.Label)) {
+                    $manifestPane = $manifest.Panes[[string]$context.Label]
+                }
+
+                $execModeValue = ''
+                if ($null -ne $manifestPane) {
+                    if ($manifestPane -is [System.Collections.IDictionary] -and $manifestPane.Contains('exec_mode')) {
+                        $execModeValue = [string]$manifestPane['exec_mode']
+                    } elseif ($null -ne $manifestPane.PSObject -and $manifestPane.PSObject.Properties.Name -contains 'exec_mode') {
+                        $execModeValue = [string]$manifestPane.exec_mode
+                    }
+                }
+
+                $roleAgentConfig = Get-RoleAgentConfig -Role $context.Role
+                $agent = [string]$roleAgentConfig.Agent
+                if ($execModeValue.Trim().ToLowerInvariant() -eq 'true' -and $agent.Trim().ToLowerInvariant() -eq 'codex') {
+                    $quotePowerShellLiteral = {
+                        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+                        $paneControlLiteralHelper = Get-Command ConvertTo-PaneControlPowerShellLiteral -ErrorAction SilentlyContinue
+                        if ($null -ne $paneControlLiteralHelper) {
+                            return ConvertTo-PaneControlPowerShellLiteral -Value $Value
+                        }
+
+                        $genericLiteralHelper = Get-Command ConvertTo-PowerShellLiteral -ErrorAction SilentlyContinue
+                        if ($null -ne $genericLiteralHelper) {
+                            return ConvertTo-PowerShellLiteral -Value $Value
+                        }
+
+                        throw 'No PowerShell literal helper is available.'
+                    }
+
+                    $promptPath = New-DispatchPromptFile -Content $text -ProjectDir $projectDir
+                    $outputPath = '{0}.last-message.txt' -f $promptPath
+                    $launchDir = [string]$context.LaunchDir
+                    $gitWorktreeDir = [string]$context.GitWorktreeDir
+                    $model = [string]$roleAgentConfig.Model
+                    $promptInstruction = 'Read the prompt file at {0} and follow its instructions' -f $promptPath
+                    $dispatchCommand = 'codex exec --full-auto -C {0} --add-dir {1} -o {2} -m {3} {4}' -f `
+                        (& $quotePowerShellLiteral $launchDir), `
+                        (& $quotePowerShellLiteral $gitWorktreeDir), `
+                        (& $quotePowerShellLiteral $outputPath), `
+                        (& $quotePowerShellLiteral $model), `
+                        (& $quotePowerShellLiteral $promptInstruction)
+
+                    & $sendCommandToPane $dispatchCommand
+                    return
+                }
+            }
+        }
+    } catch {
+    }
+
+    & $sendCommandToPane $text
 }
 
 function Invoke-Name {
