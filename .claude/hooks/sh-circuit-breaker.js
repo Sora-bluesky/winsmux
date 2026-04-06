@@ -16,7 +16,6 @@ const {
 
 const HOOK_NAME = "sh-circuit-breaker";
 const MAX_RETRIES = 3;
-const STOP_WINDOW_MS = 10_000;
 
 // ---------------------------------------------------------------------------
 // Main
@@ -30,15 +29,18 @@ try {
   void toolName;
   void toolInput;
   const session = readSession();
-  const now = Date.now();
-  const previousStopAt = Number(session.last_stop_at) || 0;
-  const isRapidStop =
-    previousStopAt > 0 && now - previousStopAt <= STOP_WINDOW_MS;
+  const isRapidStop = Date.now() - (session.last_stop_at || 0) < 5000;
+
+  if (!isRapidStop) {
+    session.stop_hook_active = false;
+    session.retry_count = 0;
+    session.last_stop_at = 0;
+    writeSession(session);
+  }
 
   // Step 1: Check stop_hook_active flag (infinite loop prevention)
   if (session.stop_hook_active === true) {
     session.stop_hook_active = false;
-    session.last_stop_at = now;
     writeSession(session);
 
     try {
@@ -62,8 +64,7 @@ try {
   }
 
   // Step 2: Read and evaluate retry count
-  const currentRetry = isRapidStop ? (session.retry_count || 0) + 1 : 1;
-  session.last_stop_at = now;
+  const currentRetry = (session.retry_count || 0) + 1;
 
   if (currentRetry > MAX_RETRIES) {
     // Retry limit reached — allow the stop
@@ -93,6 +94,7 @@ try {
   // Step 3: Retry — deny the stop request
   session.retry_count = currentRetry;
   session.stop_hook_active = true;
+  session.last_stop_at = Date.now();
   writeSession(session);
 
   try {
