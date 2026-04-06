@@ -665,11 +665,14 @@ function Invoke-AgentRespawn {
         [Parameter(Mandatory = $true)][string]$Model,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
+        [string]$ManifestPath = '',
         [int]$ReadyTimeoutSeconds = 60
     )
 
     # Build launch command (same logic as orchestra-start Get-AgentLaunchCommand)
     $launchCommand = $null
+    $paneExecMode = $false
+    $paneRole = ''
     switch ($Agent.Trim().ToLowerInvariant()) {
         'codex' {
             $escapedProject = "'" + ($ProjectDir -replace "'", "''") + "'"
@@ -688,10 +691,32 @@ function Invoke-AgentRespawn {
         }
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($ManifestPath) -and (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        try {
+            $manifestContent = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8
+            $manifest = ConvertFrom-MonitorManifest -Content $manifestContent
+            foreach ($manifestPane in $manifest.Panes.GetEnumerator()) {
+                $manifestPaneValue = $manifestPane.Value
+                $manifestPaneId = [string](Get-MonitorPropertyValue -InputObject $manifestPaneValue -Name 'pane_id' -Default '')
+                if ($manifestPaneId -ne $PaneId) {
+                    continue
+                }
+
+                $paneRole = [string](Get-MonitorPropertyValue -InputObject $manifestPaneValue -Name 'role' -Default '')
+                $execModeValue = [string](Get-MonitorPropertyValue -InputObject $manifestPaneValue -Name 'exec_mode' -Default '')
+                $paneExecMode = $execModeValue.Trim().ToLowerInvariant() -eq 'true'
+                break
+            }
+        } catch {
+        }
+    }
+
     try {
         Invoke-MonitorWinsmux -Arguments @('respawn-pane', '-k', '-t', $PaneId, '-c', $ProjectDir)
         Wait-MonitorPaneShellReady -PaneId $PaneId
-        Send-MonitorBridgeCommand -PaneId $PaneId -Text $launchCommand
+        if (-not $paneExecMode) {
+            Send-MonitorBridgeCommand -PaneId $PaneId -Text $launchCommand
+        }
     } catch {
         return [PSCustomObject]@{
             Success = $false
@@ -704,12 +729,17 @@ function Invoke-AgentRespawn {
     $deadline = (Get-Date).AddSeconds($ReadyTimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 3
-        $status = Get-PaneAgentStatus -PaneId $PaneId -Agent $Agent
+        $status = Get-PaneAgentStatus -PaneId $PaneId -Agent $Agent -Role $paneRole
         if ($status.Status -eq 'ready') {
+            $successMessage = if ($paneExecMode) {
+                "Pane respawned successfully in exec_mode for pane $PaneId"
+            } else {
+                "Agent respawned successfully in pane $PaneId"
+            }
             return [PSCustomObject]@{
                 Success = $true
                 PaneId  = $PaneId
-                Message = "Agent respawned successfully in pane $PaneId"
+                Message = $successMessage
             }
         }
     }
@@ -938,7 +968,8 @@ function Invoke-AgentMonitorCycle {
                 -Agent $agentName `
                 -Model $modelName `
                 -ProjectDir $launchDir `
-                -GitWorktreeDir $launchGitWorktreeDir
+                -GitWorktreeDir $launchGitWorktreeDir `
+                -ManifestPath $ManifestPath
 
             $result.Respawned = $respawnResult.Success
             $result.Message = $respawnResult.Message
