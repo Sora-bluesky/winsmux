@@ -78,8 +78,8 @@ CLAUDE.md
 .claude/settings.local.json
 .claude/logs/
 .claude/worktrees/
-.codex/
-.gemini/
+# .codex/ and .gemini/ are tracked (agent project config)
+# Exclude only runtime/local files if they appear
 *.local
 .vscode/settings.json
 .idea/
