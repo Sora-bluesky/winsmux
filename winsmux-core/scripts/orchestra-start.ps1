@@ -73,7 +73,7 @@ function Invoke-Bridge {
             throw "winsmux $($Arguments -join ' ') failed: $message"
         }
 
-        return [PSCustomObject]@{
+        return [ordered]@{
             ExitCode = $exitCode
             Output   = $output
         }
@@ -159,7 +159,7 @@ function New-BuilderWorktree {
         throw "Failed to create Builder worktree $branchName at ${worktreePath}: $output"
     }
 
-    return [PSCustomObject]@{
+    return [ordered]@{
         BranchName     = $branchName
         WorktreePath   = $worktreePath
         GitWorktreeDir = Get-GitWorktreeDir -ProjectDir $worktreePath
@@ -329,7 +329,7 @@ function Invoke-VaultHealthCheck {
             if ($val.Length -gt 4) { $val.Substring(0, 4) + '****' } else { '****' }
         } else { '(missing)' }
 
-        $results += [PSCustomObject]@{
+        $results += [ordered]@{
             Key      = $key
             Status   = if ($exists) { 'OK' } else { 'MISSING' }
             Preview  = $redacted
@@ -343,7 +343,7 @@ function Invoke-VaultHealthCheck {
         $ghAuth = if ($LASTEXITCODE -eq 0) { 'OK' } else { 'FAILED' }
     } catch { $ghAuth = 'ERROR' }
 
-    $results += [PSCustomObject]@{ Key = 'gh-auth'; Status = $ghAuth; Preview = '(cli)' }
+    $results += [ordered]@{ Key = 'gh-auth'; Status = $ghAuth; Preview = '(cli)' }
 
     $missing = @($results | Where-Object { $_.Status -ne 'OK' })
     if ($missing.Count -gt 0) {
@@ -758,8 +758,8 @@ try {
             $builderWorktreePath = $builderWorktree.WorktreePath
         }
 
-        # TASK-186: Removed agent launch — panes stay at pwsh prompt
-
+        $roleAgentConfig = Get-RoleAgentConfig -Role $canonicalRole -Settings $settings
+        $launchCommand = Get-AgentLaunchCommand -Agent $roleAgentConfig.Agent -Model $roleAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -ExecMode $execMode
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
@@ -767,8 +767,9 @@ try {
             Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_PANE_ID' -Value $paneId
             Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
             Wait-PaneShellReady -PaneId $paneId
-            # TASK-186: No agent launch. Dispatch per-task via codex exec.
-
+            if (-not [string]::IsNullOrWhiteSpace($launchCommand)) {
+                Send-OrchestraBridgeCommand -Target $paneId -Text $launchCommand
+            }
         } finally {
             foreach ($envName in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {
                 try {
@@ -778,7 +779,7 @@ try {
             }
         }
 
-        $paneSummaries.Add([PSCustomObject]@{
+        $paneSummaries.Add([ordered]@{
             Label = $label
             PaneId = $paneId
             Role = $canonicalRole
@@ -789,7 +790,19 @@ try {
         })
     }
 
-    # TASK-186: Skip agent readiness check — panes are plain pwsh prompts.
+    foreach ($paneSummary in $paneSummaries) {
+        if ($paneSummary.ExecMode) {
+            continue
+        }
+
+        try {
+            $roleAgentConfig = Get-RoleAgentConfig -Role $paneSummary.Role -Settings $settings
+            Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $roleAgentConfig.Agent -TimeoutSeconds 60
+        } catch {
+            Write-Error "Agent readiness timeout for $($paneSummary.Label) [$($paneSummary.PaneId)]: $($_.Exception.Message)"
+            exit 1
+        }
+    }
 
     $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $paneSummaries
     $watchdogScriptPath = Join-Path $scriptDir 'agent-watchdog.ps1'

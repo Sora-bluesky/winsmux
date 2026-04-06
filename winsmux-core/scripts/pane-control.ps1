@@ -85,7 +85,7 @@ function Get-PaneControlLaunchCommand {
 function ConvertFrom-PaneControlManifestContent {
     param([Parameter(Mandatory = $true)][string]$Content)
 
-    $manifest = [PSCustomObject]@{
+    $manifest = [ordered]@{
         Session = [ordered]@{}
         Panes   = [ordered]@{}
     }
@@ -105,9 +105,9 @@ function ConvertFrom-PaneControlManifestContent {
             return
         }
 
-        $paneObject = [PSCustomObject]@{}
+        $paneObject = [ordered]@{}
         foreach ($property in $Pane.GetEnumerator()) {
-            Add-Member -InputObject $paneObject -MemberType NoteProperty -Name $property.Key -Value $property.Value
+            $paneObject[$property.Key] = $property.Value
         }
 
         $manifest.Panes[$label] = $paneObject
@@ -208,7 +208,7 @@ function Get-PaneControlManifestContext {
             $gitWorktreeDir = Get-PaneControlGitWorktreeDir -ProjectDir $launchDir
         }
 
-        return [PSCustomObject]@{
+        return [ordered]@{
             ManifestPath         = $manifestPath
             ProjectDir           = $projectRoot
             Label                = $label
@@ -247,7 +247,7 @@ function Get-PaneControlRestartPlan {
     if (Get-Command Get-RoleAgentConfig -ErrorAction SilentlyContinue) {
         $roleAgentConfig = Get-RoleAgentConfig -Role $context.Role -Settings $Settings
     } else {
-        $roleAgentConfig = [PSCustomObject]@{
+        $roleAgentConfig = [ordered]@{
             Agent = [string]$Settings.agent
             Model = [string]$Settings.model
         }
@@ -255,7 +255,7 @@ function Get-PaneControlRestartPlan {
 
     $launchCommand = Get-PaneControlLaunchCommand -Agent $roleAgentConfig.Agent -Model $roleAgentConfig.Model -ProjectDir $context.LaunchDir -GitWorktreeDir $context.GitWorktreeDir
 
-    return [PSCustomObject]@{
+    return [ordered]@{
         PaneId         = $context.PaneId
         Label          = $context.Label
         Role           = $context.Role
