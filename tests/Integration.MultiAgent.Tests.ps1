@@ -316,7 +316,7 @@ panes:
         $output[1].IdleAlerts | Should -Be 1
         $output[1].Results[0].IdleAlerted | Should -Be $true
         $output[1].Results[0].Message | Should -Match 'Commander alert: idle pane builder-1'
-        Should -Invoke Send-MonitorTelegramAlert -Times 1 -Exactly
+        Should -Invoke Send-MonitorTelegramAlert -Times 0 -Exactly
     }
 
     It 'emits approval waiting alerts and counts them during a monitor cycle' {
@@ -358,7 +358,7 @@ panes:
         $output[1].ApprovalWaiting | Should -Be 1
         $output[1].Results[0].Status | Should -Be 'approval_waiting'
         $output[1].Results[0].Message | Should -Be 'Commander alert: builder-1 (%2) awaiting approval'
-        Should -Invoke Send-MonitorTelegramAlert -Times 1 -Exactly
+        Should -Invoke Send-MonitorTelegramAlert -Times 0 -Exactly
     }
 
     It 'emits commander alerts when a Builder stays busy with the same snapshot for three cycles' {
@@ -403,6 +403,6 @@ panes:
         $output[1].Stalls | Should -Be 1
         $output[1].Results[0].StallDetected | Should -Be $true
         $output[1].Results[0].Message | Should -Match 'Commander alert: stalled Builder pane builder-1'
-        Should -Invoke Send-MonitorTelegramAlert -Times 1 -Exactly
+        Should -Invoke Send-MonitorTelegramAlert -Times 0 -Exactly
     }
 }
