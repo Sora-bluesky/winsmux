@@ -63,6 +63,7 @@ package-lock.json
 # =========================
 # Claude Code / AI agent config
 # =========================
+CLAUDE.md
 .claude/settings.local.json
 .claude/logs/
 .claude/worktrees/

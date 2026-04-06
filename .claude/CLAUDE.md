@@ -89,4 +89,5 @@ Allowed transitions: `backlog` -> `wip` -> `review` -> `done`
 
 `ROADMAP.md` is local-only and gitignored; generate it with `sync-roadmap.ps1`.
 
+@AGENTS.md
 @HANDOFF.md
