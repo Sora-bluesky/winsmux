@@ -2136,10 +2136,10 @@ tasks:
       v0.19.2でリリース済み。winsmux-coreリポ削除完了。
 
   - id: TASK-174
-    title: "Add send-keys buffer overflow protection to winsmux send"
+    title: "Add send-keys buffer overflow protection to winsmux send (#265)"
     status: backlog
     priority: P1
-    target_version: "v0.20.1"
+    target_version: "v0.19.4"
     repo: winsmux
     labels: [bug, orchestration]
     depends_on: []
@@ -2150,10 +2150,10 @@ tasks:
       閾値超過時はtempファイルに書き出して実行。
 
   - id: TASK-175
-    title: "Fix Researcher pane not receiving commands via winsmux send"
+    title: "Fix Researcher pane not receiving commands via winsmux send (#271)"
     status: backlog
     priority: P1
-    target_version: "v0.20.1"
+    target_version: "v0.19.4"
     repo: winsmux
     labels: [bug, orchestration]
     depends_on: []
@@ -2163,13 +2163,58 @@ tasks:
       #271. winsmux send で Researcher (Claude Sonnet) ペインにコマンドを送信すると
       成功を返すが実際には何も届かない。根本原因未特定。
 
+  # === v0.19.4: Issue fixes & Governance (2026-04-06) ===
+
+  - id: TASK-182
+    title: "Builder pane Codex cannot access new worktrees (#283)"
+    status: backlog
+    priority: P0
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, orchestra]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #283. Builder Codex は orchestra-start の元 worktree に --add-dir でバインドされ、
+      新規 worktree にアクセスできない。codex exec per task で --add-dir を更新する方式に変更。
+
+  - id: TASK-183
+    title: "Researcher role-gate does not block code editing (#284)"
+    status: done
+    priority: P1
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, hooks, security]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #284. Reviewer監査結果: sh-reviewer-gate.js と sh-researcher-gate.js は dead code
+      (Codex は Claude Code の PreToolUse hook を使えない)。削除する。
+      role-gate.ps1 が既にロール権限マトリクスを持つ。Codex 制御は prompt + sandbox のみ。
+
+  - id: TASK-181
+    title: "Fix sh-circuit-breaker.js false positives (#282, #295)"
+    status: done
+    priority: P1
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, hooks]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #282. retry_count がセッション通算で累積。allow パスでリセットされず正常操作で誤検出。
+      last_stop_at タイムスタンプで短時間窓のみカウントする修正が必要。
+
   # === Issues backfill (2026-04-06) ===
 
   - id: TASK-176
-    title: "Integrate builder-queue auto-dispatch into agent-monitor respawn loop"
-    status: backlog
+    title: "Integrate builder-queue auto-dispatch into agent-monitor respawn loop (#275)"
+    status: done
     priority: P0
-    target_version: "v0.20.0"
+    target_version: "v0.19.4"
     repo: winsmux
     labels: [feat, orchestra, automation]
     depends_on: []
@@ -2180,10 +2225,10 @@ tasks:
       respawn 後の Codex は空プロンプトで idle 放置。Commander↔ペイン相互通信の実現。
 
   - id: TASK-177
-    title: "Prevent Agent subagent from bypassing sh-orchestra-gate hook"
+    title: "Prevent Agent subagent from bypassing sh-orchestra-gate hook (#273)"
     status: backlog
     priority: P1
-    target_version: "v0.20.1"
+    target_version: "v0.19.4"
     repo: winsmux
     labels: [bug, security]
     depends_on: []
@@ -2193,11 +2238,246 @@ tasks:
       #273. Commander が Agent subagent を bypassPermissions で起動するとゲートを迂回できる。
       ロール分離の根幹を破壊する脆弱性。
 
-  - id: TASK-178
-    title: "Implement winsmux verify command or remove Gate Rule 7"
+  - id: TASK-179
+    title: "Gate: block Commander git commit until Reviewer PASS confirmed (#279)"
+    status: backlog
+    priority: P0
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [feat, hooks, governance]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #279. Reviewer監査済み最小変更セット:
+      (1) Rule 8 維持(SHA pinning後回し)
+      (2) review-approve.ps1 に -Status PASS|FAIL パラメータ追加(review-fail.ps1不要)
+      (3) team-pipeline.ps1 VERIFY_PASS時に review-state.json書き込み
+      新規ファイル0。既存修正のみ。
+
+  - id: TASK-180
+    title: "Gate: Commander status reports verified against actual pane state (#280)"
     status: backlog
     priority: P1
-    target_version: "v0.20.0"
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [feat, hooks, observability]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #280. winsmux status コマンドで全ペインの実態を機械的に取得。
+      Commander の虚偽報告を構造的に防止。
+
+  - id: TASK-184
+    title: "winsmux send dispatches raw text instead of codex exec (#286)"
+    status: backlog
+    priority: P0
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, orchestra]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #286. Invoke-Send (winsmux-core.ps1 L792) は send-keys で raw text を貼り付けるだけ。
+      Codex ペインには codex exec コマンドで送信すべき。manifest.yaml のロール/exec_mode を
+      読み取り、Codex ペインには codex exec ラッパーを自動構築する。#265 #271 #283 に関連。
+
+  - id: TASK-185
+    title: "Create .claude/rules/dispatch.md Commander dispatch procedure (#287)"
+    status: done
+    priority: P0
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [enhancement, orchestra]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #287. Commander用ディスパッチ手順書。worktree作成→prompt→send→監視→回収→Reviewer→テスト→コミット
+      の全フローを定義。Commander迷子問題(毎回推測→毎回ミス)の恒久対策。
+
+  - id: TASK-186
+    title: "orchestra-start should leave panes at pwsh prompt, not launch Codex interactive (#288)"
+    status: backlog
+    priority: P0
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, orchestra]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #288. orchestra-start.ps1 が全ペインで Codex interactive を起動するため、
+      Commander が codex exec per task でディスパッチできない。
+      ペインは pwsh プロンプトのまま待機させ、Commander が codex exec を送信する方式に変更。
+      #286 の上流原因。
+
+  - id: TASK-193
+    title: "agent-monitor respawn ignores exec_mode, launches persistent Codex (#289)"
+    status: done
+    priority: P0
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, orchestra]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #289. Invoke-AgentRespawn が exec_mode=true を無視して persistent Codex を起動する。
+      orchestra-start は正しく exec_mode を実装済み (L220-221) だが、agent-monitor (L654,L674) は
+      常に Codex interactive を起動。Builder ペインに Codex が常駐し codex exec が使えない根本原因。
+
+  - id: TASK-194
+    title: "agent-monitor idle alerts go to user Telegram instead of Commander (#290)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, orchestra]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #290. agent-monitorのidle paneアラートがユーザーのTelegramに直接送信される。
+      Commander側で処理すべき運用アラートであり、ユーザーに送るべきではない。
+
+  - id: TASK-195
+    title: "respawn-pane does not update pane label in manifest.yaml (#291)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, orchestra]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #291. respawn-paneでロール変更してもラベルとmanifest.yamlが更新されない。
+      ユーザーが混乱し、manifest依存スクリプトが誤動作する。
+
+  - id: TASK-196
+    title: "Fix hooks/scripts referencing files deleted in PR #79 (#292)"
+    status: done
+    priority: P1
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, hooks]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #292. sh-task-gate.js, sh-pipeline.js が削除済みpackage.jsonを参照。
+      sh-precompact.js, sh-postcompact.js がローカルonlyのtasks/backlog.yamlを参照。
+      doctor.ps1, sync-roadmap.ps1 も同様。CLAUDE.mdにも存在しないパス参照6件。
+
+  - id: TASK-197
+    title: "Audit and resolve 8 orphan scripts in winsmux-core/scripts/ (#293)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [chore, orchestra]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      #293. agent-launch, doctor, evidence-ledger, orchestra-cleanup, pane-scaler,
+      review-approve, role-gate, verify の8スクリプトが孤立。
+      doctor.ps1/verify.ps1はwinsmux-core.ps1にインライン版が重複。統合or削除判断。
+
+  # === superset パワーアップ提案 (Reviewer監査済み 2026-04-06) ===
+
+  - id: TASK-187
+    title: "PromptTransport abstraction — argv/stdin/file unified interface"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [feat, orchestra]
+    depends_on: ["TASK-186"]
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      superset PROPOSAL-35。Windows 8191文字制限の根本解決。
+      agents設定に promptTransport: argv|stdin|file を追加し、Send-AgentPrompt で分岐。
+
+  - id: TASK-188
+    title: "Task Prompt File pattern — .winsmux/task-{slug}.md file-backed handoff"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [feat, orchestra]
+    depends_on: ["TASK-187"]
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      superset PROPOSAL-36。Reviewer PASS: dispatch rewrite (#286)の一部として統合。
+      プロンプトをファイルで渡し再現性・監査性向上。TASK-152/174と補完関係。
+
+  - id: TASK-189
+    title: "Formal WINSMUX_* environment variable contract"
+    status: backlog
+    priority: P1
+    target_version: "v0.20.1"
+    repo: winsmux
+    labels: [feat, orchestra]
+    depends_on: []
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      superset PROPOSAL-38。Reviewer PASS。既存のad hoc WINSMUX_*変数を正規化。
+      env hardening (TASK-190) の前提。v0.20.1で実施。
+
+  - id: TASK-190
+    title: "ConPTY clean environment variable boundary — Get-CleanPtyEnv"
+    status: backlog
+    priority: P2
+    target_version: "v0.20.1"
+    repo: winsmux
+    labels: [feat, orchestra, security]
+    depends_on: ["TASK-189"]
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      superset PROPOSAL-37。Reviewer WARN: 現在の起動パスと合わない、後のhardening。
+      PTY起動時にruntime汚染を除去しWINSMUX_*契約変数のみ注入。
+
+  - id: TASK-191
+    title: "/task-run one-shot orchestration command"
+    status: backlog
+    priority: P2
+    target_version: "v0.21.1"
+    repo: winsmux
+    labels: [feat, orchestra]
+    depends_on: ["TASK-188"]
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      superset PROPOSAL-39。Reviewer WARN: vendor-neutralにすべき。
+      winsmux task-run として実装。タスク作成→worktree→エージェント一括起動。
+
+  - id: TASK-192
+    title: ".agents/commands/ single-source command structure"
+    status: backlog
+    priority: P3
+    target_version: "v0.21.1"
+    repo: winsmux
+    labels: [feat, orchestra]
+    depends_on: ["TASK-191"]
+    created: "2026-04-06"
+    updated: "2026-04-06"
+    notes: >
+      superset PROPOSAL-40。Reviewer defer: TASK-191後に検討。
+      .agents/commands/ を canonical source にし、各エージェント設定をsymlink/sync。
+
+  - id: TASK-178
+    title: "Implement winsmux verify command or remove Gate Rule 7 (#277)"
+    status: done
+    priority: P1
+    target_version: "v0.19.4"
     repo: winsmux
     labels: [bug, hooks]
     depends_on: []

@@ -451,11 +451,43 @@ function Send-MonitorBridgeCommand {
     }
 }
 
+function Write-MonitorIdleAlertLog {
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Message) -or [string]::IsNullOrWhiteSpace($ProjectDir)) {
+        return $false
+    }
+
+    try {
+        $logDir = Join-Path $ProjectDir '.winsmux\logs'
+        [System.IO.Directory]::CreateDirectory($logDir) | Out-Null
+
+        $timestamp = (Get-Date).ToString('o')
+        $logLine = "[{0}] {1}{2}" -f $timestamp, $Message, [System.Environment]::NewLine
+        $logPath = Join-Path $logDir 'idle-alerts.log'
+        [System.IO.File]::AppendAllText($logPath, $logLine, [System.Text.Encoding]::UTF8)
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Send-MonitorTelegramAlert {
-    param([Parameter(Mandatory = $true)][string]$Message)
+    param(
+        [Parameter(Mandatory = $true)][string]$Message,
+        [ValidateSet('commander', 'idle')][string]$AlertType = 'commander',
+        [string]$ProjectDir = ''
+    )
 
     if ([string]::IsNullOrWhiteSpace($Message)) {
         return $false
+    }
+
+    if ($AlertType -eq 'idle') {
+        return Write-MonitorIdleAlertLog -Message $Message -ProjectDir $ProjectDir
     }
 
     if (-not (Test-Path -LiteralPath $script:MonitorTelegramEnvPath -PathType Leaf)) {
@@ -885,7 +917,7 @@ function Invoke-AgentMonitorCycle {
             $result.Message = $idleAlert.Message
             Write-Output $idleAlert.Message
             try {
-                Send-MonitorTelegramAlert -Message $idleAlert.Message | Out-Null
+                Send-MonitorTelegramAlert -Message $idleAlert.Message -AlertType 'idle' -ProjectDir $projectDir | Out-Null
             } catch {
             }
         }
