@@ -66,6 +66,27 @@ try {
   // Rule 7: REMOVED - winsmux verify not yet implemented.
   // Will be re-added when verify command exists. See #277.
 
+  // Rule 8: Block git commit without Reviewer PASS (#279)
+  if (toolName === "Bash") {
+    if (/git\s+(commit|merge)/.test(rawCommand) && !/bump-version|chore:\s*bump/.test(rawCommand)) {
+      const reviewStatePath = path.join(process.cwd(), '.winsmux', 'review-state.json');
+      try {
+        if (fs.existsSync(reviewStatePath)) {
+          const cp = require('child_process');
+          const currentBranch = cp.execSync('git branch --show-current', { encoding: 'utf8' }).trim();
+          if (currentBranch && currentBranch !== 'main') {
+            const reviewState = JSON.parse(fs.readFileSync(reviewStatePath, 'utf8'));
+            if (!reviewState[currentBranch] || reviewState[currentBranch].status !== 'PASS') {
+              deny("Reviewer PASS required before commit. Run: pwsh winsmux-core/scripts/review-approve.ps1");
+            }
+          }
+        }
+      } catch (e) {
+        // If review-state.json missing or invalid, allow (bootstrapping)
+      }
+    }
+  }
+
   process.exit(0);
 } catch (e) {
   deny("Hook parse error: " + e.message);
