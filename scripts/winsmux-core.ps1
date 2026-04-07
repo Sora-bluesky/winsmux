@@ -1119,6 +1119,11 @@ function Invoke-Role {
         Start-Sleep -Milliseconds 500
     }
 
+    try {
+        Update-PaneControlManifestPaneLabel -ProjectDir $projectDir -PaneId $paneId -Label $newLabel | Out-Null
+    } catch {
+    }
+
     # Launch Codex agent
     $gitDir = Join-Path $projectDir ".git"
     $launchCmd = "codex --sandbox danger-full-access -C '$projectDir' --add-dir '$gitDir'"
@@ -2186,6 +2191,11 @@ function Invoke-Restart {
     }
 
     Wait-PaneShellReady -PaneId $paneId
+    try {
+        Update-PaneControlManifestPaneLabel -ProjectDir $projectDir -PaneId $paneId | Out-Null
+    } catch {
+    }
+
     & winsmux send-keys -t $paneId -l -- "$($plan.LaunchCommand)"
     if ($LASTEXITCODE -ne 0) {
         Stop-WithError "failed to send launch command to $paneId"
