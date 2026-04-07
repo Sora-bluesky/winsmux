@@ -77,6 +77,12 @@ function Stop-WithError {
     exit 1
 }
 
+function Invoke-WinsmuxRaw {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    return & winsmux @Arguments
+}
+
 # --- Helper: Dispatch prompt paths ---
 function Get-DispatchPromptDirectory {
     param([string]$ProjectDir = (Get-Location).Path)
@@ -250,11 +256,128 @@ function Resolve-Target {
 function Confirm-Target {
     param([string]$PaneId)
     # display-message -t ignores the -t flag in winsmux v3.3.1, so validate via list-panes
-    $allPanes = (& winsmux list-panes -a -F '#{pane_id}' | Out-String).Trim() -split "`n" | ForEach-Object { $_.Trim() }
+    $allPanes = (Invoke-WinsmuxRaw -Arguments @('list-panes', '-a', '-F', '#{pane_id}') | Out-String).Trim() -split "`n" | ForEach-Object { $_.Trim() }
     if ($PaneId -notin $allPanes) {
         Stop-WithError "invalid target: $PaneId"
     }
     return $PaneId
+}
+
+function Get-PaneTargetCandidates {
+    param([Parameter(Mandatory = $true)][string]$PaneId)
+
+    $candidates = [ordered]@{}
+    $candidates[$PaneId] = $true
+
+    $raw = Invoke-WinsmuxRaw -Arguments @('list-panes', '-a', '-F', "#{pane_id}`t#{session_name}:#{window_index}.#{pane_index}") 2>$null
+    foreach ($line in @($raw)) {
+        $trimmed = ([string]$line).Trim()
+        if ([string]::IsNullOrWhiteSpace($trimmed)) {
+            continue
+        }
+
+        $parts = $trimmed -split "`t", 2
+        if ($parts.Count -lt 2) {
+            continue
+        }
+
+        $candidatePaneId = $parts[0].Trim()
+        $candidateTarget = $parts[1].Trim()
+        if ($candidatePaneId -ne $PaneId -or [string]::IsNullOrWhiteSpace($candidateTarget)) {
+            continue
+        }
+
+        if (-not $candidates.Contains($candidateTarget)) {
+            $candidates[$candidateTarget] = $true
+        }
+    }
+
+    return @($candidates.Keys)
+}
+
+function Invoke-WinsmuxSendKeys {
+    param(
+        [Parameter(Mandatory = $true)][string]$Target,
+        [Parameter(Mandatory = $true)][string[]]$Keys,
+        [switch]$Literal
+    )
+
+    $arguments = @('send-keys', '-t', $Target)
+    if ($Literal) {
+        $arguments += '-l'
+        $arguments += '--'
+    }
+
+    $arguments += $Keys
+    $output = Invoke-WinsmuxRaw -Arguments $arguments 2>&1
+
+    return [ordered]@{
+        ExitCode = $LASTEXITCODE
+        Output   = ($output | Out-String).Trim()
+        Target   = $Target
+    }
+}
+
+function Send-TextToPane {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$CommandText
+    )
+
+    $targetCandidates = @(Get-PaneTargetCandidates -PaneId $PaneId)
+    $attemptFailures = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($sendTarget in $targetCandidates) {
+        $preSendText = Get-PaneSnapshotText -PaneId $PaneId -Lines 200
+
+        # Type text directly (no header; headers break TUI agents like Claude Code)
+        $literalResult = Invoke-WinsmuxSendKeys -Target $sendTarget -Keys @($CommandText) -Literal
+        if ($literalResult.ExitCode -ne 0) {
+            $detail = if ([string]::IsNullOrWhiteSpace($literalResult.Output)) { 'send-keys literal failed' } else { $literalResult.Output }
+            $attemptFailures.Add("target ${sendTarget}: $detail") | Out-Null
+            continue
+        }
+
+        Start-Sleep -Milliseconds 300
+        $typedText = Get-PaneSnapshotText -PaneId $PaneId -Lines 200
+        if ($typedText -eq $preSendText) {
+            $attemptFailures.Add("target ${sendTarget}: pane buffer did not change after typing") | Out-Null
+            continue
+        }
+
+        $enterResult = Invoke-WinsmuxSendKeys -Target $sendTarget -Keys @('Enter')
+        if ($enterResult.ExitCode -ne 0) {
+            $detail = if ([string]::IsNullOrWhiteSpace($enterResult.Output)) { 'send-keys Enter failed' } else { $enterResult.Output }
+            $attemptFailures.Add("target ${sendTarget}: $detail") | Out-Null
+            continue
+        }
+
+        Start-Sleep -Milliseconds 500
+        $postEnterText = Get-PaneSnapshotText -PaneId $PaneId -Lines 200
+        if ($postEnterText -match '\[Pasted Content') {
+            $secondEnterResult = Invoke-WinsmuxSendKeys -Target $sendTarget -Keys @('Enter')
+            if ($secondEnterResult.ExitCode -ne 0) {
+                $detail = if ([string]::IsNullOrWhiteSpace($secondEnterResult.Output)) { 'send-keys second Enter failed' } else { $secondEnterResult.Output }
+                $attemptFailures.Add("target ${sendTarget}: $detail") | Out-Null
+                continue
+            }
+        }
+
+        Start-Sleep -Milliseconds 800
+        $snapshotText = Get-PaneSnapshotText -PaneId $PaneId -Lines 200
+        Save-Watermark $PaneId $snapshotText
+        Set-ReadMark $PaneId
+
+        Write-Output "sent to $PaneId via $sendTarget"
+        return
+    }
+
+    $failureText = if ($attemptFailures.Count -gt 0) {
+        $attemptFailures -join '; '
+    } else {
+        'no send targets available'
+    }
+    Stop-WithError "failed to send to ${PaneId}: $failureText"
 }
 
 # --- Helper: Read Mark ---
@@ -436,7 +559,7 @@ function Get-PaneRuntimeMap {
 function Get-PaneSnapshotText {
     param([string]$PaneId, [int]$Lines = 50)
 
-    $output = & winsmux capture-pane -t $PaneId -p -J -S "-$Lines"
+    $output = Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', "-$Lines")
     return ($output | Out-String).TrimEnd()
 }
 
@@ -896,32 +1019,6 @@ function Invoke-Send {
         Write-Warning ("send target '{0}' exceeded {1} chars ({2}); wrote full text to {3} and sent a file-read pointer instead." -f $Target, $sendKeysLengthLimit, $text.Length, $promptPath)
     }
 
-    $sendCommandToPane = {
-        param([Parameter(Mandatory = $true)][string]$CommandText)
-
-        # Type text directly (no header; headers break TUI agents like Claude Code)
-        & winsmux send-keys -t $paneId -l -- "$CommandText"
-
-        Start-Sleep -Milliseconds 300
-
-        & winsmux send-keys -t $paneId Enter
-        Start-Sleep -Milliseconds 500
-        $postEnterSnapshot = & winsmux capture-pane -t $paneId -p -J -S "-200"
-        $postEnterText = ($postEnterSnapshot | Out-String).TrimEnd()
-        if ($postEnterText -match '\[Pasted Content') {
-            & winsmux send-keys -t $paneId Enter
-        }
-
-        Start-Sleep -Milliseconds 800
-        $snapshot = & winsmux capture-pane -t $paneId -p -J -S "-200"
-        $snapshotText = ($snapshot | Out-String).TrimEnd()
-        Save-Watermark $paneId $snapshotText
-
-        Set-ReadMark $paneId
-
-        Write-Output "sent to $paneId"
-    }
-
     try {
         if (Test-Path $PaneControlScript -PathType Leaf) {
             . $PaneControlScript
@@ -985,7 +1082,7 @@ function Invoke-Send {
                         (& $quotePowerShellLiteral $model), `
                         (& $quotePowerShellLiteral $promptInstruction)
 
-                    & $sendCommandToPane $dispatchCommand
+                    Send-TextToPane -PaneId $paneId -CommandText $dispatchCommand
                     return
                 }
             }
@@ -993,7 +1090,7 @@ function Invoke-Send {
     } catch {
     }
 
-    & $sendCommandToPane $textToSend
+    Send-TextToPane -PaneId $paneId -CommandText $textToSend
 }
 
 function Invoke-Name {

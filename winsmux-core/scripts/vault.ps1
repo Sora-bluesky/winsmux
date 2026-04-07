@@ -171,14 +171,14 @@ function Invoke-WinsmuxCommand {
     }
 }
 
-function ConvertTo-PsmuxConfigString {
+function ConvertTo-WinsmuxConfigString {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
 
     $escaped = $Value.Replace('\', '\\').Replace('"', '\"')
     return '"' + $escaped + '"'
 }
 
-function Get-PsmuxSessionNameForPane {
+function Get-WinsmuxSessionNameForPane {
     param([Parameter(Mandatory = $true)][string]$PaneId)
 
     $result = Invoke-WinsmuxCommand -Arguments @('display-message', '-p', '-t', $PaneId, '#{session_name}')
@@ -252,12 +252,12 @@ function Invoke-VaultInject {
             [WinCred]::CredFree($credsPtr) | Out-Null
         }
 
-        $sessionName = Get-PsmuxSessionNameForPane -PaneId $paneId
+        $sessionName = Get-WinsmuxSessionNameForPane -PaneId $paneId
         $commands = foreach ($entry in $entries) {
             'set-environment -t {0} {1} {2}' -f `
-                (ConvertTo-PsmuxConfigString -Value $sessionName), `
-                (ConvertTo-PsmuxConfigString -Value $entry.Name), `
-                (ConvertTo-PsmuxConfigString -Value $entry.Value)
+                (ConvertTo-WinsmuxConfigString -Value $sessionName), `
+                (ConvertTo-WinsmuxConfigString -Value $entry.Name), `
+                (ConvertTo-WinsmuxConfigString -Value $entry.Value)
         }
 
         $sourceResult = Invoke-WinsmuxSourceFile -Commands $commands
