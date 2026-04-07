@@ -688,7 +688,6 @@ panes:
                 }
             }
             Mock Test-BuilderStall { $false }
-            Mock Send-MonitorTelegramAlert { $true }
             Mock Invoke-AgentRespawn {
                 param($PaneId, $Agent, $Model, $ProjectDir, $GitWorktreeDir, $ManifestPath)
 
@@ -834,8 +833,6 @@ panes:
             Mock Test-BuilderStall {
                 return $PaneId -eq '%4'
             }
-            Mock Send-MonitorTelegramAlert { $true }
-
             $output = @(Invoke-AgentMonitorCycle -Settings ([ordered]@{
                 agent = 'codex'
                 model = 'gpt-5.4'
@@ -865,7 +862,6 @@ panes:
             )
             $events[1].data.idle_threshold_seconds | Should -Be 120
             $events[4].data.required_cycles | Should -Be 3
-            Should -Invoke Send-MonitorTelegramAlert -Times 1 -Exactly
         } finally {
             if (Test-Path $tempRoot) {
                 Remove-Item -Path $tempRoot -Recurse -Force

@@ -278,7 +278,7 @@ Describe 'agent monitor idle alerts' {
         $stateAfterBusy | Should -BeNullOrEmpty
     }
 
-    It 'emits commander alerts to stdout and telegram during a monitor cycle' {
+    It 'emits commander alerts to stdout and monitor events during a monitor cycle' {
         $manifestDir = Join-Path $script:agentMonitorTempRoot '.winsmux'
         New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
         @"
@@ -295,13 +295,18 @@ panes:
 
         Save-MonitorIdleState -PaneId '%2' -ReadySince '2026-04-05T09:57:00+09:00' -AlertSent $false
         Mock Get-PaneAgentStatus {
-            [PSCustomObject]@{
+            [ordered]@{
                 Status       = 'ready'
                 PaneId       = '%2'
                 SnapshotTail = '> '
             }
         }
-        Mock Send-MonitorTelegramAlert { return $true }
+        Mock Write-MonitorEvent {
+            return [ordered]@{
+                event   = $Event
+                message = $Message
+            }
+        }
 
         $settings = [ordered]@{
             agent = 'codex'
@@ -316,7 +321,12 @@ panes:
         $output[1].IdleAlerts | Should -Be 1
         $output[1].Results[0].IdleAlerted | Should -Be $true
         $output[1].Results[0].Message | Should -Match 'Commander alert: idle pane builder-1'
-        Should -Invoke Send-MonitorTelegramAlert -Times 1 -Exactly
+        Should -Invoke Write-MonitorEvent -Times 1 -Exactly -ParameterFilter {
+            $Event -eq 'pane.idle' -and
+            $PaneId -eq '%2' -and
+            $Role -eq 'Builder' -and
+            $Message -match 'Commander alert: idle pane builder-1'
+        }
     }
 
     It 'emits approval waiting alerts and counts them during a monitor cycle' {
@@ -343,7 +353,12 @@ panes:
                 ExitReason   = ''
             }
         }
-        Mock Send-MonitorTelegramAlert { return $true }
+        Mock Write-MonitorEvent {
+            return [ordered]@{
+                event   = $Event
+                message = $Message
+            }
+        }
 
         $settings = [ordered]@{
             agent = 'codex'
@@ -358,7 +373,12 @@ panes:
         $output[1].ApprovalWaiting | Should -Be 1
         $output[1].Results[0].Status | Should -Be 'approval_waiting'
         $output[1].Results[0].Message | Should -Be 'Commander alert: builder-1 (%2) awaiting approval'
-        Should -Invoke Send-MonitorTelegramAlert -Times 0 -Exactly
+        Should -Invoke Write-MonitorEvent -Times 1 -Exactly -ParameterFilter {
+            $Event -eq 'pane.approval_waiting' -and
+            $PaneId -eq '%2' -and
+            $Role -eq 'Builder' -and
+            $Message -eq 'Pane builder-1 (%2) awaiting approval.'
+        }
     }
 
     It 'auto-approves trust prompts during a monitor cycle' {
@@ -393,7 +413,12 @@ panes:
                 Message = 'Auto-approved trust prompt in pane %2'
             }
         }
-        Mock Send-MonitorTelegramAlert { return $true }
+        Mock Write-MonitorEvent {
+            return [ordered]@{
+                event   = $Event
+                message = $Message
+            }
+        }
 
         $settings = [ordered]@{
             agent = 'codex'
@@ -409,7 +434,12 @@ panes:
         $output[1].Results[0].Status | Should -Be 'approval_waiting'
         $output[1].Results[0].Message | Should -Be 'Auto-approved trust prompt in pane %2'
         Should -Invoke Invoke-MonitorAutoApprovePrompt -Times 1 -Exactly
-        Should -Invoke Send-MonitorTelegramAlert -Times 0 -Exactly
+        Should -Invoke Write-MonitorEvent -Times 1 -Exactly -ParameterFilter {
+            $Event -eq 'pane.approval_waiting' -and
+            $PaneId -eq '%2' -and
+            $Role -eq 'Builder' -and
+            $Message -eq 'Pane builder-1 (%2) awaiting approval.'
+        }
     }
 
     It 'emits commander alerts when a Builder stays busy with the same snapshot for three cycles' {
@@ -429,7 +459,7 @@ panes:
 "@ | Set-Content -Path (Join-Path $manifestDir 'manifest.yaml') -Encoding UTF8
 
         Mock Get-PaneAgentStatus {
-            [PSCustomObject]@{
+            [ordered]@{
                 Status       = 'busy'
                 PaneId       = '%2'
                 SnapshotTail = 'working'
@@ -437,7 +467,12 @@ panes:
                 ExitReason   = ''
             }
         }
-        Mock Send-MonitorTelegramAlert { return $true }
+        Mock Write-MonitorEvent {
+            return [ordered]@{
+                event   = $Event
+                message = $Message
+            }
+        }
 
         $settings = [ordered]@{
             agent = 'codex'
@@ -454,6 +489,11 @@ panes:
         $output[1].Stalls | Should -Be 1
         $output[1].Results[0].StallDetected | Should -Be $true
         $output[1].Results[0].Message | Should -Match 'Commander alert: stalled Builder pane builder-1'
-        Should -Invoke Send-MonitorTelegramAlert -Times 0 -Exactly
+        Should -Invoke Write-MonitorEvent -Times 1 -Exactly -ParameterFilter {
+            $Event -eq 'pane.stalled' -and
+            $PaneId -eq '%2' -and
+            $Role -eq 'Builder' -and
+            $Message -match 'Commander alert: stalled Builder pane builder-1'
+        }
     }
 }
