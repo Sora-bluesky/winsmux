@@ -94,7 +94,7 @@ function Get-PaneControlLaunchCommand {
 
     switch ($Agent.Trim().ToLowerInvariant()) {
         'codex' {
-            return "codex -c model=$Model --full-auto -C $(ConvertTo-PaneControlPowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PaneControlPowerShellLiteral -Value $GitWorktreeDir)"
+            return "codex -c model=$Model --sandbox danger-full-access -C $(ConvertTo-PaneControlPowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PaneControlPowerShellLiteral -Value $GitWorktreeDir)"
         }
         'claude' {
             return 'claude --permission-mode bypassPermissions'

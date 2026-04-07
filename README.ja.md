@@ -209,7 +209,7 @@ Orchestra は1人の Commander が複数の AI エージェントを並列管理
 | CLI         | 承認レスフラグ（`-ShieldHarness` 有効時） |
 | ----------- | ----------------------------------------- |
 | Claude Code | `--permission-mode bypassPermissions`     |
-| Codex CLI   | `--full-auto`                             |
+| Codex CLI   | `--sandbox danger-full-access`             |
 | Gemini CLI  | `--yolo`                                  |
 
 `-ShieldHarness` なし: フラグは付与されない（手動承認モード）。

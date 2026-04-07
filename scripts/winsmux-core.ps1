@@ -978,7 +978,7 @@ function Invoke-Send {
                     $gitWorktreeDir = [string]$context.GitWorktreeDir
                     $model = [string]$roleAgentConfig.Model
                     $promptInstruction = 'Read the prompt file at {0} and follow its instructions' -f $promptPath
-                    $dispatchCommand = 'codex exec --full-auto -C {0} --add-dir {1} -o {2} -m {3} {4}' -f `
+                    $dispatchCommand = 'codex exec --sandbox danger-full-access -C {0} --add-dir {1} -o {2} -m {3} {4}' -f `
                         (& $quotePowerShellLiteral $launchDir), `
                         (& $quotePowerShellLiteral $gitWorktreeDir), `
                         (& $quotePowerShellLiteral $outputPath), `
@@ -1121,7 +1121,7 @@ function Invoke-Role {
 
     # Launch Codex agent
     $gitDir = Join-Path $projectDir ".git"
-    $launchCmd = "codex --full-auto -C '$projectDir' --add-dir '$gitDir'"
+    $launchCmd = "codex --sandbox danger-full-access -C '$projectDir' --add-dir '$gitDir'"
     & winsmux send-keys -t $paneId -l $launchCmd
     & winsmux send-keys -t $paneId Enter
 
@@ -1312,7 +1312,7 @@ function Invoke-Doctor {
         if ($sandbox) {
             $val = $sandbox.Matches[0].Groups[1].Value
             if ($val -eq 'elevated') {
-                Write-Output "Codex sandbox: $val [WARNING: use 'unelevated' to fix --full-auto]"
+                Write-Output "Codex sandbox: $val [WARNING: use 'unelevated' to fix --sandbox danger-full-access]"
             } else {
                 Write-Output "Codex sandbox: $val [OK]"
             }

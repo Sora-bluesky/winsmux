@@ -254,7 +254,7 @@ function Get-PaneScalerLaunchCommand {
 
     switch ($Agent.Trim().ToLowerInvariant()) {
         'codex' {
-            return "codex -c model=$Model --full-auto -C $(ConvertTo-PaneScalerPowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PaneScalerPowerShellLiteral -Value $GitWorktreeDir)"
+            return "codex -c model=$Model --sandbox danger-full-access -C $(ConvertTo-PaneScalerPowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PaneScalerPowerShellLiteral -Value $GitWorktreeDir)"
         }
         'claude' {
             return 'claude --permission-mode bypassPermissions'

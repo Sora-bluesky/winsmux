@@ -5,12 +5,12 @@
 #
 #   # Custom 3x2 with mixed agents:
 #   pwsh scripts/start-orchestra.ps1 -Rows 2 -Cols 3 -Agents @(
-#     @{label="builder-1"; command="codex --full-auto"},
-#     @{label="builder-2"; command="codex --full-auto"},
+#     @{label="builder-1"; command="codex --sandbox danger-full-access"},
+#     @{label="builder-2"; command="codex --sandbox danger-full-access"},
 #     @{label="builder-3"; command="gemini --model gemini-3.1-pro-preview --yolo"},
 #     @{label="researcher"; command="claude --model sonnet"},
 #     @{label="builder-4"; command="gemini --model gemini-3-flash-preview --yolo"},
-#     @{label="reviewer"; command="codex --full-auto"}
+#     @{label="reviewer"; command="codex --sandbox danger-full-access"}
 #   ) -ShieldHarness
 #
 # Prerequisite: user has already started winsmux in their terminal.
@@ -114,8 +114,8 @@ function Get-ApprovalFreeCommand {
     if ($Cmd -match '^claude\b' -and $Cmd -notmatch '--permission-mode') {
         return "$Cmd --permission-mode bypassPermissions"
     }
-    if ($Cmd -match '^codex\b' -and $Cmd -notmatch '--full-auto') {
-        return "$Cmd --full-auto"
+    if ($Cmd -match '^codex\b' -and $Cmd -notmatch '--sandbox') {
+        return "$Cmd --sandbox danger-full-access"
     }
     if ($Cmd -match '^gemini\b' -and $Cmd -notmatch '--yolo') {
         return "$Cmd --yolo"
