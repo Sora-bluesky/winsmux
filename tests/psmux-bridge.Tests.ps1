@@ -1,5 +1,28 @@
 $ErrorActionPreference = 'Stop'
 
+function script:Write-PsmuxBridgeTestFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [AllowEmptyString()][string]$Content = ''
+    )
+
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    $escapedPath = $Path -replace '"', '""'
+    if ([string]::IsNullOrEmpty($Content)) {
+        cmd /d /c ('type nul > "{0}"' -f $escapedPath) | Out-Null
+    } else {
+        $Content | cmd /d /c ('more > "{0}"' -f $escapedPath) | Out-Null
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "cmd.exe failed to write $Path"
+    }
+}
+
 Describe 'Assert-Role' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\role-gate.ps1')
@@ -79,10 +102,20 @@ Describe 'Assert-Role' {
         $env:WINSMUX_ROLE_MAP = '{"pane-self":"Reviewer","pane-commander":"Commander","pane-builder":"Builder","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
 
         (Assert-Role -Command 'message' -TargetPane 'commander') | Should -Be $true
+        (Assert-Role -Command 'review-request') | Should -Be $true
+        (Assert-Role -Command 'review-approve') | Should -Be $true
         (Assert-Role -Command 'status') | Should -Be $true
         (Assert-Role -Command 'list') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $false
         (Assert-Role -Command 'focus') | Should -Be $false
+    }
+
+    It 'denies review approval commands outside Reviewer role' {
+        $env:WINSMUX_ROLE = 'Builder'
+        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Builder","pane-commander":"Commander","pane-builder":"Builder","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
+
+        (Assert-Role -Command 'review-request') | Should -Be $false
+        (Assert-Role -Command 'review-approve') | Should -Be $false
     }
 }
 
@@ -1250,7 +1283,149 @@ Describe 'agent-watchdog helpers' {
     }
 }
 
-Describe 'orchestra-start background process contract' {
+Describe 'server-watchdog helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\server-watchdog.ps1')
+    }
+
+    BeforeEach {
+        $script:serverWatchdogTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-server-watchdog-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:serverWatchdogTempRoot '.winsmux') -Force | Out-Null
+        $script:serverWatchdogManifestPath = Join-Path $script:serverWatchdogTempRoot '.winsmux\manifest.yaml'
+        Write-PsmuxBridgeTestFile -Path $script:serverWatchdogManifestPath -Content @"
+version: 1
+saved_at: 2026-04-07T00:00:00+09:00
+session:
+  name: 'winsmux-orchestra'
+  project_dir: '$script:serverWatchdogTempRoot'
+"@
+    }
+
+    AfterEach {
+        if ($script:serverWatchdogTempRoot -and (Test-Path $script:serverWatchdogTempRoot)) {
+            Remove-Item -Path $script:serverWatchdogTempRoot -Recurse -Force
+        }
+    }
+
+    It 'detects a missing session and restarts it' {
+        $state = New-ServerWatchdogState
+
+        Mock Invoke-ServerWatchdogWinsmux {
+            [ordered]@{
+                ExitCode = 1
+                Output   = @('missing')
+            }
+        } -ParameterFilter {
+            $AllowFailure -and
+            $Arguments[0] -eq 'has-session' -and
+            $Arguments[1] -eq '-t' -and
+            $Arguments[2] -eq 'winsmux-orchestra'
+        }
+
+        Mock Invoke-ServerWatchdogWinsmux {
+            [ordered]@{
+                ExitCode = 0
+                Output   = @()
+            }
+        } -ParameterFilter {
+            $AllowFailure -and
+            $Arguments[0] -eq 'new-session' -and
+            $Arguments[1] -eq '-d' -and
+            $Arguments[2] -eq '-s' -and
+            $Arguments[3] -eq 'winsmux-orchestra'
+        }
+
+        $result = Invoke-ServerWatchdogCycle -ManifestPath $script:serverWatchdogManifestPath -SessionName 'winsmux-orchestra' -State $state
+
+        $result.SessionAlive | Should -Be $false
+        $result.RestartAttempted | Should -Be $true
+        $result.RestartSucceeded | Should -Be $true
+        $result.Event | Should -Be 'server.restarted'
+        $state.RestartAttempts.Count | Should -Be 1
+
+        $eventsPath = Join-Path $script:serverWatchdogTempRoot '.winsmux\events.jsonl'
+        $events = @(Get-Content -Path $eventsPath -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
+        $events.Count | Should -Be 1
+        $events[0].event | Should -Be 'server.restarted'
+        $events[0].status | Should -Be 'restarted'
+        $events[0].exit_reason | Should -Be 'session_missing'
+    }
+
+    It 'logs restart failures when restart attempt fails' {
+        $state = New-ServerWatchdogState
+
+        Mock Invoke-ServerWatchdogWinsmux {
+            [ordered]@{
+                ExitCode = 1
+                Output   = @('missing')
+            }
+        } -ParameterFilter {
+            $AllowFailure -and $Arguments[0] -eq 'has-session'
+        }
+
+        Mock Invoke-ServerWatchdogWinsmux {
+            [ordered]@{
+                ExitCode = 1
+                Output   = @('cannot start')
+            }
+        } -ParameterFilter {
+            $AllowFailure -and $Arguments[0] -eq 'new-session'
+        }
+
+        $result = Invoke-ServerWatchdogCycle -ManifestPath $script:serverWatchdogManifestPath -SessionName 'winsmux-orchestra' -State $state
+
+        $result.RestartAttempted | Should -Be $true
+        $result.RestartSucceeded | Should -Be $false
+        $result.Event | Should -Be 'server.restart_failed'
+        $state.RestartAttempts.Count | Should -Be 1
+
+        $eventsPath = Join-Path $script:serverWatchdogTempRoot '.winsmux\events.jsonl'
+        $events = @(Get-Content -Path $eventsPath -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
+        $events.Count | Should -Be 1
+        $events[0].event | Should -Be 'server.restart_failed'
+        $events[0].exit_reason | Should -Be 'restart_failed'
+        $events[0].data.restart_output | Should -Be 'cannot start'
+    }
+
+    It 'enters degraded state after three restart attempts in ten minutes' {
+        $state = New-ServerWatchdogState
+        $now = Get-Date
+        $state['RestartAttempts'] = @(
+            $now.AddMinutes(-9).ToString('o'),
+            $now.AddMinutes(-5).ToString('o'),
+            $now.AddMinutes(-1).ToString('o')
+        )
+
+        Mock Invoke-ServerWatchdogWinsmux {
+            [ordered]@{
+                ExitCode = 1
+                Output   = @('missing')
+            }
+        } -ParameterFilter {
+            $AllowFailure -and $Arguments[0] -eq 'has-session'
+        }
+
+        $result = Invoke-ServerWatchdogCycle -ManifestPath $script:serverWatchdogManifestPath -SessionName 'winsmux-orchestra' -State $state
+
+        $result.RestartAttempted | Should -Be $false
+        $result.Degraded | Should -Be $true
+        $result.Event | Should -Be 'server.restart_failed'
+        $state.Degraded | Should -Be $true
+        Should -Invoke Invoke-ServerWatchdogWinsmux -Times 0 -Exactly -ParameterFilter {
+            $Arguments[0] -eq 'new-session'
+        }
+
+        $eventsPath = Join-Path $script:serverWatchdogTempRoot '.winsmux\events.jsonl'
+        $events = @(Get-Content -Path $eventsPath -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
+        $events.Count | Should -Be 1
+        $events[0].event | Should -Be 'server.restart_failed'
+        $events[0].status | Should -Be 'degraded'
+        $events[0].exit_reason | Should -Be 'crash_loop_protection'
+        $events[0].data.attempt_count | Should -Be 3
+    }
+}
+
+Describe 'orchestra-start watchdog contract' {
     BeforeAll {
         $script:orchestraStartPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1'
         $script:orchestraStartContent = Get-Content -Path $script:orchestraStartPath -Raw -Encoding UTF8
@@ -1272,6 +1447,7 @@ Describe 'orchestra-start background process contract' {
 
     It 'launches the watchdog with Start-Process so it survives script exit' {
         $script:orchestraStartContent | Should -Match 'function Start-AgentWatchdogJob \{'
+        $script:orchestraStartContent | Should -Match 'function Start-ServerWatchdogJob \{'
         $script:orchestraStartContent | Should -Match 'Start-Process\s+-FilePath\s+''pwsh'''
         $script:orchestraStartContent | Should -Match "'-NoProfile'"
         $script:orchestraStartContent | Should -Match "'-File'"
@@ -1283,9 +1459,189 @@ Describe 'orchestra-start background process contract' {
         $script:orchestraStartContent | Should -Match 'commander_poll_pid:'
         $script:orchestraStartContent | Should -Match 'Commander Poll PID: \$\(\$commanderPollProcess\.Id\)'
         $script:orchestraStartContent | Should -Match 'watchdog_pid:'
+        $script:orchestraStartContent | Should -Match 'server_watchdog_pid:'
         $script:orchestraStartContent | Should -Match '-WatchdogPid \$watchdogProcess\.Id'
+        $script:orchestraStartContent | Should -Match '-ServerWatchdogPid \$serverWatchdogProcess\.Id'
         $script:orchestraStartContent | Should -Match 'Watchdog PID: \$\(\$watchdogProcess\.Id\)'
-        $script:orchestraStartContent | Should -Match 'Stop-Process -Id'
+        $script:orchestraStartContent | Should -Match 'Server Watchdog PID: \$\(\$serverWatchdogProcess\.Id\)'
+        $script:orchestraStartContent | Should -Match 'Stop-Process -Id \{0\},\{1\}'
+    }
+}
+
+Describe 'orchestra-start server bootstrap' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1')
+    }
+
+    BeforeEach {
+        $script:winsmuxBin = 'winsmux'
+    }
+
+    It 'returns success when the server session already exists' {
+        $script:probeCount = 0
+        $script:newSessionCallCount = 0
+
+        function Test-OrchestraServerSession {
+            param([string]$SessionName)
+            $script:probeCount++
+            return $true
+        }
+
+        function Invoke-Winsmux {
+            param([string[]]$Arguments, [switch]$CaptureOutput)
+            $script:newSessionCallCount++
+        }
+
+        $result = Ensure-OrchestraServer -SessionName 'winsmux-orchestra'
+
+        $result.SessionName | Should -Be 'winsmux-orchestra'
+        $result.SessionCreated | Should -Be $false
+        $result.ReadyChecks | Should -Be 1
+        $script:probeCount | Should -Be 1
+        $script:newSessionCallCount | Should -Be 0
+    }
+
+    It 'auto-creates the server session when missing' {
+        $script:probeCount = 0
+        $script:newSessionArguments = @()
+        $script:sleepCallCount = 0
+
+        function Test-OrchestraServerSession {
+            param([string]$SessionName)
+            $script:probeCount++
+            return ($script:probeCount -ge 3)
+        }
+
+        function Invoke-Winsmux {
+            param([string[]]$Arguments, [switch]$CaptureOutput)
+            $script:newSessionArguments = @($Arguments)
+        }
+
+        function Start-Sleep {
+            param([int]$Seconds)
+            if ($Seconds -eq 2) {
+                $script:sleepCallCount++
+            }
+        }
+
+        $result = Ensure-OrchestraServer -SessionName 'winsmux-orchestra'
+
+        $result.SessionName | Should -Be 'winsmux-orchestra'
+        $result.SessionCreated | Should -Be $true
+        $result.ReadyChecks | Should -Be 2
+        $script:newSessionArguments | Should -Be @('new-session', '-d', '-s', 'winsmux-orchestra')
+        $script:probeCount | Should -Be 3
+        $script:sleepCallCount | Should -Be 1
+    }
+}
+
+Describe 'orchestra-start session reuse contract' {
+    BeforeAll {
+        $script:orchestraStartPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1'
+        $script:orchestraStartContent = Get-Content -Path $script:orchestraStartPath -Raw -Encoding UTF8
+    }
+
+    It 'reuses the session Ensure-OrchestraServer just created' {
+        $script:orchestraStartContent | Should -Match '\$orchestraServer\s*=\s*Ensure-OrchestraServer -SessionName \$sessionName'
+        $script:orchestraStartContent | Should -Match 'if \(-not \[bool\]\$orchestraServer\.SessionCreated\) \{'
+        $script:orchestraStartContent | Should -Match "preflight\.session\.reuse"
+        $script:orchestraStartContent | Should -Match 'if \(\[bool\]\$orchestraServer\.SessionCreated\) \{'
+        $script:orchestraStartContent | Should -Match 'Session \$sessionName was already created by Ensure-OrchestraServer\.'
+    }
+}
+
+Describe 'orchestra-start rollback helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1')
+    }
+
+    BeforeEach {
+        $script:orchestraStartTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-orchestra-start-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:orchestraStartTempRoot -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:orchestraStartTempRoot -and (Test-Path $script:orchestraStartTempRoot)) {
+            Remove-Item -Path $script:orchestraStartTempRoot -Recurse -Force
+        }
+    }
+
+    It 'kills only created non-bootstrap panes and preserves the bootstrap pane during rollback' {
+        $createdWorktrees = @(
+            [ordered]@{
+                BranchName   = 'worktree-builder-1'
+                WorktreePath = (Join-Path $script:orchestraStartTempRoot '.worktrees\builder-1')
+            }
+        )
+
+        Mock Invoke-Winsmux { @('%1', '%2', '%3') } -ParameterFilter {
+            $Arguments[0] -eq 'list-panes'
+        }
+        Mock Invoke-Winsmux { } -ParameterFilter {
+            $Arguments[0] -eq 'kill-pane'
+        }
+        Mock Invoke-Winsmux { } -ParameterFilter {
+            $Arguments[0] -eq 'respawn-pane'
+        }
+        Mock Wait-PaneShellReady { }
+        Mock Remove-OrchestraCreatedWorktrees {
+            @(
+                [ordered]@{
+                    BranchName   = 'worktree-builder-1'
+                    WorktreePath = (Join-Path $script:orchestraStartTempRoot '.worktrees\builder-1')
+                }
+            )
+        }
+
+        $rollback = Invoke-OrchestraStartupRollback `
+            -ProjectDir $script:orchestraStartTempRoot `
+            -SessionName 'winsmux-orchestra' `
+            -BootstrapPaneId '%1' `
+            -CreatedPaneIds @('%1', '%2', '%3') `
+            -CreatedWorktrees $createdWorktrees `
+            -FailureMessage 'layout failed'
+
+        $rollback.RemovedPaneIds | Should -Be @('%2', '%3')
+        $rollback.RemovedWorktrees.Count | Should -Be 1
+        $rollback.BootstrapRespawned | Should -Be $true
+        $rollback.RollbackErrors.Count | Should -Be 0
+
+        Should -Invoke Invoke-Winsmux -Times 1 -Exactly -ParameterFilter {
+            $Arguments[0] -eq 'list-panes' -and
+            $Arguments[1] -eq '-t' -and
+            $Arguments[2] -eq 'winsmux-orchestra' -and
+            $Arguments[3] -eq '-F' -and
+            $Arguments[4] -eq '#{pane_id}'
+        }
+        Should -Invoke Invoke-Winsmux -Times 2 -Exactly -ParameterFilter {
+            $Arguments[0] -eq 'kill-pane'
+        }
+        Should -Invoke Invoke-Winsmux -Times 1 -Exactly -ParameterFilter {
+            $Arguments[0] -eq 'respawn-pane' -and
+            $Arguments[1] -eq '-k' -and
+            $Arguments[2] -eq '-t' -and
+            $Arguments[3] -eq '%1' -and
+            $Arguments[4] -eq '-c' -and
+            $Arguments[5] -eq $script:orchestraStartTempRoot
+        }
+        Should -Invoke Invoke-Winsmux -Times 0 -Exactly -ParameterFilter {
+            $Arguments[0] -eq 'kill-session'
+        }
+        Should -Invoke Wait-PaneShellReady -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%1'
+        }
+
+        $eventsPath = Join-Path $script:orchestraStartTempRoot '.winsmux\events.jsonl'
+        (Test-Path $eventsPath) | Should -Be $true
+
+        $events = @(Get-Content -Path $eventsPath -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
+        $events.Count | Should -Be 1
+        $events[0].event | Should -Be 'orchestra.startup.failed'
+        $events[0].pane_id | Should -Be '%1'
+        $events[0].status | Should -Be 'failed'
+        $events[0].data.bootstrap_respawned | Should -Be $true
+        $events[0].data.removed_pane_ids | Should -Be @('%2', '%3')
+        $events[0].data.removed_worktrees[0].BranchName | Should -Be 'worktree-builder-1'
     }
 }
 

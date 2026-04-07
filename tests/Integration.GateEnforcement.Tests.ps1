@@ -2,6 +2,29 @@ $ErrorActionPreference = 'Stop'
 
 Describe 'sh-orchestra-gate integration' {
     BeforeAll {
+        function Write-GateTestFile {
+            param(
+                [Parameter(Mandatory = $true)][string]$Path,
+                [AllowEmptyString()][string]$Content = ''
+            )
+
+            $parent = Split-Path -Parent $Path
+            if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+                New-Item -ItemType Directory -Path $parent -Force | Out-Null
+            }
+
+            $escapedPath = $Path -replace '"', '""'
+            if ([string]::IsNullOrEmpty($Content)) {
+                cmd /d /c ('type nul > "{0}"' -f $escapedPath) | Out-Null
+            } else {
+                $Content | cmd /d /c ('more > "{0}"' -f $escapedPath) | Out-Null
+            }
+
+            if ($LASTEXITCODE -ne 0) {
+                throw "cmd.exe failed to write $Path"
+            }
+        }
+
         $script:RepoRoot = Split-Path -Parent $PSScriptRoot
         $script:SourceHookPath = Join-Path $script:RepoRoot '.claude\hooks\sh-orchestra-gate.js'
         $script:WinsmuxCorePath = Join-Path $script:RepoRoot 'scripts\winsmux-core.ps1'
@@ -22,11 +45,12 @@ Describe 'sh-orchestra-gate integration' {
             param(
                 [string]$RepoRoot = $script:RepoRoot,
                 [Parameter(Mandatory = $true)][string]$ToolName,
-                [Parameter(Mandatory = $true)][hashtable]$ToolInput
+                [Parameter(Mandatory = $true)][System.Collections.IDictionary]$ToolInput,
+                [System.Collections.IDictionary]$Environment = @{}
             )
 
             $hookPath = Join-Path $RepoRoot '.claude\hooks\sh-orchestra-gate.js'
-            $payload = @{
+            $payload = [ordered]@{
                 tool_name  = $ToolName
                 tool_input = $ToolInput
             } | ConvertTo-Json -Compress -Depth 10
@@ -40,6 +64,9 @@ Describe 'sh-orchestra-gate integration' {
             $startInfo.RedirectStandardInput = $true
             $startInfo.RedirectStandardOutput = $true
             $startInfo.RedirectStandardError = $true
+            foreach ($entry in $Environment.GetEnumerator()) {
+                $startInfo.Environment[[string]$entry.Key] = [string]$entry.Value
+            }
 
             $process = [System.Diagnostics.Process]::Start($startInfo)
             $exitCode = $null
@@ -75,7 +102,8 @@ Describe 'sh-orchestra-gate integration' {
         $script:InvokeWinsmuxCore = {
             param(
                 [Parameter(Mandatory = $true)][string]$RepoRoot,
-                [Parameter(Mandatory = $true)][string[]]$Arguments
+                [Parameter(Mandatory = $true)][string[]]$Arguments,
+                [hashtable]$Environment = @{}
             )
 
             $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -92,6 +120,9 @@ Describe 'sh-orchestra-gate integration' {
             $startInfo.CreateNoWindow = $true
             $startInfo.RedirectStandardOutput = $true
             $startInfo.RedirectStandardError = $true
+            foreach ($entry in $Environment.GetEnumerator()) {
+                $startInfo.Environment[$entry.Key] = [string]$entry.Value
+            }
 
             $process = [System.Diagnostics.Process]::Start($startInfo)
             try {
@@ -123,19 +154,58 @@ Describe 'sh-orchestra-gate integration' {
             $repoRoot = Join-Path $fixtureRoot 'repo'
 
             New-Item -ItemType Directory -Path (Join-Path $repoRoot '.claude\hooks') -Force | Out-Null
-            Set-Content -Path (Join-Path $repoRoot 'README.md') -Value 'fixture' -Encoding UTF8
+            Write-GateTestFile -Path (Join-Path $repoRoot 'README.md') -Content 'fixture'
             Copy-Item $script:SourceHookPath (Join-Path $repoRoot '.claude\hooks\sh-orchestra-gate.js')
 
             & git -C $repoRoot init | Out-Null
             & git -C $repoRoot add .
             & git -C $repoRoot -c user.name='Test User' -c user.email='test@example.com' commit -m 'init' | Out-Null
             & git -C $repoRoot checkout -b 'feature/review-gate' | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $repoRoot '.winsmux') -Force | Out-Null
+            Write-GateTestFile -Path (Join-Path $repoRoot '.winsmux\manifest.yaml') -Content @"
+session:
+  name: 'winsmux-orchestra'
+  project_dir: '$repoRoot'
+panes:
+  reviewer-1:
+    pane_id: '%4'
+    role: Reviewer
+"@
 
             return [PSCustomObject]@{
                 Root     = $fixtureRoot
                 RepoRoot = $repoRoot
                 Branch   = 'feature/review-gate'
             }
+        }
+
+        function Get-GateFixtureHeadSha {
+            param([Parameter(Mandatory = $true)][string]$RepoRoot)
+
+            $headSha = (& git -C $RepoRoot rev-parse HEAD | Select-Object -First 1)
+            if (($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) -or [string]::IsNullOrWhiteSpace($headSha)) {
+                throw "unable to resolve HEAD for $RepoRoot"
+            }
+
+            return $headSha.Trim()
+        }
+
+        function Set-GateReviewState {
+            param(
+                [Parameter(Mandatory = $true)][string]$RepoRoot,
+                [Parameter(Mandatory = $true)][string]$Branch,
+                [Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary]$Entry
+            )
+
+            $reviewStatePath = Join-Path $RepoRoot '.winsmux\review-state.json'
+            $reviewStateDir = Split-Path -Parent $reviewStatePath
+            New-Item -ItemType Directory -Path $reviewStateDir -Force | Out-Null
+
+            $state = [ordered]@{}
+            $state[$Branch] = $Entry
+            Write-GateTestFile -Path $reviewStatePath -Content ($state | ConvertTo-Json -Depth 10)
+
+            return $reviewStatePath
         }
     }
 
@@ -162,6 +232,15 @@ Describe 'sh-orchestra-gate integration' {
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+    }
+
+    It 'denies direct Write access to review-state.json' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Write' -ToolInput ([ordered]@{
+            file_path = '.winsmux\review-state.json'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'review-state\.json'
     }
 
     It 'denies direct winsmux send-keys usage' {
@@ -241,6 +320,68 @@ EOF
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
             command = 'git rm --cached secrets.txt'
         }
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'denies direct Bash writes to review-state.json' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'Set-Content -LiteralPath .winsmux\review-state.json -Value "{}"'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'review-state\.json'
+    }
+
+    It 'allows Bash reads from review-state.json' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'Get-Content -LiteralPath .winsmux\review-state.json'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'denies review-approve unless WINSMUX_ROLE is Reviewer' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'pwsh scripts/winsmux-core.ps1 review-approve'
+        }) -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'Reviewer pane'
+    }
+
+    It 'allows review-approve when WINSMUX_ROLE is Reviewer' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'pwsh scripts/winsmux-core.ps1 review-approve'
+        }) -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Reviewer'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'allows rg review-approve as a read-only search' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'rg review-approve docs/'
+        }) -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'allows pwsh -Command with rg review-approve as a read-only search' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'pwsh -Command "rg review-approve .claude/"'
+        }) -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
@@ -353,6 +494,7 @@ EOF
         }
 
         & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'review-request'
         $result.ErrorObject.systemMessage | Should -Match 'review-approve'
     }
 
@@ -366,6 +508,7 @@ EOF
 
         & $script:AssertDenyResult -Result $result
         $result.ErrorObject.systemMessage | Should -Match 'review-approve'
+        $result.ErrorObject.systemMessage | Should -Match 'review-request'
     }
 
     It 'denies gh pr merge without Reviewer PASS for the current branch' {
@@ -378,19 +521,119 @@ EOF
 
         & $script:AssertDenyResult -Result $result
         $result.ErrorObject.systemMessage | Should -Match 'review-approve'
+        $result.ErrorObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'denies git commit when PASS head_sha does not match current HEAD' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $currentHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = ('0' * $currentHeadSha.Length)
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = ('0' * $currentHeadSha.Length)
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'git commit -m "feat: stale-review"'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'review-approve'
+        $result.ErrorObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'denies git commit when reviewer role is not Reviewer' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $currentHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $currentHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $currentHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Builder'
+                pane_id = '%4'
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'git commit -m "feat: wrong-reviewer-role"'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'review-approve'
+    }
+
+    It 'denies git commit when reviewer pane_id is empty' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+        $currentHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot
+
+        Set-GateReviewState -RepoRoot $fixture.RepoRoot -Branch $fixture.Branch -Entry ([ordered]@{
+            status    = 'PASS'
+            head_sha  = $currentHeadSha
+            request   = [ordered]@{
+                branch                  = $fixture.Branch
+                head_sha                = $currentHeadSha
+                target_reviewer_pane_id = '%4'
+            }
+            reviewer  = [ordered]@{
+                role    = 'Reviewer'
+                pane_id = ''
+            }
+            updatedAt = '2026-04-07T09:00:00.0000000+09:00'
+        }) | Out-Null
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'git commit -m "feat: missing-pane-id"'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'review-approve'
     }
 
     It 'allows git commit after review-approve records PASS for the current branch' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
 
-        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve')
+        $reviewerEnv = @{
+            WINSMUX_ROLE      = 'Reviewer'
+            WINSMUX_PANE_ID   = '%4'
+            WINSMUX_ROLE_MAP  = '{"%4":"Reviewer"}'
+            WINSMUX_AGENT_NAME = 'codex'
+        }
+
+        $requestResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-request') -Environment $reviewerEnv
+        $requestResult.ExitCode | Should -Be 0
+
+        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve') -Environment $reviewerEnv
         $approveResult.ExitCode | Should -Be 0
 
         $reviewStatePath = Join-Path $fixture.RepoRoot '.winsmux\review-state.json'
         Test-Path -LiteralPath $reviewStatePath | Should -Be $true
         $reviewState = Get-Content -LiteralPath $reviewStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
         $reviewState.'feature/review-gate'.status | Should -Be 'PASS'
+        $reviewState.'feature/review-gate'.reviewer.role | Should -Be 'Reviewer'
+        $reviewState.'feature/review-gate'.reviewer.pane_id | Should -Be '%4'
+        $reviewState.'feature/review-gate'.request.head_sha | Should -Not -BeNullOrEmpty
+        $reviewState.'feature/review-gate'.request.target_reviewer_pane_id | Should -Be '%4'
 
         $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
             command = 'git commit -m "feat: approved"'
@@ -404,7 +647,17 @@ EOF
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
 
-        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve')
+        $reviewerEnv = @{
+            WINSMUX_ROLE       = 'Reviewer'
+            WINSMUX_PANE_ID    = '%4'
+            WINSMUX_ROLE_MAP   = '{"%4":"Reviewer"}'
+            WINSMUX_AGENT_NAME = 'codex'
+        }
+
+        $requestResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-request') -Environment $reviewerEnv
+        $requestResult.ExitCode | Should -Be 0
+
+        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve') -Environment $reviewerEnv
         $approveResult.ExitCode | Should -Be 0
 
         $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
@@ -419,7 +672,17 @@ EOF
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
 
-        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve')
+        $reviewerEnv = @{
+            WINSMUX_ROLE       = 'Reviewer'
+            WINSMUX_PANE_ID    = '%4'
+            WINSMUX_ROLE_MAP   = '{"%4":"Reviewer"}'
+            WINSMUX_AGENT_NAME = 'codex'
+        }
+
+        $requestResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-request') -Environment $reviewerEnv
+        $requestResult.ExitCode | Should -Be 0
+
+        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve') -Environment $reviewerEnv
         $approveResult.ExitCode | Should -Be 0
 
         $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
@@ -434,7 +697,17 @@ EOF
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
 
-        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve')
+        $reviewerEnv = @{
+            WINSMUX_ROLE      = 'Reviewer'
+            WINSMUX_PANE_ID   = '%4'
+            WINSMUX_ROLE_MAP  = '{"%4":"Reviewer"}'
+            WINSMUX_AGENT_NAME = 'codex'
+        }
+
+        $requestResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-request') -Environment $reviewerEnv
+        $requestResult.ExitCode | Should -Be 0
+
+        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve') -Environment $reviewerEnv
         $approveResult.ExitCode | Should -Be 0
 
         $resetResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-reset')
@@ -448,5 +721,21 @@ EOF
         }
 
         & $script:AssertDenyResult -Result $result
+    }
+
+    It 'requires a pending review request before review-approve succeeds' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $reviewerEnv = @{
+            WINSMUX_ROLE      = 'Reviewer'
+            WINSMUX_PANE_ID   = '%4'
+            WINSMUX_ROLE_MAP  = '{"%4":"Reviewer"}'
+            WINSMUX_AGENT_NAME = 'codex'
+        }
+
+        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve') -Environment $reviewerEnv
+        $approveResult.ExitCode | Should -Be 1
+        $approveResult.StdErr | Should -Match 'review-request'
     }
 }
