@@ -718,6 +718,156 @@ panes:
         }
     }
 
+    It 'writes state, idle, and stalled events for detected pane states during a monitor cycle' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        $eventsPath = Join-Path $manifestDir 'events.jsonl'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+  - label: reviewer-1
+    pane_id: %3
+    role: Reviewer
+  - label: builder-2
+    pane_id: %4
+    role: Builder
+  - label: researcher-1
+    pane_id: %5
+    role: Researcher
+  - label: reviewer-2
+    pane_id: %6
+    role: Reviewer
+  - label: builder-3
+    pane_id: %7
+    role: Builder
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+            Mock Get-PaneAgentStatus {
+                switch ($PaneId) {
+                    '%2' {
+                        return [ordered]@{
+                            Status       = 'ready'
+                            PaneId       = '%2'
+                            SnapshotTail = '> '
+                            SnapshotHash = 'hash-ready'
+                            ExitReason   = ''
+                        }
+                    }
+                    '%3' {
+                        return [ordered]@{
+                            Status       = 'approval_waiting'
+                            PaneId       = '%3'
+                            SnapshotTail = 'approval'
+                            SnapshotHash = 'hash-approval'
+                            ExitReason   = ''
+                        }
+                    }
+                    '%4' {
+                        return [ordered]@{
+                            Status       = 'busy'
+                            PaneId       = '%4'
+                            SnapshotTail = 'working'
+                            SnapshotHash = 'hash-busy'
+                            ExitReason   = ''
+                        }
+                    }
+                    '%5' {
+                        return [ordered]@{
+                            Status       = 'waiting_for_dispatch'
+                            PaneId       = '%5'
+                            SnapshotTail = 'PS C:\repo>'
+                            SnapshotHash = 'hash-dispatch'
+                            ExitReason   = ''
+                        }
+                    }
+                    '%6' {
+                        return [ordered]@{
+                            Status       = 'hung'
+                            PaneId       = '%6'
+                            SnapshotTail = 'same output'
+                            SnapshotHash = 'hash-hung'
+                            ExitReason   = ''
+                        }
+                    }
+                    '%7' {
+                        return [ordered]@{
+                            Status       = 'empty'
+                            PaneId       = '%7'
+                            SnapshotTail = ''
+                            SnapshotHash = ''
+                            ExitReason   = ''
+                        }
+                    }
+                    default {
+                        throw "unexpected pane id: $PaneId"
+                    }
+                }
+            }
+            Mock Update-MonitorIdleAlertState {
+                if ($PaneId -eq '%2') {
+                    return [ordered]@{
+                        ShouldAlert = $true
+                        Message     = 'Commander alert: idle pane builder-1 (%2, role=Builder)'
+                    }
+                }
+
+                return [ordered]@{
+                    ShouldAlert = $false
+                    Message     = ''
+                }
+            }
+            Mock Test-BuilderStall {
+                return $PaneId -eq '%4'
+            }
+            Mock Send-MonitorTelegramAlert { $true }
+
+            $output = @(Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                agent = 'codex'
+                model = 'gpt-5.4'
+                roles = [ordered]@{}
+            }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra' -IdleThreshold 120)
+            $result = $output[-1]
+
+            $result.Checked | Should -Be 6
+            $result.Crashed | Should -Be 0
+            $result.ApprovalWaiting | Should -Be 1
+            $result.IdleAlerts | Should -Be 1
+            $result.Stalls | Should -Be 1
+
+            $events = @(Get-Content -Path $eventsPath -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
+            $eventNames = @($events | ForEach-Object { $_.event })
+
+            $eventNames.Count | Should -Be 8
+            $eventNames | Should -Be @(
+                'pane.ready',
+                'pane.idle',
+                'pane.approval_waiting',
+                'pane.busy',
+                'pane.stalled',
+                'pane.waiting_for_dispatch',
+                'pane.hung',
+                'pane.empty'
+            )
+            $events[1].data.idle_threshold_seconds | Should -Be 120
+            $events[4].data.required_cycles | Should -Be 3
+            Should -Invoke Send-MonitorTelegramAlert -Times 1 -Exactly
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
     It 'skips relaunch dispatch for exec_mode Researcher panes' {
         $manifestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
         $manifestPath = Join-Path $manifestRoot 'manifest.yaml'
@@ -824,6 +974,36 @@ Describe 'agent-watchdog helpers' {
             $SessionName -eq 'winsmux-orchestra' -and
             $IdleThreshold -eq 120
         }
+    }
+
+    It 'builds a stdout summary that points to events.jsonl' {
+        $summary = Get-AgentWatchdogSummary -CycleResult ([ordered]@{
+            Checked         = 2
+            Crashed         = 1
+            Respawned       = 1
+            ApprovalWaiting = 1
+            IdleAlerts      = 1
+            Stalls          = 1
+            Results         = @(
+                [ordered]@{
+                    Label      = 'builder-1'
+                    PaneId     = '%2'
+                    Status     = 'busy'
+                    ExitReason = ''
+                    Respawned  = $false
+                    Message    = ''
+                }
+            )
+        }) -ManifestPath 'C:\repo\.winsmux\manifest.yaml' -SessionName 'winsmux-orchestra'
+
+        $summary.session | Should -Be 'winsmux-orchestra'
+        $summary.events_path | Should -Be 'C:\repo\.winsmux\events.jsonl'
+        $summary.checked | Should -Be 2
+        $summary.approval_waiting | Should -Be 1
+        $summary.idle_alerts | Should -Be 1
+        $summary.stalls | Should -Be 1
+        $summary.results.Count | Should -Be 1
+        $summary.results[0].Label | Should -Be 'builder-1'
     }
 }
 

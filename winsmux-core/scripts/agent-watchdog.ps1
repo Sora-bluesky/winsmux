@@ -24,6 +24,27 @@ function Invoke-AgentWatchdogCycle {
     return (Invoke-AgentMonitorCycle -Settings $settings -ManifestPath $ManifestPath -SessionName $SessionName -IdleThreshold $IdleThreshold)
 }
 
+function Get-AgentWatchdogSummary {
+    param(
+        [Parameter(Mandatory = $true)]$CycleResult,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
+    return [ordered]@{
+        session          = $SessionName
+        manifest_path    = $ManifestPath
+        events_path      = Join-Path (Split-Path -Parent $ManifestPath) 'events.jsonl'
+        checked          = [int]$CycleResult.Checked
+        crashed          = [int]$CycleResult.Crashed
+        respawned        = [int]$CycleResult.Respawned
+        approval_waiting = [int]$CycleResult.ApprovalWaiting
+        idle_alerts      = [int]$CycleResult.IdleAlerts
+        stalls           = [int]$CycleResult.Stalls
+        results          = @($CycleResult.Results)
+    }
+}
+
 function Start-AgentWatchdogLoop {
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
@@ -35,7 +56,9 @@ function Start-AgentWatchdogLoop {
     while ($true) {
         try {
             $result = Invoke-AgentWatchdogCycle -ManifestPath $ManifestPath -SessionName $SessionName -IdleThreshold $IdleThreshold
-            Write-Output ($result | ConvertTo-Json -Depth 8 -Compress)
+            # Invoke-AgentMonitorCycle persists pane events into events.jsonl; the watchdog publishes only the cycle summary.
+            $summary = Get-AgentWatchdogSummary -CycleResult $result -ManifestPath $ManifestPath -SessionName $SessionName
+            Write-Output ($summary | ConvertTo-Json -Depth 8 -Compress)
         } catch {
             Write-Warning ("Watchdog cycle failed for session {0}: {1}" -f $SessionName, $_.Exception.Message)
         }
