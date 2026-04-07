@@ -80,19 +80,15 @@ try {
   if (toolName === "Bash") {
     if (/git\s+(commit|merge)/.test(rawCommand) && !/bump-version|chore:\s*bump/.test(rawCommand)) {
       const reviewStatePath = path.join(process.cwd(), '.winsmux', 'review-state.json');
+      const denyMessage = "Reviewer PASS required before commit. Run: pwsh scripts/winsmux-core.ps1 review-approve";
       try {
-        if (fs.existsSync(reviewStatePath)) {
-          const cp = require('child_process');
-          const currentBranch = cp.execSync('git branch --show-current', { encoding: 'utf8' }).trim();
-          if (currentBranch && currentBranch !== 'main') {
-            const reviewState = JSON.parse(fs.readFileSync(reviewStatePath, 'utf8'));
-            if (!reviewState[currentBranch] || reviewState[currentBranch].status !== 'PASS') {
-              deny("Reviewer PASS required before commit. Run: pwsh winsmux-core/scripts/review-approve.ps1");
-            }
-          }
+        const currentBranch = getCurrentBranch(process.cwd());
+        const reviewState = JSON.parse(fs.readFileSync(reviewStatePath, 'utf8'));
+        if (!currentBranch || !reviewState[currentBranch] || reviewState[currentBranch].status !== 'PASS') {
+          deny(denyMessage);
         }
       } catch (e) {
-        // If review-state.json missing or invalid, allow (bootstrapping)
+        deny(denyMessage);
       }
     }
   }
@@ -142,6 +138,30 @@ function stripHeredocBodies(command) {
   }
 
   return output.join("\n");
+}
+
+function getCurrentBranch(repoRoot) {
+  const gitDir = resolveGitDir(repoRoot);
+  const headPath = path.join(gitDir, "HEAD");
+  const head = fs.readFileSync(headPath, "utf8").trim();
+  const match = /^ref:\s+refs\/heads\/(.+)$/.exec(head);
+  return match ? match[1] : "";
+}
+
+function resolveGitDir(repoRoot) {
+  const dotGitPath = path.join(repoRoot, ".git");
+  const stat = fs.statSync(dotGitPath);
+  if (stat.isDirectory()) {
+    return dotGitPath;
+  }
+
+  const dotGitContents = fs.readFileSync(dotGitPath, "utf8").trim();
+  const match = /^gitdir:\s*(.+)$/i.exec(dotGitContents);
+  if (!match) {
+    throw new Error("invalid .git pointer");
+  }
+
+  return path.resolve(repoRoot, match[1].trim());
 }
 
 function deny(reason) {
