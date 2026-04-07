@@ -402,31 +402,224 @@ function New-CommanderPollCycleSummary {
     )
 
     return [ordered]@{
-        timestamp   = [System.DateTimeOffset]::Now.ToString('o')
-        manifest    = $ManifestPath
-        events      = $EventsPath
-        new_events  = 0
-        completions = 0
-        approvals   = 0
-        errors      = 0
-        messages    = @()
+        timestamp      = [System.DateTimeOffset]::Now.ToString('o')
+        manifest       = $ManifestPath
+        events         = $EventsPath
+        new_events     = 0
+        mailbox_events = 0
+        completions    = 0
+        approvals      = 0
+        dispatches     = 0
+        errors         = 0
+        messages       = @()
     }
 }
 
-if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
-    throw "Manifest not found: $ManifestPath"
+function Get-CommanderPollMailboxChannel {
+    param([string]$SessionName = 'winsmux-orchestra')
+
+    $resolvedSessionName = if ([string]::IsNullOrWhiteSpace($SessionName)) {
+        'winsmux-orchestra'
+    } else {
+        $SessionName.Trim()
+    }
+
+    $safeSessionName = [regex]::Replace($resolvedSessionName, '[^A-Za-z0-9_-]', '-')
+    return "$safeSessionName-commander"
 }
 
-$initialManifest = Read-CommanderPollManifest -Path $ManifestPath
-$initialProjectDir = Get-CommanderPollProjectDir -Manifest $initialManifest -ManifestPath $ManifestPath
-$eventsPath = Get-CommanderPollEventsPath -ProjectDir $initialProjectDir
-$processedLineCount = 0
+function Receive-CommanderPollMailboxMessages {
+    param(
+        [string]$SessionName = 'winsmux-orchestra',
+        [int]$TimeoutMilliseconds = 25,
+        [int]$MaxMessages = 20
+    )
 
-if (Test-Path -LiteralPath $eventsPath -PathType Leaf) {
-    $processedLineCount = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
+    $messages = [System.Collections.Generic.List[object]]::new()
+    $pipeName = "winsmux-mailbox-$(Get-CommanderPollMailboxChannel -SessionName $SessionName)"
+
+    for ($messageIndex = 0; $messageIndex -lt $MaxMessages; $messageIndex++) {
+        $server = $null
+        try {
+            $server = [System.IO.Pipes.NamedPipeServerStream]::new(
+                $pipeName,
+                [System.IO.Pipes.PipeDirection]::In,
+                1,
+                [System.IO.Pipes.PipeTransmissionMode]::Byte,
+                [System.IO.Pipes.PipeOptions]::Asynchronous
+            )
+            $waitTask = $server.WaitForConnectionAsync()
+            if (-not $waitTask.Wait($TimeoutMilliseconds)) {
+                break
+            }
+
+            $reader = [System.IO.StreamReader]::new($server, [System.Text.Encoding]::UTF8)
+            try {
+                $payload = $reader.ReadToEnd()
+            } finally {
+                $reader.Dispose()
+            }
+
+            if ([string]::IsNullOrWhiteSpace($payload)) {
+                continue
+            }
+
+            $mailboxMessage = $null
+            try {
+                $mailboxMessage = $payload | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+            } catch {
+                continue
+            }
+
+            $content = Get-CommanderPollValue -InputObject $mailboxMessage -Name 'content' -Default $null
+            $eventName = [string](Get-CommanderPollValue -InputObject $content -Name 'event' -Default '')
+            if ([string]::IsNullOrWhiteSpace($eventName)) {
+                continue
+            }
+
+            $messages.Add([ordered]@{
+                timestamp   = [string](Get-CommanderPollValue -InputObject $mailboxMessage -Name 'timestamp' -Default ([System.DateTimeOffset]::Now.ToString('o')))
+                session     = [string](Get-CommanderPollValue -InputObject $content -Name 'session' -Default $SessionName)
+                event       = $eventName
+                message     = [string](Get-CommanderPollValue -InputObject $content -Name 'message' -Default '')
+                label       = [string](Get-CommanderPollValue -InputObject $content -Name 'label' -Default '')
+                pane_id     = [string](Get-CommanderPollValue -InputObject $content -Name 'pane_id' -Default '')
+                role        = [string](Get-CommanderPollValue -InputObject $content -Name 'role' -Default '')
+                status      = [string](Get-CommanderPollValue -InputObject $content -Name 'status' -Default '')
+                exit_reason = [string](Get-CommanderPollValue -InputObject $content -Name 'exit_reason' -Default '')
+                data        = Get-CommanderPollValue -InputObject $content -Name 'data' -Default ([ordered]@{})
+                source      = 'mailbox'
+                mailbox_from = [string](Get-CommanderPollValue -InputObject $mailboxMessage -Name 'from' -Default '')
+            })
+        } catch {
+            break
+        } finally {
+            if ($server) {
+                $server.Dispose()
+            }
+        }
+    }
+
+    return @($messages)
 }
 
-while ($true) {
+function Get-CommanderPollEventSignature {
+    param([Parameter(Mandatory = $true)]$EventRecord)
+
+    return '{0}|{1}|{2}|{3}|{4}' -f `
+        ([string](Get-CommanderPollValue -InputObject $EventRecord -Name 'event' -Default '')), `
+        ([string](Get-CommanderPollValue -InputObject $EventRecord -Name 'pane_id' -Default '')), `
+        ([string](Get-CommanderPollValue -InputObject $EventRecord -Name 'label' -Default '')), `
+        ([string](Get-CommanderPollValue -InputObject $EventRecord -Name 'status' -Default '')), `
+        ([string](Get-CommanderPollValue -InputObject $EventRecord -Name 'message' -Default ''))
+}
+
+function Invoke-CommanderPollEventRecord {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)]$EventRecord,
+        [Parameter(Mandatory = $true)]$Summary
+    )
+
+    $projectDir = Get-CommanderPollProjectDir -Manifest $Manifest -ManifestPath $ManifestPath
+    $sessionName = Get-CommanderPollSessionName -Manifest $Manifest
+    $eventName = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'event' -Default '')
+    $paneContext = Get-CommanderPollPaneContext -Manifest $Manifest -ManifestPath $ManifestPath -EventRecord $EventRecord
+    $paneId = [string]$paneContext['pane_id']
+    $sourceName = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'source' -Default 'events_jsonl')
+    $sourceId = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'id' -Default '')
+    $Summary['new_events'] = [int]$Summary['new_events'] + 1
+
+    if ($eventName -in @('pane.exec_completed', 'pane.completed')) {
+        $diffData = Get-CommanderPollDiffData -WorktreePath ([string]$paneContext['worktree_path'])
+        $message = "Completion detected for $($paneContext['label']) ($paneId) with $($diffData['changed_file_count']) changed file(s)"
+
+        Write-CommanderPollLog `
+            -ProjectDir $projectDir `
+            -SessionName $sessionName `
+            -EventName 'commander.poll.exec_completed' `
+            -Message $message `
+            -PaneId $paneId `
+            -Data ([ordered]@{
+                label     = $paneContext['label']
+                role      = $paneContext['role']
+                diff      = $diffData
+                source    = $sourceName
+                source_id = $sourceId
+            })
+
+        $Summary['completions'] = [int]$Summary['completions'] + 1
+        $Summary['messages'] += @($message)
+        return
+    }
+
+    if ($eventName -eq 'pane.idle') {
+        $message = "Commander should dispatch next task to $($paneContext['label']) ($paneId)"
+
+        Write-CommanderPollLog `
+            -ProjectDir $projectDir `
+            -SessionName $sessionName `
+            -EventName 'commander.poll.idle_dispatch_needed' `
+            -Message $message `
+            -PaneId $paneId `
+            -Data ([ordered]@{
+                label      = $paneContext['label']
+                role       = $paneContext['role']
+                status     = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'status' -Default '')
+                event      = $eventName
+                source     = $sourceName
+                source_id  = $sourceId
+            })
+
+        $Summary['dispatches'] = [int]$Summary['dispatches'] + 1
+        $Summary['messages'] += @($message)
+        return
+    }
+
+    if (Test-CommanderPollApprovalEvent -EventRecord $EventRecord) {
+        if ([string]::IsNullOrWhiteSpace($paneId)) {
+            $Summary['errors'] = [int]$Summary['errors'] + 1
+            $Summary['messages'] += @('approval_waiting event is missing pane_id')
+            return
+        }
+
+        Approve-CommanderPollPane -PaneId $paneId
+        $message = "Approved pane $($paneContext['label']) ($paneId) with Enter"
+
+        Write-CommanderPollLog `
+            -ProjectDir $projectDir `
+            -SessionName $sessionName `
+            -EventName 'commander.poll.auto_approved' `
+            -Message $message `
+            -PaneId $paneId `
+            -Data ([ordered]@{
+                label     = $paneContext['label']
+                role      = $paneContext['role']
+                source    = $sourceName
+                source_id = $sourceId
+            })
+
+        $Summary['approvals'] = [int]$Summary['approvals'] + 1
+        $Summary['messages'] += @($message)
+    }
+}
+
+function Invoke-CommanderPollCycle {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [int]$ProcessedLineCount = 0,
+        [AllowNull()]$ProcessedEventSignatures = $null
+    )
+
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        throw "Manifest not found: $ManifestPath"
+    }
+
+    if ($null -eq $ProcessedEventSignatures) {
+        $ProcessedEventSignatures = [ordered]@{}
+    }
+
     $manifest = Read-CommanderPollManifest -Path $ManifestPath
     $projectDir = Get-CommanderPollProjectDir -Manifest $manifest -ManifestPath $ManifestPath
     $sessionName = Get-CommanderPollSessionName -Manifest $manifest
@@ -434,87 +627,49 @@ while ($true) {
     $summary = New-CommanderPollCycleSummary -ManifestPath $ManifestPath -EventsPath $eventsPath
 
     try {
+        $eventRecords = [System.Collections.Generic.List[object]]::new()
         $lines = @()
         if (Test-Path -LiteralPath $eventsPath -PathType Leaf) {
             $lines = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8)
         }
 
-        if ($lines.Count -lt $processedLineCount) {
-            $processedLineCount = 0
+        if ($lines.Count -lt $ProcessedLineCount) {
+            $ProcessedLineCount = 0
         }
 
-        for ($index = $processedLineCount; $index -lt $lines.Count; $index++) {
+        for ($index = $ProcessedLineCount; $index -lt $lines.Count; $index++) {
             $line = [string]$lines[$index]
             if ([string]::IsNullOrWhiteSpace($line)) {
                 continue
             }
 
-            $eventRecord = $null
             try {
                 $eventRecord = $line | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+                $eventRecord['source'] = 'events_jsonl'
+                $eventRecords.Add($eventRecord)
             } catch {
                 $summary['errors'] = [int]$summary['errors'] + 1
                 $summary['messages'] += @("Failed to parse event line $($index + 1): $($_.Exception.Message)")
-                continue
-            }
-
-            $summary['new_events'] = [int]$summary['new_events'] + 1
-            $eventName = [string](Get-CommanderPollValue -InputObject $eventRecord -Name 'event' -Default '')
-
-            if ($eventName -eq 'pane.exec_completed') {
-                $paneContext = Get-CommanderPollPaneContext -Manifest $manifest -ManifestPath $ManifestPath -EventRecord $eventRecord
-                $diffData = Get-CommanderPollDiffData -WorktreePath ([string]$paneContext['worktree_path'])
-                $message = "Completion detected for $($paneContext['label']) ($($paneContext['pane_id'])) with $($diffData['changed_file_count']) changed file(s)"
-
-                Write-CommanderPollLog `
-                    -ProjectDir $projectDir `
-                    -SessionName $sessionName `
-                    -EventName 'commander.poll.exec_completed' `
-                    -Message $message `
-                    -PaneId ([string]$paneContext['pane_id']) `
-                    -Data ([ordered]@{
-                        label      = $paneContext['label']
-                        role       = $paneContext['role']
-                        diff       = $diffData
-                        source_id  = Get-CommanderPollValue -InputObject $eventRecord -Name 'id' -Default ''
-                    })
-
-                $summary['completions'] = [int]$summary['completions'] + 1
-                $summary['messages'] += @($message)
-                continue
-            }
-
-            if (Test-CommanderPollApprovalEvent -EventRecord $eventRecord) {
-                $paneContext = Get-CommanderPollPaneContext -Manifest $manifest -ManifestPath $ManifestPath -EventRecord $eventRecord
-                $paneId = [string]$paneContext['pane_id']
-
-                if ([string]::IsNullOrWhiteSpace($paneId)) {
-                    $summary['errors'] = [int]$summary['errors'] + 1
-                    $summary['messages'] += @('approval_waiting event is missing pane_id')
-                    continue
-                }
-
-                Approve-CommanderPollPane -PaneId $paneId
-                $message = "Approved pane $($paneContext['label']) ($paneId) with Enter"
-
-                Write-CommanderPollLog `
-                    -ProjectDir $projectDir `
-                    -SessionName $sessionName `
-                    -EventName 'commander.poll.auto_approved' `
-                    -Message $message `
-                    -PaneId $paneId `
-                    -Data ([ordered]@{
-                        label     = $paneContext['label']
-                        role      = $paneContext['role']
-                        source_id = Get-CommanderPollValue -InputObject $eventRecord -Name 'id' -Default ''
-                    })
-
-                $summary['approvals'] = [int]$summary['approvals'] + 1
-                $summary['messages'] += @($message)
             }
         }
 
-        $processedLineCount = $lines.Count
+        $ProcessedLineCount = $lines.Count
+
+        $mailboxRecords = @(Receive-CommanderPollMailboxMessages -SessionName $sessionName)
+        $summary['mailbox_events'] = $mailboxRecords.Count
+        foreach ($mailboxRecord in $mailboxRecords) {
+            $eventRecords.Add($mailboxRecord)
+        }
+
+        foreach ($eventRecord in $eventRecords) {
+            $signature = Get-CommanderPollEventSignature -EventRecord $eventRecord
+            if ($ProcessedEventSignatures.Contains($signature)) {
+                continue
+            }
+
+            $ProcessedEventSignatures[$signature] = [string](Get-CommanderPollValue -InputObject $eventRecord -Name 'timestamp' -Default ([System.DateTimeOffset]::Now.ToString('o')))
+            Invoke-CommanderPollEventRecord -Manifest $manifest -ManifestPath $ManifestPath -EventRecord $eventRecord -Summary $summary
+        }
     } catch {
         $summary['errors'] = [int]$summary['errors'] + 1
         $errorMessage = "commander-poll cycle failed: $($_.Exception.Message)"
@@ -528,6 +683,37 @@ while ($true) {
             -Level 'error'
     }
 
-    Write-Output ($summary | ConvertTo-Json -Compress -Depth 10)
-    Start-Sleep -Seconds $Interval
+    return [ordered]@{
+        Summary                  = $summary
+        ProcessedLineCount       = $ProcessedLineCount
+        ProcessedEventSignatures = $ProcessedEventSignatures
+    }
+}
+
+if ($MyInvocation.InvocationName -ne '.') {
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        throw "Manifest not found: $ManifestPath"
+    }
+
+    $initialManifest = Read-CommanderPollManifest -Path $ManifestPath
+    $initialProjectDir = Get-CommanderPollProjectDir -Manifest $initialManifest -ManifestPath $ManifestPath
+    $eventsPath = Get-CommanderPollEventsPath -ProjectDir $initialProjectDir
+    $processedLineCount = 0
+    $processedEventSignatures = [ordered]@{}
+
+    if (Test-Path -LiteralPath $eventsPath -PathType Leaf) {
+        $processedLineCount = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
+    }
+
+    while ($true) {
+        $cycleResult = Invoke-CommanderPollCycle `
+            -ManifestPath $ManifestPath `
+            -ProcessedLineCount $processedLineCount `
+            -ProcessedEventSignatures $processedEventSignatures
+
+        $processedLineCount = [int]$cycleResult['ProcessedLineCount']
+        $processedEventSignatures = $cycleResult['ProcessedEventSignatures']
+        Write-Output (($cycleResult['Summary']) | ConvertTo-Json -Compress -Depth 10)
+        Start-Sleep -Seconds $Interval
+    }
 }

@@ -534,6 +534,10 @@ Describe 'agent-monitor helpers' {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\agent-monitor.ps1')
     }
 
+    BeforeEach {
+        Mock Send-MonitorCommanderMailboxMessage { return $true }
+    }
+
     It 'treats Codex context exhaustion followed by a PowerShell prompt as a crash reason' {
         Mock Invoke-MonitorWinsmux {
             @(
@@ -1504,5 +1508,74 @@ Describe 'winsmux poll-events command' {
         $result.events[0].pane_id | Should -Be '%4'
         $result.events[1].event | Should -Be 'pane.completed'
         $result.events[1].pane_id | Should -Be '%5'
+    }
+}
+
+Describe 'commander-poll helpers' {
+    BeforeAll {
+        $script:commanderPollScriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\commander-poll.ps1'
+    }
+
+    BeforeEach {
+        $script:commanderPollTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-commander-poll-tests-' + [guid]::NewGuid().ToString('N'))
+        $script:commanderPollManifestDir = Join-Path $script:commanderPollTempRoot '.winsmux'
+        $script:commanderPollManifestPath = Join-Path $script:commanderPollManifestDir 'manifest.yaml'
+        New-Item -ItemType Directory -Path $script:commanderPollManifestDir -Force | Out-Null
+
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:commanderPollTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    launch_dir: $script:commanderPollTempRoot
+"@ | Set-Content -Path $script:commanderPollManifestPath -Encoding UTF8
+
+        . $script:commanderPollScriptPath -ManifestPath $script:commanderPollManifestPath
+    }
+
+    AfterEach {
+        if ($script:commanderPollTempRoot -and (Test-Path $script:commanderPollTempRoot)) {
+            Remove-Item -Path $script:commanderPollTempRoot -Recurse -Force
+        }
+    }
+
+    It 'processes mailbox idle messages and logs dispatch-needed guidance' {
+        Mock Receive-CommanderPollMailboxMessages {
+            @(
+                [ordered]@{
+                    timestamp   = '2026-04-07T09:00:00.0000000+09:00'
+                    session     = 'winsmux-orchestra'
+                    event       = 'pane.idle'
+                    message     = 'Commander alert: idle pane builder-1 (%2, role=Builder)'
+                    label       = 'builder-1'
+                    pane_id     = '%2'
+                    role        = 'Builder'
+                    status      = 'ready'
+                    exit_reason = ''
+                    data        = [ordered]@{
+                        idle_threshold_seconds = 120
+                    }
+                    source      = 'mailbox'
+                }
+            )
+        }
+        Mock Write-CommanderPollLog { }
+
+        $cycle = Invoke-CommanderPollCycle -ManifestPath $script:commanderPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+        $summary = $cycle['Summary']
+
+        $summary.mailbox_events | Should -Be 1
+        $summary.new_events | Should -Be 1
+        $summary.dispatches | Should -Be 1
+        $summary.messages[0] | Should -Be 'Commander should dispatch next task to builder-1 (%2)'
+        Should -Invoke Write-CommanderPollLog -Times 1 -Exactly -ParameterFilter {
+            $EventName -eq 'commander.poll.idle_dispatch_needed' -and
+            $PaneId -eq '%2' -and
+            $Message -eq 'Commander should dispatch next task to builder-1 (%2)'
+        }
     }
 }
