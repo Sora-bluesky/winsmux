@@ -529,6 +529,51 @@ function Write-MonitorEvent {
     }
 }
 
+function Get-MonitorStateEventName {
+    param(
+        [Parameter(Mandatory = $true)][string]$Status,
+        [string]$ExitReason = ''
+    )
+
+    switch ($Status) {
+        'approval_waiting' { return 'pane.approval_waiting' }
+        'busy' { return 'pane.busy' }
+        'crashed' { return 'pane.crashed' }
+        'empty' { return 'pane.empty' }
+        'hung' { return 'pane.hung' }
+        'ready' {
+            if ($ExitReason -eq 'exec_completed') {
+                return 'pane.completed'
+            }
+
+            return 'pane.ready'
+        }
+        'waiting_for_dispatch' { return 'pane.waiting_for_dispatch' }
+        default { return '' }
+    }
+}
+
+function Get-MonitorStateEventMessage {
+    param(
+        [Parameter(Mandatory = $true)][string]$Event,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Status
+    )
+
+    switch ($Event) {
+        'pane.approval_waiting' { return "Pane $Label ($PaneId) awaiting approval." }
+        'pane.busy' { return "Pane $Label ($PaneId) is busy." }
+        'pane.completed' { return "Pane $Label ($PaneId) completed." }
+        'pane.crashed' { return "Pane $Label ($PaneId) crashed." }
+        'pane.empty' { return "Pane $Label ($PaneId) is empty." }
+        'pane.hung' { return "Pane $Label ($PaneId) is hung." }
+        'pane.ready' { return "Pane $Label ($PaneId) is ready." }
+        'pane.waiting_for_dispatch' { return "Pane $Label ($PaneId) is waiting for dispatch." }
+        default { return "Pane $Label ($PaneId) detected as $Status." }
+    }
+}
+
 function Write-MonitorIdleAlertLog {
     param(
         [Parameter(Mandatory = $true)][string]$Message,
@@ -1087,6 +1132,8 @@ function Invoke-AgentMonitorCycle {
             Crashed   = 0
             Respawned = 0
             ApprovalWaiting = 0
+            IdleAlerts = 0
+            Stalls = 0
             Results   = @()
         }
     }
@@ -1139,6 +1186,8 @@ function Invoke-AgentMonitorCycle {
 
         $agentName = [string]$roleAgentConfig.Agent
         $modelName = [string]$roleAgentConfig.Model
+        $launchDirFromManifest = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'launch_dir' -Default '')
+        $builderWorktreePath = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'builder_worktree_path' -Default '')
 
         $checkedCount++
         $status = Get-PaneAgentStatus -PaneId $paneId -Agent $agentName -Role $role -ExecMode $paneExecMode -HungThreshold $IdleThreshold
@@ -1157,6 +1206,28 @@ function Invoke-AgentMonitorCycle {
             IdleAlerted = $false
             StallDetected = $false
             Message    = ''
+        }
+
+        $stateEventName = Get-MonitorStateEventName -Status $statusName -ExitReason $statusExitReason
+        if (-not [string]::IsNullOrWhiteSpace($stateEventName)) {
+            $stateEventData = [ordered]@{
+                agent         = $agentName
+                model         = $modelName
+                exec_mode     = $paneExecMode
+                snapshot_hash = $statusSnapshotHash
+            }
+            if (-not [string]::IsNullOrWhiteSpace($launchDirFromManifest)) {
+                $stateEventData['launch_dir'] = $launchDirFromManifest
+            }
+            if (-not [string]::IsNullOrWhiteSpace($builderWorktreePath)) {
+                $stateEventData['builder_worktree_path'] = $builderWorktreePath
+            }
+
+            $stateEventMessage = Get-MonitorStateEventMessage -Event $stateEventName -Label $label -PaneId $paneId -Status $statusName
+            Write-MonitorEvent -ProjectDir $projectDir -SessionName $SessionName `
+                -Event $stateEventName -Message $stateEventMessage `
+                -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
+                -Data $stateEventData | Out-Null
         }
 
         if ($statusName -eq 'approval_waiting') {
@@ -1180,6 +1251,15 @@ function Invoke-AgentMonitorCycle {
             $result['IdleAlerted'] = $true
             $result['Message'] = $idleAlert.Message
             Write-Output $idleAlert.Message
+            Write-MonitorEvent -ProjectDir $projectDir -SessionName $SessionName `
+                -Event 'pane.idle' -Message $idleAlert.Message `
+                -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
+                -Data ([ordered]@{
+                    agent                  = $agentName
+                    model                  = $modelName
+                    idle_threshold_seconds = $IdleThreshold
+                    snapshot_hash          = $statusSnapshotHash
+                }) | Out-Null
             try {
                 Send-MonitorTelegramAlert -Message $idleAlert.Message -AlertType 'idle' -ProjectDir $projectDir | Out-Null
             } catch {
@@ -1193,6 +1273,15 @@ function Invoke-AgentMonitorCycle {
             $stallMessage = "Commander alert: stalled Builder pane $label ($paneId)"
             $result['Message'] = $stallMessage
             Write-Output $stallMessage
+            Write-MonitorEvent -ProjectDir $projectDir -SessionName $SessionName `
+                -Event 'pane.stalled' -Message $stallMessage `
+                -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
+                -Data ([ordered]@{
+                    agent            = $agentName
+                    model            = $modelName
+                    required_cycles  = $script:BuilderStallThresholdCycles
+                    snapshot_hash    = $statusSnapshotHash
+                }) | Out-Null
         }
 
         # Log the status check
@@ -1220,9 +1309,6 @@ function Invoke-AgentMonitorCycle {
             $launchGitWorktreeDir = $null
             $launchGitWorktreeDir = [string](Get-MonitorPropertyValue -InputObject $manifest.Session -Name 'git_worktree_dir' -Default '')
 
-            # Builder panes use their worktree path
-            $builderWorktreePath = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'builder_worktree_path' -Default '')
-
             if (-not [string]::IsNullOrWhiteSpace($builderWorktreePath) -and (Test-Path $builderWorktreePath -PathType Container)) {
                 $launchDir = $builderWorktreePath
                 # Derive git worktree dir for the builder worktree
@@ -1240,26 +1326,6 @@ function Invoke-AgentMonitorCycle {
             if ([string]::IsNullOrWhiteSpace($launchGitWorktreeDir)) {
                 $launchGitWorktreeDir = $launchDir
             }
-
-            $monitorEventName = if ($statusName -eq 'ready' -and $statusExitReason -eq 'exec_completed') {
-                'pane.completed'
-            } else {
-                'pane.crashed'
-            }
-            $monitorEventMessage = if ($monitorEventName -eq 'pane.completed') {
-                "Pane $label ($paneId) completed."
-            } else {
-                "Pane $label ($paneId) crashed."
-            }
-            Write-MonitorEvent -ProjectDir $projectDir -SessionName $SessionName `
-                -Event $monitorEventName -Message $monitorEventMessage `
-                -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
-                -Data ([ordered]@{
-                    agent            = $agentName
-                    model            = $modelName
-                    launch_dir       = $launchDir
-                    git_worktree_dir = $launchGitWorktreeDir
-                }) | Out-Null
 
             # Log respawn attempt
             if ($loggerAvailable) {
