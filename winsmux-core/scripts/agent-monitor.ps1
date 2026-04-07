@@ -466,6 +466,69 @@ function Send-MonitorBridgeCommand {
     }
 }
 
+function Get-MonitorEventsPath {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    return Join-Path (Join-Path $ProjectDir '.winsmux') 'events.jsonl'
+}
+
+function Get-MonitorProjectDir {
+    param(
+        [Parameter(Mandatory = $true)]$Manifest,
+        [Parameter(Mandatory = $true)][string]$ManifestPath
+    )
+
+    $projectDir = [string](Get-MonitorPropertyValue -InputObject $Manifest.Session -Name 'project_dir' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($projectDir)) {
+        return $projectDir
+    }
+
+    return Split-Path (Split-Path $ManifestPath -Parent) -Parent
+}
+
+function Write-MonitorEvent {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [string]$SessionName = 'winsmux-orchestra',
+        [Parameter(Mandatory = $true)][string]$Event,
+        [string]$Message = '',
+        [string]$Label = '',
+        [string]$PaneId = '',
+        [string]$Role = '',
+        [string]$Status = '',
+        [string]$ExitReason = '',
+        [AllowNull()]$Data = $null
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ProjectDir) -or [string]::IsNullOrWhiteSpace($Event)) {
+        return $null
+    }
+
+    try {
+        $eventsPath = Get-MonitorEventsPath -ProjectDir $ProjectDir
+        [System.IO.Directory]::CreateDirectory((Split-Path -Parent $eventsPath)) | Out-Null
+
+        $record = [ordered]@{
+            timestamp   = (Get-Date).ToString('o')
+            session     = if ([string]::IsNullOrWhiteSpace($SessionName)) { 'winsmux-orchestra' } else { $SessionName }
+            event       = $Event
+            message     = if ($null -eq $Message) { '' } else { $Message }
+            label       = if ($null -eq $Label) { '' } else { $Label }
+            pane_id     = if ($null -eq $PaneId) { '' } else { $PaneId }
+            role        = if ($null -eq $Role) { '' } else { $Role }
+            status      = if ($null -eq $Status) { '' } else { $Status }
+            exit_reason = if ($null -eq $ExitReason) { '' } else { $ExitReason }
+            data        = if ($null -eq $Data) { [ordered]@{} } else { $Data }
+        }
+
+        $line = ($record | ConvertTo-Json -Compress -Depth 10)
+        [System.IO.File]::AppendAllText($eventsPath, $line + [System.Environment]::NewLine, [System.Text.Encoding]::UTF8)
+        return $record
+    } catch {
+        return $null
+    }
+}
+
 function Write-MonitorIdleAlertLog {
     param(
         [Parameter(Mandatory = $true)][string]$Message,
@@ -801,6 +864,16 @@ function Invoke-AgentRespawn {
         Start-Sleep -Seconds 3
         $status = Get-PaneAgentStatus -PaneId $PaneId -Agent $Agent -Role $paneRole -ExecMode $paneExecMode
         if ($status.Status -eq 'ready') {
+            if (-not [string]::IsNullOrWhiteSpace($ManifestPath) -and (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+                try {
+                    $paneLabel = Get-MonitorPaneTitle -PaneId $PaneId
+                    if (-not [string]::IsNullOrWhiteSpace($paneLabel)) {
+                        Update-MonitorManifestPaneLabel -ManifestPath $ManifestPath -PaneId $PaneId -Label $paneLabel | Out-Null
+                    }
+                } catch {
+                }
+            }
+
             $successMessage = if ($paneExecMode) {
                 "Pane respawned successfully in exec_mode for pane $PaneId"
             } else {
@@ -819,6 +892,160 @@ function Invoke-AgentRespawn {
         PaneId  = $PaneId
         Message = "Timed out waiting for agent ready in pane $PaneId after ${ReadyTimeoutSeconds}s"
     }
+}
+
+function ConvertFrom-MonitorYamlScalar {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return ''
+    }
+
+    $text = $Value.ToString().Trim()
+    if ($text.Length -ge 2) {
+        if (($text.StartsWith('"') -and $text.EndsWith('"')) -or
+            ($text.StartsWith("'") -and $text.EndsWith("'"))) {
+            $text = $text.Substring(1, $text.Length - 2)
+        }
+    }
+
+    if ($text -eq 'null') {
+        return ''
+    }
+
+    return $text
+}
+
+function ConvertTo-MonitorYamlScalar {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return '""'
+    }
+
+    $text = $Value.ToString()
+    if ($text -eq '') {
+        return '""'
+    }
+
+    if ($text -match '^[A-Za-z0-9._/\\:-]+$') {
+        return $text
+    }
+
+    return '"' + ($text -replace '"', '\"') + '"'
+}
+
+function Get-MonitorPaneTitle {
+    param([Parameter(Mandatory = $true)][string]$PaneId)
+
+    $titleOutput = Invoke-MonitorWinsmux -Arguments @('display-message', '-p', '-t', $PaneId, '#{pane_title}') -CaptureOutput
+    return (($titleOutput | Out-String).Trim() -split "\r?\n" | Select-Object -Last 1).Trim()
+}
+
+function Update-MonitorManifestPaneLabel {
+    param(
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Label) -or -not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        return $false
+    }
+
+    $content = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($content)) {
+        return $false
+    }
+
+    $newline = "`n"
+
+    $lines = [string[]]($content -split "\r?\n")
+    $section = ''
+    $currentPaneStart = -1
+    $currentPaneId = ''
+    $changed = $false
+
+    for ($i = 0; $i -lt $lines.Length; $i++) {
+        $line = $lines[$i]
+
+        if ($line -match '^(session|panes):\s*$') {
+            if ($section -eq 'panes') {
+                if ($currentPaneStart -ge 0 -and $currentPaneId -eq $PaneId) {
+                    $match = [regex]::Match($lines[$currentPaneStart], '^\s{2}-\s+label:\s*(.*?)\s*$')
+                    if ($match.Success) {
+                        $currentLabel = ConvertFrom-MonitorYamlScalar -Value $match.Groups[1].Value
+                        if ($currentLabel -ne $Label) {
+                            $lines[$currentPaneStart] = ('  - label: {0}' -f (ConvertTo-MonitorYamlScalar -Value $Label))
+                            $changed = $true
+                        }
+                    }
+                }
+                $currentPaneStart = -1
+                $currentPaneId = ''
+            }
+
+            $section = $Matches[1]
+            continue
+        }
+
+        if ($section -eq 'panes' -and $line -match '^\s{2}-\s+label:\s*(.*?)\s*$') {
+            if ($currentPaneStart -ge 0 -and $currentPaneId -eq $PaneId) {
+                $match = [regex]::Match($lines[$currentPaneStart], '^\s{2}-\s+label:\s*(.*?)\s*$')
+                if ($match.Success) {
+                    $currentLabel = ConvertFrom-MonitorYamlScalar -Value $match.Groups[1].Value
+                    if ($currentLabel -ne $Label) {
+                        $lines[$currentPaneStart] = ('  - label: {0}' -f (ConvertTo-MonitorYamlScalar -Value $Label))
+                        $changed = $true
+                    }
+                }
+            }
+            $currentPaneStart = $i
+            $currentPaneId = ''
+            continue
+        }
+
+        if ($section -eq 'panes' -and $currentPaneStart -ge 0 -and $line -match '^\s{4}pane_id:\s*(.*?)\s*$') {
+            $currentPaneId = ConvertFrom-MonitorYamlScalar -Value $Matches[1]
+            continue
+        }
+
+        if ($section -eq 'panes' -and $line -match '^[^\s]') {
+            if ($currentPaneStart -ge 0 -and $currentPaneId -eq $PaneId) {
+                $match = [regex]::Match($lines[$currentPaneStart], '^\s{2}-\s+label:\s*(.*?)\s*$')
+                if ($match.Success) {
+                    $currentLabel = ConvertFrom-MonitorYamlScalar -Value $match.Groups[1].Value
+                    if ($currentLabel -ne $Label) {
+                        $lines[$currentPaneStart] = ('  - label: {0}' -f (ConvertTo-MonitorYamlScalar -Value $Label))
+                        $changed = $true
+                    }
+                }
+            }
+            $currentPaneStart = -1
+            $currentPaneId = ''
+            $section = ''
+        }
+    }
+
+    if ($section -eq 'panes') {
+        if ($currentPaneStart -ge 0 -and $currentPaneId -eq $PaneId) {
+            $match = [regex]::Match($lines[$currentPaneStart], '^\s{2}-\s+label:\s*(.*?)\s*$')
+            if ($match.Success) {
+                $currentLabel = ConvertFrom-MonitorYamlScalar -Value $match.Groups[1].Value
+                if ($currentLabel -ne $Label) {
+                    $lines[$currentPaneStart] = ('  - label: {0}' -f (ConvertTo-MonitorYamlScalar -Value $Label))
+                    $changed = $true
+                }
+            }
+        }
+    }
+
+    if (-not $changed) {
+        return $false
+    }
+
+    Set-Content -LiteralPath $ManifestPath -Value ($lines -join $newline) -Encoding UTF8 -NoNewline
+    return $true
 }
 
 # ---------------------------------------------------------------------------
@@ -840,8 +1067,6 @@ function Invoke-AgentMonitorCycle {
         [Alias('HungThreshold')]
         [int]$IdleThreshold = $script:AgentMonitorDefaultHungThreshold
     )
-
-    $projectDir = Split-Path (Split-Path $ManifestPath -Parent) -Parent
 
     # Read manifest to get pane assignments
     if (-not (Test-Path $ManifestPath -PathType Leaf)) {
@@ -867,6 +1092,8 @@ function Invoke-AgentMonitorCycle {
     }
 
     # Load logger for structured logging
+    # NOTE: dot-source logger BEFORE computing $projectDir because
+    # logger.ps1 has a param($ProjectDir) that would overwrite our local variable.
     $loggerScript = Join-Path $scriptDir 'logger.ps1'
     $loggerAvailable = $false
     if (Test-Path $loggerScript -PathType Leaf) {
@@ -876,6 +1103,8 @@ function Invoke-AgentMonitorCycle {
         } catch {
         }
     }
+
+    $projectDir = Get-MonitorProjectDir -Manifest $manifest -ManifestPath $ManifestPath
 
     $results = [System.Collections.Generic.List[object]]::new()
     $checkedCount = 0
@@ -951,6 +1180,10 @@ function Invoke-AgentMonitorCycle {
             $result['IdleAlerted'] = $true
             $result['Message'] = $idleAlert.Message
             Write-Output $idleAlert.Message
+            try {
+                Send-MonitorTelegramAlert -Message $idleAlert.Message -AlertType 'idle' -ProjectDir $projectDir | Out-Null
+            } catch {
+            }
         }
 
         $stallDetected = Test-BuilderStall -PaneId $paneId -Role $role -Status $statusName -SnapshotHash $statusSnapshotHash
@@ -1007,6 +1240,26 @@ function Invoke-AgentMonitorCycle {
             if ([string]::IsNullOrWhiteSpace($launchGitWorktreeDir)) {
                 $launchGitWorktreeDir = $launchDir
             }
+
+            $monitorEventName = if ($statusName -eq 'ready' -and $statusExitReason -eq 'exec_completed') {
+                'pane.completed'
+            } else {
+                'pane.crashed'
+            }
+            $monitorEventMessage = if ($monitorEventName -eq 'pane.completed') {
+                "Pane $label ($paneId) completed."
+            } else {
+                "Pane $label ($paneId) crashed."
+            }
+            Write-MonitorEvent -ProjectDir $projectDir -SessionName $SessionName `
+                -Event $monitorEventName -Message $monitorEventMessage `
+                -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
+                -Data ([ordered]@{
+                    agent            = $agentName
+                    model            = $modelName
+                    launch_dir       = $launchDir
+                    git_worktree_dir = $launchGitWorktreeDir
+                }) | Out-Null
 
             # Log respawn attempt
             if ($loggerAvailable) {

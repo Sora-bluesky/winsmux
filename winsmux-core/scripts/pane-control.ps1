@@ -163,11 +163,8 @@ function ConvertFrom-PaneControlManifestContent {
     return $manifest
 }
 
-function Get-PaneControlManifestContext {
-    param(
-        [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$PaneId
-    )
+function Get-PaneControlManifestEntries {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
     $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
     if (-not (Test-Path $manifestPath -PathType Leaf)) {
@@ -180,17 +177,16 @@ function Get-PaneControlManifestContext {
     }
 
     $manifest = ConvertFrom-PaneControlManifestContent -Content $content
+    $projectRoot = [string]$manifest.Session.project_dir
+    if ([string]::IsNullOrWhiteSpace($projectRoot)) {
+        $projectRoot = $ProjectDir
+    }
+
+    $sessionGitWorktreeDir = [string]$manifest.Session.git_worktree_dir
+    $entries = @()
+
     foreach ($label in $manifest.Panes.Keys) {
         $pane = $manifest.Panes[$label]
-        if ([string]$pane.pane_id -ne $PaneId) {
-            continue
-        }
-
-        $projectRoot = [string]$manifest.Session.project_dir
-        if ([string]::IsNullOrWhiteSpace($projectRoot)) {
-            $projectRoot = $ProjectDir
-        }
-
         $role = Get-PaneControlCanonicalRole -Role ([string]$pane.role) -Label $label
         $launchDir = [string]$pane.launch_dir
         $builderWorktreePath = [string]$pane.builder_worktree_path
@@ -203,23 +199,42 @@ function Get-PaneControlManifestContext {
             $launchDir = $projectRoot
         }
 
-        $gitWorktreeDir = [string]$manifest.Session.git_worktree_dir
+        $gitWorktreeDir = $sessionGitWorktreeDir
         if ($role -eq 'Builder' -or [string]::IsNullOrWhiteSpace($gitWorktreeDir)) {
             $gitWorktreeDir = Get-PaneControlGitWorktreeDir -ProjectDir $launchDir
         }
 
-        return [ordered]@{
-            ManifestPath         = $manifestPath
-            ProjectDir           = $projectRoot
-            Label                = $label
-            PaneId               = $PaneId
-            Role                 = $role
-            LaunchDir            = $launchDir
-            BuilderWorktreePath  = $builderWorktreePath
-            GitWorktreeDir       = $gitWorktreeDir
+        $entries += [ordered]@{
+            ManifestPath        = $manifestPath
+            ProjectDir          = $projectRoot
+            Label               = $label
+            PaneId              = [string]$pane.pane_id
+            Role                = $role
+            LaunchDir           = $launchDir
+            BuilderWorktreePath = $builderWorktreePath
+            GitWorktreeDir      = $gitWorktreeDir
         }
     }
 
+    return @($entries)
+}
+
+function Get-PaneControlManifestContext {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$PaneId
+    )
+
+    $entries = Get-PaneControlManifestEntries -ProjectDir $ProjectDir
+    foreach ($entry in $entries) {
+        if ($entry.PaneId -ne $PaneId) {
+            continue
+        }
+
+        return $entry
+    }
+
+    $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
     throw "Pane $PaneId was not found in manifest: $manifestPath"
 }
 

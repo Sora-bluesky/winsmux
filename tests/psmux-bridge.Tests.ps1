@@ -44,6 +44,7 @@ Describe 'Assert-Role' {
         $env:WINSMUX_ROLE = 'Commander'
 
         (Assert-Role -Command 'send' -TargetPane 'reviewer') | Should -Be $true
+        (Assert-Role -Command 'poll-events') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $true
         (Assert-Role -Command 'type' -TargetPane 'reviewer') | Should -Be $false
     }
@@ -64,6 +65,7 @@ Describe 'Assert-Role' {
 
         (Assert-Role -Command 'message' -TargetPane 'commander') | Should -Be $true
         (Assert-Role -Command 'read' -TargetPane 'self') | Should -Be $true
+        (Assert-Role -Command 'poll-events') | Should -Be $false
         (Assert-Role -Command 'signal') | Should -Be $false
         (Assert-Role -Command 'wait') | Should -Be $false
     }
@@ -489,6 +491,154 @@ Describe 'agent-monitor helpers' {
         }
     }
 
+    It 'updates the manifest pane label after a successful respawn' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    launch_dir: $tempRoot
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+            Mock Invoke-MonitorWinsmux { } -ParameterFilter {
+                $Arguments[0] -eq 'respawn-pane'
+            }
+            Mock Invoke-MonitorWinsmux { 'builder-2' } -ParameterFilter {
+                $Arguments[0] -eq 'display-message'
+            }
+            Mock Wait-MonitorPaneShellReady { }
+            Mock Send-MonitorBridgeCommand { }
+            Mock Get-PaneAgentStatus {
+                [PSCustomObject]@{
+                    Status       = 'ready'
+                    PaneId       = '%2'
+                    SnapshotTail = ''
+                    ExitReason   = ''
+                }
+            }
+
+            $result = Invoke-AgentRespawn `
+                -PaneId '%2' `
+                -Agent 'codex' `
+                -Model 'gpt-5.4' `
+                -ProjectDir $tempRoot `
+                -GitWorktreeDir 'C:\repo\.git\worktrees\builder-1' `
+                -ManifestPath $manifestPath
+
+            $result.Success | Should -Be $true
+            $manifestContent = Get-Content -Path $manifestPath -Raw -Encoding UTF8
+            $manifestContent | Should -Match '(?m)^  - label: builder-2$'
+            $manifestContent | Should -Not -Match '(?m)^  - label: builder-1$'
+            Should -Invoke Invoke-MonitorWinsmux -Times 1 -Exactly -ParameterFilter {
+                $Arguments[0] -eq 'display-message' -and
+                $Arguments[1] -eq '-p' -and
+                $Arguments[2] -eq '-t' -and
+                $Arguments[3] -eq '%2' -and
+                $Arguments[4] -eq '#{pane_title}'
+            }
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'writes completion and crash events during a monitor cycle' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        $eventsPath = Join-Path $manifestDir 'events.jsonl'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+  - label: reviewer
+    pane_id: %4
+    role: Reviewer
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+            Mock Get-PaneAgentStatus {
+                [PSCustomObject]@{
+                    Status       = 'ready'
+                    PaneId       = '%2'
+                    SnapshotTail = ''
+                    SnapshotHash = 'hash-builder'
+                    ExitReason   = 'exec_completed'
+                }
+            } -ParameterFilter {
+                $PaneId -eq '%2'
+            }
+            Mock Get-PaneAgentStatus {
+                [PSCustomObject]@{
+                    Status       = 'crashed'
+                    PaneId       = '%4'
+                    SnapshotTail = ''
+                    SnapshotHash = 'hash-reviewer'
+                    ExitReason   = 'context_exhausted'
+                }
+            } -ParameterFilter {
+                $PaneId -eq '%4'
+            }
+            Mock Update-MonitorIdleAlertState {
+                [ordered]@{
+                    ShouldAlert = $false
+                    Message     = ''
+                }
+            }
+            Mock Test-BuilderStall { $false }
+            Mock Send-MonitorTelegramAlert { $true }
+            Mock Invoke-AgentRespawn {
+                param($PaneId, $Agent, $Model, $ProjectDir, $GitWorktreeDir, $ManifestPath)
+
+                [PSCustomObject]@{
+                    Success = $true
+                    PaneId  = $PaneId
+                    Message = "respawned $PaneId"
+                }
+            }
+
+            $result = Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                agent = 'codex'
+                model = 'gpt-5.4'
+                roles = [ordered]@{}
+            }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra'
+
+            $result.Crashed | Should -Be 2
+            (Test-Path $eventsPath) | Should -Be $true
+
+            $events = @(Get-Content -Path $eventsPath -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
+            $events.Count | Should -Be 2
+            $events[0].event | Should -Be 'pane.completed'
+            $events[0].pane_id | Should -Be '%2'
+            $events[0].exit_reason | Should -Be 'exec_completed'
+            $events[1].event | Should -Be 'pane.crashed'
+            $events[1].pane_id | Should -Be '%4'
+            $events[1].exit_reason | Should -Be 'context_exhausted'
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
     It 'detects a stalled Builder after three busy cycles with the same snapshot hash' {
         $script:BuilderStallHistory = @{}
 
@@ -687,5 +837,155 @@ panes:
         $result.Label | Should -Be 'builder-4'
         Should -Invoke Remove-OrchestraPane -Times 1 -Exactly
         Should -Invoke Add-OrchestraPane -Times 0 -Exactly
+    }
+}
+
+Describe 'pane status helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\pane-status.ps1')
+    }
+
+    BeforeEach {
+        $script:paneStatusTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-pane-status-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $script:paneStatusTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+
+        @'
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    launch_dir: C:\repo\.worktrees\builder-1
+    builder_worktree_path: C:\repo\.worktrees\builder-1
+  - label: reviewer
+    pane_id: %4
+    role: Reviewer
+  - label: commander
+    pane_id: %1
+    role: Commander
+'@ | Set-Content -Path (Join-Path $manifestDir 'manifest.yaml') -Encoding UTF8
+    }
+
+    AfterEach {
+        if ($script:paneStatusTempRoot -and (Test-Path $script:paneStatusTempRoot)) {
+            Remove-Item -Path $script:paneStatusTempRoot -Recurse -Force
+        }
+    }
+
+    It 'reads every pane entry from the orchestra manifest' {
+        $entries = Get-PaneControlManifestEntries -ProjectDir $script:paneStatusTempRoot
+
+        $entries.Count | Should -Be 3
+        $entries[0].Label | Should -Be 'builder-1'
+        $entries[0].PaneId | Should -Be '%2'
+        $entries[0].Role | Should -Be 'Builder'
+        $entries[0].GitWorktreeDir | Should -Be 'C:\repo\.worktrees\builder-1'
+        $entries[1].Role | Should -Be 'Reviewer'
+        $entries[2].Label | Should -Be 'commander'
+    }
+
+    It 'classifies pane captures into pwsh, codex, idle, and busy states' {
+        (Get-PaneActualStateFromText -Text "PS C:\repo>") | Should -Be 'pwsh'
+        (Get-PaneActualStateFromText -Text @"
+gpt-5.4   82% context left
+? send   Ctrl+J newline
+>
+"@) | Should -Be 'idle'
+        (Get-PaneActualStateFromText -Text @"
+Launching codex...
+codex --full-auto -C C:\repo
+"@) | Should -Be 'codex'
+        (Get-PaneActualStateFromText -Text @"
+gpt-5.4   61% context left
+thinking
+Esc to interrupt
+"@) | Should -Be 'busy'
+    }
+
+    It 'builds status rows from manifest panes and capture snapshots' {
+        $records = Get-PaneStatusRecords -ProjectDir $script:paneStatusTempRoot -SnapshotProvider {
+            param($PaneId)
+
+            switch ($PaneId) {
+                '%2' {
+                    return "PS C:\repo\.worktrees\builder-1>"
+                }
+                '%4' {
+                    return @"
+gpt-5.4   82% context left
+? send   Ctrl+J newline
+>
+"@
+                }
+                '%1' {
+                    return @"
+gpt-5.4   61% context left
+thinking
+Esc to interrupt
+"@
+                }
+                default {
+                    throw "unexpected pane id: $PaneId"
+                }
+            }
+        }
+
+        $records.Count | Should -Be 3
+        $records[0].Label | Should -Be 'builder-1'
+        $records[0].State | Should -Be 'pwsh'
+        $records[0].TokensRemaining | Should -Be ''
+
+        $records[1].Label | Should -Be 'reviewer'
+        $records[1].State | Should -Be 'idle'
+        $records[1].TokensRemaining | Should -Be '82% context left'
+
+        $records[2].Label | Should -Be 'commander'
+        $records[2].State | Should -Be 'busy'
+        $records[2].TokensRemaining | Should -Be '61% context left'
+    }
+}
+
+Describe 'winsmux poll-events command' {
+    BeforeEach {
+        $script:pollEventsTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-poll-events-tests-' + [guid]::NewGuid().ToString('N'))
+        $eventsDir = Join-Path $script:pollEventsTempRoot '.winsmux'
+        $script:pollEventsPath = Join-Path $eventsDir 'events.jsonl'
+        New-Item -ItemType Directory -Path $eventsDir -Force | Out-Null
+
+        @(
+            ([ordered]@{ timestamp = '2026-04-07T09:00:00.0000000+09:00'; event = 'pane.completed'; pane_id = '%2'; label = 'builder-1' } | ConvertTo-Json -Compress),
+            ([ordered]@{ timestamp = '2026-04-07T09:00:01.0000000+09:00'; event = 'pane.crashed'; pane_id = '%4'; label = 'reviewer' } | ConvertTo-Json -Compress),
+            ([ordered]@{ timestamp = '2026-04-07T09:00:02.0000000+09:00'; event = 'pane.completed'; pane_id = '%5'; label = 'builder-2' } | ConvertTo-Json -Compress)
+        ) | Set-Content -Path $script:pollEventsPath -Encoding UTF8
+    }
+
+    AfterEach {
+        if ($script:pollEventsTempRoot -and (Test-Path $script:pollEventsTempRoot)) {
+            Remove-Item -Path $script:pollEventsTempRoot -Recurse -Force
+        }
+    }
+
+    It 'returns only events newer than the supplied cursor' {
+        $bridgeScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+
+        Push-Location $script:pollEventsTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $bridgeScript poll-events 1
+        } finally {
+            Pop-Location
+        }
+
+        $result = $output | ConvertFrom-Json -AsHashtable
+
+        $result.cursor | Should -Be 3
+        $result.events.Count | Should -Be 2
+        $result.events[0].event | Should -Be 'pane.crashed'
+        $result.events[0].pane_id | Should -Be '%4'
+        $result.events[1].event | Should -Be 'pane.completed'
+        $result.events[1].pane_id | Should -Be '%5'
     }
 }

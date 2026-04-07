@@ -17,6 +17,7 @@ $FocusPolicyFile = Join-Path $env:TEMP "winsmux\focus-policy-stack.json"
 $LabelsFile     = Join-Path $env:APPDATA "winsmux\labels.json"
 $BridgeSettingsScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\settings.ps1'))
 $PaneControlScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-control.ps1'))
+$PaneStatusScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-status.ps1'))
 
 if (Test-Path $BridgeSettingsScript -PathType Leaf) {
     . $BridgeSettingsScript
@@ -24,6 +25,10 @@ if (Test-Path $BridgeSettingsScript -PathType Leaf) {
 
 if (Test-Path $PaneControlScript -PathType Leaf) {
     . $PaneControlScript
+}
+
+if (Test-Path $PaneStatusScript -PathType Leaf) {
+    . $PaneStatusScript
 }
 
 # --- Windows Credential Manager P/Invoke ---
@@ -795,8 +800,27 @@ function Invoke-Send {
 
     # Normalize Git Bash /tmp paths before dispatching PowerShell-oriented commands.
     $text = Normalize-DispatchText -Text ($Rest -join ' ')
+    $projectDir = (Get-Location).Path
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
+    $textToSend = $text
+    $sendKeysLengthLimit = 8000
+
+    if ($text.Length -gt $sendKeysLengthLimit) {
+        $promptPath = New-DispatchPromptFile -Content $text -ProjectDir $projectDir
+        $promptRef = $promptPath
+        try {
+            $relativePromptPath = [System.IO.Path]::GetRelativePath($projectDir, $promptPath)
+            if (-not [string]::IsNullOrWhiteSpace($relativePromptPath) -and -not $relativePromptPath.StartsWith('..')) {
+                $promptRef = $relativePromptPath.Replace('\', '/')
+            }
+        } catch {
+            $promptRef = $promptPath
+        }
+
+        $textToSend = "Read the full prompt from '$promptRef' and follow it exactly. This pointer was sent because the original prompt exceeded the send buffer."
+        Write-Warning ("send target '{0}' exceeded {1} chars ({2}); wrote full text to {3} and sent a file-read pointer instead." -f $Target, $sendKeysLengthLimit, $text.Length, $promptPath)
+    }
 
     $sendCommandToPane = {
         param([Parameter(Mandatory = $true)][string]$CommandText)
@@ -895,7 +919,7 @@ function Invoke-Send {
     } catch {
     }
 
-    & $sendCommandToPane $text
+    & $sendCommandToPane $textToSend
 }
 
 function Invoke-Name {
@@ -1523,6 +1547,90 @@ function Invoke-HealthCheck {
     }
 }
 
+function Invoke-Status {
+    if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
+        Stop-WithError "usage: winsmux status"
+    }
+
+    $projectDir = (Get-Location).Path
+
+    try {
+        $records = @(Get-PaneStatusRecords -ProjectDir $projectDir)
+    } catch {
+        Stop-WithError $_.Exception.Message
+    }
+
+    if ($records.Count -eq 0) {
+        Write-Output "(no panes)"
+        return
+    }
+
+    $table = $records |
+        Select-Object Label, Role, PaneId, State, @{ Name = 'Tokens'; Expression = { $_.TokensRemaining } } |
+        Format-Table -AutoSize |
+        Out-String
+
+    Write-Output ($table.TrimEnd())
+}
+
+function Get-BridgeEventsPath {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    return Join-Path (Join-Path $ProjectDir '.winsmux') 'events.jsonl'
+}
+
+function Invoke-PollEvents {
+    if ($Rest -and $Rest.Count -gt 0) {
+        Stop-WithError "usage: winsmux poll-events [cursor]"
+    }
+
+    $cursor = 0
+    if ($Target) {
+        $parsedCursor = 0
+        if (-not [int]::TryParse($Target, [ref]$parsedCursor)) {
+            Stop-WithError "usage: winsmux poll-events [cursor]"
+        }
+
+        if ($parsedCursor -gt 0) {
+            $cursor = $parsedCursor
+        }
+    }
+
+    $eventsPath = Get-BridgeEventsPath -ProjectDir (Get-Location).Path
+    $response = [ordered]@{
+        cursor = 0
+        events = @()
+    }
+
+    if (-not (Test-Path -LiteralPath $eventsPath -PathType Leaf)) {
+        $response | ConvertTo-Json -Compress -Depth 10 | Write-Output
+        return
+    }
+
+    try {
+        $lines = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    } catch {
+        Stop-WithError "failed to read event log: $($_.Exception.Message)"
+    }
+
+    if ($cursor -gt $lines.Count) {
+        $cursor = $lines.Count
+    }
+
+    $events = [System.Collections.Generic.List[object]]::new()
+    for ($i = $cursor; $i -lt $lines.Count; $i++) {
+        try {
+            $events.Add(($lines[$i] | ConvertFrom-Json -AsHashtable -ErrorAction Stop)) | Out-Null
+        } catch {
+            Stop-WithError "failed to parse event log line $($i + 1): $($_.Exception.Message)"
+        }
+    }
+
+    $response.cursor = $lines.Count
+    $response.events = @($events)
+    $response | ConvertTo-Json -Compress -Depth 10 | Write-Output
+}
+
 function Invoke-Focus {
     param([string]$FocusTarget = $Target)
 
@@ -1799,6 +1907,8 @@ Commands:
   wait <channel> [timeout]  Block until signal received (replaces polling)
   wait-ready <target> [timeout_seconds]  Wait for Codex prompt in pane
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
+  status                    Report manifest pane states via capture-pane
+  poll-events [cursor]      Return new monitor events from .winsmux/events.jsonl
   signal <channel>          Send signal to unblock a waiting process
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
   dispatch-route <text>   Route text to appropriate pane by keyword detection
@@ -2092,6 +2202,8 @@ switch ($Command) {
     'wait'            { Invoke-Wait }
     'wait-ready'      { Invoke-WaitReady }
     'health-check'    { Invoke-HealthCheck }
+    'status'          { Invoke-Status }
+    'poll-events'     { Invoke-PollEvents }
     'signal'          { Invoke-Signal }
     'mailbox-create'  { Invoke-MailboxCreate }
     'mailbox-send'    { Invoke-MailboxSend }
