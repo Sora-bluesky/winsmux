@@ -99,6 +99,10 @@
           {
             "type": "command",
             "command": "node .claude/hooks/sh-output-control.js"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/sh-pane-monitor.js"
           }
         ]
       },

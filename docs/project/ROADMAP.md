@@ -1,7 +1,7 @@
 # ロードマップ
 
 > `tasks/backlog.yaml` から自動生成 — 手動編集禁止
-> 最終同期: 2026-04-07 20:13 (+09:00)
+> 最終同期: 2026-04-07 22:36 (+09:00)
 
 ## バージョン概要
 
@@ -42,7 +42,7 @@
 
 ## タスク詳細
 
-### v0.9.6
+### v0.9.6: fork sync + upstream PRs (COMPLETE)
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -57,7 +57,7 @@
 | [x] | TASK-003 | Fix select-layout tiled pane redistribution | P2 | psmux/psmux | done |
 | [x] | TASK-023 | File upstream Issues for remaining bugs (#176, #177, #178) | P2 | psmux/psmux | done |
 
-### v0.10.0
+### v0.10.0: Runtime verification
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -73,7 +73,7 @@
 | [x] | TASK-052 | Rewrite README.md/README.ja.md to reflect platform positioning and 3 unique strengths | P1 | winsmux | done |
 | [x] | TASK-061 | Fix CI: remove test.yml or make it skip when test files are gitignored | P1 | winsmux | done |
 
-### v0.10.1
+### v0.10.1: Integration verification + upstream
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -85,14 +85,14 @@
 | [x] | TASK-060 | Write integration tests verifying gate enforcement (deny paths end-to-end) | P1 | winsmux | done |
 | [x] | TASK-067 | Integration test: orchestra-start full cycle (settings→vault→layout→agents→health) | P1 | winsmux | done |
 
-### v0.10.2
+### v0.10.2: Codex patterns Phase 1
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [x] | TASK-084 | Implement .winsmux/manifest.yaml persistent session state | P0 | winsmux | done |
 | [x] | TASK-085 | Implement keyword-based dispatch routing for Commander | P0 | winsmux | done |
 
-### v0.10.3
+### v0.10.3: Codex patterns Phase 2
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -107,7 +107,7 @@
 | [x] | TASK-041 | Write multi-agent integration test (orchestra end-to-end scenario) | P2 | winsmux | done |
 | [x] | TASK-083 | Structured logging infrastructure for Orchestra startup and runtime | P2 | winsmux | done |
 
-### v0.12.0
+### v0.12.0: SDK + Advanced
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -148,7 +148,7 @@
 | [x] | TASK-031 | Enhance evidence-ledger with command-trace recording and integrity check | P2 | winsmux | done |
 | [x] | TASK-036 | Extend agent-readiness patterns beyond prompt detection (Codex/Gemini/Claude) | P2 | winsmux | done |
 
-### v0.17.0 — Orchestra 自動ディスパッチ
+### v0.17.0
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -156,41 +156,41 @@
 | [x] | TASK-111 | Builder completion notification + auto-Reviewer dispatch | P0 | winsmux | done |
 | [x] | TASK-121 | Commander auto-detect Codex approval prompts in Builder panes | P0 | winsmux | done |
 
-### v0.17.1 — アイドルペイン切替 + 起動シリアライズ
+### v0.17.1
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [x] | TASK-117 | Serialize orchestra-start phases with startup lock, retry, and idempotent preflight | P0 | winsmux | done |
 | [x] | TASK-112 | Idle pane auto-role-switch for optimal resource utilization | P1 | winsmux | done |
 
-### v0.17.2 — 起動 UX + Vault 堅牢化
+### v0.17.2
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [x] | TASK-116 | Remove interactive startup prompts and add startup-doctor remediation | P1 | winsmux | done |
 | [x] | TASK-119 | Credential and vault health preflight with redacted diagnostics | P1 | winsmux | done |
 
-### v0.17.3 — CI ゲート + 監査トリアージ
+### v0.17.3
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [x] | TASK-039 | Make STG3 gate CI-aware (auto-run Pester, deny on coverage < 80%) | P2 | winsmux | done |
 | [x] | TASK-082 | Triage 96 startup audit findings to responsible tasks | P2 | winsmux | done |
 
-### v0.17.4 — ロールバック + ドキュメント
+### v0.17.4
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [x] | TASK-118 | Add startup rollback and recovery journal for partial initialization | P1 | winsmux | done |
 | [x] | TASK-120 | Write startup troubleshooting guide and verification matrix | P2 | winsmux | done |
 
-### v0.18.0 — Tauri scaffold
+### v0.18.0
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [x] | TASK-098 | Tauri scaffold + sidebar + Focus Policy + notification inbox | P0 | winsmux | done |
 
-### v0.18.1 — マルチペイン + Codex 改善
+### v0.18.1
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -210,7 +210,7 @@
 | [x] | TASK-128 | Fix role switch killing pane instead of respawning | P1 | winsmux | done |
 | [x] | TASK-129 | Fix pane border labels not displayed | P2 | winsmux | done |
 
-### v0.18.2 — タスク分割 + 動的スケーリング
+### v0.18.2: orchestra-start bug (2026-04-05)
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -225,7 +225,7 @@
 | [x] | TASK-130 | Commander auto-detect Builder stall and alert | P1 | winsmux | done |
 | [x] | TASK-134 | Commander approval gate for Builder sandbox prompts | P1 | winsmux | done |
 
-### v0.19.0 — 衛生リリース (Cleanup & Hardening)
+### v0.19.0
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -233,7 +233,7 @@
 | [x] | TASK-151 | Harden against GlassWorm-style invisible Unicode attacks | P0 | winsmux | done |
 | [x] | TASK-152 | Fix /tmp/ path mismatch between bash Commander and pwsh panes | P1 | winsmux | done |
 
-### v0.19.1 — リネーム & ヘルスチェック
+### v0.19.1
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -241,13 +241,13 @@
 | [x] | TASK-139 | Rename psmux-bridge to winsmux-core + adapter layer separation | P1 | winsmux | done |
 | [x] | TASK-153 | Repo health tooling integrated with doctor + dead code audit | P1 | winsmux | done |
 
-### v0.19.2 — モノリポ統合
+### v0.19.2: Monorepo consolidation (2026-04-05, RELEASED)
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [x] | TASK-173 | Consolidate winsmux-core Rust binary into winsmux monorepo | P0 | winsmux | done |
 
-### v0.19.3 — ドキュメント & ガバナンス
+### v0.19.3: Documentation & Governance (2026-04-05)
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -255,7 +255,7 @@
 | [x] | TASK-156 | CLAUDE.md version header + changelog table | P2 | winsmux | done |
 | [x] | TASK-160 | Hook cluster SKILL.md generation (manual classification) | P2 | winsmux | done |
 
-### v0.19.4 — Issue修正 & ガバナンス強化
+### v0.19.4: Issue fixes & Governance (2026-04-06)
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -287,7 +287,7 @@
 | [ ] | TASK-202 | Remove pane-level alerts from Telegram — Commander-only (#306) | P1 | winsmux | backlog |
 | [ ] | TASK-204 | Codex pane context reset uses /new not /clear (#309) | P1 | winsmux | backlog |
 
-### v0.19.5
+### v0.19.5: monitoring stack + process gates
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -298,7 +298,7 @@
 | [ ] | TASK-208 | Codex CLM blocks Pester test execution in builder panes (#319) | P1 | winsmux | backlog |
 | [ ] | TASK-210 | Reviewer audit scope too narrow (#315) | P1 | winsmux | backlog |
 
-### v0.20.0 — Tauri Desktop
+### v0.20.0: Tauri Desktop (2026-04-05)
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -311,7 +311,7 @@
 | [ ] | TASK-115 | Installer profile design (core/orchestra/security/full) | P2 | winsmux | backlog |
 | [~] | TASK-146 | PreCompact hook × context usage monitoring | P2 | winsmux | cancelled |
 
-### v0.20.1 — Hook ガバナンス & 環境変数コントラクト
+### v0.20.1: Hook Governance & Model Management (2026-04-05)
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -324,7 +324,7 @@
 | [ ] | TASK-172 | Document Codex worktree git ops sandbox limitation | P2 | winsmux | backlog |
 | [ ] | TASK-190 | ConPTY clean environment variable boundary — Get-CleanPtyEnv | P2 | winsmux | backlog |
 
-### v0.21.0 — スマートセッション
+### v0.21.0
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -335,7 +335,7 @@
 | [ ] | TASK-154 | Manifest-aware session resume / context injection | P1 | winsmux | backlog |
 | [ ] | TASK-144 | Hook parallel execution + Notification hook | P2 | winsmux | backlog |
 
-### v0.21.1 — Orchestra ワークフロー進化
+### v0.21.1: Orchestra Workflow Evolution (2026-04-05)
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
@@ -347,7 +347,7 @@
 | [ ] | TASK-191 | /task-run one-shot orchestration command | P2 | winsmux | backlog |
 | [ ] | TASK-192 | .agents/commands/ single-source command structure | P3 | winsmux | backlog |
 
-### v0.22.0 — プロトコル層
+### v0.22.0
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|

@@ -907,6 +907,77 @@ panes:
         }
     }
 
+    It 'emits pane.completed when a busy pane returns to waiting_for_dispatch' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    exec_mode: true
+"@ | Set-Content -Path (Join-Path $manifestDir 'manifest.yaml') -Encoding UTF8
+
+        Mock Get-PaneAgentStatus {
+            [ordered]@{
+                Status       = 'waiting_for_dispatch'
+                PaneId       = '%2'
+                SnapshotTail = 'PS C:\repo>'
+                SnapshotHash = 'hash-dispatch'
+                ExitReason   = ''
+            }
+        }
+        Mock Write-MonitorEvent {
+            return [ordered]@{
+                event   = $Event
+                pane_id = $PaneId
+                status  = $Status
+            }
+        }
+        Mock Update-MonitorIdleAlertState {
+            [ordered]@{
+                ShouldAlert = $false
+                Message     = ''
+            }
+        }
+        Mock Test-BuilderStall { $false }
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            roles = [ordered]@{}
+        }
+        $previousResults = [ordered]@{
+            '%2' = 'busy'
+        }
+
+        $result = Invoke-AgentMonitorCycle -Settings $settings -ManifestPath (Join-Path $manifestDir 'manifest.yaml') -SessionName 'winsmux-orchestra' -PreviousResults $previousResults
+
+        $result.CurrentResults['%2'] | Should -Be 'waiting_for_dispatch'
+        Should -Invoke Write-MonitorEvent -Times 1 -Exactly -ParameterFilter {
+            $Event -eq 'pane.completed' -and
+            $PaneId -eq '%2' -and
+            $Role -eq 'Builder' -and
+            $Status -eq 'waiting_for_dispatch'
+        }
+        Should -Invoke Write-MonitorEvent -Times 1 -Exactly -ParameterFilter {
+            $Event -eq 'pane.waiting_for_dispatch' -and
+            $PaneId -eq '%2'
+        }
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
     It 'skips relaunch dispatch for exec_mode Researcher panes' {
         $manifestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
         $manifestPath = Join-Path $manifestRoot 'manifest.yaml'
@@ -1085,6 +1156,67 @@ Describe 'agent-watchdog helpers' {
             $SessionName -eq 'winsmux-orchestra' -and
             $IdleThreshold -eq 120
         }
+    }
+
+    It 'carries previous pane states across watchdog cycles' {
+        $script:watchdogCycleCount = 0
+        $script:watchdogPreviousStates = @()
+        $script:watchdogSleepCalls = 0
+
+        Mock Invoke-AgentWatchdogCycle {
+            param($ManifestPath, $SessionName, $IdleThreshold, $PreviousResults)
+
+            $capturedPreviousResults = [ordered]@{}
+            if ($null -ne $PreviousResults) {
+                foreach ($entry in $PreviousResults.GetEnumerator()) {
+                    $capturedPreviousResults[$entry.Key] = $entry.Value
+                }
+            }
+            $script:watchdogPreviousStates += ,$capturedPreviousResults
+            $script:watchdogCycleCount++
+
+            if ($script:watchdogCycleCount -eq 1) {
+                return [ordered]@{
+                    Checked         = 1
+                    Crashed         = 0
+                    Respawned       = 0
+                    ApprovalWaiting = 0
+                    IdleAlerts      = 0
+                    Stalls          = 0
+                    CurrentResults  = [ordered]@{ '%2' = 'busy' }
+                    Results         = @()
+                }
+            }
+
+            return [ordered]@{
+                Checked         = 1
+                Crashed         = 0
+                Respawned       = 0
+                ApprovalWaiting = 0
+                IdleAlerts      = 0
+                Stalls          = 0
+                CurrentResults  = [ordered]@{ '%2' = 'waiting_for_dispatch' }
+                Results         = @()
+            }
+        }
+        Mock Start-Sleep {
+            $script:watchdogSleepCalls++
+            if ($script:watchdogSleepCalls -ge 2) {
+                throw 'stop-loop'
+            }
+        }
+
+        $stopLoopThrown = $false
+        try {
+            Start-AgentWatchdogLoop -ManifestPath 'C:\repo\.winsmux\manifest.yaml' -SessionName 'winsmux-orchestra' -IdleThreshold 120 -PollInterval 1
+        } catch {
+            $stopLoopThrown = $_.Exception.Message -eq 'stop-loop'
+        }
+
+        $stopLoopThrown | Should -Be $true
+        $script:watchdogPreviousStates.Count | Should -Be 2
+        $script:watchdogPreviousStates[0].Count | Should -Be 0
+        $script:watchdogPreviousStates[1]['%2'] | Should -Be 'busy'
     }
 
     It 'builds a stdout summary that points to events.jsonl' {

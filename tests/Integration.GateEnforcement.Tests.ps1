@@ -172,12 +172,40 @@ Describe 'sh-orchestra-gate integration' {
         & $script:AssertDenyResult -Result $result
     }
 
+    It 'denies python writing hooks changes to settings.local.json' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'python -c "from pathlib import Path; Path(''.claude/settings.local.json'').write_text(''{\"hooks\":{}}'', encoding=''utf-8'')"'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'settings\.local\.json'
+    }
+
     It 'denies direct codex exec usage' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
             command = 'codex exec "review the repo"'
         }
 
         & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Be 'Use winsmux send to dispatch Codex to panes'
+    }
+
+    It 'denies direct codex sandbox usage' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'codex --sandbox danger-full-access -C C:\repo'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Be 'Use winsmux send to dispatch Codex to panes'
+    }
+
+    It 'allows winsmux send codex exec usage' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'winsmux send --pane builder-1 --text ''codex exec "review the repo"'''
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
     }
 
     It 'allows codex exec text inside a heredoc body' {
