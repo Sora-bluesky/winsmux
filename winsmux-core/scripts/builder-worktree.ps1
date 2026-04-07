@@ -59,7 +59,7 @@ function ConvertFrom-GitWorktreeList {
             if ($current.Contains('worktree')) {
                 $entries.Add([PSCustomObject]@{
                     WorktreePath = [string]$current.worktree
-                    BranchName   = [string]$current.branch
+                    BranchName   = if ($current.Contains('branch')) { [string]$current['branch'] } else { '' }
                 }) | Out-Null
             }
 
@@ -76,12 +76,16 @@ function ConvertFrom-GitWorktreeList {
             $current.branch = $Matches[1]
             continue
         }
+
+        if ($line -eq 'detached') {
+            continue
+        }
     }
 
     if ($current.Contains('worktree')) {
         $entries.Add([PSCustomObject]@{
             WorktreePath = [string]$current.worktree
-            BranchName   = [string]$current.branch
+            BranchName   = if ($current.Contains('branch')) { [string]$current['branch'] } else { '' }
         }) | Out-Null
     }
 
