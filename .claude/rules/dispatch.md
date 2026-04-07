@@ -10,6 +10,7 @@ paths: ["winsmux-core/scripts/**", ".claude/**"]
 3. Send: `winsmux send -t <pane> "Read .builder-prompt.txt and implement"` + Enter via `pwsh -NoProfile -File scripts/winsmux-core.ps1 keys <pane> Enter`
 4. Monitor: `winsmux capture-pane -t <pane> -p | tail -15`
 5. Verify: `git -C <worktree> diff --stat HEAD`
+6. **Commander runs tests** (Builder cannot — CLM #319): `NO_COLOR=1 pwsh -Command "Invoke-Pester <worktree>/tests/ -Output Minimal"`
 
 ## Reviewer Dispatch
 1. Send review request: `winsmux send -t reviewer-1 "Review diffs in .worktrees/builder-N"` + Enter

@@ -80,6 +80,7 @@ pwsh scripts/bump-version.ps1 -Version X.Y.Z
 - Use `[ordered]@{}` instead of `[PSCustomObject]@{}`
 - Use hashtable assignment (`$obj['key'] = val`) instead of `Add-Member`
 - Codex context reset: `/new` (not `/clear`). `/compact` for context shrink.
+- Sandbox uses `--sandbox danger-full-access` to bypass CLM (#319). Builders can run Pester directly.
 
 ## Task Status Rules
 

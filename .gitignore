@@ -70,6 +70,8 @@ CLAUDE.md
 .claude/logs/
 .claude/worktrees/
 # .codex/ and .gemini/ are tracked (agent project config)
+# Exclude sandbox config (local-only, contains danger-full-access for CLM bypass #319)
+.codex/config.toml
 # Exclude only runtime/local files if they appear
 *.local
 .vscode/settings.json
