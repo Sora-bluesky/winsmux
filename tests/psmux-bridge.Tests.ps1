@@ -44,6 +44,8 @@ Describe 'Assert-Role' {
         $env:WINSMUX_ROLE = 'Commander'
 
         (Assert-Role -Command 'send' -TargetPane 'reviewer') | Should -Be $true
+        (Assert-Role -Command 'status') | Should -Be $true
+        (Assert-Role -Command 'context-reset' -TargetPane 'reviewer') | Should -Be $true
         (Assert-Role -Command 'poll-events') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $true
         (Assert-Role -Command 'type' -TargetPane 'reviewer') | Should -Be $false
@@ -54,7 +56,9 @@ Describe 'Assert-Role' {
         $env:WINSMUX_ROLE_MAP = '{"pane-self":"Builder","pane-commander":"Commander","pane-builder":"Builder","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
 
         (Assert-Role -Command 'send' -TargetPane 'commander') | Should -Be $true
+        (Assert-Role -Command 'status') | Should -Be $true
         (Assert-Role -Command 'type' -TargetPane 'self') | Should -Be $true
+        (Assert-Role -Command 'context-reset' -TargetPane 'commander') | Should -Be $false
         (Assert-Role -Command 'send' -TargetPane 'reviewer') | Should -Be $false
         (Assert-Role -Command 'read' -TargetPane 'reviewer') | Should -Be $false
     }
@@ -75,6 +79,7 @@ Describe 'Assert-Role' {
         $env:WINSMUX_ROLE_MAP = '{"pane-self":"Reviewer","pane-commander":"Commander","pane-builder":"Builder","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
 
         (Assert-Role -Command 'message' -TargetPane 'commander') | Should -Be $true
+        (Assert-Role -Command 'status') | Should -Be $true
         (Assert-Role -Command 'list') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $false
         (Assert-Role -Command 'focus') | Should -Be $false
@@ -1261,6 +1266,101 @@ Esc to interrupt
         $records[2].Label | Should -Be 'commander'
         $records[2].State | Should -Be 'busy'
         $records[2].TokensRemaining | Should -Be '61% context left'
+    }
+}
+
+Describe 'winsmux status command' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:statusTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-status-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:statusTempRoot -Force | Out-Null
+        $script:statusManifestDir = Join-Path $script:statusTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $script:statusManifestDir -Force | Out-Null
+        $script:statusManifestPath = Join-Path $script:statusManifestDir 'manifest.yaml'
+
+        Push-Location $script:statusTempRoot
+    }
+
+    AfterEach {
+        Pop-Location
+        if ($script:statusTempRoot -and (Test-Path $script:statusTempRoot)) {
+            Remove-Item -Path $script:statusTempRoot -Recurse -Force
+        }
+
+        Remove-Item function:\winsmux -ErrorAction SilentlyContinue
+    }
+
+    It 'parses both list and dictionary pane formats' {
+        $manifest = ConvertFrom-PaneControlManifestContent -Content @'
+version: 1
+session:
+  project_dir: C:\repo
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+  reviewer:
+    pane_id: %4
+    role: Reviewer
+'@
+
+        $manifest.Session.project_dir | Should -Be 'C:\repo'
+        $manifest.Panes['builder-1'].pane_id | Should -Be '%2'
+        $manifest.Panes['reviewer'].role | Should -Be 'Reviewer'
+    }
+
+    It 'renders a manifest-backed pane state table' {
+        @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:statusTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+  - label: reviewer
+    pane_id: %4
+    role: Reviewer
+  - label: builder-2
+    pane_id: %8
+    role: Builder
+"@ | Set-Content -Path $script:statusManifestPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^list-panes ' { return @('%2 111', '%4 222') }
+                '^capture-pane .*%2' { return @('Implementation finished.', '>') }
+                '^capture-pane .*%4' { return @('Review in progress...') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        Mock Get-Process {
+            param([int]$Id)
+
+            switch ($Id) {
+                111 { return [PSCustomObject]@{ Id = 111 } }
+                222 { return [PSCustomObject]@{ Id = 222 } }
+                default { throw "process not found: $Id" }
+            }
+        }
+
+        $script:Target = $null
+        $script:Rest = @()
+        $output = Invoke-Status | Out-String
+
+        $output | Should -Match 'builder-1'
+        $output | Should -Match 'reviewer'
+        $output | Should -Match 'builder-2'
+        $output | Should -Match 'idle'
+        $output | Should -Match 'busy'
+        $output | Should -Match 'unknown'
     }
 }
 
