@@ -24,7 +24,7 @@ winsmux must be running before orchestra-start. If not running, user starts it m
 | Commander | Claude Code | plan, dispatch, git ops, backlog | write/edit code, review code |
 | Builder | Codex | implement in worktree | git add/commit/push, merge, direct main repo work |
 | Reviewer | Codex | review diffs | implement |
-| Researcher | Claude Sonnet | investigate, report, git add/commit/push | implement |
+| Researcher | Codex | investigate, report, git add/commit/push | implement |
 
 Roles are advisory. Hard enforcement is via hooks (`sh-orchestra-gate.js` for Commander). Other roles need per-role gate hooks (#284).
 
@@ -74,6 +74,12 @@ pwsh scripts/bump-version.ps1 -Version X.Y.Z
 - Commit messages: English, conventional commits (`feat:`, `fix:`, `chore:`).
 - PowerShell: strict mode, UTF-8, `$ErrorActionPreference = 'Stop'`.
 - Settings file (`.claude/settings.json`): edit via `python -c` to avoid race conditions.
+
+## CLM Compatibility (Codex scripts)
+
+- Use `[ordered]@{}` instead of `[PSCustomObject]@{}`
+- Use hashtable assignment (`$obj['key'] = val`) instead of `Add-Member`
+- Codex context reset: `/new` (not `/clear`). `/compact` for context shrink.
 
 ## Task Status Rules
 

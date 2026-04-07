@@ -2271,7 +2271,7 @@ tasks:
 
   - id: TASK-184
     title: "winsmux send dispatches raw text instead of codex exec (#286)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.19.4"
     repo: winsmux
@@ -2300,7 +2300,7 @@ tasks:
 
   - id: TASK-186
     title: "orchestra-start should leave panes at pwsh prompt, not launch Codex interactive (#288)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.19.4"
     repo: winsmux
@@ -2374,7 +2374,7 @@ tasks:
 
   - id: TASK-197
     title: "Audit and resolve 8 orphan scripts in winsmux-core/scripts/ (#293)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.19.4"
     repo: winsmux
@@ -2504,7 +2504,7 @@ tasks:
 
   - id: TASK-198
     title: "Hook Rule 2 scans heredoc body, blocks unrelated commands (#300)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.19.4"
     repo: winsmux
@@ -2547,7 +2547,7 @@ tasks:
 
   - id: TASK-199
     title: "Dispatch workflow 3 structural failures — agent-type, send+Enter, target validation (#301)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.19.4"
     repo: winsmux
@@ -2558,3 +2558,132 @@ tasks:
     notes: >
       #301. Reviewer監査FAIL: (1) pane agent-type未記載 (2) send+Enter 2ステップ不整合
       (3) dispatch先role/agent検証なし。#286/#288と関連。
+
+  - id: TASK-202
+    title: "Remove pane-level alerts from Telegram — Commander-only (#306)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, orchestra]
+    depends_on: ["TASK-200"]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #306. agent-monitor/watchdogのペインアラートがTelegramに送信される。
+      Commander stdoutのみに制限。Telegramはマイルストーン通知のみ。
+
+  - id: TASK-203
+    title: "Watchdog does not notify Commander — add events.jsonl polling (#308)"
+    status: done
+    priority: P0
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, orchestra]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #308. watchdog stdout→Commander到達不可。events.jsonl追記+poll-eventsコマンドで解決。
+      B2で実装中。
+
+  - id: TASK-204
+    title: "Codex pane context reset uses /new not /clear (#309)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.4"
+    repo: winsmux
+    labels: [bug, orchestra]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #309. /clearはCodexで無効。/newでコンテキストリセット。context-resetコマンド実装。
+      B1で実装中。
+
+  # === v0.19.5: monitoring stack + process gates ===
+  - id: TASK-205
+    title: "winsmux send silent failure — focus_pane_by_id returns without error (#316)"
+    status: backlog
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #316. core/src/tree.rs:588-602 focus_pane_by_id() silently returns when pane not found.
+      connection.rs:442-457 FocusPaneTemp does not validate result.
+      Commander dispatch to arbitrary panes is broken.
+
+  - id: TASK-206
+    title: "Monitoring stack non-functional — watchdog→Commander delivery path missing (#317)"
+    status: backlog
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, orchestra]
+    depends_on: [TASK-203]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #317. 5コンポーネント監査結果: watchdog=出力到達不可, agent-monitor=Telegram除去後代替なし,
+      bidi通信=orphaned実装, events.jsonl=main未マージ, commander-poll=main未マージ.
+      #308→#311→#302の依存チェーン解消が必要。
+
+  - id: TASK-207
+    title: "Reviewer audit checklist — design-impact scope mandatory (#318)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, review]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #318. PR#313でReviewerがコード正否のみ審査、設計影響を見ず。
+      Reviewerプロンプトに設計影響チェックリストを必須化。
+
+  - id: TASK-208
+    title: "Codex CLM blocks Pester test execution in builder panes (#319)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, orchestra]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #319. Codex sandbox enforces PowerShell CLM — Invoke-Pester fails with
+      InvalidOperation. Builders cannot verify their own changes.
+      Workaround: Commander runs tests or Agent subagent.
+
+  - id: TASK-209
+    title: "Commander Reviewer bypass — process gate enforcement (#314)"
+    status: backlog
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, review]
+    depends_on: [TASK-179]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #314. PR#313でReviewer未通過・実操作テストなしでマージ。
+      review gate hook (TASK-179 #279) マージで恒久対策。
+
+  - id: TASK-210
+    title: "Reviewer audit scope too narrow (#315)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, review]
+    depends_on: [TASK-207]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #315. 設計影響を見ずPASS判定。TASK-207のチェックリスト実装で対策。
