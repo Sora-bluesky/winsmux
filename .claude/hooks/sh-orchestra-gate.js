@@ -87,11 +87,11 @@ try {
   // Rule 9: REMOVED - winsmux verify not yet implemented.
   // Will be re-added when verify command exists. See #277.
 
-  // Rule 10: Block git commit without Reviewer PASS (#279)
+  // Rule 10: Block review-gated commit/merge commands without Reviewer PASS (#279)
   if (toolName === "Bash") {
-    if (/git\s+(commit|merge)/.test(rawCommand) && !/bump-version|chore:\s*bump/.test(rawCommand)) {
+    if (isReviewGatedCommand(rawCommand) && !/bump-version|chore:\s*bump/.test(rawCommand)) {
       const reviewStatePath = path.join(process.cwd(), '.winsmux', 'review-state.json');
-      const denyMessage = "Reviewer PASS required before commit. Run: pwsh scripts/winsmux-core.ps1 review-approve";
+      const denyMessage = "Reviewer PASS required before commit or merge. Run: pwsh scripts/winsmux-core.ps1 review-approve";
       try {
         const currentBranch = getCurrentBranch(process.cwd());
         const reviewState = JSON.parse(fs.readFileSync(reviewStatePath, 'utf8'));
@@ -149,6 +149,22 @@ function stripHeredocBodies(command) {
   }
 
   return output.join("\n");
+}
+
+function isGitCommitCommand(command) {
+  return /\bgit\b(?:\s+(?:-[A-Za-z]|--[A-Za-z][\w-]*)(?:[=\s]+(?:"[^"]*"|'[^']*'|[^\s]+))?)*\s+commit\b/.test(command);
+}
+
+function isGitMergeCommand(command) {
+  return /\bgit\b(?:\s+(?:-[A-Za-z]|--[A-Za-z][\w-]*)(?:[=\s]+(?:"[^"]*"|'[^']*'|[^\s]+))?)*\s+merge\b/.test(command);
+}
+
+function isGhPrMergeCommand(command) {
+  return /\bgh\b(?:\s+(?:-[A-Za-z]|--[A-Za-z][\w-]*)(?:[=\s]+(?:"[^"]*"|'[^']*'|[^\s]+))?)*\s+pr\s+merge\b/.test(command);
+}
+
+function isReviewGatedCommand(command) {
+  return isGitCommitCommand(command) || isGitMergeCommand(command) || isGhPrMergeCommand(command);
 }
 
 function normalizeAgentValue(value) {
@@ -228,6 +244,10 @@ module.exports = {
   DEBUG_LOG_PATH,
   SECRET_PATTERN,
   isDirectCodexDispatch,
+  isGhPrMergeCommand,
+  isGitCommitCommand,
+  isGitMergeCommand,
+  isReviewGatedCommand,
   isSettingsLocalHookMutation,
   isWriteCapableAgentMode,
   normalizeAgentValue,

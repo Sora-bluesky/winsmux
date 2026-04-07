@@ -503,6 +503,7 @@ function Save-OrchestraSessionState {
         [Parameter(Mandatory = $true)]$Settings,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [Parameter(Mandatory = $true)][System.Collections.IEnumerable]$PaneSummaries,
+        [Nullable[int]]$CommanderPollPid = $null,
         [Nullable[int]]$WatchdogPid = $null
     )
 
@@ -520,6 +521,11 @@ function Save-OrchestraSessionState {
     $lines.Add(('  model: {0}' -f (ConvertTo-YamlScalar -Value $Settings.model))) | Out-Null
     $lines.Add(('  project_dir: {0}' -f (ConvertTo-YamlScalar -Value $ProjectDir))) | Out-Null
     $lines.Add(('  git_worktree_dir: {0}' -f (ConvertTo-YamlScalar -Value $GitWorktreeDir))) | Out-Null
+    if ($null -ne $CommanderPollPid) {
+        $lines.Add(('  commander_poll_pid: {0}' -f $CommanderPollPid)) | Out-Null
+    } else {
+        $lines.Add('  commander_poll_pid: null') | Out-Null
+    }
     if ($null -ne $WatchdogPid) {
         $lines.Add(('  watchdog_pid: {0}' -f $WatchdogPid)) | Out-Null
     } else {
@@ -589,6 +595,25 @@ function Start-AgentWatchdogJob {
         ) -WindowStyle Hidden -PassThru)
 }
 
+function Start-CommanderPollJob {
+    param(
+        [Parameter(Mandatory = $true)][string]$CommanderPollScriptPath,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [int]$Interval = 20
+    )
+
+    return (Start-Process -FilePath 'pwsh' -ArgumentList @(
+            '-NoProfile',
+            '-File',
+            $CommanderPollScriptPath,
+            '-ManifestPath',
+            $ManifestPath,
+            '-Interval',
+            $Interval
+        ) -WindowStyle Hidden -PassThru)
+}
+
+$commanderPollProcess = $null
 $watchdogProcess = $null
 try {
     $settings = Get-BridgeSettings
@@ -651,10 +676,18 @@ try {
     } catch { }
 
     Write-WinsmuxLog -Level INFO -Event 'preflight.session.check' -Message "Checking for existing session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
-    & $winsmuxBin has-session -t $sessionName 1>$null 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        Write-WinsmuxLog -Level INFO -Event 'preflight.session.kill' -Message "Removing existing session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
-        Invoke-Winsmux -Arguments @('kill-session', '-t', $sessionName)
+    $sessionHealth = Test-OrchestraServerHealth -SessionName $sessionName -WinsmuxBin $winsmuxBin
+    Write-WinsmuxLog -Level INFO -Event 'preflight.session.health' -Message "Session health for $sessionName: $sessionHealth." -Data @{ session_name = $sessionName; health = $sessionHealth } | Out-Null
+    switch ($sessionHealth) {
+        'Healthy' {
+            Write-WinsmuxLog -Level INFO -Event 'preflight.session.kill' -Message "Removing existing session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
+            Invoke-Winsmux -Arguments @('kill-session', '-t', $sessionName)
+        }
+        'Unhealthy' {
+            Write-Warning "Preflight: removing stale session registration for $sessionName"
+            Write-WinsmuxLog -Level WARN -Event 'preflight.session.registration_cleared' -Message "Cleared stale session registration for $sessionName." -Data @{ session_name = $sessionName } | Out-Null
+            Clear-OrchestraSessionRegistration -SessionName $sessionName
+        }
     }
 
     # --- Startup lock (TASK-117) ---
@@ -805,9 +838,12 @@ try {
     }
 
     $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $paneSummaries
+    $commanderPollScriptPath = Join-Path $scriptDir 'commander-poll.ps1'
+    $commanderPollProcess = Start-CommanderPollJob -CommanderPollScriptPath $commanderPollScriptPath -ManifestPath $manifestPath -Interval 20
+    Write-WinsmuxLog -Level INFO -Event 'preflight.commander_poll.started' -Message "Started commander poll for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; commander_poll_pid = $commanderPollProcess.Id; process_name = $commanderPollProcess.ProcessName } | Out-Null
     $watchdogScriptPath = Join-Path $scriptDir 'agent-watchdog.ps1'
     $watchdogProcess = Start-AgentWatchdogJob -WatchdogScriptPath $watchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $paneSummaries -WatchdogPid $watchdogProcess.Id
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $paneSummaries -CommanderPollPid $commanderPollProcess.Id -WatchdogPid $watchdogProcess.Id
     Write-WinsmuxLog -Level INFO -Event 'preflight.watchdog.started' -Message "Started agent watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; watchdog_pid = $watchdogProcess.Id; process_name = $watchdogProcess.ProcessName } | Out-Null
 
     Write-Output "Orchestra session: $sessionName"
@@ -833,10 +869,15 @@ try {
 
     Write-Output ''
     Write-Output "Manifest: $manifestPath"
+    Write-Output "Commander Poll PID: $($commanderPollProcess.Id)"
     Write-Output "Watchdog PID: $($watchdogProcess.Id)"
-    Write-Output 'Cleanup: stop the watchdog after the session ends.'
+    Write-Output 'Cleanup: stop the commander poll and watchdog after the session ends.'
+    Write-Output ("  Stop-Process -Id {0}" -f $commanderPollProcess.Id)
     Write-Output ("  Stop-Process -Id {0}" -f $watchdogProcess.Id)
 } catch {
+    if ($null -ne $commanderPollProcess) {
+        try { Stop-Process -Id $commanderPollProcess.Id -Force -ErrorAction SilentlyContinue } catch {}
+    }
     if ($null -ne $watchdogProcess) {
         try { Stop-Process -Id $watchdogProcess.Id -Force -ErrorAction SilentlyContinue } catch {}
     }

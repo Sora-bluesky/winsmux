@@ -317,18 +317,27 @@ EOF
         $result.StdErr | Should -Be ''
     }
 
-    It 'Rule 7 removed verify command not yet implemented' {
+    It 'allows a normal bash command' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
-            command = 'gh pr merge 112 --squash --delete-branch'
+            command = 'git status'
         }
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
     }
 
-    It 'allows a normal bash command' {
+    It 'allows gh issue close without triggering the review gate' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
-            command = 'git status'
+            command = 'gh issue close 123'
+        }
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'allows gh pr close without triggering the review gate' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = 'gh pr close 123'
         }
 
         $result.ExitCode | Should -Be 0
@@ -341,6 +350,30 @@ EOF
 
         $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
             command = 'git commit -m "feat: gated"'
+        }
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'review-approve'
+    }
+
+    It 'denies git merge without Reviewer PASS for the current branch' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'git merge main'
+        }
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'review-approve'
+    }
+
+    It 'denies gh pr merge without Reviewer PASS for the current branch' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'gh pr merge 112 --squash --delete-branch'
         }
 
         & $script:AssertDenyResult -Result $result
@@ -361,6 +394,36 @@ EOF
 
         $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
             command = 'git commit -m "feat: approved"'
+        }
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'allows git merge after review-approve records PASS for the current branch' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve')
+        $approveResult.ExitCode | Should -Be 0
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'git merge main'
+        }
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'allows gh pr merge after review-approve records PASS for the current branch' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve')
+        $approveResult.ExitCode | Should -Be 0
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'gh pr merge 112 --squash --delete-branch'
         }
 
         $result.ExitCode | Should -Be 0

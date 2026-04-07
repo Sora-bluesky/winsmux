@@ -1250,10 +1250,24 @@ Describe 'agent-watchdog helpers' {
     }
 }
 
-Describe 'orchestra-start watchdog contract' {
+Describe 'orchestra-start background process contract' {
     BeforeAll {
         $script:orchestraStartPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1'
         $script:orchestraStartContent = Get-Content -Path $script:orchestraStartPath -Raw -Encoding UTF8
+    }
+
+    It 'launches commander-poll with Start-Process before the watchdog' {
+        $script:orchestraStartContent | Should -Match 'function Start-CommanderPollJob \{'
+        $script:orchestraStartContent | Should -Match 'commander-poll\.ps1'
+        $script:orchestraStartContent | Should -Match "'-Interval'"
+        $script:orchestraStartContent | Should -Match '-Interval 20'
+        $script:orchestraStartContent | Should -Match '-CommanderPollPid \$commanderPollProcess\.Id'
+
+        $commanderPollIndex = $script:orchestraStartContent.IndexOf('$commanderPollProcess = Start-CommanderPollJob')
+        $watchdogIndex = $script:orchestraStartContent.IndexOf('$watchdogProcess = Start-AgentWatchdogJob')
+        $commanderPollIndex | Should -BeGreaterThan -1
+        $watchdogIndex | Should -BeGreaterThan -1
+        $commanderPollIndex | Should -BeLessThan $watchdogIndex
     }
 
     It 'launches the watchdog with Start-Process so it survives script exit' {
@@ -1265,7 +1279,9 @@ Describe 'orchestra-start watchdog contract' {
         $script:orchestraStartContent | Should -Not -Match 'Start-Job\s+-Name\s+\("winsmux-watchdog-'
     }
 
-    It 'persists watchdog_pid and prints watchdog cleanup guidance' {
+    It 'persists both process pids and prints cleanup guidance' {
+        $script:orchestraStartContent | Should -Match 'commander_poll_pid:'
+        $script:orchestraStartContent | Should -Match 'Commander Poll PID: \$\(\$commanderPollProcess\.Id\)'
         $script:orchestraStartContent | Should -Match 'watchdog_pid:'
         $script:orchestraStartContent | Should -Match '-WatchdogPid \$watchdogProcess\.Id'
         $script:orchestraStartContent | Should -Match 'Watchdog PID: \$\(\$watchdogProcess\.Id\)'
@@ -1602,6 +1618,49 @@ panes:
     }
 }
 
+Describe 'winsmux send dispatch payload' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:sendTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-send-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:sendTempRoot -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:sendTempRoot -and (Test-Path $script:sendTempRoot)) {
+            Remove-Item -Path $script:sendTempRoot -Recurse -Force
+        }
+    }
+
+    It 'keeps short text inline without creating a dispatch file' {
+        $payload = Resolve-SendDispatchPayload -Text 'Write-Host short' -ProjectDir $script:sendTempRoot -LengthLimit 4000
+
+        $payload['IsFileBacked'] | Should -Be $false
+        $payload['TextToSend'] | Should -Be 'Write-Host short'
+        $payload['PromptPath'] | Should -Be $null
+        Test-Path (Join-Path $script:sendTempRoot '.winsmux\dispatch-prompts') | Should -Be $false
+    }
+
+    It 'writes long text to a dispatch file and returns a prompt pointer for non-exec panes' {
+        $longText = 'a' * 4001
+
+        $payload = Resolve-SendDispatchPayload -Text $longText -ProjectDir $script:sendTempRoot -LengthLimit 4000
+
+        $payload['IsFileBacked'] | Should -Be $true
+        $payload['TextToSend'] | Should -Not -Be $longText
+        $payload['FallbackMode'] | Should -Be 'pointer'
+        $payload['TextToSend'] | Should -Match "Read the full prompt from '"
+        $payload['PromptPath'] | Should -Not -BeNullOrEmpty
+        $payload['PromptReference'] | Should -BeLike '.winsmux/dispatch-prompts/*'
+        $promptContent = Get-Content -LiteralPath $payload['PromptPath'] -Raw -Encoding UTF8
+        $promptContent.TrimEnd("`r", "`n") | Should -BeExactly $longText
+        $payload['TextToSend'] | Should -Match ([regex]::Escape($payload['PromptReference']))
+    }
+}
+
 Describe 'winsmux poll-events command' {
     BeforeEach {
         $script:pollEventsTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-poll-events-tests-' + [guid]::NewGuid().ToString('N'))
@@ -1790,4 +1849,5 @@ Describe 'winsmux send fallback' {
         $script:sendBuffer | Should -Be "> echo test`nresult"
         $script:sendAttempts | Should -Be @('%7 literal', 'default:0.3 literal', 'default:0.3 Enter')
     }
+
 }
