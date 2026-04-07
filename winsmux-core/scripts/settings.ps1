@@ -66,8 +66,8 @@ if (-not (Get-Command Get-WinsmuxOption -ErrorAction SilentlyContinue)) {
     }
 }
 
-if (-not (Get-Command Set-PsmuxOption -ErrorAction SilentlyContinue)) {
-    function Set-PsmuxOption {
+if (-not (Get-Command Set-WinsmuxOption -ErrorAction SilentlyContinue)) {
+    function Set-WinsmuxOption {
         param(
             [Parameter(Mandatory = $true)][string]$WinsmuxBin,
             [Parameter(Mandatory = $true)][string]$OptionName,
@@ -642,6 +642,6 @@ function Save-BridgeSettings {
 
         $value = $normalized[$key]
         $serializedValue = if ($value -is [System.Array]) { $value -join ',' } else { $value.ToString() }
-        Set-PsmuxOption -WinsmuxBin $winsmuxBin -OptionName $optionName -OptionValue $serializedValue
+        Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName $optionName -OptionValue $serializedValue
     }
 }

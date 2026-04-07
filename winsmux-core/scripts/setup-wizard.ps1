@@ -125,7 +125,7 @@ function ConvertTo-PlainText {
     }
 }
 
-function Set-PsmuxOption {
+function Set-WinsmuxOption {
     param(
         [Parameter(Mandatory = $true)][string]$WinsmuxBin,
         [Parameter(Mandatory = $true)][string]$OptionName,
@@ -177,11 +177,11 @@ $researchers = Read-PositiveInt -Prompt 'Researchers count' -Default 1
 $reviewers = Read-PositiveInt -Prompt 'Reviewers count' -Default 1
 $storeVault = Read-YesNo -Prompt 'Store GH_TOKEN in the winsmux vault?' -Default $false
 
-Set-PsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-agent' -OptionValue $agentCli
-Set-PsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-model' -OptionValue $model
-Set-PsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-builders' -OptionValue $builders.ToString()
-Set-PsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-researchers' -OptionValue $researchers.ToString()
-Set-PsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-reviewers' -OptionValue $reviewers.ToString()
+Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-agent' -OptionValue $agentCli
+Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-model' -OptionValue $model
+Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-builders' -OptionValue $builders.ToString()
+Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-researchers' -OptionValue $researchers.ToString()
+Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-reviewers' -OptionValue $reviewers.ToString()
 
 $vaultStored = $false
 if ($storeVault) {

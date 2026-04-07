@@ -1579,3 +1579,83 @@ panes:
         }
     }
 }
+
+Describe 'winsmux send fallback' {
+    BeforeAll {
+        $bridgePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $null = . $bridgePath version
+    }
+
+    BeforeEach {
+        $script:sendBuffer = ''
+        $script:sendAttempts = [System.Collections.Generic.List[string]]::new()
+
+        Mock Start-Sleep { }
+        Mock Save-Watermark { }
+        Mock Set-ReadMark { }
+        Mock Invoke-WinsmuxRaw {
+            param([string[]]$Arguments)
+
+            $command = if ($Arguments.Count -gt 0) { $Arguments[0] } else { '' }
+            $global:LASTEXITCODE = 0
+
+            switch ($command) {
+                'list-panes' {
+                    $format = $Arguments[-1]
+                    if ($format -eq '#{pane_id}') {
+                        return '%7'
+                    }
+
+                    if ($format -eq "#{pane_id}`t#{session_name}:#{window_index}.#{pane_index}") {
+                        return '%7' + "`t" + 'default:0.3'
+                    }
+
+                    return @()
+                }
+                'capture-pane' {
+                    return $script:sendBuffer
+                }
+                'send-keys' {
+                    $targetIndex = [Array]::IndexOf($Arguments, '-t')
+                    $target = if ($targetIndex -ge 0 -and $targetIndex + 1 -lt $Arguments.Count) {
+                        $Arguments[$targetIndex + 1]
+                    } else {
+                        ''
+                    }
+
+                    if ($Arguments -contains '-l') {
+                        $script:sendAttempts.Add("$target literal") | Out-Null
+                        if ($target -eq 'default:0.3') {
+                            $script:sendBuffer = '> echo test'
+                        }
+
+                        return
+                    }
+
+                    $script:sendAttempts.Add("$target Enter") | Out-Null
+                    if ($target -eq 'default:0.3') {
+                        $script:sendBuffer = "> echo test`nresult"
+                    }
+                    return
+                }
+                default {
+                    throw "Unexpected winsmux command: $($Arguments -join ' ')"
+                }
+            }
+        }
+    }
+
+    It 'adds a coordinate target as a fallback candidate for a pane id' {
+        $candidates = @(Get-PaneTargetCandidates -PaneId '%7')
+
+        $candidates | Should -Be @('%7', 'default:0.3')
+    }
+
+    It 'falls back to pane coordinates when direct pane id delivery leaves the buffer unchanged' {
+        $result = Send-TextToPane -PaneId '%7' -CommandText 'echo test'
+
+        $result | Should -Be 'sent to %7 via default:0.3'
+        $script:sendBuffer | Should -Be "> echo test`nresult"
+        $script:sendAttempts | Should -Be @('%7 literal', 'default:0.3 literal', 'default:0.3 Enter')
+    }
+}
