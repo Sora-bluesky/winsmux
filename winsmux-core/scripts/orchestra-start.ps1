@@ -221,7 +221,7 @@ function Get-AgentLaunchCommand {
                 return ''
             }
 
-            return "codex -c model=$Model --full-auto -C $(ConvertTo-PowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PowerShellLiteral -Value $GitWorktreeDir)"
+            return "codex -c model=$Model --sandbox danger-full-access -C $(ConvertTo-PowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PowerShellLiteral -Value $GitWorktreeDir)"
         }
         'claude' {
             return "claude --model $Model --permission-mode bypassPermissions"

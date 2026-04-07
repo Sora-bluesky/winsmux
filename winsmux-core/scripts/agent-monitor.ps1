@@ -799,7 +799,7 @@ function Invoke-AgentRespawn {
         'codex' {
             $escapedProject = "'" + ($ProjectDir -replace "'", "''") + "'"
             $escapedWorktree = "'" + ($GitWorktreeDir -replace "'", "''") + "'"
-            $launchCommand = "codex -c model=$Model --full-auto -C $escapedProject --add-dir $escapedWorktree"
+            $launchCommand = "codex -c model=$Model --sandbox danger-full-access -C $escapedProject --add-dir $escapedWorktree"
         }
         'claude' {
             $launchCommand = 'claude --permission-mode bypassPermissions'

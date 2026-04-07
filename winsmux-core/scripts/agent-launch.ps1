@@ -17,7 +17,7 @@ function Get-AgentLaunchCommand {
 
     switch ($Agent.Trim().ToLowerInvariant()) {
         'codex' {
-            return "codex -c model=$Model --full-auto -C $(ConvertTo-PowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PowerShellLiteral -Value $GitWorktreeDir)"
+            return "codex -c model=$Model --sandbox danger-full-access -C $(ConvertTo-PowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PowerShellLiteral -Value $GitWorktreeDir)"
         }
         'claude' {
             return 'claude --permission-mode bypassPermissions'

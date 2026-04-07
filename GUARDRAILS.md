@@ -83,4 +83,4 @@
 ### 16. Codex sandbox git operations
 - **Trigger**: Builder (Codex) needs to commit changes
 - **Instruction**: Builder edits only. Git operations delegated to Researcher (Sonnet) or Commander.
-- **Reason**: Codex --full-auto sandbox blocks .git/worktrees/*/index.lock creation.
+- **Reason**: Codex --sandbox danger-full-access bypasses CLM; previously --full-auto blocked .git/worktrees/*/index.lock creation.

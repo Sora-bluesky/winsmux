@@ -566,7 +566,7 @@ Describe 'agent-monitor helpers' {
         }
         Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
             $PaneId -eq '%2' -and
-            $Text -eq "codex -c model=gpt-5.4 --full-auto -C 'C:\repo\.worktrees\builder-1' --add-dir 'C:\repo\.git\worktrees\builder-1'"
+            $Text -eq "codex -c model=gpt-5.4 --sandbox danger-full-access -C 'C:\repo\.worktrees\builder-1' --add-dir 'C:\repo\.git\worktrees\builder-1'"
         }
     }
 
@@ -1032,7 +1032,7 @@ gpt-5.4   82% context left
 "@) | Should -Be 'idle'
         (Get-PaneActualStateFromText -Text @"
 Launching codex...
-codex --full-auto -C C:\repo
+codex --sandbox danger-full-access -C C:\repo
 "@) | Should -Be 'codex'
         (Get-PaneActualStateFromText -Text @"
 gpt-5.4   61% context left
