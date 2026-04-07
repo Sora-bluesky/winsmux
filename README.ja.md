@@ -34,6 +34,18 @@ irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | ie
 
 すべて `~\.winsmux\` に配置される。
 
+tmux 互換ランタイムだけを使いたい場合は、次の方法でも直接インストールできる:
+
+```powershell
+winget install winsmux
+cargo install winsmux
+scoop bucket add winsmux https://github.com/winsmux/scoop-winsmux
+scoop install winsmux
+choco install winsmux
+```
+
+GitHub Releases の `.zip` を使うか、[`core/`](core) でソースからビルドすることもできる。
+
 ## クイックスタート
 
 ```powershell
@@ -91,6 +103,24 @@ winsmux keys codex Enter
 - クリックでペインを選択
 - ドラッグでテキスト選択（自動でクリップボードにコピー）
 - スクロールホイールでスクロール
+
+## tmux 互換ランタイム
+
+winsmux の土台には、`core/` にある Rust 製の Windows ネイティブターミナルマルチプレクサが入っている。Orchestra やクロスペイン CLI はこのランタイムの上で動く。
+
+- **tmux 互換** — tmux コマンド体系を話し、`~/.tmux.conf` を読み込み、既存テーマをそのまま使える
+- **Windows ネイティブ** — ConPTY ベースで動き、WSL/Cygwin/MSYS2 を前提にしない
+- **複数エントリポイント** — `winsmux`、`pmux`、`tmux` の3つの名前で起動できる
+- **自動化向け** — 76 個の tmux 互換コマンドと 126+ の format 変数を備え、エージェント運用の基盤になる
+
+| ランタイム資料 | 内容 |
+| ------------- | ---- |
+| [Features](core/docs/features.md) | マウス、コピー、レイアウト、format、スクリプト機能 |
+| [Compatibility](core/docs/compatibility.md) | tmux 互換性マトリクスとコマンド実装状況 |
+| [Configuration](core/docs/configuration.md) | 設定ファイル、オプション、環境変数、`.tmux.conf` 対応 |
+| [Key Bindings](core/docs/keybindings.md) | 既定のキーボード操作とマウス操作 |
+| [Mouse over SSH](core/docs/mouse-ssh.md) | SSH 越しのマウス挙動と Windows バージョン要件 |
+| [Claude Code](core/docs/claude-code.md) | Claude Code の teammate panes がどう載るか |
 
 ## winsmux
 

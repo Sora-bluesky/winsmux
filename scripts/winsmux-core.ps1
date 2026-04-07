@@ -18,6 +18,7 @@ $LabelsFile     = Join-Path $env:APPDATA "winsmux\labels.json"
 $BridgeSettingsScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\settings.ps1'))
 $PaneControlScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-control.ps1'))
 $PaneStatusScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-status.ps1'))
+$RoleGateScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\role-gate.ps1'))
 
 if (Test-Path $BridgeSettingsScript -PathType Leaf) {
     . $BridgeSettingsScript
@@ -29,6 +30,10 @@ if (Test-Path $PaneControlScript -PathType Leaf) {
 
 if (Test-Path $PaneStatusScript -PathType Leaf) {
     . $PaneStatusScript
+}
+
+if (Test-Path $RoleGateScript -PathType Leaf) {
+    . $RoleGateScript
 }
 
 # --- Windows Credential Manager P/Invoke ---
@@ -83,6 +88,37 @@ function Invoke-WinsmuxRaw {
     return & winsmux @Arguments
 }
 
+function Write-ClmSafeTextFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [AllowEmptyString()][string]$Content = '',
+        [switch]$Append
+    )
+
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    $escapedPath = $Path -replace '"', '""'
+    if ([string]::IsNullOrEmpty($Content)) {
+        if ($Append) {
+            return
+        }
+
+        $writeCommand = 'type nul > "{0}"' -f $escapedPath
+        cmd /d /c $writeCommand | Out-Null
+    } else {
+        $redirect = if ($Append) { '>>' } else { '>' }
+        $writeCommand = 'more {0} "{1}"' -f $redirect, $escapedPath
+        $Content | cmd /d /c $writeCommand | Out-Null
+    }
+
+    if ($LASTEXITCODE -ne 0) {
+        Stop-WithError "failed to write file via cmd.exe: $Path"
+    }
+}
+
 # --- Helper: Dispatch prompt paths ---
 function Get-DispatchPromptDirectory {
     param([string]$ProjectDir = (Get-Location).Path)
@@ -104,8 +140,7 @@ function New-DispatchPromptFile {
 
     $fileName = '{0}-{1}.txt' -f $Prefix, ([guid]::NewGuid().ToString('N'))
     $path = Join-Path $promptDir $fileName
-    $quotedPath = '"' + $path.Replace('"', '""') + '"'
-    $Content | cmd /d /c "more > $quotedPath" | Out-Null
+    Write-ClmSafeTextFile -Path $path -Content $Content
     return $path
 }
 
@@ -224,6 +259,92 @@ function Get-CurrentGitBranch {
     return $branch.Trim()
 }
 
+function Get-CurrentGitHead {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    $head = (git -C $ProjectDir rev-parse HEAD 2>$null | Select-Object -First 1)
+    if (($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) -or [string]::IsNullOrWhiteSpace($head)) {
+        Stop-WithError "unable to determine current git HEAD in $ProjectDir"
+    }
+
+    return $head.Trim()
+}
+
+function ConvertTo-ReviewStateValue {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    if ($Value -is [string] -or $Value -is [char] -or $Value -is [ValueType]) {
+        return $Value
+    }
+
+    if ($Value -is [System.Collections.Specialized.OrderedDictionary]) {
+        $ordered = [ordered]@{}
+        foreach ($key in $Value.Keys) {
+            $ordered[[string]$key] = ConvertTo-ReviewStateValue -Value $Value[$key]
+        }
+
+        return $ordered
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        $ordered = [ordered]@{}
+        foreach ($entry in $Value.GetEnumerator()) {
+            $ordered[[string]$entry.Key] = ConvertTo-ReviewStateValue -Value $entry.Value
+        }
+
+        return $ordered
+    }
+
+    if ($Value -is [System.Collections.IEnumerable]) {
+        $items = @()
+        foreach ($item in $Value) {
+            $items += ,(ConvertTo-ReviewStateValue -Value $item)
+        }
+
+        return $items
+    }
+
+    if ($null -ne $Value.PSObject -and $Value.PSObject.Properties.Count -gt 0) {
+        $ordered = [ordered]@{}
+        foreach ($property in $Value.PSObject.Properties) {
+            $ordered[$property.Name] = ConvertTo-ReviewStateValue -Value $property.Value
+        }
+
+        return $ordered
+    }
+
+    return $Value
+}
+
+function Get-ReviewStatePropertyValue {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        if ($InputObject.Contains($Name)) {
+            return $InputObject[$Name]
+        }
+
+        return $null
+    }
+
+    if ($null -ne $InputObject.PSObject -and $InputObject.PSObject.Properties.Name -contains $Name) {
+        return $InputObject.$Name
+    }
+
+    return $null
+}
+
 function Get-ReviewState {
     param([string]$ProjectDir = (Get-Location).Path)
 
@@ -245,14 +366,7 @@ function Get-ReviewState {
 
     $state = [ordered]@{}
     foreach ($branchProperty in $parsed.PSObject.Properties) {
-        $entry = [ordered]@{}
-        if ($null -ne $branchProperty.Value) {
-            foreach ($entryProperty in $branchProperty.Value.PSObject.Properties) {
-                $entry[$entryProperty.Name] = $entryProperty.Value
-            }
-        }
-
-        $state[$branchProperty.Name] = $entry
+        $state[$branchProperty.Name] = ConvertTo-ReviewStateValue -Value $branchProperty.Value
     }
 
     return $state
@@ -277,7 +391,83 @@ function Save-ReviewState {
         return
     }
 
-    $State | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $path -Encoding UTF8
+    Write-ClmSafeTextFile -Path $path -Content ($State | ConvertTo-Json -Depth 5)
+}
+
+function Assert-WinsmuxRolePermission {
+    param(
+        [Parameter(Mandatory = $true)][string]$CommandName,
+        [string]$TargetPane
+    )
+
+    $roleAssert = Get-Command -Name Assert-Role -CommandType Function -ErrorAction SilentlyContinue
+    if ($null -eq $roleAssert) {
+        Stop-WithError "role gate unavailable: $RoleGateScript"
+    }
+
+    if (-not (Assert-Role -Command $CommandName -TargetPane $TargetPane)) {
+        Stop-WithError "$CommandName is not permitted for the current role"
+    }
+}
+
+function Get-CurrentReviewerManifestContext {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    if ([string]::IsNullOrWhiteSpace($env:WINSMUX_PANE_ID)) {
+        Stop-WithError 'WINSMUX_PANE_ID not set'
+    }
+
+    try {
+        $context = Get-PaneControlManifestContext -ProjectDir $ProjectDir -PaneId $env:WINSMUX_PANE_ID
+    } catch {
+        Stop-WithError $_.Exception.Message
+    }
+
+    if ([string]$context.Role -ne 'Reviewer') {
+        Stop-WithError "pane $($env:WINSMUX_PANE_ID) is not registered as Reviewer in .winsmux/manifest.yaml"
+    }
+
+    return [ordered]@{
+        ManifestPath        = [string]$context.ManifestPath
+        ProjectDir          = [string]$context.ProjectDir
+        Label               = [string]$context.Label
+        PaneId              = [string]$context.PaneId
+        Role                = [string]$context.Role
+        LaunchDir           = [string]$context.LaunchDir
+        BuilderWorktreePath = [string]$context.BuilderWorktreePath
+        GitWorktreeDir      = [string]$context.GitWorktreeDir
+    }
+}
+
+function New-ReviewRequestId {
+    $timestamp = Get-Date -Format 'yyyyMMddHHmmss'
+    $suffix = ([guid]::NewGuid().ToString('N')).Substring(0, 8)
+    return "review-$timestamp-$suffix"
+}
+
+function New-ReviewerStateRecord {
+    param(
+        [Parameter(Mandatory = $true)][string]$Status,
+        [Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary]$Request,
+        [Parameter(Mandatory = $true)][System.Collections.Specialized.OrderedDictionary]$Reviewer,
+        [AllowNull()][System.Collections.Specialized.OrderedDictionary]$Evidence,
+        [Parameter(Mandatory = $true)][string]$UpdatedAt
+    )
+
+    $record = [ordered]@{
+        status    = $Status
+        branch    = [string](Get-ReviewStatePropertyValue -InputObject $Request -Name 'branch')
+        head_sha  = [string](Get-ReviewStatePropertyValue -InputObject $Request -Name 'head_sha')
+        request   = ConvertTo-ReviewStateValue -Value $Request
+        reviewer  = ConvertTo-ReviewStateValue -Value $Reviewer
+        updatedAt = $UpdatedAt
+    }
+
+    if ($null -ne $Evidence -and $Evidence.Count -gt 0) {
+        $record['evidence'] = ConvertTo-ReviewStateValue -Value $Evidence
+    }
+
+    return $record
 }
 
 # --- Helper: Labels ---
@@ -299,7 +489,7 @@ function Save-Labels {
     if (-not (Test-Path $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
-    $Labels | ConvertTo-Json | Set-Content -Path $LabelsFile -Encoding UTF8
+    Write-ClmSafeTextFile -Path $LabelsFile -Content ($Labels | ConvertTo-Json)
 }
 
 # --- Helper: Resolve-Target ---
@@ -662,7 +852,7 @@ function Save-FocusPolicyStack {
         return
     }
 
-    $Stack | ConvertTo-Json -Depth 4 | Set-Content -Path $FocusPolicyFile -Encoding UTF8
+    Write-ClmSafeTextFile -Path $FocusPolicyFile -Content ($Stack | ConvertTo-Json -Depth 4)
 }
 
 function Get-ActiveFocusPolicy {
@@ -1625,7 +1815,7 @@ function Invoke-Signal {
     $signalDir = Get-SignalDir
     $signalFile = Join-Path $signalDir "$channel.signal"
 
-    Set-Content -Path $signalFile -Value (Get-Date -Format o) -Encoding UTF8
+    Write-ClmSafeTextFile -Path $signalFile -Content (Get-Date -Format o)
     Write-Output "sent signal: $channel"
 }
 
@@ -1946,7 +2136,7 @@ function Invoke-Profile {
     }
 
     $json = $fragment | ConvertTo-Json -Depth 4
-    Set-Content -Path $fragmentFile -Value $json -Encoding UTF8
+    Write-ClmSafeTextFile -Path $fragmentFile -Content $json
     Write-Output "Registered WT profile: winsmux $profileName"
     Write-Output "Fragment: $fragmentFile"
     if ($agents.Count -gt 0) {
@@ -2105,19 +2295,96 @@ function Invoke-Version {
     Write-Output "winsmux $VERSION"
 }
 
+function Invoke-ReviewRequest {
+    if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
+        Stop-WithError "usage: winsmux review-request"
+    }
+
+    Assert-WinsmuxRolePermission -CommandName 'review-request'
+
+    $projectDir = (Get-Location).Path
+    $branch = Get-CurrentGitBranch -ProjectDir $projectDir
+    $headSha = Get-CurrentGitHead -ProjectDir $projectDir
+    $context = Get-CurrentReviewerManifestContext -ProjectDir $projectDir
+    $timestamp = (Get-Date).ToString('o')
+    $state = Get-ReviewState -ProjectDir $projectDir
+
+    $request = [ordered]@{
+        id                      = New-ReviewRequestId
+        branch                  = $branch
+        head_sha                = $headSha
+        target_reviewer_pane_id = $context.PaneId
+        target_reviewer_label   = $context.Label
+        target_reviewer_role    = $context.Role
+        dispatched_at           = $timestamp
+    }
+
+    $reviewer = [ordered]@{
+        pane_id    = $context.PaneId
+        label      = $context.Label
+        role       = $context.Role
+        agent_name = [string]$env:WINSMUX_AGENT_NAME
+    }
+
+    $state[$branch] = New-ReviewerStateRecord -Status 'PENDING' -Request $request -Reviewer $reviewer -Evidence $null -UpdatedAt $timestamp
+    Save-ReviewState -ProjectDir $projectDir -State $state
+    Write-Output "review request recorded for $branch"
+}
+
 function Invoke-ReviewApprove {
     if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
         Stop-WithError "usage: winsmux review-approve"
     }
 
+    Assert-WinsmuxRolePermission -CommandName 'review-approve'
+
     $projectDir = (Get-Location).Path
     $branch = Get-CurrentGitBranch -ProjectDir $projectDir
+    $headSha = Get-CurrentGitHead -ProjectDir $projectDir
+    $context = Get-CurrentReviewerManifestContext -ProjectDir $projectDir
     $state = Get-ReviewState -ProjectDir $projectDir
-    $state[$branch] = [ordered]@{
-        status    = 'PASS'
-        updatedAt = (Get-Date).ToString('o')
+
+    if (-not $state.Contains($branch)) {
+        Stop-WithError "review request pending for $branch was not found. Run: winsmux review-request"
     }
 
+    $entry = ConvertTo-ReviewStateValue -Value $state[$branch]
+    $request = ConvertTo-ReviewStateValue -Value (Get-ReviewStatePropertyValue -InputObject $entry -Name 'request')
+    $status = [string](Get-ReviewStatePropertyValue -InputObject $entry -Name 'status')
+
+    if ($null -eq $request -or $status -ne 'PENDING') {
+        Stop-WithError "review request pending for $branch was not found. Run: winsmux review-request"
+    }
+
+    $requestPaneId = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'target_reviewer_pane_id')
+    $requestBranch = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'branch')
+    $requestHeadSha = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'head_sha')
+
+    if ($requestPaneId -ne $context.PaneId) {
+        Stop-WithError "pending review request for $branch is assigned to $requestPaneId, not $($context.PaneId)"
+    }
+
+    if ($requestBranch -ne $branch) {
+        Stop-WithError "pending review request branch mismatch: expected $requestBranch, got $branch"
+    }
+
+    if ($requestHeadSha -ne $headSha) {
+        Stop-WithError "pending review request head mismatch: expected $requestHeadSha, got $headSha"
+    }
+
+    $timestamp = (Get-Date).ToString('o')
+    $reviewer = [ordered]@{
+        pane_id    = $context.PaneId
+        label      = $context.Label
+        role       = $context.Role
+        agent_name = [string]$env:WINSMUX_AGENT_NAME
+    }
+    $evidence = [ordered]@{
+        approved_at  = $timestamp
+        approved_via = 'winsmux review-approve'
+    }
+
+    $state[$branch] = New-ReviewerStateRecord -Status 'PASS' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
     Save-ReviewState -ProjectDir $projectDir -State $state
     Write-Output "review PASS recorded for $branch"
 }
@@ -2160,6 +2427,7 @@ Commands:
   focus-unlock              Pop the latest focus lock
   lock <label> <file>...    Acquire file lock(s) for a label
   unlock <label> <file>...  Release file lock(s) for a label
+  review-request            Record a pending Reviewer request for the current branch
   review-approve            Record Reviewer PASS for the current branch
   review-reset              Clear Reviewer PASS for the current branch
   locks                     List active file locks
@@ -2513,6 +2781,7 @@ switch ($Command) {
     'auto-rebalance'  { Invoke-AutoRebalance }
     'kill'            { Invoke-Kill }
     'restart'         { Invoke-Restart }
+    'review-request'  { Invoke-ReviewRequest }
     'review-approve'  { Invoke-ReviewApprove }
     'review-reset'    { Invoke-ReviewReset }
     'rebind-worktree' { Invoke-RebindWorktree }

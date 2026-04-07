@@ -1340,24 +1340,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "winsmux"
-version = "3.3.1"
-dependencies = [
- "chrono",
- "crossterm",
- "glob",
- "portable-pty-winsmux",
- "ratatui",
- "regex",
- "serde",
- "serde_json",
- "unicode-width",
- "vt100-winsmux",
- "which",
- "windows-sys",
-]
-
-[[package]]
 name = "quickcheck"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2346,6 +2328,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
 dependencies = [
  "cfg-if",
+ "windows-sys",
+]
+
+[[package]]
+name = "winsmux"
+version = "3.3.1"
+dependencies = [
+ "chrono",
+ "crossterm",
+ "glob",
+ "portable-pty-winsmux",
+ "ratatui",
+ "regex",
+ "serde",
+ "serde_json",
+ "unicode-width",
+ "vt100-winsmux",
+ "which",
  "windows-sys",
 ]
 

@@ -31,6 +31,7 @@ $RolePermissions = @{
         Kill          = $true
         Restart       = $true
         ContextReset  = $true
+        ReviewApprove = $false
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -67,6 +68,7 @@ $RolePermissions = @{
         Kill          = $false
         Restart       = $false
         ContextReset  = $false
+        ReviewApprove = $false
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -103,6 +105,7 @@ $RolePermissions = @{
         Kill          = $false
         Restart       = $false
         ContextReset  = $false
+        ReviewApprove = $false
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -139,6 +142,7 @@ $RolePermissions = @{
         Kill          = $false
         Restart       = $false
         ContextReset  = $false
+        ReviewApprove = $true
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -476,6 +480,14 @@ function Assert-Role {
         }
         'context-reset' {
             if ($permissions.ContextReset) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'review-approve' {
+            if ($permissions.ReviewApprove) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'review-request' {
+            if ($permissions.ReviewApprove) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
         'id' {

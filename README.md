@@ -49,6 +49,24 @@ winsmux
 - **Builder worktree isolation** gives each Builder pane a separate git worktree to reduce cross-agent collisions
 - **Evidence Ledger** supports audit-oriented capture of agent activity and review outcomes
 
+## Core runtime
+
+Under the orchestration layer, winsmux ships a Windows-native terminal multiplexer runtime written in Rust.
+
+- **tmux-compatible runtime**: runs tmux-style commands, reads `~/.tmux.conf`, and supports existing tmux themes
+- **Windows-native UX**: full mouse support, ConPTY-based panes, and no WSL/Cygwin/MSYS2 dependency
+- **Multiple entrypoints**: the runtime is available as `winsmux`, `pmux`, and `tmux`
+- **Automation-ready**: 76 tmux-compatible commands and 126+ format variables back the pane operations used by Orchestra and agent tooling
+
+| Runtime docs | Description |
+| ------- | ------- |
+| [Features](core/docs/features.md) | Mouse support, copy mode, layouts, formats, and scripting surface |
+| [Compatibility](core/docs/compatibility.md) | tmux compatibility matrix and command coverage |
+| [Configuration](core/docs/configuration.md) | Config files, options, environment variables, and `.tmux.conf` support |
+| [Key Bindings](core/docs/keybindings.md) | Default keyboard and mouse interactions |
+| [Mouse over SSH](core/docs/mouse-ssh.md) | SSH mouse behavior and Windows version requirements |
+| [Claude Code](core/docs/claude-code.md) | How teammate panes run on top of the runtime |
+
 ## Install
 
 ```powershell
@@ -57,10 +75,22 @@ irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | ie
 
 The installer:
 
-- installs the `winsmux-core` fork if `winsmux` is not already available
-- installs `winsmux` and `winsmux` command wrappers into `~\.winsmux\bin`
+- installs the Rust runtime if `winsmux` is not already available
+- installs the `winsmux` wrapper scripts into `~\.winsmux\bin`
 - configures `.winsmux.conf`
 - registers a **winsmux Orchestra** profile in Windows Terminal
+
+If you only need the tmux-compatible runtime, you can also install it directly:
+
+```powershell
+winget install winsmux
+cargo install winsmux
+scoop bucket add winsmux https://github.com/winsmux/scoop-winsmux
+scoop install winsmux
+choco install winsmux
+```
+
+You can also download a release `.zip` from GitHub Releases or build from source in [`core/`](core).
 
 ## Quick start
 
