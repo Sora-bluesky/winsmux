@@ -38,8 +38,6 @@ $script:HungSnapshotDir = Join-Path $env:TEMP 'winsmux\monitor_snapshots'
 $script:IdleStateDir = Join-Path $env:TEMP 'winsmux\monitor_idle'
 $script:AgentMonitorDefaultHungThreshold = 60
 $script:IdleAlertRepeatSeconds = 300
-$script:MonitorTelegramEnvPath = 'C:\Users\komei\.claude\channels\telegram\.env'
-$script:MonitorTelegramChatId = '8642321094'
 $script:BuilderStallHistory = @{}
 $script:BuilderStallThresholdCycles = 3
 
@@ -610,85 +608,6 @@ function Get-MonitorStateEventMessage {
         'pane.ready' { return "Pane $Label ($PaneId) is ready." }
         'pane.waiting_for_dispatch' { return "Pane $Label ($PaneId) is waiting for dispatch." }
         default { return "Pane $Label ($PaneId) detected as $Status." }
-    }
-}
-
-function Write-MonitorIdleAlertLog {
-    param(
-        [Parameter(Mandatory = $true)][string]$Message,
-        [Parameter(Mandatory = $true)][string]$ProjectDir
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Message) -or [string]::IsNullOrWhiteSpace($ProjectDir)) {
-        return $false
-    }
-
-    try {
-        $logDir = Join-Path $ProjectDir '.winsmux\logs'
-        [System.IO.Directory]::CreateDirectory($logDir) | Out-Null
-
-        $timestamp = (Get-Date).ToString('o')
-        $logLine = "[{0}] {1}{2}" -f $timestamp, $Message, [System.Environment]::NewLine
-        $logPath = Join-Path $logDir 'idle-alerts.log'
-        [System.IO.File]::AppendAllText($logPath, $logLine, [System.Text.Encoding]::UTF8)
-        return $true
-    } catch {
-        return $false
-    }
-}
-
-function Send-MonitorTelegramAlert {
-    param(
-        [Parameter(Mandatory = $true)][string]$Message,
-        [ValidateSet('commander', 'idle')][string]$AlertType = 'commander',
-        [string]$ProjectDir = ''
-    )
-
-    if ([string]::IsNullOrWhiteSpace($Message)) {
-        return $false
-    }
-
-    if ($AlertType -eq 'idle') {
-        return Write-MonitorIdleAlertLog -Message $Message -ProjectDir $ProjectDir
-    }
-
-    if (-not (Test-Path -LiteralPath $script:MonitorTelegramEnvPath -PathType Leaf)) {
-        return $false
-    }
-
-    try {
-        $envLines = Get-Content -LiteralPath $script:MonitorTelegramEnvPath -Encoding UTF8
-    } catch {
-        return $false
-    }
-
-    $token = $null
-    foreach ($line in $envLines) {
-        if ($line -match '^\s*TELEGRAM_BOT_TOKEN\s*=\s*(.+?)\s*$') {
-            $token = $Matches[1].Trim()
-            break
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($token)) {
-        return $false
-    }
-
-    if (($token.StartsWith('"') -and $token.EndsWith('"')) -or ($token.StartsWith("'") -and $token.EndsWith("'"))) {
-        $token = $token.Substring(1, $token.Length - 2)
-    }
-
-    $uri = "https://api.telegram.org/bot$token/sendMessage"
-    $body = @{
-        chat_id = $script:MonitorTelegramChatId
-        text    = $Message
-    }
-
-    try {
-        $response = Invoke-RestMethod -Method Post -Uri $uri -Body $body -ErrorAction Stop
-        return [bool](Get-MonitorPropertyValue -InputObject $response -Name 'ok' -Default $true)
-    } catch {
-        return $false
     }
 }
 
@@ -1318,10 +1237,6 @@ function Invoke-AgentMonitorCycle {
                     idle_threshold_seconds = $IdleThreshold
                     snapshot_hash          = $statusSnapshotHash
                 }) | Out-Null
-            try {
-                Send-MonitorTelegramAlert -Message $idleAlert.Message -AlertType 'idle' -ProjectDir $projectDir | Out-Null
-            } catch {
-            }
         }
 
         $stallDetected = Test-BuilderStall -PaneId $paneId -Role $role -Status $statusName -SnapshotHash $statusSnapshotHash
