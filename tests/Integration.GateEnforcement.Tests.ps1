@@ -180,6 +180,19 @@ Describe 'sh-orchestra-gate integration' {
         & $script:AssertDenyResult -Result $result
     }
 
+    It 'allows codex exec text inside a heredoc body' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = @'
+cat <<'EOF'
+codex exec "review the repo"
+EOF
+'@
+        }
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
     It 'denies shallow git clone usage' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
             command = 'git clone https://github.com/example/repo.git --depth 1'
@@ -241,6 +254,15 @@ Describe 'sh-orchestra-gate integration' {
     It 'allows Agent plan mode' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
             mode = 'plan'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'allows Agent default mode' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
+            mode = 'default'
         })
 
         $result.ExitCode | Should -Be 0

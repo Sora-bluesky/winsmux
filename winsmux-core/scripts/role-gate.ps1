@@ -15,6 +15,7 @@ $RolePermissions = @{
         KeysOwn       = $true
         KeysOther     = $false
         List          = $true
+        Status        = $true
         Name          = $true
         Resolve       = $true
         Focus         = $true
@@ -29,6 +30,7 @@ $RolePermissions = @{
         MailboxListen = $true
         Kill          = $true
         Restart       = $true
+        ContextReset  = $true
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -49,6 +51,7 @@ $RolePermissions = @{
         KeysOwn       = $true
         KeysOther     = $false
         List          = $true
+        Status        = $true
         Name          = $true
         Resolve       = $true
         Focus         = $false
@@ -63,6 +66,7 @@ $RolePermissions = @{
         MailboxListen = $false
         Kill          = $false
         Restart       = $false
+        ContextReset  = $false
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -83,6 +87,7 @@ $RolePermissions = @{
         KeysOwn       = $true
         KeysOther     = $false
         List          = $true
+        Status        = $true
         Name          = $true
         Resolve       = $true
         Focus         = $false
@@ -97,6 +102,7 @@ $RolePermissions = @{
         MailboxListen = $false
         Kill          = $false
         Restart       = $false
+        ContextReset  = $false
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -117,6 +123,7 @@ $RolePermissions = @{
         KeysOwn       = $true
         KeysOther     = $false
         List          = $true
+        Status        = $true
         Name          = $true
         Resolve       = $true
         Focus         = $false
@@ -131,6 +138,7 @@ $RolePermissions = @{
         MailboxListen = $false
         Kill          = $false
         Restart       = $false
+        ContextReset  = $false
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -398,6 +406,10 @@ function Assert-Role {
             if ($permissions.List) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
+        'status' {
+            if ($permissions.Status) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
         'name' {
             if ($permissions.Name) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
@@ -460,6 +472,10 @@ function Assert-Role {
         }
         'restart' {
             if ($permissions.Restart) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'context-reset' {
+            if ($permissions.ContextReset) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
         'id' {
