@@ -593,6 +593,64 @@ function Write-MonitorEvent {
     }
 }
 
+function Get-MonitorCommanderMailboxChannel {
+    param([string]$SessionName = 'winsmux-orchestra')
+
+    $resolvedSessionName = if ([string]::IsNullOrWhiteSpace($SessionName)) {
+        'winsmux-orchestra'
+    } else {
+        $SessionName.Trim()
+    }
+
+    $safeSessionName = [regex]::Replace($resolvedSessionName, '[^A-Za-z0-9_-]', '-')
+    return "$safeSessionName-commander"
+}
+
+function Send-MonitorCommanderMailboxMessage {
+    param(
+        [string]$SessionName = 'winsmux-orchestra',
+        [Parameter(Mandatory = $true)][string]$Event,
+        [string]$Message = '',
+        [string]$Label = '',
+        [string]$PaneId = '',
+        [string]$Role = '',
+        [string]$Status = '',
+        [string]$ExitReason = '',
+        [AllowNull()]$Data = $null
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Event)) {
+        return $false
+    }
+
+    $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\winsmux-core.ps1'))
+    $channel = Get-MonitorCommanderMailboxChannel -SessionName $SessionName
+    $payload = [ordered]@{
+        from      = if ([string]::IsNullOrWhiteSpace($Label)) { 'agent-monitor' } else { $Label }
+        to        = 'Commander'
+        content   = [ordered]@{
+            session     = if ([string]::IsNullOrWhiteSpace($SessionName)) { 'winsmux-orchestra' } else { $SessionName }
+            event       = $Event
+            message     = if ($null -eq $Message) { '' } else { $Message }
+            label       = if ($null -eq $Label) { '' } else { $Label }
+            pane_id     = if ($null -eq $PaneId) { '' } else { $PaneId }
+            role        = if ($null -eq $Role) { '' } else { $Role }
+            status      = if ($null -eq $Status) { '' } else { $Status }
+            exit_reason = if ($null -eq $ExitReason) { '' } else { $ExitReason }
+            data        = if ($null -eq $Data) { [ordered]@{} } else { $Data }
+        }
+        timestamp = (Get-Date).ToString('o')
+    }
+
+    $payloadJson = $payload | ConvertTo-Json -Compress -Depth 10
+    & pwsh -NoProfile -File $bridgeScript 'mailbox-send' $channel $payloadJson 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to send mailbox message on channel $channel."
+    }
+
+    return $true
+}
+
 function Get-MonitorStateEventName {
     param(
         [Parameter(Mandatory = $true)][string]$Status,
@@ -1244,6 +1302,14 @@ function Invoke-AgentMonitorCycle {
                 $result['Message'] = $approvalMessage
                 Write-Output $approvalMessage
             }
+
+            try {
+                Send-MonitorCommanderMailboxMessage -SessionName $SessionName `
+                    -Event 'pane.approval_waiting' -Message $result['Message'] `
+                    -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
+                    -Data $stateEventData | Out-Null
+            } catch {
+            }
         }
 
         $contextRemainingPercent = Get-MonitorContextRemainingPercent -Text $statusSnapshotTail
@@ -1297,6 +1363,18 @@ function Invoke-AgentMonitorCycle {
                     idle_threshold_seconds = $IdleThreshold
                     snapshot_hash          = $statusSnapshotHash
                 }) | Out-Null
+            try {
+                Send-MonitorCommanderMailboxMessage -SessionName $SessionName `
+                    -Event 'pane.idle' -Message $idleAlert.Message `
+                    -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
+                    -Data ([ordered]@{
+                        agent                  = $agentName
+                        model                  = $modelName
+                        idle_threshold_seconds = $IdleThreshold
+                        snapshot_hash          = $statusSnapshotHash
+                    }) | Out-Null
+            } catch {
+            }
         }
 
         $stallDetected = Test-BuilderStall -PaneId $paneId -Role $role -Status $statusName -SnapshotHash $statusSnapshotHash
@@ -1315,6 +1393,18 @@ function Invoke-AgentMonitorCycle {
                     required_cycles  = $script:BuilderStallThresholdCycles
                     snapshot_hash    = $statusSnapshotHash
                 }) | Out-Null
+            try {
+                Send-MonitorCommanderMailboxMessage -SessionName $SessionName `
+                    -Event 'pane.stalled' -Message $stallMessage `
+                    -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
+                    -Data ([ordered]@{
+                        agent            = $agentName
+                        model            = $modelName
+                        required_cycles  = $script:BuilderStallThresholdCycles
+                        snapshot_hash    = $statusSnapshotHash
+                    }) | Out-Null
+            } catch {
+            }
         }
 
         # Log the status check

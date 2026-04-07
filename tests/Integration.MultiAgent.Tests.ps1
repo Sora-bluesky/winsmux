@@ -164,8 +164,8 @@ Describe 'manifest round-trip' {
 
         $manifestPath = Get-ManifestPath -ProjectDir $script:manifestTempRoot
         $paneSummaries = @(
-            [PSCustomObject]@{ Label = 'builder-1'; PaneId = '%2'; Role = 'Builder'; BuilderWorktreePath = 'C:\repo\.worktrees\builder-1' }
-            [PSCustomObject]@{ Label = 'reviewer'; PaneId = '%4'; Role = 'Reviewer'; BuilderWorktreePath = '' }
+            [ordered]@{ Label = 'builder-1'; PaneId = '%2'; Role = 'Builder'; BuilderWorktreePath = 'C:\repo\.worktrees\builder-1' }
+            [ordered]@{ Label = 'reviewer'; PaneId = '%4'; Role = 'Reviewer'; BuilderWorktreePath = '' }
         )
         Update-ManifestPanes -ManifestPath $manifestPath -PaneSummaries $paneSummaries
 
@@ -246,6 +246,7 @@ Describe 'agent monitor idle alerts' {
         $script:agentMonitorIdleStateDir = Join-Path $script:agentMonitorTempRoot 'idle'
         New-Item -ItemType Directory -Path $script:agentMonitorTempRoot -Force | Out-Null
         $script:IdleStateDir = $script:agentMonitorIdleStateDir
+        Mock Send-MonitorCommanderMailboxMessage { return $true }
     }
 
     AfterEach {
@@ -327,6 +328,11 @@ panes:
             $Role -eq 'Builder' -and
             $Message -match 'Commander alert: idle pane builder-1'
         }
+        Should -Invoke Send-MonitorCommanderMailboxMessage -Times 1 -Exactly -ParameterFilter {
+            $Event -eq 'pane.idle' -and
+            $Label -eq 'builder-1' -and
+            $PaneId -eq '%2'
+        }
     }
 
     It 'emits approval waiting alerts and counts them during a monitor cycle' {
@@ -345,7 +351,7 @@ panes:
 "@ | Set-Content -Path (Join-Path $manifestDir 'manifest.yaml') -Encoding UTF8
 
         Mock Get-PaneAgentStatus {
-            [PSCustomObject]@{
+            [ordered]@{
                 Status       = 'approval_waiting'
                 PaneId       = '%2'
                 SnapshotTail = 'Do you want to allow this command?'
