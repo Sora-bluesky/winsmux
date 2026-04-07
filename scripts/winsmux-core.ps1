@@ -140,6 +140,80 @@ function Normalize-DispatchText {
     })
 }
 
+# --- Helper: Review State ---
+function Get-ReviewStatePath {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    return Join-Path (Join-Path $ProjectDir '.winsmux') 'review-state.json'
+}
+
+function Get-CurrentGitBranch {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    $branch = (git -C $ProjectDir rev-parse --abbrev-ref HEAD 2>$null | Select-Object -First 1)
+    if (($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) -or [string]::IsNullOrWhiteSpace($branch) -or $branch -eq 'HEAD') {
+        Stop-WithError "unable to determine current git branch in $ProjectDir"
+    }
+
+    return $branch.Trim()
+}
+
+function Get-ReviewState {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    $path = Get-ReviewStatePath -ProjectDir $ProjectDir
+    if (-not (Test-Path -LiteralPath $path)) {
+        return [ordered]@{}
+    }
+
+    $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return [ordered]@{}
+    }
+
+    try {
+        $parsed = $raw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        Stop-WithError "invalid review state: $path"
+    }
+
+    $state = [ordered]@{}
+    foreach ($branchProperty in $parsed.PSObject.Properties) {
+        $entry = [ordered]@{}
+        if ($null -ne $branchProperty.Value) {
+            foreach ($entryProperty in $branchProperty.Value.PSObject.Properties) {
+                $entry[$entryProperty.Name] = $entryProperty.Value
+            }
+        }
+
+        $state[$branchProperty.Name] = $entry
+    }
+
+    return $state
+}
+
+function Save-ReviewState {
+    param(
+        [System.Collections.Specialized.OrderedDictionary]$State,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $path = Get-ReviewStatePath -ProjectDir $ProjectDir
+    $dir = Split-Path $path -Parent
+    if (-not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+
+    if ($null -eq $State -or $State.Count -eq 0) {
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Force
+        }
+        return
+    }
+
+    $State | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $path -Encoding UTF8
+}
+
 # --- Helper: Labels ---
 function Get-Labels {
     if (Test-Path $LabelsFile) {
@@ -1880,6 +1954,39 @@ function Invoke-Version {
     Write-Output "winsmux $VERSION"
 }
 
+function Invoke-ReviewApprove {
+    if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
+        Stop-WithError "usage: winsmux review-approve"
+    }
+
+    $projectDir = (Get-Location).Path
+    $branch = Get-CurrentGitBranch -ProjectDir $projectDir
+    $state = Get-ReviewState -ProjectDir $projectDir
+    $state[$branch] = [ordered]@{
+        status    = 'PASS'
+        updatedAt = (Get-Date).ToString('o')
+    }
+
+    Save-ReviewState -ProjectDir $projectDir -State $state
+    Write-Output "review PASS recorded for $branch"
+}
+
+function Invoke-ReviewReset {
+    if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
+        Stop-WithError "usage: winsmux review-reset"
+    }
+
+    $projectDir = (Get-Location).Path
+    $branch = Get-CurrentGitBranch -ProjectDir $projectDir
+    $state = Get-ReviewState -ProjectDir $projectDir
+    if ($state.Contains($branch)) {
+        $state.Remove($branch)
+    }
+
+    Save-ReviewState -ProjectDir $projectDir -State $state
+    Write-Output "review PASS cleared for $branch"
+}
+
 function Show-Usage {
     Write-Output @"
 winsmux $VERSION - winsmux bridge for winsmux
@@ -1902,6 +2009,8 @@ Commands:
   focus-unlock              Pop the latest focus lock
   lock <label> <file>...    Acquire file lock(s) for a label
   unlock <label> <file>...  Release file lock(s) for a label
+  review-approve            Record Reviewer PASS for the current branch
+  review-reset              Clear Reviewer PASS for the current branch
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
   wait <channel> [timeout]  Block until signal received (replaces polling)
@@ -1924,6 +2033,7 @@ Commands:
   mailbox-listen <ch>       Alias for mailbox-create
   kill <target>             Stop pane process and respawn its shell
   restart <target>          Restart the pane agent using manifest context
+  rebind-worktree <target> <path>  Update a Builder pane to use a new worktree path
   doctor                    Check environment and IME diagnostics
   version                   Show version
 "@
@@ -2105,6 +2215,33 @@ function Invoke-Restart {
     Write-Output "restarted $paneId ($($plan.Label))"
 }
 
+function Invoke-RebindWorktree {
+    if (-not $Target) { Stop-WithError "usage: winsmux rebind-worktree <target> <new-worktree-path>" }
+    if (-not $Rest -or $Rest.Count -lt 1) { Stop-WithError "usage: winsmux rebind-worktree <target> <new-worktree-path>" }
+
+    $paneId = Resolve-Target $Target
+    $paneId = Confirm-Target $paneId
+    $newWorktreePath = ($Rest -join ' ').Trim()
+    if ([string]::IsNullOrWhiteSpace($newWorktreePath)) {
+        Stop-WithError "new worktree path must not be empty"
+    }
+
+    if (-not (Test-Path -LiteralPath $newWorktreePath -PathType Container)) {
+        Stop-WithError "worktree path not found: $newWorktreePath"
+    }
+
+    $projectDir = (Get-Location).Path
+    $resolvedWorktreePath = (Get-Item -LiteralPath $newWorktreePath -Force).FullName
+    $context = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId $paneId
+
+    if ($context.Role -ne 'Builder') {
+        Stop-WithError "rebind-worktree is only supported for Builder panes: $paneId ($($context.Label))"
+    }
+
+    Set-PaneControlManifestPanePaths -ProjectDir $projectDir -PaneId $paneId -LaunchDir $resolvedWorktreePath -BuilderWorktreePath $resolvedWorktreePath
+    Write-Output "rebound $paneId ($($context.Label)) to $resolvedWorktreePath"
+}
+
 # --- Dispatch ---
 switch ($Command) {
     'id'              { Invoke-Id }
@@ -2220,6 +2357,10 @@ switch ($Command) {
     'auto-rebalance'  { Invoke-AutoRebalance }
     'kill'            { Invoke-Kill }
     'restart'         { Invoke-Restart }
+    'review-approve'  { Invoke-ReviewApprove }
+    'review-reset'    { Invoke-ReviewReset }
+    'rebind-worktree' { Invoke-RebindWorktree }
     ''                { Show-Usage }
     default           { Stop-WithError "unknown command: $Command. Run without arguments for usage." }
 }
+

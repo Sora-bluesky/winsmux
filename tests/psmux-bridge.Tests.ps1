@@ -365,6 +365,85 @@ STATUS: VERIFY_PASS
     }
 }
 
+Describe 'pane-control helpers' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\pane-control.ps1')
+    }
+
+    BeforeEach {
+        $script:paneControlTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-pane-control-tests-' + [guid]::NewGuid().ToString('N'))
+        $script:paneControlManifestDir = Join-Path $script:paneControlTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $script:paneControlManifestDir -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:paneControlTempRoot -and (Test-Path $script:paneControlTempRoot)) {
+            Remove-Item -Path $script:paneControlTempRoot -Recurse -Force
+        }
+    }
+
+    It 'prefers launch_dir over builder_worktree_path when building a restart plan' {
+        @'
+version: 1
+saved_at: '2026-04-07T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: 'C:\repo'
+  git_worktree_dir: 'C:\repo\.git'
+panes:
+  - label: 'builder-1'
+    pane_id: '%2'
+    role: 'Builder'
+    exec_mode: true
+    launch_dir: 'C:\repo\.worktrees\builder-2'
+    builder_branch: 'worktree-builder-1'
+    builder_worktree_path: 'C:\repo\.worktrees\builder-1'
+    task: null
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            roles = [ordered]@{}
+        }
+
+        $plan = Get-PaneControlRestartPlan -ProjectDir $script:paneControlTempRoot -PaneId '%2' -Settings $settings
+
+        $plan.LaunchDir | Should -Be 'C:\repo\.worktrees\builder-2'
+        $plan.GitWorktreeDir | Should -Be 'C:\repo\.worktrees\builder-2'
+        $plan.LaunchCommand | Should -Match $([regex]::Escape("-C 'C:\repo\.worktrees\builder-2'"))
+    }
+
+    It 'updates launch_dir and builder_worktree_path together for builder panes' {
+        @'
+version: 1
+saved_at: '2026-04-07T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: 'C:\repo'
+  git_worktree_dir: 'C:\repo\.git'
+panes:
+  - label: 'builder-1'
+    pane_id: '%2'
+    role: 'Builder'
+    exec_mode: true
+    launch_dir: 'C:\repo\.worktrees\builder-1'
+    builder_branch: 'worktree-builder-1'
+    builder_worktree_path: 'C:\repo\.worktrees\builder-1'
+    task: null
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        Set-PaneControlManifestPanePaths -ProjectDir $script:paneControlTempRoot -PaneId '%2' -LaunchDir 'C:\repo\.worktrees\builder-9' -BuilderWorktreePath 'C:\repo\.worktrees\builder-9'
+
+        $context = Get-PaneControlManifestContext -ProjectDir $script:paneControlTempRoot -PaneId '%2'
+        $manifestContent = Get-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Raw -Encoding UTF8
+        $context.LaunchDir | Should -Be 'C:\repo\.worktrees\builder-9'
+        $context.BuilderWorktreePath | Should -Be 'C:\repo\.worktrees\builder-9'
+        $manifestContent | Should -Match $([regex]::Escape("launch_dir: 'C:\repo\.worktrees\builder-9'"))
+        $manifestContent | Should -Match $([regex]::Escape("builder_worktree_path: 'C:\repo\.worktrees\builder-9'"))
+    }
+}
+
 Describe 'logger helpers' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\logger.ps1')
@@ -635,6 +714,62 @@ panes:
         } finally {
             if (Test-Path $tempRoot) {
                 Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'skips relaunch dispatch for exec_mode Researcher panes' {
+        $manifestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestPath = Join-Path $manifestRoot 'manifest.yaml'
+        New-Item -ItemType Directory -Path $manifestRoot -Force | Out-Null
+
+        try {
+            @'
+version: 1
+saved_at: '2026-04-07T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: 'C:\repo'
+  git_worktree_dir: 'C:\repo\.git'
+panes:
+  - label: 'researcher-1'
+    pane_id: '%3'
+    role: 'Researcher'
+    exec_mode: true
+    launch_dir: 'C:\repo'
+    builder_branch: null
+    builder_worktree_path: null
+    task: null
+'@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+            Mock Invoke-MonitorWinsmux { } -ParameterFilter {
+                $Arguments[0] -eq 'respawn-pane'
+            }
+            Mock Wait-MonitorPaneShellReady { }
+            Mock Send-MonitorBridgeCommand { }
+            Mock Get-PaneAgentStatus {
+                [PSCustomObject]@{
+                    Status       = 'ready'
+                    PaneId       = '%3'
+                    SnapshotTail = ''
+                    ExitReason   = ''
+                }
+            }
+
+            $result = Invoke-AgentRespawn `
+                -PaneId '%3' `
+                -Agent 'codex' `
+                -Model 'gpt-5.4' `
+                -ProjectDir 'C:\repo' `
+                -GitWorktreeDir 'C:\repo\.git' `
+                -ManifestPath $manifestPath
+
+            $result.Success | Should -Be $true
+            $result.Message | Should -Match 'exec_mode'
+            Should -Invoke Send-MonitorBridgeCommand -Times 0 -Exactly
+        } finally {
+            if (Test-Path $manifestRoot) {
+                Remove-Item -Path $manifestRoot -Recurse -Force
             }
         }
     }

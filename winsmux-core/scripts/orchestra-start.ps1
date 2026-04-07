@@ -747,7 +747,6 @@ try {
         $launchGitWorktreeDir = $gitWorktreeDir
         $builderBranch = $null
         $builderWorktreePath = $null
-        $execMode = ($canonicalRole -eq 'Builder')
 
         if ($canonicalRole -eq 'Builder') {
             $builderIndex++
@@ -759,6 +758,7 @@ try {
         }
 
         $roleAgentConfig = Get-RoleAgentConfig -Role $canonicalRole -Settings $settings
+        $execMode = ([string]$roleAgentConfig.Agent).Trim().ToLowerInvariant() -eq 'codex'
         $launchCommand = Get-AgentLaunchCommand -Agent $roleAgentConfig.Agent -Model $roleAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -ExecMode $execMode
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
