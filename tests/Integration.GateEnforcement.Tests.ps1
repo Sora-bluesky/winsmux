@@ -205,6 +205,68 @@ Describe 'sh-orchestra-gate integration' {
         $result.StdErr | Should -Be ''
     }
 
+    It 'denies Agent acceptEdits mode outside worktree isolation' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
+            mode = 'acceptEdits'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'write-capable Agent modes'
+    }
+
+    It 'denies Agent auto mode outside worktree isolation' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
+            mode = 'auto'
+        })
+
+        & $script:AssertDenyResult -Result $result
+    }
+
+    It 'denies Agent dontAsk mode outside worktree isolation' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
+            mode = 'dontAsk'
+        })
+
+        & $script:AssertDenyResult -Result $result
+    }
+
+    It 'denies Agent bypassPermissions mode outside worktree isolation' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
+            mode = 'bypassPermissions'
+        })
+
+        & $script:AssertDenyResult -Result $result
+    }
+
+    It 'allows Agent plan mode' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
+            mode = 'plan'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'allows Explore subagents even when mode is write-capable' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
+            mode          = 'acceptEdits'
+            subagent_type = 'Explore'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'allows Agent write-capable modes when isolation is worktree' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
+            mode      = 'auto'
+            isolation = 'worktree'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
     It 'Rule 7 removed verify command not yet implemented' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
             command = 'gh pr merge 112 --squash --delete-branch'
