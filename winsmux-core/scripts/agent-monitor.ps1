@@ -19,7 +19,8 @@ Or run directly for a single monitoring cycle:
 param(
     [string]$ProjectDir,
     [string]$SessionName = 'winsmux-orchestra',
-    [int]$HungThresholdSeconds = 60
+    [int]$HungThresholdSeconds = 60,
+    [int]$ContextResetThresholdPercent = 10
 )
 
 $ErrorActionPreference = 'Stop'
@@ -438,6 +439,32 @@ function Test-CodexContextExhaustionText {
     }
 
     return $false
+}
+
+function Get-MonitorContextRemainingPercent {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $null
+    }
+
+    $patterns = @(
+        '(?im)(?<value>\d+(?:\.\d+)?)%\s+(?:context\s+)?left\b',
+        '(?im)\b(?:context\s+left|tokens?\s+remaining)\s*[:=]\s*(?<value>\d+(?:\.\d+)?)%\b'
+    )
+
+    foreach ($pattern in $patterns) {
+        $matches = [regex]::Matches($Text, $pattern)
+        if ($matches.Count -gt 0) {
+            $rawValue = $matches[$matches.Count - 1].Groups['value'].Value
+            $parsedValue = 0.0
+            if ([double]::TryParse($rawValue, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsedValue)) {
+                return $parsedValue
+            }
+        }
+    }
+
+    return $null
 }
 
 function Test-PowerShellPromptText {
@@ -1074,7 +1101,8 @@ function Invoke-AgentMonitorCycle {
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [string]$SessionName = 'winsmux-orchestra',
         [Alias('HungThreshold')]
-        [int]$IdleThreshold = $script:AgentMonitorDefaultHungThreshold
+        [int]$IdleThreshold = $script:AgentMonitorDefaultHungThreshold,
+        [int]$ContextResetThresholdPercent = 10
     )
 
     # Read manifest to get pane assignments
@@ -1096,6 +1124,7 @@ function Invoke-AgentMonitorCycle {
             Crashed   = 0
             Respawned = 0
             ApprovalWaiting = 0
+            ContextResets = 0
             IdleAlerts = 0
             Stalls = 0
             Results   = @()
@@ -1122,6 +1151,7 @@ function Invoke-AgentMonitorCycle {
     $crashedCount = 0
     $respawnedCount = 0
     $approvalWaitingCount = 0
+    $contextResetCount = 0
     $idleAlertCount = 0
     $stallCount = 0
     $cycleNow = Get-Date
@@ -1168,6 +1198,8 @@ function Invoke-AgentMonitorCycle {
             Status     = $statusName
             ExitReason = $statusExitReason
             Respawned  = $false
+            ContextReset = $false
+            ContextRemainingPercent = $null
             IdleAlerted = $false
             StallDetected = $false
             Message    = ''
@@ -1211,6 +1243,34 @@ function Invoke-AgentMonitorCycle {
                 $approvalMessage = "Commander alert: $label ($paneId) awaiting approval"
                 $result['Message'] = $approvalMessage
                 Write-Output $approvalMessage
+            }
+        }
+
+        $contextRemainingPercent = Get-MonitorContextRemainingPercent -Text $statusSnapshotTail
+        if ($agentName -eq 'codex' -and $statusName -eq 'ready' -and $null -ne $contextRemainingPercent) {
+            $result['ContextRemainingPercent'] = $contextRemainingPercent
+            if ($contextRemainingPercent -le $ContextResetThresholdPercent) {
+                try {
+                    Send-MonitorBridgeCommand -PaneId $paneId -Text '/new'
+                    $contextResetCount++
+                    $result['ContextReset'] = $true
+                    Write-MonitorEvent -ProjectDir $projectDir -SessionName $SessionName `
+                        -Event 'pane.context_reset' -Message "Reset Codex context in pane $label ($paneId)." `
+                        -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
+                        -Data ([ordered]@{
+                            agent                     = $agentName
+                            model                     = $modelName
+                            command                   = '/new'
+                            context_remaining_percent = $contextRemainingPercent
+                            threshold_percent         = $ContextResetThresholdPercent
+                            snapshot_hash             = $statusSnapshotHash
+                        }) | Out-Null
+
+                    $results.Add($result)
+                    continue
+                } catch {
+                    $result['Message'] = "Failed to reset context for pane $label ($paneId): $($_.Exception.Message)"
+                }
             }
         }
 
@@ -1367,6 +1427,7 @@ function Invoke-AgentMonitorCycle {
         Crashed   = $crashedCount
         Respawned = $respawnedCount
         ApprovalWaiting = $approvalWaitingCount
+        ContextResets = $contextResetCount
         IdleAlerts = $idleAlertCount
         Stalls = $stallCount
         Results   = @($results)
@@ -1514,7 +1575,8 @@ if ($MyInvocation.InvocationName -ne '.') {
         -Settings $settings `
         -ManifestPath $manifestPath `
         -SessionName $SessionName `
-        -HungThreshold $HungThresholdSeconds
+        -HungThreshold $HungThresholdSeconds `
+        -ContextResetThresholdPercent $ContextResetThresholdPercent
 
     Write-Output "Monitor cycle complete: checked=$($result.Checked) crashed=$($result.Crashed) respawned=$($result.Respawned)"
     foreach ($r in $result.Results) {

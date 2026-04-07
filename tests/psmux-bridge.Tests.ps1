@@ -535,6 +535,12 @@ Describe 'agent-monitor helpers' {
         $status.ExitReason | Should -Be ''
     }
 
+    It 'parses Codex context percentages from monitor capture text' {
+        (Get-MonitorContextRemainingPercent -Text 'gpt-5.4   10% context left') | Should -Be 10
+        (Get-MonitorContextRemainingPercent -Text 'gpt-5.4   · 8% left') | Should -Be 8
+        (Get-MonitorContextRemainingPercent -Text '') | Should -BeNullOrEmpty
+    }
+
     It 'respawns the pane in the launch directory before sending the agent command' {
         Mock Invoke-MonitorWinsmux { } -ParameterFilter {
             $Arguments[0] -eq 'respawn-pane'
@@ -940,6 +946,78 @@ panes:
         Test-BuilderStall -PaneId '%2' -Role 'Builder' -Status 'busy' -SnapshotHash 'hash-1' | Out-Null
         (Test-BuilderStall -PaneId '%2' -Role 'Builder' -Status 'ready' -SnapshotHash 'hash-1') | Should -Be $false
         (Test-BuilderStall -PaneId '%2' -Role 'Builder' -Status 'busy' -SnapshotHash 'hash-1') | Should -Be $false
+    }
+
+    It 'resets Codex context at the configured threshold using /new' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        $eventsPath = Join-Path $manifestDir 'events.jsonl'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    launch_dir: $tempRoot
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+            Mock Get-PaneAgentStatus {
+                [ordered]@{
+                    Status       = 'ready'
+                    PaneId       = '%2'
+                    SnapshotTail = @"
+gpt-5.4   10% context left
+>
+"@
+                    SnapshotHash = 'hash-builder'
+                    ExitReason   = ''
+                }
+            }
+            Mock Send-MonitorBridgeCommand { }
+            Mock Update-MonitorIdleAlertState {
+                [ordered]@{
+                    ShouldAlert = $false
+                    Message     = ''
+                }
+            }
+            Mock Test-BuilderStall { $false }
+
+            $result = Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                agent = 'codex'
+                model = 'gpt-5.4'
+                roles = [ordered]@{}
+            }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra'
+
+            $result.ContextResets | Should -Be 1
+            $result.Results.Count | Should -Be 1
+            $result.Results[0].ContextReset | Should -Be $true
+            $result.Results[0].ContextRemainingPercent | Should -Be 10
+            Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
+                $PaneId -eq '%2' -and $Text -eq '/new'
+            }
+            Should -Invoke Send-MonitorBridgeCommand -Times 0 -Exactly -ParameterFilter {
+                $Text -eq '/clear'
+            }
+
+            $events = @(Get-Content -Path $eventsPath -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
+            $events.Count | Should -Be 2
+            $events[0].event | Should -Be 'pane.ready'
+            $events[1].event | Should -Be 'pane.context_reset'
+            $events[1].data.command | Should -Be '/new'
+            $events[1].data.context_remaining_percent | Should -Be 10
+            $events[1].data.threshold_percent | Should -Be 10
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
     }
 }
 
