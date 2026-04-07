@@ -373,6 +373,22 @@ function Set-PaneControlManifestPaneProperties {
     }
 
     foreach ($blockLine in @($lines[$paneBlock.Start..$paneBlock.End])) {
+        if ($pendingProperties.Contains('label')) {
+            if ($blockLine -match '^\s{2}-\s+label:\s*(.*?)\s*$') {
+                $updatedValue = ConvertTo-PaneControlYamlScalar -Value $pendingProperties['label']
+                $updatedBlockLines.Add("  - label: $updatedValue") | Out-Null
+                $pendingProperties.Remove('label')
+                continue
+            }
+
+            if (-not $paneBlock.IsList -and $blockLine -match '^\s{2}([^:\s][^:]*):\s*$') {
+                $updatedValue = ConvertTo-PaneControlYamlScalar -Value $pendingProperties['label']
+                $updatedBlockLines.Add("  ${updatedValue}:") | Out-Null
+                $pendingProperties.Remove('label')
+                continue
+            }
+        }
+
         if ($blockLine -match '^\s{4}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
             $propertyName = $Matches[1]
             if ($pendingProperties.Contains($propertyName)) {
@@ -397,6 +413,46 @@ function Set-PaneControlManifestPaneProperties {
     $updatedContent = ($updatedLines -join [Environment]::NewLine)
     $quotedManifestPath = '"' + $ManifestPath.Replace('"', '""') + '"'
     $updatedContent | cmd /d /c "more > $quotedManifestPath" | Out-Null
+}
+
+function Get-PaneControlPaneTitle {
+    param([Parameter(Mandatory = $true)][string]$PaneId)
+
+    $titleOutput = & winsmux display-message -p -t $PaneId '#{pane_title}' 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        throw "failed to read pane title for $PaneId"
+    }
+
+    return (($titleOutput | Out-String).Trim() -split "\r?\n" | Select-Object -Last 1).Trim()
+}
+
+function Update-PaneControlManifestPaneLabel {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [AllowNull()][string]$Label = $null
+    )
+
+    $context = Get-PaneControlManifestContext -ProjectDir $ProjectDir -PaneId $PaneId
+    $resolvedLabel = if ([string]::IsNullOrWhiteSpace($Label)) {
+        Get-PaneControlPaneTitle -PaneId $PaneId
+    } else {
+        $Label
+    }
+
+    if ([string]::IsNullOrWhiteSpace($resolvedLabel)) {
+        return $false
+    }
+
+    if ([string]$context.Label -eq $resolvedLabel) {
+        return $false
+    }
+
+    $properties = [ordered]@{
+        label = $resolvedLabel
+    }
+    Set-PaneControlManifestPaneProperties -ManifestPath $context.ManifestPath -PaneId $PaneId -Properties $properties
+    return $true
 }
 
 function Set-PaneControlManifestPanePaths {

@@ -420,7 +420,7 @@ panes:
     }
 
     It 'updates launch_dir and builder_worktree_path together for builder panes' {
-        @'
+@'
 version: 1
 saved_at: '2026-04-07T00:00:00+09:00'
 session:
@@ -446,6 +446,34 @@ panes:
         $context.BuilderWorktreePath | Should -Be 'C:\repo\.worktrees\builder-9'
         $manifestContent | Should -Match $([regex]::Escape("launch_dir: 'C:\repo\.worktrees\builder-9'"))
         $manifestContent | Should -Match $([regex]::Escape("builder_worktree_path: 'C:\repo\.worktrees\builder-9'"))
+    }
+
+    It 'updates the manifest label from the respawned pane title' {
+@'
+version: 1
+saved_at: '2026-04-07T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: 'C:\repo'
+  git_worktree_dir: 'C:\repo\.git'
+panes:
+  - label: 'builder-1'
+    pane_id: '%2'
+    role: 'Builder'
+    exec_mode: true
+    launch_dir: 'C:\repo\.worktrees\builder-1'
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        Mock Get-PaneControlPaneTitle { 'builder-2' }
+
+        $updated = Update-PaneControlManifestPaneLabel -ProjectDir $script:paneControlTempRoot -PaneId '%2'
+
+        $context = Get-PaneControlManifestContext -ProjectDir $script:paneControlTempRoot -PaneId '%2'
+        $manifestContent = Get-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Raw -Encoding UTF8
+
+        $updated | Should -Be $true
+        $context.Label | Should -Be 'builder-2'
+        $manifestContent | Should -Match $([regex]::Escape("- label: 'builder-2'"))
     }
 }
 
