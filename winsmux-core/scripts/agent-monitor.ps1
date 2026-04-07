@@ -386,6 +386,33 @@ function Test-CodexApprovalPromptText {
     return $hasProceedQuestion -and $hasCancelHint
 }
 
+function Test-MonitorAutoApprovePromptText {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $false
+    }
+
+    $tailText = (@(Get-RecentNonEmptyLines -Text $Text -MaxCount 20) -join [Environment]::NewLine)
+    if ([string]::IsNullOrWhiteSpace($tailText)) {
+        return $false
+    }
+
+    $patterns = @(
+        '(?im)\btrust\s+this\s+folder\b',
+        '(?im)\benter\s+to\s+confirm\b',
+        '(?im)\byes,\s*i\s+trust\b'
+    )
+
+    foreach ($pattern in $patterns) {
+        if ($tailText -match $pattern) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Test-CodexContextExhaustionText {
     param([AllowNull()][string]$Text)
 
@@ -463,6 +490,18 @@ function Send-MonitorBridgeCommand {
     & pwsh -NoProfile -File $bridgeScript 'send' $PaneId $Text 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to send command to pane $PaneId"
+    }
+}
+
+function Invoke-MonitorAutoApprovePrompt {
+    param([Parameter(Mandatory = $true)][string]$PaneId)
+
+    Invoke-MonitorWinsmux -Arguments @('send-keys', '-t', $PaneId, 'Enter')
+
+    return [ordered]@{
+        Success = $true
+        PaneId  = $PaneId
+        Message = "Auto-approved trust prompt in pane $PaneId"
     }
 }
 
@@ -718,14 +757,20 @@ function Get-PaneAgentStatus {
     }
     $exitReason = ''
     $snapshotHash = Get-ContentHash -Text $text
+    $approvalAction = ''
 
-    if (Test-CodexApprovalPromptText -Text $text) {
+    if (Test-MonitorAutoApprovePromptText -Text $text) {
+        $approvalAction = 'enter'
+    }
+
+    if ($approvalAction -eq 'enter' -or (Test-CodexApprovalPromptText -Text $text)) {
         return [ordered]@{
-            Status       = 'approval_waiting'
-            PaneId       = $PaneId
-            SnapshotTail = $tail
-            SnapshotHash = $snapshotHash
-            ExitReason   = ''
+            Status         = 'approval_waiting'
+            PaneId         = $PaneId
+            SnapshotTail   = $tail
+            SnapshotHash   = $snapshotHash
+            ApprovalAction = $approvalAction
+            ExitReason     = ''
         }
     }
 
@@ -1195,6 +1240,7 @@ function Invoke-AgentMonitorCycle {
         $statusExitReason = [string](Get-MonitorPropertyValue -InputObject $status -Name 'ExitReason' -Default '')
         $statusSnapshotTail = [string](Get-MonitorPropertyValue -InputObject $status -Name 'SnapshotTail' -Default '')
         $statusSnapshotHash = [string](Get-MonitorPropertyValue -InputObject $status -Name 'SnapshotHash' -Default '')
+        $statusApprovalAction = [string](Get-MonitorPropertyValue -InputObject $status -Name 'ApprovalAction' -Default '')
 
         $result = [ordered]@{
             Label      = $label
@@ -1232,9 +1278,21 @@ function Invoke-AgentMonitorCycle {
 
         if ($statusName -eq 'approval_waiting') {
             $approvalWaitingCount++
-            $approvalMessage = "Commander alert: $label ($paneId) awaiting approval"
-            $result['Message'] = $approvalMessage
-            Write-Output $approvalMessage
+            if ($statusApprovalAction -eq 'enter') {
+                try {
+                    $approvalResult = Invoke-MonitorAutoApprovePrompt -PaneId $paneId
+                    $result['Message'] = [string](Get-MonitorPropertyValue -InputObject $approvalResult -Name 'Message' -Default "Auto-approved trust prompt in pane $paneId")
+                    Write-Output $result['Message']
+                } catch {
+                    $approvalMessage = "Commander alert: $label ($paneId) awaiting approval (auto-approve failed: $($_.Exception.Message))"
+                    $result['Message'] = $approvalMessage
+                    Write-Output $approvalMessage
+                }
+            } else {
+                $approvalMessage = "Commander alert: $label ($paneId) awaiting approval"
+                $result['Message'] = $approvalMessage
+                Write-Output $approvalMessage
+            }
         }
 
         $idleAlert = Update-MonitorIdleAlertState `

@@ -361,6 +361,57 @@ panes:
         Should -Invoke Send-MonitorTelegramAlert -Times 0 -Exactly
     }
 
+    It 'auto-approves trust prompts during a monitor cycle' {
+        $manifestDir = Join-Path $script:agentMonitorTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+        @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:agentMonitorTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    launch_dir: $script:agentMonitorTempRoot
+"@ | Set-Content -Path (Join-Path $manifestDir 'manifest.yaml') -Encoding UTF8
+
+        Mock Get-PaneAgentStatus {
+            [ordered]@{
+                Status         = 'approval_waiting'
+                PaneId         = '%2'
+                SnapshotTail   = 'Trust this folder? Enter to confirm'
+                SnapshotHash   = 'approval-hash'
+                ApprovalAction = 'enter'
+                ExitReason     = ''
+            }
+        }
+        Mock Invoke-MonitorAutoApprovePrompt {
+            [ordered]@{
+                Success = $true
+                PaneId  = '%2'
+                Message = 'Auto-approved trust prompt in pane %2'
+            }
+        }
+        Mock Send-MonitorTelegramAlert { return $true }
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            roles = [ordered]@{}
+        }
+
+        $output = @(Invoke-AgentMonitorCycle -Settings $settings -ManifestPath (Join-Path $manifestDir 'manifest.yaml') -SessionName 'winsmux-orchestra' -IdleThreshold 120)
+
+        $output.Count | Should -Be 2
+        $output[0] | Should -Be 'Auto-approved trust prompt in pane %2'
+        $output[1].ApprovalWaiting | Should -Be 1
+        $output[1].Results[0].Status | Should -Be 'approval_waiting'
+        $output[1].Results[0].Message | Should -Be 'Auto-approved trust prompt in pane %2'
+        Should -Invoke Invoke-MonitorAutoApprovePrompt -Times 1 -Exactly
+        Should -Invoke Send-MonitorTelegramAlert -Times 0 -Exactly
+    }
+
     It 'emits commander alerts when a Builder stays busy with the same snapshot for three cycles' {
         $script:BuilderStallHistory = @{}
         $manifestDir = Join-Path $script:agentMonitorTempRoot '.winsmux'
