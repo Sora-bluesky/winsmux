@@ -277,3 +277,181 @@ function Remove-OrchestraZombieProcesses {
         Killed  = @($killed)
     }
 }
+
+function Get-OrchestraSessionRegistryDir {
+    $homeDir = $env:USERPROFILE
+    if ([string]::IsNullOrWhiteSpace($homeDir)) {
+        $homeDir = $env:HOME
+    }
+
+    if ([string]::IsNullOrWhiteSpace($homeDir)) {
+        return $null
+    }
+
+    return (Join-Path $homeDir '.psmux')
+}
+
+function Get-OrchestraSessionPortFilePath {
+    param([Parameter(Mandatory = $true)][string]$SessionName)
+
+    $registryDir = Get-OrchestraSessionRegistryDir
+    if ([string]::IsNullOrWhiteSpace($registryDir)) {
+        return $null
+    }
+
+    return (Join-Path $registryDir "$SessionName.port")
+}
+
+function Get-OrchestraSessionKeyFilePath {
+    param([Parameter(Mandatory = $true)][string]$SessionName)
+
+    $registryDir = Get-OrchestraSessionRegistryDir
+    if ([string]::IsNullOrWhiteSpace($registryDir)) {
+        return $null
+    }
+
+    return (Join-Path $registryDir "$SessionName.key")
+}
+
+function Get-OrchestraSessionPort {
+    param([Parameter(Mandatory = $true)][string]$SessionName)
+
+    $portFilePath = Get-OrchestraSessionPortFilePath -SessionName $SessionName
+    if ([string]::IsNullOrWhiteSpace($portFilePath) -or -not (Test-Path -LiteralPath $portFilePath)) {
+        return $null
+    }
+
+    $rawPort = (Get-Content -LiteralPath $portFilePath -Raw -Encoding UTF8).Trim()
+    $port = 0
+    if (-not [int]::TryParse($rawPort, [ref]$port)) {
+        return $null
+    }
+
+    return $port
+}
+
+function Test-OrchestraTcpConnection {
+    param(
+        [Parameter(Mandatory = $true)][int]$Port,
+        [int]$TimeoutMs = 500
+    )
+
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $connectTask = $client.ConnectAsync('127.0.0.1', $Port)
+        if (-not $connectTask.Wait($TimeoutMs)) {
+            return $false
+        }
+
+        return $client.Connected
+    } catch {
+        return $false
+    } finally {
+        $client.Dispose()
+    }
+}
+
+function Test-OrchestraSessionAuthResponse {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][int]$Port,
+        [int]$TimeoutMs = 500
+    )
+
+    $sessionKey = ''
+    $keyFilePath = Get-OrchestraSessionKeyFilePath -SessionName $SessionName
+    if (-not [string]::IsNullOrWhiteSpace($keyFilePath) -and (Test-Path -LiteralPath $keyFilePath)) {
+        $sessionKey = (Get-Content -LiteralPath $keyFilePath -Raw -Encoding UTF8).Trim()
+    }
+
+    $client = [System.Net.Sockets.TcpClient]::new()
+    $stream = $null
+
+    try {
+        $connectTask = $client.ConnectAsync('127.0.0.1', $Port)
+        if (-not $connectTask.Wait($TimeoutMs)) {
+            return $false
+        }
+
+        $client.ReceiveTimeout = $TimeoutMs
+        $client.SendTimeout = $TimeoutMs
+        $stream = $client.GetStream()
+        $payload = [System.Text.Encoding]::UTF8.GetBytes(("AUTH {0}`nsession-info`n" -f $sessionKey))
+        $stream.Write($payload, 0, $payload.Length)
+        $stream.Flush()
+
+        $buffer = [byte[]]::new(256)
+        $bytesRead = $stream.Read($buffer, 0, $buffer.Length)
+        if ($bytesRead -le 0) {
+            return $false
+        }
+
+        $response = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $bytesRead)
+        return $response.Contains('OK')
+    } catch {
+        return $false
+    } finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+
+        $client.Dispose()
+    }
+}
+
+function Invoke-OrchestraHasSessionProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin
+    )
+
+    & $WinsmuxBin has-session -t $SessionName 1>$null 2>$null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Test-OrchestraServerHealth {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin,
+        [int]$TimeoutMs = 500
+    )
+
+    $portFilePath = Get-OrchestraSessionPortFilePath -SessionName $SessionName
+    if ([string]::IsNullOrWhiteSpace($portFilePath) -or -not (Test-Path -LiteralPath $portFilePath)) {
+        return 'Missing'
+    }
+
+    $port = Get-OrchestraSessionPort -SessionName $SessionName
+    if ($null -eq $port) {
+        return 'Unhealthy'
+    }
+
+    if (-not (Test-OrchestraTcpConnection -Port $port -TimeoutMs $TimeoutMs)) {
+        return 'Unhealthy'
+    }
+
+    if (-not (Test-OrchestraSessionAuthResponse -SessionName $SessionName -Port $port -TimeoutMs $TimeoutMs)) {
+        return 'Unhealthy'
+    }
+
+    if (-not (Invoke-OrchestraHasSessionProbe -SessionName $SessionName -WinsmuxBin $WinsmuxBin)) {
+        return 'Unhealthy'
+    }
+
+    return 'Healthy'
+}
+
+function Clear-OrchestraSessionRegistration {
+    param([Parameter(Mandatory = $true)][string]$SessionName)
+
+    foreach ($path in @(
+        (Get-OrchestraSessionPortFilePath -SessionName $SessionName),
+        (Get-OrchestraSessionKeyFilePath -SessionName $SessionName)
+    )) {
+        if ([string]::IsNullOrWhiteSpace($path) -or -not (Test-Path -LiteralPath $path)) {
+            continue
+        }
+
+        Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+    }
+}

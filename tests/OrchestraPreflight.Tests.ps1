@@ -111,3 +111,42 @@ Describe 'orchestra preflight zombie detection' {
         @($victims | ForEach-Object { [int]$_.ProcessId } | Sort-Object) | Should -Be @(402, 403)
     }
 }
+
+Describe 'orchestra preflight server health' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-preflight.ps1')
+    }
+
+    It 'returns Healthy when session exists' {
+        Mock Get-OrchestraSessionPortFilePath { 'C:\Users\test\.psmux\winsmux-orchestra.port' }
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq 'C:\Users\test\.psmux\winsmux-orchestra.port' }
+        Mock Get-OrchestraSessionPort { 49200 }
+        Mock Test-OrchestraTcpConnection { $true }
+        Mock Test-OrchestraSessionAuthResponse { $true }
+        Mock Invoke-OrchestraHasSessionProbe { $true }
+
+        $health = Test-OrchestraServerHealth -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+
+        $health | Should -Be 'Healthy'
+    }
+
+    It 'returns Missing when no port file exists' {
+        Mock Get-OrchestraSessionPortFilePath { 'C:\Users\test\.psmux\winsmux-orchestra.port' }
+        Mock Test-Path { $false } -ParameterFilter { $LiteralPath -eq 'C:\Users\test\.psmux\winsmux-orchestra.port' }
+
+        $health = Test-OrchestraServerHealth -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+
+        $health | Should -Be 'Missing'
+    }
+
+    It 'returns Unhealthy when the port file exists but the server is unreachable' {
+        Mock Get-OrchestraSessionPortFilePath { 'C:\Users\test\.psmux\winsmux-orchestra.port' }
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq 'C:\Users\test\.psmux\winsmux-orchestra.port' }
+        Mock Get-OrchestraSessionPort { 49200 }
+        Mock Test-OrchestraTcpConnection { $false }
+
+        $health = Test-OrchestraServerHealth -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
+
+        $health | Should -Be 'Unhealthy'
+    }
+}

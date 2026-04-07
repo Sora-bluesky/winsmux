@@ -104,8 +104,68 @@ function New-DispatchPromptFile {
 
     $fileName = '{0}-{1}.txt' -f $Prefix, ([guid]::NewGuid().ToString('N'))
     $path = Join-Path $promptDir $fileName
-    $Content | Set-Content -LiteralPath $path -Encoding UTF8
+    $quotedPath = '"' + $path.Replace('"', '""') + '"'
+    $Content | cmd /d /c "more > $quotedPath" | Out-Null
     return $path
+}
+
+function Get-DispatchPromptReference {
+    param(
+        [Parameter(Mandatory = $true)][string]$PromptPath,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $promptRef = $PromptPath
+    try {
+        $relativePromptPath = [System.IO.Path]::GetRelativePath($ProjectDir, $PromptPath)
+        if (-not [string]::IsNullOrWhiteSpace($relativePromptPath) -and -not $relativePromptPath.StartsWith('..')) {
+            $promptRef = $relativePromptPath.Replace('\', '/')
+        }
+    } catch {
+        $promptRef = $PromptPath
+    }
+
+    return $promptRef
+}
+
+function New-SendDispatchPointerText {
+    param(
+        [Parameter(Mandatory = $true)][string]$PromptPath,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $promptRef = Get-DispatchPromptReference -PromptPath $PromptPath -ProjectDir $ProjectDir
+    return "Read the full prompt from '$promptRef' and follow it exactly. This pointer was sent because the original prompt exceeded the send buffer."
+}
+
+function Resolve-SendDispatchPayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [string]$ProjectDir = (Get-Location).Path,
+        [int]$LengthLimit = 4000
+    )
+
+    $payload = [ordered]@{
+        TextToSend     = $Text
+        PromptPath     = $null
+        PromptReference = $null
+        IsFileBacked   = $false
+        TextLength     = $Text.Length
+        LengthLimit    = $LengthLimit
+        FallbackMode   = 'pointer'
+    }
+
+    if ($Text.Length -le $LengthLimit) {
+        return $payload
+    }
+
+    $promptPath = New-DispatchPromptFile -Content $Text -ProjectDir $ProjectDir -Prefix 'send-command'
+    $payload['PromptPath'] = $promptPath
+    $payload['PromptReference'] = Get-DispatchPromptReference -PromptPath $promptPath -ProjectDir $ProjectDir
+    $payload['IsFileBacked'] = $true
+    $payload['TextToSend'] = New-SendDispatchPointerText -PromptPath $promptPath -ProjectDir $ProjectDir
+
+    return $payload
 }
 
 function Convert-MsysTmpPathToWindowsPath {
@@ -1001,22 +1061,11 @@ function Invoke-Send {
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
     $textToSend = $text
-    $sendKeysLengthLimit = 8000
+    $dispatchPayload = Resolve-SendDispatchPayload -Text $text -ProjectDir $projectDir -LengthLimit 4000
 
-    if ($text.Length -gt $sendKeysLengthLimit) {
-        $promptPath = New-DispatchPromptFile -Content $text -ProjectDir $projectDir
-        $promptRef = $promptPath
-        try {
-            $relativePromptPath = [System.IO.Path]::GetRelativePath($projectDir, $promptPath)
-            if (-not [string]::IsNullOrWhiteSpace($relativePromptPath) -and -not $relativePromptPath.StartsWith('..')) {
-                $promptRef = $relativePromptPath.Replace('\', '/')
-            }
-        } catch {
-            $promptRef = $promptPath
-        }
-
-        $textToSend = "Read the full prompt from '$promptRef' and follow it exactly. This pointer was sent because the original prompt exceeded the send buffer."
-        Write-Warning ("send target '{0}' exceeded {1} chars ({2}); wrote full text to {3} and sent a file-read pointer instead." -f $Target, $sendKeysLengthLimit, $text.Length, $promptPath)
+    if ($dispatchPayload['IsFileBacked']) {
+        $textToSend = [string]$dispatchPayload['TextToSend']
+        Write-Warning ("send target '{0}' exceeded {1} chars ({2}); wrote full text to {3} and sent a prompt-file pointer instead." -f $Target, $dispatchPayload['LengthLimit'], $dispatchPayload['TextLength'], $dispatchPayload['PromptPath'])
     }
 
     try {
