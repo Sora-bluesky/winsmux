@@ -7,6 +7,7 @@ $RolePermissions = @{
         HealthCheck   = $true
         Watch         = $true
         WaitReady     = $true
+        PollEvents    = $true
         Vault         = $true
         Dispatch      = $true
         TypeOwn       = $true
@@ -40,6 +41,7 @@ $RolePermissions = @{
         HealthCheck   = $false
         Watch         = $false
         WaitReady     = $false
+        PollEvents    = $false
         Vault         = $false
         Dispatch      = $false
         TypeOwn       = $true
@@ -73,6 +75,7 @@ $RolePermissions = @{
         HealthCheck   = $false
         Watch         = $false
         WaitReady     = $false
+        PollEvents    = $false
         Vault         = $false
         Dispatch      = $false
         TypeOwn       = $true
@@ -106,6 +109,7 @@ $RolePermissions = @{
         HealthCheck   = $false
         Watch         = $false
         WaitReady     = $false
+        PollEvents    = $false
         Vault         = $false
         Dispatch      = $false
         TypeOwn       = $true
@@ -351,6 +355,10 @@ function Assert-Role {
         }
         'wait-ready' {
             if ($permissions.WaitReady) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'poll-events' {
+            if ($permissions.PollEvents) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
         'vault' {
