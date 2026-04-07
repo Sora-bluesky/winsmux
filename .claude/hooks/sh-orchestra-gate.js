@@ -65,11 +65,14 @@ try {
     }
   }
 
-  // Rule 9: Block Commander from using bypassPermissions on Agent subagents
+  // Rule 9: Block Commander from using write-capable Agent modes outside isolated worktrees
   if (toolName === "Agent") {
-    const mode = toolInput.mode || "";
-    if (mode === "bypassPermissions") {
-      deny("Commander cannot use bypassPermissions mode. Use default or plan mode for subagents.");
+    const agentMode = normalizeAgentValue(toolInput.mode);
+    const subagentType = normalizeAgentValue(toolInput.subagent_type);
+    const isolation = normalizeAgentValue(toolInput.isolation);
+
+    if (isolation !== "worktree" && agentMode !== "plan" && subagentType !== "explore" && isWriteCapableAgentMode(agentMode)) {
+      deny("Commander cannot use write-capable Agent modes outside worktree isolation. Use plan mode, Explore subagents, or worktree isolation.");
     }
   }
 
@@ -140,6 +143,14 @@ function stripHeredocBodies(command) {
   return output.join("\n");
 }
 
+function normalizeAgentValue(value) {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function isWriteCapableAgentMode(mode) {
+  return mode === "acceptedits" || mode === "auto" || mode === "bypasspermissions" || mode === "dontask";
+}
+
 function getCurrentBranch(repoRoot) {
   const gitDir = resolveGitDir(repoRoot);
   const headPath = path.join(gitDir, "HEAD");
@@ -175,5 +186,7 @@ function deny(reason) {
 module.exports = {
   DEBUG_LOG_PATH,
   SECRET_PATTERN,
+  isWriteCapableAgentMode,
+  normalizeAgentValue,
   stripHeredocBodies,
 };
