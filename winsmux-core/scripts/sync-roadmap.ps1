@@ -107,6 +107,24 @@ function Get-TaskBlocks {
     return $blocks
 }
 
+function Get-VersionTitleMap {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Content
+    )
+
+    $normalized = $Content -replace "`r`n", "`n"
+    $versionTitles = [ordered]@{}
+
+    foreach ($line in ($normalized -split "`n")) {
+        if ($line -match '^[ \t]*#[ \t]*===[ \t]*(?<version>v\d+\.\d+\.\d+):[ \t]*(?<title>.+?)[ \t]*===[ \t]*$') {
+            $versionTitles[$Matches['version']] = $Matches['title'].Trim()
+        }
+    }
+
+    return $versionTitles
+}
+
 function ConvertFrom-TaskBlock {
     param(
         [Parameter(Mandatory = $true)]
@@ -472,6 +490,7 @@ if (-not (Test-Path -LiteralPath $resolvedBacklogPath)) {
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $backlogContent = [System.IO.File]::ReadAllText($resolvedBacklogPath, $utf8NoBom)
+$versionTitles = Get-VersionTitleMap -Content $backlogContent
 $taskBlocks = @(Get-TaskBlocks -Content $backlogContent)
 $tasks = @(
 foreach ($taskBlock in $taskBlocks) {
@@ -536,27 +555,6 @@ $versionGroups = $tasks |
     Sort-Object @{ Expression = { (Get-VersionSortKey -Version $_.Name).Major } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Minor } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Patch } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Raw } }
 
 $builder = [System.Text.StringBuilder]::new()
-# Version theme mapping
-$versionThemes = @{
-    'v0.17.0' = 'Orchestra 自動ディスパッチ'
-    'v0.17.1' = 'アイドルペイン切替 + 起動シリアライズ'
-    'v0.17.2' = '起動 UX + Vault 堅牢化'
-    'v0.17.3' = 'CI ゲート + 監査トリアージ'
-    'v0.17.4' = 'ロールバック + ドキュメント'
-    'v0.18.0' = 'Tauri scaffold'
-    'v0.18.1' = 'マルチペイン + Codex 改善'
-    'v0.18.2' = 'タスク分割 + 動的スケーリング'
-    'v0.19.0' = '衛生リリース (Cleanup & Hardening)'
-    'v0.19.1' = 'リネーム & ヘルスチェック'
-    'v0.19.2' = 'モノリポ統合'
-    'v0.19.3' = 'ドキュメント & ガバナンス'
-    'v0.19.4' = 'Issue修正 & ガバナンス強化'
-    'v0.20.0' = 'Tauri Desktop'
-    'v0.20.1' = 'Hook ガバナンス & 環境変数コントラクト'
-    'v0.21.0' = 'スマートセッション'
-    'v0.21.1' = 'Orchestra ワークフロー進化'
-    'v0.22.0' = 'プロトコル層'
-}
 
 [void]$builder.AppendLine('# ロードマップ')
 [void]$builder.AppendLine()
@@ -582,8 +580,8 @@ foreach ($versionGroup in $versionGroups) {
 
 foreach ($versionGroup in $versionGroups) {
     $vName = $versionGroup.Name
-    $theme = if ($versionThemes.ContainsKey($vName)) { ' — ' + $versionThemes[$vName] } else { '' }
-    [void]$builder.AppendLine(('### {0}{1}' -f $vName, $theme))
+    $titleSuffix = if ($versionTitles.Contains($vName)) { ': ' + $versionTitles[$vName] } else { '' }
+    [void]$builder.AppendLine(('### {0}{1}' -f $vName, $titleSuffix))
     [void]$builder.AppendLine()
     [void]$builder.AppendLine('| | ID | Title | Priority | Repo | Status |')
     [void]$builder.AppendLine('|-|-----|-------|----------|------|--------|')

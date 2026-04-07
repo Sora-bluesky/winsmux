@@ -43,29 +43,37 @@ try {
     }
   }
 
-  // Rule 4: No direct codex exec (use orchestra-start)
+  // Rule 4: Block writes that disable local hooks in settings.local.json
   if (toolName === "Bash") {
     const commandForRule4 = stripHeredocBodies(rawCommand);
-    if (/codex\s+(exec|e)\s/.test(commandForRule4) && !/winsmux\s+send/.test(commandForRule4) && !/winsmux-core/.test(commandForRule4) && !/^gh\s/.test(commandForRule4)) {
-      deny("Use orchestra-start or winsmux send to dispatch Codex, not direct codex exec.");
+    if (isSettingsLocalHookMutation(commandForRule4)) {
+      deny("Hooks in .claude/settings.local.json cannot be disabled from Bash.");
     }
   }
 
-  // Rule 5: Block shallow git clones (they break worktree creation)
+  // Rule 5: No direct Codex dispatch outside winsmux send
+  if (toolName === "Bash") {
+    const commandForRule5 = stripHeredocBodies(rawCommand);
+    if (isDirectCodexDispatch(commandForRule5)) {
+      deny("Use winsmux send to dispatch Codex to panes");
+    }
+  }
+
+  // Rule 6: Block shallow git clones (they break worktree creation)
   if (toolName === "Bash") {
     if (/git\s+clone\s+.*--depth/.test(rawCommand)) {
       deny("Shallow clones break git worktree. Use full clone (remove --depth).");
     }
   }
 
-  // Rule 6: Block bare git rm (allow only git rm --cached)
+  // Rule 7: Block bare git rm (allow only git rm --cached)
   if (toolName === "Bash") {
     if (/git\s+rm\s/.test(rawCommand) && !/--cached/.test(rawCommand)) {
       deny("Use git rm --cached to untrack files. Bare git rm deletes local files.");
     }
   }
 
-  // Rule 9: Block Commander from using write-capable Agent modes outside isolated worktrees
+  // Rule 8: Block Commander from using write-capable Agent modes outside isolated worktrees
   if (toolName === "Agent") {
     const agentMode = normalizeAgentValue(toolInput.mode);
     const subagentType = normalizeAgentValue(toolInput.subagent_type);
@@ -76,10 +84,10 @@ try {
     }
   }
 
-  // Rule 7: REMOVED - winsmux verify not yet implemented.
+  // Rule 9: REMOVED - winsmux verify not yet implemented.
   // Will be re-added when verify command exists. See #277.
 
-  // Rule 8: Block git commit without Reviewer PASS (#279)
+  // Rule 10: Block git commit without Reviewer PASS (#279)
   if (toolName === "Bash") {
     if (/git\s+(commit|merge)/.test(rawCommand) && !/bump-version|chore:\s*bump/.test(rawCommand)) {
       const reviewStatePath = path.join(process.cwd(), '.winsmux', 'review-state.json');
@@ -147,6 +155,39 @@ function normalizeAgentValue(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
+function isSettingsLocalHookMutation(command) {
+  if (!/settings\.local\.json/i.test(command)) {
+    return false;
+  }
+
+  const writePatterns = [
+    /\bpython(?:\d+(?:\.\d+)*)?\b[\s\S]*settings\.local\.json/i,
+    /\becho\b[\s\S]*settings\.local\.json/i,
+    /\bcat\b[\s\S]*>\s*["']?[^"'\n]*settings\.local\.json/i,
+  ];
+  const hookDisablePatterns = [
+    /hooks[\s\S]*\{\s*\}/i,
+    /\bdelete\b[\s\S]*hooks/i,
+    /\bpop\s*\(\s*['"]hooks['"]\s*\)/i,
+    /\bdel\s*\(\s*\.hooks\s*\)/i,
+  ];
+
+  return (
+    writePatterns.some((pattern) => pattern.test(command)) ||
+    hookDisablePatterns.some((pattern) => pattern.test(command))
+  );
+}
+
+function isDirectCodexDispatch(command) {
+  const codexDispatchPattern = /\bcodex\b(?:\s+(?:exec|e)\b|\s+--sandbox\b)/i;
+  return (
+    codexDispatchPattern.test(command) &&
+    !/\bwinsmux\s+send\b/i.test(command) &&
+    !/\bwinsmux-core\b/i.test(command) &&
+    !/^\s*gh\s+/i.test(command)
+  );
+}
+
 function isWriteCapableAgentMode(mode) {
   return mode === "acceptedits" || mode === "auto" || mode === "bypasspermissions" || mode === "dontask";
 }
@@ -186,6 +227,8 @@ function deny(reason) {
 module.exports = {
   DEBUG_LOG_PATH,
   SECRET_PATTERN,
+  isDirectCodexDispatch,
+  isSettingsLocalHookMutation,
   isWriteCapableAgentMode,
   normalizeAgentValue,
   stripHeredocBodies,

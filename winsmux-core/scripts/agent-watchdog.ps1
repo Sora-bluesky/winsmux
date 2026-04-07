@@ -17,11 +17,12 @@ function Invoke-AgentWatchdogCycle {
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [Parameter(Mandatory = $true)][string]$SessionName,
-        [Parameter(Mandatory = $true)][int]$IdleThreshold
+        [Parameter(Mandatory = $true)][int]$IdleThreshold,
+        [AllowNull()][System.Collections.IDictionary]$PreviousResults = $null
     )
 
     $settings = Get-BridgeSettings
-    return (Invoke-AgentMonitorCycle -Settings $settings -ManifestPath $ManifestPath -SessionName $SessionName -IdleThreshold $IdleThreshold)
+    return (Invoke-AgentMonitorCycle -Settings $settings -ManifestPath $ManifestPath -SessionName $SessionName -IdleThreshold $IdleThreshold -PreviousResults $PreviousResults)
 }
 
 function Get-AgentWatchdogSummary {
@@ -53,9 +54,17 @@ function Start-AgentWatchdogLoop {
         [int]$PollInterval = 30
     )
 
+    $previousResults = [ordered]@{}
+
     while ($true) {
         try {
-            $result = Invoke-AgentWatchdogCycle -ManifestPath $ManifestPath -SessionName $SessionName -IdleThreshold $IdleThreshold
+            $result = Invoke-AgentWatchdogCycle -ManifestPath $ManifestPath -SessionName $SessionName -IdleThreshold $IdleThreshold -PreviousResults $previousResults
+            $previousResults = [ordered]@{}
+            if ($null -ne $result -and $null -ne $result.CurrentResults) {
+                foreach ($entry in $result.CurrentResults.GetEnumerator()) {
+                    $previousResults[$entry.Key] = $entry.Value
+                }
+            }
             # Invoke-AgentMonitorCycle persists pane events into events.jsonl; the watchdog publishes only the cycle summary.
             $summary = Get-AgentWatchdogSummary -CycleResult $result -ManifestPath $ManifestPath -SessionName $SessionName
             Write-Output ($summary | ConvertTo-Json -Depth 8 -Compress)

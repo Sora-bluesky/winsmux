@@ -1160,7 +1160,8 @@ function Invoke-AgentMonitorCycle {
         [string]$SessionName = 'winsmux-orchestra',
         [Alias('HungThreshold')]
         [int]$IdleThreshold = $script:AgentMonitorDefaultHungThreshold,
-        [int]$ContextResetThresholdPercent = 10
+        [int]$ContextResetThresholdPercent = 10,
+        [AllowNull()][System.Collections.IDictionary]$PreviousResults = $null
     )
 
     # Read manifest to get pane assignments
@@ -1185,6 +1186,7 @@ function Invoke-AgentMonitorCycle {
             ContextResets = 0
             IdleAlerts = 0
             Stalls = 0
+            CurrentResults = [ordered]@{}
             Results   = @()
         }
     }
@@ -1205,6 +1207,7 @@ function Invoke-AgentMonitorCycle {
     $projectDir = Get-MonitorProjectDir -Manifest $manifest -ManifestPath $ManifestPath
 
     $results = [System.Collections.Generic.List[object]]::new()
+    $currentResults = [ordered]@{}
     $checkedCount = 0
     $crashedCount = 0
     $respawnedCount = 0
@@ -1248,6 +1251,11 @@ function Invoke-AgentMonitorCycle {
         $statusSnapshotTail = [string](Get-MonitorPropertyValue -InputObject $status -Name 'SnapshotTail' -Default '')
         $statusSnapshotHash = [string](Get-MonitorPropertyValue -InputObject $status -Name 'SnapshotHash' -Default '')
         $statusApprovalAction = [string](Get-MonitorPropertyValue -InputObject $status -Name 'ApprovalAction' -Default '')
+        $previousStatusName = ''
+        if ($null -ne $PreviousResults -and $PreviousResults.Contains($paneId)) {
+            $previousStatusName = [string]$PreviousResults[$paneId]
+        }
+        $currentResults[$paneId] = $statusName
 
         $result = [ordered]@{
             Label      = $label
@@ -1261,6 +1269,29 @@ function Invoke-AgentMonitorCycle {
             IdleAlerted = $false
             StallDetected = $false
             Message    = ''
+        }
+
+        if ($previousStatusName -eq 'busy' -and $statusName -eq 'waiting_for_dispatch') {
+            $transitionEventData = [ordered]@{
+                agent           = $agentName
+                model           = $modelName
+                exec_mode       = $paneExecMode
+                snapshot_hash   = $statusSnapshotHash
+                previous_status = $previousStatusName
+                current_status  = $statusName
+            }
+            if (-not [string]::IsNullOrWhiteSpace($launchDirFromManifest)) {
+                $transitionEventData['launch_dir'] = $launchDirFromManifest
+            }
+            if (-not [string]::IsNullOrWhiteSpace($builderWorktreePath)) {
+                $transitionEventData['builder_worktree_path'] = $builderWorktreePath
+            }
+
+            $transitionEventMessage = Get-MonitorStateEventMessage -Event 'pane.completed' -Label $label -PaneId $paneId -Status $statusName
+            Write-MonitorEvent -ProjectDir $projectDir -SessionName $SessionName `
+                -Event 'pane.completed' -Message $transitionEventMessage `
+                -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
+                -Data $transitionEventData | Out-Null
         }
 
         $stateEventName = Get-MonitorStateEventName -Status $statusName -ExitReason $statusExitReason
@@ -1520,6 +1551,7 @@ function Invoke-AgentMonitorCycle {
         ContextResets = $contextResetCount
         IdleAlerts = $idleAlertCount
         Stalls = $stallCount
+        CurrentResults = $currentResults
         Results   = @($results)
     }
 }
