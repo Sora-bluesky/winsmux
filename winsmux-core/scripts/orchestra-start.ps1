@@ -1157,7 +1157,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         $roleAgentConfig = Get-RoleAgentConfig -Role $canonicalRole -Settings $settings
         $execMode = ([string]$roleAgentConfig.Agent).Trim().ToLowerInvariant() -eq 'codex'
-        $launchCommand = Get-AgentLaunchCommand -Agent $roleAgentConfig.Agent -Model $roleAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -ExecMode $execMode
+        $launchCommand = Get-AgentLaunchCommand -Agent $roleAgentConfig.Agent -Model $roleAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -ExecMode $false
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
@@ -1189,7 +1189,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             Label = $label
             PaneId = $paneId
             Role = $canonicalRole
-            ExecMode = $execMode
+            ExecMode = $false
             LaunchDir = $launchDir
             BuilderBranch = $builderBranch
             BuilderWorktreePath = $builderWorktreePath
@@ -1197,11 +1197,6 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
 
     foreach ($paneSummary in $paneSummaries) {
-        if ($paneSummary.ExecMode) {
-            Write-Warning "TASK-231: skipping readiness wait for $($paneSummary.Label) [$($paneSummary.PaneId)] (execMode=true, role=$($paneSummary.Role))."
-            continue
-        }
-
         try {
             $roleAgentConfig = Get-RoleAgentConfig -Role $paneSummary.Role -Settings $settings
             Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $roleAgentConfig.Agent -TimeoutSeconds 60
