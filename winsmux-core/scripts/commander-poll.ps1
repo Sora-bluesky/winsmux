@@ -793,7 +793,7 @@ function Invoke-CommanderStateMachine {
                 if ([string]::IsNullOrWhiteSpace($reviewerPaneId)) {
                     Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
                         -Event 'commander.blocked' -Message "Reviewer ペインが見つかりません。" -Branch $branch -HeadSha $headSha
-                    $nextState = 'blocked_bootstrap_invalid'
+                    $nextState = 'blocked_no_reviewer'
                 } else {
                     $wb = Get-WinsmuxBin
                     & $wb send-keys -t $reviewerPaneId -l 'winsmux review-request' 2>$null | Out-Null
@@ -822,10 +822,32 @@ function Invoke-CommanderStateMachine {
                         $e = $rs[$branch]
                         $st = [string]$e['status']
                         $sha = [string]$e['head_sha']
-                        if ($st -eq 'PASS' -and $sha -eq $headSha) {
+                        $rsRequest = $null
+                        if ($e.Contains('request')) { $rsRequest = $e['request'] }
+                        $rsReviewerPaneId = ''
+                        if ($null -ne $rsRequest -and $rsRequest -is [System.Collections.IDictionary] -and $rsRequest.Contains('target_reviewer_pane_id')) {
+                            $rsReviewerPaneId = [string]$rsRequest['target_reviewer_pane_id']
+                        }
+                        $manifestReviewerPaneId = ''
+                        $manifest2 = Read-CommanderPollManifest -Path $ManifestPath
+                        if ($manifest2.Panes) {
+                            foreach ($lbl2 in $manifest2.Panes.Keys) {
+                                $p2 = $manifest2.Panes[$lbl2]
+                                $r2 = [string](Get-CommanderPollValue -InputObject $p2 -Name 'role' -Default '')
+                                $s2 = [string](Get-CommanderPollValue -InputObject $p2 -Name 'status' -Default '')
+                                if ($r2 -eq 'Reviewer' -and $s2 -ne 'bootstrap_invalid') {
+                                    $manifestReviewerPaneId = [string](Get-CommanderPollValue -InputObject $p2 -Name 'pane_id' -Default '')
+                                    break
+                                }
+                            }
+                        }
+                        $reviewerMatch = [string]::IsNullOrWhiteSpace($rsReviewerPaneId) -or $rsReviewerPaneId -eq $manifestReviewerPaneId
+                        if ($st -eq 'PASS' -and $sha -eq $headSha -and $reviewerMatch) {
                             Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
                                 -Event 'commander.review_passed' -Message "レビュー PASS。" -Branch $branch -HeadSha $headSha
                             $nextState = 'review_passed'
+                        } elseif ($st -eq 'PASS' -and $sha -eq $headSha -and -not $reviewerMatch) {
+                            Write-Warning "TASK-238: review PASS pane_id mismatch: review-state=$rsReviewerPaneId manifest=$manifestReviewerPaneId"
                         } elseif ($st -eq 'FAIL') {
                             Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
                                 -Event 'commander.review_failed' -Message "レビュー FAIL。修正が必要。" -Branch $branch -HeadSha $headSha
@@ -853,6 +875,22 @@ function Invoke-CommanderStateMachine {
         }
         'blocked_review_failed' {
             if ([int]$CycleSummary['completions'] -gt 0) { $nextState = 'waiting_for_review' }
+        }
+        'blocked_no_reviewer' {
+            try {
+                $manifest = Read-CommanderPollManifest -Path $ManifestPath
+                if ($manifest.Panes) {
+                    foreach ($lbl in $manifest.Panes.Keys) {
+                        $p = $manifest.Panes[$lbl]
+                        $r = [string](Get-CommanderPollValue -InputObject $p -Name 'role' -Default '')
+                        $s = [string](Get-CommanderPollValue -InputObject $p -Name 'status' -Default '')
+                        if ($r -eq 'Reviewer' -and $s -ne 'bootstrap_invalid') {
+                            $nextState = 'waiting_for_review'
+                            break
+                        }
+                    }
+                }
+            } catch { }
         }
         'blocked_bootstrap_invalid' { }
     }

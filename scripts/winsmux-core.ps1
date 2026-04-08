@@ -2479,6 +2479,54 @@ function Invoke-ReviewApprove {
     Write-Output "review PASS recorded for $branch"
 }
 
+function Invoke-ReviewFail {
+    if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
+        Stop-WithError "usage: winsmux review-fail"
+    }
+
+    Assert-WinsmuxRolePermission -CommandName 'review-fail'
+
+    $projectDir = (Get-Location).Path
+    $branch = Get-CurrentGitBranch -ProjectDir $projectDir
+    $headSha = Get-CurrentGitHead -ProjectDir $projectDir
+    $context = Get-CurrentReviewerManifestContext -ProjectDir $projectDir
+    $state = Get-ReviewState -ProjectDir $projectDir
+
+    if (-not $state.Contains($branch)) {
+        Stop-WithError "review request pending for $branch was not found. Run: winsmux review-request"
+    }
+
+    $entry = ConvertTo-ReviewStateValue -Value $state[$branch]
+    $request = ConvertTo-ReviewStateValue -Value (Get-ReviewStatePropertyValue -InputObject $entry -Name 'request')
+    $status = [string](Get-ReviewStatePropertyValue -InputObject $entry -Name 'status')
+
+    if ($null -eq $request -or $status -ne 'PENDING') {
+        Stop-WithError "review request pending for $branch was not found. Run: winsmux review-request"
+    }
+
+    $requestPaneId = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'target_reviewer_pane_id')
+
+    if ($requestPaneId -ne $context.PaneId) {
+        Stop-WithError "pending review request for $branch is assigned to $requestPaneId, not $($context.PaneId)"
+    }
+
+    $timestamp = (Get-Date).ToString('o')
+    $reviewer = [ordered]@{
+        pane_id    = $context.PaneId
+        label      = $context.Label
+        role       = $context.Role
+        agent_name = [string]$env:WINSMUX_AGENT_NAME
+    }
+    $evidence = [ordered]@{
+        failed_at  = $timestamp
+        failed_via = 'winsmux review-fail'
+    }
+
+    $state[$branch] = New-ReviewerStateRecord -Status 'FAIL' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
+    Save-ReviewState -ProjectDir $projectDir -State $state
+    Write-Output "review FAIL recorded for $branch"
+}
+
 function Invoke-ReviewReset {
     if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
         Stop-WithError "usage: winsmux review-reset"
@@ -2519,6 +2567,7 @@ Commands:
   unlock <label> <file>...  Release file lock(s) for a label
   review-request            Record a pending Reviewer request for the current branch
   review-approve            Record Reviewer PASS for the current branch
+  review-fail               Record Reviewer FAIL for the current branch
   review-reset              Clear Reviewer PASS for the current branch
   dispatch-review            Dispatch review-request + review-approve to Reviewer pane
   locks                     List active file locks
@@ -2875,6 +2924,7 @@ switch ($Command) {
     'dispatch-review' { Invoke-DispatchReview }
     'review-request'  { Invoke-ReviewRequest }
     'review-approve'  { Invoke-ReviewApprove }
+    'review-fail'     { Invoke-ReviewFail }
     'review-reset'    { Invoke-ReviewReset }
     'rebind-worktree' { Invoke-RebindWorktree }
     ''                { Show-Usage }

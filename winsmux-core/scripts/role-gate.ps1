@@ -498,6 +498,10 @@ function Assert-Role {
             if ($permissions.ReviewApprove) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
+        'review-fail' {
+            if ($permissions.ReviewApprove) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
         'id' {
             if ($permissions.Id) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
