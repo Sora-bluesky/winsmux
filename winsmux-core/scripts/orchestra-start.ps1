@@ -1087,7 +1087,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         try {
             try {
-                $layout = . $layoutScript -SessionName $sessionName -Builders $settings.builders -Researchers $settings.researchers -Reviewers $settings.reviewers
+                $layout = . $layoutScript -SessionName $sessionName -Commanders $settings.commanders -Builders $settings.builders -Researchers $settings.researchers -Reviewers $settings.reviewers
                 foreach ($sessionPaneId in @(Get-OrchestraSessionPaneIds -SessionName $sessionName)) {
                     if ($createdPaneIds -notcontains $sessionPaneId) {
                         $createdPaneIds += $sessionPaneId

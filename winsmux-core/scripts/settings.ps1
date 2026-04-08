@@ -17,7 +17,8 @@ $script:BridgeSettingsFileName = '.winsmux.yaml'
 $script:BridgeSettingsSchema = [ordered]@{
     agent       = @{ Type = 'string';   Default = 'codex';      Option = '@bridge-agent' }
     model       = @{ Type = 'string';   Default = 'gpt-5.4';    Option = '@bridge-model' }
-    builders    = @{ Type = 'int';      Default = 4;            Option = '@bridge-builders' }
+    commanders  = @{ Type = 'int';      Default = 1;            Option = '@bridge-commanders' }
+    builders    = @{ Type = 'int';      Default = 1;            Option = '@bridge-builders' }
     researchers = @{ Type = 'int';      Default = 1;            Option = '@bridge-researchers' }
     reviewers   = @{ Type = 'int';      Default = 1;            Option = '@bridge-reviewers' }
     vault_keys  = @{ Type = 'string[]'; Default = @('GH_TOKEN'); Option = '@bridge-vault-keys' }

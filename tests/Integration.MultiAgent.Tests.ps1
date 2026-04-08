@@ -57,7 +57,7 @@ Describe 'Get-BridgeSettings defaults' {
 
         $settings.agent | Should -Be 'codex'
         $settings.model | Should -Be 'gpt-5.4'
-        $settings.builders | Should -Be 4
+        $settings.builders | Should -Be 1
         $settings.researchers | Should -Be 1
         $settings.reviewers | Should -Be 1
         $settings.terminal | Should -Be 'background'
