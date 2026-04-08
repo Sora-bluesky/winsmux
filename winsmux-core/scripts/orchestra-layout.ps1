@@ -65,16 +65,16 @@ function Split-Equal {
         [string]$Direction
     )
 
-    # TASK-231: resolve window ID for pane count observation (non-fatal)
+    # TASK-233: resolve window ID for pane count verification (fail fast)
     $windowId = (& winsmux display-message -t $Target -p '#{window_id}' 2>$null)
     if ([string]::IsNullOrWhiteSpace($windowId)) {
-        Write-Warning "TASK-231: could not resolve window ID for target pane $Target. Pane count verification skipped."
+        throw "Split-Equal: could not resolve window ID for target pane $Target. Cannot verify pane creation."
     }
 
     for ($i = 0; $i -lt ($PaneCount - 1); $i++) {
         $remaining = $PaneCount - $i
         $percent = [int](100 / $remaining)
-        $beforeCount = if ($windowId) { @(Get-PaneIds -Target $windowId).Count } else { -1 }
+        $beforeCount = @(Get-PaneIds -Target $windowId).Count
         $actualSize = (& winsmux display-message -t $Target -p '#{pane_width}x#{pane_height}' 2>$null)
 
         & winsmux split-window -t $Target $Direction -p $percent | Out-Null
@@ -82,13 +82,11 @@ function Split-Equal {
             throw "winsmux split-window failed while creating $PaneCount panes in direction $Direction. Target=$Target, ActualSize=$actualSize"
         }
 
-        # TASK-231: observe pane count change (non-fatal)
-        if ($windowId) {
-            Start-Sleep -Milliseconds 100
-            $afterCount = @(Get-PaneIds -Target $windowId).Count
-            if ($afterCount -le $beforeCount) {
-                Write-Warning "TASK-231: split-window returned exit 0 but pane count did not increase (before=$beforeCount, after=$afterCount). Target=$Target, Direction=$Direction, ActualSize=$actualSize"
-            }
+        # TASK-233: verify pane count change (fail fast)
+        Start-Sleep -Milliseconds 100
+        $afterCount = @(Get-PaneIds -Target $windowId).Count
+        if ($afterCount -le $beforeCount) {
+            throw "Split-Equal: split-window returned exit 0 but pane count did not increase (before=$beforeCount, after=$afterCount). Target=$Target, Direction=$Direction, ActualSize=$actualSize"
         }
     }
 }
