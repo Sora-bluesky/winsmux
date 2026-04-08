@@ -614,6 +614,8 @@ function Save-OrchestraSessionState {
         $lines.Add(('    builder_branch: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.BuilderBranch))) | Out-Null
         $lines.Add(('    builder_worktree_path: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.BuilderWorktreePath))) | Out-Null
         $lines.Add("    task: null") | Out-Null
+        $paneStatus = if ($paneSummary.Status) { $paneSummary.Status } else { 'ready' }
+        $lines.Add(('    status: {0}' -f (ConvertTo-YamlScalar -Value $paneStatus))) | Out-Null
     }
 
     Write-OrchestraTextFile -Path $manifestPath -Content ($lines -join [Environment]::NewLine)
@@ -1204,6 +1206,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             LaunchDir = $launchDir
             BuilderBranch = $builderBranch
             BuilderWorktreePath = $builderWorktreePath
+            Status = 'ready'
         })
     }
 
