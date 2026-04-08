@@ -2349,40 +2349,7 @@ function Invoke-DispatchReview {
         Stop-WithError "review-request was not recorded after ${maxAttempts} attempts. Check Reviewer pane $reviewerPaneId."
     }
 
-    Write-Output "PENDING confirmed. Sending review-approve to $reviewerLabel..."
-
-    # Send review-approve to Reviewer pane
-    Send-TextToPane -PaneId $reviewerPaneId -CommandText "winsmux review-approve"
-
-    # Poll for PASS state (up to 30 seconds)
-    $pass = $false
-    for ($i = 0; $i -lt $maxAttempts; $i++) {
-        Start-Sleep -Seconds 3
-        $state = Get-ReviewState -ProjectDir $projectDir
-        if ($state.Contains($branch)) {
-            $stateEntry = ConvertTo-ReviewStateValue -Value $state[$branch]
-            $status = [string](Get-ReviewStatePropertyValue -InputObject $stateEntry -Name 'status')
-            if ($status -eq 'PASS') {
-                $recordedSha = [string](Get-ReviewStatePropertyValue -InputObject $stateEntry -Name 'head_sha')
-                if ($recordedSha -eq $headSha) {
-                    $pass = $true
-                    break
-                }
-            }
-        }
-    }
-
-    if (-not $pass) {
-        $state = Get-ReviewState -ProjectDir $projectDir
-        $finalStatus = 'UNKNOWN'
-        if ($state.Contains($branch)) {
-            $stateEntry = ConvertTo-ReviewStateValue -Value $state[$branch]
-            $finalStatus = [string](Get-ReviewStatePropertyValue -InputObject $stateEntry -Name 'status')
-        }
-        Stop-WithError "Review did not pass for $branch after ${maxAttempts} attempts. Status: $finalStatus"
-    }
-
-    Write-Output "Review PASS verified for $branch ($($headSha.Substring(0,7)))"
+    Write-Output "PENDING confirmed. Reviewer will run review-approve or review-fail. Monitor review-state.json for result."
 }
 
 function Invoke-ReviewRequest {
@@ -2579,7 +2546,7 @@ Commands:
   review-approve            Record Reviewer PASS for the current branch
   review-fail               Record Reviewer FAIL for the current branch
   review-reset              Clear Reviewer PASS for the current branch
-  dispatch-review            Dispatch review-request + review-approve to Reviewer pane
+  dispatch-review            Dispatch review-request to Reviewer pane (Reviewer judges PASS/FAIL)
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
   wait <channel> [timeout]  Block until signal received (replaces polling)

@@ -25,7 +25,7 @@ try {
   if (toolName === "Write" || toolName === "Edit") {
     const filePath = toolInput.file_path || toolInput.file || "";
     if (isProtectedReviewStatePath(filePath)) {
-      deny("Direct writes to .winsmux/review-state.json are not allowed. Use review-approve or review-reset.");
+      deny("Direct writes to .winsmux/review-state.json are not allowed. Use review-approve, review-fail, or review-reset.");
     }
 
     if (/\.(ps1|js|rs|ts|py)$/i.test(filePath)) {
@@ -43,14 +43,14 @@ try {
   // Rule 3: Protect review state from direct edits
   if (toolName === "Bash") {
     if (isDirectReviewStateWriteCommand(bashCommand)) {
-      deny("Direct writes to .winsmux/review-state.json are not allowed. Use review-approve or review-reset.");
+      deny("Direct writes to .winsmux/review-state.json are not allowed. Use review-approve, review-fail, or review-reset.");
     }
   }
 
-  // Rule 4: review-approve may only run from a Reviewer pane
+  // Rule 4: review-approve and review-fail may only run from a Reviewer pane
   if (toolName === "Bash") {
-    if (isReviewApproveCommand(bashCommand) && normalizeAgentValue(process.env.WINSMUX_ROLE) !== "reviewer") {
-      deny("review-approve can only be run from a Reviewer pane.");
+    if (isReviewerOnlyCommand(bashCommand) && normalizeAgentValue(process.env.WINSMUX_ROLE) !== "reviewer") {
+      deny("review-approve and review-fail can only be run from a Reviewer pane.");
     }
   }
 
@@ -198,14 +198,19 @@ function isReviewGatedCommand(command) {
   return isGitCommitCommand(command) || isGitMergeCommand(command) || isGhPrMergeCommand(command);
 }
 
-function isReviewApproveCommand(command) {
-  return splitCommandSegments(command).some(isReviewApproveSegment);
+function isReviewerOnlyCommand(command) {
+  return splitCommandSegments(command).some(isReviewerOnlySegment);
 }
 
-function isReviewApproveSegment(segment) {
+function isReviewerOnlySegment(segment) {
   const tokens = tokenizeCommandLine(segment);
   if (tokens.length === 0) {
     return false;
+  }
+
+  function hasReviewerCommandToken(tokenList, startIndex) {
+    return hasStandaloneCommandToken(tokenList, "review-approve", startIndex) ||
+           hasStandaloneCommandToken(tokenList, "review-fail", startIndex);
   }
 
   const executable = getExecutableBasename(tokens[0]);
@@ -215,30 +220,30 @@ function isReviewApproveSegment(segment) {
 
   if (executable === "cmd" || executable === "cmd.exe") {
     const nestedCommand = getCmdShellArgument(tokens);
-    return nestedCommand ? isReviewApproveCommand(nestedCommand) : false;
+    return nestedCommand ? isReviewerOnlyCommand(nestedCommand) : false;
   }
 
   if (isPowerShellExecutable(executable)) {
     const nestedCommand = getOptionValue(tokens, ["-command", "-c"]);
     if (nestedCommand) {
-      return isReviewApproveCommand(nestedCommand);
+      return isReviewerOnlyCommand(nestedCommand);
     }
 
     const fileArgument = getOptionValue(tokens, ["-file"]);
     if (fileArgument && isWinsmuxCoreScript(fileArgument)) {
-      return hasStandaloneCommandToken(tokens, "review-approve", tokens.indexOf(fileArgument) + 1);
+      return hasReviewerCommandToken(tokens, tokens.indexOf(fileArgument) + 1);
     }
 
     const scriptIndex = tokens.findIndex((token) => isWinsmuxCoreScript(token));
-    return scriptIndex >= 0 && hasStandaloneCommandToken(tokens, "review-approve", scriptIndex + 1);
+    return scriptIndex >= 0 && hasReviewerCommandToken(tokens, scriptIndex + 1);
   }
 
   if (isWinsmuxExecutable(executable)) {
-    return hasStandaloneCommandToken(tokens, "review-approve", 1);
+    return hasReviewerCommandToken(tokens, 1);
   }
 
   if (isWinsmuxCoreScript(tokens[0])) {
-    return hasStandaloneCommandToken(tokens, "review-approve", 1);
+    return hasReviewerCommandToken(tokens, 1);
   }
 
   return false;
@@ -556,8 +561,8 @@ module.exports = {
   isPowerShellExecutable,
   isProtectedReviewStatePath,
   isReadOnlySearchCommand,
-  isReviewApproveCommand,
-  isReviewApproveSegment,
+  isReviewerOnlyCommand,
+  isReviewerOnlySegment,
   isReviewGatedCommand,
   isSettingsLocalHookMutation,
   isWinsmuxCoreScript,
