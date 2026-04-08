@@ -750,6 +750,132 @@ function Invoke-CommanderPollCycle {
     }
 }
 
+function Invoke-CommanderStateMachine {
+    param(
+        [Parameter(Mandatory = $true)][string]$CurrentState,
+        [Parameter(Mandatory = $true)]$CycleSummary,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [string]$CommitReadySha = ''
+    )
+
+    $nextState = $CurrentState
+    $nextCommitReadySha = $CommitReadySha
+
+    switch ($CurrentState) {
+        'starting' { $nextState = 'waiting_for_dispatch' }
+        'waiting_for_dispatch' {
+            if ([int]$CycleSummary['completions'] -gt 0) { $nextState = 'waiting_for_review' }
+        }
+        'builder_running' {
+            if ([int]$CycleSummary['completions'] -gt 0) { $nextState = 'waiting_for_review' }
+        }
+        'waiting_for_review' {
+            try {
+                $branch = (git -C $ProjectDir rev-parse --abbrev-ref HEAD 2>$null)
+                $headSha = (git -C $ProjectDir rev-parse HEAD 2>$null)
+                $manifest = Read-CommanderPollManifest -Path $ManifestPath
+                $reviewerPaneId = $null
+                $reviewerLabel = $null
+                if ($manifest.Panes) {
+                    foreach ($lbl in $manifest.Panes.Keys) {
+                        $p = $manifest.Panes[$lbl]
+                        $r = [string](Get-CommanderPollValue -InputObject $p -Name 'role' -Default '')
+                        $s = [string](Get-CommanderPollValue -InputObject $p -Name 'status' -Default '')
+                        if ($r -eq 'Reviewer' -and $s -ne 'bootstrap_invalid') {
+                            $reviewerPaneId = [string](Get-CommanderPollValue -InputObject $p -Name 'pane_id' -Default '')
+                            $reviewerLabel = $lbl
+                            break
+                        }
+                    }
+                }
+                if ([string]::IsNullOrWhiteSpace($reviewerPaneId)) {
+                    Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                        -Event 'commander.blocked' -Message "Reviewer ペインが見つかりません。" -Branch $branch -HeadSha $headSha
+                    $nextState = 'blocked_bootstrap_invalid'
+                } else {
+                    $wb = Get-WinsmuxBin
+                    & $wb send-keys -t $reviewerPaneId -l 'winsmux review-request' 2>$null | Out-Null
+                    & $wb send-keys -t $reviewerPaneId Enter 2>$null | Out-Null
+                    Start-Sleep -Seconds 3
+                    & $wb send-keys -t $reviewerPaneId -l 'winsmux review-approve' 2>$null | Out-Null
+                    & $wb send-keys -t $reviewerPaneId Enter 2>$null | Out-Null
+                    Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                        -Event 'commander.review_requested' -Message "$reviewerLabel ($reviewerPaneId) にレビュー依頼送信" `
+                        -PaneId $reviewerPaneId -Label $reviewerLabel -Role 'Reviewer' -Branch $branch -HeadSha $headSha
+                    $nextState = 'review_requested'
+                }
+            } catch {
+                Write-Warning "TASK-238: review dispatch failed: $($_.Exception.Message)"
+                $nextState = 'blocked_review_failed'
+            }
+        }
+        'review_requested' {
+            try {
+                $rsp = Join-Path (Join-Path $ProjectDir '.winsmux') 'review-state.json'
+                if (Test-Path $rsp -PathType Leaf) {
+                    $branch = (git -C $ProjectDir rev-parse --abbrev-ref HEAD 2>$null)
+                    $headSha = (git -C $ProjectDir rev-parse HEAD 2>$null)
+                    $rs = Get-Content $rsp -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+                    if ($rs.Contains($branch)) {
+                        $e = $rs[$branch]
+                        $st = [string]$e['status']
+                        $sha = [string]$e['head_sha']
+                        if ($st -eq 'PASS' -and $sha -eq $headSha) {
+                            Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                                -Event 'commander.review_passed' -Message "レビュー PASS。" -Branch $branch -HeadSha $headSha
+                            $nextState = 'review_passed'
+                        } elseif ($st -eq 'FAIL') {
+                            Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                                -Event 'commander.review_failed' -Message "レビュー FAIL。修正が必要。" -Branch $branch -HeadSha $headSha
+                            $nextState = 'blocked_review_failed'
+                        }
+                    }
+                }
+            } catch { Write-Warning "TASK-238: review-state read error: $($_.Exception.Message)" }
+        }
+        'review_passed' {
+            $headSha = (git -C $ProjectDir rev-parse HEAD 2>$null)
+            $nextCommitReadySha = $headSha
+            Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                -Event 'commander.commit_ready' -Message "コミット準備完了。" -HeadSha $headSha
+            $nextState = 'commit_ready'
+        }
+        'commit_ready' {
+            $currentSha = (git -C $ProjectDir rev-parse HEAD 2>$null)
+            if ($CommitReadySha -and $currentSha -ne $CommitReadySha) {
+                Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                    -Event 'commander.commit_done' -Message "コミット検出。次タスク待機。" -HeadSha $currentSha
+                $nextState = 'waiting_for_dispatch'
+                $nextCommitReadySha = ''
+            }
+        }
+        'blocked_review_failed' {
+            if ([int]$CycleSummary['completions'] -gt 0) { $nextState = 'waiting_for_review' }
+        }
+        'blocked_bootstrap_invalid' { }
+    }
+
+    if ($nextState -ne $CurrentState) {
+        Write-CommanderPollLog -ProjectDir $ProjectDir -SessionName $SessionName `
+            -EventName 'commander.state_transition' -Message "State: $CurrentState -> $nextState" `
+            -Data ([ordered]@{ from = $CurrentState; to = $nextState })
+        try {
+            $ep = Join-Path (Join-Path $ProjectDir '.winsmux') 'events.jsonl'
+            $rec = [ordered]@{
+                timestamp = (Get-Date).ToString('o'); session = $SessionName
+                event = 'commander.state_transition'; message = "State: $CurrentState -> $nextState"
+                label = ''; pane_id = ''; role = 'Commander'; status = $nextState
+                exit_reason = ''; data = [ordered]@{ from = $CurrentState; to = $nextState }
+            }
+            [System.IO.File]::AppendAllText($ep, (($rec | ConvertTo-Json -Compress -Depth 10) + "`n"), [System.Text.Encoding]::UTF8)
+        } catch { }
+    }
+
+    return [ordered]@{ State = $nextState; CommitReadySha = $nextCommitReadySha }
+}
+
 if ($MyInvocation.InvocationName -ne '.') {
     if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
         throw "Manifest not found: $ManifestPath"
@@ -769,6 +895,9 @@ if ($MyInvocation.InvocationName -ne '.') {
         -SessionName (Get-CommanderPollSessionName -Manifest $initialManifest) `
         -Event 'commander.started' -Message "Commander Poll 開始。間隔: ${Interval}秒"
 
+    $commanderState = 'starting'
+    $commitReadySha = ''
+
     while ($true) {
         $cycleResult = Invoke-CommanderPollCycle `
             -ManifestPath $ManifestPath `
@@ -777,7 +906,20 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         $processedLineCount = [int]$cycleResult['ProcessedLineCount']
         $processedEventSignatures = $cycleResult['ProcessedEventSignatures']
-        Write-Output (($cycleResult['Summary']) | ConvertTo-Json -Compress -Depth 10)
+        $smResult = Invoke-CommanderStateMachine `
+            -CurrentState $commanderState `
+            -CycleSummary ($cycleResult['Summary']) `
+            -ProjectDir $initialProjectDir `
+            -SessionName (Get-CommanderPollSessionName -Manifest (Read-CommanderPollManifest -Path $ManifestPath)) `
+            -ManifestPath $ManifestPath `
+            -CommitReadySha $commitReadySha
+
+        $commanderState = [string]$smResult['State']
+        $commitReadySha = [string]$smResult['CommitReadySha']
+
+        $summaryOutput = $cycleResult['Summary']
+        $summaryOutput['commander_state'] = $commanderState
+        Write-Output ($summaryOutput | ConvertTo-Json -Compress -Depth 10)
         Start-Sleep -Seconds $Interval
     }
 }
