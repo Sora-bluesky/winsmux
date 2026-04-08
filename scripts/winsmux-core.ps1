@@ -2295,6 +2295,96 @@ function Invoke-Version {
     Write-Output "winsmux $VERSION"
 }
 
+function Invoke-DispatchReview {
+    if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
+        Stop-WithError "usage: winsmux dispatch-review"
+    }
+
+    Assert-WinsmuxRolePermission -CommandName 'dispatch-review'
+
+    $projectDir = (Get-Location).Path
+    $branch = Get-CurrentGitBranch -ProjectDir $projectDir
+    $headSha = Get-CurrentGitHead -ProjectDir $projectDir
+
+    # Find Reviewer pane from manifest
+    $entries = Get-PaneControlManifestEntries -ProjectDir $projectDir
+    $reviewerEntry = $null
+    foreach ($entry in $entries) {
+        if ([string]$entry.Role -eq 'Reviewer') {
+            $reviewerEntry = $entry
+            break
+        }
+    }
+
+    if ($null -eq $reviewerEntry) {
+        Stop-WithError "No Reviewer pane found in manifest."
+    }
+
+    $reviewerPaneId = [string]$reviewerEntry.PaneId
+    $reviewerLabel = [string]$reviewerEntry.Label
+    Write-Output "Dispatching review to $reviewerLabel [$reviewerPaneId] for branch $branch ($($headSha.Substring(0,7)))"
+
+    # Send review-request to Reviewer pane
+    Send-TextToPane -PaneId $reviewerPaneId -CommandText "winsmux review-request"
+
+    Write-Output "review-request sent to $reviewerLabel. Waiting for PENDING state..."
+
+    # Poll for PENDING state (up to 30 seconds)
+    $maxAttempts = 10
+    $pending = $false
+    for ($i = 0; $i -lt $maxAttempts; $i++) {
+        Start-Sleep -Seconds 3
+        $state = Get-ReviewState -ProjectDir $projectDir
+        if ($state.Contains($branch)) {
+            $stateEntry = ConvertTo-ReviewStateValue -Value $state[$branch]
+            $status = [string](Get-ReviewStatePropertyValue -InputObject $stateEntry -Name 'status')
+            if ($status -eq 'PENDING') {
+                $pending = $true
+                break
+            }
+        }
+    }
+
+    if (-not $pending) {
+        Stop-WithError "review-request was not recorded after ${maxAttempts} attempts. Check Reviewer pane $reviewerPaneId."
+    }
+
+    Write-Output "PENDING confirmed. Sending review-approve to $reviewerLabel..."
+
+    # Send review-approve to Reviewer pane
+    Send-TextToPane -PaneId $reviewerPaneId -CommandText "winsmux review-approve"
+
+    # Poll for PASS state (up to 30 seconds)
+    $pass = $false
+    for ($i = 0; $i -lt $maxAttempts; $i++) {
+        Start-Sleep -Seconds 3
+        $state = Get-ReviewState -ProjectDir $projectDir
+        if ($state.Contains($branch)) {
+            $stateEntry = ConvertTo-ReviewStateValue -Value $state[$branch]
+            $status = [string](Get-ReviewStatePropertyValue -InputObject $stateEntry -Name 'status')
+            if ($status -eq 'PASS') {
+                $recordedSha = [string](Get-ReviewStatePropertyValue -InputObject $stateEntry -Name 'head_sha')
+                if ($recordedSha -eq $headSha) {
+                    $pass = $true
+                    break
+                }
+            }
+        }
+    }
+
+    if (-not $pass) {
+        $state = Get-ReviewState -ProjectDir $projectDir
+        $finalStatus = 'UNKNOWN'
+        if ($state.Contains($branch)) {
+            $stateEntry = ConvertTo-ReviewStateValue -Value $state[$branch]
+            $finalStatus = [string](Get-ReviewStatePropertyValue -InputObject $stateEntry -Name 'status')
+        }
+        Stop-WithError "Review did not pass for $branch after ${maxAttempts} attempts. Status: $finalStatus"
+    }
+
+    Write-Output "Review PASS verified for $branch ($($headSha.Substring(0,7)))"
+}
+
 function Invoke-ReviewRequest {
     if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
         Stop-WithError "usage: winsmux review-request"
@@ -2430,6 +2520,7 @@ Commands:
   review-request            Record a pending Reviewer request for the current branch
   review-approve            Record Reviewer PASS for the current branch
   review-reset              Clear Reviewer PASS for the current branch
+  dispatch-review            Dispatch review-request + review-approve to Reviewer pane
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
   wait <channel> [timeout]  Block until signal received (replaces polling)
@@ -2781,6 +2872,7 @@ switch ($Command) {
     'auto-rebalance'  { Invoke-AutoRebalance }
     'kill'            { Invoke-Kill }
     'restart'         { Invoke-Restart }
+    'dispatch-review' { Invoke-DispatchReview }
     'review-request'  { Invoke-ReviewRequest }
     'review-approve'  { Invoke-ReviewApprove }
     'review-reset'    { Invoke-ReviewReset }

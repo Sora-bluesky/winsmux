@@ -10,6 +10,7 @@ $RolePermissions = @{
         PollEvents    = $true
         Vault         = $true
         Dispatch      = $true
+        DispatchReview = $true
         TypeOwn       = $true
         TypeOther     = $false
         KeysOwn       = $true
@@ -47,6 +48,7 @@ $RolePermissions = @{
         PollEvents    = $false
         Vault         = $false
         Dispatch      = $false
+        DispatchReview = $false
         TypeOwn       = $true
         TypeOther     = $false
         KeysOwn       = $true
@@ -84,6 +86,7 @@ $RolePermissions = @{
         PollEvents    = $false
         Vault         = $false
         Dispatch      = $false
+        DispatchReview = $false
         TypeOwn       = $true
         TypeOther     = $false
         KeysOwn       = $true
@@ -121,6 +124,7 @@ $RolePermissions = @{
         PollEvents    = $false
         Vault         = $false
         Dispatch      = $false
+        DispatchReview = $false
         TypeOwn       = $true
         TypeOther     = $false
         KeysOwn       = $true
@@ -379,6 +383,10 @@ function Assert-Role {
         }
         'dispatch' {
             if ($permissions.Dispatch) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'dispatch-review' {
+            if ($permissions.DispatchReview) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
         'type' {
