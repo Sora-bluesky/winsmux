@@ -798,11 +798,8 @@ function Invoke-CommanderStateMachine {
                     $wb = Get-WinsmuxBin
                     & $wb send-keys -t $reviewerPaneId -l 'winsmux review-request' 2>$null | Out-Null
                     & $wb send-keys -t $reviewerPaneId Enter 2>$null | Out-Null
-                    Start-Sleep -Seconds 3
-                    & $wb send-keys -t $reviewerPaneId -l 'winsmux review-approve' 2>$null | Out-Null
-                    & $wb send-keys -t $reviewerPaneId Enter 2>$null | Out-Null
                     Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
-                        -Event 'commander.review_requested' -Message "$reviewerLabel ($reviewerPaneId) にレビュー依頼送信" `
+                        -Event 'commander.review_requested' -Message "$reviewerLabel ($reviewerPaneId) にレビュー依頼送信。PASS/FAIL 待機中。" `
                         -PaneId $reviewerPaneId -Label $reviewerLabel -Role 'Reviewer' -Branch $branch -HeadSha $headSha
                     $nextState = 'review_requested'
                 }

@@ -2505,9 +2505,19 @@ function Invoke-ReviewFail {
     }
 
     $requestPaneId = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'target_reviewer_pane_id')
+    $requestBranch = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'branch')
+    $requestHeadSha = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'head_sha')
 
     if ($requestPaneId -ne $context.PaneId) {
         Stop-WithError "pending review request for $branch is assigned to $requestPaneId, not $($context.PaneId)"
+    }
+
+    if ($requestBranch -ne $branch) {
+        Stop-WithError "pending review request branch mismatch: expected $requestBranch, got $branch"
+    }
+
+    if ($requestHeadSha -ne $headSha) {
+        Stop-WithError "pending review request head mismatch: expected $requestHeadSha, got $headSha"
     }
 
     $timestamp = (Get-Date).ToString('o')
