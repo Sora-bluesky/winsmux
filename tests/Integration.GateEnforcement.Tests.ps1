@@ -387,13 +387,13 @@ EOF
         $result.StdErr | Should -Be ''
     }
 
-    It 'denies Agent acceptEdits mode outside worktree isolation' {
+    It 'denies Agent acceptEdits mode' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
             mode = 'acceptEdits'
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'write-capable Agent modes'
+        $result.ErrorObject.systemMessage | Should -Match 'delegated write bypass blocked'
     }
 
     It 'denies Agent auto mode outside worktree isolation' {
@@ -429,13 +429,12 @@ EOF
         $result.StdErr | Should -Be ''
     }
 
-    It 'allows Agent default mode' {
+    It 'denies Agent default mode' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
             mode = 'default'
         })
 
-        $result.ExitCode | Should -Be 0
-        $result.StdErr | Should -Be ''
+        & $script:AssertDenyResult -Result $result
     }
 
     It 'allows Explore subagents even when mode is write-capable' {
@@ -448,14 +447,13 @@ EOF
         $result.StdErr | Should -Be ''
     }
 
-    It 'allows Agent write-capable modes when isolation is worktree' {
+    It 'denies Agent write-capable modes even with worktree isolation' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
             mode      = 'auto'
             isolation = 'worktree'
         })
 
-        $result.ExitCode | Should -Be 0
-        $result.StdErr | Should -Be ''
+        & $script:AssertDenyResult -Result $result
     }
 
     It 'allows a normal bash command' {
