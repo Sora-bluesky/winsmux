@@ -1171,6 +1171,10 @@ if ($MyInvocation.InvocationName -ne '.') {
             # TASK-236: inject role and pane_id into pane process
             Send-OrchestraBridgeCommand -Target $paneId -Text "`$env:WINSMUX_ROLE = '$canonicalRole'"
             Send-OrchestraBridgeCommand -Target $paneId -Text "`$env:WINSMUX_PANE_ID = '$paneId'"
+            # TASK-234: inject worktree path for Builder isolation (#347)
+            if ($canonicalRole -eq 'Builder' -and -not [string]::IsNullOrWhiteSpace($builderWorktreePath)) {
+                Send-OrchestraBridgeCommand -Target $paneId -Text "`$env:WINSMUX_BUILDER_WORKTREE = '$builderWorktreePath'"
+            }
             Start-Sleep -Milliseconds 300
             # TASK-231: verify pane exists after respawn
             try {
