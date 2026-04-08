@@ -1165,6 +1165,13 @@ if ($MyInvocation.InvocationName -ne '.') {
             Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_PANE_ID' -Value $paneId
             Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
             Wait-PaneShellReady -PaneId $paneId
+            # TASK-236: set cwd via cd (respawn-pane -c unreliable on Windows)
+            Send-OrchestraBridgeCommand -Target $paneId -Text "cd $(ConvertTo-PowerShellLiteral -Value $launchDir)"
+            Start-Sleep -Milliseconds 500
+            # TASK-236: inject role and pane_id into pane process
+            Send-OrchestraBridgeCommand -Target $paneId -Text "`$env:WINSMUX_ROLE = '$canonicalRole'"
+            Send-OrchestraBridgeCommand -Target $paneId -Text "`$env:WINSMUX_PANE_ID = '$paneId'"
+            Start-Sleep -Milliseconds 300
             # TASK-231: verify pane exists after respawn
             try {
                 Invoke-Winsmux -Arguments @('display-message', '-t', $paneId, '-p', '#{pane_id}') -CaptureOutput | Out-Null
@@ -1206,7 +1213,22 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
     }
 
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $paneSummaries
+    # TASK-236: validate all panes are alive before saving manifest
+    $validPaneSummaries = [System.Collections.Generic.List[object]]::new()
+    foreach ($paneSummary in $paneSummaries) {
+        try {
+            Invoke-Winsmux -Arguments @('display-message', '-t', $paneSummary.PaneId, '-p', '#{pane_id}') -CaptureOutput | Out-Null
+            $validPaneSummaries.Add($paneSummary)
+        } catch {
+            Write-Warning "TASK-236: pane $($paneSummary.PaneId) ($($paneSummary.Label)) is dead before manifest save. Excluding from manifest."
+        }
+    }
+    if ($validPaneSummaries.Count -eq 0) {
+        Write-Error "TASK-236: no living panes found. Cannot save manifest."
+        exit 1
+    }
+
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries
     $commanderPollScriptPath = Join-Path $scriptDir 'commander-poll.ps1'
     $commanderPollProcess = Start-CommanderPollJob -CommanderPollScriptPath $commanderPollScriptPath -ManifestPath $manifestPath -Interval 20
     Write-WinsmuxLog -Level INFO -Event 'preflight.commander_poll.started' -Message "Started commander poll for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; commander_poll_pid = $commanderPollProcess.Id; process_name = $commanderPollProcess.ProcessName } | Out-Null
@@ -1214,7 +1236,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     $watchdogProcess = Start-AgentWatchdogJob -WatchdogScriptPath $watchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName
     $serverWatchdogScriptPath = Join-Path $scriptDir 'server-watchdog.ps1'
     $serverWatchdogProcess = Start-ServerWatchdogJob -WatchdogScriptPath $serverWatchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $paneSummaries -CommanderPollPid $commanderPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -CommanderPollPid $commanderPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id
     Write-WinsmuxLog -Level INFO -Event 'preflight.watchdog.started' -Message "Started agent watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; watchdog_pid = $watchdogProcess.Id; process_name = $watchdogProcess.ProcessName } | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'preflight.server_watchdog.started' -Message "Started server watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; server_watchdog_pid = $serverWatchdogProcess.Id; process_name = $serverWatchdogProcess.ProcessName } | Out-Null
 
