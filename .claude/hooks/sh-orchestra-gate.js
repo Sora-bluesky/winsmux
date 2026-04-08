@@ -89,14 +89,14 @@ try {
     }
   }
 
-  // Rule 10: Block Commander from using write-capable Agent modes outside isolated worktrees
+  // Rule 10: Commander cannot use write-capable Agent modes — delegate to Builder panes (#347)
   if (toolName === "Agent") {
     const agentMode = normalizeAgentValue(toolInput.mode);
     const subagentType = normalizeAgentValue(toolInput.subagent_type);
-    const isolation = normalizeAgentValue(toolInput.isolation);
 
-    if (isolation !== "worktree" && agentMode !== "plan" && subagentType !== "explore" && isWriteCapableAgentMode(agentMode)) {
-      deny("Commander cannot use write-capable Agent modes outside worktree isolation. Use plan mode, Explore subagents, or worktree isolation.");
+    const isAllowedAgentUse = agentMode === "plan" || subagentType === "explore";
+    if (!isAllowedAgentUse) {
+      deny("Commander delegated write bypass blocked. Delegate implementation to Builder panes. Allowed: plan mode, Explore subagents.");
     }
   }
 
