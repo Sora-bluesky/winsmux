@@ -720,6 +720,7 @@ function Get-PaneAgentStatus {
     try {
         $snapshot = Invoke-MonitorWinsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
     } catch {
+        Write-Warning "TASK-231: pane $PaneId not reachable via capture-pane (may be dead). Error: $($_.Exception.Message)"
         return [ordered]@{
             Status       = 'empty'
             PaneId       = $PaneId

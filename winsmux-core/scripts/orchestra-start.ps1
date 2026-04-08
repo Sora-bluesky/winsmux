@@ -1066,6 +1066,13 @@ if ($MyInvocation.InvocationName -ne '.') {
         $bootstrapPaneId = Get-OrchestraBootstrapPaneId -SessionName $sessionName
         $createdPaneIds = @($bootstrapPaneId)
 
+        # TASK-231: preserve failed panes for debug inspection
+        try {
+            Invoke-Winsmux -Arguments @('set-option', '-t', $sessionName, 'remain-on-exit', 'on')
+        } catch {
+            Write-Warning "Could not set remain-on-exit for session ${sessionName}: $($_.Exception.Message)"
+        }
+
         Write-WinsmuxLog -Level INFO -Event 'preflight.session_env.start' -Message 'Publishing vault values to session environment.' -Data ([ordered]@{ key_count = $vaultValues.Count }) | Out-Null
         foreach ($entry in $vaultValues.GetEnumerator()) {
             Invoke-Winsmux -Arguments @('set-environment', '-t', $sessionName, $entry.Key, $entry.Value)
@@ -1158,8 +1165,16 @@ if ($MyInvocation.InvocationName -ne '.') {
             Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_PANE_ID' -Value $paneId
             Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
             Wait-PaneShellReady -PaneId $paneId
+            # TASK-231: verify pane exists after respawn
+            try {
+                Invoke-Winsmux -Arguments @('display-message', '-t', $paneId, '-p', '#{pane_id}') -CaptureOutput | Out-Null
+            } catch {
+                Write-Warning "TASK-231: pane $paneId ($label) not found after respawn-pane."
+            }
             if (-not [string]::IsNullOrWhiteSpace($launchCommand)) {
                 Send-OrchestraBridgeCommand -Target $paneId -Text $launchCommand
+            } else {
+                Write-Warning "TASK-231: empty launch command for pane $paneId ($label, role=$canonicalRole, execMode=$execMode). Agent will not start automatically."
             }
         } finally {
             foreach ($envName in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {
@@ -1183,6 +1198,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
     foreach ($paneSummary in $paneSummaries) {
         if ($paneSummary.ExecMode) {
+            Write-Warning "TASK-231: skipping readiness wait for $($paneSummary.Label) [$($paneSummary.PaneId)] (execMode=true, role=$($paneSummary.Role))."
             continue
         }
 
