@@ -514,6 +514,52 @@ function Get-CommanderPollEventSignature {
         ([string](Get-CommanderPollValue -InputObject $EventRecord -Name 'message' -Default ''))
 }
 
+function Send-CommanderTelegramNotification {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$Event,
+        [Parameter(Mandatory = $true)][string]$Message,
+        [string]$PaneId = '',
+        [string]$Label = '',
+        [string]$Role = '',
+        [string]$Branch = '',
+        [string]$HeadSha = ''
+    )
+
+    try {
+        $chatId = $env:WINSMUX_TELEGRAM_CHAT_ID
+        if ([string]::IsNullOrWhiteSpace($chatId)) {
+            $chatId = '8642321094'
+        }
+
+        $tokenPath = Join-Path $env:USERPROFILE '.claude' 'channels' 'telegram' '.env'
+        if (-not (Test-Path $tokenPath)) { return }
+        $tokenLine = Get-Content $tokenPath -Raw -Encoding UTF8
+        if ($tokenLine -match 'TELEGRAM_BOT_TOKEN=(.+)') {
+            $botToken = $Matches[1].Trim()
+        } else { return }
+
+        $shortSha = if ($HeadSha.Length -ge 7) { $HeadSha.Substring(0, 7) } else { $HeadSha }
+        $lines = @(
+            "[winsmux] $Event"
+            "セッション: $SessionName"
+        )
+        if ($Label) { $lines += "ペイン: $Label ($PaneId)" }
+        if ($Role) { $lines += "ロール: $Role" }
+        if ($Branch) { $lines += "ブランチ: $Branch" }
+        if ($shortSha) { $lines += "SHA: $shortSha" }
+        $lines += ''
+        $lines += $Message
+
+        $text = $lines -join "`n"
+        $body = @{ chat_id = $chatId; text = $text } | ConvertTo-Json -Compress
+        $null = Invoke-RestMethod -Uri "https://api.telegram.org/bot$botToken/sendMessage" -Method Post -ContentType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -ErrorAction SilentlyContinue
+    } catch {
+        # Telegram notification failure is non-fatal
+    }
+}
+
 function Invoke-CommanderPollEventRecord {
     param(
         [Parameter(Mandatory = $true)]$Manifest,
@@ -533,7 +579,7 @@ function Invoke-CommanderPollEventRecord {
 
     if ($eventName -in @('pane.exec_completed', 'pane.completed')) {
         $diffData = Get-CommanderPollDiffData -WorktreePath ([string]$paneContext['worktree_path'])
-        $message = "Completion detected for $($paneContext['label']) ($paneId) with $($diffData['changed_file_count']) changed file(s)"
+        $message = "$($paneContext['label']) ($paneId) 完了。変更ファイル: $($diffData['changed_file_count'])件"
 
         Write-CommanderPollLog `
             -ProjectDir $projectDir `
@@ -551,11 +597,17 @@ function Invoke-CommanderPollEventRecord {
 
         $Summary['completions'] = [int]$Summary['completions'] + 1
         $Summary['messages'] += @($message)
+
+        Send-CommanderTelegramNotification -ProjectDir $projectDir -SessionName $sessionName `
+            -Event $eventName -Message $message -PaneId $paneId `
+            -Label ([string]$paneContext['label']) -Role ([string]$paneContext['role']) `
+            -Branch (git -C $projectDir rev-parse --abbrev-ref HEAD 2>$null) `
+            -HeadSha (git -C $projectDir rev-parse HEAD 2>$null)
         return
     }
 
     if ($eventName -eq 'pane.idle') {
-        $message = "Commander should dispatch next task to $($paneContext['label']) ($paneId)"
+        $message = "$($paneContext['label']) ($paneId) がアイドル。次タスクのディスパッチが必要"
 
         Write-CommanderPollLog `
             -ProjectDir $projectDir `
@@ -574,6 +626,10 @@ function Invoke-CommanderPollEventRecord {
 
         $Summary['dispatches'] = [int]$Summary['dispatches'] + 1
         $Summary['messages'] += @($message)
+
+        Send-CommanderTelegramNotification -ProjectDir $projectDir -SessionName $sessionName `
+            -Event 'commander.dispatch_needed' -Message $message -PaneId $paneId `
+            -Label ([string]$paneContext['label']) -Role ([string]$paneContext['role'])
         return
     }
 
@@ -585,7 +641,7 @@ function Invoke-CommanderPollEventRecord {
         }
 
         Approve-CommanderPollPane -PaneId $paneId
-        $message = "Approved pane $($paneContext['label']) ($paneId) with Enter"
+        $message = "$($paneContext['label']) ($paneId) を自動承認"
 
         Write-CommanderPollLog `
             -ProjectDir $projectDir `
@@ -602,6 +658,10 @@ function Invoke-CommanderPollEventRecord {
 
         $Summary['approvals'] = [int]$Summary['approvals'] + 1
         $Summary['messages'] += @($message)
+
+        Send-CommanderTelegramNotification -ProjectDir $projectDir -SessionName $sessionName `
+            -Event 'commander.auto_approved' -Message $message -PaneId $paneId `
+            -Label ([string]$paneContext['label']) -Role ([string]$paneContext['role'])
     }
 }
 
@@ -704,6 +764,10 @@ if ($MyInvocation.InvocationName -ne '.') {
     if (Test-Path -LiteralPath $eventsPath -PathType Leaf) {
         $processedLineCount = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
     }
+
+    Send-CommanderTelegramNotification -ProjectDir $initialProjectDir `
+        -SessionName (Get-CommanderPollSessionName -Manifest $initialManifest) `
+        -Event 'commander.started' -Message "Commander Poll 開始。間隔: ${Interval}秒"
 
     while ($true) {
         $cycleResult = Invoke-CommanderPollCycle `

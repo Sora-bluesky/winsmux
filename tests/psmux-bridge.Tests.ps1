@@ -2118,11 +2118,11 @@ panes:
         $summary.mailbox_events | Should -Be 1
         $summary.new_events | Should -Be 1
         $summary.dispatches | Should -Be 1
-        $summary.messages[0] | Should -Be 'Commander should dispatch next task to builder-1 (%2)'
+        $summary.messages[0] | Should -Be 'builder-1 (%2) がアイドル。次タスクのディスパッチが必要'
         Should -Invoke Write-CommanderPollLog -Times 1 -Exactly -ParameterFilter {
             $EventName -eq 'commander.poll.idle_dispatch_needed' -and
             $PaneId -eq '%2' -and
-            $Message -eq 'Commander should dispatch next task to builder-1 (%2)'
+            $Message -eq 'builder-1 (%2) がアイドル。次タスクのディスパッチが必要'
         }
     }
 }
