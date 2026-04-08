@@ -103,7 +103,21 @@ try {
   // Rule 11: REMOVED - winsmux verify not yet implemented.
   // Will be re-added when verify command exists. See #277.
 
-  // Rule 12: Block review-gated commit/merge commands without valid Reviewer PASS for the current HEAD (#279)
+  // Rule 12: Builder pane isolation — block writes outside worktree (#347)
+  if (normalizeAgentValue(process.env.WINSMUX_ROLE) === "builder") {
+    const worktreePath = process.env.WINSMUX_BUILDER_WORKTREE || "";
+    if (worktreePath) {
+      const normalizedWorktree = worktreePath.replace(/\\/g, "/").toLowerCase();
+      if (toolName === "Write" || toolName === "Edit") {
+        const filePath = (toolInput.file_path || toolInput.file || "").replace(/\\/g, "/").toLowerCase();
+        if (filePath && !filePath.startsWith(normalizedWorktree)) {
+          deny(`Builder isolation: writes must target worktree ${worktreePath}, not ${toolInput.file_path || toolInput.file}`);
+        }
+      }
+    }
+  }
+
+  // Rule 13: Block review-gated commit/merge commands without valid Reviewer PASS for the current HEAD (#279)
   if (toolName === "Bash") {
     if (isReviewGatedCommand(bashCommand) && !/bump-version|chore:\s*bump/.test(bashCommand)) {
       const reviewStatePath = path.join(process.cwd(), ".winsmux", "review-state.json");
