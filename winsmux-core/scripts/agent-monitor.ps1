@@ -662,6 +662,7 @@ function Get-MonitorStateEventName {
         'busy' { return 'pane.busy' }
         'crashed' { return 'pane.crashed' }
         'empty' { return 'pane.empty' }
+        'bootstrap_invalid' { return 'pane.bootstrap_invalid' }
         'hung' { return 'pane.hung' }
         'ready' {
             if ($ExitReason -eq 'exec_completed') {
@@ -689,6 +690,7 @@ function Get-MonitorStateEventMessage {
         'pane.completed' { return "Pane $Label ($PaneId) completed." }
         'pane.crashed' { return "Pane $Label ($PaneId) crashed." }
         'pane.empty' { return "Pane $Label ($PaneId) is empty." }
+        'pane.bootstrap_invalid' { return "Pane $Label ($PaneId) failed bootstrap verification." }
         'pane.hung' { return "Pane $Label ($PaneId) is hung." }
         'pane.ready' { return "Pane $Label ($PaneId) is ready." }
         'pane.waiting_for_dispatch' { return "Pane $Label ($PaneId) is waiting for dispatch." }
@@ -1248,6 +1250,15 @@ function Invoke-AgentMonitorCycle {
         $checkedCount++
         $status = Get-PaneAgentStatus -PaneId $paneId -Agent $agentName -Role $role -ExecMode $paneExecMode -HungThreshold $IdleThreshold
         $statusName = [string](Get-MonitorPropertyValue -InputObject $status -Name 'Status' -Default '')
+
+        # TASK-240: override empty with bootstrap_invalid if manifest says so
+        if ($statusName -eq 'empty') {
+            $mfStatus = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'status' -Default '')
+            if ($mfStatus -eq 'bootstrap_invalid') {
+                $statusName = 'bootstrap_invalid'
+            }
+        }
+
         $statusExitReason = [string](Get-MonitorPropertyValue -InputObject $status -Name 'ExitReason' -Default '')
         $statusSnapshotTail = [string](Get-MonitorPropertyValue -InputObject $status -Name 'SnapshotTail' -Default '')
         $statusSnapshotHash = [string](Get-MonitorPropertyValue -InputObject $status -Name 'SnapshotHash' -Default '')
@@ -1453,6 +1464,12 @@ function Invoke-AgentMonitorCycle {
 
         $shouldRespawn = $statusName -eq 'crashed' -or ($statusName -eq 'ready' -and $statusExitReason -eq 'exec_completed')
         if ($paneExecMode -and $statusName -eq 'waiting_for_dispatch') {
+            $shouldRespawn = $false
+        }
+
+        # TASK-240: do not respawn bootstrap_invalid panes
+        $manifestPaneStatus = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'status' -Default '')
+        if ($manifestPaneStatus -eq 'bootstrap_invalid') {
             $shouldRespawn = $false
         }
 

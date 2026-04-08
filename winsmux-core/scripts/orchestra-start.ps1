@@ -616,6 +616,9 @@ function Save-OrchestraSessionState {
         $lines.Add("    task: null") | Out-Null
         $paneStatus = if ($paneSummary.Status) { $paneSummary.Status } else { 'ready' }
         $lines.Add(('    status: {0}' -f (ConvertTo-YamlScalar -Value $paneStatus))) | Out-Null
+        if ($paneSummary.BootstrapFailures) {
+            $lines.Add(('    bootstrap_failures: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.BootstrapFailures))) | Out-Null
+        }
     }
 
     Write-OrchestraTextFile -Path $manifestPath -Content ($lines -join [Environment]::NewLine)
@@ -911,6 +914,40 @@ function Invoke-OrchestraStartupRollback {
         BootstrapRespawned = $bootstrapRespawned
         RollbackErrors    = @($rollbackErrors)
     }
+}
+
+function Test-PaneBootstrapInvariants {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$ExpectedRole,
+        [Parameter(Mandatory = $true)][string]$ExpectedLaunchDir,
+        [string]$ExpectedWorktreePath = ''
+    )
+
+    $failures = [System.Collections.Generic.List[string]]::new()
+
+    # Check pane is alive
+    try {
+        Invoke-Winsmux -Arguments @('display-message', '-t', $PaneId, '-p', '#{pane_id}') -CaptureOutput | Out-Null
+    } catch {
+        $failures.Add("pane $PaneId does not exist")
+        return $failures
+    }
+
+    # Check cwd by sending pwd and reading capture-pane
+    try {
+        $cwdOutput = Invoke-Winsmux -Arguments @('display-message', '-t', $PaneId, '-p', '#{pane_current_path}') -CaptureOutput
+        $actualCwd = ([string]$cwdOutput).Trim().Replace('\', '/')
+        $expectedCwd = $ExpectedLaunchDir.Replace('\', '/')
+        if ($actualCwd -and $expectedCwd -and ($actualCwd.ToLowerInvariant() -ne $expectedCwd.ToLowerInvariant())) {
+            $failures.Add("cwd mismatch: expected=$ExpectedLaunchDir actual=$actualCwd")
+        }
+    } catch {
+        $failures.Add("could not read pane cwd: $($_.Exception.Message)")
+    }
+
+    return $failures
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
@@ -1220,19 +1257,39 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
     }
 
-    # TASK-236: validate all panes are alive before saving manifest
+    # TASK-240: bootstrap verification — verify invariants and mark failures
     $validPaneSummaries = [System.Collections.Generic.List[object]]::new()
+    $invalidCount = 0
     foreach ($paneSummary in $paneSummaries) {
-        try {
-            Invoke-Winsmux -Arguments @('display-message', '-t', $paneSummary.PaneId, '-p', '#{pane_id}') -CaptureOutput | Out-Null
+        $failures = Test-PaneBootstrapInvariants `
+            -PaneId $paneSummary.PaneId `
+            -Label $paneSummary.Label `
+            -ExpectedRole $paneSummary.Role `
+            -ExpectedLaunchDir $paneSummary.LaunchDir `
+            -ExpectedWorktreePath ([string]$paneSummary.BuilderWorktreePath)
+
+        if ($failures.Count -gt 0) {
+            $failureText = $failures -join '; '
+            Write-Warning "TASK-240: pane $($paneSummary.PaneId) ($($paneSummary.Label)) bootstrap_invalid: $failureText"
+            $invalidEntry = [ordered]@{}
+            foreach ($key in $paneSummary.Keys) {
+                $invalidEntry[$key] = $paneSummary[$key]
+            }
+            $invalidEntry['Status'] = 'bootstrap_invalid'
+            $invalidEntry['BootstrapFailures'] = $failureText
+            $validPaneSummaries.Add($invalidEntry)
+            $invalidCount++
+        } else {
             $validPaneSummaries.Add($paneSummary)
-        } catch {
-            Write-Warning "TASK-236: pane $($paneSummary.PaneId) ($($paneSummary.Label)) is dead before manifest save. Excluding from manifest."
         }
     }
-    if ($validPaneSummaries.Count -eq 0) {
-        Write-Error "TASK-236: no living panes found. Cannot save manifest."
+    $readyCount = $validPaneSummaries.Count - $invalidCount
+    if ($readyCount -eq 0) {
+        Write-Error "TASK-240: no panes passed bootstrap verification. All $invalidCount pane(s) are bootstrap_invalid."
         exit 1
+    }
+    if ($invalidCount -gt 0) {
+        Write-Warning "TASK-240: $invalidCount pane(s) marked bootstrap_invalid, $readyCount pane(s) ready."
     }
 
     $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries
