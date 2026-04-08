@@ -121,7 +121,7 @@ try {
   if (toolName === "Bash") {
     if (isReviewGatedCommand(bashCommand) && !/bump-version|chore:\s*bump/.test(bashCommand)) {
       const reviewStatePath = path.join(process.cwd(), ".winsmux", "review-state.json");
-      const denyMessage = "Review required. Flow: 1) Reviewer runs winsmux review-request, 2) Reviewer reviews, 3) Reviewer runs winsmux review-approve from Reviewer pane.";
+      const denyMessage = "Review required. Flow: 1) Reviewer runs winsmux review-request, 2) Reviewer reviews, 3) Reviewer runs winsmux review-approve or winsmux review-fail from Reviewer pane.";
       try {
         const currentBranch = getCurrentBranch(process.cwd());
         const currentHeadSha = getCurrentHeadSha(process.cwd());
