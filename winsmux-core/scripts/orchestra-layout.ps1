@@ -5,8 +5,8 @@
 [CmdletBinding()]
 param(
     [string]$SessionName = $env:WINSMUX_ORCHESTRA_SESSION,
-    [int]$Commanders = 0,
-    [int]$Builders = 4,
+    [int]$Commanders = 1,
+    [int]$Builders = 1,
     [int]$Researchers = 1,
 [int]$Reviewers = 1
 )
