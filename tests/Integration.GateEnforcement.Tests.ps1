@@ -345,7 +345,7 @@ EOF
         $result.StdErr | Should -Be ''
     }
 
-    It 'denies review-approve unless WINSMUX_ROLE is Reviewer' {
+    It 'denies review-approve unless WINSMUX_ROLE is review-capable' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
             command = 'pwsh scripts/winsmux-core.ps1 review-approve'
         }) -Environment ([ordered]@{
@@ -353,7 +353,7 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'Reviewer pane'
+        $result.ErrorObject.systemMessage | Should -Match 'review-capable pane'
     }
 
     It 'allows review-approve when WINSMUX_ROLE is Reviewer' {
@@ -361,6 +361,17 @@ EOF
             command = 'pwsh scripts/winsmux-core.ps1 review-approve'
         }) -Environment ([ordered]@{
             WINSMUX_ROLE = 'Reviewer'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'allows review-approve when WINSMUX_ROLE is Worker' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'pwsh scripts/winsmux-core.ps1 review-approve'
+        }) -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Worker'
         })
 
         $result.ExitCode | Should -Be 0
@@ -553,7 +564,7 @@ EOF
         $result.ErrorObject.systemMessage | Should -Match 'review-request'
     }
 
-    It 'denies git commit when reviewer role is not Reviewer' {
+    It 'denies git commit when reviewer role is not review-capable' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
         $currentHeadSha = Get-GateFixtureHeadSha -RepoRoot $fixture.RepoRoot

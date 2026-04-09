@@ -1,7 +1,6 @@
 agent: codex
 model: gpt-5.4
-builders: 4
-researchers: 1
-reviewers: 1
+external-commander: true
+worker-count: 6
 
 roles: {}

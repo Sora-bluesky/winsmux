@@ -5,10 +5,11 @@
 [CmdletBinding()]
 param(
     [string]$SessionName = $env:WINSMUX_ORCHESTRA_SESSION,
-    [int]$Commanders = 1,
-    [int]$Builders = 1,
-    [int]$Researchers = 1,
-[int]$Reviewers = 1
+    [int]$Commanders = 0,
+    [int]$Workers = 0,
+    [int]$Builders = 0,
+    [int]$Researchers = 0,
+    [int]$Reviewers = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -95,6 +96,7 @@ function Split-Equal {
 function Get-RoleLabels {
     param(
         [int]$CommanderCount = 0,
+        [int]$WorkerCount = 0,
         [int]$BuilderCount,
         [int]$ResearcherCount,
         [int]$ReviewerCount
@@ -104,6 +106,10 @@ function Get-RoleLabels {
 
     for ($i = 1; $i -le $CommanderCount; $i++) {
         $labels.Add("Commander-$i")
+    }
+
+    for ($i = 1; $i -le $WorkerCount; $i++) {
+        $labels.Add("Worker-$i")
     }
 
     for ($i = 1; $i -le $BuilderCount; $i++) {
@@ -122,6 +128,7 @@ function Get-RoleLabels {
 }
 
 Test-PositiveCount -Name 'Commanders' -Value $Commanders
+Test-PositiveCount -Name 'Workers' -Value $Workers
 Test-PositiveCount -Name 'Builders' -Value $Builders
 Test-PositiveCount -Name 'Researchers' -Value $Researchers
 Test-PositiveCount -Name 'Reviewers' -Value $Reviewers
@@ -130,7 +137,7 @@ if ([string]::IsNullOrWhiteSpace($SessionName)) {
     throw 'SessionName is required. Pass -SessionName or set WINSMUX_ORCHESTRA_SESSION.'
 }
 
-$total = $Commanders + $Builders + $Researchers + $Reviewers
+$total = $Commanders + $Workers + $Builders + $Researchers + $Reviewers
 if ($total -lt 1 -or $total -gt 12) {
     throw "Total panes must be 1-12 (got $total)."
 }
@@ -199,7 +206,7 @@ if ($allIds.Count -lt $total) {
     throw "Expected at least $total panes but found $($allIds.Count)."
 }
 
-$labels = Get-RoleLabels -CommanderCount $Commanders -BuilderCount $Builders -ResearcherCount $Researchers -ReviewerCount $Reviewers
+$labels = Get-RoleLabels -CommanderCount $Commanders -WorkerCount $Workers -BuilderCount $Builders -ResearcherCount $Researchers -ReviewerCount $Reviewers
 $assignments = [System.Collections.Generic.List[object]]::new()
 
 for ($index = 0; $index -lt $total; $index++) {
@@ -224,6 +231,7 @@ if ($LASTEXITCODE -ne 0) {
 
 [PSCustomObject]@{
     Builders    = $Builders
+    Workers     = $Workers
     Researchers = $Researchers
     Reviewers   = $Reviewers
     Total       = $total

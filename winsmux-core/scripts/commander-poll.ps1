@@ -781,6 +781,31 @@ function Invoke-CommanderPollCycle {
     }
 }
 
+function Get-CommanderPollPreferredReviewPane {
+    param([AllowNull()]$Manifest)
+
+    if ($null -eq $Manifest -or $null -eq $Manifest.Panes) {
+        return $null
+    }
+
+    foreach ($preferredRole in @('Reviewer', 'Worker')) {
+        foreach ($label in $Manifest.Panes.Keys) {
+            $pane = $Manifest.Panes[$label]
+            $role = [string](Get-CommanderPollValue -InputObject $pane -Name 'role' -Default '')
+            $status = [string](Get-CommanderPollValue -InputObject $pane -Name 'status' -Default '')
+            if ($role -eq $preferredRole -and $status -ne 'bootstrap_invalid') {
+                return [ordered]@{
+                    PaneId = [string](Get-CommanderPollValue -InputObject $pane -Name 'pane_id' -Default '')
+                    Label  = [string]$label
+                    Role   = $role
+                }
+            }
+        }
+    }
+
+    return $null
+}
+
 function Invoke-CommanderStateMachine {
     param(
         [Parameter(Mandatory = $true)][string]$CurrentState,
@@ -807,31 +832,18 @@ function Invoke-CommanderStateMachine {
                 $branch = (git -C $ProjectDir rev-parse --abbrev-ref HEAD 2>$null)
                 $headSha = (git -C $ProjectDir rev-parse HEAD 2>$null)
                 $manifest = Read-CommanderPollManifest -Path $ManifestPath
-                $reviewerPaneId = $null
-                $reviewerLabel = $null
-                if ($manifest.Panes) {
-                    foreach ($lbl in $manifest.Panes.Keys) {
-                        $p = $manifest.Panes[$lbl]
-                        $r = [string](Get-CommanderPollValue -InputObject $p -Name 'role' -Default '')
-                        $s = [string](Get-CommanderPollValue -InputObject $p -Name 'status' -Default '')
-                        if ($r -eq 'Reviewer' -and $s -ne 'bootstrap_invalid') {
-                            $reviewerPaneId = [string](Get-CommanderPollValue -InputObject $p -Name 'pane_id' -Default '')
-                            $reviewerLabel = $lbl
-                            break
-                        }
-                    }
-                }
-                if ([string]::IsNullOrWhiteSpace($reviewerPaneId)) {
+                $reviewPane = Get-CommanderPollPreferredReviewPane -Manifest $manifest
+                if ($null -eq $reviewPane -or [string]::IsNullOrWhiteSpace([string]$reviewPane.PaneId)) {
                     Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
-                        -Event 'commander.blocked' -Message "Reviewer ペインが見つかりません。" -Branch $branch -HeadSha $headSha
-                    $nextState = 'blocked_no_reviewer'
+                        -Event 'commander.blocked' -Message "Review 可能なペインが見つかりません。" -Branch $branch -HeadSha $headSha
+                    $nextState = 'blocked_no_review_target'
                 } else {
                     $wb = Get-WinsmuxBin
-                    & $wb send-keys -t $reviewerPaneId -l 'winsmux review-request' 2>$null | Out-Null
-                    & $wb send-keys -t $reviewerPaneId Enter 2>$null | Out-Null
+                    & $wb send-keys -t $reviewPane.PaneId -l 'winsmux review-request' 2>$null | Out-Null
+                    & $wb send-keys -t $reviewPane.PaneId Enter 2>$null | Out-Null
                     Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
-                        -Event 'commander.review_requested' -Message "$reviewerLabel ($reviewerPaneId) にレビュー依頼送信。PASS/FAIL 待機中。" `
-                        -PaneId $reviewerPaneId -Label $reviewerLabel -Role 'Reviewer' -Branch $branch -HeadSha $headSha
+                        -Event 'commander.review_requested' -Message "$($reviewPane.Label) ($($reviewPane.PaneId)) にレビュー依頼送信。PASS/FAIL 待機中。" `
+                        -PaneId $reviewPane.PaneId -Label $reviewPane.Label -Role $reviewPane.Role -Branch $branch -HeadSha $headSha
                     $nextState = 'review_requested'
                 }
             } catch {
@@ -856,26 +868,19 @@ function Invoke-CommanderStateMachine {
                         if ($null -ne $rsRequest -and $rsRequest -is [System.Collections.IDictionary] -and $rsRequest.Contains('target_reviewer_pane_id')) {
                             $rsReviewerPaneId = [string]$rsRequest['target_reviewer_pane_id']
                         }
-                        $manifestReviewerPaneId = ''
+                        $manifestReviewPaneId = ''
                         $manifest2 = Read-CommanderPollManifest -Path $ManifestPath
-                        if ($manifest2.Panes) {
-                            foreach ($lbl2 in $manifest2.Panes.Keys) {
-                                $p2 = $manifest2.Panes[$lbl2]
-                                $r2 = [string](Get-CommanderPollValue -InputObject $p2 -Name 'role' -Default '')
-                                $s2 = [string](Get-CommanderPollValue -InputObject $p2 -Name 'status' -Default '')
-                                if ($r2 -eq 'Reviewer' -and $s2 -ne 'bootstrap_invalid') {
-                                    $manifestReviewerPaneId = [string](Get-CommanderPollValue -InputObject $p2 -Name 'pane_id' -Default '')
-                                    break
-                                }
-                            }
+                        $reviewPane = Get-CommanderPollPreferredReviewPane -Manifest $manifest2
+                        if ($null -ne $reviewPane) {
+                            $manifestReviewPaneId = [string]$reviewPane.PaneId
                         }
-                        $reviewerMatch = [string]::IsNullOrWhiteSpace($rsReviewerPaneId) -or $rsReviewerPaneId -eq $manifestReviewerPaneId
+                        $reviewerMatch = [string]::IsNullOrWhiteSpace($rsReviewerPaneId) -or $rsReviewerPaneId -eq $manifestReviewPaneId
                         if ($st -eq 'PASS' -and $sha -eq $headSha -and $reviewerMatch) {
                             Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
                                 -Event 'commander.review_passed' -Message "レビュー PASS。" -Branch $branch -HeadSha $headSha
                             $nextState = 'review_passed'
                         } elseif ($st -eq 'PASS' -and $sha -eq $headSha -and -not $reviewerMatch) {
-                            Write-Warning "TASK-238: review PASS pane_id mismatch: review-state=$rsReviewerPaneId manifest=$manifestReviewerPaneId"
+                            Write-Warning "TASK-238: review PASS pane_id mismatch: review-state=$rsReviewerPaneId manifest=$manifestReviewPaneId"
                         } elseif ($st -eq 'FAIL') {
                             Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
                                 -Event 'commander.review_failed' -Message "レビュー FAIL。修正が必要。" -Branch $branch -HeadSha $headSha
@@ -904,19 +909,11 @@ function Invoke-CommanderStateMachine {
         'blocked_review_failed' {
             if ([int]$CycleSummary['completions'] -gt 0) { $nextState = 'waiting_for_review' }
         }
-        'blocked_no_reviewer' {
+        'blocked_no_review_target' {
             try {
                 $manifest = Read-CommanderPollManifest -Path $ManifestPath
-                if ($manifest.Panes) {
-                    foreach ($lbl in $manifest.Panes.Keys) {
-                        $p = $manifest.Panes[$lbl]
-                        $r = [string](Get-CommanderPollValue -InputObject $p -Name 'role' -Default '')
-                        $s = [string](Get-CommanderPollValue -InputObject $p -Name 'status' -Default '')
-                        if ($r -eq 'Reviewer' -and $s -ne 'bootstrap_invalid') {
-                            $nextState = 'waiting_for_review'
-                            break
-                        }
-                    }
+                if ($null -ne (Get-CommanderPollPreferredReviewPane -Manifest $manifest)) {
+                    $nextState = 'waiting_for_review'
                 }
             } catch { }
         }

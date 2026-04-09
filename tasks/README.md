@@ -2,9 +2,11 @@
 
 `backlog.yaml` is maintained outside this repository.
 
-Default local path:
+Default resolution order:
 
-- `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Projects\winsmux\planning\backlog.yaml`
+- `WINSMUX_BACKLOG_PATH`
+- `WINSMUX_PLANNING_ROOT\backlog.yaml`
+- the user-profile-relative default returned by `winsmux-core/scripts/planning-paths.ps1`
 
 Override with:
 

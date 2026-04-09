@@ -15,15 +15,18 @@ Dot-source this script to load the helpers:
 
 $script:BridgeSettingsFileName = '.winsmux.yaml'
 $script:BridgeSettingsSchema = [ordered]@{
-    agent       = @{ Type = 'string';   Default = 'codex';      Option = '@bridge-agent' }
-    model       = @{ Type = 'string';   Default = 'gpt-5.4';    Option = '@bridge-model' }
-    commanders  = @{ Type = 'int';      Default = 1;            Option = '@bridge-commanders' }
-    builders    = @{ Type = 'int';      Default = 1;            Option = '@bridge-builders' }
-    researchers = @{ Type = 'int';      Default = 1;            Option = '@bridge-researchers' }
-    reviewers   = @{ Type = 'int';      Default = 1;            Option = '@bridge-reviewers' }
-    vault_keys  = @{ Type = 'string[]'; Default = @('GH_TOKEN'); Option = '@bridge-vault-keys' }
-    terminal    = @{ Type = 'string';   Default = 'background'; Option = '@bridge-terminal' }
-    roles       = @{ Type = 'map';      Default = [ordered]@{}; Option = $null }
+    agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
+    model               = @{ Type = 'string';   Default = 'gpt-5.4';     Option = '@bridge-model' }
+    external_commander  = @{ Type = 'bool';     Default = $true;         Option = '@bridge-external-commander' }
+    worker_count        = @{ Type = 'int';      Default = 6;             Option = '@bridge-worker-count' }
+    legacy_role_layout  = @{ Type = 'bool';     Default = $false;        Option = '@bridge-legacy-role-layout' }
+    commanders          = @{ Type = 'int';      Default = 0;             Option = '@bridge-commanders' }
+    builders            = @{ Type = 'int';      Default = 0;             Option = '@bridge-builders' }
+    researchers         = @{ Type = 'int';      Default = 0;             Option = '@bridge-researchers' }
+    reviewers           = @{ Type = 'int';      Default = 0;             Option = '@bridge-reviewers' }
+    vault_keys          = @{ Type = 'string[]'; Default = @('GH_TOKEN'); Option = '@bridge-vault-keys' }
+    terminal            = @{ Type = 'string';   Default = 'background';  Option = '@bridge-terminal' }
+    roles               = @{ Type = 'map';      Default = [ordered]@{};  Option = $null }
 }
 
 if (-not (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue)) {
@@ -319,6 +322,26 @@ function Test-BridgeSettingValue {
 
             $NormalizedValue.Value = $parsed
             return $true
+        }
+        'bool' {
+            $text = ConvertFrom-BridgeYamlScalar $Value
+            if ([string]::IsNullOrWhiteSpace($text)) {
+                return $false
+            }
+
+            switch -Regex ($text.Trim()) {
+                '^(?i:true|1|yes|on)$' {
+                    $NormalizedValue.Value = $true
+                    return $true
+                }
+                '^(?i:false|0|no|off)$' {
+                    $NormalizedValue.Value = $false
+                    return $true
+                }
+                default {
+                    return $false
+                }
+            }
         }
         'string[]' {
             $items = @()

@@ -47,10 +47,11 @@ try {
     }
   }
 
-  // Rule 4: review-approve and review-fail may only run from a Reviewer pane
+  // Rule 4: review-approve and review-fail may only run from a review-capable pane
   if (toolName === "Bash") {
-    if (isReviewerOnlyCommand(bashCommand) && normalizeAgentValue(process.env.WINSMUX_ROLE) !== "reviewer") {
-      deny("review-approve and review-fail can only be run from a Reviewer pane.");
+    const currentRole = normalizeAgentValue(process.env.WINSMUX_ROLE);
+    if (isReviewerOnlyCommand(bashCommand) && currentRole !== "reviewer" && currentRole !== "worker") {
+      deny("review-approve and review-fail can only be run from a review-capable pane.");
     }
   }
 
@@ -121,7 +122,7 @@ try {
   if (toolName === "Bash") {
     if (isReviewGatedCommand(bashCommand) && !/bump-version|chore:\s*bump/.test(bashCommand)) {
       const reviewStatePath = path.join(process.cwd(), ".winsmux", "review-state.json");
-      const denyMessage = "Review required. Flow: 1) Reviewer runs winsmux review-request, 2) Reviewer reviews, 3) Reviewer runs winsmux review-approve or winsmux review-fail from Reviewer pane.";
+      const denyMessage = "Review required. Flow: 1) a review-capable pane runs winsmux review-request, 2) that pane reviews, 3) it runs winsmux review-approve or winsmux review-fail.";
       try {
         const currentBranch = getCurrentBranch(process.cwd());
         const currentHeadSha = getCurrentHeadSha(process.cwd());
@@ -487,7 +488,8 @@ function hasValidReviewerPass(reviewStateEntry, currentHeadSha) {
   }
 
   const reviewer = reviewStateEntry.reviewer;
-  if (!reviewer || normalizeAgentValue(reviewer.role) !== "reviewer") {
+  const reviewerRole = normalizeAgentValue(reviewer?.role);
+  if (!reviewer || (reviewerRole !== "reviewer" && reviewerRole !== "worker")) {
     return false;
   }
 

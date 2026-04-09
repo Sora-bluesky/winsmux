@@ -62,6 +62,7 @@ function Get-PaneScalerCanonicalRole {
     }
 
     switch -Regex ($candidate.Trim()) {
+        '^(?i)worker(?:$|[-_:/\s])' { return 'Worker' }
         '^(?i)builder(?:$|[-_:/\s])' { return 'Builder' }
         '^(?i)researcher(?:$|[-_:/\s])' { return 'Researcher' }
         '^(?i)reviewer(?:$|[-_:/\s])' { return 'Reviewer' }

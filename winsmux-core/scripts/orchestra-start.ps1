@@ -242,11 +242,54 @@ function Get-CanonicalRole {
     param([Parameter(Mandatory = $true)][string]$AssignmentRole)
 
     switch -Regex ($AssignmentRole) {
+        '^(?i)worker(?:$|[-_:/\s])' { return 'Worker' }
         '^(?i)builder(?:$|[-_:/\s])' { return 'Builder' }
         '^(?i)researcher(?:$|[-_:/\s])' { return 'Researcher' }
         '^(?i)reviewer(?:$|[-_:/\s])' { return 'Reviewer' }
         '^(?i)commander(?:$|[-_:/\s])' { return 'Commander' }
         default { throw "Unsupported pane role label: $AssignmentRole" }
+    }
+}
+
+function Get-OrchestraLayoutSettings {
+    param([Parameter(Mandatory = $true)]$Settings)
+
+    $commanders = [int]$Settings.commanders
+    $workers = [int]$Settings.worker_count
+    $builders = [int]$Settings.builders
+    $researchers = [int]$Settings.researchers
+    $reviewers = [int]$Settings.reviewers
+    $externalCommander = [bool]$Settings.external_commander
+    $legacyRoleLayout = [bool]$Settings.legacy_role_layout
+
+    $legacyCount = $commanders + $builders + $researchers + $reviewers
+    $useLegacyLayout = $legacyRoleLayout -or $legacyCount -gt 0
+
+    if ($useLegacyLayout) {
+        return [ordered]@{
+            ExternalCommander = $false
+            LegacyRoleLayout  = $true
+            Commanders        = $commanders
+            Workers           = 0
+            Builders          = $builders
+            Researchers       = $researchers
+            Reviewers         = $reviewers
+        }
+    }
+
+    $managedCommanders = if ($externalCommander) { 0 } else { 1 }
+    if ($workers -lt 1) {
+        throw "worker_count must be 1 or greater in external commander mode (got $workers)."
+    }
+
+    return [ordered]@{
+        ExternalCommander = $externalCommander
+        LegacyRoleLayout  = $false
+        Commanders        = $managedCommanders
+        Workers           = $workers
+        Builders          = 0
+        Researchers       = 0
+        Reviewers         = 0
     }
 }
 
@@ -978,9 +1021,20 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
 
         $settings = Get-BridgeSettings
+        $layoutSettings = Get-OrchestraLayoutSettings -Settings $settings
         $projectDir = Get-ProjectDir
         Initialize-WinsmuxLog -ProjectDir $projectDir -SessionName $sessionName | Out-Null
-        Write-WinsmuxLog -Level INFO -Event 'preflight.settings.loaded' -Message 'Loaded orchestra settings.' -Data @{ agent = $settings.agent; model = $settings.model } | Out-Null
+        Write-WinsmuxLog -Level INFO -Event 'preflight.settings.loaded' -Message 'Loaded orchestra settings.' -Data @{
+            agent              = $settings.agent
+            model              = $settings.model
+            external_commander = $layoutSettings.ExternalCommander
+            legacy_role_layout = $layoutSettings.LegacyRoleLayout
+            workers            = $layoutSettings.Workers
+            commanders         = $layoutSettings.Commanders
+            builders           = $layoutSettings.Builders
+            researchers        = $layoutSettings.Researchers
+            reviewers          = $layoutSettings.Reviewers
+        } | Out-Null
         Write-WinsmuxLog -Level INFO -Event 'preflight.winsmux_bin.ready' -Message "Using winsmux binary: $winsmuxBin." -Data @{ winsmux_bin = $winsmuxBin } | Out-Null
         Write-WinsmuxLog -Level INFO -Event 'preflight.bridge_script.ready' -Message "Using bridge script: $bridgeScript." -Data @{ bridge_script = $bridgeScript } | Out-Null
         Write-WinsmuxLog -Level INFO -Event 'preflight.project_dir.resolved' -Message "Resolved project directory: $projectDir." -Data @{ project_dir = $projectDir } | Out-Null
@@ -1018,7 +1072,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     try {
         $existingPanes = & $winsmuxBin list-panes -F '#{pane_id} #{pane_title}' 2>$null
         if ($LASTEXITCODE -eq 0 -and $existingPanes) {
-            $orchestraLabels = @('builder-', 'researcher-', 'reviewer-')
+                    $orchestraLabels = @('worker-', 'builder-', 'researcher-', 'reviewer-')
             foreach ($line in ($existingPanes -split "`n")) {
                 $parts = $line.Trim() -split '\s+', 2
                 if ($parts.Count -ge 2) {
@@ -1124,8 +1178,8 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         try {
             try {
-                Write-Warning "DEBUG: layout start session=$sessionName C=$($settings.commanders) B=$($settings.builders) R=$($settings.researchers) Rev=$($settings.reviewers)"
-                $layout = . $layoutScript -SessionName $sessionName -Commanders $settings.commanders -Builders $settings.builders -Researchers $settings.researchers -Reviewers $settings.reviewers
+                Write-Warning "DEBUG: layout start session=$sessionName external=$($layoutSettings.ExternalCommander) legacy=$($layoutSettings.LegacyRoleLayout) C=$($layoutSettings.Commanders) W=$($layoutSettings.Workers) B=$($layoutSettings.Builders) R=$($layoutSettings.Researchers) Rev=$($layoutSettings.Reviewers)"
+                $layout = . $layoutScript -SessionName $sessionName -Commanders $layoutSettings.Commanders -Workers $layoutSettings.Workers -Builders $layoutSettings.Builders -Researchers $layoutSettings.Researchers -Reviewers $layoutSettings.Reviewers
                 Write-Warning "DEBUG: layout done, panes=$($layout.Panes.Count)"
                 foreach ($sessionPaneId in @(Get-OrchestraSessionPaneIds -SessionName $sessionName)) {
                     if ($createdPaneIds -notcontains $sessionPaneId) {
@@ -1181,7 +1235,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         $builderBranch = $null
         $builderWorktreePath = $null
 
-        if ($canonicalRole -eq 'Builder') {
+        if ($canonicalRole -in @('Builder', 'Worker')) {
             $builderIndex++
             $builderWorktree = New-BuilderWorktree -ProjectDir $projectDir -BuilderIndex $builderIndex
             $createdWorktrees += [ordered]@{
@@ -1210,8 +1264,8 @@ if ($MyInvocation.InvocationName -ne '.') {
             # TASK-236: inject role and pane_id into pane process
             Send-OrchestraBridgeCommand -Target $paneId -Text "`$env:WINSMUX_ROLE = '$canonicalRole'"
             Send-OrchestraBridgeCommand -Target $paneId -Text "`$env:WINSMUX_PANE_ID = '$paneId'"
-            # TASK-234: inject worktree path for Builder isolation (#347)
-            if ($canonicalRole -eq 'Builder' -and -not [string]::IsNullOrWhiteSpace($builderWorktreePath)) {
+            # Workers currently share the Builder-style isolated worktree model.
+            if ($canonicalRole -in @('Builder', 'Worker') -and -not [string]::IsNullOrWhiteSpace($builderWorktreePath)) {
                 Send-OrchestraBridgeCommand -Target $paneId -Text "`$env:WINSMUX_BUILDER_WORKTREE = '$builderWorktreePath'"
             }
             Start-Sleep -Milliseconds 300
@@ -1307,6 +1361,13 @@ if ($MyInvocation.InvocationName -ne '.') {
     Write-Output "Orchestra session: $sessionName"
     Write-Output "Agent: $($settings.agent)"
     Write-Output "Model: $($settings.model)"
+    if ($layoutSettings.LegacyRoleLayout) {
+        Write-Output "Mode: legacy role layout"
+    } elseif ($layoutSettings.ExternalCommander) {
+        Write-Output "Mode: external commander + $($layoutSettings.Workers) workers"
+    } else {
+        Write-Output "Mode: managed commander + $($layoutSettings.Workers) workers"
+    }
     Write-Output "ProjectDir: $projectDir"
     Write-Output "GitWorktreeDir: $gitWorktreeDir"
     Write-Output ''
@@ -1315,10 +1376,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-Output ("  {0,-14} {1,-8} {2}" -f $paneSummary.Label, $paneSummary.PaneId, $paneSummary.Role)
     }
 
-    $builderPaneSummaries = @($paneSummaries | Where-Object { $_.Role -eq 'Builder' -and -not [string]::IsNullOrWhiteSpace($_.BuilderWorktreePath) })
+    $builderPaneSummaries = @($paneSummaries | Where-Object { $_.Role -in @('Builder', 'Worker') -and -not [string]::IsNullOrWhiteSpace($_.BuilderWorktreePath) })
     if ($builderPaneSummaries.Count -gt 0) {
         Write-Output ''
-        Write-Output 'Cleanup: remove Builder worktrees after the session ends.'
+        Write-Output 'Cleanup: remove managed worktrees after the session ends.'
         foreach ($paneSummary in $builderPaneSummaries) {
             $relativeWorktree = [System.IO.Path]::GetRelativePath($projectDir, $paneSummary.BuilderWorktreePath)
             Write-Output ("  git -C {0} worktree remove {1} ; git -C {0} branch -D {2}" -f $projectDir, $relativeWorktree, $paneSummary.BuilderBranch)

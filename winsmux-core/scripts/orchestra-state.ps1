@@ -252,7 +252,7 @@ function Get-OrchestraPaneReviewRecord {
         return $ReviewState[$Branch]
     }
 
-    if ($Role -ne 'Reviewer') {
+    if ($Role -notin @('Reviewer', 'Worker')) {
         return $null
     }
 

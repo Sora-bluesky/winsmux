@@ -113,6 +113,7 @@ function Get-PaneControlCanonicalRole {
     }
 
     switch -Regex ($candidate.Trim()) {
+        '^(?i)worker(?:$|[-_:/\s])' { return 'Worker' }
         '^(?i)builder(?:$|[-_:/\s])' { return 'Builder' }
         '^(?i)researcher(?:$|[-_:/\s])' { return 'Researcher' }
         '^(?i)reviewer(?:$|[-_:/\s])' { return 'Reviewer' }
@@ -216,7 +217,7 @@ function Get-PaneControlManifestEntries {
         }
 
         $gitWorktreeDir = $sessionGitWorktreeDir
-        if ($role -eq 'Builder' -or [string]::IsNullOrWhiteSpace($gitWorktreeDir)) {
+        if ($role -in @('Builder', 'Worker') -or [string]::IsNullOrWhiteSpace($gitWorktreeDir)) {
             $gitWorktreeDir = Get-PaneControlGitWorktreeDir -ProjectDir $launchDir
         }
 

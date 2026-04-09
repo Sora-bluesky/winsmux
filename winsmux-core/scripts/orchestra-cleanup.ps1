@@ -1,7 +1,7 @@
 function Test-OrchestraManagedPaneTitle {
     param([AllowEmptyString()][string]$Title)
 
-    return $Title -match '^(?i)(builder|researcher|reviewer)-\d+$'
+    return $Title -match '^(?i)(worker|builder|researcher|reviewer)-\d+$'
 }
 
 function Get-StaleOrchestraPaneTargets {

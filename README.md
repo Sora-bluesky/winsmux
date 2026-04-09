@@ -14,11 +14,11 @@ It provides the runtime and coordination layer for running multiple agent CLIs i
 
 - **Multi-vendor support**: run Codex, Claude, Gemini, and other CLI agents side by side in the same session
 - **Real-time visibility**: supervise every agent through live `winsmux` panes instead of waiting for post-hoc summaries
-- **Enterprise governance**: enforce role gates, isolate Builder work in git worktrees, and preserve an evidence trail for review and audit
+- **Enterprise governance**: keep one external Commander in control, isolate managed worker panes in git worktrees, and preserve an evidence trail for review and audit
 
 ```powershell
-winsmux read builder-1 20
-winsmux send reviewer "Review the latest auth changes."
+winsmux read worker-1 20
+winsmux send worker-2 "Review the latest auth changes."
 winsmux health-check
 ```
 
@@ -26,9 +26,9 @@ winsmux health-check
 
 Most agent tooling is optimized for a single vendor and a single execution model. winsmux is designed for teams that need to coordinate multiple agents on Windows while keeping the system observable and governable.
 
-- **Vendor-neutral orchestration**: mix Codex for implementation, Claude for review, and Gemini for research in one session
+- **Vendor-neutral orchestration**: mix Codex, Claude, Gemini, and future local models behind one Commander control loop
 - **Pane-native operations**: inspect, interrupt, redirect, and relabel live panes through `winsmux`
-- **Controlled execution**: combine read-before-act interaction, role-aware command gates, and isolated Builder workspaces
+- **Controlled execution**: combine read-before-act interaction, review-capable worker gates, and isolated worker workspaces
 - **Windows-first deployment**: no WSL2 dependency, no Linux detour, no hidden tmux requirement
 
 ## Platform model
@@ -38,15 +38,15 @@ winsmux
 ├── winsmux CLI
 ├── Orchestra
 ├── Role Gates
-├── Builder Worktree Isolation
+├── Worker Worktree Isolation
 ├── Credential Vault (DPAPI)
 └── Evidence Ledger
 ```
 
 - **`winsmux`** handles pane targeting, messaging, health checks, vault injection, and operator controls
-- **Orchestra** coordinates Commander, Builder, Researcher, and Reviewer panes
-- **Role gates** restrict which actions each role can perform
-- **Builder worktree isolation** gives each Builder pane a separate git worktree to reduce cross-agent collisions
+- **Orchestra** defaults to one external Commander plus managed worker panes
+- **Role gates** restrict which actions Commander and managed panes can perform
+- **Worker worktree isolation** gives each managed worker pane a separate git worktree to reduce cross-agent collisions
 - **Evidence Ledger** supports audit-oriented capture of agent activity and review outcomes
 
 ## Core runtime
@@ -105,19 +105,25 @@ winsmux new-session -s orchestra
 pwsh winsmux-core/scripts/orchestra-start.ps1
 ```
 
+The default layout is now:
+
+- external Commander terminal outside the managed window
+- 6 managed `worker-*` panes inside the orchestra window
+- legacy `Commander / Builder / Researcher / Reviewer` pane layouts only when explicitly enabled
+
 Inside the session, label and inspect panes:
 
 ```powershell
 winsmux list
-winsmux read builder-1 30
-winsmux send researcher "Summarize the upstream issue."
+winsmux read worker-1 30
+winsmux send worker-3 "Summarize the upstream issue."
 ```
 
 ## Governance highlights
 
-- **Role gates**: builders, researchers, reviewers, and commanders do not all get the same command surface
+- **Role gates**: the external Commander and managed worker panes do not get the same command surface
 - **Read Guard**: panes must be read before interaction, reducing blind input into the wrong target
-- **Worktree isolation**: each Builder pane can run in its own git worktree branch and directory
+- **Worktree isolation**: each managed worker pane can run in its own git worktree branch and directory
 - **Credential Vault**: secrets are stored with Windows DPAPI and injected into panes without writing repo `.env` files
 - **Evidence Ledger**: prompts, actions, and review evidence can be captured for audit and compliance workflows
 
