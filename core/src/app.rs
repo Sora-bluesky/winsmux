@@ -296,15 +296,39 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     if let Some(pid) = target_pane {
                         if is_focus_cmd {
                             if pane_is_id {
-                                let _ = tx.send(CtrlReq::FocusPane(pid));
+                                let (rtx, rrx) = mpsc::channel();
+                                let _ = tx.send(CtrlReq::FocusPaneChecked(pid, rtx));
+                                if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
+                                    let _ = write!(stream, "can't find pane: {}\n", pid);
+                                    let _ = stream.flush();
+                                    return;
+                                }
                             } else {
-                                let _ = tx.send(CtrlReq::FocusPaneByIndex(pid));
+                                let (rtx, rrx) = mpsc::channel();
+                                let _ = tx.send(CtrlReq::FocusPaneByIndexChecked(pid, rtx));
+                                if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
+                                    let _ = write!(stream, "can't find pane index: {}\n", pid);
+                                    let _ = stream.flush();
+                                    return;
+                                }
                             }
                         } else {
                             if pane_is_id {
-                                let _ = tx.send(CtrlReq::FocusPaneTemp(pid));
+                                let (rtx, rrx) = mpsc::channel();
+                                let _ = tx.send(CtrlReq::FocusPaneTemp(pid, rtx));
+                                if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
+                                    let _ = write!(stream, "can't find pane: {}\n", pid);
+                                    let _ = stream.flush();
+                                    return;
+                                }
                             } else {
-                                let _ = tx.send(CtrlReq::FocusPaneByIndexTemp(pid));
+                                let (rtx, rrx) = mpsc::channel();
+                                let _ = tx.send(CtrlReq::FocusPaneByIndexTemp(pid, rtx));
+                                if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
+                                    let _ = write!(stream, "can't find pane index: {}\n", pid);
+                                    let _ = stream.flush();
+                                    return;
+                                }
                             }
                         }
                     }
@@ -979,10 +1003,12 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                 }
                 CtrlReq::FocusWindow(wid) => { if let Some(idx) = find_window_index_by_id(&app, wid) { app.active_idx = idx; } }
                 CtrlReq::FocusWindowTemp(wid) => { if let Some(idx) = find_window_index_by_id(&app, wid) { app.active_idx = idx; } }
-                CtrlReq::FocusPane(pid) => { focus_pane_by_id(&mut app, pid); }
-                CtrlReq::FocusPaneByIndex(idx) => { focus_pane_by_index(&mut app, idx); }
-                CtrlReq::FocusPaneTemp(pid) => { focus_pane_by_id(&mut app, pid); }
-                CtrlReq::FocusPaneByIndexTemp(idx) => { focus_pane_by_index(&mut app, idx); }
+                CtrlReq::FocusPane(pid) => { let _ = focus_pane_by_id(&mut app, pid); }
+                CtrlReq::FocusPaneByIndex(idx) => { let _ = focus_pane_by_index(&mut app, idx); }
+                CtrlReq::FocusPaneChecked(pid, resp) => { let _ = resp.send(focus_pane_by_id(&mut app, pid)); }
+                CtrlReq::FocusPaneByIndexChecked(idx, resp) => { let _ = resp.send(focus_pane_by_index(&mut app, idx)); }
+                CtrlReq::FocusPaneTemp(pid, resp) => { let _ = resp.send(focus_pane_by_id(&mut app, pid)); }
+                CtrlReq::FocusPaneByIndexTemp(idx, resp) => { let _ = resp.send(focus_pane_by_index(&mut app, idx)); }
                 CtrlReq::SessionInfo(resp) => {
                     let attached = if app.attached_clients > 0 { "(attached)" } else { "(detached)" };
                     let windows = app.windows.len();
@@ -1022,7 +1048,7 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     app.last_window_area = Rect { x: 0, y: 0, width: w, height: h }; 
                     resize_all_panes(&mut app);
                 }
-                CtrlReq::FocusPaneCmd(pid) => { focus_pane_by_id(&mut app, pid); }
+                CtrlReq::FocusPaneCmd(pid) => { let _ = focus_pane_by_id(&mut app, pid); }
                 CtrlReq::FocusWindowCmd(wid) => { if let Some(idx) = find_window_index_by_id(&app, wid) { app.active_idx = idx; } }
                 CtrlReq::MouseDown(_,x,y) => { remote_mouse_down(&mut app, x, y); }
                 CtrlReq::MouseDownRight(_,x,y) => { remote_mouse_button(&mut app, x, y, 2, true); }

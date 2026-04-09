@@ -23,8 +23,31 @@ $script:TeamPipelineBridgeScript = [System.IO.Path]::GetFullPath((Join-Path $PSS
 $script:TeamPipelineLoggerScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'logger.ps1'))
 $script:TeamPipelineDangerousApprovalPattern = '(?im)(rm\s+-rf|Remove-Item\s+.+-Recurse.+-Force|git\s+push\s+--force|git\s+reset\s+--hard|DROP\s+TABLE|DELETE\s+FROM)'
 
+. (Join-Path $PSScriptRoot 'manifest.ps1')
 if (Test-Path $script:TeamPipelineLoggerScript -PathType Leaf) {
     . $script:TeamPipelineLoggerScript
+}
+
+function Get-TeamPipelineValue {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Default = $null
+    )
+
+    if ($null -eq $InputObject) {
+        return $Default
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary] -and $InputObject.Contains($Name)) {
+        return $InputObject[$Name]
+    }
+
+    if ($null -ne $InputObject.PSObject -and $InputObject.PSObject.Properties.Name -contains $Name) {
+        return $InputObject.$Name
+    }
+
+    return $Default
 }
 
 function ConvertFrom-TeamPipelineYamlScalar {
@@ -57,89 +80,11 @@ function Get-TeamPipelineManifestPath {
 function ConvertFrom-TeamPipelineManifestContent {
     param([Parameter(Mandatory = $true)][string]$Content)
 
-    $manifest = [PSCustomObject]@{
-        Session = [ordered]@{}
-        Panes   = [ordered]@{}
+    $parsed = ConvertFrom-ManifestYaml -Content $Content
+    return [PSCustomObject]@{
+        Session = $parsed.session
+        Panes   = $parsed.panes
     }
-
-    $section = $null
-    $currentPane = $null
-
-    function Save-CurrentPane {
-        param($Pane)
-
-        if ($null -eq $Pane) {
-            return
-        }
-
-        $label = [string]$Pane.label
-        if ([string]::IsNullOrWhiteSpace($label)) {
-            return
-        }
-
-        $paneObject = [PSCustomObject]@{}
-        foreach ($property in $Pane.GetEnumerator()) {
-            Add-Member -InputObject $paneObject -MemberType NoteProperty -Name $property.Key -Value $property.Value
-        }
-
-        $manifest.Panes[$label] = $paneObject
-    }
-
-    foreach ($rawLine in ($Content -split "\r?\n")) {
-        $line = $rawLine.TrimEnd()
-        if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') {
-            continue
-        }
-
-        if ($line -match '^(session|panes):\s*$') {
-            if ($section -eq 'panes') {
-                Save-CurrentPane -Pane $currentPane
-                $currentPane = $null
-            }
-
-            $section = $Matches[1]
-            continue
-        }
-
-        if ($section -eq 'session' -and $line -match '^\s{2}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
-            $manifest.Session[$Matches[1]] = ConvertFrom-TeamPipelineYamlScalar $Matches[2]
-            continue
-        }
-
-        if ($section -ne 'panes') {
-            continue
-        }
-
-        if ($line -match '^\s{2}-\s+label:\s*(.*?)\s*$') {
-            Save-CurrentPane -Pane $currentPane
-            $currentPane = [ordered]@{
-                label = ConvertFrom-TeamPipelineYamlScalar $Matches[1]
-            }
-            continue
-        }
-
-        if ($line -match '^\s{2}(.+?):\s*$') {
-            Save-CurrentPane -Pane $currentPane
-            $currentPane = [ordered]@{
-                label = ConvertFrom-TeamPipelineYamlScalar $Matches[1]
-            }
-            continue
-        }
-
-        if ($line -match '^\s{4}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
-            if ($null -eq $currentPane) {
-                continue
-            }
-
-            $currentPane[$Matches[1]] = ConvertFrom-TeamPipelineYamlScalar $Matches[2]
-        }
-    }
-
-    if ($section -eq 'panes') {
-        Save-CurrentPane -Pane $currentPane
-    }
-
-    return $manifest
 }
 
 function Read-TeamPipelineManifest {
@@ -182,10 +127,7 @@ function Resolve-TeamPipelineBuilderContext {
     )
 
     $pane = Get-TeamPipelinePaneInfo -Manifest $Manifest -Label $BuilderLabel
-    $projectDir = $null
-    if ($null -ne $Manifest -and $null -ne $Manifest.Session -and $Manifest.Session.Contains('project_dir')) {
-        $projectDir = [string]$Manifest.Session.project_dir
-    }
+    $projectDir = [string](Get-TeamPipelineValue -InputObject $Manifest.Session -Name 'project_dir' -Default '')
 
     if ([string]::IsNullOrWhiteSpace($projectDir)) {
         $projectDir = (Get-Location).Path
@@ -194,12 +136,10 @@ function Resolve-TeamPipelineBuilderContext {
     $worktreePath = $OverrideWorktreePath
     if ([string]::IsNullOrWhiteSpace($worktreePath) -and $null -ne $pane) {
         foreach ($candidateKey in @('builder_worktree_path', 'launch_dir')) {
-            if ($pane.PSObject.Properties.Name -contains $candidateKey) {
-                $candidate = [string]$pane.$candidateKey
-                if (-not [string]::IsNullOrWhiteSpace($candidate)) {
-                    $worktreePath = $candidate
-                    break
-                }
+            $candidate = [string](Get-TeamPipelineValue -InputObject $pane -Name $candidateKey -Default '')
+            if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+                $worktreePath = $candidate
+                break
             }
         }
     }
@@ -210,7 +150,7 @@ function Resolve-TeamPipelineBuilderContext {
 
     return [PSCustomObject]@{
         BuilderLabel      = $BuilderLabel
-        BuilderPaneId     = if ($null -ne $pane -and ($pane.PSObject.Properties.Name -contains 'pane_id')) { [string]$pane.pane_id } else { $null }
+        BuilderPaneId     = if ($null -ne $pane) { [string](Get-TeamPipelineValue -InputObject $pane -Name 'pane_id' -Default $null) } else { $null }
         ProjectDir        = $projectDir
         BuilderWorktreePath = $worktreePath
     }
@@ -219,11 +159,9 @@ function Resolve-TeamPipelineBuilderContext {
 function Get-TeamPipelineSessionName {
     param([AllowNull()]$Manifest)
 
-    if ($null -ne $Manifest -and $null -ne $Manifest.Session -and $Manifest.Session.Contains('name')) {
-        $sessionName = [string]$Manifest.Session.name
-        if (-not [string]::IsNullOrWhiteSpace($sessionName)) {
-            return $sessionName
-        }
+    $sessionName = [string](Get-TeamPipelineValue -InputObject $Manifest.Session -Name 'name' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($sessionName)) {
+        return $sessionName
     }
 
     return 'winsmux-orchestra'

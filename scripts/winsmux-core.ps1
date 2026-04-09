@@ -19,6 +19,7 @@ $BridgeSettingsScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '
 $PaneControlScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-control.ps1'))
 $PaneStatusScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-status.ps1'))
 $RoleGateScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\role-gate.ps1'))
+$ClmSafeIoScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\clm-safe-io.ps1'))
 
 if (Test-Path $BridgeSettingsScript -PathType Leaf) {
     . $BridgeSettingsScript
@@ -34,6 +35,10 @@ if (Test-Path $PaneStatusScript -PathType Leaf) {
 
 if (Test-Path $RoleGateScript -PathType Leaf) {
     . $RoleGateScript
+}
+
+if (Test-Path $ClmSafeIoScript -PathType Leaf) {
+    . $ClmSafeIoScript
 }
 
 # --- Windows Credential Manager P/Invoke ---
@@ -439,6 +444,24 @@ function Get-CurrentReviewerManifestContext {
     }
 }
 
+function Update-ReviewerManifestState {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Properties
+    )
+
+    if (-not (Get-Command Set-PaneControlManifestPaneProperties -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    try {
+        $context = Get-CurrentReviewerManifestContext -ProjectDir $ProjectDir
+        Set-PaneControlManifestPaneProperties -ManifestPath $context.ManifestPath -PaneId $context.PaneId -Properties $Properties
+    } catch {
+        # Review-state persistence remains the source of truth. Manifest sync is best-effort.
+    }
+}
+
 function New-ReviewRequestId {
     $timestamp = Get-Date -Format 'yyyyMMddHHmmss'
     $suffix = ([guid]::NewGuid().ToString('N')).Substring(0, 8)
@@ -680,14 +703,14 @@ function Save-Watermark {
         )
     ) -replace '-', ''
     $path = Get-WatermarkPath $PaneId
-    Set-Content -Path $path -Value $hash -Encoding UTF8 -NoNewline
+    Write-WinsmuxTextFile -Path $path -Content $hash
 }
 
 function Test-WatermarkChanged {
     param([string]$PaneId, [string]$CurrentContent)
     $path = Get-WatermarkPath $PaneId
     if (-not (Test-Path $path)) { return $true }
-    $savedHash = Get-Content -Path $path -Raw -Encoding UTF8
+    $savedHash = (Get-Content -Path $path -Raw -Encoding UTF8).Trim()
     $currentHash = [System.BitConverter]::ToString(
         [System.Security.Cryptography.SHA256]::Create().ComputeHash(
             [System.Text.Encoding]::UTF8.GetBytes($CurrentContent)
@@ -1428,8 +1451,20 @@ function Invoke-Role {
     # Count existing panes with new role to generate label number
     $existingLabels = @()
     if (Test-Path $manifestPath) {
-        $manifestContent = Get-Content $manifestPath -Raw
-        $existingLabels = @([regex]::Matches($manifestContent, "label:\s*'($newRole-\d+)'") | ForEach-Object { $_.Groups[1].Value })
+        try {
+            $manifest = Get-WinsmuxManifest -ProjectDir $projectDir
+            if ($null -ne $manifest -and $null -ne $manifest.panes) {
+                $existingLabels = @(
+                    foreach ($label in $manifest.panes.Keys) {
+                        if ([string]$label -match ("^{0}-\d+$" -f [regex]::Escape($newRole))) {
+                            [string]$label
+                        }
+                    }
+                )
+            }
+        } catch {
+            $existingLabels = @()
+        }
     }
     $nextNum = 1
     while ("$newRole-$nextNum" -in $existingLabels) { $nextNum++ }
@@ -2385,6 +2420,14 @@ function Invoke-ReviewRequest {
 
     $state[$branch] = New-ReviewerStateRecord -Status 'PENDING' -Request $request -Reviewer $reviewer -Evidence $null -UpdatedAt $timestamp
     Save-ReviewState -ProjectDir $projectDir -State $state
+    Update-ReviewerManifestState -ProjectDir $projectDir -Properties ([ordered]@{
+        review_state = 'pending'
+        task_owner   = 'Reviewer'
+        branch       = $branch
+        head_sha     = $headSha
+        last_event   = 'review.requested'
+        last_event_at = $timestamp
+    })
     Write-Output "review request recorded for $branch"
 }
 
@@ -2443,6 +2486,14 @@ function Invoke-ReviewApprove {
 
     $state[$branch] = New-ReviewerStateRecord -Status 'PASS' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
     Save-ReviewState -ProjectDir $projectDir -State $state
+    Update-ReviewerManifestState -ProjectDir $projectDir -Properties ([ordered]@{
+        review_state = 'pass'
+        task_owner   = 'Commander'
+        branch       = $branch
+        head_sha     = $headSha
+        last_event   = 'review.pass'
+        last_event_at = $timestamp
+    })
     Write-Output "review PASS recorded for $branch"
 }
 
@@ -2501,6 +2552,14 @@ function Invoke-ReviewFail {
 
     $state[$branch] = New-ReviewerStateRecord -Status 'FAIL' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
     Save-ReviewState -ProjectDir $projectDir -State $state
+    Update-ReviewerManifestState -ProjectDir $projectDir -Properties ([ordered]@{
+        review_state = 'fail'
+        task_owner   = 'Commander'
+        branch       = $branch
+        head_sha     = $headSha
+        last_event   = 'review.fail'
+        last_event_at = $timestamp
+    })
     Write-Output "review FAIL recorded for $branch"
 }
 
@@ -2517,6 +2576,13 @@ function Invoke-ReviewReset {
     }
 
     Save-ReviewState -ProjectDir $projectDir -State $state
+    Update-ReviewerManifestState -ProjectDir $projectDir -Properties ([ordered]@{
+        review_state = ''
+        branch       = ''
+        head_sha     = ''
+        last_event   = 'review.reset'
+        last_event_at = (Get-Date).ToString('o')
+    })
     Write-Output "review PASS cleared for $branch"
 }
 

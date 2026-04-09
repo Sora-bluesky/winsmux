@@ -13,6 +13,11 @@ Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 . (Join-Path $PSScriptRoot 'manifest.ps1')
+. (Join-Path $PSScriptRoot 'clm-safe-io.ps1')
+$script:BuilderQueuePaneControlScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'pane-control.ps1'))
+if (Test-Path $script:BuilderQueuePaneControlScript -PathType Leaf) {
+    . $script:BuilderQueuePaneControlScript
+}
 
 $script:BuilderQueueBridgeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\winsmux-core.ps1'))
 $script:DispatchLedgerRelativePath = '.winsmux\dispatch-ledger.json'
@@ -149,6 +154,30 @@ function Remove-BuilderQueueRawEntry {
     return @($remaining)
 }
 
+function Update-BuilderQueuePaneState {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$BuilderLabel,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Properties
+    )
+
+    if (-not (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Set-PaneControlManifestPaneProperties -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    try {
+        $entry = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { $_.Label -eq $BuilderLabel } | Select-Object -First 1)[0]
+        if ($null -eq $entry -or [string]::IsNullOrWhiteSpace([string]$entry.PaneId)) {
+            return
+        }
+
+        Set-PaneControlManifestPaneProperties -ManifestPath ([string]$entry.ManifestPath) -PaneId ([string]$entry.PaneId) -Properties $Properties
+    } catch {
+        # Pane state enrichment is best-effort and must not break queue operation.
+    }
+}
+
 function Get-BuilderQueueSnapshot {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -214,11 +243,11 @@ function Save-DispatchLedger {
     }
 
     if (@($Entries).Count -eq 0) {
-        '[]' | Set-Content -LiteralPath $path -Encoding UTF8
+        Write-WinsmuxTextFile -Path $path -Content '[]'
         return
     }
 
-    @($Entries) | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $path -Encoding UTF8
+    Write-WinsmuxTextFile -Path $path -Content (@($Entries) | ConvertTo-Json -Depth 8)
 }
 
 function ConvertTo-DispatchLockPath {
@@ -488,6 +517,16 @@ function Dispatch-NextBuilderQueueTask {
     $manifest.tasks.queued = (Remove-BuilderQueueRawEntry -Entries $manifest.tasks.queued -RawEntry $nextEntry.RawEntry)
     $manifest.tasks.in_progress = (@($manifest.tasks.in_progress) + @($nextEntry.RawEntry))
     Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest
+    Update-BuilderQueuePaneState -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel -Properties ([ordered]@{
+        task_id            = $nextEntry.TaskId
+        task               = $nextEntry.Task
+        task_state         = 'in_progress'
+        task_owner         = 'Builder'
+        changed_file_count = 0
+        changed_files      = @()
+        last_event         = 'builder.queue.dispatched'
+        last_event_at      = (Get-Date).ToString('o')
+    })
 
     return [PSCustomObject]@{
         BuilderLabel   = $BuilderLabel
@@ -526,6 +565,14 @@ function Complete-BuilderQueueTask {
     }
     Save-BuilderQueueManifest -ProjectDir $ProjectDir -Manifest $manifest
     Unlock-DispatchFiles -TaskId $completedEntry.TaskId -ProjectDir $ProjectDir | Out-Null
+    Update-BuilderQueuePaneState -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel -Properties ([ordered]@{
+        task_id       = $completedEntry.TaskId
+        task          = $completedEntry.Task
+        task_state    = 'completed'
+        task_owner    = 'Commander'
+        last_event    = 'builder.queue.completed'
+        last_event_at = (Get-Date).ToString('o')
+    })
 
     $dispatchOutcome = Dispatch-NextBuilderQueueTask -ProjectDir $ProjectDir -BuilderLabel $BuilderLabel -DispatchAction $DispatchAction
 

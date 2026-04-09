@@ -7,6 +7,9 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+. (Join-Path $PSScriptRoot 'manifest.ps1')
+. (Join-Path $PSScriptRoot 'clm-safe-io.ps1')
+. (Join-Path $PSScriptRoot 'pane-control.ps1')
 
 if (-not (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue)) {
     function Get-WinsmuxBin {
@@ -73,85 +76,11 @@ function ConvertFrom-CommanderPollYamlScalar {
 function ConvertFrom-CommanderPollManifestContent {
     param([Parameter(Mandatory = $true)][string]$Content)
 
-    $manifest = [ordered]@{
-        Session = [ordered]@{}
-        Panes   = [ordered]@{}
+    $parsed = ConvertFrom-ManifestYaml -Content $Content
+    return [ordered]@{
+        Session = $parsed.session
+        Panes   = $parsed.panes
     }
-
-    $section = ''
-    $currentPane = $null
-
-    function Save-CommanderPollPane {
-        param([AllowNull()]$Pane)
-
-        if ($null -eq $Pane) {
-            return
-        }
-
-        $label = [string](Get-CommanderPollValue -InputObject $Pane -Name 'label' -Default '')
-        if ([string]::IsNullOrWhiteSpace($label)) {
-            return
-        }
-
-        $savedPane = [ordered]@{}
-        foreach ($entry in $Pane.GetEnumerator()) {
-            $savedPane[[string]$entry.Key] = $entry.Value
-        }
-
-        $manifest['Panes'][$label] = $savedPane
-    }
-
-    foreach ($rawLine in ($Content -split "\r?\n")) {
-        $line = $rawLine.TrimEnd()
-        if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') {
-            continue
-        }
-
-        if ($line -match '^(session|panes):\s*$') {
-            if ($section -eq 'panes') {
-                Save-CommanderPollPane -Pane $currentPane
-                $currentPane = $null
-            }
-
-            $section = $Matches[1]
-            continue
-        }
-
-        if ($section -eq 'session' -and $line -match '^\s{2}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
-            $manifest['Session'][$Matches[1]] = ConvertFrom-CommanderPollYamlScalar $Matches[2]
-            continue
-        }
-
-        if ($section -ne 'panes') {
-            continue
-        }
-
-        if ($line -match '^\s{2}-\s+label:\s*(.*?)\s*$') {
-            Save-CommanderPollPane -Pane $currentPane
-            $currentPane = [ordered]@{
-                label = ConvertFrom-CommanderPollYamlScalar $Matches[1]
-            }
-            continue
-        }
-
-        if ($line -match '^\s{2}(.+?):\s*$') {
-            Save-CommanderPollPane -Pane $currentPane
-            $currentPane = [ordered]@{
-                label = ConvertFrom-CommanderPollYamlScalar $Matches[1]
-            }
-            continue
-        }
-
-        if ($null -ne $currentPane -and $line -match '^\s{4}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
-            $currentPane[$Matches[1]] = ConvertFrom-CommanderPollYamlScalar $Matches[2]
-        }
-    }
-
-    if ($section -eq 'panes') {
-        Save-CommanderPollPane -Pane $currentPane
-    }
-
-    return $manifest
 }
 
 function Read-CommanderPollManifest {
@@ -229,9 +158,8 @@ function Write-CommanderPollLog {
         data      = if ($null -eq $Data) { [ordered]@{} } else { $Data }
     }
 
-    $line = ($record | ConvertTo-Json -Compress -Depth 10) + [System.Environment]::NewLine
-    $encoding = [System.Text.UTF8Encoding]::new($false)
-    [System.IO.File]::AppendAllText((Get-CommanderPollLogPath -ProjectDir $ProjectDir), $line, $encoding)
+    $line = ($record | ConvertTo-Json -Compress -Depth 10)
+    Write-WinsmuxTextFile -Path (Get-CommanderPollLogPath -ProjectDir $ProjectDir) -Content $line -Append
 }
 
 function Get-CommanderPollPaneContext {
@@ -301,7 +229,62 @@ function Get-CommanderPollPaneContext {
         label         = $matchedLabel
         role          = $role
         worktree_path = $worktreePath
+        task_id       = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'task_id' -Default '') } else { '' }
+        task          = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'task' -Default '') } else { '' }
+        task_state    = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'task_state' -Default '') } else { '' }
+        task_owner    = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'task_owner' -Default '') } else { '' }
+        review_state  = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'review_state' -Default '') } else { '' }
+        branch        = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'branch' -Default '') } else { '' }
+        head_sha      = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'head_sha' -Default '') } else { '' }
     }
+}
+
+function Update-CommanderPollPaneState {
+    param(
+        [Parameter(Mandatory = $true)]$PaneContext,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Properties
+    )
+
+    if ([string]::IsNullOrWhiteSpace([string]$PaneContext['pane_id'])) {
+        return
+    }
+
+    try {
+        $entry = @(Get-PaneControlManifestEntries -ProjectDir ([string]$PaneContext['project_dir']) | Where-Object { $_.PaneId -eq [string]$PaneContext['pane_id'] } | Select-Object -First 1)[0]
+        if ($null -eq $entry) {
+            return
+        }
+
+        Set-PaneControlManifestPaneProperties -ManifestPath ([string]$entry.ManifestPath) -PaneId ([string]$entry.PaneId) -Properties $Properties
+    } catch {
+        # Pane state enrichment is best-effort.
+    }
+}
+
+function New-CommanderPollStateData {
+    param(
+        [Parameter(Mandatory = $true)]$PaneContext,
+        [AllowNull()]$Data = $null
+    )
+
+    $stateData = [ordered]@{
+        task_id      = [string]$PaneContext['task_id']
+        task         = [string]$PaneContext['task']
+        task_state   = [string]$PaneContext['task_state']
+        task_owner   = [string]$PaneContext['task_owner']
+        review_state = [string]$PaneContext['review_state']
+        branch       = [string]$PaneContext['branch']
+        head_sha     = [string]$PaneContext['head_sha']
+    }
+
+    if ($null -ne $Data) {
+        $dataMap = ConvertTo-ManifestPropertyMap -Value $Data
+        foreach ($key in $dataMap.Keys) {
+            $stateData[$key] = $dataMap[$key]
+        }
+    }
+
+    return $stateData
 }
 
 function Invoke-CommanderPollWinsmux {
@@ -355,6 +338,8 @@ function Get-CommanderPollDiffData {
     $statusLines = Get-CommanderPollGitOutput -WorktreePath $WorktreePath -Arguments @('status', '--short', '--untracked-files=all')
     $unstagedDiff = Get-CommanderPollGitOutput -WorktreePath $WorktreePath -Arguments @('diff', '--stat', '--no-ext-diff')
     $stagedDiff = Get-CommanderPollGitOutput -WorktreePath $WorktreePath -Arguments @('diff', '--cached', '--stat', '--no-ext-diff')
+    $branchLines = Get-CommanderPollGitOutput -WorktreePath $WorktreePath -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')
+    $headShaLines = Get-CommanderPollGitOutput -WorktreePath $WorktreePath -Arguments @('rev-parse', 'HEAD')
 
     $changedFiles = @()
     foreach ($statusLine in $statusLines) {
@@ -369,6 +354,8 @@ function Get-CommanderPollDiffData {
 
     return [ordered]@{
         worktree_path        = $WorktreePath
+        branch               = @($branchLines | Select-Object -First 1)[0]
+        head_sha             = @($headShaLines | Select-Object -First 1)[0]
         changed_file_count   = $changedFiles.Count
         changed_files        = @($changedFiles)
         status_lines         = @($statusLines)
@@ -514,6 +501,25 @@ function Get-CommanderPollEventSignature {
         ([string](Get-CommanderPollValue -InputObject $EventRecord -Name 'message' -Default ''))
 }
 
+function Test-CommanderTelegramNotificationEnabled {
+    param([Parameter(Mandatory = $true)][string]$Event)
+
+    $internalOnlyEvents = @(
+        'commander.dispatch_needed'
+    )
+
+    if ($Event -notin $internalOnlyEvents) {
+        return $true
+    }
+
+    $override = [string]$env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS
+    if ([string]::IsNullOrWhiteSpace($override)) {
+        return $false
+    }
+
+    return $override.Trim().ToLowerInvariant() -in @('1', 'true', 'yes', 'on')
+}
+
 function Send-CommanderTelegramNotification {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -526,6 +532,10 @@ function Send-CommanderTelegramNotification {
         [string]$Branch = '',
         [string]$HeadSha = ''
     )
+
+    if (-not (Test-CommanderTelegramNotificationEnabled -Event $Event)) {
+        return
+    }
 
     try {
         $chatId = $env:WINSMUX_TELEGRAM_CHAT_ID
@@ -587,16 +597,26 @@ function Invoke-CommanderPollEventRecord {
             -EventName 'commander.poll.exec_completed' `
             -Message $message `
             -PaneId $paneId `
-            -Data ([ordered]@{
-                label     = $paneContext['label']
-                role      = $paneContext['role']
-                diff      = $diffData
-                source    = $sourceName
-                source_id = $sourceId
-            })
+            -Data (New-CommanderPollStateData -PaneContext $paneContext -Data ([ordered]@{
+                    label     = $paneContext['label']
+                    role      = $paneContext['role']
+                    diff      = $diffData
+                    source    = $sourceName
+                    source_id = $sourceId
+                }))
 
         $Summary['completions'] = [int]$Summary['completions'] + 1
         $Summary['messages'] += @($message)
+        Update-CommanderPollPaneState -PaneContext $paneContext -Properties ([ordered]@{
+                task_state         = 'completed'
+                task_owner         = 'Commander'
+                branch             = [string](Get-CommanderPollValue -InputObject $diffData -Name 'branch' -Default '')
+                head_sha           = [string](Get-CommanderPollValue -InputObject $diffData -Name 'head_sha' -Default '')
+                changed_file_count = [int](Get-CommanderPollValue -InputObject $diffData -Name 'changed_file_count' -Default 0)
+                changed_files      = @(Get-CommanderPollValue -InputObject $diffData -Name 'changed_files' -Default @())
+                last_event         = 'commander.poll.exec_completed'
+                last_event_at      = (Get-Date).ToString('o')
+            })
 
         Send-CommanderTelegramNotification -ProjectDir $projectDir -SessionName $sessionName `
             -Event $eventName -Message $message -PaneId $paneId `
@@ -615,17 +635,23 @@ function Invoke-CommanderPollEventRecord {
             -EventName 'commander.poll.idle_dispatch_needed' `
             -Message $message `
             -PaneId $paneId `
-            -Data ([ordered]@{
-                label      = $paneContext['label']
-                role       = $paneContext['role']
-                status     = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'status' -Default '')
-                event      = $eventName
-                source     = $sourceName
-                source_id  = $sourceId
-            })
+            -Data (New-CommanderPollStateData -PaneContext $paneContext -Data ([ordered]@{
+                    label      = $paneContext['label']
+                    role       = $paneContext['role']
+                    status     = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'status' -Default '')
+                    event      = $eventName
+                    source     = $sourceName
+                    source_id  = $sourceId
+                }))
 
         $Summary['dispatches'] = [int]$Summary['dispatches'] + 1
         $Summary['messages'] += @($message)
+        Update-CommanderPollPaneState -PaneContext $paneContext -Properties ([ordered]@{
+                task_state    = 'waiting_for_dispatch'
+                task_owner    = 'Commander'
+                last_event    = 'commander.poll.idle_dispatch_needed'
+                last_event_at = (Get-Date).ToString('o')
+            })
 
         Send-CommanderTelegramNotification -ProjectDir $projectDir -SessionName $sessionName `
             -Event 'commander.dispatch_needed' -Message $message -PaneId $paneId `
@@ -649,15 +675,20 @@ function Invoke-CommanderPollEventRecord {
             -EventName 'commander.poll.auto_approved' `
             -Message $message `
             -PaneId $paneId `
-            -Data ([ordered]@{
-                label     = $paneContext['label']
-                role      = $paneContext['role']
-                source    = $sourceName
-                source_id = $sourceId
-            })
+            -Data (New-CommanderPollStateData -PaneContext $paneContext -Data ([ordered]@{
+                    label     = $paneContext['label']
+                    role      = $paneContext['role']
+                    source    = $sourceName
+                    source_id = $sourceId
+                }))
 
         $Summary['approvals'] = [int]$Summary['approvals'] + 1
         $Summary['messages'] += @($message)
+        Update-CommanderPollPaneState -PaneContext $paneContext -Properties ([ordered]@{
+                task_owner    = 'Commander'
+                last_event    = 'commander.poll.auto_approved'
+                last_event_at = (Get-Date).ToString('o')
+            })
 
         Send-CommanderTelegramNotification -ProjectDir $projectDir -SessionName $sessionName `
             -Event 'commander.auto_approved' -Message $message -PaneId $paneId `
@@ -904,7 +935,7 @@ function Invoke-CommanderStateMachine {
                 label = ''; pane_id = ''; role = 'Commander'; status = $nextState
                 exit_reason = ''; data = [ordered]@{ from = $CurrentState; to = $nextState }
             }
-            [System.IO.File]::AppendAllText($ep, (($rec | ConvertTo-Json -Compress -Depth 10) + "`n"), [System.Text.Encoding]::UTF8)
+            Write-WinsmuxTextFile -Path $ep -Content ($rec | ConvertTo-Json -Compress -Depth 10) -Append
         } catch { }
     }
 

@@ -5,6 +5,8 @@ $scriptDir = $PSScriptRoot
 . (Join-Path $scriptDir 'settings.ps1')
 . (Join-Path $scriptDir 'agent-monitor.ps1')
 . (Join-Path $scriptDir 'builder-worktree.ps1')
+. (Join-Path $scriptDir 'clm-safe-io.ps1')
+. (Join-Path $scriptDir 'manifest.ps1')
 
 function ConvertFrom-PaneScalerYamlScalar {
     param([AllowNull()]$Value)
@@ -80,85 +82,21 @@ function Read-PaneScalerManifest {
         throw "Manifest is empty: $ManifestPath"
     }
 
+    $parsed = ConvertFrom-ManifestYaml -Content $content
     $manifest = [PSCustomObject]@{
-        Version = 1
-        SavedAt = ''
-        Session = [ordered]@{}
-        Panes   = [ordered]@{}
+        version   = $parsed.version
+        saved_at  = $parsed.saved_at
+        session   = $parsed.session
+        panes     = $parsed.panes
+        tasks     = $parsed.tasks
+        worktrees = $parsed.worktrees
     }
-
-    $section = ''
-    $currentPane = $null
-
-    function Save-PaneScalerPane {
-        param($Pane)
-
-        if ($null -eq $Pane) {
-            return
-        }
-
-        $label = [string]$Pane.label
-        if ([string]::IsNullOrWhiteSpace($label)) {
-            return
-        }
-
-        $paneObject = [PSCustomObject]@{}
-        foreach ($entry in $Pane.GetEnumerator()) {
-            Add-Member -InputObject $paneObject -MemberType NoteProperty -Name $entry.Key -Value $entry.Value
-        }
-
-        $manifest.Panes[$label] = $paneObject
-    }
-
-    foreach ($rawLine in ($content -split "\r?\n")) {
-        $line = $rawLine.TrimEnd()
-        if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') {
-            continue
-        }
-
-        if ($line -match '^version:\s*(.+?)\s*$') {
-            $manifest.Version = [int](ConvertFrom-PaneScalerYamlScalar $Matches[1])
-            continue
-        }
-
-        if ($line -match '^saved_at:\s*(.*?)\s*$') {
-            $manifest.SavedAt = [string](ConvertFrom-PaneScalerYamlScalar $Matches[1])
-            continue
-        }
-
-        if ($line -match '^(session|panes):\s*$') {
-            if ($section -eq 'panes') {
-                Save-PaneScalerPane -Pane $currentPane
-                $currentPane = $null
-            }
-
-            $section = $Matches[1]
-            continue
-        }
-
-        if ($section -eq 'session' -and $line -match '^\s{2}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
-            $manifest.Session[$Matches[1]] = ConvertFrom-PaneScalerYamlScalar $Matches[2]
-            continue
-        }
-
-        if ($section -ne 'panes') {
-            continue
-        }
-
-        if ($line -match '^\s{2}-\s+label:\s*(.*?)\s*$') {
-            Save-PaneScalerPane -Pane $currentPane
-            $currentPane = [ordered]@{
-                label = ConvertFrom-PaneScalerYamlScalar $Matches[1]
-            }
-            continue
-        }
-
-        if ($null -ne $currentPane -and $line -match '^\s{4}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
-            $currentPane[$Matches[1]] = ConvertFrom-PaneScalerYamlScalar $Matches[2]
-        }
-    }
-
-    Save-PaneScalerPane -Pane $currentPane
+    $manifest | Add-Member -NotePropertyName 'Version' -NotePropertyValue $parsed.version -Force
+    $manifest | Add-Member -NotePropertyName 'SavedAt' -NotePropertyValue $parsed.saved_at -Force
+    $manifest | Add-Member -NotePropertyName 'Session' -NotePropertyValue $parsed.session -Force
+    $manifest | Add-Member -NotePropertyName 'Panes' -NotePropertyValue $parsed.panes -Force
+    $manifest | Add-Member -NotePropertyName 'Tasks' -NotePropertyValue $parsed.tasks -Force
+    $manifest | Add-Member -NotePropertyName 'Worktrees' -NotePropertyValue $parsed.worktrees -Force
     return $manifest
 }
 
@@ -168,42 +106,23 @@ function Save-PaneScalerManifest {
         [Parameter(Mandatory = $true)]$Manifest
     )
 
-    $lines = [System.Collections.Generic.List[string]]::new()
-    $lines.Add("version: $($Manifest.Version)") | Out-Null
-
-    $savedAt = if ([string]::IsNullOrWhiteSpace([string]$Manifest.SavedAt)) {
-        Get-Date -Format o
-    } else {
-        [string]$Manifest.SavedAt
-    }
-    $lines.Add(("saved_at: {0}" -f (ConvertTo-PaneScalerYamlScalar -Value $savedAt))) | Out-Null
-
-    $lines.Add('session:') | Out-Null
-    foreach ($entry in $Manifest.Session.GetEnumerator()) {
-        $lines.Add(("  {0}: {1}" -f $entry.Key, (ConvertTo-PaneScalerYamlScalar -Value $entry.Value))) | Out-Null
+    $projectDir = Split-Path (Split-Path $ManifestPath -Parent) -Parent
+    $version = Get-MonitorPropertyValue -InputObject $Manifest -Name 'Version' -Default (Get-MonitorPropertyValue -InputObject $Manifest -Name 'version' -Default 1)
+    $savedAt = Get-MonitorPropertyValue -InputObject $Manifest -Name 'SavedAt' -Default (Get-MonitorPropertyValue -InputObject $Manifest -Name 'saved_at' -Default '')
+    if ([string]::IsNullOrWhiteSpace([string]$savedAt)) {
+        $savedAt = Get-Date -Format o
     }
 
-    $lines.Add('panes:') | Out-Null
-    foreach ($label in $Manifest.Panes.Keys) {
-        $pane = $Manifest.Panes[$label]
-        $lines.Add(("  - label: {0}" -f (ConvertTo-PaneScalerYamlScalar -Value $label))) | Out-Null
-
-        $properties = if ($pane -is [System.Collections.IDictionary]) {
-            @($pane.GetEnumerator() | ForEach-Object { [PSCustomObject]@{ Name = $_.Key; Value = $_.Value } })
-        } else {
-            @($pane.PSObject.Properties | ForEach-Object { [PSCustomObject]@{ Name = $_.Name; Value = $_.Value } })
-        }
-
-        foreach ($property in $properties) {
-            if ($property.Name -eq 'label') {
-                continue
-            }
-
-            $lines.Add(("    {0}: {1}" -f $property.Name, (ConvertTo-PaneScalerYamlScalar -Value $property.Value))) | Out-Null
-        }
+    $canonicalManifest = [PSCustomObject]@{
+        version   = $version
+        saved_at  = [string]$savedAt
+        session   = Get-MonitorPropertyValue -InputObject $Manifest -Name 'Session' -Default (Get-MonitorPropertyValue -InputObject $Manifest -Name 'session' -Default ([PSCustomObject]@{}))
+        panes     = Get-MonitorPropertyValue -InputObject $Manifest -Name 'Panes' -Default (Get-MonitorPropertyValue -InputObject $Manifest -Name 'panes' -Default ([ordered]@{}))
+        tasks     = Get-MonitorPropertyValue -InputObject $Manifest -Name 'Tasks' -Default (Get-MonitorPropertyValue -InputObject $Manifest -Name 'tasks' -Default ([PSCustomObject]@{ queued = @(); in_progress = @(); completed = @() }))
+        worktrees = Get-MonitorPropertyValue -InputObject $Manifest -Name 'Worktrees' -Default (Get-MonitorPropertyValue -InputObject $Manifest -Name 'worktrees' -Default ([ordered]@{}))
     }
 
-    Set-Content -Path $ManifestPath -Value ($lines -join [Environment]::NewLine) -Encoding UTF8 -NoNewline
+    Save-WinsmuxManifest -ProjectDir $projectDir -Manifest $canonicalManifest
 }
 
 function Get-PaneScalerProjectDir {

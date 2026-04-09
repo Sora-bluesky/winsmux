@@ -160,6 +160,17 @@ function Get-PaneStatusRecords {
             PaneId          = $entry.PaneId
             State           = $state
             TokensRemaining = Get-PaneTokensRemainingText -Text $snapshot
+            TaskId          = $entry.TaskId
+            Task            = $entry.Task
+            TaskState       = $entry.TaskState
+            TaskOwner       = $entry.TaskOwner
+            ReviewState     = $entry.ReviewState
+            Branch          = $entry.Branch
+            HeadSha         = $entry.HeadSha
+            ChangedFileCount = $entry.ChangedFileCount
+            ChangedFiles    = @($entry.ChangedFiles)
+            LastEvent       = $entry.LastEvent
+            LastEventAt     = $entry.LastEventAt
         }
     }
 

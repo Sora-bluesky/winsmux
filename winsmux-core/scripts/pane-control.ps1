@@ -1,3 +1,5 @@
+ . (Join-Path $PSScriptRoot 'manifest.ps1')
+
 function ConvertFrom-PaneControlYamlScalar {
     param([AllowNull()]$Value)
 
@@ -40,6 +42,66 @@ function ConvertTo-PaneControlYamlScalar {
     }
 
     return "'" + $text.Replace("'", "''") + "'"
+}
+
+function Get-PaneControlValue {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Default = $null
+    )
+
+    if ($null -eq $InputObject) {
+        return $Default
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary] -and $InputObject.Contains($Name)) {
+        return $InputObject[$Name]
+    }
+
+    if ($null -ne $InputObject.PSObject -and $InputObject.PSObject.Properties.Name -contains $Name) {
+        return $InputObject.$Name
+    }
+
+    return $Default
+}
+
+function ConvertFrom-PaneControlChangedFiles {
+    param([AllowNull()]$Value)
+
+    $normalize = {
+        param($Items)
+
+        return @(
+            @($Items) |
+                Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                ForEach-Object { [string]$_ }
+        )
+    }
+
+    if ($null -eq $Value) {
+        return @()
+    }
+
+    if ($Value -is [System.Array]) {
+        return & $normalize $Value
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return @()
+    }
+
+    try {
+        $parsed = $text | ConvertFrom-Json -ErrorAction Stop
+        if ($parsed -is [System.Array]) {
+            return & $normalize $parsed
+        }
+
+        return & $normalize @($parsed)
+    } catch {
+        return & $normalize @($text)
+    }
 }
 
 function Get-PaneControlCanonicalRole {
@@ -108,82 +170,13 @@ function Get-PaneControlLaunchCommand {
 function ConvertFrom-PaneControlManifestContent {
     param([Parameter(Mandatory = $true)][string]$Content)
 
-    $manifest = [ordered]@{
-        Session = [ordered]@{}
-        Panes   = [ordered]@{}
+    $parsed = ConvertFrom-ManifestYaml -Content $Content
+    return [ordered]@{
+        Session = $parsed.session
+        Panes   = $parsed.panes
+        Tasks   = $parsed.tasks
+        Worktrees = $parsed.worktrees
     }
-
-    $section = $null
-    $currentPane = $null
-
-    function Save-PaneControlPane {
-        param($Pane)
-
-        if ($null -eq $Pane) {
-            return
-        }
-
-        $label = [string]$Pane.label
-        if ([string]::IsNullOrWhiteSpace($label)) {
-            return
-        }
-
-        $paneObject = [ordered]@{}
-        foreach ($property in $Pane.GetEnumerator()) {
-            $paneObject[[string]$property.Key] = $property.Value
-        }
-
-        $manifest.Panes[$label] = $paneObject
-    }
-
-    foreach ($rawLine in ($Content -split "\r?\n")) {
-        $line = $rawLine.TrimEnd()
-        if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') {
-            continue
-        }
-
-        if ($line -match '^(session|panes):\s*$') {
-            if ($section -eq 'panes') {
-                Save-PaneControlPane -Pane $currentPane
-                $currentPane = $null
-            }
-
-            $section = $Matches[1]
-            continue
-        }
-
-        if ($section -eq 'session' -and $line -match '^\s{2}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
-            $manifest.Session[$Matches[1]] = ConvertFrom-PaneControlYamlScalar $Matches[2]
-            continue
-        }
-
-        if ($section -ne 'panes') {
-            continue
-        }
-
-        if ($line -match '^\s{2}-\s+label:\s*(.*?)\s*$') {
-            Save-PaneControlPane -Pane $currentPane
-            $currentPane = [ordered]@{
-                label = ConvertFrom-PaneControlYamlScalar $Matches[1]
-            }
-            continue
-        }
-
-        if ($line -match '^\s{2}(.+?):\s*$') {
-            Save-PaneControlPane -Pane $currentPane
-            $currentPane = [ordered]@{
-                label = ConvertFrom-PaneControlYamlScalar $Matches[1]
-            }
-            continue
-        }
-
-        if ($null -ne $currentPane -and $line -match '^\s{4}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
-            $currentPane[$Matches[1]] = ConvertFrom-PaneControlYamlScalar $Matches[2]
-        }
-    }
-
-    Save-PaneControlPane -Pane $currentPane
-    return $manifest
 }
 
 function Get-PaneControlManifestEntries {
@@ -200,19 +193,19 @@ function Get-PaneControlManifestEntries {
     }
 
     $manifest = ConvertFrom-PaneControlManifestContent -Content $content
-    $projectRoot = [string]$manifest.Session.project_dir
+    $projectRoot = [string](Get-PaneControlValue -InputObject $manifest.Session -Name 'project_dir' -Default '')
     if ([string]::IsNullOrWhiteSpace($projectRoot)) {
         $projectRoot = $ProjectDir
     }
 
-    $sessionGitWorktreeDir = [string]$manifest.Session.git_worktree_dir
+    $sessionGitWorktreeDir = [string](Get-PaneControlValue -InputObject $manifest.Session -Name 'git_worktree_dir' -Default '')
     $entries = @()
 
     foreach ($label in $manifest.Panes.Keys) {
         $pane = $manifest.Panes[$label]
-        $role = Get-PaneControlCanonicalRole -Role ([string]$pane.role) -Label $label
-        $launchDir = [string]$pane.launch_dir
-        $builderWorktreePath = [string]$pane.builder_worktree_path
+        $role = Get-PaneControlCanonicalRole -Role ([string](Get-PaneControlValue -InputObject $pane -Name 'role' -Default '')) -Label $label
+        $launchDir = [string](Get-PaneControlValue -InputObject $pane -Name 'launch_dir' -Default '')
+        $builderWorktreePath = [string](Get-PaneControlValue -InputObject $pane -Name 'builder_worktree_path' -Default '')
 
         if ([string]::IsNullOrWhiteSpace($launchDir) -and -not [string]::IsNullOrWhiteSpace($builderWorktreePath)) {
             $launchDir = $builderWorktreePath
@@ -231,11 +224,22 @@ function Get-PaneControlManifestEntries {
             ManifestPath        = $manifestPath
             ProjectDir          = $projectRoot
             Label               = $label
-            PaneId              = [string]$pane.pane_id
+            PaneId              = [string](Get-PaneControlValue -InputObject $pane -Name 'pane_id' -Default '')
             Role                = $role
             LaunchDir           = $launchDir
             BuilderWorktreePath = $builderWorktreePath
             GitWorktreeDir      = $gitWorktreeDir
+            TaskId              = [string](Get-PaneControlValue -InputObject $pane -Name 'task_id' -Default '')
+            Task                = [string](Get-PaneControlValue -InputObject $pane -Name 'task' -Default '')
+            TaskState           = [string](Get-PaneControlValue -InputObject $pane -Name 'task_state' -Default '')
+            TaskOwner           = [string](Get-PaneControlValue -InputObject $pane -Name 'task_owner' -Default '')
+            ReviewState         = [string](Get-PaneControlValue -InputObject $pane -Name 'review_state' -Default '')
+            Branch              = [string](Get-PaneControlValue -InputObject $pane -Name 'branch' -Default '')
+            HeadSha             = [string](Get-PaneControlValue -InputObject $pane -Name 'head_sha' -Default '')
+            ChangedFileCount    = [int](Get-PaneControlValue -InputObject $pane -Name 'changed_file_count' -Default 0)
+            ChangedFiles        = @(ConvertFrom-PaneControlChangedFiles -Value (Get-PaneControlValue -InputObject $pane -Name 'changed_files' -Default @()))
+            LastEvent           = [string](Get-PaneControlValue -InputObject $pane -Name 'last_event' -Default '')
+            LastEventAt         = [string](Get-PaneControlValue -InputObject $pane -Name 'last_event_at' -Default '')
         }
     }
 
@@ -272,147 +276,47 @@ function Set-PaneControlManifestPaneProperties {
         throw "Manifest not found: $ManifestPath"
     }
 
-    $lines = @(Get-Content -Path $ManifestPath -Encoding UTF8)
-    $inPanesSection = $false
-    $currentPane = $null
-    $paneBlocks = [System.Collections.Generic.List[object]]::new()
-
-    function Add-PaneControlPaneBlock {
-        param($PaneBlock)
-
-        if ($null -eq $PaneBlock) {
-            return
-        }
-
-        if ([string]::IsNullOrWhiteSpace([string]$PaneBlock.PaneId) -and [string]::IsNullOrWhiteSpace([string]$PaneBlock.Label)) {
-            return
-        }
-
-        $paneBlocks.Add([ordered]@{
-            Label  = [string]$PaneBlock.Label
-            PaneId = [string]$PaneBlock.PaneId
-            Start  = [int]$PaneBlock.Start
-            End    = [int]$PaneBlock.End
-            IsList = [bool]$PaneBlock.IsList
-        }) | Out-Null
-    }
-
-    for ($index = 0; $index -lt $lines.Count; $index++) {
-        $line = $lines[$index]
-
-        if (-not $inPanesSection) {
-            if ($line -match '^panes:\s*$') {
-                $inPanesSection = $true
-            }
-
-            continue
-        }
-
-        if ($line -match '^[A-Za-z0-9_.-]+:\s*$') {
-            if ($null -ne $currentPane) {
-                $currentPane['End'] = $index - 1
-                Add-PaneControlPaneBlock -PaneBlock $currentPane
-                $currentPane = $null
-            }
-
-            break
-        }
-
-        if ($line -match '^\s{2}-\s+label:\s*(.*?)\s*$') {
-            if ($null -ne $currentPane) {
-                $currentPane['End'] = $index - 1
-                Add-PaneControlPaneBlock -PaneBlock $currentPane
-            }
-
-            $currentPane = [ordered]@{
-                Label  = ConvertFrom-PaneControlYamlScalar $Matches[1]
-                PaneId = ''
-                Start  = $index
-                End    = $index
-                IsList = $true
-            }
-            continue
-        }
-
-        if ($line -match '^\s{2}([^:\s][^:]*):\s*$') {
-            if ($null -ne $currentPane) {
-                $currentPane['End'] = $index - 1
-                Add-PaneControlPaneBlock -PaneBlock $currentPane
-            }
-
-            $currentPane = [ordered]@{
-                Label  = ConvertFrom-PaneControlYamlScalar $Matches[1]
-                PaneId = ''
-                Start  = $index
-                End    = $index
-                IsList = $false
-            }
-            continue
-        }
-
-        if ($null -ne $currentPane -and $line -match '^\s{4}pane_id:\s*(.*?)\s*$') {
-            $currentPane['PaneId'] = ConvertFrom-PaneControlYamlScalar $Matches[1]
-            continue
-        }
-    }
-
-    if ($null -ne $currentPane) {
-        $currentPane['End'] = $lines.Count - 1
-        Add-PaneControlPaneBlock -PaneBlock $currentPane
-    }
-
-    $paneBlock = $paneBlocks | Where-Object { $_.PaneId -eq $PaneId } | Select-Object -First 1
-    if ($null -eq $paneBlock) {
+    $projectDir = Split-Path (Split-Path $ManifestPath -Parent) -Parent
+    $manifest = Get-WinsmuxManifest -ProjectDir $projectDir
+    if ($null -eq $manifest) {
         throw "Pane $PaneId was not found in manifest: $ManifestPath"
     }
 
-    $updatedBlockLines = [System.Collections.Generic.List[string]]::new()
-    $pendingProperties = [ordered]@{}
-    foreach ($entry in $Properties.GetEnumerator()) {
-        $pendingProperties[[string]$entry.Key] = $entry.Value
-    }
-
-    foreach ($blockLine in @($lines[$paneBlock.Start..$paneBlock.End])) {
-        if ($pendingProperties.Contains('label')) {
-            if ($blockLine -match '^\s{2}-\s+label:\s*(.*?)\s*$') {
-                $updatedValue = ConvertTo-PaneControlYamlScalar -Value $pendingProperties['label']
-                $updatedBlockLines.Add("  - label: $updatedValue") | Out-Null
-                $pendingProperties.Remove('label')
-                continue
-            }
-
-            if (-not $paneBlock.IsList -and $blockLine -match '^\s{2}([^:\s][^:]*):\s*$') {
-                $updatedValue = ConvertTo-PaneControlYamlScalar -Value $pendingProperties['label']
-                $updatedBlockLines.Add("  ${updatedValue}:") | Out-Null
-                $pendingProperties.Remove('label')
-                continue
-            }
+    $originalLabel = $null
+    $updatedPanes = [ordered]@{}
+    foreach ($label in $manifest.panes.Keys) {
+        $pane = $manifest.panes[$label]
+        if ([string]$pane.pane_id -ne $PaneId) {
+            $updatedPanes[$label] = $pane
+            continue
         }
 
-        if ($blockLine -match '^\s{4}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
-            $propertyName = $Matches[1]
-            if ($pendingProperties.Contains($propertyName)) {
-                $updatedValue = ConvertTo-PaneControlYamlScalar -Value $pendingProperties[$propertyName]
-                $updatedBlockLines.Add("    ${propertyName}: $updatedValue") | Out-Null
-                $pendingProperties.Remove($propertyName)
-                continue
-            }
+        $originalLabel = $label
+        $newLabel = if ($Properties.Contains('label')) { [string]$Properties['label'] } else { $label }
+        $updatedPane = [ordered]@{}
+        $paneMap = ConvertTo-ManifestPropertyMap -Value $pane
+        foreach ($propertyName in $paneMap.Keys) {
+            $updatedPane[$propertyName] = $paneMap[$propertyName]
         }
 
-        $updatedBlockLines.Add($blockLine) | Out-Null
+        foreach ($entry in $Properties.GetEnumerator()) {
+            $propertyName = [string]$entry.Key
+            if ($propertyName -eq 'label') {
+                continue
+            }
+
+            $updatedPane[$propertyName] = $entry.Value
+        }
+
+        $updatedPanes[$newLabel] = [PSCustomObject]$updatedPane
     }
 
-    foreach ($propertyName in $pendingProperties.Keys) {
-        $updatedValue = ConvertTo-PaneControlYamlScalar -Value $pendingProperties[$propertyName]
-        $updatedBlockLines.Add("    ${propertyName}: $updatedValue") | Out-Null
+    if ($null -eq $originalLabel) {
+        throw "Pane $PaneId was not found in manifest: $ManifestPath"
     }
 
-    $before = if ($paneBlock.Start -gt 0) { @($lines[0..($paneBlock.Start - 1)]) } else { @() }
-    $after = if ($paneBlock.End + 1 -lt $lines.Count) { @($lines[($paneBlock.End + 1)..($lines.Count - 1)]) } else { @() }
-    $updatedLines = @($before + @($updatedBlockLines) + $after)
-    $updatedContent = ($updatedLines -join [Environment]::NewLine)
-    $quotedManifestPath = '"' + $ManifestPath.Replace('"', '""') + '"'
-    $updatedContent | cmd /d /c "more > $quotedManifestPath" | Out-Null
+    $manifest.panes = $updatedPanes
+    Save-WinsmuxManifest -ProjectDir $projectDir -Manifest $manifest
 }
 
 function Get-PaneControlPaneTitle {
