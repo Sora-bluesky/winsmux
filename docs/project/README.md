@@ -2,9 +2,11 @@
 
 `ROADMAP.md` is maintained outside this repository and is generated from the external planning backlog.
 
-Default local path:
+Default resolution order:
 
-- `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Projects\winsmux\planning\ROADMAP.md`
+- `WINSMUX_ROADMAP_PATH`
+- `WINSMUX_PLANNING_ROOT\ROADMAP.md`
+- the user-profile-relative default returned by `winsmux-core/scripts/planning-paths.ps1`
 
 Override with:
 

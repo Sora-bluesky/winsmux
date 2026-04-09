@@ -431,7 +431,7 @@ function Assert-WinsmuxRolePermission {
     }
 }
 
-function Get-CurrentReviewerManifestContext {
+function Get-CurrentReviewPaneManifestContext {
     param([string]$ProjectDir = (Get-Location).Path)
 
     if ([string]::IsNullOrWhiteSpace($env:WINSMUX_PANE_ID)) {
@@ -444,8 +444,8 @@ function Get-CurrentReviewerManifestContext {
         Stop-WithError $_.Exception.Message
     }
 
-    if ([string]$context.Role -ne 'Reviewer') {
-        Stop-WithError "pane $($env:WINSMUX_PANE_ID) is not registered as Reviewer in .winsmux/manifest.yaml"
+    if ([string]$context.Role -notin @('Reviewer', 'Worker')) {
+        Stop-WithError "pane $($env:WINSMUX_PANE_ID) is not registered as a review-capable pane in .winsmux/manifest.yaml"
     }
 
     return [ordered]@{
@@ -460,7 +460,7 @@ function Get-CurrentReviewerManifestContext {
     }
 }
 
-function Update-ReviewerManifestState {
+function Update-ReviewPaneManifestState {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Properties
@@ -471,11 +471,26 @@ function Update-ReviewerManifestState {
     }
 
     try {
-        $context = Get-CurrentReviewerManifestContext -ProjectDir $ProjectDir
+        $context = Get-CurrentReviewPaneManifestContext -ProjectDir $ProjectDir
         Set-PaneControlManifestPaneProperties -ManifestPath $context.ManifestPath -PaneId $context.PaneId -Properties $Properties
     } catch {
         # Review-state persistence remains the source of truth. Manifest sync is best-effort.
     }
+}
+
+function Get-PreferredReviewPaneEntry {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $entries = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir)
+    foreach ($preferredRole in @('Reviewer', 'Worker')) {
+        foreach ($entry in $entries) {
+            if ([string]$entry.Role -eq $preferredRole) {
+                return $entry
+            }
+        }
+    }
+
+    return $null
 }
 
 function New-ReviewRequestId {
@@ -1431,7 +1446,7 @@ function Invoke-AutoRebalance {
     } catch {}
 
     $suggestion = if ($queueDepth -gt 0) { "キューにタスクあり — Builder 維持" }
-                  elseif ($idleBuilders.Count -gt 0) { "アイドル $($idleBuilders.Count) 台を Researcher に切替可能" }
+                  elseif ($idleBuilders.Count -gt 0) { "アイドル $($idleBuilders.Count) 台を Worker に切替可能" }
                   else { "全 Builder 稼働中" }
 
     Write-Output "アイドル Builder: $($idleBuilders.Count)/$($builderLabels.Count)"
@@ -1442,12 +1457,12 @@ function Invoke-AutoRebalance {
 
 function Invoke-Role {
     if (-not $Target -or -not $Rest -or $Rest.Count -lt 1) {
-        Stop-WithError "usage: winsmux role <pane_label_or_id> <new_role>`n  roles: builder, researcher, reviewer"
+        Stop-WithError "usage: winsmux role <pane_label_or_id> <new_role>`n  roles: worker, builder, researcher, reviewer"
     }
 
     $newRole = $Rest[0].Trim().ToLowerInvariant()
-    if ($newRole -notin @('builder', 'researcher', 'reviewer')) {
-        Stop-WithError "invalid role: $newRole. Must be builder, researcher, or reviewer."
+    if ($newRole -notin @('worker', 'builder', 'researcher', 'reviewer')) {
+        Stop-WithError "invalid role: $newRole. Must be worker, builder, researcher, or reviewer."
     }
 
     # Resolve pane ID
@@ -2358,28 +2373,19 @@ function Invoke-DispatchReview {
     $branch = Get-CurrentGitBranch -ProjectDir $projectDir
     $headSha = Get-CurrentGitHead -ProjectDir $projectDir
 
-    # Find Reviewer pane from manifest
-    $entries = Get-PaneControlManifestEntries -ProjectDir $projectDir
-    $reviewerEntry = $null
-    foreach ($entry in $entries) {
-        if ([string]$entry.Role -eq 'Reviewer') {
-            $reviewerEntry = $entry
-            break
-        }
+    $reviewPaneEntry = Get-PreferredReviewPaneEntry -ProjectDir $projectDir
+    if ($null -eq $reviewPaneEntry) {
+        Stop-WithError "No review-capable pane found in manifest."
     }
 
-    if ($null -eq $reviewerEntry) {
-        Stop-WithError "No Reviewer pane found in manifest."
-    }
+    $reviewPaneId = [string]$reviewPaneEntry.PaneId
+    $reviewLabel = [string]$reviewPaneEntry.Label
+    $reviewRole = [string]$reviewPaneEntry.Role
+    Write-Output "Dispatching review to $reviewLabel [$reviewPaneId] for branch $branch ($($headSha.Substring(0,7)))"
 
-    $reviewerPaneId = [string]$reviewerEntry.PaneId
-    $reviewerLabel = [string]$reviewerEntry.Label
-    Write-Output "Dispatching review to $reviewerLabel [$reviewerPaneId] for branch $branch ($($headSha.Substring(0,7)))"
+    Send-TextToPane -PaneId $reviewPaneId -CommandText "winsmux review-request"
 
-    # Send review-request to Reviewer pane
-    Send-TextToPane -PaneId $reviewerPaneId -CommandText "winsmux review-request"
-
-    Write-Output "review-request sent to $reviewerLabel. Waiting for PENDING state..."
+    Write-Output "review-request sent to $reviewLabel. Waiting for PENDING state..."
 
     # Poll for PENDING state (up to 30 seconds)
     $maxAttempts = 10
@@ -2398,10 +2404,10 @@ function Invoke-DispatchReview {
     }
 
     if (-not $pending) {
-        Stop-WithError "review-request was not recorded after ${maxAttempts} attempts. Check Reviewer pane $reviewerPaneId."
+        Stop-WithError "review-request was not recorded after ${maxAttempts} attempts. Check review pane $reviewPaneId."
     }
 
-    Write-Output "PENDING confirmed. Reviewer will run review-approve or review-fail. Monitor review-state.json for result."
+    Write-Output "PENDING confirmed. $reviewRole pane will run review-approve or review-fail. Monitor review-state.json for result."
 }
 
 function Invoke-ReviewRequest {
@@ -2414,7 +2420,7 @@ function Invoke-ReviewRequest {
     $projectDir = (Get-Location).Path
     $branch = Get-CurrentGitBranch -ProjectDir $projectDir
     $headSha = Get-CurrentGitHead -ProjectDir $projectDir
-    $context = Get-CurrentReviewerManifestContext -ProjectDir $projectDir
+    $context = Get-CurrentReviewPaneManifestContext -ProjectDir $projectDir
     $timestamp = (Get-Date).ToString('o')
     $state = Get-ReviewState -ProjectDir $projectDir
 
@@ -2437,9 +2443,9 @@ function Invoke-ReviewRequest {
 
     $state[$branch] = New-ReviewerStateRecord -Status 'PENDING' -Request $request -Reviewer $reviewer -Evidence $null -UpdatedAt $timestamp
     Save-ReviewState -ProjectDir $projectDir -State $state
-    Update-ReviewerManifestState -ProjectDir $projectDir -Properties ([ordered]@{
+    Update-ReviewPaneManifestState -ProjectDir $projectDir -Properties ([ordered]@{
         review_state = 'pending'
-        task_owner   = 'Reviewer'
+        task_owner   = $context.Role
         branch       = $branch
         head_sha     = $headSha
         last_event   = 'review.requested'
@@ -2458,7 +2464,7 @@ function Invoke-ReviewApprove {
     $projectDir = (Get-Location).Path
     $branch = Get-CurrentGitBranch -ProjectDir $projectDir
     $headSha = Get-CurrentGitHead -ProjectDir $projectDir
-    $context = Get-CurrentReviewerManifestContext -ProjectDir $projectDir
+    $context = Get-CurrentReviewPaneManifestContext -ProjectDir $projectDir
     $state = Get-ReviewState -ProjectDir $projectDir
 
     if (-not $state.Contains($branch)) {
@@ -2503,7 +2509,7 @@ function Invoke-ReviewApprove {
 
     $state[$branch] = New-ReviewerStateRecord -Status 'PASS' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
     Save-ReviewState -ProjectDir $projectDir -State $state
-    Update-ReviewerManifestState -ProjectDir $projectDir -Properties ([ordered]@{
+    Update-ReviewPaneManifestState -ProjectDir $projectDir -Properties ([ordered]@{
         review_state = 'pass'
         task_owner   = 'Commander'
         branch       = $branch
@@ -2524,7 +2530,7 @@ function Invoke-ReviewFail {
     $projectDir = (Get-Location).Path
     $branch = Get-CurrentGitBranch -ProjectDir $projectDir
     $headSha = Get-CurrentGitHead -ProjectDir $projectDir
-    $context = Get-CurrentReviewerManifestContext -ProjectDir $projectDir
+    $context = Get-CurrentReviewPaneManifestContext -ProjectDir $projectDir
     $state = Get-ReviewState -ProjectDir $projectDir
 
     if (-not $state.Contains($branch)) {
@@ -2569,7 +2575,7 @@ function Invoke-ReviewFail {
 
     $state[$branch] = New-ReviewerStateRecord -Status 'FAIL' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
     Save-ReviewState -ProjectDir $projectDir -State $state
-    Update-ReviewerManifestState -ProjectDir $projectDir -Properties ([ordered]@{
+    Update-ReviewPaneManifestState -ProjectDir $projectDir -Properties ([ordered]@{
         review_state = 'fail'
         task_owner   = 'Commander'
         branch       = $branch
@@ -2593,7 +2599,7 @@ function Invoke-ReviewReset {
     }
 
     Save-ReviewState -ProjectDir $projectDir -State $state
-    Update-ReviewerManifestState -ProjectDir $projectDir -Properties ([ordered]@{
+    Update-ReviewPaneManifestState -ProjectDir $projectDir -Properties ([ordered]@{
         review_state = ''
         branch       = ''
         head_sha     = ''
@@ -2625,11 +2631,11 @@ Commands:
   focus-unlock              Pop the latest focus lock
   lock <label> <file>...    Acquire file lock(s) for a label
   unlock <label> <file>...  Release file lock(s) for a label
-  review-request            Record a pending Reviewer request for the current branch
-  review-approve            Record Reviewer PASS for the current branch
-  review-fail               Record Reviewer FAIL for the current branch
-  review-reset              Clear Reviewer PASS for the current branch
-  dispatch-review            Dispatch review-request to Reviewer pane (Reviewer judges PASS/FAIL)
+  review-request            Record a pending review request for the current branch
+  review-approve            Record review PASS for the current branch
+  review-fail               Record review FAIL for the current branch
+  review-reset              Clear review PASS for the current branch
+  dispatch-review           Dispatch review-request to a review-capable pane (Reviewer/Worker)
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
   wait <channel> [timeout]  Block until signal received (replaces polling)
@@ -2652,7 +2658,7 @@ Commands:
   mailbox-listen <ch>       Alias for mailbox-create
   kill <target>             Stop pane process and respawn its shell
   restart <target>          Restart the pane agent using manifest context
-  rebind-worktree <target> <path>  Update a Builder pane to use a new worktree path
+  rebind-worktree <target> <path>  Update a Builder/Worker pane to use a new worktree path
   doctor                    Check environment and IME diagnostics
   version                   Show version
 "@
@@ -2862,8 +2868,8 @@ function Invoke-RebindWorktree {
     $resolvedWorktreePath = (Get-Item -LiteralPath $newWorktreePath -Force).FullName
     $context = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId $paneId
 
-    if ($context.Role -ne 'Builder') {
-        Stop-WithError "rebind-worktree is only supported for Builder panes: $paneId ($($context.Label))"
+    if ($context.Role -notin @('Builder', 'Worker')) {
+        Stop-WithError "rebind-worktree is only supported for Builder/Worker panes: $paneId ($($context.Label))"
     }
 
     Set-PaneControlManifestPanePaths -ProjectDir $projectDir -PaneId $paneId -LaunchDir $resolvedWorktreePath -BuilderWorktreePath $resolvedWorktreePath

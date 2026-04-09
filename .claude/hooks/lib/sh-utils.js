@@ -21,15 +21,13 @@ const ZERO_WIDTH_RE =
 const DEFAULT_PATTERNS = { categories: {} };
 const DEFAULT_PREVIOUS_HASH = "genesis";
 const DENY_THRESHOLD = 3;
-const DEFAULT_PLANNING_ROOT = path.join(
-  os.homedir(),
-  "iCloudDrive",
-  "iCloud~md~obsidian",
-  "MainVault",
-  "Projects",
+const DEFAULT_PLANNING_ROOT = path.join(os.homedir(), ".winsmux", "planning");
+const PLANNING_ROOT_MARKER = path.join(
+  process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"),
   "winsmux",
-  "planning",
+  "planning-root.txt",
 );
+let cachedPlanningRoot = null;
 
 function deny(reason) {
   process.stdout.write(`${JSON.stringify({ decision: "deny", reason })}\n`);
@@ -394,8 +392,92 @@ function commandExists(cmd) {
   }
 }
 
+function readPlanningRootMarker() {
+  try {
+    if (!fs.existsSync(PLANNING_ROOT_MARKER)) {
+      return "";
+    }
+
+    return fs.readFileSync(PLANNING_ROOT_MARKER, "utf8").trim();
+  } catch {
+    return "";
+  }
+}
+
+function findPlanningRoot(startDir, depth = 0, maxDepth = 8) {
+  if (depth > maxDepth) {
+    return "";
+  }
+
+  let entries;
+  try {
+    entries = fs.readdirSync(startDir, { withFileTypes: true });
+  } catch {
+    return "";
+  }
+
+  const hasBacklog = entries.some(
+    (entry) => entry.isFile() && entry.name === "backlog.yaml",
+  );
+  const hasRoadmap = entries.some(
+    (entry) => entry.isFile() && entry.name === "ROADMAP.md",
+  );
+
+  if (
+    hasBacklog &&
+    hasRoadmap &&
+    normalizePath(startDir).replace(/\\/g, "/").endsWith("/winsmux/planning")
+  ) {
+    return startDir;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    if (entry.name === ".git" || entry.name === "node_modules") {
+      continue;
+    }
+
+    const candidate = findPlanningRoot(
+      path.join(startDir, entry.name),
+      depth + 1,
+      maxDepth,
+    );
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
 function getPlanningRoot() {
-  return process.env.WINSMUX_PLANNING_ROOT || DEFAULT_PLANNING_ROOT;
+  if (
+    typeof process.env.WINSMUX_PLANNING_ROOT === "string" &&
+    process.env.WINSMUX_PLANNING_ROOT.trim() !== ""
+  ) {
+    return process.env.WINSMUX_PLANNING_ROOT;
+  }
+
+  if (cachedPlanningRoot) {
+    return cachedPlanningRoot;
+  }
+
+  const markerRoot = readPlanningRootMarker();
+  if (markerRoot) {
+    cachedPlanningRoot = markerRoot;
+    return cachedPlanningRoot;
+  }
+
+  const discoveredRoot = findPlanningRoot(os.homedir());
+  if (discoveredRoot) {
+    cachedPlanningRoot = discoveredRoot;
+    return cachedPlanningRoot;
+  }
+
+  cachedPlanningRoot = DEFAULT_PLANNING_ROOT;
+  return cachedPlanningRoot;
 }
 
 function resolvePlanningFile(localRelativePath, envKey, fileName) {

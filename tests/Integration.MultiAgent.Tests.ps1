@@ -7,6 +7,7 @@ Describe 'orchestra cleanup helpers' {
 
     It 'matches orchestra-managed pane titles only' {
         (Test-OrchestraManagedPaneTitle -Title 'Builder-1') | Should -Be $true
+        (Test-OrchestraManagedPaneTitle -Title 'worker-1') | Should -Be $true
         (Test-OrchestraManagedPaneTitle -Title 'researcher-2') | Should -Be $true
         (Test-OrchestraManagedPaneTitle -Title 'Reviewer-3') | Should -Be $true
         (Test-OrchestraManagedPaneTitle -Title 'Commander') | Should -Be $false
@@ -57,9 +58,13 @@ Describe 'Get-BridgeSettings defaults' {
 
         $settings.agent | Should -Be 'codex'
         $settings.model | Should -Be 'gpt-5.4'
-        $settings.builders | Should -Be 1
-        $settings.researchers | Should -Be 1
-        $settings.reviewers | Should -Be 1
+        $settings.external_commander | Should -Be $true
+        $settings.legacy_role_layout | Should -Be $false
+        $settings.commanders | Should -Be 0
+        $settings.worker_count | Should -Be 6
+        $settings.builders | Should -Be 0
+        $settings.researchers | Should -Be 0
+        $settings.reviewers | Should -Be 0
         $settings.terminal | Should -Be 'background'
         $settings.vault_keys | Should -Be @('GH_TOKEN')
         $settings.roles | Should -BeOfType [System.Collections.Specialized.OrderedDictionary]
@@ -125,12 +130,14 @@ Describe 'agent launch helpers' {
         $command | Should -Be "codex -c model=gpt-5.4 --sandbox danger-full-access -C 'C:\repo path\builder-1' --add-dir 'C:\repo path\.git'"
     }
 
-    It 'returns a CLM workaround bootstrap only for Codex builders' {
+    It 'returns a CLM workaround bootstrap for Codex worktree workers' {
         $builderPrompt = Get-AgentBootstrapPrompt -Agent 'codex' -Role 'Builder'
         $builderPrompt | Should -Match 'ConstrainedLanguageMode'
         $builderPrompt | Should -Match 'apply_patch'
         $builderPrompt | Should -Match 'cmd /c'
 
+        $workerPrompt = Get-AgentBootstrapPrompt -Agent 'codex' -Role 'Worker'
+        $workerPrompt | Should -Match 'ConstrainedLanguageMode'
         (Get-AgentBootstrapPrompt -Agent 'codex' -Role 'Reviewer') | Should -BeNullOrEmpty
         (Get-AgentBootstrapPrompt -Agent 'claude' -Role 'Builder') | Should -BeNullOrEmpty
     }

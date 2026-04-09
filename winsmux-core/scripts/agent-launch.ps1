@@ -38,7 +38,7 @@ function Get-AgentBootstrapPrompt {
         return $null
     }
 
-    if ($Role.Trim().ToLowerInvariant() -ne 'builder') {
+    if ($Role.Trim().ToLowerInvariant() -notin @('builder', 'worker')) {
         return $null
     }
 

@@ -2,9 +2,9 @@
 param(
     [Parameter(Position = 0)]
     [string]$Task,
-    [string]$Builder = 'builder-1',
-    [string]$Researcher = 'researcher-1',
-    [string]$Reviewer = 'reviewer-1',
+    [string]$Builder = 'worker-1',
+    [string]$Researcher = '',
+    [string]$Reviewer = '',
     [string]$ManifestPath,
     [string]$BuilderWorktreePath,
     [int]$PollIntervalSeconds = 10,
@@ -200,6 +200,22 @@ function Get-TeamPipelineStageTargets {
         PlanTarget   = $planTarget
         BuildTarget  = $BuilderLabel
         VerifyTarget = $verifyTarget
+    }
+}
+
+function Get-TeamPipelineCanonicalRole {
+    param([AllowNull()][string]$Label)
+
+    if ([string]::IsNullOrWhiteSpace($Label)) {
+        return ''
+    }
+
+    switch -Regex ($Label.Trim()) {
+        '^(?i)worker(?:$|[-_:/\s])' { return 'Worker' }
+        '^(?i)builder(?:$|[-_:/\s])' { return 'Builder' }
+        '^(?i)researcher(?:$|[-_:/\s])' { return 'Researcher' }
+        '^(?i)reviewer(?:$|[-_:/\s])' { return 'Reviewer' }
+        default { return '' }
     }
 }
 
@@ -685,7 +701,14 @@ function Invoke-TeamPipeline {
             Prompt            = $verifyPrompt
             Notification      = $buildNotification.Message
         }
-        Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.reviewer.dispatched' -Message "Auto-dispatched review to $($targets.VerifyTarget) after builder completion." -Role 'Reviewer' -Target $targets.VerifyTarget -Data ([ordered]@{
+        $verifyRole = 'Worker'
+        if (-not [string]::IsNullOrWhiteSpace($Reviewer) -and $targets.VerifyTarget -eq $Reviewer) {
+            $verifyRole = 'Reviewer'
+        } elseif (-not [string]::IsNullOrWhiteSpace($Researcher) -and $targets.VerifyTarget -eq $Researcher) {
+            $verifyRole = 'Researcher'
+        }
+
+        Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.reviewer.dispatched' -Message "Auto-dispatched review to $($targets.VerifyTarget) after builder completion." -Role $verifyRole -Target $targets.VerifyTarget -Data ([ordered]@{
             attempt              = $attemptIndex
             task                 = $Task
             builder              = $Builder

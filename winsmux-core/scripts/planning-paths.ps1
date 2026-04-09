@@ -1,9 +1,81 @@
 [CmdletBinding()]
 param()
 
+function Get-WinsmuxPlanningRootMarkerPath {
+    $localAppData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { [Environment]::GetFolderPath('LocalApplicationData') }
+    return Join-Path $localAppData 'winsmux\planning-root.txt'
+}
+
+function Get-WinsmuxPlanningRootFromMarker {
+    $markerPath = Get-WinsmuxPlanningRootMarkerPath
+    if (-not (Test-Path -LiteralPath $markerPath)) {
+        return $null
+    }
+
+    try {
+        $markerValue = (Get-Content -LiteralPath $markerPath -Raw -ErrorAction Stop).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($markerValue)) {
+            return $markerValue
+        }
+    } catch {
+        return $null
+    }
+
+    return $null
+}
+
+function Find-WinsmuxPlanningRoot {
+    param([Parameter(Mandatory = $true)][string]$UserProfile)
+
+    try {
+        $backlogFiles = Get-ChildItem -LiteralPath $UserProfile -Filter 'backlog.yaml' -File -Recurse -Depth 8 -ErrorAction SilentlyContinue
+        foreach ($file in $backlogFiles) {
+            $directory = $file.DirectoryName
+            if ([string]::IsNullOrWhiteSpace($directory)) {
+                continue
+            }
+
+            if ($directory -notmatch '[\\/]winsmux[\\/]planning$') {
+                continue
+            }
+
+            if (Test-Path -LiteralPath (Join-Path $directory 'ROADMAP.md')) {
+                return $directory
+            }
+        }
+    } catch {
+        return $null
+    }
+
+    return $null
+}
+
 function Get-WinsmuxDefaultPlanningRoot {
+    $cachedPlanningRoot = $null
+    $cachedVariable = Get-Variable -Scope Script -Name WinsmuxDefaultPlanningRoot -ErrorAction SilentlyContinue
+    if ($cachedVariable) {
+        $cachedPlanningRoot = [string]$cachedVariable.Value
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($cachedPlanningRoot)) {
+        return $cachedPlanningRoot
+    }
+
     $userProfile = if ($env:USERPROFILE) { $env:USERPROFILE } else { [Environment]::GetFolderPath('UserProfile') }
-    return Join-Path $userProfile 'iCloudDrive\iCloud~md~obsidian\MainVault\Projects\winsmux\planning'
+    $markerRoot = Get-WinsmuxPlanningRootFromMarker
+    if (-not [string]::IsNullOrWhiteSpace($markerRoot)) {
+        $script:WinsmuxDefaultPlanningRoot = $markerRoot
+        return $script:WinsmuxDefaultPlanningRoot
+    }
+
+    $discoveredRoot = Find-WinsmuxPlanningRoot -UserProfile $userProfile
+    if (-not [string]::IsNullOrWhiteSpace($discoveredRoot)) {
+        $script:WinsmuxDefaultPlanningRoot = $discoveredRoot
+        return $script:WinsmuxDefaultPlanningRoot
+    }
+
+    $script:WinsmuxDefaultPlanningRoot = Join-Path $userProfile '.winsmux\planning'
+    return $script:WinsmuxDefaultPlanningRoot
 }
 
 function Get-WinsmuxPlanningRoot {

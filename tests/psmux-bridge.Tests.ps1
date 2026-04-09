@@ -42,6 +42,7 @@ Describe 'Assert-Role' {
             self       = 'pane-self'
             commander  = 'pane-commander'
             builder    = 'pane-builder'
+            worker     = 'pane-worker'
             researcher = 'pane-researcher'
             reviewer   = 'pane-reviewer'
         } | ConvertTo-Json | Set-Content -Path $labelsPath -Encoding UTF8
@@ -49,7 +50,7 @@ Describe 'Assert-Role' {
         $script:roleGateTempRoot = $tempRoot
         $script:RoleGateLabelsFile = $labelsPath
         $env:WINSMUX_PANE_ID = 'pane-self'
-        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Commander","pane-commander":"Commander","pane-builder":"Builder","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
+        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Commander","pane-commander":"Commander","pane-builder":"Builder","pane-worker":"Worker","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
     }
 
     AfterEach {
@@ -99,13 +100,25 @@ Describe 'Assert-Role' {
 
     It 'allows Reviewer to message Commander and denies privileged commands' {
         $env:WINSMUX_ROLE = 'Reviewer'
-        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Reviewer","pane-commander":"Commander","pane-builder":"Builder","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
+        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Reviewer","pane-commander":"Commander","pane-builder":"Builder","pane-worker":"Worker","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
 
         (Assert-Role -Command 'message' -TargetPane 'commander') | Should -Be $true
         (Assert-Role -Command 'review-request') | Should -Be $true
         (Assert-Role -Command 'review-approve') | Should -Be $true
         (Assert-Role -Command 'status') | Should -Be $true
         (Assert-Role -Command 'list') | Should -Be $true
+        (Assert-Role -Command 'vault') | Should -Be $false
+        (Assert-Role -Command 'focus') | Should -Be $false
+    }
+
+    It 'allows Worker to act as a review-capable pane while staying non-privileged' {
+        $env:WINSMUX_ROLE = 'Worker'
+        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Worker","pane-commander":"Commander","pane-builder":"Builder","pane-worker":"Worker","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
+
+        (Assert-Role -Command 'message' -TargetPane 'commander') | Should -Be $true
+        (Assert-Role -Command 'review-request') | Should -Be $true
+        (Assert-Role -Command 'review-approve') | Should -Be $true
+        (Assert-Role -Command 'review-fail') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $false
         (Assert-Role -Command 'focus') | Should -Be $false
     }
@@ -144,17 +157,23 @@ Describe 'Get-BridgeSettings' {
 
         $settings.agent | Should -Be 'codex'
         $settings.model | Should -Be 'gpt-5.4'
-        $settings.builders | Should -Be 1
-        $settings.researchers | Should -Be 1
-        $settings.reviewers | Should -Be 1
+        $settings.external_commander | Should -Be $true
+        $settings.legacy_role_layout | Should -Be $false
+        $settings.commanders | Should -Be 0
+        $settings.worker_count | Should -Be 6
+        $settings.builders | Should -Be 0
+        $settings.researchers | Should -Be 0
+        $settings.reviewers | Should -Be 0
         $settings.terminal | Should -Be 'background'
         $settings.vault_keys | Should -Be @('GH_TOKEN')
     }
 
     It 'applies global overrides and lets project settings take precedence per key' {
-        @'
+@'
 agent: claude
 reviewers: 3
+external-commander: false
+legacy-role-layout: true
 vault-keys:
   - GH_TOKEN
   - OPENAI_API_KEY
@@ -167,6 +186,8 @@ terminal: tab
             switch ($Name) {
                 '@bridge-agent' { 'gemini' }
                 '@bridge-model' { 'gpt-5.5-mini' }
+                '@bridge-external-commander' { 'on' }
+                '@bridge-worker-count' { '9' }
                 '@bridge-builders' { '7' }
                 '@bridge-researchers' { '2' }
                 '@bridge-reviewers' { '5' }
@@ -180,6 +201,9 @@ terminal: tab
 
         $settings.agent | Should -Be 'claude'
         $settings.model | Should -Be 'gpt-5.5-mini'
+        $settings.external_commander | Should -Be $false
+        $settings.legacy_role_layout | Should -Be $true
+        $settings.worker_count | Should -Be 9
         $settings.builders | Should -Be 7
         $settings.researchers | Should -Be 2
         $settings.reviewers | Should -Be 3
@@ -226,6 +250,52 @@ roles:
         $commanderConfig = Get-RoleAgentConfig -Role 'Commander' -Settings $settings
         $commanderConfig.Agent | Should -Be 'codex'
         $commanderConfig.Model | Should -Be 'gpt-5.4'
+    }
+}
+
+Describe 'Get-OrchestraLayoutSettings' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1')
+    }
+
+    It 'uses external commander mode by default' {
+        $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
+            external_commander = $true
+            worker_count       = 6
+            legacy_role_layout = $false
+            commanders         = 0
+            builders           = 0
+            researchers        = 0
+            reviewers          = 0
+        })
+
+        $layout.ExternalCommander | Should -Be $true
+        $layout.LegacyRoleLayout | Should -Be $false
+        $layout.Commanders | Should -Be 0
+        $layout.Workers | Should -Be 6
+        $layout.Builders | Should -Be 0
+        $layout.Researchers | Should -Be 0
+        $layout.Reviewers | Should -Be 0
+    }
+
+    It 'preserves legacy role layouts when explicit legacy counts are configured' {
+        $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
+            external_commander = $true
+            worker_count       = 6
+            legacy_role_layout = $false
+            commanders         = 0
+            builders           = 4
+            researchers        = 1
+            reviewers          = 1
+        })
+
+        $layout.ExternalCommander | Should -Be $false
+        $layout.LegacyRoleLayout | Should -Be $true
+        $layout.Commanders | Should -Be 0
+        $layout.Workers | Should -Be 0
+        $layout.Builders | Should -Be 4
+        $layout.Researchers | Should -Be 1
+        $layout.Reviewers | Should -Be 1
     }
 }
 
@@ -393,9 +463,9 @@ STATUS: VERIFY_PASS
         $defaultTargets.BuildTarget | Should -Be 'builder-1'
         $defaultTargets.VerifyTarget | Should -Be 'reviewer'
 
-        $fallbackTargets = Get-TeamPipelineStageTargets -BuilderLabel 'builder-1' -ResearcherLabel '' -ReviewerLabel ''
-        $fallbackTargets.PlanTarget | Should -Be 'builder-1'
-        $fallbackTargets.VerifyTarget | Should -Be 'builder-1'
+        $workerTargets = Get-TeamPipelineStageTargets -BuilderLabel 'worker-1' -ResearcherLabel '' -ReviewerLabel ''
+        $workerTargets.PlanTarget | Should -Be 'worker-1'
+        $workerTargets.VerifyTarget | Should -Be 'worker-1'
 
         $skipTargets = Get-TeamPipelineStageTargets -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel 'reviewer' -SkipPlan -SkipVerify
         $skipTargets.PlanTarget | Should -BeNullOrEmpty
@@ -2477,6 +2547,28 @@ panes:
         $summary.new_events | Should -Be 1
         $summary.dispatches | Should -Be 1
         $summary.messages[0] | Should -Be 'builder-1 (%2) がアイドル。次タスクのディスパッチが必要'
+    }
+
+    It 'prefers a worker as the review target when no reviewer pane exists' {
+@"
+version: 1
+saved_at: 2026-04-09T11:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:commanderPollTempRoot
+panes:
+  worker-1:
+    pane_id: %2
+    role: Worker
+    launch_dir: $script:commanderPollTempRoot
+"@ | Set-Content -Path $script:commanderPollManifestPath -Encoding UTF8
+
+        $manifest = Read-CommanderPollManifest -Path $script:commanderPollManifestPath
+        $reviewPane = Get-CommanderPollPreferredReviewPane -Manifest $manifest
+
+        $reviewPane.PaneId | Should -Be '%2'
+        $reviewPane.Label | Should -Be 'worker-1'
+        $reviewPane.Role | Should -Be 'Worker'
     }
 
     It 'appends commander poll log records as jsonl' {

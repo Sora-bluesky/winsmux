@@ -19,14 +19,16 @@ winsmux must be running before orchestra-start. If not running, user starts it m
 
 ## Roles (Orchestra)
 
+The default model is now **external Commander + background workers**.
+
 | Role | Agent | Allowed | Forbidden |
 |------|-------|---------|-----------|
-| Commander | Claude Code | plan, dispatch, git ops, backlog | write/edit code, review code |
-| Builder | Codex | implement in worktree | git add/commit/push, merge, direct main repo work |
-| Reviewer | Codex | review diffs | implement |
-| Researcher | Codex | investigate, report, git add/commit/push | implement |
+| Commander | Claude Code / Codex outside the managed window | plan, dispatch, git ops, backlog, final judgement | background pane execution as the sole control plane |
+| Worker | Codex in managed panes | implement, investigate, verify, review when assigned | direct ownership of the main repo lifecycle |
 
-Roles are advisory. Hard enforcement is via hooks (`sh-orchestra-gate.js` for Commander). Other roles need per-role gate hooks (#284).
+Legacy `Builder / Researcher / Reviewer` pane layouts remain available only for explicit compatibility mode.
+
+Roles are advisory. Hard enforcement is via hooks (`sh-orchestra-gate.js` for Commander) and winsmux role gates inside managed panes.
 
 **Enforcement**: CLAUDE.md is advisory, not enforced. Use hooks for deterministic enforcement. See GUARDRAILS.md for recurring failures.
 

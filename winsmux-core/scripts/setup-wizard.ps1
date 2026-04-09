@@ -172,13 +172,36 @@ Write-Host ''
 
 $agentCli = Read-AgentCli -Default 'codex'
 $model = Read-DefaultValue -Prompt 'Model' -Default 'gpt-5.4'
-$builders = Read-PositiveInt -Prompt 'Builders count' -Default 4
-$researchers = Read-PositiveInt -Prompt 'Researchers count' -Default 1
-$reviewers = Read-PositiveInt -Prompt 'Reviewers count' -Default 1
+$externalCommander = Read-YesNo -Prompt 'Use an external Commander terminal?' -Default $true
+$legacyRoleLayout = $false
+$commanders = 0
+$workerCount = 6
+$builders = 0
+$researchers = 0
+$reviewers = 0
+
+if ($externalCommander) {
+    $workerCount = Read-PositiveInt -Prompt 'Managed worker pane count' -Default 6
+} else {
+    $legacyRoleLayout = Read-YesNo -Prompt 'Use legacy role layout (Commander/Builder/Researcher/Reviewer panes)?' -Default $true
+    if ($legacyRoleLayout) {
+        $commanders = Read-PositiveInt -Prompt 'Commanders count' -Default 1
+        $builders = Read-PositiveInt -Prompt 'Builders count' -Default 4
+        $researchers = Read-PositiveInt -Prompt 'Researchers count' -Default 1
+        $reviewers = Read-PositiveInt -Prompt 'Reviewers count' -Default 1
+    } else {
+        $commanders = Read-PositiveInt -Prompt 'Embedded commander count' -Default 1
+        $workerCount = Read-PositiveInt -Prompt 'Managed worker pane count' -Default 6
+    }
+}
 $storeVault = Read-YesNo -Prompt 'Store GH_TOKEN in the winsmux vault?' -Default $false
 
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-agent' -OptionValue $agentCli
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-model' -OptionValue $model
+Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-external-commander' -OptionValue $(if ($externalCommander) { 'on' } else { 'off' })
+Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-legacy-role-layout' -OptionValue $(if ($legacyRoleLayout) { 'on' } else { 'off' })
+Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-commanders' -OptionValue $commanders.ToString()
+Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-worker-count' -OptionValue $workerCount.ToString()
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-builders' -OptionValue $builders.ToString()
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-researchers' -OptionValue $researchers.ToString()
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-reviewers' -OptionValue $reviewers.ToString()
@@ -198,6 +221,10 @@ Write-Host 'Saved settings:'
 Write-Host "  winsmux binary:         $winsmuxBin"
 Write-Host "  @bridge-agent:        $agentCli"
 Write-Host "  @bridge-model:        $model"
+Write-Host "  @bridge-external-commander: $externalCommander"
+Write-Host "  @bridge-legacy-role-layout: $legacyRoleLayout"
+Write-Host "  @bridge-commanders:   $commanders"
+Write-Host "  @bridge-worker-count: $workerCount"
 Write-Host "  @bridge-builders:     $builders"
 Write-Host "  @bridge-researchers:  $researchers"
 Write-Host "  @bridge-reviewers:    $reviewers"

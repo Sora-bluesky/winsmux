@@ -2,8 +2,8 @@
 param(
     [string]$Text,
     [string[]]$AvailableTargets = @(),
-    [ValidateSet('Builder', 'Reviewer', 'Researcher', 'Commander')]
-    [string]$DefaultRole = 'Builder',
+    [ValidateSet('Worker', 'Builder', 'Reviewer', 'Researcher', 'Commander')]
+    [string]$DefaultRole = 'Worker',
     [switch]$AsJson
 )
 
@@ -13,6 +13,7 @@ Set-StrictMode -Version Latest
 
 function Get-DispatchRouterKeywordMap {
     return [ordered]@{
+        Worker = @('worker', 'worker-1', 'worker-2', 'worker-3', 'worker-4', 'worker-5', 'worker-6')
         Builder = @(
             'implement', 'implementation', 'build', 'builder', 'fix', 'bug', 'patch',
             'code', 'coding', 'refactor', 'write', 'edit', 'change', 'feature',
@@ -42,6 +43,7 @@ function Get-DispatchRouterCanonicalRole {
     param([Parameter(Mandatory = $true)][string]$RoleOrLabel)
 
     switch -Regex ($RoleOrLabel) {
+        '^(?i)worker(?:$|[-_:/\s])' { return 'Worker' }
         '^(?i)builder(?:$|[-_:/\s])' { return 'Builder' }
         '^(?i)reviewer(?:$|[-_:/\s])' { return 'Reviewer' }
         '^(?i)researcher(?:$|[-_:/\s])' { return 'Researcher' }
@@ -108,8 +110,8 @@ function Get-DispatchRoute {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
         [string[]]$AvailableTargets = @(),
-        [ValidateSet('Builder', 'Reviewer', 'Researcher', 'Commander')]
-        [string]$DefaultRole = 'Builder'
+        [ValidateSet('Worker', 'Builder', 'Reviewer', 'Researcher', 'Commander')]
+        [string]$DefaultRole = 'Worker'
     )
 
     $keywordMap = Get-DispatchRouterKeywordMap
@@ -144,6 +146,10 @@ function Get-DispatchRoute {
     }
 
     $selectedTarget = Get-DispatchRouterPreferredLabel -Role $bestRole -AvailableTargets $AvailableTargets
+    if ($bestRole -ne 'Commander' -and $null -eq $selectedTarget) {
+        $selectedTarget = Get-DispatchRouterPreferredLabel -Role 'Worker' -AvailableTargets $AvailableTargets
+    }
+
     $handleLocally = $bestRole -eq 'Commander' -or $null -eq $selectedTarget
 
     $reason = if ($bestScore -gt 0) {
@@ -154,6 +160,8 @@ function Get-DispatchRoute {
 
     if ($bestRole -ne 'Commander' -and $null -eq $selectedTarget) {
         $reason = "$reason No '$bestRole' target is available."
+    } elseif ($bestRole -ne 'Commander' -and $null -ne $selectedTarget -and (Get-DispatchRouterCanonicalRole $selectedTarget) -eq 'Worker') {
+        $reason = "$reason Routed to generic worker target '$selectedTarget'."
     }
 
     if ($bestRole -eq 'Commander') {

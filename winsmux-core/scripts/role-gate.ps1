@@ -75,6 +75,44 @@ $RolePermissions = @{
         Version       = $true
         Doctor        = $true
     }
+    Worker = @{
+        ReadOwn       = $true
+        ReadOther     = $false
+        SendAny       = $false
+        SendCommander = $true
+        HealthCheck   = $false
+        Watch         = $false
+        WaitReady     = $false
+        PollEvents    = $false
+        Vault         = $false
+        Dispatch      = $false
+        DispatchReview = $false
+        TypeOwn       = $true
+        TypeOther     = $false
+        KeysOwn       = $true
+        KeysOther     = $false
+        List          = $true
+        Status        = $true
+        Name          = $true
+        Resolve       = $true
+        Focus         = $false
+        Signal        = $true
+        Wait          = $true
+        Profile       = $false
+        Lock          = $false
+        Unlock        = $false
+        Locks         = $true
+        MailboxCreate = $false
+        MailboxSend   = $true
+        MailboxListen = $false
+        Kill          = $false
+        Restart       = $false
+        ContextReset  = $false
+        ReviewApprove = $true
+        Id            = $true
+        Version       = $true
+        Doctor        = $true
+    }
     Researcher = @{
         ReadOwn       = $true
         ReadOther     = $false
@@ -164,6 +202,7 @@ function ConvertTo-CanonicalWinsmuxRole {
 
     switch -Regex ($RoleName.Trim()) {
         '^(?i)Commander$' { return 'Commander' }
+        '^(?i)Worker$' { return 'Worker' }
         '^(?i)Builder$' { return 'Builder' }
         '^(?i)Researcher$' { return 'Researcher' }
         '^(?i)Reviewer$' { return 'Reviewer' }
