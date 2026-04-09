@@ -6,6 +6,7 @@ $scriptDir = $PSScriptRoot
 . "$scriptDir/logger.ps1"
 . "$scriptDir/agent-readiness.ps1"
 . "$scriptDir/orchestra-preflight.ps1"
+. "$scriptDir/manifest.ps1"
 
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -22,28 +23,7 @@ function Write-OrchestraTextFile {
         [switch]$Append
     )
 
-    $parent = Split-Path -Parent $Path
-    if (-not [string]::IsNullOrWhiteSpace($parent) -and -not (Test-Path -LiteralPath $parent)) {
-        New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    }
-
-    $escapedPath = $Path -replace '"', '""'
-    if ([string]::IsNullOrEmpty($Content)) {
-        if ($Append) {
-            return
-        }
-
-        $writeCommand = 'type nul > "{0}"' -f $escapedPath
-        cmd /d /c $writeCommand | Out-Null
-    } else {
-        $redirect = if ($Append) { '>>' } else { '>' }
-        $writeCommand = 'more {0} "{1}"' -f $redirect, $escapedPath
-        $Content | cmd /d /c $writeCommand | Out-Null
-    }
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "cmd.exe failed to write $Path"
-    }
+    Write-WinsmuxTextFile -Path $Path -Content $Content -Append:$Append
 }
 
 function Invoke-Winsmux {
@@ -88,35 +68,61 @@ function Ensure-OrchestraServer {
     param(
         [Parameter(Mandatory = $true)]
         [string]$SessionName,
-        [int]$RetryCount = 3,
-        [int]$RetryDelaySeconds = 2
+        [int]$TimeoutSeconds = 30
     )
 
     if (Test-OrchestraServerSession -SessionName $SessionName) {
         return [ordered]@{
             SessionName    = $SessionName
             SessionCreated = $false
-            ReadyChecks    = 1
         }
     }
 
-    Invoke-Winsmux -Arguments @('new-session', '-d', '-s', $SessionName)
+    # Launch in separate Windows Terminal window (attached session gets real terminal size).
+    # Detached sessions are fixed at 120x30 in the Rust core (resize-window is a no-op on Windows).
+    $wtWidth = 200
+    $wtHeight = 70
+    $wtExe = Get-Command 'wt.exe' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($wtExe)) {
+        throw "Windows Terminal (wt.exe) is required to create the orchestra session with a usable window size. Install Windows Terminal or ensure wt.exe is in PATH."
+    }
 
-    for ($attempt = 1; $attempt -le $RetryCount; $attempt++) {
-        if (Test-OrchestraServerSession -SessionName $SessionName) {
-            return [ordered]@{
-                SessionName    = $SessionName
-                SessionCreated = $true
-                ReadyChecks    = $attempt
+    Start-Process -FilePath $wtExe -ArgumentList @(
+        '--size', "$wtWidth,$wtHeight",
+        '--title', $SessionName,
+        '--',
+        $script:winsmuxBin, 'new-session', '-s', $SessionName
+    )
+
+    # Poll for readiness: has-session + list-panes must both succeed.
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $pollAttempt = 0
+    while ((Get-Date) -lt $deadline) {
+        $pollAttempt++
+        $hasSession = Test-OrchestraServerSession -SessionName $SessionName
+        if ($hasSession) {
+            try {
+                $paneOutput = Invoke-Winsmux -Arguments @('list-panes', '-t', $SessionName, '-F', '#{pane_id}') -CaptureOutput
+                $paneText = ($paneOutput | Out-String).Trim()
+                if (-not [string]::IsNullOrWhiteSpace($paneText)) {
+                    Write-Host "Ensure-OrchestraServer: ready after $pollAttempt polls"
+                    return [ordered]@{
+                        SessionName    = $SessionName
+                        SessionCreated = $true
+                    }
+                }
+            } catch {
+                Write-Warning "Ensure-OrchestraServer: poll $pollAttempt list-panes error: $($_.Exception.Message)"
+            }
+        } else {
+            if ($pollAttempt -le 5 -or $pollAttempt % 10 -eq 0) {
+                Write-Warning "Ensure-OrchestraServer: poll $pollAttempt has-session=false"
             }
         }
-
-        if ($attempt -lt $RetryCount) {
-            Start-Sleep -Seconds $RetryDelaySeconds
-        }
+        Start-Sleep -Milliseconds 500
     }
 
-    throw "Orchestra server session '$SessionName' did not become ready after $RetryCount attempts. Verify the winsmux server can create sessions, then rerun orchestra-start.ps1."
+    throw "Orchestra session '$SessionName' did not become ready within $TimeoutSeconds seconds. Verify Windows Terminal launched correctly."
 }
 
 function Invoke-Bridge {
@@ -507,7 +513,7 @@ function Get-TailPreview {
 function Wait-PaneShellReady {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
-        [int]$TimeoutSeconds = 15
+        [int]$TimeoutSeconds = 30
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -575,53 +581,48 @@ function Save-OrchestraSessionState {
     )
 
     $manifestPath = Get-OrchestraManifestPath -ProjectDir $ProjectDir
-    $manifestDir = Split-Path -Parent $manifestPath
-    New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
-
-    $lines = [System.Collections.Generic.List[string]]::new()
-    $lines.Add('version: 1') | Out-Null
-    $lines.Add(('saved_at: {0}' -f (ConvertTo-YamlScalar -Value (Get-Date -Format o)))) | Out-Null
-    $lines.Add('session:') | Out-Null
-    $lines.Add(('  name: {0}' -f (ConvertTo-YamlScalar -Value $SessionName))) | Out-Null
-    $lines.Add("  status: 'running'") | Out-Null
-    $lines.Add(('  agent: {0}' -f (ConvertTo-YamlScalar -Value $Settings.agent))) | Out-Null
-    $lines.Add(('  model: {0}' -f (ConvertTo-YamlScalar -Value $Settings.model))) | Out-Null
-    $lines.Add(('  project_dir: {0}' -f (ConvertTo-YamlScalar -Value $ProjectDir))) | Out-Null
-    $lines.Add(('  git_worktree_dir: {0}' -f (ConvertTo-YamlScalar -Value $GitWorktreeDir))) | Out-Null
-    if ($null -ne $CommanderPollPid) {
-        $lines.Add(('  commander_poll_pid: {0}' -f $CommanderPollPid)) | Out-Null
-    } else {
-        $lines.Add('  commander_poll_pid: null') | Out-Null
-    }
-    if ($null -ne $WatchdogPid) {
-        $lines.Add(('  watchdog_pid: {0}' -f $WatchdogPid)) | Out-Null
-    } else {
-        $lines.Add('  watchdog_pid: null') | Out-Null
-    }
-    if ($null -ne $ServerWatchdogPid) {
-        $lines.Add(('  server_watchdog_pid: {0}' -f $ServerWatchdogPid)) | Out-Null
-    } else {
-        $lines.Add('  server_watchdog_pid: null') | Out-Null
-    }
-    $lines.Add('panes:') | Out-Null
-
+    $paneMap = [ordered]@{}
     foreach ($paneSummary in @($PaneSummaries)) {
-        $lines.Add(('  - label: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.Label))) | Out-Null
-        $lines.Add(('    pane_id: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.PaneId))) | Out-Null
-        $lines.Add(('    role: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.Role))) | Out-Null
-        $lines.Add(('    exec_mode: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.ExecMode))) | Out-Null
-        $lines.Add(('    launch_dir: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.LaunchDir))) | Out-Null
-        $lines.Add(('    builder_branch: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.BuilderBranch))) | Out-Null
-        $lines.Add(('    builder_worktree_path: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.BuilderWorktreePath))) | Out-Null
-        $lines.Add("    task: null") | Out-Null
-        $paneStatus = if ($paneSummary.Status) { $paneSummary.Status } else { 'ready' }
-        $lines.Add(('    status: {0}' -f (ConvertTo-YamlScalar -Value $paneStatus))) | Out-Null
-        if ($paneSummary.BootstrapFailures) {
-            $lines.Add(('    bootstrap_failures: {0}' -f (ConvertTo-YamlScalar -Value $paneSummary.BootstrapFailures))) | Out-Null
+        $paneEntry = [PSCustomObject]@{
+            pane_id               = $paneSummary.PaneId
+            role                  = $paneSummary.Role
+            exec_mode             = [bool]$paneSummary.ExecMode
+            launch_dir            = $paneSummary.LaunchDir
+            builder_branch        = $paneSummary.BuilderBranch
+            builder_worktree_path = $paneSummary.BuilderWorktreePath
+            task                  = $null
+            status                = if ($paneSummary.Status) { $paneSummary.Status } else { 'ready' }
         }
+        if ($paneSummary.Contains('BootstrapFailures') -and $paneSummary['BootstrapFailures']) {
+            $paneEntry | Add-Member -NotePropertyName 'bootstrap_failures' -NotePropertyValue $paneSummary['BootstrapFailures']
+        }
+        $paneMap[[string]$paneSummary.Label] = $paneEntry
     }
 
-    Write-OrchestraTextFile -Path $manifestPath -Content ($lines -join [Environment]::NewLine)
+    $manifest = [PSCustomObject]@{
+        version  = 1
+        saved_at = (Get-Date -Format o)
+        session  = [PSCustomObject]@{
+            name                = $SessionName
+            status              = 'running'
+            agent               = $Settings.agent
+            model               = $Settings.model
+            project_dir         = $ProjectDir
+            git_worktree_dir    = $GitWorktreeDir
+            commander_poll_pid  = $CommanderPollPid
+            watchdog_pid        = $WatchdogPid
+            server_watchdog_pid = $ServerWatchdogPid
+        }
+        panes     = $paneMap
+        tasks     = [PSCustomObject]@{
+            queued      = @()
+            in_progress = @()
+            completed   = @()
+        }
+        worktrees = [ordered]@{}
+    }
+
+    Save-WinsmuxManifest -ProjectDir $ProjectDir -Manifest $manifest
     return $manifestPath
 }
 
@@ -969,6 +970,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
 
         $orchestraServer = Ensure-OrchestraServer -SessionName $sessionName
+        Write-Warning ("Ensure result type: " + $orchestraServer.GetType().FullName + " SessionCreated=" + $orchestraServer.SessionCreated)
 
         if (-not (Test-Path $bridgeScript)) {
             Write-Error "Bridge CLI not found: $bridgeScript"
@@ -1092,16 +1094,12 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-WinsmuxLog -Level INFO -Event 'preflight.builder_worktree_cleanup.branch_removed' -Message "Removed stale Builder branch $removedBranch." -Data ([ordered]@{ branch_name = $removedBranch }) | Out-Null
     }
 
-        # Ensure-OrchestraServer may already have created the detached session.
-        if ([bool]$orchestraServer.SessionCreated) {
-            Write-WinsmuxLog -Level INFO -Event 'preflight.session.ready' -Message "Session $sessionName was already created by Ensure-OrchestraServer." -Data ([ordered]@{
-                session_name    = $sessionName
-                session_created = $true
-            }) | Out-Null
-        } else {
-            Write-WinsmuxLog -Level INFO -Event 'preflight.session.create' -Message "Creating session $sessionName." -Data ([ordered]@{ session_name = $sessionName }) | Out-Null
-            Invoke-Winsmux -Arguments @('new-session', '-d', '-s', $sessionName)
-        }
+        # Session is created by Ensure-OrchestraServer (wt.exe attached window).
+        # No fallback detached creation — wt.exe is required.
+        Write-WinsmuxLog -Level INFO -Event 'preflight.session.ready' -Message "Session $sessionName created by Ensure-OrchestraServer." -Data ([ordered]@{
+            session_name    = $sessionName
+            session_created = [bool]$orchestraServer.SessionCreated
+        }) | Out-Null
         $bootstrapPaneId = Get-OrchestraBootstrapPaneId -SessionName $sessionName
         $createdPaneIds = @($bootstrapPaneId)
 
@@ -1126,7 +1124,9 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         try {
             try {
+                Write-Warning "DEBUG: layout start session=$sessionName C=$($settings.commanders) B=$($settings.builders) R=$($settings.researchers) Rev=$($settings.reviewers)"
                 $layout = . $layoutScript -SessionName $sessionName -Commanders $settings.commanders -Builders $settings.builders -Researchers $settings.researchers -Reviewers $settings.reviewers
+                Write-Warning "DEBUG: layout done, panes=$($layout.Panes.Count)"
                 foreach ($sessionPaneId in @(Get-OrchestraSessionPaneIds -SessionName $sessionName)) {
                     if ($createdPaneIds -notcontains $sessionPaneId) {
                         $createdPaneIds += $sessionPaneId
@@ -1261,12 +1261,12 @@ if ($MyInvocation.InvocationName -ne '.') {
     $validPaneSummaries = [System.Collections.Generic.List[object]]::new()
     $invalidCount = 0
     foreach ($paneSummary in $paneSummaries) {
-        $failures = Test-PaneBootstrapInvariants `
+        $failures = @(Test-PaneBootstrapInvariants `
             -PaneId $paneSummary.PaneId `
             -Label $paneSummary.Label `
             -ExpectedRole $paneSummary.Role `
             -ExpectedLaunchDir $paneSummary.LaunchDir `
-            -ExpectedWorktreePath ([string]$paneSummary.BuilderWorktreePath)
+            -ExpectedWorktreePath ([string]$paneSummary.BuilderWorktreePath))
 
         if ($failures.Count -gt 0) {
             $failureText = $failures -join '; '
@@ -1334,6 +1334,8 @@ if ($MyInvocation.InvocationName -ne '.') {
     Write-Output ("  Stop-Process -Id {0}" -f $commanderPollProcess.Id)
     Write-Output ("  Stop-Process -Id {0},{1}" -f $watchdogProcess.Id, $serverWatchdogProcess.Id)
 } catch {
+    Write-Warning "STARTUP ERROR: $($_.Exception.Message)"
+    Write-Warning "AT: $($_.ScriptStackTrace)"
     if ($null -ne $commanderPollProcess) {
         try { Stop-Process -Id $commanderPollProcess.Id -Force -ErrorAction SilentlyContinue } catch {}
     }

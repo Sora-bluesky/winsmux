@@ -30,6 +30,9 @@ Set-StrictMode -Version Latest
 $scriptDir = $PSScriptRoot
 . "$scriptDir/settings.ps1"
 . "$scriptDir/agent-readiness.ps1"
+. "$scriptDir/pane-control.ps1"
+. "$scriptDir/orchestra-state.ps1"
+. "$scriptDir/clm-safe-io.ps1"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -125,7 +128,7 @@ function Save-MonitorSnapshot {
         timestamp = $Timestamp
     }
 
-    ($record | ConvertTo-Json -Compress) | Set-Content -Path $path -Encoding UTF8 -NoNewline
+    Write-WinsmuxTextFile -Path $path -Content ($record | ConvertTo-Json -Compress)
 }
 
 function Get-MonitorIdleStatePath {
@@ -196,7 +199,7 @@ function Save-MonitorIdleState {
     }
 
     $path = Get-MonitorIdleStatePath -PaneId $PaneId
-    ($record | ConvertTo-Json -Compress) | Set-Content -LiteralPath $path -Encoding UTF8 -NoNewline
+    Write-WinsmuxTextFile -Path $path -Content ($record | ConvertTo-Json -Compress)
 }
 
 function Update-MonitorIdleAlertState {
@@ -570,7 +573,6 @@ function Write-MonitorEvent {
 
     try {
         $eventsPath = Get-MonitorEventsPath -ProjectDir $ProjectDir
-        [System.IO.Directory]::CreateDirectory((Split-Path -Parent $eventsPath)) | Out-Null
 
         $record = [ordered]@{
             timestamp   = (Get-Date).ToString('o')
@@ -586,7 +588,7 @@ function Write-MonitorEvent {
         }
 
         $line = ($record | ConvertTo-Json -Compress -Depth 10)
-        [System.IO.File]::AppendAllText($eventsPath, $line + [System.Environment]::NewLine, [System.Text.Encoding]::UTF8)
+        Write-WinsmuxTextFile -Path $eventsPath -Content $line -Append
         return $record
     } catch {
         return $null
@@ -1050,99 +1052,12 @@ function Update-MonitorManifestPaneLabel {
         return $false
     }
 
-    $content = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8
-    if ([string]::IsNullOrWhiteSpace($content)) {
+    try {
+        Set-PaneControlManifestPaneProperties -ManifestPath $ManifestPath -PaneId $PaneId -Properties ([ordered]@{ label = $Label })
+        return $true
+    } catch {
         return $false
     }
-
-    $newline = "`n"
-
-    $lines = [string[]]($content -split "\r?\n")
-    $section = ''
-    $currentPaneStart = -1
-    $currentPaneId = ''
-    $changed = $false
-
-    for ($i = 0; $i -lt $lines.Length; $i++) {
-        $line = $lines[$i]
-
-        if ($line -match '^(session|panes):\s*$') {
-            if ($section -eq 'panes') {
-                if ($currentPaneStart -ge 0 -and $currentPaneId -eq $PaneId) {
-                    $match = [regex]::Match($lines[$currentPaneStart], '^\s{2}-\s+label:\s*(.*?)\s*$')
-                    if ($match.Success) {
-                        $currentLabel = ConvertFrom-MonitorYamlScalar -Value $match.Groups[1].Value
-                        if ($currentLabel -ne $Label) {
-                            $lines[$currentPaneStart] = ('  - label: {0}' -f (ConvertTo-MonitorYamlScalar -Value $Label))
-                            $changed = $true
-                        }
-                    }
-                }
-                $currentPaneStart = -1
-                $currentPaneId = ''
-            }
-
-            $section = $Matches[1]
-            continue
-        }
-
-        if ($section -eq 'panes' -and $line -match '^\s{2}-\s+label:\s*(.*?)\s*$') {
-            if ($currentPaneStart -ge 0 -and $currentPaneId -eq $PaneId) {
-                $match = [regex]::Match($lines[$currentPaneStart], '^\s{2}-\s+label:\s*(.*?)\s*$')
-                if ($match.Success) {
-                    $currentLabel = ConvertFrom-MonitorYamlScalar -Value $match.Groups[1].Value
-                    if ($currentLabel -ne $Label) {
-                        $lines[$currentPaneStart] = ('  - label: {0}' -f (ConvertTo-MonitorYamlScalar -Value $Label))
-                        $changed = $true
-                    }
-                }
-            }
-            $currentPaneStart = $i
-            $currentPaneId = ''
-            continue
-        }
-
-        if ($section -eq 'panes' -and $currentPaneStart -ge 0 -and $line -match '^\s{4}pane_id:\s*(.*?)\s*$') {
-            $currentPaneId = ConvertFrom-MonitorYamlScalar -Value $Matches[1]
-            continue
-        }
-
-        if ($section -eq 'panes' -and $line -match '^[^\s]') {
-            if ($currentPaneStart -ge 0 -and $currentPaneId -eq $PaneId) {
-                $match = [regex]::Match($lines[$currentPaneStart], '^\s{2}-\s+label:\s*(.*?)\s*$')
-                if ($match.Success) {
-                    $currentLabel = ConvertFrom-MonitorYamlScalar -Value $match.Groups[1].Value
-                    if ($currentLabel -ne $Label) {
-                        $lines[$currentPaneStart] = ('  - label: {0}' -f (ConvertTo-MonitorYamlScalar -Value $Label))
-                        $changed = $true
-                    }
-                }
-            }
-            $currentPaneStart = -1
-            $currentPaneId = ''
-            $section = ''
-        }
-    }
-
-    if ($section -eq 'panes') {
-        if ($currentPaneStart -ge 0 -and $currentPaneId -eq $PaneId) {
-            $match = [regex]::Match($lines[$currentPaneStart], '^\s{2}-\s+label:\s*(.*?)\s*$')
-            if ($match.Success) {
-                $currentLabel = ConvertFrom-MonitorYamlScalar -Value $match.Groups[1].Value
-                if ($currentLabel -ne $Label) {
-                    $lines[$currentPaneStart] = ('  - label: {0}' -f (ConvertTo-MonitorYamlScalar -Value $Label))
-                    $changed = $true
-                }
-            }
-        }
-    }
-
-    if (-not $changed) {
-        return $false
-    }
-
-    Set-Content -LiteralPath $ManifestPath -Value ($lines -join $newline) -Encoding UTF8 -NoNewline
-    return $true
 }
 
 # ---------------------------------------------------------------------------
@@ -1208,6 +1123,12 @@ function Invoke-AgentMonitorCycle {
     }
 
     $projectDir = Get-MonitorProjectDir -Manifest $manifest -ManifestPath $ManifestPath
+    $paneStateModels = [ordered]@{}
+    try {
+        $paneStateModels = Sync-OrchestraPaneStateModels -ProjectDir $projectDir -Manifest $manifest
+    } catch {
+        $paneStateModels = [ordered]@{}
+    }
 
     $results = [System.Collections.Generic.List[object]]::new()
     $currentResults = [ordered]@{}
@@ -1225,6 +1146,7 @@ function Invoke-AgentMonitorCycle {
         $paneId = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'pane_id' -Default '')
         $role = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'role' -Default '')
         $paneExecMode = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'exec_mode' -Default '').Trim().ToLowerInvariant() -eq 'true'
+        $paneStateModel = Get-OrchestraPaneStateModelFromCollection -StateModels $paneStateModels -Label $label -PaneId $paneId
 
         if ([string]::IsNullOrWhiteSpace($paneId)) {
             continue
@@ -1303,7 +1225,7 @@ function Invoke-AgentMonitorCycle {
             Write-MonitorEvent -ProjectDir $projectDir -SessionName $SessionName `
                 -Event 'pane.completed' -Message $transitionEventMessage `
                 -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
-                -Data $transitionEventData | Out-Null
+                -Data (Merge-OrchestraPaneEventData -StateModel $paneStateModel -Data $transitionEventData) | Out-Null
         }
 
         $stateEventName = Get-MonitorStateEventName -Status $statusName -ExitReason $statusExitReason
@@ -1325,7 +1247,7 @@ function Invoke-AgentMonitorCycle {
             Write-MonitorEvent -ProjectDir $projectDir -SessionName $SessionName `
                 -Event $stateEventName -Message $stateEventMessage `
                 -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
-                -Data $stateEventData | Out-Null
+                -Data (Merge-OrchestraPaneEventData -StateModel $paneStateModel -Data $stateEventData) | Out-Null
         }
 
         if ($statusName -eq 'approval_waiting') {
@@ -1350,7 +1272,7 @@ function Invoke-AgentMonitorCycle {
                 Send-MonitorCommanderMailboxMessage -SessionName $SessionName `
                     -Event 'pane.approval_waiting' -Message $result['Message'] `
                     -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
-                    -Data $stateEventData | Out-Null
+                    -Data (Merge-OrchestraPaneEventData -StateModel $paneStateModel -Data $stateEventData) | Out-Null
             } catch {
             }
         }
@@ -1366,14 +1288,14 @@ function Invoke-AgentMonitorCycle {
                     Write-MonitorEvent -ProjectDir $projectDir -SessionName $SessionName `
                         -Event 'pane.context_reset' -Message "Reset Codex context in pane $label ($paneId)." `
                         -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
-                        -Data ([ordered]@{
+                        -Data (Merge-OrchestraPaneEventData -StateModel $paneStateModel -Data ([ordered]@{
                             agent                     = $agentName
                             model                     = $modelName
                             command                   = '/new'
                             context_remaining_percent = $contextRemainingPercent
                             threshold_percent         = $ContextResetThresholdPercent
                             snapshot_hash             = $statusSnapshotHash
-                        }) | Out-Null
+                        })) | Out-Null
 
                     $results.Add($result)
                     continue
@@ -1400,22 +1322,22 @@ function Invoke-AgentMonitorCycle {
             Write-MonitorEvent -ProjectDir $projectDir -SessionName $SessionName `
                 -Event 'pane.idle' -Message $idleAlert.Message `
                 -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
-                -Data ([ordered]@{
+                -Data (Merge-OrchestraPaneEventData -StateModel $paneStateModel -Data ([ordered]@{
                     agent                  = $agentName
                     model                  = $modelName
                     idle_threshold_seconds = $IdleThreshold
                     snapshot_hash          = $statusSnapshotHash
-                }) | Out-Null
+                })) | Out-Null
             try {
                 Send-MonitorCommanderMailboxMessage -SessionName $SessionName `
                     -Event 'pane.idle' -Message $idleAlert.Message `
                     -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
-                    -Data ([ordered]@{
+                    -Data (Merge-OrchestraPaneEventData -StateModel $paneStateModel -Data ([ordered]@{
                         agent                  = $agentName
                         model                  = $modelName
                         idle_threshold_seconds = $IdleThreshold
                         snapshot_hash          = $statusSnapshotHash
-                    }) | Out-Null
+                    })) | Out-Null
             } catch {
             }
         }
@@ -1430,22 +1352,22 @@ function Invoke-AgentMonitorCycle {
             Write-MonitorEvent -ProjectDir $projectDir -SessionName $SessionName `
                 -Event 'pane.stalled' -Message $stallMessage `
                 -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
-                -Data ([ordered]@{
+                -Data (Merge-OrchestraPaneEventData -StateModel $paneStateModel -Data ([ordered]@{
                     agent            = $agentName
                     model            = $modelName
                     required_cycles  = $script:BuilderStallThresholdCycles
                     snapshot_hash    = $statusSnapshotHash
-                }) | Out-Null
+                })) | Out-Null
             try {
                 Send-MonitorCommanderMailboxMessage -SessionName $SessionName `
                     -Event 'pane.stalled' -Message $stallMessage `
                     -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
-                    -Data ([ordered]@{
+                    -Data (Merge-OrchestraPaneEventData -StateModel $paneStateModel -Data ([ordered]@{
                         agent            = $agentName
                         model            = $modelName
                         required_cycles  = $script:BuilderStallThresholdCycles
                         snapshot_hash    = $statusSnapshotHash
-                    }) | Out-Null
+                    })) | Out-Null
             } catch {
             }
         }
@@ -1457,7 +1379,7 @@ function Invoke-AgentMonitorCycle {
                     -Event 'monitor.status' -Level 'debug' `
                     -Message "Pane $label ($paneId): $statusName" `
                     -Role $role -PaneId $paneId `
-                    -Data ([ordered]@{ status = $statusName; exit_reason = $statusExitReason }) | Out-Null
+                    -Data (Merge-OrchestraPaneEventData -StateModel $paneStateModel -Data ([ordered]@{ status = $statusName; exit_reason = $statusExitReason })) | Out-Null
             } catch {
             }
         }
@@ -1581,117 +1503,11 @@ function Invoke-AgentMonitorCycle {
 function ConvertFrom-MonitorManifest {
     <#
     .SYNOPSIS
-    Parses the orchestra-start manifest format (session metadata + panes list).
+    Parses the orchestra manifest using the shared pane-control reader.
     #>
     param([Parameter(Mandatory = $true)][string]$Content)
 
-    $manifest = [ordered]@{
-        Session = [ordered]@{}
-        Panes   = [ordered]@{}
-    }
-
-    $section = $null
-    $currentPane = $null
-
-    function Save-MonitorManifestPane {
-        param($Pane)
-
-        if ($null -eq $Pane) {
-            return
-        }
-
-        $label = [string]$Pane.label
-        if ([string]::IsNullOrWhiteSpace($label)) {
-            return
-        }
-
-        $paneObj = [ordered]@{}
-        foreach ($entry in $Pane.GetEnumerator()) {
-            $paneObj[$entry.Key] = $entry.Value
-        }
-
-        $manifest.Panes[$label] = $paneObj
-    }
-
-    foreach ($rawLine in ($Content -split "\r?\n")) {
-        $line = $rawLine.TrimEnd()
-        if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') {
-            continue
-        }
-
-        # Top-level key
-        if ($line -match '^version:\s*') {
-            continue
-        }
-
-        if ($line -match '^(session|panes):\s*$') {
-            if ($section -eq 'panes' -and $null -ne $currentPane) {
-                Save-MonitorManifestPane -Pane $currentPane
-                $currentPane = $null
-            }
-
-            $section = $Matches[1]
-            continue
-        }
-
-        # Session properties (2-space indent)
-        if ($section -eq 'session' -and $line -match '^\s{2}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
-            $value = $Matches[2]
-            # Strip surrounding quotes
-            if ($value.Length -ge 2) {
-                if (($value.StartsWith("'") -and $value.EndsWith("'")) -or
-                    ($value.StartsWith('"') -and $value.EndsWith('"'))) {
-                    $value = $value.Substring(1, $value.Length - 2)
-                }
-            }
-            $manifest.Session[$Matches[1]] = $value
-            continue
-        }
-
-        # Pane list item start
-        if ($section -eq 'panes' -and $line -match '^\s{2}-\s+label:\s*(.*?)\s*$') {
-            if ($null -ne $currentPane) {
-                Save-MonitorManifestPane -Pane $currentPane
-            }
-
-            $value = $Matches[1]
-            if ($value.Length -ge 2) {
-                if (($value.StartsWith("'") -and $value.EndsWith("'")) -or
-                    ($value.StartsWith('"') -and $value.EndsWith('"'))) {
-                    $value = $value.Substring(1, $value.Length - 2)
-                }
-            }
-            $currentPane = [ordered]@{ label = $value }
-            continue
-        }
-
-        # Pane properties (4-space indent)
-        if ($section -eq 'panes' -and $line -match '^\s{4}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
-            if ($null -eq $currentPane) {
-                continue
-            }
-
-            $value = $Matches[2]
-            if ($value.Length -ge 2) {
-                if (($value.StartsWith("'") -and $value.EndsWith("'")) -or
-                    ($value.StartsWith('"') -and $value.EndsWith('"'))) {
-                    $value = $value.Substring(1, $value.Length - 2)
-                }
-            }
-            if ($value -eq 'null') {
-                $value = ''
-            }
-            $currentPane[$Matches[1]] = $value
-            continue
-        }
-    }
-
-    # Save last pane
-    if ($section -eq 'panes' -and $null -ne $currentPane) {
-        Save-MonitorManifestPane -Pane $currentPane
-    }
-
-    return $manifest
+    return ConvertFrom-PaneControlManifestContent -Content $Content
 }
 
 # ---------------------------------------------------------------------------

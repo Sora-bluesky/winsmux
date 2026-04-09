@@ -506,8 +506,59 @@ panes:
 
         $updated | Should -Be $true
         $context.Label | Should -Be 'builder-2'
-        $manifestContent | Should -Match $([regex]::Escape("- label: 'builder-2'"))
+        $manifestContent | Should -Match $([regex]::Escape("'builder-2':"))
     }
+
+    It 'updates the manifest label when panes are stored in dictionary format' {
+@'
+version: 1
+saved_at: '2026-04-07T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: 'C:\repo'
+  git_worktree_dir: 'C:\repo\.git'
+panes:
+  builder-1:
+    pane_id: '%2'
+    role: 'Builder'
+    exec_mode: true
+    launch_dir: 'C:\repo\.worktrees\builder-1'
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        Mock Get-PaneControlPaneTitle { 'builder-2' }
+
+        $updated = Update-PaneControlManifestPaneLabel -ProjectDir $script:paneControlTempRoot -PaneId '%2'
+
+        $context = Get-PaneControlManifestContext -ProjectDir $script:paneControlTempRoot -PaneId '%2'
+        $manifestContent = Get-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Raw -Encoding UTF8
+
+        $updated | Should -Be $true
+        $context.Label | Should -Be 'builder-2'
+        $manifestContent | Should -Match $([regex]::Escape("'builder-2':"))
+    }
+
+    It 'keeps changed_files empty when the manifest stores an empty array' {
+@'
+version: 1
+saved_at: '2026-04-09T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: 'C:\repo'
+panes:
+  builder-1:
+    pane_id: '%2'
+    role: 'Builder'
+    changed_file_count: '0'
+    changed_files: '[]'
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        $entries = @(Get-PaneControlManifestEntries -ProjectDir $script:paneControlTempRoot)
+
+        $entries.Count | Should -Be 1
+        $entries[0].ChangedFileCount | Should -Be 0
+        $entries[0].ChangedFiles | Should -Be @()
+    }
+
 }
 
 Describe 'logger helpers' {
@@ -541,7 +592,7 @@ Describe 'logger helpers' {
         $record.role | Should -Be 'Builder'
         $record.data.agent | Should -Be 'codex'
 
-        $lines = @(Get-Content -Path $logPath -Encoding UTF8)
+        $lines = @(Get-Content -Path $logPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
         $lines.Count | Should -Be 1
         $parsed = $lines[0] | ConvertFrom-Json
         $parsed.message | Should -Be 'builder booted'
@@ -692,8 +743,8 @@ panes:
 
             $result.Success | Should -Be $true
             $manifestContent = Get-Content -Path $manifestPath -Raw -Encoding UTF8
-            $manifestContent | Should -Match '(?m)^  - label: builder-2$'
-            $manifestContent | Should -Not -Match '(?m)^  - label: builder-1$'
+        $manifestContent | Should -Match $([regex]::Escape("'builder-2':"))
+            $manifestContent | Should -Not -Match $([regex]::Escape("  - label: 'builder-1'"))
             Should -Invoke Invoke-MonitorWinsmux -Times 1 -Exactly -ParameterFilter {
                 $Arguments[0] -eq 'display-message' -and
                 $Arguments[1] -eq '-p' -and
@@ -1155,6 +1206,118 @@ gpt-5.4   10% context left
             }
         }
     }
+
+    It 'syncs task review git state into manifest and monitor events' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        $eventsPath = Join-Path $manifestDir 'events.jsonl'
+        $reviewStatePath = Join-Path $manifestDir 'review-state.json'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    exec_mode: true
+    builder_branch: worktree-builder-1
+    builder_worktree_path: $tempRoot
+tasks:
+  queued: []
+  in_progress:
+    - 'id=task-243;builder=builder-1;task=Implement%20TASK-243'
+  completed: []
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+@'
+{
+  "worktree-builder-1": {
+    "status": "PENDING",
+    "request": {
+      "target_reviewer_label": "reviewer",
+      "target_reviewer_pane_id": "%3"
+    }
+  }
+}
+'@ | Set-Content -Path $reviewStatePath -Encoding UTF8
+
+            Mock Get-OrchestraGitSnapshot {
+                [ordered]@{
+                    branch             = 'worktree-builder-1'
+                    head_sha           = 'abc1234def5678'
+                    changed_file_count = 2
+                    changed_files      = @(
+                        'winsmux-core/scripts/orchestra-state.ps1',
+                        'winsmux-core/scripts/agent-monitor.ps1'
+                    )
+                }
+            }
+            Mock Get-PaneAgentStatus {
+                [ordered]@{
+                    Status       = 'ready'
+                    PaneId       = '%2'
+                    SnapshotTail = 'gpt-5.4   74% context left'
+                    SnapshotHash = 'hash-ready'
+                    ExitReason   = ''
+                }
+            }
+            Mock Update-MonitorIdleAlertState {
+                [ordered]@{
+                    ShouldAlert = $false
+                    Message     = ''
+                }
+            }
+            Mock Test-BuilderStall { $false }
+
+            $result = Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                agent = 'codex'
+                model = 'gpt-5.4'
+                roles = [ordered]@{}
+            }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra'
+
+            $result.Checked | Should -Be 1
+            $entries = @(Get-PaneControlManifestEntries -ProjectDir $tempRoot)
+            $entries.Count | Should -Be 1
+            $entries[0].TaskId | Should -Be 'task-243'
+            $entries[0].Task | Should -Be 'Implement TASK-243'
+            $entries[0].TaskState | Should -Be 'in_progress'
+            $entries[0].TaskOwner | Should -Be 'builder-1'
+            $entries[0].ReviewState | Should -Be 'PENDING'
+            $entries[0].Branch | Should -Be 'worktree-builder-1'
+            $entries[0].HeadSha | Should -Be 'abc1234def5678'
+            $entries[0].ChangedFileCount | Should -Be 2
+            $entries[0].ChangedFiles | Should -Be @(
+                'winsmux-core/scripts/orchestra-state.ps1',
+                'winsmux-core/scripts/agent-monitor.ps1'
+            )
+
+            $events = @(Get-Content -Path $eventsPath -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
+            $events.Count | Should -Be 1
+            $events[0].event | Should -Be 'pane.ready'
+            $events[0].data.task.id | Should -Be 'task-243'
+            $events[0].data.task.text | Should -Be 'Implement TASK-243'
+            $events[0].data.task.state | Should -Be 'in_progress'
+            $events[0].data.task.owner | Should -Be 'builder-1'
+            $events[0].data.git.branch | Should -Be 'worktree-builder-1'
+            $events[0].data.git.head_sha | Should -Be 'abc1234def5678'
+            $events[0].data.git.changed_file_count | Should -Be 2
+            $events[0].data.git.changed_files | Should -Be @(
+                'winsmux-core/scripts/orchestra-state.ps1',
+                'winsmux-core/scripts/agent-monitor.ps1'
+            )
+            $events[0].data.review.state | Should -Be 'PENDING'
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
 }
 
 Describe 'agent-watchdog helpers' {
@@ -1456,10 +1619,10 @@ Describe 'orchestra-start watchdog contract' {
     }
 
     It 'persists both process pids and prints cleanup guidance' {
-        $script:orchestraStartContent | Should -Match 'commander_poll_pid:'
+        $script:orchestraStartContent | Should -Match 'commander_poll_pid\s*=\s*\$CommanderPollPid'
         $script:orchestraStartContent | Should -Match 'Commander Poll PID: \$\(\$commanderPollProcess\.Id\)'
-        $script:orchestraStartContent | Should -Match 'watchdog_pid:'
-        $script:orchestraStartContent | Should -Match 'server_watchdog_pid:'
+        $script:orchestraStartContent | Should -Match 'watchdog_pid\s*=\s*\$WatchdogPid'
+        $script:orchestraStartContent | Should -Match 'server_watchdog_pid\s*=\s*\$ServerWatchdogPid'
         $script:orchestraStartContent | Should -Match '-WatchdogPid \$watchdogProcess\.Id'
         $script:orchestraStartContent | Should -Match '-ServerWatchdogPid \$serverWatchdogProcess\.Id'
         $script:orchestraStartContent | Should -Match 'Watchdog PID: \$\(\$watchdogProcess\.Id\)'
@@ -1496,14 +1659,15 @@ Describe 'orchestra-start server bootstrap' {
 
         $result.SessionName | Should -Be 'winsmux-orchestra'
         $result.SessionCreated | Should -Be $false
-        $result.ReadyChecks | Should -Be 1
         $script:probeCount | Should -Be 1
         $script:newSessionCallCount | Should -Be 0
     }
 
-    It 'auto-creates the server session when missing' {
+    It 'launches Windows Terminal and polls until panes are available when the session is missing' {
         $script:probeCount = 0
-        $script:newSessionArguments = @()
+        $script:startProcessFilePath = $null
+        $script:startProcessArgumentList = @()
+        $script:listPanesCallCount = 0
         $script:sleepCallCount = 0
 
         function Test-OrchestraServerSession {
@@ -1512,14 +1676,39 @@ Describe 'orchestra-start server bootstrap' {
             return ($script:probeCount -ge 3)
         }
 
+        function Get-Command {
+            param([string]$Name)
+            if ($Name -eq 'wt.exe') {
+                return [PSCustomObject]@{ Source = 'C:\Windows\System32\wt.exe' }
+            }
+
+            throw "unexpected command lookup: $Name"
+        }
+
+        function Start-Process {
+            param(
+                [string]$FilePath,
+                [object[]]$ArgumentList
+            )
+
+            $script:startProcessFilePath = $FilePath
+            $script:startProcessArgumentList = @($ArgumentList)
+        }
+
         function Invoke-Winsmux {
             param([string[]]$Arguments, [switch]$CaptureOutput)
-            $script:newSessionArguments = @($Arguments)
+
+            if ($Arguments[0] -eq 'list-panes') {
+                $script:listPanesCallCount++
+                return @('%1')
+            }
+
+            throw "unexpected winsmux call: $($Arguments -join ' ')"
         }
 
         function Start-Sleep {
-            param([int]$Seconds)
-            if ($Seconds -eq 2) {
+            param([int]$Milliseconds)
+            if ($Milliseconds -eq 500) {
                 $script:sleepCallCount++
             }
         }
@@ -1528,10 +1717,30 @@ Describe 'orchestra-start server bootstrap' {
 
         $result.SessionName | Should -Be 'winsmux-orchestra'
         $result.SessionCreated | Should -Be $true
-        $result.ReadyChecks | Should -Be 2
-        $script:newSessionArguments | Should -Be @('new-session', '-d', '-s', 'winsmux-orchestra')
         $script:probeCount | Should -Be 3
         $script:sleepCallCount | Should -Be 1
+        $script:listPanesCallCount | Should -Be 1
+        $script:startProcessFilePath | Should -Be 'C:\Windows\System32\wt.exe'
+        $script:startProcessArgumentList | Should -Be @(
+            '--size', '200,70',
+            '--title', 'winsmux-orchestra',
+            '--',
+            'winsmux', 'new-session', '-s', 'winsmux-orchestra'
+        )
+    }
+
+    It 'fails closed when Windows Terminal is unavailable' {
+        function Test-OrchestraServerSession {
+            param([string]$SessionName)
+            return $false
+        }
+
+        function Get-Command {
+            param([string]$Name)
+            return $null
+        }
+
+        { Ensure-OrchestraServer -SessionName 'winsmux-orchestra' } | Should -Throw '*wt.exe*'
     }
 }
 
@@ -1543,10 +1752,10 @@ Describe 'orchestra-start session reuse contract' {
 
     It 'reuses the session Ensure-OrchestraServer just created' {
         $script:orchestraStartContent | Should -Match '\$orchestraServer\s*=\s*Ensure-OrchestraServer -SessionName \$sessionName'
-        $script:orchestraStartContent | Should -Match 'if \(-not \[bool\]\$orchestraServer\.SessionCreated\) \{'
-        $script:orchestraStartContent | Should -Match "preflight\.session\.reuse"
-        $script:orchestraStartContent | Should -Match 'if \(\[bool\]\$orchestraServer\.SessionCreated\) \{'
-        $script:orchestraStartContent | Should -Match 'Session \$sessionName was already created by Ensure-OrchestraServer\.'
+        $script:orchestraStartContent | Should -Match "preflight\.session\.ready"
+        $script:orchestraStartContent | Should -Match 'Session \$sessionName created by Ensure-OrchestraServer\.'
+        $script:orchestraStartContent | Should -Not -Match "preflight\.session\.create"
+        $script:orchestraStartContent | Should -Not -Match "new-session', '-d'"
     }
 }
 
@@ -1706,6 +1915,60 @@ panes:
         $workload.BuilderCount | Should -Be 3
         $workload.BusyRatio | Should -BeGreaterThan 0.66
         $workload.BusyRatio | Should -BeLessThan 0.67
+    }
+
+    It 'reads dictionary-style pane manifests written by orchestra-start' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+  builder-2:
+    pane_id: %3
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+
+        $manifest = Read-PaneScalerManifest -ManifestPath $script:paneScalerManifestPath
+
+        $manifest.Panes.Keys | Should -Be @('builder-1', 'builder-2')
+        $manifest.Panes['builder-1'].pane_id | Should -Be '%2'
+        $manifest.Panes['builder-2'].role | Should -Be 'Builder'
+    }
+
+    It 'writes canonical dictionary-style panes when saving the manifest' {
+        $manifest = [PSCustomObject]@{
+            Version = 1
+            SavedAt = '2026-04-09T11:00:00+09:00'
+            Session = [ordered]@{
+                name = 'winsmux-orchestra'
+                project_dir = $script:paneScalerTempRoot
+            }
+            Panes = [ordered]@{
+                'builder-1' = [ordered]@{
+                    pane_id = '%2'
+                    role = 'Builder'
+                    launch_dir = $script:paneScalerTempRoot
+                }
+            }
+            Tasks = [PSCustomObject]@{
+                queued = @()
+                in_progress = @()
+                completed = @()
+            }
+            Worktrees = [ordered]@{}
+        }
+
+        Save-PaneScalerManifest -ManifestPath $script:paneScalerManifestPath -Manifest $manifest
+
+        $content = Get-Content -Path $script:paneScalerManifestPath -Raw -Encoding UTF8
+        $content | Should -Match "panes:\r?\n  'builder-1':"
+        $content | Should -Not -Match "panes:\r?\n  - label:"
+        $content | Should -Match "saved_at: '2026-04-09T11:00:00\+09:00'"
     }
 
     It 'scales up when workload exceeds the threshold' {
@@ -1876,6 +2139,52 @@ Esc to interrupt
         $records[2].Label | Should -Be 'commander'
         $records[2].State | Should -Be 'busy'
         $records[2].TokensRemaining | Should -Be '61% context left'
+    }
+
+    It 'includes task review git fields from the manifest state model' {
+        @'
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    launch_dir: C:\repo\.worktrees\builder-1
+    task_id: task-243
+    task: Implement TASK-243
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 2
+    changed_files: '["winsmux-core/scripts/orchestra-state.ps1","winsmux-core/scripts/agent-monitor.ps1"]'
+    last_event: pane.ready
+    last_event_at: 2026-04-09T12:00:00+09:00
+'@ | Set-Content -Path (Join-Path (Join-Path $script:paneStatusTempRoot '.winsmux') 'manifest.yaml') -Encoding UTF8
+
+        $records = Get-PaneStatusRecords -ProjectDir $script:paneStatusTempRoot -SnapshotProvider {
+            param($PaneId)
+            'gpt-5.4   74% context left'
+        }
+
+        $records.Count | Should -Be 1
+        $records[0].TaskId | Should -Be 'task-243'
+        $records[0].Task | Should -Be 'Implement TASK-243'
+        $records[0].TaskState | Should -Be 'in_progress'
+        $records[0].TaskOwner | Should -Be 'builder-1'
+        $records[0].ReviewState | Should -Be 'PENDING'
+        $records[0].Branch | Should -Be 'worktree-builder-1'
+        $records[0].HeadSha | Should -Be 'abc1234def5678'
+        $records[0].ChangedFileCount | Should -Be 2
+        $records[0].ChangedFiles | Should -Be @(
+            'winsmux-core/scripts/orchestra-state.ps1',
+            'winsmux-core/scripts/agent-monitor.ps1'
+        )
+        $records[0].LastEvent | Should -Be 'pane.ready'
+        $records[0].LastEventAt | Should -Be '2026-04-09T12:00:00+09:00'
     }
 }
 
@@ -2125,6 +2434,95 @@ panes:
             $Message -eq 'builder-1 (%2) がアイドル。次タスクのディスパッチが必要'
         }
     }
+
+    It 'processes mailbox idle messages when panes are stored in dictionary format' {
+        @"
+version: 1
+saved_at: 2026-04-09T11:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:commanderPollTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    launch_dir: $script:commanderPollTempRoot
+"@ | Set-Content -Path $script:commanderPollManifestPath -Encoding UTF8
+
+        Mock Receive-CommanderPollMailboxMessages {
+            @(
+                [ordered]@{
+                    timestamp   = '2026-04-07T09:00:00.0000000+09:00'
+                    session     = 'winsmux-orchestra'
+                    event       = 'pane.idle'
+                    message     = 'Commander alert: idle pane builder-1 (%2, role=Builder)'
+                    label       = 'builder-1'
+                    pane_id     = '%2'
+                    role        = 'Builder'
+                    status      = 'ready'
+                    exit_reason = ''
+                    data        = [ordered]@{
+                        idle_threshold_seconds = 120
+                    }
+                    source      = 'mailbox'
+                }
+            )
+        }
+        Mock Write-CommanderPollLog { }
+
+        $cycle = Invoke-CommanderPollCycle -ManifestPath $script:commanderPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+        $summary = $cycle['Summary']
+
+        $summary.mailbox_events | Should -Be 1
+        $summary.new_events | Should -Be 1
+        $summary.dispatches | Should -Be 1
+        $summary.messages[0] | Should -Be 'builder-1 (%2) がアイドル。次タスクのディスパッチが必要'
+    }
+
+    It 'appends commander poll log records as jsonl' {
+        Write-CommanderPollLog -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' -EventName 'commander.poll.idle_dispatch_needed' -Message 'idle' -PaneId '%2'
+        Write-CommanderPollLog -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' -EventName 'commander.poll.auto_approved' -Message 'approved' -PaneId '%2'
+
+        $logPath = Get-CommanderPollLogPath -ProjectDir $script:commanderPollTempRoot
+        $lines = @(Get-Content -Path $logPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+
+        $lines.Count | Should -Be 2
+        ($lines[0] | ConvertFrom-Json).event | Should -Be 'commander.poll.idle_dispatch_needed'
+        ($lines[1] | ConvertFrom-Json).event | Should -Be 'commander.poll.auto_approved'
+    }
+
+    It 'does not forward commander dispatch-needed alerts to Telegram by default' {
+        Mock Test-Path { $true }
+        Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+        Mock Invoke-RestMethod { }
+
+        Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
+            -Event 'commander.dispatch_needed' -Message 'idle' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
+
+        Should -Not -Invoke Invoke-RestMethod
+    }
+
+    It 'allows internal commander Telegram alerts only when explicitly overridden' {
+        $previousOverride = $env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS
+        $env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS = 'true'
+
+        try {
+            Mock Test-Path { $true }
+            Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+            Mock Invoke-RestMethod { }
+
+            Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
+                -Event 'commander.dispatch_needed' -Message 'idle' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
+
+            Should -Invoke Invoke-RestMethod -Times 1 -Exactly
+        } finally {
+            if ($null -eq $previousOverride) {
+                Remove-Item Env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS = $previousOverride
+            }
+        }
+    }
 }
 
 Describe 'winsmux send fallback' {
@@ -2206,4 +2604,35 @@ Describe 'winsmux send fallback' {
         $script:sendAttempts | Should -Be @('%7 literal', 'default:0.3 literal', 'default:0.3 Enter')
     }
 
+}
+
+Describe 'watermark helpers' {
+    BeforeAll {
+        $bridgePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $null = . $bridgePath version
+    }
+
+    BeforeEach {
+        $script:watermarkTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-watermark-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:watermarkTempRoot -Force | Out-Null
+        $WatermarkDir = $script:watermarkTempRoot
+    }
+
+    AfterEach {
+        if ($script:watermarkTempRoot -and (Test-Path $script:watermarkTempRoot)) {
+            Remove-Item -Path $script:watermarkTempRoot -Recurse -Force
+        }
+    }
+
+    It 'writes and reuses watermark hashes via the CLM-safe helper' {
+        Save-Watermark -PaneId '%7' -Content 'hello'
+
+        $path = Get-WatermarkPath -PaneId '%7'
+        $savedHash = Get-Content -Path $path -Raw -Encoding UTF8
+
+        Test-Path $path | Should -Be $true
+        $savedHash | Should -Not -BeNullOrEmpty
+        (Test-WatermarkChanged -PaneId '%7' -CurrentContent 'hello') | Should -Be $false
+        (Test-WatermarkChanged -PaneId '%7' -CurrentContent 'updated') | Should -Be $true
+    }
 }

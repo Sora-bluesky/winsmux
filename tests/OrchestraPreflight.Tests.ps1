@@ -110,6 +110,34 @@ Describe 'orchestra preflight zombie detection' {
 
         @($victims | ForEach-Object { [int]$_.ProcessId } | Sort-Object) | Should -Be @(402, 403)
     }
+
+    It 'does not treat pane root pwsh as a zombie when only descendants should be cleaned' {
+        $snapshot = & $script:NewPreflightSnapshot -Processes @(
+            [PSCustomObject]@{
+                ProcessId       = 501
+                ParentProcessId = 0
+                Name            = 'pwsh.exe'
+                CommandLine     = 'pwsh -NoProfile'
+            }
+            [PSCustomObject]@{
+                ProcessId       = 502
+                ParentProcessId = 501
+                Name            = 'codex.exe'
+                CommandLine     = 'codex'
+            }
+        )
+
+        $victims = Get-OrchestraZombieVictims `
+            -Snapshot $snapshot `
+            -ProtectedIds ([System.Collections.Generic.HashSet[int]]::new()) `
+            -ProjectDir 'C:\repo' `
+            -GitWorktreeDir 'C:\repo\.git' `
+            -BridgeScript 'C:\repo\scripts\winsmux-core.ps1' `
+            -SessionName 'winsmux-orchestra' `
+            -PaneRootIds @(501)
+
+        @($victims | ForEach-Object { [int]$_.ProcessId } | Sort-Object) | Should -Be @(502)
+    }
 }
 
 Describe 'orchestra preflight server health' {

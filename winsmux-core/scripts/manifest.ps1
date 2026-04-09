@@ -3,43 +3,107 @@
 Session manifest reader/writer for winsmux Orchestra.
 
 .DESCRIPTION
-Manages .winsmux/manifest.yaml — the single source of truth for a running
-Orchestra session (panes, tasks, worktrees).
-
-Uses simple line-by-line YAML serialization; no external modules required.
-
-Dot-source this script to load the helpers:
-
-    . "$PSScriptRoot/manifest.ps1"
+Manages .winsmux/manifest.yaml as the single source of truth for a running
+Orchestra session. Supports both the legacy list-style pane schema and the
+current dictionary-style pane schema used by orchestra-start.ps1.
 #>
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'clm-safe-io.ps1')
 
 $script:ManifestFileName = 'manifest.yaml'
-$script:ManifestDirName  = '.winsmux'
-
-# ---------------------------------------------------------------------------
-# YAML helpers (minimal, project-local)
-# ---------------------------------------------------------------------------
+$script:ManifestDirName = '.winsmux'
 
 function ConvertTo-ManifestYamlScalar {
     param([AllowNull()]$Value)
 
     if ($null -eq $Value) {
-        return '""'
+        return 'null'
     }
 
-    $text = $Value.ToString()
-    if ($text -eq '') {
-        return '""'
+    if ($Value -is [bool]) {
+        return $(if ($Value) { 'true' } else { 'false' })
     }
 
-    if ($text -match '^[A-Za-z0-9._/\\:-]+$') {
-        return $text
+    $text = [string]$Value
+    if ($text.Length -eq 0) {
+        return "''"
     }
 
-    return '"' + ($text -replace '"', '\"') + '"'
+    return "'" + $text.Replace("'", "''") + "'"
+}
+
+function Split-ManifestYamlInlineList {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $items = [System.Collections.Generic.List[string]]::new()
+    $builder = New-Object System.Text.StringBuilder
+    $quote = [char]0
+
+    for ($index = 0; $index -lt $Value.Length; $index++) {
+        $char = $Value[$index]
+
+        if ($quote -ne [char]0) {
+            [void]$builder.Append($char)
+
+            if ($char -eq $quote) {
+                if ($quote -eq "'" -and $index + 1 -lt $Value.Length -and $Value[$index + 1] -eq "'") {
+                    $index++
+                    [void]$builder.Append($Value[$index])
+                    continue
+                }
+
+                $quote = [char]0
+            }
+
+            continue
+        }
+
+        if ($char -eq "'" -or $char -eq '"') {
+            $quote = $char
+            [void]$builder.Append($char)
+            continue
+        }
+
+        if ($char -eq ',') {
+            $items.Add($builder.ToString().Trim()) | Out-Null
+            [void]$builder.Clear()
+            continue
+        }
+
+        [void]$builder.Append($char)
+    }
+
+    $items.Add($builder.ToString().Trim()) | Out-Null
+    return @($items)
+}
+
+function ConvertTo-ManifestYamlValue {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return 'null'
+    }
+
+    if ($Value -is [string] -or $Value -is [bool]) {
+        return ConvertTo-ManifestYamlScalar -Value $Value
+    }
+
+    if ($Value -is [System.Collections.IEnumerable] -and -not ($Value -is [System.Collections.IDictionary])) {
+        $items = @($Value)
+        if ($items.Count -eq 0) {
+            return '[]'
+        }
+
+        $encodedItems = foreach ($item in $items) {
+            ConvertTo-ManifestYamlScalar -Value $item
+        }
+
+        return '[' + ($encodedItems -join ', ') + ']'
+    }
+
+    return ConvertTo-ManifestYamlScalar -Value $Value
 }
 
 function ConvertFrom-ManifestYamlScalar {
@@ -57,12 +121,100 @@ function ConvertFrom-ManifestYamlScalar {
         }
     }
 
+    if ($text -eq 'null') {
+        return $null
+    }
+
     return $text
 }
 
-# ---------------------------------------------------------------------------
-# Path helpers
-# ---------------------------------------------------------------------------
+function ConvertFrom-ManifestYamlValue {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    $text = $Value.ToString().Trim()
+    if ($text -eq '[]') {
+        return @()
+    }
+
+    if ($text.Length -ge 2 -and $text.StartsWith('[') -and $text.EndsWith(']')) {
+        $inner = $text.Substring(1, $text.Length - 2).Trim()
+        if ([string]::IsNullOrWhiteSpace($inner)) {
+            return @()
+        }
+
+        return @((Split-ManifestYamlInlineList -Value $inner | ForEach-Object {
+            ConvertFrom-ManifestYamlScalar -Value $_
+        }))
+    }
+
+    return ConvertFrom-ManifestYamlScalar -Value $Value
+}
+
+function ConvertTo-ManifestPropertyMap {
+    param([AllowNull()]$Value)
+
+    $result = [ordered]@{}
+    if ($null -eq $Value) {
+        return $result
+    }
+
+    if ($Value -is [System.Collections.Specialized.OrderedDictionary]) {
+        foreach ($key in $Value.Keys) {
+            $result[[string]$key] = $Value[$key]
+        }
+
+        return $result
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($entry in $Value.GetEnumerator()) {
+            $result[[string]$entry.Key] = $entry.Value
+        }
+
+        return $result
+    }
+
+    if ($null -ne $Value.PSObject) {
+        foreach ($property in $Value.PSObject.Properties) {
+            $result[$property.Name] = $property.Value
+        }
+    }
+
+    return $result
+}
+
+function ConvertTo-ManifestKeyName {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    switch ($Name) {
+        'PaneId' { return 'pane_id' }
+        'Role' { return 'role' }
+        'ExecMode' { return 'exec_mode' }
+        'LaunchDir' { return 'launch_dir' }
+        'BuilderBranch' { return 'builder_branch' }
+        'BuilderWorktreePath' { return 'builder_worktree_path' }
+        'Task' { return 'task' }
+        'Status' { return 'status' }
+        'BootstrapFailures' { return 'bootstrap_failures' }
+        default {
+            $snake = [regex]::Replace($Name, '([a-z0-9])([A-Z])', '$1_$2')
+            return $snake.ToLowerInvariant()
+        }
+    }
+}
+
+function Write-ManifestTextFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [AllowEmptyString()][string]$Content = ''
+    )
+
+    Write-WinsmuxTextFile -Path $Path -Content $Content
+}
 
 function Get-ManifestDir {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
@@ -76,27 +228,14 @@ function Get-ManifestPath {
     return Join-Path (Get-ManifestDir -ProjectDir $ProjectDir) $script:ManifestFileName
 }
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
 function New-WinsmuxManifest {
-    <#
-    .SYNOPSIS
-    Creates a fresh .winsmux/manifest.yaml for a new Orchestra session.
-    #>
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
-    $dir = Get-ManifestDir -ProjectDir $ProjectDir
-    if (-not (Test-Path $dir)) {
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    }
-
-    $now = [System.DateTimeOffset]::Now.ToString('yyyy-MM-ddTHH:mm:sszzz')
-
+    $now = [System.DateTimeOffset]::Now.ToString('o')
     $manifest = [PSCustomObject]@{
-        version   = 1
-        session   = [PSCustomObject]@{
+        version  = 1
+        saved_at = $now
+        session  = [PSCustomObject]@{
             started = $now
             ended   = ''
         }
@@ -110,23 +249,18 @@ function New-WinsmuxManifest {
     }
 
     Save-WinsmuxManifest -ProjectDir $ProjectDir -Manifest $manifest
-
     return $manifest
 }
 
 function Get-WinsmuxManifest {
-    <#
-    .SYNOPSIS
-    Reads .winsmux/manifest.yaml and returns a PSCustomObject, or $null if absent.
-    #>
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
     $path = Get-ManifestPath -ProjectDir $ProjectDir
-    if (-not (Test-Path $path)) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         return $null
     }
 
-    $raw = Get-Content -Raw -Path $path -Encoding UTF8
+    $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
     if ([string]::IsNullOrWhiteSpace($raw)) {
         return $null
     }
@@ -135,33 +269,33 @@ function Get-WinsmuxManifest {
 }
 
 function Save-WinsmuxManifest {
-    <#
-    .SYNOPSIS
-    Writes a manifest PSCustomObject back to .winsmux/manifest.yaml.
-    #>
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)]$Manifest
     )
 
-    $dir = Get-ManifestDir -ProjectDir $ProjectDir
-    if (-not (Test-Path $dir)) {
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    }
-
     $path = Get-ManifestPath -ProjectDir $ProjectDir
     $yaml = ConvertTo-ManifestYaml -Manifest $Manifest
-    Set-Content -Path $path -Value $yaml -Encoding UTF8 -NoNewline
+    Write-ManifestTextFile -Path $path -Content $yaml
+}
+
+function ConvertTo-ManifestPaneEntry {
+    param([Parameter(Mandatory = $true)]$PaneSummary)
+
+    $entry = [ordered]@{}
+    $paneMap = ConvertTo-ManifestPropertyMap -Value $PaneSummary
+    foreach ($key in $paneMap.Keys) {
+        if ($key -eq 'Label') {
+            continue
+        }
+
+        $entry[(ConvertTo-ManifestKeyName -Name $key)] = $paneMap[$key]
+    }
+
+    return $entry
 }
 
 function Update-ManifestPanes {
-    <#
-    .SYNOPSIS
-    Replaces the panes section of the manifest.
-
-    .PARAMETER PaneSummaries
-    Array of objects with: Label, PaneId, Role, BuilderWorktreePath
-    #>
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [Parameter(Mandatory = $true)][array]$PaneSummaries
@@ -175,12 +309,7 @@ function Update-ManifestPanes {
 
     $panes = [ordered]@{}
     foreach ($pane in $PaneSummaries) {
-        $label = $pane.Label
-        $panes[$label] = [PSCustomObject]@{
-            pane_id               = $pane.PaneId
-            role                  = $pane.Role
-            builder_worktree_path = if ($pane.BuilderWorktreePath) { $pane.BuilderWorktreePath } else { '' }
-        }
+        $panes[[string]$pane.Label] = ConvertTo-ManifestPaneEntry -PaneSummary $pane
     }
 
     $manifest.panes = $panes
@@ -188,10 +317,6 @@ function Update-ManifestPanes {
 }
 
 function Update-ManifestTasks {
-    <#
-    .SYNOPSIS
-    Replaces the tasks section of the manifest.
-    #>
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][array]$InProgress,
@@ -204,7 +329,13 @@ function Update-ManifestTasks {
         throw "Manifest not found at: $ManifestPath"
     }
 
+    $queued = @()
+    if ($null -ne $manifest.tasks -and $null -ne $manifest.tasks.queued) {
+        $queued = @($manifest.tasks.queued)
+    }
+
     $manifest.tasks = [PSCustomObject]@{
+        queued      = @($queued)
         in_progress = @($InProgress)
         completed   = @($Completed)
     }
@@ -212,230 +343,176 @@ function Update-ManifestTasks {
     Save-WinsmuxManifest -ProjectDir $projectDir -Manifest $manifest
 }
 
-# ---------------------------------------------------------------------------
-# YAML serializer
-# ---------------------------------------------------------------------------
-
 function ConvertTo-ManifestYaml {
     param([Parameter(Mandatory = $true)]$Manifest)
 
+    $manifestMap = ConvertTo-ManifestPropertyMap -Value $Manifest
+    $sessionMap = ConvertTo-ManifestPropertyMap -Value $manifestMap['session']
+    $panesMap = ConvertTo-ManifestPropertyMap -Value $manifestMap['panes']
+    $tasksMap = ConvertTo-ManifestPropertyMap -Value $manifestMap['tasks']
+    $worktreesMap = ConvertTo-ManifestPropertyMap -Value $manifestMap['worktrees']
+
     $lines = [System.Collections.Generic.List[string]]::new()
-
-    $lines.Add("version: $($Manifest.version)")
-    $lines.Add('session:')
-    $lines.Add("  started: $(ConvertTo-ManifestYamlScalar $Manifest.session.started)")
-    $lines.Add("  ended: $(ConvertTo-ManifestYamlScalar $Manifest.session.ended)")
-
-    # panes
-    $lines.Add('panes:')
-    $paneEntries = $null
-    if ($Manifest.panes -is [System.Collections.IDictionary]) {
-        $paneEntries = $Manifest.panes
+    $lines.Add(('version: {0}' -f (ConvertTo-ManifestYamlScalar -Value $(if ($manifestMap.Contains('version')) { $manifestMap['version'] } else { 1 })))) | Out-Null
+    $lines.Add(('saved_at: {0}' -f (ConvertTo-ManifestYamlScalar -Value $(if ($manifestMap.Contains('saved_at')) { $manifestMap['saved_at'] } else { [System.DateTimeOffset]::Now.ToString('o') })))) | Out-Null
+    $lines.Add('session:') | Out-Null
+    foreach ($key in $sessionMap.Keys) {
+        $lines.Add(('  {0}: {1}' -f $key, (ConvertTo-ManifestYamlScalar -Value $sessionMap[$key]))) | Out-Null
     }
 
-    if ($null -ne $paneEntries -and $paneEntries.Count -gt 0) {
-        foreach ($label in $paneEntries.Keys) {
-            $pane = $paneEntries[$label]
-            $lines.Add("  $(ConvertTo-ManifestYamlScalar $label):")
-            $lines.Add("    pane_id: $(ConvertTo-ManifestYamlScalar $pane.pane_id)")
-            $lines.Add("    role: $(ConvertTo-ManifestYamlScalar $pane.role)")
-            $lines.Add("    builder_worktree_path: $(ConvertTo-ManifestYamlScalar $pane.builder_worktree_path)")
-        }
-    } else {
+    $lines.Add('panes:') | Out-Null
+    if ($panesMap.Count -eq 0) {
         $lines[$lines.Count - 1] = 'panes: {}'
-    }
-
-    # tasks
-    $lines.Add('tasks:')
-
-    $lines.Add('  queued:')
-    $queued = @()
-    if ($null -ne $Manifest.tasks -and $null -ne $Manifest.tasks.queued) {
-        $queued = @($Manifest.tasks.queued)
-    }
-
-    if ($queued.Count -gt 0) {
-        foreach ($task in $queued) {
-            $lines.Add("    - $(ConvertTo-ManifestYamlScalar $task)")
-        }
     } else {
-        $lines[$lines.Count - 1] = '  queued: []'
-    }
-
-    $lines.Add('  in_progress:')
-    $inProgress = @()
-    if ($null -ne $Manifest.tasks -and $null -ne $Manifest.tasks.in_progress) {
-        $inProgress = @($Manifest.tasks.in_progress)
-    }
-
-    if ($inProgress.Count -gt 0) {
-        foreach ($task in $inProgress) {
-            $lines.Add("    - $(ConvertTo-ManifestYamlScalar $task)")
-        }
-    } else {
-        $lines[$lines.Count - 1] = '  in_progress: []'
-    }
-
-    $lines.Add('  completed:')
-    $completed = @()
-    if ($null -ne $Manifest.tasks -and $null -ne $Manifest.tasks.completed) {
-        $completed = @($Manifest.tasks.completed)
-    }
-
-    if ($completed.Count -gt 0) {
-        foreach ($task in $completed) {
-            $lines.Add("    - $(ConvertTo-ManifestYamlScalar $task)")
-        }
-    } else {
-        $lines[$lines.Count - 1] = '  completed: []'
-    }
-
-    # worktrees
-    $lines.Add('worktrees:')
-    $wtEntries = $null
-    if ($Manifest.worktrees -is [System.Collections.IDictionary]) {
-        $wtEntries = $Manifest.worktrees
-    }
-
-    if ($null -ne $wtEntries -and $wtEntries.Count -gt 0) {
-        foreach ($label in $wtEntries.Keys) {
-            $wt = $wtEntries[$label]
-            $lines.Add("  $(ConvertTo-ManifestYamlScalar $label):")
-            if ($wt -is [System.Collections.IDictionary]) {
-                foreach ($key in $wt.Keys) {
-                    $lines.Add("    ${key}: $(ConvertTo-ManifestYamlScalar $wt[$key])")
-                }
-            } elseif ($null -ne $wt -and $null -ne $wt.PSObject) {
-                foreach ($prop in $wt.PSObject.Properties) {
-                    $lines.Add("    $($prop.Name): $(ConvertTo-ManifestYamlScalar $prop.Value)")
-                }
+        foreach ($label in $panesMap.Keys) {
+            $lines.Add(('  {0}:' -f (ConvertTo-ManifestYamlScalar -Value $label))) | Out-Null
+            $paneMap = ConvertTo-ManifestPropertyMap -Value $panesMap[$label]
+            foreach ($key in $paneMap.Keys) {
+                $lines.Add(('    {0}: {1}' -f $key, (ConvertTo-ManifestYamlValue -Value $paneMap[$key]))) | Out-Null
             }
         }
-    } else {
+    }
+
+    $lines.Add('tasks:') | Out-Null
+    foreach ($taskKey in @('queued', 'in_progress', 'completed')) {
+        $lines.Add(('  {0}:' -f $taskKey)) | Out-Null
+        $items = @()
+        if ($tasksMap.Contains($taskKey) -and $null -ne $tasksMap[$taskKey]) {
+            $items = @($tasksMap[$taskKey])
+        }
+
+        if ($items.Count -eq 0) {
+            $lines[$lines.Count - 1] = ('  {0}: []' -f $taskKey)
+        } else {
+            foreach ($item in $items) {
+                $lines.Add(('    - {0}' -f (ConvertTo-ManifestYamlScalar -Value $item))) | Out-Null
+            }
+        }
+    }
+
+    $lines.Add('worktrees:') | Out-Null
+    if ($worktreesMap.Count -eq 0) {
         $lines[$lines.Count - 1] = 'worktrees: {}'
+    } else {
+        foreach ($label in $worktreesMap.Keys) {
+            $lines.Add(('  {0}:' -f (ConvertTo-ManifestYamlScalar -Value $label))) | Out-Null
+            $worktreeEntry = ConvertTo-ManifestPropertyMap -Value $worktreesMap[$label]
+            foreach ($key in $worktreeEntry.Keys) {
+                $lines.Add(('    {0}: {1}' -f $key, (ConvertTo-ManifestYamlValue -Value $worktreeEntry[$key]))) | Out-Null
+            }
+        }
     }
 
     return ($lines -join "`n") + "`n"
 }
 
-# ---------------------------------------------------------------------------
-# YAML deserializer
-# ---------------------------------------------------------------------------
-
 function ConvertFrom-ManifestYaml {
     param([Parameter(Mandatory = $true)][string]$Content)
 
     $manifest = [PSCustomObject]@{
-        version   = 1
-        session   = [PSCustomObject]@{ started = ''; ended = '' }
-        panes     = [ordered]@{}
-        tasks     = [PSCustomObject]@{ queued = @(); in_progress = @(); completed = @() }
+        version  = 1
+        saved_at = ''
+        session  = [PSCustomObject]@{}
+        panes    = [ordered]@{}
+        tasks    = [PSCustomObject]@{
+            queued      = @()
+            in_progress = @()
+            completed   = @()
+        }
         worktrees = [ordered]@{}
     }
 
-    $section      = ''
-    $subSection   = ''
+    $section = ''
     $currentLabel = ''
-    $taskListKey  = ''
+    $currentMode = ''
+    $taskListKey = ''
 
     foreach ($rawLine in ($Content -split "\r?\n")) {
-        # Skip comments and blank lines
-        $line = $rawLine
-        if ($line -match '^\s*#') { continue }
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $line = $rawLine.TrimEnd()
+        if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') {
+            continue
+        }
 
-        # Top-level scalar: version
-        if ($line -match '^version:\s*(.+?)\s*$') {
+        if ($line -match '^version:\s*(.*?)\s*$') {
             $manifest.version = [int](ConvertFrom-ManifestYamlScalar $Matches[1])
-            $section = ''
             continue
         }
 
-        # Section headers (0-indent)
-        if ($line -match '^(session|panes|tasks|worktrees):\s*(\{?\}?)\s*$') {
-            $section      = $Matches[1]
-            $subSection   = ''
+        if ($line -match '^saved_at:\s*(.*?)\s*$') {
+            $manifest.saved_at = [string](ConvertFrom-ManifestYamlScalar $Matches[1])
+            continue
+        }
+
+        if ($line -match '^(session|panes|tasks|worktrees):\s*(\{\})?\s*$') {
+            $section = $Matches[1]
             $currentLabel = ''
-            $taskListKey  = ''
+            $currentMode = ''
+            $taskListKey = ''
             continue
         }
 
-        # 2-space indent
-        if ($line -match '^  (\S.*)$') {
-            $inner = $Matches[1]
-
-            switch ($section) {
-                'session' {
-                    if ($inner -match '^(started|ended):\s*(.*?)\s*$') {
-                        $manifest.session.($Matches[1]) = ConvertFrom-ManifestYamlScalar $Matches[2]
-                    }
-                }
-                'panes' {
-                    if ($inner -match '^(.+?):\s*$') {
-                        # Pane label header
-                        $currentLabel = ConvertFrom-ManifestYamlScalar $Matches[1]
-                        $manifest.panes[$currentLabel] = [PSCustomObject]@{
-                            pane_id               = ''
-                            role                  = ''
-                            builder_worktree_path = ''
-                        }
-                    }
-                }
-                'tasks' {
-                    if ($inner -match '^(queued|in_progress|completed):\s*(\[?\]?)\s*$') {
-                        $taskListKey = $Matches[1]
-                    } elseif ($inner -match '^-\s+(.+?)\s*$' -and $taskListKey) {
-                        $value = ConvertFrom-ManifestYamlScalar $Matches[1]
-                        if ($taskListKey -eq 'queued') {
-                            $manifest.tasks.queued = @($manifest.tasks.queued) + @($value)
-                        } elseif ($taskListKey -eq 'in_progress') {
-                            $manifest.tasks.in_progress = @($manifest.tasks.in_progress) + @($value)
-                        } else {
-                            $manifest.tasks.completed = @($manifest.tasks.completed) + @($value)
-                        }
-                    }
-                }
-                'worktrees' {
-                    if ($inner -match '^(.+?):\s*$') {
-                        $currentLabel = ConvertFrom-ManifestYamlScalar $Matches[1]
-                        $manifest.worktrees[$currentLabel] = [ordered]@{}
-                    }
-                }
-            }
-
+        if ($section -eq 'session' -and $line -match '^\s{2}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
+            $manifest.session | Add-Member -NotePropertyName $Matches[1] -NotePropertyValue (ConvertFrom-ManifestYamlValue $Matches[2]) -Force
             continue
         }
 
-        # 4-space indent
-        if ($line -match '^    (\S.*)$') {
-            $inner = $Matches[1]
-
-            if ($section -eq 'panes' -and $currentLabel -and $manifest.panes.Contains($currentLabel)) {
-                if ($inner -match '^(pane_id|role|builder_worktree_path):\s*(.*?)\s*$') {
-                    $manifest.panes[$currentLabel].($Matches[1]) = ConvertFrom-ManifestYamlScalar $Matches[2]
+        if ($section -eq 'panes') {
+            if ($line -match '^\s{2}-\s+label:\s*(.*?)\s*$') {
+                $currentLabel = [string](ConvertFrom-ManifestYamlScalar $Matches[1])
+                if (-not $manifest.panes.Contains($currentLabel)) {
+                    $manifest.panes[$currentLabel] = [ordered]@{ label = $currentLabel }
                 }
+                $currentMode = 'list'
+                continue
             }
 
-            if ($section -eq 'tasks' -and $taskListKey) {
-                if ($inner -match '^-\s+(.+?)\s*$') {
-                    $value = ConvertFrom-ManifestYamlScalar $Matches[1]
-                    if ($taskListKey -eq 'queued') {
-                        $manifest.tasks.queued = @($manifest.tasks.queued) + @($value)
-                    } elseif ($taskListKey -eq 'in_progress') {
-                        $manifest.tasks.in_progress = @($manifest.tasks.in_progress) + @($value)
-                    } else {
-                        $manifest.tasks.completed = @($manifest.tasks.completed) + @($value)
-                    }
+            if ($line -match '^\s{2}(.+?):\s*$') {
+                $currentLabel = [string](ConvertFrom-ManifestYamlScalar $Matches[1])
+                if (-not $manifest.panes.Contains($currentLabel)) {
+                    $manifest.panes[$currentLabel] = [ordered]@{}
                 }
+                $currentMode = 'dict'
+                continue
             }
 
-            if ($section -eq 'worktrees' -and $currentLabel -and $manifest.worktrees.Contains($currentLabel)) {
-                if ($inner -match '^(\S+?):\s*(.*?)\s*$') {
-                    $manifest.worktrees[$currentLabel][$Matches[1]] = ConvertFrom-ManifestYamlScalar $Matches[2]
-                }
+            if (-not [string]::IsNullOrWhiteSpace($currentLabel) -and $line -match '^\s{4}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
+                $manifest.panes[$currentLabel][$Matches[1]] = ConvertFrom-ManifestYamlValue $Matches[2]
+                continue
+            }
+        }
+
+        if ($section -eq 'tasks') {
+            if ($line -match '^\s{2}(queued|in_progress|completed):\s*(\[\])?\s*$') {
+                $taskListKey = $Matches[1]
+                continue
             }
 
-            continue
+            if (-not [string]::IsNullOrWhiteSpace($taskListKey) -and $line -match '^\s{4}-\s*(.*?)\s*$') {
+                $items = @($manifest.tasks.$taskListKey)
+                $manifest.tasks.$taskListKey = @($items + (ConvertFrom-ManifestYamlScalar $Matches[1]))
+                continue
+            }
+        }
+
+        if ($section -eq 'worktrees') {
+            if ($line -match '^\s{2}(.+?):\s*$') {
+                $currentLabel = [string](ConvertFrom-ManifestYamlScalar $Matches[1])
+                if (-not $manifest.worktrees.Contains($currentLabel)) {
+                    $manifest.worktrees[$currentLabel] = [ordered]@{}
+                }
+                continue
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($currentLabel) -and $line -match '^\s{4}([A-Za-z0-9_.-]+):\s*(.*?)\s*$') {
+                $manifest.worktrees[$currentLabel][$Matches[1]] = ConvertFrom-ManifestYamlValue $Matches[2]
+                continue
+            }
+        }
+    }
+
+    foreach ($label in @($manifest.panes.Keys)) {
+        if ($manifest.panes[$label].Contains('label')) {
+            $manifest.panes[$label].Remove('label')
         }
     }
 

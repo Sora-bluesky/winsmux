@@ -188,7 +188,12 @@ function Get-OrchestraZombieVictims {
 
     if (@($PaneRootIds).Count -gt 0) {
         $descendantIds = Get-DescendantProcessIds -Snapshot $Snapshot -RootProcessIds $PaneRootIds
+        $paneRootIdSet = [System.Collections.Generic.HashSet[int]]::new()
+        foreach ($rid in @($PaneRootIds)) { [void]$paneRootIdSet.Add([int]$rid) }
         foreach ($descendantId in $descendantIds) {
+            if ($paneRootIdSet.Contains([int]$descendantId)) {
+                continue
+            }
             if (-not $Snapshot.ById.ContainsKey($descendantId)) {
                 continue
             }

@@ -18,6 +18,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+. "$PSScriptRoot/clm-safe-io.ps1"
 
 $script:OrchestraLogDirName = '.winsmux\logs'
 $script:OrchestraLogExtension = '.jsonl'
@@ -58,7 +59,7 @@ function Initialize-OrchestraLogger {
 
     $logPath = Get-OrchestraLogPath -ProjectDir $ProjectDir -SessionName $SessionName
     if (-not (Test-Path $logPath)) {
-        Set-Content -Path $logPath -Value '' -Encoding UTF8 -NoNewline
+        Write-WinsmuxTextFile -Path $logPath -Content ''
     }
 
     return $logPath
@@ -149,7 +150,7 @@ function Write-OrchestraLog {
     $logPath = Initialize-OrchestraLogger -ProjectDir $ProjectDir -SessionName $SessionName
     $record = New-OrchestraLogRecord -SessionName $SessionName -Event $Event -Level $Level -Message $Message -Role $Role -PaneId $PaneId -Target $Target -Data $Data
     $line = ($record | ConvertTo-Json -Compress -Depth 10)
-    Add-Content -Path $logPath -Value $line -Encoding UTF8
+    Write-WinsmuxTextFile -Path $logPath -Content $line -Append
     return [PSCustomObject]$record
 }
 
