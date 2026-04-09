@@ -695,7 +695,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                         | CtrlReq::SendPaste(_)
                     );
                     let is_temp_focus = matches!(&req,
-                        CtrlReq::FocusWindowTemp(_) | CtrlReq::FocusPaneTemp(_) | CtrlReq::FocusPaneByIndexTemp(_));
+                        CtrlReq::FocusWindowTemp(_) | CtrlReq::FocusPaneTemp(..) | CtrlReq::FocusPaneByIndexTemp(..));
                     let mut hook_event: Option<&str> = None;
                     // Track active_idx changes for debugging window-switch issues
                     let _prev_active_idx = app.active_idx;
@@ -711,7 +711,9 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                         CtrlReq::MouseDownRight(..) => "MouseDownRight",
                         CtrlReq::MouseDownMiddle(..) => "MouseDownMiddle",
                         CtrlReq::FocusPane(_) => "FocusPane",
-                        CtrlReq::FocusPaneTemp(_) => "FocusPaneTemp",
+                        CtrlReq::FocusPaneChecked(..) => "FocusPaneChecked",
+                        CtrlReq::FocusPaneByIndexChecked(..) => "FocusPaneByIndexChecked",
+                        CtrlReq::FocusPaneTemp(..) => "FocusPaneTemp",
                         CtrlReq::NewWindow(..) => "NewWindow",
                         CtrlReq::KillWindow => "KillWindow",
                         CtrlReq::KillPane => "KillPane",
@@ -947,19 +949,41 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                 }
                 CtrlReq::FocusPane(pid) => {
                     let old_path = app.windows[app.active_idx].active_path.clone();
-                    switch_with_copy_save(&mut app, |app| { focus_pane_by_id(app, pid); });
+                    switch_with_copy_save(&mut app, |app| { let _ = focus_pane_by_id(app, pid); });
                     if app.windows[app.active_idx].active_path != old_path { unzoom_if_zoomed(&mut app); }
                     meta_dirty = true;
                 }
                 CtrlReq::FocusPaneByIndex(idx) => {
                     let old_path = app.windows[app.active_idx].active_path.clone();
-                    switch_with_copy_save(&mut app, |app| { focus_pane_by_index(app, idx); });
+                    switch_with_copy_save(&mut app, |app| { let _ = focus_pane_by_index(app, idx); });
                     if app.windows[app.active_idx].active_path != old_path { unzoom_if_zoomed(&mut app); }
                     // Update MRU so directional navigation remembers this focus change
                     let win = &mut app.windows[app.active_idx];
                     if let Some(pid) = crate::tree::get_active_pane_id(&win.root, &win.active_path) {
                         crate::tree::touch_mru(&mut win.pane_mru, pid);
                     }
+                    meta_dirty = true;
+                }
+                CtrlReq::FocusPaneChecked(pid, resp) => {
+                    let old_path = app.windows[app.active_idx].active_path.clone();
+                    let mut focused = false;
+                    switch_with_copy_save(&mut app, |app| { focused = focus_pane_by_id(app, pid); });
+                    if focused && app.windows[app.active_idx].active_path != old_path { unzoom_if_zoomed(&mut app); }
+                    let _ = resp.send(focused);
+                    meta_dirty = true;
+                }
+                CtrlReq::FocusPaneByIndexChecked(idx, resp) => {
+                    let old_path = app.windows[app.active_idx].active_path.clone();
+                    let mut focused = false;
+                    switch_with_copy_save(&mut app, |app| { focused = focus_pane_by_index(app, idx); });
+                    if focused && app.windows[app.active_idx].active_path != old_path { unzoom_if_zoomed(&mut app); }
+                    if focused {
+                        let win = &mut app.windows[app.active_idx];
+                        if let Some(pid) = crate::tree::get_active_pane_id(&win.root, &win.active_path) {
+                            crate::tree::touch_mru(&mut win.pane_mru, pid);
+                        }
+                    }
+                    let _ = resp.send(focused);
                     meta_dirty = true;
                 }
                 // ── Temporary focus variants for -t targeting ────────────
@@ -982,25 +1006,41 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                         }
                     }
                 }
-                CtrlReq::FocusPaneTemp(pid) => {
-                    if temp_focus_restore.is_none() {
-                        let pane_id = crate::tree::get_active_pane_id(
-                            &app.windows[app.active_idx].root,
-                            &app.windows[app.active_idx].active_path,
-                        ).unwrap_or(usize::MAX);
-                        temp_focus_restore = Some((app.active_idx, pane_id));
+                CtrlReq::FocusPaneTemp(pid, resp) => {
+                    let saved_focus = if temp_focus_restore.is_none() {
+                        Some((
+                            app.active_idx,
+                            crate::tree::get_active_pane_id(
+                                &app.windows[app.active_idx].root,
+                                &app.windows[app.active_idx].active_path,
+                            ).unwrap_or(usize::MAX),
+                        ))
+                    } else {
+                        None
+                    };
+                    let focused = focus_pane_by_id(&mut app, pid);
+                    if focused && temp_focus_restore.is_none() {
+                        temp_focus_restore = saved_focus;
                     }
-                    focus_pane_by_id(&mut app, pid);
+                    let _ = resp.send(focused);
                 }
-                CtrlReq::FocusPaneByIndexTemp(idx) => {
-                    if temp_focus_restore.is_none() {
-                        let pane_id = crate::tree::get_active_pane_id(
-                            &app.windows[app.active_idx].root,
-                            &app.windows[app.active_idx].active_path,
-                        ).unwrap_or(usize::MAX);
-                        temp_focus_restore = Some((app.active_idx, pane_id));
+                CtrlReq::FocusPaneByIndexTemp(idx, resp) => {
+                    let saved_focus = if temp_focus_restore.is_none() {
+                        Some((
+                            app.active_idx,
+                            crate::tree::get_active_pane_id(
+                                &app.windows[app.active_idx].root,
+                                &app.windows[app.active_idx].active_path,
+                            ).unwrap_or(usize::MAX),
+                        ))
+                    } else {
+                        None
+                    };
+                    let focused = focus_pane_by_index(&mut app, idx);
+                    if focused && temp_focus_restore.is_none() {
+                        temp_focus_restore = saved_focus;
                     }
-                    focus_pane_by_index(&mut app, idx);
+                    let _ = resp.send(focused);
                 }
                 CtrlReq::SessionInfo(resp) => {
                     let num_attached = app.client_registry.len();
@@ -1354,7 +1394,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                 }
                 CtrlReq::FocusPaneCmd(pid) => {
                     let old_path = app.windows[app.active_idx].active_path.clone();
-                    switch_with_copy_save(&mut app, |app| { focus_pane_by_id(app, pid); });
+                    switch_with_copy_save(&mut app, |app| { let _ = focus_pane_by_id(app, pid); });
                     if app.windows[app.active_idx].active_path != old_path { unzoom_if_zoomed(&mut app); }
                     meta_dirty = true;
                 }

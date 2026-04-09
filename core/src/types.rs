@@ -817,9 +817,12 @@ pub enum CtrlReq {
     FocusWindowTemp(usize),
     FocusPane(usize),
     FocusPaneByIndex(usize),
+    /// Checked permanent focus for -t targeting on focus-changing commands.
+    FocusPaneChecked(usize, mpsc::Sender<bool>),
+    FocusPaneByIndexChecked(usize, mpsc::Sender<bool>),
     /// Temporary pane focus for -t targeting
-    FocusPaneTemp(usize),
-    FocusPaneByIndexTemp(usize),
+    FocusPaneTemp(usize, mpsc::Sender<bool>),
+    FocusPaneByIndexTemp(usize, mpsc::Sender<bool>),
     SessionInfo(mpsc::Sender<String>),
     CapturePaneRange(mpsc::Sender<String>, Option<i32>, Option<i32>),
     ClientAttach(u64),

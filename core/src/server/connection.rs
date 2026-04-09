@@ -271,15 +271,43 @@ if control_echo || control_noecho {
         if let Some(pid) = ctrl_target_pane {
             if is_focus_cmd {
                 if ctrl_pane_is_id {
-                    let _ = tx_ctrl.send(CtrlReq::FocusPane(pid));
+                    let (rtx, rrx) = mpsc::channel::<bool>();
+                    let _ = tx_ctrl.send(CtrlReq::FocusPaneChecked(pid, rtx));
+                    if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
+                        let _ = writeln!(write_stream, "can't find pane: {}", pid);
+                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
+                        let _ = write_stream.flush();
+                        continue;
+                    }
                 } else {
-                    let _ = tx_ctrl.send(CtrlReq::FocusPaneByIndex(pid));
+                    let (rtx, rrx) = mpsc::channel::<bool>();
+                    let _ = tx_ctrl.send(CtrlReq::FocusPaneByIndexChecked(pid, rtx));
+                    if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
+                        let _ = writeln!(write_stream, "can't find pane index: {}", pid);
+                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
+                        let _ = write_stream.flush();
+                        continue;
+                    }
                 }
             } else {
                 if ctrl_pane_is_id {
-                    let _ = tx_ctrl.send(CtrlReq::FocusPaneTemp(pid));
+                    let (rtx, rrx) = mpsc::channel::<bool>();
+                    let _ = tx_ctrl.send(CtrlReq::FocusPaneTemp(pid, rtx));
+                    if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
+                        let _ = writeln!(write_stream, "can't find pane: {}", pid);
+                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
+                        let _ = write_stream.flush();
+                        continue;
+                    }
                 } else {
-                    let _ = tx_ctrl.send(CtrlReq::FocusPaneByIndexTemp(pid));
+                    let (rtx, rrx) = mpsc::channel::<bool>();
+                    let _ = tx_ctrl.send(CtrlReq::FocusPaneByIndexTemp(pid, rtx));
+                    if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
+                        let _ = writeln!(write_stream, "can't find pane index: {}", pid);
+                        let _ = writeln!(write_stream, "{}", control::format_error(ts, cmd_counter));
+                        let _ = write_stream.flush();
+                        continue;
+                    }
                 }
             }
         }
@@ -440,22 +468,50 @@ let targeted_kill_pane_id = if matches!(cmd, "kill-pane" | "killp") && pane_is_i
 };
 let skip_pane_focus = matches!(cmd, "display-message" | "display");
 if !skip_pane_focus && targeted_kill_pane_id.is_none() {
-    if let Some(pid) = target_pane {
-        if is_focus_cmd {
-            if pane_is_id {
-                let _ = tx.send(CtrlReq::FocusPane(pid));
+        if let Some(pid) = target_pane {
+            if is_focus_cmd {
+                if pane_is_id {
+                    let (rtx, rrx) = mpsc::channel::<bool>();
+                    let _ = tx.send(CtrlReq::FocusPaneChecked(pid, rtx));
+                    if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
+                        let _ = write!(write_stream, "can't find pane: {}\n", pid);
+                        let _ = write_stream.flush();
+                        if !persistent { break; }
+                        continue;
+                    }
+                } else {
+                    let (rtx, rrx) = mpsc::channel::<bool>();
+                    let _ = tx.send(CtrlReq::FocusPaneByIndexChecked(pid, rtx));
+                    if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
+                        let _ = write!(write_stream, "can't find pane index: {}\n", pid);
+                        let _ = write_stream.flush();
+                        if !persistent { break; }
+                        continue;
+                    }
+                }
             } else {
-                let _ = tx.send(CtrlReq::FocusPaneByIndex(pid));
-            }
-        } else {
-            if pane_is_id {
-                let _ = tx.send(CtrlReq::FocusPaneTemp(pid));
-            } else {
-                let _ = tx.send(CtrlReq::FocusPaneByIndexTemp(pid));
+                if pane_is_id {
+                    let (rtx, rrx) = mpsc::channel::<bool>();
+                    let _ = tx.send(CtrlReq::FocusPaneTemp(pid, rtx));
+                    if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
+                        let _ = write!(write_stream, "can't find pane: {}\n", pid);
+                        let _ = write_stream.flush();
+                        if !persistent { break; }
+                        continue;
+                    }
+                } else {
+                    let (rtx, rrx) = mpsc::channel::<bool>();
+                    let _ = tx.send(CtrlReq::FocusPaneByIndexTemp(pid, rtx));
+                    if !rrx.recv_timeout(Duration::from_millis(2000)).unwrap_or(false) {
+                        let _ = write!(write_stream, "can't find pane index: {}\n", pid);
+                        let _ = write_stream.flush();
+                        if !persistent { break; }
+                        continue;
+                    }
+                }
             }
         }
     }
-}
 match cmd {
     "new-window" | "neww" => {
         let name: Option<String> = args.windows(2).find(|w| w[0] == "-n").map(|w| w[1].trim_matches('"').to_string());

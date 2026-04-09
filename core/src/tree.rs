@@ -585,7 +585,7 @@ pub fn find_window_index_by_id(app: &AppState, wid: usize) -> Option<usize> {
     app.windows.iter().position(|w| w.id == wid)
 }
 
-pub fn focus_pane_by_id(app: &mut AppState, pid: usize) {
+pub fn focus_pane_by_id(app: &mut AppState, pid: usize) -> bool {
     fn rec(node: &Node, path: &mut Vec<usize>, found: &mut Option<Vec<usize>>, pid: usize) {
         match node {
             Node::Leaf(p) => { if p.id == pid { *found = Some(path.clone()); } }
@@ -598,11 +598,19 @@ pub fn focus_pane_by_id(app: &mut AppState, pid: usize) {
         let mut path = Vec::new();
         let mut found = None;
         rec(&w.root, &mut path, &mut found, pid);
-        if let Some(p) = found { app.active_idx = wi; let win = &mut app.windows[wi]; win.active_path = p; touch_mru(&mut win.pane_mru, pid); return; }
+        if let Some(p) = found {
+            app.active_idx = wi;
+            let win = &mut app.windows[wi];
+            win.active_path = p;
+            touch_mru(&mut win.pane_mru, pid);
+            return true;
+        }
     }
+
+    false
 }
 
-pub fn focus_pane_by_index(app: &mut AppState, idx: usize) {
+pub fn focus_pane_by_index(app: &mut AppState, idx: usize) -> bool {
     fn collect_pane_paths(node: &Node, path: &mut Vec<usize>, panes: &mut Vec<Vec<usize>>) {
         match node {
             Node::Leaf(_) => { panes.push(path.clone()); }
@@ -621,7 +629,10 @@ pub fn focus_pane_by_index(app: &mut AppState, idx: usize) {
     collect_pane_paths(&win.root, &mut path, &mut pane_paths);
     if let Some(path) = pane_paths.get(idx) {
         win.active_path = path.clone();
+        return true;
     }
+
+    false
 }
 
 /// Count the number of leaf (pane) nodes in a tree.
@@ -759,3 +770,7 @@ pub fn collect_leaves(node: Node) -> Vec<Node> {
 #[cfg(test)]
 #[path = "../tests-rs/test_issue171_layout_bugs.rs"]
 mod test_issue171_layout_bugs;
+
+#[cfg(test)]
+#[path = "../tests-rs/test_task205_focus.rs"]
+mod test_task205_focus;
