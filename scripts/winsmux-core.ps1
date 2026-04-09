@@ -87,6 +87,14 @@ function Stop-WithError {
     exit 1
 }
 
+function Get-SafeLastExitCode {
+    if (Test-Path Variable:\LASTEXITCODE) {
+        return $LASTEXITCODE
+    }
+
+    return $null
+}
+
 function Invoke-WinsmuxRaw {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
@@ -119,7 +127,8 @@ function Write-ClmSafeTextFile {
         $Content | cmd /d /c $writeCommand | Out-Null
     }
 
-    if ($LASTEXITCODE -ne 0) {
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
         Stop-WithError "failed to write file via cmd.exe: $Path"
     }
 }
@@ -257,7 +266,8 @@ function Get-CurrentGitBranch {
     param([string]$ProjectDir = (Get-Location).Path)
 
     $branch = (git -C $ProjectDir rev-parse --abbrev-ref HEAD 2>$null | Select-Object -First 1)
-    if (($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) -or [string]::IsNullOrWhiteSpace($branch) -or $branch -eq 'HEAD') {
+    $nativeExitCode = Get-SafeLastExitCode
+    if (($null -ne $nativeExitCode -and $nativeExitCode -ne 0) -or [string]::IsNullOrWhiteSpace($branch) -or $branch -eq 'HEAD') {
         Stop-WithError "unable to determine current git branch in $ProjectDir"
     }
 
@@ -268,7 +278,8 @@ function Get-CurrentGitHead {
     param([string]$ProjectDir = (Get-Location).Path)
 
     $head = (git -C $ProjectDir rev-parse HEAD 2>$null | Select-Object -First 1)
-    if (($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) -or [string]::IsNullOrWhiteSpace($head)) {
+    $nativeExitCode = Get-SafeLastExitCode
+    if (($null -ne $nativeExitCode -and $nativeExitCode -ne 0) -or [string]::IsNullOrWhiteSpace($head)) {
         Stop-WithError "unable to determine current git HEAD in $ProjectDir"
     }
 
@@ -313,9 +324,14 @@ function ConvertTo-ReviewStateValue {
         return $items
     }
 
-    if ($null -ne $Value.PSObject -and $Value.PSObject.Properties.Count -gt 0) {
+    $psProperties = @()
+    if ($null -ne $Value.PSObject) {
+        $psProperties = @($Value.PSObject.Properties)
+    }
+
+    if ($psProperties.Count -gt 0) {
         $ordered = [ordered]@{}
-        foreach ($property in $Value.PSObject.Properties) {
+        foreach ($property in $psProperties) {
             $ordered[$property.Name] = ConvertTo-ReviewStateValue -Value $property.Value
         }
 
@@ -1576,8 +1592,9 @@ function Invoke-Verify {
 
     Write-Output "Pester PASS. Merging PR #$prNumber"
     & gh pr merge $prNumber --squash --delete-branch
-    if ($LASTEXITCODE -ne 0) {
-        exit $LASTEXITCODE
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
+        exit $nativeExitCode
     }
 }
 
@@ -2758,7 +2775,8 @@ function Invoke-Kill {
     $paneId = Confirm-Target $paneId
 
     & winsmux respawn-pane -k -t $paneId
-    if ($LASTEXITCODE -ne 0) {
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
         Stop-WithError "failed to kill pane process: $paneId"
     }
 
@@ -2783,7 +2801,8 @@ function Invoke-Restart {
     $plan = Get-PaneControlRestartPlan -ProjectDir $projectDir -PaneId $paneId -Settings $settings
 
     & winsmux respawn-pane -k -t $paneId -c $plan.LaunchDir
-    if ($LASTEXITCODE -ne 0) {
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
         Stop-WithError "failed to restart pane shell: $paneId"
     }
 
@@ -2794,11 +2813,13 @@ function Invoke-Restart {
     }
 
     & winsmux send-keys -t $paneId -l -- "$($plan.LaunchCommand)"
-    if ($LASTEXITCODE -ne 0) {
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
         Stop-WithError "failed to send launch command to $paneId"
     }
     & winsmux send-keys -t $paneId Enter
-    if ($LASTEXITCODE -ne 0) {
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
         Stop-WithError "failed to submit launch command to $paneId"
     }
 

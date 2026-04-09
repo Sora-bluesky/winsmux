@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 Describe 'sh-pane-monitor integration' {
     BeforeAll {
+        $script:FixtureBaseRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'winsmux-tests\pane-monitor'
         $script:RepoRoot = Split-Path -Parent $PSScriptRoot
         $script:SourceHookRoot = Join-Path $script:RepoRoot '.claude\hooks'
         $nodeCommand = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -60,7 +61,7 @@ Describe 'sh-pane-monitor integration' {
         }
 
         function New-PaneMonitorFixture {
-            $fixtureRoot = Join-Path $script:RepoRoot '.tmp-pane-monitor-tests' ([guid]::NewGuid().ToString('N'))
+            $fixtureRoot = Join-Path $script:FixtureBaseRoot ([guid]::NewGuid().ToString('N'))
             $projectRoot = Join-Path $fixtureRoot 'project'
             $repoRoot = Join-Path $projectRoot '.worktrees\builder-1'
             $winsmuxDir = Join-Path $projectRoot '.winsmux'

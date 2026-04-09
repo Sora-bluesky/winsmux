@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 Describe 'sh-worktree integration' {
     BeforeAll {
+        $script:FixtureBaseRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'winsmux-tests\worktree-hook'
         $script:RepoRoot = Split-Path -Parent $PSScriptRoot
         $script:SourceHookRoot = Join-Path $script:RepoRoot '.claude\hooks'
         $nodeCommand = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -50,7 +51,7 @@ Describe 'sh-worktree integration' {
         }
 
         function New-WorktreeHookFixture {
-            $fixtureRoot = Join-Path $script:RepoRoot '.tmp-worktree-hook-tests' ([guid]::NewGuid().ToString('N'))
+            $fixtureRoot = Join-Path $script:FixtureBaseRoot ([guid]::NewGuid().ToString('N'))
             $repoRoot = Join-Path $fixtureRoot 'repo'
             $worktreeTarget = Join-Path $repoRoot '.worktrees\feature-auth'
 

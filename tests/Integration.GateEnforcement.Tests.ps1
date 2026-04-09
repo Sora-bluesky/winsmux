@@ -2,6 +2,8 @@ $ErrorActionPreference = 'Stop'
 
 Describe 'sh-orchestra-gate integration' {
     BeforeAll {
+        $script:FixtureBaseRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'winsmux-tests\gate-enforcement'
+
         function Write-GateTestFile {
             param(
                 [Parameter(Mandatory = $true)][string]$Path,
@@ -150,7 +152,7 @@ Describe 'sh-orchestra-gate integration' {
         }
 
         function New-GateFixture {
-            $fixtureRoot = Join-Path $script:RepoRoot '.tmp-gate-enforcement-tests' ([guid]::NewGuid().ToString('N'))
+            $fixtureRoot = Join-Path $script:FixtureBaseRoot ([guid]::NewGuid().ToString('N'))
             $repoRoot = Join-Path $fixtureRoot 'repo'
 
             New-Item -ItemType Directory -Path (Join-Path $repoRoot '.claude\hooks') -Force | Out-Null
