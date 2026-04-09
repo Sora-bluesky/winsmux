@@ -20,6 +20,9 @@ token.json
 docs/internal/
 docs/audits/
 docs/project/
+!docs/project/
+docs/project/*
+!docs/project/README.md
 docs/*-research*.md
 docs/review-notes*.md
 docs/ci-checklist*.md
@@ -29,6 +32,9 @@ docs/REQUIREMENTS.md
 .tmp-hook-*
 .review-*
 tasks/
+!tasks/
+tasks/*
+!tasks/README.md
 /skills/
 tests/
 !tests/

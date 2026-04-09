@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { execSync } = require("child_process");
 
@@ -20,6 +21,15 @@ const ZERO_WIDTH_RE =
 const DEFAULT_PATTERNS = { categories: {} };
 const DEFAULT_PREVIOUS_HASH = "genesis";
 const DENY_THRESHOLD = 3;
+const DEFAULT_PLANNING_ROOT = path.join(
+  os.homedir(),
+  "iCloudDrive",
+  "iCloud~md~obsidian",
+  "MainVault",
+  "Projects",
+  "winsmux",
+  "planning",
+);
 
 function deny(reason) {
   process.stdout.write(`${JSON.stringify({ decision: "deny", reason })}\n`);
@@ -384,6 +394,32 @@ function commandExists(cmd) {
   }
 }
 
+function getPlanningRoot() {
+  return process.env.WINSMUX_PLANNING_ROOT || DEFAULT_PLANNING_ROOT;
+}
+
+function resolvePlanningFile(localRelativePath, envKey, fileName) {
+  const explicit = process.env[envKey];
+  if (typeof explicit === "string" && explicit.trim() !== "") {
+    return explicit;
+  }
+
+  const externalPath = path.join(getPlanningRoot(), fileName);
+  if (fs.existsSync(externalPath) || !fs.existsSync(localRelativePath)) {
+    return externalPath;
+  }
+
+  return localRelativePath;
+}
+
+function getBacklogPath() {
+  return resolvePlanningFile(path.join("tasks", "backlog.yaml"), "WINSMUX_BACKLOG_PATH", "backlog.yaml");
+}
+
+function getRoadmapPath() {
+  return resolvePlanningFile(path.join("docs", "project", "ROADMAP.md"), "WINSMUX_ROADMAP_PATH", "ROADMAP.md");
+}
+
 module.exports = {
   deny,
   allow,
@@ -404,4 +440,7 @@ module.exports = {
   trackDeny,
   readYaml,
   commandExists,
+  getPlanningRoot,
+  getBacklogPath,
+  getRoadmapPath,
 };

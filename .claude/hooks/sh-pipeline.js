@@ -20,6 +20,7 @@ const {
   appendEvidence,
   commandExists,
   SH_DIR,
+  getBacklogPath,
 } = require("./lib/sh-utils");
 
 const HOOK_NAME = "sh-pipeline";
@@ -29,7 +30,7 @@ const PIPELINE_CONFIG = path.join(
   "config",
   "pipeline-config.json",
 );
-const BACKLOG_FILE = path.join("tasks", "backlog.yaml");
+const BACKLOG_FILE = getBacklogPath();
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -90,6 +91,23 @@ function executeTrusted(taskId, command) {
   });
 }
 
+function isTrackedRepoPath(targetPath) {
+  if (!targetPath || path.isAbsolute(targetPath)) {
+    return false;
+  }
+
+  try {
+    execSync(`git ls-files --error-unmatch -- "${targetPath}"`, {
+      encoding: "utf8",
+      timeout: 10000,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Update backlog.yaml task fields via js-yaml.
  * @param {string} taskId
@@ -128,6 +146,7 @@ function updateBacklog(taskId, updates) {
       quotingType: '"',
       forceQuotes: false,
     });
+    fs.mkdirSync(path.dirname(BACKLOG_FILE), { recursive: true });
     fs.writeFileSync(BACKLOG_FILE, output);
   } catch {
     // Backlog update failure is non-critical for pipeline
@@ -401,14 +420,16 @@ try {
         });
 
         // Commit backlog update
-        executeTrusted(taskId, "git add tasks/backlog.yaml");
-        try {
-          executeTrusted(
-            taskId,
-            `git commit -m "[${taskId}] STG3: pushed to remote"`,
-          );
-        } catch {
-          // No changes
+        if (isTrackedRepoPath(BACKLOG_FILE)) {
+          executeTrusted(taskId, `git add "${BACKLOG_FILE}"`);
+          try {
+            executeTrusted(
+              taskId,
+              `git commit -m "[${taskId}] STG3: pushed to remote"`,
+            );
+          } catch {
+            // No changes
+          }
         }
 
         summary = `STG3 passed: pushed to ${branchName}`;
@@ -441,14 +462,16 @@ try {
             stg_history_push: { gate: "stg5", passed_at: timestamp },
           });
 
-          executeTrusted(taskId, "git add tasks/backlog.yaml");
-          try {
-            executeTrusted(
-              taskId,
-              `git commit -m "[${taskId}] STG5: PR created"`,
-            );
-          } catch {
-            // No changes
+          if (isTrackedRepoPath(BACKLOG_FILE)) {
+            executeTrusted(taskId, `git add "${BACKLOG_FILE}"`);
+            try {
+              executeTrusted(
+                taskId,
+                `git commit -m "[${taskId}] STG5: PR created"`,
+              );
+            } catch {
+              // No changes
+            }
           }
 
           summary = `STG5 passed: PR created at ${prUrl}`;

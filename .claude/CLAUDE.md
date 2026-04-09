@@ -94,6 +94,6 @@ Allowed transitions: `backlog` -> `wip` -> `review` -> `done`
 
 ## ROADMAP Sync
 
-`ROADMAP.md` is local-only and gitignored; generate it with the local-only `sync-roadmap.ps1`.
+Planning artifacts are local-only and maintained outside the repo. Generate or refresh them with `sync-roadmap.ps1`, which resolves the external planning paths via `WINSMUX_PLANNING_ROOT`, `WINSMUX_BACKLOG_PATH`, and `WINSMUX_ROADMAP_PATH`.
 
 @HANDOFF.md
