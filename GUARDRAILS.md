@@ -37,7 +37,7 @@
 
 ### 7. ROADMAP.md committed to public repo
 - **Trigger**: Running git add on docs/ directory
-- **Instruction**: ROADMAP.md is gitignored. Never commit it. Use sync-roadmap.ps1 for local generation only.
+- **Instruction**: Planning files are external/local-only. Never commit backlog or ROADMAP; use sync-roadmap.ps1 against the external planning paths.
 - **Reason**: Internal development roadmap was accidentally published.
 
 ### 8. API tokens in plaintext
@@ -66,8 +66,8 @@
 - **Reason**: Unlabeled issues are invisible in filtered views. User corrected this 3+ times.
 
 ### 13. Backlog update without ROADMAP sync
-- **Trigger**: Editing tasks/backlog.yaml
-- **Instruction**: Always run sync-roadmap.ps1 immediately after backlog changes.
+- **Trigger**: Editing the planning backlog source of truth
+- **Instruction**: Always run sync-roadmap.ps1 immediately after backlog changes so the external ROADMAP stays in sync.
 - **Reason**: ROADMAP.md becomes stale, causing planning errors.
 
 ### 14. Memory/rules as permanent fix

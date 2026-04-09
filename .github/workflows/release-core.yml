@@ -36,6 +36,9 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v4
       - name: Create Release Assets
         run: |
@@ -43,6 +46,10 @@ jobs:
           cp winsmux-windows-x64/winsmux.exe release/winsmux-x64.exe
           cp winsmux-windows-arm64/winsmux.exe release/winsmux-arm64.exe
           cd release && sha256sum *.exe > SHA256SUMS
+      - name: Generate Release Body
+        shell: pwsh
+        run: ./scripts/generate-release-notes.ps1 -Version "${{ github.ref_name }}" -OutputPath "release/release-body.md"
       - uses: softprops/action-gh-release@v2
         with:
+          body_path: release/release-body.md
           files: release/*

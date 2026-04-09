@@ -12,9 +12,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
+. (Join-Path $Root "winsmux-core\scripts\planning-paths.ps1")
 $VersionFile = Join-Path $Root "VERSION"
-$BacklogPath = Join-Path $Root "tasks\backlog.yaml"
-$RoadmapPath = Join-Path $Root "docs\project\ROADMAP.md"
+$BacklogPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $Root -LocalRelativePath 'tasks/backlog.yaml' -EnvironmentVariable 'WINSMUX_BACKLOG_PATH' -DefaultFileName 'backlog.yaml'
+$RoadmapPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $Root -LocalRelativePath 'docs/project/ROADMAP.md' -EnvironmentVariable 'WINSMUX_ROADMAP_PATH' -DefaultFileName 'ROADMAP.md'
 $SyncRoadmapScript = Join-Path $Root "winsmux-core\scripts\sync-roadmap.ps1"
 
 function ConvertFrom-QuotedYamlScalar {
@@ -143,11 +144,13 @@ if ($DoRelease) {
 
 # --- Release requires backlog + roadmap assets ---
 if ($DoRelease) {
-    $requiredPaths = @($BacklogPath, $RoadmapPath, $SyncRoadmapScript)
+    $requiredPaths = @($BacklogPath, $SyncRoadmapScript)
     $missingPaths = @(
         $requiredPaths |
             Where-Object { -not (Test-Path $_) } |
-            ForEach-Object { [IO.Path]::GetRelativePath($Root, $_) }
+            ForEach-Object {
+                if ([IO.Path]::IsPathRooted($_)) { $_ } else { [IO.Path]::GetRelativePath($Root, $_) }
+            }
     )
 
     if ($missingPaths.Count -gt 0) {
@@ -248,13 +251,12 @@ try {
     $existingFiles = $filesToAdd | Where-Object { Test-Path (Join-Path $Root $_) }
     if ($existingFiles) { git add $existingFiles }
 
-    # Sync ROADMAP from backlog
+    # Sync ROADMAP from external planning backlog
     & pwsh $SyncRoadmapScript -BacklogPath $BacklogPath -RoadmapPath $RoadmapPath
     if ($LASTEXITCODE -ne 0) {
         throw "ROADMAP sync failed."
     }
-    if (Test-Path $RoadmapPath) { git add -f $RoadmapPath }
-    Write-Host "[release] ROADMAP synced"
+    Write-Host "[release] ROADMAP synced at $RoadmapPath"
 
     git commit -m "chore: bump version to $Version"
     Write-Host "[release] Committed"
@@ -287,7 +289,7 @@ try {
     gh release create "v$Version" --title "v$Version" --generate-notes --latest
     Write-Host "[release] GitHub Release created" -ForegroundColor Green
 
-    # Close the release task in backlog and refresh ROADMAP.
+    # Close the release task in external planning backlog and refresh ROADMAP.
     $updatedTaskIds = Update-ReleaseBacklogStatus -Path $BacklogPath -Version $Version
     if ($updatedTaskIds.Count -gt 0) {
         Write-Host "[release] Backlog updated: $($updatedTaskIds -join ', ')"
@@ -295,19 +297,10 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "ROADMAP sync failed after backlog update."
         }
-        Write-Host "[release] ROADMAP refreshed after backlog update"
-
-        git add -f -- "tasks/backlog.yaml" "docs/project/ROADMAP.md"
-        git diff --cached --quiet -- "tasks/backlog.yaml" "docs/project/ROADMAP.md"
-        if ($LASTEXITCODE -ne 0) {
-            git commit -m "chore: close release task for $Version"
-            git push origin main
-            Write-Host "[release] Backlog status committed"
-        } else {
-            Write-Host "[release] Backlog files already up to date"
-        }
+        Write-Host "[release] ROADMAP refreshed after backlog update at $RoadmapPath"
+        Write-Host "[release] Planning files are external/local-only and were not committed"
     } else {
-        Write-Warning "[release] No matching release task found in tasks/backlog.yaml for v$Version"
+        Write-Warning "[release] No matching release task found in planning backlog for v$Version"
     }
 
     Write-Host ""

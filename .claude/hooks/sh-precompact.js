@@ -16,12 +16,13 @@ const {
   appendEvidence,
   SESSION_FILE,
   SH_DIR,
+  getBacklogPath,
 } = require("./lib/sh-utils");
 
 const HOOK_NAME = "sh-precompact";
 const SAFE_SH_DIR = typeof SH_DIR === "string" && SH_DIR ? SH_DIR : os.tmpdir();
 const BACKUP_DIR = path.join(SAFE_SH_DIR, "compact-backup");
-const BACKLOG_FILE = path.join("tasks", "backlog.yaml");
+const BACKLOG_FILE = getBacklogPath();
 
 // ---------------------------------------------------------------------------
 // Backup Logic
@@ -67,7 +68,7 @@ function buildContextOutput(session) {
   parts.push("  - CLAUDE.md (project instructions)");
   parts.push("  - .claude/rules/ (security & coding rules)");
   if (fs.existsSync(BACKLOG_FILE)) {
-    parts.push("  - tasks/backlog.yaml (task SoT — read-only)");
+    parts.push(`  - ${BACKLOG_FILE} (planning backlog SoT — read-only)`);
   }
   parts.push("  - docs/DETAILED_DESIGN.md (hook specifications)");
 

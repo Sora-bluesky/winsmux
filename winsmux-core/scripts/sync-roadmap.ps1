@@ -1,9 +1,11 @@
 [CmdletBinding()]
 param(
-    [string]$BacklogPath = 'tasks/backlog.yaml',
+    [string]$BacklogPath = '',
 
-    [string]$RoadmapPath = 'docs/project/ROADMAP.md'
+    [string]$RoadmapPath = ''
 )
+
+. (Join-Path $PSScriptRoot 'planning-paths.ps1')
 
 function Resolve-WorkspacePath {
     param(
@@ -362,6 +364,7 @@ function Get-TaskReferenceFiles {
 
     $ignoredBookkeeping = @(
         'tasks/backlog.yaml',
+        'docs/project/ROADMAP.md',
         ($RoadmapPath -replace '\\', '/')
     )
 
@@ -479,6 +482,14 @@ function New-ProgressBar {
     return '[{0}] {1}% ({2}/{3})' -f $bar, $percentage, $DoneCount, $TotalCount
 }
 
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+if ([string]::IsNullOrWhiteSpace($BacklogPath)) {
+    $BacklogPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $repoRoot -LocalRelativePath 'tasks/backlog.yaml' -EnvironmentVariable 'WINSMUX_BACKLOG_PATH' -DefaultFileName 'backlog.yaml'
+}
+if ([string]::IsNullOrWhiteSpace($RoadmapPath)) {
+    $RoadmapPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $repoRoot -LocalRelativePath 'docs/project/ROADMAP.md' -EnvironmentVariable 'WINSMUX_ROADMAP_PATH' -DefaultFileName 'ROADMAP.md'
+}
+
 $resolvedBacklogPath = Resolve-WorkspacePath -Path $BacklogPath
 $resolvedRoadmapPath = Resolve-WorkspacePath -Path $RoadmapPath
 $roadmapRelativePath = [System.IO.Path]::GetRelativePath((Get-Location).Path, $resolvedRoadmapPath) -replace '\\', '/'
@@ -558,7 +569,7 @@ $builder = [System.Text.StringBuilder]::new()
 
 [void]$builder.AppendLine('# ロードマップ')
 [void]$builder.AppendLine()
-[void]$builder.AppendLine('> `tasks/backlog.yaml` から自動生成 — 手動編集禁止')
+[void]$builder.AppendLine('> planning backlog から自動生成 — 手動編集禁止')
 [void]$builder.AppendLine(('> 最終同期: {0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm (zzz)')))
 [void]$builder.AppendLine()
 [void]$builder.AppendLine('## バージョン概要')

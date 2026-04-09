@@ -9,6 +9,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+. (Join-Path $PSScriptRoot 'planning-paths.ps1')
+
 function New-DoctorResult {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('pass', 'warn', 'fail')][string]$Status,
@@ -262,10 +264,10 @@ function Test-SettingsJsonCheck {
 
 function Test-BacklogYamlCheck {
     $repoRoot = Get-DoctorRepoRoot
-    $backlogPath = Join-Path $repoRoot 'tasks/backlog.yaml'
+    $backlogPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $repoRoot -LocalRelativePath 'tasks/backlog.yaml' -EnvironmentVariable 'WINSMUX_BACKLOG_PATH' -DefaultFileName 'backlog.yaml'
 
     if (-not (Test-Path $backlogPath)) {
-        return New-DoctorResult -Status fail -Label 'backlog.yaml' -Detail 'not found'
+        return New-DoctorResult -Status fail -Label 'backlog.yaml' -Detail "not found ($backlogPath)"
     }
 
     $content = Get-Content -Path $backlogPath -Raw -Encoding UTF8

@@ -49,8 +49,8 @@ try {
       "[session-end] チェックリスト:",
       "  □ Worktree 未コミット変更はないか？ (git worktree list)",
       "  □ PR 提出済み / Builder への差し戻し完了？",
-      "  □ backlog.yaml のタスクステータスは最新か？",
-      "  □ ROADMAP.md の再 sync が必要か？ (sync-roadmap.ps1)",
+      "  □ 外部 planning backlog のタスクステータスは最新か？",
+      "  □ 外部 ROADMAP の再 sync が必要か？ (sync-roadmap.ps1)",
       "  □ HANDOFF.md は更新済みか？",
     ].join("\n"),
   );

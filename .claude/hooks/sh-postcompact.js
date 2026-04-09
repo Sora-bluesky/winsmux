@@ -17,13 +17,14 @@ const {
   writeSession,
   appendEvidence,
   SH_DIR,
+  getBacklogPath,
 } = require("./lib/sh-utils");
 
 const HOOK_NAME = "sh-postcompact";
 const SAFE_SH_DIR = typeof SH_DIR === "string" && SH_DIR ? SH_DIR : os.tmpdir();
 const BACKUP_DIR = path.join(SAFE_SH_DIR, "compact-backup");
 const CLAUDE_MD = "CLAUDE.md";
-const BACKLOG_FILE = path.join("tasks", "backlog.yaml");
+const BACKLOG_FILE = getBacklogPath();
 
 // ---------------------------------------------------------------------------
 // Restore Logic
@@ -120,7 +121,7 @@ function buildRestorationContext(session, integrityCheck) {
   parts.push("  - CLAUDE.md (project instructions)");
   parts.push("  - .claude/rules/ (security & coding rules)");
   if (fs.existsSync(BACKLOG_FILE)) {
-    parts.push("  - tasks/backlog.yaml (task SoT)");
+    parts.push(`  - ${BACKLOG_FILE} (planning backlog SoT)`);
   }
   parts.push("  - docs/DETAILED_DESIGN.md (hook specifications)");
   parts.push("==========================================");
