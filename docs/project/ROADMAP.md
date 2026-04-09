@@ -1,7 +1,7 @@
 # ロードマップ
 
 > `tasks/backlog.yaml` から自動生成 — 手動編集禁止
-> 最終同期: 2026-04-07 22:36 (+09:00)
+> 最終同期: 2026-04-09 21:21 (+09:00)
 
 ## バージョン概要
 
@@ -30,13 +30,17 @@
 | v0.19.1 | 3 | [====================] 100% (3/3) |
 | v0.19.2 | 1 | [====================] 100% (1/1) |
 | v0.19.3 | 3 | [====================] 100% (3/3) |
-| v0.19.4 | 27 | [==========----------] 48% (13/27) |
-| v0.19.5 | 6 | [--------------------] 0% (0/6) |
-| v0.20.0 | 8 | [--------------------] 0% (0/8) |
-| v0.20.1 | 8 | [--------------------] 0% (0/8) |
-| v0.21.0 | 6 | [--------------------] 0% (0/6) |
+| v0.19.4 | 23 | [====================] 100% (23/23) |
+| v0.19.5 | 27 | [====================] 100% (27/27) |
+| v0.19.6 | 6 | [--------------------] 0% (0/6) |
+| v0.19.7 | 7 | [===-----------------] 14% (1/7) |
+| v0.20.0 | 15 | [--------------------] 0% (0/15) |
+| v0.20.1 | 9 | [==------------------] 11% (1/9) |
+| v0.21.0 | 7 | [--------------------] 0% (0/7) |
 | v0.21.1 | 7 | [--------------------] 0% (0/7) |
-| v0.22.0 | 3 | [--------------------] 0% (0/3) |
+| v0.22.0 | 13 | [--------------------] 0% (0/13) |
+| v0.23.0 | 2 | [--------------------] 0% (0/2) |
+| v1.0.0 | 1 | [--------------------] 0% (0/1) |
 | cancelled | 24 | [--------------------] 0% (0/24) |
 | post-v1.0.0 | 7 | [--------------------] 0% (0/7) |
 
@@ -260,53 +264,100 @@
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [x] | TASK-176 | Integrate builder-queue auto-dispatch into agent-monitor respawn loop (#275) | P0 | winsmux | done |
-| [ ] | TASK-179 | Gate: block Commander git commit until Reviewer PASS confirmed (#279) | P0 | winsmux | backlog |
-| [ ] | TASK-182 | Builder pane Codex cannot access new worktrees (#283) | P0 | winsmux | backlog |
+| [x] | TASK-179 | Gate: block Commander git commit until Reviewer PASS confirmed (#279) | P0 | winsmux | done |
+| [x] | TASK-182 | Builder pane Codex cannot access new worktrees (#283) | P0 | winsmux | done |
 | [x] | TASK-184 | winsmux send dispatches raw text instead of codex exec (#286) | P0 | winsmux | done |
 | [x] | TASK-185 | Create .claude/rules/dispatch.md Commander dispatch procedure (#287) | P0 | winsmux | done |
 | [x] | TASK-186 | orchestra-start should leave panes at pwsh prompt, not launch Codex interactive (#288) | P0 | winsmux | done |
 | [x] | TASK-193 | agent-monitor respawn ignores exec_mode, launches persistent Codex (#289) | P0 | winsmux | done |
 | [x] | TASK-199 | Dispatch workflow 3 structural failures — agent-type, send+Enter, target validation (#301) | P0 | winsmux | done |
 | [x] | TASK-203 | Watchdog does not notify Commander — add events.jsonl polling (#308) | P0 | winsmux | done |
-| [ ] | TASK-174 | Add send-keys buffer overflow protection to winsmux send (#265) | P1 | winsmux | backlog |
-| [ ] | TASK-175 | Fix Researcher pane not receiving commands via winsmux send (#271) | P1 | winsmux | backlog |
-| [ ] | TASK-177 | Prevent Agent subagent from bypassing sh-orchestra-gate hook (#273) | P1 | winsmux | backlog |
+| [x] | TASK-177 | Prevent Agent subagent from bypassing sh-orchestra-gate hook (#273) | P1 | winsmux | done |
 | [x] | TASK-178 | Implement winsmux verify command or remove Gate Rule 7 (#277) | P1 | winsmux | done |
-| [ ] | TASK-180 | Gate: Commander status reports verified against actual pane state (#280) | P1 | winsmux | backlog |
+| [x] | TASK-180 | Gate: Commander status reports verified against actual pane state (#280) | P1 | winsmux | done |
 | [x] | TASK-181 | Fix sh-circuit-breaker.js false positives (#282, #295) | P1 | winsmux | done |
 | [x] | TASK-183 | Researcher role-gate does not block code editing (#284) | P1 | winsmux | done |
-| [ ] | TASK-187 | PromptTransport abstraction — argv/stdin/file unified interface | P1 | winsmux | backlog |
-| [ ] | TASK-188 | Task Prompt File pattern — .winsmux/task-{slug}.md file-backed handoff | P1 | winsmux | backlog |
-| [ ] | TASK-194 | agent-monitor idle alerts go to user Telegram instead of Commander (#290) | P1 | winsmux | backlog |
-| [ ] | TASK-195 | respawn-pane does not update pane label in manifest.yaml (#291) | P1 | winsmux | backlog |
+| [x] | TASK-194 | agent-monitor idle alerts go to user Telegram instead of Commander (#290) | P1 | winsmux | done |
+| [x] | TASK-195 | respawn-pane does not update pane label in manifest.yaml (#291) | P1 | winsmux | done |
 | [x] | TASK-196 | Fix hooks/scripts referencing files deleted in PR #79 (#292) | P1 | winsmux | done |
 | [x] | TASK-197 | Audit and resolve 8 orphan scripts in winsmux-core/scripts/ (#293) | P1 | winsmux | done |
 | [x] | TASK-198 | Hook Rule 2 scans heredoc body, blocks unrelated commands (#300) | P1 | winsmux | done |
-| [ ] | TASK-200 | agent-monitor bidirectional communication + idle recovery (#302) | P1 | winsmux | backlog |
-| [ ] | TASK-201 | Auto-clear Codex panes at 10% context remaining (#303) | P1 | winsmux | backlog |
-| [ ] | TASK-202 | Remove pane-level alerts from Telegram — Commander-only (#306) | P1 | winsmux | backlog |
-| [ ] | TASK-204 | Codex pane context reset uses /new not /clear (#309) | P1 | winsmux | backlog |
+| [x] | TASK-200 | agent-monitor bidirectional communication + idle recovery (#302) | P1 | winsmux | done |
+| [x] | TASK-201 | Auto-clear Codex panes at 10% context remaining (#303) | P1 | winsmux | done |
+| [x] | TASK-202 | Remove pane-level alerts from Telegram — Commander-only (#306) | P1 | winsmux | done |
+| [x] | TASK-204 | Codex pane context reset uses /new not /clear (#309) | P1 | winsmux | done |
 
 ### v0.19.5: monitoring stack + process gates
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
-| [ ] | TASK-205 | winsmux send silent failure — focus_pane_by_id returns without error (#316) | P0 | winsmux | backlog |
-| [ ] | TASK-206 | Monitoring stack non-functional — watchdog→Commander delivery path missing (#317) | P0 | winsmux | backlog |
-| [ ] | TASK-209 | Commander Reviewer bypass — process gate enforcement (#314) | P0 | winsmux | backlog |
-| [ ] | TASK-207 | Reviewer audit checklist — design-impact scope mandatory (#318) | P1 | winsmux | backlog |
-| [ ] | TASK-208 | Codex CLM blocks Pester test execution in builder panes (#319) | P1 | winsmux | backlog |
-| [ ] | TASK-210 | Reviewer audit scope too narrow (#315) | P1 | winsmux | backlog |
+| [x] | TASK-205 | winsmux send silent failure — focus_pane_by_id returns without error (#316) | P0 | winsmux | done |
+| [x] | TASK-206 | Monitoring stack non-functional — watchdog→Commander delivery path missing (#317) | P0 | winsmux | done |
+| [x] | TASK-209 | Commander Reviewer bypass — process gate enforcement (#314) | P0 | winsmux | done |
+| [x] | TASK-211 | Commander subagent edit gate — block Agent write permissions (#324) | P0 | winsmux | done |
+| [x] | TASK-214 | Fix orchestra-start crash on detached HEAD worktrees | P0 | winsmux | done |
+| [x] | TASK-221 | Non-destructive rollback — stop kill-session in orchestra-start (#334) | P0 | winsmux | done |
+| [x] | TASK-225 | Guard settings.local.json — block hook disable without approval (#338) | P0 | winsmux | done |
+| [x] | TASK-227 | Fix pane.completed event never fires — add previous-state tracking | P0 | winsmux | done |
+| [x] | TASK-228 | Launch commander-poll.ps1 from orchestra-start (#311 integration) | P0 | winsmux | done |
+| [x] | TASK-229 | Enforce review-approve from Reviewer pane only (#338 enforcement) | P0 | winsmux | done |
+| [x] | TASK-231 | Orchestra startup debug instrumentation — preserve failure evidence for Commander unresolved startup (#344) | P0 | winsmux | done |
+| [x] | TASK-232 | orchestra-start false success — Codex/Commander launch path succeeds without verified agent startup (#345) | P0 | winsmux | done |
+| [x] | TASK-233 | Detached orchestra layout reliability — fail fast when pane creation does not actually occur (#346) | P0 | winsmux | done |
+| [x] | TASK-235 | Direct Commander↔Reviewer review flow — remove user relay from review-request/review-approve (#348) | P0 | winsmux | done |
+| [x] | TASK-236 | Pane bootstrap invariants — guarantee repo cwd and WINSMUX_ROLE for all panes (#349) | P0 | winsmux | done |
+| [x] | TASK-238 | Commander runtime state machine — integrate dispatch/review/commit loop into commander-poll (#348) | P0 | winsmux | done |
+| [x] | TASK-239 | Commander first-class defaults — add commanders setting and default Commander pane (#345) | P0 | winsmux | done |
+| [x] | TASK-240 | Pane bootstrap verification — fail closed on cwd/role/pane_id mismatch and invalidate stale manifest (#349) | P0 | winsmux | done |
+| [x] | TASK-241 | Commander delegated write bypass — fail closed for write-capable Agent modes under worktree isolation (#347) | P0 | winsmux | done |
+| [x] | TASK-208 | Codex CLM blocks Pester test execution in builder panes (#319) | P1 | winsmux | done |
+| [x] | TASK-212 | Complete psmux→winsmux rename in scripts/ (TASK-139 follow-up, #329) | P1 | winsmux | done |
+| [x] | TASK-215 | orchestra-gate hook blocks gh issue close (false positive) | P1 | winsmux | done |
+| [x] | TASK-218 | Remove core/README.md — consolidate to root README | P1 | winsmux | done |
+| [x] | TASK-230 | sync-roadmap.ps1 — include Japanese version titles from backlog comments | P1 | winsmux | done |
+| [x] | TASK-234 | Builder isolation bypass — block direct main repo writes from Builder panes (#347) | P1 | winsmux | done |
+| [x] | TASK-237 | Commander Telegram dense notifications — approval requests and status reports (#350) | P1 | winsmux | done |
+| [x] | TASK-242 | Manifest convergence and CLM-safe writes — remove split-brain schema (#348, #349) | P1 | winsmux | done |
 
-### v0.20.0: Tauri Desktop (2026-04-05)
+### v0.19.6: hardening
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
+| [ ] | TASK-247 | Commander shell write bypass — block direct code writes from Commander terminal/pane outside Builder-role pane workflow (#364) | P0 | winsmux | backlog |
+| [ ] | TASK-174 | Add send-keys buffer overflow protection to winsmux send (#265) | P1 | winsmux | backlog |
+| [ ] | TASK-175 | Fix Researcher pane not receiving commands via winsmux send (#271) | P1 | winsmux | backlog |
+| [ ] | TASK-222 | Strict server health probe — Test-OrchestraServerHealth (#334) | P1 | winsmux | backlog |
+| [ ] | TASK-223 | External server watchdog — crash detection + auto-restart (#334) | P1 | winsmux | backlog |
+| [ ] | TASK-224 | Ensure-OrchestraServer auto-start integration (#334) | P2 | winsmux | backlog |
+
+### v0.19.7: visible orchestration
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
+| [ ] | TASK-253 | Commander delegation contract — first-class run packet/result packet | P0 | winsmux | backlog |
+| [x] | TASK-243 | First-class task and review state model — extend manifest/events with task, review, owner, branch, changed-files (#348) | P1 | winsmux | done |
+| [ ] | TASK-244 | Session board — add winsmux orchestra status view for pane/task/review state (#348) | P1 | winsmux | backlog |
+| [ ] | TASK-245 | Approval and review inbox — surface pending approvals, review requests, failures, and blocked panes (#348) | P1 | winsmux | backlog |
+| [ ] | TASK-256 | Run ledger and inbox surface — board/runs/explain primitives | P1 | winsmux | backlog |
+| [ ] | TASK-257 | Notification profiles — external vs internal event boundary | P1 | winsmux | backlog |
+| [ ] | TASK-246 | Evidence digest surface — show changed files, review result, branch/head, and next action per pane (#348) | P2 | winsmux | backlog |
+
+### v0.20.0: Unified Worker Architecture
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
+| [ ] | TASK-213 | Unified Worker architecture — Commander + Worker 2-layer migration | P0 | winsmux | backlog |
+| [ ] | TASK-255 | Autonomous dispatch policy — blocker/sidecar scheduling with fail-closed gates | P0 | winsmux | backlog |
 | [ ] | TASK-070 | Implement Event Stream (pub/sub event bus for Orchestra) | P1 | winsmux | backlog |
 | [ ] | TASK-100 | Explorer + Dashboard panels in Tauri | P1 | winsmux | backlog |
 | [ ] | TASK-101 | Theme engine + Nerd Font + TrueColor in Tauri | P1 | winsmux | backlog |
 | [ ] | TASK-114 | Orchestra event capture + SQLite FTS5 search layer | P1 | winsmux | backlog |
 | [ ] | TASK-138 | Source control panel in Tauri UI Explorer (worktree-aware) | P1 | winsmux | backlog |
+| [ ] | TASK-187 | PromptTransport abstraction — argv/stdin/file unified interface | P1 | winsmux | backlog |
+| [ ] | TASK-188 | Task Prompt File pattern — .winsmux/task-{slug}.md file-backed handoff | P1 | winsmux | backlog |
+| [ ] | TASK-207 | Reviewer audit checklist — design-impact scope mandatory (#318) | P1 | winsmux | backlog |
+| [ ] | TASK-210 | Reviewer audit scope too narrow (#315) | P1 | winsmux | backlog |
+| [ ] | TASK-254 | Provider capability registry — Codex/Claude/Gemini adapter abstraction | P1 | winsmux | backlog |
 | [ ] | TASK-078 | Pane border metadata display (git branch, timestamp, idle time) | P2 | winsmux | backlog |
 | [ ] | TASK-115 | Installer profile design (core/orchestra/security/full) | P2 | winsmux | backlog |
 | [~] | TASK-146 | PreCompact hook × context usage monitoring | P2 | winsmux | cancelled |
@@ -320,14 +371,16 @@
 | [ ] | TASK-165 | Agent-Model Tier Matching (role-based model selection) | P1 | winsmux | backlog |
 | [ ] | TASK-189 | Formal WINSMUX_* environment variable contract | P1 | winsmux | backlog |
 | [ ] | TASK-166 | 4-Step Model Resolution Chain (override→category→fallback→default) | P2 | winsmux | backlog |
-| [ ] | TASK-171 | Agent-monitor auto-approve trust prompt for Claude Code panes | P2 | winsmux | backlog |
+| [x] | TASK-171 | Agent-monitor auto-approve trust prompt for Claude Code panes | P2 | winsmux | done |
 | [ ] | TASK-172 | Document Codex worktree git ops sandbox limitation | P2 | winsmux | backlog |
 | [ ] | TASK-190 | ConPTY clean environment variable boundary — Get-CleanPtyEnv | P2 | winsmux | backlog |
+| [ ] | TASK-248 | Agent config versioning + migration metadata | P2 | winsmux | backlog |
 
-### v0.21.0
+### v0.21.0: psmux CLI 呼び出し集約
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
+| [ ] | TASK-216 | Consolidate psmux CLI calls into Invoke-Terminal* functions | P0 | winsmux | backlog |
 | [ ] | TASK-107 | Editor panel + drag-and-drop layout + polish | P1 | winsmux | backlog |
 | [ ] | TASK-108 | Pane pop-out and multi-display support | P1 | winsmux | backlog |
 | [ ] | TASK-143 | Shadow Git checkpoint for Builder worktrees | P1 | winsmux | backlog |
@@ -347,13 +400,36 @@
 | [ ] | TASK-191 | /task-run one-shot orchestration command | P2 | winsmux | backlog |
 | [ ] | TASK-192 | .agents/commands/ single-source command structure | P3 | winsmux | backlog |
 
-### v0.22.0
+### v0.22.0: Tauri PTY 実装
 
 | | ID | Title | Priority | Repo | Status |
 |-|-----|-------|----------|------|--------|
 | [ ] | TASK-105 | JSON-RPC backend + SDK integration in Tauri | P0 | winsmux | backlog |
+| [ ] | TASK-217a | Design PowerShell→Tauri external control plane | P0 | winsmux | backlog |
+| [ ] | TASK-217b | Bootstrap Cargo workspace + converge winsmux-app prototype | P0 | winsmux | backlog |
+| [ ] | TASK-217c | Extract winsmux-terminal headless engine from core/src/server | P0 | winsmux | backlog |
+| [ ] | TASK-217d | Tauri frontend integration + pane lifecycle parity validation | P0 | winsmux | backlog |
+| [ ] | TASK-217e | Invoke-Terminal* WINSMUX_BACKEND switch (cli|tauri) | P0 | winsmux | backlog |
 | [ ] | TASK-106 | Relay Auth + remote pane support in Tauri | P1 | winsmux | backlog |
 | [ ] | TASK-147 | ACP (Agent Communication Protocol) server support | P1 | winsmux | backlog |
+| [ ] | TASK-226 | Revise Tauri plan — backend-first, Named Pipe control plane (#339) | P1 | winsmux | backlog |
+| [ ] | TASK-249 | Cross-platform CI matrix for Windows/Linux/macOS | P1 | winsmux | backlog |
+| [ ] | TASK-250 | Cross-platform secret vault abstraction (DPAPI -> keyring backends) | P1 | winsmux | backlog |
+| [ ] | TASK-251 | PowerShell portability layer for PowerShell Core on Linux/macOS | P1 | winsmux | backlog |
+| [ ] | TASK-258 | Local LLM provider compatibility layer — read-only analysis-first integration | P2 | winsmux | backlog |
+
+### v0.23.0: cross-platform PTY portability
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
+| [ ] | TASK-219 | Phase 5 dogfooding gate — 2-week validation without psmux | P0 | winsmux | backlog |
+| [ ] | TASK-252 | PTY backend portability enablement (portable-pty non-Windows paths) | P0 | winsmux | backlog |
+
+### v1.0.0: winsmux GA Release
+
+| | ID | Title | Priority | Repo | Status |
+|-|-----|-------|----------|------|--------|
+| [ ] | TASK-220 | Phase 6 release gate — packaging, signing, docs for v1.0.0 | P0 | winsmux | backlog |
 
 ### cancelled
 

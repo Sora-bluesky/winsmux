@@ -1981,6 +1981,21 @@ tasks:
       CLI引数→ロール別設定→環境変数FALLBACK→デフォルトの4段階解決。
       TASK-087 multi-vendor の実装骨格として使用。
 
+  - id: TASK-248
+    title: "Agent config versioning + migration metadata"
+    status: backlog
+    priority: P2
+    target_version: "v0.20.1"
+    repo: winsmux
+    labels: [feat, orchestra, config]
+    depends_on: ["TASK-166"]
+    created: "2026-04-09"
+    updated: "2026-04-09"
+    notes: >
+      managed-agents-improvement-plan 由来の純新規項目。agent 設定に version,
+      schema, migration metadata を持たせ、breaking change を明示的に昇格する。
+      provider hot-swap と role-based model selection の前提となる config 進化契約を定義する。
+
   # === v0.21.1: Orchestra Workflow Evolution (2026-04-05) ===
 
   - id: TASK-163
@@ -2027,7 +2042,6 @@ tasks:
     notes: >
       haasonsaas/agent-harness の設計パターンを移植。
       ProviderRegistry + Switch-AgentProvider でランタイム中のエージェント動的切替。
-      TASK-087 multi-vendor の拡張として、稼働中ペインのプロバイダ変更を実現。
 
   - id: TASK-168
     title: "Plugin Hook Extension Loader (modular hook architecture)"
@@ -2093,7 +2107,7 @@ tasks:
 
   - id: TASK-171
     title: "Agent-monitor auto-approve trust prompt for Claude Code panes"
-    status: backlog
+    status: done
     priority: P2
     target_version: "v0.20.1"
     repo: winsmux
@@ -2135,11 +2149,13 @@ tasks:
       winsmux リポの core/ に git subtree で統合。CI統一、フォーク関係解消。
       v0.19.2でリリース済み。winsmux-coreリポ削除完了。
 
+  # === v0.19.6: hardening ===
+
   - id: TASK-174
     title: "Add send-keys buffer overflow protection to winsmux send (#265)"
     status: backlog
     priority: P1
-    target_version: "v0.19.4"
+    target_version: "v0.19.6"
     repo: winsmux
     labels: [bug, orchestration]
     depends_on: []
@@ -2153,7 +2169,7 @@ tasks:
     title: "Fix Researcher pane not receiving commands via winsmux send (#271)"
     status: backlog
     priority: P1
-    target_version: "v0.19.4"
+    target_version: "v0.19.6"
     repo: winsmux
     labels: [bug, orchestration]
     depends_on: []
@@ -2167,7 +2183,7 @@ tasks:
 
   - id: TASK-182
     title: "Builder pane Codex cannot access new worktrees (#283)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.19.4"
     repo: winsmux
@@ -2226,7 +2242,7 @@ tasks:
 
   - id: TASK-177
     title: "Prevent Agent subagent from bypassing sh-orchestra-gate hook (#273)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.19.4"
     repo: winsmux
@@ -2240,7 +2256,7 @@ tasks:
 
   - id: TASK-179
     title: "Gate: block Commander git commit until Reviewer PASS confirmed (#279)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.19.4"
     repo: winsmux
@@ -2257,7 +2273,7 @@ tasks:
 
   - id: TASK-180
     title: "Gate: Commander status reports verified against actual pane state (#280)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.19.4"
     repo: winsmux
@@ -2331,7 +2347,7 @@ tasks:
 
   - id: TASK-194
     title: "agent-monitor idle alerts go to user Telegram instead of Commander (#290)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.19.4"
     repo: winsmux
@@ -2345,7 +2361,7 @@ tasks:
 
   - id: TASK-195
     title: "respawn-pane does not update pane label in manifest.yaml (#291)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.19.4"
     repo: winsmux
@@ -2393,7 +2409,7 @@ tasks:
     title: "PromptTransport abstraction — argv/stdin/file unified interface"
     status: backlog
     priority: P1
-    target_version: "v0.19.4"
+    target_version: "v0.20.0"
     repo: winsmux
     labels: [feat, orchestra]
     depends_on: ["TASK-186"]
@@ -2407,7 +2423,7 @@ tasks:
     title: "Task Prompt File pattern — .winsmux/task-{slug}.md file-backed handoff"
     status: backlog
     priority: P1
-    target_version: "v0.19.4"
+    target_version: "v0.20.0"
     repo: winsmux
     labels: [feat, orchestra]
     depends_on: ["TASK-187"]
@@ -2519,7 +2535,7 @@ tasks:
 
   - id: TASK-200
     title: "agent-monitor bidirectional communication + idle recovery (#302)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.19.4"
     repo: winsmux
@@ -2533,7 +2549,7 @@ tasks:
 
   - id: TASK-201
     title: "Auto-clear Codex panes at 10% context remaining (#303)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.19.4"
     repo: winsmux
@@ -2561,7 +2577,7 @@ tasks:
 
   - id: TASK-202
     title: "Remove pane-level alerts from Telegram — Commander-only (#306)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.19.4"
     repo: winsmux
@@ -2589,7 +2605,7 @@ tasks:
 
   - id: TASK-204
     title: "Codex pane context reset uses /new not /clear (#309)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.19.4"
     repo: winsmux
@@ -2604,22 +2620,349 @@ tasks:
   # === v0.19.5: monitoring stack + process gates ===
   - id: TASK-205
     title: "winsmux send silent failure — focus_pane_by_id returns without error (#316)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.19.5"
     repo: winsmux
     labels: [bug]
     depends_on: []
     created: "2026-04-07"
-    updated: "2026-04-07"
+    updated: "2026-04-09"
     notes: >
       #316. core/src/tree.rs:588-602 focus_pane_by_id() silently returns when pane not found.
       connection.rs:442-457 FocusPaneTemp does not validate result.
       Commander dispatch to arbitrary panes is broken.
 
+  - id: TASK-231
+    title: "Orchestra startup debug instrumentation — preserve failure evidence for Commander unresolved startup (#344)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, orchestration, debug]
+    depends_on: []
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      #344. Instrumentation only — does not fix startup.
+      Commander unresolved: initial orchestra-start lacks evidence capture.
+      Add pane count, pane ID, launch command, readiness verification after each startup step.
+      Preserve failed panes (remain-on-exit on for debug). Log pane.empty events in watchdog.
+      Verify pane existence after split-window/new-window, not just exit code.
+      Non-garbled evidence only: command output, manifest, events.jsonl, source.
+
+  - id: TASK-232
+    title: "orchestra-start false success — Codex/Commander launch path succeeds without verified agent startup (#345)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, orchestration]
+    depends_on: [TASK-231]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      #345. Scope: false success path + Commander launch verification.
+      ExecMode causes Get-AgentLaunchCommand to return empty string (line 286-287).
+      Readiness wait skipped for ExecMode panes (line 1185-1186).
+      Commander not generated as first-class pane by orchestra-layout.ps1.
+      Fix: all roles must have verified launch. Commander as first-class pane.
+      Eliminate readiness skip. Log launch command/role/readiness per pane.
+
+  - id: TASK-233
+    title: "Detached orchestra layout reliability — fail fast when pane creation does not actually occur (#346)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, orchestration, debug]
+    depends_on: [TASK-231]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      #346. Observed during detached startup path (not root cause assertion).
+      split-window exit 0 but pane not created observed in some conditions.
+      stderr: "pane too small to split horizontally (20 cols, need 21)".
+      display-message reports 30x7 while list-panes reports 120x30 for same pane.
+      Fix: verify pane count increase after each split. Do not rely on exit code alone.
+      Investigate display-message vs list-panes size discrepancy.
+
+  - id: TASK-234
+    title: "Builder isolation bypass — block direct main repo writes from Builder panes (#347)"
+    status: done
+    priority: P1
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, security]
+    depends_on: [TASK-232]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      #347. Prevent Builder panes from writing to main repo.
+      All Builder work must happen in worktree isolation.
+      Violation attempts must be logged.
+
+  - id: TASK-235
+    title: "Direct Commander↔Reviewer review flow — remove user relay from review-request/review-approve (#348)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, orchestration, review]
+    depends_on: [TASK-232, TASK-236]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      #348. Commander dispatches review request directly to Reviewer pane.
+      Reviewer returns PASS/FAIL via review-state.json + events.
+      No user relay in the loop. Commander does not run review-approve itself.
+
+  - id: TASK-236
+    title: "Pane bootstrap invariants — guarantee repo cwd and WINSMUX_ROLE for all panes (#349)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, orchestration]
+    depends_on: [TASK-232]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      #349. Every pane must start with cwd=repo root, WINSMUX_ROLE set,
+      manifest pane_id matching actual pane. Stale manifest entries detected
+      and invalidated. respawn-pane -c fails on Windows — need alternative.
+      pane_id collision (builder-2 vs reviewer-1 both %5) must be prevented.
+
+  - id: TASK-237
+    title: "Commander Telegram dense notifications — approval requests and status reports (#350)"
+    status: done
+    priority: P1
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [enhancement, orchestration]
+    depends_on: [TASK-235, TASK-236]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      #350. Dense Telegram notifications at each state transition.
+      Telegram is notification mirror, not control path. Includes session,
+      role, pane label, task, branch, head sha, state, next action, block reason.
+
+  # === v0.19.5 second-pass: closed-loop follow-up ===
+
+  - id: TASK-238
+    title: "Commander runtime state machine — integrate dispatch/review/commit loop into commander-poll (#348)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, orchestration]
+    depends_on: [TASK-235, TASK-236]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      Second-pass follow-up for #348. commander-poll is logger+notifier only.
+      Integrate closed-loop state machine: starting, waiting_for_dispatch,
+      builder_running, waiting_for_review, review_requested, review_passed,
+      review_failed, blocked. pane.idle triggers dispatch, pane.completed
+      triggers review request, review-state.json drives commit decision.
+      User relay must not be required.
+
+  - id: TASK-239
+    title: "Commander first-class defaults — add commanders setting and default Commander pane (#345)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, orchestration]
+    depends_on: [TASK-232]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      Second-pass follow-up for #345. Commander pane param exists in layout
+      but defaults to 0 and settings.ps1 has no commanders key. Add commanders
+      to settings, default to 1, pass from orchestra-start to layout.
+      Commander pane must appear in manifest with role and status.
+
+  - id: TASK-240
+    title: "Pane bootstrap verification — fail closed on cwd/role/pane_id mismatch and invalidate stale manifest (#349)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, orchestration]
+    depends_on: [TASK-236]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      Second-pass follow-up for #349. cwd/role injection exists but
+      bootstrap_invalid state is not implemented. Panes with failed
+      invariants must not be marked ready. Stale manifest entries need
+      runtime detection, not just startup exclusion.
+
+  - id: TASK-241
+    title: "Commander delegated write bypass — fail closed for write-capable Agent modes under worktree isolation (#347)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, security, orchestration]
+    depends_on: [TASK-234]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      Second-pass follow-up for #347 scope extension. Builder main-repo
+      write is blocked, but Commander can still use Agent(worktree isolation)
+      as write-capable Builder bypass. Close this path: delegated writes
+      must go through Builder role only. Deny and audit log violations.
+
+  - id: TASK-242
+    title: "Manifest convergence and CLM-safe writes — remove split-brain schema (#348, #349)"
+    status: done
+    priority: P1
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug, orchestration]
+    depends_on: [TASK-240]
+    created: "2026-04-08"
+    updated: "2026-04-09"
+    notes: >
+      Second-pass follow-up for #348 and #349. manifest.ps1 and
+      orchestra-start.ps1 schema are split-brain. CLM unsafe file writes
+      (Set-Content/Add-Content) remain in logger/manifest/monitor.
+      Converge to single schema, remove unsafe write paths.
+
+  # === v0.19.7: visible orchestration ===
+
+  - id: TASK-243
+    title: "First-class task and review state model — extend manifest/events with task, review, owner, branch, changed-files (#348)"
+    status: done
+    priority: P1
+    target_version: "v0.19.7"
+    repo: winsmux
+    labels: [enhancement, orchestration]
+    depends_on: [TASK-238, TASK-242]
+    created: "2026-04-08"
+    updated: "2026-04-09"
+    notes: >
+      Visible orchestration foundation. Pane state alone is insufficient
+      for operator visibility. Extend manifest/events with task assignment,
+      review state, owner, branch, changed files per pane.
+
+  - id: TASK-253
+    title: "Commander delegation contract — first-class run packet/result packet"
+    status: backlog
+    priority: P0
+    target_version: "v0.19.7"
+    repo: winsmux
+    labels: [enhancement, orchestration]
+    depends_on: [TASK-243]
+    created: "2026-04-09"
+    updated: "2026-04-09"
+    notes: >
+      Codex 型の subagent orchestration を winsmux Commander に取り込むための
+      first-class delegation contract。run_id / task_id / parent_run_id /
+      write_scope / expected_output / verification_plan / review_required /
+      provider_target / status / artifacts / evidence_refs を標準 packet として定義する。
+
+  - id: TASK-244
+    title: "Session board — add winsmux orchestra status view for pane/task/review state (#348)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.7"
+    repo: winsmux
+    labels: [enhancement, orchestration]
+    depends_on: [TASK-243]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      Minimal visible orchestration surface. CLI/JSON view of session-wide
+      pane, task, and review state. Prerequisite for Tauri panel.
+      No Tauri/GUI in this task — CLI/TUI/JSON only.
+
+  - id: TASK-245
+    title: "Approval and review inbox — surface pending approvals, review requests, failures, and blocked panes (#348)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.7"
+    repo: winsmux
+    labels: [enhancement, orchestration]
+    depends_on: [TASK-238, TASK-243]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      Operator can instantly see what needs intervention. Pending approvals,
+      review requests, failures, blocked panes as first-class output.
+
+  - id: TASK-246
+    title: "Evidence digest surface — show changed files, review result, branch/head, and next action per pane (#348)"
+    status: backlog
+    priority: P2
+    target_version: "v0.19.7"
+    repo: winsmux
+    labels: [enhancement, orchestration]
+    depends_on: [TASK-243, TASK-244]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      Evidence from primary session data, not Telegram summaries.
+      Changed files, review result, branch/HEAD, next action per pane.
+
+  - id: TASK-256
+    title: "Run ledger and inbox surface — board/runs/explain primitives"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.7"
+    repo: winsmux
+    labels: [enhancement, orchestration]
+    depends_on: [TASK-243, TASK-253]
+    created: "2026-04-09"
+    updated: "2026-04-09"
+    notes: >
+      pane state に加えて run-centric visible orchestration を導入する。
+      board --json, inbox, runs, explain <run_id> を追加し、
+      pane state / task state / run ledger / review state を統合可視化する。
+
+  - id: TASK-257
+    title: "Notification profiles — external vs internal event boundary"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.7"
+    repo: winsmux
+    labels: [enhancement, orchestration]
+    depends_on: [TASK-245, TASK-246, TASK-256]
+    created: "2026-04-09"
+    updated: "2026-04-09"
+    notes: >
+      Telegram 通知を external-facing event に限定し、 internal control signal を
+      既定で非通知にする。review_requested / review_passed / review_failed /
+      blocked / commit_ready / commit_done を主対象とし、 dispatch_needed や
+      state_transition は profile/verbosity 下でのみ出せるよう整理する。
+
+  # === v0.19.6: hardening ===
+
+  - id: TASK-247
+    title: "Commander shell write bypass — block direct code writes from Commander terminal/pane outside Builder-role pane workflow (#364)"
+    status: backlog
+    priority: P0
+    target_version: "v0.19.6"
+    repo: winsmux
+    labels: [bug, security, orchestration]
+    depends_on: [TASK-241]
+    created: "2026-04-08"
+    updated: "2026-04-08"
+    notes: >
+      TASK-241 blocked Agent(worktree isolation) delegated-write bypass, but
+      Commander can still write implementation directly via shell wrappers such
+      as python -c, pwsh -Command, powershell -Command, and cmd /c. Close this
+      governance hole: Commander terminal/pane must not write code-bearing files
+      through shell execution paths. Within winsmux Orchestra governance,
+      implementation writes are allowed only through explicitly designated
+      Builder-role panes and their isolated Builder worktrees.
+
   - id: TASK-206
     title: "Monitoring stack non-functional — watchdog→Commander delivery path missing (#317)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.19.5"
     repo: winsmux
@@ -2636,7 +2979,7 @@ tasks:
     title: "Reviewer audit checklist — design-impact scope mandatory (#318)"
     status: backlog
     priority: P1
-    target_version: "v0.19.5"
+    target_version: "v0.20.0"
     repo: winsmux
     labels: [bug, review]
     depends_on: []
@@ -2648,7 +2991,7 @@ tasks:
 
   - id: TASK-208
     title: "Codex CLM blocks Pester test execution in builder panes (#319)"
-    status: backlog
+    status: done
     priority: P1
     target_version: "v0.19.5"
     repo: winsmux
@@ -2663,7 +3006,7 @@ tasks:
 
   - id: TASK-209
     title: "Commander Reviewer bypass — process gate enforcement (#314)"
-    status: backlog
+    status: done
     priority: P0
     target_version: "v0.19.5"
     repo: winsmux
@@ -2679,7 +3022,7 @@ tasks:
     title: "Reviewer audit scope too narrow (#315)"
     status: backlog
     priority: P1
-    target_version: "v0.19.5"
+    target_version: "v0.20.0"
     repo: winsmux
     labels: [bug, review]
     depends_on: [TASK-207]
@@ -2687,3 +3030,464 @@ tasks:
     updated: "2026-04-07"
     notes: >
       #315. 設計影響を見ずPASS判定。TASK-207のチェックリスト実装で対策。
+
+  - id: TASK-211
+    title: "Commander subagent edit gate — block Agent write permissions (#324)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [enhancement, security]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #324. Commander Agent サブエージェントが write/edit 権限を持つ。
+      sh-orchestra-gate.js を拡張して Agent ツールの書き込みモードをブロック。
+
+  - id: TASK-212
+    title: "Complete psmux→winsmux rename in scripts/ (TASK-139 follow-up, #329)"
+    status: done
+    priority: P1
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [chore]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #329. TASK-139で漏れた関数名~50件。settings.ps1, vault.ps1, setup-wizard.ps1,
+      psmux-bridge.ps1内のSet-PsmuxOption等。core/と.references/はスコープ外。
+      Issue #329にgrep手順と全ファイルリストを記載済み。
+
+  # === v0.20.0: Unified Worker Architecture ===
+  - id: TASK-213
+    title: "Unified Worker architecture — Commander + Worker 2-layer migration"
+    status: backlog
+    priority: P0
+    target_version: "v0.20.0"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      3ロール(Builder/Researcher/Reviewer)→2層(Commander+Worker)に移行。
+      13フェーズ。メタ認知提言: 自己レビュー防止ガード、フェーズ独立マージ、
+      team-pipeline→Commanderキューモデル(YAGNI)、成功基準定義。
+
+  - id: TASK-254
+    title: "Provider capability registry — Codex/Claude/Gemini adapter abstraction"
+    status: backlog
+    priority: P1
+    target_version: "v0.20.0"
+    repo: winsmux
+    labels: [enhancement, orchestration, providers]
+    depends_on: [TASK-253]
+    created: "2026-04-09"
+    updated: "2026-04-09"
+    notes: >
+      provider 名分岐をやめ、 supports_parallel_runs / supports_interrupt /
+      supports_structured_result / supports_file_edit / supports_subagents などの
+      capability で dispatch する adapter 抽象を導入する。
+
+  - id: TASK-255
+    title: "Autonomous dispatch policy — blocker/sidecar scheduling with fail-closed gates"
+    status: backlog
+    priority: P0
+    target_version: "v0.20.0"
+    repo: winsmux
+    labels: [enhancement, orchestration, governance]
+    depends_on: [TASK-238, TASK-243, TASK-253, TASK-254]
+    created: "2026-04-09"
+    updated: "2026-04-09"
+    notes: >
+      Codex 型の高自律 orchestrator policy を Commander に導入する。
+      blocker は Commander が保持し、 sidecar だけを並列化する。
+      同一 write_scope 並列禁止、 review insertion 必須、 wait policy 明文化、
+      危険境界は fail-close を既定にする。
+
+  # === v0.21.0: psmux CLI 呼び出し集約 ===
+  - id: TASK-216
+    title: "Consolidate psmux CLI calls into Invoke-Terminal* functions"
+    status: backlog
+    priority: P0
+    target_version: "v0.21.0"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: [TASK-213]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      散在する psmux CLI 呼び出し (capture-pane, send, send-keys, list-panes,
+      respawn-pane, split-window) を Invoke-Terminal* 薄ラッパー関数に集約。
+      抽象化ではなく DRY。成功基準: grep で直接呼び出し 0 件。
+      戦略文書: .references/strategy-psmux-to-tauri-migration.md
+
+  # === v0.22.0: Tauri PTY 実装 ===
+  - id: TASK-217a
+    title: "Design PowerShell→Tauri external control plane"
+    status: backlog
+    priority: P0
+    target_version: "v0.22.0"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: [TASK-216]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      Codex レビュー指摘 #1。PowerShell→Tauri IPC の通信経路設計。
+      候補: localhost HTTP/Named Pipe/JSON-RPC。
+      Invoke-Terminal* が Tauri backend を呼ぶ具体的メカニズム。
+
+  - id: TASK-217b
+    title: "Bootstrap Cargo workspace + converge winsmux-app prototype"
+    status: backlog
+    priority: P0
+    target_version: "v0.22.0"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: [TASK-217a]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      Codex レビュー指摘 #3。既存 winsmux-app/ プロトタイプを再利用。
+      root Cargo.toml workspace 作成。cli/ + crates/ + src-tauri/ 配置。
+
+  - id: TASK-217c
+    title: "Extract winsmux-terminal headless engine from core/src/server"
+    status: backlog
+    priority: P0
+    target_version: "v0.22.0"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: [TASK-217b]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      Codex レビュー指摘 #2。core/src/server/ を丸ごと移植ではなく
+      headless engine crate として再設計。CLI/Tauri 両方が使う。
+
+  - id: TASK-217d
+    title: "Tauri frontend integration + pane lifecycle parity validation"
+    status: backlog
+    priority: P0
+    target_version: "v0.22.0"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: [TASK-217c]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      create/capture/send/respawn/resize の CLI/Tauri parity 検証。
+      xterm.js フロントエンド統合。マルチペイン対応。
+
+  - id: TASK-217e
+    title: "Invoke-Terminal* WINSMUX_BACKEND switch (cli|tauri)"
+    status: backlog
+    priority: P0
+    target_version: "v0.22.0"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: [TASK-217d]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      Codex レビュー指摘 #5。Phase 4 で導入 (Phase 3 ではない)。
+      Tauri backend が存在してから切替を実装。環境変数 or セッション検出。
+
+  - id: TASK-225
+    title: "Guard settings.local.json — block hook disable without approval (#338)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [security, bug]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #338. sh-config-guard を settings.local.json に拡張。hook 削除ブロック。
+      secondary codex exec deny を tracked settings.json に追加。
+      python -c の .claude/ 書き込みを sh-gate.js でブロック。
+
+  - id: TASK-226
+    title: "Revise Tauri plan — backend-first, Named Pipe control plane (#339)"
+    status: backlog
+    priority: P1
+    target_version: "v0.22.0"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #339. 制御プレーンを Named Pipe に統一。backend state model + typed events
+      + stable pane ID を UI より先に実装。winsmux-app は PoC、本番は再構築。
+
+  - id: TASK-249
+    title: "Cross-platform CI matrix for Windows/Linux/macOS"
+    status: backlog
+    priority: P1
+    target_version: "v0.22.0"
+    repo: winsmux
+    labels: [ci, infrastructure]
+    depends_on: ["TASK-040", "TASK-226"]
+    created: "2026-04-09"
+    updated: "2026-04-09"
+    notes: >
+      managed-agents-improvement-plan 由来の純新規項目。Windows 専用前提を外すため、
+      backend/control-plane の smoke と unit test を 3 OS matrix で常時回す。
+      portability task の回帰検出基盤として先に CI を整える。
+
+  - id: TASK-250
+    title: "Cross-platform secret vault abstraction (DPAPI -> keyring backends)"
+    status: backlog
+    priority: P1
+    target_version: "v0.22.0"
+    repo: winsmux
+    labels: [enhancement, security]
+    depends_on: ["TASK-226"]
+    created: "2026-04-09"
+    updated: "2026-04-09"
+    notes: >
+      managed-agents-improvement-plan 由来の純新規項目。Windows DPAPI 固定をやめ、
+      OS ごとに keyring backend を差し替えられる vault abstraction を定義する。
+      secret storage の contract test を追加し、Telegram/Commander 運用と分離する。
+
+  - id: TASK-251
+    title: "PowerShell portability layer for PowerShell Core on Linux/macOS"
+    status: backlog
+    priority: P1
+    target_version: "v0.22.0"
+    repo: winsmux
+    labels: [enhancement, orchestration]
+    depends_on: ["TASK-226", "TASK-249"]
+    created: "2026-04-09"
+    updated: "2026-04-09"
+    notes: >
+      managed-agents-improvement-plan 由来の純新規項目。Windows/CLM 前提の script 群に
+      portability layer を入れ、pwsh 7 on Linux/macOS でも動く I/O, path, env,
+      process launch 契約に整理する。既存 PowerShell orchestration の移植基盤。
+
+  - id: TASK-258
+    title: "Local LLM provider compatibility layer — read-only analysis-first integration"
+    status: backlog
+    priority: P2
+    target_version: "v0.22.0"
+    repo: winsmux
+    labels: [enhancement, orchestration, local-llm]
+    depends_on: [TASK-254]
+    created: "2026-04-09"
+    updated: "2026-04-09"
+    notes: >
+      Gemma / Llama などの local LLM を provider adapter に追加するが、
+      初期 capability は read-only / analysis-first に制限する。
+      write / review / git は既定 deny とし、 provider capability registry 上で
+      安全に段階導入できるようにする。
+
+  - id: TASK-230
+    title: "sync-roadmap.ps1 — include Japanese version titles from backlog comments"
+    status: done
+    priority: P1
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      backlog.yaml の見出しコメント (例: "# === v0.19.5: monitoring stack + process gates ===")
+      を ROADMAP.md のバージョンセクション見出しに反映する。
+      現状はバージョン番号のみ出力。sync-roadmap.ps1 のパーサー修正。
+
+  - id: TASK-227
+    title: "Fix pane.completed event never fires — add previous-state tracking"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      exec_mode ペインは前回状態を保持しないため busy→completed 遷移が不可能。
+      agent-monitor に $PreviousResults パラメータ追加、agent-watchdog でサイクル間保持。
+      PR#320 の時点から到達不能だった (#326 が壊したのではない)。
+
+  - id: TASK-228
+    title: "Launch commander-poll.ps1 from orchestra-start (#311 integration)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: [TASK-227]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      PR#328 でマージ済みだが orchestra-start が起動していない。
+      watchdog と同様に Start-Process で background 起動。
+      commander-poll を watchdog より先に起動 (events.jsonl cursor 問題)。
+
+  - id: TASK-229
+    title: "Enforce review-approve from Reviewer pane only (#338 enforcement)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [security]
+    depends_on: [TASK-225]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      Commander が review-approve を自己実行するプロセス違反を3回繰り返し。
+      role-gate に ReviewApprove 権限追加 (Reviewer のみ)。
+      review-state.json に reviewer identity + head_sha を記録。
+      sh-orchestra-gate.js で非 Reviewer からの実行を Hook でブロック。
+
+  # === v0.23.0: cross-platform PTY portability ===
+  - id: TASK-252
+    title: "PTY backend portability enablement (portable-pty non-Windows paths)"
+    status: backlog
+    priority: P0
+    target_version: "v0.23.0"
+    repo: winsmux
+    labels: [enhancement, tauri, pty]
+    depends_on: [TASK-217e, TASK-249, TASK-251]
+    created: "2026-04-09"
+    updated: "2026-04-09"
+    notes: >
+      managed-agents-improvement-plan 由来の純新規項目。portable-pty / non-Windows backend
+      の実装を有効化し、pane spawn, resize, capture, focus, lifecycle を Linux/macOS で成立させる。
+      Tauri backend-first 方針の最終 portability マイルストーン。
+
+  # === v0.23.0-rc: 安定化 ===
+  - id: TASK-219
+    title: "Phase 5 dogfooding gate — 2-week validation without psmux"
+    status: backlog
+    priority: P0
+    target_version: "v0.23.0"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: [TASK-217e]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      Codex レビュー指摘 #4。2週間のドッグフーディングで致命的バグなし。
+      psmux バイナリ完全除去。同時セッション管理、IME、コピーモード検証。
+
+  - id: TASK-220
+    title: "Phase 6 release gate — packaging, signing, docs for v1.0.0"
+    status: backlog
+    priority: P0
+    target_version: "v1.0.0"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: [TASK-219]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      Codex レビュー指摘 #4。Tauri built-in updater + MSI/NSIS パッケージング。
+      README 全面更新。CLI + Desktop 両方のインストールガイド。
+      セッションロック、制御プレーンセキュリティの最終検証。
+
+  - id: TASK-221
+    title: "Non-destructive rollback — stop kill-session in orchestra-start (#334)"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug]
+    depends_on: [TASK-214]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #334 Phase 1. ロールバックで kill-session を呼ばない。bootstrap ペイン保持。
+      作成済みペインのみ個別 kill。exit-empty 対策。
+
+  - id: TASK-222
+    title: "Strict server health probe — Test-OrchestraServerHealth (#334)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.6"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: [TASK-221]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #334 Phase 2. port + TCP + AUTH + session-info の厳密チェック。
+      has-session は TCP 接続成功だけで OK を返すため不十分。
+
+  - id: TASK-223
+    title: "External server watchdog — crash detection + auto-restart (#334)"
+    status: backlog
+    priority: P1
+    target_version: "v0.19.6"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: [TASK-222]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #334 Phase 3. server-watchdog.ps1 (5-10秒間隔)。
+      max 3回/10分のクラッシュループ保護。Scheduled Task でログオン時自動起動。
+
+  - id: TASK-224
+    title: "Ensure-OrchestraServer auto-start integration (#334)"
+    status: backlog
+    priority: P2
+    target_version: "v0.19.6"
+    repo: winsmux
+    labels: [enhancement]
+    depends_on: [TASK-223]
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      #334 Phase 4. orchestra-start が Ensure-OrchestraServer を呼び、
+      サーバー不在時に自動 new-session。失敗時は構造化エラー + 修復手順。
+
+  - id: TASK-218
+    title: "Remove core/README.md — consolidate to root README"
+    status: done
+    priority: P1
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [chore]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      core/ は完全フォーク (upstream sync なし)。独自 README は不要。
+      ルート README.ja.md に統一。
+
+  - id: TASK-214
+    title: "Fix orchestra-start crash on detached HEAD worktrees"
+    status: done
+    priority: P0
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      builder-worktree.ps1:62,84 — $current.branch dot access under StrictMode
+      fails on detached HEAD worktrees (agent-* isolation worktrees).
+      Fix: Contains() guard + empty string default. 2行変更。
+
+  - id: TASK-215
+    title: "orchestra-gate hook blocks gh issue close (false positive)"
+    status: done
+    priority: P1
+    target_version: "v0.19.5"
+    repo: winsmux
+    labels: [bug]
+    depends_on: []
+    created: "2026-04-07"
+    updated: "2026-04-07"
+    notes: >
+      gh issue close 314 が review gate Rule 8 に引っかかった。
+      git commit 以外のコマンドが誤検出されている。パターンマッチの精度向上が必要。
