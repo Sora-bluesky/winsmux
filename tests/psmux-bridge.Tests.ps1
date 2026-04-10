@@ -72,6 +72,7 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'board') | Should -Be $true
         (Assert-Role -Command 'inbox') | Should -Be $true
         (Assert-Role -Command 'runs') | Should -Be $true
+        (Assert-Role -Command 'digest') | Should -Be $true
         (Assert-Role -Command 'explain') | Should -Be $true
         (Assert-Role -Command 'context-reset' -TargetPane 'reviewer') | Should -Be $true
         (Assert-Role -Command 'poll-events') | Should -Be $true
@@ -88,6 +89,7 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'board') | Should -Be $true
         (Assert-Role -Command 'inbox') | Should -Be $true
         (Assert-Role -Command 'runs') | Should -Be $true
+        (Assert-Role -Command 'digest') | Should -Be $true
         (Assert-Role -Command 'explain') | Should -Be $true
         (Assert-Role -Command 'type' -TargetPane 'self') | Should -Be $true
         (Assert-Role -Command 'context-reset' -TargetPane 'commander') | Should -Be $false
@@ -101,6 +103,7 @@ Describe 'Assert-Role' {
 
         (Assert-Role -Command 'message' -TargetPane 'commander') | Should -Be $true
         (Assert-Role -Command 'read' -TargetPane 'self') | Should -Be $true
+        (Assert-Role -Command 'digest') | Should -Be $true
         (Assert-Role -Command 'poll-events') | Should -Be $false
         (Assert-Role -Command 'signal') | Should -Be $false
         (Assert-Role -Command 'wait') | Should -Be $false
@@ -114,6 +117,7 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'review-request') | Should -Be $true
         (Assert-Role -Command 'review-approve') | Should -Be $true
         (Assert-Role -Command 'status') | Should -Be $true
+        (Assert-Role -Command 'digest') | Should -Be $true
         (Assert-Role -Command 'list') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $false
         (Assert-Role -Command 'focus') | Should -Be $false
@@ -127,6 +131,7 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'review-request') | Should -Be $true
         (Assert-Role -Command 'review-approve') | Should -Be $true
         (Assert-Role -Command 'review-fail') | Should -Be $true
+        (Assert-Role -Command 'digest') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $false
         (Assert-Role -Command 'focus') | Should -Be $false
     }
@@ -3119,6 +3124,189 @@ Set-Location '__RUNS_TEMP_ROOT__'
     }
 }
 
+Describe 'winsmux digest command' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:digestTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-digest-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:digestTempRoot -Force | Out-Null
+        $script:digestManifestDir = Join-Path $script:digestTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $script:digestManifestDir -Force | Out-Null
+        $script:digestManifestPath = Join-Path $script:digestManifestDir 'manifest.yaml'
+        $script:digestEventsPath = Join-Path $script:digestManifestDir 'events.jsonl'
+
+        Push-Location $script:digestTempRoot
+    }
+
+    AfterEach {
+        Pop-Location
+        if ($script:digestTempRoot -and (Test-Path $script:digestTempRoot)) {
+            Remove-Item -Path $script:digestTempRoot -Recurse -Force
+        }
+
+        $global:Target = $null
+        $global:Rest = @()
+        Remove-Item function:\winsmux -ErrorAction SilentlyContinue
+    }
+
+    It 'renders a high-signal evidence digest per run' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:digestTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-246
+    task: Build evidence digest
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 2
+    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T14:00:00+09:00
+"@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
+
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-10T14:01:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.approval_waiting'
+                message   = 'approval prompt detected'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                status    = 'approval_waiting'
+            } | ConvertTo-Json -Compress)
+        ) | Set-Content -Path $script:digestEventsPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $output = Invoke-Digest | Out-String
+
+        $output | Should -Match 'Run: task:task-246'
+        $output | Should -Match 'Next: approval_waiting'
+        $output | Should -Match 'Git: worktree-builder-1 @ abc1234'
+        $output | Should -Match 'Changed files \(2\):'
+        $output | Should -Match 'scripts/winsmux-core.ps1'
+    }
+
+    It 'returns digest items as json' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:digestTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-246
+    task: Build evidence digest
+    task_state: blocked
+    task_owner: builder-1
+    review_state: FAIL
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_failed
+    last_event_at: 2026-04-10T14:00:00+09:00
+"@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
+
+        ([ordered]@{
+            timestamp = '2026-04-10T14:01:00+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'commander.review_failed'
+            message   = 'review failed'
+            label     = 'reviewer-1'
+            pane_id   = '%3'
+            role      = 'Reviewer'
+            branch    = 'worktree-builder-1'
+            head_sha  = 'abc1234def5678'
+            data      = [ordered]@{
+                task_id = 'task-246'
+            }
+        } | ConvertTo-Json -Compress) | Set-Content -Path $script:digestEventsPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = (Invoke-Digest -DigestTarget '--json' | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.summary.item_count | Should -Be 1
+        $result.summary.review_failed | Should -Be 1
+        $result.items[0].run_id | Should -Be 'task:task-246'
+        $result.items[0].next_action | Should -Be 'review_failed'
+        $result.items[0].head_short | Should -Be 'abc1234'
+        $result.items[0].changed_files | Should -Be @('scripts/winsmux-core.ps1')
+    }
+
+    It 'supports winsmux digest --json through the top-level CLI entrypoint' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:digestTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-246
+    task: Build evidence digest
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T14:00:00+09:00
+"@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
+
+        $bridgeScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $childScript = @'
+Set-Item -Path function:winsmux -Value {
+    param([Parameter(ValueFromRemainingArguments = $true)][object[]]$args)
+    $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+    switch -Regex ($commandLine) {
+        '^capture-pane .*%2' { @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>'); break }
+        default { throw "unexpected winsmux call: $commandLine" }
+    }
+}
+Set-Location '__DIGEST_TEMP_ROOT__'
+& '__BRIDGE_SCRIPT__' digest --json
+'@
+        $childScript = $childScript.Replace('__DIGEST_TEMP_ROOT__', $script:digestTempRoot).Replace('__BRIDGE_SCRIPT__', $bridgeScript)
+        $output = & pwsh -NoProfile -Command $childScript
+
+        $result = ($output | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.summary.item_count | Should -Be 1
+        $result.items[0].run_id | Should -Be 'task:task-246'
+    }
+}
+
 Describe 'winsmux explain command' {
     BeforeAll {
         $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
@@ -3235,6 +3423,9 @@ panes:
 
         $result.run.run_id | Should -Be 'task:task-256'
         $result.run.task | Should -Be 'Implement run ledger'
+        $result.evidence_digest.run_id | Should -Be 'task:task-256'
+        $result.evidence_digest.next_action | Should -Be 'approval_waiting'
+        $result.evidence_digest.changed_files | Should -Be @('scripts/winsmux-core.ps1')
         $result.explanation.current_state.review_state | Should -Be 'PENDING'
         $result.explanation.reasons | Should -Contain 'task_state=in_progress'
         $result.explanation.reasons | Should -Contain 'review_state=PENDING'

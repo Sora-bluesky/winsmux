@@ -2712,6 +2712,100 @@ function Get-RunsPayload {
     }
 }
 
+function Get-ShortHeadSha {
+    param([AllowNull()][string]$HeadSha)
+
+    if ([string]::IsNullOrWhiteSpace($HeadSha)) {
+        return ''
+    }
+
+    if ($HeadSha.Length -le 7) {
+        return $HeadSha
+    }
+
+    return $HeadSha.Substring(0, 7)
+}
+
+function Get-RunNextAction {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $priorityOrder = @(
+        'approval_waiting',
+        'review_failed',
+        'task_blocked',
+        'blocked',
+        'commit_ready',
+        'task_completed',
+        'review_pending',
+        'dispatch_needed'
+    )
+    foreach ($priorityKind in $priorityOrder) {
+        $match = $Run.action_items | Where-Object { [string]$_.kind -eq $priorityKind } | Select-Object -First 1
+        if ($null -ne $match) {
+            return [string]$match.kind
+        }
+    }
+
+    $firstActionItem = $Run.action_items | Select-Object -First 1
+    if ($null -ne $firstActionItem -and -not [string]::IsNullOrWhiteSpace([string]$firstActionItem.kind)) {
+        return [string]$firstActionItem.kind
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace([string]$Run.review_state)) {
+        return [string]$Run.review_state
+    }
+
+    return [string]$Run.task_state
+}
+
+function ConvertTo-EvidenceDigestItem {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    return [ordered]@{
+        run_id             = [string]$Run.run_id
+        task_id            = [string]$Run.task_id
+        task               = [string]$Run.task
+        label              = [string]$Run.primary_label
+        pane_id            = [string]$Run.primary_pane_id
+        role               = [string]$Run.primary_role
+        task_state         = [string]$Run.task_state
+        review_state       = [string]$Run.review_state
+        next_action        = Get-RunNextAction -Run $Run
+        branch             = [string]$Run.branch
+        head_sha           = [string]$Run.head_sha
+        head_short         = Get-ShortHeadSha -HeadSha ([string]$Run.head_sha)
+        changed_file_count = [int]$Run.changed_file_count
+        changed_files      = @($Run.changed_files)
+        action_item_count  = @($Run.action_items).Count
+        last_event         = [string]$Run.last_event
+        last_event_at      = [string]$Run.last_event_at
+    }
+}
+
+function Get-DigestPayload {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $runsPayload = Get-RunsPayload -ProjectDir $ProjectDir
+    $items = @(
+        foreach ($run in @($runsPayload.runs)) {
+            ConvertTo-EvidenceDigestItem -Run $run
+        }
+    )
+
+    return [ordered]@{
+        generated_at = (Get-Date).ToString('o')
+        project_dir  = $ProjectDir
+        summary      = [ordered]@{
+            item_count         = @($items).Count
+            dirty_items        = @($items | Where-Object { [int]$_.changed_file_count -gt 0 }).Count
+            review_pending     = @($items | Where-Object { [string]$_.review_state -eq 'PENDING' }).Count
+            review_failed      = @($items | Where-Object { [string]$_.review_state -in @('FAIL', 'FAILED') }).Count
+            actionable_items   = @($items | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.next_action) }).Count
+        }
+        items        = @($items | Sort-Object @{ Expression = { [string]$_.last_event_at }; Descending = $true }, @{ Expression = { [string]$_.run_id } })
+    }
+}
+
 function Get-ExplainPayload {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -2758,6 +2852,7 @@ function Get-ExplainPayload {
         generated_at  = (Get-Date).ToString('o')
         project_dir   = $ProjectDir
         run           = $run
+        evidence_digest = ConvertTo-EvidenceDigestItem -Run $run
         explanation   = [ordered]@{
             summary       = if (-not [string]::IsNullOrWhiteSpace([string]$run.task)) { [string]$run.task } else { [string]$run.primary_label }
             reasons       = @($reasons)
@@ -2786,6 +2881,61 @@ function Write-ExplainFollowItem {
     }
 
     Write-Output ("[{0}] {1} {2}: {3}" -f [string]$Item.timestamp, [string]$Item.event, [string]$Item.label, [string]$Item.message)
+}
+
+function Invoke-Digest {
+    param(
+        [AllowNull()][string]$DigestTarget = $Target,
+        [AllowNull()][string[]]$DigestRest = $Rest
+    )
+
+    $jsonOutput = $false
+
+    if ($DigestTarget) {
+        if ($DigestTarget -eq '--json' -and (-not $DigestRest -or $DigestRest.Count -eq 0)) {
+            $jsonOutput = $true
+        } else {
+            Stop-WithError "usage: winsmux digest [--json]"
+        }
+    } elseif ($DigestRest -and $DigestRest.Count -gt 0) {
+        Stop-WithError "usage: winsmux digest [--json]"
+    }
+
+    $projectDir = (Get-Location).Path
+    $payload = Get-DigestPayload -ProjectDir $projectDir
+
+    if ($jsonOutput) {
+        $payload | ConvertTo-Json -Compress -Depth 10 | Write-Output
+        return
+    }
+
+    $items = @($payload.items)
+    if ($items.Count -eq 0) {
+        Write-Output "(no digest items)"
+        return
+    }
+
+    foreach ($item in $items) {
+        Write-Output ("Run: {0}" -f [string]$item.run_id)
+        Write-Output ("Primary: {0} ({1})" -f [string]$item.label, [string]$item.pane_id)
+        if (-not [string]::IsNullOrWhiteSpace([string]$item.task)) {
+            Write-Output ("Task: {0}" -f [string]$item.task)
+        }
+        Write-Output ("State: {0} / {1}" -f [string]$item.task_state, [string]$item.review_state)
+        Write-Output ("Next: {0}" -f [string]$item.next_action)
+        if (-not [string]::IsNullOrWhiteSpace([string]$item.branch)) {
+            Write-Output ("Git: {0} @ {1}" -f [string]$item.branch, [string]$item.head_short)
+        }
+        if ([int]$item.changed_file_count -gt 0) {
+            Write-Output ("Changed files ({0}):" -f [int]$item.changed_file_count)
+            foreach ($changedFile in @($item.changed_files)) {
+                Write-Output ("- {0}" -f [string]$changedFile)
+            }
+        } else {
+            Write-Output "Changed files: (none)"
+        }
+        Write-Output ""
+    }
 }
 
 function Get-InboxPayload {
@@ -3049,7 +3199,7 @@ function Invoke-Runs {
             @{ Name = 'Review'; Expression = { $_.review_state } }, `
             @{ Name = 'State'; Expression = { $_.state } }, `
             @{ Name = 'Branch'; Expression = { $_.branch } }, `
-            @{ Name = 'Head'; Expression = { if ([string]::IsNullOrWhiteSpace($_.head_sha)) { '' } elseif ($_.head_sha.Length -le 7) { $_.head_sha } else { $_.head_sha.Substring(0, 7) } } }, `
+            @{ Name = 'Head'; Expression = { Get-ShortHeadSha -HeadSha ([string]$_.head_sha) } }, `
             @{ Name = 'ActionItems'; Expression = { @($_.action_items).Count } } |
         Format-Table -AutoSize |
         Out-String -Width 4096
@@ -3141,11 +3291,18 @@ function Invoke-Explain {
     Write-Output ("Task: {0}" -f [string]$payload.explanation.summary)
     Write-Output ("Primary: {0} ({1})" -f [string]$payload.run.primary_label, [string]$payload.run.primary_pane_id)
     Write-Output ("State: {0} / {1} / {2}" -f [string]$payload.run.state, [string]$payload.run.task_state, [string]$payload.run.review_state)
+    Write-Output ("Next: {0}" -f [string]$payload.evidence_digest.next_action)
     if (-not [string]::IsNullOrWhiteSpace([string]$payload.run.branch)) {
         Write-Output ("Branch: {0}" -f [string]$payload.run.branch)
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$payload.run.head_sha)) {
         Write-Output ("Head: {0}" -f [string]$payload.run.head_sha)
+    }
+    if ([int]$payload.evidence_digest.changed_file_count -gt 0) {
+        Write-Output "Changed files:"
+        foreach ($changedFile in @($payload.evidence_digest.changed_files)) {
+            Write-Output ("- {0}" -f [string]$changedFile)
+        }
     }
     if (@($payload.explanation.reasons).Count -gt 0) {
         Write-Output "Reasons:"
@@ -3743,9 +3900,10 @@ Commands:
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
   status                    Report manifest pane states via capture-pane
   board [--json]            Report pane/task/review/git session board
-  inbox [--json] [--stream] Report actionable approvals/review/blockers
-  runs [--json]             Report run-oriented session view
-  explain <run_id> [--json] [--follow]  Explain one run and optionally follow new events
+inbox [--json] [--stream] Report actionable approvals/review/blockers
+runs [--json]             Report run-oriented session view
+digest [--json]           Report high-signal evidence digest per run
+explain <run_id> [--json] [--follow]  Explain one run and optionally follow new events
   poll-events [cursor]      Return new monitor events from .winsmux/events.jsonl
   signal <channel>          Send signal to unblock a waiting process
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
@@ -4079,9 +4237,10 @@ switch ($Command) {
     'health-check'    { Invoke-HealthCheck }
     'status'          { Invoke-Status }
     'board'           { Invoke-Board }
-    'inbox'           { Invoke-Inbox }
-    'runs'            { Invoke-Runs }
-    'explain'         { Invoke-Explain }
+        'inbox'           { Invoke-Inbox }
+        'runs'            { Invoke-Runs }
+        'digest'          { Invoke-Digest }
+        'explain'         { Invoke-Explain }
     'poll-events'     { Invoke-PollEvents }
     'signal'          { Invoke-Signal }
     'mailbox-create'  { Invoke-MailboxCreate }
