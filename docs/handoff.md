@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-10T12:21:30+09:00
+> Updated: 2026-04-10T15:10:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -21,6 +21,7 @@
 - Merged `TASK-257` via PR [#375](https://github.com/Sora-bluesky/winsmux/pull/375), tightening notification profiles so Telegram defaults to external-facing events only.
 - Merged `TASK-246` via PR [#376](https://github.com/Sora-bluesky/winsmux/pull/376), adding `winsmux digest [--json]` and evidence digest fields for `explain`.
 - Updated external planning so `v0.19.8` remains visible, `v0.20.1` contains `TASK-272/273/274`, and `v0.24.0` keeps the Rust runtime convergence plan.
+- Added the next stream-first UX slice locally: `winsmux digest --stream` now tails event deltas and emits high-signal digest updates only for materially affected runs.
 
 ## Validation
 
@@ -31,11 +32,12 @@
 - `TASK-257` focused regression passed before merge: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `98/98 PASS`
 - `TASK-246` focused regression passed before merge: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `101/101 PASS`
 - PR [#376](https://github.com/Sora-bluesky/winsmux/pull/376) CI passed before merge
+- Current local stream UX regression passes: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `103/103 PASS`
 
 ## Next actions
 
-1. Continue `v0.19.7` with stream-facing summary UX (`watch --stream / inbox --stream / explain --follow`) after `TASK-246`.
-2. Decide whether to close `v0.19.7` with `TASK-253` deferred or implement the delegation-contract slice next.
+1. Land the local `digest --stream` stream-first UX slice and then decide whether `watch --stream` is still necessary or should wrap digest/inbox instead of pane silence polling.
+2. Decide whether to close `v0.19.7` with `TASK-253` deferred or implement the minimal first-class `run_id` slice next.
 3. Keep future backlog aligned with the `Operator / slot / provider / verification / security monitor` model.
 4. Preserve the private planning sync flow: user/agent visible, auto-synced, but not committed to the public repo.
 5. Track GitHub Actions Node runtime warnings and update workflows before the Node 24 switch becomes mandatory.

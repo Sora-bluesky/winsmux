@@ -2883,25 +2883,122 @@ function Write-ExplainFollowItem {
     Write-Output ("[{0}] {1} {2}: {3}" -f [string]$Item.timestamp, [string]$Item.event, [string]$Item.label, [string]$Item.message)
 }
 
+function Get-DigestDeltaItems {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][object[]]$EventRecords
+    )
+
+    $records = @($EventRecords)
+    if ($records.Count -eq 0) {
+        return @()
+    }
+
+    $runsPayload = Get-RunsPayload -ProjectDir $ProjectDir
+    $matchedRunIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+
+    foreach ($run in @($runsPayload.runs)) {
+        foreach ($eventRecord in $records) {
+            if (Test-RunMatchesEventRecord -Run $run -EventRecord $eventRecord) {
+                $matchedRunIds.Add([string]$run.run_id) | Out-Null
+                break
+            }
+        }
+    }
+
+    if ($matchedRunIds.Count -eq 0) {
+        return @()
+    }
+
+    return @(
+        foreach ($run in @($runsPayload.runs | Sort-Object @{ Expression = { [string]$_.last_event_at }; Descending = $true }, @{ Expression = { [string]$_.run_id } })) {
+            if ($matchedRunIds.Contains([string]$run.run_id)) {
+                $item = ConvertTo-EvidenceDigestItem -Run $run
+                if (
+                    [int]$item.changed_file_count -gt 0 -or
+                    (
+                        [int]$item.action_item_count -gt 0 -and
+                        [string]$item.next_action -notin @('', 'backlog', 'dispatch_needed')
+                    ) -or
+                    (-not [string]::IsNullOrWhiteSpace([string]$item.review_state))
+                ) {
+                    $item
+                }
+            }
+        }
+    )
+}
+
+function Write-DigestStreamItem {
+    param(
+        [Parameter(Mandatory = $true)]$Item,
+        [switch]$Json
+    )
+
+    if ($Json) {
+        $Item | ConvertTo-Json -Compress -Depth 10 | Write-Output
+        return
+    }
+
+    $updatedAt = [string]$Item.last_event_at
+    if ([string]::IsNullOrWhiteSpace($updatedAt)) {
+        $updatedAt = (Get-Date).ToString('o')
+    }
+
+    Write-Output ("[{0}] digest {1} {2} ({3}) next={4} files={5}" -f `
+        $updatedAt, `
+        [string]$Item.run_id, `
+        [string]$Item.label, `
+        [string]$Item.pane_id, `
+        [string]$Item.next_action, `
+        [int]$Item.changed_file_count)
+}
+
 function Invoke-Digest {
     param(
         [AllowNull()][string]$DigestTarget = $Target,
         [AllowNull()][string[]]$DigestRest = $Rest
     )
 
-    $jsonOutput = $false
+    $tokens = @()
+    if (-not [string]::IsNullOrWhiteSpace($DigestTarget)) {
+        $tokens += $DigestTarget
+    }
+    if ($DigestRest) {
+        $tokens += @($DigestRest)
+    }
 
-    if ($DigestTarget) {
-        if ($DigestTarget -eq '--json' -and (-not $DigestRest -or $DigestRest.Count -eq 0)) {
-            $jsonOutput = $true
-        } else {
-            Stop-WithError "usage: winsmux digest [--json]"
+    $jsonOutput = $false
+    $streamOutput = $false
+
+    foreach ($token in $tokens) {
+        switch ($token) {
+            '--json'   { $jsonOutput = $true }
+            '--stream' { $streamOutput = $true }
+            default    { Stop-WithError "usage: winsmux digest [--json] [--stream]" }
         }
-    } elseif ($DigestRest -and $DigestRest.Count -gt 0) {
-        Stop-WithError "usage: winsmux digest [--json]"
     }
 
     $projectDir = (Get-Location).Path
+    if ($streamOutput) {
+        $snapshot = Get-DigestPayload -ProjectDir $projectDir
+        foreach ($item in @($snapshot.items)) {
+            Write-DigestStreamItem -Item $item -Json:$jsonOutput
+        }
+
+        $cursor = @(Get-BridgeEventRecords -ProjectDir $projectDir).Count
+        while ($true) {
+            $delta = Get-BridgeEventDelta -ProjectDir $projectDir -Cursor $cursor
+            $cursor = [int]$delta.cursor
+            $items = Get-DigestDeltaItems -ProjectDir $projectDir -EventRecords @($delta.events)
+            foreach ($item in @($items)) {
+                Write-DigestStreamItem -Item $item -Json:$jsonOutput
+            }
+
+            Start-Sleep -Seconds 2
+        }
+    }
+
     $payload = Get-DigestPayload -ProjectDir $projectDir
 
     if ($jsonOutput) {
@@ -3902,7 +3999,7 @@ Commands:
   board [--json]            Report pane/task/review/git session board
 inbox [--json] [--stream] Report actionable approvals/review/blockers
 runs [--json]             Report run-oriented session view
-digest [--json]           Report high-signal evidence digest per run
+digest [--json] [--stream] Report high-signal evidence digest per run
 explain <run_id> [--json] [--follow]  Explain one run and optionally follow new events
   poll-events [cursor]      Return new monitor events from .winsmux/events.jsonl
   signal <channel>          Send signal to unblock a waiting process
