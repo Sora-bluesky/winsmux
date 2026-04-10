@@ -1,3 +1,4 @@
+ . (Join-Path $PSScriptRoot 'settings.ps1')
  . (Join-Path $PSScriptRoot 'manifest.ps1')
 
 function ConvertFrom-PaneControlYamlScalar {
@@ -482,17 +483,19 @@ function Get-PaneControlRestartPlan {
     }
 
     $context = Get-PaneControlManifestContext -ProjectDir $ProjectDir -PaneId $PaneId
-    $roleAgentConfig = $null
-    if (Get-Command Get-RoleAgentConfig -ErrorAction SilentlyContinue) {
-        $roleAgentConfig = Get-RoleAgentConfig -Role $context.Role -Settings $Settings
+    $agentConfig = $null
+    if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
+        $agentConfig = Get-SlotAgentConfig -Role $context.Role -SlotId $context.Label -Settings $Settings
+    } elseif (Get-Command Get-RoleAgentConfig -ErrorAction SilentlyContinue) {
+        $agentConfig = Get-RoleAgentConfig -Role $context.Role -Settings $Settings
     } else {
-        $roleAgentConfig = [ordered]@{
+        $agentConfig = [ordered]@{
             Agent = [string]$Settings.agent
             Model = [string]$Settings.model
         }
     }
 
-    $launchCommand = Get-PaneControlLaunchCommand -Agent $roleAgentConfig.Agent -Model $roleAgentConfig.Model -ProjectDir $context.LaunchDir -GitWorktreeDir $context.GitWorktreeDir
+    $launchCommand = Get-PaneControlLaunchCommand -Agent $agentConfig.Agent -Model $agentConfig.Model -ProjectDir $context.LaunchDir -GitWorktreeDir $context.GitWorktreeDir
 
     return [ordered]@{
         PaneId         = $context.PaneId
@@ -501,8 +504,8 @@ function Get-PaneControlRestartPlan {
         ProjectDir     = $context.ProjectDir
         LaunchDir      = $context.LaunchDir
         GitWorktreeDir = $context.GitWorktreeDir
-        Agent          = [string]$roleAgentConfig.Agent
-        Model          = [string]$roleAgentConfig.Model
+        Agent          = [string]$agentConfig.Agent
+        Model          = [string]$agentConfig.Model
         LaunchCommand  = $launchCommand
     }
 }

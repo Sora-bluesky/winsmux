@@ -316,13 +316,6 @@ function Get-OrchestraLayoutSettings {
                 throw "agent_slots worktree_mode overrides are not supported yet at runtime (slot '$slotId' requested '$slotWorktreeMode')."
             }
 
-            if (-not [string]::IsNullOrWhiteSpace($slotAgent) -and $slotAgent -ne [string]$Settings.agent) {
-                throw "agent_slots per-slot agent overrides are not supported yet at runtime (slot '$slotId' requested '$slotAgent')."
-            }
-
-            if (-not [string]::IsNullOrWhiteSpace($slotModel) -and $slotModel -ne [string]$Settings.model) {
-                throw "agent_slots per-slot model overrides are not supported yet at runtime (slot '$slotId' requested '$slotModel')."
-            }
         }
     }
 
@@ -1346,9 +1339,9 @@ if ($MyInvocation.InvocationName -ne '.') {
             $builderWorktreePath = $builderWorktree.WorktreePath
         }
 
-        $roleAgentConfig = Get-RoleAgentConfig -Role $canonicalRole -Settings $settings
-        $execMode = ([string]$roleAgentConfig.Agent).Trim().ToLowerInvariant() -eq 'codex'
-        $launchCommand = Get-AgentLaunchCommand -Agent $roleAgentConfig.Agent -Model $roleAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -ExecMode $false
+        $slotAgentConfig = Get-SlotAgentConfig -Role $canonicalRole -SlotId $label -Settings $settings
+        $execMode = ([string]$slotAgentConfig.Agent).Trim().ToLowerInvariant() -eq 'codex'
+        $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -ExecMode $false
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
@@ -1391,6 +1384,8 @@ if ($MyInvocation.InvocationName -ne '.') {
             Label = $label
             PaneId = $paneId
             Role = $canonicalRole
+            Agent = [string]$slotAgentConfig.Agent
+            Model = [string]$slotAgentConfig.Model
             ExecMode = $false
             LaunchDir = $launchDir
             BuilderBranch = $builderBranch
@@ -1401,8 +1396,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
     foreach ($paneSummary in $paneSummaries) {
         try {
-            $roleAgentConfig = Get-RoleAgentConfig -Role $paneSummary.Role -Settings $settings
-            Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $roleAgentConfig.Agent -TimeoutSeconds 60
+            Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $paneSummary.Agent -TimeoutSeconds 60
         } catch {
             Write-Error "Agent readiness timeout for $($paneSummary.Label) [$($paneSummary.PaneId)]: $($_.Exception.Message)"
             exit 1
