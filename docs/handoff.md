@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-10T19:12:00+09:00
+> Updated: 2026-04-10T20:02:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -9,6 +9,7 @@
 - `v0.19.6 hardening` is implemented, merged, released, and tracked as `100% (6/6)` in the external planning backlog/roadmap.
 - `v0.19.7 visible orchestration` is implemented, merged, released, and tracked as `100% (7/7)` in the external planning backlog/roadmap.
 - `v0.19.8 External Operator & Agent Slots` is implemented in order; private planning now tracks `TASK-259`, `TASK-261`, `TASK-262`, `TASK-263`, and `TASK-264` as done, and the external roadmap is synced accordingly.
+- Private planning now swaps `v0.20.0` and `v0.21.0` to match actual implementation order: `v0.20.0` is `Desktop UX Foundation`, and `v0.21.0` is `Operator Core & Slot Dispatch`.
 - PR [#370](https://github.com/Sora-bluesky/winsmux/pull/370), PR [#371](https://github.com/Sora-bluesky/winsmux/pull/371), PR [#372](https://github.com/Sora-bluesky/winsmux/pull/372), PR [#374](https://github.com/Sora-bluesky/winsmux/pull/374), PR [#375](https://github.com/Sora-bluesky/winsmux/pull/375), PR [#376](https://github.com/Sora-bluesky/winsmux/pull/376), PR [#379](https://github.com/Sora-bluesky/winsmux/pull/379), PR [#380](https://github.com/Sora-bluesky/winsmux/pull/380), PR [#381](https://github.com/Sora-bluesky/winsmux/pull/381), PR [#382](https://github.com/Sora-bluesky/winsmux/pull/382), PR [#383](https://github.com/Sora-bluesky/winsmux/pull/383), PR [#384](https://github.com/Sora-bluesky/winsmux/pull/384), and PR [#385](https://github.com/Sora-bluesky/winsmux/pull/385) are merged into `main`.
 - Planning source of truth is externalized outside the public repository and syncs automatically into the private planning root.
 - `v0.21.x` private planning is aligned to a conversation-first Tauri operator shell, with Codex-App-like shell rules reflected in Figma and backlog notes.
@@ -48,6 +49,9 @@
 - Merged the `TASK-107` editor slice via PR [#387](https://github.com/Sora-bluesky/winsmux/pull/387), connecting the secondary editor surface to explorer selections and source-context changed files.
 - Started the workflow maintenance slice on `codex/node24-workflow-actions-20260410`, upgrading GitHub Actions core actions to Node-24-capable majors to remove runner deprecation warnings.
 - Added a durable subagent review-gate rule to [AGENTS.md](../AGENTS.md): close completed review agents promptly, prefer fresh agents per PR slice, wait longer before declaring timeout, and record fallback review grounds explicitly when timeouts persist.
+- Merged the workflow maintenance slice via PR [#388](https://github.com/Sora-bluesky/winsmux/pull/388), upgrading core GitHub Actions dependencies to Node-24-capable majors and landing the durable subagent review-gate workflow rule in [AGENTS.md](../AGENTS.md).
+- Swapped `v0.20.0` and `v0.21.0` in the private planning backlog/roadmap so release numbering matches actual implementation order, then re-synced [ROADMAP.md](C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Projects\winsmux\planning\ROADMAP.md).
+- Started the next `v0.20.0` desktop UX slice on top of `TASK-138`, unifying source-control/worktree mock data into a single `sourceControlState` view model and wiring sidebar source summary, source-entry filters, context overview cards, and changed-file rows to the same state.
 
 ## Validation
 
@@ -67,10 +71,12 @@
 - Current Tauri workspace-sidebar slice passes frontend build: `npm run build` in `winsmux-app`.
 - Current `TASK-297/292/293/294` starter slice passes frontend build: `npm run build` in `winsmux-app`.
 - Current `TASK-107` editor slice is merged via PR [#387](https://github.com/Sora-bluesky/winsmux/pull/387).
+- PR [#388](https://github.com/Sora-bluesky/winsmux/pull/388) merged cleanly and the repo is back to `main == origin/main`.
+- Current `TASK-138` source-control slice passes frontend build: `npm run build` in `winsmux-app`.
 
 ## Next actions
 
-1. Publish the active `codex/node24-workflow-actions-20260410` workflow maintenance slice, then continue `v0.21.0` toward richer editor/context integration.
+1. Publish the active `TASK-138` source-control/worktree-aware desktop UX slice, then continue `v0.20.0: Desktop UX Foundation` toward richer editor/context integration and menu/settings polish.
 2. Preserve the private planning sync flow: user/agent visible, auto-synced, but not committed to the public repo.
 3. Run the next retro-review tranche over recent merged PRs after each milestone-close sequence.
 

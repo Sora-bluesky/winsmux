@@ -39,6 +39,7 @@ interface ExplorerItem {
   label: string;
   depth: number;
   kind: "folder" | "file";
+  path?: string;
   open?: boolean;
   active?: boolean;
 }
@@ -54,9 +55,28 @@ interface EditorFile {
   active?: boolean;
 }
 
-interface SourceSummaryItem {
-  label: string;
-  value: string;
+type SourceFilter = "all" | "candidates" | "attention" | "builder-2" | "builder-3";
+
+type ChangeStatus = "modified" | "added" | "deleted" | "renamed";
+type ChangeRisk = "low" | "medium" | "high";
+
+interface SourceChange {
+  path: string;
+  summary: string;
+  slot: string;
+  status: ChangeStatus;
+  risk: ChangeRisk;
+  worktree: string;
+  branch: string;
+  lines: string;
+  commitCandidate: boolean;
+  needsAttention: boolean;
+  run: string;
+  review: string;
+}
+
+interface SourceControlState {
+  entries: SourceChange[];
 }
 
 interface ContextSection {
@@ -83,6 +103,7 @@ let composerImeActive = false;
 let sidebarWidth = 292;
 let selectedEditorPath = "winsmux-app/src/main.ts";
 let activeComposerMode: ComposerMode = "dispatch";
+let activeSourceFilter: SourceFilter = "all";
 
 const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: string }> = [
   { mode: "ask", label: "Ask", placeholder: "Ask the Operator for clarification, status, or guidance" },
@@ -121,9 +142,9 @@ const sessionItems: SessionItem[] = [
 const explorerItems: ExplorerItem[] = [
   { label: "winsmux-app", depth: 0, kind: "folder", open: true },
   { label: "src", depth: 1, kind: "folder", open: true },
-  { label: "main.ts", depth: 2, kind: "file", active: true },
-  { label: "styles.css", depth: 2, kind: "file" },
-  { label: "index.html", depth: 1, kind: "file" },
+  { label: "main.ts", depth: 2, kind: "file", path: "winsmux-app/src/main.ts", active: true },
+  { label: "styles.css", depth: 2, kind: "file", path: "winsmux-app/src/styles.css" },
+  { label: "index.html", depth: 1, kind: "file", path: "winsmux-app/index.html" },
   { label: "winsmux-core", depth: 0, kind: "folder" },
 ];
 
@@ -158,19 +179,66 @@ const editorFiles: EditorFile[] = [
     content:
       "<section id=\"conversation-panel\">\n  <div id=\"conversation-timeline\"></div>\n  <form id=\"composer\"></form>\n</section>\n\n<aside id=\"editor-surface\" hidden></aside>\n",
   },
+  {
+    path: "winsmux-core/scripts/team-pipeline.ps1",
+    summary: "Review-capable slot dispatch and branch alignment gate",
+    language: "PowerShell",
+    lineCount: 44,
+    modified: true,
+    origin: "context",
+    content:
+      "function Resolve-ReviewTarget {\n  param($Run)\n  # Review is now a slot capability, not a dedicated pane kind.\n}\n\nif ($branchMismatch) {\n  return 'blocked'\n}\n",
+  },
 ];
 
-const sourceSummaryItems: SourceSummaryItem[] = [
-  { label: "Branch", value: "codex/task264-review-capable-slot" },
-  { label: "Changed", value: "3 files" },
-  { label: "Review", value: "passed · branch mismatch" },
-  { label: "Worktree", value: ".worktrees/builder-2" },
-];
+const sourceControlState: SourceControlState = {
+  entries: [
+  {
+    path: "winsmux-app/src/main.ts",
+    summary: "Conversation shell source-control actions and worktree metadata",
+    slot: "worker-2",
+    status: "modified",
+    risk: "medium",
+    worktree: "builder-2",
+    branch: "codex/task138-source-context",
+    lines: "+46 -11",
+    commitCandidate: true,
+    needsAttention: false,
+    run: "run-245",
+    review: "passed",
+  },
+  {
+    path: "winsmux-app/src/styles.css",
+    summary: "Sidebar/context badges and source-control overview cards",
+    slot: "worker-2",
+    status: "modified",
+    risk: "low",
+    worktree: "builder-2",
+    branch: "codex/task138-source-context",
+    lines: "+38 -4",
+    commitCandidate: true,
+    needsAttention: false,
+    run: "run-245",
+    review: "passed",
+  },
+  {
+    path: "winsmux-core/scripts/team-pipeline.ps1",
+    summary: "Branch mismatch still blocks commit despite review PASS",
+    slot: "worker-3",
+    status: "modified",
+    risk: "high",
+    worktree: "builder-3",
+    branch: "codex/task264-review-capable-slot",
+    lines: "+9 -2",
+    commitCandidate: false,
+    needsAttention: true,
+    run: "run-246",
+    review: "blocked",
+  },
+  ],
+};
 
-const contextSections: ContextSection[] = [
-  { label: "slot", value: "worker-2" },
-  { label: "branch", value: "codex/task245-run-inbox" },
-  { label: "review", value: "pending" },
+const baseContextSections: ContextSection[] = [
   { label: "next", value: "Open Explain" },
 ];
 
@@ -313,10 +381,12 @@ function renderExplorer() {
     button.style.paddingLeft = `${12 + item.depth * 16}px`;
     button.innerHTML =
       `<span class="sidebar-row-title">${item.kind === "folder" ? (item.open ? "▾ " : "▸ ") : "• "}${item.label}</span>`;
-    if (item.kind === "file") {
+    if (item.kind === "file" && item.path) {
+      const itemPath = item.path;
       button.addEventListener("click", () => {
-        selectedEditorPath = findEditorFile(item.label)?.path || selectedEditorPath;
+        selectedEditorPath = findEditorFile(itemPath)?.path || selectedEditorPath;
         setEditorSurface(true);
+        renderSourceSummary();
       });
     }
     root.appendChild(button);
@@ -338,6 +408,7 @@ function renderOpenEditors() {
     button.addEventListener("click", () => {
       selectedEditorPath = editor.path;
       setEditorSurface(true);
+      renderSourceSummary();
     });
     root.appendChild(button);
   }
@@ -349,8 +420,22 @@ function renderSourceSummary() {
     return;
   }
 
+  const visibleChanges = getVisibleSourceChanges();
+  const primaryChange = getPrimarySourceChange(visibleChanges);
+  const entryCount = visibleChanges.length;
+  const attentionCount = visibleChanges.filter((item) => item.needsAttention).length;
+  const commitCandidates = visibleChanges.filter((item) => item.commitCandidate).length;
+  const summaryItems = [
+    { label: "Branch", value: primaryChange?.branch ?? "No branch" },
+    { label: "Changed", value: `${entryCount} files` },
+    { label: "Review", value: primaryChange?.review ?? "No review state" },
+    { label: "Worktree", value: primaryChange ? `.worktrees/${primaryChange.worktree}` : "No worktree" },
+    { label: "Ready", value: `${commitCandidates} candidate${commitCandidates === 1 ? "" : "s"}` },
+    { label: "Risk", value: `${attentionCount} attention` },
+  ];
+
   root.innerHTML = "";
-  for (const item of sourceSummaryItems) {
+  for (const item of summaryItems) {
     const row = document.createElement("div");
     row.className = "sidebar-summary-row";
     row.innerHTML = `<span class="sidebar-summary-label">${item.label}</span><span class="sidebar-summary-value">${item.value}</span>`;
@@ -358,31 +443,117 @@ function renderSourceSummary() {
   }
 }
 
-function renderContextPanel() {
-  const sectionRoot = document.getElementById("context-sections");
-  const fileRoot = document.getElementById("context-file-list");
-  if (!sectionRoot || !fileRoot) {
+function renderSourceEntries() {
+  const root = document.getElementById("source-entry-list");
+  if (!root) {
     return;
   }
 
+  root.innerHTML = "";
+  const entryItems: Array<{ label: string; value: string; filter: SourceFilter; tone?: "success" | "attention" }> = [
+    { label: "Commit candidates", value: `${sourceControlState.entries.filter((item) => item.commitCandidate).length} ready`, tone: "success", filter: "candidates" },
+    { label: "Needs attention", value: `${sourceControlState.entries.filter((item) => item.needsAttention).length} blocker`, tone: "attention", filter: "attention" },
+    { label: "worktree-builder-2", value: `${sourceControlState.entries.filter((item) => item.worktree === "builder-2").length} files`, filter: "builder-2" },
+    { label: "worktree-builder-3", value: `${sourceControlState.entries.filter((item) => item.worktree === "builder-3").length} files`, filter: "builder-3" },
+  ];
+
+  for (const item of entryItems) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `sidebar-row source-entry-row ${activeSourceFilter === item.filter ? "is-active" : ""} ${
+      item.tone ? `is-${item.tone}` : ""
+    }`;
+    button.innerHTML = `<span class="sidebar-row-title">${item.label}</span><span class="sidebar-row-meta">${item.value}</span>`;
+    button.addEventListener("click", () => {
+      activeSourceFilter = item.filter;
+      setContextPanel(true);
+      const primaryChange = getPrimarySourceChange(getVisibleSourceChanges());
+      if (editorSurfaceOpen && primaryChange) {
+        selectedEditorPath = primaryChange.path;
+        renderEditorSurface();
+        renderOpenEditors();
+      }
+      renderSourceSummary();
+      renderSourceEntries();
+      renderContextPanel();
+    });
+    root.appendChild(button);
+  }
+}
+
+function getVisibleSourceChanges() {
+  switch (activeSourceFilter) {
+    case "candidates":
+      return sourceControlState.entries.filter((item) => item.commitCandidate);
+    case "attention":
+      return sourceControlState.entries.filter((item) => item.needsAttention);
+    case "builder-2":
+      return sourceControlState.entries.filter((item) => item.worktree === "builder-2");
+    case "builder-3":
+      return sourceControlState.entries.filter((item) => item.worktree === "builder-3");
+    default:
+      return sourceControlState.entries;
+  }
+}
+
+function getPrimarySourceChange(changes: SourceChange[]) {
+  return changes.find((item) => item.path === selectedEditorPath) ?? changes[0] ?? sourceControlState.entries[0];
+}
+
+function renderContextPanel() {
+  const sectionRoot = document.getElementById("context-sections");
+  const overviewRoot = document.getElementById("source-overview-cards");
+  const fileRoot = document.getElementById("context-file-list");
+  if (!sectionRoot || !overviewRoot || !fileRoot) {
+    return;
+  }
+
+  const visibleChanges = getVisibleSourceChanges();
+  const primaryChange = getPrimarySourceChange(visibleChanges);
+
   sectionRoot.innerHTML = "";
-  for (const item of contextSections) {
+  const resolvedContextSections = [
+    ...baseContextSections,
+    { label: "slot", value: primaryChange?.slot ?? "No slot" },
+    { label: "branch", value: primaryChange?.branch ?? "No branch" },
+    { label: "review", value: primaryChange?.review ?? "No review state" },
+    { label: "worktree", value: primaryChange ? `.worktrees/${primaryChange.worktree}` : "No worktree" },
+  ];
+  for (const item of resolvedContextSections) {
     const row = document.createElement("div");
     row.className = "context-section";
     row.innerHTML = `<div class="context-label">${item.label}</div><div class="context-value">${item.value}</div>`;
     sectionRoot.appendChild(row);
   }
 
+  overviewRoot.innerHTML = "";
+  const overviewCards = [
+    { label: "Selected scope", value: activeSourceFilter === "all" ? "All changes" : activeSourceFilter.replace("-", " ") },
+    { label: "Commit candidates", value: `${visibleChanges.filter((item) => item.commitCandidate).length}` },
+    { label: "Needs attention", value: `${visibleChanges.filter((item) => item.needsAttention).length}` },
+    { label: "Active worktree", value: primaryChange?.worktree ?? "n/a" },
+  ];
+
+  for (const item of overviewCards) {
+    const card = document.createElement("div");
+    card.className = "source-overview-card";
+    card.innerHTML = `<div class="context-label">${item.label}</div><div class="source-overview-value">${item.value}</div>`;
+    overviewRoot.appendChild(card);
+  }
+
   fileRoot.innerHTML = "";
-  for (const file of editorFiles.filter((item) => item.origin === "context")) {
+  for (const change of visibleChanges) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `context-file-row ${file.path === selectedEditorPath && editorSurfaceOpen ? "is-active" : ""}`;
+    button.className = `context-file-row ${change.path === selectedEditorPath && editorSurfaceOpen ? "is-active" : ""} risk-${change.risk}`;
     button.innerHTML =
-      `<span class="context-file-name">${file.path.split("/").pop() ?? file.path}</span><span class="context-file-meta">${file.summary}</span>`;
+      `<span class="context-file-name">${change.path.split("/").pop() ?? change.path}</span>` +
+      `<span class="context-file-meta">${change.summary}</span>` +
+      `<span class="context-file-trace">${change.status} · ${change.lines} · ${change.worktree} · ${change.review}</span>`;
     button.addEventListener("click", () => {
-      selectedEditorPath = file.path;
+      selectedEditorPath = change.path;
       setEditorSurface(true);
+      renderSourceSummary();
     });
     fileRoot.appendChild(button);
   }
@@ -523,6 +694,7 @@ function renderEditorSurface() {
   }
 
   const selected = findEditorFile(selectedEditorPath) || editorFiles[0];
+  const sourceChange = sourceControlState.entries.find((item) => item.path === selected.path);
   selectedEditorPath = selected.path;
 
   path.textContent = selected.path;
@@ -532,6 +704,7 @@ function renderEditorSurface() {
     `${selected.lineCount} lines`,
     selected.modified ? "Modified" : "Saved",
     selected.origin === "context" ? "Opened from context" : "Opened from explorer",
+    sourceChange ? `${sourceChange.status} · ${sourceChange.worktree}` : "No source metadata",
   ]) {
     const chip = document.createElement("span");
     chip.className = `editor-meta-chip ${item === "Modified" ? "is-modified" : ""}`;
@@ -539,7 +712,9 @@ function renderEditorSurface() {
     meta.appendChild(chip);
   }
   code.textContent = selected.content;
-  statusbar.textContent = `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selected.path}`;
+  statusbar.textContent = sourceChange
+    ? `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selected.path} · ${sourceChange.branch} · ${sourceChange.review}`
+    : `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selected.path}`;
   tabs.innerHTML = "";
 
   for (const editor of editorFiles) {
@@ -551,7 +726,9 @@ function renderEditorSurface() {
       selectedEditorPath = editor.path;
       renderEditorSurface();
       renderOpenEditors();
+      renderSourceSummary();
       renderContextPanel();
+      renderSourceEntries();
     });
     tabs.appendChild(tab);
   }
@@ -658,7 +835,44 @@ function appendUserMessage(message: string) {
 }
 
 function findEditorFile(label: string) {
-  return editorFiles.find((editor) => editor.path.endsWith(label));
+  const existing = editorFiles.find((editor) => editor.path === label);
+  if (existing) {
+    return existing;
+  }
+
+  const sourceChange = sourceControlState.entries.find((entry) => entry.path === label);
+  if (!sourceChange) {
+    return undefined;
+  }
+
+  return {
+    path: sourceChange.path,
+    summary: sourceChange.summary,
+    content:
+      `// Generated source-control preview\n` +
+      `// ${sourceChange.branch} · ${sourceChange.worktree} · ${sourceChange.review}\n` +
+      `// ${sourceChange.lines}\n`,
+    language: inferLanguageFromPath(sourceChange.path),
+    lineCount: 3,
+    modified: sourceChange.status !== "deleted",
+    origin: "context",
+  };
+}
+
+function inferLanguageFromPath(path: string) {
+  if (path.endsWith(".ts")) {
+    return "TypeScript";
+  }
+  if (path.endsWith(".css")) {
+    return "CSS";
+  }
+  if (path.endsWith(".html")) {
+    return "HTML";
+  }
+  if (path.endsWith(".ps1")) {
+    return "PowerShell";
+  }
+  return "Text";
 }
 
 function initializeSidebarResize() {
@@ -704,6 +918,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderExplorer();
   renderOpenEditors();
   renderSourceSummary();
+  renderSourceEntries();
   renderContextPanel();
   renderFooterLane();
   renderConversation(seedConversation);
