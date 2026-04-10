@@ -47,6 +47,7 @@
 - Started the next `TASK-107` editor slice on `codex/task107-editor-secondary-surface-20260410`, wiring changed files and source context into the secondary editor surface.
 - Merged the `TASK-107` editor slice via PR [#387](https://github.com/Sora-bluesky/winsmux/pull/387), connecting the secondary editor surface to explorer selections and source-context changed files.
 - Started the workflow maintenance slice on `codex/node24-workflow-actions-20260410`, upgrading GitHub Actions core actions to Node-24-capable majors to remove runner deprecation warnings.
+- Added a durable subagent review-gate rule to [AGENTS.md](../AGENTS.md): close completed review agents promptly, prefer fresh agents per PR slice, wait longer before declaring timeout, and record fallback review grounds explicitly when timeouts persist.
 
 ## Validation
 
