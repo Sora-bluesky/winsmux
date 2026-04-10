@@ -8,10 +8,99 @@
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body>
-    <div id="toolbar">
-      <span class="toolbar-title">winsmux</span>
-      <button id="add-pane-btn">+ Pane</button>
+    <div id="app-shell">
+      <aside id="left-rail">
+        <div class="brand">winsmux</div>
+        <nav id="nav-list">
+          <button class="nav-item is-active" data-view="inbox">Inbox</button>
+          <button class="nav-item" data-view="runs">Runs</button>
+          <button class="nav-item" data-view="digest">Digest</button>
+          <button class="nav-item" data-view="source">Source</button>
+          <button class="nav-item" data-view="settings">Settings</button>
+        </nav>
+      </aside>
+      <main id="workspace">
+        <header id="workspace-header">
+          <div>
+            <div class="eyebrow">Operator workspace</div>
+            <h1 id="workspace-title">Inbox</h1>
+            <p id="workspace-subtitle">Conversation-first shell for operator judgment, evidence, and action.</p>
+          </div>
+          <div id="header-actions">
+            <button
+              class="ghost-btn"
+              id="toggle-context-btn"
+              type="button"
+              aria-controls="context-panel"
+              aria-expanded="true"
+            >
+              Context
+            </button>
+            <button
+              class="ghost-btn"
+              id="toggle-terminal-btn"
+              type="button"
+              aria-controls="terminal-drawer"
+              aria-expanded="false"
+            >
+              Terminal
+            </button>
+          </div>
+        </header>
+
+        <section id="workspace-body">
+          <section id="conversation-panel">
+            <div id="thread-meta">
+              <span>winsmux session</span>
+              <span>active operator thread</span>
+            </div>
+            <div id="conversation-timeline"></div>
+            <form id="composer" autocomplete="off">
+              <label class="sr-only" for="composer-input">Message the Operator</label>
+              <textarea id="composer-input" rows="2" placeholder="Message the Operator... Dispatch, ask, review, or explain"></textarea>
+              <div id="composer-footer">
+                <div id="attachment-tray">
+                  <button type="button" class="attachment-chip">Screen 1.png</button>
+                  <button type="button" class="attachment-chip">Trace.txt</button>
+                  <button type="button" class="attachment-chip attachment-chip-muted">+1</button>
+                </div>
+                <div id="composer-actions">
+                  <span id="ime-hint">IME-safe: Enter sends, Shift+Enter inserts newline, composing Enter never sends.</span>
+                  <button type="submit" id="send-btn">Send</button>
+                </div>
+              </div>
+            </form>
+          </section>
+
+          <aside id="context-panel">
+            <div class="panel-title">Context</div>
+            <div class="context-section">
+              <div class="context-label">slot</div>
+              <div class="context-value">worker-2</div>
+            </div>
+            <div class="context-section">
+              <div class="context-label">branch</div>
+              <div class="context-value">codex/task245-run-inbox</div>
+            </div>
+            <div class="context-section">
+              <div class="context-label">review</div>
+              <div class="context-value">pending</div>
+            </div>
+            <div class="context-section">
+              <div class="context-label">next</div>
+              <div class="context-value">Open Explain</div>
+            </div>
+          </aside>
+        </section>
+
+        <section id="terminal-drawer" hidden>
+          <div id="terminal-toolbar">
+            <span>Utility drawer: terminal / raw logs / diagnostics only</span>
+            <button id="add-pane-btn">+ Pane</button>
+          </div>
+          <div id="panes-container"></div>
+        </section>
+      </main>
     </div>
-    <div id="panes-container"></div>
   </body>
 </html>

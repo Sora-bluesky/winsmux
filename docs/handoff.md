@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-10T15:10:00+09:00
+> Updated: 2026-04-10T16:45:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -11,6 +11,7 @@
 - Planning source of truth is externalized outside the public repository and syncs automatically into the private planning root.
 - `v0.19.7 visible orchestration` has `TASK-243`, `TASK-244`, `TASK-245`, `TASK-246`, `TASK-256`, and `TASK-257` merged into `main`, and private planning is now `86% (6/7)`.
 - `v0.24.0: Rust runtime convergence` exists in external planning as the pre-`v1.0.0` Rust unification milestone.
+- `v0.21.x` private planning is now aligned to a conversation-first Tauri operator shell, with Codex-App-like shell rules reflected in Figma and backlog notes.
 
 ## This session
 
@@ -22,6 +23,8 @@
 - Merged `TASK-246` via PR [#376](https://github.com/Sora-bluesky/winsmux/pull/376), adding `winsmux digest [--json]` and evidence digest fields for `explain`.
 - Updated external planning so `v0.19.8` remains visible, `v0.20.1` contains `TASK-272/273/274`, and `v0.24.0` keeps the Rust runtime convergence plan.
 - Added the next stream-first UX slice locally: `winsmux digest --stream` now tails event deltas and emits high-signal digest updates only for materially affected runs.
+- Reworked the Tauri prototype toward `TASK-285`: `winsmux-app` now renders an operator workspace shell scaffold with left nav, conversation timeline, sticky composer with inline attachments, context panel toggle, and a terminal utility drawer instead of a PTY-first full-window layout.
+- Added Figma high-fi anchors for `Operator Home / Inbox`, `Run Explain / Evidence`, and `Editor Secondary Surface`, and clarified how Explorer/Editor/Pane map into the new shell.
 
 ## Validation
 
@@ -33,12 +36,14 @@
 - `TASK-246` focused regression passed before merge: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `101/101 PASS`
 - PR [#376](https://github.com/Sora-bluesky/winsmux/pull/376) CI passed before merge
 - Current local stream UX regression passes: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `103/103 PASS`
+- Current Tauri shell scaffold passes frontend build: `npm run build` in `winsmux-app`
+- Composer scaffold now matches the advertised keyboard contract (`Enter` sends, `Shift+Enter` inserts newline, IME composition Enter does not send), and Context/Terminal toggles expose disclosure semantics via `aria-controls` + `aria-expanded`
 
 ## Next actions
 
-1. Land the local `digest --stream` stream-first UX slice and then decide whether `watch --stream` is still necessary or should wrap digest/inbox instead of pane silence polling.
-2. Decide whether to close `v0.19.7` with `TASK-253` deferred or implement the minimal first-class `run_id` slice next.
-3. Keep future backlog aligned with the `Operator / slot / provider / verification / security monitor` model.
+1. Land the repo-side `TASK-285` starter (`winsmux-app` conversation shell scaffold) via branch/PR if the current build-only validation is acceptable.
+2. Decide whether `v0.19.7` should close with `TASK-253` deferred or whether to implement the minimal first-class `run_id` slice next.
+3. Continue `v0.21.0` with `TASK-292/293/294`, then align `TASK-107` implementation to the now-explicit secondary editor surface.
 4. Preserve the private planning sync flow: user/agent visible, auto-synced, but not committed to the public repo.
 5. Track GitHub Actions Node runtime warnings and update workflows before the Node 24 switch becomes mandatory.
 
