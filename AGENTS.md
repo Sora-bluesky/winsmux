@@ -94,3 +94,25 @@ When winsmux directly reuses or closely adapts UI assets, style definitions, men
 4. mention the provenance in `docs/handoff.md` when the change is active in the current session.
 
 For Codex-derived UI work, use `openai/codex` as the upstream reference and track the exact source areas being reused.
+
+## Subagent Review Gate
+
+Review agents are a required quality gate, but they must be operated predictably.
+
+Codex must follow these rules:
+
+1. Close completed subagents promptly after their result is integrated.
+2. Prefer fresh review agents for new PR slices instead of keeping completed agents open.
+3. For review requests, wait at least 30 seconds before treating the review as timed out unless the task is explicitly urgent.
+4. A subagent timeout is not a PASS or FAIL result. It is only `no result yet`.
+5. If a review agent times out, Codex may continue with a fallback gate only when:
+   - the diff is small and well-scoped,
+   - validation passes,
+   - manual diff review is completed,
+   - the timeout is explicitly recorded in `docs/handoff.md` or the PR summary.
+6. Before merge, if a delayed subagent result arrives, Codex must incorporate that result into the final merge decision.
+7. If review agents time out repeatedly across slices, Codex must treat that as a process issue and either:
+   - reduce review scope,
+   - reduce concurrent agents,
+   - increase wait time,
+   - or document the blocker clearly before continuing.
