@@ -2,6 +2,30 @@
 
 This repository may reuse selected UI/UX assets and implementation patterns from external open-source projects.
 
+## winsmux core / legacy psmux compatibility surface
+
+- Upstream: https://github.com/winsmux/winsmux
+- License: MIT
+- Copyright: Josh
+
+### winsmux usage policy
+
+winsmux retains selected legacy compatibility surfaces that still expose or reference `psmux`, `pmux`, or `tmux` names through the MIT-licensed core upstream.
+
+This includes:
+
+- legacy binary aliases
+- legacy CLI/help compatibility
+- legacy data-path and terminal-multiplexer compatibility behavior
+
+MIT does not require a separate NOTICE file in the same way Apache-2.0 often does, but winsmux keeps this entry anyway for provenance, auditability, and rename-debt tracking.
+
+### Current tracked source references
+
+- `core/Cargo.toml`
+- `core/src/main.rs`
+- `core/src/cli.rs`
+
 ## openai/codex
 
 - Upstream: https://github.com/openai/codex

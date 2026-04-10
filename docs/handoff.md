@@ -38,7 +38,7 @@
 - Tightened the `TASK-285` shell slice locally: `winsmux-app` now uses a workspace sidebar instead of generic nav, adds a Codex-style footer/status lane, keeps wrapping summary-first, and separates sidebar / conversation / editor surface / context side sheet / terminal drawer more explicitly.
 - Updated private planning notes so `TASK-101`, `TASK-285`, `TASK-287`, `TASK-292`, `TASK-294`, `TASK-297`, `TASK-107`, `TASK-138`, `TASK-286`, and `TASK-288` reflect the Codex-TUI-plus-cmux synthesis, then re-synced the external roadmap.
 - Updated the Figma `winsmux Tauri Operator Workspace` file so the high-fi home screen shows the workspace sidebar, sticky composer, and footer/status lane together.
-- Added [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and a matching `AGENTS.md` rule so direct Codex OSS UI reuse keeps Apache-2.0 attribution plus upstream source-path tracking in-repo.
+- Added [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and a matching `AGENTS.md` rule so direct Codex OSS UI reuse keeps Apache-2.0 attribution plus upstream source-path tracking in-repo, and documented the MIT-licensed legacy `psmux` compatibility surface from the core upstream for provenance.
 
 ## Validation
 
