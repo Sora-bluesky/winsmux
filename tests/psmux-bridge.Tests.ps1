@@ -69,6 +69,7 @@ Describe 'Assert-Role' {
 
         (Assert-Role -Command 'send' -TargetPane 'reviewer') | Should -Be $true
         (Assert-Role -Command 'status') | Should -Be $true
+        (Assert-Role -Command 'board') | Should -Be $true
         (Assert-Role -Command 'context-reset' -TargetPane 'reviewer') | Should -Be $true
         (Assert-Role -Command 'poll-events') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $true
@@ -81,6 +82,7 @@ Describe 'Assert-Role' {
 
         (Assert-Role -Command 'send' -TargetPane 'commander') | Should -Be $true
         (Assert-Role -Command 'status') | Should -Be $true
+        (Assert-Role -Command 'board') | Should -Be $true
         (Assert-Role -Command 'type' -TargetPane 'self') | Should -Be $true
         (Assert-Role -Command 'context-reset' -TargetPane 'commander') | Should -Be $false
         (Assert-Role -Command 'send' -TargetPane 'reviewer') | Should -Be $false
@@ -2428,6 +2430,153 @@ panes:
         $output | Should -Match 'idle'
         $output | Should -Match 'busy'
         $output | Should -Match 'unknown'
+    }
+}
+
+Describe 'winsmux board command' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:boardTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-board-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:boardTempRoot -Force | Out-Null
+        $script:boardManifestDir = Join-Path $script:boardTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $script:boardManifestDir -Force | Out-Null
+        $script:boardManifestPath = Join-Path $script:boardManifestDir 'manifest.yaml'
+
+        Push-Location $script:boardTempRoot
+    }
+
+    AfterEach {
+        Pop-Location
+        if ($script:boardTempRoot -and (Test-Path $script:boardTempRoot)) {
+            Remove-Item -Path $script:boardTempRoot -Recurse -Force
+        }
+
+        $global:Target = $null
+        $global:Rest = @()
+        Remove-Item function:\winsmux -ErrorAction SilentlyContinue
+    }
+
+    It 'renders a session board with task, review, and git state columns' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:boardTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-244
+    task: Implement session board
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 2
+    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    last_event: pane.ready
+    last_event_at: 2026-04-10T10:00:00+09:00
+  worker-1:
+    pane_id: %6
+    role: Worker
+    task_id: ''
+    task: ''
+    task_state: backlog
+    task_owner: ''
+    review_state: ''
+    branch: ''
+    head_sha: ''
+    changed_file_count: 0
+    changed_files: '[]'
+    last_event: pane.idle
+    last_event_at: 2026-04-10T10:05:00+09:00
+"@ | Set-Content -Path $script:boardManifestPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                '^capture-pane .*%6' { return @('gpt-5.4   52% context left', 'thinking', 'Esc to interrupt') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $output = Invoke-Board | Out-String
+
+        $output | Should -Match 'builder-1'
+        $output | Should -Match 'worker-1'
+        $output | Should -Match 'in_progress'
+        $output | Should -Match 'PENDING'
+        $output | Should -Match 'worktree-builder-1'
+        $output | Should -Match 'abc1234'
+    }
+
+    It 'returns full session board data as json' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:boardTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-244
+    task: Implement session board
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 2
+    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    last_event: pane.ready
+    last_event_at: 2026-04-10T10:00:00+09:00
+  worker-1:
+    pane_id: %6
+    role: Worker
+    task_id: ''
+    task: ''
+    task_state: backlog
+    task_owner: ''
+    review_state: ''
+    branch: ''
+    head_sha: ''
+    changed_file_count: 0
+    changed_files: '[]'
+    last_event: pane.idle
+    last_event_at: 2026-04-10T10:05:00+09:00
+"@ | Set-Content -Path $script:boardManifestPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                '^capture-pane .*%6' { return @('gpt-5.4   52% context left', 'thinking', 'Esc to interrupt') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = (Invoke-Board -BoardTarget '--json' | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.project_dir | Should -Be $script:boardTempRoot
+        $result.summary.pane_count | Should -Be 2
+        $result.summary.dirty_panes | Should -Be 1
+        $result.summary.review_pending | Should -Be 1
+        $result.summary.tasks_in_progress | Should -Be 1
+        $result.summary.by_state.idle | Should -Be 1
+        $result.summary.by_state.busy | Should -Be 1
+        $result.panes.Count | Should -Be 2
+        $result.panes[0].label | Should -Be 'builder-1'
+        $result.panes[0].changed_files | Should -Be @('scripts/winsmux-core.ps1', 'tests/psmux-bridge.Tests.ps1')
+        $result.panes[0].last_event | Should -Be 'pane.ready'
+        $result.panes[1].label | Should -Be 'worker-1'
+        $result.panes[1].state | Should -Be 'busy'
     }
 }
 
