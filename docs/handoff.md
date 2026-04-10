@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-10T18:18:00+09:00
+> Updated: 2026-04-10T19:00:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -43,6 +43,8 @@
 - Added [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and a matching `AGENTS.md` rule so direct Codex OSS UI reuse keeps Apache-2.0 attribution plus upstream source-path tracking in-repo, and documented the MIT-licensed legacy `psmux` compatibility surface from the core upstream for provenance.
 - Merged the `TASK-285` workspace-sidebar shell slice via PR [#385](https://github.com/Sora-bluesky/winsmux/pull/385), replacing the generic left-nav with a workspace sidebar and landing in-repo third-party UI provenance tracking.
 - Started the next `v0.21.0` UI slice on `codex/task297-sidebar-composer-responsive-20260410`, adding workspace-sidebar responsive behavior, composer mode chips, log semantics, and a settings/menu surface to advance `TASK-297`, `TASK-292`, `TASK-293`, and `TASK-294`.
+- Merged the `TASK-297/292/293/294` starter slice via PR [#386](https://github.com/Sora-bluesky/winsmux/pull/386), adding a responsive workspace sidebar overlay, composer mode chips, settings/menu sheet, and conversation log semantics.
+- Started the next `TASK-107` editor slice on `codex/task107-editor-secondary-surface-20260410`, wiring changed files and source context into the secondary editor surface.
 
 ## Validation
 
@@ -61,10 +63,11 @@
 - `TASK-264` starter regression passed before merge: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `116/116 PASS`.
 - Current Tauri workspace-sidebar slice passes frontend build: `npm run build` in `winsmux-app`.
 - Current `TASK-297/292/293/294` starter slice passes frontend build: `npm run build` in `winsmux-app`.
+- Current `TASK-107` editor slice is in progress on `codex/task107-editor-secondary-surface-20260410`.
 
 ## Next actions
 
-1. Review and publish the active `codex/task297-sidebar-composer-responsive-20260410` slice, then continue `v0.21.0` with `TASK-107` aligned to the explicit secondary editor surface model.
+1. Review and publish the active `codex/task107-editor-secondary-surface-20260410` slice, continuing `v0.21.0` toward the explicit secondary editor surface model.
 2. Preserve the private planning sync flow: user/agent visible, auto-synced, but not committed to the public repo.
 3. Track GitHub Actions Node runtime warnings and update workflows before the Node 24 switch becomes mandatory.
 4. Run the next retro-review tranche over recent merged PRs after each milestone-close sequence.

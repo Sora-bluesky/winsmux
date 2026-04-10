@@ -553,10 +553,36 @@ textarea {
   color: #f4f6ff;
 }
 
+.secondary-title {
+  margin-top: 8px;
+}
+
 #editor-file-path {
   font-size: 12px;
   color: #8c96b4;
   font-family: "Cascadia Code", "Consolas", monospace;
+}
+
+#editor-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.editor-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: #171c29;
+  border: 1px solid #2b3146;
+  color: #d5dcf3;
+  font-size: 11px;
+}
+
+.editor-meta-chip.is-modified {
+  border-color: rgba(77, 118, 240, 0.45);
+  color: #eef2ff;
 }
 
 #editor-tabs {
@@ -617,6 +643,43 @@ textarea {
 .context-value {
   font-size: 13px;
   color: #e5e9f8;
+}
+
+#context-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.context-file-row {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  border: 1px solid #22283b;
+  border-radius: 14px;
+  background: #141927;
+  color: #dbe2f8;
+  padding: 10px 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-file-row:hover,
+.context-file-row.is-active {
+  background: #1c2233;
+  border-color: #3d4d78;
+}
+
+.context-file-name {
+  font-size: 13px;
+  color: #f4f6ff;
+}
+
+.context-file-meta {
+  font-size: 11px;
+  color: #8d97b7;
 }
 
 #terminal-drawer {
