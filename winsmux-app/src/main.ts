@@ -63,6 +63,7 @@ type ChangeRisk = "low" | "medium" | "high";
 interface SourceChange {
   path: string;
   summary: string;
+  slot: string;
   status: ChangeStatus;
   risk: ChangeRisk;
   worktree: string;
@@ -195,6 +196,7 @@ const sourceControlState: SourceControlState = {
   {
     path: "winsmux-app/src/main.ts",
     summary: "Conversation shell source-control actions and worktree metadata",
+    slot: "worker-2",
     status: "modified",
     risk: "medium",
     worktree: "builder-2",
@@ -208,6 +210,7 @@ const sourceControlState: SourceControlState = {
   {
     path: "winsmux-app/src/styles.css",
     summary: "Sidebar/context badges and source-control overview cards",
+    slot: "worker-2",
     status: "modified",
     risk: "low",
     worktree: "builder-2",
@@ -221,6 +224,7 @@ const sourceControlState: SourceControlState = {
   {
     path: "winsmux-core/scripts/team-pipeline.ps1",
     summary: "Branch mismatch still blocks commit despite review PASS",
+    slot: "worker-3",
     status: "modified",
     risk: "high",
     worktree: "builder-3",
@@ -235,7 +239,6 @@ const sourceControlState: SourceControlState = {
 };
 
 const baseContextSections: ContextSection[] = [
-  { label: "slot", value: "worker-2" },
   { label: "next", value: "Open Explain" },
 ];
 
@@ -464,6 +467,12 @@ function renderSourceEntries() {
     button.addEventListener("click", () => {
       activeSourceFilter = item.filter;
       setContextPanel(true);
+      const primaryChange = getPrimarySourceChange(getVisibleSourceChanges());
+      if (editorSurfaceOpen && primaryChange) {
+        selectedEditorPath = primaryChange.path;
+        renderEditorSurface();
+        renderOpenEditors();
+      }
       renderSourceSummary();
       renderSourceEntries();
       renderContextPanel();
@@ -505,6 +514,7 @@ function renderContextPanel() {
   sectionRoot.innerHTML = "";
   const resolvedContextSections = [
     ...baseContextSections,
+    { label: "slot", value: primaryChange?.slot ?? "No slot" },
     { label: "branch", value: primaryChange?.branch ?? "No branch" },
     { label: "review", value: primaryChange?.review ?? "No review state" },
     { label: "worktree", value: primaryChange ? `.worktrees/${primaryChange.worktree}` : "No worktree" },
@@ -825,7 +835,44 @@ function appendUserMessage(message: string) {
 }
 
 function findEditorFile(label: string) {
-  return editorFiles.find((editor) => editor.path === label);
+  const existing = editorFiles.find((editor) => editor.path === label);
+  if (existing) {
+    return existing;
+  }
+
+  const sourceChange = sourceControlState.entries.find((entry) => entry.path === label);
+  if (!sourceChange) {
+    return undefined;
+  }
+
+  return {
+    path: sourceChange.path,
+    summary: sourceChange.summary,
+    content:
+      `// Generated source-control preview\n` +
+      `// ${sourceChange.branch} · ${sourceChange.worktree} · ${sourceChange.review}\n` +
+      `// ${sourceChange.lines}\n`,
+    language: inferLanguageFromPath(sourceChange.path),
+    lineCount: 3,
+    modified: sourceChange.status !== "deleted",
+    origin: "context",
+  };
+}
+
+function inferLanguageFromPath(path: string) {
+  if (path.endsWith(".ts")) {
+    return "TypeScript";
+  }
+  if (path.endsWith(".css")) {
+    return "CSS";
+  }
+  if (path.endsWith(".html")) {
+    return "HTML";
+  }
+  if (path.endsWith(".ps1")) {
+    return "PowerShell";
+  }
+  return "Text";
 }
 
 function initializeSidebarResize() {
