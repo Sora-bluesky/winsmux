@@ -298,7 +298,11 @@ function Get-OrchestraLayoutSettings {
     $legacyRoleLayout = [bool]$Settings.legacy_role_layout
 
     $legacyCount = $commanders + $builders + $researchers + $reviewers
-    $useLegacyLayout = $legacyRoleLayout -or $legacyCount -gt 0
+    $useLegacyLayout = $legacyRoleLayout
+
+    if ($legacyCount -gt 0 -and -not $useLegacyLayout) {
+        throw 'Legacy role counts require legacy_role_layout=true. Set legacy_role_layout explicitly to opt into Commander/Builder/Researcher/Reviewer panes.'
+    }
 
     if (-not $useLegacyLayout -and $agentSlots.Count -gt 0) {
         foreach ($slot in $agentSlots) {

@@ -1,11 +1,21 @@
-# Project-level psmux-bridge settings.
-# Priority: project (.psmux-bridge.yaml) > global (@bridge-*) > built-in defaults.
+# Project-level winsmux settings.
+# Default mode is external operator + managed worker slots.
+# Set legacy_role_layout: true only if you explicitly want Commander/Builder/Researcher/Reviewer panes.
 
 agent: codex
 model: gpt-5.4
-builders: 4
-researchers: 1
-reviewers: 1
+external-commander: true
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    worktree-mode: managed
 vault_keys:
   - GH_TOKEN
 terminal: background
