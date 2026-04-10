@@ -2236,6 +2236,474 @@ function Get-BridgeEventsPath {
     return Join-Path (Join-Path $ProjectDir '.winsmux') 'events.jsonl'
 }
 
+function Get-BridgeEventRecords {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    $eventsPath = Get-BridgeEventsPath -ProjectDir $ProjectDir
+    if (-not (Test-Path -LiteralPath $eventsPath -PathType Leaf)) {
+        return @()
+    }
+
+    try {
+        $lines = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8)
+    } catch {
+        Stop-WithError "failed to read event log: $($_.Exception.Message)"
+    }
+
+    $records = [System.Collections.Generic.List[object]]::new()
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $line = [string]$lines[$i]
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        try {
+            $record = $line | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+            if ($null -eq $record) {
+                continue
+            }
+
+            $record['line_number'] = $i + 1
+            $records.Add($record) | Out-Null
+        } catch {
+            Stop-WithError "failed to parse event log line $($i + 1): $($_.Exception.Message)"
+        }
+    }
+
+    return @($records)
+}
+
+function Get-BridgeEventDelta {
+    param(
+        [string]$ProjectDir = (Get-Location).Path,
+        [int]$Cursor = 0
+    )
+
+    $records = @(Get-BridgeEventRecords -ProjectDir $ProjectDir)
+    if ($Cursor -gt $records.Count) {
+        $Cursor = $records.Count
+    }
+
+    return [ordered]@{
+        cursor = $records.Count
+        events  = @($records | Select-Object -Skip $Cursor)
+    }
+}
+
+function Get-InboxPriority {
+    param([string]$Kind)
+
+    switch ([string]$Kind) {
+        'blocked'          { return 0 }
+        'task_blocked'     { return 0 }
+        'review_failed'    { return 0 }
+        'bootstrap_invalid' { return 0 }
+        'crashed'          { return 0 }
+        'hung'             { return 0 }
+        'stalled'          { return 0 }
+        'approval_waiting' { return 1 }
+        'review_requested' { return 1 }
+        'review_pending'   { return 1 }
+        'dispatch_needed'  { return 2 }
+        'task_completed'   { return 2 }
+        'commit_ready'     { return 2 }
+        default            { return 3 }
+    }
+}
+
+function New-InboxItem {
+    param(
+        [Parameter(Mandatory = $true)][string]$Kind,
+        [Parameter(Mandatory = $true)][string]$Message,
+        [string]$Label = '',
+        [string]$PaneId = '',
+        [string]$Role = '',
+        [string]$TaskId = '',
+        [string]$Task = '',
+        [string]$TaskState = '',
+        [string]$ReviewState = '',
+        [string]$Branch = '',
+        [string]$HeadSha = '',
+        [string]$Event = '',
+        [string]$Timestamp = '',
+        [string]$Source = '',
+        [int]$ChangedFileCount = 0
+    )
+
+    return [ordered]@{
+        kind               = $Kind
+        priority           = Get-InboxPriority -Kind $Kind
+        message            = $Message
+        label              = $Label
+        pane_id            = $PaneId
+        role               = $Role
+        task_id            = $TaskId
+        task               = $Task
+        task_state         = $TaskState
+        review_state       = $ReviewState
+        branch             = $Branch
+        head_sha           = $HeadSha
+        changed_file_count = $ChangedFileCount
+        event              = $Event
+        timestamp          = $Timestamp
+        source             = $Source
+    }
+}
+
+function Get-InboxActionableEventKind {
+    param([Parameter(Mandatory = $true)]$EventRecord)
+
+    $eventName = [string]$EventRecord['event']
+    $status = [string]$EventRecord['status']
+    $data = $null
+    if ($EventRecord.Contains('data')) {
+        $data = $EventRecord['data']
+    }
+
+    $dataStatus = ''
+    if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('status')) {
+        $dataStatus = [string]$data['status']
+    }
+
+    if ($eventName -eq 'approval_waiting' -or $eventName -eq 'pane.approval_waiting' -or $status -eq 'approval_waiting' -or ($eventName -eq 'monitor.status' -and $dataStatus -eq 'approval_waiting')) {
+        return 'approval_waiting'
+    }
+
+    switch ($eventName) {
+        'pane.idle'              { return 'dispatch_needed' }
+        'pane.completed'         { return 'task_completed' }
+        'pane.bootstrap_invalid' { return 'bootstrap_invalid' }
+        'pane.crashed'           { return 'crashed' }
+        'pane.hung'              { return 'hung' }
+        'pane.stalled'           { return 'stalled' }
+    }
+
+    if ($eventName -eq 'commander.state_transition') {
+        switch ($status) {
+            'blocked_no_review_target' { return 'blocked' }
+            'blocked_review_failed'    { return 'review_failed' }
+            'commit_ready'             { return 'commit_ready' }
+        }
+
+        switch ($dataStatus) {
+            'blocked_no_review_target' { return 'blocked' }
+            'blocked_review_failed'    { return 'review_failed' }
+            'commit_ready'             { return 'commit_ready' }
+        }
+    }
+
+    switch ($eventName) {
+        'commander.review_requested' { return 'review_requested' }
+        'commander.review_failed'    { return 'review_failed' }
+        'commander.blocked'          { return 'blocked' }
+        'commander.commit_ready'     { return 'commit_ready' }
+        default                      { return '' }
+    }
+}
+
+function ConvertTo-InboxEventItem {
+    param([Parameter(Mandatory = $true)]$EventRecord)
+
+    $kind = Get-InboxActionableEventKind -EventRecord $EventRecord
+    if ([string]::IsNullOrWhiteSpace($kind)) {
+        return $null
+    }
+
+    $data = $null
+    if ($EventRecord.Contains('data')) {
+        $data = $EventRecord['data']
+    }
+
+    $taskId = ''
+    $branch = [string]$EventRecord['branch']
+    $headSha = [string]$EventRecord['head_sha']
+    $eventStatus = [string]$EventRecord['status']
+    if ($null -ne $data -and $data -is [System.Collections.IDictionary]) {
+        if ($data.Contains('task_id')) { $taskId = [string]$data['task_id'] }
+        if ([string]::IsNullOrWhiteSpace($branch) -and $data.Contains('branch')) { $branch = [string]$data['branch'] }
+        if ([string]::IsNullOrWhiteSpace($headSha) -and $data.Contains('head_sha')) { $headSha = [string]$data['head_sha'] }
+        if ([string]::IsNullOrWhiteSpace($eventStatus) -and $data.Contains('to')) { $eventStatus = [string]$data['to'] }
+    }
+
+    $eventLabel = [string]$EventRecord['event']
+    if (-not [string]::IsNullOrWhiteSpace($eventStatus)) {
+        $eventLabel = $eventStatus
+    }
+
+    return New-InboxItem `
+        -Kind $kind `
+        -Message ([string]$EventRecord['message']) `
+        -Label ([string]$EventRecord['label']) `
+        -PaneId ([string]$EventRecord['pane_id']) `
+        -Role ([string]$EventRecord['role']) `
+        -TaskId $taskId `
+        -Branch $branch `
+        -HeadSha $headSha `
+        -Event $eventLabel `
+        -Timestamp ([string]$EventRecord['timestamp']) `
+        -Source 'events'
+}
+
+function Get-InboxEventEntityKey {
+    param([Parameter(Mandatory = $true)]$EventRecord)
+
+    $eventName = [string]$EventRecord['event']
+    if ($eventName -like 'commander.*') {
+        return 'commander'
+    }
+
+    $paneId = [string]$EventRecord['pane_id']
+    if (-not [string]::IsNullOrWhiteSpace($paneId)) {
+        return "pane:$paneId"
+    }
+
+    $label = [string]$EventRecord['label']
+    if (-not [string]::IsNullOrWhiteSpace($label)) {
+        return "label:$label"
+    }
+
+    return "event:$eventName"
+}
+
+function Get-InboxActiveEventRecords {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $records = @(Get-BridgeEventRecords -ProjectDir $ProjectDir)
+    $latestByEntity = [ordered]@{}
+    foreach ($record in $records) {
+        $key = Get-InboxEventEntityKey -EventRecord $record
+        $latestByEntity[$key] = $record
+    }
+
+    return @($latestByEntity.Values)
+}
+
+function Get-InboxStreamStartCursor {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    return @(Get-BridgeEventRecords -ProjectDir $ProjectDir).Count
+}
+
+function Get-InboxPayload {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $boardPayload = Get-BoardPayload -ProjectDir $ProjectDir
+    $itemsByKey = [ordered]@{}
+
+    foreach ($pane in @($boardPayload.panes)) {
+        $paneKeyBase = if (-not [string]::IsNullOrWhiteSpace([string]$pane.pane_id)) { [string]$pane.pane_id } else { [string]$pane.label }
+        $reviewState = [string]$pane.review_state
+        $taskState = [string]$pane.task_state
+
+        if ($reviewState -eq 'PENDING') {
+            $key = "manifest:review_pending:$paneKeyBase"
+            $itemsByKey[$key] = New-InboxItem `
+                -Kind 'review_pending' `
+                -Message ("{0} が review 待機中。" -f [string]$pane.label) `
+                -Label ([string]$pane.label) `
+                -PaneId ([string]$pane.pane_id) `
+                -Role ([string]$pane.role) `
+                -TaskId ([string]$pane.task_id) `
+                -Task ([string]$pane.task) `
+                -TaskState $taskState `
+                -ReviewState $reviewState `
+                -Branch ([string]$pane.branch) `
+                -HeadSha ([string]$pane.head_sha) `
+                -Event ([string]$pane.last_event) `
+                -Timestamp ([string]$pane.last_event_at) `
+                -Source 'manifest' `
+                -ChangedFileCount ([int]$pane.changed_file_count)
+        }
+
+        if ($reviewState -in @('FAIL', 'FAILED')) {
+            $key = "manifest:review_failed:$paneKeyBase"
+            $itemsByKey[$key] = New-InboxItem `
+                -Kind 'review_failed' `
+                -Message ("{0} の review が FAIL。" -f [string]$pane.label) `
+                -Label ([string]$pane.label) `
+                -PaneId ([string]$pane.pane_id) `
+                -Role ([string]$pane.role) `
+                -TaskId ([string]$pane.task_id) `
+                -Task ([string]$pane.task) `
+                -TaskState $taskState `
+                -ReviewState $reviewState `
+                -Branch ([string]$pane.branch) `
+                -HeadSha ([string]$pane.head_sha) `
+                -Event ([string]$pane.last_event) `
+                -Timestamp ([string]$pane.last_event_at) `
+                -Source 'manifest' `
+                -ChangedFileCount ([int]$pane.changed_file_count)
+        }
+
+        if ($taskState -eq 'blocked') {
+            $key = "manifest:task_blocked:$paneKeyBase"
+            $itemsByKey[$key] = New-InboxItem `
+                -Kind 'task_blocked' `
+                -Message ("{0} が blocked。" -f [string]$pane.label) `
+                -Label ([string]$pane.label) `
+                -PaneId ([string]$pane.pane_id) `
+                -Role ([string]$pane.role) `
+                -TaskId ([string]$pane.task_id) `
+                -Task ([string]$pane.task) `
+                -TaskState $taskState `
+                -ReviewState $reviewState `
+                -Branch ([string]$pane.branch) `
+                -HeadSha ([string]$pane.head_sha) `
+                -Event ([string]$pane.last_event) `
+                -Timestamp ([string]$pane.last_event_at) `
+                -Source 'manifest' `
+                -ChangedFileCount ([int]$pane.changed_file_count)
+        }
+    }
+
+    $eventRecords = @(Get-InboxActiveEventRecords -ProjectDir $ProjectDir)
+    foreach ($eventRecord in $eventRecords) {
+        $item = ConvertTo-InboxEventItem -EventRecord $eventRecord
+        if ($null -eq $item) {
+            continue
+        }
+
+        $paneKeyBase = if (-not [string]::IsNullOrWhiteSpace([string]$item.pane_id)) { [string]$item.pane_id } else { [string]$item.label }
+        $key = "events:{0}:{1}" -f [string]$item.kind, $paneKeyBase
+        $itemsByKey[$key] = $item
+    }
+
+    $items = @($itemsByKey.Values | Sort-Object @{ Expression = { [int]$_.priority } }, @{ Expression = { [string]$_.timestamp } ; Descending = $true }, @{ Expression = { [string]$_.label } })
+    $byKind = [ordered]@{}
+    foreach ($item in $items) {
+        $kind = [string]$item.kind
+        if ([string]::IsNullOrWhiteSpace($kind)) {
+            $kind = 'unknown'
+        }
+
+        if ($byKind.Contains($kind)) {
+            $byKind[$kind] = [int]$byKind[$kind] + 1
+        } else {
+            $byKind[$kind] = 1
+        }
+    }
+
+    return [ordered]@{
+        generated_at = (Get-Date).ToString('o')
+        project_dir  = $ProjectDir
+        summary      = [ordered]@{
+            item_count = $items.Count
+            by_kind    = $byKind
+        }
+        items        = $items
+    }
+}
+
+function Write-InboxStreamItem {
+    param(
+        [Parameter(Mandatory = $true)]$Item,
+        [switch]$Json
+    )
+
+    if ($Json) {
+        $Item | ConvertTo-Json -Compress -Depth 10 | Write-Output
+        return
+    }
+
+    $timestamp = [string]$Item.timestamp
+    if ([string]::IsNullOrWhiteSpace($timestamp)) {
+        $timestamp = (Get-Date).ToString('o')
+    }
+
+    $label = [string]$Item.label
+    $paneId = [string]$Item.pane_id
+    $prefix = if (-not [string]::IsNullOrWhiteSpace($label) -and -not [string]::IsNullOrWhiteSpace($paneId)) {
+        '{0} ({1})' -f $label, $paneId
+    } elseif (-not [string]::IsNullOrWhiteSpace($label)) {
+        $label
+    } else {
+        $paneId
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($prefix)) {
+        Write-Output ("[{0}] {1} {2}: {3}" -f $timestamp, [string]$Item.kind, $prefix, [string]$Item.message)
+    } else {
+        Write-Output ("[{0}] {1}: {2}" -f $timestamp, [string]$Item.kind, [string]$Item.message)
+    }
+}
+
+function Invoke-Inbox {
+    param(
+        [AllowNull()][string]$InboxTarget = $Target,
+        [AllowNull()][string[]]$InboxRest = $Rest
+    )
+
+    $tokens = @()
+    if (-not [string]::IsNullOrWhiteSpace($InboxTarget)) {
+        $tokens += $InboxTarget
+    }
+    if ($InboxRest) {
+        $tokens += @($InboxRest)
+    }
+
+    $jsonOutput = $false
+    $streamOutput = $false
+
+    foreach ($token in $tokens) {
+        switch ($token) {
+            '--json'   { $jsonOutput = $true }
+            '--stream' { $streamOutput = $true }
+            default    { Stop-WithError "usage: winsmux inbox [--json] [--stream]" }
+        }
+    }
+
+    $projectDir = (Get-Location).Path
+    if ($streamOutput) {
+        $snapshot = Get-InboxPayload -ProjectDir $projectDir
+        foreach ($item in @($snapshot.items)) {
+            Write-InboxStreamItem -Item $item -Json:$jsonOutput
+        }
+
+        $cursor = Get-InboxStreamStartCursor -ProjectDir $projectDir
+        while ($true) {
+            $delta = Get-BridgeEventDelta -ProjectDir $projectDir -Cursor $cursor
+            $cursor = [int]$delta.cursor
+            foreach ($eventRecord in @($delta.events)) {
+                $item = ConvertTo-InboxEventItem -EventRecord $eventRecord
+                if ($null -eq $item) {
+                    continue
+                }
+
+                Write-InboxStreamItem -Item $item -Json:$jsonOutput
+            }
+
+            Start-Sleep -Seconds 2
+        }
+    }
+
+    $payload = Get-InboxPayload -ProjectDir $projectDir
+    if ($jsonOutput) {
+        $payload | ConvertTo-Json -Compress -Depth 10 | Write-Output
+        return
+    }
+
+    $items = @($payload.items)
+    if ($items.Count -eq 0) {
+        Write-Output "(no inbox items)"
+        return
+    }
+
+    $table = $items |
+        Select-Object `
+            @{ Name = 'Kind'; Expression = { $_.kind } }, `
+            @{ Name = 'Label'; Expression = { $_.label } }, `
+            @{ Name = 'PaneId'; Expression = { $_.pane_id } }, `
+            @{ Name = 'Role'; Expression = { $_.role } }, `
+            @{ Name = 'TaskState'; Expression = { $_.task_state } }, `
+            @{ Name = 'Review'; Expression = { $_.review_state } }, `
+            @{ Name = 'Branch'; Expression = { $_.branch } }, `
+            @{ Name = 'Message'; Expression = { $_.message } } |
+        Format-Table -AutoSize |
+        Out-String -Width 4096
+
+    Write-Output ($table.TrimEnd())
+}
+
 function Invoke-PollEvents {
     if ($Rest -and $Rest.Count -gt 0) {
         Stop-WithError "usage: winsmux poll-events [cursor]"
@@ -2818,6 +3286,7 @@ Commands:
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
   status                    Report manifest pane states via capture-pane
   board [--json]            Report pane/task/review/git session board
+  inbox [--json] [--stream] Report actionable approvals/review/blockers
   poll-events [cursor]      Return new monitor events from .winsmux/events.jsonl
   signal <channel>          Send signal to unblock a waiting process
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
@@ -3151,6 +3620,7 @@ switch ($Command) {
     'health-check'    { Invoke-HealthCheck }
     'status'          { Invoke-Status }
     'board'           { Invoke-Board }
+    'inbox'           { Invoke-Inbox }
     'poll-events'     { Invoke-PollEvents }
     'signal'          { Invoke-Signal }
     'mailbox-create'  { Invoke-MailboxCreate }
