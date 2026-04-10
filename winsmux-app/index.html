@@ -104,6 +104,7 @@
               <button class="ghost-btn ghost-btn-small" id="close-editor-btn" type="button">Close</button>
             </div>
             <div id="editor-file-path">winsmux-app/src/main.ts</div>
+            <div id="editor-meta-row"></div>
             <div id="editor-tabs"></div>
             <pre id="editor-code"></pre>
             <div id="editor-statusbar">Secondary work surface: opened from conversation, changed files, or explorer.</div>
@@ -111,22 +112,9 @@
 
           <aside id="context-panel">
             <div class="panel-title">Context</div>
-            <div class="context-section">
-              <div class="context-label">slot</div>
-              <div class="context-value">worker-2</div>
-            </div>
-            <div class="context-section">
-              <div class="context-label">branch</div>
-              <div class="context-value">codex/task245-run-inbox</div>
-            </div>
-            <div class="context-section">
-              <div class="context-label">review</div>
-              <div class="context-value">pending</div>
-            </div>
-            <div class="context-section">
-              <div class="context-label">next</div>
-              <div class="context-value">Open Explain</div>
-            </div>
+            <div id="context-sections"></div>
+            <div class="panel-title secondary-title">Changed files</div>
+            <div id="context-file-list"></div>
           </aside>
         </section>
 

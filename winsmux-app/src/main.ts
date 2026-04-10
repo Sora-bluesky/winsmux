@@ -47,10 +47,19 @@ interface EditorFile {
   path: string;
   summary: string;
   content: string;
+  language: string;
+  lineCount: number;
+  modified?: boolean;
+  origin: "explorer" | "context";
   active?: boolean;
 }
 
 interface SourceSummaryItem {
+  label: string;
+  value: string;
+}
+
+interface ContextSection {
   label: string;
   value: string;
 }
@@ -122,6 +131,10 @@ const editorFiles: EditorFile[] = [
   {
     path: "winsmux-app/src/main.ts",
     summary: "Conversation shell scaffold",
+    language: "TypeScript",
+    lineCount: 138,
+    modified: true,
+    origin: "context",
     active: true,
     content:
       "const summaryStream = [\n  'blocked',\n  'review_requested',\n  'commit_ready',\n];\n\nfunction openEditorSurface() {\n  // Secondary work surface opened from conversation or source context.\n}\n",
@@ -129,8 +142,21 @@ const editorFiles: EditorFile[] = [
   {
     path: "winsmux-app/src/styles.css",
     summary: "Workspace sidebar and responsive shell",
+    language: "CSS",
+    lineCount: 74,
+    modified: true,
+    origin: "context",
     content:
       ".workspace-sidebar {\n  width: var(--sidebar-width);\n}\n\n.editor-secondary-surface {\n  border-left: 1px solid var(--border-muted);\n}\n",
+  },
+  {
+    path: "winsmux-app/index.html",
+    summary: "Operator shell structure and panel hierarchy",
+    language: "HTML",
+    lineCount: 67,
+    origin: "explorer",
+    content:
+      "<section id=\"conversation-panel\">\n  <div id=\"conversation-timeline\"></div>\n  <form id=\"composer\"></form>\n</section>\n\n<aside id=\"editor-surface\" hidden></aside>\n",
   },
 ];
 
@@ -139,6 +165,13 @@ const sourceSummaryItems: SourceSummaryItem[] = [
   { label: "Changed", value: "3 files" },
   { label: "Review", value: "passed · branch mismatch" },
   { label: "Worktree", value: ".worktrees/builder-2" },
+];
+
+const contextSections: ContextSection[] = [
+  { label: "slot", value: "worker-2" },
+  { label: "branch", value: "codex/task245-run-inbox" },
+  { label: "review", value: "pending" },
+  { label: "next", value: "Open Explain" },
 ];
 
 const footerLeftItems: FooterStatusItem[] = [
@@ -325,6 +358,36 @@ function renderSourceSummary() {
   }
 }
 
+function renderContextPanel() {
+  const sectionRoot = document.getElementById("context-sections");
+  const fileRoot = document.getElementById("context-file-list");
+  if (!sectionRoot || !fileRoot) {
+    return;
+  }
+
+  sectionRoot.innerHTML = "";
+  for (const item of contextSections) {
+    const row = document.createElement("div");
+    row.className = "context-section";
+    row.innerHTML = `<div class="context-label">${item.label}</div><div class="context-value">${item.value}</div>`;
+    sectionRoot.appendChild(row);
+  }
+
+  fileRoot.innerHTML = "";
+  for (const file of editorFiles.filter((item) => item.origin === "context")) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `context-file-row ${file.path === selectedEditorPath && editorSurfaceOpen ? "is-active" : ""}`;
+    button.innerHTML =
+      `<span class="context-file-name">${file.path.split("/").pop() ?? file.path}</span><span class="context-file-meta">${file.summary}</span>`;
+    button.addEventListener("click", () => {
+      selectedEditorPath = file.path;
+      setEditorSurface(true);
+    });
+    fileRoot.appendChild(button);
+  }
+}
+
 function renderFooterLane() {
   const left = document.getElementById("footer-left");
   const right = document.getElementById("footer-right");
@@ -451,9 +514,11 @@ function handleChipAction(action: ChipAction) {
 
 function renderEditorSurface() {
   const path = document.getElementById("editor-file-path");
+  const meta = document.getElementById("editor-meta-row");
   const tabs = document.getElementById("editor-tabs");
   const code = document.getElementById("editor-code");
-  if (!path || !tabs || !code) {
+  const statusbar = document.getElementById("editor-statusbar");
+  if (!path || !meta || !tabs || !code || !statusbar) {
     return;
   }
 
@@ -461,7 +526,20 @@ function renderEditorSurface() {
   selectedEditorPath = selected.path;
 
   path.textContent = selected.path;
+  meta.innerHTML = "";
+  for (const item of [
+    selected.language,
+    `${selected.lineCount} lines`,
+    selected.modified ? "Modified" : "Saved",
+    selected.origin === "context" ? "Opened from context" : "Opened from explorer",
+  ]) {
+    const chip = document.createElement("span");
+    chip.className = `editor-meta-chip ${item === "Modified" ? "is-modified" : ""}`;
+    chip.textContent = item;
+    meta.appendChild(chip);
+  }
   code.textContent = selected.content;
+  statusbar.textContent = `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selected.path}`;
   tabs.innerHTML = "";
 
   for (const editor of editorFiles) {
@@ -473,6 +551,7 @@ function renderEditorSurface() {
       selectedEditorPath = editor.path;
       renderEditorSurface();
       renderOpenEditors();
+      renderContextPanel();
     });
     tabs.appendChild(tab);
   }
@@ -526,6 +605,7 @@ function setEditorSurface(open: boolean) {
   body.classList.toggle("editor-open", open);
   renderEditorSurface();
   renderOpenEditors();
+  renderContextPanel();
 }
 
 function isNarrowLayout() {
@@ -624,6 +704,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderExplorer();
   renderOpenEditors();
   renderSourceSummary();
+  renderContextPanel();
   renderFooterLane();
   renderConversation(seedConversation);
   renderComposerModes();
