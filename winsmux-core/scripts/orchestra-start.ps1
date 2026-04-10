@@ -133,8 +133,7 @@ function Reset-OrchestraServerSession {
         [string]$Reason = 'reset'
     )
 
-    & $WinsmuxBin has-session -t $SessionName 1>$null 2>$null
-    if ($LASTEXITCODE -eq 0) {
+    if (Test-OrchestraServerSession -SessionName $SessionName) {
         try {
             Invoke-Winsmux -Arguments @('kill-session', '-t', $SessionName)
         } catch {
