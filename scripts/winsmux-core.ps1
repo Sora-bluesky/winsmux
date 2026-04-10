@@ -2104,6 +2104,132 @@ function Invoke-Status {
     Write-Output ($table.TrimEnd())
 }
 
+function Get-BoardStateCounts {
+    param(
+        [Parameter(Mandatory = $true)][object[]]$Records,
+        [Parameter(Mandatory = $true)][scriptblock]$Selector
+    )
+
+    $counts = [ordered]@{}
+    foreach ($record in $Records) {
+        $value = [string](& $Selector $record)
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            $value = 'unknown'
+        }
+
+        if ($counts.Contains($value)) {
+            $counts[$value] = [int]$counts[$value] + 1
+        } else {
+            $counts[$value] = 1
+        }
+    }
+
+    return $counts
+}
+
+function Get-BoardPayload {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $records = @(Get-PaneStatusRecords -ProjectDir $ProjectDir | Sort-Object Label)
+    $summary = [ordered]@{
+        pane_count        = $records.Count
+        dirty_panes       = @($records | Where-Object { [int]$_.ChangedFileCount -gt 0 }).Count
+        review_pending    = @($records | Where-Object { [string]$_.ReviewState -eq 'PENDING' }).Count
+        review_failed     = @($records | Where-Object { [string]$_.ReviewState -in @('FAIL', 'FAILED') }).Count
+        review_passed     = @($records | Where-Object { [string]$_.ReviewState -eq 'PASS' }).Count
+        tasks_in_progress = @($records | Where-Object { [string]$_.TaskState -eq 'in_progress' }).Count
+        tasks_blocked     = @($records | Where-Object { [string]$_.TaskState -eq 'blocked' }).Count
+        by_state          = Get-BoardStateCounts -Records $records -Selector { param($Record) $Record.State }
+        by_review         = Get-BoardStateCounts -Records $records -Selector { param($Record) $Record.ReviewState }
+        by_task_state     = Get-BoardStateCounts -Records $records -Selector { param($Record) $Record.TaskState }
+    }
+
+    $panes = @(
+        $records | ForEach-Object {
+            [ordered]@{
+                label              = $_.Label
+                role               = $_.Role
+                pane_id            = $_.PaneId
+                state              = $_.State
+                tokens_remaining   = $_.TokensRemaining
+                task_id            = $_.TaskId
+                task               = $_.Task
+                task_state         = $_.TaskState
+                task_owner         = $_.TaskOwner
+                review_state       = $_.ReviewState
+                branch             = $_.Branch
+                head_sha           = $_.HeadSha
+                changed_file_count = $_.ChangedFileCount
+                changed_files      = @($_.ChangedFiles)
+                last_event         = $_.LastEvent
+                last_event_at      = $_.LastEventAt
+            }
+        }
+    )
+
+    return [ordered]@{
+        generated_at = (Get-Date).ToString('o')
+        project_dir  = $ProjectDir
+        summary      = $summary
+        panes        = $panes
+    }
+}
+
+function Invoke-Board {
+    param(
+        [AllowNull()][string]$BoardTarget = $Target,
+        [AllowNull()][string[]]$BoardRest = $Rest
+    )
+
+    $jsonOutput = $false
+
+    if ($BoardTarget) {
+        if ($BoardTarget -eq '--json' -and (-not $BoardRest -or $BoardRest.Count -eq 0)) {
+            $jsonOutput = $true
+        } else {
+            Stop-WithError "usage: winsmux board [--json]"
+        }
+    } elseif ($BoardRest -and $BoardRest.Count -gt 0) {
+        Stop-WithError "usage: winsmux board [--json]"
+    }
+
+    $projectDir = (Get-Location).Path
+
+    try {
+        $payload = Get-BoardPayload -ProjectDir $projectDir
+    } catch {
+        Stop-WithError $_.Exception.Message
+    }
+
+    if ($jsonOutput) {
+        $payload | ConvertTo-Json -Compress -Depth 10 | Write-Output
+        return
+    }
+
+    $records = @($payload.panes)
+    if ($records.Count -eq 0) {
+        Write-Output "(no panes)"
+        return
+    }
+
+    $table = $records |
+        Select-Object `
+            @{ Name = 'Label'; Expression = { $_.label } }, `
+            @{ Name = 'Role'; Expression = { $_.role } }, `
+            @{ Name = 'PaneId'; Expression = { $_.pane_id } }, `
+            @{ Name = 'State'; Expression = { $_.state } }, `
+            @{ Name = 'Tokens'; Expression = { $_.tokens_remaining } }, `
+            @{ Name = 'TaskState'; Expression = { $_.task_state } }, `
+            @{ Name = 'Review'; Expression = { $_.review_state } }, `
+            @{ Name = 'Changed'; Expression = { $_.changed_file_count } }, `
+            @{ Name = 'Branch'; Expression = { $_.branch } }, `
+            @{ Name = 'Head'; Expression = { if ([string]::IsNullOrWhiteSpace($_.head_sha)) { '' } elseif ($_.head_sha.Length -le 7) { $_.head_sha } else { $_.head_sha.Substring(0, 7) } } } |
+        Format-Table -AutoSize |
+        Out-String -Width 4096
+
+    Write-Output ($table.TrimEnd())
+}
+
 function Get-BridgeEventsPath {
     param([string]$ProjectDir = (Get-Location).Path)
 
@@ -2691,6 +2817,7 @@ Commands:
   wait-ready <target> [timeout_seconds]  Wait for Codex prompt in pane
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
   status                    Report manifest pane states via capture-pane
+  board [--json]            Report pane/task/review/git session board
   poll-events [cursor]      Return new monitor events from .winsmux/events.jsonl
   signal <channel>          Send signal to unblock a waiting process
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
@@ -3023,6 +3150,7 @@ switch ($Command) {
     'wait-ready'      { Invoke-WaitReady }
     'health-check'    { Invoke-HealthCheck }
     'status'          { Invoke-Status }
+    'board'           { Invoke-Board }
     'poll-events'     { Invoke-PollEvents }
     'signal'          { Invoke-Signal }
     'mailbox-create'  { Invoke-MailboxCreate }

@@ -1,39 +1,44 @@
 # Handoff
 
-> Updated: 2026-04-10T10:15+09:00
+> Updated: 2026-04-10T10:05:33+09:00
 > Source of truth: this file
 
 ## Current state
 
 - `v0.19.5` is released.
-- `v0.19.6 hardening` is implemented and tracked as `100% (6/6)` in the external planning backlog/roadmap.
-- PR [#370](https://github.com/Sora-bluesky/winsmux/pull/370) carries the repo-side hardening closure.
+- `v0.19.6 hardening` is implemented, merged, and tracked as `100% (6/6)` in the external planning backlog/roadmap.
+- PR [#370](https://github.com/Sora-bluesky/winsmux/pull/370) is merged into `main`.
 - Planning source of truth is externalized outside the public repository and syncs automatically into the private planning root.
+- `v0.19.7 visible orchestration` is now `2/7` complete. `TASK-243` and `TASK-244` are done in external planning.
+- `v0.24.0: Rust runtime convergence` exists in external planning as the pre-`v1.0.0` Rust unification milestone.
 
 ## This session
 
-- Closed the remaining `v0.19.6` hardening implementation in the repo.
-- Added strict orchestra server health waiting and watchdog restart handling.
-- Hardened `winsmux send` so redraw-only pane changes do not report false success.
-- Added operator shell write-bypass blocking for direct code-file writes from non-worker panes.
-- Updated external planning so `v0.19.6` is complete and `v0.19.8` exists in the roadmap.
+- Merged the repo-side `v0.19.6` hardening closure.
+- Added a durable handoff maintenance rule to `AGENTS.md` so new sessions must refresh `docs/handoff.md` at milestone boundaries and before autonomous git progression.
+- Implemented `winsmux board` as the first visible orchestration surface for `TASK-244`.
+- Updated external planning so `TASK-244` is `done`, `v0.19.7` is `2/7`, and `v0.24.0` contains the Rust runtime convergence plan.
 
 ## Validation
 
 - Full local Pester suite passed: `171/171 PASS`
 - Targeted hardening suite passed earlier: `133/133 PASS`
-- CI on PR `#370` initially failed only because `Reset-OrchestraServerSession` called the `winsmux` binary directly in a test environment where the binary is unavailable.
-- The repo now uses `Test-OrchestraServerSession` for that check so CI can be rerun cleanly.
+- `TASK-244` focused regression passed: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `82/82 PASS`
+- Current uncommitted board surface touches:
+  - `scripts/winsmux-core.ps1`
+  - `winsmux-core/scripts/role-gate.ps1`
+  - `tests/psmux-bridge.Tests.ps1`
 
 ## Next actions
 
-1. Push the CI-only fix for PR `#370`.
-2. Confirm GitHub Actions is green.
-3. Merge PR `#370`.
-4. Delete the merged feature branch.
-5. Start `v0.19.7` or `v0.19.8` depending on orchestration priorities.
+1. Commit and PR the repo-side `TASK-244` board surface.
+2. Release `v0.19.6` and prepare the release post draft.
+3. Continue `v0.19.7` with `TASK-245` or `TASK-256` after the board surface lands.
+4. Keep future backlog aligned with the `Operator / slot / provider` model and the new `v0.24.0` Rust convergence plan.
 
 ## Notes
 
 - `HANDOFF.md` at the repository root is historical context and no longer authoritative.
 - Public tracked files must not contain personal paths or private planning roots.
+- External planning source of truth stays outside the public repository and is resolved via the configured planning root.
+- Public docs may refer to the external planning contract, but must not embed machine-specific absolute paths.

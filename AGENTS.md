@@ -45,3 +45,31 @@ cmd /c "echo content > path\to\file.txt"
 
 winsmux is a Windows-native AI agent orchestration platform.
 Builders operate in isolated git worktrees under `.worktrees/builder-N/`.
+
+## Handoff Maintenance
+
+`docs/handoff.md` is the only active handoff source of truth for this repo.
+Treat repository-root `HANDOFF.md` files as historical unless the task is explicitly about consolidation.
+
+Codex must update `docs/handoff.md` at these points:
+
+1. After any milestone-level state change.
+   - Examples: release completion, PR merge, roadmap/backlog progress shift, version closure, planning externalization.
+2. Before autonomous `commit -> push -> PR -> merge -> cleanup`, if the task materially changes current state.
+3. Before ending a session when there are material code, planning, test, or release changes.
+4. When the user asks for current status / handoff / continuation context and the file is stale.
+
+`docs/handoff.md` should stay concise and always include these sections:
+
+- `Current state`
+- `This session`
+- `Validation`
+- `Next actions`
+- `Notes`
+
+When updating handoff:
+
+- Replace stale “next actions” that have already completed. Do not leave merged PR steps in place.
+- If work is still in progress, record the active task, branch, changed files scope, and latest validation status.
+- Reflect external planning truth when version progress changes.
+- Prefer exact identifiers: version, task IDs, PR numbers, release status.
