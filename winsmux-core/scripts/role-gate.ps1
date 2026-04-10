@@ -473,6 +473,10 @@ function Assert-Role {
             if ($permissions.Status) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
+        'digest' {
+            if ($permissions.Status) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
         'explain' {
             if ($permissions.Status) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
