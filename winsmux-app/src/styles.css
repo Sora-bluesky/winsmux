@@ -64,6 +64,10 @@ textarea {
     linear-gradient(180deg, var(--bg-canvas) 0%, #121521 100%);
 }
 
+#sidebar-overlay {
+  display: none;
+}
+
 #left-rail {
   position: relative;
   border-right: 1px solid #232737;
@@ -236,6 +240,10 @@ textarea {
   gap: 8px;
 }
 
+#toggle-sidebar-btn {
+  display: none;
+}
+
 .ghost-btn {
   border: 1px solid #31374d;
   background: #1a1f2f;
@@ -391,6 +399,29 @@ textarea {
 #composer-input:focus {
   border-color: var(--accent-blue-hover);
   box-shadow: 0 0 0 3px rgba(90, 132, 245, 0.18);
+}
+
+#composer-mode-row {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.mode-chip {
+  border: 1px solid #31374d;
+  border-radius: 999px;
+  background: #171c29;
+  color: #d4daf0;
+  padding: 7px 11px;
+  cursor: pointer;
+}
+
+.mode-chip.is-active,
+.mode-chip:hover {
+  background: #242b3f;
+  border-color: rgba(77, 118, 240, 0.45);
+  color: #eef2ff;
 }
 
 #composer-footer {
@@ -595,6 +626,30 @@ textarea {
   min-height: 240px;
 }
 
+#settings-sheet {
+  position: fixed;
+  top: 76px;
+  right: 24px;
+  width: min(360px, calc(100vw - 48px));
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border: 1px solid var(--border-muted);
+  border-radius: 20px;
+  background: rgba(18, 21, 33, 0.98);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+  z-index: 50;
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #23283a;
+}
+
 #terminal-toolbar {
   display: flex;
   align-items: center;
@@ -695,7 +750,34 @@ textarea {
 
 @media (max-width: 1180px) {
   #app-shell {
-    grid-template-columns: minmax(240px, 36vw) minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  #sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    display: block;
+    background: rgba(8, 10, 16, 0.48);
+    z-index: 24;
+  }
+
+  #left-rail {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(86vw, 340px);
+    z-index: 30;
+    transform: translateX(-100%);
+    transition: transform 160ms ease;
+  }
+
+  #app-shell.sidebar-open #left-rail {
+    transform: translateX(0);
+  }
+
+  #toggle-sidebar-btn {
+    display: inline-flex;
   }
 
   #workspace-body,
@@ -743,5 +825,10 @@ textarea {
     z-index: 20;
     max-height: 42vh;
     box-shadow: 0 16px 48px rgba(0, 0, 0, 0.32);
+  }
+
+  #settings-sheet {
+    top: auto;
+    bottom: 84px;
   }
 }

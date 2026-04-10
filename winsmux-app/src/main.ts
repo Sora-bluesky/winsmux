@@ -61,14 +61,26 @@ interface FooterStatusItem {
   tone?: "default" | "accent";
 }
 
+type ComposerMode = "ask" | "dispatch" | "review" | "explain";
+
 const panes = new Map<string, PaneEntry>();
 let paneCounter = 0;
 let terminalDrawerOpen = false;
 let contextPanelOpen = true;
 let editorSurfaceOpen = false;
+let settingsSheetOpen = false;
+let sidebarOpen = true;
 let composerImeActive = false;
 let sidebarWidth = 292;
 let selectedEditorPath = "winsmux-app/src/main.ts";
+let activeComposerMode: ComposerMode = "dispatch";
+
+const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: string }> = [
+  { mode: "ask", label: "Ask", placeholder: "Ask the Operator for clarification, status, or guidance" },
+  { mode: "dispatch", label: "Dispatch", placeholder: "Dispatch the next task to the Operator" },
+  { mode: "review", label: "Review", placeholder: "Request review, approval, or audit from the Operator" },
+  { mode: "explain", label: "Explain", placeholder: "Ask the Operator to explain the current run state" },
+];
 
 const seedConversation: ConversationItem[] = [
   {
@@ -327,6 +339,9 @@ function renderFooterLane() {
     button.innerHTML = item.value
       ? `<span class="footer-pill-label">${item.label}</span><span class="footer-pill-value">${item.value}</span>`
       : `<span class="footer-pill-value">${item.label}</span>`;
+    if (item.label === "Settings" || item.value === "Settings") {
+      button.addEventListener("click", () => setSettingsSheet(true));
+    }
     return button;
   };
 
@@ -339,6 +354,34 @@ function renderFooterLane() {
 
   for (const item of footerRightItems) {
     right.appendChild(buildPill(item));
+  }
+}
+
+function renderComposerModes() {
+  const root = document.getElementById("composer-mode-row");
+  const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (!root || !composerInput) {
+    return;
+  }
+
+  root.innerHTML = "";
+  for (const item of composerModes) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `mode-chip ${item.mode === activeComposerMode ? "is-active" : ""}`;
+    button.textContent = item.label;
+    button.setAttribute("aria-pressed", item.mode === activeComposerMode ? "true" : "false");
+    button.addEventListener("click", () => {
+      activeComposerMode = item.mode;
+      composerInput.placeholder = item.placeholder;
+      renderComposerModes();
+    });
+    root.appendChild(button);
+  }
+
+  const selected = composerModes.find((item) => item.mode === activeComposerMode);
+  if (selected) {
+    composerInput.placeholder = selected.placeholder;
   }
 }
 
@@ -485,6 +528,46 @@ function setEditorSurface(open: boolean) {
   renderOpenEditors();
 }
 
+function isNarrowLayout() {
+  return window.matchMedia("(max-width: 1180px)").matches;
+}
+
+function setSidebarOpen(open: boolean) {
+  sidebarOpen = open;
+  const shell = document.getElementById("app-shell");
+  const overlay = document.getElementById("sidebar-overlay");
+  const button = document.getElementById("toggle-sidebar-btn");
+  if (!shell || !overlay || !button) {
+    return;
+  }
+
+  shell.classList.toggle("sidebar-open", open);
+  overlay.hidden = !(open && isNarrowLayout());
+  button.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function setSettingsSheet(open: boolean) {
+  settingsSheetOpen = open;
+  const sheet = document.getElementById("settings-sheet");
+  if (!sheet) {
+    return;
+  }
+
+  sheet.hidden = !open;
+}
+
+function syncResponsiveShell() {
+  if (isNarrowLayout()) {
+    setSidebarOpen(false);
+    setContextPanel(false);
+  } else {
+    setSidebarOpen(true);
+    if (!contextPanelOpen) {
+      setContextPanel(true);
+    }
+  }
+}
+
 function appendUserMessage(message: string) {
   seedConversation.push({ type: "user", body: message });
   seedConversation.push({
@@ -543,11 +626,16 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderSourceSummary();
   renderFooterLane();
   renderConversation(seedConversation);
+  renderComposerModes();
   renderEditorSurface();
-  setContextPanel(true);
+  syncResponsiveShell();
   setEditorSurface(false);
   setTerminalDrawer(false);
   initializeSidebarResize();
+
+  document.getElementById("toggle-sidebar-btn")?.addEventListener("click", () => {
+    setSidebarOpen(!sidebarOpen);
+  });
 
   document.getElementById("toggle-terminal-btn")?.addEventListener("click", () => {
     setTerminalDrawer(!terminalDrawerOpen);
@@ -559,6 +647,18 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("close-editor-btn")?.addEventListener("click", () => {
     setEditorSurface(false);
+  });
+
+  document.getElementById("settings-btn")?.addEventListener("click", () => {
+    setSettingsSheet(true);
+  });
+
+  document.getElementById("close-settings-btn")?.addEventListener("click", () => {
+    setSettingsSheet(false);
+  });
+
+  document.getElementById("sidebar-overlay")?.addEventListener("click", () => {
+    setSidebarOpen(false);
   });
 
   document.getElementById("add-pane-btn")?.addEventListener("click", () => {
@@ -603,7 +703,21 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
+  window.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && settingsSheetOpen) {
+      event.preventDefault();
+      setSettingsSheet(false);
+      return;
+    }
+
+    if ((event.ctrlKey || event.metaKey) && event.key === ",") {
+      event.preventDefault();
+      setSettingsSheet(!settingsSheetOpen);
+    }
+  });
+
   window.addEventListener("resize", () => {
+    syncResponsiveShell();
     panes.forEach((pane) => pane.fitAddon.fit());
   });
 });
