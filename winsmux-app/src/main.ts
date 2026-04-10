@@ -27,6 +27,7 @@ interface ConversationItem {
   title?: string;
   body: string;
   chips?: ConversationChip[];
+  tone?: SurfaceTone;
 }
 
 interface SessionItem {
@@ -87,7 +88,18 @@ interface ContextSection {
 interface FooterStatusItem {
   label: string;
   value?: string;
-  tone?: "default" | "accent";
+  tone?: SurfaceTone;
+}
+
+type SurfaceTone = "default" | "accent" | "success" | "warning" | "danger" | "info" | "focus";
+type ThemeMode = "codex-dark" | "graphite-dark";
+type DensityMode = "comfortable" | "compact";
+type WrapMode = "balanced" | "compact";
+
+interface ThemeState {
+  theme: ThemeMode;
+  density: DensityMode;
+  wrapMode: WrapMode;
 }
 
 type ComposerMode = "ask" | "dispatch" | "review" | "explain";
@@ -104,6 +116,11 @@ let sidebarWidth = 292;
 let selectedEditorPath = "winsmux-app/src/main.ts";
 let activeComposerMode: ComposerMode = "dispatch";
 let activeSourceFilter: SourceFilter = "all";
+const themeState: ThemeState = {
+  theme: "codex-dark",
+  density: "comfortable",
+  wrapMode: "balanced",
+};
 
 const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: string }> = [
   { mode: "ask", label: "Ask", placeholder: "Ask the Operator for clarification, status, or guidance" },
@@ -120,6 +137,7 @@ const seedConversation: ConversationItem[] = [
   {
     type: "operator",
     body: "Operator update: inbox shows 2 approval waits. I am checking run ledger and evidence digest now.",
+    tone: "info",
   },
   {
     type: "system",
@@ -131,6 +149,7 @@ const seedConversation: ConversationItem[] = [
       { label: "Source Context", action: "open-source-context" },
       { label: "Terminal", action: "open-terminal" },
     ],
+    tone: "warning",
   },
 ];
 
@@ -242,17 +261,19 @@ const baseContextSections: ContextSection[] = [
   { label: "next", value: "Open Explain" },
 ];
 
-const footerLeftItems: FooterStatusItem[] = [
-  { label: "Local environment" },
-  { label: "GPT-5.4" },
-  { label: "High" },
-  { label: "Settings", tone: "accent" },
+const themeOptions: Array<{ value: ThemeMode; label: string; description: string }> = [
+  { value: "codex-dark", label: "Codex Dark", description: "Close adaptation of Codex typography and contrast." },
+  { value: "graphite-dark", label: "Graphite", description: "Softer shell contrast for long operator sessions." },
 ];
 
-const footerRightItems: FooterStatusItem[] = [
-  { label: "config.toml" },
-  { label: "main" },
-  { label: "Operator ready", tone: "accent" },
+const densityOptions: Array<{ value: DensityMode; label: string; description: string }> = [
+  { value: "comfortable", label: "Comfortable", description: "Default shell spacing for conversation and context." },
+  { value: "compact", label: "Compact", description: "Tighter panel spacing and smaller composer height." },
+];
+
+const wrapOptions: Array<{ value: WrapMode; label: string; description: string }> = [
+  { value: "balanced", label: "Balanced", description: "Preferred readability for timeline, code, and footer lanes." },
+  { value: "compact", label: "Compact", description: "Denser wrapping for narrow windows and long traces." },
 ];
 
 function createPane(paneId?: string): string {
@@ -450,9 +471,9 @@ function renderSourceEntries() {
   }
 
   root.innerHTML = "";
-  const entryItems: Array<{ label: string; value: string; filter: SourceFilter; tone?: "success" | "attention" }> = [
+  const entryItems: Array<{ label: string; value: string; filter: SourceFilter; tone?: SurfaceTone }> = [
     { label: "Commit candidates", value: `${sourceControlState.entries.filter((item) => item.commitCandidate).length} ready`, tone: "success", filter: "candidates" },
-    { label: "Needs attention", value: `${sourceControlState.entries.filter((item) => item.needsAttention).length} blocker`, tone: "attention", filter: "attention" },
+    { label: "Needs attention", value: `${sourceControlState.entries.filter((item) => item.needsAttention).length} blocker`, tone: "danger", filter: "attention" },
     { label: "worktree-builder-2", value: `${sourceControlState.entries.filter((item) => item.worktree === "builder-2").length} files`, filter: "builder-2" },
     { label: "worktree-builder-3", value: `${sourceControlState.entries.filter((item) => item.worktree === "builder-3").length} files`, filter: "builder-3" },
   ];
@@ -460,9 +481,8 @@ function renderSourceEntries() {
   for (const item of entryItems) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `sidebar-row source-entry-row ${activeSourceFilter === item.filter ? "is-active" : ""} ${
-      item.tone ? `is-${item.tone}` : ""
-    }`;
+    button.className = `sidebar-row source-entry-row ${activeSourceFilter === item.filter ? "is-active" : ""}`;
+    button.dataset.tone = item.tone ?? "default";
     button.innerHTML = `<span class="sidebar-row-title">${item.label}</span><span class="sidebar-row-meta">${item.value}</span>`;
     button.addEventListener("click", () => {
       activeSourceFilter = item.filter;
@@ -545,7 +565,8 @@ function renderContextPanel() {
   for (const change of visibleChanges) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `context-file-row ${change.path === selectedEditorPath && editorSurfaceOpen ? "is-active" : ""} risk-${change.risk}`;
+    button.className = `context-file-row ${change.path === selectedEditorPath && editorSurfaceOpen ? "is-active" : ""}`;
+    button.dataset.tone = getSourceEntryTone(change);
     button.innerHTML =
       `<span class="context-file-name">${change.path.split("/").pop() ?? change.path}</span>` +
       `<span class="context-file-meta">${change.summary}</span>` +
@@ -559,6 +580,97 @@ function renderContextPanel() {
   }
 }
 
+function getSourceEntryTone(entry: SourceChange): SurfaceTone {
+  if (entry.needsAttention || entry.risk === "high") {
+    return "danger";
+  }
+  if (entry.commitCandidate) {
+    return "success";
+  }
+  if (entry.risk === "medium") {
+    return "warning";
+  }
+  return "info";
+}
+
+function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[] } {
+  const themeLabel = themeOptions.find((item) => item.value === themeState.theme)?.label ?? themeState.theme;
+  const densityLabel = densityOptions.find((item) => item.value === themeState.density)?.label ?? themeState.density;
+  const wrapLabel = wrapOptions.find((item) => item.value === themeState.wrapMode)?.label ?? themeState.wrapMode;
+
+  return {
+    left: [
+      { label: "Local environment" },
+      { label: themeLabel, tone: "focus" },
+      { label: densityLabel },
+      { label: `Wrap ${wrapLabel}` },
+      { label: "Settings", tone: "accent" },
+    ],
+    right: [
+      { label: "config.toml" },
+      { label: "main" },
+      { label: "Operator ready", tone: "success" },
+    ],
+  };
+}
+
+function applyShellPreferences() {
+  const shell = document.getElementById("app-shell");
+  if (!shell) {
+    return;
+  }
+
+  shell.dataset.theme = themeState.theme;
+  shell.dataset.density = themeState.density;
+  shell.dataset.wrapMode = themeState.wrapMode;
+}
+
+function renderPreferenceOptions<T extends string>(
+  rootId: string,
+  options: Array<{ value: T; label: string; description: string }>,
+  selected: T,
+  onSelect: (value: T) => void,
+) {
+  const root = document.getElementById(rootId);
+  if (!root) {
+    return;
+  }
+
+  root.innerHTML = "";
+  for (const option of options) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `settings-option-chip ${option.value === selected ? "is-active" : ""}`;
+    button.setAttribute("aria-pressed", option.value === selected ? "true" : "false");
+    button.innerHTML = `<span class="settings-option-label">${option.label}</span><span class="settings-option-description">${option.description}</span>`;
+    button.addEventListener("click", () => onSelect(option.value));
+    root.appendChild(button);
+  }
+}
+
+function renderSettingsControls() {
+  renderPreferenceOptions("theme-options", themeOptions, themeState.theme, (value) => {
+    themeState.theme = value;
+    applyShellPreferences();
+    renderFooterLane();
+    renderSettingsControls();
+  });
+
+  renderPreferenceOptions("density-options", densityOptions, themeState.density, (value) => {
+    themeState.density = value;
+    applyShellPreferences();
+    renderFooterLane();
+    renderSettingsControls();
+  });
+
+  renderPreferenceOptions("wrap-options", wrapOptions, themeState.wrapMode, (value) => {
+    themeState.wrapMode = value;
+    applyShellPreferences();
+    renderFooterLane();
+    renderSettingsControls();
+  });
+}
+
 function renderFooterLane() {
   const left = document.getElementById("footer-left");
   const right = document.getElementById("footer-right");
@@ -566,10 +678,13 @@ function renderFooterLane() {
     return;
   }
 
+  const footerItems = getFooterItems();
+
   const buildPill = (item: FooterStatusItem) => {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `footer-pill ${item.tone === "accent" ? "is-accent" : ""}`;
+    button.className = "footer-pill";
+    button.dataset.tone = item.tone ?? "default";
     button.innerHTML = item.value
       ? `<span class="footer-pill-label">${item.label}</span><span class="footer-pill-value">${item.value}</span>`
       : `<span class="footer-pill-value">${item.label}</span>`;
@@ -582,11 +697,11 @@ function renderFooterLane() {
   left.innerHTML = "";
   right.innerHTML = "";
 
-  for (const item of footerLeftItems) {
+  for (const item of footerItems.left) {
     left.appendChild(buildPill(item));
   }
 
-  for (const item of footerRightItems) {
+  for (const item of footerItems.right) {
     right.appendChild(buildPill(item));
   }
 }
@@ -630,6 +745,7 @@ function renderConversation(items: ConversationItem[]) {
   for (const item of items) {
     const article = document.createElement("article");
     article.className = `timeline-item timeline-${item.type}`;
+    article.dataset.tone = item.tone ?? (item.type === "operator" ? "info" : item.type === "system" ? "focus" : "default");
 
     if (item.title) {
       const title = document.createElement("div");
@@ -708,6 +824,7 @@ function renderEditorSurface() {
   ]) {
     const chip = document.createElement("span");
     chip.className = `editor-meta-chip ${item === "Modified" ? "is-modified" : ""}`;
+    chip.dataset.tone = item === "Modified" ? "focus" : "default";
     chip.textContent = item;
     meta.appendChild(chip);
   }
@@ -830,6 +947,7 @@ function appendUserMessage(message: string) {
   seedConversation.push({
     type: "operator",
     body: "Operator update: queued for dispatch. Open Explain, inspect changed files, or use the terminal drawer if raw PTY detail becomes necessary.",
+    tone: "info",
   });
   renderConversation(seedConversation);
 }
@@ -920,6 +1038,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderSourceSummary();
   renderSourceEntries();
   renderContextPanel();
+  applyShellPreferences();
+  renderSettingsControls();
   renderFooterLane();
   renderConversation(seedConversation);
   renderComposerModes();

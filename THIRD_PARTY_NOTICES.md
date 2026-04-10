@@ -64,11 +64,24 @@ When code or UI definitions are directly copied or closely adapted from `openai/
 These upstream areas are the current reference set for Codex-derived UI work:
 
 - `codex-rs/tui/`
+- `codex-rs/tui/src/app.rs`
+- `codex-rs/tui/src/chatwidget.rs`
 - `codex-rs/tui/src/wrapping.rs`
+- `codex-rs/tui/src/bottom_pane/chat_composer.rs`
 - `codex-rs/tui/src/bottom_pane/footer.rs`
-- `codex-rs/tui/src/bottom_pane/slash_command.rs`
-- `codex-rs/tui/src/bottom_pane/history_search.rs`
+- `codex-rs/tui/src/bottom_pane/slash_commands.rs`
+- `codex-rs/tui/src/bottom_pane/chat_composer_history.rs`
+- `codex-rs/tui/src/theme_picker.rs`
 - `codex-rs/tui/styles.md`
-- `codex-rs/AGENTS.md`
+- `codex-rs/tui/src/bottom_pane/AGENTS.md`
+
+### Current winsmux adaptation scope
+
+The current `winsmux-app` shell work tracks these Codex-derived areas most closely:
+
+- typography and semantic theme token direction
+- conversation-shell wrapping behavior
+- footer/status-lane affordances
+- settings/menu surface affordances
 
 This notice covers attribution and provenance tracking. It does not imply that winsmux reproduces Codex verbatim end-to-end.
