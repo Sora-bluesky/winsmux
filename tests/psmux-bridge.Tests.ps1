@@ -1543,17 +1543,7 @@ session:
     It 'detects a missing session and restarts it' {
         $state = New-ServerWatchdogState
 
-        Mock Invoke-ServerWatchdogWinsmux {
-            [ordered]@{
-                ExitCode = 1
-                Output   = @('missing')
-            }
-        } -ParameterFilter {
-            $AllowFailure -and
-            $Arguments[0] -eq 'has-session' -and
-            $Arguments[1] -eq '-t' -and
-            $Arguments[2] -eq 'winsmux-orchestra'
-        }
+        Mock Get-ServerWatchdogHealthStatus { 'Missing' }
 
         Mock Invoke-ServerWatchdogWinsmux {
             [ordered]@{
@@ -1582,19 +1572,13 @@ session:
         $events[0].event | Should -Be 'server.restarted'
         $events[0].status | Should -Be 'restarted'
         $events[0].exit_reason | Should -Be 'session_missing'
+        $events[0].data.health_status | Should -Be 'Missing'
     }
 
     It 'logs restart failures when restart attempt fails' {
         $state = New-ServerWatchdogState
 
-        Mock Invoke-ServerWatchdogWinsmux {
-            [ordered]@{
-                ExitCode = 1
-                Output   = @('missing')
-            }
-        } -ParameterFilter {
-            $AllowFailure -and $Arguments[0] -eq 'has-session'
-        }
+        Mock Get-ServerWatchdogHealthStatus { 'Missing' }
 
         Mock Invoke-ServerWatchdogWinsmux {
             [ordered]@{
@@ -1618,6 +1602,32 @@ session:
         $events[0].event | Should -Be 'server.restart_failed'
         $events[0].exit_reason | Should -Be 'restart_failed'
         $events[0].data.restart_output | Should -Be 'cannot start'
+        $events[0].data.health_status | Should -Be 'Missing'
+    }
+
+    It 'treats unhealthy strict health as a restartable server failure' {
+        $state = New-ServerWatchdogState
+
+        Mock Get-ServerWatchdogHealthStatus { 'Unhealthy' }
+        Mock Invoke-ServerWatchdogWinsmux {
+            [ordered]@{
+                ExitCode = 0
+                Output   = @()
+            }
+        } -ParameterFilter {
+            $AllowFailure -and $Arguments[0] -eq 'new-session'
+        }
+
+        $result = Invoke-ServerWatchdogCycle -ManifestPath $script:serverWatchdogManifestPath -SessionName 'winsmux-orchestra' -State $state
+
+        $result.RestartAttempted | Should -Be $true
+        $result.RestartSucceeded | Should -Be $true
+        $result.HealthStatus | Should -Be 'Unhealthy'
+
+        $eventsPath = Join-Path $script:serverWatchdogTempRoot '.winsmux\events.jsonl'
+        $events = @(Get-Content -Path $eventsPath -Encoding UTF8 | Where-Object { $_ } | ForEach-Object { $_ | ConvertFrom-Json })
+        $events[0].exit_reason | Should -Be 'healthcheck_failed'
+        $events[0].data.health_status | Should -Be 'Unhealthy'
     }
 
     It 'enters degraded state after three restart attempts in ten minutes' {
@@ -1629,13 +1639,11 @@ session:
             $now.AddMinutes(-1).ToString('o')
         )
 
+        Mock Get-ServerWatchdogHealthStatus { 'Missing' }
         Mock Invoke-ServerWatchdogWinsmux {
-            [ordered]@{
-                ExitCode = 1
-                Output   = @('missing')
-            }
+            throw 'restart should not be attempted while degraded'
         } -ParameterFilter {
-            $AllowFailure -and $Arguments[0] -eq 'has-session'
+            $Arguments[0] -eq 'new-session'
         }
 
         $result = Invoke-ServerWatchdogCycle -ManifestPath $script:serverWatchdogManifestPath -SessionName 'winsmux-orchestra' -State $state
@@ -1655,6 +1663,7 @@ session:
         $events[0].status | Should -Be 'degraded'
         $events[0].exit_reason | Should -Be 'crash_loop_protection'
         $events[0].data.attempt_count | Should -Be 3
+        $events[0].data.health_status | Should -Be 'Missing'
     }
 }
 
@@ -1739,6 +1748,7 @@ Describe 'orchestra-start server bootstrap' {
         $script:startProcessArgumentList = @()
         $script:listPanesCallCount = 0
         $script:sleepCallCount = 0
+        $script:waitHealthyCount = 0
 
         function Test-OrchestraServerSession {
             param([string]$SessionName)
@@ -1783,6 +1793,12 @@ Describe 'orchestra-start server bootstrap' {
             }
         }
 
+        function Wait-OrchestraServerHealthy {
+            param([string]$SessionName, [string]$WinsmuxBin, [int]$TimeoutSeconds, [int]$PollIntervalMilliseconds)
+            $script:waitHealthyCount++
+            return [ordered]@{ SessionName = $SessionName; Health = 'Healthy'; Attempts = 1 }
+        }
+
         $result = Ensure-OrchestraServer -SessionName 'winsmux-orchestra'
 
         $result.SessionName | Should -Be 'winsmux-orchestra'
@@ -1790,6 +1806,7 @@ Describe 'orchestra-start server bootstrap' {
         $script:probeCount | Should -Be 3
         $script:sleepCallCount | Should -Be 1
         $script:listPanesCallCount | Should -Be 1
+        $script:waitHealthyCount | Should -Be 1
         $script:startProcessFilePath | Should -Be 'C:\Windows\System32\wt.exe'
         $script:startProcessArgumentList | Should -Be @(
             '--size', '200,70',
@@ -1797,6 +1814,67 @@ Describe 'orchestra-start server bootstrap' {
             '--',
             'winsmux', 'new-session', '-s', 'winsmux-orchestra'
         )
+    }
+
+    It 'resets a stale session by killing it, clearing registration, and recreating it' {
+        $script:killCalls = 0
+        $script:clearCalls = 0
+        $script:ensureCalls = 0
+        $script:waitCalls = 0
+
+        function Invoke-Winsmux {
+            param([string[]]$Arguments, [switch]$CaptureOutput)
+            if ($Arguments[0] -eq 'kill-session') {
+                $script:killCalls++
+                return
+            }
+
+            throw "unexpected winsmux call: $($Arguments -join ' ')"
+        }
+
+        function Clear-OrchestraSessionRegistration {
+            param([string]$SessionName)
+            $script:clearCalls++
+        }
+
+        function Ensure-OrchestraServer {
+            param([string]$SessionName, [int]$TimeoutSeconds = 30)
+            $script:ensureCalls++
+            return [ordered]@{
+                SessionName    = $SessionName
+                SessionCreated = $true
+            }
+        }
+
+        function Wait-OrchestraServerHealthy {
+            param([string]$SessionName, [string]$WinsmuxBin, [int]$TimeoutSeconds = 15, [int]$PollIntervalMilliseconds = 500)
+            $script:waitCalls++
+            return [ordered]@{
+                SessionName = $SessionName
+                Health      = 'Healthy'
+                Attempts    = 1
+            }
+        }
+
+        Mock Test-OrchestraServerSession { $true }
+
+        $result = Reset-OrchestraServerSession -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux' -Reason 'test'
+
+        $result.SessionCreated | Should -Be $true
+        $result.Health | Should -Be 'Healthy'
+        $script:killCalls | Should -Be 1
+        $script:clearCalls | Should -Be 1
+        $script:ensureCalls | Should -Be 1
+        $script:waitCalls | Should -Be 1
+    }
+
+    It 'fails closed when a background watchdog process exits immediately' {
+        $process = [PSCustomObject]@{
+            HasExited = $true
+            ExitCode  = 23
+        }
+
+        { Assert-OrchestraBackgroundProcessStarted -Process $process -Name 'Server watchdog job' -StartupDelayMilliseconds 1 } | Should -Throw '*exited immediately*'
     }
 
     It 'fails closed when Windows Terminal is unavailable' {
@@ -2694,6 +2772,129 @@ Describe 'winsmux send fallback' {
         $result | Should -Be 'sent to %7 via default:0.3'
         $script:sendBuffer | Should -Be "> echo test`nresult"
         $script:sendAttempts | Should -Be @('%7 literal', 'default:0.3 literal', 'default:0.3 Enter')
+    }
+
+    It 'falls back when direct pane id delivery redraws the buffer but does not contain the typed command' {
+        $script:sendAttempts = [System.Collections.Generic.List[string]]::new()
+        $script:sendBuffer = '> '
+        $script:sendCommandText = 'claude research --topic winsmux'
+
+        Mock Invoke-WinsmuxRaw {
+            param([string[]]$Arguments)
+
+            switch ($Arguments[0]) {
+                'list-panes' {
+                    $format = $Arguments[-1]
+                    if ($format -eq '#{pane_id}') {
+                        return '%7'
+                    }
+
+                    if ($format -eq "#{pane_id}`t#{session_name}:#{window_index}.#{pane_index}") {
+                        return '%7' + "`t" + 'default:0.3'
+                    }
+
+                    return @()
+                }
+                'capture-pane' {
+                    return $script:sendBuffer
+                }
+                'send-keys' {
+                    $targetIndex = [Array]::IndexOf($Arguments, '-t')
+                    $target = if ($targetIndex -ge 0 -and $targetIndex + 1 -lt $Arguments.Count) {
+                        $Arguments[$targetIndex + 1]
+                    } else {
+                        ''
+                    }
+
+                    if ($Arguments -contains '-l') {
+                        $script:sendAttempts.Add("$target literal") | Out-Null
+                        if ($target -eq '%7') {
+                            $script:sendBuffer = "> [status redraw only]"
+                        } elseif ($target -eq 'default:0.3') {
+                            $script:sendBuffer = "> $script:sendCommandText"
+                        }
+
+                        return
+                    }
+
+                    $script:sendAttempts.Add("$target Enter") | Out-Null
+                    if ($target -eq 'default:0.3') {
+                        $script:sendBuffer += "`nresult"
+                    }
+                    return
+                }
+                default {
+                    throw "Unexpected winsmux command: $($Arguments -join ' ')"
+                }
+            }
+        }
+
+        $result = Send-TextToPane -PaneId '%7' -CommandText $script:sendCommandText
+
+        $result | Should -Be 'sent to %7 via default:0.3'
+        $script:sendBuffer | Should -Be "> $script:sendCommandText`nresult"
+        $script:sendAttempts | Should -Be @('%7 literal', 'default:0.3 literal', 'default:0.3 Enter')
+    }
+
+    It 'chunks long literal sends before pressing Enter' {
+        $script:sendAttempts = [System.Collections.Generic.List[string]]::new()
+        $script:sendBuffer = '> '
+        $script:longCommandText = ('a' * 1200) + 'UNIQUE-TAIL-1234567890'
+
+        Mock Invoke-WinsmuxRaw {
+            param([string[]]$Arguments)
+
+            switch ($Arguments[0]) {
+                'list-panes' {
+                    $format = $Arguments[-1]
+                    if ($format -eq '#{pane_id}') {
+                        return '%7'
+                    }
+
+                    if ($format -eq "#{pane_id}`t#{session_name}:#{window_index}.#{pane_index}") {
+                        return '%7' + "`t" + 'default:0.3'
+                    }
+
+                    return @()
+                }
+                'capture-pane' {
+                    return $script:sendBuffer
+                }
+                'send-keys' {
+                    $targetIndex = [Array]::IndexOf($Arguments, '-t')
+                    $target = if ($targetIndex -ge 0 -and $targetIndex + 1 -lt $Arguments.Count) {
+                        $Arguments[$targetIndex + 1]
+                    } else {
+                        ''
+                    }
+
+                    if ($Arguments -contains '-l') {
+                        $literalText = $Arguments[-1]
+                        $script:sendAttempts.Add("$target literal:$($literalText.Length)") | Out-Null
+                        if ($target -eq 'default:0.3') {
+                            $script:sendBuffer += $literalText
+                        }
+
+                        return
+                    }
+
+                    $script:sendAttempts.Add("$target Enter") | Out-Null
+                    if ($target -eq 'default:0.3') {
+                        $script:sendBuffer += "`nresult"
+                    }
+                    return
+                }
+                default {
+                    throw "Unexpected winsmux command: $($Arguments -join ' ')"
+                }
+            }
+        }
+
+        $result = Send-TextToPane -PaneId '%7' -CommandText $script:longCommandText
+
+        $result | Should -Be 'sent to %7 via default:0.3'
+        (@($script:sendAttempts | Where-Object { $_ -like '* literal*' })).Count | Should -Be 4
+        $script:sendAttempts[-1] | Should -Be 'default:0.3 Enter'
     }
 
 }

@@ -400,6 +400,39 @@ EOF
         $result.StdErr | Should -Be ''
     }
 
+    It 'denies pwsh -Command writing a code file from the operator pane' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'pwsh -Command "Set-Content -LiteralPath scripts/demo.ps1 -Value ''Write-Host hi''"'
+        }) -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'Operator shell write bypass blocked'
+    }
+
+    It 'denies cmd /c writing a code file from the operator pane' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'cmd /c "echo Write-Host hi > scripts\\demo.ps1"'
+        }) -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'Operator shell write bypass blocked'
+    }
+
+    It 'denies python -c writing a code file from the operator pane' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+            command = 'python -c "from pathlib import Path; Path(''scripts/demo.py'').write_text(''print(1)'', encoding=''utf-8'')"'
+        }) -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'Operator shell write bypass blocked'
+    }
+
     It 'denies Agent acceptEdits mode' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
             mode = 'acceptEdits'

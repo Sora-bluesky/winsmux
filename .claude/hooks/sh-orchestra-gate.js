@@ -40,6 +40,14 @@ try {
     }
   }
 
+  // Rule 2b: Operator shell wrappers must not write code-bearing files outside managed worker panes
+  if (toolName === "Bash") {
+    const currentRole = normalizeAgentValue(process.env.WINSMUX_ROLE);
+    if (currentRole !== "builder" && currentRole !== "worker" && isDirectCodeWriteBypassCommand(bashCommand)) {
+      deny("Operator shell write bypass blocked. Delegate implementation to managed worker panes.");
+    }
+  }
+
   // Rule 3: Protect review state from direct edits
   if (toolName === "Bash") {
     if (isDirectReviewStateWriteCommand(bashCommand)) {
@@ -97,7 +105,7 @@ try {
 
     const isAllowedAgentUse = agentMode === "plan" || subagentType === "explore";
     if (!isAllowedAgentUse) {
-      deny("Commander delegated write bypass blocked. Delegate implementation to Builder panes. Allowed: plan mode, Explore subagents.");
+      deny("Operator delegated write bypass blocked. Delegate implementation to managed worker panes. Allowed: plan mode, Explore subagents.");
     }
   }
 
@@ -440,6 +448,50 @@ function isProtectedReviewStatePath(filePath) {
   return normalized === ".winsmux/review-state.json" || normalized.endsWith("/.winsmux/review-state.json");
 }
 
+function isDirectCodeWriteBypassCommand(command) {
+  const normalized = normalizePathValue(command);
+  if (!/\.(ps1|psm1|js|ts|rs|py)\b/.test(normalized)) {
+    return false;
+  }
+
+  const codePathPattern = /[^"'|\r\n]*\.(?:ps1|psm1|js|ts|rs|py)\b/i;
+  const directWritePattern = /(?:>|>>)\s*["']?[^"'|\r\n]*\.(?:ps1|psm1|js|ts|rs|py)\b|(?:set-content|add-content|out-file|copy-item|move-item|rename-item|new-item|ni)\b[^|&\r\n]*\.(?:ps1|psm1|js|ts|rs|py)\b/i;
+  if (directWritePattern.test(normalized)) {
+    return true;
+  }
+
+  const segments = splitCommandSegments(command);
+  for (const segment of segments) {
+    const tokens = tokenizeCommandLine(segment);
+    if (tokens.length === 0) {
+      continue;
+    }
+
+    const executable = getExecutableBasename(tokens[0]);
+    if (isPowerShellExecutable(executable)) {
+      const commandArgument = getOptionValue(tokens, ["-command", "-c"]);
+      if (commandArgument && codePathPattern.test(commandArgument) && directWritePattern.test(normalizePathValue(commandArgument))) {
+        return true;
+      }
+    }
+
+    if (executable === "cmd" || executable === "cmd.exe") {
+      const shellArgument = getCmdShellArgument(tokens);
+      if (shellArgument && codePathPattern.test(shellArgument) && directWritePattern.test(normalizePathValue(shellArgument))) {
+        return true;
+      }
+    }
+
+    if ((executable === "python" || executable === "python.exe" || executable === "python3" || executable === "py") &&
+        /(?:open|write_text|write_bytes|Path\()/i.test(segment) &&
+        codePathPattern.test(segment)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function isSettingsLocalHookMutation(command) {
   if (!/settings\.local\.json/i.test(command)) {
     return false;
@@ -556,6 +608,7 @@ module.exports = {
   hasStandaloneCommandToken,
   hasValidReviewerPass,
   isDirectCodexDispatch,
+  isDirectCodeWriteBypassCommand,
   isDirectReviewStateWriteCommand,
   isGhPrMergeCommand,
   isGitCommitCommand,

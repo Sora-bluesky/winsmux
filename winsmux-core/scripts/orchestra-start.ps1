@@ -105,6 +105,7 @@ function Ensure-OrchestraServer {
                 $paneOutput = Invoke-Winsmux -Arguments @('list-panes', '-t', $SessionName, '-F', '#{pane_id}') -CaptureOutput
                 $paneText = ($paneOutput | Out-String).Trim()
                 if (-not [string]::IsNullOrWhiteSpace($paneText)) {
+                    $null = Wait-OrchestraServerHealthy -SessionName $SessionName -WinsmuxBin $script:winsmuxBin -TimeoutSeconds ([Math]::Min($TimeoutSeconds, 15))
                     Write-Host "Ensure-OrchestraServer: ready after $pollAttempt polls"
                     return [ordered]@{
                         SessionName    = $SessionName
@@ -123,6 +124,32 @@ function Ensure-OrchestraServer {
     }
 
     throw "Orchestra session '$SessionName' did not become ready within $TimeoutSeconds seconds. Verify Windows Terminal launched correctly."
+}
+
+function Reset-OrchestraServerSession {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin,
+        [string]$Reason = 'reset'
+    )
+
+    if (Test-OrchestraServerSession -SessionName $SessionName) {
+        try {
+            Invoke-Winsmux -Arguments @('kill-session', '-t', $SessionName)
+        } catch {
+            Write-Warning "Reset-OrchestraServerSession: failed to kill $SessionName during ${Reason}: $($_.Exception.Message)"
+        }
+    }
+
+    Clear-OrchestraSessionRegistration -SessionName $SessionName
+    $server = Ensure-OrchestraServer -SessionName $SessionName
+    $health = Wait-OrchestraServerHealthy -SessionName $SessionName -WinsmuxBin $WinsmuxBin
+
+    return [ordered]@{
+        SessionName    = $server.SessionName
+        SessionCreated = $server.SessionCreated
+        Health         = $health.Health
+    }
 }
 
 function Invoke-Bridge {
@@ -761,6 +788,34 @@ function Start-ServerWatchdogJob {
         ) -WindowStyle Hidden -PassThru)
 }
 
+function Assert-OrchestraBackgroundProcessStarted {
+    param(
+        [Parameter(Mandatory = $true)]$Process,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [int]$StartupDelayMilliseconds = 300
+    )
+
+    if ($null -eq $Process) {
+        throw "$Name did not start."
+    }
+
+    Start-Sleep -Milliseconds $StartupDelayMilliseconds
+    try {
+        if ($Process.HasExited) {
+            $exitCode = 'unknown'
+            try {
+                $exitCode = [string]$Process.ExitCode
+            } catch {
+            }
+            throw "$Name exited immediately (exit code $exitCode)."
+        }
+    } catch {
+        if ($_.Exception.Message -like '*exited immediately*') {
+            throw
+        }
+    }
+}
+
 function Get-OrchestraEventsPath {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
@@ -1096,16 +1151,22 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-WinsmuxLog -Level INFO -Event 'preflight.session.health' -Message "Session health for ${sessionName}: $sessionHealth." -Data @{ session_name = $sessionName; health = $sessionHealth } | Out-Null
         switch ($sessionHealth) {
             'Healthy' {
-                Write-WinsmuxLog -Level INFO -Event 'preflight.session.kill' -Message "Removing existing session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
-                Invoke-Winsmux -Arguments @('kill-session', '-t', $sessionName)
+                Write-WinsmuxLog -Level INFO -Event 'preflight.session.reset' -Message "Resetting existing healthy session $sessionName before startup." -Data @{ session_name = $sessionName; health = $sessionHealth } | Out-Null
+                $orchestraServer = Reset-OrchestraServerSession -SessionName $sessionName -WinsmuxBin $winsmuxBin -Reason 'healthy_existing_session'
             }
             'Unhealthy' {
                 Write-Warning "Preflight: removing stale session registration for $sessionName"
                 Write-WinsmuxLog -Level WARN -Event 'preflight.session.registration_cleared' -Message "Cleared stale session registration for $sessionName." -Data @{ session_name = $sessionName } | Out-Null
-                Clear-OrchestraSessionRegistration -SessionName $sessionName
+                $orchestraServer = Reset-OrchestraServerSession -SessionName $sessionName -WinsmuxBin $winsmuxBin -Reason 'unhealthy_existing_session'
+            }
+            default {
+                Write-Warning "Preflight: session $sessionName is missing strict health metadata; recreating it"
+                Write-WinsmuxLog -Level WARN -Event 'preflight.session.reset' -Message "Resetting session $sessionName after missing strict health metadata." -Data @{ session_name = $sessionName; health = $sessionHealth } | Out-Null
+                $orchestraServer = Reset-OrchestraServerSession -SessionName $sessionName -WinsmuxBin $winsmuxBin -Reason 'missing_strict_health'
             }
         }
     } else {
+        $null = Wait-OrchestraServerHealthy -SessionName $sessionName -WinsmuxBin $winsmuxBin
         Write-WinsmuxLog -Level INFO -Event 'preflight.session.reuse' -Message "Reusing server-created session $sessionName." -Data ([ordered]@{
             session_name    = $sessionName
             session_created = $true
@@ -1354,6 +1415,9 @@ if ($MyInvocation.InvocationName -ne '.') {
     $watchdogProcess = Start-AgentWatchdogJob -WatchdogScriptPath $watchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName
     $serverWatchdogScriptPath = Join-Path $scriptDir 'server-watchdog.ps1'
     $serverWatchdogProcess = Start-ServerWatchdogJob -WatchdogScriptPath $serverWatchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName
+    Assert-OrchestraBackgroundProcessStarted -Process $commanderPollProcess -Name 'Commander poll job'
+    Assert-OrchestraBackgroundProcessStarted -Process $watchdogProcess -Name 'Agent watchdog job'
+    Assert-OrchestraBackgroundProcessStarted -Process $serverWatchdogProcess -Name 'Server watchdog job'
     $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -CommanderPollPid $commanderPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id
     Write-WinsmuxLog -Level INFO -Event 'preflight.watchdog.started' -Message "Started agent watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; watchdog_pid = $watchdogProcess.Id; process_name = $watchdogProcess.ProcessName } | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'preflight.server_watchdog.started' -Message "Started server watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; server_watchdog_pid = $serverWatchdogProcess.Id; process_name = $serverWatchdogProcess.ProcessName } | Out-Null
