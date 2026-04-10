@@ -688,7 +688,11 @@ function Get-BridgeSettings {
     }
 
     $legacyCount = [int]$settings.commanders + [int]$settings.builders + [int]$settings.researchers + [int]$settings.reviewers
-    $useLegacyLayout = [bool]$settings.legacy_role_layout -or $legacyCount -gt 0
+    $useLegacyLayout = [bool]$settings.legacy_role_layout
+
+    if ($legacyCount -gt 0 -and -not $useLegacyLayout) {
+        throw 'Legacy role counts require legacy_role_layout=true. Set legacy_role_layout explicitly to opt into Commander/Builder/Researcher/Reviewer panes.'
+    }
 
     if (@($settings.agent_slots).Count -eq 0 -and -not $useLegacyLayout -and [bool]$settings.external_commander -and [int]$settings.worker_count -gt 0) {
         $settings.agent_slots = New-BridgeManagedAgentSlots -Count ([int]$settings.worker_count) -Agent ([string]$settings.agent) -Model ([string]$settings.model)

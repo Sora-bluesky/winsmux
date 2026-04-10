@@ -372,6 +372,20 @@ agent-slots:
         { Get-BridgeSettings } | Should -Throw '*duplicate slot_id*'
     }
 
+    It 'rejects legacy role counts unless legacy_role_layout is explicitly enabled' {
+@'
+agent: codex
+model: gpt-5.4
+external-commander: true
+builders: 4
+reviewers: 1
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        { Get-BridgeSettings } | Should -Throw '*legacy_role_layout=true*'
+    }
+
     It 'reads project settings from an explicit root path even when the current location differs' {
         $projectRoot = Join-Path $script:settingsTempRoot 'repo-root'
         $otherRoot = Join-Path $script:settingsTempRoot 'other-root'
@@ -496,12 +510,12 @@ Describe 'Get-OrchestraLayoutSettings' {
         $projectConfig | Should -Not -Match 'worker_count:'
     }
 
-    It 'preserves legacy role layouts when explicit legacy counts are configured' {
+    It 'preserves legacy role layouts only when explicit opt-in is enabled' {
         $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
-            external_commander = $true
-            worker_count       = 6
-            legacy_role_layout = $false
-            commanders         = 0
+            external_commander = $false
+            worker_count       = 0
+            legacy_role_layout = $true
+            commanders         = 1
             builders           = 4
             researchers        = 1
             reviewers          = 1
@@ -509,11 +523,25 @@ Describe 'Get-OrchestraLayoutSettings' {
 
         $layout.ExternalCommander | Should -Be $false
         $layout.LegacyRoleLayout | Should -Be $true
-        $layout.Commanders | Should -Be 0
+        $layout.Commanders | Should -Be 1
         $layout.Workers | Should -Be 0
         $layout.Builders | Should -Be 4
         $layout.Researchers | Should -Be 1
         $layout.Reviewers | Should -Be 1
+    }
+
+    It 'rejects implicit legacy role counts when legacy_role_layout is false' {
+        {
+            Get-OrchestraLayoutSettings -Settings ([ordered]@{
+                external_commander = $true
+                worker_count       = 6
+                legacy_role_layout = $false
+                commanders         = 0
+                builders           = 4
+                researchers        = 1
+                reviewers          = 1
+            })
+        } | Should -Throw '*legacy_role_layout=true*'
     }
 }
 

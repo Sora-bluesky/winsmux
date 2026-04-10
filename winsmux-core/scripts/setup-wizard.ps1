@@ -187,14 +187,14 @@ if ($externalCommander) {
     $workerCount = Read-PositiveInt -Prompt 'Managed worker pane count' -Default 6
     $agentSlots = New-BridgeManagedAgentSlots -Count $workerCount -Agent $agentCli -Model $model
 } else {
-    $legacyRoleLayout = Read-YesNo -Prompt 'Use legacy role layout (Commander/Builder/Researcher/Reviewer panes)?' -Default $true
+    $legacyRoleLayout = Read-YesNo -Prompt 'Use legacy role layout (Commander/Builder/Researcher/Reviewer panes)?' -Default $false
     if ($legacyRoleLayout) {
         $commanders = Read-PositiveInt -Prompt 'Commanders count' -Default 1
         $builders = Read-PositiveInt -Prompt 'Builders count' -Default 4
         $researchers = Read-PositiveInt -Prompt 'Researchers count' -Default 1
         $reviewers = Read-PositiveInt -Prompt 'Reviewers count' -Default 1
     } else {
-        $commanders = Read-PositiveInt -Prompt 'Embedded operator count' -Default 1
+        $commanders = 0
         $workerCount = Read-PositiveInt -Prompt 'Managed worker pane count' -Default 6
         $agentSlots = New-BridgeManagedAgentSlots -Count $workerCount -Agent $agentCli -Model $model
     }
