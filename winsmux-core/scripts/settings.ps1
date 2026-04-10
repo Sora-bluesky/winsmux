@@ -103,7 +103,13 @@ function Get-BridgeSettingsDefaults {
 }
 
 function Get-BridgeProjectSettingsPath {
-    return Join-Path (Get-Location).Path $script:BridgeSettingsFileName
+    param([string]$RootPath)
+
+    if ([string]::IsNullOrWhiteSpace($RootPath)) {
+        $RootPath = (Get-Location).Path
+    }
+
+    return Join-Path $RootPath $script:BridgeSettingsFileName
 }
 
 function Remove-BridgeYamlComment {
@@ -348,7 +354,9 @@ function ConvertFrom-BridgeManualYaml {
 }
 
 function Read-BridgeProjectSettings {
-    $path = Get-BridgeProjectSettingsPath
+    param([string]$RootPath)
+
+    $path = Get-BridgeProjectSettingsPath -RootPath $RootPath
     if (-not (Test-Path $path)) {
         return @{}
     }
@@ -608,6 +616,8 @@ function Read-BridgeGlobalSettings {
 }
 
 function Get-BridgeSettings {
+    param([string]$RootPath)
+
     $defaults = Get-BridgeSettingsDefaults
     $settings = [ordered]@{}
 
@@ -630,7 +640,26 @@ function Get-BridgeSettings {
         }
     }
 
-    $projectSettings = ConvertTo-BridgeSettingsSource (Read-BridgeProjectSettings)
+    $rawProjectSettings = Read-BridgeProjectSettings -RootPath $RootPath
+    $projectSettings = ConvertTo-BridgeSettingsSource $rawProjectSettings
+
+    if ($rawProjectSettings -is [System.Collections.IDictionary] -and $rawProjectSettings.Contains('agent_slots')) {
+        $rawSlotEntries = @()
+        $rawSlotValue = $rawProjectSettings['agent_slots']
+        if ($rawSlotValue -is [System.Collections.IEnumerable] -and $rawSlotValue -isnot [string]) {
+            $rawSlotEntries = @($rawSlotValue)
+        }
+
+        if (-not $projectSettings.Contains('agent_slots')) {
+            throw 'Invalid agent_slots configuration: every slot entry must include at least slot_id.'
+        }
+
+        $normalizedSlotEntries = @($projectSettings['agent_slots'])
+        if ($rawSlotEntries.Count -gt 0 -and $normalizedSlotEntries.Count -ne $rawSlotEntries.Count) {
+            throw 'Invalid agent_slots configuration: every slot entry must include at least slot_id.'
+        }
+    }
+
     foreach ($key in $projectSettings.Keys) {
         $value = $projectSettings[$key]
         if ($value -is [System.Array]) {
@@ -642,6 +671,20 @@ function Get-BridgeSettings {
 
     if ($settings.agent_slots -isnot [System.Array]) {
         $settings.agent_slots = @()
+    }
+
+    $slotIds = @{}
+    foreach ($slot in @($settings.agent_slots)) {
+        if ([string]::IsNullOrWhiteSpace([string]$slot.slot_id)) {
+            throw 'Invalid agent_slots configuration: slot_id must not be empty.'
+        }
+
+        $slotId = [string]$slot.slot_id
+        if ($slotIds.ContainsKey($slotId)) {
+            throw "Invalid agent_slots configuration: duplicate slot_id '$slotId'."
+        }
+
+        $slotIds[$slotId] = $true
     }
 
     $legacyCount = [int]$settings.commanders + [int]$settings.builders + [int]$settings.researchers + [int]$settings.reviewers
@@ -707,14 +750,17 @@ function Get-RoleAgentConfig {
 }
 
 function Get-BridgeSetting {
-    param([Parameter(Mandatory = $true)][string]$Name)
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string]$RootPath
+    )
 
     $key = $Name -replace '-', '_'
     if (-not $script:BridgeSettingsSchema.Contains($key)) {
         throw "Unknown bridge setting: $Name"
     }
 
-    return (Get-BridgeSettings)[$key]
+    return (Get-BridgeSettings -RootPath $RootPath)[$key]
 }
 
 function ConvertTo-BridgeYamlScalar {
@@ -735,17 +781,23 @@ function ConvertTo-BridgeYamlScalar {
 function Save-BridgeSettings {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('project', 'global')][string]$Scope,
-        [Parameter(Mandatory = $true)][hashtable]$Settings
+        [Parameter(Mandatory = $true)][hashtable]$Settings,
+        [string]$RootPath
     )
 
     $normalized = ConvertTo-BridgeSettingsSource $Settings
 
     if ($Scope -eq 'project') {
-        $path = Get-BridgeProjectSettingsPath
+        $path = Get-BridgeProjectSettingsPath -RootPath $RootPath
         $lines = [System.Collections.Generic.List[string]]::new()
+        $hasAgentSlots = @($normalized.agent_slots).Count -gt 0
 
         foreach ($key in $script:BridgeSettingsSchema.Keys) {
             if (-not $normalized.Contains($key)) {
+                continue
+            }
+
+            if ($key -eq 'worker_count' -and $hasAgentSlots) {
                 continue
             }
 

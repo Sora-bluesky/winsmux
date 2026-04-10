@@ -199,6 +199,10 @@ if ($externalCommander) {
         $agentSlots = New-BridgeManagedAgentSlots -Count $workerCount -Agent $agentCli -Model $model
     }
 }
+
+function Get-SetupWizardProjectRoot {
+    return [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+}
 $storeVault = Read-YesNo -Prompt 'Store GH_TOKEN in the winsmux vault?' -Default $false
 
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-agent' -OptionValue $agentCli
@@ -223,7 +227,7 @@ Save-BridgeSettings -Scope project -Settings ([ordered]@{
     researchers         = $researchers
     reviewers           = $reviewers
     vault_keys          = @('GH_TOKEN')
-})
+}) -RootPath (Get-SetupWizardProjectRoot)
 
 $vaultStored = $false
 if ($storeVault) {

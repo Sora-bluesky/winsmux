@@ -1,7 +1,6 @@
 agent: codex
 model: gpt-5.4
 external-commander: true
-worker-count: 6
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
