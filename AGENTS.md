@@ -83,6 +83,16 @@ When generating or editing a release:
 1. Use English section headings and bullets for the public GitHub Release body.
 2. Keep the GitHub Release body aligned with the `/release-notes` structure, but in English.
 3. Local or private post drafts may be Japanese if the task explicitly asks for them, but the public GitHub Release stays English.
+4. Follow the current `openai/codex` release template as the default public structure unless the user explicitly requests otherwise.
+5. Use these section headings in this order when they are relevant:
+   - `New Features`
+   - `Bug Fixes`
+   - `Documentation`
+   - `Chores`
+   - `Full Changelog`
+6. Prefer omitting empty sections rather than leaving placeholders.
+7. `Full Changelog` should point to the compare range for the released tags when that range is available.
+8. When winsmux reuses Codex release phrasing or structure, keep the wording adapted to winsmux facts rather than copying Codex release text verbatim.
 
 ## Third-Party UI Attribution
 
@@ -116,3 +126,4 @@ Codex must follow these rules:
    - reduce concurrent agents,
    - increase wait time,
    - or document the blocker clearly before continuing.
+8. At the end of each implementation or review slice, close all completed or abandoned subagents that are no longer needed. Do not leave idle agents open across unrelated slices.
