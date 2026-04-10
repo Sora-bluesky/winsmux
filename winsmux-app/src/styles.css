@@ -176,6 +176,14 @@ textarea {
   text-align: right;
 }
 
+.source-entry-row.is-success {
+  border-color: rgba(74, 222, 128, 0.28);
+}
+
+.source-entry-row.is-attention {
+  border-color: rgba(248, 113, 113, 0.34);
+}
+
 .sidebar-spacer {
   flex: 1;
 }
@@ -645,6 +653,27 @@ textarea {
   color: #e5e9f8;
 }
 
+#source-overview-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.source-overview-card {
+  border: 1px solid #22283b;
+  border-radius: 14px;
+  background: #141927;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.source-overview-value {
+  font-size: 13px;
+  color: #eef2ff;
+}
+
 #context-file-list {
   display: flex;
   flex-direction: column;
@@ -680,6 +709,23 @@ textarea {
 .context-file-meta {
   font-size: 11px;
   color: #8d97b7;
+}
+
+.context-file-trace {
+  font-size: 11px;
+  color: #aab3ce;
+}
+
+.context-file-row.risk-high {
+  border-color: rgba(248, 113, 113, 0.38);
+}
+
+.context-file-row.risk-medium {
+  border-color: rgba(96, 165, 250, 0.34);
+}
+
+.context-file-row.risk-low {
+  border-color: rgba(125, 211, 252, 0.22);
 }
 
 #terminal-drawer {
@@ -868,6 +914,10 @@ textarea {
   #workspace-footer {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  #source-overview-cards {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   #footer-right {
