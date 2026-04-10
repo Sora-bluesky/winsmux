@@ -40,6 +40,5 @@
 
 - `HANDOFF.md` at the repository root is historical context and no longer authoritative.
 - Public tracked files must not contain personal paths or private planning roots.
-- External planning source of truth:
-  - `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Projects\winsmux\planning\backlog.yaml`
-  - `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Projects\winsmux\planning\ROADMAP.md`
+- External planning source of truth stays outside the public repository and is resolved via the configured planning root.
+- Public docs may refer to the external planning contract, but must not embed machine-specific absolute paths.
