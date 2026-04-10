@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-10T10:05:33+09:00
+> Updated: 2026-04-10T11:09:39+09:00
 > Source of truth: this file
 
 ## Current state
@@ -42,3 +42,4 @@
 - Public tracked files must not contain personal paths or private planning roots.
 - External planning source of truth stays outside the public repository and is resolved via the configured planning root.
 - Public docs may refer to the external planning contract, but must not embed machine-specific absolute paths.
+- Public GitHub Release titles and bodies are standardized in English, even when the working session is conducted in Japanese.
