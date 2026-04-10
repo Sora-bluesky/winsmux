@@ -71,6 +71,8 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'status') | Should -Be $true
         (Assert-Role -Command 'board') | Should -Be $true
         (Assert-Role -Command 'inbox') | Should -Be $true
+        (Assert-Role -Command 'runs') | Should -Be $true
+        (Assert-Role -Command 'explain') | Should -Be $true
         (Assert-Role -Command 'context-reset' -TargetPane 'reviewer') | Should -Be $true
         (Assert-Role -Command 'poll-events') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $true
@@ -85,6 +87,8 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'status') | Should -Be $true
         (Assert-Role -Command 'board') | Should -Be $true
         (Assert-Role -Command 'inbox') | Should -Be $true
+        (Assert-Role -Command 'runs') | Should -Be $true
+        (Assert-Role -Command 'explain') | Should -Be $true
         (Assert-Role -Command 'type' -TargetPane 'self') | Should -Be $true
         (Assert-Role -Command 'context-reset' -TargetPane 'commander') | Should -Be $false
         (Assert-Role -Command 'send' -TargetPane 'reviewer') | Should -Be $false
@@ -2907,6 +2911,426 @@ Invoke-Inbox -InboxTarget '--json'
         $delta = Get-BridgeEventDelta -ProjectDir $script:inboxTempRoot -Cursor $cursor
         $delta.cursor | Should -Be 2
         @($delta.events).Count | Should -Be 0
+    }
+}
+
+Describe 'winsmux runs command' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:runsTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-runs-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:runsTempRoot -Force | Out-Null
+        $script:runsManifestDir = Join-Path $script:runsTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $script:runsManifestDir -Force | Out-Null
+        $script:runsManifestPath = Join-Path $script:runsManifestDir 'manifest.yaml'
+        $script:runsEventsPath = Join-Path $script:runsManifestDir 'events.jsonl'
+
+        Push-Location $script:runsTempRoot
+    }
+
+    AfterEach {
+        Pop-Location
+        if ($script:runsTempRoot -and (Test-Path $script:runsTempRoot)) {
+            Remove-Item -Path $script:runsTempRoot -Recurse -Force
+        }
+
+        $global:Target = $null
+        $global:Rest = @()
+        Remove-Item function:\winsmux -ErrorAction SilentlyContinue
+    }
+
+    It 'renders run-oriented grouped output from manifest and actionable items' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:runsTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    task: Implement run ledger
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 2
+    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+  worker-1:
+    pane_id: %6
+    role: Worker
+    task_id: ''
+    task: ''
+    task_state: backlog
+    task_owner: ''
+    review_state: ''
+    branch: ''
+    head_sha: ''
+    changed_file_count: 0
+    changed_files: '[]'
+    last_event: pane.idle
+    last_event_at: 2026-04-10T12:05:00+09:00
+"@ | Set-Content -Path $script:runsManifestPath -Encoding UTF8
+
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-10T12:01:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.approval_waiting'
+                message   = 'approval prompt detected'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                status    = 'approval_waiting'
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T12:06:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.idle'
+                message   = 'idle pane'
+                label     = 'worker-1'
+                pane_id   = '%6'
+                role      = 'Worker'
+                status    = 'ready'
+            } | ConvertTo-Json -Compress)
+        ) | Set-Content -Path $script:runsEventsPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                '^capture-pane .*%6' { return @('gpt-5.4   52% context left', 'thinking', 'Esc to interrupt') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $output = Invoke-Runs | Out-String
+
+        $output | Should -Match 'task:task-256'
+        $output | Should -Match 'builder-1'
+        $output | Should -Match 'Implement run ledger'
+        $output | Should -Match 'PENDING'
+        $output | Should -Match '\s2\s*$'
+    }
+
+    It 'returns runs as json' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:runsTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    task: Implement run ledger
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $script:runsManifestPath -Encoding UTF8
+
+        ([ordered]@{
+            timestamp = '2026-04-10T12:01:00+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'pane.approval_waiting'
+            message   = 'approval prompt detected'
+            label     = 'builder-1'
+            pane_id   = '%2'
+            role      = 'Builder'
+            status    = 'approval_waiting'
+        } | ConvertTo-Json -Compress) | Set-Content -Path $script:runsEventsPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = (Invoke-Runs -RunsTarget '--json' | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.summary.run_count | Should -Be 1
+        $result.summary.review_pending | Should -Be 1
+        $result.summary.dirty_runs | Should -Be 1
+        $result.runs[0].run_id | Should -Be 'task:task-256'
+        @($result.runs[0].action_items | ForEach-Object { $_.kind }) | Should -Contain 'approval_waiting'
+        @($result.runs[0].action_items | ForEach-Object { $_.kind }) | Should -Contain 'review_pending'
+        $result.runs[0].changed_files | Should -Be @('scripts/winsmux-core.ps1')
+    }
+
+    It 'supports winsmux runs --json through the top-level CLI entrypoint' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:runsTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    task: Implement run ledger
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $script:runsManifestPath -Encoding UTF8
+
+        $bridgeScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $childScript = @'
+Set-Item -Path function:winsmux -Value {
+    param([Parameter(ValueFromRemainingArguments = $true)][object[]]$args)
+    $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+    switch -Regex ($commandLine) {
+        '^capture-pane .*%2' { @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>'); break }
+        default { throw "unexpected winsmux call: $commandLine" }
+    }
+}
+Set-Location '__RUNS_TEMP_ROOT__'
+& '__BRIDGE_SCRIPT__' runs --json
+'@
+        $childScript = $childScript.Replace('__RUNS_TEMP_ROOT__', $script:runsTempRoot).Replace('__BRIDGE_SCRIPT__', $bridgeScript)
+        $output = & pwsh -NoProfile -Command $childScript
+
+        $result = ($output | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.summary.run_count | Should -Be 1
+        $result.runs[0].run_id | Should -Be 'task:task-256'
+    }
+}
+
+Describe 'winsmux explain command' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:explainTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-explain-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:explainTempRoot -Force | Out-Null
+        $script:explainManifestDir = Join-Path $script:explainTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $script:explainManifestDir -Force | Out-Null
+        $script:explainManifestPath = Join-Path $script:explainManifestDir 'manifest.yaml'
+        $script:explainEventsPath = Join-Path $script:explainManifestDir 'events.jsonl'
+        $script:explainReviewStatePath = Join-Path $script:explainManifestDir 'review-state.json'
+
+        Push-Location $script:explainTempRoot
+    }
+
+    AfterEach {
+        Pop-Location
+        if ($script:explainTempRoot -and (Test-Path $script:explainTempRoot)) {
+            Remove-Item -Path $script:explainTempRoot -Recurse -Force
+        }
+
+        $global:Target = $null
+        $global:Rest = @()
+        Remove-Item function:\winsmux -ErrorAction SilentlyContinue
+    }
+
+    It 'returns a json explanation with related events and review state' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:explainTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    task: Implement run ledger
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
+
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-10T12:01:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'commander.review_requested'
+                message   = 'review requested'
+                label     = 'reviewer-1'
+                pane_id   = '%3'
+                role      = 'Reviewer'
+                branch    = 'worktree-builder-1'
+                head_sha  = 'abc1234def5678'
+                data      = [ordered]@{
+                    task_id = 'task-256'
+                }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T12:02:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.approval_waiting'
+                message   = 'approval prompt detected'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                status    = 'approval_waiting'
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T12:03:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.idle'
+                message   = 'idle pane'
+                label     = 'worker-1'
+                pane_id   = '%6'
+                role      = 'Worker'
+                status    = 'ready'
+            } | ConvertTo-Json -Compress)
+        ) | Set-Content -Path $script:explainEventsPath -Encoding UTF8
+
+@'
+{
+  "worktree-builder-1": {
+    "status": "PENDING",
+    "head_sha": "abc1234def5678",
+    "request": {
+      "branch": "worktree-builder-1",
+      "head_sha": "abc1234def5678",
+      "target_reviewer_label": "reviewer-1",
+      "target_reviewer_pane_id": "%3"
+    }
+  }
+}
+'@ | Set-Content -Path $script:explainReviewStatePath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = (Invoke-Explain -ExplainTarget 'task:task-256' -ExplainRest @('--json') | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.run.run_id | Should -Be 'task:task-256'
+        $result.run.task | Should -Be 'Implement run ledger'
+        $result.explanation.current_state.review_state | Should -Be 'PENDING'
+        $result.explanation.reasons | Should -Contain 'task_state=in_progress'
+        $result.explanation.reasons | Should -Contain 'review_state=PENDING'
+        $result.review_state.status | Should -Be 'PENDING'
+        $result.recent_events.Count | Should -Be 2
+        @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'commander.review_requested'
+        @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pane.approval_waiting'
+    }
+
+    It 'filters explain follow events from the current cursor forward' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:explainTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    task: Implement run ledger
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
+
+        ([ordered]@{
+            timestamp = '2026-04-10T12:01:00+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'commander.review_requested'
+            message   = 'review requested'
+            label     = 'reviewer-1'
+            pane_id   = '%3'
+            role      = 'Reviewer'
+            branch    = 'worktree-builder-1'
+            head_sha  = 'abc1234def5678'
+            data      = [ordered]@{
+                task_id = 'task-256'
+            }
+        } | ConvertTo-Json -Compress) | Set-Content -Path $script:explainEventsPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $payload = Get-ExplainPayload -ProjectDir $script:explainTempRoot -RunId 'task:task-256'
+        $cursor = @(Get-BridgeEventRecords -ProjectDir $script:explainTempRoot).Count
+
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-10T12:02:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.idle'
+                message   = 'idle pane'
+                label     = 'worker-1'
+                pane_id   = '%6'
+                role      = 'Worker'
+                status    = 'ready'
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T12:03:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'commander.commit_ready'
+                message   = 'commit ready'
+                label     = ''
+                pane_id   = ''
+                role      = 'Commander'
+                branch    = 'worktree-builder-1'
+                head_sha  = 'abc1234def5678'
+                status    = 'commit_ready'
+                data      = [ordered]@{
+                    task_id = 'task-256'
+                }
+            } | ConvertTo-Json -Compress)
+        ) | Add-Content -Path $script:explainEventsPath -Encoding UTF8
+
+        $delta = Get-BridgeEventDelta -ProjectDir $script:explainTempRoot -Cursor $cursor
+        $matching = @(
+            $delta.events |
+                Where-Object { Test-RunMatchesEventRecord -Run $payload.run -EventRecord $_ } |
+                ForEach-Object { ConvertTo-RunEventRecord -EventRecord $_ }
+        )
+
+        $delta.cursor | Should -Be 3
+        $matching.Count | Should -Be 1
+        $matching[0].event | Should -Be 'commander.commit_ready'
     }
 }
 

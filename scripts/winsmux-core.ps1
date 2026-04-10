@@ -2484,6 +2484,310 @@ function Get-InboxStreamStartCursor {
     return @(Get-BridgeEventRecords -ProjectDir $ProjectDir).Count
 }
 
+function Get-RunIdFromPaneRecord {
+    param([Parameter(Mandatory = $true)]$PaneRecord)
+
+    $taskId = [string]$PaneRecord.task_id
+    if (-not [string]::IsNullOrWhiteSpace($taskId)) {
+        return "task:$taskId"
+    }
+
+    $branch = [string]$PaneRecord.branch
+    if (-not [string]::IsNullOrWhiteSpace($branch)) {
+        return "branch:$branch"
+    }
+
+    $paneId = [string]$PaneRecord.pane_id
+    if (-not [string]::IsNullOrWhiteSpace($paneId)) {
+        return "pane:$paneId"
+    }
+
+    return "label:{0}" -f [string]$PaneRecord.label
+}
+
+function Test-RunMatchesEventRecord {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$EventRecord
+    )
+
+    $runTaskId = [string]$Run.task_id
+    $runBranch = [string]$Run.branch
+    $runHeadSha = [string]$Run.head_sha
+    $runLabels = @($Run.labels)
+    $runPaneIds = @($Run.pane_ids)
+
+    $eventTaskId = ''
+    $eventBranch = [string]$EventRecord['branch']
+    $eventHeadSha = [string]$EventRecord['head_sha']
+    $eventLabel = [string]$EventRecord['label']
+    $eventPaneId = [string]$EventRecord['pane_id']
+
+    $data = $null
+    if ($EventRecord.Contains('data')) {
+        $data = $EventRecord['data']
+    }
+
+    if ($null -ne $data -and $data -is [System.Collections.IDictionary]) {
+        if ($data.Contains('task_id')) { $eventTaskId = [string]$data['task_id'] }
+        if ([string]::IsNullOrWhiteSpace($eventBranch) -and $data.Contains('branch')) { $eventBranch = [string]$data['branch'] }
+        if ([string]::IsNullOrWhiteSpace($eventHeadSha) -and $data.Contains('head_sha')) { $eventHeadSha = [string]$data['head_sha'] }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($runTaskId) -and $runTaskId -eq $eventTaskId) {
+        return $true
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($runBranch) -and $runBranch -eq $eventBranch) {
+        return $true
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($runHeadSha) -and $runHeadSha -eq $eventHeadSha) {
+        return $true
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($eventLabel) -and $runLabels -contains $eventLabel) {
+        return $true
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($eventPaneId) -and $runPaneIds -contains $eventPaneId) {
+        return $true
+    }
+
+    return $false
+}
+
+function ConvertTo-RunEventRecord {
+    param([Parameter(Mandatory = $true)]$EventRecord)
+
+    $taskId = ''
+    $branch = [string]$EventRecord['branch']
+    $headSha = [string]$EventRecord['head_sha']
+    $data = $null
+    if ($EventRecord.Contains('data')) {
+        $data = $EventRecord['data']
+    }
+
+    if ($null -ne $data -and $data -is [System.Collections.IDictionary]) {
+        if ($data.Contains('task_id')) { $taskId = [string]$data['task_id'] }
+        if ([string]::IsNullOrWhiteSpace($branch) -and $data.Contains('branch')) { $branch = [string]$data['branch'] }
+        if ([string]::IsNullOrWhiteSpace($headSha) -and $data.Contains('head_sha')) { $headSha = [string]$data['head_sha'] }
+    }
+
+    return [ordered]@{
+        line_number = [int]$EventRecord['line_number']
+        timestamp   = [string]$EventRecord['timestamp']
+        event       = [string]$EventRecord['event']
+        status      = [string]$EventRecord['status']
+        message     = [string]$EventRecord['message']
+        label       = [string]$EventRecord['label']
+        pane_id     = [string]$EventRecord['pane_id']
+        role        = [string]$EventRecord['role']
+        task_id     = $taskId
+        branch      = $branch
+        head_sha    = $headSha
+        source      = [string]$EventRecord['source']
+    }
+}
+
+function Get-RunsPayload {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $boardPayload = Get-BoardPayload -ProjectDir $ProjectDir
+    $inboxPayload = Get-InboxPayload -ProjectDir $ProjectDir
+    $runsById = [ordered]@{}
+
+    foreach ($pane in @($boardPayload.panes)) {
+        $runId = Get-RunIdFromPaneRecord -PaneRecord $pane
+        if (-not $runsById.Contains($runId)) {
+            $runsById[$runId] = [ordered]@{
+                run_id             = $runId
+                task_id            = [string]$pane.task_id
+                task               = [string]$pane.task
+                task_state         = [string]$pane.task_state
+                review_state       = [string]$pane.review_state
+                branch             = [string]$pane.branch
+                head_sha           = [string]$pane.head_sha
+                primary_label      = [string]$pane.label
+                primary_pane_id    = [string]$pane.pane_id
+                primary_role       = [string]$pane.role
+                state              = [string]$pane.state
+                tokens_remaining   = [string]$pane.tokens_remaining
+                last_event         = [string]$pane.last_event
+                last_event_at      = [string]$pane.last_event_at
+                pane_count         = 0
+                changed_file_count = 0
+                labels             = [System.Collections.Generic.List[string]]::new()
+                pane_ids           = [System.Collections.Generic.List[string]]::new()
+                roles              = [System.Collections.Generic.List[string]]::new()
+                changed_files      = [System.Collections.Generic.List[string]]::new()
+                action_items       = [System.Collections.Generic.List[object]]::new()
+            }
+        }
+
+        $run = $runsById[$runId]
+        $run.pane_count = [int]$run.pane_count + 1
+        $run.changed_file_count = [int]$run.changed_file_count + [int]$pane.changed_file_count
+
+        if (-not [string]::IsNullOrWhiteSpace([string]$pane.label) -and -not $run.labels.Contains([string]$pane.label)) {
+            $run.labels.Add([string]$pane.label) | Out-Null
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$pane.pane_id) -and -not $run.pane_ids.Contains([string]$pane.pane_id)) {
+            $run.pane_ids.Add([string]$pane.pane_id) | Out-Null
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$pane.role) -and -not $run.roles.Contains([string]$pane.role)) {
+            $run.roles.Add([string]$pane.role) | Out-Null
+        }
+
+        foreach ($changedFile in @($pane.changed_files)) {
+            $changedFileText = [string]$changedFile
+            if (-not [string]::IsNullOrWhiteSpace($changedFileText) -and -not $run.changed_files.Contains($changedFileText)) {
+                $run.changed_files.Add($changedFileText) | Out-Null
+            }
+        }
+    }
+
+    foreach ($item in @($inboxPayload.items)) {
+        foreach ($runId in @($runsById.Keys)) {
+            $run = $runsById[$runId]
+            if (
+                ((-not [string]::IsNullOrWhiteSpace([string]$item.task_id)) -and ([string]$item.task_id -eq [string]$run.task_id)) -or
+                ((-not [string]::IsNullOrWhiteSpace([string]$item.branch)) -and ([string]$item.branch -eq [string]$run.branch)) -or
+                ((-not [string]::IsNullOrWhiteSpace([string]$item.head_sha)) -and ([string]$item.head_sha -eq [string]$run.head_sha)) -or
+                ((-not [string]::IsNullOrWhiteSpace([string]$item.label)) -and ($run.labels -contains [string]$item.label)) -or
+                ((-not [string]::IsNullOrWhiteSpace([string]$item.pane_id)) -and ($run.pane_ids -contains [string]$item.pane_id))
+            ) {
+                $run.action_items.Add([ordered]@{
+                    kind      = [string]$item.kind
+                    message   = [string]$item.message
+                    event     = [string]$item.event
+                    timestamp = [string]$item.timestamp
+                    source    = [string]$item.source
+                }) | Out-Null
+                break
+            }
+        }
+    }
+
+    $runs = @(
+        foreach ($runId in @($runsById.Keys)) {
+            $run = $runsById[$runId]
+            [ordered]@{
+                run_id             = [string]$run.run_id
+                task_id            = [string]$run.task_id
+                task               = [string]$run.task
+                task_state         = [string]$run.task_state
+                review_state       = [string]$run.review_state
+                branch             = [string]$run.branch
+                head_sha           = [string]$run.head_sha
+                primary_label      = [string]$run.primary_label
+                primary_pane_id    = [string]$run.primary_pane_id
+                primary_role       = [string]$run.primary_role
+                state              = [string]$run.state
+                tokens_remaining   = [string]$run.tokens_remaining
+                last_event         = [string]$run.last_event
+                last_event_at      = [string]$run.last_event_at
+                pane_count         = [int]$run.pane_count
+                changed_file_count = [int]$run.changed_file_count
+                labels             = @($run.labels)
+                pane_ids           = @($run.pane_ids)
+                roles              = @($run.roles)
+                changed_files      = @($run.changed_files)
+                action_items       = @($run.action_items | Sort-Object @{ Expression = { [string]$_.timestamp }; Descending = $true }, @{ Expression = { [string]$_.kind } })
+            }
+        }
+    )
+
+    return [ordered]@{
+        generated_at = (Get-Date).ToString('o')
+        project_dir  = $ProjectDir
+        summary      = [ordered]@{
+            run_count          = $runs.Count
+            blocked_runs       = @($runs | Where-Object { [string]$_.task_state -eq 'blocked' }).Count
+            review_pending     = @($runs | Where-Object { [string]$_.review_state -eq 'PENDING' }).Count
+            dirty_runs         = @($runs | Where-Object { [int]$_.changed_file_count -gt 0 }).Count
+            action_item_count  = @($runs | ForEach-Object { @($_.action_items).Count } | Measure-Object -Sum).Sum
+        }
+        runs         = @($runs | Sort-Object @{ Expression = { [string]$_.last_event_at }; Descending = $true }, @{ Expression = { [string]$_.run_id } })
+    }
+}
+
+function Get-ExplainPayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    $runsPayload = Get-RunsPayload -ProjectDir $ProjectDir
+    $run = @($runsPayload.runs | Where-Object { [string]$_.run_id -eq $RunId } | Select-Object -First 1)[0]
+    if ($null -eq $run) {
+        Stop-WithError "run not found: $RunId"
+    }
+
+    $events = @(
+        Get-BridgeEventRecords -ProjectDir $ProjectDir |
+            Where-Object { Test-RunMatchesEventRecord -Run $run -EventRecord $_ } |
+            ForEach-Object { ConvertTo-RunEventRecord -EventRecord $_ } |
+            Sort-Object @{ Expression = { [string]$_.timestamp }; Descending = $true }, @{ Expression = { [int]$_.line_number }; Descending = $true }
+    )
+
+    $reviewState = $null
+    $branch = [string]$run.branch
+    if (-not [string]::IsNullOrWhiteSpace($branch)) {
+        $state = Get-ReviewState -ProjectDir $ProjectDir
+        if ($state.Contains($branch)) {
+            $reviewState = ConvertTo-ReviewStateValue -Value $state[$branch]
+        }
+    }
+
+    $reasons = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace([string]$run.task_state)) {
+        $reasons.Add("task_state=$([string]$run.task_state)") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$run.review_state)) {
+        $reasons.Add("review_state=$([string]$run.review_state)") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$run.last_event)) {
+        $reasons.Add("last_event=$([string]$run.last_event)") | Out-Null
+    }
+    foreach ($actionItem in @($run.action_items | Select-Object -First 3)) {
+        $reasons.Add("action:$([string]$actionItem.kind)") | Out-Null
+    }
+
+    return [ordered]@{
+        generated_at  = (Get-Date).ToString('o')
+        project_dir   = $ProjectDir
+        run           = $run
+        explanation   = [ordered]@{
+            summary       = if (-not [string]::IsNullOrWhiteSpace([string]$run.task)) { [string]$run.task } else { [string]$run.primary_label }
+            reasons       = @($reasons)
+            next_action   = if (@($run.action_items).Count -gt 0) { [string]$run.action_items[0].kind } else { [string]$run.task_state }
+            current_state = [ordered]@{
+                state        = [string]$run.state
+                task_state   = [string]$run.task_state
+                review_state = [string]$run.review_state
+                last_event   = [string]$run.last_event
+            }
+        }
+        review_state  = $reviewState
+        recent_events = @($events | Select-Object -First 20)
+    }
+}
+
+function Write-ExplainFollowItem {
+    param(
+        [Parameter(Mandatory = $true)]$Item,
+        [switch]$Json
+    )
+
+    if ($Json) {
+        $Item | ConvertTo-Json -Compress -Depth 10 | Write-Output
+        return
+    }
+
+    Write-Output ("[{0}] {1} {2}: {3}" -f [string]$Item.timestamp, [string]$Item.event, [string]$Item.label, [string]$Item.message)
+}
+
 function Get-InboxPayload {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
@@ -2702,6 +3006,159 @@ function Invoke-Inbox {
         Out-String -Width 4096
 
     Write-Output ($table.TrimEnd())
+}
+
+function Invoke-Runs {
+    param(
+        [AllowNull()][string]$RunsTarget = $Target,
+        [AllowNull()][string[]]$RunsRest = $Rest
+    )
+
+    $jsonOutput = $false
+
+    if ($RunsTarget) {
+        if ($RunsTarget -eq '--json' -and (-not $RunsRest -or $RunsRest.Count -eq 0)) {
+            $jsonOutput = $true
+        } else {
+            Stop-WithError "usage: winsmux runs [--json]"
+        }
+    } elseif ($RunsRest -and $RunsRest.Count -gt 0) {
+        Stop-WithError "usage: winsmux runs [--json]"
+    }
+
+    $projectDir = (Get-Location).Path
+    $payload = Get-RunsPayload -ProjectDir $projectDir
+
+    if ($jsonOutput) {
+        $payload | ConvertTo-Json -Compress -Depth 10 | Write-Output
+        return
+    }
+
+    $runs = @($payload.runs)
+    if ($runs.Count -eq 0) {
+        Write-Output "(no runs)"
+        return
+    }
+
+    $table = $runs |
+        Select-Object `
+            @{ Name = 'RunId'; Expression = { $_.run_id } }, `
+            @{ Name = 'Label'; Expression = { $_.primary_label } }, `
+            @{ Name = 'Task'; Expression = { $_.task } }, `
+            @{ Name = 'TaskState'; Expression = { $_.task_state } }, `
+            @{ Name = 'Review'; Expression = { $_.review_state } }, `
+            @{ Name = 'State'; Expression = { $_.state } }, `
+            @{ Name = 'Branch'; Expression = { $_.branch } }, `
+            @{ Name = 'Head'; Expression = { if ([string]::IsNullOrWhiteSpace($_.head_sha)) { '' } elseif ($_.head_sha.Length -le 7) { $_.head_sha } else { $_.head_sha.Substring(0, 7) } } }, `
+            @{ Name = 'ActionItems'; Expression = { @($_.action_items).Count } } |
+        Format-Table -AutoSize |
+        Out-String -Width 4096
+
+    Write-Output ($table.TrimEnd())
+}
+
+function Invoke-Explain {
+    param(
+        [AllowNull()][string]$ExplainTarget = $Target,
+        [AllowNull()][string[]]$ExplainRest = $Rest
+    )
+
+    $tokens = @()
+    if (-not [string]::IsNullOrWhiteSpace($ExplainTarget)) {
+        $tokens += $ExplainTarget
+    }
+    if ($ExplainRest) {
+        $tokens += @($ExplainRest)
+    }
+
+    if ($tokens.Count -eq 0) {
+        Stop-WithError "usage: winsmux explain <run_id> [--json] [--follow]"
+    }
+
+    $runId = ''
+    $jsonOutput = $false
+    $followOutput = $false
+
+    foreach ($token in $tokens) {
+        switch ($token) {
+            '--json'   { $jsonOutput = $true }
+            '--follow' { $followOutput = $true }
+            default {
+                if ([string]::IsNullOrWhiteSpace($runId)) {
+                    $runId = [string]$token
+                } else {
+                    Stop-WithError "usage: winsmux explain <run_id> [--json] [--follow]"
+                }
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        Stop-WithError "usage: winsmux explain <run_id> [--json] [--follow]"
+    }
+
+    $projectDir = (Get-Location).Path
+    $payload = Get-ExplainPayload -ProjectDir $projectDir -RunId $runId
+
+    if ($followOutput) {
+        if ($jsonOutput) {
+            $payload | ConvertTo-Json -Compress -Depth 10 | Write-Output
+        } else {
+            Write-Output ("Run: {0}" -f [string]$payload.run.run_id)
+            Write-Output ("Task: {0}" -f [string]$payload.explanation.summary)
+            Write-Output ("State: {0} / {1} / {2}" -f [string]$payload.run.state, [string]$payload.run.task_state, [string]$payload.run.review_state)
+            if (-not [string]::IsNullOrWhiteSpace([string]$payload.run.branch)) {
+                Write-Output ("Branch: {0}" -f [string]$payload.run.branch)
+            }
+            if (-not [string]::IsNullOrWhiteSpace([string]$payload.run.head_sha)) {
+                Write-Output ("Head: {0}" -f [string]$payload.run.head_sha)
+            }
+        }
+
+        $cursor = @(Get-BridgeEventRecords -ProjectDir $projectDir).Count
+        while ($true) {
+            $delta = Get-BridgeEventDelta -ProjectDir $projectDir -Cursor $cursor
+            $cursor = [int]$delta.cursor
+            foreach ($eventRecord in @($delta.events)) {
+                if (-not (Test-RunMatchesEventRecord -Run $payload.run -EventRecord $eventRecord)) {
+                    continue
+                }
+
+                $item = ConvertTo-RunEventRecord -EventRecord $eventRecord
+                Write-ExplainFollowItem -Item $item -Json:$jsonOutput
+            }
+
+            Start-Sleep -Seconds 2
+        }
+    }
+
+    if ($jsonOutput) {
+        $payload | ConvertTo-Json -Compress -Depth 10 | Write-Output
+        return
+    }
+
+    Write-Output ("Run: {0}" -f [string]$payload.run.run_id)
+    Write-Output ("Task: {0}" -f [string]$payload.explanation.summary)
+    Write-Output ("Primary: {0} ({1})" -f [string]$payload.run.primary_label, [string]$payload.run.primary_pane_id)
+    Write-Output ("State: {0} / {1} / {2}" -f [string]$payload.run.state, [string]$payload.run.task_state, [string]$payload.run.review_state)
+    if (-not [string]::IsNullOrWhiteSpace([string]$payload.run.branch)) {
+        Write-Output ("Branch: {0}" -f [string]$payload.run.branch)
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$payload.run.head_sha)) {
+        Write-Output ("Head: {0}" -f [string]$payload.run.head_sha)
+    }
+    if (@($payload.explanation.reasons).Count -gt 0) {
+        Write-Output "Reasons:"
+        foreach ($reason in @($payload.explanation.reasons)) {
+            Write-Output ("- {0}" -f [string]$reason)
+        }
+    }
+    if (@($payload.recent_events).Count -gt 0) {
+        Write-Output "Recent events:"
+        foreach ($eventRecord in @($payload.recent_events | Select-Object -First 10)) {
+            Write-Output ("- [{0}] {1} {2}: {3}" -f [string]$eventRecord.timestamp, [string]$eventRecord.event, [string]$eventRecord.label, [string]$eventRecord.message)
+        }
+    }
 }
 
 function Invoke-PollEvents {
@@ -3287,6 +3744,8 @@ Commands:
   status                    Report manifest pane states via capture-pane
   board [--json]            Report pane/task/review/git session board
   inbox [--json] [--stream] Report actionable approvals/review/blockers
+  runs [--json]             Report run-oriented session view
+  explain <run_id> [--json] [--follow]  Explain one run and optionally follow new events
   poll-events [cursor]      Return new monitor events from .winsmux/events.jsonl
   signal <channel>          Send signal to unblock a waiting process
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
@@ -3621,6 +4080,8 @@ switch ($Command) {
     'status'          { Invoke-Status }
     'board'           { Invoke-Board }
     'inbox'           { Invoke-Inbox }
+    'runs'            { Invoke-Runs }
+    'explain'         { Invoke-Explain }
     'poll-events'     { Invoke-PollEvents }
     'signal'          { Invoke-Signal }
     'mailbox-create'  { Invoke-MailboxCreate }
