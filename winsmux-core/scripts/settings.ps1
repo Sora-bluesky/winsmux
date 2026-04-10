@@ -749,6 +749,89 @@ function Get-RoleAgentConfig {
     }
 }
 
+function Get-SlotAgentConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$Role,
+        [string]$SlotId,
+        $Settings = (Get-BridgeSettings)
+    )
+
+    if ($null -eq $Settings) {
+        throw 'Settings cannot be null.'
+    }
+
+    $roleAgentConfig = Get-RoleAgentConfig -Role $Role -Settings $Settings
+    $agent = [string]$roleAgentConfig.Agent
+    $model = [string]$roleAgentConfig.Model
+    $source = 'role'
+
+    if (-not [string]::IsNullOrWhiteSpace($SlotId)) {
+        $configuredSlots = @()
+        if ($Settings -is [System.Collections.IDictionary]) {
+            if ($Settings.Contains('agent_slots')) {
+                $configuredSlots = @($Settings['agent_slots'])
+            }
+        } elseif ($null -ne $Settings.PSObject -and ($Settings.PSObject.Properties.Name -contains 'agent_slots')) {
+            $configuredSlots = @($Settings.agent_slots)
+        }
+
+        foreach ($slot in $configuredSlots) {
+            if ($null -eq $slot) {
+                continue
+            }
+
+            $candidateSlotId = ''
+            $slotAgent = ''
+            $slotModel = ''
+
+            if ($slot -is [System.Collections.IDictionary]) {
+                if ($slot.Contains('slot_id')) {
+                    $candidateSlotId = [string]$slot['slot_id']
+                }
+                if ($slot.Contains('agent')) {
+                    $slotAgent = [string]$slot['agent']
+                }
+                if ($slot.Contains('model')) {
+                    $slotModel = [string]$slot['model']
+                }
+            } elseif ($null -ne $slot.PSObject) {
+                if ($slot.PSObject.Properties.Name -contains 'slot_id') {
+                    $candidateSlotId = [string]$slot.slot_id
+                }
+                if ($slot.PSObject.Properties.Name -contains 'agent') {
+                    $slotAgent = [string]$slot.agent
+                }
+                if ($slot.PSObject.Properties.Name -contains 'model') {
+                    $slotModel = [string]$slot.model
+                }
+            }
+
+            if (-not [string]::Equals($candidateSlotId, $SlotId, [System.StringComparison]::OrdinalIgnoreCase)) {
+                continue
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($slotAgent)) {
+                $agent = $slotAgent
+                $source = 'slot'
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($slotModel)) {
+                $model = $slotModel
+                $source = 'slot'
+            }
+
+            break
+        }
+    }
+
+    return [PSCustomObject]@{
+        SlotId = [string]$SlotId
+        Agent  = [string]$agent
+        Model  = [string]$model
+        Source = [string]$source
+    }
+}
+
 function Get-BridgeSetting {
     param(
         [Parameter(Mandatory = $true)][string]$Name,

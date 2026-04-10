@@ -1155,7 +1155,11 @@ function Invoke-AgentMonitorCycle {
         # Determine agent config for this role
         $roleAgentConfig = $null
         try {
-            $roleAgentConfig = Get-RoleAgentConfig -Role $role -Settings $Settings
+            if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
+                $roleAgentConfig = Get-SlotAgentConfig -Role $role -SlotId $label -Settings $Settings
+            } else {
+                $roleAgentConfig = Get-RoleAgentConfig -Role $role -Settings $Settings
+            }
         } catch {
             # Fallback to default settings
             $roleAgentConfig = [ordered]@{

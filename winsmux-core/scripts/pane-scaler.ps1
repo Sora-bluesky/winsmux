@@ -299,7 +299,11 @@ function Get-PaneWorkload {
 
         $roleAgentConfig = $null
         try {
-            $roleAgentConfig = Get-RoleAgentConfig -Role 'Builder' -Settings $Settings
+            if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
+                $roleAgentConfig = Get-SlotAgentConfig -Role 'Builder' -SlotId $label -Settings $Settings
+            } else {
+                $roleAgentConfig = Get-RoleAgentConfig -Role 'Builder' -Settings $Settings
+            }
         } catch {
             $roleAgentConfig = [PSCustomObject]@{
                 Agent = [string]$Settings.agent
@@ -383,7 +387,11 @@ function Add-OrchestraPane {
 
         $roleAgentConfig = $null
         try {
-            $roleAgentConfig = Get-RoleAgentConfig -Role 'Builder' -Settings $Settings
+            if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
+                $roleAgentConfig = Get-SlotAgentConfig -Role 'Builder' -SlotId $newLabel -Settings $Settings
+            } else {
+                $roleAgentConfig = Get-RoleAgentConfig -Role 'Builder' -Settings $Settings
+            }
         } catch {
             $roleAgentConfig = [PSCustomObject]@{
                 Agent = [string]$Settings.agent

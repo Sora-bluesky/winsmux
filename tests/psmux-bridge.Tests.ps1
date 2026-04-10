@@ -302,6 +302,40 @@ roles:
         $commanderConfig.Model | Should -Be 'gpt-5.4'
     }
 
+    It 'prefers slot-level agent and model overrides when a matching slot id is provided' {
+@'
+agent: codex
+model: gpt-5.4
+roles:
+  worker:
+    agent: codex
+    model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: claude
+    model: sonnet
+  - slot-id: worker-2
+    runtime-role: worker
+    agent: gemini
+    model: gemini-2.5-pro
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+
+        $workerOneConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings
+        $workerOneConfig.Agent | Should -Be 'claude'
+        $workerOneConfig.Model | Should -Be 'sonnet'
+        $workerOneConfig.Source | Should -Be 'slot'
+
+        $workerThreeConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-3' -Settings $settings
+        $workerThreeConfig.Agent | Should -Be 'codex'
+        $workerThreeConfig.Model | Should -Be 'gpt-5.4'
+        $workerThreeConfig.Source | Should -Be 'role'
+    }
+
     It 'fails closed when explicit agent slot entries are malformed' {
 @'
 agent: codex
@@ -419,14 +453,14 @@ Describe 'Get-OrchestraLayoutSettings' {
         $layout.Workers | Should -Be 3
     }
 
-    It 'rejects unsupported per-slot runtime overrides until slot runtime wiring exists' {
+    It 'rejects unsupported non-worker runtime_role overrides until slot runtime wiring expands' {
         {
             Get-OrchestraLayoutSettings -Settings ([ordered]@{
                 external_commander = $true
                 worker_count       = 2
                 agent_slots        = @(
                     [ordered]@{ slot_id = 'worker-1'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worktree_mode = 'managed' },
-                    [ordered]@{ slot_id = 'worker-2'; runtime_role = 'worker'; agent = 'claude'; model = 'sonnet'; worktree_mode = 'managed' }
+                    [ordered]@{ slot_id = 'review-1'; runtime_role = 'reviewer'; agent = 'claude'; model = 'sonnet'; worktree_mode = 'managed' }
                 )
                 agent              = 'codex'
                 model              = 'gpt-5.4'
@@ -436,7 +470,7 @@ Describe 'Get-OrchestraLayoutSettings' {
                 researchers        = 0
                 reviewers          = 0
             })
-        } | Should -Throw '*per-slot agent overrides are not supported yet at runtime*'
+        } | Should -Throw '*runtime_role overrides are not supported yet at runtime*'
     }
 
     It 'writes project settings to an explicit root path and omits worker_count when agent slots are present' {
@@ -704,6 +738,49 @@ panes:
         $plan.LaunchDir | Should -Be 'C:\repo\.worktrees\builder-2'
         $plan.GitWorktreeDir | Should -Be 'C:\repo\.worktrees\builder-2'
         $plan.LaunchCommand | Should -Match $([regex]::Escape("-C 'C:\repo\.worktrees\builder-2'"))
+    }
+
+    It 'uses slot-level agent and model overrides when building a restart plan' {
+@'
+version: 1
+saved_at: '2026-04-07T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: 'C:\repo'
+  git_worktree_dir: 'C:\repo\.git'
+panes:
+  - label: 'worker-1'
+    pane_id: '%2'
+    role: 'Worker'
+    exec_mode: false
+    launch_dir: 'C:\repo'
+    task: null
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            roles = [ordered]@{
+                worker = [ordered]@{
+                    agent = 'codex'
+                    model = 'gpt-5.4'
+                }
+            }
+            agent_slots = @(
+                [ordered]@{
+                    slot_id = 'worker-1'
+                    runtime_role = 'worker'
+                    agent = 'claude'
+                    model = 'sonnet'
+                }
+            )
+        }
+
+        $plan = Get-PaneControlRestartPlan -ProjectDir $script:paneControlTempRoot -PaneId '%2' -Settings $settings
+
+        $plan.Agent | Should -Be 'claude'
+        $plan.Model | Should -Be 'sonnet'
+        $plan.LaunchCommand | Should -Be 'claude --permission-mode bypassPermissions'
     }
 
     It 'updates launch_dir and builder_worktree_path together for builder panes' {
@@ -1091,6 +1168,78 @@ panes:
             $events[1].event | Should -Be 'pane.crashed'
             $events[1].pane_id | Should -Be '%4'
             $events[1].exit_reason | Should -Be 'context_exhausted'
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'uses slot-level agent and model overrides during a monitor cycle' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  worker-2:
+    pane_id: %4
+    role: Worker
+    launch_dir: $tempRoot
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+            Mock Get-PaneAgentStatus {
+                [PSCustomObject]@{
+                    Status       = 'ready'
+                    PaneId       = '%4'
+                    SnapshotTail = ''
+                    SnapshotHash = 'hash-worker'
+                    ExitReason   = ''
+                }
+            }
+            Mock Update-MonitorIdleAlertState {
+                [ordered]@{
+                    ShouldAlert = $false
+                    Message     = ''
+                }
+            }
+            Mock Test-BuilderStall { $false }
+            Mock Invoke-AgentRespawn {
+                [PSCustomObject]@{
+                    Success = $true
+                    PaneId  = '%4'
+                    Message = 'respawned'
+                }
+            }
+
+            Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                agent = 'codex'
+                model = 'gpt-5.4'
+                roles = [ordered]@{
+                    worker = [ordered]@{
+                        agent = 'codex'
+                        model = 'gpt-5.4'
+                    }
+                }
+                agent_slots = @(
+                    [ordered]@{
+                        slot_id = 'worker-2'
+                        runtime_role = 'worker'
+                        agent = 'claude'
+                        model = 'sonnet'
+                    }
+                )
+            }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra' | Out-Null
+
+            Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+                $PaneId -eq '%4' -and $Agent -eq 'claude' -and $Role -eq 'Worker'
+            }
         } finally {
             if (Test-Path $tempRoot) {
                 Remove-Item -Path $tempRoot -Recurse -Force
