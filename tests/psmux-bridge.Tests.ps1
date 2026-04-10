@@ -3575,6 +3575,83 @@ panes:
         Should -Not -Invoke Invoke-RestMethod
     }
 
+    It 'does not forward auto-approved alerts to Telegram by default' {
+        Mock Test-Path { $true }
+        Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+        Mock Invoke-RestMethod { }
+
+        Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
+            -Event 'commander.auto_approved' -Message 'approved' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
+
+        Should -Not -Invoke Invoke-RestMethod
+    }
+
+    It 'sends external review-requested alerts to Telegram by default' {
+        Mock Test-Path { $true }
+        Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+        Mock Invoke-RestMethod { }
+
+        Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
+            -Event 'commander.review_requested' -Message 'review requested' -PaneId '%4' -Label 'worker-1' -Role 'Worker'
+
+        Should -Invoke Invoke-RestMethod -Times 1 -Exactly
+    }
+
+    It 'sends commit-ready alerts to Telegram by default' {
+        Mock Test-Path { $true }
+        Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+        Mock Invoke-RestMethod { }
+
+        Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
+            -Event 'commander.commit_ready' -Message 'ready to commit' -HeadSha 'abc1234def5678'
+
+        Should -Invoke Invoke-RestMethod -Times 1 -Exactly
+    }
+
+    It 'allows all commander Telegram alerts when verbose profile is enabled' {
+        $previousProfile = $env:WINSMUX_TELEGRAM_PROFILE
+        $env:WINSMUX_TELEGRAM_PROFILE = 'verbose'
+
+        try {
+            Mock Test-Path { $true }
+            Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+            Mock Invoke-RestMethod { }
+
+            Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
+                -Event 'commander.dispatch_needed' -Message 'idle' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
+
+            Should -Invoke Invoke-RestMethod -Times 1 -Exactly
+        } finally {
+            if ($null -eq $previousProfile) {
+                Remove-Item Env:WINSMUX_TELEGRAM_PROFILE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_TELEGRAM_PROFILE = $previousProfile
+            }
+        }
+    }
+
+    It 'suppresses all Telegram alerts when profile is none' {
+        $previousProfile = $env:WINSMUX_TELEGRAM_PROFILE
+        $env:WINSMUX_TELEGRAM_PROFILE = 'none'
+
+        try {
+            Mock Test-Path { $true }
+            Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
+            Mock Invoke-RestMethod { }
+
+            Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
+                -Event 'commander.review_failed' -Message 'review failed' -HeadSha 'abc1234def5678'
+
+            Should -Not -Invoke Invoke-RestMethod
+        } finally {
+            if ($null -eq $previousProfile) {
+                Remove-Item Env:WINSMUX_TELEGRAM_PROFILE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_TELEGRAM_PROFILE = $previousProfile
+            }
+        }
+    }
+
     It 'allows internal commander Telegram alerts only when explicitly overridden' {
         $previousOverride = $env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS
         $env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS = 'true'
