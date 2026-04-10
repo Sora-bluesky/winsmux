@@ -501,23 +501,59 @@ function Get-CommanderPollEventSignature {
         ([string](Get-CommanderPollValue -InputObject $EventRecord -Name 'message' -Default ''))
 }
 
-function Test-CommanderTelegramNotificationEnabled {
-    param([Parameter(Mandatory = $true)][string]$Event)
-
-    $internalOnlyEvents = @(
-        'commander.dispatch_needed'
-    )
-
-    if ($Event -notin $internalOnlyEvents) {
-        return $true
+function Get-CommanderTelegramNotificationProfile {
+    $profile = [string]$env:WINSMUX_TELEGRAM_PROFILE
+    if (-not [string]::IsNullOrWhiteSpace($profile)) {
+        switch ($profile.Trim().ToLowerInvariant()) {
+            { $_ -in @('external', 'default', 'public') } { return 'external' }
+            { $_ -in @('verbose', 'all', 'internal') } { return 'verbose' }
+            { $_ -in @('none', 'off', 'disabled') } { return 'none' }
+        }
     }
 
     $override = [string]$env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS
-    if ([string]::IsNullOrWhiteSpace($override)) {
-        return $false
+    if (-not [string]::IsNullOrWhiteSpace($override) -and $override.Trim().ToLowerInvariant() -in @('1', 'true', 'yes', 'on')) {
+        return 'verbose'
     }
 
-    return $override.Trim().ToLowerInvariant() -in @('1', 'true', 'yes', 'on')
+    return 'external'
+}
+
+function Test-CommanderTelegramNotificationEnabled {
+    param([Parameter(Mandatory = $true)][string]$Event)
+
+    $externalFacingEvents = @(
+        'commander.review_requested',
+        'commander.review_passed',
+        'commander.review_failed',
+        'commander.blocked',
+        'commander.commit_ready',
+        'commander.commit_done'
+    )
+
+    $internalOnlyEvents = @(
+        'commander.dispatch_needed',
+        'commander.auto_approved',
+        'commander.started',
+        'pane.completed',
+        'pane.exec_completed'
+    )
+
+    switch (Get-CommanderTelegramNotificationProfile) {
+        'none' { return $false }
+        'verbose' { return $true }
+        default {
+            if ($Event -in $externalFacingEvents) {
+                return $true
+            }
+
+            if ($Event -in $internalOnlyEvents) {
+                return $false
+            }
+
+            return $false
+        }
+    }
 }
 
 function Send-CommanderTelegramNotification {
