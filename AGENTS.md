@@ -83,3 +83,14 @@ When generating or editing a release:
 1. Use English section headings and bullets for the public GitHub Release body.
 2. Keep the GitHub Release body aligned with the `/release-notes` structure, but in English.
 3. Local or private post drafts may be Japanese if the task explicitly asks for them, but the public GitHub Release stays English.
+
+## Third-Party UI Attribution
+
+When winsmux directly reuses or closely adapts UI assets, style definitions, menu/footer behavior, wrapping logic, or component code from external OSS projects, Codex must:
+
+1. keep `THIRD_PARTY_NOTICES.md` updated,
+2. record the upstream repository and source file paths,
+3. preserve the original OSS license attribution in-repo,
+4. mention the provenance in `docs/handoff.md` when the change is active in the current session.
+
+For Codex-derived UI work, use `openai/codex` as the upstream reference and track the exact source areas being reused.
