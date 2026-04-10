@@ -622,6 +622,48 @@ function Invoke-WinsmuxSendKeys {
     }
 }
 
+function Split-SendKeysLiteralChunks {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
+        [ValidateRange(1, 4000)][int]$ChunkSize = 900
+    )
+
+    if ($Text.Length -le $ChunkSize) {
+        return @($Text)
+    }
+
+    $chunks = [System.Collections.Generic.List[string]]::new()
+    for ($index = 0; $index -lt $Text.Length; $index += $ChunkSize) {
+        $remaining = $Text.Length - $index
+        $length = [System.Math]::Min($ChunkSize, $remaining)
+        $chunks.Add($Text.Substring($index, $length)) | Out-Null
+    }
+
+    return @($chunks)
+}
+
+function Test-PaneContainsCommandFragment {
+    param(
+        [AllowEmptyString()][string]$PaneText,
+        [AllowEmptyString()][string]$CommandText,
+        [ValidateRange(8, 256)][int]$FragmentLength = 64
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PaneText) -or [string]::IsNullOrWhiteSpace($CommandText)) {
+        return $false
+    }
+
+    $normalizedPaneText = (($PaneText -replace '\s+', '')).ToLowerInvariant()
+    $normalizedCommandText = (($CommandText -replace '\s+', '')).ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($normalizedPaneText) -or [string]::IsNullOrWhiteSpace($normalizedCommandText)) {
+        return $false
+    }
+
+    $effectiveLength = [Math]::Min($FragmentLength, $normalizedCommandText.Length)
+    $fragment = $normalizedCommandText.Substring([Math]::Max(0, $normalizedCommandText.Length - $effectiveLength))
+    return $normalizedPaneText.Contains($fragment)
+}
+
 function Send-TextToPane {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
@@ -633,19 +675,26 @@ function Send-TextToPane {
 
     foreach ($sendTarget in $targetCandidates) {
         $preSendText = Get-PaneSnapshotText -PaneId $PaneId -Lines 200
+        $literalChunks = @(Split-SendKeysLiteralChunks -Text $CommandText)
 
         # Type text directly (no header; headers break TUI agents like Claude Code)
-        $literalResult = Invoke-WinsmuxSendKeys -Target $sendTarget -Keys @($CommandText) -Literal
-        if ($literalResult.ExitCode -ne 0) {
-            $detail = if ([string]::IsNullOrWhiteSpace($literalResult.Output)) { 'send-keys literal failed' } else { $literalResult.Output }
-            $attemptFailures.Add("target ${sendTarget}: $detail") | Out-Null
-            continue
+        for ($chunkIndex = 0; $chunkIndex -lt $literalChunks.Count; $chunkIndex++) {
+            $literalResult = Invoke-WinsmuxSendKeys -Target $sendTarget -Keys @($literalChunks[$chunkIndex]) -Literal
+            if ($literalResult.ExitCode -ne 0) {
+                $detail = if ([string]::IsNullOrWhiteSpace($literalResult.Output)) { 'send-keys literal failed' } else { $literalResult.Output }
+                $attemptFailures.Add("target ${sendTarget}: chunk $($chunkIndex + 1)/$($literalChunks.Count) $detail") | Out-Null
+                continue 2
+            }
         }
 
         Start-Sleep -Milliseconds 300
         $typedText = Get-PaneSnapshotText -PaneId $PaneId -Lines 200
         if ($typedText -eq $preSendText) {
             $attemptFailures.Add("target ${sendTarget}: pane buffer did not change after typing") | Out-Null
+            continue
+        }
+        if (-not (Test-PaneContainsCommandFragment -PaneText $typedText -CommandText $CommandText)) {
+            $attemptFailures.Add("target ${sendTarget}: pane buffer changed but typed command fragment was not observed") | Out-Null
             continue
         }
 

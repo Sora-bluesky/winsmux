@@ -335,13 +335,17 @@ function Get-OrchestraSessionPort {
     return $port
 }
 
+function New-OrchestraTcpClient {
+    return [System.Net.Sockets.TcpClient]::new()
+}
+
 function Test-OrchestraTcpConnection {
     param(
         [Parameter(Mandatory = $true)][int]$Port,
         [int]$TimeoutMs = 500
     )
 
-    $client = [System.Net.Sockets.TcpClient]::new()
+    $client = New-OrchestraTcpClient
     try {
         $connectTask = $client.ConnectAsync('127.0.0.1', $Port)
         if (-not $connectTask.Wait($TimeoutMs)) {
@@ -369,7 +373,7 @@ function Test-OrchestraSessionAuthResponse {
         $sessionKey = (Get-Content -LiteralPath $keyFilePath -Raw -Encoding UTF8).Trim()
     }
 
-    $client = [System.Net.Sockets.TcpClient]::new()
+    $client = New-OrchestraTcpClient
     $stream = $null
 
     try {
@@ -392,7 +396,14 @@ function Test-OrchestraSessionAuthResponse {
         }
 
         $response = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $bytesRead)
-        return $response.Contains('OK')
+        $lines = @($response -split "\r?\n" | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        if ($lines.Count -eq 0) {
+            return $false
+        }
+
+        $authOk = $lines[0] -match '^(?i)OK\b'
+        $sessionInfoLines = @($lines | Select-Object -Skip 1 | Where-Object { $_ -notmatch '^(?i)OK\b' })
+        return ($authOk -and $sessionInfoLines.Count -gt 0)
     } catch {
         return $false
     } finally {
@@ -444,6 +455,34 @@ function Test-OrchestraServerHealth {
     }
 
     return 'Healthy'
+}
+
+function Wait-OrchestraServerHealthy {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin,
+        [ValidateRange(1, 120)][int]$TimeoutSeconds = 15,
+        [ValidateRange(100, 5000)][int]$PollIntervalMilliseconds = 500
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $attempt = 0
+    $lastHealth = 'Unknown'
+    while ((Get-Date) -lt $deadline) {
+        $attempt++
+        $lastHealth = Test-OrchestraServerHealth -SessionName $SessionName -WinsmuxBin $WinsmuxBin -TimeoutMs ([Math]::Max($PollIntervalMilliseconds, 500))
+        if ($lastHealth -eq 'Healthy') {
+            return [ordered]@{
+                SessionName = $SessionName
+                Health      = $lastHealth
+                Attempts    = $attempt
+            }
+        }
+
+        Start-Sleep -Milliseconds $PollIntervalMilliseconds
+    }
+
+    throw "Orchestra session '$SessionName' did not reach Healthy state within $TimeoutSeconds seconds (last health: $lastHealth)."
 }
 
 function Clear-OrchestraSessionRegistration {

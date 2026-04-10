@@ -12,6 +12,7 @@ Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $scriptDir = $PSScriptRoot
+. (Join-Path $scriptDir 'orchestra-preflight.ps1')
 . (Join-Path $scriptDir 'settings.ps1')
 
 function Write-ServerWatchdogTextFile {
@@ -152,6 +153,16 @@ function Invoke-ServerWatchdogRestart {
     return (Invoke-ServerWatchdogWinsmux -Arguments @('new-session', '-d', '-s', $SessionName) -AllowFailure)
 }
 
+function Get-ServerWatchdogHealthStatus {
+    param([Parameter(Mandatory = $true)][string]$SessionName)
+
+    try {
+        return [string](Test-OrchestraServerHealth -SessionName $SessionName -WinsmuxBin (Get-WinsmuxBin))
+    } catch {
+        return 'Unknown'
+    }
+}
+
 function Get-ServerWatchdogActiveAttempts {
     param(
         [Parameter(Mandatory = $true)]$State,
@@ -217,11 +228,15 @@ function Invoke-ServerWatchdogCycle {
         return $result
     }
 
-    if (Test-ServerWatchdogSessionAlive -SessionName $SessionName) {
+    $healthStatus = Get-ServerWatchdogHealthStatus -SessionName $SessionName
+    $result['HealthStatus'] = $healthStatus
+
+    if ($healthStatus -eq 'Healthy') {
         return $result
     }
 
     $result['SessionAlive'] = $false
+    $exitReason = if ($healthStatus -eq 'Unhealthy') { 'healthcheck_failed' } else { 'session_missing' }
 
     if ($activeAttempts.Count -ge [int]$State.MaxRestartAttempts) {
         $State['Degraded'] = $true
@@ -239,6 +254,7 @@ function Invoke-ServerWatchdogCycle {
                     attempt_count          = $activeAttempts.Count
                     max_restart_attempts   = [int]$State.MaxRestartAttempts
                     restart_window_minutes = [int]$State.RestartWindowMinutes
+                    health_status          = $healthStatus
                 }) | Out-Null
             $State['DegradedLogged'] = $true
         }
@@ -263,11 +279,12 @@ function Invoke-ServerWatchdogCycle {
             -Event 'server.restarted' `
             -Message $result.Message `
             -Status 'restarted' `
-            -ExitReason 'session_missing' `
+            -ExitReason $exitReason `
             -Data ([ordered]@{
                 attempt_count          = $result.AttemptCount
                 max_restart_attempts   = [int]$State.MaxRestartAttempts
                 restart_window_minutes = [int]$State.RestartWindowMinutes
+                health_status          = $healthStatus
             }) | Out-Null
 
         return $result
@@ -288,6 +305,7 @@ function Invoke-ServerWatchdogCycle {
             max_restart_attempts   = [int]$State.MaxRestartAttempts
             restart_window_minutes = [int]$State.RestartWindowMinutes
             restart_output         = $restartOutput
+            health_status          = $healthStatus
         }) | Out-Null
 
     return $result

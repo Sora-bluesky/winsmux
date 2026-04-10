@@ -145,6 +145,35 @@ Describe 'orchestra preflight server health' {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-preflight.ps1')
     }
 
+    It 'requires session-info output in addition to AUTH OK' {
+        Mock Get-OrchestraSessionKeyFilePath { 'C:\Users\test\.psmux\winsmux-orchestra.key' }
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq 'C:\Users\test\.psmux\winsmux-orchestra.key' }
+        Mock Get-Content { 'test-key' } -ParameterFilter { $LiteralPath -eq 'C:\Users\test\.psmux\winsmux-orchestra.key' }
+
+        $stream = New-Object PSObject
+        Add-Member -InputObject $stream -MemberType ScriptMethod -Name Write -Value { param($Buffer, $Offset, $Count) }
+        Add-Member -InputObject $stream -MemberType ScriptMethod -Name Flush -Value { }
+        Add-Member -InputObject $stream -MemberType ScriptMethod -Name Read -Value {
+            param($Buffer, $Offset, $Count)
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes("OK`n")
+            [Array]::Copy($bytes, 0, $Buffer, 0, $bytes.Length)
+            return $bytes.Length
+        }
+        Add-Member -InputObject $stream -MemberType ScriptMethod -Name Dispose -Value { }
+
+        $client = [PSCustomObject]@{
+            SendTimeout    = 0
+            ReceiveTimeout = 0
+        }
+        Add-Member -InputObject $client -MemberType ScriptMethod -Name ConnectAsync -Value { param($Host, $Port) [System.Threading.Tasks.Task]::FromResult($null) }
+        Add-Member -InputObject $client -MemberType ScriptMethod -Name GetStream -Value { $stream }
+        Add-Member -InputObject $client -MemberType ScriptMethod -Name Dispose -Value { }
+
+        Mock New-OrchestraTcpClient { $client }
+
+        Test-OrchestraSessionAuthResponse -SessionName 'winsmux-orchestra' -Port 49200 | Should -Be $false
+    }
+
     It 'returns Healthy when session exists' {
         Mock Get-OrchestraSessionPortFilePath { 'C:\Users\test\.psmux\winsmux-orchestra.port' }
         Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq 'C:\Users\test\.psmux\winsmux-orchestra.port' }
@@ -176,5 +205,31 @@ Describe 'orchestra preflight server health' {
         $health = Test-OrchestraServerHealth -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux'
 
         $health | Should -Be 'Unhealthy'
+    }
+}
+
+Describe 'orchestra preflight healthy wait' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-preflight.ps1')
+    }
+
+    It 'waits until strict server health becomes Healthy' {
+        $script:healthProbeCount = 0
+
+        Mock Test-OrchestraServerHealth {
+            $script:healthProbeCount++
+            if ($script:healthProbeCount -lt 3) {
+                return 'Unhealthy'
+            }
+
+            return 'Healthy'
+        }
+
+        Mock Start-Sleep {}
+
+        $result = Wait-OrchestraServerHealthy -SessionName 'winsmux-orchestra' -WinsmuxBin 'winsmux' -TimeoutSeconds 5 -PollIntervalMilliseconds 100
+
+        $result.Health | Should -Be 'Healthy'
+        $result.Attempts | Should -Be 3
     }
 }
