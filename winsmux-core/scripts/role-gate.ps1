@@ -469,6 +469,14 @@ function Assert-Role {
             if ($permissions.Status) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
+        'runs' {
+            if ($permissions.Status) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'explain' {
+            if ($permissions.Status) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
         'name' {
             if ($permissions.Name) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
