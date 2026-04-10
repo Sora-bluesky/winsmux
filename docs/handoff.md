@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-10T19:00:00+09:00
+> Updated: 2026-04-10T19:12:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -45,6 +45,8 @@
 - Started the next `v0.21.0` UI slice on `codex/task297-sidebar-composer-responsive-20260410`, adding workspace-sidebar responsive behavior, composer mode chips, log semantics, and a settings/menu surface to advance `TASK-297`, `TASK-292`, `TASK-293`, and `TASK-294`.
 - Merged the `TASK-297/292/293/294` starter slice via PR [#386](https://github.com/Sora-bluesky/winsmux/pull/386), adding a responsive workspace sidebar overlay, composer mode chips, settings/menu sheet, and conversation log semantics.
 - Started the next `TASK-107` editor slice on `codex/task107-editor-secondary-surface-20260410`, wiring changed files and source context into the secondary editor surface.
+- Merged the `TASK-107` editor slice via PR [#387](https://github.com/Sora-bluesky/winsmux/pull/387), connecting the secondary editor surface to explorer selections and source-context changed files.
+- Started the workflow maintenance slice on `codex/node24-workflow-actions-20260410`, upgrading GitHub Actions core actions to Node-24-capable majors to remove runner deprecation warnings.
 
 ## Validation
 
@@ -63,14 +65,13 @@
 - `TASK-264` starter regression passed before merge: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `116/116 PASS`.
 - Current Tauri workspace-sidebar slice passes frontend build: `npm run build` in `winsmux-app`.
 - Current `TASK-297/292/293/294` starter slice passes frontend build: `npm run build` in `winsmux-app`.
-- Current `TASK-107` editor slice is in progress on `codex/task107-editor-secondary-surface-20260410`.
+- Current `TASK-107` editor slice is merged via PR [#387](https://github.com/Sora-bluesky/winsmux/pull/387).
 
 ## Next actions
 
-1. Review and publish the active `codex/task107-editor-secondary-surface-20260410` slice, continuing `v0.21.0` toward the explicit secondary editor surface model.
+1. Publish the active `codex/node24-workflow-actions-20260410` workflow maintenance slice, then continue `v0.21.0` toward richer editor/context integration.
 2. Preserve the private planning sync flow: user/agent visible, auto-synced, but not committed to the public repo.
-3. Track GitHub Actions Node runtime warnings and update workflows before the Node 24 switch becomes mandatory.
-4. Run the next retro-review tranche over recent merged PRs after each milestone-close sequence.
+3. Run the next retro-review tranche over recent merged PRs after each milestone-close sequence.
 
 ## Notes
 
