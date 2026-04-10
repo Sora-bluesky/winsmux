@@ -3261,6 +3261,132 @@ panes:
         $result.items[0].changed_files | Should -Be @('scripts/winsmux-core.ps1')
     }
 
+    It 'returns digest delta items only for runs affected after the current cursor' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:digestTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-246
+    task: Build evidence digest
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 2
+    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T14:00:00+09:00
+  worker-1:
+    pane_id: %6
+    role: Worker
+    task_id: ''
+    task: ''
+    task_state: backlog
+    task_owner: ''
+    review_state: ''
+    branch: ''
+    head_sha: ''
+    changed_file_count: 0
+    changed_files: '[]'
+    last_event: pane.idle
+    last_event_at: 2026-04-10T14:00:30+09:00
+"@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
+
+        ([ordered]@{
+            timestamp = '2026-04-10T14:01:00+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'commander.review_requested'
+            message   = 'review requested'
+            label     = 'reviewer-1'
+            pane_id   = '%3'
+            role      = 'Reviewer'
+            branch    = 'worktree-builder-1'
+            head_sha  = 'abc1234def5678'
+            data      = [ordered]@{
+                task_id = 'task-246'
+            }
+        } | ConvertTo-Json -Compress) | Set-Content -Path $script:digestEventsPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                '^capture-pane .*%6' { return @('gpt-5.4   52% context left', 'thinking', 'Esc to interrupt') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $cursor = @(Get-BridgeEventRecords -ProjectDir $script:digestTempRoot).Count
+
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-10T14:02:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.idle'
+                message   = 'idle pane'
+                label     = 'worker-1'
+                pane_id   = '%6'
+                role      = 'Worker'
+                status    = 'ready'
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T14:03:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'commander.commit_ready'
+                message   = 'commit ready'
+                label     = ''
+                pane_id   = ''
+                role      = 'Operator'
+                branch    = 'worktree-builder-1'
+                head_sha  = 'abc1234def5678'
+                status    = 'commit_ready'
+                data      = [ordered]@{
+                    task_id = 'task-246'
+                }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T14:04:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.approval_waiting'
+                message   = 'approval prompt detected'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                status    = 'approval_waiting'
+            } | ConvertTo-Json -Compress)
+        ) | Add-Content -Path $script:digestEventsPath -Encoding UTF8
+
+        $delta = Get-BridgeEventDelta -ProjectDir $script:digestTempRoot -Cursor $cursor
+        $items = @(Get-DigestDeltaItems -ProjectDir $script:digestTempRoot -EventRecords @($delta.events))
+
+        $delta.cursor | Should -Be 4
+        $items.Count | Should -Be 1
+        $items[0].run_id | Should -Be 'task:task-246'
+        $items[0].next_action | Should -Be 'approval_waiting'
+        $items[0].changed_file_count | Should -Be 2
+    }
+
+    It 'writes digest stream items as one-line summary records' {
+        $item = [ordered]@{
+            run_id             = 'task:task-246'
+            label              = 'builder-1'
+            pane_id            = '%2'
+            next_action        = 'commit_ready'
+            changed_file_count = 2
+            last_event_at      = '2026-04-10T14:03:00+09:00'
+        }
+
+        $output = Write-DigestStreamItem -Item $item | Out-String
+
+        $output | Should -Match 'digest task:task-246 builder-1 \(%2\) next=commit_ready files=2'
+    }
+
     It 'supports winsmux digest --json through the top-level CLI entrypoint' {
 @"
 version: 1
