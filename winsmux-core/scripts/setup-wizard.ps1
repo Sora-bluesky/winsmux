@@ -5,6 +5,8 @@ param()
 
 $ErrorActionPreference = 'Stop'
 
+. (Join-Path $PSScriptRoot 'settings.ps1')
+
 function Get-WinsmuxBin {
     foreach ($candidate in @('winsmux', 'pmux', 'tmux')) {
         $command = Get-Command $candidate -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -172,16 +174,18 @@ Write-Host ''
 
 $agentCli = Read-AgentCli -Default 'codex'
 $model = Read-DefaultValue -Prompt 'Model' -Default 'gpt-5.4'
-$externalCommander = Read-YesNo -Prompt 'Use an external Commander terminal?' -Default $true
+$externalCommander = Read-YesNo -Prompt 'Use an external Operator terminal?' -Default $true
 $legacyRoleLayout = $false
 $commanders = 0
 $workerCount = 6
+$agentSlots = @()
 $builders = 0
 $researchers = 0
 $reviewers = 0
 
 if ($externalCommander) {
     $workerCount = Read-PositiveInt -Prompt 'Managed worker pane count' -Default 6
+    $agentSlots = New-BridgeManagedAgentSlots -Count $workerCount -Agent $agentCli -Model $model
 } else {
     $legacyRoleLayout = Read-YesNo -Prompt 'Use legacy role layout (Commander/Builder/Researcher/Reviewer panes)?' -Default $true
     if ($legacyRoleLayout) {
@@ -190,8 +194,9 @@ if ($externalCommander) {
         $researchers = Read-PositiveInt -Prompt 'Researchers count' -Default 1
         $reviewers = Read-PositiveInt -Prompt 'Reviewers count' -Default 1
     } else {
-        $commanders = Read-PositiveInt -Prompt 'Embedded commander count' -Default 1
+        $commanders = Read-PositiveInt -Prompt 'Embedded operator count' -Default 1
         $workerCount = Read-PositiveInt -Prompt 'Managed worker pane count' -Default 6
+        $agentSlots = New-BridgeManagedAgentSlots -Count $workerCount -Agent $agentCli -Model $model
     }
 }
 $storeVault = Read-YesNo -Prompt 'Store GH_TOKEN in the winsmux vault?' -Default $false
@@ -205,6 +210,20 @@ Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-worker-count' -Op
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-builders' -OptionValue $builders.ToString()
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-researchers' -OptionValue $researchers.ToString()
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-reviewers' -OptionValue $reviewers.ToString()
+
+Save-BridgeSettings -Scope project -Settings ([ordered]@{
+    agent               = $agentCli
+    model               = $model
+    external_commander  = $externalCommander
+    worker_count        = $workerCount
+    agent_slots         = @($agentSlots)
+    legacy_role_layout  = $legacyRoleLayout
+    commanders          = $commanders
+    builders            = $builders
+    researchers         = $researchers
+    reviewers           = $reviewers
+    vault_keys          = @('GH_TOKEN')
+})
 
 $vaultStored = $false
 if ($storeVault) {
@@ -228,4 +247,5 @@ Write-Host "  @bridge-worker-count: $workerCount"
 Write-Host "  @bridge-builders:     $builders"
 Write-Host "  @bridge-researchers:  $researchers"
 Write-Host "  @bridge-reviewers:    $reviewers"
+Write-Host "  project agent_slots:  $(@($agentSlots).Count)"
 Write-Host "  GH_TOKEN stored:      $(if ($vaultStored) { 'yes' } else { 'no' })"

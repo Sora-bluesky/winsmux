@@ -283,6 +283,14 @@ function Get-OrchestraLayoutSettings {
 
     $commanders = [int]$Settings.commanders
     $workers = [int]$Settings.worker_count
+    $agentSlots = @()
+    if ($Settings -is [System.Collections.IDictionary]) {
+        if ($Settings.Contains('agent_slots')) {
+            $agentSlots = @($Settings.agent_slots)
+        }
+    } elseif ($null -ne $Settings -and $null -ne $Settings.PSObject -and ($Settings.PSObject.Properties.Name -contains 'agent_slots')) {
+        $agentSlots = @($Settings.agent_slots)
+    }
     $builders = [int]$Settings.builders
     $researchers = [int]$Settings.researchers
     $reviewers = [int]$Settings.reviewers
@@ -305,6 +313,9 @@ function Get-OrchestraLayoutSettings {
     }
 
     $managedCommanders = if ($externalCommander) { 0 } else { 1 }
+    if ($agentSlots.Count -gt 0) {
+        $workers = $agentSlots.Count
+    }
     if ($workers -lt 1) {
         throw "worker_count must be 1 or greater in external commander mode (got $workers)."
     }

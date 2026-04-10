@@ -2,5 +2,36 @@ agent: codex
 model: gpt-5.4
 external-commander: true
 worker-count: 6
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    worktree-mode: managed
+  - slot-id: worker-3
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    worktree-mode: managed
+  - slot-id: worker-4
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    worktree-mode: managed
+  - slot-id: worker-5
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    worktree-mode: managed
+  - slot-id: worker-6
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    worktree-mode: managed
 
 roles: {}

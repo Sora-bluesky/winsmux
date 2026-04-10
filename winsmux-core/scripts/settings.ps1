@@ -19,6 +19,7 @@ $script:BridgeSettingsSchema = [ordered]@{
     model               = @{ Type = 'string';   Default = 'gpt-5.4';     Option = '@bridge-model' }
     external_commander  = @{ Type = 'bool';     Default = $true;         Option = '@bridge-external-commander' }
     worker_count        = @{ Type = 'int';      Default = 6;             Option = '@bridge-worker-count' }
+    agent_slots         = @{ Type = 'slotlist'; Default = @();           Option = $null }
     legacy_role_layout  = @{ Type = 'bool';     Default = $false;        Option = '@bridge-legacy-role-layout' }
     commanders          = @{ Type = 'int';      Default = 0;             Option = '@bridge-commanders' }
     builders            = @{ Type = 'int';      Default = 0;             Option = '@bridge-builders' }
@@ -176,11 +177,81 @@ function ConvertFrom-BridgeInlineList {
     )
 }
 
+function ConvertTo-BridgeSlotEntry {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    $pairs = @()
+    if ($Value -is [System.Collections.IDictionary]) {
+        $pairs = $Value.GetEnumerator()
+    } elseif ($null -ne $Value -and $null -ne $Value.PSObject) {
+        $pairs = $Value.PSObject.Properties | ForEach-Object {
+            [PSCustomObject]@{
+                Key = $_.Name
+                Value = $_.Value
+            }
+        }
+    } else {
+        return $null
+    }
+
+    $slot = [ordered]@{}
+    foreach ($pair in $pairs) {
+        $key = $pair.Key.ToString() -replace '-', '_'
+        if ($key -notin @('slot_id', 'runtime_role', 'agent', 'model', 'worktree_mode')) {
+            continue
+        }
+
+        $text = ConvertFrom-BridgeYamlScalar $pair.Value
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            continue
+        }
+
+        $slot[$key] = $text
+    }
+
+    if (-not $slot.Contains('slot_id')) {
+        return $null
+    }
+
+    if (-not $slot.Contains('runtime_role')) {
+        $slot.runtime_role = 'worker'
+    }
+
+    return $slot
+}
+
+function New-BridgeManagedAgentSlots {
+    param(
+        [Parameter(Mandatory = $true)][int]$Count,
+        [Parameter(Mandatory = $true)][string]$Agent,
+        [Parameter(Mandatory = $true)][string]$Model
+    )
+
+    $slots = @()
+    for ($index = 1; $index -le $Count; $index++) {
+        $slots += [ordered]@{
+            slot_id       = "worker-$index"
+            runtime_role  = 'worker'
+            agent         = $Agent
+            model         = $Model
+            worktree_mode = 'managed'
+        }
+    }
+
+    return @($slots)
+}
+
 function ConvertFrom-BridgeManualYaml {
     param([Parameter(Mandatory = $true)][string]$Content)
 
     $settings = [ordered]@{}
     $currentListKey = $null
+    $currentSlotListKey = $null
+    $currentSlotEntry = $null
     $currentMapKey = $null
     $currentMapEntryKey = $null
     $lineNumber = 0
@@ -189,6 +260,21 @@ function ConvertFrom-BridgeManualYaml {
         $lineNumber++
         $line = Remove-BridgeYamlComment $rawLine
         if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        if ($null -ne $currentSlotListKey -and $line -match '^\s*-\s*([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$') {
+            $slotEntry = [ordered]@{}
+            $slotKey = $Matches[1] -replace '-', '_'
+            $slotEntry[$slotKey] = ConvertFrom-BridgeYamlScalar $Matches[2]
+            $settings[$currentSlotListKey] += @($slotEntry)
+            $currentSlotEntry = $slotEntry
+            continue
+        }
+
+        if ($null -ne $currentSlotListKey -and $null -ne $currentSlotEntry -and $line -match '^\s{4}([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$') {
+            $slotKey = $Matches[1] -replace '-', '_'
+            $currentSlotEntry[$slotKey] = ConvertFrom-BridgeYamlScalar $Matches[2]
             continue
         }
 
@@ -202,6 +288,8 @@ function ConvertFrom-BridgeManualYaml {
         }
 
         $currentListKey = $null
+        $currentSlotListKey = $null
+        $currentSlotEntry = $null
         if ($null -ne $currentMapKey -and $line -match '^\s{2}([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*$') {
             $currentMapEntryKey = $Matches[1] -replace '-', '_'
             if (-not $settings[$currentMapKey].Contains($currentMapEntryKey)) {
@@ -230,12 +318,19 @@ function ConvertFrom-BridgeManualYaml {
         }
 
         if ([string]::IsNullOrWhiteSpace($value)) {
-            if ($script:BridgeSettingsSchema[$key].Type -eq 'map') {
-                $settings[$key] = [ordered]@{}
-                $currentMapKey = $key
-            } else {
-                $settings[$key] = @()
-                $currentListKey = $key
+            switch ($script:BridgeSettingsSchema[$key].Type) {
+                'map' {
+                    $settings[$key] = [ordered]@{}
+                    $currentMapKey = $key
+                }
+                'slotlist' {
+                    $settings[$key] = @()
+                    $currentSlotListKey = $key
+                }
+                default {
+                    $settings[$key] = @()
+                    $currentListKey = $key
+                }
             }
             continue
         }
@@ -426,6 +521,23 @@ function Test-BridgeSettingValue {
             $NormalizedValue.Value = $map
             return $true
         }
+        'slotlist' {
+            $slots = @()
+
+            if ($Value -isnot [System.Collections.IEnumerable] -or $Value -is [string]) {
+                return $false
+            }
+
+            foreach ($slotValue in $Value) {
+                $slot = ConvertTo-BridgeSlotEntry $slotValue
+                if ($null -ne $slot) {
+                    $slots += $slot
+                }
+            }
+
+            $NormalizedValue.Value = @($slots)
+            return $true
+        }
         default {
             return $false
         }
@@ -528,6 +640,21 @@ function Get-BridgeSettings {
         }
     }
 
+    if ($settings.agent_slots -isnot [System.Array]) {
+        $settings.agent_slots = @()
+    }
+
+    $legacyCount = [int]$settings.commanders + [int]$settings.builders + [int]$settings.researchers + [int]$settings.reviewers
+    $useLegacyLayout = [bool]$settings.legacy_role_layout -or $legacyCount -gt 0
+
+    if (@($settings.agent_slots).Count -eq 0 -and -not $useLegacyLayout -and [bool]$settings.external_commander -and [int]$settings.worker_count -gt 0) {
+        $settings.agent_slots = New-BridgeManagedAgentSlots -Count ([int]$settings.worker_count) -Agent ([string]$settings.agent) -Model ([string]$settings.model)
+    }
+
+    if (@($settings.agent_slots).Count -gt 0 -and -not $useLegacyLayout) {
+        $settings.worker_count = @($settings.agent_slots).Count
+    }
+
     return $settings
 }
 
@@ -625,8 +752,28 @@ function Save-BridgeSettings {
             $value = $normalized[$key]
             if ($value -is [System.Array]) {
                 $lines.Add("${key}:")
-                foreach ($item in $value) {
-                    $lines.Add("  - $(ConvertTo-BridgeYamlScalar $item)")
+                if ($script:BridgeSettingsSchema[$key].Type -eq 'slotlist') {
+                    foreach ($item in $value) {
+                        $slot = ConvertTo-BridgeSlotEntry $item
+                        if ($null -eq $slot) {
+                            continue
+                        }
+
+                        $firstProperty = $true
+                        foreach ($slotEntry in $slot.GetEnumerator()) {
+                            if ($firstProperty) {
+                                $lines.Add("  - $($slotEntry.Key): $(ConvertTo-BridgeYamlScalar $slotEntry.Value)")
+                                $firstProperty = $false
+                                continue
+                            }
+
+                            $lines.Add("    $($slotEntry.Key): $(ConvertTo-BridgeYamlScalar $slotEntry.Value)")
+                        }
+                    }
+                } else {
+                    foreach ($item in $value) {
+                        $lines.Add("  - $(ConvertTo-BridgeYamlScalar $item)")
+                    }
                 }
             } elseif ($value -is [System.Collections.IDictionary]) {
                 $lines.Add("${key}:")
