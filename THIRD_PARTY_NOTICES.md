@@ -10,7 +10,7 @@ This repository may reuse selected UI/UX assets and implementation patterns from
 
 ### winsmux usage policy
 
-winsmux retains selected legacy compatibility surfaces that still expose or reference `psmux`, `pmux`, or `tmux` names through the MIT-licensed core upstream.
+winsmux currently retains selected legacy compatibility surfaces that still expose or reference `psmux`, `pmux`, or `tmux` names through the MIT-licensed core upstream.
 
 This includes:
 
@@ -19,6 +19,18 @@ This includes:
 - legacy data-path and terminal-multiplexer compatibility behavior
 
 MIT does not require a separate NOTICE file in the same way Apache-2.0 often does, but winsmux keeps this entry anyway for provenance, auditability, and rename-debt tracking.
+
+### Sunset policy
+
+This section is tied to the active compatibility contract.
+
+- While legacy `psmux` compatibility remains in the public product surface, keep this notice entry and keep the tracked source references current.
+- When the compatibility sunset is completed before `v1.0.0`, update this section to reflect the post-sunset reality:
+  - remove references that no longer ship in the public surface,
+  - keep attribution only for code or assets that still remain in-repo,
+  - or remove this section entirely if no MIT-derived `psmux` compatibility surface remains.
+
+In other words, this entry is not permanent. It should evolve with the compatibility contract and be reduced or removed once the sunset work is complete.
 
 ### Current tracked source references
 
