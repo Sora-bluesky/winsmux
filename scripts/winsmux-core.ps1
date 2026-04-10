@@ -2163,6 +2163,21 @@ function Get-BoardPayload {
                 changed_files      = @($_.ChangedFiles)
                 last_event         = $_.LastEvent
                 last_event_at      = $_.LastEventAt
+                parent_run_id      = [string]$_.ParentRunId
+                goal               = [string]$_.Goal
+                task_type          = [string]$_.TaskType
+                priority           = [string]$_.Priority
+                blocking           = [bool]$_.Blocking
+                write_scope        = @($_.WriteScope)
+                read_scope         = @($_.ReadScope)
+                constraints        = @($_.Constraints)
+                expected_output    = [string]$_.ExpectedOutput
+                verification_plan  = @($_.VerificationPlan)
+                review_required    = [bool]$_.ReviewRequired
+                provider_target    = [string]$_.ProviderTarget
+                agent_role         = [string]$_.AgentRole
+                timeout_policy     = [string]$_.TimeoutPolicy
+                handoff_refs       = @($_.HandoffRefs)
             }
         }
     )
@@ -2505,6 +2520,95 @@ function Get-RunIdFromPaneRecord {
     return "label:{0}" -f [string]$PaneRecord.label
 }
 
+function New-RunPacketFromRun {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    return [ordered]@{
+        run_id            = [string]$Run.run_id
+        task_id           = [string]$Run.task_id
+        parent_run_id     = [string]$Run.parent_run_id
+        goal              = [string]$Run.goal
+        task              = [string]$Run.task
+        task_type         = [string]$Run.task_type
+        priority          = [string]$Run.priority
+        blocking          = [bool]$Run.blocking
+        write_scope       = @($Run.write_scope)
+        read_scope        = @($Run.read_scope)
+        constraints       = @($Run.constraints)
+        expected_output   = [string]$Run.expected_output
+        verification_plan = @($Run.verification_plan)
+        review_required   = [bool]$Run.review_required
+        provider_target   = [string]$Run.provider_target
+        agent_role        = if (-not [string]::IsNullOrWhiteSpace([string]$Run.agent_role)) { [string]$Run.agent_role } else { [string]$Run.primary_role }
+        timeout_policy    = [string]$Run.timeout_policy
+        handoff_refs      = @($Run.handoff_refs)
+        branch            = [string]$Run.branch
+        head_sha          = [string]$Run.head_sha
+        primary_label     = [string]$Run.primary_label
+        primary_pane_id   = [string]$Run.primary_pane_id
+        primary_role      = [string]$Run.primary_role
+        labels            = @($Run.labels)
+        pane_ids          = @($Run.pane_ids)
+        roles             = @($Run.roles)
+        changed_files     = @($Run.changed_files)
+        last_event        = [string]$Run.last_event
+        last_event_at     = [string]$Run.last_event_at
+    }
+}
+
+function New-RunResultPacket {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$EvidenceDigest,
+        [AllowNull()]$ReviewState = $null,
+        [Parameter(Mandatory = $true)][object[]]$RecentEvents
+    )
+
+    $status = ''
+    if ([string]$Run.review_state -in @('FAIL', 'FAILED')) {
+        $status = 'failed'
+    } elseif ([string]$Run.review_state -eq 'PASS' -or [string]$Run.task_state -eq 'done') {
+        $status = 'completed'
+    } elseif ([string]$Run.task_state -eq 'blocked') {
+        $status = 'blocked'
+    } elseif ([string]$Run.task_state -eq 'in_progress') {
+        $status = 'in_progress'
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$Run.task_state)) {
+        $status = [string]$Run.task_state
+    }
+
+    $summary = if (-not [string]::IsNullOrWhiteSpace([string]$EvidenceDigest.last_event)) {
+        [string]$EvidenceDigest.last_event
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$Run.task)) {
+        [string]$Run.task
+    } else {
+        [string]$Run.primary_label
+    }
+
+    $reviewRecommendation = ''
+    if ($ReviewState -is [System.Collections.IDictionary] -and $ReviewState.Contains('status')) {
+        $reviewRecommendation = [string]$ReviewState['status']
+    } elseif ([string]$Run.review_state -in @('FAIL', 'FAILED', 'PENDING', 'PASS')) {
+        $reviewRecommendation = [string]$Run.review_state
+    }
+
+    return [ordered]@{
+        run_id                = [string]$Run.run_id
+        status                = $status
+        summary               = $summary
+        artifacts             = @()
+        changed_files         = @($EvidenceDigest.changed_files)
+        head_sha              = [string]$EvidenceDigest.head_sha
+        branch                = [string]$EvidenceDigest.branch
+        next_action_hint      = [string]$EvidenceDigest.next_action
+        review_recommendation = $reviewRecommendation
+        evidence_refs         = @($EvidenceDigest.changed_files)
+        action_items          = @($Run.action_items)
+        review_state          = $ReviewState
+        recent_events         = @($RecentEvents)
+    }
+}
+
 function Test-RunMatchesEventRecord {
     param(
         [Parameter(Mandatory = $true)]$Run,
@@ -2622,12 +2726,58 @@ function Get-RunsPayload {
                 roles              = [System.Collections.Generic.List[string]]::new()
                 changed_files      = [System.Collections.Generic.List[string]]::new()
                 action_items       = [System.Collections.Generic.List[object]]::new()
+                parent_run_id      = [string]$pane.parent_run_id
+                goal               = [string]$pane.goal
+                task_type          = [string]$pane.task_type
+                priority           = [string]$pane.priority
+                blocking           = [bool]$pane.blocking
+                write_scope        = [System.Collections.Generic.List[string]]::new()
+                read_scope         = [System.Collections.Generic.List[string]]::new()
+                constraints        = [System.Collections.Generic.List[string]]::new()
+                expected_output    = [string]$pane.expected_output
+                verification_plan  = [System.Collections.Generic.List[string]]::new()
+                review_required    = [bool]$pane.review_required
+                provider_target    = [string]$pane.provider_target
+                agent_role         = [string]$pane.agent_role
+                timeout_policy     = [string]$pane.timeout_policy
+                handoff_refs       = [System.Collections.Generic.List[string]]::new()
             }
         }
 
         $run = $runsById[$runId]
         $run.pane_count = [int]$run.pane_count + 1
         $run.changed_file_count = [int]$run.changed_file_count + [int]$pane.changed_file_count
+
+        if ([string]::IsNullOrWhiteSpace([string]$run.parent_run_id) -and -not [string]::IsNullOrWhiteSpace([string]$pane.parent_run_id)) {
+            $run.parent_run_id = [string]$pane.parent_run_id
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$run.goal) -and -not [string]::IsNullOrWhiteSpace([string]$pane.goal)) {
+            $run.goal = [string]$pane.goal
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$run.task_type) -and -not [string]::IsNullOrWhiteSpace([string]$pane.task_type)) {
+            $run.task_type = [string]$pane.task_type
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$run.priority) -and -not [string]::IsNullOrWhiteSpace([string]$pane.priority)) {
+            $run.priority = [string]$pane.priority
+        }
+        if (-not [bool]$run.blocking -and [bool]$pane.blocking) {
+            $run.blocking = $true
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$run.expected_output) -and -not [string]::IsNullOrWhiteSpace([string]$pane.expected_output)) {
+            $run.expected_output = [string]$pane.expected_output
+        }
+        if (-not [bool]$run.review_required -and [bool]$pane.review_required) {
+            $run.review_required = $true
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$run.provider_target) -and -not [string]::IsNullOrWhiteSpace([string]$pane.provider_target)) {
+            $run.provider_target = [string]$pane.provider_target
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$run.agent_role) -and -not [string]::IsNullOrWhiteSpace([string]$pane.agent_role)) {
+            $run.agent_role = [string]$pane.agent_role
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$run.timeout_policy) -and -not [string]::IsNullOrWhiteSpace([string]$pane.timeout_policy)) {
+            $run.timeout_policy = [string]$pane.timeout_policy
+        }
 
         if (-not [string]::IsNullOrWhiteSpace([string]$pane.label) -and -not $run.labels.Contains([string]$pane.label)) {
             $run.labels.Add([string]$pane.label) | Out-Null
@@ -2643,6 +2793,36 @@ function Get-RunsPayload {
             $changedFileText = [string]$changedFile
             if (-not [string]::IsNullOrWhiteSpace($changedFileText) -and -not $run.changed_files.Contains($changedFileText)) {
                 $run.changed_files.Add($changedFileText) | Out-Null
+            }
+        }
+        foreach ($writeScopePath in @($pane.write_scope)) {
+            $writeScopeText = [string]$writeScopePath
+            if (-not [string]::IsNullOrWhiteSpace($writeScopeText) -and -not $run.write_scope.Contains($writeScopeText)) {
+                $run.write_scope.Add($writeScopeText) | Out-Null
+            }
+        }
+        foreach ($readScopePath in @($pane.read_scope)) {
+            $readScopeText = [string]$readScopePath
+            if (-not [string]::IsNullOrWhiteSpace($readScopeText) -and -not $run.read_scope.Contains($readScopeText)) {
+                $run.read_scope.Add($readScopeText) | Out-Null
+            }
+        }
+        foreach ($constraint in @($pane.constraints)) {
+            $constraintText = [string]$constraint
+            if (-not [string]::IsNullOrWhiteSpace($constraintText) -and -not $run.constraints.Contains($constraintText)) {
+                $run.constraints.Add($constraintText) | Out-Null
+            }
+        }
+        foreach ($verificationStep in @($pane.verification_plan)) {
+            $verificationText = [string]$verificationStep
+            if (-not [string]::IsNullOrWhiteSpace($verificationText) -and -not $run.verification_plan.Contains($verificationText)) {
+                $run.verification_plan.Add($verificationText) | Out-Null
+            }
+        }
+        foreach ($handoffRef in @($pane.handoff_refs)) {
+            $handoffRefText = [string]$handoffRef
+            if (-not [string]::IsNullOrWhiteSpace($handoffRefText) -and -not $run.handoff_refs.Contains($handoffRefText)) {
+                $run.handoff_refs.Add($handoffRefText) | Out-Null
             }
         }
     }
@@ -2694,9 +2874,28 @@ function Get-RunsPayload {
                 roles              = @($run.roles)
                 changed_files      = @($run.changed_files)
                 action_items       = @($run.action_items | Sort-Object @{ Expression = { [string]$_.timestamp }; Descending = $true }, @{ Expression = { [string]$_.kind } })
+                parent_run_id      = [string]$run.parent_run_id
+                goal               = [string]$run.goal
+                task_type          = [string]$run.task_type
+                priority           = [string]$run.priority
+                blocking           = [bool]$run.blocking
+                write_scope        = @($run.write_scope)
+                read_scope         = @($run.read_scope)
+                constraints        = @($run.constraints)
+                expected_output    = [string]$run.expected_output
+                verification_plan  = @($run.verification_plan)
+                review_required    = [bool]$run.review_required
+                provider_target    = [string]$run.provider_target
+                agent_role         = if (-not [string]::IsNullOrWhiteSpace([string]$run.agent_role)) { [string]$run.agent_role } else { [string]$run.primary_role }
+                timeout_policy     = [string]$run.timeout_policy
+                handoff_refs       = @($run.handoff_refs)
             }
         }
     )
+
+    foreach ($run in @($runs)) {
+        $run['run_packet'] = New-RunPacketFromRun -Run $run
+    }
 
     return [ordered]@{
         generated_at = (Get-Date).ToString('o')
@@ -2848,11 +3047,15 @@ function Get-ExplainPayload {
         $reasons.Add("action:$([string]$actionItem.kind)") | Out-Null
     }
 
+    $evidenceDigest = ConvertTo-EvidenceDigestItem -Run $run
+    $recentEvents = @($events | Select-Object -First 20)
+
     return [ordered]@{
-        generated_at  = (Get-Date).ToString('o')
-        project_dir   = $ProjectDir
-        run           = $run
-        evidence_digest = ConvertTo-EvidenceDigestItem -Run $run
+        generated_at    = (Get-Date).ToString('o')
+        project_dir     = $ProjectDir
+        run             = $run
+        run_packet      = New-RunPacketFromRun -Run $run
+        evidence_digest = $evidenceDigest
         explanation   = [ordered]@{
             summary       = if (-not [string]::IsNullOrWhiteSpace([string]$run.task)) { [string]$run.task } else { [string]$run.primary_label }
             reasons       = @($reasons)
@@ -2864,8 +3067,9 @@ function Get-ExplainPayload {
                 last_event   = [string]$run.last_event
             }
         }
-        review_state  = $reviewState
-        recent_events = @($events | Select-Object -First 20)
+        review_state    = $reviewState
+        recent_events   = $recentEvents
+        result_packet   = New-RunResultPacket -Run $run -EvidenceDigest $evidenceDigest -ReviewState $reviewState -RecentEvents $recentEvents
     }
 }
 

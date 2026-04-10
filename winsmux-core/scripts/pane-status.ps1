@@ -171,6 +171,21 @@ function Get-PaneStatusRecords {
             ChangedFiles    = @($entry.ChangedFiles)
             LastEvent       = $entry.LastEvent
             LastEventAt     = $entry.LastEventAt
+            ParentRunId     = $entry.ParentRunId
+            Goal            = $entry.Goal
+            TaskType        = $entry.TaskType
+            Priority        = $entry.Priority
+            Blocking        = $entry.Blocking
+            WriteScope      = @($entry.WriteScope)
+            ReadScope       = @($entry.ReadScope)
+            Constraints     = @($entry.Constraints)
+            ExpectedOutput  = $entry.ExpectedOutput
+            VerificationPlan = @($entry.VerificationPlan)
+            ReviewRequired  = $entry.ReviewRequired
+            ProviderTarget  = $entry.ProviderTarget
+            AgentRole       = $entry.AgentRole
+            TimeoutPolicy   = $entry.TimeoutPolicy
+            HandoffRefs     = @($entry.HandoffRefs)
         }
     }
 

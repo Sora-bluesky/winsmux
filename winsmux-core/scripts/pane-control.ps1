@@ -104,6 +104,73 @@ function ConvertFrom-PaneControlChangedFiles {
     }
 }
 
+function ConvertFrom-PaneControlStringArray {
+    param([AllowNull()]$Value)
+
+    $normalize = {
+        param($Items)
+
+        return @(
+            @($Items) |
+                Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) } |
+                ForEach-Object { [string]$_ }
+        )
+    }
+
+    if ($null -eq $Value) {
+        return @()
+    }
+
+    if ($Value -is [System.Array]) {
+        return & $normalize $Value
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return @()
+    }
+
+    try {
+        $parsed = $text | ConvertFrom-Json -ErrorAction Stop
+        if ($parsed -is [System.Array]) {
+            return & $normalize $parsed
+        }
+
+        return & $normalize @($parsed)
+    } catch {
+        return & $normalize @($text)
+    }
+}
+
+function ConvertFrom-PaneControlBoolean {
+    param([AllowNull()]$Value, [bool]$Default = $false)
+
+    if ($null -eq $Value) {
+        return $Default
+    }
+
+    if ($Value -is [bool]) {
+        return [bool]$Value
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $Default
+    }
+
+    switch ($text.Trim().ToLowerInvariant()) {
+        'true' { return $true }
+        '1' { return $true }
+        'yes' { return $true }
+        'y' { return $true }
+        'false' { return $false }
+        '0' { return $false }
+        'no' { return $false }
+        'n' { return $false }
+        default { return $Default }
+    }
+}
+
 function Get-PaneControlCanonicalRole {
     param([AllowNull()][string]$Role, [AllowNull()][string]$Label)
 
@@ -241,6 +308,21 @@ function Get-PaneControlManifestEntries {
             ChangedFiles        = @(ConvertFrom-PaneControlChangedFiles -Value (Get-PaneControlValue -InputObject $pane -Name 'changed_files' -Default @()))
             LastEvent           = [string](Get-PaneControlValue -InputObject $pane -Name 'last_event' -Default '')
             LastEventAt         = [string](Get-PaneControlValue -InputObject $pane -Name 'last_event_at' -Default '')
+            ParentRunId         = [string](Get-PaneControlValue -InputObject $pane -Name 'parent_run_id' -Default '')
+            Goal                = [string](Get-PaneControlValue -InputObject $pane -Name 'goal' -Default '')
+            TaskType            = [string](Get-PaneControlValue -InputObject $pane -Name 'task_type' -Default '')
+            Priority            = [string](Get-PaneControlValue -InputObject $pane -Name 'priority' -Default '')
+            Blocking            = ConvertFrom-PaneControlBoolean -Value (Get-PaneControlValue -InputObject $pane -Name 'blocking' -Default $false) -Default $false
+            WriteScope          = @(ConvertFrom-PaneControlStringArray -Value (Get-PaneControlValue -InputObject $pane -Name 'write_scope' -Default @()))
+            ReadScope           = @(ConvertFrom-PaneControlStringArray -Value (Get-PaneControlValue -InputObject $pane -Name 'read_scope' -Default @()))
+            Constraints         = @(ConvertFrom-PaneControlStringArray -Value (Get-PaneControlValue -InputObject $pane -Name 'constraints' -Default @()))
+            ExpectedOutput      = [string](Get-PaneControlValue -InputObject $pane -Name 'expected_output' -Default '')
+            VerificationPlan    = @(ConvertFrom-PaneControlStringArray -Value (Get-PaneControlValue -InputObject $pane -Name 'verification_plan' -Default @()))
+            ReviewRequired      = ConvertFrom-PaneControlBoolean -Value (Get-PaneControlValue -InputObject $pane -Name 'review_required' -Default $false) -Default $false
+            ProviderTarget      = [string](Get-PaneControlValue -InputObject $pane -Name 'provider_target' -Default '')
+            AgentRole           = [string](Get-PaneControlValue -InputObject $pane -Name 'agent_role' -Default '')
+            TimeoutPolicy       = [string](Get-PaneControlValue -InputObject $pane -Name 'timeout_policy' -Default '')
+            HandoffRefs         = @(ConvertFrom-PaneControlStringArray -Value (Get-PaneControlValue -InputObject $pane -Name 'handoff_refs' -Default @()))
         }
     }
 

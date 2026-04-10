@@ -3036,14 +3036,29 @@ panes:
     pane_id: %2
     role: Builder
     task_id: task-256
+    parent_run_id: operator:session-1
+    goal: Ship run contract primitives
     task: Implement run ledger
+    task_type: implementation
     task_state: in_progress
     task_owner: builder-1
     review_state: PENDING
+    priority: P0
+    blocking: true
     branch: worktree-builder-1
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
+    write_scope: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    read_scope: '["winsmux-core/scripts/pane-status.ps1"]'
+    constraints: '["preserve existing board schema"]'
+    expected_output: Stable run_packet JSON
+    verification_plan: '["Invoke-Pester tests/psmux-bridge.Tests.ps1","verify runs --json contract"]'
+    review_required: true
+    provider_target: codex:gpt-5.4
+    agent_role: worker
+    timeout_policy: standard
+    handoff_refs: '["docs/handoff.md"]'
     last_event: commander.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:runsManifestPath -Encoding UTF8
@@ -3076,6 +3091,21 @@ panes:
         @($result.runs[0].action_items | ForEach-Object { $_.kind }) | Should -Contain 'approval_waiting'
         @($result.runs[0].action_items | ForEach-Object { $_.kind }) | Should -Contain 'review_pending'
         $result.runs[0].changed_files | Should -Be @('scripts/winsmux-core.ps1')
+        $result.runs[0].run_packet.parent_run_id | Should -Be 'operator:session-1'
+        $result.runs[0].run_packet.goal | Should -Be 'Ship run contract primitives'
+        $result.runs[0].run_packet.task_type | Should -Be 'implementation'
+        $result.runs[0].run_packet.priority | Should -Be 'P0'
+        $result.runs[0].run_packet.blocking | Should -Be $true
+        $result.runs[0].run_packet.write_scope | Should -Be @('scripts/winsmux-core.ps1', 'tests/psmux-bridge.Tests.ps1')
+        $result.runs[0].run_packet.read_scope | Should -Be @('winsmux-core/scripts/pane-status.ps1')
+        $result.runs[0].run_packet.constraints | Should -Be @('preserve existing board schema')
+        $result.runs[0].run_packet.expected_output | Should -Be 'Stable run_packet JSON'
+        $result.runs[0].run_packet.verification_plan | Should -Be @('Invoke-Pester tests/psmux-bridge.Tests.ps1', 'verify runs --json contract')
+        $result.runs[0].run_packet.review_required | Should -Be $true
+        $result.runs[0].run_packet.provider_target | Should -Be 'codex:gpt-5.4'
+        $result.runs[0].run_packet.agent_role | Should -Be 'worker'
+        $result.runs[0].run_packet.timeout_policy | Should -Be 'standard'
+        $result.runs[0].run_packet.handoff_refs | Should -Be @('docs/handoff.md')
     }
 
     It 'supports winsmux runs --json through the top-level CLI entrypoint' {
@@ -3473,14 +3503,29 @@ panes:
     pane_id: %2
     role: Builder
     task_id: task-256
+    parent_run_id: operator:session-1
+    goal: Ship run contract primitives
     task: Implement run ledger
+    task_type: implementation
     task_state: in_progress
     task_owner: builder-1
     review_state: PENDING
+    priority: P0
+    blocking: true
     branch: worktree-builder-1
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
+    write_scope: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    read_scope: '["winsmux-core/scripts/pane-status.ps1"]'
+    constraints: '["preserve existing board schema"]'
+    expected_output: Stable run_packet JSON
+    verification_plan: '["Invoke-Pester tests/psmux-bridge.Tests.ps1","verify explain --json contract"]'
+    review_required: true
+    provider_target: codex:gpt-5.4
+    agent_role: worker
+    timeout_policy: standard
+    handoff_refs: '["docs/handoff.md"]'
     last_event: commander.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
@@ -3549,6 +3594,21 @@ panes:
 
         $result.run.run_id | Should -Be 'task:task-256'
         $result.run.task | Should -Be 'Implement run ledger'
+        $result.run_packet.parent_run_id | Should -Be 'operator:session-1'
+        $result.run_packet.goal | Should -Be 'Ship run contract primitives'
+        $result.run_packet.task_type | Should -Be 'implementation'
+        $result.run_packet.priority | Should -Be 'P0'
+        $result.run_packet.blocking | Should -Be $true
+        $result.run_packet.write_scope | Should -Be @('scripts/winsmux-core.ps1', 'tests/psmux-bridge.Tests.ps1')
+        $result.run_packet.read_scope | Should -Be @('winsmux-core/scripts/pane-status.ps1')
+        $result.run_packet.constraints | Should -Be @('preserve existing board schema')
+        $result.run_packet.expected_output | Should -Be 'Stable run_packet JSON'
+        $result.run_packet.verification_plan | Should -Be @('Invoke-Pester tests/psmux-bridge.Tests.ps1', 'verify explain --json contract')
+        $result.run_packet.review_required | Should -Be $true
+        $result.run_packet.provider_target | Should -Be 'codex:gpt-5.4'
+        $result.run_packet.agent_role | Should -Be 'worker'
+        $result.run_packet.timeout_policy | Should -Be 'standard'
+        $result.run_packet.handoff_refs | Should -Be @('docs/handoff.md')
         $result.evidence_digest.run_id | Should -Be 'task:task-256'
         $result.evidence_digest.next_action | Should -Be 'approval_waiting'
         $result.evidence_digest.changed_files | Should -Be @('scripts/winsmux-core.ps1')
@@ -3556,6 +3616,14 @@ panes:
         $result.explanation.reasons | Should -Contain 'task_state=in_progress'
         $result.explanation.reasons | Should -Contain 'review_state=PENDING'
         $result.review_state.status | Should -Be 'PENDING'
+        $result.result_packet.status | Should -Be 'in_progress'
+        $result.result_packet.summary | Should -Be 'commander.review_requested'
+        $result.result_packet.changed_files | Should -Be @('scripts/winsmux-core.ps1')
+        $result.result_packet.branch | Should -Be 'worktree-builder-1'
+        $result.result_packet.head_sha | Should -Be 'abc1234def5678'
+        $result.result_packet.next_action_hint | Should -Be 'approval_waiting'
+        $result.result_packet.review_recommendation | Should -Be 'PENDING'
+        $result.result_packet.evidence_refs | Should -Be @('scripts/winsmux-core.ps1')
         $result.recent_events.Count | Should -Be 2
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'commander.review_requested'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pane.approval_waiting'
