@@ -174,6 +174,9 @@ Describe 'Get-BridgeSettings' {
         $settings.legacy_role_layout | Should -Be $false
         $settings.commanders | Should -Be 0
         $settings.worker_count | Should -Be 6
+        $settings.agent_slots.Count | Should -Be 6
+        $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
+        $settings.agent_slots[0].runtime_role | Should -Be 'worker'
         $settings.builders | Should -Be 0
         $settings.researchers | Should -Be 0
         $settings.reviewers | Should -Be 0
@@ -224,6 +227,40 @@ terminal: tab
         $settings.vault_keys | Should -Be @('GH_TOKEN', 'OPENAI_API_KEY')
     }
 
+    It 'parses agent slot arrays and treats them as the source of truth for managed slot count' {
+@'
+agent: codex
+model: gpt-5.4
+external-commander: true
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    agent: claude
+    model: sonnet
+    worktree-mode: managed
+  - slot-id: worker-3
+    runtime-role: worker
+    agent: gemini
+    model: gemini-2.5-pro
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+
+        $settings.worker_count | Should -Be 3
+        $settings.agent_slots.Count | Should -Be 3
+        $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
+        $settings.agent_slots[1].agent | Should -Be 'claude'
+        $settings.agent_slots[2].model | Should -Be 'gemini-2.5-pro'
+    }
+
     It 'parses per-role agent and model overrides and falls back to global settings' {
         @'
 agent: codex
@@ -264,6 +301,73 @@ roles:
         $commanderConfig.Agent | Should -Be 'codex'
         $commanderConfig.Model | Should -Be 'gpt-5.4'
     }
+
+    It 'fails closed when explicit agent slot entries are malformed' {
+@'
+agent: codex
+model: gpt-5.4
+external-commander: true
+agent-slots:
+  - runtime-role: worker
+    agent: codex
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        { Get-BridgeSettings } | Should -Throw '*Invalid agent_slots configuration*'
+    }
+
+    It 'fails closed when explicit agent slots contain duplicate slot ids' {
+@'
+agent: codex
+model: gpt-5.4
+external-commander: true
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        { Get-BridgeSettings } | Should -Throw '*duplicate slot_id*'
+    }
+
+    It 'reads project settings from an explicit root path even when the current location differs' {
+        $projectRoot = Join-Path $script:settingsTempRoot 'repo-root'
+        $otherRoot = Join-Path $script:settingsTempRoot 'other-root'
+        New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+        New-Item -ItemType Directory -Path $otherRoot -Force | Out-Null
+
+@'
+agent: claude
+model: sonnet
+external-commander: true
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: claude
+    model: sonnet
+'@ | Set-Content -Path (Join-Path $projectRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        Push-Location $otherRoot
+        try {
+            $settings = Get-BridgeSettings -RootPath $projectRoot
+        } finally {
+            Pop-Location
+        }
+
+        $settings.agent | Should -Be 'claude'
+        $settings.model | Should -Be 'sonnet'
+        $settings.agent_slots.Count | Should -Be 1
+    }
 }
 
 Describe 'Get-OrchestraLayoutSettings' {
@@ -289,6 +393,73 @@ Describe 'Get-OrchestraLayoutSettings' {
         $layout.Builders | Should -Be 0
         $layout.Researchers | Should -Be 0
         $layout.Reviewers | Should -Be 0
+    }
+
+    It 'prefers explicit agent slots over worker_count when deriving managed slot count' {
+        $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
+            external_commander = $true
+            worker_count       = 2
+            agent_slots        = @(
+                [ordered]@{ slot_id = 'worker-1'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worktree_mode = 'managed' },
+                [ordered]@{ slot_id = 'worker-2'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worktree_mode = 'managed' },
+                [ordered]@{ slot_id = 'worker-3'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worktree_mode = 'managed' }
+            )
+            agent             = 'codex'
+            model             = 'gpt-5.4'
+            legacy_role_layout = $false
+            commanders         = 0
+            builders           = 0
+            researchers        = 0
+            reviewers          = 0
+        })
+
+        $layout.ExternalCommander | Should -Be $true
+        $layout.LegacyRoleLayout | Should -Be $false
+        $layout.Commanders | Should -Be 0
+        $layout.Workers | Should -Be 3
+    }
+
+    It 'rejects unsupported per-slot runtime overrides until slot runtime wiring exists' {
+        {
+            Get-OrchestraLayoutSettings -Settings ([ordered]@{
+                external_commander = $true
+                worker_count       = 2
+                agent_slots        = @(
+                    [ordered]@{ slot_id = 'worker-1'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worktree_mode = 'managed' },
+                    [ordered]@{ slot_id = 'worker-2'; runtime_role = 'worker'; agent = 'claude'; model = 'sonnet'; worktree_mode = 'managed' }
+                )
+                agent              = 'codex'
+                model              = 'gpt-5.4'
+                legacy_role_layout = $false
+                commanders         = 0
+                builders           = 0
+                researchers        = 0
+                reviewers          = 0
+            })
+        } | Should -Throw '*per-slot agent overrides are not supported yet at runtime*'
+    }
+
+    It 'writes project settings to an explicit root path and omits worker_count when agent slots are present' {
+        $projectRoot = Join-Path $script:settingsTempRoot 'repo-root'
+        New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+
+        Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{
+            agent              = 'codex'
+            model              = 'gpt-5.4'
+            external_commander = $true
+            worker_count       = 2
+            agent_slots        = @(
+                [ordered]@{ slot_id = 'worker-1'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worktree_mode = 'managed' },
+                [ordered]@{ slot_id = 'worker-2'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worktree_mode = 'managed' }
+            )
+            vault_keys         = @('GH_TOKEN')
+        })
+
+        $projectConfigPath = Join-Path $projectRoot '.winsmux.yaml'
+        Test-Path $projectConfigPath | Should -Be $true
+        $projectConfig = Get-Content -Raw -Path $projectConfigPath -Encoding UTF8
+        $projectConfig | Should -Match 'agent_slots:'
+        $projectConfig | Should -Not -Match 'worker_count:'
     }
 
     It 'preserves legacy role layouts when explicit legacy counts are configured' {

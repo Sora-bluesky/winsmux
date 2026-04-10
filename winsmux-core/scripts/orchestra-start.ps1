@@ -283,6 +283,14 @@ function Get-OrchestraLayoutSettings {
 
     $commanders = [int]$Settings.commanders
     $workers = [int]$Settings.worker_count
+    $agentSlots = @()
+    if ($Settings -is [System.Collections.IDictionary]) {
+        if ($Settings.Contains('agent_slots')) {
+            $agentSlots = @($Settings.agent_slots)
+        }
+    } elseif ($null -ne $Settings -and $null -ne $Settings.PSObject -and ($Settings.PSObject.Properties.Name -contains 'agent_slots')) {
+        $agentSlots = @($Settings.agent_slots)
+    }
     $builders = [int]$Settings.builders
     $researchers = [int]$Settings.researchers
     $reviewers = [int]$Settings.reviewers
@@ -291,6 +299,32 @@ function Get-OrchestraLayoutSettings {
 
     $legacyCount = $commanders + $builders + $researchers + $reviewers
     $useLegacyLayout = $legacyRoleLayout -or $legacyCount -gt 0
+
+    if (-not $useLegacyLayout -and $agentSlots.Count -gt 0) {
+        foreach ($slot in $agentSlots) {
+            $slotId = [string]$slot.slot_id
+            $slotRole = [string]$slot.runtime_role
+            $slotAgent = [string]$slot.agent
+            $slotModel = [string]$slot.model
+            $slotWorktreeMode = [string]$slot.worktree_mode
+
+            if (-not [string]::IsNullOrWhiteSpace($slotRole) -and $slotRole -ne 'worker') {
+                throw "agent_slots runtime_role overrides are not supported yet at runtime (slot '$slotId' requested '$slotRole')."
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($slotWorktreeMode) -and $slotWorktreeMode -ne 'managed') {
+                throw "agent_slots worktree_mode overrides are not supported yet at runtime (slot '$slotId' requested '$slotWorktreeMode')."
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($slotAgent) -and $slotAgent -ne [string]$Settings.agent) {
+                throw "agent_slots per-slot agent overrides are not supported yet at runtime (slot '$slotId' requested '$slotAgent')."
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($slotModel) -and $slotModel -ne [string]$Settings.model) {
+                throw "agent_slots per-slot model overrides are not supported yet at runtime (slot '$slotId' requested '$slotModel')."
+            }
+        }
+    }
 
     if ($useLegacyLayout) {
         return [ordered]@{
@@ -305,6 +339,9 @@ function Get-OrchestraLayoutSettings {
     }
 
     $managedCommanders = if ($externalCommander) { 0 } else { 1 }
+    if ($agentSlots.Count -gt 0) {
+        $workers = $agentSlots.Count
+    }
     if ($workers -lt 1) {
         throw "worker_count must be 1 or greater in external commander mode (got $workers)."
     }
@@ -1075,9 +1112,9 @@ if ($MyInvocation.InvocationName -ne '.') {
             exit 1
         }
 
-        $settings = Get-BridgeSettings
-        $layoutSettings = Get-OrchestraLayoutSettings -Settings $settings
         $projectDir = Get-ProjectDir
+        $settings = Get-BridgeSettings -RootPath $projectDir
+        $layoutSettings = Get-OrchestraLayoutSettings -Settings $settings
         Initialize-WinsmuxLog -ProjectDir $projectDir -SessionName $sessionName | Out-Null
         Write-WinsmuxLog -Level INFO -Event 'preflight.settings.loaded' -Message 'Loaded orchestra settings.' -Data @{
             agent              = $settings.agent
