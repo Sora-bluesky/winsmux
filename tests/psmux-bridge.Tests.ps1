@@ -70,6 +70,7 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'send' -TargetPane 'reviewer') | Should -Be $true
         (Assert-Role -Command 'status') | Should -Be $true
         (Assert-Role -Command 'board') | Should -Be $true
+        (Assert-Role -Command 'inbox') | Should -Be $true
         (Assert-Role -Command 'context-reset' -TargetPane 'reviewer') | Should -Be $true
         (Assert-Role -Command 'poll-events') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $true
@@ -83,6 +84,7 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'send' -TargetPane 'commander') | Should -Be $true
         (Assert-Role -Command 'status') | Should -Be $true
         (Assert-Role -Command 'board') | Should -Be $true
+        (Assert-Role -Command 'inbox') | Should -Be $true
         (Assert-Role -Command 'type' -TargetPane 'self') | Should -Be $true
         (Assert-Role -Command 'context-reset' -TargetPane 'commander') | Should -Be $false
         (Assert-Role -Command 'send' -TargetPane 'reviewer') | Should -Be $false
@@ -2624,6 +2626,287 @@ Invoke-Board -BoardTarget '--json'
         $result.summary.pane_count | Should -Be 1
         $result.panes[0].label | Should -Be 'builder-1'
         $result.panes[0].task_state | Should -Be 'in_progress'
+    }
+}
+
+Describe 'winsmux inbox command' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:inboxTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-inbox-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:inboxTempRoot -Force | Out-Null
+        $script:inboxManifestDir = Join-Path $script:inboxTempRoot '.winsmux'
+        New-Item -ItemType Directory -Path $script:inboxManifestDir -Force | Out-Null
+        $script:inboxManifestPath = Join-Path $script:inboxManifestDir 'manifest.yaml'
+        $script:inboxEventsPath = Join-Path $script:inboxManifestDir 'events.jsonl'
+
+        Push-Location $script:inboxTempRoot
+    }
+
+    AfterEach {
+        Pop-Location
+        if ($script:inboxTempRoot -and (Test-Path $script:inboxTempRoot)) {
+            Remove-Item -Path $script:inboxTempRoot -Recurse -Force
+        }
+
+        $global:Target = $null
+        $global:Rest = @()
+        Remove-Item function:\winsmux -ErrorAction SilentlyContinue
+    }
+
+    It 'renders actionable inbox items from manifest review and blocked state' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:inboxTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-245
+    task: Build inbox surface
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: review.requested
+    last_event_at: 2026-04-10T11:00:00+09:00
+  worker-1:
+    pane_id: %6
+    role: Worker
+    task_id: task-999
+    task: Fix blocker
+    task_state: blocked
+    task_owner: worker-1
+    review_state: ''
+    branch: worktree-worker-1
+    head_sha: def5678abc1234
+    changed_file_count: 0
+    changed_files: '[]'
+    last_event: commander.state_transition
+    last_event_at: 2026-04-10T11:05:00+09:00
+"@ | Set-Content -Path $script:inboxManifestPath -Encoding UTF8
+
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-10T11:02:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.approval_waiting'
+                message   = 'approval prompt detected'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                status    = 'approval_waiting'
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T11:06:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'commander.state_transition'
+                message   = 'State: review_requested -> blocked_no_review_target'
+                label     = ''
+                pane_id   = ''
+                role      = 'Commander'
+                status    = 'blocked_no_review_target'
+                data      = [ordered]@{
+                    from = 'review_requested'
+                    to   = 'blocked_no_review_target'
+                }
+            } | ConvertTo-Json -Compress)
+        ) | Set-Content -Path $script:inboxEventsPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                '^capture-pane .*%6' { return @('gpt-5.4   52% context left', 'thinking', 'Esc to interrupt') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $output = Invoke-Inbox | Out-String
+
+        $output | Should -Match 'review_pending'
+        $output | Should -Match 'approval_waiting'
+        $output | Should -Match 'task_blocked'
+        $output | Should -Match 'blocked'
+        $output | Should -Match 'builder-1'
+        $output | Should -Match 'worker-1'
+    }
+
+    It 'returns actionable inbox items as json' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:inboxTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-245
+    task: Build inbox surface
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: review.requested
+    last_event_at: 2026-04-10T11:00:00+09:00
+"@ | Set-Content -Path $script:inboxManifestPath -Encoding UTF8
+
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-10T11:02:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.approval_waiting'
+                message   = 'approval prompt detected'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                status    = 'approval_waiting'
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T11:07:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'commander.commit_ready'
+                message   = 'コミット準備完了。'
+                label     = ''
+                pane_id   = ''
+                role      = 'Commander'
+                status    = 'commit_ready'
+                head_sha  = 'abc1234def5678'
+            } | ConvertTo-Json -Compress)
+        ) | Set-Content -Path $script:inboxEventsPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = (Invoke-Inbox -InboxTarget '--json' | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.project_dir | Should -Be $script:inboxTempRoot
+        $result.summary.item_count | Should -Be 3
+        $result.summary.by_kind.review_pending | Should -Be 1
+        $result.summary.by_kind.approval_waiting | Should -Be 1
+        $result.summary.by_kind.commit_ready | Should -Be 1
+        @($result.items | ForEach-Object { $_.kind }) | Should -Contain 'review_pending'
+        @($result.items | ForEach-Object { $_.kind }) | Should -Contain 'approval_waiting'
+        @($result.items | ForEach-Object { $_.kind }) | Should -Contain 'commit_ready'
+    }
+
+    It 'supports winsmux inbox --json through the top-level CLI entrypoint' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:inboxTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-245
+    task: Build inbox surface
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: review.requested
+    last_event_at: 2026-04-10T11:00:00+09:00
+"@ | Set-Content -Path $script:inboxManifestPath -Encoding UTF8
+
+        ([ordered]@{
+            timestamp = '2026-04-10T11:02:00+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'pane.approval_waiting'
+            message   = 'approval prompt detected'
+            label     = 'builder-1'
+            pane_id   = '%2'
+            role      = 'Builder'
+            status    = 'approval_waiting'
+        } | ConvertTo-Json -Compress) | Set-Content -Path $script:inboxEventsPath -Encoding UTF8
+
+        $bridgeScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $childScript = @'
+Set-Item -Path function:winsmux -Value {
+    param([Parameter(ValueFromRemainingArguments = $true)][object[]]$args)
+    $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+    switch -Regex ($commandLine) {
+        '^capture-pane .*%2' { @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>'); break }
+        default { throw "unexpected winsmux call: $commandLine" }
+    }
+}
+Set-Location '__INBOX_TEMP_ROOT__'
+. '__BRIDGE_SCRIPT__' version *> $null
+Invoke-Inbox -InboxTarget '--json'
+'@
+        $childScript = $childScript.Replace('__INBOX_TEMP_ROOT__', $script:inboxTempRoot).Replace('__BRIDGE_SCRIPT__', $bridgeScript)
+        $output = & pwsh -NoProfile -Command $childScript
+
+        $result = ($output | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.summary.item_count | Should -Be 2
+        @($result.items | ForEach-Object { $_.kind }) | Should -Contain 'review_pending'
+        @($result.items | ForEach-Object { $_.kind }) | Should -Contain 'approval_waiting'
+    }
+
+    It 'classifies the actionable inbox event taxonomy' {
+        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'pane.approval_waiting'; status = 'approval_waiting' })) | Should -Be 'approval_waiting'
+        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'pane.idle'; status = 'ready' })) | Should -Be 'dispatch_needed'
+        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'pane.completed'; status = 'waiting_for_dispatch' })) | Should -Be 'task_completed'
+        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'pane.bootstrap_invalid'; status = 'bootstrap_invalid' })) | Should -Be 'bootstrap_invalid'
+        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'pane.crashed'; status = 'crashed' })) | Should -Be 'crashed'
+        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'pane.hung'; status = 'hung' })) | Should -Be 'hung'
+        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'pane.stalled'; status = 'stalled' })) | Should -Be 'stalled'
+        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'commander.state_transition'; status = 'blocked_no_review_target'; data = [ordered]@{ to = 'blocked_no_review_target' } })) | Should -Be 'blocked'
+        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'commander.commit_ready'; status = 'commit_ready' })) | Should -Be 'commit_ready'
+    }
+
+    It 'starts inbox stream after the current event cursor instead of replaying full history' {
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-10T11:02:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.approval_waiting'
+                message   = 'approval prompt detected'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                status    = 'approval_waiting'
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T11:03:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.ready'
+                message   = 'ready'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                status    = 'ready'
+            } | ConvertTo-Json -Compress)
+        ) | Set-Content -Path $script:inboxEventsPath -Encoding UTF8
+
+        $cursor = Get-InboxStreamStartCursor -ProjectDir $script:inboxTempRoot
+
+        $cursor | Should -Be 2
+        $delta = Get-BridgeEventDelta -ProjectDir $script:inboxTempRoot -Cursor $cursor
+        $delta.cursor | Should -Be 2
+        @($delta.events).Count | Should -Be 0
     }
 }
 

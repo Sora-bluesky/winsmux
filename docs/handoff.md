@@ -1,40 +1,40 @@
 # Handoff
 
-> Updated: 2026-04-10T10:05:33+09:00
+> Updated: 2026-04-10T11:05:00+09:00
 > Source of truth: this file
 
 ## Current state
 
-- `v0.19.5` is released.
-- `v0.19.6 hardening` is implemented, merged, and tracked as `100% (6/6)` in the external planning backlog/roadmap.
-- PR [#370](https://github.com/Sora-bluesky/winsmux/pull/370) is merged into `main`.
+- `v0.19.5` and `v0.19.6` are released.
+- `v0.19.6 hardening` is implemented, merged, released, and tracked as `100% (6/6)` in the external planning backlog/roadmap.
+- PR [#370](https://github.com/Sora-bluesky/winsmux/pull/370) and PR [#371](https://github.com/Sora-bluesky/winsmux/pull/371) are merged into `main`.
 - Planning source of truth is externalized outside the public repository and syncs automatically into the private planning root.
-- `v0.19.7 visible orchestration` is now `2/7` complete. `TASK-243` and `TASK-244` are done in external planning.
+- `v0.19.7 visible orchestration` is now `2/7` complete. `TASK-243` and `TASK-244` are done in external planning, and repo-side work has started on `TASK-245`.
 - `v0.24.0: Rust runtime convergence` exists in external planning as the pre-`v1.0.0` Rust unification milestone.
 
 ## This session
 
-- Merged the repo-side `v0.19.6` hardening closure.
-- Added a durable handoff maintenance rule to `AGENTS.md` so new sessions must refresh `docs/handoff.md` at milestone boundaries and before autonomous git progression.
-- Implemented `winsmux board` as the first visible orchestration surface for `TASK-244`.
-- Updated external planning so `TASK-244` is `done`, `v0.19.7` is `2/7`, and `v0.24.0` contains the Rust runtime convergence plan.
+- Merged the repo-side `TASK-244` session board surface via PR [#371](https://github.com/Sora-bluesky/winsmux/pull/371).
+- Released `v0.19.6` from tag `eac8615` and updated the public GitHub Release body to `/release-notes` format.
+- Added `winsmux inbox` as the first `TASK-245` surface: snapshot/json/stream for actionable approvals, review requests, failures, and blockers.
+- Updated external planning so `v0.19.8` remains visible, `v0.20.1` contains `TASK-272/273/274`, and `v0.24.0` keeps the Rust runtime convergence plan.
 
 ## Validation
 
-- Full local Pester suite passed: `171/171 PASS`
-- Targeted hardening suite passed earlier: `133/133 PASS`
-- `TASK-244` focused regression passed: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `82/82 PASS`
-- Current uncommitted board surface touches:
+- Release workflow passed: `Release Core Binary` for `v0.19.6`
+- `TASK-244` PR CI passed before merge
+- Current `TASK-245` focused regression passed: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `88/88 PASS`
+- Current uncommitted `TASK-245` touches:
   - `scripts/winsmux-core.ps1`
   - `winsmux-core/scripts/role-gate.ps1`
   - `tests/psmux-bridge.Tests.ps1`
 
 ## Next actions
 
-1. Commit and PR the repo-side `TASK-244` board surface.
-2. Release `v0.19.6` and prepare the release post draft.
-3. Continue `v0.19.7` with `TASK-245` or `TASK-256` after the board surface lands.
-4. Keep future backlog aligned with the `Operator / slot / provider` model and the new `v0.24.0` Rust convergence plan.
+1. Commit and PR the repo-side `TASK-245` inbox surface.
+2. Continue `v0.19.7` with `TASK-256` explain/run-ledger follow-up after inbox lands.
+3. Keep future backlog aligned with the `Operator / slot / provider / verification / security monitor` model.
+4. Preserve the private planning sync flow: user/agent visible, auto-synced, but not committed to the public repo.
 
 ## Notes
 
