@@ -263,8 +263,14 @@ function Get-OrchestraPaneReviewRecord {
             continue
         }
 
-        $targetLabel = [string](Get-OrchestraStateValue -InputObject $request -Name 'target_reviewer_label' -Default '')
-        $targetPaneId = [string](Get-OrchestraStateValue -InputObject $request -Name 'target_reviewer_pane_id' -Default '')
+        $targetLabel = [string](Get-OrchestraStateValue -InputObject $request -Name 'target_review_label' -Default '')
+        if ([string]::IsNullOrWhiteSpace($targetLabel)) {
+            $targetLabel = [string](Get-OrchestraStateValue -InputObject $request -Name 'target_reviewer_label' -Default '')
+        }
+        $targetPaneId = [string](Get-OrchestraStateValue -InputObject $request -Name 'target_review_pane_id' -Default '')
+        if ([string]::IsNullOrWhiteSpace($targetPaneId)) {
+            $targetPaneId = [string](Get-OrchestraStateValue -InputObject $request -Name 'target_reviewer_pane_id' -Default '')
+        }
         if ($targetLabel -eq $Label -or $targetPaneId -eq $PaneId) {
             return $entry
         }

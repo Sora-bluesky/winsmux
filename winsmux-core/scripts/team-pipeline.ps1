@@ -708,11 +708,12 @@ function Invoke-TeamPipeline {
             $verifyRole = 'Researcher'
         }
 
-        Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.reviewer.dispatched' -Message "Auto-dispatched review to $($targets.VerifyTarget) after builder completion." -Role $verifyRole -Target $targets.VerifyTarget -Data ([ordered]@{
+        Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.review.dispatched' -Message "Auto-dispatched review to $($targets.VerifyTarget) after builder completion." -Role $verifyRole -Target $targets.VerifyTarget -Data ([ordered]@{
             attempt              = $attemptIndex
             task                 = $Task
             builder              = $Builder
             builder_worktree_path = $builderContext.BuilderWorktreePath
+            verify_role          = $verifyRole
             summary              = $buildNotification.Summary
         }) | Out-Null
         Invoke-TeamPipelineBridge -Arguments @('send', $targets.VerifyTarget, $verifyPrompt) | Out-Null

@@ -900,9 +900,13 @@ function Invoke-CommanderStateMachine {
                         $sha = [string]$e['head_sha']
                         $rsRequest = $null
                         if ($e.Contains('request')) { $rsRequest = $e['request'] }
-                        $rsReviewerPaneId = ''
-                        if ($null -ne $rsRequest -and $rsRequest -is [System.Collections.IDictionary] -and $rsRequest.Contains('target_reviewer_pane_id')) {
-                            $rsReviewerPaneId = [string]$rsRequest['target_reviewer_pane_id']
+                        $rsReviewPaneId = ''
+                        if ($null -ne $rsRequest -and $rsRequest -is [System.Collections.IDictionary]) {
+                            if ($rsRequest.Contains('target_review_pane_id')) {
+                                $rsReviewPaneId = [string]$rsRequest['target_review_pane_id']
+                            } elseif ($rsRequest.Contains('target_reviewer_pane_id')) {
+                                $rsReviewPaneId = [string]$rsRequest['target_reviewer_pane_id']
+                            }
                         }
                         $manifestReviewPaneId = ''
                         $manifest2 = Read-CommanderPollManifest -Path $ManifestPath
@@ -910,13 +914,13 @@ function Invoke-CommanderStateMachine {
                         if ($null -ne $reviewPane) {
                             $manifestReviewPaneId = [string]$reviewPane.PaneId
                         }
-                        $reviewerMatch = [string]::IsNullOrWhiteSpace($rsReviewerPaneId) -or $rsReviewerPaneId -eq $manifestReviewPaneId
-                        if ($st -eq 'PASS' -and $sha -eq $headSha -and $reviewerMatch) {
+                        $reviewTargetMatch = [string]::IsNullOrWhiteSpace($rsReviewPaneId) -or $rsReviewPaneId -eq $manifestReviewPaneId
+                        if ($st -eq 'PASS' -and $sha -eq $headSha -and $reviewTargetMatch) {
                             Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
                                 -Event 'commander.review_passed' -Message "レビュー PASS。" -Branch $branch -HeadSha $headSha
                             $nextState = 'review_passed'
-                        } elseif ($st -eq 'PASS' -and $sha -eq $headSha -and -not $reviewerMatch) {
-                            Write-Warning "TASK-238: review PASS pane_id mismatch: review-state=$rsReviewerPaneId manifest=$manifestReviewPaneId"
+                        } elseif ($st -eq 'PASS' -and $sha -eq $headSha -and -not $reviewTargetMatch) {
+                            Write-Warning "TASK-238: review PASS pane_id mismatch: review-state=$rsReviewPaneId manifest=$manifestReviewPaneId"
                         } elseif ($st -eq 'FAIL') {
                             Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
                                 -Event 'commander.review_failed' -Message "レビュー FAIL。修正が必要。" -Branch $branch -HeadSha $headSha

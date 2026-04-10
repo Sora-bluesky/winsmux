@@ -366,6 +366,23 @@ function Get-ReviewStatePropertyValue {
     return $null
 }
 
+function Get-ReviewRequestTargetValue {
+    param(
+        [AllowNull()]$Request,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $primaryName = "target_review_$Name"
+    $legacyName = "target_reviewer_$Name"
+
+    $primaryValue = Get-ReviewStatePropertyValue -InputObject $Request -Name $primaryName
+    if ($null -ne $primaryValue -and -not [string]::IsNullOrWhiteSpace([string]$primaryValue)) {
+        return $primaryValue
+    }
+
+    return Get-ReviewStatePropertyValue -InputObject $Request -Name $legacyName
+}
+
 function Get-ReviewState {
     param([string]$ProjectDir = (Get-Location).Path)
 
@@ -3986,6 +4003,9 @@ function Invoke-ReviewRequest {
         id                      = New-ReviewRequestId
         branch                  = $branch
         head_sha                = $headSha
+        target_review_pane_id   = $context.PaneId
+        target_review_label     = $context.Label
+        target_review_role      = $context.Role
         target_reviewer_pane_id = $context.PaneId
         target_reviewer_label   = $context.Label
         target_reviewer_role    = $context.Role
@@ -4037,7 +4057,7 @@ function Invoke-ReviewApprove {
         Stop-WithError "review request pending for $branch was not found. Run: winsmux review-request"
     }
 
-    $requestPaneId = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'target_reviewer_pane_id')
+    $requestPaneId = [string](Get-ReviewRequestTargetValue -Request $request -Name 'pane_id')
     $requestBranch = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'branch')
     $requestHeadSha = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'head_sha')
 
@@ -4103,7 +4123,7 @@ function Invoke-ReviewFail {
         Stop-WithError "review request pending for $branch was not found. Run: winsmux review-request"
     }
 
-    $requestPaneId = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'target_reviewer_pane_id')
+    $requestPaneId = [string](Get-ReviewRequestTargetValue -Request $request -Name 'pane_id')
     $requestBranch = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'branch')
     $requestHeadSha = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'head_sha')
 

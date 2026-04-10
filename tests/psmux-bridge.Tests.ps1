@@ -1671,8 +1671,8 @@ tasks:
   "worktree-builder-1": {
     "status": "PENDING",
     "request": {
-      "target_reviewer_label": "reviewer",
-      "target_reviewer_pane_id": "%3"
+      "target_review_label": "reviewer",
+      "target_review_pane_id": "%3"
     }
   }
 }
@@ -4283,6 +4283,37 @@ panes:
         $reviewPane.PaneId | Should -Be '%2'
         $reviewPane.Label | Should -Be 'worker-1'
         $reviewPane.Role | Should -Be 'Worker'
+    }
+
+    It 'matches review-state records that use generic review target keys' {
+@"
+version: 1
+saved_at: 2026-04-09T11:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:commanderPollTempRoot
+panes:
+  worker-1:
+    pane_id: %2
+    role: Worker
+    launch_dir: $script:commanderPollTempRoot
+"@ | Set-Content -Path $script:commanderPollManifestPath -Encoding UTF8
+
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-state.ps1')
+
+        $reviewState = @{
+            'feature/test' = @{
+                status = 'PENDING'
+                request = @{
+                    target_review_label = 'worker-1'
+                    target_review_pane_id = '%2'
+                }
+            }
+        }
+
+        $record = Get-OrchestraPaneReviewRecord -ReviewState $reviewState -Branch '' -Label 'worker-1' -PaneId '%2' -Role 'Worker'
+
+        $record.status | Should -Be 'PENDING'
     }
 
     It 'appends commander poll log records as jsonl' {
