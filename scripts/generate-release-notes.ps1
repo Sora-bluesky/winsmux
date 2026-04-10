@@ -206,58 +206,58 @@ function ConvertTo-UserBenefit {
 
     switch -Regex ($Text) {
         'gate enforcement tests|test: move fixture temp dirs out of repo root|fix\(tests\): harden PowerShell native-exit handling' {
-            return 'CI とテスト実行の安定性を引き上げ、repo root の一時ファイル汚染を防いだ'
+            return 'Improved CI and test stability while preventing temporary test artifacts from polluting the repo root'
         }
         'runtime state machine|closed-loop dispatch/review/commit|closed-loop orchestra startup' {
-            return 'Commander が dispatch -> review -> commit を閉ループで回せる前提を整備'
+            return 'Established the closed-loop runtime required for dispatch -> review -> commit orchestration'
         }
         'Direct Commander.?Reviewer review flow|direct review flow' {
-            return 'Commander から Reviewer へ直接レビュー依頼できる流れを整備'
+            return 'Added a direct review handoff from the operator to the reviewer path'
         }
         'bootstrap invariants|bootstrap verification|cwd|WINSMUX_ROLE|pane_id mismatch|stale manifest invalidation' {
-            return 'pane の cwd / role / pane_id を起動時に検証し、ズレた状態を fail-close'
+            return 'Validate pane cwd / role / pane_id at startup and fail closed when bootstrap state drifts'
         }
         'Builder isolation|outside worktree|delegated write bypass|write-capable' {
-            return 'Builder の worktree 外書き込みと write bypass を遮断'
+            return 'Blocked direct write bypass and out-of-worktree writes from managed builder flows'
         }
         'first-class task and review state model|first-class pane state model|changed-files' {
-            return 'task / review / branch / changed-files を state として扱えるようにした'
+            return 'Promoted task, review, branch, and changed-files metadata to first-class runtime state'
         }
         'winsmux send silent failure|target pane.*not found|focus_pane_by_id|fail when target pane is missing' {
-            return '存在しない pane への送信が silent success せず、明示エラーで止まるように修正'
+            return 'Stop silent success when a target pane does not exist and fail explicitly instead'
         }
         'Monitoring stack non-functional|watchdog.?Commander delivery path missing' {
-            return 'watchdog から Commander への監視イベント配送を復旧'
+            return 'Restored watchdog-to-operator delivery for monitoring events'
         }
         'false success|pane creation does not actually occur|detached orchestra layout reliability' {
-            return '起動できていないのに success 扱いする経路を減らした'
+            return 'Reduced false-success paths where orchestra startup reported success without a real pane launch'
         }
         'Manifest convergence|split-brain schema|CLM-safe writes' {
-            return 'manifest schema を収束させ、CLM-safe write 経路に統一'
+            return 'Converged the manifest schema and unified CLM-safe write paths'
         }
         'Commander first-class defaults|default Commander pane|commanders=1' {
-            return 'default Commander pane と最小構成の起動前提を整理'
+            return 'Clarified the default operator pane assumptions and minimum startup layout'
         }
         'defaults alignment and pane status in manifest' {
-            return 'default Commander pane と pane status の初期状態を整理'
+            return 'Aligned default operator state and pane status initialization in the manifest'
         }
         'Reviewer-only|review-approve' {
-            return 'review-approve を Reviewer 専用に固定し、誤承認経路を塞いだ'
+            return 'Restricted review-approve to the reviewer path to close accidental approval routes'
         }
         'review-fail command|blocked_no_reviewer|review-fail' {
-            return 'review failure と reviewer 不在時の停止条件を明確化'
+            return 'Made review-failure and no-reviewer stop conditions explicit'
         }
         'Guard settings\.local\.json|hook disable' {
-            return '危険な hook disable 変更を approval なしで通しにくくした'
+            return 'Made dangerous hook-disable changes harder to land without an explicit approval path'
         }
         'Commander Telegram dense notifications' {
-            return 'Commander 向けの通知を整理し、承認待ちや状態変化を把握しやすくした'
+            return 'Reduced noisy operator notifications and improved visibility into approvals and state changes'
         }
         'pane\.completed|PostToolUse pane monitor hook' {
-            return 'pane completion を検知して Commander が次の判断をしやすくした'
+            return 'Surfaced pane completion events so the operator can make the next decision faster'
         }
         'complete psmux.?winsmux rename|send buffer overflow' {
-            return 'winsmux 名称統一と送信まわりの安定化を進めた'
+            return 'Continued the winsmux naming convergence and stabilized the send pipeline'
         }
         'bump version|sync backlog and roadmap' {
             return $null
@@ -492,19 +492,19 @@ $builder = New-Object System.Text.StringBuilder
 [void]$builder.AppendLine("## winsmux $Version")
 [void]$builder.AppendLine()
 $seenBenefits = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-Add-Section -Builder $builder -Title 'ハイライト' -Items $highlights -Seen $seenBenefits
-Add-Section -Builder $builder -Title '新機能' -Items $features -Seen $seenBenefits
-Add-Section -Builder $builder -Title '修正' -Items $fixes -Seen $seenBenefits
-Add-Section -Builder $builder -Title 'セキュリティ / ガード' -Items $security -Seen $seenBenefits
-Add-Section -Builder $builder -Title 'その他' -Items $other -Seen $seenBenefits
+Add-Section -Builder $builder -Title 'Highlights' -Items $highlights -Seen $seenBenefits
+Add-Section -Builder $builder -Title 'Features' -Items $features -Seen $seenBenefits
+Add-Section -Builder $builder -Title 'Fixes' -Items $fixes -Seen $seenBenefits
+Add-Section -Builder $builder -Title 'Security / Guardrails' -Items $security -Seen $seenBenefits
+Add-Section -Builder $builder -Title 'Other' -Items $other -Seen $seenBenefits
 
-[void]$builder.AppendLine('### 変更規模')
+[void]$builder.AppendLine('### Change Scope')
 [void]$builder.AppendLine()
-[void]$builder.AppendLine("- コミット範囲: ``$commitRange``")
+[void]$builder.AppendLine("- Commit range: ``$commitRange``")
 if ($doneTasksForVersion.Count -gt 0) {
-    [void]$builder.AppendLine("- backlog 上の完了タスク: $($doneTasksForVersion.Count) 件")
+    [void]$builder.AppendLine("- Completed backlog tasks for this version: $($doneTasksForVersion.Count)")
 }
-[void]$builder.AppendLine("- 公開 asset: ``winsmux-x64.exe``, ``winsmux-arm64.exe``, ``SHA256SUMS``")
+[void]$builder.AppendLine("- Published assets: ``winsmux-x64.exe``, ``winsmux-arm64.exe``, ``SHA256SUMS``")
 [void]$builder.AppendLine()
 [void]$builder.AppendLine('### Full Changelog')
 [void]$builder.AppendLine()

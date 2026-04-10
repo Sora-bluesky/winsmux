@@ -73,3 +73,13 @@ When updating handoff:
 - If work is still in progress, record the active task, branch, changed files scope, and latest validation status.
 - Reflect external planning truth when version progress changes.
 - Prefer exact identifiers: version, task IDs, PR numbers, release status.
+
+## Release Notes Policy
+
+GitHub Release titles and bodies must be written in English, regardless of the conversation language.
+
+When generating or editing a release:
+
+1. Use English section headings and bullets for the public GitHub Release body.
+2. Keep the GitHub Release body aligned with the `/release-notes` structure, but in English.
+3. Local or private post drafts may be Japanese if the task explicitly asks for them, but the public GitHub Release stays English.
