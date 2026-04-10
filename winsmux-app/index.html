@@ -9,6 +9,7 @@
   </head>
   <body>
     <div id="app-shell">
+      <div id="sidebar-overlay" hidden></div>
       <aside id="left-rail">
         <div class="brand-block">
           <div class="brand">winsmux</div>
@@ -44,6 +45,15 @@
           <div id="header-actions">
             <button
               class="ghost-btn"
+              id="toggle-sidebar-btn"
+              type="button"
+              aria-controls="left-rail"
+              aria-expanded="true"
+            >
+              Workspace
+            </button>
+            <button
+              class="ghost-btn"
               id="toggle-context-btn"
               type="button"
               aria-controls="context-panel"
@@ -69,10 +79,11 @@
               <span>winsmux session</span>
               <span>conversation shell</span>
             </div>
-            <div id="conversation-timeline"></div>
+            <div id="conversation-timeline" role="log" aria-live="polite" aria-relevant="additions text"></div>
             <form id="composer" autocomplete="off">
               <label class="sr-only" for="composer-input">Message the Operator</label>
               <textarea id="composer-input" rows="2" placeholder="Message the Operator... Dispatch, ask, review, or explain"></textarea>
+              <div id="composer-mode-row" aria-label="Composer modes"></div>
               <div id="composer-footer">
                 <div id="attachment-tray">
                   <button type="button" class="attachment-chip">Screen 1.png</button>
@@ -130,6 +141,25 @@
             <button id="add-pane-btn">+ Pane</button>
           </div>
           <div id="panes-container"></div>
+        </section>
+
+        <section id="settings-sheet" hidden role="dialog" aria-modal="false" aria-labelledby="settings-sheet-title">
+          <div class="panel-title-row">
+            <div class="panel-title" id="settings-sheet-title">Settings</div>
+            <button class="ghost-btn ghost-btn-small" id="close-settings-btn" type="button">Close</button>
+          </div>
+          <div class="settings-section">
+            <div class="context-label">Profile</div>
+            <div class="context-value">Local environment · GPT-5.4 · High reasoning</div>
+          </div>
+          <div class="settings-section">
+            <div class="context-label">Workspace</div>
+            <div class="context-value">Sidebar width, context collapse, terminal drawer behavior</div>
+          </div>
+          <div class="settings-section">
+            <div class="context-label">Input</div>
+            <div class="context-value">Enter sends, Shift+Enter inserts newline, IME composition is protected</div>
+          </div>
         </section>
       </main>
     </div>

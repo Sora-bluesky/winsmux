@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-10T18:02:00+09:00
+> Updated: 2026-04-10T18:18:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -42,6 +42,7 @@
 - Updated the Figma `winsmux Tauri Operator Workspace` file so the high-fi home screen shows the workspace sidebar, sticky composer, and footer/status lane together.
 - Added [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) and a matching `AGENTS.md` rule so direct Codex OSS UI reuse keeps Apache-2.0 attribution plus upstream source-path tracking in-repo, and documented the MIT-licensed legacy `psmux` compatibility surface from the core upstream for provenance.
 - Merged the `TASK-285` workspace-sidebar shell slice via PR [#385](https://github.com/Sora-bluesky/winsmux/pull/385), replacing the generic left-nav with a workspace sidebar and landing in-repo third-party UI provenance tracking.
+- Started the next `v0.21.0` UI slice on `codex/task297-sidebar-composer-responsive-20260410`, adding workspace-sidebar responsive behavior, composer mode chips, log semantics, and a settings/menu surface to advance `TASK-297`, `TASK-292`, `TASK-293`, and `TASK-294`.
 
 ## Validation
 
@@ -59,11 +60,11 @@
 - `TASK-263` explicit legacy opt-in regression passed before merge: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `115/115 PASS`.
 - `TASK-264` starter regression passed before merge: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `116/116 PASS`.
 - Current Tauri workspace-sidebar slice passes frontend build: `npm run build` in `winsmux-app`.
-- Repository is currently clean on `main`: `git status --short --branch` -> `## main...origin/main`.
+- Current `TASK-297/292/293/294` starter slice passes frontend build: `npm run build` in `winsmux-app`.
 
 ## Next actions
 
-1. Continue `v0.21.0` with `TASK-297` plus `TASK-292/293/294`, then align `TASK-107` implementation to the explicit secondary editor surface and workspace sidebar model.
+1. Review and publish the active `codex/task297-sidebar-composer-responsive-20260410` slice, then continue `v0.21.0` with `TASK-107` aligned to the explicit secondary editor surface model.
 2. Preserve the private planning sync flow: user/agent visible, auto-synced, but not committed to the public repo.
 3. Track GitHub Actions Node runtime warnings and update workflows before the Node 24 switch becomes mandatory.
 4. Run the next retro-review tranche over recent merged PRs after each milestone-close sequence.
