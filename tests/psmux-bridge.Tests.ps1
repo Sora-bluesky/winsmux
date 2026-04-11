@@ -170,6 +170,7 @@ Describe 'Get-BridgeSettings' {
 
         $settings.agent | Should -Be 'codex'
         $settings.model | Should -Be 'gpt-5.4'
+        $settings.prompt_transport | Should -Be 'argv'
         $settings.external_commander | Should -Be $true
         $settings.legacy_role_layout | Should -Be $false
         $settings.commanders | Should -Be 0
@@ -300,6 +301,71 @@ roles:
         $commanderConfig = Get-RoleAgentConfig -Role 'Commander' -Settings $settings
         $commanderConfig.Agent | Should -Be 'codex'
         $commanderConfig.Model | Should -Be 'gpt-5.4'
+    }
+
+    It 'parses per-role and slot-level prompt transport overrides with the same precedence as agent/model' {
+@'
+agent: codex
+model: gpt-5.4
+prompt-transport: argv
+roles:
+  worker:
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: file
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: claude
+    model: sonnet
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $settings.prompt_transport | Should -Be 'argv'
+        $settings.roles.worker.prompt_transport | Should -Be 'file'
+        $settings.agent_slots[0].prompt_transport | Should -Be 'argv'
+
+        $workerRoleConfig = Get-RoleAgentConfig -Role 'Worker' -Settings $settings
+        $workerRoleConfig.PromptTransport | Should -Be 'file'
+
+        $workerOneConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings
+        $workerOneConfig.PromptTransport | Should -Be 'argv'
+        $workerOneConfig.Source | Should -Be 'slot'
+
+        $workerTwoConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-2' -Settings $settings
+        $workerTwoConfig.PromptTransport | Should -Be 'file'
+        $workerTwoConfig.Source | Should -Be 'role'
+    }
+
+    It 'lets project prompt_transport override the global winsmux option' {
+@'
+prompt-transport: file
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption {
+            param($Name, $Default)
+
+            switch ($Name) {
+                '@bridge-prompt-transport' { 'argv' }
+                default { $null }
+            }
+        }
+
+        $settings = Get-BridgeSettings
+        $settings.prompt_transport | Should -Be 'file'
+    }
+
+    It 'fails closed when prompt_transport is unsupported' {
+@'
+prompt-transport: stdin
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        { Get-BridgeSettings } | Should -Throw '*prompt_transport*'
     }
 
     It 'prefers slot-level agent and model overrides when a matching slot id is provided' {
@@ -808,7 +874,54 @@ panes:
 
         $plan.Agent | Should -Be 'claude'
         $plan.Model | Should -Be 'sonnet'
+        $plan.PromptTransport | Should -Be 'argv'
         $plan.LaunchCommand | Should -Be 'claude --permission-mode bypassPermissions'
+    }
+
+    It 'includes slot-level prompt transport overrides in the restart plan' {
+@'
+version: 1
+saved_at: '2026-04-07T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: 'C:\repo'
+  git_worktree_dir: 'C:\repo\.git'
+panes:
+  - label: 'worker-1'
+    pane_id: '%2'
+    role: 'Worker'
+    exec_mode: false
+    launch_dir: 'C:\repo'
+    task: null
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            prompt_transport = 'argv'
+            roles = [ordered]@{
+                worker = [ordered]@{
+                    agent = 'codex'
+                    model = 'gpt-5.4'
+                    prompt_transport = 'file'
+                }
+            }
+            agent_slots = @(
+                [ordered]@{
+                    slot_id = 'worker-1'
+                    runtime_role = 'worker'
+                    agent = 'claude'
+                    model = 'sonnet'
+                    prompt_transport = 'argv'
+                }
+            )
+        }
+
+        $plan = Get-PaneControlRestartPlan -ProjectDir $script:paneControlTempRoot -PaneId '%2' -Settings $settings
+
+        $plan.Agent | Should -Be 'claude'
+        $plan.Model | Should -Be 'sonnet'
+        $plan.PromptTransport | Should -Be 'argv'
     }
 
     It 'updates launch_dir and builder_worktree_path together for builder panes' {
@@ -4107,6 +4220,20 @@ Describe 'winsmux send dispatch payload' {
         $promptContent = Get-Content -LiteralPath $payload['PromptPath'] -Raw -Encoding UTF8
         $promptContent.TrimEnd("`r", "`n") | Should -BeExactly $longText
         $payload['TextToSend'] | Should -Match ([regex]::Escape($payload['PromptReference']))
+    }
+
+    It 'always writes a dispatch file when prompt_transport is file' {
+        $payload = Resolve-SendDispatchPayload -Text 'Write-Host short' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -PromptTransport 'file'
+
+        $payload['PromptTransport'] | Should -Be 'file'
+        $payload['IsFileBacked'] | Should -Be $true
+        $payload['TextToSend'] | Should -Match "Read the full prompt from '"
+        $payload['PromptPath'] | Should -Not -BeNullOrEmpty
+        (Get-Content -LiteralPath $payload['PromptPath'] -Raw -Encoding UTF8).TrimEnd("`r", "`n") | Should -BeExactly 'Write-Host short'
+    }
+
+    It 'rejects unsupported prompt transport values' {
+        { Resolve-SendDispatchPayload -Text 'Write-Host short' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -PromptTransport 'stdin' } | Should -Throw '*prompt_transport*'
     }
 }
 

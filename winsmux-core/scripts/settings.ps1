@@ -17,6 +17,7 @@ $script:BridgeSettingsFileName = '.winsmux.yaml'
 $script:BridgeSettingsSchema = [ordered]@{
     agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
     model               = @{ Type = 'string';   Default = 'gpt-5.4';     Option = '@bridge-model' }
+    prompt_transport    = @{ Type = 'transport'; Default = 'argv';       Option = '@bridge-prompt-transport' }
     external_commander  = @{ Type = 'bool';     Default = $true;         Option = '@bridge-external-commander' }
     worker_count        = @{ Type = 'int';      Default = 6;             Option = '@bridge-worker-count' }
     agent_slots         = @{ Type = 'slotlist'; Default = @();           Option = $null }
@@ -207,7 +208,7 @@ function ConvertTo-BridgeSlotEntry {
     $slot = [ordered]@{}
     foreach ($pair in $pairs) {
         $key = $pair.Key.ToString() -replace '-', '_'
-        if ($key -notin @('slot_id', 'runtime_role', 'agent', 'model', 'worktree_mode')) {
+        if ($key -notin @('slot_id', 'runtime_role', 'agent', 'model', 'prompt_transport', 'worktree_mode')) {
             continue
         }
 
@@ -446,6 +447,26 @@ function Test-BridgeSettingValue {
                 }
             }
         }
+        'transport' {
+            $text = ConvertFrom-BridgeYamlScalar $Value
+            if ([string]::IsNullOrWhiteSpace($text)) {
+                return $false
+            }
+
+            switch ($text.Trim().ToLowerInvariant()) {
+                'argv' {
+                    $NormalizedValue.Value = 'argv'
+                    return $true
+                }
+                'file' {
+                    $NormalizedValue.Value = 'file'
+                    return $true
+                }
+                default {
+                    return $false
+                }
+            }
+        }
         'string[]' {
             $items = @()
 
@@ -511,7 +532,7 @@ function Test-BridgeSettingValue {
 
                 foreach ($rolePair in $rolePairs) {
                     $propertyKey = $rolePair.Key.ToString() -replace '-', '_'
-                    if ($propertyKey -notin @('agent', 'model')) {
+                    if ($propertyKey -notin @('agent', 'model', 'prompt_transport')) {
                         continue
                     }
 
@@ -609,6 +630,8 @@ function Read-BridgeGlobalSettings {
             } else {
                 $settings[$key] = $normalizedValue
             }
+        } elseif ($key -eq 'prompt_transport') {
+            throw "Invalid prompt_transport configuration: unsupported value '$rawValue'."
         }
     }
 
@@ -642,6 +665,10 @@ function Get-BridgeSettings {
 
     $rawProjectSettings = Read-BridgeProjectSettings -RootPath $RootPath
     $projectSettings = ConvertTo-BridgeSettingsSource $rawProjectSettings
+
+    if ($rawProjectSettings -is [System.Collections.IDictionary] -and $rawProjectSettings.Contains('prompt_transport') -and -not $projectSettings.Contains('prompt_transport')) {
+        throw "Invalid prompt_transport configuration: unsupported value '$($rawProjectSettings['prompt_transport'])'."
+    }
 
     if ($rawProjectSettings -is [System.Collections.IDictionary] -and $rawProjectSettings.Contains('agent_slots')) {
         $rawSlotEntries = @()
@@ -728,6 +755,14 @@ function Get-RoleAgentConfig {
 
     $agent = $Settings.agent
     $model = $Settings.model
+    $promptTransport = 'argv'
+    if ($Settings -is [System.Collections.IDictionary]) {
+        if ($Settings.Contains('prompt_transport') -and -not [string]::IsNullOrWhiteSpace([string]$Settings['prompt_transport'])) {
+            $promptTransport = [string]$Settings['prompt_transport']
+        }
+    } elseif ($null -ne $Settings.PSObject -and $Settings.PSObject.Properties.Name -contains 'prompt_transport' -and -not [string]::IsNullOrWhiteSpace([string]$Settings.prompt_transport)) {
+        $promptTransport = [string]$Settings.prompt_transport
+    }
 
     if ($resolvedRoleConfig -is [System.Collections.IDictionary]) {
         if ($resolvedRoleConfig.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['agent'])) {
@@ -737,6 +772,10 @@ function Get-RoleAgentConfig {
         if ($resolvedRoleConfig.Contains('model') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['model'])) {
             $model = [string]$resolvedRoleConfig['model']
         }
+
+        if ($resolvedRoleConfig.Contains('prompt_transport') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['prompt_transport'])) {
+            $promptTransport = [string]$resolvedRoleConfig['prompt_transport']
+        }
     } elseif ($null -ne $resolvedRoleConfig -and $null -ne $resolvedRoleConfig.PSObject) {
         if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'agent' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.agent)) {
             $agent = [string]$resolvedRoleConfig.agent
@@ -745,11 +784,16 @@ function Get-RoleAgentConfig {
         if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'model' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.model)) {
             $model = [string]$resolvedRoleConfig.model
         }
+
+        if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'prompt_transport' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.prompt_transport)) {
+            $promptTransport = [string]$resolvedRoleConfig.prompt_transport
+        }
     }
 
     return [PSCustomObject]@{
-        Agent = [string]$agent
-        Model = [string]$model
+        Agent           = [string]$agent
+        Model           = [string]$model
+        PromptTransport = [string]$promptTransport
     }
 }
 
@@ -767,6 +811,7 @@ function Get-SlotAgentConfig {
     $roleAgentConfig = Get-RoleAgentConfig -Role $Role -Settings $Settings
     $agent = [string]$roleAgentConfig.Agent
     $model = [string]$roleAgentConfig.Model
+    $promptTransport = [string]$roleAgentConfig.PromptTransport
     $source = 'role'
 
     if (-not [string]::IsNullOrWhiteSpace($SlotId)) {
@@ -787,6 +832,7 @@ function Get-SlotAgentConfig {
             $candidateSlotId = ''
             $slotAgent = ''
             $slotModel = ''
+            $slotPromptTransport = ''
 
             if ($slot -is [System.Collections.IDictionary]) {
                 if ($slot.Contains('slot_id')) {
@@ -798,6 +844,9 @@ function Get-SlotAgentConfig {
                 if ($slot.Contains('model')) {
                     $slotModel = [string]$slot['model']
                 }
+                if ($slot.Contains('prompt_transport')) {
+                    $slotPromptTransport = [string]$slot['prompt_transport']
+                }
             } elseif ($null -ne $slot.PSObject) {
                 if ($slot.PSObject.Properties.Name -contains 'slot_id') {
                     $candidateSlotId = [string]$slot.slot_id
@@ -807,6 +856,9 @@ function Get-SlotAgentConfig {
                 }
                 if ($slot.PSObject.Properties.Name -contains 'model') {
                     $slotModel = [string]$slot.model
+                }
+                if ($slot.PSObject.Properties.Name -contains 'prompt_transport') {
+                    $slotPromptTransport = [string]$slot.prompt_transport
                 }
             }
 
@@ -824,15 +876,21 @@ function Get-SlotAgentConfig {
                 $source = 'slot'
             }
 
+            if (-not [string]::IsNullOrWhiteSpace($slotPromptTransport)) {
+                $promptTransport = $slotPromptTransport
+                $source = 'slot'
+            }
+
             break
         }
     }
 
     return [PSCustomObject]@{
-        SlotId = [string]$SlotId
-        Agent  = [string]$agent
-        Model  = [string]$model
-        Source = [string]$source
+        SlotId          = [string]$SlotId
+        Agent           = [string]$agent
+        Model           = [string]$model
+        PromptTransport = [string]$promptTransport
+        Source          = [string]$source
     }
 }
 

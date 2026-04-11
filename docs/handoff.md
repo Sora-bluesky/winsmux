@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-11T11:58:00+09:00
+> Updated: 2026-04-11T14:25:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -18,6 +18,12 @@
 
 ## This session
 
+- Expanded the public operator contract in [docs/operator-model.md](../docs/operator-model.md) to add `Observation Pack`, `Consultation loop`, `Consult-capable slots`, `Experiment isolation and compare`, and `Tactic promotion` as first-class winsmux concepts.
+- Updated the external planning backlog so `TASK-114`, `TASK-187`, `TASK-191`, `TASK-286`, and `TASK-299` explicitly cover experiment-ledger and consultation semantics, and added `TASK-300` through `TASK-305` for observation packs, consultation packets, consult-capable slots, experiment compare, tactic promotion, and the Tauri experiment board.
+- Updated the Figma `winsmux Tauri Operator Workspace` file with a new `E. Experiment Loop & Consultation` section that maps `Experiments`, consultation cards, compare views, and playbook promotion into the sidebar, conversation shell, context side sheet, and command bar.
+- Started the repo-side `TASK-187` first slice locally by introducing `prompt_transport` settings precedence (`global -> role -> slot`) with built-in `argv` default and fail-closed rejection for unsupported values such as `stdin`.
+- Extracted send-path transport planning in [scripts/winsmux-core.ps1](../scripts/winsmux-core.ps1) so normal sends and `codex exec` sends now share a single transport-plan entry point while preserving file-backed prompt handoff as the first stable transport abstraction.
+- Extended [tests/psmux-bridge.Tests.ps1](../tests/psmux-bridge.Tests.ps1) to cover prompt-transport settings precedence, restart-plan propagation, and file-forced dispatch payload behavior, and updated [winsmux-core/scripts/pane-control.ps1](../winsmux-core/scripts/pane-control.ps1) to surface the resolved `PromptTransport` in restart plans.
 - Merged `TASK-287` via PR [#393](https://github.com/Sora-bluesky/winsmux/pull/393), adding the keyboard-first operator command bar (`Ctrl/Cmd+K`) with quick actions, IME-safe input handling, focus restore, and accessible active-option semantics.
 - Merged `TASK-298` via PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), rewriting `README.ja.md` to match the public operator model, shrinking maintainer-only planning readmes into internal stubs, and making tracked public config/docs safer for external users.
 - Re-synced the external planning backlog/roadmap after PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), marking `TASK-298` as done so `v0.20.0` now shows `100% (12/12)`.
@@ -94,12 +100,13 @@
 - Current `TASK-287` command-bar slice passes frontend build: `npm run build` in `winsmux-app`.
 - `TASK-298` docs/config cleanup landed via PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394); its CI `Pester Tests` run `24271531120` passed before merge.
 - `v0.20.0` release workflow run `24276032671` completed successfully and published `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
+- Current local `TASK-187` transport slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `122/122 PASS`.
 
 ## Next actions
 
-1. Commit and push the release-note generator fix so future GitHub Releases use the Codex-style headings without manual cleanup.
-2. Preserve the private planning sync flow: user/agent visible, auto-synced, but not committed to the public repo.
-3. Run the next retro-review tranche over recent merged PRs after each milestone-close sequence.
+1. Commit and review the current `TASK-187` first slice, then open the PR with the existing `argv/file` transport contract and `stdin` fail-close behavior made explicit.
+2. Follow with `TASK-114` so the event ledger becomes an experiment ledger with searchable `hypothesis / test_plan / result / consultation_ref` fields.
+3. Keep the external planning sync flow user-visible but out of the public repo, then reflect consultation/experiment surfaces into the Tauri shell as `TASK-305` approaches.
 
 ## Notes
 
