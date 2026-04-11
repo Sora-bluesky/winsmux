@@ -93,8 +93,17 @@ GitHub Release titles and bodies must be written in English, regardless of the c
 When generating or editing a release:
 
 1. Use English section headings and bullets for the public GitHub Release body.
-2. Keep the GitHub Release body aligned with the `/release-notes` structure, but in English.
-3. Local or private post drafts may be Japanese if the task explicitly asks for them, but the public GitHub Release stays English.
+2. Follow the Codex GitHub Release template structure used in `openai/codex` releases.
+   - Preferred headings are:
+     - `New Features`
+     - `Bug Fixes`
+     - `Documentation`
+     - `Chores`
+     - `Full Changelog`
+   - Omit empty sections rather than invent filler.
+3. Keep the GitHub Release body aligned with the `/release-notes` structure, but in English and mapped onto the Codex-style headings above.
+4. Link the compare range in `Full Changelog` when the repository and tag range support it.
+5. Local or private post drafts may be Japanese if the task explicitly asks for them, but the public GitHub Release stays English.
 
 ## Third-Party UI Attribution
 

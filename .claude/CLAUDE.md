@@ -60,6 +60,7 @@ The default orchestra model is:
 - The operator communicates with users through a channel layer, not through direct pane ownership.
 - Review is a slot capability and may be served by different panes over time.
 - winsmux hooks and role gates are the enforcement surface; this file is guidance only.
+- Public GitHub Releases should follow the English Codex-style release template (`New Features`, `Bug Fixes`, `Documentation`, `Chores`, `Full Changelog`).
 
 ## Practical commands
 
