@@ -187,24 +187,43 @@ function New-SendDispatchPointerText {
     return "Read the full prompt from '$promptRef' and follow it exactly. This pointer was sent because the original prompt exceeded the send buffer."
 }
 
+function Resolve-SupportedPromptTransport {
+    param([AllowEmptyString()][string]$PromptTransport = 'argv')
+
+    $resolved = if ([string]::IsNullOrWhiteSpace($PromptTransport)) {
+        'argv'
+    } else {
+        $PromptTransport.Trim().ToLowerInvariant()
+    }
+
+    if ($resolved -notin @('argv', 'file')) {
+        throw "Unsupported prompt_transport setting: $PromptTransport"
+    }
+
+    return $resolved
+}
+
 function Resolve-SendDispatchPayload {
     param(
         [Parameter(Mandatory = $true)][string]$Text,
         [string]$ProjectDir = (Get-Location).Path,
-        [int]$LengthLimit = 4000
+        [int]$LengthLimit = 4000,
+        [string]$PromptTransport = 'argv'
     )
 
+    $resolvedPromptTransport = Resolve-SupportedPromptTransport -PromptTransport $PromptTransport
     $payload = [ordered]@{
-        TextToSend     = $Text
-        PromptPath     = $null
+        TextToSend      = $Text
+        PromptPath      = $null
         PromptReference = $null
-        IsFileBacked   = $false
-        TextLength     = $Text.Length
-        LengthLimit    = $LengthLimit
-        FallbackMode   = 'pointer'
+        IsFileBacked    = $false
+        TextLength      = $Text.Length
+        LengthLimit     = $LengthLimit
+        FallbackMode    = 'pointer'
+        PromptTransport = $resolvedPromptTransport
     }
 
-    if ($Text.Length -le $LengthLimit) {
+    if ($resolvedPromptTransport -eq 'argv' -and $Text.Length -le $LengthLimit) {
         return $payload
     }
 
@@ -215,6 +234,75 @@ function Resolve-SendDispatchPayload {
     $payload['TextToSend'] = New-SendDispatchPointerText -PromptPath $promptPath -ProjectDir $ProjectDir
 
     return $payload
+}
+
+function ConvertTo-DispatchPowerShellLiteral {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    $paneControlLiteralHelper = Get-Command ConvertTo-PaneControlPowerShellLiteral -ErrorAction SilentlyContinue
+    if ($null -ne $paneControlLiteralHelper) {
+        return ConvertTo-PaneControlPowerShellLiteral -Value $Value
+    }
+
+    $genericLiteralHelper = Get-Command ConvertTo-PowerShellLiteral -ErrorAction SilentlyContinue
+    if ($null -ne $genericLiteralHelper) {
+        return ConvertTo-PowerShellLiteral -Value $Value
+    }
+
+    return "'" + ($Value -replace "'", "''") + "'"
+}
+
+function Resolve-SendTransportPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [string]$ProjectDir = (Get-Location).Path,
+        [int]$LengthLimit = 4000,
+        [string]$PromptTransport = 'argv',
+        [bool]$ExecMode = $false,
+        [string]$LaunchDir,
+        [string]$GitWorktreeDir,
+        [string]$Model
+    )
+
+    $resolvedPromptTransport = Resolve-SupportedPromptTransport -PromptTransport $PromptTransport
+    if (-not $ExecMode) {
+        $payload = Resolve-SendDispatchPayload -Text $Text -ProjectDir $ProjectDir -LengthLimit $LengthLimit -PromptTransport $resolvedPromptTransport
+        return [ordered]@{
+            Mode            = if ($payload['IsFileBacked']) { 'pointer' } else { 'inline' }
+            TextToSend      = [string]$payload['TextToSend']
+            PromptPath      = $payload['PromptPath']
+            PromptReference = $payload['PromptReference']
+            IsFileBacked    = [bool]$payload['IsFileBacked']
+            TextLength      = [int]$payload['TextLength']
+            LengthLimit     = [int]$payload['LengthLimit']
+            FallbackMode    = [string]$payload['FallbackMode']
+            PromptTransport = [string]$payload['PromptTransport']
+            ExecInstruction = $null
+        }
+    }
+
+    $promptPath = New-DispatchPromptFile -Content $Text -ProjectDir $ProjectDir -Prefix 'send-command'
+    $outputPath = '{0}.last-message.txt' -f $promptPath
+    $promptInstruction = 'Read the prompt file at {0} and follow its instructions' -f $promptPath
+    $execInstruction = 'codex exec --sandbox danger-full-access -C {0} --add-dir {1} -o {2} -m {3} {4}' -f `
+        (ConvertTo-DispatchPowerShellLiteral -Value $LaunchDir), `
+        (ConvertTo-DispatchPowerShellLiteral -Value $GitWorktreeDir), `
+        (ConvertTo-DispatchPowerShellLiteral -Value $outputPath), `
+        (ConvertTo-DispatchPowerShellLiteral -Value $Model), `
+        (ConvertTo-DispatchPowerShellLiteral -Value $promptInstruction)
+
+    return [ordered]@{
+        Mode            = 'codex_exec_file'
+        TextToSend      = $null
+        PromptPath      = $promptPath
+        PromptReference = Get-DispatchPromptReference -PromptPath $promptPath -ProjectDir $ProjectDir
+        IsFileBacked    = $true
+        TextLength      = $Text.Length
+        LengthLimit     = $LengthLimit
+        FallbackMode    = 'exec_file'
+        PromptTransport = $resolvedPromptTransport
+        ExecInstruction = $execInstruction
+    }
 }
 
 function Convert-MsysTmpPathToWindowsPath {
@@ -1370,13 +1458,13 @@ function Invoke-Send {
     $projectDir = (Get-Location).Path
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
-    $textToSend = $text
-    $dispatchPayload = Resolve-SendDispatchPayload -Text $text -ProjectDir $projectDir -LengthLimit 4000
-
-    if ($dispatchPayload['IsFileBacked']) {
-        $textToSend = [string]$dispatchPayload['TextToSend']
-        Write-Warning ("send target '{0}' exceeded {1} chars ({2}); wrote full text to {3} and sent a prompt-file pointer instead." -f $Target, $dispatchPayload['LengthLimit'], $dispatchPayload['TextLength'], $dispatchPayload['PromptPath'])
+    $context = $null
+    $agentConfig = [ordered]@{
+        Agent           = 'codex'
+        Model           = 'gpt-5.4'
+        PromptTransport = 'argv'
     }
+    $execMode = $false
 
     try {
         if (Test-Path $PaneControlScript -PathType Leaf) {
@@ -1386,11 +1474,14 @@ function Invoke-Send {
         if (Test-Path $BridgeSettingsScript -PathType Leaf) {
             . $BridgeSettingsScript
         }
+    } catch {
+    }
 
-        $hasManifestHelper = Get-Command Get-PaneControlManifestContext -ErrorAction SilentlyContinue
-        $hasRoleConfigHelper = Get-Command Get-RoleAgentConfig -ErrorAction SilentlyContinue
-        if ($null -ne $hasManifestHelper -and $null -ne $hasRoleConfigHelper) {
-            $projectDir = (Get-Location).Path
+    $hasManifestHelper = Get-Command Get-PaneControlManifestContext -ErrorAction SilentlyContinue
+    $hasRoleConfigHelper = Get-Command Get-RoleAgentConfig -ErrorAction SilentlyContinue
+    $manifestPath = Join-Path $projectDir '.winsmux\manifest.yaml'
+    if ($null -ne $hasManifestHelper -and $null -ne $hasRoleConfigHelper -and (Test-Path $manifestPath -PathType Leaf)) {
+        try {
             $context = Get-PaneControlManifestContext -ProjectDir $projectDir -PaneId $paneId
             if ($null -ne $context -and -not [string]::IsNullOrWhiteSpace([string]$context.ManifestPath)) {
                 $manifestContent = Get-Content -LiteralPath $context.ManifestPath -Raw -Encoding UTF8
@@ -1398,6 +1489,12 @@ function Invoke-Send {
                 $manifestPane = $null
                 if ($null -ne $manifest -and $null -ne $manifest.Panes -and $manifest.Panes.Contains([string]$context.Label)) {
                     $manifestPane = $manifest.Panes[[string]$context.Label]
+                }
+
+                if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
+                    $agentConfig = Get-SlotAgentConfig -Role $context.Role -SlotId $context.Label
+                } else {
+                    $agentConfig = Get-RoleAgentConfig -Role $context.Role
                 }
 
                 $execModeValue = ''
@@ -1409,47 +1506,32 @@ function Invoke-Send {
                     }
                 }
 
-                $roleAgentConfig = Get-RoleAgentConfig -Role $context.Role
-                $agent = [string]$roleAgentConfig.Agent
-                if ($execModeValue.Trim().ToLowerInvariant() -eq 'true' -and $agent.Trim().ToLowerInvariant() -eq 'codex') {
-                    $quotePowerShellLiteral = {
-                        param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
-
-                        $paneControlLiteralHelper = Get-Command ConvertTo-PaneControlPowerShellLiteral -ErrorAction SilentlyContinue
-                        if ($null -ne $paneControlLiteralHelper) {
-                            return ConvertTo-PaneControlPowerShellLiteral -Value $Value
-                        }
-
-                        $genericLiteralHelper = Get-Command ConvertTo-PowerShellLiteral -ErrorAction SilentlyContinue
-                        if ($null -ne $genericLiteralHelper) {
-                            return ConvertTo-PowerShellLiteral -Value $Value
-                        }
-
-                        throw 'No PowerShell literal helper is available.'
-                    }
-
-                    $promptPath = New-DispatchPromptFile -Content $text -ProjectDir $projectDir
-                    $outputPath = '{0}.last-message.txt' -f $promptPath
-                    $launchDir = [string]$context.LaunchDir
-                    $gitWorktreeDir = [string]$context.GitWorktreeDir
-                    $model = [string]$roleAgentConfig.Model
-                    $promptInstruction = 'Read the prompt file at {0} and follow its instructions' -f $promptPath
-                    $dispatchCommand = 'codex exec --sandbox danger-full-access -C {0} --add-dir {1} -o {2} -m {3} {4}' -f `
-                        (& $quotePowerShellLiteral $launchDir), `
-                        (& $quotePowerShellLiteral $gitWorktreeDir), `
-                        (& $quotePowerShellLiteral $outputPath), `
-                        (& $quotePowerShellLiteral $model), `
-                        (& $quotePowerShellLiteral $promptInstruction)
-
-                    Send-TextToPane -PaneId $paneId -CommandText $dispatchCommand
-                    return
-                }
+                $execMode = $execModeValue.Trim().ToLowerInvariant() -eq 'true' -and [string]$agentConfig.Agent -eq 'codex'
             }
+        } catch {
         }
-    } catch {
     }
 
-    Send-TextToPane -PaneId $paneId -CommandText $textToSend
+    $transportPlan = Resolve-SendTransportPlan `
+        -Text $text `
+        -ProjectDir $projectDir `
+        -LengthLimit 4000 `
+        -PromptTransport ([string]$agentConfig.PromptTransport) `
+        -ExecMode:$execMode `
+        -LaunchDir ([string]$context.LaunchDir) `
+        -GitWorktreeDir ([string]$context.GitWorktreeDir) `
+        -Model ([string]$agentConfig.Model)
+
+    if ($transportPlan['Mode'] -eq 'codex_exec_file') {
+        Send-TextToPane -PaneId $paneId -CommandText ([string]$transportPlan['ExecInstruction'])
+        return
+    }
+
+    if ($transportPlan['IsFileBacked']) {
+        Write-Warning ("send target '{0}' used prompt_transport={1}; wrote full text to {2} and sent a prompt-file pointer instead." -f $Target, $transportPlan['PromptTransport'], $transportPlan['PromptPath'])
+    }
+
+    Send-TextToPane -PaneId $paneId -CommandText ([string]$transportPlan['TextToSend'])
 }
 
 function Invoke-Name {

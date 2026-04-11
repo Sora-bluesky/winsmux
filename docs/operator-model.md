@@ -139,3 +139,73 @@ Pane result reports should follow the shared `AGENT-BASE.md` report shape:
 - `RESULT`
 - `FILES_CHANGED`
 - `ISSUES`
+
+## 8. Observation packs
+
+Before substantive work, the operator should perform a small orientation pass and package the result as an **observation pack** for the target pane or slot.
+
+Observation packs are not freeform prose. They are evidence bundles that can be compared across runs and experiments.
+
+An observation pack should include, when available:
+
+- changed files
+- working tree summary
+- failing command or failing check
+- last passing signal
+- branch/head
+- worktree
+- CI, build, cache, and environment signals
+- relevant links or prior evidence references
+
+## 9. Consultation loop
+
+When the operator judges a task to be difficult, ambiguous, or non-converging, it should consult a **consult-capable slot**.
+
+The standard consultation timings are:
+
+- after initial orientation, before substantive work
+- when stuck
+- when considering a change of approach
+- when evidence conflicts
+- before declaring the task done
+
+Consultation results are advisory. The operator owns the final accept/reject judgement.
+
+## 10. Consult-capable slots
+
+Consultation is handled as a slot capability, similar to review capability.
+
+- no dedicated consultation pane is required
+- Codex is the default consultation candidate for code, build, and debug work
+- Gemini is the default consultation candidate for long-context, multimodal, policy, or specification work
+- other providers may advertise consultation capability in the same slot model
+
+In **advisory mode**, a consult-capable slot does not perform file mutation or destructive command execution. It returns recommendations, risks, confidence, and the next test to run.
+
+The default policy is:
+
+- up to 2 consultation calls per run
+- a 3rd call is allowed only for stuck-state recovery or evidence reconciliation
+
+## 11. Experiment isolation and compare
+
+Hypothesis-driven work should be isolated by run, slot, and worktree.
+
+- one hypothesis should map to one run
+- parallel experiments should use separate slots or worktrees
+- comparison should happen on top of the run ledger, not ad hoc operator memory
+
+The operator uses these isolated runs to compare evidence, detect conflicts, and choose the next experiment.
+
+## 12. Tactic promotion
+
+When a run finds a repeatable winning tactic, winsmux should promote it instead of leaving it as one-off tribal knowledge.
+
+Promotion targets include:
+
+- playbooks
+- prewarm candidates
+- verification presets
+- reusable investigation prompts
+
+This keeps successful debugging, build, and verification loops durable and reusable across future runs.
