@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-11T19:20:06+09:00
+> Updated: 2026-04-11T20:24:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -30,6 +30,7 @@
 - Started the repo-side `TASK-114` first slice locally by extending `runs / digest / explain` to surface a new `experiment_packet` assembled from event-ledger data without changing the existing `run_packet` contract.
 - Added strict experiment-event correlation so experiment packets prefer `run_id / task_id / pane_id / label` over branch-only matching, and added a branch-collision regression to keep parallel hypothesis runs from cross-contaminating each other.
 - Extended [tests/psmux-bridge.Tests.ps1](../tests/psmux-bridge.Tests.ps1) so `winsmux runs --json`, `winsmux digest --json`, `winsmux explain --json`, and explain follow-delta all cover experiment-ledger fields plus a negative case where `experiment_packet` remains null when no experiment metadata exists.
+- Started the repo-side `TASK-301` write-side slice locally by adding consultation writer helpers and thin CLI commands that file `consult_request / consult_result / consult_error` packets under `.winsmux/consultations`, append corresponding bridge events, and project `result / confidence / next_action` back into the existing experiment ledger.
 - Merged `TASK-287` via PR [#393](https://github.com/Sora-bluesky/winsmux/pull/393), adding the keyboard-first operator command bar (`Ctrl/Cmd+K`) with quick actions, IME-safe input handling, focus restore, and accessible active-option semantics.
 - Merged `TASK-298` via PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), rewriting `README.ja.md` to match the public operator model, shrinking maintainer-only planning readmes into internal stubs, and making tracked public config/docs safer for external users.
 - Re-synced the external planning backlog/roadmap after PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), marking `TASK-298` as done so `v0.20.0` now shows `100% (12/12)`.
@@ -109,12 +110,13 @@
 - `TASK-187` transport slice passed focused regression before merge: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `122/122 PASS`.
 - Current local `TASK-114` experiment-ledger slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `123/123 PASS`.
 - PR [#396](https://github.com/Sora-bluesky/winsmux/pull/396) CI passed before merge: `Pester Tests` run `24280233475`.
+- Current local `TASK-301` write-side consultation slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `130/130 PASS`.
 
 ## Next actions
 
-1. Start `TASK-300` / `TASK-301` so observation packs and consultation packets become file-backed, first-class ledger inputs instead of read-only fields.
-2. Keep the external planning sync flow user-visible but out of the public repo, then reflect consultation/experiment surfaces into the Tauri shell as `TASK-305` approaches.
-3. Use the rebalanced roadmap as the release train baseline: `v0.21.0` for slot dispatch core, `v0.21.1` for compare/promotion, and `v0.22.0` for backend-first Tauri foundation only.
+1. Commit and review the current `TASK-301` write-side consultation slice, then open the PR with consultation packet writers and bridge-event append helpers.
+2. After `TASK-301`, move to `TASK-191` so one-shot orchestration can insert consult steps without hard-coding vendor-specific advisor behavior.
+3. Keep the external planning sync flow user-visible but out of the public repo, then reflect consultation/experiment surfaces into the Tauri shell as `TASK-305` approaches.
 
 ## Notes
 

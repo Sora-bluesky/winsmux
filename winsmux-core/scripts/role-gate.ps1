@@ -33,6 +33,7 @@ $RolePermissions = @{
         Restart       = $true
         ContextReset  = $true
         ReviewApprove = $false
+        ConsultWrite  = $true
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -71,6 +72,7 @@ $RolePermissions = @{
         Restart       = $false
         ContextReset  = $false
         ReviewApprove = $false
+        ConsultWrite  = $true
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -109,6 +111,7 @@ $RolePermissions = @{
         Restart       = $false
         ContextReset  = $false
         ReviewApprove = $true
+        ConsultWrite  = $true
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -147,6 +150,7 @@ $RolePermissions = @{
         Restart       = $false
         ContextReset  = $false
         ReviewApprove = $false
+        ConsultWrite  = $true
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -185,6 +189,7 @@ $RolePermissions = @{
         Restart       = $false
         ContextReset  = $false
         ReviewApprove = $true
+        ConsultWrite  = $true
         Id            = $true
         Version       = $true
         Doctor        = $true
@@ -559,6 +564,18 @@ function Assert-Role {
         }
         'review-fail' {
             if ($permissions.ReviewApprove) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'consult-request' {
+            if ($permissions.ConsultWrite) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'consult-result' {
+            if ($permissions.ConsultWrite) { return $true }
+            return Deny-RoleCommand -Role $role -Command $normalizedCommand
+        }
+        'consult-error' {
+            if ($permissions.ConsultWrite) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
         'id' {
