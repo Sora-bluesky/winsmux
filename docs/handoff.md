@@ -104,5 +104,6 @@
 - Public tracked files must not contain personal paths or private planning roots.
 - External planning source of truth stays outside the public repository and is resolved via the configured planning root.
 - Public docs may refer to the external planning contract, but must not embed machine-specific absolute paths.
+- `v0.21.2` release gate includes a required `README.md` / `README.ja.md` refresh so the terminal-based final form is documented before `v0.22.0` begins the desktop control-plane handoff.
 - Public GitHub Release titles and bodies are standardized in English, even when the working session is conducted in Japanese.
 - Before each release, explicitly re-check the boundary between public product docs/config and maintainer dogfooding material.
