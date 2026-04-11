@@ -128,6 +128,16 @@ interface ComposerAttachment {
 
 type ComposerMode = "ask" | "dispatch" | "review" | "explain";
 
+interface CommandAction {
+  id: string;
+  label: string;
+  description: string;
+  keywords: string[];
+  shortcut?: string;
+  tone?: SurfaceTone;
+  run: () => void;
+}
+
 const panes = new Map<string, PaneEntry>();
 let paneCounter = 0;
 let terminalDrawerOpen = false;
@@ -141,6 +151,11 @@ let selectedEditorPath = "winsmux-app/src/main.ts";
 let activeComposerMode: ComposerMode = "dispatch";
 let activeSourceFilter: SourceFilter = "all";
 let activeTimelineFilter: TimelineFilter = "all";
+let commandBarOpen = false;
+let commandBarQuery = "";
+let selectedCommandIndex = 0;
+let commandBarImeActive = false;
+let lastCommandBarFocus: HTMLElement | null = null;
 let pendingAttachments: ComposerAttachment[] = [];
 const themeState: ThemeState = {
   theme: "codex-dark",
@@ -715,6 +730,7 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
       { label: themeLabel, tone: "focus" },
       { label: densityLabel },
       { label: `Wrap ${wrapLabel}` },
+      { label: "Command", value: "Ctrl/Cmd+K", tone: "accent" },
       { label: "Settings", tone: "accent" },
     ],
     right: [
@@ -799,6 +815,9 @@ function renderFooterLane() {
     button.innerHTML = item.value
       ? `<span class="footer-pill-label">${item.label}</span><span class="footer-pill-value">${item.value}</span>`
       : `<span class="footer-pill-value">${item.label}</span>`;
+    if (item.label === "Command" || item.value === "Command") {
+      button.addEventListener("click", () => openCommandBar());
+    }
     if (item.label === "Settings" || item.value === "Settings") {
       button.addEventListener("click", () => setSettingsSheet(true));
     }
@@ -817,6 +836,22 @@ function renderFooterLane() {
   }
 }
 
+function setComposerMode(mode: ComposerMode) {
+  activeComposerMode = mode;
+  renderComposerModes();
+}
+
+function focusComposer() {
+  const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (!composerInput) {
+    return;
+  }
+
+  composerInput.focus();
+  const length = composerInput.value.length;
+  composerInput.setSelectionRange(length, length);
+}
+
 function renderComposerModes() {
   const root = document.getElementById("composer-mode-row");
   const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
@@ -832,9 +867,7 @@ function renderComposerModes() {
     button.textContent = item.label;
     button.setAttribute("aria-pressed", item.mode === activeComposerMode ? "true" : "false");
     button.addEventListener("click", () => {
-      activeComposerMode = item.mode;
-      composerInput.placeholder = item.placeholder;
-      renderComposerModes();
+      setComposerMode(item.mode);
     });
     root.appendChild(button);
   }
@@ -1165,6 +1198,274 @@ function handleChipAction(action: ChipAction) {
   }
 }
 
+function getCommandActions(): CommandAction[] {
+  return [
+    {
+      id: "dispatch",
+      label: "Dispatch next task",
+      description: "Switch the composer to dispatch mode and focus the operator input.",
+      keywords: ["dispatch", "task", "composer", "operator"],
+      shortcut: "Ctrl/Cmd+K",
+      tone: "focus",
+      run: () => {
+        setComposerMode("dispatch");
+        focusComposer();
+      },
+    },
+    {
+      id: "ask",
+      label: "Ask the operator",
+      description: "Switch to ask mode for status questions, clarifications, and routing checks.",
+      keywords: ["ask", "status", "clarify", "operator"],
+      tone: "info",
+      run: () => {
+        setComposerMode("ask");
+        focusComposer();
+      },
+    },
+    {
+      id: "review",
+      label: "Request review",
+      description: "Switch to review mode to request approval, audit, or verification.",
+      keywords: ["review", "approve", "audit", "verify"],
+      tone: "warning",
+      run: () => {
+        setComposerMode("review");
+        focusComposer();
+      },
+    },
+    {
+      id: "explain",
+      label: "Explain selected run",
+      description: "Open the explain flow for the currently selected run and add operator context to the timeline.",
+      keywords: ["explain", "run", "blocked", "why"],
+      tone: "info",
+      run: () => handleChipAction("open-explain"),
+    },
+    {
+      id: "editor",
+      label: "Open secondary editor",
+      description: "Open the secondary work surface for the currently selected file or run context.",
+      keywords: ["editor", "file", "changed files", "secondary"],
+      tone: "default",
+      run: () => handleChipAction("open-editor"),
+    },
+    {
+      id: "source-context",
+      label: "Open source context",
+      description: "Reveal the source-control context sheet and changed-file drill-down.",
+      keywords: ["source", "context", "changed files", "worktree", "branch"],
+      tone: "default",
+      run: () => handleChipAction("open-source-context"),
+    },
+    {
+      id: "terminal",
+      label: "Open terminal drawer",
+      description: "Show the utility drawer for raw PTY output, diagnostics, and pane control.",
+      keywords: ["terminal", "drawer", "pty", "diagnostics", "pane"],
+      tone: "default",
+      run: () => handleChipAction("open-terminal"),
+    },
+    {
+      id: "settings",
+      label: "Open settings",
+      description: "Open theme, density, wrap, and workspace preferences.",
+      keywords: ["settings", "theme", "density", "wrap", "preferences"],
+      tone: "accent",
+      run: () => setSettingsSheet(true),
+    },
+    {
+      id: "attention-filter",
+      label: "Filter timeline: attention",
+      description: "Show only blocked and urgent attention events in the conversation feed.",
+      keywords: ["filter", "attention", "blocked", "timeline"],
+      tone: "danger",
+      run: () => {
+        activeTimelineFilter = "attention";
+        renderTimelineFilters();
+        renderRunSummary();
+        renderConversation(seedConversation);
+      },
+    },
+    {
+      id: "review-filter",
+      label: "Filter timeline: review",
+      description: "Show review requests, approvals, and review-capable slot activity.",
+      keywords: ["filter", "review", "timeline", "approve"],
+      tone: "warning",
+      run: () => {
+        activeTimelineFilter = "review";
+        renderTimelineFilters();
+        renderRunSummary();
+        renderConversation(seedConversation);
+      },
+    },
+  ];
+}
+
+function getFilteredCommandActions() {
+  const query = commandBarQuery.trim().toLowerCase();
+  const actions = getCommandActions();
+  if (!query) {
+    return actions;
+  }
+
+  return actions.filter((action) => {
+    const haystack = [action.label, action.description, action.shortcut ?? "", ...action.keywords]
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(query);
+  });
+}
+
+function openCommandBar() {
+  commandBarOpen = true;
+  commandBarQuery = "";
+  selectedCommandIndex = 0;
+  lastCommandBarFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  if (settingsSheetOpen) {
+    setSettingsSheet(false);
+  }
+  renderCommandBar();
+
+  const shell = document.getElementById("command-bar-shell");
+  const button = document.getElementById("open-command-bar-btn");
+  const input = document.getElementById("command-bar-input") as HTMLInputElement | null;
+  if (shell) {
+    shell.hidden = false;
+  }
+  if (button) {
+    button.setAttribute("aria-expanded", "true");
+  }
+
+  requestAnimationFrame(() => input?.focus());
+}
+
+function closeCommandBar(restoreFocus = true) {
+  commandBarOpen = false;
+  commandBarQuery = "";
+  selectedCommandIndex = 0;
+  commandBarImeActive = false;
+
+  const shell = document.getElementById("command-bar-shell");
+  const button = document.getElementById("open-command-bar-btn");
+  const input = document.getElementById("command-bar-input") as HTMLInputElement | null;
+  if (shell) {
+    shell.hidden = true;
+  }
+  if (button) {
+    button.setAttribute("aria-expanded", "false");
+  }
+  if (input) {
+    input.value = "";
+  }
+
+  if (restoreFocus) {
+    requestAnimationFrame(() => lastCommandBarFocus?.focus());
+  }
+}
+
+function executeSelectedCommand() {
+  const actions = getFilteredCommandActions();
+  if (actions.length === 0) {
+    return;
+  }
+
+  const action = actions[Math.min(selectedCommandIndex, actions.length - 1)];
+  closeCommandBar(false);
+  action.run();
+}
+
+function renderCommandBar() {
+  const input = document.getElementById("command-bar-input") as HTMLInputElement | null;
+  const results = document.getElementById("command-bar-results");
+  if (!input || !results) {
+    return;
+  }
+
+  input.value = commandBarQuery;
+  const actions = getFilteredCommandActions();
+  if (selectedCommandIndex >= actions.length) {
+    selectedCommandIndex = Math.max(0, actions.length - 1);
+  }
+
+  results.innerHTML = "";
+  if (actions.length === 0) {
+    input.removeAttribute("aria-activedescendant");
+    const empty = document.createElement("div");
+    empty.className = "command-bar-empty";
+    empty.textContent = "No matching command. Try run, review, terminal, source, or settings.";
+    results.appendChild(empty);
+    return;
+  }
+
+  actions.forEach((action, index) => {
+    const optionId = `command-option-${action.id}`;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = optionId;
+    button.className = `command-bar-item ${index === selectedCommandIndex ? "is-active" : ""}`;
+    button.dataset.tone = action.tone ?? "default";
+    button.setAttribute("role", "option");
+    button.setAttribute("aria-selected", index === selectedCommandIndex ? "true" : "false");
+    button.innerHTML =
+      `<div class="command-bar-item-main">` +
+      `<span class="command-bar-item-label">${action.label}</span>` +
+      `<span class="command-bar-item-description">${action.description}</span>` +
+      `</div>` +
+      `<div class="command-bar-item-meta">` +
+      (action.shortcut ? `<span class="command-bar-item-shortcut">${action.shortcut}</span>` : "") +
+      `<span class="command-bar-item-keywords">${action.keywords.slice(0, 3).join(" · ")}</span>` +
+      `</div>`;
+    button.addEventListener("mouseenter", () => {
+      selectedCommandIndex = index;
+      renderCommandBar();
+    });
+    button.addEventListener("click", () => {
+      selectedCommandIndex = index;
+      executeSelectedCommand();
+    });
+    results.appendChild(button);
+  });
+
+  const activeAction = actions[Math.min(selectedCommandIndex, actions.length - 1)];
+  if (activeAction) {
+    input.setAttribute("aria-activedescendant", `command-option-${activeAction.id}`);
+  } else {
+    input.removeAttribute("aria-activedescendant");
+  }
+}
+
+function trapCommandBarTab(event: KeyboardEvent) {
+  const root = document.getElementById("command-bar");
+  if (!root || event.key !== "Tab") {
+    return;
+  }
+
+  const focusables = Array.from(
+    root.querySelectorAll<HTMLElement>('input, button, [href], [tabindex]:not([tabindex="-1"])'),
+  ).filter((element) => !element.hasAttribute("disabled") && !element.getAttribute("aria-hidden"));
+
+  if (focusables.length === 0) {
+    return;
+  }
+
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  const active = document.activeElement;
+
+  if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+    return;
+  }
+
+  if (event.shiftKey && active === first) {
+    event.preventDefault();
+    last.focus();
+  }
+}
+
 function renderEditorSurface() {
   const path = document.getElementById("editor-file-path");
   const meta = document.getElementById("editor-meta-row");
@@ -1292,6 +1593,10 @@ function setSettingsSheet(open: boolean) {
   const sheet = document.getElementById("settings-sheet");
   if (!sheet) {
     return;
+  }
+
+  if (open && commandBarOpen) {
+    closeCommandBar();
   }
 
   sheet.hidden = !open;
@@ -1435,6 +1740,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderConversation(seedConversation);
   renderComposerModes();
   renderAttachmentTray();
+  renderCommandBar();
   renderEditorSurface();
   syncResponsiveShell();
   setEditorSurface(false);
@@ -1443,6 +1749,14 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("toggle-sidebar-btn")?.addEventListener("click", () => {
     setSidebarOpen(!sidebarOpen);
+  });
+
+  document.getElementById("open-command-bar-btn")?.addEventListener("click", () => {
+    if (commandBarOpen) {
+      closeCommandBar();
+      return;
+    }
+    openCommandBar();
   });
 
   document.getElementById("toggle-terminal-btn")?.addEventListener("click", () => {
@@ -1467,6 +1781,67 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("sidebar-overlay")?.addEventListener("click", () => {
     setSidebarOpen(false);
+  });
+
+  document.getElementById("command-bar-backdrop")?.addEventListener("click", () => {
+    closeCommandBar();
+  });
+
+  document.getElementById("command-bar")?.addEventListener("keydown", (event) => {
+    trapCommandBarTab(event);
+  });
+
+  const commandBarInput = document.getElementById("command-bar-input") as HTMLInputElement | null;
+  commandBarInput?.addEventListener("compositionstart", () => {
+    commandBarImeActive = true;
+  });
+
+  commandBarInput?.addEventListener("compositionend", () => {
+    commandBarImeActive = false;
+  });
+
+  commandBarInput?.addEventListener("input", () => {
+    commandBarQuery = commandBarInput.value;
+    selectedCommandIndex = 0;
+    renderCommandBar();
+  });
+
+  commandBarInput?.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      const actions = getFilteredCommandActions();
+      if (actions.length === 0) {
+        return;
+      }
+      selectedCommandIndex = (selectedCommandIndex + 1) % actions.length;
+      renderCommandBar();
+      return;
+    }
+
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      const actions = getFilteredCommandActions();
+      if (actions.length === 0) {
+        return;
+      }
+      selectedCommandIndex = (selectedCommandIndex - 1 + actions.length) % actions.length;
+      renderCommandBar();
+      return;
+    }
+
+    if (event.key === "Enter") {
+      if (commandBarImeActive || event.isComposing) {
+        return;
+      }
+      event.preventDefault();
+      executeSelectedCommand();
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCommandBar();
+    }
   });
 
   document.getElementById("add-pane-btn")?.addEventListener("click", () => {
@@ -1558,6 +1933,22 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
 
   window.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      if (commandBarOpen) {
+        closeCommandBar();
+      } else {
+        openCommandBar();
+      }
+      return;
+    }
+
+    if (event.key === "Escape" && commandBarOpen) {
+      event.preventDefault();
+      closeCommandBar();
+      return;
+    }
+
     if (event.key === "Escape" && settingsSheetOpen) {
       event.preventDefault();
       setSettingsSheet(false);

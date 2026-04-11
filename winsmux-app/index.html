@@ -46,6 +46,15 @@
           <div id="header-actions">
             <button
               class="ghost-btn"
+              id="open-command-bar-btn"
+              type="button"
+              aria-controls="command-bar"
+              aria-expanded="false"
+            >
+              Command
+            </button>
+            <button
+              class="ghost-btn"
               id="toggle-sidebar-btn"
               type="button"
               aria-controls="left-rail"
@@ -168,6 +177,30 @@
           <div class="settings-section">
             <div class="context-label">Input</div>
             <div class="context-value">Enter sends, Shift+Enter inserts newline, IME composition is protected</div>
+          </div>
+        </section>
+
+        <section id="command-bar-shell" hidden>
+          <div id="command-bar-backdrop"></div>
+          <div id="command-bar" role="dialog" aria-modal="true" aria-labelledby="command-bar-title">
+            <div id="command-bar-header">
+              <div>
+                <div class="timeline-eyebrow">Keyboard-first control</div>
+                <div id="command-bar-title">Command bar</div>
+              </div>
+              <div id="command-bar-hint">Ctrl/Cmd+K to open · ↑↓ navigate · Enter execute · Esc close</div>
+            </div>
+            <label class="sr-only" for="command-bar-input">Search commands</label>
+            <input
+              id="command-bar-input"
+              type="text"
+              autocomplete="off"
+              placeholder="Search actions, runs, panels, and operator controls"
+            />
+            <div id="command-bar-meta">
+              <span>Command palette for dispatch, review, explain, source context, settings, and terminal control.</span>
+            </div>
+            <div id="command-bar-results" role="listbox" aria-label="Command results"></div>
           </div>
         </section>
       </main>

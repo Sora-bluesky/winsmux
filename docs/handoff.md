@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-11T03:20:00+09:00
+> Updated: 2026-04-11T04:25:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -10,8 +10,8 @@
 - `v0.19.7 visible orchestration` is implemented, merged, released, and tracked as `100% (7/7)` in the external planning backlog/roadmap.
 - `v0.19.8 External Operator & Agent Slots` is implemented in order; private planning now tracks `TASK-259`, `TASK-261`, `TASK-262`, `TASK-263`, and `TASK-264` as done, and the external roadmap is synced accordingly.
 - Private planning now swaps `v0.20.0` and `v0.21.0` to match actual implementation order: `v0.20.0` is `Desktop UX Foundation`, and `v0.21.0` is `Operator Core & Slot Dispatch`.
-- PR [#370](https://github.com/Sora-bluesky/winsmux/pull/370), PR [#371](https://github.com/Sora-bluesky/winsmux/pull/371), PR [#372](https://github.com/Sora-bluesky/winsmux/pull/372), PR [#374](https://github.com/Sora-bluesky/winsmux/pull/374), PR [#375](https://github.com/Sora-bluesky/winsmux/pull/375), PR [#376](https://github.com/Sora-bluesky/winsmux/pull/376), PR [#379](https://github.com/Sora-bluesky/winsmux/pull/379), PR [#380](https://github.com/Sora-bluesky/winsmux/pull/380), PR [#381](https://github.com/Sora-bluesky/winsmux/pull/381), PR [#382](https://github.com/Sora-bluesky/winsmux/pull/382), PR [#383](https://github.com/Sora-bluesky/winsmux/pull/383), PR [#384](https://github.com/Sora-bluesky/winsmux/pull/384), PR [#385](https://github.com/Sora-bluesky/winsmux/pull/385), PR [#386](https://github.com/Sora-bluesky/winsmux/pull/386), PR [#387](https://github.com/Sora-bluesky/winsmux/pull/387), PR [#388](https://github.com/Sora-bluesky/winsmux/pull/388), PR [#389](https://github.com/Sora-bluesky/winsmux/pull/389), and PR [#390](https://github.com/Sora-bluesky/winsmux/pull/390) are merged into `main`.
-- `v0.20.0` now tracks desktop UX work directly; `TASK-101` is merged, `TASK-292`, `TASK-286`, and `TASK-299` are active on the current branch, and `TASK-298` tracks public-repo vs maintainer-dogfooding cleanup.
+- PR [#370](https://github.com/Sora-bluesky/winsmux/pull/370), PR [#371](https://github.com/Sora-bluesky/winsmux/pull/371), PR [#372](https://github.com/Sora-bluesky/winsmux/pull/372), PR [#374](https://github.com/Sora-bluesky/winsmux/pull/374), PR [#375](https://github.com/Sora-bluesky/winsmux/pull/375), PR [#376](https://github.com/Sora-bluesky/winsmux/pull/376), PR [#379](https://github.com/Sora-bluesky/winsmux/pull/379), PR [#380](https://github.com/Sora-bluesky/winsmux/pull/380), PR [#381](https://github.com/Sora-bluesky/winsmux/pull/381), PR [#382](https://github.com/Sora-bluesky/winsmux/pull/382), PR [#383](https://github.com/Sora-bluesky/winsmux/pull/383), PR [#384](https://github.com/Sora-bluesky/winsmux/pull/384), PR [#385](https://github.com/Sora-bluesky/winsmux/pull/385), PR [#386](https://github.com/Sora-bluesky/winsmux/pull/386), PR [#387](https://github.com/Sora-bluesky/winsmux/pull/387), PR [#388](https://github.com/Sora-bluesky/winsmux/pull/388), PR [#389](https://github.com/Sora-bluesky/winsmux/pull/389), PR [#390](https://github.com/Sora-bluesky/winsmux/pull/390), and PR [#392](https://github.com/Sora-bluesky/winsmux/pull/392) are merged into `main`.
+- `v0.20.0` now tracks desktop UX work directly; `TASK-101`, `TASK-286`, `TASK-292`, and `TASK-299` are merged, `TASK-287` is active on `codex/task287-command-bar-20260411`, and `TASK-298` tracks the remaining public-repo vs maintainer-dogfooding cleanup.
 - Planning source of truth is externalized outside the public repository and syncs automatically into the private planning root.
 - `v0.21.x` private planning is aligned to a conversation-first Tauri operator shell, with Codex-App-like shell rules reflected in Figma and backlog notes.
 - `v0.24.x` private planning is split into schema, ledger, machine contract, cutover, and canary phases for Rust runtime convergence before `v1.0.0`.
@@ -58,6 +58,9 @@
 - Merged the `TASK-101` theme-contract slice via PR [#390](https://github.com/Sora-bluesky/winsmux/pull/390), adding semantic theme tokens, theme/density/wrap controls, and Codex OSS attribution for reused styling patterns.
 - Started the active `v0.20.0` desktop UX slice on `codex/v0200-operator-timeline-public-docs-20260411`, combining `TASK-292`, `TASK-286`, and public operator-doc cleanup: composer attachments now support paste/drag-drop/file-picker, the conversation shell is moving to a concise filtered activity feed, and public operator docs are being split from contributor dogfooding docs.
 - Expanded the active slice to include `TASK-299`, adding strict public operator/pane role-definition docs (`.claude/CLAUDE.md`, `AGENT-BASE.md`, `AGENT.md`, `GEMINI.md`, `docs/operator-model.md`) and aligning the timeline grammar with pane result reports.
+- Merged the public operator/pane docs and concise timeline slice via PR [#392](https://github.com/Sora-bluesky/winsmux/pull/392), adding `AGENT-BASE.md`, `AGENT.md`, the strict-default `.claude/CLAUDE.md`, the reworked `docs/operator-model.md`, and pane report cards with `STATUS/TASK/RESULT/FILES_CHANGED/ISSUES`.
+- Re-synced the external planning backlog/roadmap after PR [#392](https://github.com/Sora-bluesky/winsmux/pull/392), marking `TASK-101`, `TASK-286`, `TASK-292`, and `TASK-299` as done so `v0.20.0` now shows `83% (10/12)`.
+- Started `TASK-287` on `codex/task287-command-bar-20260411`, adding a keyboard-first command bar (`Ctrl/Cmd+K`) with quick actions for dispatch/review/explain, source context, settings, and terminal control.
 
 ## Validation
 
@@ -80,11 +83,12 @@
 - PR [#388](https://github.com/Sora-bluesky/winsmux/pull/388) merged cleanly and the repo is back to `main == origin/main`.
 - Current `TASK-138` source-control slice passes frontend build: `npm run build` in `winsmux-app`.
 - Current `TASK-101` theme-contract slice passes frontend build: `npm run build` in `winsmux-app`.
-- Active `TASK-292/TASK-286/TASK-299` slice passes frontend build: `npm run build` in `winsmux-app`.
+- Merged `TASK-292/TASK-286/TASK-299` slice passed frontend build before landing: `npm run build` in `winsmux-app`.
+- Current `TASK-287` command-bar slice passes frontend build: `npm run build` in `winsmux-app`.
 
 ## Next actions
 
-1. Publish the active `TASK-292/TASK-286/TASK-299` desktop UX slice, then continue `v0.20.0: Desktop UX Foundation` toward `TASK-287` and the remaining public-surface cleanup in `TASK-298`.
+1. Publish `TASK-287` (global command bar + quick actions), then continue `v0.20.0: Desktop UX Foundation` with the remaining public-surface cleanup in `TASK-298`.
 2. Preserve the private planning sync flow: user/agent visible, auto-synced, but not committed to the public repo.
 3. Run the next retro-review tranche over recent merged PRs after each milestone-close sequence.
 
