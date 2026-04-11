@@ -77,6 +77,7 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'context-reset' -TargetPane 'reviewer') | Should -Be $true
         (Assert-Role -Command 'poll-events') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $true
+        (Assert-Role -Command 'consult-request') | Should -Be $true
         (Assert-Role -Command 'type' -TargetPane 'reviewer') | Should -Be $false
     }
 
@@ -91,6 +92,7 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'runs') | Should -Be $true
         (Assert-Role -Command 'digest') | Should -Be $true
         (Assert-Role -Command 'explain') | Should -Be $true
+        (Assert-Role -Command 'consult-result') | Should -Be $true
         (Assert-Role -Command 'type' -TargetPane 'self') | Should -Be $true
         (Assert-Role -Command 'context-reset' -TargetPane 'commander') | Should -Be $false
         (Assert-Role -Command 'send' -TargetPane 'reviewer') | Should -Be $false
@@ -104,6 +106,7 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'message' -TargetPane 'commander') | Should -Be $true
         (Assert-Role -Command 'read' -TargetPane 'self') | Should -Be $true
         (Assert-Role -Command 'digest') | Should -Be $true
+        (Assert-Role -Command 'consult-error') | Should -Be $true
         (Assert-Role -Command 'poll-events') | Should -Be $false
         (Assert-Role -Command 'signal') | Should -Be $false
         (Assert-Role -Command 'wait') | Should -Be $false
@@ -116,6 +119,7 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'message' -TargetPane 'commander') | Should -Be $true
         (Assert-Role -Command 'review-request') | Should -Be $true
         (Assert-Role -Command 'review-approve') | Should -Be $true
+        (Assert-Role -Command 'consult-result') | Should -Be $true
         (Assert-Role -Command 'status') | Should -Be $true
         (Assert-Role -Command 'digest') | Should -Be $true
         (Assert-Role -Command 'list') | Should -Be $true
@@ -131,6 +135,7 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'review-request') | Should -Be $true
         (Assert-Role -Command 'review-approve') | Should -Be $true
         (Assert-Role -Command 'review-fail') | Should -Be $true
+        (Assert-Role -Command 'consult-request') | Should -Be $true
         (Assert-Role -Command 'digest') | Should -Be $true
         (Assert-Role -Command 'vault') | Should -Be $false
         (Assert-Role -Command 'focus') | Should -Be $false
@@ -4618,6 +4623,103 @@ Describe 'winsmux observation and consultation artifacts' {
 
         $hydrated = Read-WinsmuxArtifactJson -Reference '.winsmux/observation-packs/observation-pack-bad.json' -ProjectDir $script:artifactTempRoot -ExpectedDirectoryPath $badDir -ExpectedRunId 'task:task-300'
         $hydrated | Should -Be $null
+    }
+}
+
+Describe 'winsmux consultation commands' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:consultTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-consult-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $script:consultTempRoot '.winsmux'
+        $script:consultManifestPath = Join-Path $manifestDir 'manifest.yaml'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:consultTempRoot '.worktrees\builder-1') -Force | Out-Null
+
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:consultTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    launch_dir: $script:consultTempRoot
+    builder_worktree_path: $(Join-Path $script:consultTempRoot '.worktrees\builder-1')
+    task_id: task-301
+    task: Investigate consultation packets
+    task_state: in_progress
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+"@ | Set-Content -Path $script:consultManifestPath -Encoding UTF8
+
+        Push-Location $script:consultTempRoot
+        $script:originalPaneId = $env:WINSMUX_PANE_ID
+        $script:originalAgentName = $env:WINSMUX_AGENT_NAME
+        $script:originalRole = $env:WINSMUX_ROLE
+        $env:WINSMUX_PANE_ID = '%2'
+        $env:WINSMUX_AGENT_NAME = 'codex'
+        $env:WINSMUX_ROLE = 'Builder'
+    }
+
+    AfterEach {
+        $env:WINSMUX_PANE_ID = $script:originalPaneId
+        $env:WINSMUX_AGENT_NAME = $script:originalAgentName
+        $env:WINSMUX_ROLE = $script:originalRole
+        Pop-Location
+
+        if ($script:consultTempRoot -and (Test-Path $script:consultTempRoot)) {
+            Remove-Item -Path $script:consultTempRoot -Recurse -Force
+        }
+    }
+
+    It 'records a consult request as a file-backed packet and event' {
+        $args = Parse-ConsultCommandArgs -Mode 'early' -Args @('--target-slot', 'slot-review-1', '--message', 'sanity-check the current hypothesis')
+
+        $output = Write-ConsultationCommandRecord -Kind 'consult_request' -Mode ([string]$args.mode) -Message ([string]$args.message) -TargetSlot ([string]$args.target_slot) -ProjectDir $script:consultTempRoot
+
+        $output | Should -Match 'consult request recorded for task:task-301'
+        $events = @(Get-BridgeEventRecords -ProjectDir $script:consultTempRoot)
+        $events.Count | Should -Be 1
+        $events[0].event | Should -Be 'pane.consult_request'
+        $events[0].data.consultation_ref | Should -BeLike '.winsmux/consultations/consult-request-*.json'
+        $events[0].data.run_id | Should -Be 'task:task-301'
+
+        $packet = Read-WinsmuxArtifactJson -Reference ([string]$events[0].data.consultation_ref) -ProjectDir $script:consultTempRoot -ExpectedDirectoryPath (Get-ConsultationDirectory -ProjectDir $script:consultTempRoot) -ExpectedRunId 'task:task-301'
+        $packet.kind | Should -Be 'consult_request'
+        $packet.mode | Should -Be 'early'
+        $packet.target_slot | Should -Be 'slot-review-1'
+        $packet.request | Should -Be 'sanity-check the current hypothesis'
+    }
+
+    It 'records a consult result with summary projection fields' {
+        $args = Parse-ConsultCommandArgs -Mode 'final' -Args @('--message', 'keep deterministic build command', '--confidence', '0.8', '--next-test', 'rerun build', '--risk', 'cache mismatch')
+
+        $output = Write-ConsultationCommandRecord -Kind 'consult_result' -Mode ([string]$args.mode) -Message ([string]$args.message) -TargetSlot ([string]$args.target_slot) -Confidence $args.confidence -NextTest ([string]$args.next_test) -Risks @($args.risks) -ProjectDir $script:consultTempRoot
+
+        $output | Should -Match 'consult result recorded for task:task-301'
+        $events = @(Get-BridgeEventRecords -ProjectDir $script:consultTempRoot)
+        $events.Count | Should -Be 1
+        $events[0].event | Should -Be 'pane.consult_result'
+        $events[0].data.result | Should -Be 'keep deterministic build command'
+        $events[0].data.confidence | Should -Be 0.8
+        $events[0].data.next_action | Should -Be 'rerun build'
+
+        $packet = Read-WinsmuxArtifactJson -Reference ([string]$events[0].data.consultation_ref) -ProjectDir $script:consultTempRoot -ExpectedDirectoryPath (Get-ConsultationDirectory -ProjectDir $script:consultTempRoot) -ExpectedRunId 'task:task-301'
+        $packet.kind | Should -Be 'consult_result'
+        $packet.mode | Should -Be 'final'
+        $packet.recommendation | Should -Be 'keep deterministic build command'
+        $packet.next_test | Should -Be 'rerun build'
+        $packet.confidence | Should -Be 0.8
+        $packet.risks | Should -Be @('cache mismatch')
+    }
+
+    It 'fails closed for unsupported consult mode' {
+        { Parse-ConsultCommandArgs -Mode 'later' -Args @('--message', 'invalid mode test') } | Should -Throw '*Unsupported consult mode*'
     }
 }
 

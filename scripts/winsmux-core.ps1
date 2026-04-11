@@ -793,6 +793,51 @@ function Get-CurrentReviewPaneManifestContext {
     }
 }
 
+function Get-CurrentPaneManifestContext {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    if ([string]::IsNullOrWhiteSpace($env:WINSMUX_PANE_ID)) {
+        Stop-WithError 'WINSMUX_PANE_ID not set'
+    }
+
+    try {
+        $context = Get-PaneControlManifestContext -ProjectDir $ProjectDir -PaneId $env:WINSMUX_PANE_ID
+    } catch {
+        Stop-WithError $_.Exception.Message
+    }
+
+    $sessionName = ''
+    try {
+        $manifestContent = Get-Content -LiteralPath ([string]$context.ManifestPath) -Raw -Encoding UTF8
+        $manifest = ConvertFrom-PaneControlManifestContent -Content $manifestContent
+        $sessionName = [string](Get-PaneControlValue -InputObject $manifest.Session -Name 'name' -Default '')
+    } catch {
+    }
+
+    return [ordered]@{
+        ManifestPath        = [string]$context.ManifestPath
+        ProjectDir          = [string]$context.ProjectDir
+        SessionName         = [string]$sessionName
+        Label               = [string]$context.Label
+        PaneId              = [string]$context.PaneId
+        Role                = [string]$context.Role
+        LaunchDir           = [string]$context.LaunchDir
+        BuilderWorktreePath = [string]$context.BuilderWorktreePath
+        GitWorktreeDir      = [string]$context.GitWorktreeDir
+        TaskId              = [string]$context.TaskId
+        Task                = [string]$context.Task
+        TaskState           = [string]$context.TaskState
+        TaskOwner           = [string]$context.TaskOwner
+        ReviewState         = [string]$context.ReviewState
+        Branch              = [string]$context.Branch
+        HeadSha             = [string]$context.HeadSha
+        ParentRunId         = [string]$context.ParentRunId
+        Goal                = [string]$context.Goal
+        TaskType            = [string]$context.TaskType
+        Priority            = [string]$context.Priority
+    }
+}
+
 function Update-ReviewPaneManifestState {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -830,6 +875,258 @@ function New-ReviewRequestId {
     $timestamp = Get-Date -Format 'yyyyMMddHHmmss'
     $suffix = ([guid]::NewGuid().ToString('N')).Substring(0, 8)
     return "review-$timestamp-$suffix"
+}
+
+function Parse-ConsultCommandArgs {
+    param(
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [string[]]$Args = @()
+    )
+
+    $normalizedMode = if ([string]::IsNullOrWhiteSpace($Mode)) { '' } else { $Mode.Trim().ToLowerInvariant() }
+    if ($normalizedMode -notin @('early', 'stuck', 'reconcile', 'final')) {
+        Stop-WithError "Unsupported consult mode: $Mode"
+    }
+
+    $message = ''
+    $targetSlot = ''
+    $nextTest = ''
+    $confidence = $null
+    $risks = [System.Collections.Generic.List[string]]::new()
+    $messageParts = [System.Collections.Generic.List[string]]::new()
+
+    for ($i = 0; $i -lt $Args.Count; $i++) {
+        $token = [string]$Args[$i]
+        switch ($token) {
+            '--message' {
+                if ($i + 1 -ge $Args.Count) {
+                    Stop-WithError '--message requires a value'
+                }
+                $message = [string]$Args[$i + 1]
+                $i++
+            }
+            '--target-slot' {
+                if ($i + 1 -ge $Args.Count) {
+                    Stop-WithError '--target-slot requires a value'
+                }
+                $targetSlot = [string]$Args[$i + 1]
+                $i++
+            }
+            '--confidence' {
+                if ($i + 1 -ge $Args.Count) {
+                    Stop-WithError '--confidence requires a value'
+                }
+                $rawConfidence = [string]$Args[$i + 1]
+                $parsedConfidence = 0.0
+                if (-not [double]::TryParse($rawConfidence, [System.Globalization.NumberStyles]::Float, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsedConfidence)) {
+                    Stop-WithError "Invalid confidence value: $rawConfidence"
+                }
+                $confidence = $parsedConfidence
+                $i++
+            }
+            '--next-test' {
+                if ($i + 1 -ge $Args.Count) {
+                    Stop-WithError '--next-test requires a value'
+                }
+                $nextTest = [string]$Args[$i + 1]
+                $i++
+            }
+            '--risk' {
+                if ($i + 1 -ge $Args.Count) {
+                    Stop-WithError '--risk requires a value'
+                }
+                $risk = [string]$Args[$i + 1]
+                if (-not [string]::IsNullOrWhiteSpace($risk)) {
+                    $risks.Add($risk) | Out-Null
+                }
+                $i++
+            }
+            default {
+                if (-not [string]::IsNullOrWhiteSpace($token)) {
+                    $messageParts.Add($token) | Out-Null
+                }
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($message) -and $messageParts.Count -gt 0) {
+        $message = ($messageParts -join ' ')
+    }
+
+    if ([string]::IsNullOrWhiteSpace($message)) {
+        Stop-WithError 'consult message is required'
+    }
+
+    return [ordered]@{
+        mode        = $normalizedMode
+        message     = [string]$message
+        target_slot = [string]$targetSlot
+        confidence  = $confidence
+        next_test   = [string]$nextTest
+        risks       = @($risks)
+    }
+}
+
+function Resolve-CurrentCommandArgs {
+    $resolvedTarget = [string]$Target
+    if ([string]::IsNullOrWhiteSpace($resolvedTarget)) {
+        $globalTarget = Get-Variable -Name Target -Scope Global -ValueOnly -ErrorAction SilentlyContinue
+        if ($null -ne $globalTarget) {
+            $resolvedTarget = [string]$globalTarget
+        }
+    }
+
+    $resolvedRest = @($Rest)
+    if (@($resolvedRest).Count -eq 0) {
+        $globalRest = Get-Variable -Name Rest -Scope Global -ValueOnly -ErrorAction SilentlyContinue
+        if ($null -ne $globalRest) {
+            $resolvedRest = @($globalRest)
+        }
+    }
+
+    return [ordered]@{
+        target = [string]$resolvedTarget
+        rest   = @($resolvedRest)
+    }
+}
+
+function Get-ConsultationCommandContext {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    $context = Get-CurrentPaneManifestContext -ProjectDir $ProjectDir
+    $branch = [string]$context.Branch
+    if ([string]::IsNullOrWhiteSpace($branch)) {
+        $branch = Get-CurrentGitBranch -ProjectDir $ProjectDir
+    }
+
+    $headSha = [string]$context.HeadSha
+    if ([string]::IsNullOrWhiteSpace($headSha)) {
+        $headSha = Get-CurrentGitHead -ProjectDir $ProjectDir
+    }
+
+    $runId = [string]$context.ParentRunId
+    if ([string]::IsNullOrWhiteSpace($runId) -and -not [string]::IsNullOrWhiteSpace([string]$context.TaskId)) {
+        $runId = "task:$([string]$context.TaskId)"
+    }
+
+    if ([string]::IsNullOrWhiteSpace($runId) -and [string]::IsNullOrWhiteSpace([string]$context.TaskId)) {
+        Stop-WithError 'consultation commands require task_id or parent_run_id in the current pane manifest entry'
+    }
+
+    $worktree = ''
+    $worktreePath = [string]$context.GitWorktreeDir
+    if ([string]::IsNullOrWhiteSpace($worktreePath)) {
+        $worktreePath = [string]$context.BuilderWorktreePath
+    }
+    if ([string]::IsNullOrWhiteSpace($worktreePath)) {
+        $worktreePath = [string]$context.LaunchDir
+    }
+    if (-not [string]::IsNullOrWhiteSpace($worktreePath)) {
+        $worktree = Get-WinsmuxArtifactReference -ArtifactPath $worktreePath -ProjectDir $ProjectDir
+    }
+
+    return [ordered]@{
+        SessionName = [string]$context.SessionName
+        Label       = [string]$context.Label
+        PaneId      = [string]$context.PaneId
+        Role        = [string]$context.Role
+        TaskId      = [string]$context.TaskId
+        Branch      = [string]$branch
+        HeadSha     = [string]$headSha
+        RunId       = [string]$runId
+        Slot        = [string]$context.Label
+        Worktree    = [string]$worktree
+    }
+}
+
+function Write-ConsultationCommandRecord {
+    param(
+        [Parameter(Mandatory = $true)][string]$Kind,
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [Parameter(Mandatory = $true)][string]$Message,
+        [string]$TargetSlot = '',
+        [AllowNull()]$Confidence = $null,
+        [string]$NextTest = '',
+        [string[]]$Risks = @(),
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $context = Get-ConsultationCommandContext -ProjectDir $ProjectDir
+    $timestamp = (Get-Date).ToString('o')
+    $packet = [ordered]@{
+        run_id      = [string]$context.RunId
+        task_id     = [string]$context.TaskId
+        pane_id     = [string]$context.PaneId
+        slot        = [string]$context.Slot
+        kind        = [string]$Kind
+        mode        = [string]$Mode
+        target_slot = [string]$TargetSlot
+        branch      = [string]$context.Branch
+        head_sha    = [string]$context.HeadSha
+        worktree    = [string]$context.Worktree
+    }
+
+    switch ($Kind) {
+        'consult_request' { $packet['request'] = $Message }
+        'consult_result' {
+            $packet['recommendation'] = $Message
+            if ($null -ne $Confidence) {
+                $packet['confidence'] = $Confidence
+            }
+            if (-not [string]::IsNullOrWhiteSpace($NextTest)) {
+                $packet['next_test'] = $NextTest
+            }
+            if (@($Risks).Count -gt 0) {
+                $packet['risks'] = @($Risks)
+            }
+        }
+        'consult_error' { $packet['error'] = $Message }
+        default { Stop-WithError "Unsupported consultation command kind: $Kind" }
+    }
+
+    $artifact = New-ConsultationPacketFile -ProjectDir $ProjectDir -ConsultationPacket $packet
+
+    $eventData = [ordered]@{
+        task_id          = [string]$context.TaskId
+        run_id           = [string]$context.RunId
+        slot             = [string]$context.Slot
+        branch           = [string]$context.Branch
+        worktree         = [string]$context.Worktree
+        consultation_ref = [string]$artifact.reference
+    }
+
+    if ($Kind -eq 'consult_result') {
+        $eventData['result'] = $Message
+    }
+    if ($null -ne $Confidence) {
+        $eventData['confidence'] = $Confidence
+    }
+    if (-not [string]::IsNullOrWhiteSpace($NextTest)) {
+        $eventData['next_action'] = $NextTest
+    }
+
+    $eventRecord = [ordered]@{
+        timestamp = $timestamp
+        session   = [string]$context.SessionName
+        event     = "pane.$Kind"
+        message   = $Message
+        label     = [string]$context.Label
+        pane_id   = [string]$context.PaneId
+        role      = [string]$context.Role
+        branch    = [string]$context.Branch
+        head_sha  = [string]$context.HeadSha
+        data      = $eventData
+    }
+
+    Write-BridgeEventRecord -ProjectDir $ProjectDir -EventRecord $eventRecord | Out-Null
+
+    Update-ReviewPaneManifestState -ProjectDir $ProjectDir -Properties ([ordered]@{
+        last_event    = ($Kind -replace '_', '.')
+        last_event_at = $timestamp
+    })
+
+    $kindLabel = ($Kind -replace '^consult_', 'consult ' -replace '_', ' ')
+    Write-Output "$kindLabel recorded for $([string]$context.RunId)"
 }
 
 function New-ReviewerStateRecord {
@@ -4824,6 +5121,27 @@ function Invoke-ReviewReset {
     Write-Output "review PASS cleared for $branch"
 }
 
+function Invoke-ConsultRequest {
+    Assert-WinsmuxRolePermission -CommandName 'consult-request'
+    $commandArgs = Resolve-CurrentCommandArgs
+    $args = Parse-ConsultCommandArgs -Mode ([string]$commandArgs.target) -Args @($commandArgs.rest)
+    Write-ConsultationCommandRecord -Kind 'consult_request' -Mode ([string]$args.mode) -Message ([string]$args.message) -TargetSlot ([string]$args.target_slot)
+}
+
+function Invoke-ConsultResult {
+    Assert-WinsmuxRolePermission -CommandName 'consult-result'
+    $commandArgs = Resolve-CurrentCommandArgs
+    $args = Parse-ConsultCommandArgs -Mode ([string]$commandArgs.target) -Args @($commandArgs.rest)
+    Write-ConsultationCommandRecord -Kind 'consult_result' -Mode ([string]$args.mode) -Message ([string]$args.message) -TargetSlot ([string]$args.target_slot) -Confidence $args.confidence -NextTest ([string]$args.next_test) -Risks @($args.risks)
+}
+
+function Invoke-ConsultError {
+    Assert-WinsmuxRolePermission -CommandName 'consult-error'
+    $commandArgs = Resolve-CurrentCommandArgs
+    $args = Parse-ConsultCommandArgs -Mode ([string]$commandArgs.target) -Args @($commandArgs.rest)
+    Write-ConsultationCommandRecord -Kind 'consult_error' -Mode ([string]$args.mode) -Message ([string]$args.message) -TargetSlot ([string]$args.target_slot)
+}
+
 function Show-Usage {
     Write-Output @"
 winsmux $VERSION - winsmux bridge for winsmux
@@ -4851,6 +5169,9 @@ Commands:
   review-fail               Record review FAIL for the current branch
   review-reset              Clear review PASS for the current branch
   dispatch-review           Dispatch review-request to a review-capable pane (Reviewer/Worker)
+  consult-request <mode> [--message <text>] [--target-slot <slot>]  Record a consultation request packet/event
+  consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>]  Record a consultation result packet/event
+  consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
   wait <channel> [timeout]  Block until signal received (replaces polling)
@@ -5221,6 +5542,9 @@ switch ($Command) {
     'review-approve'  { Invoke-ReviewApprove }
     'review-fail'     { Invoke-ReviewFail }
     'review-reset'    { Invoke-ReviewReset }
+    'consult-request' { Invoke-ConsultRequest }
+    'consult-result'  { Invoke-ConsultResult }
+    'consult-error'   { Invoke-ConsultError }
     'rebind-worktree' { Invoke-RebindWorktree }
     ''                { Show-Usage }
     default           { Stop-WithError "unknown command: $Command. Run without arguments for usage." }
