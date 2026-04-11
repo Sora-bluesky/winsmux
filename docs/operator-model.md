@@ -3,43 +3,70 @@
 winsmux is built around a **two-layer orchestration model**:
 
 - an **external operator layer**
-- a **managed pane layer**
+- a **managed pane execution layer**
 
-This separation is the key to understanding how Claude Code, Codex, Gemini, and other LLM tools fit into winsmux.
+This separation is the main contract of the product.
 
-## 1. External operator layer
+## 1. Standard control chain
 
-The operator layer is where user communication, dispatch, approval, and final judgement happen.
+The standard winsmux operating model is:
 
-The recommended operator is **Claude Code** because winsmux is designed to work well with:
+`User -> Claude Code (operator) -> pane agents`
+
+That model means:
+
+- the user communicates with the operator
+- the operator coordinates work
+- pane agents execute work
+- pane agents do not communicate directly with the user
+- pane agents do not communicate directly with each other
+
+## 2. Operator layer
+
+The operator layer is where:
+
+- user communication
+- dispatch
+- approval
+- review interpretation
+- prioritization
+- escalation
+- final judgement
+
+happen.
+
+The recommended operator is **Claude Code**.
+winsmux is designed to work well with:
 
 - Claude Code Channels
 - Claude Code remote control
 - other external user-to-operator channel surfaces
 
-The important abstraction is the **external channel boundary**.
-Telegram, Discord, or another channel can sit on top of that boundary, but the architecture is not tied to one messaging product.
+The important abstraction is the **channel boundary**, not Telegram, Discord, or another single product.
 
-Typical operator responsibilities:
+In the standard winsmux operating model, the operator is responsible for:
 
-- talk to the user
-- inspect `inbox`, `runs`, `explain`, and `digest`
-- decide what to dispatch next
-- request or interpret review
-- own git lifecycle decisions
+- decomposition
+- delegation
+- result collection
+- context alignment
+- review decisions
+- git lifecycle judgement
 
-## 2. Managed pane layer
+Direct file mutation or command execution by the operator is outside the standard winsmux operating model.
 
-The managed pane layer is where multiple agent CLIs run inside winsmux-controlled panes or slots.
+## 3. Pane execution layer
+
+The managed pane layer is where agent CLIs run inside winsmux-controlled panes or slots.
 
 Examples:
 
-- Claude Code
 - Codex
 - Gemini
+- Claude Code when explicitly assigned to a pane
 - future local or hosted LLM CLIs
 
-These panes are expected to work in parallel and may differ by:
+Panes may differ by:
 
 - provider
 - model
@@ -49,30 +76,31 @@ These panes are expected to work in parallel and may differ by:
 
 The current direction is **slot/capability-based orchestration**, not hard-coded vendor roles.
 
-## 3. Legacy layouts vs current model
+Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 
-Older `Commander / Builder / Researcher / Reviewer` pane layouts still exist for compatibility, but they are not the long-term architecture.
+## 4. Public role-definition documents
 
-The current model is:
-
-- one external operator
-- multiple managed worker slots
-- review handled by any review-capable slot
-
-This means:
-
-- `reviewer` is not required to be a permanent dedicated pane
-- operator channels are not tied to Telegram specifically
-- vendor identity does not define authority by itself
-
-## 4. Public product docs vs contributor docs
-
-Public product behavior should be read from:
+The public contract is split across these files:
 
 - `README.md`
 - `.claude/CLAUDE.md`
+- `AGENT-BASE.md`
+- `AGENT.md`
 - `GEMINI.md`
 - this file
+
+Their responsibilities are:
+
+- `.claude/CLAUDE.md`
+  - operator role definition
+- `AGENT-BASE.md`
+  - pane-wide shared execution contract
+- `AGENT.md`
+  - Codex-specific pane contract
+- `GEMINI.md`
+  - Gemini-specific pane contract
+
+## 5. Public docs vs contributor docs
 
 Contributor and dogfooding operations may still exist in repo-facing docs such as:
 
@@ -82,9 +110,21 @@ Contributor and dogfooding operations may still exist in repo-facing docs such a
 Those files describe how contributors and AI agents operate **inside this repository**.
 They are not the public end-user guide for winsmux as a product.
 
-## 5. UI/UX direction
+Dogfooding-specific rules do not define the public operator or pane contract.
 
-The Tauri desktop direction follows the same operator model:
+## 6. Legacy layouts vs current model
+
+Older `Commander / Builder / Researcher / Reviewer` pane layouts still exist for compatibility, but they are not the long-term architecture.
+
+The current model is:
+
+- one external operator
+- multiple managed pane agents
+- review handled by any review-capable slot
+
+## 7. Tauri UI direction
+
+The Tauri desktop direction follows the same contract:
 
 - **workspace sidebar** for sessions, explorer, open editors, and source control summary
 - **conversation shell** as the primary operator surface
@@ -92,4 +132,17 @@ The Tauri desktop direction follows the same operator model:
 - **secondary editor surface** for source-level drill-down
 - **terminal drawer** for raw PTY and diagnostics only
 
-This keeps the operator loop separate from the managed pane execution layer.
+`TASK-286` aligns the timeline grammar with the docs contract:
+
+- user message
+- operator update
+- system card
+- pane result report
+
+Pane result reports should follow the shared `AGENT-BASE.md` report shape:
+
+- `STATUS`
+- `TASK`
+- `RESULT`
+- `FILES_CHANGED`
+- `ISSUES`

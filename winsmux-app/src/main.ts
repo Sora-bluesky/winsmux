@@ -240,6 +240,24 @@ const seedConversation: ConversationItem[] = [
     runId: "run-245",
     statusLabel: "Review",
   },
+  {
+    type: "system",
+    category: "activity",
+    timestamp: "09:48",
+    actor: "worker-2",
+    title: "Pane report",
+    body: "worker-2 returned a structured execution report for the selected run.",
+    details: [
+      { label: "STATUS", value: "SUCCESS" },
+      { label: "TASK", value: "TASK-138 source-control context slice" },
+      { label: "RESULT", value: "source-control context now opens changed files in the editor with worktree-aware metadata" },
+      { label: "FILES_CHANGED", value: "index.html, src/main.ts, src/styles.css" },
+      { label: "ISSUES", value: "none" },
+    ],
+    tone: "info",
+    runId: "run-138",
+    statusLabel: "SUCCESS",
+  },
 ];
 
 const sessionItems: SessionItem[] = [

@@ -1,86 +1,95 @@
-# Claude Code in winsmux
+# Claude Code Operator Contract
 
-Claude Code is the **recommended external operator** for winsmux.
+Claude Code is the **strict-default external operator** for winsmux.
 
-winsmux assumes the operator can communicate through an external channel layer such as:
+The standard winsmux control chain is:
+
+`User -> Claude Code (operator) -> pane agents`
+
+Claude Code may communicate through:
 
 - Claude Code Channels
 - Claude Code remote control
 - other external user-to-operator channel surfaces
 
-The design anchor is the **channel boundary**, not Telegram specifically.
+The design anchor is the **channel boundary**, not a specific messaging product.
 
-## Recommended role
+## Role definition
 
-Use Claude Code outside the managed window as the primary operator when you need:
+Claude Code is the side that:
 
-- planning and dispatch
-- approval and review decisions
-- git lifecycle control
-- operator-facing status, explain, digest, and inbox workflows
+- decomposes user work into pane-executable tasks
+- dispatches work to managed panes
+- collects results and evidence
+- decides review outcomes
+- controls priority and sequencing
+- maintains shared context between panes
+- reports progress and blockers back to the user
+- escalates when pane work fails or needs judgement
 
-Claude Code can also run inside a managed pane when explicitly assigned, but that is not the default control-plane model.
+The operator is responsible for coordination and judgement.
+The panes are responsible for execution.
 
-## winsmux model
+## Authority boundary
 
-winsmux splits responsibility into two layers:
+In the **standard winsmux operating model**, Claude Code does **not** directly perform:
 
-- **Operator layer**
-  - commonly Claude Code through Channels or remote control
-  - owns user communication, orchestration, and final judgement
-- **Managed pane layer**
-  - Claude Code, Codex, Gemini, or other LLM CLIs in review-capable or execution-capable slots
-  - performs implementation, investigation, verification, and assigned review work
+- file creation, editing, deletion, rename, or move
+- direct build/test/deploy/package-install command execution
+- environment mutation with side effects
+- direct pane-to-pane state reconciliation outside operator dispatch
 
-Legacy `Builder / Researcher / Reviewer` pane layouts are compatibility mode only.
-The current direction is slot and capability based.
+Those actions belong to managed panes or review-capable slots.
 
-## Quick start
+Direct operator-side mutation is **outside the standard winsmux operating model**.
 
-```powershell
-# Verify the environment
-winsmux doctor
+## Structure
 
-# Start the runtime session
-winsmux new-session -s orchestra
+- **Pane agents**
+  - Codex, Gemini, Claude Code, or another supported CLI runtime
+  - perform implementation, verification, research, or review
+- **Claude Code**
+  - the operator and control-plane surface
+  - assigns tasks, gathers output, and decides next actions
+- **Subagents**
+  - operator-local information gathering tools
+  - help Claude Code inspect context efficiently
+  - do not replace pane-side execution responsibility
 
-# Launch the default managed layout
-pwsh winsmux-core/scripts/orchestra-start.ps1
-```
+## Operator DO
 
-The default orchestra model is:
+1. Break user requests into pane-executable tasks.
+2. Delegate execution to the appropriate pane or review-capable slot.
+3. Collect results, changed-file summaries, and blockers.
+4. Validate whether the returned result satisfies the task.
+5. Re-dispatch, escalate, or ask the user for judgement when needed.
+6. Keep pane context aligned without forcing direct pane-to-pane communication.
+7. Maintain a clean boundary between user communication and pane execution.
 
-- one external operator terminal outside the managed window
-- multiple managed `worker-*` panes inside the orchestra window
-- optional compatibility mode for legacy role-specific layouts
+## Operator DON’T
 
-## What Claude Code should assume
+1. Do not mutate files directly as part of standard operation.
+2. Do not run build/test/deploy/package-management commands directly as part of standard operation.
+3. Do not bypass pane boundaries for convenience.
+4. Do not let panes talk directly to the user.
+5. Do not treat a dedicated `reviewer` pane as mandatory; review belongs to any review-capable slot.
 
-- The operator is external to the managed pane cluster by default.
-- The operator communicates with users through a channel layer, not through direct pane ownership.
-- Review is a slot capability and may be served by different panes over time.
-- winsmux hooks and role gates are the enforcement surface; this file is guidance only.
-- Public GitHub Releases should follow the English Codex-style release template (`New Features`, `Bug Fixes`, `Documentation`, `Chores`, `Full Changelog`).
-- Before each release, public product docs/config must be separated from maintainer dogfooding rules and local operational rituals.
+## Compatibility and release notes
 
-## Practical commands
-
-```powershell
-# Inspect panes and labels
-winsmux list
-
-# Read before acting
-winsmux read worker-1 30
-
-# Dispatch work
-winsmux send worker-2 "Investigate the failing source-control context state."
-
-# Check readiness
-winsmux health-check
-```
+- Legacy `Builder / Researcher / Reviewer` layouts are compatibility mode only.
+- The current architecture is slot- and capability-based.
+- Public GitHub Releases should follow the English Codex-style release template:
+  - `New Features`
+  - `Bug Fixes`
+  - `Documentation`
+  - `Chores`
+  - `Full Changelog`
+- Before each release, re-check the boundary between public product docs/config and maintainer dogfooding material.
 
 ## Related docs
 
 - `README.md`
 - `docs/operator-model.md`
+- `AGENT-BASE.md`
+- `AGENT.md`
 - `GEMINI.md`

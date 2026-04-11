@@ -14,7 +14,7 @@ It provides the runtime and coordination layer for running multiple agent CLIs i
 
 - **Multi-vendor support**: run Codex, Claude, Gemini, and other CLI agents side by side in the same session
 - **Real-time visibility**: supervise every agent through live `winsmux` panes instead of waiting for post-hoc summaries
-- **Enterprise governance**: keep one external Commander in control, isolate managed worker panes in git worktrees, and preserve an evidence trail for review and audit
+- **Enterprise governance**: keep one external operator in control, isolate managed pane agents in git worktrees, and preserve an evidence trail for review and audit
 
 ```powershell
 winsmux read worker-1 20
@@ -26,7 +26,7 @@ winsmux health-check
 
 Most agent tooling is optimized for a single vendor and a single execution model. winsmux is designed for teams that need to coordinate multiple agents on Windows while keeping the system observable and governable.
 
-- **Vendor-neutral orchestration**: mix Codex, Claude, Gemini, and future local models behind one Commander control loop
+- **Vendor-neutral orchestration**: mix Codex, Claude, Gemini, and future local models behind one operator control loop
 - **Pane-native operations**: inspect, interrupt, redirect, and relabel live panes through `winsmux`
 - **Controlled execution**: combine read-before-act interaction, review-capable worker gates, and isolated worker workspaces
 - **Windows-first deployment**: no WSL2 dependency, no Linux detour, no hidden tmux requirement
@@ -44,12 +44,13 @@ winsmux
 ```
 
 - **`winsmux`** handles pane targeting, messaging, health checks, vault injection, and operator controls
-- **Orchestra** defaults to one external Commander plus managed worker panes
-- **Role gates** restrict which actions Commander and managed panes can perform
+- **Orchestra** defaults to one external operator plus managed pane agents
+- **Role gates** restrict which actions the operator and managed pane agents can perform
 - **Worker worktree isolation** gives each managed worker pane a separate git worktree to reduce cross-agent collisions
 - **Evidence Ledger** supports audit-oriented capture of agent activity and review outcomes
 
 For the public operator/pane architecture, see [docs/operator-model.md](docs/operator-model.md).
+Agent role definitions are split into [`.claude/CLAUDE.md`](.claude/CLAUDE.md), [`AGENT-BASE.md`](AGENT-BASE.md), [`AGENT.md`](AGENT.md), and [`GEMINI.md`](GEMINI.md).
 
 ## Core runtime
 
@@ -109,9 +110,9 @@ pwsh winsmux-core/scripts/orchestra-start.ps1
 
 The default layout is now:
 
-- external Commander terminal outside the managed window
+- external operator terminal outside the managed window
 - 6 managed `worker-*` panes inside the orchestra window
-- legacy `Commander / Builder / Researcher / Reviewer` pane layouts only when explicitly enabled
+- legacy `Commander / Builder / Researcher / Reviewer` pane layouts only when explicitly enabled for compatibility
 
 Inside the session, label and inspect panes:
 
@@ -123,7 +124,7 @@ winsmux send worker-3 "Summarize the upstream issue."
 
 ## Governance highlights
 
-- **Role gates**: the external Commander and managed worker panes do not get the same command surface
+- **Role gates**: the external operator and managed pane agents do not get the same command surface
 - **Read Guard**: panes must be read before interaction, reducing blind input into the wrong target
 - **Worktree isolation**: each managed worker pane can run in its own git worktree branch and directory
 - **Credential Vault**: secrets are stored with Windows DPAPI and injected into panes without writing repo `.env` files

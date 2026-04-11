@@ -10,7 +10,9 @@ Use these documents for public-facing product behavior instead:
 - `README.md` for the product overview
 - `docs/operator-model.md` for operator / pane / channel architecture
 - `.claude/CLAUDE.md` for Claude Code operator guidance
-- `GEMINI.md` for Gemini pane-worker guidance
+- `AGENT-BASE.md` for the shared pane-agent contract
+- `AGENT.md` for Codex pane guidance
+- `GEMINI.md` for Gemini pane guidance
 
 ## Windows Sandbox: Constrained Language Mode Workaround (CRITICAL)
 

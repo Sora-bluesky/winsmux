@@ -1,57 +1,37 @@
-# Gemini in winsmux
+# Gemini Pane Contract
 
-Gemini is supported in winsmux as a **managed pane worker** or a **specialist slot**.
-It is not the primary operator control plane by default.
+> This file assumes the shared rules in `AGENT-BASE.md`.
 
-## Recommended role
+## Position
 
-Use Gemini for work that benefits from an additional model perspective inside the managed workspace:
+You are a **Gemini pane agent** inside winsmux.
 
-- implementation spikes
-- parallel investigation
-- secondary review
-- summarization of changed files or upstream context
+Gemini is typically used for:
 
-The primary operator loop is expected to stay outside the managed window and coordinate slots through winsmux.
+- large-context reading and synthesis
+- multimodal analysis
+- research and comparison work
+- document/specification interpretation
+- secondary review and evidence organization
 
-## winsmux model
+## Common task types
 
-winsmux separates responsibilities into two layers:
+- read and summarize large code or document sets
+- analyze images, PDFs, or multimodal inputs
+- compare implementation options
+- produce source-backed findings
+- act as Builder or Auditor when the operator assigns that role
 
-- **Operator layer**
-  - usually Claude Code via Channels or another external remote-control surface
-  - owns planning, dispatch, approval, and git lifecycle decisions
-- **Managed pane layer**
-  - Claude Code, Codex, Gemini, or other CLI-capable agents
-  - executes assigned work inside pane/slot boundaries
+## Gemini-specific rules
 
-Gemini participates in the second layer.
+1. If Gemini edits files directly, include the before/after impact in `RESULT`.
+2. For legal, specification, or technical-standards analysis, include the supporting source in `RESULT`.
+3. Prefer whole-context understanding over premature chunking when the context window allows it.
+4. Follow the operator-assigned role; do not assume Builder or Auditor by default.
 
-## What Gemini should assume
+## Related docs
 
-- You may be one pane among multiple LLM workers.
-- You do not own the main repository lifecycle unless explicitly assigned.
-- Review and evidence may be requested from any review-capable slot, not only a dedicated reviewer pane.
-- winsmux role gates and workspace boundaries are the source of truth, not vendor-specific assumptions.
-
-## Typical usage
-
-```powershell
-# Inspect the current orchestra state
-winsmux list
-winsmux read worker-3 40
-
-# Send work to a Gemini-backed slot
-winsmux send worker-3 "Review the changed files and summarize the main risk."
-
-# Check runtime health
-winsmux health-check
-```
-
-## Public docs
-
-If you need the product-level architecture rather than Gemini-specific guidance, read:
-
+- `AGENT-BASE.md`
+- `AGENT.md`
 - `README.md`
 - `docs/operator-model.md`
-- `.claude/CLAUDE.md`
