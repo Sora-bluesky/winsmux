@@ -22,12 +22,27 @@ interface ConversationChip {
   action: ChipAction;
 }
 
+type TimelineFilter = "all" | "attention" | "review" | "activity";
+type ConversationCategory = "user" | "attention" | "review" | "activity";
+
+interface ConversationDetail {
+  label: string;
+  value: string;
+}
+
 interface ConversationItem {
   type: "user" | "operator" | "system";
+  category: ConversationCategory;
+  timestamp: string;
+  actor: string;
   title?: string;
   body: string;
+  details?: ConversationDetail[];
   chips?: ConversationChip[];
+  attachments?: Array<{ name: string; kind: "image" | "file"; sizeLabel: string }>;
   tone?: SurfaceTone;
+  runId?: string;
+  statusLabel?: string;
 }
 
 interface SessionItem {
@@ -102,6 +117,15 @@ interface ThemeState {
   wrapMode: WrapMode;
 }
 
+interface ComposerAttachment {
+  id: string;
+  name: string;
+  kind: "image" | "file";
+  sizeLabel: string;
+  file: File;
+  previewUrl?: string;
+}
+
 type ComposerMode = "ask" | "dispatch" | "review" | "explain";
 
 const panes = new Map<string, PaneEntry>();
@@ -116,6 +140,8 @@ let sidebarWidth = 292;
 let selectedEditorPath = "winsmux-app/src/main.ts";
 let activeComposerMode: ComposerMode = "dispatch";
 let activeSourceFilter: SourceFilter = "all";
+let activeTimelineFilter: TimelineFilter = "all";
+let pendingAttachments: ComposerAttachment[] = [];
 const themeState: ThemeState = {
   theme: "codex-dark",
   density: "comfortable",
@@ -129,20 +155,48 @@ const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: str
   { mode: "explain", label: "Explain", placeholder: "Ask the Operator to explain the current run state" },
 ];
 
+const timelineFilters: Array<{ filter: TimelineFilter; label: string }> = [
+  { filter: "all", label: "All" },
+  { filter: "attention", label: "Attention" },
+  { filter: "review", label: "Review" },
+  { filter: "activity", label: "Activity" },
+];
+
 const seedConversation: ConversationItem[] = [
   {
     type: "user",
+    category: "user",
+    timestamp: "09:41",
+    actor: "User",
     body: "Please tighten the notification boundary and show why this run is blocked.",
   },
   {
     type: "operator",
-    body: "Operator update: inbox shows 2 approval waits. I am checking run ledger and evidence digest now.",
+    category: "activity",
+    timestamp: "09:42",
+    actor: "Operator",
+    title: "Operator update",
+    body: "Inbox shows 2 approval waits. I am checking run ledger, source context, and the evidence digest before deciding the next action.",
+    details: [
+      { label: "focus", value: "run-246" },
+      { label: "scope", value: "branch/head mismatch" },
+    ],
     tone: "info",
+    runId: "run-246",
   },
   {
     type: "system",
+    category: "attention",
+    timestamp: "09:43",
+    actor: "System",
     title: "Commit blocked",
     body: "worker-2 changed 3 files. Review passed, but branch/head mismatch still blocks commit. Open Explain or inspect the edited files.",
+    details: [
+      { label: "run", value: "run-246" },
+      { label: "slot", value: "worker-3" },
+      { label: "review", value: "passed" },
+      { label: "next", value: "Open Explain" },
+    ],
     chips: [
       { label: "Open Explain", action: "open-explain" },
       { label: "Open in Editor", action: "open-editor" },
@@ -150,6 +204,59 @@ const seedConversation: ConversationItem[] = [
       { label: "Terminal", action: "open-terminal" },
     ],
     tone: "warning",
+    runId: "run-246",
+    statusLabel: "Blocked",
+  },
+  {
+    type: "operator",
+    category: "review",
+    timestamp: "09:44",
+    actor: "Operator",
+    title: "Review boundary",
+    body: "Only external-facing review and commit-ready events should surface through the channel layer. Internal dispatch noise stays inside the workspace.",
+    details: [
+      { label: "channel", value: "external only" },
+      { label: "profile", value: "review_requested, blocked, commit_ready" },
+    ],
+    tone: "focus",
+  },
+  {
+    type: "system",
+    category: "review",
+    timestamp: "09:46",
+    actor: "System",
+    title: "Review requested",
+    body: "A review-capable slot is ready to inspect the changed files for run-245. The timeline keeps the request, evidence, and next action in the same feed.",
+    details: [
+      { label: "run", value: "run-245" },
+      { label: "slot", value: "worker-2" },
+      { label: "target", value: "Changed files" },
+    ],
+    chips: [
+      { label: "Open in Editor", action: "open-editor" },
+      { label: "Source Context", action: "open-source-context" },
+    ],
+    tone: "focus",
+    runId: "run-245",
+    statusLabel: "Review",
+  },
+  {
+    type: "system",
+    category: "activity",
+    timestamp: "09:48",
+    actor: "worker-2",
+    title: "Pane report",
+    body: "worker-2 returned a structured execution report for the selected run.",
+    details: [
+      { label: "STATUS", value: "SUCCESS" },
+      { label: "TASK", value: "TASK-138 source-control context slice" },
+      { label: "RESULT", value: "source-control context now opens changed files in the editor with worktree-aware metadata" },
+      { label: "FILES_CHANGED", value: "index.html, src/main.ts, src/styles.css" },
+      { label: "ISSUES", value: "none" },
+    ],
+    tone: "info",
+    runId: "run-138",
+    statusLabel: "SUCCESS",
   },
 ];
 
@@ -408,6 +515,7 @@ function renderExplorer() {
         selectedEditorPath = findEditorFile(itemPath)?.path || selectedEditorPath;
         setEditorSurface(true);
         renderSourceSummary();
+        renderRunSummary();
       });
     }
     root.appendChild(button);
@@ -430,6 +538,7 @@ function renderOpenEditors() {
       selectedEditorPath = editor.path;
       setEditorSurface(true);
       renderSourceSummary();
+      renderRunSummary();
     });
     root.appendChild(button);
   }
@@ -496,6 +605,7 @@ function renderSourceEntries() {
       renderSourceSummary();
       renderSourceEntries();
       renderContextPanel();
+      renderRunSummary();
     });
     root.appendChild(button);
   }
@@ -575,6 +685,7 @@ function renderContextPanel() {
       selectedEditorPath = change.path;
       setEditorSurface(true);
       renderSourceSummary();
+      renderRunSummary();
     });
     fileRoot.appendChild(button);
   }
@@ -734,6 +845,206 @@ function renderComposerModes() {
   }
 }
 
+function formatAttachmentSize(size: number) {
+  if (size >= 1024 * 1024) {
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  if (size >= 1024) {
+    return `${Math.max(1, Math.round(size / 1024))} KB`;
+  }
+  return `${size} B`;
+}
+
+function synthesizeScreenshotName() {
+  const now = new Date();
+  const date = `${now.getFullYear()}-${`${now.getMonth() + 1}`.padStart(2, "0")}-${`${now.getDate()}`.padStart(2, "0")}`;
+  const time = `${`${now.getHours()}`.padStart(2, "0")}.${`${now.getMinutes()}`.padStart(2, "0")}.${`${now.getSeconds()}`.padStart(2, "0")}`;
+  return `Screenshot ${date} ${time}.png`;
+}
+
+function createComposerAttachment(file: File) {
+  const name = file.name?.trim() ? file.name : file.type.startsWith("image/") ? synthesizeScreenshotName() : "Attachment";
+  const kind: "image" | "file" = file.type.startsWith("image/") ? "image" : "file";
+  return {
+    id: `${name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
+    name,
+    kind,
+    sizeLabel: formatAttachmentSize(file.size),
+    file,
+    previewUrl: kind === "image" ? URL.createObjectURL(file) : undefined,
+  } satisfies ComposerAttachment;
+}
+
+function releaseAttachmentPreview(attachment: ComposerAttachment) {
+  if (attachment.previewUrl) {
+    URL.revokeObjectURL(attachment.previewUrl);
+  }
+}
+
+function clearPendingAttachments() {
+  for (const attachment of pendingAttachments) {
+    releaseAttachmentPreview(attachment);
+  }
+  pendingAttachments = [];
+}
+
+function renderAttachmentTray() {
+  const tray = document.getElementById("attachment-tray");
+  if (!tray) {
+    return;
+  }
+
+  tray.innerHTML = "";
+  tray.classList.toggle("is-empty", pendingAttachments.length === 0);
+
+  if (pendingAttachments.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "attachment-empty-state";
+    empty.textContent = "Paste a screenshot, drop files, or use Attach.";
+    tray.appendChild(empty);
+    return;
+  }
+
+  for (const attachment of pendingAttachments) {
+    const item = document.createElement("div");
+    item.className = "attachment-item";
+
+    if (attachment.previewUrl) {
+      const thumb = document.createElement("img");
+      thumb.className = "attachment-thumb";
+      thumb.src = attachment.previewUrl;
+      thumb.alt = attachment.name;
+      item.appendChild(thumb);
+    } else {
+      const icon = document.createElement("div");
+      icon.className = "attachment-thumb attachment-thumb-file";
+      icon.textContent = attachment.kind === "image" ? "IMG" : "FILE";
+      item.appendChild(icon);
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "attachment-meta";
+    meta.innerHTML = `<span class="attachment-name">${attachment.name}</span><span class="attachment-size">${attachment.sizeLabel}</span>`;
+    item.appendChild(meta);
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "attachment-remove";
+    removeButton.setAttribute("aria-label", `Remove ${attachment.name}`);
+    removeButton.textContent = "Remove";
+    removeButton.addEventListener("click", () => {
+      releaseAttachmentPreview(attachment);
+      pendingAttachments = pendingAttachments.filter((item) => item.id !== attachment.id);
+      renderAttachmentTray();
+    });
+    item.appendChild(removeButton);
+
+    tray.appendChild(item);
+  }
+}
+
+function appendAttachments(files: File[]) {
+  if (files.length === 0) {
+    return;
+  }
+
+  const remaining = Math.max(0, 5 - pendingAttachments.length);
+  if (remaining <= 0) {
+    return;
+  }
+
+  const next = files.slice(0, remaining).map((file) => createComposerAttachment(file));
+  pendingAttachments = [...pendingAttachments, ...next];
+  renderAttachmentTray();
+}
+
+function getVisibleConversationItems(items: ConversationItem[]) {
+  switch (activeTimelineFilter) {
+    case "attention":
+      return items.filter((item) => item.category === "attention");
+    case "review":
+      return items.filter((item) => item.category === "review");
+    case "activity":
+      return items.filter((item) => item.category === "activity" || item.type === "operator");
+    default:
+      return items;
+  }
+}
+
+function renderTimelineFilters() {
+  const root = document.getElementById("timeline-filter-row");
+  if (!root) {
+    return;
+  }
+
+  root.innerHTML = "";
+  for (const item of timelineFilters) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `timeline-filter-chip ${item.filter === activeTimelineFilter ? "is-active" : ""}`;
+    button.textContent = item.label;
+    button.setAttribute("aria-pressed", item.filter === activeTimelineFilter ? "true" : "false");
+    button.addEventListener("click", () => {
+      activeTimelineFilter = item.filter;
+      renderTimelineFilters();
+      renderConversation(seedConversation);
+      renderRunSummary();
+    });
+    root.appendChild(button);
+  }
+}
+
+function renderRunSummary() {
+  const root = document.getElementById("selected-run-summary");
+  if (!root) {
+    return;
+  }
+
+  const visibleChanges = getVisibleSourceChanges();
+  const primaryChange = getPrimarySourceChange(visibleChanges);
+  if (!primaryChange) {
+    root.innerHTML = "";
+    return;
+  }
+
+  const attentionCount = visibleChanges.filter((item) => item.needsAttention).length;
+  const candidateCount = visibleChanges.filter((item) => item.commitCandidate).length;
+  root.innerHTML = `
+    <div class="run-summary-card">
+      <div class="run-summary-header">
+        <div>
+          <div class="timeline-eyebrow">Selected run</div>
+          <div class="run-summary-title">${primaryChange.run}</div>
+        </div>
+        <div class="run-summary-status" data-tone="${primaryChange.needsAttention ? "warning" : "success"}">
+          ${primaryChange.review}
+        </div>
+      </div>
+      <div class="run-summary-meta-row">
+        <span class="run-summary-pill">${primaryChange.slot}</span>
+        <span class="run-summary-pill">${primaryChange.branch}</span>
+        <span class="run-summary-pill">.worktrees/${primaryChange.worktree}</span>
+        <span class="run-summary-pill">${candidateCount} candidate${candidateCount === 1 ? "" : "s"}</span>
+        <span class="run-summary-pill">${attentionCount} blocker${attentionCount === 1 ? "" : "s"}</span>
+      </div>
+      <div class="run-summary-body">${primaryChange.summary}</div>
+      <div class="timeline-chip-row">
+        <button type="button" class="timeline-chip" data-action="open-explain">Open Explain</button>
+        <button type="button" class="timeline-chip" data-action="open-editor">Open in Editor</button>
+        <button type="button" class="timeline-chip" data-action="open-source-context">Source Context</button>
+      </div>
+    </div>
+  `;
+
+  for (const button of root.querySelectorAll<HTMLButtonElement>(".timeline-chip")) {
+    const action = button.dataset.action as ChipAction | undefined;
+    if (!action) {
+      continue;
+    }
+    button.addEventListener("click", () => handleChipAction(action));
+  }
+}
+
 function renderConversation(items: ConversationItem[]) {
   const timeline = document.getElementById("conversation-timeline");
   if (!timeline) {
@@ -741,11 +1052,30 @@ function renderConversation(items: ConversationItem[]) {
   }
 
   timeline.innerHTML = "";
+  const visibleItems = getVisibleConversationItems(items);
 
-  for (const item of items) {
+  if (visibleItems.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "attachment-empty-state";
+    empty.textContent = "No events in this filter yet.";
+    timeline.appendChild(empty);
+    return;
+  }
+
+  for (const item of visibleItems) {
     const article = document.createElement("article");
     article.className = `timeline-item timeline-${item.type}`;
     article.dataset.tone = item.tone ?? (item.type === "operator" ? "info" : item.type === "system" ? "focus" : "default");
+
+    const meta = document.createElement("div");
+    meta.className = "timeline-meta-row";
+    meta.innerHTML =
+      `<span class="timeline-actor">${item.actor}</span>` +
+      `<span class="timeline-meta-separator">·</span>` +
+      `<span>${item.timestamp}</span>` +
+      (item.runId ? `<span class="timeline-meta-separator">·</span><span>${item.runId}</span>` : "") +
+      (item.statusLabel ? `<span class="timeline-status-pill">${item.statusLabel}</span>` : "");
+    article.appendChild(meta);
 
     if (item.title) {
       const title = document.createElement("div");
@@ -758,6 +1088,30 @@ function renderConversation(items: ConversationItem[]) {
     body.className = "timeline-body";
     body.textContent = item.body;
     article.appendChild(body);
+
+    if (item.details?.length) {
+      const detailRow = document.createElement("div");
+      detailRow.className = "timeline-detail-row";
+      for (const detail of item.details) {
+        const pill = document.createElement("span");
+        pill.className = "timeline-detail-pill";
+        pill.innerHTML = `<span class="timeline-detail-label">${detail.label}</span><span>${detail.value}</span>`;
+        detailRow.appendChild(pill);
+      }
+      article.appendChild(detailRow);
+    }
+
+    if (item.attachments?.length) {
+      const attachmentRow = document.createElement("div");
+      attachmentRow.className = "timeline-attachment-row";
+      for (const attachment of item.attachments) {
+        const pill = document.createElement("span");
+        pill.className = "timeline-attachment-pill";
+        pill.innerHTML = `<span>${attachment.kind === "image" ? "Image" : "File"}</span><span>${attachment.name}</span><span>${attachment.sizeLabel}</span>`;
+        attachmentRow.appendChild(pill);
+      }
+      article.appendChild(attachmentRow);
+    }
 
     if (item.chips?.length) {
       const chipRow = document.createElement("div");
@@ -792,8 +1146,20 @@ function handleChipAction(action: ChipAction) {
     case "open-explain":
       seedConversation.push({
         type: "operator",
-        body: "Explain opened: this run is blocked on branch/head alignment after review passed. Changed files and commit readiness are available in the context sheet.",
+        category: "activity",
+        timestamp: "09:47",
+        actor: "Operator",
+        title: "Explain opened",
+        body: "This run is blocked on branch/head alignment after review passed. Changed files and commit readiness stay available in the context sheet and source-control surface.",
+        details: [
+          { label: "run", value: "run-246" },
+          { label: "focus", value: "branch/head alignment" },
+        ],
+        tone: "info",
+        runId: "run-246",
       });
+      renderTimelineFilters();
+      renderRunSummary();
       renderConversation(seedConversation);
       break;
   }
@@ -846,6 +1212,7 @@ function renderEditorSurface() {
       renderSourceSummary();
       renderContextPanel();
       renderSourceEntries();
+      renderRunSummary();
     });
     tabs.appendChild(tab);
   }
@@ -942,13 +1309,35 @@ function syncResponsiveShell() {
   }
 }
 
-function appendUserMessage(message: string) {
-  seedConversation.push({ type: "user", body: message });
+function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
+  const now = new Date();
+  const timestamp = `${`${now.getHours()}`.padStart(2, "0")}:${`${now.getMinutes()}`.padStart(2, "0")}`;
+  seedConversation.push({
+    type: "user",
+    category: "user",
+    timestamp,
+    actor: "User",
+    body: message || "Attached files for dispatch.",
+    attachments: attachments.map((attachment) => ({
+      name: attachment.name,
+      kind: attachment.kind,
+      sizeLabel: attachment.sizeLabel,
+    })),
+  });
   seedConversation.push({
     type: "operator",
-    body: "Operator update: queued for dispatch. Open Explain, inspect changed files, or use the terminal drawer if raw PTY detail becomes necessary.",
+    category: "activity",
+    timestamp,
+    actor: "Operator",
+    title: "Queued for dispatch",
+    body: "The request is now part of the operator feed. Open Explain, inspect changed files, or use the terminal drawer only if raw PTY detail becomes necessary.",
+    details: [
+      { label: "mode", value: activeComposerMode },
+      { label: "attachments", value: `${attachments.length}` },
+    ],
     tone: "info",
   });
+  renderRunSummary();
   renderConversation(seedConversation);
 }
 
@@ -1041,8 +1430,11 @@ window.addEventListener("DOMContentLoaded", async () => {
   applyShellPreferences();
   renderSettingsControls();
   renderFooterLane();
+  renderTimelineFilters();
+  renderRunSummary();
   renderConversation(seedConversation);
   renderComposerModes();
+  renderAttachmentTray();
   renderEditorSurface();
   syncResponsiveShell();
   setEditorSurface(false);
@@ -1086,6 +1478,8 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   const composer = document.getElementById("composer") as HTMLFormElement | null;
   const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  const composerFileInput = document.getElementById("composer-file-input") as HTMLInputElement | null;
+  const attachButton = document.getElementById("attach-btn") as HTMLButtonElement | null;
   if (composer && composerInput) {
     composerInput.addEventListener("compositionstart", () => {
       composerImeActive = true;
@@ -1108,16 +1502,60 @@ window.addEventListener("DOMContentLoaded", async () => {
       composer.requestSubmit();
     });
 
+    composerInput.addEventListener("paste", (event) => {
+      const items = Array.from(event.clipboardData?.items ?? []);
+      const attachmentFiles = items
+        .filter((item) => item.kind === "file")
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => Boolean(file));
+
+      if (attachmentFiles.length === 0) {
+        return;
+      }
+
+      event.preventDefault();
+      appendAttachments(attachmentFiles);
+    });
+
+    composerInput.addEventListener("dragover", (event) => {
+      if (event.dataTransfer?.files?.length) {
+        event.preventDefault();
+      }
+    });
+
+    composerInput.addEventListener("drop", (event) => {
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      if (files.length === 0) {
+        return;
+      }
+
+      event.preventDefault();
+      appendAttachments(files);
+    });
+
     composer.addEventListener("submit", (event) => {
       event.preventDefault();
       const value = composerInput.value.trim();
-      if (!value) {
+      if (!value && pendingAttachments.length === 0) {
         return;
       }
-      appendUserMessage(value);
+      const submittedAttachments = [...pendingAttachments];
+      appendUserMessage(value, submittedAttachments);
       composerInput.value = "";
+      clearPendingAttachments();
+      renderAttachmentTray();
     });
   }
+
+  attachButton?.addEventListener("click", () => {
+    composerFileInput?.click();
+  });
+
+  composerFileInput?.addEventListener("change", () => {
+    const files = Array.from(composerFileInput.files ?? []);
+    appendAttachments(files);
+    composerFileInput.value = "";
+  });
 
   window.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && settingsSheetOpen) {

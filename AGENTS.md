@@ -1,5 +1,19 @@
 # Codex Project Rules — winsmux
 
+## Scope
+
+This file is for **Codex contributors operating inside this repository**.
+It is not the public product guide for winsmux users.
+
+Use these documents for public-facing product behavior instead:
+
+- `README.md` for the product overview
+- `docs/operator-model.md` for operator / pane / channel architecture
+- `.claude/CLAUDE.md` for Claude Code operator guidance
+- `AGENT-BASE.md` for the shared pane-agent contract
+- `AGENT.md` for Codex pane guidance
+- `GEMINI.md` for Gemini pane guidance
+
 ## Windows Sandbox: Constrained Language Mode Workaround (CRITICAL)
 
 On Windows, the Codex sandbox (`unelevated`) runs PowerShell in ConstrainedLanguageMode.
@@ -81,8 +95,35 @@ GitHub Release titles and bodies must be written in English, regardless of the c
 When generating or editing a release:
 
 1. Use English section headings and bullets for the public GitHub Release body.
-2. Keep the GitHub Release body aligned with the `/release-notes` structure, but in English.
-3. Local or private post drafts may be Japanese if the task explicitly asks for them, but the public GitHub Release stays English.
+2. Follow the Codex GitHub Release template structure used in `openai/codex` releases.
+   - Preferred headings are:
+     - `New Features`
+     - `Bug Fixes`
+     - `Documentation`
+     - `Chores`
+     - `Full Changelog`
+   - Omit empty sections rather than invent filler.
+3. Keep the GitHub Release body aligned with the `/release-notes` structure, but in English and mapped onto the Codex-style headings above.
+4. Link the compare range in `Full Changelog` when the repository and tag range support it.
+5. Local or private post drafts may be Japanese if the task explicitly asks for them, but the public GitHub Release stays English.
+
+## Public-vs-Dogfooding Release Gate
+
+winsmux is dogfooded in this repository, so every release candidate must explicitly separate:
+
+- public product-facing documentation and configuration, and
+- maintainer / repo-operations / dogfooding-only material.
+
+Before every version release, Codex must verify:
+
+1. public-facing docs still describe winsmux for external users, not the maintainer's local workflow,
+2. dogfooding-only rules stay in contributor/agent-operation documents,
+3. release notes and README-facing docs do not leak private planning roots, personal paths, or maintainer-only rituals,
+4. any newly added tracked files are classified as either:
+   - public product surface, or
+   - dogfooding/contributor surface.
+
+If drift is found, fix or explicitly track it before the release is finalized.
 
 ## Third-Party UI Attribution
 

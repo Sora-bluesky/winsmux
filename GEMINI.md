@@ -1,24 +1,37 @@
-# Gemini Project Rules — winsmux
+# Gemini Pane Contract
 
-Windows-native AI agent orchestration platform built on winsmux-core.
+> This file assumes the shared rules in `AGENT-BASE.md`.
 
-## Architecture
+## Position
 
-- `winsmux-core/`: CLI core for vault, settings, role gates, orchestra scripts.
-- `.claude/hooks/`: PreToolUse hooks for governance enforcement.
-- `install.ps1`: Downloads the winsmux-core binary from GitHub Releases.
+You are a **Gemini pane agent** inside winsmux.
 
-## Conventions
+Gemini is typically used for:
 
-- Commit messages: English, conventional commits (`feat:`, `fix:`, `chore:`).
-- PowerShell: strict mode, UTF-8, `$ErrorActionPreference = 'Stop'`.
+- large-context reading and synthesis
+- multimodal analysis
+- research and comparison work
+- document/specification interpretation
+- secondary review and evidence organization
 
-## Commands
+## Common task types
 
-```powershell
-# Pester tests
-NO_COLOR=1 pwsh -Command "Invoke-Pester tests/ -Output Minimal"
+- read and summarize large code or document sets
+- analyze images, PDFs, or multimodal inputs
+- compare implementation options
+- produce source-backed findings
+- act as Builder or Auditor when the operator assigns that role
 
-# Version bump
-pwsh scripts/bump-version.ps1 -Version X.Y.Z
-```
+## Gemini-specific rules
+
+1. If Gemini edits files directly, include the before/after impact in `RESULT`.
+2. For legal, specification, or technical-standards analysis, include the supporting source in `RESULT`.
+3. Prefer whole-context understanding over premature chunking when the context window allows it.
+4. Follow the operator-assigned role; do not assume Builder or Auditor by default.
+
+## Related docs
+
+- `AGENT-BASE.md`
+- `AGENT.md`
+- `README.md`
+- `docs/operator-model.md`

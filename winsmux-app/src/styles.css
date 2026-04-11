@@ -376,6 +376,122 @@ textarea {
   font-size: var(--text-xs);
 }
 
+#timeline-toolbar,
+#selected-run-summary {
+  padding: 0 20px 12px;
+}
+
+#timeline-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#timeline-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timeline-filter-chip {
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-surface-raised);
+  color: var(--text-secondary);
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: var(--text-xs);
+}
+
+.timeline-filter-chip.is-active,
+.timeline-filter-chip:hover {
+  border-color: var(--status-focus-border);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+
+#timeline-feed-hint {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+.run-summary-card {
+  border: 1px solid var(--border-muted);
+  border-radius: 18px;
+  background: var(--bg-surface-raised);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.run-summary-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.timeline-eyebrow {
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #7d88a9;
+  margin-bottom: 4px;
+}
+
+.run-summary-title {
+  color: var(--text-primary);
+  font-size: var(--text-md);
+  font-weight: 700;
+}
+
+.run-summary-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  border: 1px solid var(--border-muted);
+}
+
+.run-summary-status[data-tone="warning"] {
+  border-color: var(--status-warning-border);
+  color: var(--status-warning);
+  background: var(--status-warning-bg);
+}
+
+.run-summary-status[data-tone="success"] {
+  border-color: var(--status-success-border);
+  color: var(--status-success);
+  background: var(--status-success-bg);
+}
+
+.run-summary-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.run-summary-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-muted);
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+}
+
+.run-summary-body {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
 #conversation-timeline {
   min-height: 0;
   overflow: auto;
@@ -395,6 +511,35 @@ textarea {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
   background: var(--bg-panel);
   border: 1px solid transparent;
+}
+
+.timeline-meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+}
+
+.timeline-actor {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.timeline-meta-separator {
+  color: #66708f;
+}
+
+.timeline-status-pill {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 8px;
+  border: 1px solid var(--status-focus-border);
+  background: var(--status-focus-bg);
+  color: var(--text-primary);
 }
 
 .timeline-user {
@@ -442,10 +587,52 @@ textarea {
   overflow-wrap: var(--body-wrap);
 }
 
+.timeline-detail-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timeline-detail-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-muted);
+  background: rgba(14, 17, 26, 0.4);
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+}
+
+.timeline-detail-label {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .timeline-chip-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.timeline-attachment-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timeline-attachment-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(14, 17, 26, 0.48);
+  border: 1px solid var(--border-muted);
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
 }
 
 .timeline-chip {
@@ -524,20 +711,83 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  min-height: 42px;
+  align-items: flex-start;
 }
 
-.attachment-chip {
-  border: 0;
+.attachment-empty-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 2px;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.attachment-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  max-width: 320px;
+  padding: 8px 10px;
+  border-radius: 14px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-muted);
+}
+
+.attachment-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 1px solid var(--border-strong);
+  background: #0f1117;
+}
+
+.attachment-thumb-file {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+}
+
+.attachment-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.attachment-name {
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-size {
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+}
+
+.attachment-remove {
+  border: 1px solid var(--border-strong);
+  background: var(--bg-surface-raised);
+  color: var(--text-secondary);
   border-radius: 999px;
-  padding: 7px 11px;
-  background: #f4f5f3;
-  color: #161922;
+  padding: 6px 10px;
   cursor: pointer;
+  font-size: var(--text-2xs);
 }
 
-.attachment-chip-muted {
-  background: #323851;
-  color: #eef2ff;
+.attachment-remove:hover {
+  background: var(--bg-panel);
 }
 
 #composer-actions {
@@ -1040,9 +1290,25 @@ textarea {
     align-items: flex-start;
   }
 
+  #selected-run-summary,
+  #timeline-toolbar {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  #attachment-tray {
+    width: 100%;
+  }
+
+  .attachment-item {
+    max-width: 100%;
+    width: 100%;
+  }
+
   #composer-actions {
     width: 100%;
     justify-content: space-between;
+    flex-wrap: wrap;
   }
 
   #workspace-footer {
