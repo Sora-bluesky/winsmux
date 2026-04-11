@@ -1,5 +1,17 @@
 # Codex Project Rules — winsmux
 
+## Scope
+
+This file is for **Codex contributors operating inside this repository**.
+It is not the public product guide for winsmux users.
+
+Use these documents for public-facing product behavior instead:
+
+- `README.md` for the product overview
+- `docs/operator-model.md` for operator / pane / channel architecture
+- `.claude/CLAUDE.md` for Claude Code operator guidance
+- `GEMINI.md` for Gemini pane-worker guidance
+
 ## Windows Sandbox: Constrained Language Mode Workaround (CRITICAL)
 
 On Windows, the Codex sandbox (`unelevated`) runs PowerShell in ConstrainedLanguageMode.

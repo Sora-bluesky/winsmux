@@ -78,21 +78,24 @@
           <section id="conversation-panel">
             <div id="thread-meta">
               <span>winsmux session</span>
-              <span>conversation shell</span>
+              <span>conversation shell · concise feed</span>
             </div>
+            <div id="timeline-toolbar">
+              <div id="timeline-filter-row" aria-label="Timeline filters"></div>
+              <div id="timeline-feed-hint">Material events only: user messages, operator updates, and structured system cards.</div>
+            </div>
+            <div id="selected-run-summary"></div>
             <div id="conversation-timeline" role="log" aria-live="polite" aria-relevant="additions text"></div>
             <form id="composer" autocomplete="off">
               <label class="sr-only" for="composer-input">Message the Operator</label>
               <textarea id="composer-input" rows="2" placeholder="Message the Operator... Dispatch, ask, review, or explain"></textarea>
+              <input id="composer-file-input" type="file" hidden multiple />
               <div id="composer-mode-row" aria-label="Composer modes"></div>
               <div id="composer-footer">
-                <div id="attachment-tray">
-                  <button type="button" class="attachment-chip">Screen 1.png</button>
-                  <button type="button" class="attachment-chip">Trace.txt</button>
-                  <button type="button" class="attachment-chip attachment-chip-muted">+1</button>
-                </div>
+                <div id="attachment-tray" aria-live="polite"></div>
                 <div id="composer-actions">
                   <span id="ime-hint">IME-safe: Enter sends, Shift+Enter inserts newline, composing Enter never sends.</span>
+                  <button type="button" id="attach-btn" class="ghost-btn ghost-btn-small">Attach</button>
                   <button type="submit" id="send-btn">Send</button>
                 </div>
               </div>

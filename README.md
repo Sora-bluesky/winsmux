@@ -49,6 +49,8 @@ winsmux
 - **Worker worktree isolation** gives each managed worker pane a separate git worktree to reduce cross-agent collisions
 - **Evidence Ledger** supports audit-oriented capture of agent activity and review outcomes
 
+For the public operator/pane architecture, see [docs/operator-model.md](docs/operator-model.md).
+
 ## Core runtime
 
 Under the orchestration layer, winsmux ships a Windows-native terminal multiplexer runtime written in Rust.
