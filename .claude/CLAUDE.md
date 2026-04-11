@@ -61,6 +61,7 @@ The default orchestra model is:
 - Review is a slot capability and may be served by different panes over time.
 - winsmux hooks and role gates are the enforcement surface; this file is guidance only.
 - Public GitHub Releases should follow the English Codex-style release template (`New Features`, `Bug Fixes`, `Documentation`, `Chores`, `Full Changelog`).
+- Before each release, public product docs/config must be separated from maintainer dogfooding rules and local operational rituals.
 
 ## Practical commands
 

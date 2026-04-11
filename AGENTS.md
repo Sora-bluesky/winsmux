@@ -105,6 +105,24 @@ When generating or editing a release:
 4. Link the compare range in `Full Changelog` when the repository and tag range support it.
 5. Local or private post drafts may be Japanese if the task explicitly asks for them, but the public GitHub Release stays English.
 
+## Public-vs-Dogfooding Release Gate
+
+winsmux is dogfooded in this repository, so every release candidate must explicitly separate:
+
+- public product-facing documentation and configuration, and
+- maintainer / repo-operations / dogfooding-only material.
+
+Before every version release, Codex must verify:
+
+1. public-facing docs still describe winsmux for external users, not the maintainer's local workflow,
+2. dogfooding-only rules stay in contributor/agent-operation documents,
+3. release notes and README-facing docs do not leak private planning roots, personal paths, or maintainer-only rituals,
+4. any newly added tracked files are classified as either:
+   - public product surface, or
+   - dogfooding/contributor surface.
+
+If drift is found, fix or explicitly track it before the release is finalized.
+
 ## Third-Party UI Attribution
 
 When winsmux directly reuses or closely adapts UI assets, style definitions, menu/footer behavior, wrapping logic, or component code from external OSS projects, Codex must:
