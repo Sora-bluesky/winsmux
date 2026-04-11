@@ -48,11 +48,12 @@ ISSUES: <problems/risks/concerns, or "none">
 
 ## Shared execution environment
 
-- **OS**: Windows native, no WSL2 assumption
+Current winsmux defaults in this repository are:
+
+- **OS**: Windows native, with no WSL2 assumption in the default pane flow
 - **Auth**: OAuth/token lifecycle is outside your responsibility; auth failures should be reported as `STATUS: BLOCKED`
-- **Shell**: PowerShell, not bash
-- **Path separator**: backslash (`\`)
-- **Line endings**: CRLF by default; do not silently normalize to LF
+- **Shell**: PowerShell by default unless the operator or pane runtime explicitly says otherwise
+- **Paths and line endings**: follow the repository and task-local conventions instead of silently normalizing formats
 
 ## If uncertain
 

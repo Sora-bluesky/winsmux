@@ -2,20 +2,19 @@
 # Default mode is external operator + managed worker slots.
 # Set legacy_role_layout: true only if you explicitly want Commander/Builder/Researcher/Reviewer panes.
 
-agent: codex
-model: gpt-5.4
+# Optional:
+# agent: codex
+# model: gpt-5.4
 external-commander: true
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
-    agent: codex
-    model: gpt-5.4
     worktree-mode: managed
   - slot-id: worker-2
     runtime-role: worker
-    agent: codex
-    model: gpt-5.4
     worktree-mode: managed
-vault_keys:
-  - GH_TOKEN
-terminal: background
+
+# Optional:
+# vault_keys:
+#   - GH_TOKEN
+# terminal: background

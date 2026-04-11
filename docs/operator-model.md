@@ -102,15 +102,8 @@ Their responsibilities are:
 
 ## 5. Public docs vs contributor docs
 
-Contributor and dogfooding operations may still exist in repo-facing docs such as:
-
-- `AGENTS.md`
-- `docs/handoff.md`
-
-Those files describe how contributors and AI agents operate **inside this repository**.
-They are not the public end-user guide for winsmux as a product.
-
-Dogfooding-specific rules do not define the public operator or pane contract.
+The files listed in this document describe the **public product contract** for winsmux.
+Contributor workflows, release operations, and repository-specific maintenance rules are documented separately and do not define the public operator or pane contract.
 
 ## 6. Legacy layouts vs current model
 
