@@ -78,13 +78,6 @@ Direct operator-side mutation is **outside the standard winsmux operating model*
 
 - Legacy `Builder / Researcher / Reviewer` layouts are compatibility mode only.
 - The current architecture is slot- and capability-based.
-- Public GitHub Releases should follow the English Codex-style release template:
-  - `New Features`
-  - `Bug Fixes`
-  - `Documentation`
-  - `Chores`
-  - `Full Changelog`
-- Before each release, re-check the boundary between public product docs/config and maintainer dogfooding material.
 
 ## Related docs
 

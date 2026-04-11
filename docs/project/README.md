@@ -1,16 +1,11 @@
-# Project Roadmap
+# Internal Planning Surface
 
-`ROADMAP.md` is maintained outside this repository and is generated from the external planning backlog.
+This directory is for maintainer-only planning notes and sync surfaces.
+It is not public product documentation.
 
-Default resolution order:
+For the public operator model and user-facing product docs, see:
 
-- `WINSMUX_ROADMAP_PATH`
-- `WINSMUX_PLANNING_ROOT\ROADMAP.md`
-- the user-profile-relative default returned by `winsmux-core/scripts/planning-paths.ps1`
+- [README.md](../../README.md)
+- [docs/operator-model.md](../operator-model.md)
 
-Override with:
-
-- `WINSMUX_PLANNING_ROOT`
-- `WINSMUX_ROADMAP_PATH`
-
-Use `winsmux-core/scripts/sync-roadmap.ps1` to regenerate the external roadmap.
+The active planning source of truth is maintained outside the public product docs.

@@ -6,18 +6,68 @@
 
 # winsmux
 
-Windows ネイティブのターミナルマルチプレクサ。AI エージェント間のクロスペイン通信を実現する。WSL2 不要。
+**winsmux は Windows ネイティブの AI エージェントオーケストレーション基盤です。**
 
-- **ユーザー向け** — PowerShell 上で Alt キーバインドによるペイン操作
-- **エージェント向け** — `winsmux` CLI で任意のペインの読み取り・入力・キー送信が可能
-- **エージェント間通信** — Claude Code が隣のペインの Codex に指示を送り、Codex が返答する。シェルコマンドを実行できるエージェントなら何でも参加できる。
-- **プラットフォーム** — Claude Code が提供するランタイム＋オーケストレーション層から、モデルロックインを除いた構成。ベンダー非依存設計。
+1 つのオペレーターが Windows 上の複数のエージェント CLI を統括するための、ランタイムと制御レイヤーを提供します。単一ベンダーに閉じず、ペイン実行、ライブ監督、レビュー統制を同じワークスペースで扱えるようにします。
+
+## winsmux が提供するもの
+
+- **マルチベンダー対応**: Codex、Claude、Gemini など複数の CLI エージェントを同じセッションで並行運用
+- **リアルタイム可視化**: 事後要約ではなく、`winsmux` ペインを通じて各エージェントの状態をライブで監督
+- **統制しやすい実行基盤**: 1 人の外部オペレーター、managed pane agents、review/evidence の導線を分離
 
 ```powershell
-winsmux read codex 20              # ペインを読む
-winsmux type codex "review src/auth.ts"  # テキストを入力
-winsmux keys codex Enter           # Enter を押す
+winsmux read worker-1 20
+winsmux send worker-2 "最新の auth 変更をレビューしてください。"
+winsmux health-check
 ```
+
+## winsmux が向いている場面
+
+多くの agent ツールは、単一ベンダー・単一実行モデルに最適化されています。winsmux は、Windows で複数エージェントを同時に動かしつつ、全体を観測可能かつ統制可能に保ちたいチーム向けに設計されています。
+
+- **ベンダー非依存のオーケストレーション**: 1 つの operator loop の下で Codex、Claude、Gemini、将来のローカルモデルを混在運用
+- **pane-native な運用**: `winsmux` を通じて、ライブのペインを inspect / interrupt / redirect / relabel
+- **統制された実行**: read-before-act、review-capable slot、worker worktree isolation を組み合わせて事故を減らす
+- **Windows-first**: WSL2 や Linux 経由を前提にしない
+
+## プラットフォームモデル
+
+```text
+winsmux
+├── winsmux CLI
+├── Orchestra
+├── Role Gates
+├── Worker Worktree Isolation
+├── Credential Vault (DPAPI)
+└── Evidence Ledger
+```
+
+- **`winsmux`** は pane targeting、messaging、health-check、vault injection、operator controls を担います
+- **Orchestra** は 1 人の external operator と複数の managed pane agents を既定モデルにします
+- **Role gates** は operator と pane agents の実行権限を分離します
+- **Worker worktree isolation** は worker ごとに独立した git worktree を与えます
+- **Evidence Ledger** は review や audit 向けの証跡を扱います
+
+公開向けの operator / pane architecture は [docs/operator-model.md](docs/operator-model.md) を参照してください。役割定義は [`.claude/CLAUDE.md`](.claude/CLAUDE.md)、[`AGENT-BASE.md`](AGENT-BASE.md)、[`AGENT.md`](AGENT.md)、[`GEMINI.md`](GEMINI.md) に分割しています。
+
+## コアランタイム
+
+オーケストレーション層の下には、Rust 製の Windows ネイティブ terminal multiplexer runtime があります。
+
+- **tmux 互換ランタイム**: tmux 風のコマンド体系を話し、`~/.tmux.conf` や既存テーマを利用可能
+- **Windows ネイティブ UX**: ConPTY ベース、マウス対応、WSL/Cygwin/MSYS2 依存なし
+- **複数エントリポイント**: `winsmux`、`pmux`、`tmux`
+- **自動化向け**: 76 個の tmux 互換コマンドと 126+ の format 変数
+
+| ランタイム資料 | 内容 |
+| ------- | ------- |
+| [Features](core/docs/features.md) | マウス、copy mode、layout、format、script surface |
+| [Compatibility](core/docs/compatibility.md) | tmux 互換マトリクスとコマンド実装状況 |
+| [Configuration](core/docs/configuration.md) | config file、option、environment variable、`.tmux.conf` 対応 |
+| [Key Bindings](core/docs/keybindings.md) | 既定のキーボード操作とマウス操作 |
+| [Mouse over SSH](core/docs/mouse-ssh.md) | SSH 越しのマウス動作と Windows 版要件 |
+| [Claude Code](core/docs/claude-code.md) | teammate pane がランタイム上でどう動くか |
 
 ## インストール
 
@@ -25,16 +75,14 @@ winsmux keys codex Enter           # Enter を押す
 irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | iex
 ```
 
-インストールされるもの:
+インストーラーは次を行います。
 
-- **winsmux** — 未インストールの場合は自動インストール（winget, scoop, cargo, chocolatey のいずれか）
-- **winsmux** — クロスペイン通信用 CLI
-- **.winsmux.conf** — Alt キーバインド、マウスサポート、ペインラベルの設定
-- **Windows Terminal Fragment** — WT のドロップダウンメニューに「winsmux Orchestra」プロファイルを追加
+- `winsmux` ランタイムが未インストールなら導入
+- `winsmux` wrapper script を `~\.winsmux\bin` に配置
+- `.winsmux.conf` を構成
+- Windows Terminal に **winsmux Orchestra** profile を登録
 
-すべて `~\.winsmux\` に配置される。
-
-tmux 互換ランタイムだけを使いたい場合は、次の方法でも直接インストールできる:
+tmux 互換ランタイムだけが必要なら、直接インストールも可能です。
 
 ```powershell
 winget install winsmux
@@ -44,301 +92,61 @@ scoop install winsmux
 choco install winsmux
 ```
 
-GitHub Releases の `.zip` を使うか、[`core/`](core) でソースからビルドすることもできる。
+GitHub Releases の `.zip` を使うか、[`core/`](core) でソースからビルドすることもできます。
 
 ## クイックスタート
 
 ```powershell
-# 1. セッションを作成
-winsmux new-session -s work
+# 環境チェック
+winsmux doctor
 
-# 2. ペインを分割（Alt+n でも可）
-winsmux split-window -h
+# セッション開始
+winsmux new-session -s orchestra
 
-# 3. ペインにラベルを付ける
-winsmux name %1 claude
-winsmux name %2 codex
-
-# 4. メッセージを送信
-winsmux read codex 20
-winsmux message codex "review src/auth.ts"
-winsmux read codex 20
-winsmux keys codex Enter
+# 既定の Orchestra レイアウトを起動
+pwsh winsmux-core/scripts/orchestra-start.ps1
 ```
 
-## キーバインド
+現在の既定レイアウトは次です。
 
-すべてのキーバインドは **Alt** キーを使用する。プレフィックス不要。
+- 管理対象ウィンドウの外に external operator terminal
+- 管理対象ウィンドウの中に複数の `worker-*` pane
+- 旧 `Commander / Builder / Researcher / Reviewer` レイアウトは compatibility mode でのみ有効
 
-### ペイン
-
-| キー          | 動作                              |
-| ------------- | --------------------------------- |
-| `Alt+i/k/j/l` | 上/下/左/右に移動                 |
-| `Alt+n`       | 新しいペイン（分割 + 自動タイル） |
-| `Alt+w`       | ペインを閉じる                    |
-| `Alt+o`       | レイアウトを切り替え              |
-| `Alt+g`       | ペインをマーク                    |
-| `Alt+y`       | マークしたペインと入れ替え        |
-
-### ウィンドウ
-
-| キー    | 動作             |
-| ------- | ---------------- |
-| `Alt+m` | 新しいウィンドウ |
-| `Alt+u` | 次のウィンドウ   |
-| `Alt+h` | 前のウィンドウ   |
-
-### スクロール
-
-| キー                | 動作                       |
-| ------------------- | -------------------------- |
-| `Alt+Tab`           | スクロールモードの切り替え |
-| `i/k`               | 上/下にスクロール          |
-| `Shift+I/K`         | 半ページ上/下              |
-| `q` または `Escape` | スクロールモード終了       |
-
-### マウス
-
-- クリックでペインを選択
-- ドラッグでテキスト選択（自動でクリップボードにコピー）
-- スクロールホイールでスクロール
-
-## tmux 互換ランタイム
-
-winsmux の土台には、`core/` にある Rust 製の Windows ネイティブターミナルマルチプレクサが入っている。Orchestra やクロスペイン CLI はこのランタイムの上で動く。
-
-- **tmux 互換** — tmux コマンド体系を話し、`~/.tmux.conf` を読み込み、既存テーマをそのまま使える
-- **Windows ネイティブ** — ConPTY ベースで動き、WSL/Cygwin/MSYS2 を前提にしない
-- **複数エントリポイント** — `winsmux`、`pmux`、`tmux` の3つの名前で起動できる
-- **自動化向け** — 76 個の tmux 互換コマンドと 126+ の format 変数を備え、エージェント運用の基盤になる
-
-| ランタイム資料 | 内容 |
-| ------------- | ---- |
-| [Features](core/docs/features.md) | マウス、コピー、レイアウト、format、スクリプト機能 |
-| [Compatibility](core/docs/compatibility.md) | tmux 互換性マトリクスとコマンド実装状況 |
-| [Configuration](core/docs/configuration.md) | 設定ファイル、オプション、環境変数、`.tmux.conf` 対応 |
-| [Key Bindings](core/docs/keybindings.md) | 既定のキーボード操作とマウス操作 |
-| [Mouse over SSH](core/docs/mouse-ssh.md) | SSH 越しのマウス挙動と Windows バージョン要件 |
-| [Claude Code](core/docs/claude-code.md) | Claude Code の teammate panes がどう載るか |
-
-## winsmux
-
-Windows 向けのクロスペイン通信 CLI。シェルコマンドを実行できるツールなら何でも使える — Claude Code、Codex、Gemini CLI、PowerShell スクリプトなど。
-
-| コマンド                                | 説明                                             |
-| --------------------------------------- | ------------------------------------------------ |
-| `winsmux list`                     | 全ペインをターゲット・プロセス・ラベル付きで表示 |
-| `winsmux read <target> [lines]`    | ペインの末尾 N 行を読み取り（デフォルト 50）     |
-| `winsmux type <target> <text>`     | ペインにテキストを入力（Enter なし）             |
-| `winsmux keys <target> <key>...`   | キーを送信（Enter, Escape, C-c 等）              |
-| `winsmux message <target> <text>`  | 送信者情報付きのタグ付きメッセージを送信         |
-| `winsmux name <target> <label>`    | ペインにラベルを付ける                           |
-| `winsmux resolve <label>`          | ラベルからペインを検索                           |
-| `winsmux id`                       | 自分のペイン ID を表示                           |
-| `winsmux ime-input <target>`       | GUI ダイアログで日本語 IME 入力                  |
-| `winsmux image-paste <target>`     | クリップボード画像を保存してパスを送信           |
-| `winsmux clipboard-paste <target>` | クリップボードテキストをペインに送信             |
-| `winsmux send <target> <text>`     | テキスト送信 + Enter（推奨）                     |
-| `winsmux focus <label\|target>`    | アクティブペイン切替（winsmux 外から操作）         |
-| `winsmux wait <channel> [timeout]` | シグナル受信までブロック（ポーリング置換）       |
-| `winsmux signal <channel>`         | シグナル送信（待機プロセスをアンブロック）       |
-| `winsmux watch <label> [sil] [to]` | ペイン出力の沈黙を検知してブロック解除           |
-| `winsmux vault set <key> [value]`  | 資格情報をセキュアに保存（DPAPI）                |
-| `winsmux vault get <key>`          | 保存済み資格情報を取得                           |
-| `winsmux vault inject <pane>`      | 全資格情報を環境変数としてペインに注入           |
-| `winsmux vault list`               | 保存済み資格情報のキー一覧                       |
-| `winsmux profile [name] [agents]`  | WT ドロップダウンプロファイルの表示・登録         |
-| `winsmux wait-ready <target> [to]` | エージェントのアイドル待ち（デフォルト 30s）     |
-| `winsmux health-check`             | ラベル付きペインの READY/BUSY/HUNG/DEAD を報告   |
-| `winsmux doctor`                   | 環境チェックと IME 診断                          |
-| `winsmux version`                  | バージョンを表示                                 |
-
-### Read Guard
-
-CLI は **read-before-act** ルールを強制する。ペインを `read` しない限り `type` や `keys` は実行できない。`type`/`keys` 実行後はマークがクリアされ、再度 `read` が必要になる。
+セッション内では、pane を一覧・読取・送信できます。
 
 ```powershell
-winsmux type codex "hello"
-# error: must read the pane before interacting. Run: winsmux read codex
+winsmux list
+winsmux read worker-1 30
+winsmux send worker-3 "upstream issue を要約してください。"
 ```
 
-エージェントが誤ったペインに盲目的に入力するのを防ぐ仕組みだ。
+## ガバナンスの要点
 
-### ターゲット指定
+- **Role gates**: external operator と managed pane agents に同じ command surface を与えない
+- **Read Guard**: 読んでいない pane への blind input を防ぐ
+- **Worktree isolation**: worker ごとに独立した git worktree を持てる
+- **Credential Vault**: Windows DPAPI でシークレットを管理し、repo に `.env` を置かない
+- **Evidence Ledger**: prompt、action、review evidence を記録できる
 
-ペインは以下の方法で指定できる:
+## 主要コマンド
 
-- **ペイン ID** — `%3`, `%5`（winsmux ネイティブ ID）
-- **ラベル** — `winsmux name` で設定した任意の名前
-
-ラベルはすべてのコマンドで自動解決される。保存先は `$env:APPDATA\winsmux\labels.json`。
-
-### ペイン境界ラベル
-
-v0.9.5 で、ペイン境界に見えるラベルを出すための winsmux 機能として次の 2 つをサポート:
-
-- `pane-border-format` は各ペイン境界に描画する文字列を制御する
-- `pane-border-status` はその境界文字列の表示を有効にし、位置を `top` または `bottom` にする
-
-`pane-border-format` に `#{pane_title}` を入れると、ペインラベルを表示できる。このタイトルは `select-pane -T` で直接設定することも、`winsmux name` 経由で設定することもできる。
-
-設定例:
-
-```tmux
-set -g pane-border-status top
-set -g pane-border-format " #{pane_index} #{pane_title} "
-
-# どちらのコマンドでも境界に表示するラベルを設定できる。
-select-pane -T claude
-winsmux name %2 codex
-```
-
-## Credential Vault
-
-シークレットをセキュアに保管し、エージェントのペインに注入する。リポジトリに `.env` ファイルを置く必要はない。
-
-```powershell
-# 資格情報を保存（DPAPI 暗号化、Windows Credential Manager）
-winsmux vault set OPENAI_API_KEY sk-...
-winsmux vault set ANTHROPIC_API_KEY sk-ant-...
-
-# ビルダーペインに全資格情報を $env: 変数として注入
-winsmux read builder 10
-winsmux vault inject builder
-```
-
-資格情報は Windows DPAPI でマシン単位に暗号化保存される。`vault inject` はターゲットペインに `$env:KEY = 'value'` コマンドを送信するため、エージェントプロセスは環境変数として受け取る。ディスクに平文は残らない。
-
-## Windows Terminal 連携
-
-インストーラーは [Fragments](https://learn.microsoft.com/en-us/windows/terminal/json-fragment-extensions) 経由で Windows Terminal のドロップダウンに **winsmux Orchestra** プロファイルを自動登録する。ワンクリックで `winsmux doctor` → winsmux セッション作成 → Orchestra スクリプト起動までを実行。
-
-カスタムプロファイルの作成:
-
-```powershell
-winsmux profile mysetup builder:codex reviewer:claude
-```
-
-## Orchestra
-
-Orchestra は1人の Commander が複数の AI エージェントを並列管理する仕組みだ。Commander はユーザーのターミナルで動作（キーボード直接入力可能）、バックグラウンドのエージェントは winsmux ペインで動く。やりたいことを Commander に伝えれば、ビルダーへの作業分割・完了ポーリング・レビュー依頼・競合チェック・コミットまでを自動で進める。
-
-### Commander がやること
-
-1. **作業分割** — ビルダーごとに担当ファイルを割り当て、互いに干渉させない
-2. **完了ポーリング** — 全エージェントを `winsmux read` で巡回し、完了を検知
-3. **段階的レビュー** — ビルダーが完了した順にレビュアーへ送信（全員を待たない）
-4. **競合検知** — マージ前に `git diff --name-only` で変更ファイルの重複をチェック
-5. **安全なコミット** — レビュー通過＋競合なしの場合のみコミット
-
-### マルチベンダー対応
-
-異なる CLI エージェントを同じ Orchestra に混在できる。スクリプトが CLI の種類を自動判定して差異を吸収する:
-
-| CLI         | 承認レスフラグ（`-ShieldHarness` 有効時） |
-| ----------- | ----------------------------------------- |
-| Claude Code | `--permission-mode bypassPermissions`     |
-| Codex CLI   | `--sandbox danger-full-access`             |
-| Gemini CLI  | `--yolo`                                  |
-
-`-ShieldHarness` なし: フラグは付与されない（手動承認モード）。
-
-### クイック起動
-
-```powershell
-# 1. ターミナルを開いて winsmux を起動
-winsmux
-
-# 2. 別のターミナルから Orchestra セットアップを実行
-pwsh scripts/start-orchestra.ps1 -ProjectDir C:\path\to\project
-
-# 3. さらに別のターミナルで Commander を起動
-cd C:\path\to\project
-claude --model claude-opus-4-6 --append-system-prompt-file .commander-prompt.txt
-```
-
-### スケールアップ（例: ビルダー4 + リサーチャー + レビュアー）
-
-```powershell
-pwsh scripts/start-orchestra.ps1 -ProjectDir C:\my\project -Rows 2 -Cols 3 -Agents @(
-  @{label="builder-1"; command="codex"},
-  @{label="builder-2"; command="codex"},
-  @{label="builder-3"; command="gemini --model gemini-3.1-pro-preview"},
-  @{label="researcher"; command="claude --model sonnet"},
-  @{label="builder-4"; command="gemini --model gemini-3-flash-preview"},
-  @{label="reviewer"; command="codex"}
-) -ShieldHarness
-```
-
-```
-┌──────────┬──────────┬──────────┐
-│builder-1 │builder-2 │builder-3 │
-├──────────┼──────────┼──────────┤
-│researcher│builder-4 │reviewer  │
-└──────────┴──────────┴──────────┘
-```
-
-`.commander-prompt.txt` は実際のペインID・ラベル・協調プロトコル付きで自動生成される。Commander は誰にどう話しかければいいか常に把握している。
-
-| パラメータ       | デフォルト        | 説明                                                                                        |
-| ---------------- | ----------------- | ------------------------------------------------------------------------------------------- |
-| `-ProjectDir`    | カレント          | 全ペインの作業ディレクトリ                                                                  |
-| `-Rows`          | 2                 | グリッドの行数                                                                              |
-| `-Cols`          | 2                 | グリッドの列数                                                                              |
-| `-Agents`        | 4ペインデフォルト | `@{label; command}` の配列                                                                  |
-| `-ShieldHarness` | Off               | [Shield Harness](https://github.com/Sora-bluesky/shield-harness) による承認レスモード有効化 |
-
-詳細は [SKILL.md](skills/winsmux/SKILL.md) を参照。管理プロトコル（パイプライン運用、researcher 偵察、reviewer 小分け、エージェント選定）はスキルの references/ に同梱され、エージェントがオンデマンドで読み込む。
-
-## AI Agent Skills
-
-winsmux スキルをインストールすると、エージェントが winsmux の使い方を学習する:
-
-```powershell
-npx skills add Sora-bluesky/winsmux
-```
-
-スキルに含まれるもの:
-
-- winsmux の使い方（[SKILL.md](skills/winsmux/SKILL.md)）
-- Orchestra 管理プロトコル（[references/orchestra-management.md](skills/winsmux/references/orchestra-management.md)）
-- エージェント選定ガイド（[references/agent-selection.md](skills/winsmux/references/agent-selection.md)）
-
-Claude Code、Codex、Cursor、Copilot、[その他のエージェント](https://skills.sh)で動作する。
-
-### Orchestra Layout スキル
-
-Claude Code ユーザー向けに、`orchestra-layout` スキルが決定論的な winsmux グリッドレイアウトを1コマンドで作成する。手動の split-window 試行錯誤を排除:
-
-```bash
-bash .claude/skills/orchestra-layout/scripts/orchestra-layout.sh 4b1r1v
-# 2x3 グリッド作成: ビルダー4 + リサーチャー1 + レビュアー1
-```
-
-## アップデート
-
-```powershell
-winsmux update
-```
-
-## アンインストール
-
-```powershell
-winsmux uninstall
-```
+| コマンド | 用途 |
+| ------- | ------- |
+| `winsmux list` | pane、label、process を表示 |
+| `winsmux read <target> [lines]` | 実行前に pane output を読む |
+| `winsmux send <target> <text>` | text を送って Enter を押す |
+| `winsmux health-check` | label 付き pane の READY/BUSY/HUNG/DEAD を報告 |
+| `winsmux vault set <key> [value]` | DPAPI-backed vault に資格情報を保存 |
+| `winsmux vault inject <pane>` | 保存済み資格情報を対象 pane に注入 |
+| `winsmux update` | 最新版へ更新 |
+| `winsmux uninstall` | winsmux を削除 |
 
 ## 動作要件
 
 - Windows 10/11
-- PowerShell 7+（pwsh）
-- [winsmux core (Rust binary)](https://github.com/Sora-bluesky/winsmux)（自動インストール）
-
-## 謝辞
-
-winsmux は [smux](https://github.com/ShawnPana/smux)（[@ShawnPana](https://github.com/ShawnPana) 作）の Windows ネイティブ版だ。smux は macOS/Linux 向けに tmux を使った同様のターミナルマルチプレクサ + AI エージェント通信ワークフローを提供している。winsmux はその体験を winsmux 経由で Windows にネイティブに持ち込む。WSL2 は不要。
-
-ターミナルバナーは [oh-my-logo](https://github.com/shinshin86/oh-my-logo)（MIT AND CC0-1.0）を使用。
+- PowerShell 7+
+- Windows Terminal 推奨
 
 ## ライセンス
 

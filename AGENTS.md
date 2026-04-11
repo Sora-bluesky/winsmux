@@ -122,6 +122,7 @@ Before every version release, Codex must verify:
 4. any newly added tracked files are classified as either:
    - public product surface, or
    - dogfooding/contributor surface.
+5. when releasing `v0.21.2`, update `README.md` and `README.ja.md` so they describe the terminal-based final form as the last pre-Tauri release shape before the `v0.22.0` desktop control-plane handoff.
 
 If drift is found, fix or explicitly track it before the release is finalized.
 

@@ -1,16 +1,11 @@
-# Planning Backlog
+# Internal Task Surface
 
-`backlog.yaml` is maintained outside this repository.
+This directory is for maintainer-only planning and task sync files.
+It is not public product documentation.
 
-Default resolution order:
+For the public operator model and user-facing product docs, see:
 
-- `WINSMUX_BACKLOG_PATH`
-- `WINSMUX_PLANNING_ROOT\backlog.yaml`
-- the user-profile-relative default returned by `winsmux-core/scripts/planning-paths.ps1`
+- [README.md](../README.md)
+- [docs/operator-model.md](../docs/operator-model.md)
 
-Override with:
-
-- `WINSMUX_PLANNING_ROOT`
-- `WINSMUX_BACKLOG_PATH`
-
-Use `winsmux-core/scripts/sync-roadmap.ps1` to regenerate the external roadmap from the external backlog.
+Task and roadmap sources of truth live outside the public docs.

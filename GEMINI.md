@@ -24,7 +24,7 @@ Gemini is typically used for:
 
 ## Gemini-specific rules
 
-1. If Gemini edits files directly, include the before/after impact in `RESULT`.
+1. If the operator assigns Gemini an editing task, summarize the file impact in `RESULT`.
 2. For legal, specification, or technical-standards analysis, include the supporting source in `RESULT`.
 3. Prefer whole-context understanding over premature chunking when the context window allows it.
 4. Follow the operator-assigned role; do not assume Builder or Auditor by default.
