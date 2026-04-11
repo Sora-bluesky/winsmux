@@ -3533,6 +3533,21 @@ panes:
             pane_id   = '%2'
             role      = 'Builder'
             status    = 'approval_waiting'
+            data      = [ordered]@{
+                task_id              = 'task-256'
+                hypothesis           = 'branch-scoped event data is enough for experiment ledger'
+                test_plan            = @('capture matching events', 'render experiment packet')
+                result               = 'hypothesis still pending'
+                confidence           = 0.72
+                next_action          = 'review_pending'
+                observation_pack_ref = '.winsmux/observation-packs/task-256.json'
+                consultation_ref     = '.winsmux/consultations/task-256-review.json'
+                run_id               = 'task:task-256'
+                slot                 = 'slot-builder-1'
+                worktree             = '.worktrees/builder-1'
+                env_fingerprint      = 'env:abc123'
+                command_hash         = 'cmd:def456'
+            }
         } | ConvertTo-Json -Compress) | Set-Content -Path $script:runsEventsPath -Encoding UTF8
 
         function global:winsmux {
@@ -3567,6 +3582,18 @@ panes:
         $result.runs[0].run_packet.agent_role | Should -Be 'worker'
         $result.runs[0].run_packet.timeout_policy | Should -Be 'standard'
         $result.runs[0].run_packet.handoff_refs | Should -Be @('docs/handoff.md')
+        $result.runs[0].experiment_packet.hypothesis | Should -Be 'branch-scoped event data is enough for experiment ledger'
+        $result.runs[0].experiment_packet.test_plan | Should -Be @('capture matching events', 'render experiment packet')
+        $result.runs[0].experiment_packet.result | Should -Be 'hypothesis still pending'
+        $result.runs[0].experiment_packet.confidence | Should -Be 0.72
+        $result.runs[0].experiment_packet.next_action | Should -Be 'review_pending'
+        $result.runs[0].experiment_packet.observation_pack_ref | Should -Be '.winsmux/observation-packs/task-256.json'
+        $result.runs[0].experiment_packet.consultation_ref | Should -Be '.winsmux/consultations/task-256-review.json'
+        $result.runs[0].experiment_packet.run_id | Should -Be 'task:task-256'
+        $result.runs[0].experiment_packet.slot | Should -Be 'slot-builder-1'
+        $result.runs[0].experiment_packet.worktree | Should -Be '.worktrees/builder-1'
+        $result.runs[0].experiment_packet.env_fingerprint | Should -Be 'env:abc123'
+        $result.runs[0].experiment_packet.command_hash | Should -Be 'cmd:def456'
     }
 
     It 'supports winsmux runs --json through the top-level CLI entrypoint' {
@@ -3612,6 +3639,103 @@ Set-Location '__RUNS_TEMP_ROOT__'
 
         $result.summary.run_count | Should -Be 1
         $result.runs[0].run_id | Should -Be 'task:task-256'
+        $result.runs[0].experiment_packet | Should -Be $null
+    }
+
+    It 'keeps experiment packets scoped to strong run keys when multiple runs share a branch' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:runsTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    task: Investigate cache mismatch
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: shared-worktree
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+  builder-2:
+    pane_id: %6
+    role: Builder
+    task_id: task-999
+    task: Investigate cache mismatch separately
+    task_state: in_progress
+    task_owner: builder-2
+    review_state: PENDING
+    branch: shared-worktree
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["tests/psmux-bridge.Tests.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:01:00+09:00
+"@ | Set-Content -Path $script:runsManifestPath -Encoding UTF8
+
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-10T12:01:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.progress'
+                message   = 'builder-1 hypothesis update'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                status    = 'busy'
+                branch    = 'shared-worktree'
+                head_sha  = 'abc1234def5678'
+                data      = [ordered]@{
+                    task_id    = 'task-256'
+                    run_id     = 'task:task-256'
+                    hypothesis = 'builder-1 owns this experiment packet'
+                    result     = 'pending'
+                }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T12:02:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.progress'
+                message   = 'builder-2 hypothesis update'
+                label     = 'builder-2'
+                pane_id   = '%6'
+                role      = 'Builder'
+                status    = 'busy'
+                branch    = 'shared-worktree'
+                head_sha  = 'abc1234def5678'
+                data      = [ordered]@{
+                    task_id    = 'task-999'
+                    run_id     = 'task:task-999'
+                    hypothesis = 'builder-2 owns this experiment packet'
+                    result     = 'pending'
+                }
+            } | ConvertTo-Json -Compress)
+        ) | Set-Content -Path $script:runsEventsPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                '^capture-pane .*%6' { return @('gpt-5.4   61% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = (Invoke-Runs -RunsTarget '--json' | Out-String | ConvertFrom-Json -AsHashtable)
+
+        @($result.runs).Count | Should -Be 2
+        $first = @($result.runs | Where-Object { $_.run_id -eq 'task:task-256' })[0]
+        $second = @($result.runs | Where-Object { $_.run_id -eq 'task:task-999' })[0]
+        $first.experiment_packet.run_id | Should -Be 'task:task-256'
+        $first.experiment_packet.hypothesis | Should -Be 'builder-1 owns this experiment packet'
+        $second.experiment_packet.run_id | Should -Be 'task:task-999'
+        $second.experiment_packet.hypothesis | Should -Be 'builder-2 owns this experiment packet'
     }
 }
 
@@ -3730,7 +3854,13 @@ panes:
             branch    = 'worktree-builder-1'
             head_sha  = 'abc1234def5678'
             data      = [ordered]@{
-                task_id = 'task-246'
+                task_id              = 'task-246'
+                hypothesis           = 'result summary should appear in digest'
+                result               = 'review failure reproduced'
+                confidence           = 0.88
+                next_action          = 'review_failed'
+                observation_pack_ref = '.winsmux/observation-packs/task-246.json'
+                consultation_ref     = '.winsmux/consultations/task-246-reconcile.json'
             }
         } | ConvertTo-Json -Compress) | Set-Content -Path $script:digestEventsPath -Encoding UTF8
 
@@ -3750,6 +3880,10 @@ panes:
         $result.items[0].next_action | Should -Be 'review_failed'
         $result.items[0].head_short | Should -Be 'abc1234'
         $result.items[0].changed_files | Should -Be @('scripts/winsmux-core.ps1')
+        $result.items[0].hypothesis | Should -Be 'result summary should appear in digest'
+        $result.items[0].confidence | Should -Be 0.88
+        $result.items[0].observation_pack_ref | Should -Be '.winsmux/observation-packs/task-246.json'
+        $result.items[0].consultation_ref | Should -Be '.winsmux/consultations/task-246-reconcile.json'
     }
 
     It 'returns digest delta items only for runs affected after the current cursor' {
@@ -4003,7 +4137,19 @@ panes:
                 branch    = 'worktree-builder-1'
                 head_sha  = 'abc1234def5678'
                 data      = [ordered]@{
-                    task_id = 'task-256'
+                    task_id              = 'task-256'
+                    hypothesis           = 'experiment packet should flow into explain'
+                    test_plan            = @('collect matching events', 'normalize packet')
+                    result               = 'consult before work'
+                    confidence           = 0.66
+                    next_action          = 'approval_waiting'
+                    observation_pack_ref = '.winsmux/observation-packs/task-256.json'
+                    consultation_ref     = '.winsmux/consultations/task-256-early.json'
+                    run_id               = 'task:task-256'
+                    slot                 = 'slot-builder-1'
+                    worktree             = '.worktrees/builder-1'
+                    env_fingerprint      = 'env:abc123'
+                    command_hash         = 'cmd:def456'
                 }
             } | ConvertTo-Json -Compress),
             ([ordered]@{
@@ -4070,6 +4216,18 @@ panes:
         $result.run_packet.agent_role | Should -Be 'worker'
         $result.run_packet.timeout_policy | Should -Be 'standard'
         $result.run_packet.handoff_refs | Should -Be @('docs/handoff.md')
+        $result.experiment_packet.hypothesis | Should -Be 'experiment packet should flow into explain'
+        $result.experiment_packet.test_plan | Should -Be @('collect matching events', 'normalize packet')
+        $result.experiment_packet.result | Should -Be 'consult before work'
+        $result.experiment_packet.confidence | Should -Be 0.66
+        $result.experiment_packet.next_action | Should -Be 'approval_waiting'
+        $result.experiment_packet.observation_pack_ref | Should -Be '.winsmux/observation-packs/task-256.json'
+        $result.experiment_packet.consultation_ref | Should -Be '.winsmux/consultations/task-256-early.json'
+        $result.experiment_packet.run_id | Should -Be 'task:task-256'
+        $result.experiment_packet.slot | Should -Be 'slot-builder-1'
+        $result.experiment_packet.worktree | Should -Be '.worktrees/builder-1'
+        $result.experiment_packet.env_fingerprint | Should -Be 'env:abc123'
+        $result.experiment_packet.command_hash | Should -Be 'cmd:def456'
         $result.evidence_digest.run_id | Should -Be 'task:task-256'
         $result.evidence_digest.next_action | Should -Be 'approval_waiting'
         $result.evidence_digest.changed_files | Should -Be @('scripts/winsmux-core.ps1')
@@ -4088,6 +4246,7 @@ panes:
         $result.recent_events.Count | Should -Be 2
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'commander.review_requested'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pane.approval_waiting'
+        ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).hypothesis | Should -Be 'experiment packet should flow into explain'
     }
 
     It 'filters explain follow events from the current cursor forward' {
@@ -4162,7 +4321,11 @@ panes:
                 head_sha  = 'abc1234def5678'
                 status    = 'commit_ready'
                 data      = [ordered]@{
-                    task_id = 'task-256'
+                    task_id              = 'task-256'
+                    hypothesis           = 'follow path should keep experiment fields'
+                    result               = 'ready to commit'
+                    next_action          = 'commit_ready'
+                    observation_pack_ref = '.winsmux/observation-packs/task-256.json'
                 }
             } | ConvertTo-Json -Compress)
         ) | Add-Content -Path $script:explainEventsPath -Encoding UTF8
@@ -4177,6 +4340,9 @@ panes:
         $delta.cursor | Should -Be 3
         $matching.Count | Should -Be 1
         $matching[0].event | Should -Be 'commander.commit_ready'
+        $matching[0].hypothesis | Should -Be 'follow path should keep experiment fields'
+        $matching[0].next_action | Should -Be 'commit_ready'
+        $matching[0].observation_pack_ref | Should -Be '.winsmux/observation-packs/task-256.json'
     }
 }
 

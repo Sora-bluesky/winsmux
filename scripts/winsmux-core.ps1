@@ -2619,6 +2619,124 @@ function Get-RunIdFromPaneRecord {
     return "label:{0}" -f [string]$PaneRecord.label
 }
 
+function ConvertTo-ExperimentPacketStringArray {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return @()
+    }
+
+    if ($Value -is [string]) {
+        $text = [string]$Value
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            return @()
+        }
+
+        return @($text)
+    }
+
+    if ($Value -is [System.Collections.IEnumerable]) {
+        $items = [System.Collections.Generic.List[string]]::new()
+        foreach ($entry in $Value) {
+            $text = [string]$entry
+            if (-not [string]::IsNullOrWhiteSpace($text)) {
+                $items.Add($text) | Out-Null
+            }
+        }
+
+        return @($items)
+    }
+
+    return @([string]$Value)
+}
+
+function Get-ExperimentPacketFromEventRecords {
+    param([Parameter(Mandatory = $true)][object[]]$EventRecords)
+
+    $packet = [ordered]@{
+        hypothesis           = ''
+        test_plan            = [System.Collections.Generic.List[string]]::new()
+        result               = ''
+        confidence           = $null
+        next_action          = ''
+        observation_pack_ref = ''
+        consultation_ref     = ''
+        run_id               = ''
+        slot                 = ''
+        branch               = ''
+        worktree             = ''
+        env_fingerprint      = ''
+        command_hash         = ''
+    }
+
+    $hasContent = $false
+
+    foreach ($eventRecord in @($EventRecords | Sort-Object @{ Expression = { [string]$_.timestamp } }, @{ Expression = { [int]$_.line_number } })) {
+        $data = $null
+        if ($eventRecord.Contains('data')) {
+            $data = $eventRecord['data']
+        }
+
+        if ($null -eq $data -or $data -isnot [System.Collections.IDictionary]) {
+            continue
+        }
+
+        foreach ($fieldName in @('hypothesis', 'result', 'next_action', 'observation_pack_ref', 'consultation_ref', 'run_id', 'slot', 'branch', 'worktree', 'env_fingerprint', 'command_hash')) {
+            if ($data.Contains($fieldName)) {
+                $value = [string]$data[$fieldName]
+                if (-not [string]::IsNullOrWhiteSpace($value)) {
+                    $packet[$fieldName] = $value
+                    $hasContent = $true
+                }
+            }
+        }
+
+        if ($data.Contains('test_plan')) {
+            foreach ($step in @(ConvertTo-ExperimentPacketStringArray -Value $data['test_plan'])) {
+                if (-not $packet.test_plan.Contains($step)) {
+                    $packet.test_plan.Add($step) | Out-Null
+                    $hasContent = $true
+                }
+            }
+        }
+
+        if ($data.Contains('confidence')) {
+            $confidenceValue = $data['confidence']
+            if ($null -ne $confidenceValue -and -not [string]::IsNullOrWhiteSpace([string]$confidenceValue)) {
+                $packet.confidence = $confidenceValue
+                $hasContent = $true
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace([string]$packet.branch)) {
+            $eventBranch = [string]$eventRecord['branch']
+            if (-not [string]::IsNullOrWhiteSpace($eventBranch)) {
+                $packet.branch = $eventBranch
+            }
+        }
+    }
+
+    if (-not $hasContent) {
+        return $null
+    }
+
+    return [ordered]@{
+        hypothesis           = [string]$packet.hypothesis
+        test_plan            = @($packet.test_plan)
+        result               = [string]$packet.result
+        confidence           = $packet.confidence
+        next_action          = [string]$packet.next_action
+        observation_pack_ref = [string]$packet.observation_pack_ref
+        consultation_ref     = [string]$packet.consultation_ref
+        run_id               = [string]$packet.run_id
+        slot                 = [string]$packet.slot
+        branch               = [string]$packet.branch
+        worktree             = [string]$packet.worktree
+        env_fingerprint      = [string]$packet.env_fingerprint
+        command_hash         = [string]$packet.command_hash
+    }
+}
+
 function New-RunPacketFromRun {
     param([Parameter(Mandatory = $true)]$Run)
 
@@ -2702,6 +2820,7 @@ function New-RunResultPacket {
         next_action_hint      = [string]$EvidenceDigest.next_action
         review_recommendation = $reviewRecommendation
         evidence_refs         = @($EvidenceDigest.changed_files)
+        experiment_packet     = $Run.experiment_packet
         action_items          = @($Run.action_items)
         review_state          = $ReviewState
         recent_events         = @($RecentEvents)
@@ -2760,6 +2879,69 @@ function Test-RunMatchesEventRecord {
     return $false
 }
 
+function Test-RunMatchesExperimentEventRecord {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$EventRecord
+    )
+
+    $runId = [string]$Run.run_id
+    $runTaskId = [string]$Run.task_id
+    $runBranch = [string]$Run.branch
+    $runHeadSha = [string]$Run.head_sha
+    $runLabels = @($Run.labels)
+    $runPaneIds = @($Run.pane_ids)
+
+    $eventTaskId = ''
+    $eventBranch = [string]$EventRecord['branch']
+    $eventHeadSha = [string]$EventRecord['head_sha']
+    $eventLabel = [string]$EventRecord['label']
+    $eventPaneId = [string]$EventRecord['pane_id']
+    $eventRunId = ''
+
+    $data = $null
+    if ($EventRecord.Contains('data')) {
+        $data = $EventRecord['data']
+    }
+
+    if ($null -ne $data -and $data -is [System.Collections.IDictionary]) {
+        if ($data.Contains('task_id')) { $eventTaskId = [string]$data['task_id'] }
+        if ($data.Contains('run_id')) { $eventRunId = [string]$data['run_id'] }
+        if ([string]::IsNullOrWhiteSpace($eventBranch) -and $data.Contains('branch')) { $eventBranch = [string]$data['branch'] }
+        if ([string]::IsNullOrWhiteSpace($eventHeadSha) -and $data.Contains('head_sha')) { $eventHeadSha = [string]$data['head_sha'] }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($eventRunId)) {
+        return ($eventRunId -eq $runId)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($eventTaskId) -and -not [string]::IsNullOrWhiteSpace($runTaskId)) {
+        return ($eventTaskId -eq $runTaskId)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($eventPaneId)) {
+        return ($runPaneIds -contains $eventPaneId)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($eventLabel)) {
+        return ($runLabels -contains $eventLabel)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($eventTaskId) -or -not [string]::IsNullOrWhiteSpace($runTaskId)) {
+        return $false
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($runBranch) -and $runBranch -eq $eventBranch) {
+        return $true
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($runHeadSha) -and $runHeadSha -eq $eventHeadSha) {
+        return $true
+    }
+
+    return $false
+}
+
 function ConvertTo-RunEventRecord {
     param([Parameter(Mandatory = $true)]$EventRecord)
 
@@ -2777,19 +2959,33 @@ function ConvertTo-RunEventRecord {
         if ([string]::IsNullOrWhiteSpace($headSha) -and $data.Contains('head_sha')) { $headSha = [string]$data['head_sha'] }
     }
 
+    $experimentPacket = Get-ExperimentPacketFromEventRecords -EventRecords @($EventRecord)
+
     return [ordered]@{
-        line_number = [int]$EventRecord['line_number']
-        timestamp   = [string]$EventRecord['timestamp']
-        event       = [string]$EventRecord['event']
-        status      = [string]$EventRecord['status']
-        message     = [string]$EventRecord['message']
-        label       = [string]$EventRecord['label']
-        pane_id     = [string]$EventRecord['pane_id']
-        role        = [string]$EventRecord['role']
-        task_id     = $taskId
-        branch      = $branch
-        head_sha    = $headSha
-        source      = [string]$EventRecord['source']
+        line_number          = [int]$EventRecord['line_number']
+        timestamp            = [string]$EventRecord['timestamp']
+        event                = [string]$EventRecord['event']
+        status               = [string]$EventRecord['status']
+        message              = [string]$EventRecord['message']
+        label                = [string]$EventRecord['label']
+        pane_id              = [string]$EventRecord['pane_id']
+        role                 = [string]$EventRecord['role']
+        task_id              = $taskId
+        branch               = $branch
+        head_sha             = $headSha
+        source               = [string]$EventRecord['source']
+        hypothesis           = if ($null -ne $experimentPacket) { [string]$experimentPacket.hypothesis } else { '' }
+        test_plan            = if ($null -ne $experimentPacket) { @($experimentPacket.test_plan) } else { @() }
+        result               = if ($null -ne $experimentPacket) { [string]$experimentPacket.result } else { '' }
+        confidence           = if ($null -ne $experimentPacket) { $experimentPacket.confidence } else { $null }
+        next_action          = if ($null -ne $experimentPacket) { [string]$experimentPacket.next_action } else { '' }
+        observation_pack_ref = if ($null -ne $experimentPacket) { [string]$experimentPacket.observation_pack_ref } else { '' }
+        consultation_ref     = if ($null -ne $experimentPacket) { [string]$experimentPacket.consultation_ref } else { '' }
+        run_id               = if ($null -ne $experimentPacket) { [string]$experimentPacket.run_id } else { '' }
+        slot                 = if ($null -ne $experimentPacket) { [string]$experimentPacket.slot } else { '' }
+        worktree             = if ($null -ne $experimentPacket) { [string]$experimentPacket.worktree } else { '' }
+        env_fingerprint      = if ($null -ne $experimentPacket) { [string]$experimentPacket.env_fingerprint } else { '' }
+        command_hash         = if ($null -ne $experimentPacket) { [string]$experimentPacket.command_hash } else { '' }
     }
 }
 
@@ -2798,6 +2994,7 @@ function Get-RunsPayload {
 
     $boardPayload = Get-BoardPayload -ProjectDir $ProjectDir
     $inboxPayload = Get-InboxPayload -ProjectDir $ProjectDir
+    $eventRecords = @(Get-BridgeEventRecords -ProjectDir $ProjectDir)
     $runsById = [ordered]@{}
 
     foreach ($pane in @($boardPayload.panes)) {
@@ -2840,6 +3037,7 @@ function Get-RunsPayload {
                 agent_role         = [string]$pane.agent_role
                 timeout_policy     = [string]$pane.timeout_policy
                 handoff_refs       = [System.Collections.Generic.List[string]]::new()
+                experiment_packet  = $null
             }
         }
 
@@ -2948,6 +3146,30 @@ function Get-RunsPayload {
         }
     }
 
+    foreach ($runId in @($runsById.Keys)) {
+        $run = $runsById[$runId]
+        $matchingEvents = @(
+            foreach ($eventRecord in $eventRecords) {
+                if (Test-RunMatchesExperimentEventRecord -Run $run -EventRecord $eventRecord) {
+                    $eventRecord
+                }
+            }
+        )
+
+        if (@($matchingEvents).Count -gt 0) {
+            $experimentPacket = Get-ExperimentPacketFromEventRecords -EventRecords $matchingEvents
+            if (
+                $null -ne $experimentPacket -and
+                -not [string]::IsNullOrWhiteSpace([string]$experimentPacket.run_id) -and
+                [string]$experimentPacket.run_id -ne [string]$run.run_id
+            ) {
+                $experimentPacket = $null
+            }
+
+            $run.experiment_packet = $experimentPacket
+        }
+    }
+
     $runs = @(
         foreach ($runId in @($runsById.Keys)) {
             $run = $runsById[$runId]
@@ -2988,6 +3210,7 @@ function Get-RunsPayload {
                 agent_role         = if (-not [string]::IsNullOrWhiteSpace([string]$run.agent_role)) { [string]$run.agent_role } else { [string]$run.primary_role }
                 timeout_policy     = [string]$run.timeout_policy
                 handoff_refs       = @($run.handoff_refs)
+                experiment_packet  = $run.experiment_packet
             }
         }
     )
@@ -3059,6 +3282,8 @@ function Get-RunNextAction {
 function ConvertTo-EvidenceDigestItem {
     param([Parameter(Mandatory = $true)]$Run)
 
+    $experimentPacket = $Run.experiment_packet
+
     return [ordered]@{
         run_id             = [string]$Run.run_id
         task_id            = [string]$Run.task_id
@@ -3077,6 +3302,10 @@ function ConvertTo-EvidenceDigestItem {
         action_item_count  = @($Run.action_items).Count
         last_event         = [string]$Run.last_event
         last_event_at      = [string]$Run.last_event_at
+        hypothesis         = if ($null -ne $experimentPacket) { [string]$experimentPacket.hypothesis } else { '' }
+        confidence         = if ($null -ne $experimentPacket) { $experimentPacket.confidence } else { $null }
+        observation_pack_ref = if ($null -ne $experimentPacket) { [string]$experimentPacket.observation_pack_ref } else { '' }
+        consultation_ref   = if ($null -ne $experimentPacket) { [string]$experimentPacket.consultation_ref } else { '' }
     }
 }
 
@@ -3154,6 +3383,7 @@ function Get-ExplainPayload {
         project_dir     = $ProjectDir
         run             = $run
         run_packet      = New-RunPacketFromRun -Run $run
+        experiment_packet = $run.experiment_packet
         evidence_digest = $evidenceDigest
         explanation   = [ordered]@{
             summary       = if (-not [string]::IsNullOrWhiteSpace([string]$run.task)) { [string]$run.task } else { [string]$run.primary_label }
