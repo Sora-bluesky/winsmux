@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-11T11:18:00+09:00
+> Updated: 2026-04-11T11:58:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -22,6 +22,7 @@
 - Merged `TASK-298` via PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), rewriting `README.ja.md` to match the public operator model, shrinking maintainer-only planning readmes into internal stubs, and making tracked public config/docs safer for external users.
 - Re-synced the external planning backlog/roadmap after PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), marking `TASK-298` as done so `v0.20.0` now shows `100% (12/12)`.
 - Drafted the `v0.20.0` release notes and X thread in the external changelog root using the Codex-style release template.
+- Published `v0.20.0` from tag `465782b` via GitHub Actions run `24276032671`, then aligned `scripts/generate-release-notes.ps1` and the live release body to the Codex-style section headings.
 - Merged the repo-side `TASK-244` session board surface via PR [#371](https://github.com/Sora-bluesky/winsmux/pull/371).
 - Released `v0.19.6` from tag `eac8615` and updated the public GitHub Release body to `/release-notes` format.
 - Merged `TASK-245` via PR [#372](https://github.com/Sora-bluesky/winsmux/pull/372), adding `winsmux inbox` as the first actionable approval/review/blocker surface.
@@ -92,10 +93,11 @@
 - Merged `TASK-292/TASK-286/TASK-299` slice passed frontend build before landing: `npm run build` in `winsmux-app`.
 - Current `TASK-287` command-bar slice passes frontend build: `npm run build` in `winsmux-app`.
 - `TASK-298` docs/config cleanup landed via PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394); its CI `Pester Tests` run `24271531120` passed before merge.
+- `v0.20.0` release workflow run `24276032671` completed successfully and published `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
 
 ## Next actions
 
-1. Verify the public-vs-dogfooding release gate and publish the `v0.20.0` release using the prepared Codex-style release notes and post draft.
+1. Commit and push the release-note generator fix so future GitHub Releases use the Codex-style headings without manual cleanup.
 2. Preserve the private planning sync flow: user/agent visible, auto-synced, but not committed to the public repo.
 3. Run the next retro-review tranche over recent merged PRs after each milestone-close sequence.
 

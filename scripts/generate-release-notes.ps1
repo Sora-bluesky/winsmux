@@ -472,40 +472,43 @@ $securitySource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('del
 $securitySource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Reviewer-only', 'review-approve')
 $securitySource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Guard settings\.local\.json', 'hook disable')
 $securitySource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('review-fail command', 'blocked_no_reviewer', 'review-fail')
-$otherSource = @()
-$otherSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Commander Telegram dense notifications', 'pane\.completed', 'psmux.?winsmux rename')
-$otherSource += @(
+$docsSource = @(
     $commitSubjects |
         Where-Object {
-            $_ -match '^(chore|docs|test|ci)' -and
+            $_ -match '^docs' -and
+            -not (Test-MatchesAny -Text $_ -Patterns @('bump version', 'sync backlog and roadmap'))
+        }
+)
+$choreSource = @()
+$choreSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Commander Telegram dense notifications', 'pane\.completed', 'psmux.?winsmux rename')
+$choreSource += @(
+    $commitSubjects |
+        Where-Object {
+            $_ -match '^(chore|ci|test)' -and
             -not (Test-MatchesAny -Text $_ -Patterns @('bump version', 'sync backlog and roadmap'))
         }
 )
 
-$highlights = Get-UniqueBenefits -Values $highlightCandidates -Limit 3
-$features = Get-UniqueBenefits -Values $featureSource -Limit 5
-$fixes = Get-UniqueBenefits -Values $fixSource -Limit 5
-$security = Get-UniqueBenefits -Values $securitySource -Limit 2
-$other = Get-UniqueBenefits -Values $otherSource -Limit 3
+$highlights = @(Get-UniqueBenefits -Values $highlightCandidates -Limit 3)
+$features = @(Get-UniqueBenefits -Values $featureSource -Limit 5)
+$features = @($highlights + (Remove-ExistingBenefits -Items $features -Existing $highlights))
+$features = @($features | Select-Object -First 6)
+$fixes = @(Get-UniqueBenefits -Values $fixSource -Limit 5)
+$security = @(Get-UniqueBenefits -Values $securitySource -Limit 2)
+$documentation = @(Get-UniqueBenefits -Values $docsSource -Limit 4)
+$chores = @(Get-UniqueBenefits -Values $choreSource -Limit 6)
+$chores = @($security + (Remove-ExistingBenefits -Items $chores -Existing $security))
+$chores = @($chores | Select-Object -First 4)
 
 $builder = New-Object System.Text.StringBuilder
 [void]$builder.AppendLine("## winsmux $Version")
 [void]$builder.AppendLine()
 $seenBenefits = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-Add-Section -Builder $builder -Title 'Highlights' -Items $highlights -Seen $seenBenefits
-Add-Section -Builder $builder -Title 'Features' -Items $features -Seen $seenBenefits
-Add-Section -Builder $builder -Title 'Fixes' -Items $fixes -Seen $seenBenefits
-Add-Section -Builder $builder -Title 'Security / Guardrails' -Items $security -Seen $seenBenefits
-Add-Section -Builder $builder -Title 'Other' -Items $other -Seen $seenBenefits
+Add-Section -Builder $builder -Title 'New Features' -Items $features -Seen $seenBenefits
+Add-Section -Builder $builder -Title 'Bug Fixes' -Items $fixes -Seen $seenBenefits
+Add-Section -Builder $builder -Title 'Documentation' -Items $documentation -Seen $seenBenefits
+Add-Section -Builder $builder -Title 'Chores' -Items $chores -Seen $seenBenefits
 
-[void]$builder.AppendLine('### Change Scope')
-[void]$builder.AppendLine()
-[void]$builder.AppendLine("- Commit range: ``$commitRange``")
-if ($doneTasksForVersion.Count -gt 0) {
-    [void]$builder.AppendLine("- Completed backlog tasks for this version: $($doneTasksForVersion.Count)")
-}
-[void]$builder.AppendLine("- Published assets: ``winsmux-x64.exe``, ``winsmux-arm64.exe``, ``SHA256SUMS``")
-[void]$builder.AppendLine()
 [void]$builder.AppendLine('### Full Changelog')
 [void]$builder.AppendLine()
 if ($null -ne $previousTag) {
