@@ -3524,6 +3524,31 @@ panes:
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:runsManifestPath -Encoding UTF8
 
+        $runsObservationPack = New-ObservationPackFile -ProjectDir $script:runsTempRoot -ObservationPack ([ordered]@{
+            run_id              = 'task:task-256'
+            task_id             = 'task-256'
+            pane_id             = '%2'
+            slot                = 'slot-builder-1'
+            hypothesis          = 'branch-scoped event data is enough for experiment ledger'
+            test_plan           = @('capture matching events', 'render experiment packet')
+            env_fingerprint     = 'env:abc123'
+            command_hash        = 'cmd:def456'
+            changed_files       = @('scripts/winsmux-core.ps1')
+        })
+        $runsConsultationPacket = New-ConsultationPacketFile -ProjectDir $script:runsTempRoot -ConsultationPacket ([ordered]@{
+            run_id         = 'task:task-256'
+            task_id        = 'task-256'
+            pane_id        = '%2'
+            slot           = 'slot-builder-1'
+            kind           = 'consult_result'
+            mode           = 'early'
+            target_slot    = 'slot-review-1'
+            confidence     = 0.72
+            recommendation = 'keep experiment packet read-only'
+            next_test      = 'review_pending'
+            risks          = @('result still provisional')
+        })
+
         ([ordered]@{
             timestamp = '2026-04-10T12:01:00+09:00'
             session   = 'winsmux-orchestra'
@@ -3540,8 +3565,8 @@ panes:
                 result               = 'hypothesis still pending'
                 confidence           = 0.72
                 next_action          = 'review_pending'
-                observation_pack_ref = '.winsmux/observation-packs/task-256.json'
-                consultation_ref     = '.winsmux/consultations/task-256-review.json'
+                observation_pack_ref = $runsObservationPack.reference
+                consultation_ref     = $runsConsultationPacket.reference
                 run_id               = 'task:task-256'
                 slot                 = 'slot-builder-1'
                 worktree             = '.worktrees/builder-1'
@@ -3587,13 +3612,15 @@ panes:
         $result.runs[0].experiment_packet.result | Should -Be 'hypothesis still pending'
         $result.runs[0].experiment_packet.confidence | Should -Be 0.72
         $result.runs[0].experiment_packet.next_action | Should -Be 'review_pending'
-        $result.runs[0].experiment_packet.observation_pack_ref | Should -Be '.winsmux/observation-packs/task-256.json'
-        $result.runs[0].experiment_packet.consultation_ref | Should -Be '.winsmux/consultations/task-256-review.json'
+        $result.runs[0].experiment_packet.observation_pack_ref | Should -Be $runsObservationPack.reference
+        $result.runs[0].experiment_packet.consultation_ref | Should -Be $runsConsultationPacket.reference
         $result.runs[0].experiment_packet.run_id | Should -Be 'task:task-256'
         $result.runs[0].experiment_packet.slot | Should -Be 'slot-builder-1'
         $result.runs[0].experiment_packet.worktree | Should -Be '.worktrees/builder-1'
         $result.runs[0].experiment_packet.env_fingerprint | Should -Be 'env:abc123'
         $result.runs[0].experiment_packet.command_hash | Should -Be 'cmd:def456'
+        $result.runs[0].Contains('observation_pack') | Should -Be $false
+        $result.runs[0].Contains('consultation_packet') | Should -Be $false
     }
 
     It 'supports winsmux runs --json through the top-level CLI entrypoint' {
@@ -3843,6 +3870,27 @@ panes:
     last_event_at: 2026-04-10T14:00:00+09:00
 "@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
 
+        $digestObservationPack = New-ObservationPackFile -ProjectDir $script:digestTempRoot -ObservationPack ([ordered]@{
+            run_id          = 'task:task-246'
+            task_id         = 'task-246'
+            pane_id         = '%2'
+            slot            = 'slot-builder-1'
+            hypothesis      = 'result summary should appear in digest'
+            env_fingerprint = 'env:abc123'
+        })
+        $digestConsultationPacket = New-ConsultationPacketFile -ProjectDir $script:digestTempRoot -ConsultationPacket ([ordered]@{
+            run_id         = 'task:task-246'
+            task_id        = 'task-246'
+            pane_id        = '%2'
+            slot           = 'slot-builder-1'
+            kind           = 'consult_result'
+            mode           = 'reconcile'
+            target_slot    = 'slot-review-1'
+            confidence     = 0.88
+            recommendation = 'treat review failure as blocking'
+            next_test      = 'review_failed'
+        })
+
         ([ordered]@{
             timestamp = '2026-04-10T14:01:00+09:00'
             session   = 'winsmux-orchestra'
@@ -3859,8 +3907,8 @@ panes:
                 result               = 'review failure reproduced'
                 confidence           = 0.88
                 next_action          = 'review_failed'
-                observation_pack_ref = '.winsmux/observation-packs/task-246.json'
-                consultation_ref     = '.winsmux/consultations/task-246-reconcile.json'
+                observation_pack_ref = $digestObservationPack.reference
+                consultation_ref     = $digestConsultationPacket.reference
             }
         } | ConvertTo-Json -Compress) | Set-Content -Path $script:digestEventsPath -Encoding UTF8
 
@@ -3882,8 +3930,10 @@ panes:
         $result.items[0].changed_files | Should -Be @('scripts/winsmux-core.ps1')
         $result.items[0].hypothesis | Should -Be 'result summary should appear in digest'
         $result.items[0].confidence | Should -Be 0.88
-        $result.items[0].observation_pack_ref | Should -Be '.winsmux/observation-packs/task-246.json'
-        $result.items[0].consultation_ref | Should -Be '.winsmux/consultations/task-246-reconcile.json'
+        $result.items[0].observation_pack_ref | Should -Be $digestObservationPack.reference
+        $result.items[0].consultation_ref | Should -Be $digestConsultationPacket.reference
+        $result.items[0].Contains('observation_pack') | Should -Be $false
+        $result.items[0].Contains('consultation_packet') | Should -Be $false
     }
 
     It 'returns digest delta items only for runs affected after the current cursor' {
@@ -4125,6 +4175,33 @@ panes:
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
 
+        $explainObservationPack = New-ObservationPackFile -ProjectDir $script:explainTempRoot -ObservationPack ([ordered]@{
+            run_id               = 'task:task-256'
+            task_id              = 'task-256'
+            pane_id              = '%2'
+            slot                 = 'slot-builder-1'
+            hypothesis           = 'experiment packet should flow into explain'
+            test_plan            = @('collect matching events', 'normalize packet')
+            changed_files        = @('scripts/winsmux-core.ps1')
+            working_tree_summary = '1 file modified'
+            failing_command      = 'Invoke-Pester tests/psmux-bridge.Tests.ps1'
+            env_fingerprint      = 'env:abc123'
+            command_hash         = 'cmd:def456'
+        })
+        $explainConsultationPacket = New-ConsultationPacketFile -ProjectDir $script:explainTempRoot -ConsultationPacket ([ordered]@{
+            run_id         = 'task:task-256'
+            task_id        = 'task-256'
+            pane_id        = '%2'
+            slot           = 'slot-builder-1'
+            kind           = 'consult_result'
+            mode           = 'early'
+            target_slot    = 'slot-review-1'
+            confidence     = 0.66
+            recommendation = 'consult before work'
+            next_test      = 'approval_waiting'
+            risks          = @('needs reviewer confirmation')
+        })
+
         @(
             ([ordered]@{
                 timestamp = '2026-04-10T12:01:00+09:00'
@@ -4143,8 +4220,8 @@ panes:
                     result               = 'consult before work'
                     confidence           = 0.66
                     next_action          = 'approval_waiting'
-                    observation_pack_ref = '.winsmux/observation-packs/task-256.json'
-                    consultation_ref     = '.winsmux/consultations/task-256-early.json'
+                    observation_pack_ref = $explainObservationPack.reference
+                    consultation_ref     = $explainConsultationPacket.reference
                     run_id               = 'task:task-256'
                     slot                 = 'slot-builder-1'
                     worktree             = '.worktrees/builder-1'
@@ -4221,13 +4298,21 @@ panes:
         $result.experiment_packet.result | Should -Be 'consult before work'
         $result.experiment_packet.confidence | Should -Be 0.66
         $result.experiment_packet.next_action | Should -Be 'approval_waiting'
-        $result.experiment_packet.observation_pack_ref | Should -Be '.winsmux/observation-packs/task-256.json'
-        $result.experiment_packet.consultation_ref | Should -Be '.winsmux/consultations/task-256-early.json'
+        $result.experiment_packet.observation_pack_ref | Should -Be $explainObservationPack.reference
+        $result.experiment_packet.consultation_ref | Should -Be $explainConsultationPacket.reference
         $result.experiment_packet.run_id | Should -Be 'task:task-256'
         $result.experiment_packet.slot | Should -Be 'slot-builder-1'
         $result.experiment_packet.worktree | Should -Be '.worktrees/builder-1'
         $result.experiment_packet.env_fingerprint | Should -Be 'env:abc123'
         $result.experiment_packet.command_hash | Should -Be 'cmd:def456'
+        $result.observation_pack.packet_type | Should -Be 'observation_pack'
+        $result.observation_pack.failing_command | Should -Be 'Invoke-Pester tests/psmux-bridge.Tests.ps1'
+        $result.consultation_packet.kind | Should -Be 'consult_result'
+        $result.consultation_packet.mode | Should -Be 'early'
+        $result.consultation_summary.kind | Should -Be 'consult_result'
+        $result.consultation_summary.next_test | Should -Be 'approval_waiting'
+        $result.experiment_packet.observation_pack.packet_type | Should -Be 'observation_pack'
+        $result.experiment_packet.consultation_packet.kind | Should -Be 'consult_result'
         $result.evidence_digest.run_id | Should -Be 'task:task-256'
         $result.evidence_digest.next_action | Should -Be 'approval_waiting'
         $result.evidence_digest.changed_files | Should -Be @('scripts/winsmux-core.ps1')
@@ -4243,10 +4328,79 @@ panes:
         $result.result_packet.next_action_hint | Should -Be 'approval_waiting'
         $result.result_packet.review_recommendation | Should -Be 'PENDING'
         $result.result_packet.evidence_refs | Should -Be @('scripts/winsmux-core.ps1')
+        $result.result_packet.observation_pack.packet_type | Should -Be 'observation_pack'
+        $result.result_packet.consultation_packet.kind | Should -Be 'consult_result'
+        $result.result_packet.consultation_summary.kind | Should -Be 'consult_result'
         $result.recent_events.Count | Should -Be 2
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'commander.review_requested'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pane.approval_waiting'
         ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).hypothesis | Should -Be 'experiment packet should flow into explain'
+        ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).observation_pack.packet_type | Should -Be 'observation_pack'
+        ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).consultation_packet.kind | Should -Be 'consult_result'
+    }
+
+    It 'keeps refs and returns null packets when artifact files are missing or malformed' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:explainTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-777
+    task: Explain missing packets
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 0
+    changed_files: '[]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
+
+        $badConsultDir = Get-ConsultationDirectory -ProjectDir $script:explainTempRoot
+        New-Item -ItemType Directory -Path $badConsultDir -Force | Out-Null
+        Write-PsmuxBridgeTestFile -Path (Join-Path $badConsultDir 'consult-result-bad.json') -Content '{ nope }'
+
+        ([ordered]@{
+            timestamp = '2026-04-10T12:01:00+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'commander.review_requested'
+            message   = 'review requested'
+            label     = 'reviewer-1'
+            pane_id   = '%3'
+            role      = 'Reviewer'
+            branch    = 'worktree-builder-1'
+            head_sha  = 'abc1234def5678'
+            data      = [ordered]@{
+                task_id              = 'task-777'
+                hypothesis           = 'hydrate should be resilient'
+                observation_pack_ref = '.winsmux/observation-packs/missing.json'
+                consultation_ref     = '.winsmux/consultations/consult-result-bad.json'
+                run_id               = 'task:task-777'
+                slot                 = 'slot-builder-1'
+            }
+        } | ConvertTo-Json -Compress) | Set-Content -Path $script:explainEventsPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = (Invoke-Explain -ExplainTarget 'task:task-777' -ExplainRest @('--json') | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.experiment_packet.observation_pack_ref | Should -Be '.winsmux/observation-packs/missing.json'
+        $result.experiment_packet.consultation_ref | Should -Be '.winsmux/consultations/consult-result-bad.json'
+        $result.observation_pack | Should -Be $null
+        $result.consultation_packet | Should -Be $null
+        $result.consultation_summary | Should -Be $null
     }
 
     It 'filters explain follow events from the current cursor forward' {
@@ -4400,6 +4554,70 @@ Describe 'winsmux send dispatch payload' {
 
     It 'rejects unsupported prompt transport values' {
         { Resolve-SendDispatchPayload -Text 'Write-Host short' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -PromptTransport 'stdin' } | Should -Throw '*prompt_transport*'
+    }
+}
+
+Describe 'winsmux observation and consultation artifacts' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:artifactTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-artifact-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:artifactTempRoot -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:artifactTempRoot -and (Test-Path $script:artifactTempRoot)) {
+            Remove-Item -Path $script:artifactTempRoot -Recurse -Force
+        }
+    }
+
+    It 'writes and reads an observation pack with a stable relative reference' {
+        $written = New-ObservationPackFile -ProjectDir $script:artifactTempRoot -ObservationPack ([ordered]@{
+            run_id              = 'task:task-300'
+            task_id             = 'task-300'
+            pane_id             = '%2'
+            slot                = 'slot-builder-1'
+            hypothesis          = 'observation packs should be file-backed'
+            test_plan           = @('write file', 'hydrate explain')
+            env_fingerprint     = 'env:abc123'
+            command_hash        = 'cmd:def456'
+            changed_files       = @('scripts/winsmux-core.ps1')
+            relevant_links      = @('https://example.test/logs/1')
+        })
+
+        $written.reference | Should -BeLike '.winsmux/observation-packs/observation-pack-*.json'
+        Test-Path -LiteralPath $written.path | Should -Be $true
+
+        $hydrated = Read-WinsmuxArtifactJson -Reference $written.reference -ProjectDir $script:artifactTempRoot -ExpectedDirectoryPath (Get-ObservationPackDirectory -ProjectDir $script:artifactTempRoot) -ExpectedRunId 'task:task-300'
+        $hydrated.packet_type | Should -Be 'observation_pack'
+        $hydrated.hypothesis | Should -Be 'observation packs should be file-backed'
+        $hydrated.test_plan | Should -Be @('write file', 'hydrate explain')
+        $hydrated.env_fingerprint | Should -Be 'env:abc123'
+    }
+
+    It 'rejects consultation packets with unsupported kind' {
+        {
+            New-ConsultationPacketFile -ProjectDir $script:artifactTempRoot -ConsultationPacket ([ordered]@{
+                run_id  = 'task:task-301'
+                task_id = 'task-301'
+                pane_id = '%2'
+                kind    = 'consult_maybe'
+                mode    = 'early'
+            })
+        } | Should -Throw '*Unsupported consultation packet kind*'
+    }
+
+    It 'returns null when a packet file contains malformed json' {
+        $badDir = Get-ObservationPackDirectory -ProjectDir $script:artifactTempRoot
+        New-Item -ItemType Directory -Path $badDir -Force | Out-Null
+        $badPath = Join-Path $badDir 'observation-pack-bad.json'
+        Write-PsmuxBridgeTestFile -Path $badPath -Content '{ not-valid-json }'
+
+        $hydrated = Read-WinsmuxArtifactJson -Reference '.winsmux/observation-packs/observation-pack-bad.json' -ProjectDir $script:artifactTempRoot -ExpectedDirectoryPath $badDir -ExpectedRunId 'task:task-300'
+        $hydrated | Should -Be $null
     }
 }
 

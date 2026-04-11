@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-11T18:05:00+09:00
+> Updated: 2026-04-11T19:20:06+09:00
 > Source of truth: this file
 
 ## Current state
@@ -15,6 +15,8 @@
 - Planning source of truth is externalized outside the public repository and syncs automatically into the private planning root.
 - `v0.21.x` private planning is aligned to a conversation-first Tauri operator shell, with Codex-App-like shell rules reflected in Figma and backlog notes.
 - `v0.24.x` private planning is split into schema, ledger, machine contract, cutover, and canary phases for Rust runtime convergence before `v1.0.0`.
+- PR [#396](https://github.com/Sora-bluesky/winsmux/pull/396) is merged into `main`, landing the first `TASK-114` experiment-ledger read model slice.
+- External planning is rebalanced so `v0.21.0` is reduced to slot-dispatch core, `v0.21.1` absorbs experiment compare/promotion, and `v0.22.0` is narrowed to backend-first Tauri control-plane foundation.
 
 ## This session
 
@@ -106,12 +108,13 @@
 - `v0.20.0` release workflow run `24276032671` completed successfully and published `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
 - `TASK-187` transport slice passed focused regression before merge: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `122/122 PASS`.
 - Current local `TASK-114` experiment-ledger slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `123/123 PASS`.
+- PR [#396](https://github.com/Sora-bluesky/winsmux/pull/396) CI passed before merge: `Pester Tests` run `24280233475`.
 
 ## Next actions
 
-1. Commit and review the current `TASK-114` first slice, then open the PR with the new read-side `experiment_packet` contract on `runs / digest / explain`.
-2. After `TASK-114`, move to `TASK-300` / `TASK-301` so observation packs and consultation packets become file-backed, first-class ledger inputs instead of read-only fields.
-3. Keep the external planning sync flow user-visible but out of the public repo, then reflect consultation/experiment surfaces into the Tauri shell as `TASK-305` approaches.
+1. Start `TASK-300` / `TASK-301` so observation packs and consultation packets become file-backed, first-class ledger inputs instead of read-only fields.
+2. Keep the external planning sync flow user-visible but out of the public repo, then reflect consultation/experiment surfaces into the Tauri shell as `TASK-305` approaches.
+3. Use the rebalanced roadmap as the release train baseline: `v0.21.0` for slot dispatch core, `v0.21.1` for compare/promotion, and `v0.22.0` for backend-first Tauri foundation only.
 
 ## Notes
 

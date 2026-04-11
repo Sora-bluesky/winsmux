@@ -177,6 +177,234 @@ function Get-DispatchPromptReference {
     return $promptRef
 }
 
+function ConvertTo-WinsmuxArtifactData {
+    param([AllowNull()]$Data)
+
+    if ($null -eq $Data) {
+        return [ordered]@{}
+    }
+
+    if ($Data -is [System.Collections.IDictionary]) {
+        $clone = [ordered]@{}
+        foreach ($entry in $Data.GetEnumerator()) {
+            $clone[[string]$entry.Key] = $entry.Value
+        }
+        return $clone
+    }
+
+    if ($null -ne $Data.PSObject) {
+        $clone = [ordered]@{}
+        foreach ($property in $Data.PSObject.Properties) {
+            $clone[$property.Name] = $property.Value
+        }
+        return $clone
+    }
+
+    return [ordered]@{ value = $Data }
+}
+
+function Test-WinsmuxArtifactHasCorrelation {
+    param([Parameter(Mandatory = $true)][System.Collections.IDictionary]$Data)
+
+    $runId = if ($Data.Contains('run_id')) { [string]$Data['run_id'] } else { '' }
+    $taskId = if ($Data.Contains('task_id')) { [string]$Data['task_id'] } else { '' }
+    $paneId = if ($Data.Contains('pane_id')) { [string]$Data['pane_id'] } else { '' }
+    $slot = if ($Data.Contains('slot')) { [string]$Data['slot'] } else { '' }
+
+    if (-not [string]::IsNullOrWhiteSpace($runId)) {
+        return $true
+    }
+
+    return (
+        -not [string]::IsNullOrWhiteSpace($taskId) -and
+        (
+            -not [string]::IsNullOrWhiteSpace($paneId) -or
+            -not [string]::IsNullOrWhiteSpace($slot)
+        )
+    )
+}
+
+function Get-ObservationPackDirectory {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    return Join-Path $ProjectDir '.winsmux\observation-packs'
+}
+
+function Get-ConsultationDirectory {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    return Join-Path $ProjectDir '.winsmux\consultations'
+}
+
+function Get-WinsmuxArtifactReference {
+    param(
+        [Parameter(Mandatory = $true)][string]$ArtifactPath,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $artifactRef = $ArtifactPath
+    try {
+        $relativeArtifactPath = [System.IO.Path]::GetRelativePath($ProjectDir, $ArtifactPath)
+        if (-not [string]::IsNullOrWhiteSpace($relativeArtifactPath) -and -not $relativeArtifactPath.StartsWith('..')) {
+            $artifactRef = $relativeArtifactPath.Replace('\', '/')
+        }
+    } catch {
+    }
+
+    return $artifactRef
+}
+
+function Write-WinsmuxArtifactFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$DirectoryPath,
+        [Parameter(Mandatory = $true)][string]$Prefix,
+        [Parameter(Mandatory = $true)][AllowNull()]$Data,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    if (-not (Test-Path -LiteralPath $DirectoryPath -PathType Container)) {
+        New-Item -ItemType Directory -Path $DirectoryPath -Force | Out-Null
+    }
+
+    $fileName = '{0}-{1}.json' -f $Prefix, ([guid]::NewGuid().ToString('N'))
+    $path = Join-Path $DirectoryPath $fileName
+    $tempPath = '{0}.tmp' -f $path
+    $content = ($Data | ConvertTo-Json -Depth 12)
+
+    Write-ClmSafeTextFile -Path $tempPath -Content $content
+    Move-Item -LiteralPath $tempPath -Destination $path -Force
+
+    return [ordered]@{
+        path      = $path
+        reference = Get-WinsmuxArtifactReference -ArtifactPath $path -ProjectDir $ProjectDir
+    }
+}
+
+function New-ObservationPackFile {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()]$ObservationPack,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $packet = ConvertTo-WinsmuxArtifactData -Data $ObservationPack
+    if (-not (Test-WinsmuxArtifactHasCorrelation -Data $packet)) {
+        throw 'Observation pack requires run_id or task_id with pane_id/slot.'
+    }
+
+    if (-not $packet.Contains('packet_type')) {
+        $packet['packet_type'] = 'observation_pack'
+    }
+    if (-not $packet.Contains('generated_at')) {
+        $packet['generated_at'] = (Get-Date).ToString('o')
+    }
+
+    return Write-WinsmuxArtifactFile -DirectoryPath (Get-ObservationPackDirectory -ProjectDir $ProjectDir) -Prefix 'observation-pack' -Data $packet -ProjectDir $ProjectDir
+}
+
+function New-ConsultationPacketFile {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()]$ConsultationPacket,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $packet = ConvertTo-WinsmuxArtifactData -Data $ConsultationPacket
+    if (-not (Test-WinsmuxArtifactHasCorrelation -Data $packet)) {
+        throw 'Consultation packet requires run_id or task_id with pane_id/slot.'
+    }
+
+    $kind = if ($packet.Contains('kind')) { [string]$packet['kind'] } else { '' }
+    if ($kind -notin @('consult_request', 'consult_result', 'consult_error')) {
+        throw "Unsupported consultation packet kind: $kind"
+    }
+
+    if ($packet.Contains('mode')) {
+        $mode = [string]$packet['mode']
+        if (-not [string]::IsNullOrWhiteSpace($mode) -and $mode -notin @('early', 'stuck', 'reconcile', 'final')) {
+            throw "Unsupported consultation packet mode: $mode"
+        }
+    }
+
+    if (-not $packet.Contains('packet_type')) {
+        $packet['packet_type'] = 'consultation_packet'
+    }
+    if (-not $packet.Contains('generated_at')) {
+        $packet['generated_at'] = (Get-Date).ToString('o')
+    }
+
+    $prefix = switch ($kind) {
+        'consult_request' { 'consult-request' }
+        'consult_result' { 'consult-result' }
+        'consult_error' { 'consult-error' }
+        default { 'consultation' }
+    }
+
+    return Write-WinsmuxArtifactFile -DirectoryPath (Get-ConsultationDirectory -ProjectDir $ProjectDir) -Prefix $prefix -Data $packet -ProjectDir $ProjectDir
+}
+
+function Read-WinsmuxArtifactJson {
+    param(
+        [AllowEmptyString()][string]$Reference,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$ExpectedDirectoryPath,
+        [string]$ExpectedRunId = ''
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Reference)) {
+        return $null
+    }
+
+    $path = $Reference
+    if (-not [System.IO.Path]::IsPathRooted($path)) {
+        $path = Join-Path $ProjectDir ($Reference.Replace('/', '\'))
+    }
+
+    $fullPath = [System.IO.Path]::GetFullPath($path)
+    $expectedDirectoryFullPath = [System.IO.Path]::GetFullPath($ExpectedDirectoryPath)
+
+    if (-not $fullPath.StartsWith($expectedDirectoryFullPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        $content = Get-Content -LiteralPath $fullPath -Raw -Encoding UTF8
+        $parsed = $content | ConvertFrom-Json -AsHashtable -Depth 12
+    } catch {
+        return $null
+    }
+
+    if (
+        -not [string]::IsNullOrWhiteSpace($ExpectedRunId) -and
+        $parsed.Contains('run_id') -and
+        -not [string]::IsNullOrWhiteSpace([string]$parsed['run_id']) -and
+        [string]$parsed['run_id'] -ne $ExpectedRunId
+    ) {
+        return $null
+    }
+
+    $orderedParsed = [ordered]@{}
+    foreach ($entry in $parsed.GetEnumerator()) {
+        $orderedParsed[[string]$entry.Key] = $entry.Value
+    }
+
+    return $orderedParsed
+}
+
+function Write-BridgeEventRecord {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][AllowNull()]$EventRecord
+    )
+
+    $eventsPath = Get-BridgeEventsPath -ProjectDir $ProjectDir
+    $recordLine = ($EventRecord | ConvertTo-Json -Compress -Depth 12)
+    Write-ClmSafeTextFile -Path $eventsPath -Content $recordLine -Append
+    return $eventsPath
+}
+
 function New-SendDispatchPointerText {
     param(
         [Parameter(Mandatory = $true)][string]$PromptPath,
@@ -2737,6 +2965,73 @@ function Get-ExperimentPacketFromEventRecords {
     }
 }
 
+function Get-HydratedObservationPack {
+    param(
+        [AllowNull()]$ExperimentPacket,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [string]$ExpectedRunId = ''
+    )
+
+    if ($null -eq $ExperimentPacket) {
+        return $null
+    }
+
+    return Read-WinsmuxArtifactJson `
+        -Reference ([string]$ExperimentPacket.observation_pack_ref) `
+        -ProjectDir $ProjectDir `
+        -ExpectedDirectoryPath (Get-ObservationPackDirectory -ProjectDir $ProjectDir) `
+        -ExpectedRunId $ExpectedRunId
+}
+
+function Get-HydratedConsultationPacket {
+    param(
+        [AllowNull()]$ExperimentPacket,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [string]$ExpectedRunId = ''
+    )
+
+    if ($null -eq $ExperimentPacket) {
+        return $null
+    }
+
+    return Read-WinsmuxArtifactJson `
+        -Reference ([string]$ExperimentPacket.consultation_ref) `
+        -ProjectDir $ProjectDir `
+        -ExpectedDirectoryPath (Get-ConsultationDirectory -ProjectDir $ProjectDir) `
+        -ExpectedRunId $ExpectedRunId
+}
+
+function Get-ConsultationSummaryFromPacket {
+    param([AllowNull()]$ConsultationPacket)
+
+    if ($null -eq $ConsultationPacket) {
+        return $null
+    }
+
+    $risks = @()
+    if ($ConsultationPacket.Contains('risks') -and $ConsultationPacket['risks'] -is [System.Collections.IEnumerable] -and $ConsultationPacket['risks'] -isnot [string]) {
+        $risks = @($ConsultationPacket['risks'])
+    } elseif ($ConsultationPacket.Contains('risks') -and -not [string]::IsNullOrWhiteSpace([string]$ConsultationPacket['risks'])) {
+        $risks = @([string]$ConsultationPacket['risks'])
+    }
+
+    $nextTest = ''
+    if ($ConsultationPacket.Contains('next_test')) {
+        $nextTest = [string]$ConsultationPacket['next_test']
+    } elseif ($ConsultationPacket.Contains('next_action')) {
+        $nextTest = [string]$ConsultationPacket['next_action']
+    }
+
+    return [ordered]@{
+        kind        = if ($ConsultationPacket.Contains('kind')) { [string]$ConsultationPacket['kind'] } else { '' }
+        mode        = if ($ConsultationPacket.Contains('mode')) { [string]$ConsultationPacket['mode'] } else { '' }
+        target_slot = if ($ConsultationPacket.Contains('target_slot')) { [string]$ConsultationPacket['target_slot'] } else { '' }
+        confidence  = if ($ConsultationPacket.Contains('confidence')) { $ConsultationPacket['confidence'] } else { $null }
+        next_test   = $nextTest
+        risks       = @($risks)
+    }
+}
+
 function New-RunPacketFromRun {
     param([Parameter(Mandatory = $true)]$Run)
 
@@ -2778,7 +3073,10 @@ function New-RunResultPacket {
         [Parameter(Mandatory = $true)]$Run,
         [Parameter(Mandatory = $true)]$EvidenceDigest,
         [AllowNull()]$ReviewState = $null,
-        [Parameter(Mandatory = $true)][object[]]$RecentEvents
+        [Parameter(Mandatory = $true)][object[]]$RecentEvents,
+        [AllowNull()]$ObservationPack = $null,
+        [AllowNull()]$ConsultationPacket = $null,
+        [AllowNull()]$ConsultationSummary = $null
     )
 
     $status = ''
@@ -2821,6 +3119,9 @@ function New-RunResultPacket {
         review_recommendation = $reviewRecommendation
         evidence_refs         = @($EvidenceDigest.changed_files)
         experiment_packet     = $Run.experiment_packet
+        observation_pack      = $ObservationPack
+        consultation_packet   = $ConsultationPacket
+        consultation_summary  = $ConsultationSummary
         action_items          = @($Run.action_items)
         review_state          = $ReviewState
         recent_events         = @($RecentEvents)
@@ -2943,7 +3244,10 @@ function Test-RunMatchesExperimentEventRecord {
 }
 
 function ConvertTo-RunEventRecord {
-    param([Parameter(Mandatory = $true)]$EventRecord)
+    param(
+        [Parameter(Mandatory = $true)]$EventRecord,
+        [string]$ProjectDir = (Get-Location).Path
+    )
 
     $taskId = ''
     $branch = [string]$EventRecord['branch']
@@ -2960,6 +3264,9 @@ function ConvertTo-RunEventRecord {
     }
 
     $experimentPacket = Get-ExperimentPacketFromEventRecords -EventRecords @($EventRecord)
+    $runId = if ($null -ne $experimentPacket) { [string]$experimentPacket.run_id } else { '' }
+    $observationPack = Get-HydratedObservationPack -ExperimentPacket $experimentPacket -ProjectDir $ProjectDir -ExpectedRunId $runId
+    $consultationPacket = Get-HydratedConsultationPacket -ExperimentPacket $experimentPacket -ProjectDir $ProjectDir -ExpectedRunId $runId
 
     return [ordered]@{
         line_number          = [int]$EventRecord['line_number']
@@ -2986,6 +3293,8 @@ function ConvertTo-RunEventRecord {
         worktree             = if ($null -ne $experimentPacket) { [string]$experimentPacket.worktree } else { '' }
         env_fingerprint      = if ($null -ne $experimentPacket) { [string]$experimentPacket.env_fingerprint } else { '' }
         command_hash         = if ($null -ne $experimentPacket) { [string]$experimentPacket.command_hash } else { '' }
+        observation_pack     = $observationPack
+        consultation_packet  = $consultationPacket
     }
 }
 
@@ -3348,7 +3657,7 @@ function Get-ExplainPayload {
     $events = @(
         Get-BridgeEventRecords -ProjectDir $ProjectDir |
             Where-Object { Test-RunMatchesEventRecord -Run $run -EventRecord $_ } |
-            ForEach-Object { ConvertTo-RunEventRecord -EventRecord $_ } |
+            ForEach-Object { ConvertTo-RunEventRecord -EventRecord $_ -ProjectDir $ProjectDir } |
             Sort-Object @{ Expression = { [string]$_.timestamp }; Descending = $true }, @{ Expression = { [int]$_.line_number }; Descending = $true }
     )
 
@@ -3377,13 +3686,29 @@ function Get-ExplainPayload {
 
     $evidenceDigest = ConvertTo-EvidenceDigestItem -Run $run
     $recentEvents = @($events | Select-Object -First 20)
+    $observationPack = Get-HydratedObservationPack -ExperimentPacket $run.experiment_packet -ProjectDir $ProjectDir -ExpectedRunId ([string]$run.run_id)
+    $consultationPacket = Get-HydratedConsultationPacket -ExperimentPacket $run.experiment_packet -ProjectDir $ProjectDir -ExpectedRunId ([string]$run.run_id)
+    $consultationSummary = Get-ConsultationSummaryFromPacket -ConsultationPacket $consultationPacket
+    $experimentPacket = $run.experiment_packet
+    if ($null -ne $experimentPacket) {
+        $hydratedExperimentPacket = [ordered]@{}
+        foreach ($entry in $experimentPacket.GetEnumerator()) {
+            $hydratedExperimentPacket[[string]$entry.Key] = $entry.Value
+        }
+        $hydratedExperimentPacket['observation_pack'] = $observationPack
+        $hydratedExperimentPacket['consultation_packet'] = $consultationPacket
+        $experimentPacket = $hydratedExperimentPacket
+    }
 
     return [ordered]@{
         generated_at    = (Get-Date).ToString('o')
         project_dir     = $ProjectDir
         run             = $run
         run_packet      = New-RunPacketFromRun -Run $run
-        experiment_packet = $run.experiment_packet
+        experiment_packet = $experimentPacket
+        observation_pack = $observationPack
+        consultation_packet = $consultationPacket
+        consultation_summary = $consultationSummary
         evidence_digest = $evidenceDigest
         explanation   = [ordered]@{
             summary       = if (-not [string]::IsNullOrWhiteSpace([string]$run.task)) { [string]$run.task } else { [string]$run.primary_label }
@@ -3398,7 +3723,7 @@ function Get-ExplainPayload {
         }
         review_state    = $reviewState
         recent_events   = $recentEvents
-        result_packet   = New-RunResultPacket -Run $run -EvidenceDigest $evidenceDigest -ReviewState $reviewState -RecentEvents $recentEvents
+        result_packet   = New-RunResultPacket -Run $run -EvidenceDigest $evidenceDigest -ReviewState $reviewState -RecentEvents $recentEvents -ObservationPack $observationPack -ConsultationPacket $consultationPacket -ConsultationSummary $consultationSummary
     }
 }
 
@@ -3904,7 +4229,7 @@ function Invoke-Explain {
                     continue
                 }
 
-                $item = ConvertTo-RunEventRecord -EventRecord $eventRecord
+                $item = ConvertTo-RunEventRecord -EventRecord $eventRecord -ProjectDir $projectDir
                 Write-ExplainFollowItem -Item $item -Json:$jsonOutput
             }
 
