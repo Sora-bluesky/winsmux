@@ -49,7 +49,7 @@ jobs:
       - name: Generate Release Body
         shell: pwsh
         run: ./scripts/generate-release-notes.ps1 -Version "${{ github.ref_name }}" -OutputPath "release/release-body.md"
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           body_path: release/release-body.md
           files: release/*

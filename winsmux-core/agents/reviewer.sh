@@ -81,12 +81,20 @@ printf '%s\n' "- Inspect the current diff with: git diff $diff_base_display"
 cat <<'PROMPT'
 - Review for correctness, regressions, missing verification, and security issues.
 - Call out any credential exposure, injection risks, auth or authz mistakes, path handling issues, or unsafe shell usage.
+- Explicitly evaluate design impact, not just local diff correctness:
+  - What downstream behavior, workflow, or monitoring capability does this change disable or alter?
+  - Was any removed or changed capability replaced elsewhere, or does it create a blind spot?
+  - Are there orphaned artifacts such as dead mocks, stale helpers, or unused state transitions that indicate an incomplete change?
+- Separate direct code issues from architecture or operational risks.
 - Do not edit code during this review.
 
 Respond with:
 - verdict
 - findings
 - security review
+- design impact
+- replacement check
+- orphaned artifacts
 - recommended follow-ups
 
 If there are no blocking findings, end with exactly:
