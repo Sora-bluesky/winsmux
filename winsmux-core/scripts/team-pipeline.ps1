@@ -496,6 +496,72 @@ function Get-TeamPipelineRunPolicy {
     }
 }
 
+function Get-TeamPipelineExplicitCommandLines {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return @()
+    }
+
+    $result = [System.Collections.Generic.List[string]]::new()
+    foreach ($rawLine in ($Text -split "\r?\n")) {
+        $line = $rawLine.Trim()
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        $line = ($line -replace '^(?:[-*+]|\d+\.)\s*', '').Trim()
+        if ($line -match '^(?:pwsh|powershell|git|winsmux|apply_patch|Set-Content|Out-File|Add-Content|New-Item|Copy-Item|Move-Item|Remove-Item|curl|wget|Invoke-WebRequest|Invoke-RestMethod|npm|pnpm|yarn|pip|uv|cargo|winget|choco|scoop)\b') {
+            $result.Add($line) | Out-Null
+        }
+    }
+
+    return @($result)
+}
+
+function Find-TeamPipelineSecurityViolation {
+    param(
+        [Parameter(Mandatory = $true)][string]$StageName,
+        [AllowNull()][string]$Text
+    )
+
+    $commandLines = @(Get-TeamPipelineExplicitCommandLines -Text $Text)
+    if ($commandLines.Count -lt 1) {
+        return $null
+    }
+
+    $policy = Get-TeamPipelineRunPolicy -StageName $StageName
+    $categoryPatterns = [ordered]@{
+        write          = '(?i)\b(?:apply_patch|Set-Content|Out-File|Add-Content|New-Item|Copy-Item|Move-Item|Remove-Item)\b'
+        git            = '(?i)\bgit\s+(?:add|commit|push|merge|rebase|checkout|switch|tag|stash|reset|cherry-pick)\b'
+        network        = '(?i)\b(?:curl|wget|Invoke-WebRequest|Invoke-RestMethod|npm\s+install|pnpm\s+add|yarn\s+add|pip\s+install|uv\s+pip|cargo\s+add|winget\s+install|choco\s+install|scoop\s+install)\b'
+        destructive    = '(?im)(rm\s+-rf|Remove-Item\s+.+-Recurse.+-Force|DROP\s+TABLE|DELETE\s+FROM)'
+        force_push     = '(?i)\bgit\s+push\s+--force(?:-with-lease)?\b'
+        hard_reset     = '(?i)\bgit\s+reset\s+--hard\b'
+        recursive_delete = '(?i)\bRemove-Item\b.+-Recurse.+-Force'
+        schema_drop    = '(?i)\bDROP\s+TABLE\b'
+    }
+
+    foreach ($line in $commandLines) {
+        foreach ($blockedCategory in @($policy.block)) {
+            if (-not $categoryPatterns.Contains($blockedCategory)) {
+                continue
+            }
+
+            if ($line -match $categoryPatterns[$blockedCategory]) {
+                return [ordered]@{
+                    line = $line
+                    category = $blockedCategory
+                    reason = "stage $($policy.stage) blocks explicit $blockedCategory commands before dispatch"
+                    policy = $policy
+                }
+            }
+        }
+    }
+
+    return $null
+}
+
 function Get-TeamPipelineChangedPaths {
     param([string]$BuilderWorktreePath)
 
@@ -545,6 +611,52 @@ function New-TeamPipelineSecurityVerdict {
         allow         = @($policy.allow)
         block         = @($policy.block)
         next_action   = 'revise_request_or_override'
+    }
+}
+
+function Invoke-TeamPipelineGuardedSend {
+    param(
+        [Parameter(Mandatory = $true)][string]$StageName,
+        [Parameter(Mandatory = $true)][string]$Target,
+        [Parameter(Mandatory = $true)][string]$Prompt,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [string]$Role = '',
+        [string]$Task = '',
+        [int]$Attempt = 0
+    )
+
+    $violation = Find-TeamPipelineSecurityViolation -StageName $StageName -Text $Prompt
+    if ($null -eq $violation) {
+        Invoke-TeamPipelineBridge -Arguments @('send', $Target, $Prompt) | Out-Null
+        return $null
+    }
+
+    $securityVerdict = New-TeamPipelineSecurityVerdict -StageName $StageName -Target $Target -Reason ([string]$violation['reason']) -ActionKind 'pre_dispatch' -ActionValue ([string]$violation['line']) -PromptText $Prompt
+    Write-TeamPipelineEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'pipeline.security.blocked' -Message "Security monitor blocked $StageName on $Target before dispatch." -Role $Role -Target $Target -Data ([ordered]@{
+        stage         = $securityVerdict.stage
+        attempt       = $Attempt
+        task          = $Task
+        verdict       = $securityVerdict.verdict
+        reason        = $securityVerdict.reason
+        advisory_mode = $securityVerdict.advisory_mode
+        allow         = @($securityVerdict.allow)
+        block         = @($securityVerdict.block)
+        next_action   = $securityVerdict.next_action
+        action_kind   = 'pre_dispatch'
+        action_value  = [string]$violation['line']
+        category      = [string]$violation['category']
+    }) | Out-Null
+
+    return [PSCustomObject]@{
+        Stage      = $StageName
+        Target     = $Target
+        Status     = 'BLOCKED'
+        Summary    = "Security monitor blocked $StageName before dispatch. $([string]$violation['reason'])"
+        Transcript = $Prompt
+        Policy     = [PSCustomObject]$violation['policy']
+        SecurityVerdict = $securityVerdict
+        VerificationResult = $null
     }
 }
 
@@ -1001,8 +1113,11 @@ function Invoke-TeamPipelineConsultStage {
         verify_summary       = $VerificationSummary
     }
 
+    $dispatchResult = Invoke-TeamPipelineGuardedSend -StageName ("CONSULT_{0}" -f $Mode.ToUpperInvariant()) -Target $TargetLabel -Prompt $prompt -ProjectDir $ProjectDir -SessionName $SessionName -Role $consultRole -Task $Task -Attempt $Attempt
+    if ($null -ne $dispatchResult) {
+        return $dispatchResult
+    }
     Write-TeamPipelineEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'pipeline.consult.dispatched' -Message "Dispatched $Mode consult to $TargetLabel." -Role $consultRole -Target $TargetLabel -Data $eventData | Out-Null
-    Invoke-TeamPipelineBridge -Arguments @('send', $TargetLabel, $prompt) | Out-Null
     $stage = Wait-TeamPipelineStage -Target $TargetLabel -StageName ("CONSULT_{0}" -f $Mode.ToUpperInvariant()) -TimeoutSeconds $TimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -ProjectDir $ProjectDir -SessionName $SessionName -Role $consultRole -Task $Task -Attempt $Attempt
 
     $completedEvent = if ($stage.Status -eq 'BLOCKED') { 'pipeline.consult.blocked' } else { 'pipeline.consult.completed' }
@@ -1073,8 +1188,12 @@ function Invoke-TeamPipeline {
     $consultTarget = Get-TeamPipelineConsultTarget -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer
     if (-not [string]::IsNullOrWhiteSpace($targets.PlanTarget)) {
         $planPrompt = New-TeamPipelinePlanPrompt -Task $Task
-        Invoke-TeamPipelineBridge -Arguments @('send', $targets.PlanTarget, $planPrompt) | Out-Null
-        $planStage = Wait-TeamPipelineStage -Target $targets.PlanTarget -StageName 'PLAN' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role 'Researcher' -Task $Task
+        $planDispatchResult = Invoke-TeamPipelineGuardedSend -StageName 'PLAN' -Target $targets.PlanTarget -Prompt $planPrompt -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role 'Researcher' -Task $Task
+        if ($null -ne $planDispatchResult) {
+            $planStage = $planDispatchResult
+        } else {
+            $planStage = Wait-TeamPipelineStage -Target $targets.PlanTarget -StageName 'PLAN' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role 'Researcher' -Task $Task
+        }
         $result.Plan = $planStage
         if ($planStage.Status -eq 'BLOCKED') {
         $planSecurityVerdict = Get-TeamPipelineValue -InputObject $planStage -Name 'SecurityVerdict' -Default $null
@@ -1111,8 +1230,12 @@ function Invoke-TeamPipeline {
             New-TeamPipelineFixPrompt -Task $Task -PlanSummary $planSummary -VerificationSummary $previousVerify
         }
 
-        Invoke-TeamPipelineBridge -Arguments @('send', $Builder, $buildPrompt) | Out-Null
-        $buildStage = Wait-TeamPipelineStage -Target $Builder -StageName 'EXEC' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role 'Builder' -Task $Task -Attempt $attemptIndex
+        $buildDispatchResult = Invoke-TeamPipelineGuardedSend -StageName 'EXEC' -Target $Builder -Prompt $buildPrompt -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role 'Builder' -Task $Task -Attempt $attemptIndex
+        if ($null -ne $buildDispatchResult) {
+            $buildStage = $buildDispatchResult
+        } else {
+            $buildStage = Wait-TeamPipelineStage -Target $Builder -StageName 'EXEC' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role 'Builder' -Task $Task -Attempt $attemptIndex
+        }
         $attempt.Build = $buildStage
 
         if ($buildStage.Status -eq 'BLOCKED') {
@@ -1166,16 +1289,20 @@ function Invoke-TeamPipeline {
             $verifyRole = 'Researcher'
         }
 
-        Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.review.dispatched' -Message "Auto-dispatched review to $($targets.VerifyTarget) after builder completion." -Role $verifyRole -Target $targets.VerifyTarget -Data ([ordered]@{
-            attempt              = $attemptIndex
-            task                 = $Task
-            builder              = $Builder
-            builder_worktree_path = $builderContext.BuilderWorktreePath
-            verify_role          = $verifyRole
-            summary              = $buildNotification.Summary
-        }) | Out-Null
-        Invoke-TeamPipelineBridge -Arguments @('send', $targets.VerifyTarget, $verifyPrompt) | Out-Null
-        $verifyStage = Wait-TeamPipelineStage -Target $targets.VerifyTarget -StageName 'VERIFY' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role $verifyRole -Task $Task -Attempt $attemptIndex
+        $verifyDispatchResult = Invoke-TeamPipelineGuardedSend -StageName 'VERIFY' -Target $targets.VerifyTarget -Prompt $verifyPrompt -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role $verifyRole -Task $Task -Attempt $attemptIndex
+        if ($null -ne $verifyDispatchResult) {
+            $verifyStage = $verifyDispatchResult
+        } else {
+            Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.review.dispatched' -Message "Auto-dispatched review to $($targets.VerifyTarget) after builder completion." -Role $verifyRole -Target $targets.VerifyTarget -Data ([ordered]@{
+                attempt              = $attemptIndex
+                task                 = $Task
+                builder              = $Builder
+                builder_worktree_path = $builderContext.BuilderWorktreePath
+                verify_role          = $verifyRole
+                summary              = $buildNotification.Summary
+            }) | Out-Null
+            $verifyStage = Wait-TeamPipelineStage -Target $targets.VerifyTarget -StageName 'VERIFY' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role $verifyRole -Task $Task -Attempt $attemptIndex
+        }
         $attempt.Verify = $verifyStage
         $attempt.VerifyPacket = New-TeamPipelineVerificationPacket -Task $Task -VerifyStatus $verifyStage.Status -VerifierLabel $targets.VerifyTarget -BuilderLabel $Builder -BuilderWorktreePath $builderContext.BuilderWorktreePath -Summary $verifyStage.Summary
         $result.VerificationPackets += $attempt.VerifyPacket

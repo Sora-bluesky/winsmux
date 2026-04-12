@@ -108,6 +108,12 @@ winsmux new-session -s orchestra
 pwsh winsmux-core/scripts/orchestra-start.ps1
 ```
 
+If `winsmux doctor` reports the Codex worktree git sandbox limitation on Windows, keep using the standard winsmux split:
+- Codex panes handle file edits inside isolated worktrees
+- the external operator handles `git add/commit/push` when sandboxed Codex cannot create `.git/worktrees/*/index.lock`
+
+See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for the Windows `ConstrainedLanguageMode` workaround details.
+
 The default layout is now:
 
 - external operator terminal outside the managed window

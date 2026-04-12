@@ -27,6 +27,26 @@ Remove-Item .winsmux/orchestra.lock -Force
 sandbox = "unelevated"
 ```
 
+### Codex worktree pane で file write や git 操作が不安定
+
+**症状**:
+- worktree pane 内の Codex が `.git/worktrees/*/index.lock` を作れず、`git add` や `git commit` が失敗する
+- PowerShell が `ConstrainedLanguageMode` になり、`Set-Content` / `Out-File` / `[IO.File]::*` が失敗する
+
+**原因**:
+- Windows の `unelevated` sandbox では、Codex pane が worktree git metadata と PowerShell file APIs に制約を受ける
+
+**解決**:
+- winsmux の標準分担を使う
+  - Codex pane: file edit / test / focused verification
+  - external operator: `git add` / `git commit` / `git push`
+- pane 内の file write は `apply_patch` か `cmd /c` を使う
+- `Set-Content` / `Out-File` / `[IO.File]::WriteAllText()` は避ける
+
+**補足**:
+- これは issue `#260` の documented workaround
+- `winsmux doctor` がこの limitation を検知したら、external operator が `git add` / `git commit` / `git push` を担当する
+
 ### vault key が見つからない
 
 **原因**: Windows Credential Manager に登録されていない。

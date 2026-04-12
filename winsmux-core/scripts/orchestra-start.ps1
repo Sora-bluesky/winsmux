@@ -7,6 +7,7 @@ $scriptDir = $PSScriptRoot
 . "$scriptDir/agent-readiness.ps1"
 . "$scriptDir/orchestra-preflight.ps1"
 . "$scriptDir/manifest.ps1"
+. "$scriptDir/pane-env.ps1"
 
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -1315,7 +1316,13 @@ if ($MyInvocation.InvocationName -ne '.') {
     foreach ($pane in @($layout.Panes)) {
         $sessionRoleMap[[string]$pane.PaneId] = Get-CanonicalRole -AssignmentRole ([string]$pane.Role)
     }
-    Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_ROLE_MAP' -Value (($sessionRoleMap | ConvertTo-Json -Compress))
+    $sessionRoleMapJson = ($sessionRoleMap | ConvertTo-Json -Compress)
+    $environmentContract = Get-WinsmuxEnvironmentContract -ProjectDir $projectDir
+    Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_ORCHESTRA_SESSION' -Value $sessionName
+    Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_ORCHESTRA_PROJECT_DIR' -Value $projectDir
+    Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_ROLE_MAP' -Value $sessionRoleMapJson
+    Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_HOOK_PROFILE' -Value ([string]$environmentContract['hook_profile'])
+    Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_GOVERNANCE_MODE' -Value ([string]$environmentContract['governance_mode'])
 
     $paneSummaries = [System.Collections.Generic.List[object]]::new()
     $builderIndex = 0
@@ -1349,19 +1356,19 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
-            Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_ROLE' -Value $canonicalRole
-            Set-OrchestraSessionEnvironment -SessionName $sessionName -Name 'WINSMUX_PANE_ID' -Value $paneId
+            $paneEnvironment = Get-WinsmuxPaneEnvironment -Role $canonicalRole -PaneId $paneId -SessionName $sessionName -ProjectDir $projectDir -RoleMapJson $sessionRoleMapJson -BuilderWorktreePath $builderWorktreePath
+            foreach ($entry in $paneEnvironment.GetEnumerator()) {
+                if ($entry.Key -in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {
+                    Set-OrchestraSessionEnvironment -SessionName $sessionName -Name ([string]$entry.Key) -Value ([string]$entry.Value)
+                }
+            }
             Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
             Wait-PaneShellReady -PaneId $paneId
             # TASK-236: set cwd via cd (respawn-pane -c unreliable on Windows)
             Send-OrchestraBridgeCommand -Target $paneId -Text "cd $(ConvertTo-PowerShellLiteral -Value $launchDir)"
             Start-Sleep -Milliseconds 500
-            # TASK-236: inject role and pane_id into pane process
-            Send-OrchestraBridgeCommand -Target $paneId -Text "`$env:WINSMUX_ROLE = '$canonicalRole'"
-            Send-OrchestraBridgeCommand -Target $paneId -Text "`$env:WINSMUX_PANE_ID = '$paneId'"
-            # Workers currently share the Builder-style isolated worktree model.
-            if ($canonicalRole -in @('Builder', 'Worker') -and -not [string]::IsNullOrWhiteSpace($builderWorktreePath)) {
-                Send-OrchestraBridgeCommand -Target $paneId -Text "`$env:WINSMUX_BUILDER_WORKTREE = '$builderWorktreePath'"
+            foreach ($entry in $paneEnvironment.GetEnumerator()) {
+                Send-OrchestraBridgeCommand -Target $paneId -Text ('{0} = {1}' -f ('$env:' + [string]$entry.Key), (ConvertTo-PowerShellLiteral -Value ([string]$entry.Value)))
             }
             Start-Sleep -Milliseconds 300
             # TASK-231: verify pane exists after respawn
