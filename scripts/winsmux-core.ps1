@@ -5725,6 +5725,7 @@ explain <run_id> [--json] [--follow]  Explain one run and optionally follow new 
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
   dispatch-route <text>   Route text to appropriate pane by keyword detection
   pipeline <task>       Run plan-exec-verify-fix loop for a task
+  task-run <task>       Alias for pipeline; one-shot orchestration entrypoint
   builder-queue <action> [args]  Manage Builder queue and auto-dispatch next work
   vault set <key> [value]   Store a credential securely (DPAPI)
   vault get <key>           Retrieve a stored credential
@@ -5990,6 +5991,15 @@ switch ($Command) {
         & pwsh -NoProfile -File $splitterScript -Task $taskText -AsJson
     }
     'pipeline' {
+        $pipelineScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\team-pipeline.ps1'))
+        $taskText = (@($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
+        if ($taskText) {
+            & pwsh -NoProfile -File $pipelineScript -Task $taskText
+        } else {
+            & pwsh -NoProfile -File $pipelineScript
+        }
+    }
+    'task-run' {
         $pipelineScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\team-pipeline.ps1'))
         $taskText = (@($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ' '
         if ($taskText) {

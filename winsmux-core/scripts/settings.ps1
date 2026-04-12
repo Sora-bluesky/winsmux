@@ -15,6 +15,7 @@ Dot-source this script to load the helpers:
 
 $script:BridgeSettingsFileName = '.winsmux.yaml'
 $script:BridgeSettingsSchema = [ordered]@{
+    config_version      = @{ Type = 'int';      Default = 1;             Option = $null }
     agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
     model               = @{ Type = 'string';   Default = 'gpt-5.4';     Option = '@bridge-model' }
     prompt_transport    = @{ Type = 'transport'; Default = 'argv';       Option = '@bridge-prompt-transport' }
@@ -700,6 +701,11 @@ function Get-BridgeSettings {
         $settings.agent_slots = @()
     }
 
+    $configVersion = [int]$settings.config_version
+    if ($configVersion -ne 1) {
+        throw "Unsupported config_version '$configVersion'. Supported versions: 1."
+    }
+
     $slotIds = @{}
     foreach ($slot in @($settings.agent_slots)) {
         if ([string]::IsNullOrWhiteSpace([string]$slot.slot_id)) {
@@ -730,6 +736,27 @@ function Get-BridgeSettings {
     }
 
     return $settings
+}
+
+function Get-BridgeSettingsMetadata {
+    param(
+        [string]$RootPath,
+        $Settings = $null
+    )
+
+    if ($null -eq $Settings) {
+        $Settings = Get-BridgeSettings -RootPath $RootPath
+    }
+
+    $configVersion = [int]$Settings.config_version
+    $migrationStatus = if ($configVersion -eq 1) { 'current' } else { 'unsupported' }
+
+    return [PSCustomObject]@{
+        ConfigVersion   = $configVersion
+        MigrationStatus = $migrationStatus
+        LegacyRoleLayout = [bool]$Settings.legacy_role_layout
+        SlotCount       = @($Settings.agent_slots).Count
+    }
 }
 
 function Get-RoleAgentConfig {
