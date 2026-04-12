@@ -788,6 +788,117 @@ STATUS: VERIFY_PASS
         $skipTargets.PlanTarget | Should -BeNullOrEmpty
         $skipTargets.VerifyTarget | Should -BeNullOrEmpty
     }
+
+    It 'prefers reviewer then researcher for consult targets and skips builder-only runs' {
+        (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel 'reviewer') | Should -Be 'reviewer'
+        (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel '') | Should -Be 'researcher'
+        (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel '' -ReviewerLabel 'builder-1') | Should -BeNullOrEmpty
+        (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel '' -ReviewerLabel '') | Should -BeNullOrEmpty
+    }
+
+    It 'inserts early and final consult stages into successful one-shot orchestration when a consult target exists' {
+        $manifest = [PSCustomObject]@{
+            Session = [PSCustomObject]@{
+                name        = 'winsmux-orchestra'
+                project_dir = 'C:\repo'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\repo\.worktrees\builder-1' }
+                'reviewer'  = [PSCustomObject]@{ pane_id = '%4'; role = 'Reviewer'; launch_dir = 'C:\repo' }
+            }
+        }
+
+        $script:teamPipelineBridgeCalls = @()
+        $script:teamPipelineEvents = @()
+
+        Mock Read-TeamPipelineManifest { $manifest }
+        Mock Invoke-TeamPipelineBridge {
+            param([string[]]$Arguments, [switch]$AllowFailure)
+            $script:teamPipelineBridgeCalls += ,@($Arguments)
+            [PSCustomObject]@{ ExitCode = 0; Output = '' }
+        }
+        Mock Wait-TeamPipelineStage {
+            param([string]$Target, [string]$StageName, [int]$TimeoutSeconds, [int]$PollIntervalSeconds)
+            switch ($StageName) {
+                'PLAN'          { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'PLAN_DONE'; Summary = 'plan summary'; Transcript = '' } }
+                'CONSULT_EARLY' { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'CONSULT_DONE'; Summary = 'early consult summary'; Transcript = '' } }
+                'EXEC'          { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'EXEC_DONE'; Summary = 'build summary'; Transcript = '' } }
+                'VERIFY'        { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'VERIFY_PASS'; Summary = 'verify summary'; Transcript = '' } }
+                'CONSULT_FINAL' { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'CONSULT_DONE'; Summary = 'final consult summary'; Transcript = '' } }
+                default         { throw "Unexpected stage $StageName" }
+            }
+        }
+        Mock Write-TeamPipelineEvent {
+            param($ProjectDir, $SessionName, $Event, $Message, $Role, $PaneId, $Target, $Data)
+            $script:teamPipelineEvents += [PSCustomObject]@{
+                Event = $Event
+                Role = $Role
+                Target = $Target
+                Data = $Data
+            }
+        }
+
+        $result = Invoke-TeamPipeline -Task 'Investigate cache drift' -Builder 'builder-1' -Reviewer 'reviewer'
+
+        $result.FinalStatus | Should -Be 'VERIFY_PASS'
+        $result.Success | Should -Be $true
+        $result.PreWorkConsult.Status | Should -Be 'CONSULT_DONE'
+        $result.FinalConsult.Status | Should -Be 'CONSULT_DONE'
+        @($script:teamPipelineBridgeCalls | Where-Object { $_[0] -eq 'send' -and $_[1] -eq 'reviewer' }).Count | Should -Be 3
+        @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.dispatched' }).Count | Should -Be 2
+        @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.completed' }).Count | Should -Be 2
+    }
+
+    It 'inserts a stuck consult before returning blocked execution' {
+        $manifest = [PSCustomObject]@{
+            Session = [PSCustomObject]@{
+                name        = 'winsmux-orchestra'
+                project_dir = 'C:\repo'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\repo\.worktrees\builder-1' }
+                'reviewer'  = [PSCustomObject]@{ pane_id = '%4'; role = 'Reviewer'; launch_dir = 'C:\repo' }
+            }
+        }
+
+        $script:teamPipelineBridgeCalls = @()
+        $script:teamPipelineEvents = @()
+
+        Mock Read-TeamPipelineManifest { $manifest }
+        Mock Invoke-TeamPipelineBridge {
+            param([string[]]$Arguments, [switch]$AllowFailure)
+            $script:teamPipelineBridgeCalls += ,@($Arguments)
+            [PSCustomObject]@{ ExitCode = 0; Output = '' }
+        }
+        Mock Wait-TeamPipelineStage {
+            param([string]$Target, [string]$StageName, [int]$TimeoutSeconds, [int]$PollIntervalSeconds)
+            switch ($StageName) {
+                'PLAN'          { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'PLAN_DONE'; Summary = 'plan summary'; Transcript = '' } }
+                'CONSULT_EARLY' { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'CONSULT_DONE'; Summary = 'early consult summary'; Transcript = '' } }
+                'EXEC'          { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'BLOCKED'; Summary = 'builder blocked summary'; Transcript = '' } }
+                'CONSULT_STUCK' { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'CONSULT_DONE'; Summary = 'stuck consult summary'; Transcript = '' } }
+                default         { throw "Unexpected stage $StageName" }
+            }
+        }
+        Mock Write-TeamPipelineEvent {
+            param($ProjectDir, $SessionName, $Event, $Message, $Role, $PaneId, $Target, $Data)
+            $script:teamPipelineEvents += [PSCustomObject]@{
+                Event = $Event
+                Role = $Role
+                Target = $Target
+                Data = $Data
+            }
+        }
+
+        $result = Invoke-TeamPipeline -Task 'Investigate cache drift' -Builder 'builder-1' -Reviewer 'reviewer'
+
+        $result.FinalStatus | Should -Be 'EXEC_BLOCKED'
+        $result.Success | Should -Be $false
+        $result.StuckConsults.Count | Should -Be 1
+        $result.StuckConsults[0].Status | Should -Be 'CONSULT_DONE'
+        @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.dispatched' }).Count | Should -Be 2
+        @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.completed' }).Count | Should -Be 2
+    }
 }
 
 Describe 'pane-control helpers' {

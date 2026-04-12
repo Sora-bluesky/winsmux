@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-11T20:24:00+09:00
+> Updated: 2026-04-12T01:05:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -31,6 +31,10 @@
 - Added strict experiment-event correlation so experiment packets prefer `run_id / task_id / pane_id / label` over branch-only matching, and added a branch-collision regression to keep parallel hypothesis runs from cross-contaminating each other.
 - Extended [tests/psmux-bridge.Tests.ps1](../tests/psmux-bridge.Tests.ps1) so `winsmux runs --json`, `winsmux digest --json`, `winsmux explain --json`, and explain follow-delta all cover experiment-ledger fields plus a negative case where `experiment_packet` remains null when no experiment metadata exists.
 - Started the repo-side `TASK-301` write-side slice locally by adding consultation writer helpers and thin CLI commands that file `consult_request / consult_result / consult_error` packets under `.winsmux/consultations`, append corresponding bridge events, and project `result / confidence / next_action` back into the existing experiment ledger.
+- Merged the `TASK-301` write-side consultation slice via PR [#398](https://github.com/Sora-bluesky/winsmux/pull/398), landing file-backed consultation packet writers and bridge-event projection fields on `main`.
+- Started the repo-side `TASK-191` first slice locally by teaching one-shot orchestration to insert advisory consult steps before work, on blocked states, and before done using the existing reviewer/researcher lanes without introducing `consult-capable` routing policy yet.
+- Extended [winsmux-core/scripts/team-pipeline.ps1](../winsmux-core/scripts/team-pipeline.ps1) with consult-target selection, advisory consult prompt builders, and `pipeline.consult.*` event emission so one-shot runs can dispatch `early / stuck / final` consult stages around the existing `plan -> build -> verify` loop.
+- Extended [tests/psmux-bridge.Tests.ps1](../tests/psmux-bridge.Tests.ps1) to cover consult target selection plus successful and blocked orchestration paths, asserting that consult stages are inserted only when a non-builder consult target exists.
 - Merged `TASK-287` via PR [#393](https://github.com/Sora-bluesky/winsmux/pull/393), adding the keyboard-first operator command bar (`Ctrl/Cmd+K`) with quick actions, IME-safe input handling, focus restore, and accessible active-option semantics.
 - Merged `TASK-298` via PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), rewriting `README.ja.md` to match the public operator model, shrinking maintainer-only planning readmes into internal stubs, and making tracked public config/docs safer for external users.
 - Re-synced the external planning backlog/roadmap after PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), marking `TASK-298` as done so `v0.20.0` now shows `100% (12/12)`.
@@ -111,11 +115,14 @@
 - Current local `TASK-114` experiment-ledger slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `123/123 PASS`.
 - PR [#396](https://github.com/Sora-bluesky/winsmux/pull/396) CI passed before merge: `Pester Tests` run `24280233475`.
 - Current local `TASK-301` write-side consultation slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `130/130 PASS`.
+- PR [#398](https://github.com/Sora-bluesky/winsmux/pull/398) merged cleanly and the repo returned to `main == origin/main`.
+- Current local `TASK-191` consult-insertion slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `133/133 PASS`.
+- Current local `TASK-191` consult-insertion slice passes `git diff --check` aside from benign LF->CRLF warnings on the edited files.
 
 ## Next actions
 
-1. Commit and review the current `TASK-301` write-side consultation slice, then open the PR with consultation packet writers and bridge-event append helpers.
-2. After `TASK-301`, move to `TASK-191` so one-shot orchestration can insert consult steps without hard-coding vendor-specific advisor behavior.
+1. Commit and review the current `TASK-191` consult-insertion slice, then open the PR with `team-pipeline` consult hooks and regression coverage.
+2. After `TASK-191`, move to the next `v0.20.1` ledger/transport increment without introducing `consult-capable` routing policy before `TASK-302`.
 3. Keep the external planning sync flow user-visible but out of the public repo, then reflect consultation/experiment surfaces into the Tauri shell as `TASK-305` approaches.
 
 ## Notes

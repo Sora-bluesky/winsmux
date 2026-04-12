@@ -203,6 +203,24 @@ function Get-TeamPipelineStageTargets {
     }
 }
 
+function Get-TeamPipelineConsultTarget {
+    param(
+        [Parameter(Mandatory = $true)][string]$BuilderLabel,
+        [string]$ResearcherLabel,
+        [string]$ReviewerLabel
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ReviewerLabel) -and $ReviewerLabel -ne $BuilderLabel) {
+        return $ReviewerLabel
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ResearcherLabel) -and $ResearcherLabel -ne $BuilderLabel) {
+        return $ResearcherLabel
+    }
+
+    return $null
+}
+
 function Get-TeamPipelineCanonicalRole {
     param([AllowNull()][string]$Label)
 
@@ -217,6 +235,34 @@ function Get-TeamPipelineCanonicalRole {
         '^(?i)reviewer(?:$|[-_:/\s])' { return 'Reviewer' }
         default { return '' }
     }
+}
+
+function Get-TeamPipelineConsultRole {
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetLabel,
+        [Parameter(Mandatory = $true)][string]$BuilderLabel,
+        [string]$ResearcherLabel,
+        [string]$ReviewerLabel
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ReviewerLabel) -and $TargetLabel -eq $ReviewerLabel) {
+        return 'Reviewer'
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ResearcherLabel) -and $TargetLabel -eq $ResearcherLabel) {
+        return 'Researcher'
+    }
+
+    if ($TargetLabel -eq $BuilderLabel) {
+        return 'Builder'
+    }
+
+    $canonical = Get-TeamPipelineCanonicalRole -Label $TargetLabel
+    if (-not [string]::IsNullOrWhiteSpace($canonical)) {
+        return $canonical
+    }
+
+    return 'Worker'
 }
 
 function Invoke-TeamPipelineBridge {
@@ -590,6 +636,118 @@ STATUS: BLOCKED
 "@
 }
 
+function New-TeamPipelineConsultPrompt {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('early', 'stuck', 'final')][string]$Mode,
+        [Parameter(Mandatory = $true)][string]$Task,
+        [string]$PlanSummary,
+        [string]$BuildSummary,
+        [string]$VerificationSummary,
+        [string]$BuilderLabel,
+        [string]$BuilderWorktreePath
+    )
+
+    $modeInstruction = switch ($Mode) {
+        'early' { 'Provide a short second opinion before substantive work starts. Focus on likely failure modes, missing evidence, and the best next experiment.' }
+        'stuck' { 'The run is blocked. Diagnose the block, propose the safest next test, and identify the smallest unblock path.' }
+        'final' { 'The run appears ready to conclude. Sanity-check the result, residual risks, and the single best next validation step before done.' }
+    }
+
+    return @"
+You are acting in advisory mode for winsmux one-shot orchestration.
+
+Task:
+$Task
+
+Consult mode:
+$Mode
+
+Builder:
+$BuilderLabel
+
+Builder worktree:
+$BuilderWorktreePath
+
+Plan summary:
+$PlanSummary
+
+Build summary:
+$BuildSummary
+
+Verification summary:
+$VerificationSummary
+
+$modeInstruction
+
+Constraints:
+- Do not edit files.
+- Do not run destructive commands.
+- Keep the response concise and operational.
+
+Return:
+- 2-4 bullet points with advice
+- one line `NEXT_TEST: ...`
+
+End with exactly one line:
+STATUS: CONSULT_DONE
+
+If you cannot advise safely, end with:
+STATUS: BLOCKED
+"@
+}
+
+function Invoke-TeamPipelineConsultStage {
+    param(
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [Parameter(Mandatory = $true)][string]$Task,
+        [Parameter(Mandatory = $true)][string]$BuilderLabel,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [string]$TargetLabel,
+        [string]$ResearcherLabel,
+        [string]$ReviewerLabel,
+        [string]$BuilderWorktreePath,
+        [string]$PlanSummary,
+        [string]$BuildSummary,
+        [string]$VerificationSummary,
+        [int]$TimeoutSeconds = 240,
+        [int]$PollIntervalSeconds = 10,
+        [int]$Attempt = 0
+    )
+
+    if ([string]::IsNullOrWhiteSpace($TargetLabel)) {
+        return $null
+    }
+
+    $consultRole = Get-TeamPipelineConsultRole -TargetLabel $TargetLabel -BuilderLabel $BuilderLabel -ResearcherLabel $ResearcherLabel -ReviewerLabel $ReviewerLabel
+    $prompt = New-TeamPipelineConsultPrompt -Mode $Mode -Task $Task -PlanSummary $PlanSummary -BuildSummary $BuildSummary -VerificationSummary $VerificationSummary -BuilderLabel $BuilderLabel -BuilderWorktreePath $BuilderWorktreePath
+    $eventData = [ordered]@{
+        mode                 = $Mode
+        attempt              = $Attempt
+        task                 = $Task
+        builder              = $BuilderLabel
+        builder_worktree_path = $BuilderWorktreePath
+        verify_summary       = $VerificationSummary
+    }
+
+    Write-TeamPipelineEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'pipeline.consult.dispatched' -Message "Dispatched $Mode consult to $TargetLabel." -Role $consultRole -Target $TargetLabel -Data $eventData | Out-Null
+    Invoke-TeamPipelineBridge -Arguments @('send', $TargetLabel, $prompt) | Out-Null
+    $stage = Wait-TeamPipelineStage -Target $TargetLabel -StageName ("CONSULT_{0}" -f $Mode.ToUpperInvariant()) -TimeoutSeconds $TimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds
+
+    $completedEvent = if ($stage.Status -eq 'BLOCKED') { 'pipeline.consult.blocked' } else { 'pipeline.consult.completed' }
+    Write-TeamPipelineEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event $completedEvent -Message "$Mode consult on $TargetLabel completed with status $($stage.Status)." -Role $consultRole -Target $TargetLabel -Data ([ordered]@{
+        mode                  = $Mode
+        attempt               = $Attempt
+        task                  = $Task
+        status                = $stage.Status
+        summary               = $stage.Summary
+        builder               = $BuilderLabel
+        builder_worktree_path = $BuilderWorktreePath
+    }) | Out-Null
+
+    return $stage
+}
+
 function Invoke-TeamPipeline {
     param(
         [Parameter(Mandatory = $true)][string]$Task,
@@ -630,12 +788,16 @@ function Invoke-TeamPipeline {
         PlanTarget          = $targets.PlanTarget
         VerifyTarget        = $targets.VerifyTarget
         Plan                = $null
+        PreWorkConsult      = $null
+        FinalConsult        = $null
+        StuckConsults       = @()
         Attempts            = @()
         Success             = $false
         FinalStatus         = 'NOT_STARTED'
     }
 
     $planSummary = ''
+    $consultTarget = Get-TeamPipelineConsultTarget -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer
     if (-not [string]::IsNullOrWhiteSpace($targets.PlanTarget)) {
         $planPrompt = New-TeamPipelinePlanPrompt -Task $Task
         Invoke-TeamPipelineBridge -Arguments @('send', $targets.PlanTarget, $planPrompt) | Out-Null
@@ -649,6 +811,10 @@ function Invoke-TeamPipeline {
         $planSummary = $planStage.Summary
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($consultTarget)) {
+        $result.PreWorkConsult = Invoke-TeamPipelineConsultStage -Mode 'early' -Task $Task -BuilderLabel $Builder -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -TargetLabel $consultTarget -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds
+    }
+
     $attemptLimit = 1 + [Math]::Max(0, $MaxFixRounds)
     for ($attemptIndex = 1; $attemptIndex -le $attemptLimit; $attemptIndex++) {
         $attempt = [ordered]@{
@@ -657,6 +823,7 @@ function Invoke-TeamPipeline {
             BuildNotification = $null
             VerifyDispatch    = $null
             Verify            = $null
+            StuckConsult      = $null
         }
 
         $buildPrompt = if ($attemptIndex -eq 1) {
@@ -671,6 +838,12 @@ function Invoke-TeamPipeline {
         $attempt.Build = $buildStage
 
         if ($buildStage.Status -eq 'BLOCKED') {
+            if (-not [string]::IsNullOrWhiteSpace($consultTarget)) {
+                $attempt.StuckConsult = Invoke-TeamPipelineConsultStage -Mode 'stuck' -Task $Task -BuilderLabel $Builder -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -TargetLabel $consultTarget -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -BuildSummary $buildStage.Summary -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -Attempt $attemptIndex
+                if ($null -ne $attempt.StuckConsult) {
+                    $result.StuckConsults += $attempt.StuckConsult
+                }
+            }
             $result.Attempts += [PSCustomObject]$attempt
             $result.FinalStatus = 'EXEC_BLOCKED'
             return [PSCustomObject]$result
@@ -688,6 +861,9 @@ function Invoke-TeamPipeline {
         }) | Out-Null
 
         if ([string]::IsNullOrWhiteSpace($targets.VerifyTarget)) {
+            if (-not [string]::IsNullOrWhiteSpace($consultTarget)) {
+                $result.FinalConsult = Invoke-TeamPipelineConsultStage -Mode 'final' -Task $Task -BuilderLabel $Builder -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -TargetLabel $consultTarget -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -BuildSummary $buildStage.Summary -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -Attempt $attemptIndex
+            }
             $result.Attempts += [PSCustomObject]$attempt
             $result.Success = $true
             $result.FinalStatus = 'EXEC_DONE'
@@ -723,11 +899,20 @@ function Invoke-TeamPipeline {
 
         switch ($verifyStage.Status) {
             'VERIFY_PASS' {
+                if (-not [string]::IsNullOrWhiteSpace($consultTarget)) {
+                    $result.FinalConsult = Invoke-TeamPipelineConsultStage -Mode 'final' -Task $Task -BuilderLabel $Builder -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -TargetLabel $consultTarget -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -BuildSummary $buildStage.Summary -VerificationSummary $verifyStage.Summary -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -Attempt $attemptIndex
+                }
                 $result.Success = $true
                 $result.FinalStatus = 'VERIFY_PASS'
                 return [PSCustomObject]$result
             }
             'BLOCKED' {
+                if (-not [string]::IsNullOrWhiteSpace($consultTarget)) {
+                    $attempt.StuckConsult = Invoke-TeamPipelineConsultStage -Mode 'stuck' -Task $Task -BuilderLabel $Builder -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -TargetLabel $consultTarget -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -BuildSummary $buildStage.Summary -VerificationSummary $verifyStage.Summary -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -Attempt $attemptIndex
+                    if ($null -ne $attempt.StuckConsult) {
+                        $result.StuckConsults += $attempt.StuckConsult
+                    }
+                }
                 $result.FinalStatus = 'VERIFY_BLOCKED'
                 return [PSCustomObject]$result
             }
