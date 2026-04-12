@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T01:42:00+09:00
+> Updated: 2026-04-12T14:12:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -11,7 +11,9 @@
 - `v0.19.8 External Operator & Agent Slots` is implemented in order; private planning now tracks `TASK-259`, `TASK-261`, `TASK-262`, `TASK-263`, and `TASK-264` as done, and the external roadmap is synced accordingly.
 - Private planning now swaps `v0.20.0` and `v0.21.0` to match actual implementation order: `v0.20.0` is `Desktop UX Foundation`, and `v0.21.0` is `Operator Core & Slot Dispatch`.
 - PR [#370](https://github.com/Sora-bluesky/winsmux/pull/370), PR [#371](https://github.com/Sora-bluesky/winsmux/pull/371), PR [#372](https://github.com/Sora-bluesky/winsmux/pull/372), PR [#374](https://github.com/Sora-bluesky/winsmux/pull/374), PR [#375](https://github.com/Sora-bluesky/winsmux/pull/375), PR [#376](https://github.com/Sora-bluesky/winsmux/pull/376), PR [#379](https://github.com/Sora-bluesky/winsmux/pull/379), PR [#380](https://github.com/Sora-bluesky/winsmux/pull/380), PR [#381](https://github.com/Sora-bluesky/winsmux/pull/381), PR [#382](https://github.com/Sora-bluesky/winsmux/pull/382), PR [#383](https://github.com/Sora-bluesky/winsmux/pull/383), PR [#384](https://github.com/Sora-bluesky/winsmux/pull/384), PR [#385](https://github.com/Sora-bluesky/winsmux/pull/385), PR [#386](https://github.com/Sora-bluesky/winsmux/pull/386), PR [#387](https://github.com/Sora-bluesky/winsmux/pull/387), PR [#388](https://github.com/Sora-bluesky/winsmux/pull/388), PR [#389](https://github.com/Sora-bluesky/winsmux/pull/389), PR [#390](https://github.com/Sora-bluesky/winsmux/pull/390), and PR [#392](https://github.com/Sora-bluesky/winsmux/pull/392) are merged into `main`.
-- `v0.20.0` is now fully implemented at `100% (12/12)` in the external planning backlog/roadmap and is ready for release preparation.
+- `v0.20.0` is released.
+- `v0.20.1` is now fully implemented at `100% (7/7)` in the external planning backlog/roadmap after rebaselining the shipped transport/ledger slices and moving the remaining SQLite FTS5 + stdin parity work into follow-up tasks.
+- `v0.20.1` is released at [v0.20.1](https://github.com/Sora-bluesky/winsmux/releases/tag/v0.20.1); release workflow run `24299025847` published `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
 - Planning source of truth is externalized outside the public repository and syncs automatically into the private planning root.
 - `v0.21.x` private planning is aligned to a conversation-first Tauri operator shell, with Codex-App-like shell rules reflected in Figma and backlog notes.
 - `v0.24.x` private planning is split into schema, ledger, machine contract, cutover, and canary phases for Rust runtime convergence before `v1.0.0`.
@@ -39,6 +41,10 @@
 - Started the repo-side `TASK-188` first slice locally by extending the transport layer with stable `.winsmux/task-{slug}.md` prompt files so task-scoped handoff can be audited and reused before the full `task-run` command exists.
 - Extended [scripts/winsmux-core.ps1](../scripts/winsmux-core.ps1) with task-prompt helpers (`ConvertTo-TaskPromptSlug`, `Get-TaskPromptPath`, `New-TaskPromptFile`) and task-aware transport planning so file-backed sends can target a deterministic `task-{slug}.md` artifact instead of a random dispatch file.
 - Extended [tests/psmux-bridge.Tests.ps1](../tests/psmux-bridge.Tests.ps1) so send payloads cover normalized task slugs, stable relative references, and overwrite semantics when the same task slug is reused.
+- Rebased the external planning backlog so `TASK-114`, `TASK-187`, `TASK-188`, `TASK-300`, and `TASK-301` reflect the shipped `v0.20.1` slices and are marked done, while the unshipped `stdin` transport parity and SQLite FTS5 search backend moved to new follow-up tasks `TASK-306` and `TASK-307` under `v0.20.3`.
+- Re-synced the external roadmap so `v0.20.1: Run Transport & Event Ledger` now reads as `100% (7/7)` and is ready for release preparation.
+- Drafted and saved the `v0.20.1` release notes and X thread under `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\ChangeLogs\winsmux\v0.20.1\`.
+- Tagged and published `v0.20.1`, then replaced the workflow-generated body with the curated Codex-style release notes and removed the extra `release-body.md` asset so the public release ships only `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
 - Merged `TASK-287` via PR [#393](https://github.com/Sora-bluesky/winsmux/pull/393), adding the keyboard-first operator command bar (`Ctrl/Cmd+K`) with quick actions, IME-safe input handling, focus restore, and accessible active-option semantics.
 - Merged `TASK-298` via PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), rewriting `README.ja.md` to match the public operator model, shrinking maintainer-only planning readmes into internal stubs, and making tracked public config/docs safer for external users.
 - Re-synced the external planning backlog/roadmap after PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), marking `TASK-298` as done so `v0.20.0` now shows `100% (12/12)`.
@@ -125,12 +131,14 @@
 - PR [#399](https://github.com/Sora-bluesky/winsmux/pull/399) merged cleanly and the repo returned to `main == origin/main`.
 - Current local `TASK-188` task-prompt-file slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `135/135 PASS`.
 - Current local `TASK-188` task-prompt-file slice passes `git diff --check` aside from benign LF->CRLF warnings on the edited files.
+- PR [#400](https://github.com/Sora-bluesky/winsmux/pull/400) merged cleanly and the repo returned to `main == origin/main`.
+- `v0.20.1` release workflow run `24299025847` completed successfully after tag push.
 
 ## Next actions
 
-1. Commit and review the current `TASK-188` task-prompt-file slice, then open the PR with stable `.winsmux/task-{slug}.md` transport helpers and regression coverage.
-2. After `TASK-188`, continue `v0.20.1` by connecting these task prompt files to the eventual `task-run` entrypoint rather than expanding routing policy prematurely.
-3. Keep the external planning sync flow user-visible but out of the public repo, then reflect consultation/experiment surfaces into the Tauri shell as `TASK-305` approaches.
+1. Continue with `v0.20.2` verification/security work, keeping `TASK-306` and `TASK-307` as explicit follow-up debt rather than sneaking them into unrelated milestones.
+2. Keep the external planning sync flow user-visible but out of the public repo, then reflect consultation/experiment surfaces into the Tauri shell as `TASK-305` approaches.
+3. Update the release workflow away from `softprops/action-gh-release@v2` or force Node 24 explicitly before the Node 20 deprecation window becomes a blocker.
 
 ## Notes
 
