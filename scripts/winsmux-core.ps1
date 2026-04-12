@@ -4273,6 +4273,54 @@ function Get-RunFromPayload {
     return $null
 }
 
+function Test-RunRecommendable {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $taskState = [string]$Run.task_state
+    $reviewState = ([string]$Run.review_state).ToUpperInvariant()
+    $verificationOutcome = if ($null -ne $Run.verification_result) { ([string]$Run.verification_result.outcome).ToUpperInvariant() } else { '' }
+    $securityVerdict = if ($null -ne $Run.security_verdict) { ([string]$Run.security_verdict.verdict).ToUpperInvariant() } else { '' }
+
+    if ($taskState -in @('blocked', 'failed')) {
+        return $false
+    }
+    if ($reviewState -in @('FAIL', 'FAILED', 'BLOCKED')) {
+        return $false
+    }
+    if ($verificationOutcome -in @('FAIL', 'FAILED', 'PARTIAL', 'BLOCK', 'BLOCKED')) {
+        return $false
+    }
+    if ($securityVerdict -in @('BLOCK', 'BLOCKED', 'FAIL', 'FAILED')) {
+        return $false
+    }
+
+    return $true
+}
+
+function Test-RunPromotable {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    if (-not (Test-RunRecommendable -Run $Run)) {
+        return $false
+    }
+
+    $taskState = [string]$Run.task_state
+    $reviewState = ([string]$Run.review_state).ToUpperInvariant()
+    $verificationOutcome = if ($null -ne $Run.verification_result) { ([string]$Run.verification_result.outcome).ToUpperInvariant() } else { '' }
+
+    if ($taskState -notin @('completed', 'task_completed', 'commit_ready', 'done')) {
+        return $false
+    }
+    if (-not [string]::IsNullOrWhiteSpace($reviewState) -and $reviewState -ne 'PASS') {
+        return $false
+    }
+    if ($verificationOutcome -ne 'PASS') {
+        return $false
+    }
+
+    return $true
+}
+
 function ConvertTo-CompareRunsPayload {
     param(
         [Parameter(Mandatory = $true)]$LeftPayload,
@@ -4353,6 +4401,17 @@ function ConvertTo-CompareRunsPayload {
         }) | Out-Null
     }
 
+    $leftRecommendable = Test-RunRecommendable -Run $leftRun
+    $rightRecommendable = Test-RunRecommendable -Run $rightRun
+    $winningRunId = ''
+    if ($leftRecommendable -and $rightRecommendable -and $null -ne $confidenceDelta) {
+        if ($confidenceDelta -gt 0) {
+            $winningRunId = [string]$leftRun.run_id
+        } elseif ($confidenceDelta -lt 0) {
+            $winningRunId = [string]$rightRun.run_id
+        }
+    }
+
     return [ordered]@{
         generated_at = (Get-Date).ToString('o')
         left = [ordered]@{
@@ -4367,6 +4426,7 @@ function ConvertTo-CompareRunsPayload {
             changed_files        = @($leftChangedFiles)
             observation_pack_ref = if ($null -ne $leftExperiment) { [string]$leftExperiment.observation_pack_ref } else { '' }
             consultation_ref     = if ($null -ne $leftExperiment) { [string]$leftExperiment.consultation_ref } else { '' }
+            recommendable        = $leftRecommendable
         }
         right = [ordered]@{
             run_id               = [string]$rightRun.run_id
@@ -4380,6 +4440,7 @@ function ConvertTo-CompareRunsPayload {
             changed_files        = @($rightChangedFiles)
             observation_pack_ref = if ($null -ne $rightExperiment) { [string]$rightExperiment.observation_pack_ref } else { '' }
             consultation_ref     = if ($null -ne $rightExperiment) { [string]$rightExperiment.consultation_ref } else { '' }
+            recommendable        = $rightRecommendable
         }
         shared_changed_files = @($sharedChangedFiles)
         left_only_changed_files = @($leftOnlyChangedFiles)
@@ -4387,10 +4448,11 @@ function ConvertTo-CompareRunsPayload {
         confidence_delta = $confidenceDelta
         differences = @($differences)
         recommend = [ordered]@{
-            winning_run_id = if ($null -ne $confidenceDelta) {
-                if ($confidenceDelta -gt 0) { [string]$leftRun.run_id } elseif ($confidenceDelta -lt 0) { [string]$rightRun.run_id } else { '' }
-            } else { '' }
-            reconcile_consult = [bool](@($differences | Where-Object { $_.field -in @('branch', 'worktree', 'env_fingerprint', 'command_hash', 'result') }).Count -gt 0)
+            winning_run_id = $winningRunId
+            reconcile_consult = [bool](
+                @($differences | Where-Object { $_.field -in @('branch', 'worktree', 'env_fingerprint', 'command_hash', 'result') }).Count -gt 0 -or
+                -not ($leftRecommendable -and $rightRecommendable)
+            )
             next_action = if ([string]$leftEvidence.next_action -eq [string]$rightEvidence.next_action) { [string]$leftEvidence.next_action } else { 'reconcile_consult' }
         }
     }
@@ -5329,7 +5391,12 @@ function Invoke-PromoteTactic {
     }
 
     $projectDir = (Get-Location).Path
-    $payload = Get-PromoteTacticPayload -ExplainPayload (Get-ExplainPayload -ProjectDir $projectDir -RunId $runId) -Title $title -Kind $kind
+    $explainPayload = Get-ExplainPayload -ProjectDir $projectDir -RunId $runId
+    if (-not (Test-RunPromotable -Run $explainPayload.run)) {
+        Stop-WithError "run is not promotable: $runId"
+    }
+
+    $payload = Get-PromoteTacticPayload -ExplainPayload $explainPayload -Title $title -Kind $kind
     $artifact = New-PlaybookCandidateFile -ProjectDir $projectDir -PlaybookCandidate $payload
     $result = [ordered]@{
         generated_at = (Get-Date).ToString('o')

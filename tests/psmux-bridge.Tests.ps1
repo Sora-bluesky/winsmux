@@ -5304,8 +5304,8 @@ panes:
     role: Builder
     task_id: task-compare-a
     task: Compare run A
-    task_state: in_progress
-    review_state: PENDING
+    task_state: completed
+    review_state: PASS
     branch: worktree-builder-a
     head_sha: aaaabbbbccccdddd
     changed_file_count: 1
@@ -5317,8 +5317,8 @@ panes:
     role: Worker
     task_id: task-compare-b
     task: Compare run B
-    task_state: blocked
-    review_state: FAIL
+    task_state: completed
+    review_state: PASS
     branch: worktree-builder-b
     head_sha: eeeeffff11112222
     changed_file_count: 2
@@ -5422,6 +5422,44 @@ panes:
                     env_fingerprint      = 'env:b'
                     command_hash         = 'cmd:b'
                 }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-12T10:05:10+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pipeline.verify.pass'
+                message   = 'verification passed'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                branch    = 'worktree-builder-a'
+                head_sha  = 'aaaabbbbccccdddd'
+                data      = [ordered]@{
+                    task_id = 'task-compare-a'
+                    run_id  = 'task:task-compare-a'
+                    verification_result = [ordered]@{
+                        outcome = 'PASS'
+                        summary = 'cache hit confirmed'
+                    }
+                }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-12T10:05:20+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pipeline.verify.pass'
+                message   = 'verification passed'
+                label     = 'builder-2'
+                pane_id   = '%4'
+                role      = 'Worker'
+                branch    = 'worktree-builder-b'
+                head_sha  = 'eeeeffff11112222'
+                data      = [ordered]@{
+                    task_id = 'task-compare-b'
+                    run_id  = 'task:task-compare-b'
+                    verification_result = [ordered]@{
+                        outcome = 'PASS'
+                        summary = 'rebuild confirmed'
+                    }
+                }
             } | ConvertTo-Json -Compress)
         ) | Set-Content -Path $script:compareEventsPath -Encoding UTF8
 
@@ -5451,6 +5489,123 @@ panes:
         @($result.differences | ForEach-Object { $_.field }) | Should -Contain 'changed_files'
     }
 
+    It 'suppresses winner selection when a higher-confidence run is unhealthy' {
+        @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:compareTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-compare-a
+    task: Compare run A
+    task_state: completed
+    review_state: PASS
+    branch: worktree-builder-a
+    head_sha: aaaabbbbccccdddd
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-12T10:00:00+09:00
+  builder-2:
+    pane_id: %4
+    role: Worker
+    task_id: task-compare-b
+    task: Compare run B
+    task_state: blocked
+    review_state: FAIL
+    branch: worktree-builder-b
+    head_sha: eeeeffff11112222
+    changed_file_count: 2
+    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    last_event: pane.consult_result
+    last_event_at: 2026-04-12T10:05:00+09:00
+"@ | Set-Content -Path $script:compareManifestPath -Encoding UTF8
+
+        $unhealthyEvents = @(
+            ([ordered]@{
+                timestamp = '2026-04-12T10:00:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'commander.review_requested'
+                message   = 'review requested'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                branch    = 'worktree-builder-a'
+                head_sha  = 'aaaabbbbccccdddd'
+                data      = [ordered]@{
+                    task_id              = 'task-compare-a'
+                    run_id               = 'task:task-compare-a'
+                    slot                 = 'slot-builder-a'
+                    hypothesis           = 'deterministic command fixes cache drift'
+                    result               = 'cache hit done'
+                    confidence           = 0.85
+                    next_action          = 'promote tactic'
+                    observation_pack_ref = $script:compareObsA.reference
+                    consultation_ref     = $script:compareConsultA.reference
+                    worktree             = '.worktrees/builder-a'
+                    env_fingerprint      = 'env:a'
+                    command_hash         = 'cmd:a'
+                    verification_result  = [ordered]@{ outcome = 'PASS' }
+                }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-12T10:05:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.consult_result'
+                message   = 'consultation completed'
+                label     = 'builder-2'
+                pane_id   = '%4'
+                role      = 'Worker'
+                branch    = 'worktree-builder-b'
+                head_sha  = 'eeeeffff11112222'
+                data      = [ordered]@{
+                    task_id              = 'task-compare-b'
+                    run_id               = 'task:task-compare-b'
+                    slot                 = 'slot-builder-b'
+                    hypothesis           = 'framework inference is re-injecting noise'
+                    result               = 'still dirty'
+                    confidence           = 0.95
+                    next_action          = 'reconcile consult'
+                    observation_pack_ref = $script:compareObsB.reference
+                    consultation_ref     = $script:compareConsultB.reference
+                    worktree             = '.worktrees/builder-b'
+                    env_fingerprint      = 'env:b'
+                    command_hash         = 'cmd:b'
+                }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-12T10:05:20+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pipeline.verify.fail'
+                message   = 'verification failed'
+                label     = 'builder-2'
+                pane_id   = '%4'
+                role      = 'Worker'
+                branch    = 'worktree-builder-b'
+                head_sha  = 'eeeeffff11112222'
+                data      = [ordered]@{
+                    task_id = 'task-compare-b'
+                    run_id  = 'task:task-compare-b'
+                    verification_result = [ordered]@{
+                        outcome = 'FAIL'
+                        summary = 'dirty build remains'
+                    }
+                }
+            } | ConvertTo-Json -Compress)
+        )
+        $unhealthyEvents | Set-Content -Path $script:compareEventsPath -Encoding UTF8
+
+        $result = (Invoke-CompareRuns -CompareTarget 'task:task-compare-a' -CompareRest @('task:task-compare-b', '--json') | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.left.recommendable | Should -Be $true
+        $result.right.recommendable | Should -Be $false
+        $result.recommend.winning_run_id | Should -Be ''
+        $result.recommend.reconcile_consult | Should -Be $true
+    }
+
     It 'exports a playbook candidate from a run and writes a file-backed artifact' {
         $result = (Invoke-PromoteTactic -PromoteTarget 'task:task-compare-a' -PromoteRest @('--title', 'Deterministic build command', '--json') | Out-String | ConvertFrom-Json -AsHashtable)
 
@@ -5469,6 +5624,31 @@ panes:
 
     It 'fails closed for unsupported promote kind' {
         { Invoke-PromoteTactic -PromoteTarget 'task:task-compare-a' -PromoteRest @('--kind', 'unknown') } | Should -Throw '*Unsupported promote kind*'
+    }
+
+    It 'rejects promote-tactic for unhealthy runs' {
+        @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:compareTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-compare-a
+    task: Compare run A
+    task_state: blocked
+    review_state: FAIL
+    branch: worktree-builder-a
+    head_sha: aaaabbbbccccdddd
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-12T10:00:00+09:00
+"@ | Set-Content -Path $script:compareManifestPath -Encoding UTF8
+
+        { Invoke-PromoteTactic -PromoteTarget 'task:task-compare-a' } | Should -Throw '*run is not promotable*'
     }
 }
 

@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T19:20:00+09:00
+> Updated: 2026-04-12T19:31:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -32,15 +32,21 @@
   - `.winsmux/playbook-candidates/` file-backed candidate export
 - Expanded regression coverage for compare/promote surfaces.
 - Rebased external planning so `v0.21.1` closes on shipped baseline and moved non-shipped items out.
-- Fresh reviewer timed out after the required wait and was closed. A second fresh reviewer will be run on the PR before merge.
+- Reviewer `Ptolemy` returned `FAIL` on compare winner health and promote guard conditions.
+- Fixed the findings by:
+  - suppressing `compare-runs` winner selection unless both sides are recommendable
+  - rejecting `promote-tactic` for non-promotable runs
+  - adding regression tests for both guards
+- Another fresh reviewer will run on the updated PR before merge.
 
 ## Validation
 
-- `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `158/158 PASS`
+- `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `160/160 PASS`
 - `git diff --check` -> no substantive diff-check failures
 - Review gate history for the active `v0.21.1` closure slice:
   - explorer audit established release-scope drift
   - fresh reviewer `Parfit` -> `no result yet` after 30s wait; closed without result
+  - fresh reviewer `Ptolemy` -> `FAIL`, findings fixed locally
   - manual diff review completed on the compare/promote slice
 
 ## Next actions
