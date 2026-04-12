@@ -643,6 +643,75 @@ function getSessionItems() {
   ] satisfies SessionItem[];
 }
 
+function getBoardPaneForDigestItem(item: DesktopDigestItem) {
+  return (
+    desktopSummarySnapshot?.board.panes.find((pane) => {
+      return (
+        (pane.pane_id && pane.pane_id === item.pane_id) ||
+        (pane.label && pane.label === item.label) ||
+        (pane.branch && pane.branch === item.branch)
+      );
+    }) ?? null
+  );
+}
+
+function getExplainPayloadForRun(runId: string | null) {
+  if (!runId) {
+    return null;
+  }
+  return desktopExplainCache.get(runId) ?? null;
+}
+
+function getProjectionSourceEntries(): SourceChange[] {
+  if (!desktopSummarySnapshot) {
+    return sourceControlState.entries;
+  }
+
+  const entries: SourceChange[] = [];
+  for (const digestItem of desktopSummarySnapshot.digest.items) {
+    const boardPane = getBoardPaneForDigestItem(digestItem);
+    const explainPayload = getExplainPayloadForRun(digestItem.run_id);
+    const changedFiles = explainPayload?.evidence_digest.changed_files?.length
+      ? explainPayload.evidence_digest.changed_files
+      : digestItem.changed_files;
+    const sourceRoot = boardPane?.label || digestItem.label || digestItem.pane_id || "summary-stream";
+    const reviewState = digestItem.review_state || boardPane?.review_state || "unknown";
+    const verification = digestItem.verification_outcome || "";
+    const security = digestItem.security_blocked || "";
+    const commitCandidate =
+      reviewState === "PASS" &&
+      (verification === "" || verification === "PASS") &&
+      (security === "" || security === "ALLOW" || security === "PASS");
+    const needsAttention =
+      reviewState === "PENDING" ||
+      reviewState === "FAIL" ||
+      reviewState === "FAILED" ||
+      security === "BLOCK" ||
+      digestItem.next_action === "blocked";
+    const risk: ChangeRisk = needsAttention ? "high" : commitCandidate ? "low" : "medium";
+
+    for (const path of changedFiles) {
+      const recentReason = explainPayload?.explanation.reasons?.[0];
+      entries.push({
+        path,
+        summary: recentReason || digestItem.task || `Projected from ${digestItem.run_id}`,
+        slot: sourceRoot,
+        status: "modified",
+        risk,
+        worktree: sourceRoot,
+        branch: digestItem.branch || boardPane?.branch || "no branch",
+        lines: `${changedFiles.length} changed in run`,
+        commitCandidate,
+        needsAttention,
+        run: digestItem.run_id,
+        review: reviewState,
+      });
+    }
+  }
+
+  return entries.length > 0 ? entries : sourceControlState.entries;
+}
+
 function renderExplorer() {
   const root = document.getElementById("explorer-list");
   if (!root) {
@@ -698,6 +767,7 @@ function renderSourceSummary() {
     return;
   }
 
+  const activeEntries = getProjectionSourceEntries();
   const visibleChanges = getVisibleSourceChanges();
   const primaryChange = getPrimarySourceChange(visibleChanges);
   const entryCount = visibleChanges.length;
@@ -707,9 +777,9 @@ function renderSourceSummary() {
     { label: "Branch", value: primaryChange?.branch ?? "No branch" },
     { label: "Changed", value: `${entryCount} files` },
     { label: "Review", value: primaryChange?.review ?? "No review state" },
-    { label: "Worktree", value: primaryChange ? `.worktrees/${primaryChange.worktree}` : "No worktree" },
+    { label: "Source", value: primaryChange?.worktree ?? "No source projection" },
     { label: "Ready", value: `${commitCandidates} candidate${commitCandidates === 1 ? "" : "s"}` },
-    { label: "Risk", value: `${attentionCount} attention` },
+    { label: "Risk", value: `${attentionCount} attention · ${activeEntries.length} projected` },
   ];
 
   root.innerHTML = "";
@@ -727,12 +797,13 @@ function renderSourceEntries() {
     return;
   }
 
+  const activeEntries = getProjectionSourceEntries();
   root.innerHTML = "";
   const entryItems: Array<{ label: string; value: string; filter: SourceFilter; tone?: SurfaceTone }> = [
-    { label: "Commit candidates", value: `${sourceControlState.entries.filter((item) => item.commitCandidate).length} ready`, tone: "success", filter: "candidates" },
-    { label: "Needs attention", value: `${sourceControlState.entries.filter((item) => item.needsAttention).length} blocker`, tone: "danger", filter: "attention" },
-    { label: "worktree-builder-2", value: `${sourceControlState.entries.filter((item) => item.worktree === "builder-2").length} files`, filter: "builder-2" },
-    { label: "worktree-builder-3", value: `${sourceControlState.entries.filter((item) => item.worktree === "builder-3").length} files`, filter: "builder-3" },
+    { label: "Commit candidates", value: `${activeEntries.filter((item) => item.commitCandidate).length} ready`, tone: "success", filter: "candidates" },
+    { label: "Needs attention", value: `${activeEntries.filter((item) => item.needsAttention).length} blocker`, tone: "danger", filter: "attention" },
+    { label: "builder-2", value: `${activeEntries.filter((item) => item.worktree === "builder-2" || item.branch === "worktree-builder-2").length} files`, filter: "builder-2" },
+    { label: "builder-3", value: `${activeEntries.filter((item) => item.worktree === "builder-3" || item.branch === "worktree-builder-3").length} files`, filter: "builder-3" },
   ];
 
   for (const item of entryItems) {
@@ -760,22 +831,23 @@ function renderSourceEntries() {
 }
 
 function getVisibleSourceChanges() {
+  const activeEntries = getProjectionSourceEntries();
   switch (activeSourceFilter) {
     case "candidates":
-      return sourceControlState.entries.filter((item) => item.commitCandidate);
+      return activeEntries.filter((item) => item.commitCandidate);
     case "attention":
-      return sourceControlState.entries.filter((item) => item.needsAttention);
+      return activeEntries.filter((item) => item.needsAttention);
     case "builder-2":
-      return sourceControlState.entries.filter((item) => item.worktree === "builder-2");
+      return activeEntries.filter((item) => item.worktree === "builder-2" || item.branch === "worktree-builder-2");
     case "builder-3":
-      return sourceControlState.entries.filter((item) => item.worktree === "builder-3");
+      return activeEntries.filter((item) => item.worktree === "builder-3" || item.branch === "worktree-builder-3");
     default:
-      return sourceControlState.entries;
+      return activeEntries;
   }
 }
 
 function getPrimarySourceChange(changes: SourceChange[]) {
-  return changes.find((item) => item.path === selectedEditorPath) ?? changes[0] ?? sourceControlState.entries[0];
+  return changes.find((item) => item.path === selectedEditorPath) ?? changes[0] ?? getProjectionSourceEntries()[0];
 }
 
 function getPrimaryDigestItem() {
@@ -803,7 +875,7 @@ function renderContextPanel() {
     { label: "slot", value: primaryChange?.slot ?? "No slot" },
     { label: "branch", value: primaryChange?.branch ?? "No branch" },
     { label: "review", value: primaryChange?.review ?? "No review state" },
-    { label: "worktree", value: primaryChange ? `.worktrees/${primaryChange.worktree}` : "No worktree" },
+    { label: "source", value: primaryChange?.worktree ?? "No source projection" },
   ];
   for (const item of resolvedContextSections) {
     const row = document.createElement("div");
@@ -1420,6 +1492,10 @@ async function openExplainForSelectedRun() {
 
   renderTimelineFilters();
   renderRunSummary();
+  renderSourceSummary();
+  renderSourceEntries();
+  renderContextPanel();
+  renderEditorSurface();
   renderConversation(seedConversation);
 }
 
@@ -1737,7 +1813,7 @@ function renderEditorSurface() {
   }
 
   const selected = findEditorFile(selectedEditorPath) || editorFiles[0];
-  const sourceChange = sourceControlState.entries.find((item) => item.path === selected.path);
+  const sourceChange = getProjectionSourceEntries().find((item) => item.path === selected.path);
   selectedEditorPath = selected.path;
 
   path.textContent = selected.path;
@@ -1912,20 +1988,27 @@ function findEditorFile(label: string) {
     return existing;
   }
 
-  const sourceChange = sourceControlState.entries.find((entry) => entry.path === label);
+  const sourceChange = getProjectionSourceEntries().find((entry) => entry.path === label);
   if (!sourceChange) {
     return undefined;
   }
 
+  const explainPayload = getExplainPayloadForRun(sourceChange.run);
+  const explainSummary = explainPayload?.explanation.summary || sourceChange.summary;
+  const branch = explainPayload?.run.branch || sourceChange.branch;
+  const review = explainPayload?.run.review_state || sourceChange.review;
+  const state = explainPayload?.run.task_state || "unknown";
+
   return {
     path: sourceChange.path,
-    summary: sourceChange.summary,
+    summary: explainSummary,
     content:
-      `// Generated source-control preview\n` +
-      `// ${sourceChange.branch} · ${sourceChange.worktree} · ${sourceChange.review}\n` +
-      `// ${sourceChange.lines}\n`,
+      `// Backend projection preview\n` +
+      `// ${branch} · ${sourceChange.worktree} · ${review}\n` +
+      `// ${sourceChange.lines} · state=${state}\n` +
+      (explainPayload?.explanation.reasons?.length ? `// ${explainPayload.explanation.reasons.join(" | ")}\n` : ""),
     language: inferLanguageFromPath(sourceChange.path),
-    lineCount: 3,
+    lineCount: explainPayload?.evidence_digest.changed_file_count || 3,
     modified: sourceChange.status !== "deleted",
     origin: "context",
   };
@@ -1951,7 +2034,8 @@ function buildDesktopSummaryConversation(snapshot: DesktopSummarySnapshot): Conv
   const board = snapshot.board.summary;
   const digest = snapshot.digest.summary;
   const inbox = snapshot.inbox.summary;
-  const topInboxItem = snapshot.inbox.items[0];
+  const topInboxItems = snapshot.inbox.items.slice(0, 2);
+  const topDigestItems = snapshot.digest.items.slice(0, 3);
 
   const items: ConversationItem[] = [
     {
@@ -1970,7 +2054,7 @@ function buildDesktopSummaryConversation(snapshot: DesktopSummarySnapshot): Conv
     },
   ];
 
-  if (topInboxItem) {
+  for (const topInboxItem of topInboxItems) {
     items.push({
       type: "system",
       category: "attention",
@@ -1988,6 +2072,29 @@ function buildDesktopSummaryConversation(snapshot: DesktopSummarySnapshot): Conv
     });
   }
 
+  for (const digestItem of topDigestItems) {
+    items.push({
+      type: "operator",
+      category: digestItem.review_state === "PENDING" || digestItem.review_state === "FAIL" || digestItem.review_state === "FAILED" ? "review" : "activity",
+      timestamp: new Date(snapshot.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: digestItem.label || digestItem.pane_id || "Operator",
+      title: digestItem.task || "Projected run",
+      body: `Next ${digestItem.next_action || "idle"} · ${digestItem.changed_file_count} changed files · review ${digestItem.review_state || "n/a"}.`,
+      details: [
+        { label: "run", value: digestItem.run_id },
+        { label: "branch", value: digestItem.branch || "no branch" },
+        { label: "verify", value: digestItem.verification_outcome || "n/a" },
+      ],
+      tone: digestItem.review_state === "PASS" ? "success" : digestItem.review_state === "PENDING" ? "warning" : "info",
+      runId: digestItem.run_id,
+      statusLabel: digestItem.review_state || digestItem.next_action || undefined,
+      chips: [
+        { label: "Open Explain", action: "open-explain" },
+        { label: "Source Context", action: "open-source-context" },
+      ],
+    });
+  }
+
   return items;
 }
 
@@ -1995,6 +2102,15 @@ async function loadDesktopSummary() {
   try {
     const snapshot = await invoke<DesktopSummarySnapshot>("desktop_summary_snapshot");
     desktopSummarySnapshot = snapshot;
+    const topRunId = snapshot.digest.items[0]?.run_id;
+    if (topRunId && !desktopExplainCache.has(topRunId)) {
+      try {
+        const explainPayload = await invoke<DesktopExplainPayload>("desktop_run_explain", { runId: topRunId });
+        desktopExplainCache.set(topRunId, explainPayload);
+      } catch (error) {
+        console.warn("Failed to prefetch desktop explain payload", error);
+      }
+    }
 
     const existingTitles = new Set(["Summary stream connected", "Inbox: review_pending", "Inbox: review_failed", "Inbox: task_blocked"]);
     const retainedConversation = seedConversation.filter((item) => !item.title || !existingTitles.has(item.title));
@@ -2003,6 +2119,11 @@ async function loadDesktopSummary() {
     renderSessions();
     renderFooterLane();
     renderRunSummary();
+    renderSourceSummary();
+    renderSourceEntries();
+    renderContextPanel();
+    renderOpenEditors();
+    renderEditorSurface();
     renderConversation(seedConversation);
   } catch (error) {
     console.warn("Failed to load desktop summary snapshot", error);

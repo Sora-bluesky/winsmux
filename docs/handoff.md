@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T02:06:00+09:00
+> Updated: 2026-04-12T02:28:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -35,6 +35,11 @@
   - `winsmux-app/src/main.ts` now loads a desktop summary snapshot at startup
   - sessions, footer lane, selected run summary, and explain flow prefer backend `board/inbox/digest/explain` data
   - the seeded shell remains as fallback when the backend adapter is unavailable
+- Started branch `codex/task291-source-projection-context-20260412` for the next `TASK-291` slice.
+- Replaced the source-context shell's primary data path with backend projections wherever the current adapter already has data:
+  - source summary, source filters, context list, and selected-run chips now derive from `digest.items` plus cached `explain` payloads
+  - editor metadata and generated preview content now prefer backend `run/slot/evidence` fields over the old hardcoded `sourceControlState`
+  - the seeded state remains only as fallback when no backend summary is available
 - Landed `TASK-216` slice 1 and slice 2 on `main`:
   - PR #408: leaf wrapper consolidation for `commander-poll`, `pane-status`, and `pane-control`
   - PR #409: wrapper-based `orchestra-layout` session/window/pane flow
@@ -61,6 +66,11 @@
 
 ## Validation
 
+- `npm run build` in `winsmux-app` -> PASS
+- `cargo check` in `winsmux-app/src-tauri` -> PASS
+- `git diff --check` -> warnings only for CRLF normalization, no substantive errors
+- Fresh reviewer `Lorentz` -> `no result yet` after two 35s waits; closed without result
+- Manual diff review completed for the `TASK-291` projection-driven source-context slice
 - `cargo check` in `winsmux-app/src-tauri` -> PASS
 - `npm run build` in `winsmux-app` -> PASS
 - `pwsh -NoProfile -Command "& { & '.\scripts\winsmux-core.ps1' board --json }"` -> PASS
@@ -96,9 +106,9 @@
 
 ## Next actions
 
-1. Continue `v0.22.0` with the next backend-first slice after `TASK-289 / TASK-291`.
-2. Keep raw PTY constrained to the utility drawer while summary surfaces remain the primary desktop state source.
-3. Keep the release workflow follow-up in view if `release-body.md` should stop being uploaded automatically in future releases.
+1. Open a PR for the `TASK-291` source-context slice if the current diff still holds after final manual review.
+2. Continue `v0.22.0` with the next backend-first slice after the source-context projection lands.
+3. Keep raw PTY constrained to the utility drawer while summary surfaces remain the primary desktop state source.
 
 ## Notes
 
