@@ -3316,6 +3316,86 @@ panes:
     }
 }
 
+Describe 'orchestra layout script' {
+    BeforeAll {
+        $script:orchestraLayoutPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-layout.ps1'
+    }
+
+    BeforeEach {
+        Mock Start-Sleep { }
+    }
+
+    It 'creates a single labeled pane through the orchestra wrapper' {
+        $global:winsmuxCalls = [System.Collections.Generic.List[string]]::new()
+
+        function global:winsmux {
+            $global:LASTEXITCODE = 0
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            $global:winsmuxCalls.Add($commandLine) | Out-Null
+
+            switch -Regex ($commandLine) {
+                '^has-session ' { return @() }
+                '^new-window ' { return '@1 %2' }
+                '^list-panes -t @1 -F #\{pane_id\}$' { return '%2' }
+                '^set-option ' { return @() }
+                '^select-pane -t %2 -T Builder-1$' { return @() }
+                '^select-pane -t %2$' { return @() }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = & $script:orchestraLayoutPath -SessionName 'winsmux-orchestra' -Builders 1
+
+        $result.Total | Should -Be 1
+        $result.Rows | Should -Be 1
+        $result.Cols | Should -Be 1
+        $result.Panes.Count | Should -Be 1
+        $result.Panes[0].PaneId | Should -Be '%2'
+        $result.Panes[0].Role | Should -Be 'Builder-1'
+        @($global:winsmuxCalls) | Should -Contain 'list-panes -t @1 -F #{pane_id}'
+        @($global:winsmuxCalls) | Should -Contain 'select-pane -t %2 -T Builder-1'
+    }
+
+    It 'uses wrapper-mediated split flow for a two-pane layout' {
+        $global:winsmuxCalls = [System.Collections.Generic.List[string]]::new()
+        $global:layoutPaneIds = @('%2')
+
+        function global:winsmux {
+            $global:LASTEXITCODE = 0
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            $global:winsmuxCalls.Add($commandLine) | Out-Null
+
+            switch -Regex ($commandLine) {
+                '^has-session ' { return @() }
+                '^new-window ' { return '@1 %2' }
+                '^set-option ' { return @() }
+                '^display-message -t %2 -p #\{window_id\}$' { return '@1' }
+                '^display-message -t %2 -p #\{pane_width\}x#\{pane_height\}$' { return '120x40' }
+                '^split-window -t %2 -h -p 50$' {
+                    $global:layoutPaneIds = @('%2', '%3')
+                    return @()
+                }
+                '^list-panes -t @1 -F #\{pane_id\}$' { return $global:layoutPaneIds }
+                '^select-pane -t %2$' { return @() }
+                '^select-pane -t %2 -T Builder-1$' { return @() }
+                '^select-pane -t %3 -T Builder-2$' { return @() }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = & $script:orchestraLayoutPath -SessionName 'winsmux-orchestra' -Builders 2
+
+        $result.Total | Should -Be 2
+        $result.Rows | Should -Be 1
+        $result.Cols | Should -Be 2
+        $result.Panes.Count | Should -Be 2
+        $result.Panes[0].Role | Should -Be 'Builder-1'
+        $result.Panes[1].Role | Should -Be 'Builder-2'
+        @($global:winsmuxCalls) | Should -Contain 'split-window -t %2 -h -p 50'
+        @($global:winsmuxCalls) | Should -Contain 'select-pane -t %3 -T Builder-2'
+    }
+}
+
 Describe 'winsmux status command' {
     BeforeAll {
         $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'

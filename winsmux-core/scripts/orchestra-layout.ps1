@@ -17,6 +17,22 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = $PSScriptRoot
 . "$scriptDir/pane-border.ps1"
 
+function Invoke-OrchestraLayoutWinsmux {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $output = & winsmux @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $message = ($output | Out-String).Trim()
+        if ([string]::IsNullOrWhiteSpace($message)) {
+            $message = 'unknown winsmux error'
+        }
+
+        throw "winsmux $($Arguments -join ' ') failed: $message"
+    }
+
+    return $output
+}
+
 function Test-PositiveCount {
     param(
         [string]$Name,
@@ -50,7 +66,7 @@ function Get-PaneIds {
         [string]$Target
     )
 
-    $rawPaneIds = & winsmux list-panes -t $Target -F '#{pane_id}' 2>$null
+    $rawPaneIds = Invoke-OrchestraLayoutWinsmux -Arguments @('list-panes', '-t', $Target, '-F', '#{pane_id}')
     return @(
         $rawPaneIds |
             ForEach-Object { $_.Trim() } |
@@ -68,7 +84,7 @@ function Split-Equal {
     )
 
     # TASK-233: resolve window ID for pane count verification (fail fast)
-    $windowId = (& winsmux display-message -t $Target -p '#{window_id}' 2>$null)
+    $windowId = Invoke-OrchestraLayoutWinsmux -Arguments @('display-message', '-t', $Target, '-p', '#{window_id}')
     if ([string]::IsNullOrWhiteSpace($windowId)) {
         throw "Split-Equal: could not resolve window ID for target pane $Target. Cannot verify pane creation."
     }
@@ -77,12 +93,8 @@ function Split-Equal {
         $remaining = $PaneCount - $i
         $percent = [int](100 / $remaining)
         $beforeCount = @(Get-PaneIds -Target $windowId).Count
-        $actualSize = (& winsmux display-message -t $Target -p '#{pane_width}x#{pane_height}' 2>$null)
-
-        & winsmux split-window -t $Target $Direction -p $percent | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "winsmux split-window failed while creating $PaneCount panes in direction $Direction. Target=$Target, ActualSize=$actualSize"
-        }
+        $actualSize = Invoke-OrchestraLayoutWinsmux -Arguments @('display-message', '-t', $Target, '-p', '#{pane_width}x#{pane_height}')
+        Invoke-OrchestraLayoutWinsmux -Arguments @('split-window', '-t', $Target, $Direction, '-p', $percent) | Out-Null
 
         # TASK-233: verify pane count change (fail fast)
         Start-Sleep -Milliseconds 100
@@ -146,20 +158,14 @@ $grid = Get-GridDimensions -PaneCount $total
 $rows = $grid.Rows
 $cols = $grid.Cols
 
-& winsmux has-session -t $SessionName 1>$null 2>$null
-if ($LASTEXITCODE -ne 0) {
-    & winsmux new-session -d -s $SessionName | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw 'winsmux new-session failed.'
-    }
-
+try {
+    Invoke-OrchestraLayoutWinsmux -Arguments @('has-session', '-t', $SessionName) | Out-Null
+} catch {
+    Invoke-OrchestraLayoutWinsmux -Arguments @('new-session', '-d', '-s', $SessionName) | Out-Null
     Start-Sleep -Milliseconds 500
 }
 
-$windowMetadata = (& winsmux new-window -t $SessionName -P -F '#{window_id} #{pane_id}' 2>$null | Out-String).Trim()
-if ($LASTEXITCODE -ne 0) {
-    throw 'winsmux new-window failed.'
-}
+$windowMetadata = (Invoke-OrchestraLayoutWinsmux -Arguments @('new-window', '-t', $SessionName, '-P', '-F', '#{window_id} #{pane_id}') | Out-String).Trim()
 
 $windowParts = @($windowMetadata -split '\s+')
 if ($windowParts.Count -lt 2) {
@@ -183,40 +189,33 @@ if ($rows -gt 1) {
     Split-Equal -Target $newPaneId -PaneCount $rows -Direction '-v'
 }
 
-$rowIds = Get-PaneIds -Target $newWindowId
+$rowIds = @(Get-PaneIds -Target $newWindowId)
 if ($rowIds.Count -lt $rows) {
     throw "Expected at least $rows row panes but found $($rowIds.Count)."
 }
 
 if ($cols -gt 1) {
     for ($rowIndex = 0; $rowIndex -lt $rows; $rowIndex++) {
-        & winsmux select-pane -t $rowIds[$rowIndex] | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-            throw "winsmux select-pane failed for row pane $($rowIds[$rowIndex])."
-        }
-
+        Invoke-OrchestraLayoutWinsmux -Arguments @('select-pane', '-t', $rowIds[$rowIndex]) | Out-Null
         Split-Equal -Target $rowIds[$rowIndex] -PaneCount $cols -Direction '-h'
     }
 }
 
 Start-Sleep -Milliseconds 300
 
-$allIds = Get-PaneIds -Target $newWindowId
+$allIds = @(Get-PaneIds -Target $newWindowId)
 if ($allIds.Count -lt $total) {
     throw "Expected at least $total panes but found $($allIds.Count)."
 }
 
-$labels = Get-RoleLabels -CommanderCount $Commanders -WorkerCount $Workers -BuilderCount $Builders -ResearcherCount $Researchers -ReviewerCount $Reviewers
+$labels = @(Get-RoleLabels -CommanderCount $Commanders -WorkerCount $Workers -BuilderCount $Builders -ResearcherCount $Researchers -ReviewerCount $Reviewers)
 $assignments = [System.Collections.Generic.List[object]]::new()
 
 for ($index = 0; $index -lt $total; $index++) {
     $paneId = $allIds[$index]
     $label = $labels[$index]
 
-    & winsmux select-pane -t $paneId -T $label | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "winsmux select-pane -T failed for pane $paneId."
-    }
+    Invoke-OrchestraLayoutWinsmux -Arguments @('select-pane', '-t', $paneId, '-T', $label) | Out-Null
 
     $assignments.Add([PSCustomObject]@{
         PaneId = $paneId
@@ -224,10 +223,7 @@ for ($index = 0; $index -lt $total; $index++) {
     })
 }
 
-& winsmux select-pane -t $allIds[0] | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    throw "winsmux select-pane failed for pane $($allIds[0])."
-}
+Invoke-OrchestraLayoutWinsmux -Arguments @('select-pane', '-t', $allIds[0]) | Out-Null
 
 [PSCustomObject]@{
     Builders    = $Builders
