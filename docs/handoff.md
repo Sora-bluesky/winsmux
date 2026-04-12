@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T14:12:00+09:00
+> Updated: 2026-04-12T14:55:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -14,6 +14,7 @@
 - `v0.20.0` is released.
 - `v0.20.1` is now fully implemented at `100% (7/7)` in the external planning backlog/roadmap after rebaselining the shipped transport/ledger slices and moving the remaining SQLite FTS5 + stdin parity work into follow-up tasks.
 - `v0.20.1` is released at [v0.20.1](https://github.com/Sora-bluesky/winsmux/releases/tag/v0.20.1); release workflow run `24299025847` published `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
+- `v0.20.2` is now the active implementation milestone, starting with reviewer-governance hardening and release-workflow maintenance.
 - Planning source of truth is externalized outside the public repository and syncs automatically into the private planning root.
 - `v0.21.x` private planning is aligned to a conversation-first Tauri operator shell, with Codex-App-like shell rules reflected in Figma and backlog notes.
 - `v0.24.x` private planning is split into schema, ledger, machine contract, cutover, and canary phases for Rust runtime convergence before `v1.0.0`.
@@ -45,6 +46,9 @@
 - Re-synced the external roadmap so `v0.20.1: Run Transport & Event Ledger` now reads as `100% (7/7)` and is ready for release preparation.
 - Drafted and saved the `v0.20.1` release notes and X thread under `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\ChangeLogs\winsmux\v0.20.1\`.
 - Tagged and published `v0.20.1`, then replaced the workflow-generated body with the curated Codex-style release notes and removed the extra `release-body.md` asset so the public release ships only `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
+- Started the first `v0.20.2` slice for `TASK-207` by strengthening `winsmux-core/agents/reviewer.sh` so reviewer prompts must explicitly audit downstream design impact, replacement coverage, and orphaned artifacts instead of limiting review to local diff correctness.
+- Updated `winsmux-core/agents/AGENTS.md` to keep the reviewer-template docs aligned with the stronger audit contract, and added a narrow regression in `tests/psmux-bridge.Tests.ps1` that locks the new review-checklist language in place.
+- Updated `.github/workflows/release-core.yml` from `softprops/action-gh-release@v2` to `@v3` to remove the Node 20 deprecation path that still appeared during the `v0.20.1` release workflow.
 - Merged `TASK-287` via PR [#393](https://github.com/Sora-bluesky/winsmux/pull/393), adding the keyboard-first operator command bar (`Ctrl/Cmd+K`) with quick actions, IME-safe input handling, focus restore, and accessible active-option semantics.
 - Merged `TASK-298` via PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), rewriting `README.ja.md` to match the public operator model, shrinking maintainer-only planning readmes into internal stubs, and making tracked public config/docs safer for external users.
 - Re-synced the external planning backlog/roadmap after PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), marking `TASK-298` as done so `v0.20.0` now shows `100% (12/12)`.
@@ -133,12 +137,14 @@
 - Current local `TASK-188` task-prompt-file slice passes `git diff --check` aside from benign LF->CRLF warnings on the edited files.
 - PR [#400](https://github.com/Sora-bluesky/winsmux/pull/400) merged cleanly and the repo returned to `main == origin/main`.
 - `v0.20.1` release workflow run `24299025847` completed successfully after tag push.
+- Current local `TASK-207` + release-workflow maintenance slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `136/136 PASS`.
+- Current local `TASK-207` + release-workflow maintenance slice passes `git diff --check` aside from benign LF->CRLF warnings on edited files.
 
 ## Next actions
 
-1. Continue with `v0.20.2` verification/security work, keeping `TASK-306` and `TASK-307` as explicit follow-up debt rather than sneaking them into unrelated milestones.
-2. Keep the external planning sync flow user-visible but out of the public repo, then reflect consultation/experiment surfaces into the Tauri shell as `TASK-305` approaches.
-3. Update the release workflow away from `softprops/action-gh-release@v2` or force Node 24 explicitly before the Node 20 deprecation window becomes a blocker.
+1. Land the `TASK-207` reviewer-checklist slice and close the `softprops/action-gh-release` Node 20 warning by merging the current release-workflow update.
+2. Continue with `v0.20.2` verification/security work, keeping `TASK-306` and `TASK-307` as explicit follow-up debt rather than sneaking them into unrelated milestones.
+3. Keep the external planning sync flow user-visible but out of the public repo, then reflect consultation/experiment surfaces into the Tauri shell as `TASK-305` approaches.
 
 ## Notes
 

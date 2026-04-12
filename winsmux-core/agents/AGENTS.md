@@ -11,7 +11,7 @@ This directory contains bash wrappers that generate fixed user prompts for winsm
 
 - `reviewer.sh`
   - Purpose: emit a Reviewer prompt for diff-based review without editing code.
-  - Guardrails: requires `WORKTREE`, tells the agent to `cd` into it, review `git diff`, and explicitly check for security issues.
+  - Guardrails: requires `WORKTREE`, tells the agent to `cd` into it, review `git diff`, explicitly check for security issues, and always audit downstream design impact / replacement coverage / orphaned artifacts.
   - Completion markers: `REVIEW_PASS` or `REVIEW_FAIL`
   - Optional env var: `DIFF_BASE` to override the diff target. Defaults to `HEAD`.
   - Safety contract for `DIFF_BASE`: it must be a trusted, single-line Git diff target such as `HEAD`, `HEAD~1`, or `origin/main...HEAD`. Do not pass shell fragments, command substitutions, or newline-delimited content. The script renders `DIFF_BASE` as shell-escaped display text only.

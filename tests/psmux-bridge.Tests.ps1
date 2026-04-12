@@ -150,6 +150,20 @@ Describe 'Assert-Role' {
     }
 }
 
+Describe 'reviewer.sh prompt contract' {
+    It 'includes mandatory design-impact checklist items' {
+        $scriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\agents\reviewer.sh'
+        $content = Get-Content -Path $scriptPath -Raw -Encoding UTF8
+
+        $content | Should -Match 'downstream behavior, workflow, or monitoring capability'
+        $content | Should -Match 'removed or changed capability replaced elsewhere'
+        $content | Should -Match 'orphaned artifacts such as dead mocks'
+        $content | Should -Match 'design impact'
+        $content | Should -Match 'replacement check'
+        $content | Should -Match 'orphaned artifacts'
+    }
+}
+
 Describe 'Get-BridgeSettings' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\settings.ps1')
