@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T19:31:00+09:00
+> Updated: 2026-04-12T20:19:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -37,22 +37,29 @@
   - suppressing `compare-runs` winner selection unless both sides are recommendable
   - rejecting `promote-tactic` for non-promotable runs
   - adding regression tests for both guards
+- Reviewer `Halley` returned `FAIL` on the stricter closure criteria.
+- Fixed the findings by:
+  - requiring completed task state, review pass, verification pass, and explicit security allow/pass for recommend/promote
+  - teaching the read model to recognize allow-side security events
+  - adding regression coverage for missing-security promotion and strict healthy-winner selection
 - Another fresh reviewer will run on the updated PR before merge.
 
 ## Validation
 
-- `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `160/160 PASS`
+- `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `161/161 PASS`
+- PowerShell parser check for `scripts/winsmux-core.ps1` and `tests/psmux-bridge.Tests.ps1` -> PASS
 - `git diff --check` -> no substantive diff-check failures
 - Review gate history for the active `v0.21.1` closure slice:
   - explorer audit established release-scope drift
   - fresh reviewer `Parfit` -> `no result yet` after 30s wait; closed without result
   - fresh reviewer `Ptolemy` -> `FAIL`, findings fixed locally
+  - fresh reviewer `Halley` -> `FAIL`, stricter guard findings fixed locally
   - manual diff review completed on the compare/promote slice
 
 ## Next actions
 
-1. Open PR for the `v0.21.1` compare/promote closure slice and run a fresh `/review`.
-2. Merge the closure slice if CI is green and the review gate passes or times out into documented fallback.
+1. Run one fresh `/review` on PR #407 after the latest security/recommendability fixes.
+2. Merge PR #407 if CI is green and the review gate passes or times out into documented fallback.
 3. Publish `v0.21.1` with curated release notes after the roadmap truth is synchronized.
 
 ## Notes

@@ -3676,7 +3676,7 @@ function Get-SecurityVerdictFromEventRecords {
 
     $snapshot = Get-LatestRunEventDataSnapshot `
         -EventRecords $EventRecords `
-        -EventNames @('pipeline.security.blocked', 'security.policy.blocked') `
+        -EventNames @('pipeline.security.blocked', 'security.policy.blocked', 'pipeline.security.allowed', 'security.policy.allowed') `
         -DataFields @('stage', 'attempt', 'task', 'verdict', 'reason', 'advisory_mode', 'allow', 'block', 'next_action')
     if ($null -eq $snapshot) {
         return $null
@@ -3977,7 +3977,7 @@ function ConvertTo-RunEventRecord {
         consultation_packet  = $consultationPacket
         verification_contract = if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('verification_contract')) { $data['verification_contract'] } else { $null }
         verification_result   = if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('verification_result')) { $data['verification_result'] } else { $null }
-        security_verdict      = if (($EventRecord['event'] -in @('pipeline.security.blocked', 'security.policy.blocked')) -and $null -ne $data -and $data -is [System.Collections.IDictionary]) {
+        security_verdict      = if (($EventRecord['event'] -in @('pipeline.security.blocked', 'security.policy.blocked', 'pipeline.security.allowed', 'security.policy.allowed')) -and $null -ne $data -and $data -is [System.Collections.IDictionary]) {
             [ordered]@{
                 stage         = if ($data.Contains('stage')) { [string]$data['stage'] } else { '' }
                 attempt       = if ($data.Contains('attempt')) { $data['attempt'] } else { $null }
@@ -4281,33 +4281,6 @@ function Test-RunRecommendable {
     $verificationOutcome = if ($null -ne $Run.verification_result) { ([string]$Run.verification_result.outcome).ToUpperInvariant() } else { '' }
     $securityVerdict = if ($null -ne $Run.security_verdict) { ([string]$Run.security_verdict.verdict).ToUpperInvariant() } else { '' }
 
-    if ($taskState -in @('blocked', 'failed')) {
-        return $false
-    }
-    if ($reviewState -in @('FAIL', 'FAILED', 'BLOCKED')) {
-        return $false
-    }
-    if ($verificationOutcome -in @('FAIL', 'FAILED', 'PARTIAL', 'BLOCK', 'BLOCKED')) {
-        return $false
-    }
-    if ($securityVerdict -in @('BLOCK', 'BLOCKED', 'FAIL', 'FAILED')) {
-        return $false
-    }
-
-    return $true
-}
-
-function Test-RunPromotable {
-    param([Parameter(Mandatory = $true)]$Run)
-
-    if (-not (Test-RunRecommendable -Run $Run)) {
-        return $false
-    }
-
-    $taskState = [string]$Run.task_state
-    $reviewState = ([string]$Run.review_state).ToUpperInvariant()
-    $verificationOutcome = if ($null -ne $Run.verification_result) { ([string]$Run.verification_result.outcome).ToUpperInvariant() } else { '' }
-
     if ($taskState -notin @('completed', 'task_completed', 'commit_ready', 'done')) {
         return $false
     }
@@ -4317,8 +4290,17 @@ function Test-RunPromotable {
     if ($verificationOutcome -ne 'PASS') {
         return $false
     }
+    if ($securityVerdict -notin @('ALLOW', 'PASS')) {
+        return $false
+    }
 
     return $true
+}
+
+function Test-RunPromotable {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    return (Test-RunRecommendable -Run $Run)
 }
 
 function ConvertTo-CompareRunsPayload {
