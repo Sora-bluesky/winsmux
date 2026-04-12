@@ -108,9 +108,7 @@ winsmux new-session -s orchestra
 pwsh winsmux-core/scripts/orchestra-start.ps1
 ```
 
-If `winsmux doctor` reports the Codex worktree git sandbox limitation on Windows, keep using the standard winsmux split:
-- Codex panes handle file edits inside isolated worktrees
-- the external operator handles `git add/commit/push` when sandboxed Codex cannot create `.git/worktrees/*/index.lock`
+If `winsmux doctor` reports the Windows worktree git sandbox limitation, keep using the managed pane for edits and tests, but run `git add`, `git commit`, and `git push` from a regular shell outside the sandboxed pane when `.git/worktrees/*/index.lock` cannot be created.
 
 See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for the Windows `ConstrainedLanguageMode` workaround details.
 

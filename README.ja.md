@@ -107,9 +107,7 @@ winsmux new-session -s orchestra
 pwsh winsmux-core/scripts/orchestra-start.ps1
 ```
 
-Windows で `winsmux doctor` が Codex worktree git sandbox limitation を報告した場合も、winsmux の基本分担は変わりません。
-- Codex pane は isolated worktree 内の file edit を担当
-- external operator は、sandboxed Codex が `.git/worktrees/*/index.lock` を作れない場合の `git add/commit/push` を担当
+Windows で `winsmux doctor` が worktree git sandbox limitation を報告した場合は、sandboxed pane では file edit / test を続けつつ、`.git/worktrees/*/index.lock` を作れないときの `git add` / `git commit` / `git push` だけを通常の shell から実行してください。
 
 Windows の `ConstrainedLanguageMode` を含む詳細な回避策は [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) を参照してください。
 

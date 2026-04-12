@@ -1,58 +1,52 @@
 # Handoff
 
-> Updated: 2026-04-12T21:35:00+09:00
+> Updated: 2026-04-12T16:40:38+09:00
 > Source of truth: this file
 
 ## Current state
 
-- `v0.20.0`, `v0.20.1`, and `v0.20.2` are released.
-- `v0.20.3` shipped scope is rebaselined locally to these 5 tasks and is pending PR/merge/release:
+- `v0.20.0`, `v0.20.1`, `v0.20.2`, and `v0.20.3` are released.
+- `v0.20.3` is closed at `100% (5/5)` with shipped scope:
   - `TASK-161`
   - `TASK-162` baseline only
   - `TASK-172`
   - `TASK-189`
   - `TASK-309`
-- Follow-up work is moved out of `v0.20.3`:
-  - `TASK-190`
-  - `TASK-248`
-  - `TASK-306`
-  - `TASK-307`
-  - `TASK-310`
-- Current working branch is `codex/v0203-governance-env-security-20260412`.
+- Issue `#260` is closed after the public troubleshooting workaround shipped in `v0.20.3`.
+- Current branch is `main`.
 
 ## This session
 
-- Added `winsmux-core/scripts/pane-env.ps1` to formalize hook-profile / governance-mode resolution and pane env payload generation.
-- Updated `winsmux-core/scripts/orchestra-start.ps1` and `scripts/start-orchestra.ps1` to use the shared pane env / hook-profile contract.
-- Extended `winsmux-core/scripts/doctor.ps1` with hook profile, governance mode, and `WINSMUX_*` env contract checks.
-- Added send-side security policy blocking in `scripts/winsmux-core.ps1` and one-shot pre-dispatch policy blocking in `winsmux-core/scripts/team-pipeline.ps1`.
-- Documented the Codex worktree git sandbox limitation in `README.md`, `README.ja.md`, and `docs/TROUBLESHOOTING.md`.
-- Rebaselined external planning locally so `v0.20.3` now reads as `Governance Baseline, Env Contracts & Security Policy Enforcement`; final `done` state will be applied only after merge/release.
-- Ran `/review` twice via Codex CLI against the current working-tree diff; both attempts timed out with `no result yet`.
-- Spawned fresh review explorers `Fermat` and `Locke`; both also remain `no result yet` after a 35-second wait and have not yet produced findings.
+- Merged PR `#405` and released `v0.20.3`.
+- Rebased external planning so `v0.20.3` is `Governance Baseline, Env Contracts & Security Policy Enforcement` at `100% (5/5)`.
+- Published the `v0.20.3` GitHub Release with Codex-style headings and inline issue refs.
+- Updated `README.md`, `README.ja.md`, and `docs/TROUBLESHOOTING.md` so the Windows worktree sandbox workaround is described in external-user-safe language instead of maintainer workflow terms.
+- Closed stale review agents after integrating results.
 
 ## Validation
 
-- PowerShell parser checks passed for:
-  - `winsmux-core/scripts/pane-env.ps1`
-  - `winsmux-core/scripts/orchestra-start.ps1`
-  - `winsmux-core/scripts/team-pipeline.ps1`
-  - `winsmux-core/scripts/doctor.ps1`
-  - `scripts/start-orchestra.ps1`
-  - `scripts/winsmux-core.ps1`
-- `node --check .claude/hooks/sh-session-start.js` passed.
-- `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `148/148 PASS`.
-- `git diff --check` shows only benign `LF -> CRLF` warnings on edited files.
-- Review gate status: `no result yet`; fallback gate is currently `manual diff review + parser checks + 148/148 PASS + git diff --check`.
+- PR `#405` CI passed:
+  - `Pester Tests` green on run `24301402686`
+- Local validation before merge:
+  - PowerShell parser checks passed for the governance/env/security scripts
+  - `node --check .claude/hooks/sh-session-start.js`
+  - `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `149/149 PASS`
+- Review gate history:
+  - `/review` via Codex CLI timed out twice with `no result yet`
+  - reviewer `Locke` -> `FAIL`, findings fixed
+  - reviewer `Fermat` -> `FAIL`, findings fixed
+  - reviewer `Hegel` -> `PASS`
+  - release-readiness reviewer `Kepler` -> `FAIL`, docs/release-body issues fixed
+  - release-readiness reviewer `Einstein` -> `PASS`
 
 ## Next actions
 
-1. Wait once more for fresh review results; if none arrive, proceed with fallback gate.
-2. Commit, push, and open the `v0.20.3` implementation PR from `codex/v0203-governance-env-security-20260412`.
-3. Merge after CI, publish `v0.20.3`, and close issue `#260`.
+1. Push the final public-doc wording and handoff updates that were made during the `v0.20.3` release gate.
+2. Verify the `v0.20.3` release assets are limited to `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
+3. Start `v0.21.0` from the rebalanced roadmap.
 
 ## Notes
 
-- Public GitHub Releases must stay English and use the Codex-style headings plus inline issue/PR refs.
-- `TASK-162` is intentionally shipped as a governance baseline only; per-call cost tracking moved to `TASK-310`.
-- Before release, re-run the public-vs-dogfooding gate and keep the README/troubleshooting language external-user-safe.
+- `TASK-162` intentionally shipped as a governance baseline only; per-call cost tracking moved to `TASK-310`.
+- Public GitHub Releases stay English, use Codex-style headings, and keep inline issue/PR refs visible.
+- `README.md` and `README.ja.md` must be updated again at `v0.21.2` release time to mark the terminal-based final form as the last pre-Tauri shape.

@@ -37,15 +37,14 @@ sandbox = "unelevated"
 - Windows の `unelevated` sandbox では、Codex pane が worktree git metadata と PowerShell file APIs に制約を受ける
 
 **解決**:
-- winsmux の標準分担を使う
-  - Codex pane: file edit / test / focused verification
-  - external operator: `git add` / `git commit` / `git push`
+- sandboxed pane では file edit / test / focused verification を続ける
+- `.git/worktrees/*/index.lock` を作れない場合の `git add` / `git commit` / `git push` は通常の shell から実行する
 - pane 内の file write は `apply_patch` か `cmd /c` を使う
 - `Set-Content` / `Out-File` / `[IO.File]::WriteAllText()` は避ける
 
 **補足**:
 - これは issue `#260` の documented workaround
-- `winsmux doctor` がこの limitation を検知したら、external operator が `git add` / `git commit` / `git push` を担当する
+- `winsmux doctor` がこの limitation を検知したら、sandboxed pane の外で repository-level git writes を実行する
 
 ### vault key が見つからない
 
