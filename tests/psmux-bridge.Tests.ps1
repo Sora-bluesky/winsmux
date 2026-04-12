@@ -1390,6 +1390,22 @@ panes:
         $manifestContent | Should -Match $([regex]::Escape("'builder-2':"))
     }
 
+    It 'reads pane titles through the pane-control winsmux wrapper' {
+        Mock Invoke-PaneControlWinsmux { @('ignored', 'builder-7') } -ParameterFilter {
+            $Arguments.Count -eq 5 -and
+            $Arguments[0] -eq 'display-message' -and
+            $Arguments[1] -eq '-p' -and
+            $Arguments[2] -eq '-t' -and
+            $Arguments[3] -eq '%7' -and
+            $Arguments[4] -eq '#{pane_title}'
+        }
+
+        $title = Get-PaneControlPaneTitle -PaneId '%7'
+
+        $title | Should -Be 'builder-7'
+        Should -Invoke Invoke-PaneControlWinsmux -Times 1 -Exactly
+    }
+
     It 'keeps changed_files empty when the manifest stores an empty array' {
 @'
 version: 1
@@ -3224,6 +3240,35 @@ Esc to interrupt
         $records[2].TokensRemaining | Should -Be '61% context left'
     }
 
+    It 'uses the pane-status winsmux wrapper when no snapshot provider is passed' {
+        Mock Invoke-PaneStatusWinsmux {
+            param([string[]]$Arguments)
+
+            switch ($Arguments[2]) {
+                '%2' { return "PS C:\repo\.worktrees\builder-1>" }
+                '%4' { return "gpt-5.4   82% context left`n?" }
+                '%1' { return "thinking`nEsc to interrupt" }
+                default { throw "unexpected capture target: $($Arguments[2])" }
+            }
+        } -ParameterFilter {
+            $Arguments.Count -eq 7 -and
+            $Arguments[0] -eq 'capture-pane' -and
+            $Arguments[1] -eq '-t' -and
+            $Arguments[3] -eq '-p' -and
+            $Arguments[4] -eq '-J' -and
+            $Arguments[5] -eq '-S' -and
+            $Arguments[6] -eq '-80'
+        }
+
+        $records = Get-PaneStatusRecords -ProjectDir $script:paneStatusTempRoot
+
+        $records.Count | Should -Be 3
+        $records[0].State | Should -Be 'pwsh'
+        $records[1].State | Should -Be 'idle'
+        $records[2].State | Should -Be 'busy'
+        Should -Invoke Invoke-PaneStatusWinsmux -Times 3 -Exactly
+    }
+
     It 'includes task review git fields from the manifest state model' {
         @'
 version: 1
@@ -3337,10 +3382,19 @@ panes:
             $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
             switch -Regex ($commandLine) {
                 '^list-panes ' { return @('%2 111', '%4 222') }
-                '^capture-pane .*%2' { return @('Implementation finished.', '>') }
-                '^capture-pane .*%4' { return @('Review in progress...') }
                 default { throw "unexpected winsmux call: $commandLine" }
             }
+        }
+        Mock Invoke-PaneStatusWinsmux {
+            param([string[]]$Arguments)
+
+            switch ($Arguments[2]) {
+                '%2' { return @('Implementation finished.', '>') }
+                '%4' { return @('Review in progress...') }
+                default { throw "unexpected capture target: $($Arguments[2])" }
+            }
+        } -ParameterFilter {
+            $Arguments[0] -eq 'capture-pane'
         }
 
         Mock Get-Process {
@@ -3433,10 +3487,19 @@ panes:
         function global:winsmux {
             $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
             switch -Regex ($commandLine) {
-                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
-                '^capture-pane .*%6' { return @('gpt-5.4   52% context left', 'thinking', 'Esc to interrupt') }
                 default { throw "unexpected winsmux call: $commandLine" }
             }
+        }
+        Mock Invoke-PaneStatusWinsmux {
+            param([string[]]$Arguments)
+
+            switch ($Arguments[2]) {
+                '%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                '%6' { return @('gpt-5.4   52% context left', 'thinking', 'Esc to interrupt') }
+                default { throw "unexpected capture target: $($Arguments[2])" }
+            }
+        } -ParameterFilter {
+            $Arguments[0] -eq 'capture-pane'
         }
 
         $output = Invoke-Board | Out-String
@@ -6279,6 +6342,40 @@ panes:
             } else {
                 $env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS = $previousOverride
             }
+        }
+    }
+
+    It 'dispatches review requests through commander poll wrappers' {
+@"
+version: 1
+saved_at: 2026-04-12T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:commanderPollTempRoot
+panes:
+  reviewer-1:
+    pane_id: %4
+    role: Reviewer
+    launch_dir: $script:commanderPollTempRoot
+"@ | Set-Content -Path $script:commanderPollManifestPath -Encoding UTF8
+
+        Mock Send-CommanderPollLiteral { }
+        Mock Approve-CommanderPollPane { }
+        Mock Send-CommanderTelegramNotification { }
+
+        $result = Invoke-CommanderStateMachine `
+            -CurrentState 'waiting_for_review' `
+            -CycleSummary @{ completions = 1 } `
+            -ProjectDir $script:commanderPollTempRoot `
+            -SessionName 'winsmux-orchestra' `
+            -ManifestPath $script:commanderPollManifestPath
+
+        $result.State | Should -Be 'review_requested'
+        Should -Invoke Send-CommanderPollLiteral -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%4' -and $Text -eq 'winsmux review-request'
+        }
+        Should -Invoke Approve-CommanderPollPane -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%4'
         }
     }
 }

@@ -10,6 +10,22 @@ if (Test-Path $paneControlScript -PathType Leaf) {
     . $paneControlScript
 }
 
+function Invoke-PaneStatusWinsmux {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $output = & winsmux @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $message = ($output | Out-String).Trim()
+        if ([string]::IsNullOrWhiteSpace($message)) {
+            $message = 'unknown winsmux error'
+        }
+
+        throw "winsmux $($Arguments -join ' ') failed: $message"
+    }
+
+    return $output
+}
+
 function Get-PaneTokensRemainingText {
     param([AllowNull()][string]$Text)
 
@@ -131,7 +147,7 @@ function Get-PaneStatusRecords {
     if ($null -eq $SnapshotProvider) {
         $SnapshotProvider = {
             param($PaneId)
-            (& winsmux capture-pane -t $PaneId -p -J -S '-80' | Out-String).TrimEnd()
+            (Invoke-PaneStatusWinsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') | Out-String).TrimEnd()
         }
     }
 

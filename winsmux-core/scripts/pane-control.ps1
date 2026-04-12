@@ -1,5 +1,21 @@
- . (Join-Path $PSScriptRoot 'settings.ps1')
- . (Join-Path $PSScriptRoot 'manifest.ps1')
+. (Join-Path $PSScriptRoot 'settings.ps1')
+. (Join-Path $PSScriptRoot 'manifest.ps1')
+
+function Invoke-PaneControlWinsmux {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    $output = & winsmux @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $message = ($output | Out-String).Trim()
+        if ([string]::IsNullOrWhiteSpace($message)) {
+            $message = 'unknown winsmux error'
+        }
+
+        throw "winsmux $($Arguments -join ' ') failed: $message"
+    }
+
+    return $output
+}
 
 function ConvertFrom-PaneControlYamlScalar {
     param([AllowNull()]$Value)
@@ -438,11 +454,7 @@ function Set-PaneControlManifestPaneProperties {
 function Get-PaneControlPaneTitle {
     param([Parameter(Mandatory = $true)][string]$PaneId)
 
-    $titleOutput = & winsmux display-message -p -t $PaneId '#{pane_title}' 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        throw "failed to read pane title for $PaneId"
-    }
-
+    $titleOutput = Invoke-PaneControlWinsmux -Arguments @('display-message', '-p', '-t', $PaneId, '#{pane_title}')
     return (($titleOutput | Out-String).Trim() -split "\r?\n" | Select-Object -Last 1).Trim()
 }
 

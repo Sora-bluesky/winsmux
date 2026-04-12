@@ -314,6 +314,15 @@ function Approve-CommanderPollPane {
     Invoke-CommanderPollWinsmux -Arguments @('send-keys', '-t', $PaneId, 'Enter') | Out-Null
 }
 
+function Send-CommanderPollLiteral {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Text
+    )
+
+    Invoke-CommanderPollWinsmux -Arguments @('send-keys', '-t', $PaneId, '-l', '--', $Text) | Out-Null
+}
+
 function Get-CommanderPollGitOutput {
     param(
         [Parameter(Mandatory = $true)][string]$WorktreePath,
@@ -874,9 +883,8 @@ function Invoke-CommanderStateMachine {
                         -Event 'commander.blocked' -Message "Review 可能なペインが見つかりません。" -Branch $branch -HeadSha $headSha
                     $nextState = 'blocked_no_review_target'
                 } else {
-                    $wb = Get-WinsmuxBin
-                    & $wb send-keys -t $reviewPane.PaneId -l 'winsmux review-request' 2>$null | Out-Null
-                    & $wb send-keys -t $reviewPane.PaneId Enter 2>$null | Out-Null
+                    Send-CommanderPollLiteral -PaneId $reviewPane.PaneId -Text 'winsmux review-request'
+                    Approve-CommanderPollPane -PaneId $reviewPane.PaneId
                     Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
                         -Event 'commander.review_requested' -Message "$($reviewPane.Label) ($($reviewPane.PaneId)) にレビュー依頼送信。PASS/FAIL 待機中。" `
                         -PaneId $reviewPane.PaneId -Label $reviewPane.Label -Role $reviewPane.Role -Branch $branch -HeadSha $headSha
