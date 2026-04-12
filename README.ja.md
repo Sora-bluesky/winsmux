@@ -10,6 +10,8 @@
 
 1 つのオペレーターが Windows 上の複数のエージェント CLI を統括するための、ランタイムと制御レイヤーを提供します。単一ベンダーに閉じず、ペイン実行、ライブ監督、レビュー統制を同じワークスペースで扱えるようにします。
 
+`v0.21.2` は terminal-based final form の release です。Windows ネイティブ terminal surface、external operator model、managed worker panes、evidence/review controls を中心にした pre-Tauri の最終形をここで閉じます。`v0.22.0` からは Tauri backend / frontend adapter への desktop control-plane handoff が始まります。
+
 ## winsmux が提供するもの
 
 - **マルチベンダー対応**: Codex、Claude、Gemini など複数の CLI エージェントを同じセッションで並行運用
@@ -116,6 +118,8 @@ Windows の `ConstrainedLanguageMode` を含む詳細な回避策は [docs/TROUB
 - 管理対象ウィンドウの外に external operator terminal
 - 管理対象ウィンドウの中に複数の `worker-*` pane
 - 旧 `Commander / Builder / Researcher / Reviewer` レイアウトは compatibility mode でのみ有効
+
+この版が、terminal surface を primary control plane として使う最後の release train です。次の `v0.22.0` では terminal runtime を維持しつつ、desktop orchestration の主軸を Tauri control plane へ移します。
 
 セッション内では、pane を一覧・読取・送信できます。
 

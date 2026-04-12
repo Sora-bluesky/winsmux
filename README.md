@@ -10,6 +10,8 @@
 
 It provides the runtime and coordination layer for running multiple agent CLIs in one operator-controlled workspace on Windows. Instead of locking teams into a single model vendor, winsmux combines pane-based execution, live supervision, and governance controls that fit real engineering workflows.
 
+`v0.21.2` is the terminal-based final form release. It closes the pre-Tauri runtime shape around the Windows-native terminal surface, external operator model, managed worker panes, and evidence/review controls. `v0.22.0` begins the desktop control-plane handoff into the Tauri backend and frontend adapter layers.
+
 ## What winsmux does
 
 - **Multi-vendor support**: run Codex, Claude, Gemini, and other CLI agents side by side in the same session
@@ -117,6 +119,8 @@ The default layout is now:
 - external operator terminal outside the managed window
 - 6 managed `worker-*` panes inside the orchestra window
 - legacy `Commander / Builder / Researcher / Reviewer` pane layouts only when explicitly enabled for compatibility
+
+This is the last release line where the terminal surface is the primary control plane. The next train (`v0.22.0`) keeps the terminal runtime, but hands primary desktop orchestration to the Tauri control plane.
 
 Inside the session, label and inspect panes:
 
