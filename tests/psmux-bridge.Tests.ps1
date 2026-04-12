@@ -5280,6 +5280,198 @@ Describe 'winsmux task-run command' {
     }
 }
 
+Describe 'winsmux compare-runs and promote-tactic commands' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:compareTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-compare-tests-' + [guid]::NewGuid().ToString('N'))
+        $script:compareManifestDir = Join-Path $script:compareTempRoot '.winsmux'
+        $script:compareManifestPath = Join-Path $script:compareManifestDir 'manifest.yaml'
+        $script:compareEventsPath = Join-Path $script:compareManifestDir 'events.jsonl'
+        New-Item -ItemType Directory -Path $script:compareManifestDir -Force | Out-Null
+
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:compareTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-compare-a
+    task: Compare run A
+    task_state: in_progress
+    review_state: PENDING
+    branch: worktree-builder-a
+    head_sha: aaaabbbbccccdddd
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-12T10:00:00+09:00
+  builder-2:
+    pane_id: %4
+    role: Worker
+    task_id: task-compare-b
+    task: Compare run B
+    task_state: blocked
+    review_state: FAIL
+    branch: worktree-builder-b
+    head_sha: eeeeffff11112222
+    changed_file_count: 2
+    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    last_event: pane.consult_result
+    last_event_at: 2026-04-12T10:05:00+09:00
+"@ | Set-Content -Path $script:compareManifestPath -Encoding UTF8
+
+        $script:compareObsA = New-ObservationPackFile -ProjectDir $script:compareTempRoot -ObservationPack ([ordered]@{
+            run_id          = 'task:task-compare-a'
+            task_id         = 'task-compare-a'
+            pane_id         = '%2'
+            slot            = 'slot-builder-a'
+            hypothesis      = 'deterministic command fixes cache drift'
+            test_plan       = @('rerun build', 'check cache hit')
+            env_fingerprint = 'env:a'
+            command_hash    = 'cmd:a'
+            changed_files   = @('scripts/winsmux-core.ps1')
+        })
+        $script:compareObsB = New-ObservationPackFile -ProjectDir $script:compareTempRoot -ObservationPack ([ordered]@{
+            run_id          = 'task:task-compare-b'
+            task_id         = 'task-compare-b'
+            pane_id         = '%4'
+            slot            = 'slot-builder-b'
+            hypothesis      = 'framework inference is re-injecting noise'
+            test_plan       = @('disable inference', 'rerun build')
+            env_fingerprint = 'env:b'
+            command_hash    = 'cmd:b'
+            changed_files   = @('scripts/winsmux-core.ps1', 'tests/psmux-bridge.Tests.ps1')
+        })
+        $script:compareConsultA = New-ConsultationPacketFile -ProjectDir $script:compareTempRoot -ConsultationPacket ([ordered]@{
+            run_id         = 'task:task-compare-a'
+            task_id        = 'task-compare-a'
+            pane_id        = '%2'
+            slot           = 'slot-builder-a'
+            kind           = 'consult_result'
+            mode           = 'early'
+            confidence     = 0.85
+            recommendation = 'prefer deterministic command'
+            next_test      = 'promote tactic'
+        })
+        $script:compareConsultB = New-ConsultationPacketFile -ProjectDir $script:compareTempRoot -ConsultationPacket ([ordered]@{
+            run_id         = 'task:task-compare-b'
+            task_id        = 'task-compare-b'
+            pane_id        = '%4'
+            slot           = 'slot-builder-b'
+            kind           = 'consult_result'
+            mode           = 'reconcile'
+            confidence     = 0.4
+            recommendation = 'needs reconcile consult'
+            next_test      = 'reconcile consult'
+        })
+
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-12T10:00:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'commander.review_requested'
+                message   = 'review requested'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                branch    = 'worktree-builder-a'
+                head_sha  = 'aaaabbbbccccdddd'
+                data      = [ordered]@{
+                    task_id              = 'task-compare-a'
+                    run_id               = 'task:task-compare-a'
+                    slot                 = 'slot-builder-a'
+                    hypothesis           = 'deterministic command fixes cache drift'
+                    result               = 'cache hit done'
+                    confidence           = 0.85
+                    next_action          = 'promote tactic'
+                    observation_pack_ref = $script:compareObsA.reference
+                    consultation_ref     = $script:compareConsultA.reference
+                    worktree             = '.worktrees/builder-a'
+                    env_fingerprint      = 'env:a'
+                    command_hash         = 'cmd:a'
+                }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-12T10:05:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.consult_result'
+                message   = 'consultation completed'
+                label     = 'builder-2'
+                pane_id   = '%4'
+                role      = 'Worker'
+                branch    = 'worktree-builder-b'
+                head_sha  = 'eeeeffff11112222'
+                data      = [ordered]@{
+                    task_id              = 'task-compare-b'
+                    run_id               = 'task:task-compare-b'
+                    slot                 = 'slot-builder-b'
+                    hypothesis           = 'framework inference is re-injecting noise'
+                    result               = 'still dirty'
+                    confidence           = 0.4
+                    next_action          = 'reconcile consult'
+                    observation_pack_ref = $script:compareObsB.reference
+                    consultation_ref     = $script:compareConsultB.reference
+                    worktree             = '.worktrees/builder-b'
+                    env_fingerprint      = 'env:b'
+                    command_hash         = 'cmd:b'
+                }
+            } | ConvertTo-Json -Compress)
+        ) | Set-Content -Path $script:compareEventsPath -Encoding UTF8
+
+        Push-Location $script:compareTempRoot
+    }
+
+    AfterEach {
+        Pop-Location
+        if ($script:compareTempRoot -and (Test-Path $script:compareTempRoot)) {
+            Remove-Item -Path $script:compareTempRoot -Recurse -Force
+        }
+    }
+
+    It 'compares two runs and reports confidence and evidence deltas in json' {
+        $result = (Invoke-CompareRuns -CompareTarget 'task:task-compare-a' -CompareRest @('task:task-compare-b', '--json') | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.left.run_id | Should -Be 'task:task-compare-a'
+        $result.right.run_id | Should -Be 'task:task-compare-b'
+        $result.confidence_delta | Should -Be 0.45
+        $result.shared_changed_files | Should -Be @('scripts/winsmux-core.ps1')
+        $result.left_only_changed_files | Should -Be @()
+        $result.right_only_changed_files | Should -Be @('tests/psmux-bridge.Tests.ps1')
+        $result.recommend.winning_run_id | Should -Be 'task:task-compare-a'
+        $result.recommend.reconcile_consult | Should -Be $true
+        @($result.differences | ForEach-Object { $_.field }) | Should -Contain 'result'
+        @($result.differences | ForEach-Object { $_.field }) | Should -Contain 'confidence'
+        @($result.differences | ForEach-Object { $_.field }) | Should -Contain 'changed_files'
+    }
+
+    It 'exports a playbook candidate from a run and writes a file-backed artifact' {
+        $result = (Invoke-PromoteTactic -PromoteTarget 'task:task-compare-a' -PromoteRest @('--title', 'Deterministic build command', '--json') | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.run_id | Should -Be 'task:task-compare-a'
+        $result.candidate_ref | Should -BeLike '.winsmux/playbook-candidates/playbook-candidate-*.json'
+        Test-Path -LiteralPath $result.candidate_path | Should -Be $true
+        $result.candidate.packet_type | Should -Be 'playbook_candidate'
+        $result.candidate.kind | Should -Be 'playbook'
+        $result.candidate.title | Should -Be 'Deterministic build command'
+        $result.candidate.summary | Should -Be 'prefer deterministic command'
+        $result.candidate.hypothesis | Should -Be 'deterministic command fixes cache drift'
+        $result.candidate.changed_files | Should -Be @('scripts/winsmux-core.ps1')
+        $result.candidate.observation_pack_ref | Should -Be $script:compareObsA.reference
+        $result.candidate.consultation_ref | Should -Be $script:compareConsultA.reference
+    }
+
+    It 'fails closed for unsupported promote kind' {
+        { Invoke-PromoteTactic -PromoteTarget 'task:task-compare-a' -PromoteRest @('--kind', 'unknown') } | Should -Throw '*Unsupported promote kind*'
+    }
+}
+
 Describe 'winsmux observation and consultation artifacts' {
     BeforeAll {
         $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
