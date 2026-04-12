@@ -570,8 +570,6 @@ $chores = @($security + (Remove-ExistingBenefits -Items $chores -Existing $secur
 $chores = @($chores | Select-Object -First 4)
 
 $builder = New-Object System.Text.StringBuilder
-[void]$builder.AppendLine("## winsmux $Version")
-[void]$builder.AppendLine()
 $seenBenefits = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
 Add-Section -Builder $builder -Title 'New Features' -Items $features -Seen $seenBenefits
 Add-Section -Builder $builder -Title 'Bug Fixes' -Items $fixes -Seen $seenBenefits
@@ -581,9 +579,9 @@ Add-Section -Builder $builder -Title 'Chores' -Items $chores -Seen $seenBenefits
 [void]$builder.AppendLine('### Full Changelog')
 [void]$builder.AppendLine()
 if ($null -ne $previousTag) {
-    [void]$builder.AppendLine("- https://github.com/Sora-bluesky/winsmux/compare/$previousTag...$Version")
+    [void]$builder.AppendLine("- [$previousTag...$Version](https://github.com/Sora-bluesky/winsmux/compare/$previousTag...$Version)")
 } else {
-    [void]$builder.AppendLine("- https://github.com/Sora-bluesky/winsmux/releases/tag/$Version")
+    [void]$builder.AppendLine("- [$Version](https://github.com/Sora-bluesky/winsmux/releases/tag/$Version)")
 }
 
 $builder.ToString() | Set-Content -Path $outputFullPath -Encoding UTF8
