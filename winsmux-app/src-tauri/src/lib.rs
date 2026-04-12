@@ -1,4 +1,5 @@
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -23,6 +24,24 @@ struct DesktopSummarySnapshot {
     board: serde_json::Value,
     inbox: serde_json::Value,
     digest: serde_json::Value,
+    run_projections: Vec<DesktopRunProjection>,
+}
+
+#[derive(serde::Serialize)]
+struct DesktopRunProjection {
+    run_id: String,
+    pane_id: String,
+    label: String,
+    branch: String,
+    task: String,
+    task_state: String,
+    review_state: String,
+    verification_outcome: String,
+    security_blocked: String,
+    changed_files: Vec<String>,
+    next_action: String,
+    summary: String,
+    reasons: Vec<String>,
 }
 
 fn looks_like_repo_root(path: &Path) -> bool {
@@ -93,11 +112,126 @@ fn run_winsmux_json(project_dir: Option<String>, args: &[String]) -> Result<serd
     serde_json::from_str(&stdout).map_err(|err| format!("Failed to parse winsmux JSON payload: {err}"))
 }
 
+fn get_string(map: &Map<String, Value>, key: &str) -> String {
+    map.get(key)
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn get_string_array(map: &Map<String, Value>, key: &str) -> Vec<String> {
+    map.get(key)
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items.iter()
+                .filter_map(|item| item.as_str().map(|text| text.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn build_run_projection(
+    digest_item: &Map<String, Value>,
+    explain_payload: &Value,
+) -> DesktopRunProjection {
+    let explain_run = explain_payload.get("run").and_then(|value| value.as_object());
+    let explanation = explain_payload
+        .get("explanation")
+        .and_then(|value| value.as_object());
+    let evidence = explain_payload
+        .get("evidence_digest")
+        .and_then(|value| value.as_object());
+
+    let run_id = get_string(digest_item, "run_id");
+    let pane_id = get_string(digest_item, "pane_id");
+    let label = get_string(digest_item, "label");
+    let branch = explain_run
+        .map(|run| get_string(run, "branch"))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| get_string(digest_item, "branch"));
+    let changed_files = evidence
+        .map(|digest| get_string_array(digest, "changed_files"))
+        .filter(|items| !items.is_empty())
+        .unwrap_or_else(|| get_string_array(digest_item, "changed_files"));
+    let task = get_string(digest_item, "task");
+    let summary = explanation
+        .map(|payload| get_string(payload, "summary"))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            if !task.is_empty() {
+                task.clone()
+            } else if !run_id.is_empty() {
+                format!("Projected from {run_id}")
+            } else {
+                "Projected run".to_string()
+            }
+        });
+
+    DesktopRunProjection {
+        run_id,
+        pane_id,
+        label,
+        branch,
+        task,
+        task_state: explain_run
+            .map(|run| get_string(run, "task_state"))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| get_string(digest_item, "task_state")),
+        review_state: explain_run
+            .map(|run| get_string(run, "review_state"))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| get_string(digest_item, "review_state")),
+        verification_outcome: evidence
+            .map(|digest| get_string(digest, "verification_outcome"))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| get_string(digest_item, "verification_outcome")),
+        security_blocked: evidence
+            .map(|digest| get_string(digest, "security_blocked"))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| get_string(digest_item, "security_blocked")),
+        changed_files,
+        next_action: explanation
+            .map(|payload| get_string(payload, "next_action"))
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| get_string(digest_item, "next_action")),
+        summary,
+        reasons: explanation
+            .map(|payload| get_string_array(payload, "reasons"))
+            .unwrap_or_default(),
+    }
+}
+
+fn build_run_projections(digest: &Value, project_dir: Option<String>) -> Vec<DesktopRunProjection> {
+    digest
+        .get("items")
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items.iter()
+                .filter_map(|item| item.as_object())
+                .map(|digest_item| {
+                    let run_id = get_string(digest_item, "run_id");
+                    let explain_payload = if run_id.is_empty() {
+                        Value::Null
+                    } else {
+                        run_winsmux_json(
+                            project_dir.clone(),
+                            &["explain".to_string(), run_id, "--json".to_string()],
+                        )
+                        .unwrap_or(Value::Null)
+                    };
+                    build_run_projection(digest_item, &explain_payload)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 async fn desktop_summary_snapshot(project_dir: Option<String>) -> Result<DesktopSummarySnapshot, String> {
     let board = run_winsmux_json(project_dir.clone(), &["board".to_string(), "--json".to_string()])?;
     let inbox = run_winsmux_json(project_dir.clone(), &["inbox".to_string(), "--json".to_string()])?;
     let digest = run_winsmux_json(project_dir.clone(), &["digest".to_string(), "--json".to_string()])?;
+    let run_projections = build_run_projections(&digest, project_dir.clone());
 
     let effective_project_dir = match project_dir {
         Some(path) if !path.trim().is_empty() => path,
@@ -110,6 +244,7 @@ async fn desktop_summary_snapshot(project_dir: Option<String>) -> Result<Desktop
         board,
         inbox,
         digest,
+        run_projections,
     })
 }
 
