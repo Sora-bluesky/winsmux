@@ -54,13 +54,14 @@
   - fresh reviewer `Parfit` -> `no result yet` after 30s wait; closed without result
   - fresh reviewer `Ptolemy` -> `FAIL`, findings fixed locally
   - fresh reviewer `Halley` -> `FAIL`, stricter guard findings fixed locally
+  - fresh reviewer `Ohm` -> `no result yet` after two 35s waits on the final diff; closed without result
   - manual diff review completed on the compare/promote slice
 
 ## Next actions
 
-1. Run one fresh `/review` on PR #407 after the latest security/recommendability fixes.
-2. Merge PR #407 if CI is green and the review gate passes or times out into documented fallback.
-3. Publish `v0.21.1` with curated release notes after the roadmap truth is synchronized.
+1. Merge PR #407 if CI stays green, using the documented fallback gate (`161/161 PASS`, parser check, diff check, manual diff review, reviewer timeout recorded).
+2. Publish `v0.21.1` with curated release notes after the roadmap truth is synchronized.
+3. Update `docs/handoff.md` again on `main` for release-complete state.
 
 ## Notes
 
