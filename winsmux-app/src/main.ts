@@ -95,6 +95,114 @@ interface SourceControlState {
   entries: SourceChange[];
 }
 
+interface DesktopBoardSummary {
+  pane_count: number;
+  dirty_panes: number;
+  review_pending: number;
+  review_failed: number;
+  review_passed: number;
+  tasks_in_progress: number;
+  tasks_blocked: number;
+}
+
+interface DesktopBoardPane {
+  label: string;
+  pane_id: string;
+  role: string;
+  task: string;
+  task_state: string;
+  review_state: string;
+  branch: string;
+  changed_file_count: number;
+}
+
+interface DesktopInboxSummary {
+  item_count: number;
+}
+
+interface DesktopInboxItem {
+  kind: string;
+  message: string;
+  label: string;
+  pane_id: string;
+  task_state: string;
+  review_state: string;
+  branch: string;
+  changed_file_count: number;
+}
+
+interface DesktopDigestSummary {
+  item_count: number;
+  actionable_items: number;
+  review_pending: number;
+  review_failed: number;
+}
+
+interface DesktopDigestItem {
+  run_id: string;
+  task: string;
+  label: string;
+  pane_id: string;
+  role: string;
+  task_state: string;
+  review_state: string;
+  next_action: string;
+  branch: string;
+  head_short: string;
+  changed_file_count: number;
+  changed_files: string[];
+  verification_outcome?: string;
+  security_blocked?: string;
+}
+
+interface DesktopSummarySnapshot {
+  generated_at: string;
+  project_dir: string;
+  board: {
+    summary: DesktopBoardSummary;
+    panes: DesktopBoardPane[];
+  };
+  inbox: {
+    summary: DesktopInboxSummary;
+    items: DesktopInboxItem[];
+  };
+  digest: {
+    summary: DesktopDigestSummary;
+    items: DesktopDigestItem[];
+  };
+}
+
+interface DesktopExplainPayload {
+  run: {
+    run_id: string;
+    task: string;
+    state: string;
+    task_state: string;
+    review_state: string;
+    branch: string;
+    head_sha: string;
+    changed_files: string[];
+  };
+  explanation: {
+    summary: string;
+    reasons: string[];
+    next_action: string;
+  };
+  evidence_digest: {
+    next_action: string;
+    changed_file_count: number;
+    changed_files: string[];
+    verification_outcome?: string;
+    security_blocked?: string;
+  };
+  recent_events: Array<{
+    timestamp: string;
+    event: string;
+    label: string;
+    message: string;
+  }>;
+}
+
 interface ContextSection {
   label: string;
   value: string;
@@ -157,6 +265,8 @@ let selectedCommandIndex = 0;
 let commandBarImeActive = false;
 let lastCommandBarFocus: HTMLElement | null = null;
 let pendingAttachments: ComposerAttachment[] = [];
+let desktopSummarySnapshot: DesktopSummarySnapshot | null = null;
+const desktopExplainCache = new Map<string, DesktopExplainPayload>();
 const themeState: ThemeState = {
   theme: "codex-dark",
   density: "comfortable",
@@ -500,14 +610,37 @@ function renderSessions() {
     return;
   }
 
+  const activeSessions = getSessionItems();
   root.innerHTML = "";
-  for (const session of sessionItems) {
+  for (const session of activeSessions) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `sidebar-row ${session.active ? "is-active" : ""}`;
     button.innerHTML = `<span class="sidebar-row-title">${session.name}</span><span class="sidebar-row-meta">${session.meta}</span>`;
     root.appendChild(button);
   }
+}
+
+function getSessionItems() {
+  if (!desktopSummarySnapshot) {
+    return sessionItems;
+  }
+
+  const board = desktopSummarySnapshot.board.summary;
+  const inbox = desktopSummarySnapshot.inbox.summary;
+  const digest = desktopSummarySnapshot.digest.summary;
+
+  return [
+    {
+      name: "winsmux",
+      meta: `${board.pane_count} panes · ${inbox.item_count} inbox · ${board.tasks_blocked} blocked`,
+      active: true,
+    },
+    {
+      name: "summary-stream",
+      meta: `${digest.item_count} runs · ${digest.actionable_items} actionable · ${board.review_pending} review pending`,
+    },
+  ] satisfies SessionItem[];
 }
 
 function renderExplorer() {
@@ -645,6 +778,14 @@ function getPrimarySourceChange(changes: SourceChange[]) {
   return changes.find((item) => item.path === selectedEditorPath) ?? changes[0] ?? sourceControlState.entries[0];
 }
 
+function getPrimaryDigestItem() {
+  return desktopSummarySnapshot?.digest.items?.[0] ?? null;
+}
+
+function getSelectedRunId() {
+  return getPrimaryDigestItem()?.run_id ?? null;
+}
+
 function renderContextPanel() {
   const sectionRoot = document.getElementById("context-sections");
   const overviewRoot = document.getElementById("source-overview-cards");
@@ -723,6 +864,13 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
   const themeLabel = themeOptions.find((item) => item.value === themeState.theme)?.label ?? themeState.theme;
   const densityLabel = densityOptions.find((item) => item.value === themeState.density)?.label ?? themeState.density;
   const wrapLabel = wrapOptions.find((item) => item.value === themeState.wrapMode)?.label ?? themeState.wrapMode;
+  const summaryStatus = desktopSummarySnapshot
+    ? `${desktopSummarySnapshot.digest.summary.item_count} runs`
+    : "Operator ready";
+  const inboxStatus = desktopSummarySnapshot
+    ? `${desktopSummarySnapshot.inbox.summary.item_count} inbox`
+    : "config.toml";
+  const branchStatus = getPrimaryDigestItem()?.branch || "main";
 
   return {
     left: [
@@ -734,9 +882,9 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
       { label: "Settings", tone: "accent" },
     ],
     right: [
-      { label: "config.toml" },
-      { label: "main" },
-      { label: "Operator ready", tone: "success" },
+      { label: inboxStatus },
+      { label: branchStatus },
+      { label: summaryStatus, tone: desktopSummarySnapshot ? "info" : "success" },
     ],
   };
 }
@@ -1033,6 +1181,57 @@ function renderRunSummary() {
     return;
   }
 
+  const digestItem = getPrimaryDigestItem();
+  if (digestItem) {
+    const statusTone =
+      digestItem.review_state === "PASS"
+        ? "success"
+        : digestItem.review_state === "PENDING"
+          ? "warning"
+          : digestItem.review_state === "FAIL" || digestItem.review_state === "FAILED"
+            ? "danger"
+            : "info";
+    const verification = digestItem.verification_outcome ? `verify ${digestItem.verification_outcome}` : "verify n/a";
+    const security = digestItem.security_blocked ? `security ${digestItem.security_blocked}` : "security n/a";
+
+    root.innerHTML = `
+      <div class="run-summary-card">
+        <div class="run-summary-header">
+          <div>
+            <div class="timeline-eyebrow">Selected run</div>
+            <div class="run-summary-title">${digestItem.run_id}</div>
+          </div>
+          <div class="run-summary-status" data-tone="${statusTone}">
+            ${digestItem.review_state || "ready"}
+          </div>
+        </div>
+        <div class="run-summary-meta-row">
+          <span class="run-summary-pill">${digestItem.label || digestItem.pane_id || "summary-stream"}</span>
+          <span class="run-summary-pill">${digestItem.branch || "no branch"}</span>
+          <span class="run-summary-pill">${digestItem.changed_file_count} changed</span>
+          <span class="run-summary-pill">${digestItem.next_action || "no next action"}</span>
+          <span class="run-summary-pill">${verification}</span>
+          <span class="run-summary-pill">${security}</span>
+        </div>
+        <div class="run-summary-body">${digestItem.task || "Summary-stream run surfaced by the backend adapter."}</div>
+        <div class="timeline-chip-row">
+          <button type="button" class="timeline-chip" data-action="open-explain">Open Explain</button>
+          <button type="button" class="timeline-chip" data-action="open-source-context">Source Context</button>
+          <button type="button" class="timeline-chip" data-action="open-terminal">Terminal</button>
+        </div>
+      </div>
+    `;
+
+    for (const button of root.querySelectorAll<HTMLButtonElement>(".timeline-chip")) {
+      const action = button.dataset.action as ChipAction | undefined;
+      if (!action) {
+        continue;
+      }
+      button.addEventListener("click", () => handleChipAction(action));
+    }
+    return;
+  }
+
   const visibleChanges = getVisibleSourceChanges();
   const primaryChange = getPrimarySourceChange(visibleChanges);
   if (!primaryChange) {
@@ -1164,6 +1363,83 @@ function renderConversation(items: ConversationItem[]) {
   }
 }
 
+async function openExplainForSelectedRun() {
+  const selectedRunId = getSelectedRunId();
+  if (!selectedRunId) {
+    appendFallbackExplain();
+    return;
+  }
+
+  try {
+    const payload =
+      desktopExplainCache.get(selectedRunId) ??
+      (await invoke<DesktopExplainPayload>("desktop_run_explain", { runId: selectedRunId }));
+    desktopExplainCache.set(selectedRunId, payload);
+
+    const detailItems: ConversationDetail[] = [
+      { label: "run", value: payload.run.run_id },
+      { label: "next", value: payload.explanation.next_action || payload.evidence_digest.next_action || "no next action" },
+    ];
+    if (payload.run.branch) {
+      detailItems.push({ label: "branch", value: payload.run.branch });
+    }
+    if (payload.evidence_digest.verification_outcome) {
+      detailItems.push({ label: "verify", value: payload.evidence_digest.verification_outcome });
+    }
+    if (payload.evidence_digest.security_blocked) {
+      detailItems.push({ label: "security", value: payload.evidence_digest.security_blocked });
+    }
+
+    const bodyParts = [payload.explanation.summary];
+    if (payload.explanation.reasons.length > 0) {
+      bodyParts.push(`Reasons: ${payload.explanation.reasons.join(" | ")}`);
+    }
+    if (payload.recent_events.length > 0) {
+      const recent = payload.recent_events
+        .slice(0, 2)
+        .map((item) => `${item.event}: ${item.message}`)
+        .join(" | ");
+      bodyParts.push(`Recent: ${recent}`);
+    }
+
+    seedConversation.push({
+      type: "operator",
+      category: "activity",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Explain opened",
+      body: bodyParts.join(" "),
+      details: detailItems,
+      tone: "info",
+      runId: payload.run.run_id,
+    });
+  } catch (error) {
+    console.warn("Failed to load desktop explain payload", error);
+    appendFallbackExplain();
+  }
+
+  renderTimelineFilters();
+  renderRunSummary();
+  renderConversation(seedConversation);
+}
+
+function appendFallbackExplain() {
+  seedConversation.push({
+    type: "operator",
+    category: "activity",
+    timestamp: "09:47",
+    actor: "Operator",
+    title: "Explain opened",
+    body: "This run is blocked on branch/head alignment after review passed. Changed files and commit readiness stay available in the context sheet and source-control surface.",
+    details: [
+      { label: "run", value: "run-246" },
+      { label: "focus", value: "branch/head alignment" },
+    ],
+    tone: "info",
+    runId: "run-246",
+  });
+}
+
 function handleChipAction(action: ChipAction) {
   switch (action) {
     case "open-editor":
@@ -1177,23 +1453,7 @@ function handleChipAction(action: ChipAction) {
       setTerminalDrawer(true);
       break;
     case "open-explain":
-      seedConversation.push({
-        type: "operator",
-        category: "activity",
-        timestamp: "09:47",
-        actor: "Operator",
-        title: "Explain opened",
-        body: "This run is blocked on branch/head alignment after review passed. Changed files and commit readiness stay available in the context sheet and source-control surface.",
-        details: [
-          { label: "run", value: "run-246" },
-          { label: "focus", value: "branch/head alignment" },
-        ],
-        tone: "info",
-        runId: "run-246",
-      });
-      renderTimelineFilters();
-      renderRunSummary();
-      renderConversation(seedConversation);
+      void openExplainForSelectedRun();
       break;
   }
 }
@@ -1687,6 +1947,68 @@ function inferLanguageFromPath(path: string) {
   return "Text";
 }
 
+function buildDesktopSummaryConversation(snapshot: DesktopSummarySnapshot): ConversationItem[] {
+  const board = snapshot.board.summary;
+  const digest = snapshot.digest.summary;
+  const inbox = snapshot.inbox.summary;
+  const topInboxItem = snapshot.inbox.items[0];
+
+  const items: ConversationItem[] = [
+    {
+      type: "operator",
+      category: "activity",
+      timestamp: new Date(snapshot.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Summary stream connected",
+      body: "Tauri is reading board, inbox, and digest surfaces from the backend adapter instead of treating raw PTY output as the primary UI source.",
+      details: [
+        { label: "panes", value: `${board.pane_count}` },
+        { label: "inbox", value: `${inbox.item_count}` },
+        { label: "runs", value: `${digest.item_count}` },
+      ],
+      tone: "info",
+    },
+  ];
+
+  if (topInboxItem) {
+    items.push({
+      type: "system",
+      category: "attention",
+      timestamp: new Date(snapshot.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: topInboxItem.label || topInboxItem.pane_id || "System",
+      title: `Inbox: ${topInboxItem.kind}`,
+      body: topInboxItem.message,
+      details: [
+        { label: "branch", value: topInboxItem.branch || "no branch" },
+        { label: "review", value: topInboxItem.review_state || "n/a" },
+        { label: "task", value: topInboxItem.task_state || "n/a" },
+      ],
+      tone: "warning",
+      statusLabel: topInboxItem.kind,
+    });
+  }
+
+  return items;
+}
+
+async function loadDesktopSummary() {
+  try {
+    const snapshot = await invoke<DesktopSummarySnapshot>("desktop_summary_snapshot");
+    desktopSummarySnapshot = snapshot;
+
+    const existingTitles = new Set(["Summary stream connected", "Inbox: review_pending", "Inbox: review_failed", "Inbox: task_blocked"]);
+    const retainedConversation = seedConversation.filter((item) => !item.title || !existingTitles.has(item.title));
+    seedConversation.splice(0, seedConversation.length, ...buildDesktopSummaryConversation(snapshot), ...retainedConversation);
+
+    renderSessions();
+    renderFooterLane();
+    renderRunSummary();
+    renderConversation(seedConversation);
+  } catch (error) {
+    console.warn("Failed to load desktop summary snapshot", error);
+  }
+}
+
 function initializeSidebarResize() {
   const appShell = document.getElementById("app-shell");
   const handle = document.getElementById("sidebar-resizer");
@@ -1742,6 +2064,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderAttachmentTray();
   renderCommandBar();
   renderEditorSurface();
+  await loadDesktopSummary();
   syncResponsiveShell();
   setEditorSurface(false);
   setTerminalDrawer(false);
