@@ -310,6 +310,37 @@ function Get-MatchedCommits {
     return @($Subjects | Where-Object { Test-MatchesAny -Text $_ -Patterns $Patterns })
 }
 
+function Get-RepoReferenceSuffix {
+    param(
+        [AllowNull()]
+        [string]$Text
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return ''
+    }
+
+    $matches = [regex]::Matches($Text, '#\d+')
+    if ($matches.Count -eq 0) {
+        return ''
+    }
+
+    $refs = New-Object System.Collections.Generic.List[string]
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($match in $matches) {
+        $token = [string]$match.Value
+        if ($seen.Add($token)) {
+            $refs.Add($token)
+        }
+    }
+
+    if ($refs.Count -eq 0) {
+        return ''
+    }
+
+    return ' (' + (($refs.ToArray()) -join ', ') + ')'
+}
+
 function Remove-ExistingBenefits {
     param(
         [string[]]$Items,
@@ -326,6 +357,37 @@ function Remove-ExistingBenefits {
     }
 
     return @($Items | Where-Object { -not $existingSet.Contains($_) })
+}
+
+function Get-UniqueBenefitsWithRefs {
+    param(
+        [string[]]$Values,
+        [int]$Limit = 5
+    )
+
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    $results = New-Object System.Collections.Generic.List[string]
+
+    foreach ($value in $Values) {
+        $normalized = ConvertTo-UserBenefit -Text $value
+        if ([string]::IsNullOrWhiteSpace($normalized)) {
+            continue
+        }
+
+        if (-not $seen.Add($normalized)) {
+            continue
+        }
+
+        $suffix = Get-RepoReferenceSuffix -Text $value
+        $display = if ([string]::IsNullOrWhiteSpace($suffix)) { $normalized } else { $normalized + $suffix }
+        $results.Add($display)
+
+        if ($results.Count -ge $Limit) {
+            break
+        }
+    }
+
+    return @($results.ToArray())
 }
 
 function Add-Section {
@@ -405,6 +467,11 @@ if (Test-Path $backlogFullPath) {
     Write-Warning "[release-notes] backlog not found at $backlogFullPath; generating from git history only."
 }
 $doneTasksForVersion = @($tasks | Where-Object { $_.TargetVersion -eq $Version -and $_.Status -eq 'done' })
+$doneTaskTitlesForVersion = @(
+    $doneTasksForVersion |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_.Title) } |
+        Select-Object -ExpandProperty Title
+)
 
 $previousTag = Get-PreviousTag -CurrentTag $Version
 $commitRange = if ($null -ne $previousTag) { "$previousTag..$Version" } else { $Version }
@@ -435,6 +502,7 @@ if ($highlightCandidates.Count -eq 0) {
 }
 
 $featureSource = @()
+$featureSource += @($doneTaskTitlesForVersion | Where-Object { $_ -notmatch '#\d+' })
 $featureSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Direct Commander.?Reviewer review flow')
 $featureSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('runtime state machine', 'closed-loop orchestra startup')
 $featureSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('bootstrap verification', 'bootstrap invariants')
@@ -442,6 +510,7 @@ $featureSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Comm
 $featureSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('first-class task and review state model', 'first-class pane state model')
 $featureSource += @($commitSubjects | Where-Object { $_ -match '^feat' })
 $fixSource = @()
+$fixSource += @($doneTaskTitlesForVersion | Where-Object { $_ -match '#\d+' })
 $fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('winsmux send silent failure', 'target pane.*not found', 'fail when target pane is missing')
 $fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Monitoring stack non-functional', 'watchdog.?Commander delivery path missing')
 $fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('false success', 'pane creation does not actually occur', 'detached orchestra layout reliability')
@@ -489,14 +558,14 @@ $choreSource += @(
         }
 )
 
-$highlights = @(Get-UniqueBenefits -Values $highlightCandidates -Limit 3)
-$features = @(Get-UniqueBenefits -Values $featureSource -Limit 5)
+$highlights = @(Get-UniqueBenefitsWithRefs -Values $highlightCandidates -Limit 3)
+$features = @(Get-UniqueBenefitsWithRefs -Values $featureSource -Limit 5)
 $features = @($highlights + (Remove-ExistingBenefits -Items $features -Existing $highlights))
 $features = @($features | Select-Object -First 6)
-$fixes = @(Get-UniqueBenefits -Values $fixSource -Limit 5)
-$security = @(Get-UniqueBenefits -Values $securitySource -Limit 2)
-$documentation = @(Get-UniqueBenefits -Values $docsSource -Limit 4)
-$chores = @(Get-UniqueBenefits -Values $choreSource -Limit 6)
+$fixes = @(Get-UniqueBenefitsWithRefs -Values $fixSource -Limit 5)
+$security = @(Get-UniqueBenefitsWithRefs -Values $securitySource -Limit 2)
+$documentation = @(Get-UniqueBenefitsWithRefs -Values $docsSource -Limit 4)
+$chores = @(Get-UniqueBenefitsWithRefs -Values $choreSource -Limit 6)
 $chores = @($security + (Remove-ExistingBenefits -Items $chores -Existing $security))
 $chores = @($chores | Select-Object -First 4)
 

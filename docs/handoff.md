@@ -63,6 +63,8 @@
 - Closed GitHub issues [#315](https://github.com/Sora-bluesky/winsmux/issues/315) and [#318](https://github.com/Sora-bluesky/winsmux/issues/318) after their merged fixes were reflected in planning truth.
 - Drafted and saved the `v0.20.2` release notes and X thread under `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\ChangeLogs\winsmux\v0.20.2\`.
 - Tagged and published `v0.20.2`, then replaced the workflow-generated body with the curated Codex-style release notes and removed the extra `release-body.md` asset so the public release ships only `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
+- Updated the release-notes policy and generator so future GitHub Release bullets preserve visible issue/PR refs inline in Codex style instead of stripping them during summarization.
+- Fresh reviewer `Hooke` timed out with `no result yet` after a 30-second wait and was closed; fallback gate for the release-formatting diff is `pwsh scripts/generate-release-notes.ps1 + manual diff review + git diff --check`.
 - Merged `TASK-287` via PR [#393](https://github.com/Sora-bluesky/winsmux/pull/393), adding the keyboard-first operator command bar (`Ctrl/Cmd+K`) with quick actions, IME-safe input handling, focus restore, and accessible active-option semantics.
 - Merged `TASK-298` via PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), rewriting `README.ja.md` to match the public operator model, shrinking maintainer-only planning readmes into internal stubs, and making tracked public config/docs safer for external users.
 - Re-synced the external planning backlog/roadmap after PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), marking `TASK-298` as done so `v0.20.0` now shows `100% (12/12)`.
@@ -160,6 +162,7 @@
 - Current local `v0.20.2` closing slice passes `git diff --check` aside from benign LF->CRLF warnings on edited files.
 - PR [#403](https://github.com/Sora-bluesky/winsmux/pull/403) CI passed before merge: `Pester Tests` run `24300148509`.
 - `v0.20.2` release workflow run `24300269827` completed successfully and published `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
+- Current local release-formatting slice passes `pwsh scripts/generate-release-notes.ps1 -Version v0.20.2 ...` and `git diff --check` aside from benign LF->CRLF warnings on edited files.
 
 ## Next actions
 
