@@ -186,6 +186,7 @@ function Get-PaneStatusRecords {
             AgentRole       = $entry.AgentRole
             TimeoutPolicy   = $entry.TimeoutPolicy
             HandoffRefs     = @($entry.HandoffRefs)
+            SecurityPolicy  = $entry.SecurityPolicy
         }
     }
 

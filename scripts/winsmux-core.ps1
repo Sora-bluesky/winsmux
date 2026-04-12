@@ -901,6 +901,7 @@ function Get-CurrentPaneManifestContext {
         ReviewState         = [string]$context.ReviewState
         Branch              = [string]$context.Branch
         HeadSha             = [string]$context.HeadSha
+        SecurityPolicy      = $context.SecurityPolicy
         ParentRunId         = [string]$context.ParentRunId
         Goal                = [string]$context.Goal
         TaskType            = [string]$context.TaskType
@@ -2941,6 +2942,7 @@ function Get-BoardPayload {
                 agent_role         = [string]$_.AgentRole
                 timeout_policy     = [string]$_.TimeoutPolicy
                 handoff_refs       = @($_.HandoffRefs)
+                security_policy    = $_.SecurityPolicy
             }
         }
     )
@@ -3175,6 +3177,8 @@ function Get-InboxActionableEventKind {
         'commander.review_failed'    { return 'review_failed' }
         'commander.blocked'          { return 'blocked' }
         'commander.commit_ready'     { return 'commit_ready' }
+        'pipeline.security.blocked'  { return 'blocked' }
+        'security.policy.blocked'    { return 'blocked' }
         default                      { return '' }
     }
 }
@@ -3468,6 +3472,85 @@ function Get-ConsultationSummaryFromPacket {
     }
 }
 
+function Get-LatestRunEventDataSnapshot {
+    param(
+        [object[]]$EventRecords = @(),
+        [string[]]$EventNames = @(),
+        [string[]]$DataFields = @()
+    )
+
+    $snapshot = [ordered]@{}
+    $matched = $false
+    foreach ($eventRecord in @($EventRecords | Sort-Object @{ Expression = { [string]$_.timestamp } }, @{ Expression = { [int]$_.line_number } })) {
+        $eventName = [string]$eventRecord['event']
+        if (@($EventNames).Count -gt 0 -and $eventName -notin $EventNames) {
+            continue
+        }
+
+        $data = $null
+        if ($eventRecord.Contains('data')) {
+            $data = $eventRecord['data']
+        }
+        if ($null -eq $data -or $data -isnot [System.Collections.IDictionary]) {
+            continue
+        }
+
+        foreach ($fieldName in @($DataFields)) {
+            if ($data.Contains($fieldName)) {
+                $snapshot[$fieldName] = $data[$fieldName]
+                $matched = $true
+            }
+        }
+    }
+
+    if (-not $matched) {
+        return $null
+    }
+
+    return $snapshot
+}
+
+function Get-VerificationSnapshotFromEventRecords {
+    param([object[]]$EventRecords = @())
+
+    $snapshot = Get-LatestRunEventDataSnapshot `
+        -EventRecords $EventRecords `
+        -EventNames @('pipeline.verify.pass', 'pipeline.verify.fail', 'pipeline.verify.partial') `
+        -DataFields @('verification_contract', 'verification_result')
+    if ($null -eq $snapshot) {
+        return $null
+    }
+
+    return [ordered]@{
+        verification_contract = if ($snapshot.Contains('verification_contract')) { $snapshot['verification_contract'] } else { $null }
+        verification_result   = if ($snapshot.Contains('verification_result')) { $snapshot['verification_result'] } else { $null }
+    }
+}
+
+function Get-SecurityVerdictFromEventRecords {
+    param([object[]]$EventRecords = @())
+
+    $snapshot = Get-LatestRunEventDataSnapshot `
+        -EventRecords $EventRecords `
+        -EventNames @('pipeline.security.blocked', 'security.policy.blocked') `
+        -DataFields @('stage', 'attempt', 'task', 'verdict', 'reason', 'advisory_mode', 'allow', 'block', 'next_action')
+    if ($null -eq $snapshot) {
+        return $null
+    }
+
+    return [ordered]@{
+        stage         = if ($snapshot.Contains('stage')) { [string]$snapshot['stage'] } else { '' }
+        attempt       = if ($snapshot.Contains('attempt')) { $snapshot['attempt'] } else { $null }
+        task          = if ($snapshot.Contains('task')) { [string]$snapshot['task'] } else { '' }
+        verdict       = if ($snapshot.Contains('verdict')) { [string]$snapshot['verdict'] } else { '' }
+        reason        = if ($snapshot.Contains('reason')) { [string]$snapshot['reason'] } else { '' }
+        advisory_mode = if ($snapshot.Contains('advisory_mode')) { [bool]$snapshot['advisory_mode'] } else { $false }
+        allow         = if ($snapshot.Contains('allow')) { @($snapshot['allow']) } else { @() }
+        block         = if ($snapshot.Contains('block')) { @($snapshot['block']) } else { @() }
+        next_action   = if ($snapshot.Contains('next_action')) { [string]$snapshot['next_action'] } else { '' }
+    }
+}
+
 function New-RunPacketFromRun {
     param([Parameter(Mandatory = $true)]$Run)
 
@@ -3499,6 +3582,10 @@ function New-RunPacketFromRun {
         pane_ids          = @($Run.pane_ids)
         roles             = @($Run.roles)
         changed_files     = @($Run.changed_files)
+        security_policy   = $Run.security_policy
+        security_verdict  = $Run.security_verdict
+        verification_contract = $Run.verification_contract
+        verification_result   = $Run.verification_result
         last_event        = [string]$Run.last_event
         last_event_at     = [string]$Run.last_event_at
     }
@@ -3569,6 +3656,10 @@ function New-RunResultPacket {
         action_items          = @($Run.action_items)
         review_state          = $ReviewState
         review_contract       = $reviewContract
+        verification_contract = $Run.verification_contract
+        verification_result   = $Run.verification_result
+        security_policy       = $Run.security_policy
+        security_verdict      = $Run.security_verdict
         recent_events         = @($RecentEvents)
     }
 }
@@ -3740,6 +3831,21 @@ function ConvertTo-RunEventRecord {
         command_hash         = if ($null -ne $experimentPacket) { [string]$experimentPacket.command_hash } else { '' }
         observation_pack     = $observationPack
         consultation_packet  = $consultationPacket
+        verification_contract = if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('verification_contract')) { $data['verification_contract'] } else { $null }
+        verification_result   = if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('verification_result')) { $data['verification_result'] } else { $null }
+        security_verdict      = if (($EventRecord['event'] -in @('pipeline.security.blocked', 'security.policy.blocked')) -and $null -ne $data -and $data -is [System.Collections.IDictionary]) {
+            [ordered]@{
+                stage         = if ($data.Contains('stage')) { [string]$data['stage'] } else { '' }
+                attempt       = if ($data.Contains('attempt')) { $data['attempt'] } else { $null }
+                task          = if ($data.Contains('task')) { [string]$data['task'] } else { '' }
+                verdict       = if ($data.Contains('verdict')) { [string]$data['verdict'] } else { '' }
+                reason        = if ($data.Contains('reason')) { [string]$data['reason'] } else { '' }
+                advisory_mode = if ($data.Contains('advisory_mode')) { [bool]$data['advisory_mode'] } else { $false }
+                allow         = if ($data.Contains('allow')) { @($data['allow']) } else { @() }
+                block         = if ($data.Contains('block')) { @($data['block']) } else { @() }
+                next_action   = if ($data.Contains('next_action')) { [string]$data['next_action'] } else { '' }
+            }
+        } else { $null }
     }
 }
 
@@ -3792,6 +3898,10 @@ function Get-RunsPayload {
                 timeout_policy     = [string]$pane.timeout_policy
                 handoff_refs       = [System.Collections.Generic.List[string]]::new()
                 experiment_packet  = $null
+                security_policy    = $pane.security_policy
+                security_verdict   = $null
+                verification_contract = $null
+                verification_result   = $null
             }
         }
 
@@ -3828,6 +3938,9 @@ function Get-RunsPayload {
         }
         if ([string]::IsNullOrWhiteSpace([string]$run.timeout_policy) -and -not [string]::IsNullOrWhiteSpace([string]$pane.timeout_policy)) {
             $run.timeout_policy = [string]$pane.timeout_policy
+        }
+        if ($null -eq $run.security_policy -and $null -ne $pane.security_policy) {
+            $run.security_policy = $pane.security_policy
         }
 
         if (-not [string]::IsNullOrWhiteSpace([string]$pane.label) -and -not $run.labels.Contains([string]$pane.label)) {
@@ -3921,6 +4034,16 @@ function Get-RunsPayload {
             }
 
             $run.experiment_packet = $experimentPacket
+            $verificationSnapshot = Get-VerificationSnapshotFromEventRecords -EventRecords $matchingEvents
+            if ($null -ne $verificationSnapshot) {
+                $run.verification_contract = $verificationSnapshot.verification_contract
+                $run.verification_result = $verificationSnapshot.verification_result
+            }
+
+            $securityVerdict = Get-SecurityVerdictFromEventRecords -EventRecords $matchingEvents
+            if ($null -ne $securityVerdict) {
+                $run.security_verdict = $securityVerdict
+            }
         }
     }
 
@@ -3965,6 +4088,10 @@ function Get-RunsPayload {
                 timeout_policy     = [string]$run.timeout_policy
                 handoff_refs       = @($run.handoff_refs)
                 experiment_packet  = $run.experiment_packet
+                security_policy    = $run.security_policy
+                security_verdict   = $run.security_verdict
+                verification_contract = $run.verification_contract
+                verification_result   = $run.verification_result
             }
         }
     )
@@ -4056,11 +4183,72 @@ function ConvertTo-EvidenceDigestItem {
         action_item_count  = @($Run.action_items).Count
         last_event         = [string]$Run.last_event
         last_event_at      = [string]$Run.last_event_at
+        verification_outcome = if ($null -ne $Run.verification_result) { [string]$Run.verification_result.outcome } else { '' }
+        security_blocked   = if ($null -ne $Run.security_verdict) { [string]$Run.security_verdict.verdict } else { '' }
         hypothesis         = if ($null -ne $experimentPacket) { [string]$experimentPacket.hypothesis } else { '' }
         confidence         = if ($null -ne $experimentPacket) { $experimentPacket.confidence } else { $null }
         observation_pack_ref = if ($null -ne $experimentPacket) { [string]$experimentPacket.observation_pack_ref } else { '' }
         consultation_ref   = if ($null -ne $experimentPacket) { [string]$experimentPacket.consultation_ref } else { '' }
     }
+}
+
+function ConvertTo-DigestSummaryEventItem {
+    param([Parameter(Mandatory = $true)]$EventRecord)
+
+    $kind = Get-InboxActionableEventKind -EventRecord $EventRecord
+    if ([string]::IsNullOrWhiteSpace($kind)) {
+        return $null
+    }
+
+    $data = $null
+    if ($EventRecord.Contains('data')) {
+        $data = $EventRecord['data']
+    }
+
+    $branch = [string]$EventRecord['branch']
+    $headSha = [string]$EventRecord['head_sha']
+    $taskId = ''
+    $runId = ''
+    $nextAction = ''
+    $changedFileCount = 0
+    if ($null -ne $data -and $data -is [System.Collections.IDictionary]) {
+        if ([string]::IsNullOrWhiteSpace($branch) -and $data.Contains('branch')) { $branch = [string]$data['branch'] }
+        if ([string]::IsNullOrWhiteSpace($headSha) -and $data.Contains('head_sha')) { $headSha = [string]$data['head_sha'] }
+        if ($data.Contains('task_id')) { $taskId = [string]$data['task_id'] }
+        if ($data.Contains('run_id')) { $runId = [string]$data['run_id'] }
+        if ($data.Contains('next_action')) { $nextAction = [string]$data['next_action'] }
+        if ($data.Contains('changed_file_count')) { $changedFileCount = [int]$data['changed_file_count'] }
+    }
+
+    return [ordered]@{
+        timestamp          = [string]$EventRecord['timestamp']
+        kind               = $kind
+        source_event       = [string]$EventRecord['event']
+        run_id             = $runId
+        task_id            = $taskId
+        label              = [string]$EventRecord['label']
+        pane_id            = [string]$EventRecord['pane_id']
+        role               = [string]$EventRecord['role']
+        message            = [string]$EventRecord['message']
+        next_action        = $nextAction
+        branch             = $branch
+        head_sha           = $headSha
+        head_short         = Get-ShortHeadSha -HeadSha $headSha
+        changed_file_count = $changedFileCount
+    }
+}
+
+function Get-DigestSummaryEventItems {
+    param([Parameter(Mandatory = $true)][object[]]$EventRecords)
+
+    return @(
+        foreach ($eventRecord in @($EventRecords)) {
+            $item = ConvertTo-DigestSummaryEventItem -EventRecord $eventRecord
+            if ($null -ne $item) {
+                $item
+            }
+        }
+    )
 }
 
 function Get-DigestPayload {
@@ -4136,6 +4324,12 @@ function Get-ExplainPayload {
     }
     foreach ($actionItem in @($run.action_items | Select-Object -First 3)) {
         $reasons.Add("action:$([string]$actionItem.kind)") | Out-Null
+    }
+    if ($null -ne $run.verification_result -and -not [string]::IsNullOrWhiteSpace([string]$run.verification_result.outcome)) {
+        $reasons.Add("verify=$([string]$run.verification_result.outcome)") | Out-Null
+    }
+    if ($null -ne $run.security_verdict -and -not [string]::IsNullOrWhiteSpace([string]$run.security_verdict.verdict)) {
+        $reasons.Add("security=$([string]$run.security_verdict.verdict)") | Out-Null
     }
 
     $evidenceDigest = ConvertTo-EvidenceDigestItem -Run $run
@@ -4241,6 +4435,25 @@ function Get-DigestDeltaItems {
     )
 }
 
+function Write-DigestEventStreamItem {
+    param(
+        [Parameter(Mandatory = $true)]$Item,
+        [switch]$Json
+    )
+
+    if ($Json) {
+        $Item | ConvertTo-Json -Compress -Depth 10 | Write-Output
+        return
+    }
+
+    Write-Output ("[{0}] {1} {2} ({3}) {4}" -f `
+        [string]$Item.timestamp, `
+        [string]$Item.kind, `
+        [string]$Item.label, `
+        [string]$Item.pane_id, `
+        [string]$Item.message)
+}
+
 function Write-DigestStreamItem {
     param(
         [Parameter(Mandatory = $true)]$Item,
@@ -4282,33 +4495,77 @@ function Invoke-Digest {
 
     $jsonOutput = $false
     $streamOutput = $false
+    $eventSummaryOutput = $false
 
     foreach ($token in $tokens) {
         switch ($token) {
             '--json'   { $jsonOutput = $true }
             '--stream' { $streamOutput = $true }
-            default    { Stop-WithError "usage: winsmux digest [--json] [--stream]" }
+            '--events' { $eventSummaryOutput = $true }
+            default    { Stop-WithError "usage: winsmux digest [--json] [--stream] [--events]" }
         }
     }
 
     $projectDir = (Get-Location).Path
     if ($streamOutput) {
-        $snapshot = Get-DigestPayload -ProjectDir $projectDir
-        foreach ($item in @($snapshot.items)) {
-            Write-DigestStreamItem -Item $item -Json:$jsonOutput
+        if ($eventSummaryOutput) {
+            $snapshotEvents = Get-DigestSummaryEventItems -EventRecords @(Get-BridgeEventRecords -ProjectDir $projectDir)
+            foreach ($item in @($snapshotEvents)) {
+                Write-DigestEventStreamItem -Item $item -Json:$jsonOutput
+            }
+        } else {
+            $snapshot = Get-DigestPayload -ProjectDir $projectDir
+            foreach ($item in @($snapshot.items)) {
+                Write-DigestStreamItem -Item $item -Json:$jsonOutput
+            }
         }
 
         $cursor = @(Get-BridgeEventRecords -ProjectDir $projectDir).Count
         while ($true) {
             $delta = Get-BridgeEventDelta -ProjectDir $projectDir -Cursor $cursor
             $cursor = [int]$delta.cursor
-            $items = Get-DigestDeltaItems -ProjectDir $projectDir -EventRecords @($delta.events)
+            $items = if ($eventSummaryOutput) {
+                Get-DigestSummaryEventItems -EventRecords @($delta.events)
+            } else {
+                Get-DigestDeltaItems -ProjectDir $projectDir -EventRecords @($delta.events)
+            }
             foreach ($item in @($items)) {
-                Write-DigestStreamItem -Item $item -Json:$jsonOutput
+                if ($eventSummaryOutput) {
+                    Write-DigestEventStreamItem -Item $item -Json:$jsonOutput
+                } else {
+                    Write-DigestStreamItem -Item $item -Json:$jsonOutput
+                }
             }
 
             Start-Sleep -Seconds 2
         }
+    }
+
+    if ($eventSummaryOutput) {
+        $items = Get-DigestSummaryEventItems -EventRecords @(Get-BridgeEventRecords -ProjectDir $projectDir)
+        $payload = [ordered]@{
+            generated_at = (Get-Date).ToString('o')
+            project_dir  = $projectDir
+            summary      = [ordered]@{
+                item_count = @($items).Count
+            }
+            items        = @($items)
+        }
+
+        if ($jsonOutput) {
+            $payload | ConvertTo-Json -Compress -Depth 10 | Write-Output
+            return
+        }
+
+        if (@($items).Count -eq 0) {
+            Write-Output "(no digest events)"
+            return
+        }
+
+        foreach ($item in @($items)) {
+            Write-DigestEventStreamItem -Item $item
+        }
+        return
     }
 
     $payload = Get-DigestPayload -ProjectDir $projectDir
@@ -5347,7 +5604,7 @@ Commands:
   board [--json]            Report pane/task/review/git session board
 inbox [--json] [--stream] Report actionable approvals/review/blockers
 runs [--json]             Report run-oriented session view
-digest [--json] [--stream] Report high-signal evidence digest per run
+digest [--json] [--stream] [--events] Report high-signal evidence digest per run or actionable event summaries
 explain <run_id> [--json] [--follow]  Explain one run and optionally follow new events
   poll-events [cursor]      Return new monitor events from .winsmux/events.jsonl
   signal <channel>          Send signal to unblock a waiting process

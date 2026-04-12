@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T18:25:00+09:00
+> Updated: 2026-04-12T20:05:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -14,8 +14,7 @@
 - `v0.20.0` is released.
 - `v0.20.1` is now fully implemented at `100% (7/7)` in the external planning backlog/roadmap after rebaselining the shipped transport/ledger slices and moving the remaining SQLite FTS5 + stdin parity work into follow-up tasks.
 - `v0.20.1` is released at [v0.20.1](https://github.com/Sora-bluesky/winsmux/releases/tag/v0.20.1); release workflow run `24299025847` published `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
-- `v0.20.2` is now the active implementation milestone, starting with reviewer-governance hardening and release-workflow maintenance.
-- `v0.20.2` remains the active implementation milestone; `TASK-207` is merged and the next in-flight slice is `TASK-210` on branch `codex/task210-review-scope-contract-20260412`.
+- `v0.20.2` is the active implementation milestone; `TASK-207`, `TASK-210`, `TASK-272`, `TASK-273`, and `TASK-274` are implemented locally, and the closing PR slice is in progress on `codex/v0202-verify-security-summary-20260412`.
 - Planning source of truth is externalized outside the public repository and syncs automatically into the private planning root.
 - `v0.21.x` private planning is aligned to a conversation-first Tauri operator shell, with Codex-App-like shell rules reflected in Figma and backlog notes.
 - `v0.24.x` private planning is split into schema, ledger, machine contract, cutover, and canary phases for Rust runtime convergence before `v1.0.0`.
@@ -53,6 +52,12 @@
 - Started the `TASK-210` runtime slice on `codex/task210-review-scope-contract-20260412`, adding `request.review_contract` to `review-request`, surfacing that contract through `explain/result_packet`, and rejecting `review-approve` / `review-fail` when a pending request lacks the mandatory scope contract.
 - Updated external planning notes so `TASK-210`, `TASK-272`, `TASK-302`, `TASK-303`, `TASK-304`, and `TASK-305` explicitly encode Codex-derived UI acceptance rules (`utility-first`, `real-data-first`, `minimal chrome`, `calm hierarchy`, `one accent`), and added `TASK-308` for Playwright-based desktop viewport / overlap / drawer verification.
 - Updated [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) with a short `Adaptation guardrails` bridge so Codex-derived UI reuse points back to release-train acceptance criteria without turning the notice file into additional license terms.
+- Started the `v0.20.2` closing slice on `codex/v0202-verify-security-summary-20260412`, wiring structured verification packets, run-scoped security verdicts/policies, and digest event summaries into the runtime surfaces that back `runs`, `digest`, `explain`, and one-shot orchestration.
+- Extended [winsmux-core/scripts/team-pipeline.ps1](../winsmux-core/scripts/team-pipeline.ps1) so verify stages emit `VERIFY_PASS / VERIFY_FAIL / VERIFY_PARTIAL`, produce utility-first verification packets, and surface security-block decisions as explicit blocked verdicts instead of prompt-only text.
+- Extended [scripts/winsmux-core.ps1](../scripts/winsmux-core.ps1) so `runs`, `result_packet`, `run_packet`, `digest --events`, and `explain` hydrate `verification_contract`, `verification_result`, `security_policy`, and `security_verdict` from ledger events and manifest context.
+- Extended [winsmux-core/scripts/pane-control.ps1](../winsmux-core/scripts/pane-control.ps1) and [winsmux-core/scripts/pane-status.ps1](../winsmux-core/scripts/pane-status.ps1) so manifest `security_policy` survives into pane/run surfaces even when stored as a JSON-escaped scalar in `.winsmux/manifest.yaml`.
+- Extended [tests/psmux-bridge.Tests.ps1](../tests/psmux-bridge.Tests.ps1) to cover structured verify parsing, blocked security verdicts, manifest security policy hydration, digest event summaries, and explain/runs packet projection; local focused regression now passes at `141/141`.
+- Fresh reviewer `Dirac` timed out with `no result yet` after a 30-second wait and was closed; fallback gate for this slice is `manual diff review + Invoke-Pester tests/psmux-bridge.Tests.ps1 + git diff --check`.
 - Merged `TASK-287` via PR [#393](https://github.com/Sora-bluesky/winsmux/pull/393), adding the keyboard-first operator command bar (`Ctrl/Cmd+K`) with quick actions, IME-safe input handling, focus restore, and accessible active-option semantics.
 - Merged `TASK-298` via PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), rewriting `README.ja.md` to match the public operator model, shrinking maintainer-only planning readmes into internal stubs, and making tracked public config/docs safer for external users.
 - Re-synced the external planning backlog/roadmap after PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), marking `TASK-298` as done so `v0.20.0` now shows `100% (12/12)`.
@@ -146,12 +151,14 @@
 - Current local `TASK-210` runtime-contract slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `136/136 PASS`.
 - Current local `TASK-210` runtime-contract slice passes focused regression: `Invoke-Pester tests/Integration.GateEnforcement.Tests.ps1` -> `45/45 PASS`.
 - Current local `TASK-210` runtime-contract slice passes `git diff --check` aside from benign LF->CRLF warnings on edited files.
+- Current local `v0.20.2` closing slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `141/141 PASS`.
+- Current local `v0.20.2` closing slice passes `git diff --check` aside from benign LF->CRLF warnings on edited files.
 
 ## Next actions
 
-1. Run a fresh reviewer on the `TASK-210` slice, then stage / commit / push / open the PR if the fallback gate still looks clean.
-2. After `TASK-210`, continue `v0.20.2` with `TASK-272` so verification output becomes utility-first and structured instead of prompt-only.
-3. Keep `TASK-308` as the explicit `v0.22.1` gate for Playwright viewport / overlap / drawer verification when Codex-derived desktop surfaces become release-bound.
+1. Stage / commit / push the `codex/v0202-verify-security-summary-20260412` closing slice, open the PR, and merge it once CI is green.
+2. Rebaseline external planning so `v0.20.2` reflects the shipped scope of `TASK-272`, `TASK-273`, and `TASK-274`, then sync the roadmap.
+3. Draft and publish the `v0.20.2` release, then update handoff to the released state.
 
 ## Notes
 

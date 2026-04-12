@@ -315,6 +315,70 @@ function Get-TeamPipelineSummaryFromOutput {
     return $cleaned
 }
 
+function Get-TeamPipelineVerificationResultFromOutput {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $null
+    }
+
+    $status = Get-TeamPipelineStatusFromOutput -Text $Text
+    if ([string]::IsNullOrWhiteSpace($status)) {
+        return $null
+    }
+
+    $summary = ''
+    $summaryMatches = [regex]::Matches($Text, '(?im)^\s*SUMMARY:\s*(.+?)\s*$')
+    if ($summaryMatches.Count -gt 0) {
+        $summary = $summaryMatches[$summaryMatches.Count - 1].Groups[1].Value.Trim()
+    } else {
+        $summary = Get-TeamPipelineSummaryFromOutput -Text $Text
+    }
+
+    $checks = @()
+    foreach ($match in [regex]::Matches($Text, '(?im)^\s*CHECK:\s*([^|]+)\|([^|]+)\|(.+?)\s*$')) {
+        $checks += [ordered]@{
+            name   = $match.Groups[1].Value.Trim()
+            status = $match.Groups[2].Value.Trim().ToUpperInvariant()
+            detail = $match.Groups[3].Value.Trim()
+        }
+    }
+
+    $nextAction = ''
+    $nextActionMatches = [regex]::Matches($Text, '(?im)^\s*NEXT_ACTION:\s*(.+?)\s*$')
+    if ($nextActionMatches.Count -gt 0) {
+        $nextAction = $nextActionMatches[$nextActionMatches.Count - 1].Groups[1].Value.Trim()
+    }
+
+    $outcome = switch ($status) {
+        'VERIFY_PASS' { 'PASS' }
+        'VERIFY_FAIL' { 'FAIL' }
+        'VERIFY_PARTIAL' { 'PARTIAL' }
+        'BLOCKED' { 'PARTIAL' }
+        default { 'PARTIAL' }
+    }
+
+    return [ordered]@{
+        outcome     = $outcome
+        summary     = $summary
+        checks      = @($checks)
+        next_action = $nextAction
+        adversarial = $true
+    }
+}
+
+function New-TeamPipelineVerificationContract {
+    return [ordered]@{
+        version          = 1
+        source_task      = 'TASK-272'
+        mode             = 'adversarial_verify'
+        style            = 'utility_first'
+        allowed_outcomes = @('PASS', 'FAIL', 'PARTIAL')
+        required_fields  = @('summary', 'checks', 'next_action')
+        rationale        = 'Verification specialists must return concise structured evidence instead of decorative prose.'
+    }
+}
+
 function Get-TeamPipelineApprovalAction {
     param([AllowNull()][string]$Text)
 
@@ -384,16 +448,174 @@ function Invoke-TeamPipelineApproval {
     }
 }
 
+function Get-TeamPipelineRunPolicy {
+    param([Parameter(Mandatory = $true)][string]$StageName)
+
+    $upperStage = $StageName.ToUpperInvariant()
+    switch -Regex ($upperStage) {
+        '^PLAN$' {
+            return [ordered]@{
+                stage         = $upperStage
+                advisory_mode = $false
+                allow         = @('read', 'analysis')
+                block         = @('write', 'git', 'network', 'destructive')
+            }
+        }
+        '^EXEC$' {
+            return [ordered]@{
+                stage         = $upperStage
+                advisory_mode = $false
+                allow         = @('read', 'write', 'git', 'build', 'test', 'lint')
+                block         = @('force_push', 'hard_reset', 'recursive_delete', 'schema_drop')
+            }
+        }
+        '^VERIFY$' {
+            return [ordered]@{
+                stage         = $upperStage
+                advisory_mode = $false
+                allow         = @('read', 'build', 'test', 'lint')
+                block         = @('write', 'git', 'network', 'destructive')
+            }
+        }
+        '^CONSULT_' {
+            return [ordered]@{
+                stage         = $upperStage
+                advisory_mode = $true
+                allow         = @('read', 'analysis')
+                block         = @('write', 'git', 'network', 'destructive')
+            }
+        }
+        default {
+            return [ordered]@{
+                stage         = $upperStage
+                advisory_mode = $false
+                allow         = @('read')
+                block         = @('destructive')
+            }
+        }
+    }
+}
+
+function Get-TeamPipelineChangedPaths {
+    param([string]$BuilderWorktreePath)
+
+    if ([string]::IsNullOrWhiteSpace($BuilderWorktreePath) -or -not (Test-Path -LiteralPath $BuilderWorktreePath -PathType Container)) {
+        return @()
+    }
+
+    $gitExe = Get-Command git -ErrorAction SilentlyContinue
+    if ($null -eq $gitExe) {
+        return @()
+    }
+
+    try {
+        $changed = & $gitExe.Source -C $BuilderWorktreePath diff --name-only --relative 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            return @()
+        }
+    } catch {
+        return @()
+    }
+
+    return @($changed | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+}
+
+function New-TeamPipelineSecurityVerdict {
+    param(
+        [Parameter(Mandatory = $true)][string]$StageName,
+        [Parameter(Mandatory = $true)][string]$Target,
+        [Parameter(Mandatory = $true)][string]$Reason,
+        [string]$ActionKind = '',
+        [string]$ActionValue = '',
+        [string]$PromptText = ''
+    )
+
+    $policy = Get-TeamPipelineRunPolicy -StageName $StageName
+    return [PSCustomObject]@{
+        packet_type   = 'security_verdict'
+        scope         = 'run'
+        stage         = $policy.stage
+        target        = $Target
+        verdict       = 'BLOCK'
+        reason        = $Reason
+        action_kind   = $ActionKind
+        action_value  = $ActionValue
+        prompt_text   = $PromptText
+        advisory_mode = [bool]$policy.advisory_mode
+        allow         = @($policy.allow)
+        block         = @($policy.block)
+        next_action   = 'revise_request_or_override'
+    }
+}
+
+function New-TeamPipelineVerificationPacket {
+    param(
+        [Parameter(Mandatory = $true)][string]$Task,
+        [Parameter(Mandatory = $true)][string]$VerifyStatus,
+        [Parameter(Mandatory = $true)][string]$VerifierLabel,
+        [string]$BuilderLabel = '',
+        [string]$BuilderWorktreePath = '',
+        [string]$Summary = ''
+    )
+
+    $verdict = switch ($VerifyStatus) {
+        'VERIFY_PASS' { 'PASS' }
+        'VERIFY_FAIL' { 'FAIL' }
+        'BLOCKED' { 'PARTIAL' }
+        default { 'PARTIAL' }
+    }
+
+    $nextAction = switch ($verdict) {
+        'PASS' { 'ready_for_done' }
+        'FAIL' { 'fix_and_rerun_verify' }
+        default { 'unblock_verify' }
+    }
+
+    $verificationResult = Get-TeamPipelineVerificationResultFromOutput -Text $Summary
+    $trimmedSummary = [string]$Summary
+    if ($null -ne $verificationResult -and -not [string]::IsNullOrWhiteSpace([string]$verificationResult.summary)) {
+        $trimmedSummary = [string]$verificationResult.summary
+    }
+    $changedPaths = Get-TeamPipelineChangedPaths -BuilderWorktreePath $BuilderWorktreePath
+    $policy = Get-TeamPipelineRunPolicy -StageName 'VERIFY'
+
+    return [PSCustomObject]@{
+        packet_type        = 'verification_packet'
+        verification_contract = [PSCustomObject](New-TeamPipelineVerificationContract)
+        verification_result = if ($null -ne $verificationResult) { [PSCustomObject]$verificationResult } else { $null }
+        style              = 'utility_first'
+        task               = $Task
+        verifier           = $VerifierLabel
+        builder            = $BuilderLabel
+        builder_worktree   = $BuilderWorktreePath
+        verify_status      = $VerifyStatus
+        verdict            = $verdict
+        changed_paths      = @($changedPaths)
+        changed_path_count = @($changedPaths).Count
+        evidence_refs      = @($changedPaths)
+        failing_probe      = if ($verdict -eq 'PASS') { '' } else { $trimmedSummary }
+        next_action        = if ($null -ne $verificationResult -and -not [string]::IsNullOrWhiteSpace([string]$verificationResult.next_action)) { [string]$verificationResult.next_action } else { $nextAction }
+        summary            = $trimmedSummary
+        policy             = [PSCustomObject]$policy
+    }
+}
+
 function Wait-TeamPipelineStage {
     param(
         [Parameter(Mandatory = $true)][string]$Target,
         [Parameter(Mandatory = $true)][string]$StageName,
         [int]$TimeoutSeconds = 240,
-        [int]$PollIntervalSeconds = 10
+        [int]$PollIntervalSeconds = 10,
+        [string]$ProjectDir = '',
+        [string]$SessionName = '',
+        [string]$Role = '',
+        [string]$Task = '',
+        [int]$Attempt = 0
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $lastOutput = ''
+    $policy = [PSCustomObject](Get-TeamPipelineRunPolicy -StageName $StageName)
 
     while ((Get-Date) -lt $deadline) {
         $readResult = Invoke-TeamPipelineBridge -Arguments @('read', $Target, '120')
@@ -401,16 +623,57 @@ function Wait-TeamPipelineStage {
 
         $status = Get-TeamPipelineStatusFromOutput -Text $lastOutput
         if ($null -ne $status) {
+            $verificationResult = $null
+            $summary = Get-TeamPipelineSummaryFromOutput -Text $lastOutput
+            if ($StageName.ToUpperInvariant() -eq 'VERIFY') {
+                $verificationResult = Get-TeamPipelineVerificationResultFromOutput -Text $lastOutput
+                if ($null -ne $verificationResult -and -not [string]::IsNullOrWhiteSpace([string]$verificationResult.summary)) {
+                    $summary = [string]$verificationResult.summary
+                }
+            }
+
             return [PSCustomObject]@{
                 Stage      = $StageName
                 Target     = $Target
                 Status     = $status
-                Summary    = Get-TeamPipelineSummaryFromOutput -Text $lastOutput
+                Summary    = $summary
                 Transcript = $lastOutput
+                Policy     = $policy
+                SecurityVerdict = $null
+                VerificationResult = $verificationResult
             }
         }
 
-        $approvalAction = Get-TeamPipelineApprovalAction -Text $lastOutput
+        $approvalAction = $null
+        try {
+            $approvalAction = Get-TeamPipelineApprovalAction -Text $lastOutput
+        } catch {
+            $securityVerdict = New-TeamPipelineSecurityVerdict -StageName $StageName -Target $Target -Reason $_.Exception.Message -PromptText $lastOutput
+            if (-not [string]::IsNullOrWhiteSpace($ProjectDir) -and -not [string]::IsNullOrWhiteSpace($SessionName)) {
+                Write-TeamPipelineEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'pipeline.security.blocked' -Message "Security monitor blocked $StageName on $Target." -Role $Role -Target $Target -Data ([ordered]@{
+                    stage          = $securityVerdict.stage
+                    attempt        = $Attempt
+                    task           = $Task
+                    verdict        = $securityVerdict.verdict
+                    reason         = $securityVerdict.reason
+                    advisory_mode  = $securityVerdict.advisory_mode
+                    allow          = @($securityVerdict.allow)
+                    block          = @($securityVerdict.block)
+                    next_action    = $securityVerdict.next_action
+                }) | Out-Null
+            }
+
+            return [PSCustomObject]@{
+                Stage      = $StageName
+                Target     = $Target
+                Status     = 'BLOCKED'
+                Summary    = "Security monitor blocked approval. $($_.Exception.Message)"
+                Transcript = $lastOutput
+                Policy     = $policy
+                SecurityVerdict = $securityVerdict
+                VerificationResult = $null
+            }
+        }
         if ($null -ne $approvalAction) {
             Invoke-TeamPipelineApproval -Target $Target -Action $approvalAction
             Start-Sleep -Seconds 1
@@ -567,35 +830,43 @@ function New-TeamPipelineVerifyPrompt {
         $BuilderCompletionMessage.Trim()
     }
 
-    return @"
-Verify the latest builder result without editing code.
-
-This review was auto-dispatched after the builder reported completion.
-
-Task:
-$Task
-
-Builder label: $BuilderLabel
-Builder worktree: $BuilderWorktreePath
-
-Builder completion notification:
-$completionBlock
-
-Plan guidance:
-$planBlock
-
-Please inspect the builder workspace, review the current diff, and run focused verification where useful.
-If fixes are needed, provide concrete findings the builder can act on.
-
-End with exactly one line:
-STATUS: VERIFY_PASS
-
-If changes need fixes, end with:
-STATUS: VERIFY_FAIL
-
-If blocked, end with:
-STATUS: BLOCKED
-"@
+    return (@(
+        'Verify the latest builder result without editing code.'
+        ''
+        'This review was auto-dispatched after the builder reported completion.'
+        ''
+        'Task:'
+        $Task
+        ''
+        ('Builder label: {0}' -f $BuilderLabel)
+        ('Builder worktree: {0}' -f $BuilderWorktreePath)
+        ''
+        'Builder completion notification:'
+        $completionBlock
+        ''
+        'Plan guidance:'
+        $planBlock
+        ''
+        'Please inspect the builder workspace, review the current diff, and run focused verification where useful.'
+        'If fixes are needed, provide concrete findings the builder can act on.'
+        ''
+        'End with exactly one line:'
+        'STATUS: VERIFY_PASS'
+        ''
+        'If changes need fixes, end with:'
+        'STATUS: VERIFY_FAIL'
+        ''
+        'If verification is incomplete but actionable evidence exists, end with:'
+        'STATUS: VERIFY_PARTIAL'
+        ''
+        'If blocked, end with:'
+        'STATUS: BLOCKED'
+        ''
+        'Also include:'
+        '- one line SUMMARY: ...'
+        '- 1-4 lines CHECK: name|PASS|detail or CHECK: name|FAIL|detail'
+        '- one line NEXT_ACTION: ...'
+    ) -join "`n")
 }
 
 function New-TeamPipelineFixPrompt {
@@ -640,11 +911,11 @@ function New-TeamPipelineConsultPrompt {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('early', 'stuck', 'final')][string]$Mode,
         [Parameter(Mandatory = $true)][string]$Task,
-        [string]$PlanSummary,
-        [string]$BuildSummary,
-        [string]$VerificationSummary,
-        [string]$BuilderLabel,
-        [string]$BuilderWorktreePath
+        [string]$PlanSummary = '',
+        [string]$BuildSummary = '',
+        [string]$VerificationSummary = '',
+        [string]$BuilderLabel = '',
+        [string]$BuilderWorktreePath = ''
     )
 
     $modeInstruction = switch ($Mode) {
@@ -703,13 +974,13 @@ function Invoke-TeamPipelineConsultStage {
         [Parameter(Mandatory = $true)][string]$BuilderLabel,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$SessionName,
-        [string]$TargetLabel,
-        [string]$ResearcherLabel,
-        [string]$ReviewerLabel,
-        [string]$BuilderWorktreePath,
-        [string]$PlanSummary,
-        [string]$BuildSummary,
-        [string]$VerificationSummary,
+        [string]$TargetLabel = '',
+        [string]$ResearcherLabel = '',
+        [string]$ReviewerLabel = '',
+        [string]$BuilderWorktreePath = '',
+        [string]$PlanSummary = '',
+        [string]$BuildSummary = '',
+        [string]$VerificationSummary = '',
         [int]$TimeoutSeconds = 240,
         [int]$PollIntervalSeconds = 10,
         [int]$Attempt = 0
@@ -732,7 +1003,7 @@ function Invoke-TeamPipelineConsultStage {
 
     Write-TeamPipelineEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event 'pipeline.consult.dispatched' -Message "Dispatched $Mode consult to $TargetLabel." -Role $consultRole -Target $TargetLabel -Data $eventData | Out-Null
     Invoke-TeamPipelineBridge -Arguments @('send', $TargetLabel, $prompt) | Out-Null
-    $stage = Wait-TeamPipelineStage -Target $TargetLabel -StageName ("CONSULT_{0}" -f $Mode.ToUpperInvariant()) -TimeoutSeconds $TimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds
+    $stage = Wait-TeamPipelineStage -Target $TargetLabel -StageName ("CONSULT_{0}" -f $Mode.ToUpperInvariant()) -TimeoutSeconds $TimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -ProjectDir $ProjectDir -SessionName $SessionName -Role $consultRole -Task $Task -Attempt $Attempt
 
     $completedEvent = if ($stage.Status -eq 'BLOCKED') { 'pipeline.consult.blocked' } else { 'pipeline.consult.completed' }
     Write-TeamPipelineEvent -ProjectDir $ProjectDir -SessionName $SessionName -Event $completedEvent -Message "$Mode consult on $TargetLabel completed with status $($stage.Status)." -Role $consultRole -Target $TargetLabel -Data ([ordered]@{
@@ -791,6 +1062,8 @@ function Invoke-TeamPipeline {
         PreWorkConsult      = $null
         FinalConsult        = $null
         StuckConsults       = @()
+        VerificationPackets = @()
+        SecurityVerdicts    = @()
         Attempts            = @()
         Success             = $false
         FinalStatus         = 'NOT_STARTED'
@@ -801,9 +1074,13 @@ function Invoke-TeamPipeline {
     if (-not [string]::IsNullOrWhiteSpace($targets.PlanTarget)) {
         $planPrompt = New-TeamPipelinePlanPrompt -Task $Task
         Invoke-TeamPipelineBridge -Arguments @('send', $targets.PlanTarget, $planPrompt) | Out-Null
-        $planStage = Wait-TeamPipelineStage -Target $targets.PlanTarget -StageName 'PLAN' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds
+        $planStage = Wait-TeamPipelineStage -Target $targets.PlanTarget -StageName 'PLAN' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role 'Researcher' -Task $Task
         $result.Plan = $planStage
         if ($planStage.Status -eq 'BLOCKED') {
+        $planSecurityVerdict = Get-TeamPipelineValue -InputObject $planStage -Name 'SecurityVerdict' -Default $null
+        if ($null -ne $planSecurityVerdict) {
+            $result.SecurityVerdicts += $planSecurityVerdict
+        }
             $result.FinalStatus = 'PLAN_BLOCKED'
             return [PSCustomObject]$result
         }
@@ -812,7 +1089,7 @@ function Invoke-TeamPipeline {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($consultTarget)) {
-        $result.PreWorkConsult = Invoke-TeamPipelineConsultStage -Mode 'early' -Task $Task -BuilderLabel $Builder -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -TargetLabel $consultTarget -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds
+        $result.PreWorkConsult = Invoke-TeamPipelineConsultStage -Mode 'early' -Task $Task -BuilderLabel $Builder -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -TargetLabel $consultTarget -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -BuildSummary '' -VerificationSummary '' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds
     }
 
     $attemptLimit = 1 + [Math]::Max(0, $MaxFixRounds)
@@ -823,6 +1100,7 @@ function Invoke-TeamPipeline {
             BuildNotification = $null
             VerifyDispatch    = $null
             Verify            = $null
+            VerifyPacket      = $null
             StuckConsult      = $null
         }
 
@@ -834,12 +1112,16 @@ function Invoke-TeamPipeline {
         }
 
         Invoke-TeamPipelineBridge -Arguments @('send', $Builder, $buildPrompt) | Out-Null
-        $buildStage = Wait-TeamPipelineStage -Target $Builder -StageName 'EXEC' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds
+        $buildStage = Wait-TeamPipelineStage -Target $Builder -StageName 'EXEC' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role 'Builder' -Task $Task -Attempt $attemptIndex
         $attempt.Build = $buildStage
 
         if ($buildStage.Status -eq 'BLOCKED') {
+            $buildSecurityVerdict = Get-TeamPipelineValue -InputObject $buildStage -Name 'SecurityVerdict' -Default $null
+            if ($null -ne $buildSecurityVerdict) {
+                $result.SecurityVerdicts += $buildSecurityVerdict
+            }
             if (-not [string]::IsNullOrWhiteSpace($consultTarget)) {
-                $attempt.StuckConsult = Invoke-TeamPipelineConsultStage -Mode 'stuck' -Task $Task -BuilderLabel $Builder -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -TargetLabel $consultTarget -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -BuildSummary $buildStage.Summary -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -Attempt $attemptIndex
+                $attempt.StuckConsult = Invoke-TeamPipelineConsultStage -Mode 'stuck' -Task $Task -BuilderLabel $Builder -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -TargetLabel $consultTarget -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -BuildSummary $buildStage.Summary -VerificationSummary '' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -Attempt $attemptIndex
                 if ($null -ne $attempt.StuckConsult) {
                     $result.StuckConsults += $attempt.StuckConsult
                 }
@@ -862,7 +1144,7 @@ function Invoke-TeamPipeline {
 
         if ([string]::IsNullOrWhiteSpace($targets.VerifyTarget)) {
             if (-not [string]::IsNullOrWhiteSpace($consultTarget)) {
-                $result.FinalConsult = Invoke-TeamPipelineConsultStage -Mode 'final' -Task $Task -BuilderLabel $Builder -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -TargetLabel $consultTarget -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -BuildSummary $buildStage.Summary -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -Attempt $attemptIndex
+                $result.FinalConsult = Invoke-TeamPipelineConsultStage -Mode 'final' -Task $Task -BuilderLabel $Builder -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -TargetLabel $consultTarget -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -BuildSummary $buildStage.Summary -VerificationSummary '' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -Attempt $attemptIndex
             }
             $result.Attempts += [PSCustomObject]$attempt
             $result.Success = $true
@@ -893,8 +1175,33 @@ function Invoke-TeamPipeline {
             summary              = $buildNotification.Summary
         }) | Out-Null
         Invoke-TeamPipelineBridge -Arguments @('send', $targets.VerifyTarget, $verifyPrompt) | Out-Null
-        $verifyStage = Wait-TeamPipelineStage -Target $targets.VerifyTarget -StageName 'VERIFY' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds
+        $verifyStage = Wait-TeamPipelineStage -Target $targets.VerifyTarget -StageName 'VERIFY' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role $verifyRole -Task $Task -Attempt $attemptIndex
         $attempt.Verify = $verifyStage
+        $attempt.VerifyPacket = New-TeamPipelineVerificationPacket -Task $Task -VerifyStatus $verifyStage.Status -VerifierLabel $targets.VerifyTarget -BuilderLabel $Builder -BuilderWorktreePath $builderContext.BuilderWorktreePath -Summary $verifyStage.Summary
+        $result.VerificationPackets += $attempt.VerifyPacket
+        $verifySecurityVerdict = Get-TeamPipelineValue -InputObject $verifyStage -Name 'SecurityVerdict' -Default $null
+        if ($null -ne $verifySecurityVerdict) {
+            $result.SecurityVerdicts += $verifySecurityVerdict
+        }
+        $verifyEventName = switch ($attempt.VerifyPacket.verdict) {
+            'PASS' { 'pipeline.verify.pass' }
+            'FAIL' { 'pipeline.verify.fail' }
+            default { 'pipeline.verify.partial' }
+        }
+        Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event $verifyEventName -Message "Verification returned $($attempt.VerifyPacket.verdict) on $($targets.VerifyTarget)." -Role $verifyRole -Target $targets.VerifyTarget -Data ([ordered]@{
+            attempt           = $attemptIndex
+            task              = $Task
+            verifier          = $targets.VerifyTarget
+            verdict           = $attempt.VerifyPacket.verdict
+            verify_status     = $attempt.VerifyPacket.verify_status
+            changed_paths     = @($attempt.VerifyPacket.changed_paths)
+            evidence_refs     = @($attempt.VerifyPacket.evidence_refs)
+            failing_probe     = $attempt.VerifyPacket.failing_probe
+            next_action       = $attempt.VerifyPacket.next_action
+            style             = $attempt.VerifyPacket.style
+            verification_contract = $attempt.VerifyPacket.verification_contract
+            verification_result = $attempt.VerifyPacket.verification_result
+        }) | Out-Null
         $result.Attempts += [PSCustomObject]$attempt
 
         switch ($verifyStage.Status) {
@@ -914,6 +1221,10 @@ function Invoke-TeamPipeline {
                     }
                 }
                 $result.FinalStatus = 'VERIFY_BLOCKED'
+                return [PSCustomObject]$result
+            }
+            'VERIFY_PARTIAL' {
+                $result.FinalStatus = 'VERIFY_PARTIAL'
                 return [PSCustomObject]$result
             }
             'VERIFY_FAIL' {
