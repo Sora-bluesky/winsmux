@@ -256,7 +256,7 @@ function ConvertTo-UserBenefit {
         'pane\.completed|PostToolUse pane monitor hook' {
             return 'Surfaced pane completion events so the operator can make the next decision faster'
         }
-        'complete psmux.?winsmux rename|send buffer overflow' {
+        'complete winsmux-surface rename|send buffer overflow' {
             return 'Continued the winsmux naming convergence and stabilized the send pipeline'
         }
         'bump version|sync backlog and roadmap' {
@@ -549,7 +549,7 @@ $docsSource = @(
         }
 )
 $choreSource = @()
-$choreSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Commander Telegram dense notifications', 'pane\.completed', 'psmux.?winsmux rename')
+$choreSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Commander Telegram dense notifications', 'pane\.completed', 'winsmux-surface rename')
 $choreSource += @(
     $commitSubjects |
         Where-Object {

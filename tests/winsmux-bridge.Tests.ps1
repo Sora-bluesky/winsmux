@@ -3545,7 +3545,7 @@ panes:
     branch: worktree-builder-1
     head_sha: abc1234def5678
     changed_file_count: 2
-    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    changed_files: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
     last_event: pane.ready
     last_event_at: 2026-04-10T10:00:00+09:00
   worker-1:
@@ -3610,7 +3610,7 @@ panes:
     branch: worktree-builder-1
     head_sha: abc1234def5678
     changed_file_count: 2
-    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    changed_files: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
     last_event: pane.ready
     last_event_at: 2026-04-10T10:00:00+09:00
   worker-1:
@@ -3649,7 +3649,7 @@ panes:
         $result.summary.by_state.busy | Should -Be 1
         $result.panes.Count | Should -Be 2
         $result.panes[0].label | Should -Be 'builder-1'
-        $result.panes[0].changed_files | Should -Be @('scripts/winsmux-core.ps1', 'tests/psmux-bridge.Tests.ps1')
+        $result.panes[0].changed_files | Should -Be @('scripts/winsmux-core.ps1', 'tests/winsmux-bridge.Tests.ps1')
         $result.panes[0].last_event | Should -Be 'pane.ready'
         $result.panes[1].label | Should -Be 'worker-1'
         $result.panes[1].state | Should -Be 'busy'
@@ -4030,7 +4030,7 @@ panes:
     branch: worktree-builder-1
     head_sha: abc1234def5678
     changed_file_count: 2
-    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    changed_files: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
     last_event: commander.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
   worker-1:
@@ -4114,11 +4114,11 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    write_scope: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    write_scope: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
     read_scope: '["winsmux-core/scripts/pane-status.ps1"]'
     constraints: '["preserve existing board schema"]'
     expected_output: Stable run_packet JSON
-    verification_plan: '["Invoke-Pester tests/psmux-bridge.Tests.ps1","verify runs --json contract"]'
+    verification_plan: '["Invoke-Pester tests/winsmux-bridge.Tests.ps1","verify runs --json contract"]'
     review_required: true
     provider_target: codex:gpt-5.4
     agent_role: worker
@@ -4226,11 +4226,11 @@ panes:
         $result.runs[0].run_packet.task_type | Should -Be 'implementation'
         $result.runs[0].run_packet.priority | Should -Be 'P0'
         $result.runs[0].run_packet.blocking | Should -Be $true
-        $result.runs[0].run_packet.write_scope | Should -Be @('scripts/winsmux-core.ps1', 'tests/psmux-bridge.Tests.ps1')
+        $result.runs[0].run_packet.write_scope | Should -Be @('scripts/winsmux-core.ps1', 'tests/winsmux-bridge.Tests.ps1')
         $result.runs[0].run_packet.read_scope | Should -Be @('winsmux-core/scripts/pane-status.ps1')
         $result.runs[0].run_packet.constraints | Should -Be @('preserve existing board schema')
         $result.runs[0].run_packet.expected_output | Should -Be 'Stable run_packet JSON'
-        $result.runs[0].run_packet.verification_plan | Should -Be @('Invoke-Pester tests/psmux-bridge.Tests.ps1', 'verify runs --json contract')
+        $result.runs[0].run_packet.verification_plan | Should -Be @('Invoke-Pester tests/winsmux-bridge.Tests.ps1', 'verify runs --json contract')
         $result.runs[0].run_packet.review_required | Should -Be $true
         $result.runs[0].run_packet.provider_target | Should -Be 'codex:gpt-5.4'
         $result.runs[0].run_packet.agent_role | Should -Be 'worker'
@@ -4333,7 +4333,7 @@ panes:
     branch: shared-worktree
     head_sha: abc1234def5678
     changed_file_count: 1
-    changed_files: '["tests/psmux-bridge.Tests.ps1"]'
+    changed_files: '["tests/winsmux-bridge.Tests.ps1"]'
     last_event: commander.review_requested
     last_event_at: 2026-04-10T12:01:00+09:00
 "@ | Set-Content -Path $script:runsManifestPath -Encoding UTF8
@@ -4507,7 +4507,7 @@ panes:
     branch: worktree-builder-1
     head_sha: abc1234def5678
     changed_file_count: 2
-    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    changed_files: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
     last_event: commander.review_requested
     last_event_at: 2026-04-10T14:00:00+09:00
 "@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
@@ -4717,7 +4717,7 @@ panes:
     branch: worktree-builder-1
     head_sha: abc1234def5678
     changed_file_count: 2
-    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    changed_files: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
     last_event: commander.review_requested
     last_event_at: 2026-04-10T14:00:00+09:00
   worker-1:
@@ -4924,11 +4924,11 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    write_scope: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    write_scope: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
     read_scope: '["winsmux-core/scripts/pane-status.ps1"]'
     constraints: '["preserve existing board schema"]'
     expected_output: Stable run_packet JSON
-    verification_plan: '["Invoke-Pester tests/psmux-bridge.Tests.ps1","verify explain --json contract"]'
+    verification_plan: '["Invoke-Pester tests/winsmux-bridge.Tests.ps1","verify explain --json contract"]'
     review_required: true
     provider_target: codex:gpt-5.4
     agent_role: worker
@@ -4947,7 +4947,7 @@ panes:
             test_plan            = @('collect matching events', 'normalize packet')
             changed_files        = @('scripts/winsmux-core.ps1')
             working_tree_summary = '1 file modified'
-            failing_command      = 'Invoke-Pester tests/psmux-bridge.Tests.ps1'
+            failing_command      = 'Invoke-Pester tests/winsmux-bridge.Tests.ps1'
             env_fingerprint      = 'env:abc123'
             command_hash         = 'cmd:def456'
         })
@@ -5080,11 +5080,11 @@ panes:
         $result.run_packet.task_type | Should -Be 'implementation'
         $result.run_packet.priority | Should -Be 'P0'
         $result.run_packet.blocking | Should -Be $true
-        $result.run_packet.write_scope | Should -Be @('scripts/winsmux-core.ps1', 'tests/psmux-bridge.Tests.ps1')
+        $result.run_packet.write_scope | Should -Be @('scripts/winsmux-core.ps1', 'tests/winsmux-bridge.Tests.ps1')
         $result.run_packet.read_scope | Should -Be @('winsmux-core/scripts/pane-status.ps1')
         $result.run_packet.constraints | Should -Be @('preserve existing board schema')
         $result.run_packet.expected_output | Should -Be 'Stable run_packet JSON'
-        $result.run_packet.verification_plan | Should -Be @('Invoke-Pester tests/psmux-bridge.Tests.ps1', 'verify explain --json contract')
+        $result.run_packet.verification_plan | Should -Be @('Invoke-Pester tests/winsmux-bridge.Tests.ps1', 'verify explain --json contract')
         $result.run_packet.review_required | Should -Be $true
         $result.run_packet.provider_target | Should -Be 'codex:gpt-5.4'
         $result.run_packet.agent_role | Should -Be 'worker'
@@ -5105,7 +5105,7 @@ panes:
         $result.run_packet.verification_contract.mode | Should -Be 'adversarial_verify'
         $result.run_packet.verification_result.outcome | Should -Be 'PARTIAL'
         $result.observation_pack.packet_type | Should -Be 'observation_pack'
-        $result.observation_pack.failing_command | Should -Be 'Invoke-Pester tests/psmux-bridge.Tests.ps1'
+        $result.observation_pack.failing_command | Should -Be 'Invoke-Pester tests/winsmux-bridge.Tests.ps1'
         $result.consultation_packet.kind | Should -Be 'consult_result'
         $result.consultation_packet.mode | Should -Be 'early'
         $result.consultation_summary.kind | Should -Be 'consult_result'
@@ -5465,7 +5465,7 @@ panes:
     branch: worktree-builder-b
     head_sha: eeeeffff11112222
     changed_file_count: 2
-    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    changed_files: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
     last_event: pane.consult_result
     last_event_at: 2026-04-12T10:05:00+09:00
 "@ | Set-Content -Path $script:compareManifestPath -Encoding UTF8
@@ -5490,7 +5490,7 @@ panes:
             test_plan       = @('disable inference', 'rerun build')
             env_fingerprint = 'env:b'
             command_hash    = 'cmd:b'
-            changed_files   = @('scripts/winsmux-core.ps1', 'tests/psmux-bridge.Tests.ps1')
+            changed_files   = @('scripts/winsmux-core.ps1', 'tests/winsmux-bridge.Tests.ps1')
         })
         $script:compareConsultA = New-ConsultationPacketFile -ProjectDir $script:compareTempRoot -ConsultationPacket ([ordered]@{
             run_id         = 'task:task-compare-a'
@@ -5658,7 +5658,7 @@ panes:
         $result.confidence_delta | Should -Be 0.45
         $result.shared_changed_files | Should -Be @('scripts/winsmux-core.ps1')
         $result.left_only_changed_files | Should -Be @()
-        $result.right_only_changed_files | Should -Be @('tests/psmux-bridge.Tests.ps1')
+        $result.right_only_changed_files | Should -Be @('tests/winsmux-bridge.Tests.ps1')
         $result.recommend.winning_run_id | Should -Be 'task:task-compare-a'
         $result.recommend.reconcile_consult | Should -Be $true
         @($result.differences | ForEach-Object { $_.field }) | Should -Contain 'result'
@@ -5696,7 +5696,7 @@ panes:
     branch: worktree-builder-b
     head_sha: eeeeffff11112222
     changed_file_count: 2
-    changed_files: '["scripts/winsmux-core.ps1","tests/psmux-bridge.Tests.ps1"]'
+    changed_files: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
     last_event: pane.consult_result
     last_event_at: 2026-04-12T10:05:00+09:00
 "@ | Set-Content -Path $script:compareManifestPath -Encoding UTF8
