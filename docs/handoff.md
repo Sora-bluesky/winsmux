@@ -1,15 +1,16 @@
 # Handoff
 
-> Updated: 2026-04-12T23:42:00+09:00
+> Updated: 2026-04-12T23:59:00+09:00
 > Source of truth: this file
 
 ## Current state
 
-- `v0.20.0`, `v0.20.1`, `v0.20.2`, `v0.20.3`, `v0.21.0`, and `v0.21.1` are released.
-- `v0.21.2` is in release-prep. The shipped scope has been rebaselined to:
+- `v0.20.0`, `v0.20.1`, `v0.20.2`, `v0.20.3`, `v0.21.0`, `v0.21.1`, and `v0.21.2` are released.
+- `v0.21.2` shipped as the terminal-based final form release before the `v0.22.0` Tauri control-plane handoff.
+- `ROADMAP.md` shows `v0.21.2 = 100% (2/2)` with only:
   - `TASK-216` terminal hot-path wrapper baseline
   - `TASK-295` winsmux-surface rename cleanup slice
-- `ROADMAP.md` now shows `v0.21.2 = 100% (2/2)` and non-terminal follow-up work moved out to later versions.
+- Non-terminal follow-up work was moved out of `v0.21.2` to later versions before release.
 - `v0.21.1` shipped as a workflow-baseline release for:
   - `TASK-163` phase-gated workflow baseline
   - `TASK-164` structured chaining baseline
@@ -37,6 +38,12 @@
   - `TASK-144` -> Tauri control-plane foundation follow-up
   - `TASK-143`, `TASK-154`, `TASK-306`, `TASK-115` -> later release/canary/GA tracks
 - Updated `README.md` and `README.ja.md` to mark `v0.21.2` as the last terminal-primary release before `v0.22.0`.
+- Released `v0.21.2`:
+  - tag: `v0.21.2`
+  - workflow: `24307042112` success
+  - assets: `winsmux-x64.exe`, `winsmux-arm64.exe`, `SHA256SUMS`
+  - release body replaced with the curated Codex-style notes
+  - stray `release-body.md` asset removed
 
 ## Validation
 
@@ -62,19 +69,19 @@
 - Explorer `Rawls` -> `v0.21.2` reallocation recommendation complete
 - Fresh reviewer `Planck` -> `PASS` on the `TASK-295` rename slice
 - Fresh reviewer `Sartre` -> `no result yet` after 45s on release-prep docs/planning diff; closed without result
+- Release reviewer `Hypatia` -> `PASS` for `v0.21.2` release readiness
 - Manual diff review completed for the `README.md` / `README.ja.md` release-prep wording
+- GitHub release [v0.21.2](https://github.com/Sora-bluesky/winsmux/releases/tag/v0.21.2) published successfully
 
 ## Next actions
 
-1. Commit and push the `README.md` / `README.ja.md` release-prep wording.
-2. Generate curated release notes and X draft for `v0.21.2`.
-3. Create tag/release for `v0.21.2` and verify assets/body.
-4. Update handoff again after the release is public and return the repo to a clean `main == origin/main` state.
+1. Start `v0.22.0: Tauri Control Plane Foundation (Backend-first adapter core)`.
+2. Keep the release workflow follow-up in view if `release-body.md` should stop being uploaded automatically in future releases.
+3. Preserve the `v0.21.2` README wording until `v0.22.0` materially changes the public surface.
 
 ## Notes
 
 - `v0.21.1` is a baseline release, not the full advanced workflow/runtime roadmap.
-- `TASK-216` is being landed as small hot-path wrapper slices rather than a single bridge-file refactor.
+- `TASK-216` landed as small hot-path wrapper slices rather than a single bridge-file refactor.
 - `TASK-295` keeps `.psmux` compatibility paths untouched; those stay under the sunset plan instead of this rename slice.
 - Public GitHub Releases stay English, use Codex-style headings, and keep inline issue/PR refs visible.
-- `README.md` and `README.ja.md` must be updated again at `v0.21.2` release time to mark the terminal-based final form as the last pre-Tauri shape.
