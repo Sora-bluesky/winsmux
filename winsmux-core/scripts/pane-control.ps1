@@ -248,6 +248,37 @@ function ConvertFrom-PaneControlManifestContent {
     }
 }
 
+function ConvertFrom-PaneControlSecurityPolicy {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        return $Value
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+
+    $parseCandidates = @($text)
+    if ($text.Contains('\"')) {
+        $parseCandidates += ($text -replace '\\"', '"')
+    }
+
+    foreach ($candidate in $parseCandidates | Select-Object -Unique) {
+        try {
+            return ($candidate | ConvertFrom-Json -AsHashtable -Depth 8)
+        } catch {
+        }
+    }
+
+    return [ordered]@{ raw = $text }
+}
+
 function Get-PaneControlManifestEntries {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
@@ -324,6 +355,7 @@ function Get-PaneControlManifestEntries {
             AgentRole           = [string](Get-PaneControlValue -InputObject $pane -Name 'agent_role' -Default '')
             TimeoutPolicy       = [string](Get-PaneControlValue -InputObject $pane -Name 'timeout_policy' -Default '')
             HandoffRefs         = @(ConvertFrom-PaneControlStringArray -Value (Get-PaneControlValue -InputObject $pane -Name 'handoff_refs' -Default @()))
+            SecurityPolicy      = ConvertFrom-PaneControlSecurityPolicy -Value (Get-PaneControlValue -InputObject $pane -Name 'security_policy' -Default $null)
         }
     }
 

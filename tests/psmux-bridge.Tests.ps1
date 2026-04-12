@@ -777,6 +777,26 @@ STATUS: VERIFY_PASS
         ((Get-TeamPipelineSummaryFromOutput -Text $output) -replace "`r`n", "`n") | Should -Be "Work finished.`n`nFollow-up note."
     }
 
+    It 'parses structured verification output including VERIFY_PARTIAL' {
+        $output = @'
+STATUS: VERIFY_PARTIAL
+SUMMARY: verify contract incomplete but evidence is usable
+CHECK: diff|PASS|changed files inspected
+CHECK: tests|FAIL|missing rerun evidence
+NEXT_ACTION: rerun focused verification
+'@
+
+        $result = Get-TeamPipelineVerificationResultFromOutput -Text $output
+
+        $result.outcome | Should -Be 'PARTIAL'
+        $result.summary | Should -Be 'verify contract incomplete but evidence is usable'
+        $result.checks.Count | Should -Be 2
+        $result.checks[0].name | Should -Be 'diff'
+        $result.checks[0].status | Should -Be 'PASS'
+        $result.next_action | Should -Be 'rerun focused verification'
+        $result.adversarial | Should -Be $true
+    }
+
     It 'detects approval prompts and blocks dangerous confirmations' {
         $typeEnter = Get-TeamPipelineApprovalAction -Text "Do you want to proceed?`n1. Yes"
         $typeEnter.Kind | Should -Be 'TypeEnter'
@@ -786,6 +806,33 @@ STATUS: VERIFY_PASS
         $shellConfirm.Value | Should -Be 'y'
 
         { Get-TeamPipelineApprovalAction -Text 'Approve command: git reset --hard origin/main' } | Should -Throw
+    }
+
+    It 'returns a blocked security verdict when dangerous approval text appears during a stage wait' {
+        Mock Invoke-TeamPipelineBridge {
+            [PSCustomObject]@{
+                ExitCode = 0
+                Output = "Approve command: git reset --hard origin/main"
+            }
+        }
+        $script:securityEventWrites = @()
+        Mock Write-TeamPipelineEvent {
+            param($ProjectDir, $SessionName, $Event, $Message, $Role, $PaneId, $Target, $Data)
+            $script:securityEventWrites += [PSCustomObject]@{
+                Event = $Event
+                Target = $Target
+                Data = $Data
+            }
+        }
+
+        $result = Wait-TeamPipelineStage -Target 'builder-1' -StageName 'EXEC' -TimeoutSeconds 1 -PollIntervalSeconds 0 -ProjectDir 'C:\repo' -SessionName 'winsmux-orchestra' -Role 'Builder' -Task 'Investigate cache drift' -Attempt 1
+
+        $result.Status | Should -Be 'BLOCKED'
+        $result.SecurityVerdict.verdict | Should -Be 'BLOCK'
+        $result.SecurityVerdict.stage | Should -Be 'EXEC'
+        $script:securityEventWrites.Count | Should -Be 1
+        $script:securityEventWrites[0].Event | Should -Be 'pipeline.security.blocked'
+        $script:securityEventWrites[0].Data.verdict | Should -Be 'BLOCK'
     }
 
     It 'selects sensible planning and verification targets from the available roles' {
@@ -1159,6 +1206,29 @@ panes:
         $entries.Count | Should -Be 1
         $entries[0].ChangedFileCount | Should -Be 0
         $entries[0].ChangedFiles | Should -Be @()
+    }
+
+    It 'surfaces security_policy from the manifest entry' {
+@'
+version: 1
+saved_at: '2026-04-09T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: 'C:\repo'
+panes:
+  worker-1:
+    pane_id: '%2'
+    role: 'Worker'
+    security_policy: '{\"mode\":\"blocklist\",\"allow_patterns\":[\"Invoke-Pester\"],\"block_patterns\":[\"git reset --hard\"]}'
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        $entries = @(Get-PaneControlManifestEntries -ProjectDir $script:paneControlTempRoot)
+        $entry = @($entries | Where-Object { $_.Label -eq 'worker-1' } | Select-Object -First 1)[0]
+
+        $entry | Should -Not -BeNullOrEmpty
+        $entry.SecurityPolicy.mode | Should -Be 'blocklist'
+        @($entry.SecurityPolicy.allow_patterns) | Should -Be @('Invoke-Pester')
+        @($entry.SecurityPolicy.block_patterns) | Should -Be @('git reset --hard')
     }
 
 }
@@ -3679,6 +3749,7 @@ panes:
             risks          = @('result still provisional')
         })
 
+        @(
         ([ordered]@{
             timestamp = '2026-04-10T12:01:00+09:00'
             session   = 'winsmux-orchestra'
@@ -3703,7 +3774,31 @@ panes:
                 env_fingerprint      = 'env:abc123'
                 command_hash         = 'cmd:def456'
             }
-        } | ConvertTo-Json -Compress) | Set-Content -Path $script:runsEventsPath -Encoding UTF8
+        } | ConvertTo-Json -Compress),
+        ([ordered]@{
+            timestamp = '2026-04-10T12:02:00+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'pipeline.verify.partial'
+            message   = 'verification partially complete'
+            label     = 'reviewer-1'
+            pane_id   = '%3'
+            role      = 'Reviewer'
+            branch    = 'worktree-builder-1'
+            head_sha  = 'abc1234def5678'
+            data      = [ordered]@{
+                task_id = 'task-256'
+                run_id  = 'task:task-256'
+                verification_contract = [ordered]@{
+                    mode = 'adversarial_verify'
+                }
+                verification_result = [ordered]@{
+                    outcome = 'PARTIAL'
+                    summary = 'rerun focused verification'
+                    next_action = 'rerun_verify'
+                }
+            }
+        } | ConvertTo-Json -Compress)
+        ) | Set-Content -Path $script:runsEventsPath -Encoding UTF8
 
         function global:winsmux {
             $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
@@ -3749,6 +3844,9 @@ panes:
         $result.runs[0].experiment_packet.worktree | Should -Be '.worktrees/builder-1'
         $result.runs[0].experiment_packet.env_fingerprint | Should -Be 'env:abc123'
         $result.runs[0].experiment_packet.command_hash | Should -Be 'cmd:def456'
+        $result.runs[0].verification_contract.mode | Should -Be 'adversarial_verify'
+        $result.runs[0].verification_result.outcome | Should -Be 'PARTIAL'
+        $result.runs[0].run_packet.verification_result.outcome | Should -Be 'PARTIAL'
         $result.runs[0].Contains('observation_pack') | Should -Be $false
         $result.runs[0].Contains('consultation_packet') | Should -Be $false
     }
@@ -3893,6 +3991,69 @@ panes:
         $first.experiment_packet.hypothesis | Should -Be 'builder-1 owns this experiment packet'
         $second.experiment_packet.run_id | Should -Be 'task:task-999'
         $second.experiment_packet.hypothesis | Should -Be 'builder-2 owns this experiment packet'
+    }
+
+    It 'surfaces security policy and latest security verdict in runs json' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:runsTempRoot
+panes:
+  worker-1:
+    pane_id: %2
+    role: Worker
+    task_id: task-273
+    task: Enforce security policy
+    task_state: blocked
+    task_owner: worker-1
+    review_state: ''
+    branch: worktree-worker-1
+    head_sha: def5678abc1234
+    changed_file_count: 0
+    changed_files: '[]'
+    security_policy: '{\"mode\":\"blocklist\",\"allow_patterns\":[\"Invoke-Pester\"],\"block_patterns\":[\"git reset --hard\"]}'
+    last_event: pipeline.security.blocked
+    last_event_at: 2026-04-10T12:03:00+09:00
+"@ | Set-Content -Path $script:runsManifestPath -Encoding UTF8
+
+        ([ordered]@{
+            timestamp = '2026-04-10T12:03:00+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'pipeline.security.blocked'
+            message   = 'security monitor blocked exec'
+            label     = 'worker-1'
+            pane_id   = '%2'
+            role      = 'Worker'
+            branch    = 'worktree-worker-1'
+            head_sha  = 'def5678abc1234'
+            data      = [ordered]@{
+                task_id = 'task-273'
+                run_id  = 'task:task-273'
+                stage   = 'EXEC'
+                verdict = 'BLOCK'
+                reason  = 'dangerous command approval'
+                advisory_mode = $false
+                allow   = @('read', 'write')
+                block   = @('hard_reset')
+                next_action = 'revise_request_or_override'
+            }
+        } | ConvertTo-Json -Compress) | Set-Content -Path $script:runsEventsPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = (Invoke-Runs -RunsTarget '--json' | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.runs[0].security_policy.mode | Should -Be 'blocklist'
+        @($result.runs[0].security_policy.block_patterns) | Should -Be @('git reset --hard')
+        $result.runs[0].security_verdict.verdict | Should -Be 'BLOCK'
+        $result.runs[0].run_packet.security_verdict.reason | Should -Be 'dangerous command approval'
     }
 }
 
@@ -4064,6 +4225,74 @@ panes:
         $result.items[0].consultation_ref | Should -Be $digestConsultationPacket.reference
         $result.items[0].Contains('observation_pack') | Should -Be $false
         $result.items[0].Contains('consultation_packet') | Should -Be $false
+    }
+
+    It 'returns digest event summaries when --events is supplied' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:digestTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-274
+    task: Build event summaries
+    task_state: blocked
+    task_owner: builder-1
+    review_state: ''
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 0
+    changed_files: '[]'
+    last_event: pipeline.security.blocked
+    last_event_at: 2026-04-10T14:02:00+09:00
+"@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
+
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-10T14:01:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.noise'
+                message   = 'ignore me'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T14:02:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pipeline.security.blocked'
+                message   = 'security monitor blocked exec'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                branch    = 'worktree-builder-1'
+                head_sha  = 'abc1234def5678'
+                data      = [ordered]@{
+                    task_id = 'task-274'
+                    run_id  = 'task:task-274'
+                    next_action = 'revise_request_or_override'
+                }
+            } | ConvertTo-Json -Compress)
+        ) | Set-Content -Path $script:digestEventsPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        $result = (Invoke-Digest -DigestTarget '--events' -DigestRest @('--json') | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.summary.item_count | Should -Be 1
+        $result.items[0].kind | Should -Be 'blocked'
+        $result.items[0].source_event | Should -Be 'pipeline.security.blocked'
+        $result.items[0].run_id | Should -Be 'task:task-274'
+        $result.items[0].next_action | Should -Be 'revise_request_or_override'
     }
 
     It 'returns digest delta items only for runs affected after the current cursor' {
@@ -4362,6 +4591,29 @@ panes:
             ([ordered]@{
                 timestamp = '2026-04-10T12:02:00+09:00'
                 session   = 'winsmux-orchestra'
+                event     = 'pipeline.verify.partial'
+                message   = 'verification partial'
+                label     = 'reviewer-1'
+                pane_id   = '%3'
+                role      = 'Reviewer'
+                branch    = 'worktree-builder-1'
+                head_sha  = 'abc1234def5678'
+                data      = [ordered]@{
+                    task_id = 'task-256'
+                    run_id  = 'task:task-256'
+                    verification_contract = [ordered]@{
+                        mode = 'adversarial_verify'
+                    }
+                    verification_result = [ordered]@{
+                        outcome = 'PARTIAL'
+                        summary = 'rerun focused verification'
+                        next_action = 'rerun_verify'
+                    }
+                }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T12:02:30+09:00'
+                session   = 'winsmux-orchestra'
                 event     = 'pane.approval_waiting'
                 message   = 'approval prompt detected'
                 label     = 'builder-1'
@@ -4446,6 +4698,8 @@ panes:
         $result.experiment_packet.worktree | Should -Be '.worktrees/builder-1'
         $result.experiment_packet.env_fingerprint | Should -Be 'env:abc123'
         $result.experiment_packet.command_hash | Should -Be 'cmd:def456'
+        $result.run_packet.verification_contract.mode | Should -Be 'adversarial_verify'
+        $result.run_packet.verification_result.outcome | Should -Be 'PARTIAL'
         $result.observation_pack.packet_type | Should -Be 'observation_pack'
         $result.observation_pack.failing_command | Should -Be 'Invoke-Pester tests/psmux-bridge.Tests.ps1'
         $result.consultation_packet.kind | Should -Be 'consult_result'
@@ -4460,6 +4714,7 @@ panes:
         $result.explanation.current_state.review_state | Should -Be 'PENDING'
         $result.explanation.reasons | Should -Contain 'task_state=in_progress'
         $result.explanation.reasons | Should -Contain 'review_state=PENDING'
+        $result.explanation.reasons | Should -Contain 'verify=PARTIAL'
         $result.explanation.reasons | Should -Contain 'review_contract=design_impact,replacement_coverage,orphaned_artifacts'
         $result.review_state.status | Should -Be 'PENDING'
         $result.review_state.request.review_contract.style | Should -Be 'utility_first'
@@ -4474,12 +4729,14 @@ panes:
         $result.result_packet.review_recommendation | Should -Be 'PENDING'
         $result.result_packet.review_contract.style | Should -Be 'utility_first'
         $result.result_packet.review_contract.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
+        $result.result_packet.verification_result.outcome | Should -Be 'PARTIAL'
         $result.result_packet.evidence_refs | Should -Be @('scripts/winsmux-core.ps1')
         $result.result_packet.observation_pack.packet_type | Should -Be 'observation_pack'
         $result.result_packet.consultation_packet.kind | Should -Be 'consult_result'
         $result.result_packet.consultation_summary.kind | Should -Be 'consult_result'
-        $result.recent_events.Count | Should -Be 2
+        $result.recent_events.Count | Should -Be 3
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'commander.review_requested'
+        @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.verify.partial'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pane.approval_waiting'
         ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).hypothesis | Should -Be 'experiment packet should flow into explain'
         ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).observation_pack.packet_type | Should -Be 'observation_pack'
