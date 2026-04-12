@@ -44,6 +44,11 @@
   - assets: `winsmux-x64.exe`, `winsmux-arm64.exe`, `SHA256SUMS`
   - release body replaced with the curated Codex-style notes
   - stray `release-body.md` asset removed
+- Re-reviewed post-`v0.21.2` task placement and adjusted planning:
+  - `TASK-306` -> `v0.22.0`
+  - `TASK-310` -> `v0.24.3`
+  - `TASK-115` -> `v0.24.5`
+  - renamed `v0.24.1` to `Rust ledger, projections & session-state convergence`
 
 ## Validation
 
