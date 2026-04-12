@@ -20,6 +20,7 @@ $PaneControlScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\
 $PaneStatusScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-status.ps1'))
 $RoleGateScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\role-gate.ps1'))
 $ClmSafeIoScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\clm-safe-io.ps1'))
+$PaneEnvScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-env.ps1'))
 
 if (Test-Path $BridgeSettingsScript -PathType Leaf) {
     . $BridgeSettingsScript
@@ -39,6 +40,10 @@ if (Test-Path $RoleGateScript -PathType Leaf) {
 
 if (Test-Path $ClmSafeIoScript -PathType Leaf) {
     . $ClmSafeIoScript
+}
+
+if (Test-Path $PaneEnvScript -PathType Leaf) {
+    . $PaneEnvScript
 }
 
 # --- Windows Credential Manager P/Invoke ---
@@ -475,6 +480,86 @@ function Resolve-SupportedPromptTransport {
     }
 
     return $resolved
+}
+
+function Get-BridgeSecurityPolicyRuleList {
+    param(
+        [AllowNull()]$SecurityPolicy,
+        [Parameter(Mandatory = $true)][string]$Key
+    )
+
+    if ($null -eq $SecurityPolicy) {
+        return @()
+    }
+
+    if ($SecurityPolicy -is [System.Collections.IDictionary] -and $SecurityPolicy.Contains($Key)) {
+        return @($SecurityPolicy[$Key] | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    }
+
+    if ($null -ne $SecurityPolicy.PSObject -and $SecurityPolicy.PSObject.Properties.Name -contains $Key) {
+        return @($SecurityPolicy.$Key | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    }
+
+    return @()
+}
+
+function Find-SendSecurityPolicyViolation {
+    param(
+        [Parameter(Mandatory = $true)][string]$Text,
+        [AllowNull()]$SecurityPolicy
+    )
+
+    if ($null -eq $SecurityPolicy) {
+        return $null
+    }
+
+    $mode = ''
+    if ($SecurityPolicy -is [System.Collections.IDictionary] -and $SecurityPolicy.Contains('mode')) {
+        $mode = [string]$SecurityPolicy['mode']
+    } elseif ($null -ne $SecurityPolicy.PSObject -and $SecurityPolicy.PSObject.Properties.Name -contains 'mode') {
+        $mode = [string]$SecurityPolicy.mode
+    }
+    $mode = $mode.Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($mode)) {
+        $mode = 'blocklist'
+    }
+
+    $allowPatterns = @(Get-BridgeSecurityPolicyRuleList -SecurityPolicy $SecurityPolicy -Key 'allow_patterns')
+    $blockPatterns = @(Get-BridgeSecurityPolicyRuleList -SecurityPolicy $SecurityPolicy -Key 'block_patterns')
+
+    foreach ($pattern in $blockPatterns) {
+        if ($Text -match $pattern) {
+            return [ordered]@{
+                verdict = 'BLOCK'
+                reason = "send matched blocked security policy pattern '$pattern'"
+                pattern = $pattern
+                mode = $mode
+                allow = @($allowPatterns)
+                block = @($blockPatterns)
+                next_action = 'revise_request_or_override'
+            }
+        }
+    }
+
+    if ($mode -eq 'allowlist' -and $allowPatterns.Count -gt 0) {
+        foreach ($pattern in $allowPatterns) {
+            if ($Text -match $pattern) {
+                return $null
+            }
+        }
+
+        return [ordered]@{
+            verdict = 'BLOCK'
+            reason = 'send did not match any allow_patterns entry required by allowlist security policy'
+            pattern = ''
+            mode = $mode
+            allow = @($allowPatterns)
+            block = @($blockPatterns)
+            next_action = 'revise_request_or_override'
+        }
+    }
+
+    return $null
 }
 
 function Resolve-SendDispatchPayload {
@@ -2173,6 +2258,35 @@ function Invoke-Send {
                 $execMode = $execModeValue.Trim().ToLowerInvariant() -eq 'true' -and [string]$agentConfig.Agent -eq 'codex'
             }
         } catch {
+        }
+    }
+
+    if ($null -ne $context -and $null -ne $context.SecurityPolicy) {
+        $policyViolation = Find-SendSecurityPolicyViolation -Text $text -SecurityPolicy $context.SecurityPolicy
+        if ($null -ne $policyViolation) {
+            $eventRecord = [ordered]@{
+                timestamp = [System.DateTimeOffset]::Now.ToString('o')
+                session   = [string]$context.SessionName
+                event     = 'security.policy.blocked'
+                message   = [string]$policyViolation['reason']
+                label     = [string]$context.Label
+                pane_id   = [string]$context.PaneId
+                role      = [string]$context.Role
+                branch    = [string]$context.Branch
+                head_sha  = [string]$context.HeadSha
+                data      = [ordered]@{
+                    verdict     = [string]$policyViolation['verdict']
+                    reason      = [string]$policyViolation['reason']
+                    pattern     = [string]$policyViolation['pattern']
+                    mode        = [string]$policyViolation['mode']
+                    allow       = @($policyViolation['allow'])
+                    block       = @($policyViolation['block'])
+                    next_action = [string]$policyViolation['next_action']
+                    target      = $Target
+                }
+            }
+            Write-BridgeEventRecord -ProjectDir $projectDir -EventRecord $eventRecord | Out-Null
+            Stop-WithError ([string]$policyViolation['reason'])
         }
     }
 

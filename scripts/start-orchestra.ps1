@@ -27,6 +27,10 @@ param(
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$paneEnvScript = Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-env.ps1'
+if (Test-Path $paneEnvScript -PathType Leaf) {
+    . $paneEnvScript
+}
 
 function Show-WinsmuxBanner {
     $bannerScript = Join-Path $PSScriptRoot "banner.mjs"
@@ -83,16 +87,20 @@ if ($Agents.Count -ne $expectedPanes) {
 
 # --- Shield Harness (opt-in) ---
 $shieldActive = $false
+$hookProfile = 'standard'
+if (Get-Command Resolve-WinsmuxHookProfile -ErrorAction SilentlyContinue) {
+    $hookProfile = Resolve-WinsmuxHookProfile -ProjectDir $ProjectDir
+}
 if ($ShieldHarness) {
     $markerFile = Join-Path $ProjectDir ".claude\hooks\sh-gate.js"
     if (Test-Path $markerFile) {
-        Write-Output "[shield-harness] Detected in $ProjectDir"
+        Write-Output "[shield-harness] Detected in $ProjectDir (profile: $hookProfile)"
         $shieldActive = $true
     } else {
-        Write-Output "[shield-harness] Initializing in $ProjectDir ..."
+        Write-Output "[shield-harness] Initializing in $ProjectDir (profile: $hookProfile) ..."
         Push-Location $ProjectDir
         try {
-            npx shield-harness init --profile standard
+            npx shield-harness init --profile $hookProfile
             if ($LASTEXITCODE -eq 0) {
                 Write-Output "[shield-harness] Initialized successfully"
                 $shieldActive = $true
@@ -104,6 +112,11 @@ if ($ShieldHarness) {
         }
         Pop-Location
     }
+}
+
+$governanceMode = 'standard'
+if (Get-Command Resolve-WinsmuxGovernanceMode -ErrorAction SilentlyContinue) {
+    $governanceMode = Resolve-WinsmuxGovernanceMode -ProjectDir $ProjectDir
 }
 
 # --- Approval-free mode flags (only with ShieldHarness) ---
@@ -314,7 +327,13 @@ for ($i = 0; $i -lt $Agents.Count; $i++) {
     $agent = $Agents[$i]
     $paneId = $paneIds[$i]
     $cmd = Get-ApprovalFreeCommand $agent.command
-    winsmux send-keys -t $paneId "cd $ProjectDir && $cmd" Enter
+    $envPrefix = @(
+        ('$env:WINSMUX_ORCHESTRA_SESSION = ''{0}''' -f ($session -replace "'", "''"))
+        ('$env:WINSMUX_ORCHESTRA_PROJECT_DIR = ''{0}''' -f ($ProjectDir -replace "'", "''"))
+        ('$env:WINSMUX_HOOK_PROFILE = ''{0}''' -f ($hookProfile -replace "'", "''"))
+        ('$env:WINSMUX_GOVERNANCE_MODE = ''{0}''' -f ($governanceMode -replace "'", "''"))
+    ) -join '; '
+    winsmux send-keys -t $paneId "$envPrefix; cd $ProjectDir; $cmd" Enter
 }
 
 # --- Startup verification ---
@@ -332,6 +351,13 @@ if ($codexConfigBackup) {
 # --- Summary ---
 Write-Output ""
 Write-Output "Orchestra started in session '$session' (${Rows}x${Cols} grid)"
+if (Get-Command Resolve-WinsmuxHookProfile -ErrorAction SilentlyContinue) {
+    try {
+        Write-Output "  Hook profile:  $(Resolve-WinsmuxHookProfile -ProjectDir $ProjectDir)"
+    } catch {
+        Write-Warning "Hook profile resolution failed: $($_.Exception.Message)"
+    }
+}
 foreach ($agent in $Agents) {
     $pad = ($agent.label).PadRight(14)
     Write-Output "  ${pad} $($paneMap[$agent.label])  ($($agent.command))"

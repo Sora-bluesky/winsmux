@@ -58,6 +58,9 @@ const DEFAULT_TOKEN_BUDGET = {
   used: 0,
 };
 
+const winsmuxHookProfile = (process.env.WINSMUX_HOOK_PROFILE || "standard").trim() || "standard";
+const winsmuxGovernanceMode = (process.env.WINSMUX_GOVERNANCE_MODE || "standard").trim() || "standard";
+
 try {
   const input = readHookInput();
   const toolName = input.tool_name || input.toolName || "";
@@ -173,7 +176,14 @@ try {
   session.retry_count = 0;
   session.stop_hook_active = false;
   session.deny_tracker = {};
+  session.winsmux_contract = {
+    hook_profile: winsmuxHookProfile,
+    governance_mode: winsmuxGovernanceMode,
+  };
   contextParts.push("[env-check] Session initialized, token budget set");
+  contextParts.push(
+    `[winsmux] Hook profile: ${winsmuxHookProfile}, governance mode: ${winsmuxGovernanceMode}`,
+  );
 
   // 2c: OpenShell detection (Layer 3b, ADR-037)
   const openshellResult = detectOpenShell();
@@ -373,6 +383,10 @@ try {
             reason: policyCompat.reason,
           }
         : null,
+      winsmux_contract: {
+        hook_profile: winsmuxHookProfile,
+        governance_mode: winsmuxGovernanceMode,
+      },
     });
   } catch {
     // Evidence failure is non-blocking

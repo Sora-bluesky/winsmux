@@ -835,6 +835,93 @@ NEXT_ACTION: rerun focused verification
         $script:securityEventWrites[0].Data.verdict | Should -Be 'BLOCK'
     }
 
+    It 'blocks explicit git commands in plan prompts before dispatch' {
+        $script:securityEventWrites = @()
+        Mock Write-TeamPipelineEvent {
+            param($ProjectDir, $SessionName, $Event, $Message, $Role, $PaneId, $Target, $Data)
+            $script:securityEventWrites += [PSCustomObject]@{
+                Event = $Event
+                Target = $Target
+                Data = $Data
+            }
+        }
+
+        $result = Invoke-TeamPipelineGuardedSend -StageName 'PLAN' -Target 'researcher' -Prompt "git commit -m 'oops'" -ProjectDir 'C:\repo' -SessionName 'winsmux-orchestra' -Role 'Researcher' -Task 'Investigate cache drift'
+
+        $result.Status | Should -Be 'BLOCKED'
+        $result.SecurityVerdict.verdict | Should -Be 'BLOCK'
+        $result.SecurityVerdict.stage | Should -Be 'PLAN'
+        $script:securityEventWrites.Count | Should -Be 1
+        $script:securityEventWrites[0].Data.category | Should -Be 'git'
+    }
+
+    It 'blocks explicit destructive commands in consult prompts before dispatch' {
+        $script:securityEventWrites = @()
+        Mock Write-TeamPipelineEvent {
+            param($ProjectDir, $SessionName, $Event, $Message, $Role, $PaneId, $Target, $Data)
+            $script:securityEventWrites += [PSCustomObject]@{
+                Event = $Event
+                Target = $Target
+                Data = $Data
+            }
+        }
+
+        $result = Invoke-TeamPipelineConsultStage -Mode 'stuck' -Task 'Investigate cache drift' -BuilderLabel 'builder-1' -ProjectDir 'C:\repo' -SessionName 'winsmux-orchestra' -TargetLabel 'reviewer' -ReviewerLabel 'reviewer' -BuilderWorktreePath 'C:\repo\.worktrees\builder-1' -BuildSummary 'Remove-Item logs -Recurse -Force'
+
+        $result.Status | Should -Be 'BLOCKED'
+        $result.SecurityVerdict.verdict | Should -Be 'BLOCK'
+        $result.SecurityVerdict.stage | Should -Be 'CONSULT_STUCK'
+        $script:securityEventWrites.Count | Should -Be 1
+        @($script:securityEventWrites | Select-Object -ExpandProperty Event) | Should -Be @('pipeline.security.blocked')
+    }
+
+    It 'does not record review dispatched when verify prompt is blocked before send' {
+        $manifest = [PSCustomObject]@{
+            Session = [PSCustomObject]@{
+                name        = 'winsmux-orchestra'
+                project_dir = 'C:\repo'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\repo\.worktrees\builder-1' }
+                'reviewer'  = [PSCustomObject]@{ pane_id = '%4'; role = 'Reviewer'; launch_dir = 'C:\repo' }
+            }
+        }
+
+        $script:teamPipelineBridgeCalls = @()
+        $script:teamPipelineEvents = @()
+
+        Mock Read-TeamPipelineManifest { $manifest }
+        Mock Invoke-TeamPipelineBridge {
+            param([string[]]$Arguments, [switch]$AllowFailure)
+            $script:teamPipelineBridgeCalls += ,@($Arguments)
+            [PSCustomObject]@{ ExitCode = 0; Output = '' }
+        }
+        Mock Wait-TeamPipelineStage {
+            param([string]$Target, [string]$StageName, [int]$TimeoutSeconds, [int]$PollIntervalSeconds)
+            switch ($StageName) {
+                'PLAN' { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'PLAN_DONE'; Summary = 'plan summary'; Transcript = '' } }
+                'CONSULT_EARLY' { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'CONSULT_DONE'; Summary = 'early consult summary'; Transcript = '' } }
+                'EXEC' { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'EXEC_DONE'; Summary = "git commit -m 'oops'"; Transcript = '' } }
+                default { throw "Unexpected stage $StageName" }
+            }
+        }
+        Mock Write-TeamPipelineEvent {
+            param($ProjectDir, $SessionName, $Event, $Message, $Role, $PaneId, $Target, $Data)
+            $script:teamPipelineEvents += [PSCustomObject]@{
+                Event = $Event
+                Role = $Role
+                Target = $Target
+                Data = $Data
+            }
+        }
+
+        $result = Invoke-TeamPipeline -Task 'Investigate cache drift' -Builder 'builder-1' -Reviewer 'reviewer'
+
+        $result.FinalStatus | Should -Be 'VERIFY_BLOCKED'
+        @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.review.dispatched' }).Count | Should -Be 0
+        @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.security.blocked' }).Count | Should -BeGreaterThan 0
+    }
+
     It 'selects sensible planning and verification targets from the available roles' {
         $defaultTargets = Get-TeamPipelineStageTargets -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel 'reviewer'
         $defaultTargets.PlanTarget | Should -Be 'researcher'
@@ -959,6 +1046,79 @@ NEXT_ACTION: rerun focused verification
         $result.StuckConsults[0].Status | Should -Be 'CONSULT_DONE'
         @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.dispatched' }).Count | Should -Be 2
         @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.completed' }).Count | Should -Be 2
+    }
+}
+
+Describe 'winsmux pane env contract' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\pane-env.ps1')
+    }
+
+    BeforeEach {
+        $script:paneEnvTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-pane-env-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:paneEnvTempRoot '.winsmux') -Force | Out-Null
+        $script:previousHookProfile = $env:WINSMUX_HOOK_PROFILE
+        $script:previousGovernanceMode = $env:WINSMUX_GOVERNANCE_MODE
+    }
+
+    AfterEach {
+        if ($null -eq $script:previousHookProfile) {
+            Remove-Item Env:WINSMUX_HOOK_PROFILE -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_HOOK_PROFILE = $script:previousHookProfile
+        }
+
+        if ($null -eq $script:previousGovernanceMode) {
+            Remove-Item Env:WINSMUX_GOVERNANCE_MODE -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_GOVERNANCE_MODE = $script:previousGovernanceMode
+        }
+
+        if ($script:paneEnvTempRoot -and (Test-Path $script:paneEnvTempRoot)) {
+            Remove-Item -Path $script:paneEnvTempRoot -Recurse -Force
+        }
+    }
+
+    It 'reads hook profile and governance mode from governance.yaml when env vars are absent' {
+@'
+mode: enhanced
+hook_profile: builder
+'@ | Set-Content -Path (Join-Path $script:paneEnvTempRoot '.winsmux\governance.yaml') -Encoding UTF8
+
+        $contract = Get-WinsmuxEnvironmentContract -ProjectDir $script:paneEnvTempRoot
+
+        $contract.hook_profile | Should -Be 'builder'
+        $contract.governance_mode | Should -Be 'enhanced'
+        $contract.variable_names | Should -Contain 'WINSMUX_HOOK_PROFILE'
+        $contract.variable_names | Should -Contain 'WINSMUX_GOVERNANCE_MODE'
+    }
+
+    It 'lets WINSMUX_HOOK_PROFILE and WINSMUX_GOVERNANCE_MODE override governance.yaml' {
+@'
+mode: core
+hook_profile: ci
+'@ | Set-Content -Path (Join-Path $script:paneEnvTempRoot '.winsmux\governance.yaml') -Encoding UTF8
+        $env:WINSMUX_HOOK_PROFILE = 'commander'
+        $env:WINSMUX_GOVERNANCE_MODE = 'standard'
+
+        (Resolve-WinsmuxHookProfile -ProjectDir $script:paneEnvTempRoot) | Should -Be 'commander'
+        (Resolve-WinsmuxGovernanceMode -ProjectDir $script:paneEnvTempRoot) | Should -Be 'standard'
+    }
+
+    It 'builds a normalized pane environment payload' {
+        $env:WINSMUX_HOOK_PROFILE = 'builder'
+        $env:WINSMUX_GOVERNANCE_MODE = 'enhanced'
+
+        $payload = Get-WinsmuxPaneEnvironment -Role 'Worker' -PaneId '%4' -SessionName 'winsmux-orchestra' -ProjectDir $script:paneEnvTempRoot -RoleMapJson '{"%4":"Worker"}' -BuilderWorktreePath 'C:\repo\.worktrees\builder-1'
+
+        $payload.WINSMUX_ORCHESTRA_SESSION | Should -Be 'winsmux-orchestra'
+        $payload.WINSMUX_ORCHESTRA_PROJECT_DIR | Should -Be $script:paneEnvTempRoot
+        $payload.WINSMUX_ROLE | Should -Be 'Worker'
+        $payload.WINSMUX_PANE_ID | Should -Be '%4'
+        $payload.WINSMUX_ROLE_MAP | Should -Be '{"%4":"Worker"}'
+        $payload.WINSMUX_BUILDER_WORKTREE | Should -Be 'C:\repo\.worktrees\builder-1'
+        $payload.WINSMUX_HOOK_PROFILE | Should -Be 'builder'
+        $payload.WINSMUX_GOVERNANCE_MODE | Should -Be 'enhanced'
     }
 }
 
@@ -4980,6 +5140,29 @@ Describe 'winsmux send dispatch payload' {
 
     It 'rejects unsupported prompt transport values' {
         { Resolve-SendDispatchPayload -Text 'Write-Host short' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -PromptTransport 'stdin' } | Should -Throw '*prompt_transport*'
+    }
+
+    It 'blocks send text when a blocklist security policy pattern matches' {
+        $violation = Find-SendSecurityPolicyViolation -Text 'git reset --hard origin/main' -SecurityPolicy ([ordered]@{
+            mode = 'blocklist'
+            allow_patterns = @('Invoke-Pester')
+            block_patterns = @('git reset --hard')
+        })
+
+        $violation.verdict | Should -Be 'BLOCK'
+        $violation.mode | Should -Be 'blocklist'
+        @($violation.block) | Should -Be @('git reset --hard')
+    }
+
+    It 'blocks allowlist sends when no allow pattern matches' {
+        $violation = Find-SendSecurityPolicyViolation -Text 'Write-Host short' -SecurityPolicy ([ordered]@{
+            mode = 'allowlist'
+            allow_patterns = @('Invoke-Pester')
+            block_patterns = @()
+        })
+
+        $violation.verdict | Should -Be 'BLOCK'
+        $violation.reason | Should -Match 'allow_patterns'
     }
 }
 

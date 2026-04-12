@@ -10,6 +10,7 @@ Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 . (Join-Path $PSScriptRoot 'planning-paths.ps1')
+. (Join-Path $PSScriptRoot 'pane-env.ps1')
 
 function New-DoctorResult {
     param(
@@ -403,6 +404,43 @@ function Test-BridgeConfigCheck {
     return New-DoctorResult -Status pass -Label '.winsmux.yaml' -Detail 'found'
 }
 
+function Test-HookProfileCheck {
+    $repoRoot = Get-DoctorRepoRoot
+
+    try {
+        $profile = Resolve-WinsmuxHookProfile -ProjectDir $repoRoot
+    } catch {
+        return New-DoctorResult -Status fail -Label 'Hook profile' -Detail $_.Exception.Message
+    }
+
+    return New-DoctorResult -Status pass -Label 'Hook profile' -Detail $profile
+}
+
+function Test-GovernanceModeCheck {
+    $repoRoot = Get-DoctorRepoRoot
+
+    try {
+        $mode = Resolve-WinsmuxGovernanceMode -ProjectDir $repoRoot
+    } catch {
+        return New-DoctorResult -Status fail -Label 'Governance mode' -Detail $_.Exception.Message
+    }
+
+    return New-DoctorResult -Status pass -Label 'Governance mode' -Detail $mode
+}
+
+function Test-WinsmuxEnvContractCheck {
+    $repoRoot = Get-DoctorRepoRoot
+
+    try {
+        $contract = Get-WinsmuxEnvironmentContract -ProjectDir $repoRoot
+    } catch {
+        return New-DoctorResult -Status fail -Label 'WINSMUX env contract' -Detail $_.Exception.Message
+    }
+
+    $detail = "hook_profile=$($contract['hook_profile']); governance_mode=$($contract['governance_mode']); vars=$((@($contract['variable_names']) -join ','))"
+    return New-DoctorResult -Status pass -Label 'WINSMUX env contract' -Detail $detail
+}
+
 function Write-DoctorResult {
     param([Parameter(Mandatory = $true)]$Result)
 
@@ -419,6 +457,9 @@ $results = @(
     Test-StaleWorktreesCheck
     Test-ZombieProcessesCheck
     Test-BridgeConfigCheck
+    Test-HookProfileCheck
+    Test-GovernanceModeCheck
+    Test-WinsmuxEnvContractCheck
 )
 
 $hasFail = $false
