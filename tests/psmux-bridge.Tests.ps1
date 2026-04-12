@@ -4390,7 +4390,18 @@ panes:
       "branch": "worktree-builder-1",
       "head_sha": "abc1234def5678",
       "target_reviewer_label": "reviewer-1",
-      "target_reviewer_pane_id": "%3"
+      "target_reviewer_pane_id": "%3",
+      "review_contract": {
+        "version": 1,
+        "source_task": "TASK-210",
+        "issue_ref": "#315",
+        "style": "utility_first",
+        "required_scope": [
+          "design_impact",
+          "replacement_coverage",
+          "orphaned_artifacts"
+        ]
+      }
     }
   }
 }
@@ -4449,7 +4460,11 @@ panes:
         $result.explanation.current_state.review_state | Should -Be 'PENDING'
         $result.explanation.reasons | Should -Contain 'task_state=in_progress'
         $result.explanation.reasons | Should -Contain 'review_state=PENDING'
+        $result.explanation.reasons | Should -Contain 'review_contract=design_impact,replacement_coverage,orphaned_artifacts'
         $result.review_state.status | Should -Be 'PENDING'
+        $result.review_state.request.review_contract.style | Should -Be 'utility_first'
+        $result.review_state.request.review_contract.source_task | Should -Be 'TASK-210'
+        $result.review_state.request.review_contract.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
         $result.result_packet.status | Should -Be 'in_progress'
         $result.result_packet.summary | Should -Be 'commander.review_requested'
         $result.result_packet.changed_files | Should -Be @('scripts/winsmux-core.ps1')
@@ -4457,6 +4472,8 @@ panes:
         $result.result_packet.head_sha | Should -Be 'abc1234def5678'
         $result.result_packet.next_action_hint | Should -Be 'approval_waiting'
         $result.result_packet.review_recommendation | Should -Be 'PENDING'
+        $result.result_packet.review_contract.style | Should -Be 'utility_first'
+        $result.result_packet.review_contract.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
         $result.result_packet.evidence_refs | Should -Be @('scripts/winsmux-core.ps1')
         $result.result_packet.observation_pack.packet_type | Should -Be 'observation_pack'
         $result.result_packet.consultation_packet.kind | Should -Be 'consult_result'

@@ -84,4 +84,10 @@ The current `winsmux-app` shell work tracks these Codex-derived areas most close
 - footer/status-lane affordances
 - settings/menu surface affordances
 
+### Adaptation guardrails
+
+Codex-derived UI reuse in winsmux follows the active release-train acceptance rules for utility-first surfaces, real-data-first release paths, minimal chrome, and Playwright viewport verification evidence recorded in backlog notes, pull requests, or handoff.
+
+These are project adaptation guardrails, not additional license terms.
+
 This notice covers attribution and provenance tracking. It does not imply that winsmux reproduces Codex verbatim end-to-end.

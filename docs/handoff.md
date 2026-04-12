@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T14:55:00+09:00
+> Updated: 2026-04-12T18:25:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -15,6 +15,7 @@
 - `v0.20.1` is now fully implemented at `100% (7/7)` in the external planning backlog/roadmap after rebaselining the shipped transport/ledger slices and moving the remaining SQLite FTS5 + stdin parity work into follow-up tasks.
 - `v0.20.1` is released at [v0.20.1](https://github.com/Sora-bluesky/winsmux/releases/tag/v0.20.1); release workflow run `24299025847` published `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
 - `v0.20.2` is now the active implementation milestone, starting with reviewer-governance hardening and release-workflow maintenance.
+- `v0.20.2` remains the active implementation milestone; `TASK-207` is merged and the next in-flight slice is `TASK-210` on branch `codex/task210-review-scope-contract-20260412`.
 - Planning source of truth is externalized outside the public repository and syncs automatically into the private planning root.
 - `v0.21.x` private planning is aligned to a conversation-first Tauri operator shell, with Codex-App-like shell rules reflected in Figma and backlog notes.
 - `v0.24.x` private planning is split into schema, ledger, machine contract, cutover, and canary phases for Rust runtime convergence before `v1.0.0`.
@@ -49,6 +50,9 @@
 - Started the first `v0.20.2` slice for `TASK-207` by strengthening `winsmux-core/agents/reviewer.sh` so reviewer prompts must explicitly audit downstream design impact, replacement coverage, and orphaned artifacts instead of limiting review to local diff correctness.
 - Updated `winsmux-core/agents/AGENTS.md` to keep the reviewer-template docs aligned with the stronger audit contract, and added a narrow regression in `tests/psmux-bridge.Tests.ps1` that locks the new review-checklist language in place.
 - Updated `.github/workflows/release-core.yml` from `softprops/action-gh-release@v2` to `@v3` to remove the Node 20 deprecation path that still appeared during the `v0.20.1` release workflow.
+- Started the `TASK-210` runtime slice on `codex/task210-review-scope-contract-20260412`, adding `request.review_contract` to `review-request`, surfacing that contract through `explain/result_packet`, and rejecting `review-approve` / `review-fail` when a pending request lacks the mandatory scope contract.
+- Updated external planning notes so `TASK-210`, `TASK-272`, `TASK-302`, `TASK-303`, `TASK-304`, and `TASK-305` explicitly encode Codex-derived UI acceptance rules (`utility-first`, `real-data-first`, `minimal chrome`, `calm hierarchy`, `one accent`), and added `TASK-308` for Playwright-based desktop viewport / overlap / drawer verification.
+- Updated [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) with a short `Adaptation guardrails` bridge so Codex-derived UI reuse points back to release-train acceptance criteria without turning the notice file into additional license terms.
 - Merged `TASK-287` via PR [#393](https://github.com/Sora-bluesky/winsmux/pull/393), adding the keyboard-first operator command bar (`Ctrl/Cmd+K`) with quick actions, IME-safe input handling, focus restore, and accessible active-option semantics.
 - Merged `TASK-298` via PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), rewriting `README.ja.md` to match the public operator model, shrinking maintainer-only planning readmes into internal stubs, and making tracked public config/docs safer for external users.
 - Re-synced the external planning backlog/roadmap after PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), marking `TASK-298` as done so `v0.20.0` now shows `100% (12/12)`.
@@ -139,12 +143,15 @@
 - `v0.20.1` release workflow run `24299025847` completed successfully after tag push.
 - Current local `TASK-207` + release-workflow maintenance slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `136/136 PASS`.
 - Current local `TASK-207` + release-workflow maintenance slice passes `git diff --check` aside from benign LF->CRLF warnings on edited files.
+- Current local `TASK-210` runtime-contract slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `136/136 PASS`.
+- Current local `TASK-210` runtime-contract slice passes focused regression: `Invoke-Pester tests/Integration.GateEnforcement.Tests.ps1` -> `45/45 PASS`.
+- Current local `TASK-210` runtime-contract slice passes `git diff --check` aside from benign LF->CRLF warnings on edited files.
 
 ## Next actions
 
-1. Land the `TASK-207` reviewer-checklist slice and close the `softprops/action-gh-release` Node 20 warning by merging the current release-workflow update.
-2. Continue with `v0.20.2` verification/security work, keeping `TASK-306` and `TASK-307` as explicit follow-up debt rather than sneaking them into unrelated milestones.
-3. Keep the external planning sync flow user-visible but out of the public repo, then reflect consultation/experiment surfaces into the Tauri shell as `TASK-305` approaches.
+1. Run a fresh reviewer on the `TASK-210` slice, then stage / commit / push / open the PR if the fallback gate still looks clean.
+2. After `TASK-210`, continue `v0.20.2` with `TASK-272` so verification output becomes utility-first and structured instead of prompt-only.
+3. Keep `TASK-308` as the explicit `v0.22.1` gate for Playwright viewport / overlap / drawer verification when Codex-derived desktop surfaces become release-bound.
 
 ## Notes
 

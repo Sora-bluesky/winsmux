@@ -678,6 +678,10 @@ EOF
         $reviewState.'feature/review-gate'.reviewer.pane_id | Should -Be '%4'
         $reviewState.'feature/review-gate'.request.head_sha | Should -Not -BeNullOrEmpty
         $reviewState.'feature/review-gate'.request.target_reviewer_pane_id | Should -Be '%4'
+        $reviewState.'feature/review-gate'.request.review_contract.source_task | Should -Be 'TASK-210'
+        $reviewState.'feature/review-gate'.request.review_contract.style | Should -Be 'utility_first'
+        $reviewState.'feature/review-gate'.request.review_contract.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
+        $reviewState.'feature/review-gate'.evidence.review_contract_snapshot.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
 
         $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
             command = 'git commit -m "feat: approved"'
@@ -781,5 +785,39 @@ EOF
         $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve') -Environment $reviewerEnv
         $approveResult.ExitCode | Should -Be 1
         $approveResult.StdErr | Should -Match 'review-request'
+    }
+
+    It 'rejects review-approve when the pending request is missing review_contract' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $reviewStatePath = Join-Path $fixture.RepoRoot '.winsmux\review-state.json'
+        @'
+{
+  "feature/review-gate": {
+    "status": "PENDING",
+    "branch": "feature/review-gate",
+    "head_sha": "1111111111111111111111111111111111111111",
+    "request": {
+      "branch": "feature/review-gate",
+      "head_sha": "1111111111111111111111111111111111111111",
+      "target_reviewer_pane_id": "%4",
+      "target_reviewer_label": "reviewer-1",
+      "target_reviewer_role": "Reviewer"
+    }
+  }
+}
+'@ | Set-Content -LiteralPath $reviewStatePath -Encoding UTF8
+
+        $reviewerEnv = @{
+            WINSMUX_ROLE      = 'Reviewer'
+            WINSMUX_PANE_ID   = '%4'
+            WINSMUX_ROLE_MAP  = '{"%4":"Reviewer"}'
+            WINSMUX_AGENT_NAME = 'codex'
+        }
+
+        $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve') -Environment $reviewerEnv
+        $approveResult.ExitCode | Should -Be 1
+        $approveResult.StdErr | Should -Match 'missing review_contract'
     }
 }
