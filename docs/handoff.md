@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T22:02:00+09:00
+> Updated: 2026-04-12T22:15:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -32,7 +32,8 @@
   - pane status default snapshot capture through its wrapper
   - pane title reads through the pane-control wrapper
 - Integrated explorer review findings from `Aristotle` and closed that subagent after use.
-- Validation is passing locally; fresh `/review` is the next gate before commit/PR.
+- Fresh reviewer `Mill` returned `no result yet` after two 35s waits and was closed.
+- Merged PR #408 for the `TASK-216` leaf-wrapper first slice.
 
 ## Validation
 
@@ -45,15 +46,15 @@
   -> PASS
 - `git diff --check` -> warnings only, no substantive diff-check failures
 - Explorer review `Aristotle` completed and recommended the leaf-script-first `TASK-216` slice
+- PR #408 CI -> green (`Pester Tests`)
 - Fresh reviewer `Mill` -> `no result yet` after two 35s waits; closed without result
 - Manual diff review completed for the `TASK-216` leaf-wrapper slice
 
 ## Next actions
 
-1. Run a fresh `/review` on the current `TASK-216` leaf-wrapper slice.
-2. Create branch/commit/PR for the `TASK-216` first slice once review is incorporated.
-3. Continue `v0.21.2` with the next densest wrapper consolidation target after this slice.
-4. At `v0.21.2` release time, update `README.md` and `README.ja.md` to mark the terminal-based final form before `v0.22.0`.
+1. Continue `TASK-216` with the next densest wrapper consolidation target after the leaf-wrapper slice.
+2. Decide whether the next `v0.21.2` slice is `orchestra-layout` wrapper consolidation or a different terminal-ergonomics task.
+3. At `v0.21.2` release time, update `README.md` and `README.ja.md` to mark the terminal-based final form before `v0.22.0`.
 
 ## Notes
 
