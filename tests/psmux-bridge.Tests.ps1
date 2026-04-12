@@ -4668,6 +4668,28 @@ Describe 'winsmux send dispatch payload' {
         (Get-Content -LiteralPath $payload['PromptPath'] -Raw -Encoding UTF8).TrimEnd("`r", "`n") | Should -BeExactly 'Write-Host short'
     }
 
+    It 'normalizes task prompt slugs and writes a stable task prompt file when task_slug is supplied' {
+        (ConvertTo-TaskPromptSlug -TaskSlug ' Cache Drift / Build ') | Should -Be 'cache-drift-build'
+
+        $payload = Resolve-SendDispatchPayload -Text 'Write-Host short' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -TaskSlug ' Cache Drift / Build '
+
+        $payload['TaskSlug'] | Should -Be 'cache-drift-build'
+        $payload['IsFileBacked'] | Should -Be $true
+        $payload['FallbackMode'] | Should -Be 'task_file'
+        $payload['PromptPath'] | Should -Be (Join-Path $script:sendTempRoot '.winsmux\task-cache-drift-build.md')
+        $payload['PromptReference'] | Should -Be '.winsmux/task-cache-drift-build.md'
+        (Get-Content -LiteralPath $payload['PromptPath'] -Raw -Encoding UTF8).TrimEnd("`r", "`n") | Should -BeExactly 'Write-Host short'
+    }
+
+    It 'overwrites the same task prompt path when the same task_slug is reused' {
+        $first = Resolve-SendDispatchPayload -Text 'first prompt' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -TaskSlug 'cache-drift'
+        $second = Resolve-SendDispatchPayload -Text 'second prompt' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -TaskSlug 'cache-drift'
+
+        $first['PromptPath'] | Should -Be $second['PromptPath']
+        $second['PromptReference'] | Should -Be '.winsmux/task-cache-drift.md'
+        (Get-Content -LiteralPath $second['PromptPath'] -Raw -Encoding UTF8).TrimEnd("`r", "`n") | Should -BeExactly 'second prompt'
+    }
+
     It 'rejects unsupported prompt transport values' {
         { Resolve-SendDispatchPayload -Text 'Write-Host short' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -PromptTransport 'stdin' } | Should -Throw '*prompt_transport*'
     }

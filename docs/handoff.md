@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T01:05:00+09:00
+> Updated: 2026-04-12T01:42:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -35,6 +35,10 @@
 - Started the repo-side `TASK-191` first slice locally by teaching one-shot orchestration to insert advisory consult steps before work, on blocked states, and before done using the existing reviewer/researcher lanes without introducing `consult-capable` routing policy yet.
 - Extended [winsmux-core/scripts/team-pipeline.ps1](../winsmux-core/scripts/team-pipeline.ps1) with consult-target selection, advisory consult prompt builders, and `pipeline.consult.*` event emission so one-shot runs can dispatch `early / stuck / final` consult stages around the existing `plan -> build -> verify` loop.
 - Extended [tests/psmux-bridge.Tests.ps1](../tests/psmux-bridge.Tests.ps1) to cover consult target selection plus successful and blocked orchestration paths, asserting that consult stages are inserted only when a non-builder consult target exists.
+- Merged the `TASK-191` first slice via PR [#399](https://github.com/Sora-bluesky/winsmux/pull/399), inserting advisory consult stages into one-shot team orchestration without introducing `consult-capable` routing policy yet.
+- Started the repo-side `TASK-188` first slice locally by extending the transport layer with stable `.winsmux/task-{slug}.md` prompt files so task-scoped handoff can be audited and reused before the full `task-run` command exists.
+- Extended [scripts/winsmux-core.ps1](../scripts/winsmux-core.ps1) with task-prompt helpers (`ConvertTo-TaskPromptSlug`, `Get-TaskPromptPath`, `New-TaskPromptFile`) and task-aware transport planning so file-backed sends can target a deterministic `task-{slug}.md` artifact instead of a random dispatch file.
+- Extended [tests/psmux-bridge.Tests.ps1](../tests/psmux-bridge.Tests.ps1) so send payloads cover normalized task slugs, stable relative references, and overwrite semantics when the same task slug is reused.
 - Merged `TASK-287` via PR [#393](https://github.com/Sora-bluesky/winsmux/pull/393), adding the keyboard-first operator command bar (`Ctrl/Cmd+K`) with quick actions, IME-safe input handling, focus restore, and accessible active-option semantics.
 - Merged `TASK-298` via PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), rewriting `README.ja.md` to match the public operator model, shrinking maintainer-only planning readmes into internal stubs, and making tracked public config/docs safer for external users.
 - Re-synced the external planning backlog/roadmap after PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), marking `TASK-298` as done so `v0.20.0` now shows `100% (12/12)`.
@@ -118,11 +122,14 @@
 - PR [#398](https://github.com/Sora-bluesky/winsmux/pull/398) merged cleanly and the repo returned to `main == origin/main`.
 - Current local `TASK-191` consult-insertion slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `133/133 PASS`.
 - Current local `TASK-191` consult-insertion slice passes `git diff --check` aside from benign LF->CRLF warnings on the edited files.
+- PR [#399](https://github.com/Sora-bluesky/winsmux/pull/399) merged cleanly and the repo returned to `main == origin/main`.
+- Current local `TASK-188` task-prompt-file slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `135/135 PASS`.
+- Current local `TASK-188` task-prompt-file slice passes `git diff --check` aside from benign LF->CRLF warnings on the edited files.
 
 ## Next actions
 
-1. Commit and review the current `TASK-191` consult-insertion slice, then open the PR with `team-pipeline` consult hooks and regression coverage.
-2. After `TASK-191`, move to the next `v0.20.1` ledger/transport increment without introducing `consult-capable` routing policy before `TASK-302`.
+1. Commit and review the current `TASK-188` task-prompt-file slice, then open the PR with stable `.winsmux/task-{slug}.md` transport helpers and regression coverage.
+2. After `TASK-188`, continue `v0.20.1` by connecting these task prompt files to the eventual `task-run` entrypoint rather than expanding routing policy prematurely.
 3. Keep the external planning sync flow user-visible but out of the public repo, then reflect consultation/experiment surfaces into the Tauri shell as `TASK-305` approaches.
 
 ## Notes
