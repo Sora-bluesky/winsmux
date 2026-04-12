@@ -106,6 +106,9 @@ When generating or editing a release:
 3. Keep the GitHub Release body aligned with the `/release-notes` structure, but in English and mapped onto the Codex-style headings above.
 4. Link the compare range in `Full Changelog` when the repository and tag range support it.
 5. Local or private post drafts may be Japanese if the task explicitly asks for them, but the public GitHub Release stays English.
+6. When an item maps to a repository issue or PR, preserve that reference inline in the bullet in Codex style.
+   - Prefer `(#315)` or `(#315, #318)` at the end of the bullet when the reference is available.
+   - Do not strip issue/PR references out of release bullets during summarization if they materially help traceability.
 
 ## Public-vs-Dogfooding Release Gate
 
