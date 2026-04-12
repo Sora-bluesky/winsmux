@@ -287,6 +287,12 @@ function Get-ConsultationDirectory {
     return Join-Path $ProjectDir '.winsmux\consultations'
 }
 
+function Get-PlaybookCandidateDirectory {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    return Join-Path $ProjectDir '.winsmux\playbook-candidates'
+}
+
 function Get-WinsmuxArtifactReference {
     param(
         [Parameter(Mandatory = $true)][string]$ArtifactPath,
@@ -390,6 +396,30 @@ function New-ConsultationPacketFile {
     }
 
     return Write-WinsmuxArtifactFile -DirectoryPath (Get-ConsultationDirectory -ProjectDir $ProjectDir) -Prefix $prefix -Data $packet -ProjectDir $ProjectDir
+}
+
+function New-PlaybookCandidateFile {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()]$PlaybookCandidate,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $packet = ConvertTo-WinsmuxArtifactData -Data $PlaybookCandidate
+    if (-not (Test-WinsmuxArtifactHasCorrelation -Data $packet)) {
+        throw 'Playbook candidate requires run_id or task_id with pane_id/slot.'
+    }
+
+    if (-not $packet.Contains('packet_type')) {
+        $packet['packet_type'] = 'playbook_candidate'
+    }
+    if (-not $packet.Contains('generated_at')) {
+        $packet['generated_at'] = (Get-Date).ToString('o')
+    }
+    if (-not $packet.Contains('kind')) {
+        $packet['kind'] = 'playbook'
+    }
+
+    return Write-WinsmuxArtifactFile -DirectoryPath (Get-PlaybookCandidateDirectory -ProjectDir $ProjectDir) -Prefix 'playbook-candidate' -Data $packet -ProjectDir $ProjectDir
 }
 
 function Read-WinsmuxArtifactJson {
@@ -3646,7 +3676,7 @@ function Get-SecurityVerdictFromEventRecords {
 
     $snapshot = Get-LatestRunEventDataSnapshot `
         -EventRecords $EventRecords `
-        -EventNames @('pipeline.security.blocked', 'security.policy.blocked') `
+        -EventNames @('pipeline.security.blocked', 'security.policy.blocked', 'pipeline.security.allowed', 'security.policy.allowed') `
         -DataFields @('stage', 'attempt', 'task', 'verdict', 'reason', 'advisory_mode', 'allow', 'block', 'next_action')
     if ($null -eq $snapshot) {
         return $null
@@ -3947,7 +3977,7 @@ function ConvertTo-RunEventRecord {
         consultation_packet  = $consultationPacket
         verification_contract = if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('verification_contract')) { $data['verification_contract'] } else { $null }
         verification_result   = if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('verification_result')) { $data['verification_result'] } else { $null }
-        security_verdict      = if (($EventRecord['event'] -in @('pipeline.security.blocked', 'security.policy.blocked')) -and $null -ne $data -and $data -is [System.Collections.IDictionary]) {
+        security_verdict      = if (($EventRecord['event'] -in @('pipeline.security.blocked', 'security.policy.blocked', 'pipeline.security.allowed', 'security.policy.allowed')) -and $null -ne $data -and $data -is [System.Collections.IDictionary]) {
             [ordered]@{
                 stage         = if ($data.Contains('stage')) { [string]$data['stage'] } else { '' }
                 attempt       = if ($data.Contains('attempt')) { $data['attempt'] } else { $null }
@@ -4225,6 +4255,244 @@ function Get-RunsPayload {
             action_item_count  = @($runs | ForEach-Object { @($_.action_items).Count } | Measure-Object -Sum).Sum
         }
         runs         = @($runs | Sort-Object @{ Expression = { [string]$_.last_event_at }; Descending = $true }, @{ Expression = { [string]$_.run_id } })
+    }
+}
+
+function Get-RunFromPayload {
+    param(
+        [Parameter(Mandatory = $true)]$RunsPayload,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    foreach ($run in @($RunsPayload.runs)) {
+        if ([string]$run.run_id -eq $RunId) {
+            return $run
+        }
+    }
+
+    return $null
+}
+
+function Test-RunRecommendable {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $taskState = [string]$Run.task_state
+    $reviewState = ([string]$Run.review_state).ToUpperInvariant()
+    $verificationOutcome = if ($null -ne $Run.verification_result) { ([string]$Run.verification_result.outcome).ToUpperInvariant() } else { '' }
+    $securityVerdict = if ($null -ne $Run.security_verdict) { ([string]$Run.security_verdict.verdict).ToUpperInvariant() } else { '' }
+
+    if ($taskState -notin @('completed', 'task_completed', 'commit_ready', 'done')) {
+        return $false
+    }
+    if (-not [string]::IsNullOrWhiteSpace($reviewState) -and $reviewState -ne 'PASS') {
+        return $false
+    }
+    if ($verificationOutcome -ne 'PASS') {
+        return $false
+    }
+    if ($securityVerdict -notin @('ALLOW', 'PASS')) {
+        return $false
+    }
+
+    return $true
+}
+
+function Test-RunPromotable {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    return (Test-RunRecommendable -Run $Run)
+}
+
+function ConvertTo-CompareRunsPayload {
+    param(
+        [Parameter(Mandatory = $true)]$LeftPayload,
+        [Parameter(Mandatory = $true)]$RightPayload
+    )
+
+    $leftRun = $LeftPayload.run
+    $rightRun = $RightPayload.run
+    $leftExperiment = $LeftPayload.experiment_packet
+    $rightExperiment = $RightPayload.experiment_packet
+    $leftEvidence = $LeftPayload.evidence_digest
+    $rightEvidence = $RightPayload.evidence_digest
+    $leftChangedFiles = @($leftEvidence.changed_files)
+    $rightChangedFiles = @($rightEvidence.changed_files)
+    $sharedChangedFiles = @($leftChangedFiles | Where-Object { $_ -in $rightChangedFiles } | Select-Object -Unique)
+    $leftOnlyChangedFiles = @($leftChangedFiles | Where-Object { $_ -notin $rightChangedFiles })
+    $rightOnlyChangedFiles = @($rightChangedFiles | Where-Object { $_ -notin $leftChangedFiles })
+
+    $leftConfidence = if ($null -ne $leftExperiment -and $leftExperiment.Contains('confidence')) { $leftExperiment.confidence } else { $null }
+    $rightConfidence = if ($null -ne $rightExperiment -and $rightExperiment.Contains('confidence')) { $rightExperiment.confidence } else { $null }
+    $confidenceDelta = $null
+    if ($null -ne $leftConfidence -and $null -ne $rightConfidence) {
+        $confidenceDelta = [math]::Round(([double]$leftConfidence - [double]$rightConfidence), 4)
+    }
+
+    $differences = [System.Collections.Generic.List[object]]::new()
+    foreach ($field in @(
+            'branch',
+            'worktree',
+            'slot',
+            'task_state',
+            'review_state',
+            'state',
+            'next_action',
+            'hypothesis',
+            'result',
+            'env_fingerprint',
+            'command_hash'
+        )) {
+        $leftValue = ''
+        $rightValue = ''
+        switch ($field) {
+            'branch'         { $leftValue = [string]$leftRun.branch; $rightValue = [string]$rightRun.branch }
+            'worktree'       { $leftValue = if ($null -ne $leftExperiment) { [string]$leftExperiment.worktree } else { '' }; $rightValue = if ($null -ne $rightExperiment) { [string]$rightExperiment.worktree } else { '' } }
+            'slot'           { $leftValue = if ($null -ne $leftExperiment) { [string]$leftExperiment.slot } else { '' }; $rightValue = if ($null -ne $rightExperiment) { [string]$rightExperiment.slot } else { '' } }
+            'task_state'     { $leftValue = [string]$leftRun.task_state; $rightValue = [string]$rightRun.task_state }
+            'review_state'   { $leftValue = [string]$leftRun.review_state; $rightValue = [string]$rightRun.review_state }
+            'state'          { $leftValue = [string]$leftRun.state; $rightValue = [string]$rightRun.state }
+            'next_action'    { $leftValue = [string]$leftEvidence.next_action; $rightValue = [string]$rightEvidence.next_action }
+            'hypothesis'     { $leftValue = if ($null -ne $leftExperiment) { [string]$leftExperiment.hypothesis } else { '' }; $rightValue = if ($null -ne $rightExperiment) { [string]$rightExperiment.hypothesis } else { '' } }
+            'result'         { $leftValue = if ($null -ne $leftExperiment) { [string]$leftExperiment.result } else { '' }; $rightValue = if ($null -ne $rightExperiment) { [string]$rightExperiment.result } else { '' } }
+            'env_fingerprint'{ $leftValue = if ($null -ne $leftExperiment) { [string]$leftExperiment.env_fingerprint } else { '' }; $rightValue = if ($null -ne $rightExperiment) { [string]$rightExperiment.env_fingerprint } else { '' } }
+            'command_hash'   { $leftValue = if ($null -ne $leftExperiment) { [string]$leftExperiment.command_hash } else { '' }; $rightValue = if ($null -ne $rightExperiment) { [string]$rightExperiment.command_hash } else { '' } }
+        }
+
+        if ($leftValue -ne $rightValue) {
+            $differences.Add([ordered]@{
+                field = $field
+                left  = $leftValue
+                right = $rightValue
+            }) | Out-Null
+        }
+    }
+
+    if (@($leftOnlyChangedFiles).Count -gt 0 -or @($rightOnlyChangedFiles).Count -gt 0) {
+        $differences.Add([ordered]@{
+            field = 'changed_files'
+            left  = @($leftChangedFiles)
+            right = @($rightChangedFiles)
+        }) | Out-Null
+    }
+
+    if ($null -ne $confidenceDelta -and $confidenceDelta -ne 0) {
+        $differences.Add([ordered]@{
+            field = 'confidence'
+            left  = $leftConfidence
+            right = $rightConfidence
+        }) | Out-Null
+    }
+
+    $leftRecommendable = Test-RunRecommendable -Run $leftRun
+    $rightRecommendable = Test-RunRecommendable -Run $rightRun
+    $winningRunId = ''
+    if ($leftRecommendable -and $rightRecommendable -and $null -ne $confidenceDelta) {
+        if ($confidenceDelta -gt 0) {
+            $winningRunId = [string]$leftRun.run_id
+        } elseif ($confidenceDelta -lt 0) {
+            $winningRunId = [string]$rightRun.run_id
+        }
+    }
+
+    return [ordered]@{
+        generated_at = (Get-Date).ToString('o')
+        left = [ordered]@{
+            run_id               = [string]$leftRun.run_id
+            label                = [string]$leftRun.primary_label
+            branch               = [string]$leftRun.branch
+            task_state           = [string]$leftRun.task_state
+            review_state         = [string]$leftRun.review_state
+            state                = [string]$leftRun.state
+            next_action          = [string]$leftEvidence.next_action
+            confidence           = $leftConfidence
+            changed_files        = @($leftChangedFiles)
+            observation_pack_ref = if ($null -ne $leftExperiment) { [string]$leftExperiment.observation_pack_ref } else { '' }
+            consultation_ref     = if ($null -ne $leftExperiment) { [string]$leftExperiment.consultation_ref } else { '' }
+            recommendable        = $leftRecommendable
+        }
+        right = [ordered]@{
+            run_id               = [string]$rightRun.run_id
+            label                = [string]$rightRun.primary_label
+            branch               = [string]$rightRun.branch
+            task_state           = [string]$rightRun.task_state
+            review_state         = [string]$rightRun.review_state
+            state                = [string]$rightRun.state
+            next_action          = [string]$rightEvidence.next_action
+            confidence           = $rightConfidence
+            changed_files        = @($rightChangedFiles)
+            observation_pack_ref = if ($null -ne $rightExperiment) { [string]$rightExperiment.observation_pack_ref } else { '' }
+            consultation_ref     = if ($null -ne $rightExperiment) { [string]$rightExperiment.consultation_ref } else { '' }
+            recommendable        = $rightRecommendable
+        }
+        shared_changed_files = @($sharedChangedFiles)
+        left_only_changed_files = @($leftOnlyChangedFiles)
+        right_only_changed_files = @($rightOnlyChangedFiles)
+        confidence_delta = $confidenceDelta
+        differences = @($differences)
+        recommend = [ordered]@{
+            winning_run_id = $winningRunId
+            reconcile_consult = [bool](
+                @($differences | Where-Object { $_.field -in @('branch', 'worktree', 'env_fingerprint', 'command_hash', 'result') }).Count -gt 0 -or
+                -not ($leftRecommendable -and $rightRecommendable)
+            )
+            next_action = if ([string]$leftEvidence.next_action -eq [string]$rightEvidence.next_action) { [string]$leftEvidence.next_action } else { 'reconcile_consult' }
+        }
+    }
+}
+
+function Get-PromoteTacticPayload {
+    param(
+        [Parameter(Mandatory = $true)]$ExplainPayload,
+        [string]$Title = '',
+        [string]$Kind = 'playbook'
+    )
+
+    $run = $ExplainPayload.run
+    $experimentPacket = $ExplainPayload.experiment_packet
+    $observationPack = $ExplainPayload.observation_pack
+    $consultationPacket = $ExplainPayload.consultation_packet
+    $evidenceDigest = $ExplainPayload.evidence_digest
+
+    if ([string]::IsNullOrWhiteSpace($Title)) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$consultationPacket.recommendation)) {
+            $Title = [string]$consultationPacket.recommendation
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$experimentPacket.result)) {
+            $Title = [string]$experimentPacket.result
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$run.task)) {
+            $Title = [string]$run.task
+        } else {
+            $Title = "Tactic from $([string]$run.run_id)"
+        }
+    }
+
+    return [ordered]@{
+        run_id               = [string]$run.run_id
+        task_id              = [string]$run.task_id
+        pane_id              = [string]$run.primary_pane_id
+        slot                 = if ($null -ne $experimentPacket) { [string]$experimentPacket.slot } else { '' }
+        kind                 = [string]$Kind
+        title                = [string]$Title
+        summary              = if (-not [string]::IsNullOrWhiteSpace([string]$consultationPacket.recommendation)) { [string]$consultationPacket.recommendation } else { [string]$experimentPacket.result }
+        hypothesis           = if ($null -ne $experimentPacket) { [string]$experimentPacket.hypothesis } else { '' }
+        next_action          = [string]$evidenceDigest.next_action
+        confidence           = if ($null -ne $experimentPacket -and $experimentPacket.Contains('confidence')) { $experimentPacket.confidence } else { $null }
+        branch               = [string]$run.branch
+        head_sha             = [string]$run.head_sha
+        worktree             = if ($null -ne $experimentPacket) { [string]$experimentPacket.worktree } else { '' }
+        env_fingerprint      = if ($null -ne $experimentPacket) { [string]$experimentPacket.env_fingerprint } else { '' }
+        command_hash         = if ($null -ne $experimentPacket) { [string]$experimentPacket.command_hash } else { '' }
+        changed_files        = @($evidenceDigest.changed_files)
+        observation_pack_ref = if ($null -ne $experimentPacket) { [string]$experimentPacket.observation_pack_ref } else { '' }
+        consultation_ref     = if ($null -ne $experimentPacket) { [string]$experimentPacket.consultation_ref } else { '' }
+        verification_result  = $run.verification_result
+        security_verdict     = $run.security_verdict
+        action_item_count    = @($run.action_items).Count
+        action_item_kinds    = @($run.action_items | ForEach-Object { [string]$_.kind } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
+        reuse_conditions     = @(
+            if (-not [string]::IsNullOrWhiteSpace([string]$run.branch)) { "branch=$([string]$run.branch)" }
+            if ($null -ne $experimentPacket -and -not [string]::IsNullOrWhiteSpace([string]$experimentPacket.env_fingerprint)) { "env_fingerprint=$([string]$experimentPacket.env_fingerprint)" }
+            if ($null -ne $experimentPacket -and -not [string]::IsNullOrWhiteSpace([string]$experimentPacket.command_hash)) { "command_hash=$([string]$experimentPacket.command_hash)" }
+        )
     }
 }
 
@@ -4987,6 +5255,147 @@ function Invoke-Runs {
     Write-Output ($table.TrimEnd())
 }
 
+function Invoke-CompareRuns {
+    param(
+        [AllowNull()][string]$CompareTarget = $Target,
+        [AllowNull()][string[]]$CompareRest = $Rest
+    )
+
+    $tokens = @()
+    if (-not [string]::IsNullOrWhiteSpace($CompareTarget)) {
+        $tokens += $CompareTarget
+    }
+    if ($CompareRest) {
+        $tokens += @($CompareRest)
+    }
+
+    $jsonOutput = $false
+    $runIds = [System.Collections.Generic.List[string]]::new()
+    foreach ($token in $tokens) {
+        if ([string]$token -eq '--json') {
+            $jsonOutput = $true
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$token)) {
+            $runIds.Add([string]$token) | Out-Null
+        }
+    }
+
+    if ($runIds.Count -ne 2) {
+        Stop-WithError 'usage: winsmux compare-runs <left_run_id> <right_run_id> [--json]'
+    }
+
+    $projectDir = (Get-Location).Path
+    $leftPayload = Get-ExplainPayload -ProjectDir $projectDir -RunId ([string]$runIds[0])
+    $rightPayload = Get-ExplainPayload -ProjectDir $projectDir -RunId ([string]$runIds[1])
+    $payload = ConvertTo-CompareRunsPayload -LeftPayload $leftPayload -RightPayload $rightPayload
+
+    if ($jsonOutput) {
+        $payload | ConvertTo-Json -Compress -Depth 12 | Write-Output
+        return
+    }
+
+    Write-Output ("Compare: {0} vs {1}" -f [string]$payload.left.run_id, [string]$payload.right.run_id)
+    Write-Output ("Shared changed files: {0}" -f (@($payload.shared_changed_files).Count))
+    if ($null -ne $payload.confidence_delta) {
+        Write-Output ("Confidence delta: {0}" -f [string]$payload.confidence_delta)
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$payload.recommend.winning_run_id)) {
+        Write-Output ("Winning run: {0}" -f [string]$payload.recommend.winning_run_id)
+    }
+    Write-Output ("Next action: {0}" -f [string]$payload.recommend.next_action)
+    if (@($payload.differences).Count -gt 0) {
+        Write-Output 'Differences:'
+        foreach ($difference in @($payload.differences)) {
+            $leftValue = if ($difference.left -is [System.Array]) { (($difference.left | ForEach-Object { [string]$_ }) -join ', ') } else { [string]$difference.left }
+            $rightValue = if ($difference.right -is [System.Array]) { (($difference.right | ForEach-Object { [string]$_ }) -join ', ') } else { [string]$difference.right }
+            Write-Output ("- {0}: left={1} right={2}" -f [string]$difference.field, $leftValue, $rightValue)
+        }
+    } else {
+        Write-Output 'Differences: (none)'
+    }
+}
+
+function Invoke-PromoteTactic {
+    param(
+        [AllowNull()][string]$PromoteTarget = $Target,
+        [AllowNull()][string[]]$PromoteRest = $Rest
+    )
+
+    $tokens = @()
+    if (-not [string]::IsNullOrWhiteSpace($PromoteTarget)) {
+        $tokens += $PromoteTarget
+    }
+    if ($PromoteRest) {
+        $tokens += @($PromoteRest)
+    }
+
+    if ($tokens.Count -eq 0) {
+        Stop-WithError 'usage: winsmux promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>] [--json]'
+    }
+
+    $runId = ''
+    $title = ''
+    $kind = 'playbook'
+    $jsonOutput = $false
+
+    for ($i = 0; $i -lt $tokens.Count; $i++) {
+        $token = [string]$tokens[$i]
+        switch ($token) {
+            '--json' { $jsonOutput = $true }
+            '--title' {
+                if ($i + 1 -ge $tokens.Count) {
+                    Stop-WithError '--title requires a value'
+                }
+                $title = [string]$tokens[$i + 1]
+                $i++
+            }
+            '--kind' {
+                if ($i + 1 -ge $tokens.Count) {
+                    Stop-WithError '--kind requires a value'
+                }
+                $kind = [string]$tokens[$i + 1]
+                $i++
+            }
+            default {
+                if ([string]::IsNullOrWhiteSpace($runId)) {
+                    $runId = [string]$token
+                } else {
+                    Stop-WithError 'usage: winsmux promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>] [--json]'
+                }
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        Stop-WithError 'usage: winsmux promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>] [--json]'
+    }
+    if ($kind -notin @('playbook', 'prewarm', 'verification')) {
+        Stop-WithError "Unsupported promote kind: $kind"
+    }
+
+    $projectDir = (Get-Location).Path
+    $explainPayload = Get-ExplainPayload -ProjectDir $projectDir -RunId $runId
+    if (-not (Test-RunPromotable -Run $explainPayload.run)) {
+        Stop-WithError "run is not promotable: $runId"
+    }
+
+    $payload = Get-PromoteTacticPayload -ExplainPayload $explainPayload -Title $title -Kind $kind
+    $artifact = New-PlaybookCandidateFile -ProjectDir $projectDir -PlaybookCandidate $payload
+    $result = [ordered]@{
+        generated_at = (Get-Date).ToString('o')
+        run_id       = [string]$runId
+        candidate_ref = [string]$artifact.reference
+        candidate_path = [string]$artifact.path
+        candidate    = Read-WinsmuxArtifactJson -Reference ([string]$artifact.reference) -ProjectDir $projectDir -ExpectedDirectoryPath (Get-PlaybookCandidateDirectory -ProjectDir $projectDir) -ExpectedRunId $runId
+    }
+
+    if ($jsonOutput) {
+        $result | ConvertTo-Json -Compress -Depth 12 | Write-Output
+        return
+    }
+
+    Write-Output ("promoted tactic from {0} -> {1}" -f [string]$runId, [string]$artifact.reference)
+}
+
 function Invoke-Explain {
     param(
         [AllowNull()][string]$ExplainTarget = $Target,
@@ -5720,6 +6129,8 @@ inbox [--json] [--stream] Report actionable approvals/review/blockers
 runs [--json]             Report run-oriented session view
 digest [--json] [--stream] [--events] Report high-signal evidence digest per run or actionable event summaries
 explain <run_id> [--json] [--follow]  Explain one run and optionally follow new events
+compare-runs <left_run_id> <right_run_id> [--json]  Compare two runs and surface evidence/confidence deltas
+promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>] [--json]  Export a reusable tactic candidate from a successful run
   poll-events [cursor]      Return new monitor events from .winsmux/events.jsonl
   signal <channel>          Send signal to unblock a waiting process
   watch <label> [silence_s] [timeout_s]  Block until pane output is silent
@@ -6067,6 +6478,8 @@ switch ($Command) {
         'runs'            { Invoke-Runs }
         'digest'          { Invoke-Digest }
         'explain'         { Invoke-Explain }
+        'compare-runs'    { Invoke-CompareRuns }
+        'promote-tactic'  { Invoke-PromoteTactic }
     'poll-events'     { Invoke-PollEvents }
     'signal'          { Invoke-Signal }
     'mailbox-create'  { Invoke-MailboxCreate }
