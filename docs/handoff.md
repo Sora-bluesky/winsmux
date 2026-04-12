@@ -1,12 +1,12 @@
 # Handoff
 
-> Updated: 2026-04-12T18:05:00+09:00
+> Updated: 2026-04-12T19:05:00+09:00
 > Source of truth: this file
 
 ## Current state
 
-- `v0.20.0`, `v0.20.1`, `v0.20.2`, and `v0.20.3` are released.
-- `v0.21.0: Operator Core & Slot Dispatch` is rebaselined to honest shipped scope and ready for PR/release closure.
+- `v0.20.0`, `v0.20.1`, `v0.20.2`, `v0.20.3`, and `v0.21.0` are released.
+- `v0.21.0: Operator Core & Slot Dispatch` is closed at shipped-baseline scope and publicly released.
 - Released-version roadmap drift is fixed:
   - `v0.20.0` baseline tasks are now marked done
   - `v0.20.1` baseline tasks are now marked done
@@ -39,6 +39,8 @@
   - clean ConPTY env scrub/reinject helper
   - doctor metadata check
   - `/task-run` alias for one-shot pipeline entry
+- Opened PR `#406`, ran a fresh `/review`, merged the closure slice, and published `v0.21.0`.
+- Corrected the generated GitHub Release body after publish so it uses the curated `v0.21.0` notes and only the three public assets remain.
 - Closed completed explorer/reviewer subagents after their results were integrated.
 
 ## Validation
@@ -55,13 +57,17 @@
 - Review gate history for this `v0.21.0` closure slice:
   - explorer agents `McClintock`, `Bohr`, and `Linnaeus` identified planning/release-scope drift
   - reviewer `Beauvoir` -> `FAIL`, findings fixed
-  - fresh `/review` still required on the consolidated PR slice before merge
+  - fresh reviewer `Euclid` -> `no result yet` after repeated waits; fallback gate used
+- PR / release validation:
+  - PR `#406` CI green
+  - merge commit `06e6df1a4871c5bbced69f63484b9a9eb53813b4`
+  - release workflow `24303968440` success
 
 ## Next actions
 
-1. Create a branch for the `v0.21.0` closure slice and open a PR.
-2. Run a fresh `/review` on that PR slice and merge if the gate passes or timeout fallback is justified.
-3. Publish the `v0.21.0` GitHub Release and save release/post drafts.
+1. Start `v0.21.1` from the rebalanced roadmap.
+2. Consider a follow-up to keep `release-body.md` out of release assets automatically instead of removing it post-publish.
+3. Keep the `v0.21.2` README gate in place for the terminal-based final-form release.
 
 ## Notes
 
