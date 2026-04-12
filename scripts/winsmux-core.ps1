@@ -140,6 +140,33 @@ function Get-DispatchPromptDirectory {
     return Join-Path $ProjectDir '.winsmux\dispatch-prompts'
 }
 
+function ConvertTo-TaskPromptSlug {
+    param([AllowEmptyString()][string]$TaskSlug)
+
+    if ([string]::IsNullOrWhiteSpace($TaskSlug)) {
+        throw 'task slug is required'
+    }
+
+    $normalized = $TaskSlug.Trim().ToLowerInvariant()
+    $normalized = [regex]::Replace($normalized, '[^a-z0-9._-]+', '-')
+    $normalized = [regex]::Replace($normalized, '-{2,}', '-').Trim('-')
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        throw "task slug '$TaskSlug' does not contain any supported characters"
+    }
+
+    return $normalized
+}
+
+function Get-TaskPromptPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$TaskSlug,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $normalized = ConvertTo-TaskPromptSlug -TaskSlug $TaskSlug
+    return Join-Path (Join-Path $ProjectDir '.winsmux') ("task-{0}.md" -f $normalized)
+}
+
 function New-DispatchPromptFile {
     param(
         [Parameter(Mandatory = $true)][string]$Content,
@@ -155,6 +182,25 @@ function New-DispatchPromptFile {
     $fileName = '{0}-{1}.txt' -f $Prefix, ([guid]::NewGuid().ToString('N'))
     $path = Join-Path $promptDir $fileName
     Write-ClmSafeTextFile -Path $path -Content $Content
+    return $path
+}
+
+function New-TaskPromptFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Content,
+        [Parameter(Mandatory = $true)][string]$TaskSlug,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $path = Get-TaskPromptPath -TaskSlug $TaskSlug -ProjectDir $ProjectDir
+    $parent = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    $tempPath = '{0}.tmp' -f $path
+    Write-ClmSafeTextFile -Path $tempPath -Content $Content
+    Move-Item -LiteralPath $tempPath -Destination $path -Force
     return $path
 }
 
@@ -436,7 +482,8 @@ function Resolve-SendDispatchPayload {
         [Parameter(Mandatory = $true)][string]$Text,
         [string]$ProjectDir = (Get-Location).Path,
         [int]$LengthLimit = 4000,
-        [string]$PromptTransport = 'argv'
+        [string]$PromptTransport = 'argv',
+        [string]$TaskSlug = ''
     )
 
     $resolvedPromptTransport = Resolve-SupportedPromptTransport -PromptTransport $PromptTransport
@@ -449,6 +496,19 @@ function Resolve-SendDispatchPayload {
         LengthLimit     = $LengthLimit
         FallbackMode    = 'pointer'
         PromptTransport = $resolvedPromptTransport
+        TaskSlug        = ''
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($TaskSlug)) {
+        $normalizedTaskSlug = ConvertTo-TaskPromptSlug -TaskSlug $TaskSlug
+        $promptPath = New-TaskPromptFile -Content $Text -TaskSlug $normalizedTaskSlug -ProjectDir $ProjectDir
+        $payload['PromptPath'] = $promptPath
+        $payload['PromptReference'] = Get-DispatchPromptReference -PromptPath $promptPath -ProjectDir $ProjectDir
+        $payload['IsFileBacked'] = $true
+        $payload['TextToSend'] = New-SendDispatchPointerText -PromptPath $promptPath -ProjectDir $ProjectDir
+        $payload['TaskSlug'] = $normalizedTaskSlug
+        $payload['FallbackMode'] = 'task_file'
+        return $payload
     }
 
     if ($resolvedPromptTransport -eq 'argv' -and $Text.Length -le $LengthLimit) {
@@ -486,6 +546,7 @@ function Resolve-SendTransportPlan {
         [string]$ProjectDir = (Get-Location).Path,
         [int]$LengthLimit = 4000,
         [string]$PromptTransport = 'argv',
+        [string]$TaskSlug = '',
         [bool]$ExecMode = $false,
         [string]$LaunchDir,
         [string]$GitWorktreeDir,
@@ -494,7 +555,7 @@ function Resolve-SendTransportPlan {
 
     $resolvedPromptTransport = Resolve-SupportedPromptTransport -PromptTransport $PromptTransport
     if (-not $ExecMode) {
-        $payload = Resolve-SendDispatchPayload -Text $Text -ProjectDir $ProjectDir -LengthLimit $LengthLimit -PromptTransport $resolvedPromptTransport
+        $payload = Resolve-SendDispatchPayload -Text $Text -ProjectDir $ProjectDir -LengthLimit $LengthLimit -PromptTransport $resolvedPromptTransport -TaskSlug $TaskSlug
         return [ordered]@{
             Mode            = if ($payload['IsFileBacked']) { 'pointer' } else { 'inline' }
             TextToSend      = [string]$payload['TextToSend']
@@ -505,11 +566,19 @@ function Resolve-SendTransportPlan {
             LengthLimit     = [int]$payload['LengthLimit']
             FallbackMode    = [string]$payload['FallbackMode']
             PromptTransport = [string]$payload['PromptTransport']
+            TaskSlug        = [string]$payload['TaskSlug']
             ExecInstruction = $null
         }
     }
 
-    $promptPath = New-DispatchPromptFile -Content $Text -ProjectDir $ProjectDir -Prefix 'send-command'
+    $normalizedTaskSlug = ''
+    $promptPath = $null
+    if (-not [string]::IsNullOrWhiteSpace($TaskSlug)) {
+        $normalizedTaskSlug = ConvertTo-TaskPromptSlug -TaskSlug $TaskSlug
+        $promptPath = New-TaskPromptFile -Content $Text -TaskSlug $normalizedTaskSlug -ProjectDir $ProjectDir
+    } else {
+        $promptPath = New-DispatchPromptFile -Content $Text -ProjectDir $ProjectDir -Prefix 'send-command'
+    }
     $outputPath = '{0}.last-message.txt' -f $promptPath
     $promptInstruction = 'Read the prompt file at {0} and follow its instructions' -f $promptPath
     $execInstruction = 'codex exec --sandbox danger-full-access -C {0} --add-dir {1} -o {2} -m {3} {4}' -f `
@@ -529,6 +598,7 @@ function Resolve-SendTransportPlan {
         LengthLimit     = $LengthLimit
         FallbackMode    = 'exec_file'
         PromptTransport = $resolvedPromptTransport
+        TaskSlug        = $normalizedTaskSlug
         ExecInstruction = $execInstruction
     }
 }
@@ -1978,8 +2048,29 @@ function Invoke-Send {
     if (-not $Target) { Stop-WithError "usage: winsmux send <target> <text>" }
     if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: winsmux send <target> <text>" }
 
+    $taskSlug = ''
+    $messageParts = New-Object System.Collections.Generic.List[string]
+    for ($index = 0; $index -lt $Rest.Count; $index++) {
+        $token = [string]$Rest[$index]
+        if ($token -eq '--task-slug') {
+            if ($index + 1 -ge $Rest.Count) {
+                Stop-WithError "--task-slug requires a value"
+            }
+
+            $index++
+            $taskSlug = [string]$Rest[$index]
+            continue
+        }
+
+        $messageParts.Add($token) | Out-Null
+    }
+
+    if ($messageParts.Count -lt 1) {
+        Stop-WithError "usage: winsmux send <target> <text>"
+    }
+
     # Normalize Git Bash /tmp paths before dispatching PowerShell-oriented commands.
-    $text = Normalize-DispatchText -Text ($Rest -join ' ')
+    $text = Normalize-DispatchText -Text ($messageParts -join ' ')
     $projectDir = (Get-Location).Path
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
@@ -2042,6 +2133,7 @@ function Invoke-Send {
         -ProjectDir $projectDir `
         -LengthLimit 4000 `
         -PromptTransport ([string]$agentConfig.PromptTransport) `
+        -TaskSlug $taskSlug `
         -ExecMode:$execMode `
         -LaunchDir ([string]$context.LaunchDir) `
         -GitWorktreeDir ([string]$context.GitWorktreeDir) `
