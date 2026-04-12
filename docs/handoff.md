@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T01:18:00+09:00
+> Updated: 2026-04-12T02:06:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -26,8 +26,8 @@
 
 ## This session
 
-- Started `v0.22.0: Tauri Control Plane Foundation (Backend-first adapter core)` on branch `codex/task289-tauri-summary-adapter-20260412`.
-- Added a read-only Tauri desktop adapter slice for `TASK-289 / TASK-291`:
+- Started `v0.22.0: Tauri Control Plane Foundation (Backend-first adapter core)`.
+- Merged PR #411 for the first `TASK-289 / TASK-291` backend-first adapter slice:
   - `winsmux-app/src-tauri/src/lib.rs` now exposes `desktop_summary_snapshot` and `desktop_run_explain`
   - the adapter shells out to `scripts/winsmux-core.ps1` for `board/inbox/digest/explain --json`
   - repo-root resolution is centralized so Tauri reads backend summary surfaces instead of treating PTY stdout as the primary state source
@@ -65,6 +65,9 @@
 - `npm run build` in `winsmux-app` -> PASS
 - `pwsh -NoProfile -Command "& { & '.\scripts\winsmux-core.ps1' board --json }"` -> PASS
 - `git diff --check` -> warnings only for CRLF normalization, no substantive errors
+- PR #411 CI -> green (`Pester Tests`)
+- Fresh reviewer `Anscombe` -> `no result yet` after two 35s waits; closed without result
+- Manual diff review completed for the `TASK-289 / TASK-291` adapter slice
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1` -> `164/164 PASS`
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1` -> `166/166 PASS` after the `orchestra-layout` slice
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1` -> `166/166 PASS` after the `TASK-295` rename slice
@@ -93,8 +96,8 @@
 
 ## Next actions
 
-1. Review the `TASK-289 / TASK-291` Tauri adapter slice and address any backend-first contract issues before PR.
-2. If the adapter slice holds, open a PR with the validated `cargo check + npm run build` results and keep raw PTY constrained to the utility drawer. Fresh reviewer `Anscombe` returned `no result yet` after two 35s waits and was closed.
+1. Continue `v0.22.0` with the next backend-first slice after `TASK-289 / TASK-291`.
+2. Keep raw PTY constrained to the utility drawer while summary surfaces remain the primary desktop state source.
 3. Keep the release workflow follow-up in view if `release-body.md` should stop being uploaded automatically in future releases.
 
 ## Notes
