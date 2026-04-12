@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T20:20:00+09:00
+> Updated: 2026-04-12T20:32:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -14,7 +14,7 @@
 - `v0.20.0` is released.
 - `v0.20.1` is now fully implemented at `100% (7/7)` in the external planning backlog/roadmap after rebaselining the shipped transport/ledger slices and moving the remaining SQLite FTS5 + stdin parity work into follow-up tasks.
 - `v0.20.1` is released at [v0.20.1](https://github.com/Sora-bluesky/winsmux/releases/tag/v0.20.1); release workflow run `24299025847` published `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
-- `v0.20.2` is fully implemented at `100% (5/5)` in the external planning backlog/roadmap and is ready for release.
+- `v0.20.2` is fully implemented at `100% (5/5)` in the external planning backlog/roadmap and is released.
 - Planning source of truth is externalized outside the public repository and syncs automatically into the private planning root.
 - `v0.21.x` private planning is aligned to a conversation-first Tauri operator shell, with Codex-App-like shell rules reflected in Figma and backlog notes.
 - `v0.24.x` private planning is split into schema, ledger, machine contract, cutover, and canary phases for Rust runtime convergence before `v1.0.0`.
@@ -61,6 +61,8 @@
 - Merged the `v0.20.2` closing slice via PR [#403](https://github.com/Sora-bluesky/winsmux/pull/403), landing utility-first verification packets, run-scoped security verdict surfaces, and `winsmux digest --events` on `main`.
 - Rebaselined the external planning backlog/roadmap so `TASK-207`, `TASK-210`, `TASK-272`, `TASK-273`, and `TASK-274` are all `done`, `v0.20.2` shows `100% (5/5)`, and the unshipped full security-policy enforcement work moved to new follow-up `TASK-309`.
 - Closed GitHub issues [#315](https://github.com/Sora-bluesky/winsmux/issues/315) and [#318](https://github.com/Sora-bluesky/winsmux/issues/318) after their merged fixes were reflected in planning truth.
+- Drafted and saved the `v0.20.2` release notes and X thread under `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\ChangeLogs\winsmux\v0.20.2\`.
+- Tagged and published `v0.20.2`, then replaced the workflow-generated body with the curated Codex-style release notes and removed the extra `release-body.md` asset so the public release ships only `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
 - Merged `TASK-287` via PR [#393](https://github.com/Sora-bluesky/winsmux/pull/393), adding the keyboard-first operator command bar (`Ctrl/Cmd+K`) with quick actions, IME-safe input handling, focus restore, and accessible active-option semantics.
 - Merged `TASK-298` via PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), rewriting `README.ja.md` to match the public operator model, shrinking maintainer-only planning readmes into internal stubs, and making tracked public config/docs safer for external users.
 - Re-synced the external planning backlog/roadmap after PR [#394](https://github.com/Sora-bluesky/winsmux/pull/394), marking `TASK-298` as done so `v0.20.0` now shows `100% (12/12)`.
@@ -157,12 +159,13 @@
 - Current local `v0.20.2` closing slice passes focused regression: `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `141/141 PASS`.
 - Current local `v0.20.2` closing slice passes `git diff --check` aside from benign LF->CRLF warnings on edited files.
 - PR [#403](https://github.com/Sora-bluesky/winsmux/pull/403) CI passed before merge: `Pester Tests` run `24300148509`.
+- `v0.20.2` release workflow run `24300269827` completed successfully and published `winsmux-x64.exe`, `winsmux-arm64.exe`, and `SHA256SUMS`.
 
 ## Next actions
 
-1. Draft and publish the `v0.20.2` release, then update handoff to the released state.
-2. Start `v0.20.3` from `TASK-309` or another governance/runtime-contract slice after release.
-3. Keep `TASK-308` as the explicit `v0.22.1` Playwright viewport / overlap / drawer quality gate for the Tauri desktop shell.
+1. Start `v0.20.3` from `TASK-309` or another governance/runtime-contract slice.
+2. Keep `TASK-308` as the explicit `v0.22.1` Playwright viewport / overlap / drawer quality gate for the Tauri desktop shell.
+3. Preserve the Codex-style English release format for future GitHub Releases.
 
 ## Notes
 
