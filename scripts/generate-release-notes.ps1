@@ -413,7 +413,7 @@ function Add-Section {
         return
     }
 
-    [void]$Builder.AppendLine("### $Title")
+    [void]$Builder.AppendLine("## $Title")
     [void]$Builder.AppendLine()
     foreach ($item in $uniqueItems) {
         [void]$Builder.AppendLine("- $item")
@@ -576,7 +576,7 @@ Add-Section -Builder $builder -Title 'Bug Fixes' -Items $fixes -Seen $seenBenefi
 Add-Section -Builder $builder -Title 'Documentation' -Items $documentation -Seen $seenBenefits
 Add-Section -Builder $builder -Title 'Chores' -Items $chores -Seen $seenBenefits
 
-[void]$builder.AppendLine('### Full Changelog')
+[void]$builder.AppendLine('## Full Changelog')
 [void]$builder.AppendLine()
 if ($null -ne $previousTag) {
     [void]$builder.AppendLine("- [$previousTag...$Version](https://github.com/Sora-bluesky/winsmux/compare/$previousTag...$Version)")
