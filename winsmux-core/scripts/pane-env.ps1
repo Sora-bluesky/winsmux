@@ -190,3 +190,31 @@ function Get-WinsmuxPaneEnvironment {
 
     return $environment
 }
+
+function Get-CleanPtyEnv {
+    param(
+        [Parameter(Mandatory = $true)]$AllowedEnvironment
+    )
+
+    $environment = [ordered]@{}
+    if ($AllowedEnvironment -is [System.Collections.IDictionary]) {
+        foreach ($entry in $AllowedEnvironment.GetEnumerator()) {
+            $environment[[string]$entry.Key] = [string]$entry.Value
+        }
+    } elseif ($null -ne $AllowedEnvironment.PSObject) {
+        foreach ($property in $AllowedEnvironment.PSObject.Properties) {
+            $environment[[string]$property.Name] = [string]$property.Value
+        }
+    } else {
+        throw 'AllowedEnvironment must be a dictionary-like object.'
+    }
+
+    $allowedNames = @($environment.Keys)
+    $removeCommand = "Get-ChildItem Env: | Where-Object { `$_.Name -like 'WINSMUX_*' } | ForEach-Object { Remove-Item -LiteralPath ('Env:' + `$_.Name) -ErrorAction SilentlyContinue }"
+
+    return [PSCustomObject]@{
+        RemoveCommand      = $removeCommand
+        Environment        = $environment
+        AllowedVariableNames = $allowedNames
+    }
+}

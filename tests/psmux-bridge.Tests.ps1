@@ -189,6 +189,7 @@ Describe 'Get-BridgeSettings' {
 
         $settings.agent | Should -Be 'codex'
         $settings.model | Should -Be 'gpt-5.4'
+        $settings.config_version | Should -Be 1
         $settings.prompt_transport | Should -Be 'argv'
         $settings.external_commander | Should -Be $true
         $settings.legacy_role_layout | Should -Be $false
@@ -377,6 +378,24 @@ prompt-transport: file
         $settings.prompt_transport | Should -Be 'file'
     }
 
+    It 'reads config_version metadata and reports it as current' {
+@'
+config-version: 1
+agent: codex
+model: gpt-5.4
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $metadata = Get-BridgeSettingsMetadata -Settings $settings
+
+        $settings.config_version | Should -Be 1
+        $metadata.ConfigVersion | Should -Be 1
+        $metadata.MigrationStatus | Should -Be 'current'
+        $metadata.SlotCount | Should -BeGreaterThan 0
+    }
+
     It 'fails closed when prompt_transport is unsupported' {
 @'
 prompt-transport: stdin
@@ -385,6 +404,16 @@ prompt-transport: stdin
         Mock Get-WinsmuxOption { param($Name, $Default) return $null }
 
         { Get-BridgeSettings } | Should -Throw '*prompt_transport*'
+    }
+
+    It 'fails closed when config_version is unsupported' {
+@'
+config-version: 2
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        { Get-BridgeSettings } | Should -Throw '*config_version*'
     }
 
     It 'prefers slot-level agent and model overrides when a matching slot id is provided' {
@@ -1119,6 +1148,21 @@ hook_profile: ci
         $payload.WINSMUX_BUILDER_WORKTREE | Should -Be 'C:\repo\.worktrees\builder-1'
         $payload.WINSMUX_HOOK_PROFILE | Should -Be 'builder'
         $payload.WINSMUX_GOVERNANCE_MODE | Should -Be 'enhanced'
+    }
+
+    It 'builds a clean ConPTY boundary that scrubs stray WINSMUX variables before reinjection' {
+        $env:WINSMUX_HOOK_PROFILE = 'builder'
+        $env:WINSMUX_GOVERNANCE_MODE = 'enhanced'
+
+        $payload = Get-WinsmuxPaneEnvironment -Role 'Worker' -PaneId '%4' -SessionName 'winsmux-orchestra' -ProjectDir $script:paneEnvTempRoot -RoleMapJson '{"%4":"Worker"}' -BuilderWorktreePath 'C:\repo\.worktrees\builder-1'
+        $clean = Get-CleanPtyEnv -AllowedEnvironment $payload
+
+        $clean.RemoveCommand | Should -Match 'WINSMUX_\*'
+        $clean.RemoveCommand | Should -Match 'Remove-Item'
+        $clean.AllowedVariableNames | Should -Contain 'WINSMUX_ROLE'
+        $clean.AllowedVariableNames | Should -Contain 'WINSMUX_GOVERNANCE_MODE'
+        $clean.Environment.WINSMUX_ROLE | Should -Be 'Worker'
+        $clean.Environment.WINSMUX_PANE_ID | Should -Be '%4'
     }
 }
 
@@ -2833,6 +2877,63 @@ Describe 'orchestra-start rollback helpers' {
         $events[0].data.bootstrap_respawned | Should -Be $true
         $events[0].data.removed_pane_ids | Should -Be @('%2', '%3')
         $events[0].data.removed_worktrees[0].BranchName | Should -Be 'worktree-builder-1'
+    }
+
+    It 'scrubs WINSMUX variables before reinjecting pane environment after respawn' {
+        $sentCommands = [System.Collections.Generic.List[string]]::new()
+        $cleanPtyEnv = [PSCustomObject]@{
+            RemoveCommand = "Get-ChildItem Env: | Where-Object { `$_.Name -like 'WINSMUX_*' } | ForEach-Object { Remove-Item -LiteralPath ('Env:' + `$_.Name) -ErrorAction SilentlyContinue }"
+            Environment   = [ordered]@{
+                WINSMUX_ROLE            = 'Worker'
+                WINSMUX_GOVERNANCE_MODE = 'enhanced'
+            }
+        }
+
+        Mock Wait-PaneShellReady { }
+        Mock Send-OrchestraBridgeCommand {
+            $sentCommands.Add($Text) | Out-Null
+        }
+
+        Initialize-OrchestraPaneEnvironment -PaneId '%2' -LaunchDir 'C:\repo\.worktrees\builder-1' -CleanPtyEnv $cleanPtyEnv
+
+        Should -Invoke Wait-PaneShellReady -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2'
+        }
+        $sentCommands.Count | Should -Be 4
+        $sentCommands[0] | Should -Be "cd 'C:\repo\.worktrees\builder-1'"
+        $sentCommands[1] | Should -Match 'WINSMUX_\*'
+        $sentCommands[1] | Should -Match 'Remove-Item'
+        $sentCommands[2] | Should -Be '$env:WINSMUX_ROLE = ''Worker'''
+        $sentCommands[3] | Should -Be '$env:WINSMUX_GOVERNANCE_MODE = ''enhanced'''
+    }
+}
+
+Describe 'doctor bridge config metadata check' {
+    BeforeAll {
+        $script:__winsmux_doctor_functions_only = $true
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\doctor.ps1')
+        Remove-Variable -Name __winsmux_doctor_functions_only -Scope Script -ErrorAction SilentlyContinue
+    }
+
+    BeforeEach {
+        $script:doctorTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-doctor-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:doctorTempRoot -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:doctorTempRoot -and (Test-Path $script:doctorTempRoot)) {
+            Remove-Item -Path $script:doctorTempRoot -Recurse -Force
+        }
+    }
+
+    It 'fails bridge config metadata check when .winsmux.yaml is missing' {
+        Mock Get-DoctorRepoRoot { $script:doctorTempRoot }
+
+        $result = Test-BridgeConfigMetadataCheck
+
+        $result.Status | Should -Be 'fail'
+        $result.Label | Should -Be 'Bridge config metadata'
+        $result.Detail | Should -Be '.winsmux.yaml not found'
     }
 }
 
@@ -5163,6 +5264,19 @@ Describe 'winsmux send dispatch payload' {
 
         $violation.verdict | Should -Be 'BLOCK'
         $violation.reason | Should -Match 'allow_patterns'
+    }
+}
+
+Describe 'winsmux task-run command' {
+    BeforeAll {
+        $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreRawContent = Get-Content -Path $script:winsmuxCoreRawPath -Raw -Encoding UTF8
+    }
+
+    It 'documents task-run in usage and dispatches it through the one-shot pipeline entrypoint' {
+        $script:winsmuxCoreRawContent | Should -Match 'task-run <task>\s+Alias for pipeline; one-shot orchestration entrypoint'
+        $script:winsmuxCoreRawContent | Should -Match "'task-run'\s*\{"
+        $script:winsmuxCoreRawContent | Should -Match "team-pipeline\.ps1"
     }
 }
 

@@ -11,6 +11,7 @@ Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot 'planning-paths.ps1')
 . (Join-Path $PSScriptRoot 'pane-env.ps1')
+. (Join-Path $PSScriptRoot 'settings.ps1')
 
 function New-DoctorResult {
     param(
@@ -404,6 +405,24 @@ function Test-BridgeConfigCheck {
     return New-DoctorResult -Status pass -Label '.winsmux.yaml' -Detail 'found'
 }
 
+function Test-BridgeConfigMetadataCheck {
+    $repoRoot = Get-DoctorRepoRoot
+    $configPath = Join-Path $repoRoot '.winsmux.yaml'
+
+    if (-not (Test-Path $configPath)) {
+        return New-DoctorResult -Status fail -Label 'Bridge config metadata' -Detail '.winsmux.yaml not found'
+    }
+
+    try {
+        $metadata = Get-BridgeSettingsMetadata -RootPath $repoRoot
+    } catch {
+        return New-DoctorResult -Status fail -Label 'Bridge config metadata' -Detail $_.Exception.Message
+    }
+
+    $detail = "config_version=$($metadata.ConfigVersion); migration_status=$($metadata.MigrationStatus); slot_count=$($metadata.SlotCount); legacy_role_layout=$($metadata.LegacyRoleLayout)"
+    return New-DoctorResult -Status pass -Label 'Bridge config metadata' -Detail $detail
+}
+
 function Test-HookProfileCheck {
     $repoRoot = Get-DoctorRepoRoot
 
@@ -448,30 +467,33 @@ function Write-DoctorResult {
     Write-Output ("[{0}] {1}: {2}" -f $status, $Result.Label, $Result.Detail)
 }
 
-$results = @(
-    Test-VersionFileCheck
-    Test-HookFilesCheck
-    Test-SettingsJsonCheck
-    Test-BacklogYamlCheck
-    Test-ManifestYamlCheck
-    Test-StaleWorktreesCheck
-    Test-ZombieProcessesCheck
-    Test-BridgeConfigCheck
-    Test-HookProfileCheck
-    Test-GovernanceModeCheck
-    Test-WinsmuxEnvContractCheck
-)
+if (-not $script:__winsmux_doctor_functions_only) {
+    $results = @(
+        Test-VersionFileCheck
+        Test-HookFilesCheck
+        Test-SettingsJsonCheck
+        Test-BacklogYamlCheck
+        Test-ManifestYamlCheck
+        Test-StaleWorktreesCheck
+        Test-ZombieProcessesCheck
+        Test-BridgeConfigCheck
+        Test-BridgeConfigMetadataCheck
+        Test-HookProfileCheck
+        Test-GovernanceModeCheck
+        Test-WinsmuxEnvContractCheck
+    )
 
-$hasFail = $false
-foreach ($result in $results) {
-    Write-DoctorResult -Result $result
-    if ($result.Status -eq 'fail') {
-        $hasFail = $true
+    $hasFail = $false
+    foreach ($result in $results) {
+        Write-DoctorResult -Result $result
+        if ($result.Status -eq 'fail') {
+            $hasFail = $true
+        }
     }
-}
 
-if ($hasFail) {
-    exit 1
-}
+    if ($hasFail) {
+        exit 1
+    }
 
-exit 0
+    exit 0
+}

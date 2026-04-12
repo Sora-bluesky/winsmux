@@ -383,6 +383,25 @@ function Send-OrchestraBridgeCommand {
     Invoke-Bridge -Arguments @('send', $Target, $Text)
 }
 
+function Initialize-OrchestraPaneEnvironment {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$LaunchDir,
+        [Parameter(Mandatory = $true)]$CleanPtyEnv
+    )
+
+    Wait-PaneShellReady -PaneId $PaneId
+    # TASK-236: set cwd via cd (respawn-pane -c unreliable on Windows)
+    Send-OrchestraBridgeCommand -Target $PaneId -Text "cd $(ConvertTo-PowerShellLiteral -Value $LaunchDir)"
+    Start-Sleep -Milliseconds 500
+    Send-OrchestraBridgeCommand -Target $PaneId -Text ([string]$CleanPtyEnv.RemoveCommand)
+    Start-Sleep -Milliseconds 200
+    foreach ($entry in $CleanPtyEnv.Environment.GetEnumerator()) {
+        Send-OrchestraBridgeCommand -Target $PaneId -Text ('{0} = {1}' -f ('$env:' + [string]$entry.Key), (ConvertTo-PowerShellLiteral -Value ([string]$entry.Value)))
+    }
+    Start-Sleep -Milliseconds 300
+}
+
 function Get-AgentLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Agent,
@@ -1357,20 +1376,14 @@ if ($MyInvocation.InvocationName -ne '.') {
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
             $paneEnvironment = Get-WinsmuxPaneEnvironment -Role $canonicalRole -PaneId $paneId -SessionName $sessionName -ProjectDir $projectDir -RoleMapJson $sessionRoleMapJson -BuilderWorktreePath $builderWorktreePath
+            $cleanPtyEnv = Get-CleanPtyEnv -AllowedEnvironment $paneEnvironment
             foreach ($entry in $paneEnvironment.GetEnumerator()) {
                 if ($entry.Key -in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {
                     Set-OrchestraSessionEnvironment -SessionName $sessionName -Name ([string]$entry.Key) -Value ([string]$entry.Value)
                 }
             }
             Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
-            Wait-PaneShellReady -PaneId $paneId
-            # TASK-236: set cwd via cd (respawn-pane -c unreliable on Windows)
-            Send-OrchestraBridgeCommand -Target $paneId -Text "cd $(ConvertTo-PowerShellLiteral -Value $launchDir)"
-            Start-Sleep -Milliseconds 500
-            foreach ($entry in $paneEnvironment.GetEnumerator()) {
-                Send-OrchestraBridgeCommand -Target $paneId -Text ('{0} = {1}' -f ('$env:' + [string]$entry.Key), (ConvertTo-PowerShellLiteral -Value ([string]$entry.Value)))
-            }
-            Start-Sleep -Milliseconds 300
+            Initialize-OrchestraPaneEnvironment -PaneId $paneId -LaunchDir $launchDir -CleanPtyEnv $cleanPtyEnv
             # TASK-231: verify pane exists after respawn
             try {
                 Invoke-Winsmux -Arguments @('display-message', '-t', $paneId, '-p', '#{pane_id}') -CaptureOutput | Out-Null
