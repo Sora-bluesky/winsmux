@@ -1224,6 +1224,53 @@ function New-ReviewerStateRecord {
     return $record
 }
 
+function New-ReviewContractRecord {
+    $requiredScope = @(
+        'design_impact'
+        'replacement_coverage'
+        'orphaned_artifacts'
+    )
+
+    return [ordered]@{
+        version           = 1
+        source_task       = 'TASK-210'
+        issue_ref         = '#315'
+        style             = 'utility_first'
+        required_scope    = $requiredScope
+        checklist_labels  = @(
+            'design impact'
+            'replacement coverage'
+            'orphaned artifacts'
+        )
+        rationale         = 'Review requests must audit downstream design impact, replacement coverage, and orphaned artifacts as part of the runtime contract.'
+    }
+}
+
+function Test-ReviewContractPresent {
+    param(
+        [AllowNull()]$Request
+    )
+
+    if ($null -eq $Request -or -not ($Request -is [System.Collections.IDictionary])) {
+        return $false
+    }
+
+    if (-not $Request.Contains('review_contract')) {
+        return $false
+    }
+
+    $contract = $Request['review_contract']
+    if ($null -eq $contract -or -not ($contract -is [System.Collections.IDictionary])) {
+        return $false
+    }
+
+    if (-not $contract.Contains('required_scope')) {
+        return $false
+    }
+
+    return @($contract['required_scope']).Count -gt 0
+}
+
 # --- Helper: Labels ---
 function Get-Labels {
     if (Test-Path $LabelsFile) {
@@ -3496,6 +3543,14 @@ function New-RunResultPacket {
         $reviewRecommendation = [string]$Run.review_state
     }
 
+    $reviewContract = $null
+    if ($ReviewState -is [System.Collections.IDictionary] -and $ReviewState.Contains('request')) {
+        $reviewRequest = $ReviewState['request']
+        if ($reviewRequest -is [System.Collections.IDictionary] -and $reviewRequest.Contains('review_contract')) {
+            $reviewContract = $reviewRequest['review_contract']
+        }
+    }
+
     return [ordered]@{
         run_id                = [string]$Run.run_id
         status                = $status
@@ -3513,6 +3568,7 @@ function New-RunResultPacket {
         consultation_summary  = $ConsultationSummary
         action_items          = @($Run.action_items)
         review_state          = $ReviewState
+        review_contract       = $reviewContract
         recent_events         = @($RecentEvents)
     }
 }
@@ -4065,6 +4121,15 @@ function Get-ExplainPayload {
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$run.review_state)) {
         $reasons.Add("review_state=$([string]$run.review_state)") | Out-Null
+    }
+    if ($reviewState -is [System.Collections.IDictionary] -and $reviewState.Contains('request')) {
+        $reviewRequest = $reviewState['request']
+        if ($reviewRequest -is [System.Collections.IDictionary] -and $reviewRequest.Contains('review_contract')) {
+            $reviewContract = $reviewRequest['review_contract']
+            if ($reviewContract -is [System.Collections.IDictionary] -and $reviewContract.Contains('required_scope')) {
+                $reasons.Add("review_contract=$(([string[]]$reviewContract['required_scope']) -join ',')") | Out-Null
+            }
+        }
     }
     if (-not [string]::IsNullOrWhiteSpace([string]$run.last_event)) {
         $reasons.Add("last_event=$([string]$run.last_event)") | Out-Null
@@ -5035,6 +5100,7 @@ function Invoke-ReviewRequest {
         target_reviewer_pane_id = $context.PaneId
         target_reviewer_label   = $context.Label
         target_reviewer_role    = $context.Role
+        review_contract         = New-ReviewContractRecord
         dispatched_at           = $timestamp
     }
 
@@ -5082,6 +5148,9 @@ function Invoke-ReviewApprove {
     if ($null -eq $request -or $status -ne 'PENDING') {
         Stop-WithError "review request pending for $branch was not found. Run: winsmux review-request"
     }
+    if (-not (Test-ReviewContractPresent -Request $request)) {
+        Stop-WithError "pending review request for $branch is missing review_contract. Re-run: winsmux review-request"
+    }
 
     $requestPaneId = [string](Get-ReviewRequestTargetValue -Request $request -Name 'pane_id')
     $requestBranch = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'branch')
@@ -5107,8 +5176,9 @@ function Invoke-ReviewApprove {
         agent_name = [string]$env:WINSMUX_AGENT_NAME
     }
     $evidence = [ordered]@{
-        approved_at  = $timestamp
-        approved_via = 'winsmux review-approve'
+        approved_at             = $timestamp
+        approved_via            = 'winsmux review-approve'
+        review_contract_snapshot = Get-ReviewStatePropertyValue -InputObject $request -Name 'review_contract'
     }
 
     $state[$branch] = New-ReviewerStateRecord -Status 'PASS' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
@@ -5148,6 +5218,9 @@ function Invoke-ReviewFail {
     if ($null -eq $request -or $status -ne 'PENDING') {
         Stop-WithError "review request pending for $branch was not found. Run: winsmux review-request"
     }
+    if (-not (Test-ReviewContractPresent -Request $request)) {
+        Stop-WithError "pending review request for $branch is missing review_contract. Re-run: winsmux review-request"
+    }
 
     $requestPaneId = [string](Get-ReviewRequestTargetValue -Request $request -Name 'pane_id')
     $requestBranch = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'branch')
@@ -5173,8 +5246,9 @@ function Invoke-ReviewFail {
         agent_name = [string]$env:WINSMUX_AGENT_NAME
     }
     $evidence = [ordered]@{
-        failed_at  = $timestamp
-        failed_via = 'winsmux review-fail'
+        failed_at               = $timestamp
+        failed_via              = 'winsmux review-fail'
+        review_contract_snapshot = Get-ReviewStatePropertyValue -InputObject $request -Name 'review_contract'
     }
 
     $state[$branch] = New-ReviewerStateRecord -Status 'FAIL' -Request $request -Reviewer $reviewer -Evidence $evidence -UpdatedAt $timestamp
