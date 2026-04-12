@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T22:15:00+09:00
+> Updated: 2026-04-12T22:34:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -27,17 +27,24 @@
   - `winsmux-core/scripts/commander-poll.ps1`
   - `winsmux-core/scripts/pane-status.ps1`
   - `winsmux-core/scripts/pane-control.ps1`
+- Implemented the next `TASK-216` slice in `winsmux-core/scripts/orchestra-layout.ps1`:
+  - wrapper-mediated `has-session`, `new-session`, `new-window`
+  - wrapper-mediated `list-panes`, `display-message`, `split-window`, `select-pane`
+  - array-shape fixes for pane ids and role labels so single-pane and split layouts stay deterministic
 - Added regression coverage for:
   - commander review dispatch using wrappers
   - pane status default snapshot capture through its wrapper
   - pane title reads through the pane-control wrapper
+  - orchestra layout single-pane and split flow execution
 - Integrated explorer review findings from `Aristotle` and closed that subagent after use.
 - Fresh reviewer `Mill` returned `no result yet` after two 35s waits and was closed.
 - Merged PR #408 for the `TASK-216` leaf-wrapper first slice.
+- Validation is passing locally for the `orchestra-layout` slice; fresh `/review` is the next gate before commit/PR.
 
 ## Validation
 
 - `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `164/164 PASS`
+- `Invoke-Pester tests/psmux-bridge.Tests.ps1` -> `166/166 PASS` after the `orchestra-layout` slice
 - PowerShell parser check for:
   - `winsmux-core/scripts/commander-poll.ps1`
   - `winsmux-core/scripts/pane-status.ps1`
@@ -49,12 +56,15 @@
 - PR #408 CI -> green (`Pester Tests`)
 - Fresh reviewer `Mill` -> `no result yet` after two 35s waits; closed without result
 - Manual diff review completed for the `TASK-216` leaf-wrapper slice
+- Fresh reviewer `Wegener` -> `no result yet` after two 35s waits on the `orchestra-layout` slice; closed without result
+- Manual diff review completed for the `orchestra-layout` wrapper slice
 
 ## Next actions
 
-1. Continue `TASK-216` with the next densest wrapper consolidation target after the leaf-wrapper slice.
-2. Decide whether the next `v0.21.2` slice is `orchestra-layout` wrapper consolidation or a different terminal-ergonomics task.
-3. At `v0.21.2` release time, update `README.md` and `README.ja.md` to mark the terminal-based final form before `v0.22.0`.
+1. Run a fresh `/review` on the current `orchestra-layout` wrapper slice.
+2. Create branch/commit/PR for the `orchestra-layout` `TASK-216` slice once review is incorporated.
+3. Continue `v0.21.2` toward the remaining terminal/session ergonomics slices after this lands.
+4. At `v0.21.2` release time, update `README.md` and `README.ja.md` to mark the terminal-based final form before `v0.22.0`.
 
 ## Notes
 
