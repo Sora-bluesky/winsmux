@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-13T19:15:00+09:00
+> Updated: 2026-04-13T19:32:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -44,6 +44,11 @@
   - `winsmux-app/src/main.ts` now consumes projection DTOs for source summary, source filters, context list, and editor preview
   - projection consumers now use `pane label + branch` only; they no longer pretend to have separate source/worktree identity
   - `explain` remains detail drill-down only instead of acting as a hidden source-summary join input
+- Started branch `codex/task105-desktop-client-seam-20260413` for the first `TASK-105` slice.
+- Added `winsmux-app/src/desktopClient.ts` as the backend-facing seam for desktop snapshot/explain calls:
+  - `main.ts` no longer invokes `desktop_summary_snapshot` or `desktop_run_explain` directly
+  - backend contract types for summary/explain now live in the client module instead of the main shell
+  - the current transport remains Tauri `invoke`, but the seam is ready for a later JSON-RPC / SDK swap
 - Landed `TASK-216` slice 1 and slice 2 on `main`:
   - PR #408: leaf wrapper consolidation for `commander-poll`, `pane-status`, and `pane-control`
   - PR #409: wrapper-based `orchestra-layout` session/window/pane flow
@@ -76,6 +81,8 @@
 - `pwsh -NoProfile -Command "& { & '.\scripts\winsmux-core.ps1' digest --json }"` -> PASS
 - `pwsh -NoProfile -Command "& { $digest = & '.\scripts\winsmux-core.ps1' digest --json | ConvertFrom-Json; if ($digest.items.Count -gt 0) { & '.\scripts\winsmux-core.ps1' explain $digest.items[0].run_id --json | Out-Null } }"` -> PASS
 - `git diff --check` -> warnings only for CRLF normalization, no substantive errors
+- `cargo check` in `winsmux-app/src-tauri` -> PASS after `desktopClient.ts` extraction
+- `npm run build` in `winsmux-app` -> PASS after `desktopClient.ts` extraction
 - Fresh reviewer `Dewey` -> `PASS` for the projection-driven source-context slice in PR #412
 - Fresh reviewer `Herschel` -> `FAIL`; backend heuristic join removed after review
 - Fresh reviewer `Singer` -> `FAIL`; field semantics corrected to avoid fake worktree/source identity
@@ -117,8 +124,8 @@
 
 ## Next actions
 
-1. Continue `v0.22.0` with the next backend-first slice after PR #413, likely `TASK-105` RPC bootstrap.
-2. Keep raw PTY constrained to the utility drawer while summary surfaces remain the primary desktop state source.
+1. Open a PR for the `TASK-105` desktop client seam slice.
+2. Continue `v0.22.0` with the next backend-first slice after the seam lands, likely JSON-RPC transport substitution inside `desktopClient.ts`.
 3. Track startup latency from per-run `explain` fetches inside `desktop_summary_snapshot` if digest volume grows.
 
 ## Notes
