@@ -3,6 +3,13 @@ import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "xterm/css/xterm.css";
+import {
+  getDesktopRunExplain,
+  getDesktopSummarySnapshot,
+  type DesktopDigestItem,
+  type DesktopExplainPayload,
+  type DesktopSummarySnapshot,
+} from "./desktopClient";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -92,131 +99,6 @@ interface SourceChange {
 
 interface SourceControlState {
   entries: SourceChange[];
-}
-
-interface DesktopBoardSummary {
-  pane_count: number;
-  dirty_panes: number;
-  review_pending: number;
-  review_failed: number;
-  review_passed: number;
-  tasks_in_progress: number;
-  tasks_blocked: number;
-}
-
-interface DesktopBoardPane {
-  label: string;
-  pane_id: string;
-  role: string;
-  task: string;
-  task_state: string;
-  review_state: string;
-  branch: string;
-  changed_file_count: number;
-}
-
-interface DesktopInboxSummary {
-  item_count: number;
-}
-
-interface DesktopInboxItem {
-  kind: string;
-  message: string;
-  label: string;
-  pane_id: string;
-  task_state: string;
-  review_state: string;
-  branch: string;
-  changed_file_count: number;
-}
-
-interface DesktopDigestSummary {
-  item_count: number;
-  actionable_items: number;
-  review_pending: number;
-  review_failed: number;
-}
-
-interface DesktopDigestItem {
-  run_id: string;
-  task: string;
-  label: string;
-  pane_id: string;
-  role: string;
-  task_state: string;
-  review_state: string;
-  next_action: string;
-  branch: string;
-  head_short: string;
-  changed_file_count: number;
-  changed_files: string[];
-  verification_outcome?: string;
-  security_blocked?: string;
-}
-
-interface DesktopSummarySnapshot {
-  generated_at: string;
-  project_dir: string;
-  board: {
-    summary: DesktopBoardSummary;
-    panes: DesktopBoardPane[];
-  };
-  inbox: {
-    summary: DesktopInboxSummary;
-    items: DesktopInboxItem[];
-  };
-  digest: {
-    summary: DesktopDigestSummary;
-    items: DesktopDigestItem[];
-  };
-  run_projections: DesktopRunProjection[];
-}
-
-interface DesktopRunProjection {
-  run_id: string;
-  pane_id: string;
-  label: string;
-  branch: string;
-  task: string;
-  task_state: string;
-  review_state: string;
-  verification_outcome: string;
-  security_blocked: string;
-  changed_files: string[];
-  next_action: string;
-  summary: string;
-  reasons: string[];
-}
-
-interface DesktopExplainPayload {
-  run: {
-    run_id: string;
-    task: string;
-    state: string;
-    task_state: string;
-    review_state: string;
-    branch: string;
-    head_sha: string;
-    changed_files: string[];
-  };
-  explanation: {
-    summary: string;
-    reasons: string[];
-    next_action: string;
-  };
-  evidence_digest: {
-    next_action: string;
-    changed_file_count: number;
-    changed_files: string[];
-    verification_outcome?: string;
-    security_blocked?: string;
-  };
-  recent_events: Array<{
-    timestamp: string;
-    event: string;
-    label: string;
-    message: string;
-  }>;
 }
 
 interface ContextSection {
@@ -1468,7 +1350,7 @@ async function openExplainForSelectedRun() {
   try {
     const payload =
       desktopExplainCache.get(selectedRunId) ??
-      (await invoke<DesktopExplainPayload>("desktop_run_explain", { runId: selectedRunId }));
+      await getDesktopRunExplain(selectedRunId);
     desktopExplainCache.set(selectedRunId, payload);
 
     const detailItems: ConversationDetail[] = [
@@ -2123,12 +2005,12 @@ function buildDesktopSummaryConversation(snapshot: DesktopSummarySnapshot): Conv
 
 async function loadDesktopSummary() {
   try {
-    const snapshot = await invoke<DesktopSummarySnapshot>("desktop_summary_snapshot");
+    const snapshot = await getDesktopSummarySnapshot();
     desktopSummarySnapshot = snapshot;
     const topRunId = snapshot.digest.items[0]?.run_id;
     if (topRunId && !desktopExplainCache.has(topRunId)) {
       try {
-        const explainPayload = await invoke<DesktopExplainPayload>("desktop_run_explain", { runId: topRunId });
+        const explainPayload = await getDesktopRunExplain(topRunId);
         desktopExplainCache.set(topRunId, explainPayload);
       } catch (error) {
         console.warn("Failed to prefetch desktop explain payload", error);
