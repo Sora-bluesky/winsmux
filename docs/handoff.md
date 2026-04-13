@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T02:28:00+09:00
+> Updated: 2026-04-12T23:34:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -35,11 +35,16 @@
   - `winsmux-app/src/main.ts` now loads a desktop summary snapshot at startup
   - sessions, footer lane, selected run summary, and explain flow prefer backend `board/inbox/digest/explain` data
   - the seeded shell remains as fallback when the backend adapter is unavailable
-- Started branch `codex/task291-source-projection-context-20260412` for the next `TASK-291` slice.
-- Replaced the source-context shell's primary data path with backend projections wherever the current adapter already has data:
+- Merged PR #412 for the next `TASK-291` slice:
   - source summary, source filters, context list, and selected-run chips now derive from `digest.items` plus cached `explain` payloads
   - editor metadata and generated preview content now prefer backend `run/slot/evidence` fields over the old hardcoded `sourceControlState`
   - the seeded state remains only as fallback when no backend summary is available
+- Started branch `codex/task291-run-projection-snapshot-20260412` for the next `TASK-291` slice.
+- Replaced the remaining frontend heuristic join with a backend-normalized `run_projections` snapshot:
+  - `winsmux-app/src-tauri/src/lib.rs` now emits `run_projections` from `board + digest + explain`
+  - `winsmux-app/src/main.ts` now consumes projection DTOs for source summary, source filters, context list, and editor preview
+  - projection consumers now use `pane label + branch` only; they no longer pretend to have separate source/worktree identity
+  - `explain` remains detail drill-down only instead of acting as a hidden source-summary join input
 - Landed `TASK-216` slice 1 and slice 2 on `main`:
   - PR #408: leaf wrapper consolidation for `commander-poll`, `pane-status`, and `pane-control`
   - PR #409: wrapper-based `orchestra-layout` session/window/pane flow
@@ -68,14 +73,20 @@
 
 - `npm run build` in `winsmux-app` -> PASS
 - `cargo check` in `winsmux-app/src-tauri` -> PASS
+- `pwsh -NoProfile -Command "& { & '.\scripts\winsmux-core.ps1' board --json }"` -> PASS
+- `pwsh -NoProfile -Command "& { & '.\scripts\winsmux-core.ps1' digest --json }"` -> PASS
+- `pwsh -NoProfile -Command "& { $digest = & '.\scripts\winsmux-core.ps1' digest --json | ConvertFrom-Json; if ($digest.items.Count -gt 0) { & '.\scripts\winsmux-core.ps1' explain $digest.items[0].run_id --json | Out-Null } }"` -> PASS
 - `git diff --check` -> warnings only for CRLF normalization, no substantive errors
+- Fresh reviewer `Dewey` -> `PASS` for the projection-driven source-context slice in PR #412
+- Fresh reviewer `Herschel` -> `FAIL`; backend heuristic join removed after review
+- Fresh reviewer `Singer` -> `FAIL`; field semantics corrected to avoid fake worktree/source identity
+- Fresh reviewer `Socrates` -> `FAIL`; frontend branch/worktree leakage removed from filters and context copy
+- Fresh reviewer `Aquinas` -> `PASS`; no blocking findings on the final `run_projections` slice
 - Fresh reviewer `Lorentz` -> `no result yet` after two 35s waits; closed without result
 - Manual diff review completed for the `TASK-291` projection-driven source-context slice
-- `cargo check` in `winsmux-app/src-tauri` -> PASS
-- `npm run build` in `winsmux-app` -> PASS
-- `pwsh -NoProfile -Command "& { & '.\scripts\winsmux-core.ps1' board --json }"` -> PASS
-- `git diff --check` -> warnings only for CRLF normalization, no substantive errors
 - PR #411 CI -> green (`Pester Tests`)
+- PR #412 CI -> green (`Pester Tests`)
+- Fresh reviewer `Dewey` -> `PASS` for the projection-driven source-context slice
 - Fresh reviewer `Anscombe` -> `no result yet` after two 35s waits; closed without result
 - Manual diff review completed for the `TASK-289 / TASK-291` adapter slice
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1` -> `164/164 PASS`
@@ -106,8 +117,8 @@
 
 ## Next actions
 
-1. Open a PR for the `TASK-291` source-context slice if the current diff still holds after final manual review.
-2. Continue `v0.22.0` with the next backend-first slice after the source-context projection lands.
+1. Open a PR for the `TASK-291` backend-normalized `run_projections` slice.
+2. Continue `v0.22.0` with the next backend-first slice after this lands, likely `TASK-105` RPC bootstrap.
 3. Keep raw PTY constrained to the utility drawer while summary surfaces remain the primary desktop state source.
 
 ## Notes

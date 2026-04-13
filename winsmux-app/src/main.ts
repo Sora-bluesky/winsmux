@@ -79,10 +79,9 @@ type ChangeRisk = "low" | "medium" | "high";
 interface SourceChange {
   path: string;
   summary: string;
-  slot: string;
+  paneLabel: string;
   status: ChangeStatus;
   risk: ChangeRisk;
-  worktree: string;
   branch: string;
   lines: string;
   commitCandidate: boolean;
@@ -170,6 +169,23 @@ interface DesktopSummarySnapshot {
     summary: DesktopDigestSummary;
     items: DesktopDigestItem[];
   };
+  run_projections: DesktopRunProjection[];
+}
+
+interface DesktopRunProjection {
+  run_id: string;
+  pane_id: string;
+  label: string;
+  branch: string;
+  task: string;
+  task_state: string;
+  review_state: string;
+  verification_outcome: string;
+  security_blocked: string;
+  changed_files: string[];
+  next_action: string;
+  summary: string;
+  reasons: string[];
 }
 
 interface DesktopExplainPayload {
@@ -447,10 +463,9 @@ const sourceControlState: SourceControlState = {
   {
     path: "winsmux-app/src/main.ts",
     summary: "Conversation shell source-control actions and worktree metadata",
-    slot: "worker-2",
+    paneLabel: "worker-2",
     status: "modified",
     risk: "medium",
-    worktree: "builder-2",
     branch: "codex/task138-source-context",
     lines: "+46 -11",
     commitCandidate: true,
@@ -461,10 +476,9 @@ const sourceControlState: SourceControlState = {
   {
     path: "winsmux-app/src/styles.css",
     summary: "Sidebar/context badges and source-control overview cards",
-    slot: "worker-2",
+    paneLabel: "worker-2",
     status: "modified",
     risk: "low",
-    worktree: "builder-2",
     branch: "codex/task138-source-context",
     lines: "+38 -4",
     commitCandidate: true,
@@ -475,10 +489,9 @@ const sourceControlState: SourceControlState = {
   {
     path: "winsmux-core/scripts/team-pipeline.ps1",
     summary: "Branch mismatch still blocks commit despite review PASS",
-    slot: "worker-3",
+    paneLabel: "worker-3",
     status: "modified",
     risk: "high",
-    worktree: "builder-3",
     branch: "codex/task264-review-capable-slot",
     lines: "+9 -2",
     commitCandidate: false,
@@ -643,41 +656,29 @@ function getSessionItems() {
   ] satisfies SessionItem[];
 }
 
-function getBoardPaneForDigestItem(item: DesktopDigestItem) {
-  return (
-    desktopSummarySnapshot?.board.panes.find((pane) => {
-      return (
-        (pane.pane_id && pane.pane_id === item.pane_id) ||
-        (pane.label && pane.label === item.label) ||
-        (pane.branch && pane.branch === item.branch)
-      );
-    }) ?? null
-  );
+function getRunProjections() {
+  return desktopSummarySnapshot?.run_projections ?? [];
 }
 
-function getExplainPayloadForRun(runId: string | null) {
+function getRunProjectionByRunId(runId: string | null) {
   if (!runId) {
     return null;
   }
-  return desktopExplainCache.get(runId) ?? null;
+  return getRunProjections().find((projection) => projection.run_id === runId) ?? null;
 }
 
 function getProjectionSourceEntries(): SourceChange[] {
-  if (!desktopSummarySnapshot) {
+  const projections = getRunProjections();
+  if (projections.length === 0) {
     return sourceControlState.entries;
   }
 
   const entries: SourceChange[] = [];
-  for (const digestItem of desktopSummarySnapshot.digest.items) {
-    const boardPane = getBoardPaneForDigestItem(digestItem);
-    const explainPayload = getExplainPayloadForRun(digestItem.run_id);
-    const changedFiles = explainPayload?.evidence_digest.changed_files?.length
-      ? explainPayload.evidence_digest.changed_files
-      : digestItem.changed_files;
-    const sourceRoot = boardPane?.label || digestItem.label || digestItem.pane_id || "summary-stream";
-    const reviewState = digestItem.review_state || boardPane?.review_state || "unknown";
-    const verification = digestItem.verification_outcome || "";
-    const security = digestItem.security_blocked || "";
+  for (const projection of projections) {
+    const changedFiles = projection.changed_files;
+    const reviewState = projection.review_state || "unknown";
+    const verification = projection.verification_outcome || "";
+    const security = projection.security_blocked || "";
     const commitCandidate =
       reviewState === "PASS" &&
       (verification === "" || verification === "PASS") &&
@@ -687,23 +688,22 @@ function getProjectionSourceEntries(): SourceChange[] {
       reviewState === "FAIL" ||
       reviewState === "FAILED" ||
       security === "BLOCK" ||
-      digestItem.next_action === "blocked";
+      projection.next_action === "blocked";
     const risk: ChangeRisk = needsAttention ? "high" : commitCandidate ? "low" : "medium";
 
     for (const path of changedFiles) {
-      const recentReason = explainPayload?.explanation.reasons?.[0];
+      const recentReason = projection.reasons?.[0];
       entries.push({
         path,
-        summary: recentReason || digestItem.task || `Projected from ${digestItem.run_id}`,
-        slot: sourceRoot,
+        summary: recentReason || projection.summary || projection.task || `Projected from ${projection.run_id}`,
+        paneLabel: projection.label || projection.pane_id || "summary-stream",
         status: "modified",
         risk,
-        worktree: sourceRoot,
-        branch: digestItem.branch || boardPane?.branch || "no branch",
+        branch: projection.branch || "no branch",
         lines: `${changedFiles.length} changed in run`,
         commitCandidate,
         needsAttention,
-        run: digestItem.run_id,
+        run: projection.run_id,
         review: reviewState,
       });
     }
@@ -777,7 +777,7 @@ function renderSourceSummary() {
     { label: "Branch", value: primaryChange?.branch ?? "No branch" },
     { label: "Changed", value: `${entryCount} files` },
     { label: "Review", value: primaryChange?.review ?? "No review state" },
-    { label: "Source", value: primaryChange?.worktree ?? "No source projection" },
+    { label: "Branch", value: primaryChange?.branch ?? "No source projection" },
     { label: "Ready", value: `${commitCandidates} candidate${commitCandidates === 1 ? "" : "s"}` },
     { label: "Risk", value: `${attentionCount} attention · ${activeEntries.length} projected` },
   ];
@@ -802,8 +802,8 @@ function renderSourceEntries() {
   const entryItems: Array<{ label: string; value: string; filter: SourceFilter; tone?: SurfaceTone }> = [
     { label: "Commit candidates", value: `${activeEntries.filter((item) => item.commitCandidate).length} ready`, tone: "success", filter: "candidates" },
     { label: "Needs attention", value: `${activeEntries.filter((item) => item.needsAttention).length} blocker`, tone: "danger", filter: "attention" },
-    { label: "builder-2", value: `${activeEntries.filter((item) => item.worktree === "builder-2" || item.branch === "worktree-builder-2").length} files`, filter: "builder-2" },
-    { label: "builder-3", value: `${activeEntries.filter((item) => item.worktree === "builder-3" || item.branch === "worktree-builder-3").length} files`, filter: "builder-3" },
+    { label: "builder-2", value: `${activeEntries.filter((item) => item.paneLabel === "builder-2").length} files`, filter: "builder-2" },
+    { label: "builder-3", value: `${activeEntries.filter((item) => item.paneLabel === "builder-3").length} files`, filter: "builder-3" },
   ];
 
   for (const item of entryItems) {
@@ -838,9 +838,9 @@ function getVisibleSourceChanges() {
     case "attention":
       return activeEntries.filter((item) => item.needsAttention);
     case "builder-2":
-      return activeEntries.filter((item) => item.worktree === "builder-2" || item.branch === "worktree-builder-2");
+      return activeEntries.filter((item) => item.paneLabel === "builder-2");
     case "builder-3":
-      return activeEntries.filter((item) => item.worktree === "builder-3" || item.branch === "worktree-builder-3");
+      return activeEntries.filter((item) => item.paneLabel === "builder-3");
     default:
       return activeEntries;
   }
@@ -851,7 +851,31 @@ function getPrimarySourceChange(changes: SourceChange[]) {
 }
 
 function getPrimaryDigestItem() {
-  return desktopSummarySnapshot?.digest.items?.[0] ?? null;
+  if (desktopSummarySnapshot?.digest.items?.length) {
+    return desktopSummarySnapshot.digest.items[0];
+  }
+
+  const projection = getRunProjections()[0];
+  if (!projection) {
+    return null;
+  }
+
+  return {
+    run_id: projection.run_id,
+    task: projection.task,
+    label: projection.label,
+    pane_id: projection.pane_id,
+    role: "",
+    task_state: projection.task_state,
+    review_state: projection.review_state,
+    next_action: projection.next_action,
+    branch: projection.branch,
+    head_short: "",
+    changed_file_count: projection.changed_files.length,
+    changed_files: projection.changed_files,
+    verification_outcome: projection.verification_outcome,
+    security_blocked: projection.security_blocked,
+  } satisfies DesktopDigestItem;
 }
 
 function getSelectedRunId() {
@@ -872,10 +896,9 @@ function renderContextPanel() {
   sectionRoot.innerHTML = "";
   const resolvedContextSections = [
     ...baseContextSections,
-    { label: "slot", value: primaryChange?.slot ?? "No slot" },
+    { label: "pane", value: primaryChange?.paneLabel ?? "No pane label" },
     { label: "branch", value: primaryChange?.branch ?? "No branch" },
     { label: "review", value: primaryChange?.review ?? "No review state" },
-    { label: "source", value: primaryChange?.worktree ?? "No source projection" },
   ];
   for (const item of resolvedContextSections) {
     const row = document.createElement("div");
@@ -889,7 +912,7 @@ function renderContextPanel() {
     { label: "Selected scope", value: activeSourceFilter === "all" ? "All changes" : activeSourceFilter.replace("-", " ") },
     { label: "Commit candidates", value: `${visibleChanges.filter((item) => item.commitCandidate).length}` },
     { label: "Needs attention", value: `${visibleChanges.filter((item) => item.needsAttention).length}` },
-    { label: "Active worktree", value: primaryChange?.worktree ?? "n/a" },
+    { label: "Active pane", value: primaryChange?.paneLabel ?? "n/a" },
   ];
 
   for (const item of overviewCards) {
@@ -908,7 +931,7 @@ function renderContextPanel() {
     button.innerHTML =
       `<span class="context-file-name">${change.path.split("/").pop() ?? change.path}</span>` +
       `<span class="context-file-meta">${change.summary}</span>` +
-      `<span class="context-file-trace">${change.status} · ${change.lines} · ${change.worktree} · ${change.review}</span>`;
+      `<span class="context-file-trace">${change.status} · ${change.lines} · ${change.branch} · ${change.review}</span>`;
     button.addEventListener("click", () => {
       selectedEditorPath = change.path;
       setEditorSurface(true);
@@ -1325,9 +1348,9 @@ function renderRunSummary() {
         </div>
       </div>
       <div class="run-summary-meta-row">
-        <span class="run-summary-pill">${primaryChange.slot}</span>
+        <span class="run-summary-pill">${primaryChange.paneLabel}</span>
         <span class="run-summary-pill">${primaryChange.branch}</span>
-        <span class="run-summary-pill">.worktrees/${primaryChange.worktree}</span>
+        <span class="run-summary-pill">${primaryChange.branch}</span>
         <span class="run-summary-pill">${candidateCount} candidate${candidateCount === 1 ? "" : "s"}</span>
         <span class="run-summary-pill">${attentionCount} blocker${attentionCount === 1 ? "" : "s"}</span>
       </div>
@@ -1823,7 +1846,7 @@ function renderEditorSurface() {
     `${selected.lineCount} lines`,
     selected.modified ? "Modified" : "Saved",
     selected.origin === "context" ? "Opened from context" : "Opened from explorer",
-    sourceChange ? `${sourceChange.status} · ${sourceChange.worktree}` : "No source metadata",
+    sourceChange ? `${sourceChange.status} · ${sourceChange.branch}` : "No source metadata",
   ]) {
     const chip = document.createElement("span");
     chip.className = `editor-meta-chip ${item === "Modified" ? "is-modified" : ""}`;
@@ -1993,22 +2016,22 @@ function findEditorFile(label: string) {
     return undefined;
   }
 
-  const explainPayload = getExplainPayloadForRun(sourceChange.run);
-  const explainSummary = explainPayload?.explanation.summary || sourceChange.summary;
-  const branch = explainPayload?.run.branch || sourceChange.branch;
-  const review = explainPayload?.run.review_state || sourceChange.review;
-  const state = explainPayload?.run.task_state || "unknown";
+  const projection = getRunProjectionByRunId(sourceChange.run);
+  const explainSummary = projection?.summary || sourceChange.summary;
+  const branch = projection?.branch || sourceChange.branch;
+  const review = projection?.review_state || sourceChange.review;
+  const state = projection?.task_state || "unknown";
 
   return {
     path: sourceChange.path,
     summary: explainSummary,
     content:
       `// Backend projection preview\n` +
-      `// ${branch} · ${sourceChange.worktree} · ${review}\n` +
+      `// ${branch} · ${sourceChange.paneLabel} · ${review}\n` +
       `// ${sourceChange.lines} · state=${state}\n` +
-      (explainPayload?.explanation.reasons?.length ? `// ${explainPayload.explanation.reasons.join(" | ")}\n` : ""),
+      (projection?.reasons?.length ? `// ${projection.reasons.join(" | ")}\n` : ""),
     language: inferLanguageFromPath(sourceChange.path),
-    lineCount: explainPayload?.evidence_digest.changed_file_count || 3,
+    lineCount: projection?.changed_files.length || 3,
     modified: sourceChange.status !== "deleted",
     origin: "context",
   };
@@ -2035,7 +2058,7 @@ function buildDesktopSummaryConversation(snapshot: DesktopSummarySnapshot): Conv
   const digest = snapshot.digest.summary;
   const inbox = snapshot.inbox.summary;
   const topInboxItems = snapshot.inbox.items.slice(0, 2);
-  const topDigestItems = snapshot.digest.items.slice(0, 3);
+  const topDigestItems = snapshot.run_projections.slice(0, 3);
 
   const items: ConversationItem[] = [
     {
@@ -2079,7 +2102,7 @@ function buildDesktopSummaryConversation(snapshot: DesktopSummarySnapshot): Conv
       timestamp: new Date(snapshot.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
       actor: digestItem.label || digestItem.pane_id || "Operator",
       title: digestItem.task || "Projected run",
-      body: `Next ${digestItem.next_action || "idle"} · ${digestItem.changed_file_count} changed files · review ${digestItem.review_state || "n/a"}.`,
+      body: `Next ${digestItem.next_action || "idle"} · ${digestItem.changed_files.length} changed files · review ${digestItem.review_state || "n/a"}.`,
       details: [
         { label: "run", value: digestItem.run_id },
         { label: "branch", value: digestItem.branch || "no branch" },
