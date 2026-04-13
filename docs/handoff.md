@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-12T23:34:00+09:00
+> Updated: 2026-04-13T19:15:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -39,8 +39,7 @@
   - source summary, source filters, context list, and selected-run chips now derive from `digest.items` plus cached `explain` payloads
   - editor metadata and generated preview content now prefer backend `run/slot/evidence` fields over the old hardcoded `sourceControlState`
   - the seeded state remains only as fallback when no backend summary is available
-- Started branch `codex/task291-run-projection-snapshot-20260412` for the next `TASK-291` slice.
-- Replaced the remaining frontend heuristic join with a backend-normalized `run_projections` snapshot:
+- Merged PR #413 for the next `TASK-291` slice:
   - `winsmux-app/src-tauri/src/lib.rs` now emits `run_projections` from `board + digest + explain`
   - `winsmux-app/src/main.ts` now consumes projection DTOs for source summary, source filters, context list, and editor preview
   - projection consumers now use `pane label + branch` only; they no longer pretend to have separate source/worktree identity
@@ -82,6 +81,7 @@
 - Fresh reviewer `Singer` -> `FAIL`; field semantics corrected to avoid fake worktree/source identity
 - Fresh reviewer `Socrates` -> `FAIL`; frontend branch/worktree leakage removed from filters and context copy
 - Fresh reviewer `Aquinas` -> `PASS`; no blocking findings on the final `run_projections` slice
+- PR #413 CI -> green (`Pester Tests`)
 - Fresh reviewer `Lorentz` -> `no result yet` after two 35s waits; closed without result
 - Manual diff review completed for the `TASK-291` projection-driven source-context slice
 - PR #411 CI -> green (`Pester Tests`)
@@ -117,9 +117,9 @@
 
 ## Next actions
 
-1. Open a PR for the `TASK-291` backend-normalized `run_projections` slice.
-2. Continue `v0.22.0` with the next backend-first slice after this lands, likely `TASK-105` RPC bootstrap.
-3. Keep raw PTY constrained to the utility drawer while summary surfaces remain the primary desktop state source.
+1. Continue `v0.22.0` with the next backend-first slice after PR #413, likely `TASK-105` RPC bootstrap.
+2. Keep raw PTY constrained to the utility drawer while summary surfaces remain the primary desktop state source.
+3. Track startup latency from per-run `explain` fetches inside `desktop_summary_snapshot` if digest volume grows.
 
 ## Notes
 
