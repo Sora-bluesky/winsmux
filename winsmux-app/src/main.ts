@@ -1438,12 +1438,12 @@ function appendFallbackExplain() {
   const digestItem = getPrimaryDigestItem();
   const hasSelectedDigest = Boolean(selectedRunId && digestItem?.run_id === selectedRunId);
   const body = hasSelectedDigest
-    ? `Unable to load the latest explain payload for ${selectedRunId}. Backend summary still reports ${digestItem?.changed_file_count ?? 0} changed files and next ${digestItem?.next_action || "idle"}.`
+    ? `Explain is unavailable for ${selectedRunId}. Backend digest still reports next ${digestItem?.next_action || "idle"}.`
     : desktopSummarySnapshot && desktopSummarySnapshot.digest.summary.item_count > 0
-      ? "Explain is unavailable until a projected run is selected from the current backend summary."
+      ? "Explain is unavailable until a projected run is selected."
       : desktopSummarySnapshot
-        ? "The backend summary is connected, but no projected run is available to explain yet."
-        : "The backend summary is not connected yet. Once the desktop summary loads, Explain will follow the live run state.";
+        ? "No projected run is available to explain yet."
+        : "Backend summary unavailable.";
   const details = hasSelectedDigest
     ? [
         { label: "run", value: selectedRunId as string },
@@ -1773,11 +1773,11 @@ function renderEditorSurface() {
   const editors = getEditorFiles();
   const selected = editors.find((editor) => editor.key === selectedEditorKey) || editors[0];
   if (!selected) {
-    path.textContent = "No file selected";
+    path.textContent = "Editor idle";
     meta.innerHTML = "";
     tabs.innerHTML = "";
-    code.textContent = "Select a changed file to load a real file preview from the backend.";
-    statusbar.textContent = "Secondary work surface: waiting for backend source data";
+    code.textContent = "Open a projected file to load a backend preview.";
+    statusbar.textContent = "Secondary work surface: waiting for file selection";
     return;
   }
   selectedEditorKey = selected.key;
@@ -2469,9 +2469,8 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
     const shouldPrefetchExplain =
       Boolean(selectedRunId) &&
       (
-        !previousSnapshot ||
-        diff.hasMeaningfulChange ||
         forceExplainRunId === selectedRunId ||
+        !previousSnapshot ||
         selectedRunId !== previousSelectedRunId ||
         !desktopExplainCache.has(selectedRunId ?? "")
       );

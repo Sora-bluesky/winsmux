@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T04:15:00+09:00
+> Updated: 2026-04-14T04:30:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -118,6 +118,10 @@
 - Continued the narrower `TASK-291 / TASK-107` cleanup after that review:
   - `appendFallbackExplain()` now falls back to current digest counts and next action instead of the older generic placeholder copy when explain loading fails
   - source summary and secondary-editor metadata surfacing were both pared back after review so the `v0.22.0` slice stays out of `TASK-290` territory
+- Continued the same narrow lane without reintroducing detail UX:
+  - `appendFallbackExplain()` copy is now shorter and backend-digest-first, without the older explanatory placeholder wording
+  - the secondary editor empty state now uses neutral waiting copy instead of source-metadata-like placeholders
+  - `refreshDesktopSummary()` now prefetches explain only on first load, selected-run change, cold cache, or explicit explain requests, instead of every material summary change
 - Added a durable Rust learning-note rule to `AGENTS.md` for future handoffs:
   - when a session uses Rust / Cargo / Tauri commands during winsmux work, handoff must also update `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md`
   - the note is kept outside the repo, stays beginner-friendly, and should be updated in the same session rather than deferred
@@ -218,6 +222,8 @@
 - Fresh reviewer `Poincare` -> `FAIL`; editor empty-state metadata surfacing was also classified as `TASK-290` UX drift and reverted from the `v0.22.0` lane
 - Fresh reviewer `Carson` -> `PASS` on the narrowed explain-fallback / metadata-reduction follow-up after delayed completion
 - Manual diff review was used provisionally after the initial 30s wait, then superseded by the delayed `PASS` before packaging
+- `npm run build` in `winsmux-app` -> PASS after narrowing explain copy, editor idle copy, and explain prefetch conditions
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the same narrow follow-up
 - `/review` follow-up via `codex exec` -> `REQUEST_CHANGES`, then `APPROVE` after:
   - preferring `launch_dir` over stale `builder_worktree_path`
   - relativizing explicit worktrees against `session.project_dir`
