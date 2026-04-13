@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T03:00:00+09:00
+> Updated: 2026-04-14T03:35:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -8,7 +8,7 @@
 - `v0.20.0`, `v0.20.1`, `v0.20.2`, `v0.20.3`, `v0.21.0`, `v0.21.1`, and `v0.21.2` are released.
 - `v0.21.2` shipped as the terminal-based final form release before the `v0.22.0` Tauri control-plane handoff.
 - `v0.22.0` remains on the shortest active path of `TASK-105 -> TASK-291 -> TASK-289`, with the current branch carrying the backend transport convergence work.
-- The current `v0.22.0` slice on `codex/task105-json-rpc-transport-20260413` is now focused on `TASK-290` richer detail surfaces and `TASK-289` material-event follow-through, while keeping roadmap sync and handoff discipline aligned with the root planning lane.
+- The current `v0.22.0` slice on `codex/task105-json-rpc-transport-20260413` is back on `TASK-105 / TASK-291 / TASK-289`; the richer `TASK-290` detail UX now lives on `codex/task290-detail-lane-20260414` so `v0.22.1` keeps that scope.
 - `ROADMAP.md` shows `v0.21.2 = 100% (2/2)` with only:
   - `TASK-216` terminal hot-path wrapper baseline
   - `TASK-295` winsmux-surface rename cleanup slice
@@ -109,14 +109,10 @@
   - `winsmux-app/src/desktopClient.ts` and `winsmux-app/src-tauri/src/desktop_backend.rs` now accept the richer detail DTO shape so the frontend can render it without ad hoc casts
   - `winsmux-app/src/main.ts` now builds selected-run detail cards, changed-file pills, and recent-event cards from the backend detail surfaces instead of seeded placeholder metadata
   - desktop follow-through now compares the previous and next summary snapshots and only appends runtime activity when there is a material change in run projection or inbox count
-- Extended the same `TASK-290` detail slice without changing the backend command surface:
-  - `winsmux-app/src/desktopClient.ts` now types `action_items`, `verification_contract`, `verification_result`, `security_policy`, and `security_verdict` from the already-present explain payload
-  - `winsmux-app/src/main.ts` now summarizes verification detail, security detail, and the top action item into the existing selected-run detail grid so operators can judge next steps without opening deeper payloads
-  - explain/follow-through fingerprints now include those new detail fields, so a verification, security, or action-item-only change is treated as material
-- Continued the same `TASK-290 / TASK-289` follow-up in `winsmux-app/src/main.ts`:
-  - the selected-run summary now adds conditional action chips for `Open in Editor` and `Open Audit` while reusing the existing chip-action plumbing instead of introducing a new surface
-  - `refreshDesktopSummary()` now skips explain prefetch on unchanged polling/focus/visibility refreshes unless the selected run changed, the cache is cold, or the refresh was forced
-  - focus/visibility triggers remain in place, but redundant backend explain calls are reduced on steady-state shells
+- Re-sorted the version boundary after the detail UX drift was identified:
+  - created `codex/task290-detail-lane-20260414` and moved the selected-run editor targeting change there
+  - removed the selected-run detail grid, action chips, and verification/security/action-item summarization from the `v0.22.0` branch
+  - kept the `TASK-289 / TASK-291` pieces on `codex/task105-json-rpc-transport-20260413`: material-change follow-through and narrower explain prefetch on unchanged refreshes
 - Added a durable Rust learning-note rule to `AGENTS.md` for future handoffs:
   - when a session uses Rust / Cargo / Tauri commands during winsmux work, handoff must also update `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md`
   - the note is kept outside the repo, stays beginner-friendly, and should be updated in the same session rather than deferred
@@ -209,6 +205,8 @@
 - `npm run test:editor-targets` in `winsmux-app` -> PASS after conditional action-chip wiring and explain-prefetch gating
 - Fresh reviewer `Kierkegaard` -> `no result yet` after a 30s wait on the action-chip / prefetch-gating follow-up
 - Manual diff review completed for the action-chip / prefetch-gating follow-up
+- `npm run build` in `winsmux-app` -> PASS after splitting `TASK-290` detail UX back out of the `v0.22.0` branch
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the same boundary cleanup
 - `/review` follow-up via `codex exec` -> `REQUEST_CHANGES`, then `APPROVE` after:
   - preferring `launch_dir` over stale `builder_worktree_path`
   - relativizing explicit worktrees against `session.project_dir`
@@ -257,10 +255,11 @@
 
 ## Next actions
 
-1. Update PR #417 from `codex/task105-json-rpc-transport-20260413` with the action-chip and prefetch-gating follow-up and record the fresh reviewer result once it lands.
-2. Continue `TASK-290` by extending the secondary editor and detail surface with deeper evidence links or richer action chips only where they improve operator judgment without bloating the shell.
+1. Update PR #417 from `codex/task105-json-rpc-transport-20260413` with the `v0.22.0` boundary cleanup and verify that only `TASK-105 / TASK-291 / TASK-289` scope remains on the branch.
+2. Continue `TASK-291 / TASK-107` by removing the remaining seeded fallback paths without re-expanding the selected-run detail surface.
 3. Continue `TASK-289` by reducing polling dependence further, either with narrower refresh triggers or a backend event surface once the transport shape is ready.
-4. Keep the new Rust learning note current during future handoffs whenever Rust / Cargo / Tauri commands are used in the session.
+4. Resume `TASK-290` later from `codex/task290-detail-lane-20260414`, after `v0.22.0` closes.
+5. Keep the new Rust learning note current during future handoffs whenever Rust / Cargo / Tauri commands are used in the session.
 
 ## Notes
 
@@ -271,3 +270,4 @@
 - Review gate for this slice was satisfied after a second `/review` pass returned `APPROVE`; the intermediate `REQUEST_CHANGES` findings were incorporated before continuing.
 - Reviewer `Tesla` initially timed out after the required 35s wait, so work proceeded under the manual-diff fallback gate; the delayed reviewer result later arrived as `PASS` before packaging the slice.
 - The external learning note under `MainVault\Learning` is intentionally untracked; only the durable handoff rule in `AGENTS.md` is part of the repo.
+- `TASK-290` remains a `v0.22.1` task; only the minimum observability needed for `TASK-289 / TASK-291` stays on the `v0.22.0` branch.

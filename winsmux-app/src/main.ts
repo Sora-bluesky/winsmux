@@ -1178,239 +1178,6 @@ function renderTimelineFilters() {
   }
 }
 
-function buildRunSummaryCards(
-  digestItem: DesktopDigestItem,
-  projection: DesktopRunProjection | null,
-  explainPayload: DesktopExplainPayload | null,
-) {
-  const cards: Array<{ label: string; value: string }> = [
-    { label: "Branch", value: digestItem.branch || projection?.branch || "no branch" },
-    {
-      label: "Head",
-      value: projection?.head_short || digestItem.head_short || "n/a",
-    },
-    {
-      label: "Worktree",
-      value: projection?.worktree || digestItem.worktree || "Project root",
-    },
-    {
-      label: "Provider",
-      value:
-        projection?.provider_target ||
-        digestItem.provider_target ||
-        explainPayload?.run.provider_target ||
-        explainPayload?.run_packet?.provider_target ||
-        "n/a",
-    },
-    {
-      label: "State",
-      value:
-        explainPayload?.explanation.current_state?.task_state ||
-        digestItem.task_state ||
-        projection?.task_state ||
-        "n/a",
-    },
-    {
-      label: "Review",
-      value:
-        explainPayload?.review_state?.status ||
-        digestItem.review_state ||
-        projection?.review_state ||
-        "n/a",
-    },
-    {
-      label: "Verify",
-      value:
-        projection?.verification_outcome ||
-        digestItem.verification_outcome ||
-        explainPayload?.evidence_digest.verification_outcome ||
-        "n/a",
-    },
-    {
-      label: "Security",
-      value:
-        projection?.security_blocked ||
-        digestItem.security_blocked ||
-        explainPayload?.evidence_digest.security_blocked ||
-        "n/a",
-    },
-  ];
-
-  const verificationDetail = summarizeVerificationDetail(explainPayload);
-  if (verificationDetail) {
-    cards.push({
-      label: "Verify detail",
-      value: verificationDetail,
-    });
-  }
-
-  const securityDetail = summarizeSecurityDetail(explainPayload);
-  if (securityDetail) {
-    cards.push({
-      label: "Security detail",
-      value: securityDetail,
-    });
-  }
-
-  const actionDetail = summarizeActionItems(explainPayload);
-  if (actionDetail) {
-    cards.push({
-      label: "Action",
-      value: actionDetail,
-    });
-  }
-
-  if (projection?.hypothesis || explainPayload?.run.goal) {
-    cards.push({
-      label: "Goal",
-      value: projection?.hypothesis || explainPayload?.run.goal || "n/a",
-    });
-  }
-
-  if (projection?.consultation_ref || explainPayload?.consultation_summary?.next_test) {
-    cards.push({
-      label: "Consult",
-      value:
-        projection?.consultation_ref ||
-        explainPayload?.consultation_summary?.next_test ||
-        "n/a",
-    });
-  }
-
-  if (projection?.observation_pack_ref) {
-    cards.push({
-      label: "Observation",
-      value: projection.observation_pack_ref,
-    });
-  }
-
-  return cards
-    .filter((item) => item.value && item.value !== "n/a")
-    .slice(0, 14);
-}
-
-function buildRunSummaryFiles(
-  digestItem: DesktopDigestItem,
-  projection: DesktopRunProjection | null,
-  explainPayload: DesktopExplainPayload | null,
-) {
-  const candidates = [
-    ...(projection?.changed_files ?? []),
-    ...digestItem.changed_files,
-    ...(explainPayload?.evidence_digest.changed_files ?? []),
-  ];
-  return Array.from(new Set(candidates)).slice(0, 6);
-}
-
-function buildRunSummaryRecentEvents(explainPayload: DesktopExplainPayload | null) {
-  if (!explainPayload) {
-    return [];
-  }
-
-  return explainPayload.recent_events.slice(0, 3).map((event) => ({
-    title: event.event,
-    body: `${event.label}: ${event.message}`,
-  }));
-}
-
-function summarizeVerificationDetail(explainPayload: DesktopExplainPayload | null) {
-  if (!explainPayload) {
-    return "";
-  }
-
-  const parts: string[] = [];
-  const contract = explainPayload.verification_contract;
-  const result = explainPayload.verification_result;
-
-  if (contract?.mode) {
-    parts.push(`contract ${contract.mode}`);
-  }
-  if (typeof contract?.required === "boolean") {
-    parts.push(contract.required ? "required" : "optional");
-  }
-  if (result?.outcome) {
-    parts.push(`result ${result.outcome}`);
-  }
-  if (result?.summary) {
-    parts.push(result.summary);
-  } else if (result?.next_action) {
-    parts.push(result.next_action);
-  }
-  if (Array.isArray(result?.failed_checks) && result.failed_checks.length > 0) {
-    parts.push(`failed ${result.failed_checks[0]}`);
-  }
-
-  return parts.join(" · ");
-}
-
-function summarizeSecurityDetail(explainPayload: DesktopExplainPayload | null) {
-  if (!explainPayload) {
-    return "";
-  }
-
-  const parts: string[] = [];
-  const policy = explainPayload.security_policy;
-  const verdict = explainPayload.security_verdict;
-
-  if (policy?.mode) {
-    parts.push(`policy ${policy.mode}`);
-  }
-  if (verdict?.verdict) {
-    parts.push(`verdict ${verdict.verdict}`);
-  }
-  if (verdict?.reason) {
-    parts.push(verdict.reason);
-  } else if (verdict?.next_action) {
-    parts.push(verdict.next_action);
-  }
-
-  return parts.join(" · ");
-}
-
-function summarizeActionItems(explainPayload: DesktopExplainPayload | null) {
-  if (!explainPayload || !Array.isArray(explainPayload.action_items) || explainPayload.action_items.length === 0) {
-    return "";
-  }
-
-  const firstItem = explainPayload.action_items[0];
-  const count = explainPayload.action_items.length;
-  const parts = [firstItem.kind, firstItem.message].filter((value): value is string => Boolean(value && value.trim()));
-  if (count > 1) {
-    parts.push(`+${count - 1} more`);
-  }
-  return parts.join(" · ");
-}
-
-function buildRunSummaryChips(
-  digestItem: DesktopDigestItem,
-  explainPayload: DesktopExplainPayload | null,
-  changedFiles: string[],
-) {
-  const chips: Array<{ label: string; action: ChipAction }> = [
-    { label: "Open Explain", action: "open-explain" },
-  ];
-
-  if (changedFiles.length > 0) {
-    chips.push({ label: "Open in Editor", action: "open-editor" });
-  }
-
-  if (
-    explainPayload?.verification_result ||
-    explainPayload?.security_verdict ||
-    (Array.isArray(explainPayload?.action_items) && explainPayload.action_items.length > 0) ||
-    digestItem.review_state === "PENDING" ||
-    digestItem.review_state === "FAIL" ||
-    digestItem.review_state === "FAILED"
-  ) {
-    chips.push({ label: "Open Audit", action: "toggle-context" });
-  } else {
-    chips.push({ label: "Source Context", action: "open-source-context" });
-  }
-
-  chips.push({ label: "Terminal", action: "open-terminal" });
-  return chips;
-}
-
 function renderRunSummary() {
   const root = document.getElementById("selected-run-summary");
   if (!root) {
@@ -1419,12 +1186,6 @@ function renderRunSummary() {
 
   const digestItem = getPrimaryDigestItem();
   if (digestItem) {
-    const selectedProjection = getSelectedRunProjection();
-    const selectedExplainPayload = getSelectedExplainPayload();
-    const detailCards = buildRunSummaryCards(digestItem, selectedProjection, selectedExplainPayload);
-    const changedFiles = buildRunSummaryFiles(digestItem, selectedProjection, selectedExplainPayload);
-    const recentEvents = buildRunSummaryRecentEvents(selectedExplainPayload);
-    const chips = buildRunSummaryChips(digestItem, selectedExplainPayload, changedFiles);
     const statusTone =
       digestItem.review_state === "PASS"
         ? "success"
@@ -1456,38 +1217,10 @@ function renderRunSummary() {
           <span class="run-summary-pill">${security}</span>
         </div>
         <div class="run-summary-body">${digestItem.task || "Summary-stream run surfaced by the backend adapter."}</div>
-        <div class="run-summary-detail-grid">
-          ${detailCards
-            .map(
-              (card) =>
-                `<div class="run-summary-detail-card"><div class="run-summary-detail-label">${card.label}</div><div class="run-summary-detail-value">${card.value}</div></div>`,
-            )
-            .join("")}
-        </div>
-        ${
-          changedFiles.length > 0
-            ? `<div class="run-summary-file-list">${changedFiles
-                .map((file) => `<span class="run-summary-file-pill">${file}</span>`)
-                .join("")}</div>`
-            : ""
-        }
-        ${
-          recentEvents.length > 0
-            ? `<div class="run-summary-event-list">${recentEvents
-                .map(
-                  (event) =>
-                    `<div class="run-summary-event-card"><div class="run-summary-detail-label">${event.title}</div><div class="run-summary-event-body">${event.body}</div></div>`,
-                )
-                .join("")}</div>`
-            : ""
-        }
         <div class="timeline-chip-row">
-          ${chips
-            .map(
-              (chip) =>
-                `<button type="button" class="timeline-chip" data-action="${chip.action}">${chip.label}</button>`,
-            )
-            .join("")}
+          <button type="button" class="timeline-chip" data-action="open-explain">Open Explain</button>
+          <button type="button" class="timeline-chip" data-action="open-source-context">Source Context</button>
+          <button type="button" class="timeline-chip" data-action="open-terminal">Terminal</button>
         </div>
       </div>
     `;
@@ -2096,18 +1829,6 @@ function appendRuntimeConversation(item: ConversationItem) {
   }
 }
 
-function getSelectedRunProjection() {
-  return getRunProjectionByRunId(getSelectedRunId());
-}
-
-function getSelectedExplainPayload() {
-  const runId = getSelectedRunId();
-  if (!runId) {
-    return null;
-  }
-  return desktopExplainCache.get(runId) ?? null;
-}
-
 function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | undefined) {
   if (!payload) {
     return "";
@@ -2136,29 +1857,6 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.evidence_digest.security_blocked,
     payload.evidence_digest.changed_files.join("|"),
     payload.review_state?.status,
-    payload.consultation_summary?.recommendation,
-    payload.consultation_summary?.next_test,
-    payload.action_items?.map((item) => `${item.kind}:${item.message}`).join("|"),
-    payload.verification_contract?.mode,
-    payload.verification_contract?.required,
-    payload.verification_contract?.checks?.join("|"),
-    payload.verification_contract?.commands?.join("|"),
-    payload.verification_result?.outcome,
-    payload.verification_result?.summary,
-    payload.verification_result?.next_action,
-    payload.verification_result?.passed_checks?.join("|"),
-    payload.verification_result?.failed_checks?.join("|"),
-    payload.security_policy?.mode,
-    payload.security_policy?.stage,
-    payload.security_policy?.task,
-    payload.security_policy?.allow?.join("|"),
-    payload.security_policy?.block?.join("|"),
-    payload.security_verdict?.verdict,
-    payload.security_verdict?.stage,
-    payload.security_verdict?.reason,
-    payload.security_verdict?.next_action,
-    payload.security_verdict?.allow?.join("|"),
-    payload.security_verdict?.block?.join("|"),
     payload.result_packet?.summary,
     payload.result_packet?.next_action_hint,
   ]);
@@ -2179,10 +1877,6 @@ function getRunProjectionFingerprint(projection: DesktopRunProjection | null | u
     projection.security_blocked,
     projection.branch,
     projection.provider_target,
-    projection.hypothesis,
-    projection.confidence,
-    projection.observation_pack_ref,
-    projection.consultation_ref,
     projection.changed_files.join("|"),
     projection.summary,
   ]);
