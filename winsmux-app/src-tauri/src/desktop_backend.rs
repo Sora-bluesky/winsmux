@@ -28,6 +28,9 @@ pub struct DesktopRunProjection {
     pub label: String,
     pub branch: String,
     pub worktree: String,
+    pub head_sha: String,
+    pub head_short: String,
+    pub provider_target: String,
     pub task: String,
     pub task_state: String,
     pub review_state: String,
@@ -37,6 +40,10 @@ pub struct DesktopRunProjection {
     pub next_action: String,
     pub summary: String,
     pub reasons: Vec<String>,
+    pub hypothesis: String,
+    pub confidence: Option<f64>,
+    pub observation_pack_ref: String,
+    pub consultation_ref: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -453,6 +460,9 @@ mod tests {
                     "label": "builder-1",
                     "branch": "codex/task",
                     "worktree": ".worktrees/builder-1",
+                    "head_sha": "abc1234def5678",
+                    "head_short": "abc1234",
+                    "provider_target": "codex:gpt-5.4",
                     "task": "Implement",
                     "task_state": "in_progress",
                     "review_state": "PENDING",
@@ -461,7 +471,11 @@ mod tests {
                     "changed_files": ["winsmux-app/src/main.ts"],
                     "next_action": "review_requested",
                     "summary": "Implement",
-                    "reasons": ["task_state=in_progress"]
+                    "reasons": ["task_state=in_progress"],
+                    "hypothesis": "projection should surface detail",
+                    "confidence": 0.75,
+                    "observation_pack_ref": "obs-1",
+                    "consultation_ref": "consult-1"
                 }]
             }),
         };

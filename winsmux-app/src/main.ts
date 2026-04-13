@@ -8,6 +8,7 @@ import {
   type DesktopEditorFilePayload,
   type DesktopDigestItem,
   type DesktopExplainPayload,
+  type DesktopRunProjection,
   type DesktopSummarySnapshot,
 } from "./desktopClient";
 import { getEditorFileKey, getSourceChangeKey, pickEditorPathCandidate } from "./editorTargets";
@@ -186,6 +187,7 @@ const desktopStandaloneEditorTargets = new Map<string, EditorTarget>();
 const backendConversation: ConversationItem[] = [];
 const runtimeConversation: ConversationItem[] = [];
 const DESKTOP_SUMMARY_REFRESH_INTERVAL_MS = 15_000;
+const MAX_RUNTIME_CONVERSATION_ITEMS = 80;
 const themeState: ThemeState = {
   theme: "codex-dark",
   density: "comfortable",
@@ -1176,6 +1178,117 @@ function renderTimelineFilters() {
   }
 }
 
+function buildRunSummaryCards(
+  digestItem: DesktopDigestItem,
+  projection: DesktopRunProjection | null,
+  explainPayload: DesktopExplainPayload | null,
+) {
+  const cards: Array<{ label: string; value: string }> = [
+    { label: "Branch", value: digestItem.branch || projection?.branch || "no branch" },
+    {
+      label: "Head",
+      value: projection?.head_short || digestItem.head_short || "n/a",
+    },
+    {
+      label: "Worktree",
+      value: projection?.worktree || digestItem.worktree || "Project root",
+    },
+    {
+      label: "Provider",
+      value:
+        projection?.provider_target ||
+        digestItem.provider_target ||
+        explainPayload?.run.provider_target ||
+        explainPayload?.run_packet?.provider_target ||
+        "n/a",
+    },
+    {
+      label: "State",
+      value:
+        explainPayload?.explanation.current_state?.task_state ||
+        digestItem.task_state ||
+        projection?.task_state ||
+        "n/a",
+    },
+    {
+      label: "Review",
+      value:
+        explainPayload?.review_state?.status ||
+        digestItem.review_state ||
+        projection?.review_state ||
+        "n/a",
+    },
+    {
+      label: "Verify",
+      value:
+        projection?.verification_outcome ||
+        digestItem.verification_outcome ||
+        explainPayload?.evidence_digest.verification_outcome ||
+        "n/a",
+    },
+    {
+      label: "Security",
+      value:
+        projection?.security_blocked ||
+        digestItem.security_blocked ||
+        explainPayload?.evidence_digest.security_blocked ||
+        "n/a",
+    },
+  ];
+
+  if (projection?.hypothesis || explainPayload?.run.goal) {
+    cards.push({
+      label: "Goal",
+      value: projection?.hypothesis || explainPayload?.run.goal || "n/a",
+    });
+  }
+
+  if (projection?.consultation_ref || explainPayload?.consultation_summary?.next_test) {
+    cards.push({
+      label: "Consult",
+      value:
+        projection?.consultation_ref ||
+        explainPayload?.consultation_summary?.next_test ||
+        "n/a",
+    });
+  }
+
+  if (projection?.observation_pack_ref) {
+    cards.push({
+      label: "Observation",
+      value: projection.observation_pack_ref,
+    });
+  }
+
+  return cards
+    .filter((item) => item.value && item.value !== "n/a")
+    .slice(0, 10);
+}
+
+function buildRunSummaryFiles(
+  digestItem: DesktopDigestItem,
+  projection: DesktopRunProjection | null,
+  explainPayload: DesktopExplainPayload | null,
+) {
+  const candidates = [
+    ...(projection?.changed_files ?? []),
+    ...digestItem.changed_files,
+    ...(explainPayload?.evidence_digest.changed_files ?? []),
+  ];
+  return Array.from(new Set(candidates)).slice(0, 6);
+}
+
+function buildRunSummaryRecentEvents(explainPayload: DesktopExplainPayload | null) {
+  if (!explainPayload) {
+    return [];
+  }
+
+  return explainPayload.recent_events.slice(0, 3).map((event) => ({
+    title: event.event,
+    body: `${event.label}: ${event.message}`,
+  }));
+}
+
 function renderRunSummary() {
   const root = document.getElementById("selected-run-summary");
   if (!root) {
@@ -1184,6 +1297,11 @@ function renderRunSummary() {
 
   const digestItem = getPrimaryDigestItem();
   if (digestItem) {
+    const selectedProjection = getSelectedRunProjection();
+    const selectedExplainPayload = getSelectedExplainPayload();
+    const detailCards = buildRunSummaryCards(digestItem, selectedProjection, selectedExplainPayload);
+    const changedFiles = buildRunSummaryFiles(digestItem, selectedProjection, selectedExplainPayload);
+    const recentEvents = buildRunSummaryRecentEvents(selectedExplainPayload);
     const statusTone =
       digestItem.review_state === "PASS"
         ? "success"
@@ -1215,6 +1333,31 @@ function renderRunSummary() {
           <span class="run-summary-pill">${security}</span>
         </div>
         <div class="run-summary-body">${digestItem.task || "Summary-stream run surfaced by the backend adapter."}</div>
+        <div class="run-summary-detail-grid">
+          ${detailCards
+            .map(
+              (card) =>
+                `<div class="run-summary-detail-card"><div class="run-summary-detail-label">${card.label}</div><div class="run-summary-detail-value">${card.value}</div></div>`,
+            )
+            .join("")}
+        </div>
+        ${
+          changedFiles.length > 0
+            ? `<div class="run-summary-file-list">${changedFiles
+                .map((file) => `<span class="run-summary-file-pill">${file}</span>`)
+                .join("")}</div>`
+            : ""
+        }
+        ${
+          recentEvents.length > 0
+            ? `<div class="run-summary-event-list">${recentEvents
+                .map(
+                  (event) =>
+                    `<div class="run-summary-event-card"><div class="run-summary-detail-label">${event.title}</div><div class="run-summary-event-body">${event.body}</div></div>`,
+                )
+                .join("")}</div>`
+            : ""
+        }
         <div class="timeline-chip-row">
           <button type="button" class="timeline-chip" data-action="open-explain">Open Explain</button>
           <button type="button" class="timeline-chip" data-action="open-source-context">Source Context</button>
@@ -1379,6 +1522,7 @@ async function openExplainForSelectedRun() {
   }
 
   try {
+    const previousPayload = desktopExplainCache.get(selectedRunId) ?? null;
     const payload = await getDesktopRunExplain(selectedRunId);
     desktopExplainCache.set(selectedRunId, payload);
 
@@ -1408,17 +1552,21 @@ async function openExplainForSelectedRun() {
       bodyParts.push(`Recent: ${recent}`);
     }
 
-    runtimeConversation.push({
-      type: "operator",
-      category: "activity",
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
-      actor: "Operator",
-      title: "Explain opened",
-      body: bodyParts.join(" "),
-      details: detailItems,
-      tone: "info",
-      runId: payload.run.run_id,
-    });
+    const previousFingerprint = getExplainPayloadFingerprint(previousPayload);
+    const nextFingerprint = getExplainPayloadFingerprint(payload);
+    if (previousFingerprint !== nextFingerprint) {
+      appendRuntimeConversation({
+        type: "operator",
+        category: "activity",
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+        actor: "Operator",
+        title: "Explain opened",
+        body: bodyParts.join(" "),
+        details: detailItems,
+        tone: "info",
+        runId: payload.run.run_id,
+      });
+    }
     await refreshDesktopSummary(payload.run.run_id);
   } catch (error) {
     console.warn("Failed to load desktop explain payload", error);
@@ -1430,7 +1578,7 @@ async function openExplainForSelectedRun() {
 function appendFallbackExplain() {
   const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
   const selectedRunId = getSelectedRunId();
-  runtimeConversation.push({
+  appendRuntimeConversation({
     type: "operator",
     category: "activity",
     timestamp,
@@ -1804,6 +1952,260 @@ function getConversationItems() {
   return [...backendConversation, ...runtimeConversation];
 }
 
+function appendRuntimeConversation(item: ConversationItem) {
+  const lastItem = runtimeConversation[runtimeConversation.length - 1];
+  if (
+    lastItem &&
+    lastItem.type === item.type &&
+    lastItem.title === item.title &&
+    lastItem.body === item.body &&
+    lastItem.runId === item.runId
+  ) {
+    return;
+  }
+
+  runtimeConversation.push(item);
+  if (runtimeConversation.length > MAX_RUNTIME_CONVERSATION_ITEMS) {
+    runtimeConversation.splice(0, runtimeConversation.length - MAX_RUNTIME_CONVERSATION_ITEMS);
+  }
+}
+
+function getSelectedRunProjection() {
+  return getRunProjectionByRunId(getSelectedRunId());
+}
+
+function getSelectedExplainPayload() {
+  const runId = getSelectedRunId();
+  if (!runId) {
+    return null;
+  }
+  return desktopExplainCache.get(runId) ?? null;
+}
+
+function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | undefined) {
+  if (!payload) {
+    return "";
+  }
+
+  return JSON.stringify([
+    payload.run.run_id,
+    payload.run.state,
+    payload.run.task_state,
+    payload.run.review_state,
+    payload.run.provider_target,
+    payload.run.agent_role,
+    payload.run.branch,
+    payload.run.head_sha,
+    payload.run.worktree,
+    payload.run.changed_files.join("|"),
+    payload.explanation.summary,
+    payload.explanation.next_action,
+    payload.explanation.current_state?.state,
+    payload.explanation.current_state?.task_state,
+    payload.explanation.current_state?.review_state,
+    payload.explanation.current_state?.last_event,
+    payload.explanation.reasons.join("|"),
+    payload.evidence_digest.next_action,
+    payload.evidence_digest.verification_outcome,
+    payload.evidence_digest.security_blocked,
+    payload.evidence_digest.changed_files.join("|"),
+    payload.review_state?.status,
+    payload.consultation_summary?.recommendation,
+    payload.consultation_summary?.next_test,
+    payload.result_packet?.summary,
+    payload.result_packet?.next_action_hint,
+  ]);
+}
+
+function getRunProjectionFingerprint(projection: DesktopRunProjection | null | undefined) {
+  if (!projection) {
+    return "";
+  }
+
+  return JSON.stringify([
+    projection.head_sha,
+    projection.head_short,
+    projection.worktree,
+    projection.review_state,
+    projection.next_action,
+    projection.verification_outcome,
+    projection.security_blocked,
+    projection.branch,
+    projection.provider_target,
+    projection.hypothesis,
+    projection.confidence,
+    projection.observation_pack_ref,
+    projection.consultation_ref,
+    projection.changed_files.join("|"),
+    projection.summary,
+  ]);
+}
+
+function diffDesktopSummarySnapshots(
+  previousSnapshot: DesktopSummarySnapshot | null,
+  nextSnapshot: DesktopSummarySnapshot,
+) {
+  if (!previousSnapshot) {
+    return {
+      hasMeaningfulChange: true,
+      changedRunIds: [] as string[],
+      inboxCountChanged: false,
+      addedRunIds: [] as string[],
+      removedRunIds: [] as string[],
+    };
+  }
+
+  const previousProjectionMap = new Map(
+    previousSnapshot.run_projections.map((projection) => [projection.run_id, projection]),
+  );
+  const nextProjectionMap = new Map(
+    nextSnapshot.run_projections.map((projection) => [projection.run_id, projection]),
+  );
+
+  const changedRunIds: string[] = [];
+  const addedRunIds: string[] = [];
+  const removedRunIds: string[] = [];
+
+  for (const [runId, nextProjection] of nextProjectionMap) {
+    const previousProjection = previousProjectionMap.get(runId);
+    if (!previousProjection) {
+      addedRunIds.push(runId);
+      continue;
+    }
+
+    if (getRunProjectionFingerprint(previousProjection) !== getRunProjectionFingerprint(nextProjection)) {
+      changedRunIds.push(runId);
+    }
+  }
+
+  for (const runId of previousProjectionMap.keys()) {
+    if (!nextProjectionMap.has(runId)) {
+      removedRunIds.push(runId);
+    }
+  }
+
+  const inboxCountChanged =
+    previousSnapshot.inbox.summary.item_count !== nextSnapshot.inbox.summary.item_count;
+
+  return {
+    hasMeaningfulChange:
+      inboxCountChanged ||
+      addedRunIds.length > 0 ||
+      removedRunIds.length > 0 ||
+      changedRunIds.length > 0,
+    changedRunIds,
+    inboxCountChanged,
+    addedRunIds,
+    removedRunIds,
+  };
+}
+
+function buildDesktopFollowConversation(
+  previousSnapshot: DesktopSummarySnapshot | null,
+  nextSnapshot: DesktopSummarySnapshot,
+) {
+  const diff = diffDesktopSummarySnapshots(previousSnapshot, nextSnapshot);
+  if (!previousSnapshot || !diff.hasMeaningfulChange) {
+    return [];
+  }
+
+  const timestamp = new Date(nextSnapshot.generated_at).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const previousProjectionMap = new Map(
+    previousSnapshot.run_projections.map((projection) => [projection.run_id, projection]),
+  );
+  const nextProjectionMap = new Map(
+    nextSnapshot.run_projections.map((projection) => [projection.run_id, projection]),
+  );
+  const selected = resolveSelectedRunId(nextSnapshot);
+  const prioritizedChangedRunIds = [
+    ...diff.changedRunIds.filter((runId) => runId === selected),
+    ...diff.addedRunIds.filter((runId) => runId === selected),
+    ...diff.changedRunIds.filter((runId) => runId !== selected),
+    ...diff.addedRunIds.filter((runId) => runId !== selected),
+  ].slice(0, 3);
+
+  const items: ConversationItem[] = [];
+  for (const runId of prioritizedChangedRunIds) {
+    const projection = nextProjectionMap.get(runId);
+    if (!projection) {
+      continue;
+    }
+
+    items.push({
+      type: "system",
+      category:
+        projection.review_state === "PENDING" ||
+        projection.review_state === "FAIL" ||
+        projection.review_state === "FAILED"
+          ? "review"
+          : "activity",
+      timestamp,
+      actor: projection.label || projection.pane_id || "System",
+      title: diff.addedRunIds.includes(runId) ? "Run surfaced" : "Run updated",
+      body:
+        `Next ${projection.next_action || "idle"} · ` +
+        `${projection.changed_files.length} changed files · ` +
+        `review ${projection.review_state || "n/a"}.`,
+      details: [
+        { label: "run", value: runId },
+        { label: "branch", value: projection.branch || "no branch" },
+        { label: "head", value: projection.head_short || "n/a" },
+        { label: "verify", value: projection.verification_outcome || "n/a" },
+      ],
+      tone:
+        projection.review_state === "PASS"
+          ? "success"
+          : projection.review_state === "PENDING"
+            ? "warning"
+            : "info",
+      runId,
+      statusLabel: projection.next_action || projection.review_state || undefined,
+    });
+  }
+
+  for (const runId of diff.removedRunIds.slice(0, 2)) {
+    const previousProjection = previousProjectionMap.get(runId);
+    if (!previousProjection) {
+      continue;
+    }
+
+    items.push({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: previousProjection.label || previousProjection.pane_id || "System",
+      title: "Run removed",
+      body: `Run ${runId} dropped out of the desktop summary snapshot.`,
+      details: [
+        { label: "branch", value: previousProjection.branch || "no branch" },
+        { label: "head", value: previousProjection.head_short || "n/a" },
+      ],
+      tone: "warning",
+      runId,
+      statusLabel: previousProjection.review_state || undefined,
+    });
+  }
+
+  if (diff.inboxCountChanged) {
+    items.push({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "System",
+      title: "Inbox changed",
+      body: `Inbox items moved from ${previousSnapshot.inbox.summary.item_count} to ${nextSnapshot.inbox.summary.item_count}.`,
+      details: [{ label: "inbox", value: `${nextSnapshot.inbox.summary.item_count}` }],
+      tone: "warning",
+    });
+  }
+
+  return items.slice(0, 4);
+}
+
 function setTerminalDrawer(open: boolean) {
   terminalDrawerOpen = open;
   const drawer = document.getElementById("terminal-drawer");
@@ -1902,7 +2304,7 @@ function syncResponsiveShell() {
 function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
   const now = new Date();
   const timestamp = `${`${now.getHours()}`.padStart(2, "0")}:${`${now.getMinutes()}`.padStart(2, "0")}`;
-  runtimeConversation.push({
+  appendRuntimeConversation({
     type: "user",
     category: "user",
     timestamp,
@@ -1914,7 +2316,7 @@ function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
       sizeLabel: attachment.sizeLabel,
     })),
   });
-  runtimeConversation.push({
+  appendRuntimeConversation({
     type: "operator",
     category: "activity",
     timestamp,
@@ -2211,7 +2613,9 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
 
   desktopSummaryRefreshInFlight = (async () => {
   try {
+    const previousSnapshot = desktopSummarySnapshot;
     const snapshot = await getDesktopSummarySnapshot();
+    const diff = diffDesktopSummarySnapshots(previousSnapshot, snapshot);
     desktopSummarySnapshot = snapshot;
     selectedRunId = resolveSelectedRunId(snapshot, forceExplainRunId);
     pruneExplainCache(snapshot, forceExplainRunId);
@@ -2224,7 +2628,14 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
       }
     }
 
+    if (previousSnapshot && !diff.hasMeaningfulChange && !forceExplainRunId) {
+      return;
+    }
+
     backendConversation.splice(0, backendConversation.length, ...buildDesktopSummaryConversation(snapshot));
+    for (const item of buildDesktopFollowConversation(previousSnapshot, snapshot)) {
+      appendRuntimeConversation(item);
+    }
     renderDesktopSurfaces();
   } catch (error) {
     console.warn("Failed to load desktop summary snapshot", error);

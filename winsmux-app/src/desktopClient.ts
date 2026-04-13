@@ -89,15 +89,22 @@ export interface DesktopDigestItem {
   label: string;
   pane_id: string;
   role: string;
+  provider_target?: string;
   task_state: string;
   review_state: string;
   next_action: string;
   branch: string;
+  worktree?: string;
+  head_sha?: string;
   head_short: string;
   changed_file_count: number;
   changed_files: string[];
   verification_outcome?: string;
   security_blocked?: string;
+  hypothesis?: string;
+  confidence?: number | null;
+  observation_pack_ref?: string;
+  consultation_ref?: string;
 }
 
 export interface DesktopRunProjection {
@@ -106,6 +113,9 @@ export interface DesktopRunProjection {
   label: string;
   branch: string;
   worktree: string;
+  head_sha: string;
+  head_short: string;
+  provider_target: string;
   task: string;
   task_state: string;
   review_state: string;
@@ -115,6 +125,10 @@ export interface DesktopRunProjection {
   next_action: string;
   summary: string;
   reasons: string[];
+  hypothesis: string;
+  confidence: number | null;
+  observation_pack_ref: string;
+  consultation_ref: string;
 }
 
 export interface DesktopSummarySnapshot {
@@ -136,20 +150,42 @@ export interface DesktopSummarySnapshot {
 }
 
 export interface DesktopExplainPayload {
+  generated_at?: string;
+  project_dir?: string;
   run: {
     run_id: string;
+    task_id?: string;
+    parent_run_id?: string;
     task: string;
+    goal?: string;
+    task_type?: string;
     state: string;
     task_state: string;
     review_state: string;
+    priority?: string;
+    blocking?: string[];
+    review_required?: boolean;
+    provider_target?: string;
+    agent_role?: string;
+    timeout_policy?: string;
+    tokens_remaining?: number | null;
+    last_event?: string;
+    last_event_at?: string;
     branch: string;
     head_sha: string;
+    worktree?: string;
     changed_files: string[];
   };
   explanation: {
     summary: string;
     reasons: string[];
     next_action: string;
+    current_state?: {
+      state?: string;
+      task_state?: string;
+      review_state?: string;
+      last_event?: string;
+    };
   };
   evidence_digest: {
     next_action: string;
@@ -157,6 +193,21 @@ export interface DesktopExplainPayload {
     changed_files: string[];
     verification_outcome?: string;
     security_blocked?: string;
+  };
+  review_state?: {
+    status?: string;
+  };
+  consultation_summary?: {
+    kind?: string;
+    recommendation?: string;
+    next_test?: string;
+  } | null;
+  run_packet?: {
+    provider_target?: string;
+  };
+  result_packet?: {
+    summary?: string;
+    next_action_hint?: string;
   };
   recent_events: Array<{
     timestamp: string;

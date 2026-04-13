@@ -4560,6 +4560,7 @@ function ConvertTo-EvidenceDigestItem {
         label              = [string]$Run.primary_label
         pane_id            = [string]$Run.primary_pane_id
         role               = [string]$Run.primary_role
+        provider_target    = [string]$Run.provider_target
         task_state         = [string]$Run.task_state
         review_state       = [string]$Run.review_state
         next_action        = Get-RunNextAction -Run $Run
@@ -4712,6 +4713,9 @@ function New-DesktopRunProjection {
         label                = [string]$DigestItem.label
         branch               = $branch
         worktree             = $worktree
+        head_sha             = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.head_sha)) { [string]$run.head_sha } else { [string]$DigestItem.head_sha }
+        head_short           = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.head_sha)) { Get-ShortHeadSha -HeadSha ([string]$run.head_sha) } else { [string]$DigestItem.head_short }
+        provider_target      = [string]$DigestItem.provider_target
         task                 = $task
         task_state           = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.task_state)) { [string]$run.task_state } else { [string]$DigestItem.task_state }
         review_state         = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.review_state)) { [string]$run.review_state } else { [string]$DigestItem.review_state }
@@ -4721,6 +4725,10 @@ function New-DesktopRunProjection {
         next_action          = if ($null -ne $explanation -and -not [string]::IsNullOrWhiteSpace([string]$explanation.next_action)) { [string]$explanation.next_action } else { [string]$DigestItem.next_action }
         summary              = $summary
         reasons              = if ($null -ne $explanation) { @($explanation.reasons) } else { @() }
+        hypothesis           = [string]$DigestItem.hypothesis
+        confidence           = $DigestItem.confidence
+        observation_pack_ref = [string]$DigestItem.observation_pack_ref
+        consultation_ref     = [string]$DigestItem.consultation_ref
     }
 }
 

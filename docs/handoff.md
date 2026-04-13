@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T01:25:00+09:00
+> Updated: 2026-04-14T02:20:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -8,6 +8,7 @@
 - `v0.20.0`, `v0.20.1`, `v0.20.2`, `v0.20.3`, `v0.21.0`, `v0.21.1`, and `v0.21.2` are released.
 - `v0.21.2` shipped as the terminal-based final form release before the `v0.22.0` Tauri control-plane handoff.
 - `v0.22.0` remains on the shortest active path of `TASK-105 -> TASK-291 -> TASK-289`, with the current branch carrying the backend transport convergence work.
+- The current `v0.22.0` slice on `codex/task105-json-rpc-transport-20260413` is now focused on `TASK-290` richer detail surfaces and `TASK-289` material-event follow-through, while keeping roadmap sync and handoff discipline aligned with the root planning lane.
 - `ROADMAP.md` shows `v0.21.2 = 100% (2/2)` with only:
   - `TASK-216` terminal hot-path wrapper baseline
   - `TASK-295` winsmux-surface rename cleanup slice
@@ -103,6 +104,15 @@
   - source context, run summary, Explain, and secondary editor now follow the selected backend run instead of a seeded timeline fallback
   - the workspace Explorer now builds from projection-derived changed files and standalone editor targets, replacing the old static sample file tree
   - desktop summary refresh now runs on startup, focus, visibility restore, and a 15s polling interval so the shell follows live inbox/digest movement rather than one-shot hydration
+- Continued the same `codex/task105-json-rpc-transport-20260413` slice toward `TASK-290 / TASK-289`:
+  - `scripts/winsmux-core.ps1` now carries richer run-projection detail through desktop summary output, including `provider_target`, `head_sha`, `head_short`, `hypothesis`, `confidence`, `observation_pack_ref`, and `consultation_ref`
+  - `winsmux-app/src/desktopClient.ts` and `winsmux-app/src-tauri/src/desktop_backend.rs` now accept the richer detail DTO shape so the frontend can render it without ad hoc casts
+  - `winsmux-app/src/main.ts` now builds selected-run detail cards, changed-file pills, and recent-event cards from the backend detail surfaces instead of seeded placeholder metadata
+  - desktop follow-through now compares the previous and next summary snapshots and only appends runtime activity when there is a material change in run projection or inbox count
+- Added a durable Rust learning-note rule to `AGENTS.md` for future handoffs:
+  - when a session uses Rust / Cargo / Tauri commands during winsmux work, handoff must also update `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md`
+  - the note is kept outside the repo, stays beginner-friendly, and should be updated in the same session rather than deferred
+- Initialized the external learning note at `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md` with starter entries for `cargo check`, `cargo test --lib`, `cargo fmt`, `cargo fmt --check`, `cargo build`, and `cargo tauri dev`
 - Landed `TASK-216` slice 1 and slice 2 on `main`:
   - PR #408: leaf wrapper consolidation for `commander-poll`, `pane-status`, and `pane-control`
   - PR #409: wrapper-based `orchestra-layout` session/window/pane flow
@@ -171,6 +181,14 @@
 - root `winsmux-core/scripts/sync-roadmap.ps1` -> PASS (roadmap + internal docs regenerated with no planning drift introduced by this slice)
 - Fresh reviewer `Tesla` -> `PASS` for the selected-run / live-follow slice after delayed completion
 - Manual diff review also completed for the selected-run / live-follow slice
+- `npm run build` in `winsmux-app` -> PASS after richer detail DTO wiring and material-event desktop follow-through
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the same slice
+- `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (`10 passed`) after detail DTO contract expansion
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `171/171 PASS` after the same slice
+- `git diff --check` -> warnings only for CRLF normalization, no substantive errors
+- Fresh reviewer `Pascal` -> `FAIL`; follow-through fingerprints and removed-run handling were corrected before packaging
+- Fresh reviewer `Nietzsche` -> `no result yet` after a 30s wait on the corrected slice
+- Manual diff review completed for the corrected richer detail DTO / material-event follow-through slice
 - `/review` follow-up via `codex exec` -> `REQUEST_CHANGES`, then `APPROVE` after:
   - preferring `launch_dir` over stale `builder_worktree_path`
   - relativizing explicit worktrees against `session.project_dir`
@@ -219,10 +237,10 @@
 
 ## Next actions
 
-1. Update PR #417 from `codex/task105-json-rpc-transport-20260413` with the selected-run / live-follow slice and describe the remaining `TASK-291 / TASK-289` delta explicitly.
-2. Continue `TASK-291 / TASK-107` by converging the secondary editor on richer real detail DTOs (test results, review verdict, branch/head cards) instead of placeholder preview metadata.
-3. Continue `TASK-289` by replacing polling-only follow-through with material-event subscription or narrower refresh triggers once the backend stream shape is ready.
-4. Keep root-repo planning-sync diffs separate from this worktree slice; the root-side `main.ts` / `ptyClient.ts` / `desktop_backend.rs` changes are a divergent lane and were not auto-cleaned.
+1. Update PR #417 from `codex/task105-json-rpc-transport-20260413` with the richer detail DTO / material-event follow-through slice and record the reviewer result once it lands.
+2. Continue `TASK-290` by extending the secondary editor and detail surface with more real backend fields such as verification contract/result, security verdict, and action items where they improve operator judgment.
+3. Continue `TASK-289` by reducing polling dependence further, either with narrower refresh triggers or a backend event surface once the transport shape is ready.
+4. Keep the new Rust learning note current during future handoffs whenever Rust / Cargo / Tauri commands are used in the session.
 
 ## Notes
 
@@ -232,3 +250,4 @@
 - Public GitHub Releases stay English, use Codex-style headings, and keep inline issue/PR refs visible.
 - Review gate for this slice was satisfied after a second `/review` pass returned `APPROVE`; the intermediate `REQUEST_CHANGES` findings were incorporated before continuing.
 - Reviewer `Tesla` initially timed out after the required 35s wait, so work proceeded under the manual-diff fallback gate; the delayed reviewer result later arrived as `PASS` before packaging the slice.
+- The external learning note under `MainVault\Learning` is intentionally untracked; only the durable handoff rule in `AGENTS.md` is part of the repo.
