@@ -58,6 +58,10 @@
   - Tauri `invoke` is now the default transport implementation instead of the hardwired call site
   - `getDesktopSummarySnapshot` and `getDesktopRunExplain` now resolve through the transport interface
   - the next JSON-RPC slice can swap transport behavior without touching `main.ts`
+- Opened PR #415 for the `DesktopCommandTransport` abstraction slice:
+  - branch: `codex/task105-desktop-client-transport-20260413`
+  - title: `refactor: abstract desktop client transport`
+  - status: CI pending at handoff time
 - Landed `TASK-216` slice 1 and slice 2 on `main`:
   - PR #408: leaf wrapper consolidation for `commander-poll`, `pane-status`, and `pane-control`
   - PR #409: wrapper-based `orchestra-layout` session/window/pane flow
@@ -97,6 +101,7 @@
 - PR #414 CI -> green (`Pester Tests`)
 - `npm run build` in `winsmux-app` -> PASS after `DesktopCommandTransport` refactor
 - `git diff --check` -> warnings only for CRLF normalization, no substantive errors
+- `git push -u origin codex/task105-desktop-client-transport-20260413` -> PASS
 - Fresh reviewer `Dewey` -> `PASS` for the projection-driven source-context slice in PR #412
 - Fresh reviewer `Herschel` -> `FAIL`; backend heuristic join removed after review
 - Fresh reviewer `Singer` -> `FAIL`; field semantics corrected to avoid fake worktree/source identity
@@ -138,7 +143,7 @@
 
 ## Next actions
 
-1. Open a PR for the `DesktopCommandTransport` abstraction slice on `codex/task105-desktop-client-transport-20260413`.
+1. Check PR #415 CI and merge if green.
 2. Continue `v0.22.0` with the next backend-first slice by swapping a concrete JSON-RPC transport implementation into `desktopClient.ts`.
 3. Track startup latency from per-run `explain` fetches inside `desktop_summary_snapshot` if digest volume grows.
 
