@@ -3,6 +3,13 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const DESKTOP_JSON_RPC_VERSION: &str = "2.0";
+const JSON_RPC_INVALID_REQUEST: i32 = -32600;
+const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
+const JSON_RPC_INVALID_PARAMS: i32 = -32602;
+const JSON_RPC_INTERNAL_ERROR: i32 = -32603;
+const JSON_RPC_SERVER_ERROR: i32 = -32000;
+
 #[derive(Serialize, Deserialize)]
 pub struct DesktopSummarySnapshot {
     pub generated_at: String,
@@ -28,6 +35,36 @@ pub struct DesktopRunProjection {
     pub next_action: String,
     pub summary: String,
     pub reasons: Vec<String>,
+}
+
+#[derive(Deserialize)]
+pub struct DesktopJsonRpcRequest {
+    pub jsonrpc: String,
+    pub id: Value,
+    pub method: String,
+    #[serde(default)]
+    pub params: Option<Value>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct DesktopJsonRpcError {
+    pub code: i32,
+    pub message: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(untagged)]
+pub enum DesktopJsonRpcResponse {
+    Success {
+        jsonrpc: String,
+        id: Value,
+        result: Value,
+    },
+    Error {
+        jsonrpc: String,
+        id: Value,
+        error: DesktopJsonRpcError,
+    },
 }
 
 pub enum DesktopCommand {
@@ -93,6 +130,102 @@ pub fn load_desktop_run_explain(
         run_id,
         project_dir,
     })
+}
+
+pub fn handle_desktop_json_rpc(
+    transport: &dyn DesktopCommandTransport,
+    request: DesktopJsonRpcRequest,
+    project_dir: Option<String>,
+) -> DesktopJsonRpcResponse {
+    let request_id = request.id.clone();
+    if request.jsonrpc != DESKTOP_JSON_RPC_VERSION {
+        return json_rpc_error(
+            request_id,
+            JSON_RPC_INVALID_REQUEST,
+            "desktop_json_rpc expects jsonrpc=\"2.0\"",
+        );
+    }
+
+    let params = request.params;
+    let resolved_project_dir = resolve_project_dir(project_dir, params.as_ref());
+
+    match request.method.as_str() {
+        "desktop.summary.snapshot" => {
+            match load_desktop_summary_snapshot(transport, resolved_project_dir) {
+                Ok(snapshot) => match serde_json::to_value(snapshot) {
+                    Ok(result) => json_rpc_result(request_id, result),
+                    Err(err) => json_rpc_error(
+                        request_id,
+                        JSON_RPC_INTERNAL_ERROR,
+                        format!("Failed to serialize desktop summary payload: {err}"),
+                    ),
+                },
+                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
+            }
+        }
+        "desktop.run.explain" => {
+            let run_id = match get_required_string_param(params.as_ref(), &["runId", "run_id"]) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+
+            match load_desktop_run_explain(transport, run_id, resolved_project_dir) {
+                Ok(result) => json_rpc_result(request_id, result),
+                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
+            }
+        }
+        _ => json_rpc_error(
+            request_id,
+            JSON_RPC_METHOD_NOT_FOUND,
+            format!("Unknown desktop JSON-RPC method: {}", request.method),
+        ),
+    }
+}
+
+fn resolve_project_dir(project_dir: Option<String>, params: Option<&Value>) -> Option<String> {
+    if let Some(path) = project_dir.filter(|value| !value.trim().is_empty()) {
+        return Some(path);
+    }
+
+    get_optional_string_param(params, &["projectDir", "project_dir"])
+}
+
+fn get_required_string_param(params: Option<&Value>, keys: &[&str]) -> Result<String, String> {
+    get_optional_string_param(params, keys)
+        .ok_or_else(|| format!("Missing required params field: {}", keys.join(" or ")))
+}
+
+fn get_optional_string_param(params: Option<&Value>, keys: &[&str]) -> Option<String> {
+    let object = params?.as_object()?;
+    for key in keys {
+        let value = object.get(*key)?.as_str()?.trim();
+        if !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+
+    None
+}
+
+fn json_rpc_result(id: Value, result: Value) -> DesktopJsonRpcResponse {
+    DesktopJsonRpcResponse::Success {
+        jsonrpc: DESKTOP_JSON_RPC_VERSION.to_string(),
+        id,
+        result,
+    }
+}
+
+fn json_rpc_error(id: Value, code: i32, message: impl Into<String>) -> DesktopJsonRpcResponse {
+    DesktopJsonRpcResponse::Error {
+        jsonrpc: DESKTOP_JSON_RPC_VERSION.to_string(),
+        id,
+        error: DesktopJsonRpcError {
+            code,
+            message: message.into(),
+        },
+    }
 }
 
 fn looks_like_repo_root(path: &Path) -> bool {
@@ -240,5 +373,97 @@ mod tests {
             transport.requests.borrow().as_slice(),
             ["explain run-7 --json"]
         );
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_routes_summary_snapshot() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({
+                "generated_at": "2026-04-13T00:00:00Z",
+                "project_dir": "C:/repo",
+                "board": { "summary": { "pane_count": 1 }, "panes": [] },
+                "inbox": { "summary": { "item_count": 0 }, "items": [] },
+                "digest": { "summary": { "item_count": 1 }, "items": [] },
+                "run_projections": []
+            }),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-1"),
+                method: "desktop.summary.snapshot".to_string(),
+                params: None,
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Success { id, result, .. } => {
+                assert_eq!(id, serde_json::json!("req-1"));
+                assert_eq!(result["project_dir"], "C:/repo");
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+        assert_eq!(
+            transport.requests.borrow().as_slice(),
+            ["desktop-summary --json"]
+        );
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_rejects_unknown_method() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-2"),
+                method: "desktop.unknown".to_string(),
+                params: None,
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Error { id, error, .. } => {
+                assert_eq!(id, serde_json::json!("req-2"));
+                assert_eq!(error.code, JSON_RPC_METHOD_NOT_FOUND);
+            }
+            DesktopJsonRpcResponse::Success { .. } => panic!("expected error response"),
+        }
+        assert!(transport.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_requires_run_id_for_explain() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-3"),
+                method: "desktop.run.explain".to_string(),
+                params: Some(serde_json::json!({})),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                assert_eq!(error.code, JSON_RPC_INVALID_PARAMS);
+            }
+            DesktopJsonRpcResponse::Success { .. } => panic!("expected invalid params error"),
+        }
+        assert!(transport.requests.borrow().is_empty());
     }
 }

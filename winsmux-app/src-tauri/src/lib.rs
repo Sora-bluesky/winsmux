@@ -1,8 +1,8 @@
 mod desktop_backend;
 
 use desktop_backend::{
-    load_desktop_run_explain, load_desktop_summary_snapshot, DesktopSummarySnapshot,
-    PwshScriptTransport,
+    handle_desktop_json_rpc, load_desktop_run_explain, load_desktop_summary_snapshot,
+    DesktopJsonRpcRequest, DesktopJsonRpcResponse, DesktopSummarySnapshot, PwshScriptTransport,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::collections::HashMap;
@@ -35,6 +35,15 @@ async fn desktop_run_explain(
 ) -> Result<serde_json::Value, String> {
     let transport = PwshScriptTransport;
     load_desktop_run_explain(&transport, run_id, project_dir)
+}
+
+#[tauri::command]
+async fn desktop_json_rpc(
+    request: DesktopJsonRpcRequest,
+    project_dir: Option<String>,
+) -> Result<DesktopJsonRpcResponse, String> {
+    let transport = PwshScriptTransport;
+    Ok(handle_desktop_json_rpc(&transport, request, project_dir))
 }
 
 #[tauri::command]
@@ -167,6 +176,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             desktop_summary_snapshot,
             desktop_run_explain,
+            desktop_json_rpc,
             pty_spawn,
             pty_write,
             pty_resize,

@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-13T19:48:00+09:00
+> Updated: 2026-04-13T19:58:21+09:00
 > Source of truth: this file
 
 ## Current state
@@ -77,6 +77,18 @@
 - Replaced hardcoded source pane filters in `winsmux-app/src/main.ts`:
   - source context no longer assumes only `builder-2` and `builder-3`
   - pane-specific source filters are now generated from the current projection snapshot
+- Merged PR #416 for the PTY seam + backend aggregation slice:
+  - branch: `codex/task105-desktop-summary-pty-20260413`
+  - title: `feat: add desktop summary and pty transport seams`
+  - `Pester Tests` green before merge
+- Synced the external planning source of truth at `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Projects\winsmux\planning`:
+  - `backlog.yaml` now marks `TASK-105`, `TASK-289`, and `TASK-291` as `active`
+  - `ROADMAP.md` regenerated from the backlog after the merged `#411` / `#412` / `#413` / `#414` / `#415` / `#416` slices
+- Started branch `codex/task105-json-rpc-transport-20260413` for the next `TASK-105` slice.
+- Added a JSON-RPC envelope transport for desktop summary/explain calls:
+  - `winsmux-app/src/desktopClient.ts` now defaults to a single `desktop_json_rpc` Tauri command instead of per-method `invoke(...)`
+  - `winsmux-app/src-tauri/src/desktop_backend.rs` now validates JSON-RPC `2.0`, dispatches `desktop.summary.snapshot` / `desktop.run.explain`, and returns structured `result/error` responses
+  - `winsmux-app/src-tauri/src/lib.rs` now exposes `desktop_json_rpc` while keeping the older per-command handlers available
 - Landed `TASK-216` slice 1 and slice 2 on `main`:
   - PR #408: leaf wrapper consolidation for `commander-poll`, `pane-status`, and `pane-control`
   - PR #409: wrapper-based `orchestra-layout` session/window/pane flow
@@ -118,6 +130,13 @@
 - `git diff --check` -> warnings only for CRLF normalization, no substantive errors
 - PR #415 CI -> green (`Pester Tests`)
 - `gh pr merge 415 --merge --delete-branch` -> PASS
+- external planning `backlog.yaml` update + `sync-roadmap.ps1` -> PASS
+- `npm run build` in `winsmux-app` -> PASS after `desktop_json_rpc` transport wiring
+- `cargo fmt` in `winsmux-app/src-tauri` -> PASS after JSON-RPC dispatch formatting
+- `cargo check` in `winsmux-app/src-tauri` -> PASS after JSON-RPC dispatch wiring
+- `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (JSON-RPC dispatch tests added)
+- Fresh reviewer `Euler` -> `no result yet` after a 35s wait; closed without result
+- Manual diff review completed for the JSON-RPC envelope transport slice
 - `npm run build` in `winsmux-app` -> PASS after PTY seam extraction, desktop backend extraction, and dynamic source filters
 - `cargo fmt --check` in `winsmux-app/src-tauri` -> PASS after backend extraction
 - `cargo check` in `winsmux-app/src-tauri` -> PASS after backend extraction
@@ -165,9 +184,9 @@
 
 ## Next actions
 
-1. Open a follow-up PR for the PTY seam + `desktop-summary` backend aggregation slice on `codex/task105-desktop-summary-pty-20260413`.
-2. Continue `TASK-105` by swapping a concrete JSON-RPC transport under `desktopClient.ts` / `desktop_backend.rs` instead of the current PowerShell-backed transports.
-3. Continue `TASK-107` by removing remaining seeded runtime fallback state and by adding a real file preview/read surface for the secondary editor.
+1. Open a follow-up PR for the JSON-RPC envelope slice on `codex/task105-json-rpc-transport-20260413`.
+2. Continue `TASK-105` by replacing the current `PwshScriptTransport` behind `desktop_json_rpc` with a long-lived MCP/JSON-RPC backend client.
+3. Continue `TASK-291` / `TASK-107` by removing remaining seeded runtime fallback state and by adding a real file preview/read surface for the secondary editor.
 
 ## Notes
 

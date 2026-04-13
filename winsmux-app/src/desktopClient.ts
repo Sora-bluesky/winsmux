@@ -1,6 +1,31 @@
 import { invoke } from "@tauri-apps/api/core";
 
 type DesktopCommandName = "desktop_summary_snapshot" | "desktop_run_explain";
+type DesktopJsonRpcMethod = "desktop.summary.snapshot" | "desktop.run.explain";
+
+interface DesktopJsonRpcRequest {
+  jsonrpc: "2.0";
+  id: string;
+  method: DesktopJsonRpcMethod;
+  params?: Record<string, unknown>;
+}
+
+interface DesktopJsonRpcError {
+  code: number;
+  message: string;
+}
+
+type DesktopJsonRpcResponse<TResponse> =
+  | {
+      jsonrpc: "2.0";
+      id: string;
+      result: TResponse;
+    }
+  | {
+      jsonrpc: "2.0";
+      id: string;
+      error: DesktopJsonRpcError;
+    };
 
 export interface DesktopCommandTransport {
   request<TResponse>(
@@ -134,6 +159,8 @@ export interface DesktopExplainPayload {
   }>;
 }
 
+let nextDesktopJsonRpcId = 0;
+
 function normalizeDesktopError(action: string, error: unknown) {
   if (error instanceof Error) {
     return new Error(`${action} failed: ${error.message}`);
@@ -142,18 +169,67 @@ function normalizeDesktopError(action: string, error: unknown) {
   return new Error(`${action} failed: ${String(error)}`);
 }
 
-export function createTauriDesktopCommandTransport(
+function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMethod {
+  switch (command) {
+    case "desktop_summary_snapshot":
+      return "desktop.summary.snapshot";
+    case "desktop_run_explain":
+      return "desktop.run.explain";
+  }
+}
+
+function normalizeDesktopJsonRpcError(
+  method: DesktopJsonRpcMethod,
+  error: DesktopJsonRpcError,
+) {
+  return new Error(`${method} returned JSON-RPC error ${error.code}: ${error.message}`);
+}
+
+export function createJsonRpcDesktopCommandTransport(
   invokeCommand: typeof invoke = invoke,
 ): DesktopCommandTransport {
   return {
-    request<TResponse>(command: DesktopCommandName, payload?: Record<string, unknown>) {
-      return invokeCommand<TResponse>(command, payload);
+    async request<TResponse>(
+      command: DesktopCommandName,
+      payload?: Record<string, unknown>,
+    ) {
+      const method = getDesktopJsonRpcMethod(command);
+      const request: DesktopJsonRpcRequest = {
+        jsonrpc: "2.0",
+        id: `desktop-${++nextDesktopJsonRpcId}`,
+        method,
+      };
+      if (payload && Object.keys(payload).length > 0) {
+        request.params = payload;
+      }
+
+      const response = await invokeCommand<DesktopJsonRpcResponse<TResponse>>(
+        "desktop_json_rpc",
+        { request },
+      );
+      if (response.jsonrpc !== "2.0") {
+        throw new Error(`${method} returned an invalid JSON-RPC version`);
+      }
+      if (response.id !== request.id) {
+        throw new Error(`${method} returned an unexpected JSON-RPC id`);
+      }
+      if ("error" in response) {
+        throw normalizeDesktopJsonRpcError(method, response.error);
+      }
+
+      return response.result;
     },
   };
 }
 
 let desktopCommandTransport: DesktopCommandTransport =
-  createTauriDesktopCommandTransport();
+  createJsonRpcDesktopCommandTransport();
+
+export function createTauriDesktopCommandTransport(
+  invokeCommand: typeof invoke = invoke,
+): DesktopCommandTransport {
+  return createJsonRpcDesktopCommandTransport(invokeCommand);
+}
 
 export function configureDesktopCommandTransport(
   transport: DesktopCommandTransport,
