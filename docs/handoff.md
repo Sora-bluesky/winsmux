@@ -196,8 +196,11 @@
 - `npm run build` in `winsmux-app` -> PASS after verification/security/action detail-card expansion
 - `npm run test:editor-targets` in `winsmux-app` -> PASS after verification/security/action detail-card expansion
 - root `winsmux-core/scripts/sync-roadmap.ps1` -> PASS after the same slice (no planning drift)
-- Fresh reviewer `Hooke` -> `no result yet` after a 30s wait on the verification/security/action detail slice
-- Manual diff review completed for the verification/security/action detail slice
+- Fresh reviewer `Hooke` -> `FAIL`; detail-card priority and explain fingerprint coverage were corrected before packaging
+- `npm run build` in `winsmux-app` -> PASS after the Hooke follow-up fixes
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the Hooke follow-up fixes
+- Fresh reviewer `Bohr` -> `no result yet` after a 30s wait on the corrected detail-card/fingerprint follow-up
+- Manual diff review completed for the corrected verification/security/action detail slice
 - `/review` follow-up via `codex exec` -> `REQUEST_CHANGES`, then `APPROVE` after:
   - preferring `launch_dir` over stale `builder_worktree_path`
   - relativizing explicit worktrees against `session.project_dir`

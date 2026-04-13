@@ -1236,30 +1236,6 @@ function buildRunSummaryCards(
     },
   ];
 
-  if (projection?.hypothesis || explainPayload?.run.goal) {
-    cards.push({
-      label: "Goal",
-      value: projection?.hypothesis || explainPayload?.run.goal || "n/a",
-    });
-  }
-
-  if (projection?.consultation_ref || explainPayload?.consultation_summary?.next_test) {
-    cards.push({
-      label: "Consult",
-      value:
-        projection?.consultation_ref ||
-        explainPayload?.consultation_summary?.next_test ||
-        "n/a",
-    });
-  }
-
-  if (projection?.observation_pack_ref) {
-    cards.push({
-      label: "Observation",
-      value: projection.observation_pack_ref,
-    });
-  }
-
   const verificationDetail = summarizeVerificationDetail(explainPayload);
   if (verificationDetail) {
     cards.push({
@@ -1284,9 +1260,33 @@ function buildRunSummaryCards(
     });
   }
 
+  if (projection?.hypothesis || explainPayload?.run.goal) {
+    cards.push({
+      label: "Goal",
+      value: projection?.hypothesis || explainPayload?.run.goal || "n/a",
+    });
+  }
+
+  if (projection?.consultation_ref || explainPayload?.consultation_summary?.next_test) {
+    cards.push({
+      label: "Consult",
+      value:
+        projection?.consultation_ref ||
+        explainPayload?.consultation_summary?.next_test ||
+        "n/a",
+    });
+  }
+
+  if (projection?.observation_pack_ref) {
+    cards.push({
+      label: "Observation",
+      value: projection.observation_pack_ref,
+    });
+  }
+
   return cards
     .filter((item) => item.value && item.value !== "n/a")
-    .slice(0, 12);
+    .slice(0, 14);
 }
 
 function buildRunSummaryFiles(
@@ -2107,14 +2107,24 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.action_items?.map((item) => `${item.kind}:${item.message}`).join("|"),
     payload.verification_contract?.mode,
     payload.verification_contract?.required,
+    payload.verification_contract?.checks?.join("|"),
+    payload.verification_contract?.commands?.join("|"),
     payload.verification_result?.outcome,
     payload.verification_result?.summary,
     payload.verification_result?.next_action,
+    payload.verification_result?.passed_checks?.join("|"),
     payload.verification_result?.failed_checks?.join("|"),
     payload.security_policy?.mode,
+    payload.security_policy?.stage,
+    payload.security_policy?.task,
+    payload.security_policy?.allow?.join("|"),
+    payload.security_policy?.block?.join("|"),
     payload.security_verdict?.verdict,
+    payload.security_verdict?.stage,
     payload.security_verdict?.reason,
     payload.security_verdict?.next_action,
+    payload.security_verdict?.allow?.join("|"),
+    payload.security_verdict?.block?.join("|"),
     payload.result_packet?.summary,
     payload.result_packet?.next_action_hint,
   ]);
