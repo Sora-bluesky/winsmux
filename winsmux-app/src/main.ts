@@ -1381,6 +1381,36 @@ function summarizeActionItems(explainPayload: DesktopExplainPayload | null) {
   return parts.join(" · ");
 }
 
+function buildRunSummaryChips(
+  digestItem: DesktopDigestItem,
+  explainPayload: DesktopExplainPayload | null,
+  changedFiles: string[],
+) {
+  const chips: Array<{ label: string; action: ChipAction }> = [
+    { label: "Open Explain", action: "open-explain" },
+  ];
+
+  if (changedFiles.length > 0) {
+    chips.push({ label: "Open in Editor", action: "open-editor" });
+  }
+
+  if (
+    explainPayload?.verification_result ||
+    explainPayload?.security_verdict ||
+    (Array.isArray(explainPayload?.action_items) && explainPayload.action_items.length > 0) ||
+    digestItem.review_state === "PENDING" ||
+    digestItem.review_state === "FAIL" ||
+    digestItem.review_state === "FAILED"
+  ) {
+    chips.push({ label: "Open Audit", action: "toggle-context" });
+  } else {
+    chips.push({ label: "Source Context", action: "open-source-context" });
+  }
+
+  chips.push({ label: "Terminal", action: "open-terminal" });
+  return chips;
+}
+
 function renderRunSummary() {
   const root = document.getElementById("selected-run-summary");
   if (!root) {
@@ -1394,6 +1424,7 @@ function renderRunSummary() {
     const detailCards = buildRunSummaryCards(digestItem, selectedProjection, selectedExplainPayload);
     const changedFiles = buildRunSummaryFiles(digestItem, selectedProjection, selectedExplainPayload);
     const recentEvents = buildRunSummaryRecentEvents(selectedExplainPayload);
+    const chips = buildRunSummaryChips(digestItem, selectedExplainPayload, changedFiles);
     const statusTone =
       digestItem.review_state === "PASS"
         ? "success"
@@ -1451,9 +1482,12 @@ function renderRunSummary() {
             : ""
         }
         <div class="timeline-chip-row">
-          <button type="button" class="timeline-chip" data-action="open-explain">Open Explain</button>
-          <button type="button" class="timeline-chip" data-action="open-source-context">Source Context</button>
-          <button type="button" class="timeline-chip" data-action="open-terminal">Terminal</button>
+          ${chips
+            .map(
+              (chip) =>
+                `<button type="button" class="timeline-chip" data-action="${chip.action}">${chip.label}</button>`,
+            )
+            .join("")}
         </div>
       </div>
     `;
@@ -2727,12 +2761,22 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
   desktopSummaryRefreshInFlight = (async () => {
   try {
     const previousSnapshot = desktopSummarySnapshot;
+    const previousSelectedRunId = selectedRunId;
     const snapshot = await getDesktopSummarySnapshot();
     const diff = diffDesktopSummarySnapshots(previousSnapshot, snapshot);
     desktopSummarySnapshot = snapshot;
     selectedRunId = resolveSelectedRunId(snapshot, forceExplainRunId);
     pruneExplainCache(snapshot, forceExplainRunId);
-    if (selectedRunId) {
+    const shouldPrefetchExplain =
+      Boolean(selectedRunId) &&
+      (
+        !previousSnapshot ||
+        diff.hasMeaningfulChange ||
+        forceExplainRunId === selectedRunId ||
+        selectedRunId !== previousSelectedRunId ||
+        !desktopExplainCache.has(selectedRunId ?? "")
+      );
+    if (selectedRunId && shouldPrefetchExplain) {
       try {
         const explainPayload = await getDesktopRunExplain(selectedRunId);
         desktopExplainCache.set(selectedRunId, explainPayload);
@@ -2741,7 +2785,7 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
       }
     }
 
-    if (previousSnapshot && !diff.hasMeaningfulChange && !forceExplainRunId) {
+    if (previousSnapshot && !diff.hasMeaningfulChange && !forceExplainRunId && !shouldPrefetchExplain) {
       return;
     }
 

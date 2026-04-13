@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T02:45:00+09:00
+> Updated: 2026-04-14T03:00:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -113,6 +113,10 @@
   - `winsmux-app/src/desktopClient.ts` now types `action_items`, `verification_contract`, `verification_result`, `security_policy`, and `security_verdict` from the already-present explain payload
   - `winsmux-app/src/main.ts` now summarizes verification detail, security detail, and the top action item into the existing selected-run detail grid so operators can judge next steps without opening deeper payloads
   - explain/follow-through fingerprints now include those new detail fields, so a verification, security, or action-item-only change is treated as material
+- Continued the same `TASK-290 / TASK-289` follow-up in `winsmux-app/src/main.ts`:
+  - the selected-run summary now adds conditional action chips for `Open in Editor` and `Open Audit` while reusing the existing chip-action plumbing instead of introducing a new surface
+  - `refreshDesktopSummary()` now skips explain prefetch on unchanged polling/focus/visibility refreshes unless the selected run changed, the cache is cold, or the refresh was forced
+  - focus/visibility triggers remain in place, but redundant backend explain calls are reduced on steady-state shells
 - Added a durable Rust learning-note rule to `AGENTS.md` for future handoffs:
   - when a session uses Rust / Cargo / Tauri commands during winsmux work, handoff must also update `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md`
   - the note is kept outside the repo, stays beginner-friendly, and should be updated in the same session rather than deferred
@@ -201,6 +205,10 @@
 - `npm run test:editor-targets` in `winsmux-app` -> PASS after the Hooke follow-up fixes
 - Fresh reviewer `Bohr` -> `no result yet` after a 30s wait on the corrected detail-card/fingerprint follow-up
 - Manual diff review completed for the corrected verification/security/action detail slice
+- `npm run build` in `winsmux-app` -> PASS after conditional action-chip wiring and explain-prefetch gating
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after conditional action-chip wiring and explain-prefetch gating
+- Fresh reviewer `Kierkegaard` -> `no result yet` after a 30s wait on the action-chip / prefetch-gating follow-up
+- Manual diff review completed for the action-chip / prefetch-gating follow-up
 - `/review` follow-up via `codex exec` -> `REQUEST_CHANGES`, then `APPROVE` after:
   - preferring `launch_dir` over stale `builder_worktree_path`
   - relativizing explicit worktrees against `session.project_dir`
@@ -249,8 +257,8 @@
 
 ## Next actions
 
-1. Update PR #417 from `codex/task105-json-rpc-transport-20260413` with the verification/security/action detail extension and record the fresh reviewer result once it lands.
-2. Continue `TASK-290` by extending the secondary editor and detail surface with deeper evidence links or action chips where they improve operator judgment without bloating the shell.
+1. Update PR #417 from `codex/task105-json-rpc-transport-20260413` with the action-chip and prefetch-gating follow-up and record the fresh reviewer result once it lands.
+2. Continue `TASK-290` by extending the secondary editor and detail surface with deeper evidence links or richer action chips only where they improve operator judgment without bloating the shell.
 3. Continue `TASK-289` by reducing polling dependence further, either with narrower refresh triggers or a backend event surface once the transport shape is ready.
 4. Keep the new Rust learning note current during future handoffs whenever Rust / Cargo / Tauri commands are used in the session.
 
