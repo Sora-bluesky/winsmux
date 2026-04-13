@@ -1,12 +1,13 @@
 # Handoff
 
-> Updated: 2026-04-13T19:58:21+09:00
+> Updated: 2026-04-13T21:20:32+09:00
 > Source of truth: this file
 
 ## Current state
 
 - `v0.20.0`, `v0.20.1`, `v0.20.2`, `v0.20.3`, `v0.21.0`, `v0.21.1`, and `v0.21.2` are released.
 - `v0.21.2` shipped as the terminal-based final form release before the `v0.22.0` Tauri control-plane handoff.
+- `v0.22.0` remains on the shortest active path of `TASK-105 -> TASK-291 -> TASK-289`, with the current branch carrying the backend transport convergence work.
 - `ROADMAP.md` shows `v0.21.2 = 100% (2/2)` with only:
   - `TASK-216` terminal hot-path wrapper baseline
   - `TASK-295` winsmux-surface rename cleanup slice
@@ -89,6 +90,10 @@
   - `winsmux-app/src/desktopClient.ts` now defaults to a single `desktop_json_rpc` Tauri command instead of per-method `invoke(...)`
   - `winsmux-app/src-tauri/src/desktop_backend.rs` now validates JSON-RPC `2.0`, dispatches `desktop.summary.snapshot` / `desktop.run.explain`, and returns structured `result/error` responses
   - `winsmux-app/src-tauri/src/lib.rs` now exposes `desktop_json_rpc` while keeping the older per-command handlers available
+- Continued `TASK-105` on `codex/task105-json-rpc-transport-20260413` by converging PTY pane lifecycle calls on the same single-call pattern:
+  - `winsmux-app/src/ptyClient.ts` now sends `pty.spawn` / `pty.write` / `pty.resize` / `pty.close` through one `pty_json_rpc` Tauri command instead of per-method `invoke(...)`
+  - `winsmux-app/src-tauri/src/pty_backend.rs` now validates JSON-RPC `2.0`, parses PTY params, and returns structured `result/error` responses for PTY lifecycle requests
+  - `winsmux-app/src-tauri/src/lib.rs` now routes both `pty_json_rpc` and the legacy per-command handlers through shared PTY helpers, so the transport boundary changed without breaking compatibility
 - Landed `TASK-216` slice 1 and slice 2 on `main`:
   - PR #408: leaf wrapper consolidation for `commander-poll`, `pane-status`, and `pane-control`
   - PR #409: wrapper-based `orchestra-layout` session/window/pane flow
@@ -142,6 +147,13 @@
 - `cargo check` in `winsmux-app/src-tauri` -> PASS after backend extraction
 - `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (desktop backend transport tests)
 - targeted temp-project harness for `winsmux-core.ps1 desktop-summary --json` -> PASS
+- `cargo fmt` in `winsmux-app/src-tauri` -> PASS after PTY JSON-RPC routing
+- `cargo check` in `winsmux-app/src-tauri` -> PASS after PTY JSON-RPC routing
+- `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (`8 passed`, PTY JSON-RPC dispatch tests added)
+- `npm run build` in `winsmux-app` -> PASS after `pty_json_rpc` client wiring
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1` -> `167/167 PASS` after the PTY JSON-RPC slice
+- Fresh reviewer `Kepler` -> `no result yet` after a 30s wait; closed without result
+- Manual diff review completed for the PTY JSON-RPC transport slice
 - `git diff --check` -> warnings only for CRLF normalization, no substantive errors
 - Fresh reviewer `Dewey` -> `PASS` for the projection-driven source-context slice in PR #412
 - Fresh reviewer `Herschel` -> `FAIL`; backend heuristic join removed after review
@@ -184,9 +196,9 @@
 
 ## Next actions
 
-1. Open a follow-up PR for the JSON-RPC envelope slice on `codex/task105-json-rpc-transport-20260413`.
-2. Continue `TASK-105` by replacing the current `PwshScriptTransport` behind `desktop_json_rpc` with a long-lived MCP/JSON-RPC backend client.
-3. Continue `TASK-291` / `TASK-107` by removing remaining seeded runtime fallback state and by adding a real file preview/read surface for the secondary editor.
+1. Open or update the follow-up PR for the current `TASK-105` transport-convergence slice on `codex/task105-json-rpc-transport-20260413`.
+2. Continue `TASK-291` / `TASK-107` by removing remaining seeded runtime fallback state and by adding a real file preview/read surface for the secondary editor.
+3. Continue `TASK-289` by replacing the remaining one-shot digest/explain hydration with live inbox/digest follow-through in the desktop shell.
 
 ## Notes
 

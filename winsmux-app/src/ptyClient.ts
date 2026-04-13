@@ -1,16 +1,43 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-type PtyCommandName = "pty_spawn" | "pty_write" | "pty_resize" | "pty_close";
+const PTY_JSON_RPC_VERSION = "2.0";
+type PtyCommandName = "pty.spawn" | "pty.write" | "pty.resize" | "pty.close";
 
 interface PtyOutputEvent {
   pane_id: string;
   data: string;
 }
 
+interface PtyJsonRpcRequest {
+  jsonrpc: typeof PTY_JSON_RPC_VERSION;
+  id: string;
+  method: PtyCommandName;
+  params?: Record<string, unknown>;
+}
+
+interface PtyJsonRpcError {
+  code: number;
+  message: string;
+}
+
+type PtyJsonRpcResponse =
+  | {
+      jsonrpc: typeof PTY_JSON_RPC_VERSION;
+      id: string;
+      result: unknown;
+    }
+  | {
+      jsonrpc: typeof PTY_JSON_RPC_VERSION;
+      id: string;
+      error: PtyJsonRpcError;
+    };
+
 export interface PtyCommandTransport {
   request(command: PtyCommandName, payload: Record<string, unknown>): Promise<void>;
 }
+
+let ptyRequestSequence = 0;
 
 function normalizePtyError(action: string, error: unknown) {
   if (error instanceof Error) {
@@ -25,7 +52,19 @@ export function createTauriPtyCommandTransport(
 ): PtyCommandTransport {
   return {
     async request(command: PtyCommandName, payload: Record<string, unknown>) {
-      await invokeCommand(command, payload);
+      const request: PtyJsonRpcRequest = {
+        jsonrpc: PTY_JSON_RPC_VERSION,
+        id: `pty-${++ptyRequestSequence}`,
+        method: command,
+        params: payload,
+      };
+      const response = await invokeCommand<PtyJsonRpcResponse>("pty_json_rpc", {
+        request,
+      });
+
+      if ("error" in response) {
+        throw new Error(response.error.message);
+      }
     },
   };
 }
@@ -42,17 +81,17 @@ export async function spawnPtyPane(
   rows: number,
 ) {
   try {
-    await ptyCommandTransport.request("pty_spawn", { paneId, cols, rows });
+    await ptyCommandTransport.request("pty.spawn", { paneId, cols, rows });
   } catch (error) {
-    throw normalizePtyError(`pty_spawn(${paneId})`, error);
+    throw normalizePtyError(`pty.spawn(${paneId})`, error);
   }
 }
 
 export async function writePtyData(paneId: string, data: string) {
   try {
-    await ptyCommandTransport.request("pty_write", { paneId, data });
+    await ptyCommandTransport.request("pty.write", { paneId, data });
   } catch (error) {
-    throw normalizePtyError(`pty_write(${paneId})`, error);
+    throw normalizePtyError(`pty.write(${paneId})`, error);
   }
 }
 
@@ -62,17 +101,17 @@ export async function resizePtyPane(
   rows: number,
 ) {
   try {
-    await ptyCommandTransport.request("pty_resize", { paneId, cols, rows });
+    await ptyCommandTransport.request("pty.resize", { paneId, cols, rows });
   } catch (error) {
-    throw normalizePtyError(`pty_resize(${paneId})`, error);
+    throw normalizePtyError(`pty.resize(${paneId})`, error);
   }
 }
 
 export async function closePtyPane(paneId: string) {
   try {
-    await ptyCommandTransport.request("pty_close", { paneId });
+    await ptyCommandTransport.request("pty.close", { paneId });
   } catch (error) {
-    throw normalizePtyError(`pty_close(${paneId})`, error);
+    throw normalizePtyError(`pty.close(${paneId})`, error);
   }
 }
 
