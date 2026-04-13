@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T02:20:00+09:00
+> Updated: 2026-04-14T02:45:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -109,6 +109,10 @@
   - `winsmux-app/src/desktopClient.ts` and `winsmux-app/src-tauri/src/desktop_backend.rs` now accept the richer detail DTO shape so the frontend can render it without ad hoc casts
   - `winsmux-app/src/main.ts` now builds selected-run detail cards, changed-file pills, and recent-event cards from the backend detail surfaces instead of seeded placeholder metadata
   - desktop follow-through now compares the previous and next summary snapshots and only appends runtime activity when there is a material change in run projection or inbox count
+- Extended the same `TASK-290` detail slice without changing the backend command surface:
+  - `winsmux-app/src/desktopClient.ts` now types `action_items`, `verification_contract`, `verification_result`, `security_policy`, and `security_verdict` from the already-present explain payload
+  - `winsmux-app/src/main.ts` now summarizes verification detail, security detail, and the top action item into the existing selected-run detail grid so operators can judge next steps without opening deeper payloads
+  - explain/follow-through fingerprints now include those new detail fields, so a verification, security, or action-item-only change is treated as material
 - Added a durable Rust learning-note rule to `AGENTS.md` for future handoffs:
   - when a session uses Rust / Cargo / Tauri commands during winsmux work, handoff must also update `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md`
   - the note is kept outside the repo, stays beginner-friendly, and should be updated in the same session rather than deferred
@@ -189,6 +193,11 @@
 - Fresh reviewer `Pascal` -> `FAIL`; follow-through fingerprints and removed-run handling were corrected before packaging
 - Fresh reviewer `Nietzsche` -> `no result yet` after a 30s wait on the corrected slice
 - Manual diff review completed for the corrected richer detail DTO / material-event follow-through slice
+- `npm run build` in `winsmux-app` -> PASS after verification/security/action detail-card expansion
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after verification/security/action detail-card expansion
+- root `winsmux-core/scripts/sync-roadmap.ps1` -> PASS after the same slice (no planning drift)
+- Fresh reviewer `Hooke` -> `no result yet` after a 30s wait on the verification/security/action detail slice
+- Manual diff review completed for the verification/security/action detail slice
 - `/review` follow-up via `codex exec` -> `REQUEST_CHANGES`, then `APPROVE` after:
   - preferring `launch_dir` over stale `builder_worktree_path`
   - relativizing explicit worktrees against `session.project_dir`
@@ -237,8 +246,8 @@
 
 ## Next actions
 
-1. Update PR #417 from `codex/task105-json-rpc-transport-20260413` with the richer detail DTO / material-event follow-through slice and record the reviewer result once it lands.
-2. Continue `TASK-290` by extending the secondary editor and detail surface with more real backend fields such as verification contract/result, security verdict, and action items where they improve operator judgment.
+1. Update PR #417 from `codex/task105-json-rpc-transport-20260413` with the verification/security/action detail extension and record the fresh reviewer result once it lands.
+2. Continue `TASK-290` by extending the secondary editor and detail surface with deeper evidence links or action chips where they improve operator judgment without bloating the shell.
 3. Continue `TASK-289` by reducing polling dependence further, either with narrower refresh triggers or a backend event surface once the transport shape is ready.
 4. Keep the new Rust learning note current during future handoffs whenever Rust / Cargo / Tauri commands are used in the session.
 

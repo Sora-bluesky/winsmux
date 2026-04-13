@@ -202,6 +202,42 @@ export interface DesktopExplainPayload {
     recommendation?: string;
     next_test?: string;
   } | null;
+  action_items?: Array<{
+    kind?: string;
+    message?: string;
+    event?: string;
+    timestamp?: string;
+    source?: string;
+  }>;
+  verification_contract?: {
+    mode?: string;
+    required?: boolean;
+    checks?: string[];
+    commands?: string[];
+  } | null;
+  verification_result?: {
+    outcome?: string;
+    summary?: string;
+    next_action?: string;
+    failed_checks?: string[];
+    passed_checks?: string[];
+  } | null;
+  security_policy?: {
+    mode?: string;
+    stage?: string;
+    task?: string;
+    allow?: string[];
+    block?: string[];
+  } | null;
+  security_verdict?: {
+    verdict?: string;
+    reason?: string;
+    next_action?: string;
+    advisory_mode?: boolean;
+    stage?: string;
+    allow?: string[];
+    block?: string[];
+  } | null;
   run_packet?: {
     provider_target?: string;
   };

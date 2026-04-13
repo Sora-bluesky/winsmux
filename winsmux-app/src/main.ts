@@ -1260,9 +1260,33 @@ function buildRunSummaryCards(
     });
   }
 
+  const verificationDetail = summarizeVerificationDetail(explainPayload);
+  if (verificationDetail) {
+    cards.push({
+      label: "Verify detail",
+      value: verificationDetail,
+    });
+  }
+
+  const securityDetail = summarizeSecurityDetail(explainPayload);
+  if (securityDetail) {
+    cards.push({
+      label: "Security detail",
+      value: securityDetail,
+    });
+  }
+
+  const actionDetail = summarizeActionItems(explainPayload);
+  if (actionDetail) {
+    cards.push({
+      label: "Action",
+      value: actionDetail,
+    });
+  }
+
   return cards
     .filter((item) => item.value && item.value !== "n/a")
-    .slice(0, 10);
+    .slice(0, 12);
 }
 
 function buildRunSummaryFiles(
@@ -1287,6 +1311,74 @@ function buildRunSummaryRecentEvents(explainPayload: DesktopExplainPayload | nul
     title: event.event,
     body: `${event.label}: ${event.message}`,
   }));
+}
+
+function summarizeVerificationDetail(explainPayload: DesktopExplainPayload | null) {
+  if (!explainPayload) {
+    return "";
+  }
+
+  const parts: string[] = [];
+  const contract = explainPayload.verification_contract;
+  const result = explainPayload.verification_result;
+
+  if (contract?.mode) {
+    parts.push(`contract ${contract.mode}`);
+  }
+  if (typeof contract?.required === "boolean") {
+    parts.push(contract.required ? "required" : "optional");
+  }
+  if (result?.outcome) {
+    parts.push(`result ${result.outcome}`);
+  }
+  if (result?.summary) {
+    parts.push(result.summary);
+  } else if (result?.next_action) {
+    parts.push(result.next_action);
+  }
+  if (Array.isArray(result?.failed_checks) && result.failed_checks.length > 0) {
+    parts.push(`failed ${result.failed_checks[0]}`);
+  }
+
+  return parts.join(" · ");
+}
+
+function summarizeSecurityDetail(explainPayload: DesktopExplainPayload | null) {
+  if (!explainPayload) {
+    return "";
+  }
+
+  const parts: string[] = [];
+  const policy = explainPayload.security_policy;
+  const verdict = explainPayload.security_verdict;
+
+  if (policy?.mode) {
+    parts.push(`policy ${policy.mode}`);
+  }
+  if (verdict?.verdict) {
+    parts.push(`verdict ${verdict.verdict}`);
+  }
+  if (verdict?.reason) {
+    parts.push(verdict.reason);
+  } else if (verdict?.next_action) {
+    parts.push(verdict.next_action);
+  }
+
+  return parts.join(" · ");
+}
+
+function summarizeActionItems(explainPayload: DesktopExplainPayload | null) {
+  if (!explainPayload || !Array.isArray(explainPayload.action_items) || explainPayload.action_items.length === 0) {
+    return "";
+  }
+
+  const firstItem = explainPayload.action_items[0];
+  const count = explainPayload.action_items.length;
+  const parts = [firstItem.kind, firstItem.message].filter((value): value is string => Boolean(value && value.trim()));
+  if (count > 1) {
+    parts.push(`+${count - 1} more`);
+  }
+  return parts.join(" · ");
 }
 
 function renderRunSummary() {
@@ -2012,6 +2104,17 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.review_state?.status,
     payload.consultation_summary?.recommendation,
     payload.consultation_summary?.next_test,
+    payload.action_items?.map((item) => `${item.kind}:${item.message}`).join("|"),
+    payload.verification_contract?.mode,
+    payload.verification_contract?.required,
+    payload.verification_result?.outcome,
+    payload.verification_result?.summary,
+    payload.verification_result?.next_action,
+    payload.verification_result?.failed_checks?.join("|"),
+    payload.security_policy?.mode,
+    payload.security_verdict?.verdict,
+    payload.security_verdict?.reason,
+    payload.security_verdict?.next_action,
     payload.result_packet?.summary,
     payload.result_packet?.next_action_hint,
   ]);
