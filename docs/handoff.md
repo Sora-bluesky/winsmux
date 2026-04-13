@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-13T21:20:32+09:00
+> Updated: 2026-04-14T01:25:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -94,6 +94,15 @@
   - `winsmux-app/src/ptyClient.ts` now sends `pty.spawn` / `pty.write` / `pty.resize` / `pty.close` through one `pty_json_rpc` Tauri command instead of per-method `invoke(...)`
   - `winsmux-app/src-tauri/src/pty_backend.rs` now validates JSON-RPC `2.0`, parses PTY params, and returns structured `result/error` responses for PTY lifecycle requests
   - `winsmux-app/src-tauri/src/lib.rs` now routes both `pty_json_rpc` and the legacy per-command handlers through shared PTY helpers, so the transport boundary changed without breaking compatibility
+- Continued the same `TASK-105` slice by wiring real worktree metadata through desktop summary and source preview hydration:
+  - `winsmux-core/scripts/pane-status.ps1` now emits `Worktree` from the current pane cwd first, falls back to manifest builder paths, and only infers `.worktrees/<label>` when the standard `worktree-<label>` branch convention matches
+  - `scripts/winsmux-core.ps1` now preserves `worktree` through `board -> runs -> digest -> desktop-summary run_projections` without dropping hashtable-backed values
+  - `tests/winsmux-bridge.Tests.ps1` now covers explicit worktree precedence, manifest-root relativization, inferred builder worktrees, and the top-level `desktop-summary --json` propagation path
+- Continued `TASK-291 / TASK-107 / TASK-289` on `codex/task105-json-rpc-transport-20260413` by removing more seeded desktop shell state:
+  - `winsmux-app/src/main.ts` now keeps a real `selectedRunId` derived from digest/run-projection data instead of always treating the first run as selected
+  - source context, run summary, Explain, and secondary editor now follow the selected backend run instead of a seeded timeline fallback
+  - the workspace Explorer now builds from projection-derived changed files and standalone editor targets, replacing the old static sample file tree
+  - desktop summary refresh now runs on startup, focus, visibility restore, and a 15s polling interval so the shell follows live inbox/digest movement rather than one-shot hydration
 - Landed `TASK-216` slice 1 and slice 2 on `main`:
   - PR #408: leaf wrapper consolidation for `commander-poll`, `pane-status`, and `pane-control`
   - PR #409: wrapper-based `orchestra-layout` session/window/pane flow
@@ -152,6 +161,20 @@
 - `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (`8 passed`, PTY JSON-RPC dispatch tests added)
 - `npm run build` in `winsmux-app` -> PASS after `pty_json_rpc` client wiring
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1` -> `167/167 PASS` after the PTY JSON-RPC slice
+- `npm run build` in `winsmux-app` -> PASS after the worktree propagation follow-up
+- `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (`10 passed`) after the editor/worktree backend follow-up
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `171/171 PASS` after fixing desktop-summary worktree propagation
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after selected-run / explorer convergence
+- `npm run build` in `winsmux-app` -> PASS after selected-run state + live desktop summary follow-through
+- `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (`10 passed`) after selected-run / live-follow slice
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `171/171 PASS` after selected-run / live-follow slice
+- root `winsmux-core/scripts/sync-roadmap.ps1` -> PASS (roadmap + internal docs regenerated with no planning drift introduced by this slice)
+- Fresh reviewer `Tesla` -> `PASS` for the selected-run / live-follow slice after delayed completion
+- Manual diff review also completed for the selected-run / live-follow slice
+- `/review` follow-up via `codex exec` -> `REQUEST_CHANGES`, then `APPROVE` after:
+  - preferring `launch_dir` over stale `builder_worktree_path`
+  - relativizing explicit worktrees against `session.project_dir`
+  - adding focused pane-status and desktop-summary regression coverage
 - Fresh reviewer `Kepler` -> `no result yet` after a 30s wait; closed without result
 - Manual diff review completed for the PTY JSON-RPC transport slice
 - `git diff --check` -> warnings only for CRLF normalization, no substantive errors
@@ -196,9 +219,10 @@
 
 ## Next actions
 
-1. Open or update the follow-up PR for the current `TASK-105` transport-convergence slice on `codex/task105-json-rpc-transport-20260413`.
-2. Continue `TASK-291` / `TASK-107` by removing remaining seeded runtime fallback state and by adding a real file preview/read surface for the secondary editor.
-3. Continue `TASK-289` by replacing the remaining one-shot digest/explain hydration with live inbox/digest follow-through in the desktop shell.
+1. Update PR #417 from `codex/task105-json-rpc-transport-20260413` with the selected-run / live-follow slice and describe the remaining `TASK-291 / TASK-289` delta explicitly.
+2. Continue `TASK-291 / TASK-107` by converging the secondary editor on richer real detail DTOs (test results, review verdict, branch/head cards) instead of placeholder preview metadata.
+3. Continue `TASK-289` by replacing polling-only follow-through with material-event subscription or narrower refresh triggers once the backend stream shape is ready.
+4. Keep root-repo planning-sync diffs separate from this worktree slice; the root-side `main.ts` / `ptyClient.ts` / `desktop_backend.rs` changes are a divergent lane and were not auto-cleaned.
 
 ## Notes
 
@@ -206,3 +230,5 @@
 - `TASK-216` landed as small hot-path wrapper slices rather than a single bridge-file refactor.
 - `TASK-295` keeps `.psmux` compatibility paths untouched; those stay under the sunset plan instead of this rename slice.
 - Public GitHub Releases stay English, use Codex-style headings, and keep inline issue/PR refs visible.
+- Review gate for this slice was satisfied after a second `/review` pass returned `APPROVE`; the intermediate `REQUEST_CHANGES` findings were incorporated before continuing.
+- Reviewer `Tesla` initially timed out after the required 35s wait, so work proceeded under the manual-diff fallback gate; the delayed reviewer result later arrived as `PASS` before packaging the slice.

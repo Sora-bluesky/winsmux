@@ -1,7 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 
-type DesktopCommandName = "desktop_summary_snapshot" | "desktop_run_explain";
-type DesktopJsonRpcMethod = "desktop.summary.snapshot" | "desktop.run.explain";
+type DesktopCommandName =
+  | "desktop_summary_snapshot"
+  | "desktop_run_explain"
+  | "desktop_editor_read";
+type DesktopJsonRpcMethod =
+  | "desktop.summary.snapshot"
+  | "desktop.run.explain"
+  | "desktop.editor.read";
 
 interface DesktopJsonRpcRequest {
   jsonrpc: "2.0";
@@ -99,6 +105,7 @@ export interface DesktopRunProjection {
   pane_id: string;
   label: string;
   branch: string;
+  worktree: string;
   task: string;
   task_state: string;
   review_state: string;
@@ -159,6 +166,13 @@ export interface DesktopExplainPayload {
   }>;
 }
 
+export interface DesktopEditorFilePayload {
+  path: string;
+  content: string;
+  line_count: number;
+  truncated: boolean;
+}
+
 let nextDesktopJsonRpcId = 0;
 
 function normalizeDesktopError(action: string, error: unknown) {
@@ -175,6 +189,8 @@ function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMet
       return "desktop.summary.snapshot";
     case "desktop_run_explain":
       return "desktop.run.explain";
+    case "desktop_editor_read":
+      return "desktop.editor.read";
   }
 }
 
@@ -255,5 +271,17 @@ export async function getDesktopRunExplain(runId: string) {
     );
   } catch (error) {
     throw normalizeDesktopError(`desktop_run_explain(${runId})`, error);
+  }
+}
+
+export async function getDesktopEditorFile(path: string, worktree?: string) {
+  try {
+    return await desktopCommandTransport.request<DesktopEditorFilePayload>(
+      "desktop_editor_read",
+      worktree ? { path, worktree } : { path },
+    );
+  } catch (error) {
+    const worktreeSuffix = worktree ? `, ${worktree}` : "";
+    throw normalizeDesktopError(`desktop_editor_read(${path}${worktreeSuffix})`, error);
   }
 }
