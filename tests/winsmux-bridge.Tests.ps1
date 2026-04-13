@@ -4869,6 +4869,53 @@ Set-Location '__DIGEST_TEMP_ROOT__'
         $result.summary.item_count | Should -Be 1
         $result.items[0].run_id | Should -Be 'task:task-246'
     }
+
+    It 'supports winsmux desktop-summary --json through the top-level CLI entrypoint' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:digestTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-246
+    task: Build evidence digest
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T14:00:00+09:00
+"@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
+
+        $bridgeScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $childScript = @'
+Set-Item -Path function:winsmux -Value {
+    param([Parameter(ValueFromRemainingArguments = $true)][object[]]$args)
+    $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+    switch -Regex ($commandLine) {
+        '^capture-pane .*%2' { @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>'); break }
+        default { throw "unexpected winsmux call: $commandLine" }
+    }
+}
+Set-Location '__DIGEST_TEMP_ROOT__'
+& '__BRIDGE_SCRIPT__' desktop-summary --json
+'@
+        $childScript = $childScript.Replace('__DIGEST_TEMP_ROOT__', $script:digestTempRoot).Replace('__BRIDGE_SCRIPT__', $bridgeScript)
+        $output = & pwsh -NoProfile -Command $childScript
+
+        $result = ($output | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.board.summary.pane_count | Should -Be 1
+        $result.digest.summary.item_count | Should -Be 1
+        @($result.run_projections).Count | Should -Be 1
+        $result.run_projections[0].run_id | Should -Be 'task:task-246'
+    }
 }
 
 Describe 'winsmux explain command' {
