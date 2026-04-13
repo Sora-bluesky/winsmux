@@ -1776,8 +1776,8 @@ function renderEditorSurface() {
     path.textContent = "Editor idle";
     meta.innerHTML = "";
     tabs.innerHTML = "";
-    code.textContent = "Open a projected file to load a backend preview.";
-    statusbar.textContent = "Secondary work surface: waiting for file selection";
+    code.textContent = "Backend preview is waiting for a projected file.";
+    statusbar.textContent = "Secondary work surface: waiting for backend preview";
     return;
   }
   selectedEditorKey = selected.key;
@@ -2195,10 +2195,10 @@ function findEditorFile(target: EditorTarget | null) {
   const loading = desktopEditorLoadingPaths.has(target.key);
   const loadError = desktopEditorLoadErrors.get(target.key);
   const previewBody = loadError
-    ? `Unable to load file preview.\n\n${loadError}`
+    ? `Backend preview failed to load.\n\n${loadError}`
     : loading
-      ? "Loading file preview from backend..."
-      : "Select this file to load a real preview from the backend.";
+      ? "Backend preview is hydrating."
+      : "Backend preview is waiting for a selected file.";
 
   return {
     key: target.key,
@@ -2254,7 +2254,7 @@ function getEditorFiles() {
       key: target.key,
       path: target.path,
       summary: target.summary,
-      content: "Loading file preview from backend...",
+      content: "Backend preview is hydrating.",
       language: inferLanguageFromPath(target.path),
       lineCount: 1,
       modified: target.modified,
