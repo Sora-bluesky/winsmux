@@ -2,7 +2,9 @@
 param(
     [string]$BacklogPath = '',
 
-    [string]$RoadmapPath = ''
+    [string]$RoadmapPath = '',
+
+    [string]$RoadmapTitleJaPath = ''
 )
 
 . (Join-Path $PSScriptRoot 'planning-paths.ps1')
@@ -125,6 +127,151 @@ function Get-VersionTitleMap {
     }
 
     return $versionTitles
+}
+
+function Get-RoadmapLocalizationMap {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path)) {
+        return @{
+            VersionTitles = @{}
+            TaskTitles    = @{}
+        }
+    }
+
+    $data = Import-PowerShellDataFile -LiteralPath $Path
+    return @{
+        VersionTitles = if ($null -ne $data.VersionTitles) { $data.VersionTitles } else { @{} }
+        TaskTitles    = if ($null -ne $data.TaskTitles) { $data.TaskTitles } else { @{} }
+    }
+}
+
+function Get-VersionSortTuple {
+    param(
+        [AllowNull()]
+        [string]$Version
+    )
+
+    if ($Version -match '^v(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)$') {
+        return @([int]$Matches['major'], [int]$Matches['minor'], [int]$Matches['patch'])
+    }
+
+    return @([int]::MaxValue, [int]::MaxValue, [int]::MaxValue)
+}
+
+function Test-VersionGreaterOrEqual {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+
+        [Parameter(Mandatory = $true)]
+        [string]$MinimumVersion
+    )
+
+    $left = Get-VersionSortTuple -Version $Version
+    $right = Get-VersionSortTuple -Version $MinimumVersion
+
+    for ($index = 0; $index -lt 3; $index++) {
+        if ($left[$index] -gt $right[$index]) {
+            return $true
+        }
+
+        if ($left[$index] -lt $right[$index]) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Test-RequiresJapaneseVersionTitle {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    if ($Version -like 'post-v1.0.0*') {
+        return $true
+    }
+
+    if ($Version -match '^v\d+\.\d+\.\d+$') {
+        return Test-VersionGreaterOrEqual -Version $Version -MinimumVersion 'v0.20.0'
+    }
+
+    return $false
+}
+
+function Convert-TitleFallbackToJapanese {
+    param(
+        [AllowNull()]
+        [string]$Title
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Title)) {
+        return ''
+    }
+
+    $converted = $Title -replace '→', '→'
+    $converted = $converted -replace ' +— +', ' — '
+    $converted = $converted -replace '^Fix (.+)$', '$1 を修正'
+    $converted = $converted -replace '^Add (.+)$', '$1 を追加'
+    $converted = $converted -replace '^Create (.+)$', '$1 を作成'
+    $converted = $converted -replace '^Implement (.+)$', '$1 を実装'
+    $converted = $converted -replace '^Sync (.+)$', '$1 を同期'
+    $converted = $converted -replace '^Document (.+)$', '$1 を文書化'
+    $converted = $converted -replace '^Write (.+)$', '$1 を作成'
+    $converted = $converted -replace '^Run (.+)$', '$1 を実行'
+    $converted = $converted -replace '^Release (.+)$', '$1 をリリース'
+    $converted = $converted -replace '^Rewrite (.+)$', '$1 を書き直し'
+    $converted = $converted -replace '^Remove (.+)$', '$1 を削除'
+    $converted = $converted -replace '^Replace (.+)$', '$1 を置換'
+    $converted = $converted -replace '^Prevent (.+)$', '$1 を防止'
+    $converted = $converted -replace '^Restore (.+)$', '$1 を復元'
+    $converted = $converted -replace '^Audit (.+)$', '$1 を監査'
+    $converted = $converted -replace '^Complete (.+)$', '$1 を完了'
+    $converted = $converted -replace '^Prepare and submit PR to (.+)$', '$1 への PR を準備して提出'
+
+    return $converted
+}
+
+function Get-RoadmapVersionTitle {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+
+        [AllowNull()]
+        [string]$DefaultTitle,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Localization
+    )
+
+    if ($Localization.ContainsKey($Version)) {
+        return [string]$Localization[$Version]
+    }
+
+    return $DefaultTitle
+}
+
+function Get-RoadmapTaskTitle {
+    param(
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$Task,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$Localization
+    )
+
+    $hasOverride = $Localization.ContainsKey($Task.Id)
+    $title = if ($hasOverride) { [string]$Localization[$Task.Id] } else { Convert-TitleFallbackToJapanese -Title $Task.Title }
+
+    return [pscustomobject]@{
+        Title       = $title
+        HasOverride = $hasOverride
+    }
 }
 
 function ConvertFrom-TaskBlock {
@@ -489,9 +636,13 @@ if ([string]::IsNullOrWhiteSpace($BacklogPath)) {
 if ([string]::IsNullOrWhiteSpace($RoadmapPath)) {
     $RoadmapPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $repoRoot -LocalRelativePath 'docs/project/ROADMAP.md' -EnvironmentVariable 'WINSMUX_ROADMAP_PATH' -DefaultFileName 'ROADMAP.md'
 }
+if ([string]::IsNullOrWhiteSpace($RoadmapTitleJaPath)) {
+    $RoadmapTitleJaPath = Join-Path $repoRoot 'tasks/roadmap-title-ja.psd1'
+}
 
 $resolvedBacklogPath = Resolve-WorkspacePath -Path $BacklogPath
 $resolvedRoadmapPath = Resolve-WorkspacePath -Path $RoadmapPath
+$resolvedRoadmapTitleJaPath = Resolve-WorkspacePath -Path $RoadmapTitleJaPath
 $roadmapRelativePath = [System.IO.Path]::GetRelativePath((Get-Location).Path, $resolvedRoadmapPath) -replace '\\', '/'
 
 if (-not (Test-Path -LiteralPath $resolvedBacklogPath)) {
@@ -502,6 +653,7 @@ if (-not (Test-Path -LiteralPath $resolvedBacklogPath)) {
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $backlogContent = [System.IO.File]::ReadAllText($resolvedBacklogPath, $utf8NoBom)
 $versionTitles = Get-VersionTitleMap -Content $backlogContent
+$roadmapLocalization = Get-RoadmapLocalizationMap -Path $resolvedRoadmapTitleJaPath
 $taskBlocks = @(Get-TaskBlocks -Content $backlogContent)
 $tasks = @(
 foreach ($taskBlock in $taskBlocks) {
@@ -514,6 +666,8 @@ foreach ($taskBlock in $taskBlocks) {
 
 $downgradedTasks = New-Object System.Collections.Generic.List[object]
 $validationWarnings = New-Object System.Collections.Generic.List[string]
+$missingJapaneseTitles = New-Object System.Collections.Generic.List[string]
+$missingJapaneseVersionTitles = New-Object System.Collections.Generic.List[string]
 
 foreach ($task in $tasks | Where-Object { $_.Status -eq 'review' }) {
     $referenceFiles = Get-TaskReferenceFiles -Task $task -RoadmapPath $roadmapRelativePath
@@ -561,7 +715,14 @@ if ($downgradedTasks.Count -gt 0) {
     [System.IO.File]::WriteAllText($resolvedBacklogPath, $backlogContent, $utf8NoBom)
 }
 
-$versionGroups = $tasks |
+$tasksWithoutTargetVersion = @($tasks | Where-Object { [string]::IsNullOrWhiteSpace($_.TargetVersion) })
+foreach ($task in $tasksWithoutTargetVersion) {
+    $validationWarnings.Add(("Roadmap sync warning for {0}: empty target_version. Skipping from version-grouped roadmap output." -f $task.Id))
+}
+
+$tasksWithTargetVersion = @($tasks | Where-Object { -not [string]::IsNullOrWhiteSpace($_.TargetVersion) })
+
+$versionGroups = $tasksWithTargetVersion |
     Group-Object -Property TargetVersion |
     Sort-Object @{ Expression = { (Get-VersionSortKey -Version $_.Name).Major } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Minor } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Patch } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Raw } }
 
@@ -591,7 +752,9 @@ foreach ($versionGroup in $versionGroups) {
 
 foreach ($versionGroup in $versionGroups) {
     $vName = $versionGroup.Name
-    $titleSuffix = if ($versionTitles.Contains($vName)) { ': ' + $versionTitles[$vName] } else { '' }
+    $defaultVersionTitle = if ($versionTitles.Contains($vName)) { $versionTitles[$vName] } else { '' }
+    $localizedVersionTitle = Get-RoadmapVersionTitle -Version $vName -DefaultTitle $defaultVersionTitle -Localization $roadmapLocalization.VersionTitles
+    $titleSuffix = if (-not [string]::IsNullOrWhiteSpace($localizedVersionTitle)) { ': ' + $localizedVersionTitle } else { '' }
     [void]$builder.AppendLine(('### {0}{1}' -f $vName, $titleSuffix))
     [void]$builder.AppendLine()
     [void]$builder.AppendLine('| | ID | Title | Priority | Repo | Status |')
@@ -599,7 +762,8 @@ foreach ($versionGroup in $versionGroups) {
 
     $sortedTasks = @($versionGroup.Group | Sort-Object @{ Expression = { Get-PriorityRank -Priority $_.Priority } }, @{ Expression = { $_.IdNumber } }, @{ Expression = { $_.Id } })
     foreach ($task in $sortedTasks) {
-        [void]$builder.AppendLine(('| {0} | {1} | {2} | {3} | {4} | {5} |' -f (Get-StatusSymbol -Status $task.Status), $task.Id, $task.Title, $task.Priority, $task.Repo, $task.Status))
+        $localizedTaskTitle = Get-RoadmapTaskTitle -Task $task -Localization $roadmapLocalization.TaskTitles
+        [void]$builder.AppendLine(('| {0} | {1} | {2} | {3} | {4} | {5} |' -f (Get-StatusSymbol -Status $task.Status), $task.Id, $localizedTaskTitle.Title, $task.Priority, $task.Repo, $task.Status))
     }
 
     [void]$builder.AppendLine()
@@ -621,6 +785,47 @@ foreach ($versionGroup in $versionGroups) {
 [void]$builder.AppendLine('| P2 | 中 |')
 [void]$builder.AppendLine('| P3 | 低 |')
 
+foreach ($downgradedTask in $downgradedTasks) {
+    Write-Output ("Downgraded {0}: review -> backlog (gitignored: {1})" -f $downgradedTask.Id, ($downgradedTask.Files -join ', '))
+}
+
+foreach ($warning in $validationWarnings) {
+    Write-Warning $warning
+}
+
+foreach ($task in $tasksWithTargetVersion) {
+    if (-not (Test-VersionGreaterOrEqual -Version $task.TargetVersion -MinimumVersion 'v0.20.0')) {
+        continue
+    }
+
+    $localizedTaskTitle = Get-RoadmapTaskTitle -Task $task -Localization $roadmapLocalization.TaskTitles
+    if (-not $localizedTaskTitle.HasOverride) {
+        $missingJapaneseTitles.Add(('{0} ({1})' -f $task.Id, $task.Title))
+    }
+}
+
+foreach ($versionGroup in $versionGroups) {
+    if (-not (Test-RequiresJapaneseVersionTitle -Version $versionGroup.Name)) {
+        continue
+    }
+
+    if (-not $roadmapLocalization.VersionTitles.ContainsKey($versionGroup.Name)) {
+        $missingJapaneseVersionTitles.Add($versionGroup.Name)
+    }
+}
+
+if ($missingJapaneseVersionTitles.Count -gt 0) {
+    $missingVersionList = $missingJapaneseVersionTitles | Sort-Object
+    Write-Error ("Roadmap Japanese version-title gate failed. Add version title overrides to {0} for: {1}" -f $resolvedRoadmapTitleJaPath, ($missingVersionList -join ', '))
+    exit 1
+}
+
+if ($missingJapaneseTitles.Count -gt 0) {
+    $missingList = $missingJapaneseTitles | Sort-Object
+    Write-Error ("Roadmap Japanese title gate failed. Add task title overrides to {0} for: {1}" -f $resolvedRoadmapTitleJaPath, ($missingList -join ', '))
+    exit 1
+}
+
 $roadmapDirectory = Split-Path -Parent $resolvedRoadmapPath
 if (-not [string]::IsNullOrWhiteSpace($roadmapDirectory)) {
     New-Item -ItemType Directory -Force -Path $roadmapDirectory 1>$null
@@ -628,12 +833,14 @@ if (-not [string]::IsNullOrWhiteSpace($roadmapDirectory)) {
 
 [System.IO.File]::WriteAllText($resolvedRoadmapPath, $builder.ToString(), $utf8NoBom)
 
-foreach ($downgradedTask in $downgradedTasks) {
-    Write-Output ("Downgraded {0}: review -> backlog (gitignored: {1})" -f $downgradedTask.Id, ($downgradedTask.Files -join ', '))
-}
-
-foreach ($warning in $validationWarnings) {
-    Write-Warning $warning
+$syncInternalDocsScript = Join-Path $PSScriptRoot 'sync-internal-docs.ps1'
+if (Test-Path -LiteralPath $syncInternalDocsScript) {
+    try {
+        & $syncInternalDocsScript -BacklogPath $resolvedBacklogPath -RoadmapTitleJaPath $resolvedRoadmapTitleJaPath
+    } catch {
+        Write-Error ("Internal docs sync failed via {0}: {1}" -f $syncInternalDocsScript, $_.Exception.Message)
+        exit 1
+    }
 }
 
 Write-Output ("Generated roadmap: {0}" -f $resolvedRoadmapPath)

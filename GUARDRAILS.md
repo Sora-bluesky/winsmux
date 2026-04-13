@@ -67,8 +67,8 @@
 
 ### 13. Backlog update without ROADMAP sync
 - **Trigger**: Editing the planning backlog source of truth
-- **Instruction**: Always run sync-roadmap.ps1 immediately after backlog changes so the external ROADMAP stays in sync.
-- **Reason**: ROADMAP.md becomes stale, causing planning errors.
+- **Instruction**: Always run sync-roadmap.ps1 immediately after backlog changes so the external ROADMAP and internal planning docs under docs/internal stay in sync.
+- **Reason**: ROADMAP.md or the internal verification docs become stale, causing planning and test errors.
 
 ### 14. Memory/rules as permanent fix
 - **Trigger**: Recurring problem needs prevention

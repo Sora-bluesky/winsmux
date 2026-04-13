@@ -88,6 +88,21 @@ When updating handoff:
 - Reflect external planning truth when version progress changes.
 - Prefer exact identifiers: version, task IDs, PR numbers, release status.
 
+## Roadmap Localization Gate
+
+`backlog.yaml` remains English-first, but `ROADMAP.md` is the Japanese-facing planning view for this repo.
+
+When updating planning:
+
+1. Keep task metadata in `backlog.yaml` in English unless the task explicitly requires otherwise.
+2. Generate planning views through `winsmux-core/scripts/sync-roadmap.ps1`.
+   - This now refreshes `ROADMAP.md` and the internal-only planning docs under `docs/internal/`.
+3. Maintain Japanese roadmap title overrides in `tasks/roadmap-title-ja.psd1`.
+4. For `v0.20.0` and later, do not allow English task titles to leak into `ROADMAP.md`.
+   - If a new task is added or renamed in `backlog.yaml`, update the Japanese title override before considering roadmap sync complete.
+5. Treat missing Japanese roadmap titles as a sync gate failure, not as acceptable drift.
+6. Treat stale internal planning docs under `docs/internal/` as a sync failure when backlog-driven sections no longer match the external planning source of truth.
+
 ## Rust Learning Note Gate
 
 When handoff work includes Rust, Cargo, Tauri, or Rust-adjacent commands used in winsmux development, Codex must also update the beginner-friendly learning note at:
