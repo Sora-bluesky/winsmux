@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-13T20:05:00+09:00
+> Updated: 2026-04-13T19:48:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -58,10 +58,25 @@
   - Tauri `invoke` is now the default transport implementation instead of the hardwired call site
   - `getDesktopSummarySnapshot` and `getDesktopRunExplain` now resolve through the transport interface
   - the next JSON-RPC slice can swap transport behavior without touching `main.ts`
-- Opened PR #415 for the `DesktopCommandTransport` abstraction slice:
+- Merged PR #415 for the `DesktopCommandTransport` abstraction slice:
   - branch: `codex/task105-desktop-client-transport-20260413`
   - title: `refactor: abstract desktop client transport`
-  - status: CI pending at handoff time
+  - `Pester Tests` green before merge
+- Started branch `codex/task105-desktop-summary-pty-20260413` for the next `TASK-105` follow-up slice.
+- Added `winsmux-app/src/ptyClient.ts` as the PTY transport seam for terminal pane lifecycle calls:
+  - `winsmux-app/src/main.ts` no longer invokes `pty_spawn`, `pty_write`, `pty_resize`, or `pty_close` directly
+  - Tauri `invoke` remains the default PTY transport implementation behind the helper
+  - PTY output subscription now also resolves through `ptyClient.ts`, so `main.ts` no longer imports Tauri APIs directly
+- Added `winsmux-app/src-tauri/src/desktop_backend.rs` as the backend transport boundary for desktop summary/explain:
+  - `lib.rs` now delegates desktop summary/explain Tauri commands into a dedicated backend module
+  - `PwshScriptTransport` keeps the current PowerShell execution path isolated behind a transport trait
+  - the next JSON-RPC transport can swap under the backend module without touching Tauri command handlers
+- Added `desktop-summary --json` to `scripts/winsmux-core.ps1` and routed `desktop_summary_snapshot` through it:
+  - board/inbox/digest/run_projections now come back from one backend command instead of three commands plus N `explain` calls in Rust
+  - `tests/winsmux-bridge.Tests.ps1` now covers the top-level `desktop-summary --json` entrypoint
+- Replaced hardcoded source pane filters in `winsmux-app/src/main.ts`:
+  - source context no longer assumes only `builder-2` and `builder-3`
+  - pane-specific source filters are now generated from the current projection snapshot
 - Landed `TASK-216` slice 1 and slice 2 on `main`:
   - PR #408: leaf wrapper consolidation for `commander-poll`, `pane-status`, and `pane-control`
   - PR #409: wrapper-based `orchestra-layout` session/window/pane flow
@@ -101,7 +116,14 @@
 - PR #414 CI -> green (`Pester Tests`)
 - `npm run build` in `winsmux-app` -> PASS after `DesktopCommandTransport` refactor
 - `git diff --check` -> warnings only for CRLF normalization, no substantive errors
-- `git push -u origin codex/task105-desktop-client-transport-20260413` -> PASS
+- PR #415 CI -> green (`Pester Tests`)
+- `gh pr merge 415 --merge --delete-branch` -> PASS
+- `npm run build` in `winsmux-app` -> PASS after PTY seam extraction, desktop backend extraction, and dynamic source filters
+- `cargo fmt --check` in `winsmux-app/src-tauri` -> PASS after backend extraction
+- `cargo check` in `winsmux-app/src-tauri` -> PASS after backend extraction
+- `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (desktop backend transport tests)
+- targeted temp-project harness for `winsmux-core.ps1 desktop-summary --json` -> PASS
+- `git diff --check` -> warnings only for CRLF normalization, no substantive errors
 - Fresh reviewer `Dewey` -> `PASS` for the projection-driven source-context slice in PR #412
 - Fresh reviewer `Herschel` -> `FAIL`; backend heuristic join removed after review
 - Fresh reviewer `Singer` -> `FAIL`; field semantics corrected to avoid fake worktree/source identity
@@ -143,9 +165,9 @@
 
 ## Next actions
 
-1. Check PR #415 CI and merge if green.
-2. Continue `v0.22.0` with the next backend-first slice by swapping a concrete JSON-RPC transport implementation into `desktopClient.ts`.
-3. Track startup latency from per-run `explain` fetches inside `desktop_summary_snapshot` if digest volume grows.
+1. Open a follow-up PR for the PTY seam + `desktop-summary` backend aggregation slice on `codex/task105-desktop-summary-pty-20260413`.
+2. Continue `TASK-105` by swapping a concrete JSON-RPC transport under `desktopClient.ts` / `desktop_backend.rs` instead of the current PowerShell-backed transports.
+3. Continue `TASK-107` by removing remaining seeded runtime fallback state and by adding a real file preview/read surface for the secondary editor.
 
 ## Notes
 

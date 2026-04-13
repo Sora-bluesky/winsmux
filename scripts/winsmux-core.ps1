@@ -4657,6 +4657,87 @@ function Get-DigestPayload {
     }
 }
 
+function New-DesktopRunProjection {
+    param(
+        [Parameter(Mandatory = $true)]$DigestItem,
+        [AllowNull()]$ExplainPayload
+    )
+
+    $run = if ($null -ne $ExplainPayload) { $ExplainPayload.run } else { $null }
+    $explanation = if ($null -ne $ExplainPayload) { $ExplainPayload.explanation } else { $null }
+    $evidenceDigest = if ($null -ne $ExplainPayload) { $ExplainPayload.evidence_digest } else { $null }
+
+    $runId = [string]$DigestItem.run_id
+    $task = [string]$DigestItem.task
+    $branch = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.branch)) {
+        [string]$run.branch
+    } else {
+        [string]$DigestItem.branch
+    }
+    $changedFiles = if ($null -ne $evidenceDigest -and @($evidenceDigest.changed_files).Count -gt 0) {
+        @($evidenceDigest.changed_files)
+    } else {
+        @($DigestItem.changed_files)
+    }
+    $summary = if ($null -ne $explanation -and -not [string]::IsNullOrWhiteSpace([string]$explanation.summary)) {
+        [string]$explanation.summary
+    } elseif (-not [string]::IsNullOrWhiteSpace($task)) {
+        $task
+    } elseif (-not [string]::IsNullOrWhiteSpace($runId)) {
+        "Projected from $runId"
+    } else {
+        'Projected run'
+    }
+
+    return [ordered]@{
+        run_id               = $runId
+        pane_id              = [string]$DigestItem.pane_id
+        label                = [string]$DigestItem.label
+        branch               = $branch
+        task                 = $task
+        task_state           = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.task_state)) { [string]$run.task_state } else { [string]$DigestItem.task_state }
+        review_state         = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.review_state)) { [string]$run.review_state } else { [string]$DigestItem.review_state }
+        verification_outcome = if ($null -ne $evidenceDigest -and -not [string]::IsNullOrWhiteSpace([string]$evidenceDigest.verification_outcome)) { [string]$evidenceDigest.verification_outcome } else { [string]$DigestItem.verification_outcome }
+        security_blocked     = if ($null -ne $evidenceDigest -and -not [string]::IsNullOrWhiteSpace([string]$evidenceDigest.security_blocked)) { [string]$evidenceDigest.security_blocked } else { [string]$DigestItem.security_blocked }
+        changed_files        = @($changedFiles)
+        next_action          = if ($null -ne $explanation -and -not [string]::IsNullOrWhiteSpace([string]$explanation.next_action)) { [string]$explanation.next_action } else { [string]$DigestItem.next_action }
+        summary              = $summary
+        reasons              = if ($null -ne $explanation) { @($explanation.reasons) } else { @() }
+    }
+}
+
+function Get-DesktopSummaryPayload {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $board = Get-BoardPayload -ProjectDir $ProjectDir
+    $inbox = Get-InboxPayload -ProjectDir $ProjectDir
+    $digest = Get-DigestPayload -ProjectDir $ProjectDir
+    $runProjections = @()
+
+    foreach ($digestItem in @($digest.items)) {
+        $explainPayload = $null
+        $runId = [string]$digestItem.run_id
+        if (-not [string]::IsNullOrWhiteSpace($runId)) {
+            try {
+                $explainPayload = Get-ExplainPayload -ProjectDir $ProjectDir -RunId $runId
+            } catch {
+                $explainPayload = $null
+            }
+        }
+
+        $runProjections += @(New-DesktopRunProjection -DigestItem $digestItem -ExplainPayload $explainPayload)
+    }
+
+    return [ordered]@{
+        generated_at    = (Get-Date).ToString('o')
+        project_dir     = $ProjectDir
+        board           = $board
+        inbox           = $inbox
+        digest          = $digest
+        run_projections = @($runProjections)
+    }
+}
+
 function Get-ExplainPayload {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -4755,6 +4836,39 @@ function Get-ExplainPayload {
         recent_events   = $recentEvents
         result_packet   = New-RunResultPacket -Run $run -EvidenceDigest $evidenceDigest -ReviewState $reviewState -RecentEvents $recentEvents -ObservationPack $observationPack -ConsultationPacket $consultationPacket -ConsultationSummary $consultationSummary
     }
+}
+
+function Invoke-DesktopSummary {
+    param(
+        [AllowNull()][string]$DesktopSummaryTarget = $Target,
+        [AllowNull()][string[]]$DesktopSummaryRest = $Rest
+    )
+
+    $jsonOutput = $false
+
+    if ($DesktopSummaryTarget) {
+        if ($DesktopSummaryTarget -eq '--json' -and (-not $DesktopSummaryRest -or $DesktopSummaryRest.Count -eq 0)) {
+            $jsonOutput = $true
+        } else {
+            Stop-WithError "usage: winsmux desktop-summary [--json]"
+        }
+    } elseif ($DesktopSummaryRest -and $DesktopSummaryRest.Count -gt 0) {
+        Stop-WithError "usage: winsmux desktop-summary [--json]"
+    }
+
+    $projectDir = (Get-Location).Path
+    $payload = Get-DesktopSummaryPayload -ProjectDir $projectDir
+
+    if ($jsonOutput) {
+        $payload | ConvertTo-Json -Compress -Depth 12 | Write-Output
+        return
+    }
+
+    Write-Output ("Desktop summary: {0} panes, {1} inbox items, {2} digest items, {3} projections" -f `
+        [int]$payload.board.summary.pane_count, `
+        [int]$payload.inbox.summary.item_count, `
+        [int]$payload.digest.summary.item_count, `
+        @($payload.run_projections).Count)
 }
 
 function Write-ExplainFollowItem {
@@ -6125,6 +6239,7 @@ Commands:
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
   status                    Report manifest pane states via capture-pane
   board [--json]            Report pane/task/review/git session board
+desktop-summary [--json]  Report the aggregated desktop read-model snapshot
 inbox [--json] [--stream] Report actionable approvals/review/blockers
 runs [--json]             Report run-oriented session view
 digest [--json] [--stream] [--events] Report high-signal evidence digest per run or actionable event summaries
@@ -6474,12 +6589,13 @@ switch ($Command) {
     'health-check'    { Invoke-HealthCheck }
     'status'          { Invoke-Status }
     'board'           { Invoke-Board }
-        'inbox'           { Invoke-Inbox }
-        'runs'            { Invoke-Runs }
-        'digest'          { Invoke-Digest }
-        'explain'         { Invoke-Explain }
-        'compare-runs'    { Invoke-CompareRuns }
-        'promote-tactic'  { Invoke-PromoteTactic }
+    'desktop-summary' { Invoke-DesktopSummary }
+    'inbox'           { Invoke-Inbox }
+    'runs'            { Invoke-Runs }
+    'digest'          { Invoke-Digest }
+    'explain'         { Invoke-Explain }
+    'compare-runs'    { Invoke-CompareRuns }
+    'promote-tactic'  { Invoke-PromoteTactic }
     'poll-events'     { Invoke-PollEvents }
     'signal'          { Invoke-Signal }
     'mailbox-create'  { Invoke-MailboxCreate }

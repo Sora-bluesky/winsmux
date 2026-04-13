@@ -1,5 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "xterm/css/xterm.css";
@@ -10,6 +8,13 @@ import {
   type DesktopExplainPayload,
   type DesktopSummarySnapshot,
 } from "./desktopClient";
+import {
+  closePtyPane,
+  resizePtyPane,
+  spawnPtyPane,
+  subscribeToPtyOutput,
+  writePtyData,
+} from "./ptyClient";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -78,7 +83,7 @@ interface EditorFile {
   active?: boolean;
 }
 
-type SourceFilter = "all" | "candidates" | "attention" | "builder-2" | "builder-3";
+type SourceFilter = "all" | "candidates" | "attention" | `pane:${string}`;
 
 type ChangeStatus = "modified" | "added" | "deleted" | "renamed";
 type ChangeRisk = "low" | "medium" | "high";
@@ -460,17 +465,17 @@ function createPane(paneId?: string): string {
   fitAddon.fit();
 
   terminal.onData((data: string) => {
-    void invoke("pty_write", { paneId: id, data });
+    void writePtyData(id, data);
   });
 
   terminal.onResize(({ cols, rows }) => {
-    void invoke("pty_resize", { paneId: id, cols, rows });
+    void resizePtyPane(id, cols, rows);
   });
 
   panes.set(id, { terminal, fitAddon, container: paneDiv });
 
   const { cols, rows } = { cols: terminal.cols, rows: terminal.rows };
-  void invoke("pty_spawn", { paneId: id, cols, rows });
+  void spawnPtyPane(id, cols, rows);
 
   return id;
 }
@@ -494,7 +499,7 @@ function closePane(id: string) {
 
   entry.container.remove();
   panes.delete(id);
-  void invoke("pty_close", { paneId: id });
+  void closePtyPane(id);
 
   panes.forEach((pane) => pane.fitAddon.fit());
 }
@@ -594,6 +599,18 @@ function getProjectionSourceEntries(): SourceChange[] {
   return entries.length > 0 ? entries : sourceControlState.entries;
 }
 
+function getPaneSourceFilter(label: string): SourceFilter {
+  return `pane:${label}`;
+}
+
+function getPaneLabelFromSourceFilter(filter: SourceFilter) {
+  if (!filter.startsWith("pane:")) {
+    return null;
+  }
+
+  return filter.slice("pane:".length);
+}
+
 function renderExplorer() {
   const root = document.getElementById("explorer-list");
   if (!root) {
@@ -684,9 +701,17 @@ function renderSourceEntries() {
   const entryItems: Array<{ label: string; value: string; filter: SourceFilter; tone?: SurfaceTone }> = [
     { label: "Commit candidates", value: `${activeEntries.filter((item) => item.commitCandidate).length} ready`, tone: "success", filter: "candidates" },
     { label: "Needs attention", value: `${activeEntries.filter((item) => item.needsAttention).length} blocker`, tone: "danger", filter: "attention" },
-    { label: "builder-2", value: `${activeEntries.filter((item) => item.paneLabel === "builder-2").length} files`, filter: "builder-2" },
-    { label: "builder-3", value: `${activeEntries.filter((item) => item.paneLabel === "builder-3").length} files`, filter: "builder-3" },
   ];
+  const paneLabels = [...new Set(activeEntries.map((item) => item.paneLabel).filter((item) => item))].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  for (const paneLabel of paneLabels) {
+    entryItems.push({
+      label: paneLabel,
+      value: `${activeEntries.filter((item) => item.paneLabel === paneLabel).length} files`,
+      filter: getPaneSourceFilter(paneLabel),
+    });
+  }
 
   for (const item of entryItems) {
     const button = document.createElement("button");
@@ -719,17 +744,30 @@ function getVisibleSourceChanges() {
       return activeEntries.filter((item) => item.commitCandidate);
     case "attention":
       return activeEntries.filter((item) => item.needsAttention);
-    case "builder-2":
-      return activeEntries.filter((item) => item.paneLabel === "builder-2");
-    case "builder-3":
-      return activeEntries.filter((item) => item.paneLabel === "builder-3");
     default:
+      if (activeSourceFilter.startsWith("pane:")) {
+        const paneLabel = getPaneLabelFromSourceFilter(activeSourceFilter);
+        return activeEntries.filter((item) => item.paneLabel === paneLabel);
+      }
       return activeEntries;
   }
 }
 
 function getPrimarySourceChange(changes: SourceChange[]) {
   return changes.find((item) => item.path === selectedEditorPath) ?? changes[0] ?? getProjectionSourceEntries()[0];
+}
+
+function getSourceFilterLabel(filter: SourceFilter) {
+  switch (filter) {
+    case "all":
+      return "All changes";
+    case "candidates":
+      return "Commit candidates";
+    case "attention":
+      return "Needs attention";
+    default:
+      return getPaneLabelFromSourceFilter(filter) ?? filter;
+  }
 }
 
 function getPrimaryDigestItem() {
@@ -791,7 +829,7 @@ function renderContextPanel() {
 
   overviewRoot.innerHTML = "";
   const overviewCards = [
-    { label: "Selected scope", value: activeSourceFilter === "all" ? "All changes" : activeSourceFilter.replace("-", " ") },
+    { label: "Selected scope", value: getSourceFilterLabel(activeSourceFilter) },
     { label: "Commit candidates", value: `${visibleChanges.filter((item) => item.commitCandidate).length}` },
     { label: "Needs attention", value: `${visibleChanges.filter((item) => item.needsAttention).length}` },
     { label: "Active pane", value: primaryChange?.paneLabel ?? "n/a" },
@@ -2059,18 +2097,16 @@ function initializeSidebarResize() {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
-  await listen<string>("pty-output", (event) => {
-    try {
-      const payload = JSON.parse(event.payload);
-      const entry = panes.get(payload.pane_id);
-      if (entry) {
-        entry.terminal.write(payload.data);
-      }
-    } catch {
-      const first = panes.values().next().value as PaneEntry | undefined;
-      if (first) {
-        first.terminal.write(event.payload);
-      }
+  await subscribeToPtyOutput((payload) => {
+    const entry = payload.pane_id ? panes.get(payload.pane_id) : undefined;
+    if (entry) {
+      entry.terminal.write(payload.data);
+      return;
+    }
+
+    const first = panes.values().next().value as PaneEntry | undefined;
+    if (first) {
+      first.terminal.write(payload.data);
     }
   });
 
