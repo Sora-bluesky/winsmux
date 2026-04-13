@@ -3066,6 +3066,7 @@ function Get-BoardPayload {
                 task_owner         = $_.TaskOwner
                 review_state       = $_.ReviewState
                 branch             = $_.Branch
+                worktree           = if ($null -ne $_.PSObject.Properties['Worktree']) { [string]$_.Worktree } else { '' }
                 head_sha           = $_.HeadSha
                 changed_file_count = $_.ChangedFileCount
                 changed_files      = @($_.ChangedFiles)
@@ -4011,6 +4012,7 @@ function Get-RunsPayload {
                 task_state         = [string]$pane.task_state
                 review_state       = [string]$pane.review_state
                 branch             = [string]$pane.branch
+                worktree           = [string]$pane.worktree
                 head_sha           = [string]$pane.head_sha
                 primary_label      = [string]$pane.label
                 primary_pane_id    = [string]$pane.pane_id
@@ -4070,6 +4072,9 @@ function Get-RunsPayload {
         }
         if ([string]::IsNullOrWhiteSpace([string]$run.expected_output) -and -not [string]::IsNullOrWhiteSpace([string]$pane.expected_output)) {
             $run.expected_output = [string]$pane.expected_output
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$run.worktree) -and -not [string]::IsNullOrWhiteSpace([string]$pane.worktree)) {
+            $run.worktree = [string]$pane.worktree
         }
         if (-not [bool]$run.review_required -and [bool]$pane.review_required) {
             $run.review_required = $true
@@ -4201,6 +4206,7 @@ function Get-RunsPayload {
                 task_state         = [string]$run.task_state
                 review_state       = [string]$run.review_state
                 branch             = [string]$run.branch
+                worktree           = [string]$run.worktree
                 head_sha           = [string]$run.head_sha
                 primary_label      = [string]$run.primary_label
                 primary_pane_id    = [string]$run.primary_pane_id
@@ -4554,10 +4560,12 @@ function ConvertTo-EvidenceDigestItem {
         label              = [string]$Run.primary_label
         pane_id            = [string]$Run.primary_pane_id
         role               = [string]$Run.primary_role
+        provider_target    = [string]$Run.provider_target
         task_state         = [string]$Run.task_state
         review_state       = [string]$Run.review_state
         next_action        = Get-RunNextAction -Run $Run
         branch             = [string]$Run.branch
+        worktree           = if ($null -ne $experimentPacket -and -not [string]::IsNullOrWhiteSpace([string]$experimentPacket.worktree)) { [string]$experimentPacket.worktree } else { [string]$Run.worktree }
         head_sha           = [string]$Run.head_sha
         head_short         = Get-ShortHeadSha -HeadSha ([string]$Run.head_sha)
         changed_file_count = [int]$Run.changed_file_count
@@ -4674,6 +4682,16 @@ function New-DesktopRunProjection {
     } else {
         [string]$DigestItem.branch
     }
+    $runWorktree = if ($null -ne $run) { [string]$run.worktree } else { '' }
+    if ([string]::IsNullOrWhiteSpace($runWorktree) -and $null -ne $run -and $null -ne $run.experiment_packet) {
+        $runWorktree = [string]$run.experiment_packet.worktree
+    }
+    $digestWorktree = if ($null -ne $DigestItem) { [string]$DigestItem.worktree } else { '' }
+    $worktree = if (-not [string]::IsNullOrWhiteSpace($runWorktree)) {
+        $runWorktree
+    } else {
+        $digestWorktree
+    }
     $changedFiles = if ($null -ne $evidenceDigest -and @($evidenceDigest.changed_files).Count -gt 0) {
         @($evidenceDigest.changed_files)
     } else {
@@ -4694,6 +4712,10 @@ function New-DesktopRunProjection {
         pane_id              = [string]$DigestItem.pane_id
         label                = [string]$DigestItem.label
         branch               = $branch
+        worktree             = $worktree
+        head_sha             = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.head_sha)) { [string]$run.head_sha } else { [string]$DigestItem.head_sha }
+        head_short           = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.head_sha)) { Get-ShortHeadSha -HeadSha ([string]$run.head_sha) } else { [string]$DigestItem.head_short }
+        provider_target      = [string]$DigestItem.provider_target
         task                 = $task
         task_state           = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.task_state)) { [string]$run.task_state } else { [string]$DigestItem.task_state }
         review_state         = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.review_state)) { [string]$run.review_state } else { [string]$DigestItem.review_state }
@@ -4703,6 +4725,10 @@ function New-DesktopRunProjection {
         next_action          = if ($null -ne $explanation -and -not [string]::IsNullOrWhiteSpace([string]$explanation.next_action)) { [string]$explanation.next_action } else { [string]$DigestItem.next_action }
         summary              = $summary
         reasons              = if ($null -ne $explanation) { @($explanation.reasons) } else { @() }
+        hypothesis           = [string]$DigestItem.hypothesis
+        confidence           = $DigestItem.confidence
+        observation_pack_ref = [string]$DigestItem.observation_pack_ref
+        consultation_ref     = [string]$DigestItem.consultation_ref
     }
 }
 

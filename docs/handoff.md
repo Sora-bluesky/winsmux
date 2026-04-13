@@ -1,12 +1,14 @@
 # Handoff
 
-> Updated: 2026-04-13T19:48:00+09:00
+> Updated: 2026-04-14T05:20:00+09:00
 > Source of truth: this file
 
 ## Current state
 
 - `v0.20.0`, `v0.20.1`, `v0.20.2`, `v0.20.3`, `v0.21.0`, `v0.21.1`, and `v0.21.2` are released.
 - `v0.21.2` shipped as the terminal-based final form release before the `v0.22.0` Tauri control-plane handoff.
+- `v0.22.0` remains on the shortest active path of `TASK-105 -> TASK-291 -> TASK-289`, with the current branch carrying the backend transport convergence work.
+- The current `v0.22.0` slice on `codex/task105-json-rpc-transport-20260413` is back on `TASK-105 / TASK-291 / TASK-289`; the richer `TASK-290` detail UX now lives on `codex/task290-detail-lane-20260414` so `v0.22.1` keeps that scope.
 - `ROADMAP.md` shows `v0.21.2 = 100% (2/2)` with only:
   - `TASK-216` terminal hot-path wrapper baseline
   - `TASK-295` winsmux-surface rename cleanup slice
@@ -77,6 +79,60 @@
 - Replaced hardcoded source pane filters in `winsmux-app/src/main.ts`:
   - source context no longer assumes only `builder-2` and `builder-3`
   - pane-specific source filters are now generated from the current projection snapshot
+- Merged PR #416 for the PTY seam + backend aggregation slice:
+  - branch: `codex/task105-desktop-summary-pty-20260413`
+  - title: `feat: add desktop summary and pty transport seams`
+  - `Pester Tests` green before merge
+- Synced the external planning source of truth at `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Projects\winsmux\planning`:
+  - `backlog.yaml` now marks `TASK-105`, `TASK-289`, and `TASK-291` as `active`
+  - `ROADMAP.md` regenerated from the backlog after the merged `#411` / `#412` / `#413` / `#414` / `#415` / `#416` slices
+- Started branch `codex/task105-json-rpc-transport-20260413` for the next `TASK-105` slice.
+- Added a JSON-RPC envelope transport for desktop summary/explain calls:
+  - `winsmux-app/src/desktopClient.ts` now defaults to a single `desktop_json_rpc` Tauri command instead of per-method `invoke(...)`
+  - `winsmux-app/src-tauri/src/desktop_backend.rs` now validates JSON-RPC `2.0`, dispatches `desktop.summary.snapshot` / `desktop.run.explain`, and returns structured `result/error` responses
+  - `winsmux-app/src-tauri/src/lib.rs` now exposes `desktop_json_rpc` while keeping the older per-command handlers available
+- Continued `TASK-105` on `codex/task105-json-rpc-transport-20260413` by converging PTY pane lifecycle calls on the same single-call pattern:
+  - `winsmux-app/src/ptyClient.ts` now sends `pty.spawn` / `pty.write` / `pty.resize` / `pty.close` through one `pty_json_rpc` Tauri command instead of per-method `invoke(...)`
+  - `winsmux-app/src-tauri/src/pty_backend.rs` now validates JSON-RPC `2.0`, parses PTY params, and returns structured `result/error` responses for PTY lifecycle requests
+  - `winsmux-app/src-tauri/src/lib.rs` now routes both `pty_json_rpc` and the legacy per-command handlers through shared PTY helpers, so the transport boundary changed without breaking compatibility
+- Continued the same `TASK-105` slice by wiring real worktree metadata through desktop summary and source preview hydration:
+  - `winsmux-core/scripts/pane-status.ps1` now emits `Worktree` from the current pane cwd first, falls back to manifest builder paths, and only infers `.worktrees/<label>` when the standard `worktree-<label>` branch convention matches
+  - `scripts/winsmux-core.ps1` now preserves `worktree` through `board -> runs -> digest -> desktop-summary run_projections` without dropping hashtable-backed values
+  - `tests/winsmux-bridge.Tests.ps1` now covers explicit worktree precedence, manifest-root relativization, inferred builder worktrees, and the top-level `desktop-summary --json` propagation path
+- Continued `TASK-291 / TASK-107 / TASK-289` on `codex/task105-json-rpc-transport-20260413` by removing more seeded desktop shell state:
+  - `winsmux-app/src/main.ts` now keeps a real `selectedRunId` derived from digest/run-projection data instead of always treating the first run as selected
+  - source context, run summary, Explain, and secondary editor now follow the selected backend run instead of a seeded timeline fallback
+  - the workspace Explorer now builds from projection-derived changed files and standalone editor targets, replacing the old static sample file tree
+  - desktop summary refresh now runs on startup, focus, visibility restore, and a 15s polling interval so the shell follows live inbox/digest movement rather than one-shot hydration
+- Continued the same `codex/task105-json-rpc-transport-20260413` slice toward `TASK-290 / TASK-289`:
+  - `scripts/winsmux-core.ps1` now carries richer run-projection detail through desktop summary output, including `provider_target`, `head_sha`, `head_short`, `hypothesis`, `confidence`, `observation_pack_ref`, and `consultation_ref`
+  - `winsmux-app/src/desktopClient.ts` and `winsmux-app/src-tauri/src/desktop_backend.rs` now accept the richer detail DTO shape so the frontend can render it without ad hoc casts
+  - `winsmux-app/src/main.ts` now builds selected-run detail cards, changed-file pills, and recent-event cards from the backend detail surfaces instead of seeded placeholder metadata
+  - desktop follow-through now compares the previous and next summary snapshots and only appends runtime activity when there is a material change in run projection or inbox count
+- Re-sorted the version boundary after the detail UX drift was identified:
+  - created `codex/task290-detail-lane-20260414` and moved the selected-run editor targeting change there
+  - removed the selected-run detail grid, action chips, and verification/security/action-item summarization from the `v0.22.0` branch
+  - kept the `TASK-289 / TASK-291` pieces on `codex/task105-json-rpc-transport-20260413`: material-change follow-through and narrower explain prefetch on unchanged refreshes
+- Attempted a broader selected-run metadata surfacing pass for `TASK-291 / TASK-107`, then reverted it after review marked it as `TASK-290` UX drift.
+- Kept the next `v0.22.0` target narrower: backend-truth fallback cleanup should stay in Explain/editor placeholder handling, not in selected-run or source-metadata presentation.
+- Continued the narrower `TASK-291 / TASK-107` cleanup after that review:
+  - `appendFallbackExplain()` now falls back to current digest counts and next action instead of the older generic placeholder copy when explain loading fails
+  - source summary and secondary-editor metadata surfacing were both pared back after review so the `v0.22.0` slice stays out of `TASK-290` territory
+- Continued the same narrow lane without reintroducing detail UX:
+  - `appendFallbackExplain()` copy is now shorter and backend-digest-first, without the older explanatory placeholder wording
+  - the secondary editor empty state now uses neutral waiting copy instead of source-metadata-like placeholders
+  - `refreshDesktopSummary()` now prefetches explain only on first load, selected-run change, cold cache, or explicit explain requests, instead of every material summary change
+- Continued `TASK-291 / TASK-107` on the editor hydration path:
+  - `findEditorFile()` now returns a neutral loading/error body instead of a synthetic metadata block when the backend file content is not cached yet
+  - `renderEditorSurface()` now triggers `ensureEditorFileLoaded()` as soon as the selected editor target is known, so backend preview loading starts without waiting for a second interaction
+- Continued `TASK-289` on the summary follow-through path:
+  - the 15s desktop summary refresh now skips background tabs and relies on `focus` / `visibilitychange` for catch-up when the shell becomes visible again
+  - `getRunProjectionFingerprint()` no longer treats projection summary copy alone as a material change
+  - `refreshDesktopSummary()` now refreshes the selected run explain cache when that run shows a material projection change, instead of relying on copy churn
+- Added a durable Rust learning-note rule to `AGENTS.md` for future handoffs:
+  - when a session uses Rust / Cargo / Tauri commands during winsmux work, handoff must also update `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md`
+  - the note is kept outside the repo, stays beginner-friendly, and should be updated in the same session rather than deferred
+- Initialized the external learning note at `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md` with starter entries for `cargo check`, `cargo test --lib`, `cargo fmt`, `cargo fmt --check`, `cargo build`, and `cargo tauri dev`
 - Landed `TASK-216` slice 1 and slice 2 on `main`:
   - PR #408: leaf wrapper consolidation for `commander-poll`, `pane-status`, and `pane-control`
   - PR #409: wrapper-based `orchestra-layout` session/window/pane flow
@@ -118,11 +174,79 @@
 - `git diff --check` -> warnings only for CRLF normalization, no substantive errors
 - PR #415 CI -> green (`Pester Tests`)
 - `gh pr merge 415 --merge --delete-branch` -> PASS
+- external planning `backlog.yaml` update + `sync-roadmap.ps1` -> PASS
+- `npm run build` in `winsmux-app` -> PASS after `desktop_json_rpc` transport wiring
+- `cargo fmt` in `winsmux-app/src-tauri` -> PASS after JSON-RPC dispatch formatting
+- `cargo check` in `winsmux-app/src-tauri` -> PASS after JSON-RPC dispatch wiring
+- `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (JSON-RPC dispatch tests added)
+- Fresh reviewer `Euler` -> `no result yet` after a 35s wait; closed without result
+- Manual diff review completed for the JSON-RPC envelope transport slice
 - `npm run build` in `winsmux-app` -> PASS after PTY seam extraction, desktop backend extraction, and dynamic source filters
 - `cargo fmt --check` in `winsmux-app/src-tauri` -> PASS after backend extraction
 - `cargo check` in `winsmux-app/src-tauri` -> PASS after backend extraction
 - `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (desktop backend transport tests)
 - targeted temp-project harness for `winsmux-core.ps1 desktop-summary --json` -> PASS
+- `cargo fmt` in `winsmux-app/src-tauri` -> PASS after PTY JSON-RPC routing
+- `cargo check` in `winsmux-app/src-tauri` -> PASS after PTY JSON-RPC routing
+- `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (`8 passed`, PTY JSON-RPC dispatch tests added)
+- `npm run build` in `winsmux-app` -> PASS after `pty_json_rpc` client wiring
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1` -> `167/167 PASS` after the PTY JSON-RPC slice
+- `npm run build` in `winsmux-app` -> PASS after the worktree propagation follow-up
+- `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (`10 passed`) after the editor/worktree backend follow-up
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `171/171 PASS` after fixing desktop-summary worktree propagation
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after selected-run / explorer convergence
+- `npm run build` in `winsmux-app` -> PASS after selected-run state + live desktop summary follow-through
+- `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (`10 passed`) after selected-run / live-follow slice
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `171/171 PASS` after selected-run / live-follow slice
+- root `winsmux-core/scripts/sync-roadmap.ps1` -> PASS (roadmap + internal docs regenerated with no planning drift introduced by this slice)
+- Fresh reviewer `Tesla` -> `PASS` for the selected-run / live-follow slice after delayed completion
+- Manual diff review also completed for the selected-run / live-follow slice
+- `npm run build` in `winsmux-app` -> PASS after richer detail DTO wiring and material-event desktop follow-through
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the same slice
+- `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (`10 passed`) after detail DTO contract expansion
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `171/171 PASS` after the same slice
+- `git diff --check` -> warnings only for CRLF normalization, no substantive errors
+- Fresh reviewer `Pascal` -> `FAIL`; follow-through fingerprints and removed-run handling were corrected before packaging
+- Fresh reviewer `Nietzsche` -> `no result yet` after a 30s wait on the corrected slice
+- Manual diff review completed for the corrected richer detail DTO / material-event follow-through slice
+- `npm run build` in `winsmux-app` -> PASS after verification/security/action detail-card expansion
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after verification/security/action detail-card expansion
+- root `winsmux-core/scripts/sync-roadmap.ps1` -> PASS after the same slice (no planning drift)
+- Fresh reviewer `Hooke` -> `FAIL`; detail-card priority and explain fingerprint coverage were corrected before packaging
+- `npm run build` in `winsmux-app` -> PASS after the Hooke follow-up fixes
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the Hooke follow-up fixes
+- Fresh reviewer `Bohr` -> `no result yet` after a 30s wait on the corrected detail-card/fingerprint follow-up
+- Manual diff review completed for the corrected verification/security/action detail slice
+- `npm run build` in `winsmux-app` -> PASS after conditional action-chip wiring and explain-prefetch gating
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after conditional action-chip wiring and explain-prefetch gating
+- Fresh reviewer `Kierkegaard` -> `no result yet` after a 30s wait on the action-chip / prefetch-gating follow-up
+- Manual diff review completed for the action-chip / prefetch-gating follow-up
+- `npm run build` in `winsmux-app` -> PASS after splitting `TASK-290` detail UX back out of the `v0.22.0` branch
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the same boundary cleanup
+- Fresh reviewer `Russell` -> `FAIL`; broader selected-run metadata presentation was classified as `TASK-290` UX drift and reverted from the `v0.22.0` lane
+- `npm run build` in `winsmux-app` -> PASS after narrowing the fallback cleanup back to Explain/editor placeholder handling
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the same narrowed fallback cleanup
+- Fresh reviewer `Poincare` -> `FAIL`; editor empty-state metadata surfacing was also classified as `TASK-290` UX drift and reverted from the `v0.22.0` lane
+- Fresh reviewer `Carson` -> `PASS` on the narrowed explain-fallback / metadata-reduction follow-up after delayed completion
+- Manual diff review was used provisionally after the initial 30s wait, then superseded by the delayed `PASS` before packaging
+- `npm run build` in `winsmux-app` -> PASS after narrowing explain copy, editor idle copy, and explain prefetch conditions
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the same narrow follow-up
+- `npm run build` in `winsmux-app` -> PASS after neutralizing editor hydration placeholders and starting selected-target loads eagerly
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the same editor hydration follow-up
+- `/review` follow-up via subagent `Helmholtz` -> `PASS` on the editor hydration slice:
+  - eager selected-target loading is guarded by `desktopEditorFileCache` / `desktopEditorLoadingPaths` and stays consistent with `ensureEditorFileLoaded()`
+  - `findEditorFile()` now stays backend-truth-focused by returning a neutral loading/error body instead of synthetic metadata
+- `npm run build` in `winsmux-app` -> PASS after trimming background polling and moving explain prefetch onto material selected-run changes
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the same `TASK-289` follow-through refinement
+- `/review` follow-up via subagent `Popper` -> delayed `PASS` on the `TASK-289` polling/material-change slice after the initial 30s wait
+  - the provisional manual diff review was superseded by the delayed `PASS`
+  - the reviewed slice stayed scoped to skipping hidden-tab interval refresh, removing `projection.summary` from material-change fingerprinting, and refreshing selected-run explain only when that run itself shows a material projection change
+- `/review` follow-up via `codex exec` -> `REQUEST_CHANGES`, then `APPROVE` after:
+  - preferring `launch_dir` over stale `builder_worktree_path`
+  - relativizing explicit worktrees against `session.project_dir`
+  - adding focused pane-status and desktop-summary regression coverage
+- Fresh reviewer `Kepler` -> `no result yet` after a 30s wait; closed without result
+- Manual diff review completed for the PTY JSON-RPC transport slice
 - `git diff --check` -> warnings only for CRLF normalization, no substantive errors
 - Fresh reviewer `Dewey` -> `PASS` for the projection-driven source-context slice in PR #412
 - Fresh reviewer `Herschel` -> `FAIL`; backend heuristic join removed after review
@@ -165,9 +289,11 @@
 
 ## Next actions
 
-1. Open a follow-up PR for the PTY seam + `desktop-summary` backend aggregation slice on `codex/task105-desktop-summary-pty-20260413`.
-2. Continue `TASK-105` by swapping a concrete JSON-RPC transport under `desktopClient.ts` / `desktop_backend.rs` instead of the current PowerShell-backed transports.
-3. Continue `TASK-107` by removing remaining seeded runtime fallback state and by adding a real file preview/read surface for the secondary editor.
+1. Update PR #417 from `codex/task105-json-rpc-transport-20260413` with the `v0.22.0` boundary cleanup and verify that only `TASK-105 / TASK-291 / TASK-289` scope remains on the branch.
+2. Continue `TASK-291 / TASK-107` by removing the remaining seeded fallback paths in Explain/editor hydration flow without re-expanding the selected-run detail surface.
+3. Continue `TASK-289` by reducing polling dependence further, either with narrower refresh triggers or a backend event surface once the transport shape is ready.
+4. Resume `TASK-290` later from `codex/task290-detail-lane-20260414`, after `v0.22.0` closes.
+5. Keep the new Rust learning note current during future handoffs whenever Rust / Cargo / Tauri commands are used in the session.
 
 ## Notes
 
@@ -175,3 +301,7 @@
 - `TASK-216` landed as small hot-path wrapper slices rather than a single bridge-file refactor.
 - `TASK-295` keeps `.psmux` compatibility paths untouched; those stay under the sunset plan instead of this rename slice.
 - Public GitHub Releases stay English, use Codex-style headings, and keep inline issue/PR refs visible.
+- Review gate for this slice was satisfied after a second `/review` pass returned `APPROVE`; the intermediate `REQUEST_CHANGES` findings were incorporated before continuing.
+- Reviewer `Tesla` initially timed out after the required 35s wait, so work proceeded under the manual-diff fallback gate; the delayed reviewer result later arrived as `PASS` before packaging the slice.
+- The external learning note under `MainVault\Learning` is intentionally untracked; only the durable handoff rule in `AGENTS.md` is part of the repo.
+- `TASK-290` remains a `v0.22.1` task; only the minimum observability needed for `TASK-289 / TASK-291` stays on the `v0.22.0` branch.

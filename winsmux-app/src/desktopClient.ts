@@ -1,6 +1,37 @@
 import { invoke } from "@tauri-apps/api/core";
 
-type DesktopCommandName = "desktop_summary_snapshot" | "desktop_run_explain";
+type DesktopCommandName =
+  | "desktop_summary_snapshot"
+  | "desktop_run_explain"
+  | "desktop_editor_read";
+type DesktopJsonRpcMethod =
+  | "desktop.summary.snapshot"
+  | "desktop.run.explain"
+  | "desktop.editor.read";
+
+interface DesktopJsonRpcRequest {
+  jsonrpc: "2.0";
+  id: string;
+  method: DesktopJsonRpcMethod;
+  params?: Record<string, unknown>;
+}
+
+interface DesktopJsonRpcError {
+  code: number;
+  message: string;
+}
+
+type DesktopJsonRpcResponse<TResponse> =
+  | {
+      jsonrpc: "2.0";
+      id: string;
+      result: TResponse;
+    }
+  | {
+      jsonrpc: "2.0";
+      id: string;
+      error: DesktopJsonRpcError;
+    };
 
 export interface DesktopCommandTransport {
   request<TResponse>(
@@ -58,15 +89,22 @@ export interface DesktopDigestItem {
   label: string;
   pane_id: string;
   role: string;
+  provider_target?: string;
   task_state: string;
   review_state: string;
   next_action: string;
   branch: string;
+  worktree?: string;
+  head_sha?: string;
   head_short: string;
   changed_file_count: number;
   changed_files: string[];
   verification_outcome?: string;
   security_blocked?: string;
+  hypothesis?: string;
+  confidence?: number | null;
+  observation_pack_ref?: string;
+  consultation_ref?: string;
 }
 
 export interface DesktopRunProjection {
@@ -74,6 +112,10 @@ export interface DesktopRunProjection {
   pane_id: string;
   label: string;
   branch: string;
+  worktree: string;
+  head_sha: string;
+  head_short: string;
+  provider_target: string;
   task: string;
   task_state: string;
   review_state: string;
@@ -83,6 +125,10 @@ export interface DesktopRunProjection {
   next_action: string;
   summary: string;
   reasons: string[];
+  hypothesis: string;
+  confidence: number | null;
+  observation_pack_ref: string;
+  consultation_ref: string;
 }
 
 export interface DesktopSummarySnapshot {
@@ -104,20 +150,42 @@ export interface DesktopSummarySnapshot {
 }
 
 export interface DesktopExplainPayload {
+  generated_at?: string;
+  project_dir?: string;
   run: {
     run_id: string;
+    task_id?: string;
+    parent_run_id?: string;
     task: string;
+    goal?: string;
+    task_type?: string;
     state: string;
     task_state: string;
     review_state: string;
+    priority?: string;
+    blocking?: string[];
+    review_required?: boolean;
+    provider_target?: string;
+    agent_role?: string;
+    timeout_policy?: string;
+    tokens_remaining?: number | null;
+    last_event?: string;
+    last_event_at?: string;
     branch: string;
     head_sha: string;
+    worktree?: string;
     changed_files: string[];
   };
   explanation: {
     summary: string;
     reasons: string[];
     next_action: string;
+    current_state?: {
+      state?: string;
+      task_state?: string;
+      review_state?: string;
+      last_event?: string;
+    };
   };
   evidence_digest: {
     next_action: string;
@@ -125,6 +193,57 @@ export interface DesktopExplainPayload {
     changed_files: string[];
     verification_outcome?: string;
     security_blocked?: string;
+  };
+  review_state?: {
+    status?: string;
+  };
+  consultation_summary?: {
+    kind?: string;
+    recommendation?: string;
+    next_test?: string;
+  } | null;
+  action_items?: Array<{
+    kind?: string;
+    message?: string;
+    event?: string;
+    timestamp?: string;
+    source?: string;
+  }>;
+  verification_contract?: {
+    mode?: string;
+    required?: boolean;
+    checks?: string[];
+    commands?: string[];
+  } | null;
+  verification_result?: {
+    outcome?: string;
+    summary?: string;
+    next_action?: string;
+    failed_checks?: string[];
+    passed_checks?: string[];
+  } | null;
+  security_policy?: {
+    mode?: string;
+    stage?: string;
+    task?: string;
+    allow?: string[];
+    block?: string[];
+  } | null;
+  security_verdict?: {
+    verdict?: string;
+    reason?: string;
+    next_action?: string;
+    advisory_mode?: boolean;
+    stage?: string;
+    allow?: string[];
+    block?: string[];
+  } | null;
+  run_packet?: {
+    provider_target?: string;
+  };
+  result_packet?: {
+    summary?: string;
+    next_action_hint?: string;
   };
   recent_events: Array<{
     timestamp: string;
@@ -134,6 +253,15 @@ export interface DesktopExplainPayload {
   }>;
 }
 
+export interface DesktopEditorFilePayload {
+  path: string;
+  content: string;
+  line_count: number;
+  truncated: boolean;
+}
+
+let nextDesktopJsonRpcId = 0;
+
 function normalizeDesktopError(action: string, error: unknown) {
   if (error instanceof Error) {
     return new Error(`${action} failed: ${error.message}`);
@@ -142,18 +270,69 @@ function normalizeDesktopError(action: string, error: unknown) {
   return new Error(`${action} failed: ${String(error)}`);
 }
 
-export function createTauriDesktopCommandTransport(
+function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMethod {
+  switch (command) {
+    case "desktop_summary_snapshot":
+      return "desktop.summary.snapshot";
+    case "desktop_run_explain":
+      return "desktop.run.explain";
+    case "desktop_editor_read":
+      return "desktop.editor.read";
+  }
+}
+
+function normalizeDesktopJsonRpcError(
+  method: DesktopJsonRpcMethod,
+  error: DesktopJsonRpcError,
+) {
+  return new Error(`${method} returned JSON-RPC error ${error.code}: ${error.message}`);
+}
+
+export function createJsonRpcDesktopCommandTransport(
   invokeCommand: typeof invoke = invoke,
 ): DesktopCommandTransport {
   return {
-    request<TResponse>(command: DesktopCommandName, payload?: Record<string, unknown>) {
-      return invokeCommand<TResponse>(command, payload);
+    async request<TResponse>(
+      command: DesktopCommandName,
+      payload?: Record<string, unknown>,
+    ) {
+      const method = getDesktopJsonRpcMethod(command);
+      const request: DesktopJsonRpcRequest = {
+        jsonrpc: "2.0",
+        id: `desktop-${++nextDesktopJsonRpcId}`,
+        method,
+      };
+      if (payload && Object.keys(payload).length > 0) {
+        request.params = payload;
+      }
+
+      const response = await invokeCommand<DesktopJsonRpcResponse<TResponse>>(
+        "desktop_json_rpc",
+        { request },
+      );
+      if (response.jsonrpc !== "2.0") {
+        throw new Error(`${method} returned an invalid JSON-RPC version`);
+      }
+      if (response.id !== request.id) {
+        throw new Error(`${method} returned an unexpected JSON-RPC id`);
+      }
+      if ("error" in response) {
+        throw normalizeDesktopJsonRpcError(method, response.error);
+      }
+
+      return response.result;
     },
   };
 }
 
 let desktopCommandTransport: DesktopCommandTransport =
-  createTauriDesktopCommandTransport();
+  createJsonRpcDesktopCommandTransport();
+
+export function createTauriDesktopCommandTransport(
+  invokeCommand: typeof invoke = invoke,
+): DesktopCommandTransport {
+  return createJsonRpcDesktopCommandTransport(invokeCommand);
+}
 
 export function configureDesktopCommandTransport(
   transport: DesktopCommandTransport,
@@ -179,5 +358,17 @@ export async function getDesktopRunExplain(runId: string) {
     );
   } catch (error) {
     throw normalizeDesktopError(`desktop_run_explain(${runId})`, error);
+  }
+}
+
+export async function getDesktopEditorFile(path: string, worktree?: string) {
+  try {
+    return await desktopCommandTransport.request<DesktopEditorFilePayload>(
+      "desktop_editor_read",
+      worktree ? { path, worktree } : { path },
+    );
+  } catch (error) {
+    const worktreeSuffix = worktree ? `, ${worktree}` : "";
+    throw normalizeDesktopError(`desktop_editor_read(${path}${worktreeSuffix})`, error);
   }
 }

@@ -1,10 +1,14 @@
 mod desktop_backend;
+mod pty_backend;
 
 use desktop_backend::{
-    load_desktop_run_explain, load_desktop_summary_snapshot, DesktopSummarySnapshot,
-    PwshScriptTransport,
+    handle_desktop_json_rpc, load_desktop_run_explain, load_desktop_summary_snapshot,
+    DesktopJsonRpcRequest, DesktopJsonRpcResponse, DesktopSummarySnapshot, PwshScriptTransport,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use pty_backend::{
+    handle_pty_json_rpc, PtyCommand, PtyCommandTransport, PtyJsonRpcRequest, PtyJsonRpcResponse,
+};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -18,6 +22,10 @@ struct SinglePty {
 
 struct PtyManager {
     panes: Arc<Mutex<HashMap<String, SinglePty>>>,
+}
+
+struct TauriPtyTransport {
+    app: AppHandle,
 }
 
 #[tauri::command]
@@ -38,7 +46,44 @@ async fn desktop_run_explain(
 }
 
 #[tauri::command]
+async fn desktop_json_rpc(
+    request: DesktopJsonRpcRequest,
+    project_dir: Option<String>,
+) -> Result<DesktopJsonRpcResponse, String> {
+    let transport = PwshScriptTransport;
+    Ok(handle_desktop_json_rpc(&transport, request, project_dir))
+}
+
+#[tauri::command]
+async fn pty_json_rpc(
+    app: AppHandle,
+    request: PtyJsonRpcRequest,
+) -> Result<PtyJsonRpcResponse, String> {
+    let transport = TauriPtyTransport { app };
+    Ok(handle_pty_json_rpc(&transport, request))
+}
+
+#[tauri::command]
 async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
+    spawn_pty(&app, pane_id, cols, rows)
+}
+
+#[tauri::command]
+async fn pty_write(app: AppHandle, pane_id: String, data: String) -> Result<(), String> {
+    write_pty(&app, &pane_id, &data)
+}
+
+#[tauri::command]
+async fn pty_resize(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
+    resize_pty(&app, &pane_id, cols, rows)
+}
+
+#[tauri::command]
+async fn pty_close(app: AppHandle, pane_id: String) -> Result<(), String> {
+    close_pty(&app, &pane_id)
+}
+
+fn spawn_pty(app: &AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
     let pty_system = native_pty_system();
 
     let pair = pty_system
@@ -106,12 +151,11 @@ async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Res
     Ok(())
 }
 
-#[tauri::command]
-async fn pty_write(app: AppHandle, pane_id: String, data: String) -> Result<(), String> {
+fn write_pty(app: &AppHandle, pane_id: &str, data: &str) -> Result<(), String> {
     let manager = app.state::<PtyManager>();
     let panes = manager.panes.lock().map_err(|e| e.to_string())?;
     let pty = panes
-        .get(&pane_id)
+        .get(pane_id)
         .ok_or_else(|| format!("Pane {} not found", pane_id))?;
     let mut writer = pty.writer.lock().map_err(|e| e.to_string())?;
     writer
@@ -121,12 +165,11 @@ async fn pty_write(app: AppHandle, pane_id: String, data: String) -> Result<(), 
     Ok(())
 }
 
-#[tauri::command]
-async fn pty_resize(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
+fn resize_pty(app: &AppHandle, pane_id: &str, cols: u16, rows: u16) -> Result<(), String> {
     let manager = app.state::<PtyManager>();
     let panes = manager.panes.lock().map_err(|e| e.to_string())?;
     let pty = panes
-        .get(&pane_id)
+        .get(pane_id)
         .ok_or_else(|| format!("Pane {} not found", pane_id))?;
     let master = pty.master.lock().map_err(|e| e.to_string())?;
     master
@@ -140,12 +183,11 @@ async fn pty_resize(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Re
     Ok(())
 }
 
-#[tauri::command]
-async fn pty_close(app: AppHandle, pane_id: String) -> Result<(), String> {
+fn close_pty(app: &AppHandle, pane_id: &str) -> Result<(), String> {
     let manager = app.state::<PtyManager>();
     let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
     let entry = panes
-        .remove(&pane_id)
+        .remove(pane_id)
         .ok_or_else(|| format!("Pane {} not found", pane_id))?;
     // Kill child process
     if let Ok(mut child) = entry.child.lock() {
@@ -155,6 +197,37 @@ async fn pty_close(app: AppHandle, pane_id: String) -> Result<(), String> {
     drop(entry.master);
     drop(entry.writer);
     Ok(())
+}
+
+impl PtyCommandTransport for TauriPtyTransport {
+    fn execute(&self, command: &PtyCommand) -> Result<serde_json::Value, String> {
+        match command {
+            PtyCommand::Spawn {
+                pane_id,
+                cols,
+                rows,
+            } => {
+                spawn_pty(&self.app, pane_id.clone(), *cols, *rows)?;
+                Ok(serde_json::json!({ "paneId": pane_id }))
+            }
+            PtyCommand::Write { pane_id, data } => {
+                write_pty(&self.app, pane_id, data)?;
+                Ok(serde_json::json!({ "paneId": pane_id }))
+            }
+            PtyCommand::Resize {
+                pane_id,
+                cols,
+                rows,
+            } => {
+                resize_pty(&self.app, pane_id, *cols, *rows)?;
+                Ok(serde_json::json!({ "paneId": pane_id }))
+            }
+            PtyCommand::Close { pane_id } => {
+                close_pty(&self.app, pane_id)?;
+                Ok(serde_json::json!({ "paneId": pane_id }))
+            }
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -167,6 +240,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             desktop_summary_snapshot,
             desktop_run_explain,
+            desktop_json_rpc,
+            pty_json_rpc,
             pty_spawn,
             pty_write,
             pty_resize,
