@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T03:00:00+09:00
+> Updated: 2026-04-14T03:20:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -117,6 +117,9 @@
   - the selected-run summary now adds conditional action chips for `Open in Editor` and `Open Audit` while reusing the existing chip-action plumbing instead of introducing a new surface
   - `refreshDesktopSummary()` now skips explain prefetch on unchanged polling/focus/visibility refreshes unless the selected run changed, the cache is cold, or the refresh was forced
   - focus/visibility triggers remain in place, but redundant backend explain calls are reduced on steady-state shells
+- Continued the same `TASK-290` line with a selected-run-first editor handoff:
+  - `Open in Editor` now prefers files tied to the currently selected run before falling back to the global primary change or the previously opened editor tab
+  - if a selected run already has projected/evidence-backed changed files, the secondary editor now lands on that run’s most relevant file instead of an unrelated visible change from another run
 - Added a durable Rust learning-note rule to `AGENTS.md` for future handoffs:
   - when a session uses Rust / Cargo / Tauri commands during winsmux work, handoff must also update `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md`
   - the note is kept outside the repo, stays beginner-friendly, and should be updated in the same session rather than deferred
@@ -209,6 +212,8 @@
 - `npm run test:editor-targets` in `winsmux-app` -> PASS after conditional action-chip wiring and explain-prefetch gating
 - Fresh reviewer `Kierkegaard` -> `no result yet` after a 30s wait on the action-chip / prefetch-gating follow-up
 - Manual diff review completed for the action-chip / prefetch-gating follow-up
+- `npm run build` in `winsmux-app` -> PASS after selected-run-first editor routing
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after selected-run-first editor routing
 - `/review` follow-up via `codex exec` -> `REQUEST_CHANGES`, then `APPROVE` after:
   - preferring `launch_dir` over stale `builder_worktree_path`
   - relativizing explicit worktrees against `session.project_dir`
@@ -257,8 +262,8 @@
 
 ## Next actions
 
-1. Update PR #417 from `codex/task105-json-rpc-transport-20260413` with the action-chip and prefetch-gating follow-up and record the fresh reviewer result once it lands.
-2. Continue `TASK-290` by extending the secondary editor and detail surface with deeper evidence links or richer action chips only where they improve operator judgment without bloating the shell.
+1. Update PR #417 from `codex/task105-json-rpc-transport-20260413` with the selected-run-first editor routing follow-up and record the fresh reviewer result once it lands.
+2. Continue `TASK-290` by extending the secondary editor and detail surface with deeper evidence links only where they improve operator judgment without bloating the shell.
 3. Continue `TASK-289` by reducing polling dependence further, either with narrower refresh triggers or a backend event surface once the transport shape is ready.
 4. Keep the new Rust learning note current during future handoffs whenever Rust / Cargo / Tauri commands are used in the session.
 
