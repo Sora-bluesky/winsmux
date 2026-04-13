@@ -3286,6 +3286,7 @@ panes:
     task_owner: builder-1
     review_state: PENDING
     branch: worktree-builder-1
+    builder_worktree_path: .worktrees/builder-1
     head_sha: abc1234def5678
     changed_file_count: 2
     changed_files: '["winsmux-core/scripts/orchestra-state.ps1","winsmux-core/scripts/agent-monitor.ps1"]'
@@ -3313,6 +3314,79 @@ panes:
         )
         $records[0].LastEvent | Should -Be 'pane.ready'
         $records[0].LastEventAt | Should -Be '2026-04-09T12:00:00+09:00'
+    }
+
+    It 'infers a conventional worktree from branch and label when the manifest path is omitted' {
+        @'
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    task_id: task-243
+    task: Implement TASK-243
+    task_state: in_progress
+    review_state: PENDING
+    branch: worktree-builder-1
+'@ | Set-Content -Path (Join-Path (Join-Path $script:paneStatusTempRoot '.winsmux') 'manifest.yaml') -Encoding UTF8
+
+        $records = Get-PaneStatusRecords -ProjectDir $script:paneStatusTempRoot -SnapshotProvider {
+            param($PaneId)
+            'gpt-5.4   74% context left'
+        }
+
+        $records.Count | Should -Be 1
+        $records[0].Worktree | Should -Be '.worktrees/builder-1'
+    }
+
+    It 'prefers launch_dir over builder_worktree_path when both are present' {
+        @'
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    launch_dir: C:\repo\.worktrees\builder-9
+    builder_worktree_path: C:\repo\.worktrees\builder-1
+    branch: worktree-builder-1
+'@ | Set-Content -Path (Join-Path (Join-Path $script:paneStatusTempRoot '.winsmux') 'manifest.yaml') -Encoding UTF8
+
+        $records = Get-PaneStatusRecords -ProjectDir $script:paneStatusTempRoot -SnapshotProvider {
+            param($PaneId)
+            'gpt-5.4   74% context left'
+        }
+
+        $records.Count | Should -Be 1
+        $records[0].Worktree | Should -Be '.worktrees/builder-9'
+    }
+
+    It 'relativizes explicit worktrees against the manifest session project root' {
+        @'
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+    builder_worktree_path: C:\repo\.worktrees\builder-1
+    branch: worktree-builder-1
+'@ | Set-Content -Path (Join-Path (Join-Path $script:paneStatusTempRoot '.winsmux') 'manifest.yaml') -Encoding UTF8
+
+        $records = Get-PaneStatusRecords -ProjectDir $script:paneStatusTempRoot -SnapshotProvider {
+            param($PaneId)
+            'gpt-5.4   74% context left'
+        }
+
+        $records.Count | Should -Be 1
+        $records[0].Worktree | Should -Be '.worktrees/builder-1'
     }
 }
 
@@ -3543,6 +3617,7 @@ panes:
     task_owner: builder-1
     review_state: PENDING
     branch: worktree-builder-1
+    builder_worktree_path: .worktrees/builder-1
     head_sha: abc1234def5678
     changed_file_count: 2
     changed_files: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
@@ -4868,6 +4943,101 @@ Set-Location '__DIGEST_TEMP_ROOT__'
 
         $result.summary.item_count | Should -Be 1
         $result.items[0].run_id | Should -Be 'task:task-246'
+    }
+
+    It 'supports winsmux desktop-summary --json through the top-level CLI entrypoint' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:digestTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-246
+    task: Build evidence digest
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T14:00:00+09:00
+"@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
+
+        $bridgeScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $childScript = @'
+Set-Item -Path function:winsmux -Value {
+    param([Parameter(ValueFromRemainingArguments = $true)][object[]]$args)
+    $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+    switch -Regex ($commandLine) {
+        '^capture-pane .*%2' { @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>'); break }
+        default { throw "unexpected winsmux call: $commandLine" }
+    }
+}
+Set-Location '__DIGEST_TEMP_ROOT__'
+& '__BRIDGE_SCRIPT__' desktop-summary --json
+'@
+        $childScript = $childScript.Replace('__DIGEST_TEMP_ROOT__', $script:digestTempRoot).Replace('__BRIDGE_SCRIPT__', $bridgeScript)
+        $output = & pwsh -NoProfile -Command $childScript
+
+        $result = ($output | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.board.summary.pane_count | Should -Be 1
+        $result.digest.summary.item_count | Should -Be 1
+        @($result.run_projections).Count | Should -Be 1
+        $result.run_projections[0].run_id | Should -Be 'task:task-246'
+        $result.run_projections[0].worktree | Should -Be '.worktrees/builder-1'
+    }
+
+    It 'prefers launch_dir in desktop-summary projections when the builder path lags behind' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    launch_dir: C:\repo\.worktrees\builder-9
+    builder_worktree_path: C:\repo\.worktrees\builder-1
+    task_id: task-246
+    task: Build evidence digest
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T14:00:00+09:00
+"@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
+
+        $bridgeScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $childScript = @'
+Set-Item -Path function:winsmux -Value {
+    param([Parameter(ValueFromRemainingArguments = $true)][object[]]$args)
+    $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+    switch -Regex ($commandLine) {
+        '^capture-pane .*%2' { @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>'); break }
+        default { throw "unexpected winsmux call: $commandLine" }
+    }
+}
+Set-Location '__DIGEST_TEMP_ROOT__'
+& '__BRIDGE_SCRIPT__' desktop-summary --json
+'@
+        $childScript = $childScript.Replace('__DIGEST_TEMP_ROOT__', $script:digestTempRoot).Replace('__BRIDGE_SCRIPT__', $bridgeScript)
+        $output = & pwsh -NoProfile -Command $childScript
+
+        $result = ($output | Out-String | ConvertFrom-Json -AsHashtable)
+
+        @($result.run_projections).Count | Should -Be 1
+        $result.run_projections[0].worktree | Should -Be '.worktrees/builder-9'
     }
 }
 

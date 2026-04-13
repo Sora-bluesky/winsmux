@@ -1,15 +1,24 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "xterm/css/xterm.css";
 import {
+  getDesktopEditorFile,
   getDesktopRunExplain,
   getDesktopSummarySnapshot,
+  type DesktopEditorFilePayload,
   type DesktopDigestItem,
   type DesktopExplainPayload,
+  type DesktopRunProjection,
   type DesktopSummarySnapshot,
 } from "./desktopClient";
+import { getEditorFileKey, getSourceChangeKey, pickEditorPathCandidate } from "./editorTargets";
+import {
+  closePtyPane,
+  resizePtyPane,
+  spawnPtyPane,
+  subscribeToPtyOutput,
+  writePtyData,
+} from "./ptyClient";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -63,11 +72,13 @@ interface ExplorerItem {
   depth: number;
   kind: "folder" | "file";
   path?: string;
+  worktree?: string;
   open?: boolean;
   active?: boolean;
 }
 
 interface EditorFile {
+  key: string;
   path: string;
   summary: string;
   content: string;
@@ -78,7 +89,17 @@ interface EditorFile {
   active?: boolean;
 }
 
-type SourceFilter = "all" | "candidates" | "attention" | "builder-2" | "builder-3";
+interface EditorTarget {
+  key: string;
+  path: string;
+  summary: string;
+  worktree: string;
+  origin: "explorer" | "context";
+  modified: boolean;
+  sourceChange?: SourceChange;
+}
+
+type SourceFilter = "all" | "candidates" | "attention" | `pane:${string}`;
 
 type ChangeStatus = "modified" | "added" | "deleted" | "renamed";
 type ChangeRisk = "low" | "medium" | "high";
@@ -87,6 +108,7 @@ interface SourceChange {
   path: string;
   summary: string;
   paneLabel: string;
+  worktree: string;
   status: ChangeStatus;
   risk: ChangeRisk;
   branch: string;
@@ -95,15 +117,6 @@ interface SourceChange {
   needsAttention: boolean;
   run: string;
   review: string;
-}
-
-interface SourceControlState {
-  entries: SourceChange[];
-}
-
-interface ContextSection {
-  label: string;
-  value: string;
 }
 
 interface FooterStatusItem {
@@ -153,7 +166,8 @@ let settingsSheetOpen = false;
 let sidebarOpen = true;
 let composerImeActive = false;
 let sidebarWidth = 292;
-let selectedEditorPath = "winsmux-app/src/main.ts";
+let selectedEditorKey = "";
+let selectedRunId: string | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
 let activeSourceFilter: SourceFilter = "all";
 let activeTimelineFilter: TimelineFilter = "all";
@@ -164,7 +178,16 @@ let commandBarImeActive = false;
 let lastCommandBarFocus: HTMLElement | null = null;
 let pendingAttachments: ComposerAttachment[] = [];
 let desktopSummarySnapshot: DesktopSummarySnapshot | null = null;
+let desktopSummaryRefreshInFlight: Promise<void> | null = null;
 const desktopExplainCache = new Map<string, DesktopExplainPayload>();
+const desktopEditorFileCache = new Map<string, EditorFile>();
+const desktopEditorLoadingPaths = new Set<string>();
+const desktopEditorLoadErrors = new Map<string, string>();
+const desktopStandaloneEditorTargets = new Map<string, EditorTarget>();
+const backendConversation: ConversationItem[] = [];
+const runtimeConversation: ConversationItem[] = [];
+const DESKTOP_SUMMARY_REFRESH_INTERVAL_MS = 15_000;
+const MAX_RUNTIME_CONVERSATION_ITEMS = 80;
 const themeState: ThemeState = {
   theme: "codex-dark",
   density: "comfortable",
@@ -183,209 +206,6 @@ const timelineFilters: Array<{ filter: TimelineFilter; label: string }> = [
   { filter: "attention", label: "Attention" },
   { filter: "review", label: "Review" },
   { filter: "activity", label: "Activity" },
-];
-
-const seedConversation: ConversationItem[] = [
-  {
-    type: "user",
-    category: "user",
-    timestamp: "09:41",
-    actor: "User",
-    body: "Please tighten the notification boundary and show why this run is blocked.",
-  },
-  {
-    type: "operator",
-    category: "activity",
-    timestamp: "09:42",
-    actor: "Operator",
-    title: "Operator update",
-    body: "Inbox shows 2 approval waits. I am checking run ledger, source context, and the evidence digest before deciding the next action.",
-    details: [
-      { label: "focus", value: "run-246" },
-      { label: "scope", value: "branch/head mismatch" },
-    ],
-    tone: "info",
-    runId: "run-246",
-  },
-  {
-    type: "system",
-    category: "attention",
-    timestamp: "09:43",
-    actor: "System",
-    title: "Commit blocked",
-    body: "worker-2 changed 3 files. Review passed, but branch/head mismatch still blocks commit. Open Explain or inspect the edited files.",
-    details: [
-      { label: "run", value: "run-246" },
-      { label: "slot", value: "worker-3" },
-      { label: "review", value: "passed" },
-      { label: "next", value: "Open Explain" },
-    ],
-    chips: [
-      { label: "Open Explain", action: "open-explain" },
-      { label: "Open in Editor", action: "open-editor" },
-      { label: "Source Context", action: "open-source-context" },
-      { label: "Terminal", action: "open-terminal" },
-    ],
-    tone: "warning",
-    runId: "run-246",
-    statusLabel: "Blocked",
-  },
-  {
-    type: "operator",
-    category: "review",
-    timestamp: "09:44",
-    actor: "Operator",
-    title: "Review boundary",
-    body: "Only external-facing review and commit-ready events should surface through the channel layer. Internal dispatch noise stays inside the workspace.",
-    details: [
-      { label: "channel", value: "external only" },
-      { label: "profile", value: "review_requested, blocked, commit_ready" },
-    ],
-    tone: "focus",
-  },
-  {
-    type: "system",
-    category: "review",
-    timestamp: "09:46",
-    actor: "System",
-    title: "Review requested",
-    body: "A review-capable slot is ready to inspect the changed files for run-245. The timeline keeps the request, evidence, and next action in the same feed.",
-    details: [
-      { label: "run", value: "run-245" },
-      { label: "slot", value: "worker-2" },
-      { label: "target", value: "Changed files" },
-    ],
-    chips: [
-      { label: "Open in Editor", action: "open-editor" },
-      { label: "Source Context", action: "open-source-context" },
-    ],
-    tone: "focus",
-    runId: "run-245",
-    statusLabel: "Review",
-  },
-  {
-    type: "system",
-    category: "activity",
-    timestamp: "09:48",
-    actor: "worker-2",
-    title: "Pane report",
-    body: "worker-2 returned a structured execution report for the selected run.",
-    details: [
-      { label: "STATUS", value: "SUCCESS" },
-      { label: "TASK", value: "TASK-138 source-control context slice" },
-      { label: "RESULT", value: "source-control context now opens changed files in the editor with worktree-aware metadata" },
-      { label: "FILES_CHANGED", value: "index.html, src/main.ts, src/styles.css" },
-      { label: "ISSUES", value: "none" },
-    ],
-    tone: "info",
-    runId: "run-138",
-    statusLabel: "SUCCESS",
-  },
-];
-
-const sessionItems: SessionItem[] = [
-  { name: "winsmux", meta: "operator active · 2 runs blocked", active: true },
-  { name: "release-check", meta: "digest clean · no review waits" },
-];
-
-const explorerItems: ExplorerItem[] = [
-  { label: "winsmux-app", depth: 0, kind: "folder", open: true },
-  { label: "src", depth: 1, kind: "folder", open: true },
-  { label: "main.ts", depth: 2, kind: "file", path: "winsmux-app/src/main.ts", active: true },
-  { label: "styles.css", depth: 2, kind: "file", path: "winsmux-app/src/styles.css" },
-  { label: "index.html", depth: 1, kind: "file", path: "winsmux-app/index.html" },
-  { label: "winsmux-core", depth: 0, kind: "folder" },
-];
-
-const editorFiles: EditorFile[] = [
-  {
-    path: "winsmux-app/src/main.ts",
-    summary: "Conversation shell scaffold",
-    language: "TypeScript",
-    lineCount: 138,
-    modified: true,
-    origin: "context",
-    active: true,
-    content:
-      "const summaryStream = [\n  'blocked',\n  'review_requested',\n  'commit_ready',\n];\n\nfunction openEditorSurface() {\n  // Secondary work surface opened from conversation or source context.\n}\n",
-  },
-  {
-    path: "winsmux-app/src/styles.css",
-    summary: "Workspace sidebar and responsive shell",
-    language: "CSS",
-    lineCount: 74,
-    modified: true,
-    origin: "context",
-    content:
-      ".workspace-sidebar {\n  width: var(--sidebar-width);\n}\n\n.editor-secondary-surface {\n  border-left: 1px solid var(--border-muted);\n}\n",
-  },
-  {
-    path: "winsmux-app/index.html",
-    summary: "Operator shell structure and panel hierarchy",
-    language: "HTML",
-    lineCount: 67,
-    origin: "explorer",
-    content:
-      "<section id=\"conversation-panel\">\n  <div id=\"conversation-timeline\"></div>\n  <form id=\"composer\"></form>\n</section>\n\n<aside id=\"editor-surface\" hidden></aside>\n",
-  },
-  {
-    path: "winsmux-core/scripts/team-pipeline.ps1",
-    summary: "Review-capable slot dispatch and branch alignment gate",
-    language: "PowerShell",
-    lineCount: 44,
-    modified: true,
-    origin: "context",
-    content:
-      "function Resolve-ReviewTarget {\n  param($Run)\n  # Review is now a slot capability, not a dedicated pane kind.\n}\n\nif ($branchMismatch) {\n  return 'blocked'\n}\n",
-  },
-];
-
-const sourceControlState: SourceControlState = {
-  entries: [
-  {
-    path: "winsmux-app/src/main.ts",
-    summary: "Conversation shell source-control actions and worktree metadata",
-    paneLabel: "worker-2",
-    status: "modified",
-    risk: "medium",
-    branch: "codex/task138-source-context",
-    lines: "+46 -11",
-    commitCandidate: true,
-    needsAttention: false,
-    run: "run-245",
-    review: "passed",
-  },
-  {
-    path: "winsmux-app/src/styles.css",
-    summary: "Sidebar/context badges and source-control overview cards",
-    paneLabel: "worker-2",
-    status: "modified",
-    risk: "low",
-    branch: "codex/task138-source-context",
-    lines: "+38 -4",
-    commitCandidate: true,
-    needsAttention: false,
-    run: "run-245",
-    review: "passed",
-  },
-  {
-    path: "winsmux-core/scripts/team-pipeline.ps1",
-    summary: "Branch mismatch still blocks commit despite review PASS",
-    paneLabel: "worker-3",
-    status: "modified",
-    risk: "high",
-    branch: "codex/task264-review-capable-slot",
-    lines: "+9 -2",
-    commitCandidate: false,
-    needsAttention: true,
-    run: "run-246",
-    review: "blocked",
-  },
-  ],
-};
-
-const baseContextSections: ContextSection[] = [
-  { label: "next", value: "Open Explain" },
 ];
 
 const themeOptions: Array<{ value: ThemeMode; label: string; description: string }> = [
@@ -460,17 +280,17 @@ function createPane(paneId?: string): string {
   fitAddon.fit();
 
   terminal.onData((data: string) => {
-    void invoke("pty_write", { paneId: id, data });
+    void writePtyData(id, data);
   });
 
   terminal.onResize(({ cols, rows }) => {
-    void invoke("pty_resize", { paneId: id, cols, rows });
+    void resizePtyPane(id, cols, rows);
   });
 
   panes.set(id, { terminal, fitAddon, container: paneDiv });
 
   const { cols, rows } = { cols: terminal.cols, rows: terminal.rows };
-  void invoke("pty_spawn", { paneId: id, cols, rows });
+  void spawnPtyPane(id, cols, rows);
 
   return id;
 }
@@ -494,7 +314,7 @@ function closePane(id: string) {
 
   entry.container.remove();
   panes.delete(id);
-  void invoke("pty_close", { paneId: id });
+  void closePtyPane(id);
 
   panes.forEach((pane) => pane.fitAddon.fit());
 }
@@ -518,7 +338,7 @@ function renderSessions() {
 
 function getSessionItems() {
   if (!desktopSummarySnapshot) {
-    return sessionItems;
+    return [{ name: "winsmux", meta: "Waiting for backend summary", active: true }] satisfies SessionItem[];
   }
 
   const board = desktopSummarySnapshot.board.summary;
@@ -542,6 +362,38 @@ function getRunProjections() {
   return desktopSummarySnapshot?.run_projections ?? [];
 }
 
+function getAvailableRunIds(snapshot: DesktopSummarySnapshot | null = desktopSummarySnapshot) {
+  if (!snapshot) {
+    return [] as string[];
+  }
+
+  const runIds = new Set<string>();
+  for (const item of snapshot.digest.items) {
+    runIds.add(item.run_id);
+  }
+  for (const projection of snapshot.run_projections) {
+    runIds.add(projection.run_id);
+  }
+  return Array.from(runIds);
+}
+
+function resolveSelectedRunId(snapshot: DesktopSummarySnapshot | null = desktopSummarySnapshot, preferredRunId?: string | null) {
+  const availableRunIds = getAvailableRunIds(snapshot);
+  if (availableRunIds.length === 0) {
+    return null;
+  }
+
+  if (preferredRunId && availableRunIds.includes(preferredRunId)) {
+    return preferredRunId;
+  }
+
+  if (selectedRunId && availableRunIds.includes(selectedRunId)) {
+    return selectedRunId;
+  }
+
+  return availableRunIds[0] ?? null;
+}
+
 function getRunProjectionByRunId(runId: string | null) {
   if (!runId) {
     return null;
@@ -549,10 +401,14 @@ function getRunProjectionByRunId(runId: string | null) {
   return getRunProjections().find((projection) => projection.run_id === runId) ?? null;
 }
 
+function setSelectedRun(runId: string | null) {
+  selectedRunId = resolveSelectedRunId(desktopSummarySnapshot, runId);
+}
+
 function getProjectionSourceEntries(): SourceChange[] {
   const projections = getRunProjections();
   if (projections.length === 0) {
-    return sourceControlState.entries;
+    return [];
   }
 
   const entries: SourceChange[] = [];
@@ -579,6 +435,7 @@ function getProjectionSourceEntries(): SourceChange[] {
         path,
         summary: recentReason || projection.summary || projection.task || `Projected from ${projection.run_id}`,
         paneLabel: projection.label || projection.pane_id || "summary-stream",
+        worktree: projection.worktree || "",
         status: "modified",
         risk,
         branch: projection.branch || "no branch",
@@ -591,7 +448,121 @@ function getProjectionSourceEntries(): SourceChange[] {
     }
   }
 
-  return entries.length > 0 ? entries : sourceControlState.entries;
+  return entries;
+}
+
+function findSourceChangeByKey(key: string) {
+  return getProjectionSourceEntries().find((entry) => getSourceChangeKey(entry) === key);
+}
+
+function findSourceChangeByPath(path: string, worktree = "") {
+  return (
+    pickEditorPathCandidate(getVisibleSourceChanges(), path, worktree, selectedEditorKey) ??
+    pickEditorPathCandidate(getProjectionSourceEntries(), path, worktree, selectedEditorKey)
+  );
+}
+
+function createStandaloneEditorTarget(path: string, worktree = ""): EditorTarget {
+  const key = getEditorFileKey(path, worktree);
+  return {
+    key,
+    path,
+    summary: `Project file preview · ${path.split("/").pop() ?? path}`,
+    worktree,
+    origin: "explorer",
+    modified: false,
+  };
+}
+
+function getExplorerItems() {
+  const targets = new Map<string, EditorTarget>();
+  for (const entry of getProjectionSourceEntries()) {
+    const target = getEditorTargetForSourceChange(entry);
+    if (target) {
+      targets.set(target.key, target);
+    }
+  }
+  for (const [key, target] of desktopStandaloneEditorTargets) {
+    if (!targets.has(key)) {
+      targets.set(key, target);
+    }
+  }
+
+  const items: ExplorerItem[] = [];
+  const seenFolders = new Set<string>();
+
+  for (const target of Array.from(targets.values()).sort((left, right) => left.path.localeCompare(right.path))) {
+    const normalizedPath = target.path.replace(/\\/g, "/");
+    const segments = normalizedPath.split("/").filter(Boolean);
+    let currentPath = "";
+    segments.forEach((segment, index) => {
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+      const depth = index;
+      const isFile = index === segments.length - 1;
+      if (isFile) {
+        items.push({
+          label: segment,
+          depth,
+          kind: "file",
+          path: target.path,
+          worktree: target.worktree,
+          active: target.key === selectedEditorKey,
+        });
+        return;
+      }
+
+      if (seenFolders.has(currentPath)) {
+        return;
+      }
+
+      seenFolders.add(currentPath);
+      items.push({
+        label: segment,
+        depth,
+        kind: "folder",
+        open: true,
+      });
+    });
+  }
+
+  return items;
+}
+
+function getEditorTargetForSourceChange(sourceChange: SourceChange | undefined): EditorTarget | null {
+  if (!sourceChange) {
+    return null;
+  }
+
+  return {
+    key: getSourceChangeKey(sourceChange),
+    path: sourceChange.path,
+    summary: sourceChange.summary,
+    worktree: sourceChange.worktree,
+    origin: "context",
+    modified: sourceChange.status !== "deleted",
+    sourceChange,
+  };
+}
+
+function getEditorTargetByKey(key: string): EditorTarget | null {
+  const sourceChange = findSourceChangeByKey(key);
+  if (sourceChange) {
+    return getEditorTargetForSourceChange(sourceChange);
+  }
+
+  return desktopStandaloneEditorTargets.get(key) ?? null;
+}
+
+function getPaneSourceFilter(label: string): SourceFilter {
+  return `pane:${label}`;
+}
+
+function getPaneLabelFromSourceFilter(filter: SourceFilter) {
+  if (!filter.startsWith("pane:")) {
+    return null;
+  }
+
+  return filter.slice("pane:".length);
 }
 
 function renderExplorer() {
@@ -600,7 +571,18 @@ function renderExplorer() {
     return;
   }
 
+  const explorerItems = getExplorerItems();
   root.innerHTML = "";
+  if (explorerItems.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sidebar-row";
+    empty.innerHTML =
+      `<span class="sidebar-row-title">No projected files</span>` +
+      `<span class="sidebar-row-meta">Changed files will appear here after the desktop summary refreshes.</span>`;
+    root.appendChild(empty);
+    return;
+  }
+
   for (const item of explorerItems) {
     const button = document.createElement("button");
     button.type = "button";
@@ -610,11 +592,9 @@ function renderExplorer() {
       `<span class="sidebar-row-title">${item.kind === "folder" ? (item.open ? "▾ " : "▸ ") : "• "}${item.label}</span>`;
     if (item.kind === "file" && item.path) {
       const itemPath = item.path;
+      const itemWorktree = item.worktree ?? "";
       button.addEventListener("click", () => {
-        selectedEditorPath = findEditorFile(itemPath)?.path || selectedEditorPath;
-        setEditorSurface(true);
-        renderSourceSummary();
-        renderRunSummary();
+        void openEditorPath(itemPath, itemWorktree);
       });
     }
     root.appendChild(button);
@@ -628,16 +608,22 @@ function renderOpenEditors() {
   }
 
   root.innerHTML = "";
-  for (const editor of editorFiles) {
+  const editors = getEditorFiles();
+  if (editors.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sidebar-row";
+    empty.innerHTML = `<span class="sidebar-row-title">No changed files</span><span class="sidebar-row-meta">Connect the backend summary to inspect a real file preview.</span>`;
+    root.appendChild(empty);
+    return;
+  }
+
+  for (const editor of editors) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `sidebar-row ${editor.path === selectedEditorPath && editorSurfaceOpen ? "is-active" : ""}`;
+    button.className = `sidebar-row ${editor.key === selectedEditorKey && editorSurfaceOpen ? "is-active" : ""}`;
     button.innerHTML = `<span class="sidebar-row-title">${editor.path.split("/").pop() ?? editor.path}</span><span class="sidebar-row-meta">${editor.summary}</span>`;
     button.addEventListener("click", () => {
-      selectedEditorPath = editor.path;
-      setEditorSurface(true);
-      renderSourceSummary();
-      renderRunSummary();
+      void openEditorTarget(getEditorTargetByKey(editor.key));
     });
     root.appendChild(button);
   }
@@ -651,17 +637,15 @@ function renderSourceSummary() {
 
   const activeEntries = getProjectionSourceEntries();
   const visibleChanges = getVisibleSourceChanges();
-  const primaryChange = getPrimarySourceChange(visibleChanges);
   const entryCount = visibleChanges.length;
   const attentionCount = visibleChanges.filter((item) => item.needsAttention).length;
   const commitCandidates = visibleChanges.filter((item) => item.commitCandidate).length;
   const summaryItems = [
-    { label: "Branch", value: primaryChange?.branch ?? "No branch" },
+    { label: "Selected scope", value: getSourceFilterLabel(activeSourceFilter) },
+    { label: "Projected", value: `${activeEntries.length} files` },
     { label: "Changed", value: `${entryCount} files` },
-    { label: "Review", value: primaryChange?.review ?? "No review state" },
-    { label: "Branch", value: primaryChange?.branch ?? "No source projection" },
     { label: "Ready", value: `${commitCandidates} candidate${commitCandidates === 1 ? "" : "s"}` },
-    { label: "Risk", value: `${attentionCount} attention · ${activeEntries.length} projected` },
+    { label: "Risk", value: `${attentionCount} attention` },
   ];
 
   root.innerHTML = "";
@@ -684,9 +668,17 @@ function renderSourceEntries() {
   const entryItems: Array<{ label: string; value: string; filter: SourceFilter; tone?: SurfaceTone }> = [
     { label: "Commit candidates", value: `${activeEntries.filter((item) => item.commitCandidate).length} ready`, tone: "success", filter: "candidates" },
     { label: "Needs attention", value: `${activeEntries.filter((item) => item.needsAttention).length} blocker`, tone: "danger", filter: "attention" },
-    { label: "builder-2", value: `${activeEntries.filter((item) => item.paneLabel === "builder-2").length} files`, filter: "builder-2" },
-    { label: "builder-3", value: `${activeEntries.filter((item) => item.paneLabel === "builder-3").length} files`, filter: "builder-3" },
   ];
+  const paneLabels = [...new Set(activeEntries.map((item) => item.paneLabel).filter((item) => item))].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  for (const paneLabel of paneLabels) {
+    entryItems.push({
+      label: paneLabel,
+      value: `${activeEntries.filter((item) => item.paneLabel === paneLabel).length} files`,
+      filter: getPaneSourceFilter(paneLabel),
+    });
+  }
 
   for (const item of entryItems) {
     const button = document.createElement("button");
@@ -698,8 +690,9 @@ function renderSourceEntries() {
       activeSourceFilter = item.filter;
       setContextPanel(true);
       const primaryChange = getPrimarySourceChange(getVisibleSourceChanges());
+      setSelectedRun(primaryChange?.run ?? null);
       if (editorSurfaceOpen && primaryChange) {
-        selectedEditorPath = primaryChange.path;
+        selectedEditorKey = getSourceChangeKey(primaryChange);
         renderEditorSurface();
         renderOpenEditors();
       }
@@ -719,25 +712,54 @@ function getVisibleSourceChanges() {
       return activeEntries.filter((item) => item.commitCandidate);
     case "attention":
       return activeEntries.filter((item) => item.needsAttention);
-    case "builder-2":
-      return activeEntries.filter((item) => item.paneLabel === "builder-2");
-    case "builder-3":
-      return activeEntries.filter((item) => item.paneLabel === "builder-3");
     default:
+      if (activeSourceFilter.startsWith("pane:")) {
+        const paneLabel = getPaneLabelFromSourceFilter(activeSourceFilter);
+        return activeEntries.filter((item) => item.paneLabel === paneLabel);
+      }
       return activeEntries;
   }
 }
 
 function getPrimarySourceChange(changes: SourceChange[]) {
-  return changes.find((item) => item.path === selectedEditorPath) ?? changes[0] ?? getProjectionSourceEntries()[0];
+  return (
+    changes.find((item) => item.run === selectedRunId) ??
+    changes.find((item) => getSourceChangeKey(item) === selectedEditorKey) ??
+    changes[0] ??
+    getProjectionSourceEntries()[0]
+  );
+}
+
+function getSourceFilterLabel(filter: SourceFilter) {
+  switch (filter) {
+    case "all":
+      return "All changes";
+    case "candidates":
+      return "Commit candidates";
+    case "attention":
+      return "Needs attention";
+    default:
+      return getPaneLabelFromSourceFilter(filter) ?? filter;
+  }
 }
 
 function getPrimaryDigestItem() {
   if (desktopSummarySnapshot?.digest.items?.length) {
+    const resolvedRunId = resolveSelectedRunId();
+    if (resolvedRunId) {
+      const selectedDigestItem = desktopSummarySnapshot.digest.items.find((item) => item.run_id === resolvedRunId);
+      if (selectedDigestItem) {
+        return selectedDigestItem;
+      }
+    }
+
     return desktopSummarySnapshot.digest.items[0];
   }
 
-  const projection = getRunProjections()[0];
+  const resolvedRunId = resolveSelectedRunId();
+  const projection =
+    getRunProjectionByRunId(resolvedRunId) ??
+    getRunProjections()[0];
   if (!projection) {
     return null;
   }
@@ -761,7 +783,7 @@ function getPrimaryDigestItem() {
 }
 
 function getSelectedRunId() {
-  return getPrimaryDigestItem()?.run_id ?? null;
+  return resolveSelectedRunId();
 }
 
 function renderContextPanel() {
@@ -774,12 +796,15 @@ function renderContextPanel() {
 
   const visibleChanges = getVisibleSourceChanges();
   const primaryChange = getPrimarySourceChange(visibleChanges);
+  const selectedDigestItem = getPrimaryDigestItem();
 
   sectionRoot.innerHTML = "";
   const resolvedContextSections = [
-    ...baseContextSections,
+    { label: "next", value: selectedDigestItem?.next_action || "Open Explain" },
+    { label: "run", value: selectedDigestItem?.run_id || primaryChange?.run || "No active run" },
     { label: "pane", value: primaryChange?.paneLabel ?? "No pane label" },
     { label: "branch", value: primaryChange?.branch ?? "No branch" },
+    { label: "worktree", value: primaryChange?.worktree || "Project root" },
     { label: "review", value: primaryChange?.review ?? "No review state" },
   ];
   for (const item of resolvedContextSections) {
@@ -791,10 +816,11 @@ function renderContextPanel() {
 
   overviewRoot.innerHTML = "";
   const overviewCards = [
-    { label: "Selected scope", value: activeSourceFilter === "all" ? "All changes" : activeSourceFilter.replace("-", " ") },
+    { label: "Selected scope", value: getSourceFilterLabel(activeSourceFilter) },
     { label: "Commit candidates", value: `${visibleChanges.filter((item) => item.commitCandidate).length}` },
     { label: "Needs attention", value: `${visibleChanges.filter((item) => item.needsAttention).length}` },
     { label: "Active pane", value: primaryChange?.paneLabel ?? "n/a" },
+    { label: "Worktree", value: primaryChange?.worktree || "Project root" },
   ];
 
   for (const item of overviewCards) {
@@ -808,17 +834,15 @@ function renderContextPanel() {
   for (const change of visibleChanges) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `context-file-row ${change.path === selectedEditorPath && editorSurfaceOpen ? "is-active" : ""}`;
+    button.className = `context-file-row ${getSourceChangeKey(change) === selectedEditorKey && editorSurfaceOpen ? "is-active" : ""}`;
     button.dataset.tone = getSourceEntryTone(change);
     button.innerHTML =
       `<span class="context-file-name">${change.path.split("/").pop() ?? change.path}</span>` +
       `<span class="context-file-meta">${change.summary}</span>` +
-      `<span class="context-file-trace">${change.status} · ${change.lines} · ${change.branch} · ${change.review}</span>`;
+      `<span class="context-file-trace">${change.status} · ${change.lines} · ${change.branch} · ${change.review}${change.worktree ? ` · ${change.worktree}` : ""}</span>`;
     button.addEventListener("click", () => {
-      selectedEditorPath = change.path;
-      setEditorSurface(true);
-      renderSourceSummary();
-      renderRunSummary();
+      setSelectedRun(change.run);
+      void openEditorSourceChange(change);
     });
     fileRoot.appendChild(button);
   }
@@ -1145,7 +1169,7 @@ function renderTimelineFilters() {
     button.addEventListener("click", () => {
       activeTimelineFilter = item.filter;
       renderTimelineFilters();
-      renderConversation(seedConversation);
+      renderConversation(getConversationItems());
       renderRunSummary();
     });
     root.appendChild(button);
@@ -1275,6 +1299,13 @@ function renderConversation(items: ConversationItem[]) {
     const article = document.createElement("article");
     article.className = `timeline-item timeline-${item.type}`;
     article.dataset.tone = item.tone ?? (item.type === "operator" ? "info" : item.type === "system" ? "focus" : "default");
+    if (item.runId) {
+      article.classList.toggle("is-selected-run", item.runId === getSelectedRunId());
+      article.addEventListener("click", () => {
+        setSelectedRun(item.runId ?? null);
+        renderDesktopSurfaces();
+      });
+    }
 
     const meta = document.createElement("div");
     meta.className = "timeline-meta-row";
@@ -1348,9 +1379,8 @@ async function openExplainForSelectedRun() {
   }
 
   try {
-    const payload =
-      desktopExplainCache.get(selectedRunId) ??
-      await getDesktopRunExplain(selectedRunId);
+    const previousPayload = desktopExplainCache.get(selectedRunId) ?? null;
+    const payload = await getDesktopRunExplain(selectedRunId);
     desktopExplainCache.set(selectedRunId, payload);
 
     const detailItems: ConversationDetail[] = [
@@ -1379,52 +1409,75 @@ async function openExplainForSelectedRun() {
       bodyParts.push(`Recent: ${recent}`);
     }
 
-    seedConversation.push({
-      type: "operator",
-      category: "activity",
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
-      actor: "Operator",
-      title: "Explain opened",
-      body: bodyParts.join(" "),
-      details: detailItems,
-      tone: "info",
-      runId: payload.run.run_id,
-    });
+    const previousFingerprint = getExplainPayloadFingerprint(previousPayload);
+    const nextFingerprint = getExplainPayloadFingerprint(payload);
+    if (previousFingerprint !== nextFingerprint) {
+      appendRuntimeConversation({
+        type: "operator",
+        category: "activity",
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+        actor: "Operator",
+        title: "Explain opened",
+        body: bodyParts.join(" "),
+        details: detailItems,
+        tone: "info",
+        runId: payload.run.run_id,
+      });
+    }
+    await refreshDesktopSummary(payload.run.run_id);
   } catch (error) {
     console.warn("Failed to load desktop explain payload", error);
     appendFallbackExplain();
+    return;
   }
-
-  renderTimelineFilters();
-  renderRunSummary();
-  renderSourceSummary();
-  renderSourceEntries();
-  renderContextPanel();
-  renderEditorSurface();
-  renderConversation(seedConversation);
 }
 
 function appendFallbackExplain() {
-  seedConversation.push({
+  const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  const selectedRunId = getSelectedRunId();
+  const digestItem = getPrimaryDigestItem();
+  const hasSelectedDigest = Boolean(selectedRunId && digestItem?.run_id === selectedRunId);
+  const body = hasSelectedDigest
+    ? `Explain is unavailable for ${selectedRunId}. Backend digest still reports next ${digestItem?.next_action || "idle"}.`
+    : desktopSummarySnapshot && desktopSummarySnapshot.digest.summary.item_count > 0
+      ? "Explain is unavailable until a projected run is selected."
+      : desktopSummarySnapshot
+        ? "No projected run is available to explain yet."
+        : "Backend summary unavailable.";
+  const details = hasSelectedDigest
+    ? [
+        { label: "run", value: selectedRunId as string },
+        { label: "next", value: digestItem?.next_action || "idle" },
+        { label: "changed", value: `${digestItem?.changed_file_count ?? 0}` },
+      ]
+    : desktopSummarySnapshot
+      ? [
+          { label: "runs", value: `${desktopSummarySnapshot.digest.summary.item_count}` },
+          { label: "inbox", value: `${desktopSummarySnapshot.inbox.summary.item_count}` },
+        ]
+      : [{ label: "state", value: "backend unavailable" }];
+  appendRuntimeConversation({
     type: "operator",
     category: "activity",
-    timestamp: "09:47",
+    timestamp,
     actor: "Operator",
     title: "Explain opened",
-    body: "This run is blocked on branch/head alignment after review passed. Changed files and commit readiness stay available in the context sheet and source-control surface.",
-    details: [
-      { label: "run", value: "run-246" },
-      { label: "focus", value: "branch/head alignment" },
-    ],
+    body,
+    details,
     tone: "info",
-    runId: "run-246",
+    runId: selectedRunId ?? undefined,
   });
+  renderRunSummary();
+  renderConversation(getConversationItems());
 }
 
 function handleChipAction(action: ChipAction) {
   switch (action) {
     case "open-editor":
-      setEditorSurface(true);
+      void openEditorTarget(
+        getEditorTargetForSourceChange(getPrimarySourceChange(getVisibleSourceChanges())) ??
+          getEditorTargetByKey(selectedEditorKey),
+      );
       break;
     case "open-source-context":
     case "toggle-context":
@@ -1525,7 +1578,7 @@ function getCommandActions(): CommandAction[] {
         activeTimelineFilter = "attention";
         renderTimelineFilters();
         renderRunSummary();
-        renderConversation(seedConversation);
+        renderConversation(getConversationItems());
       },
     },
     {
@@ -1538,7 +1591,7 @@ function getCommandActions(): CommandAction[] {
         activeTimelineFilter = "review";
         renderTimelineFilters();
         renderRunSummary();
-        renderConversation(seedConversation);
+        renderConversation(getConversationItems());
       },
     },
   ];
@@ -1717,9 +1770,21 @@ function renderEditorSurface() {
     return;
   }
 
-  const selected = findEditorFile(selectedEditorPath) || editorFiles[0];
-  const sourceChange = getProjectionSourceEntries().find((item) => item.path === selected.path);
-  selectedEditorPath = selected.path;
+  const editors = getEditorFiles();
+  const selected = editors.find((editor) => editor.key === selectedEditorKey) || editors[0];
+  if (!selected) {
+    path.textContent = "Editor idle";
+    meta.innerHTML = "";
+    tabs.innerHTML = "";
+    code.textContent = "Open a projected file to load a backend preview.";
+    statusbar.textContent = "Secondary work surface: waiting for file selection";
+    return;
+  }
+  selectedEditorKey = selected.key;
+  const selectedTarget = getEditorTargetByKey(selected.key);
+  if (selectedTarget && !desktopEditorFileCache.has(selected.key) && !desktopEditorLoadingPaths.has(selected.key)) {
+    void ensureEditorFileLoaded(selectedTarget);
+  }
 
   path.textContent = selected.path;
   meta.innerHTML = "";
@@ -1728,7 +1793,6 @@ function renderEditorSurface() {
     `${selected.lineCount} lines`,
     selected.modified ? "Modified" : "Saved",
     selected.origin === "context" ? "Opened from context" : "Opened from explorer",
-    sourceChange ? `${sourceChange.status} · ${sourceChange.branch}` : "No source metadata",
   ]) {
     const chip = document.createElement("span");
     chip.className = `editor-meta-chip ${item === "Modified" ? "is-modified" : ""}`;
@@ -1737,27 +1801,258 @@ function renderEditorSurface() {
     meta.appendChild(chip);
   }
   code.textContent = selected.content;
-  statusbar.textContent = sourceChange
-    ? `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selected.path} · ${sourceChange.branch} · ${sourceChange.review}`
-    : `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selected.path}`;
+  statusbar.textContent = `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selected.path}`;
   tabs.innerHTML = "";
 
-  for (const editor of editorFiles) {
+  for (const editor of editors) {
     const tab = document.createElement("button");
     tab.type = "button";
-    tab.className = `editor-tab ${editor.path === selected.path ? "is-active" : ""}`;
+    tab.className = `editor-tab ${editor.key === selected.key ? "is-active" : ""}`;
     tab.textContent = editor.path.split("/").pop() ?? editor.path;
     tab.addEventListener("click", () => {
-      selectedEditorPath = editor.path;
-      renderEditorSurface();
-      renderOpenEditors();
-      renderSourceSummary();
-      renderContextPanel();
-      renderSourceEntries();
-      renderRunSummary();
+      void openEditorTarget(getEditorTargetByKey(editor.key));
     });
     tabs.appendChild(tab);
   }
+}
+
+function getConversationItems() {
+  return [...backendConversation, ...runtimeConversation];
+}
+
+function appendRuntimeConversation(item: ConversationItem) {
+  const lastItem = runtimeConversation[runtimeConversation.length - 1];
+  if (
+    lastItem &&
+    lastItem.type === item.type &&
+    lastItem.title === item.title &&
+    lastItem.body === item.body &&
+    lastItem.runId === item.runId
+  ) {
+    return;
+  }
+
+  runtimeConversation.push(item);
+  if (runtimeConversation.length > MAX_RUNTIME_CONVERSATION_ITEMS) {
+    runtimeConversation.splice(0, runtimeConversation.length - MAX_RUNTIME_CONVERSATION_ITEMS);
+  }
+}
+
+function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | undefined) {
+  if (!payload) {
+    return "";
+  }
+
+  return JSON.stringify([
+    payload.run.run_id,
+    payload.run.state,
+    payload.run.task_state,
+    payload.run.review_state,
+    payload.run.provider_target,
+    payload.run.agent_role,
+    payload.run.branch,
+    payload.run.head_sha,
+    payload.run.worktree,
+    payload.run.changed_files.join("|"),
+    payload.explanation.summary,
+    payload.explanation.next_action,
+    payload.explanation.current_state?.state,
+    payload.explanation.current_state?.task_state,
+    payload.explanation.current_state?.review_state,
+    payload.explanation.current_state?.last_event,
+    payload.explanation.reasons.join("|"),
+    payload.evidence_digest.next_action,
+    payload.evidence_digest.verification_outcome,
+    payload.evidence_digest.security_blocked,
+    payload.evidence_digest.changed_files.join("|"),
+    payload.review_state?.status,
+    payload.result_packet?.summary,
+    payload.result_packet?.next_action_hint,
+  ]);
+}
+
+function getRunProjectionFingerprint(projection: DesktopRunProjection | null | undefined) {
+  if (!projection) {
+    return "";
+  }
+
+  return JSON.stringify([
+    projection.head_sha,
+    projection.head_short,
+    projection.worktree,
+    projection.review_state,
+    projection.next_action,
+    projection.verification_outcome,
+    projection.security_blocked,
+    projection.branch,
+    projection.provider_target,
+    projection.changed_files.join("|"),
+  ]);
+}
+
+function diffDesktopSummarySnapshots(
+  previousSnapshot: DesktopSummarySnapshot | null,
+  nextSnapshot: DesktopSummarySnapshot,
+) {
+  if (!previousSnapshot) {
+    return {
+      hasMeaningfulChange: true,
+      changedRunIds: [] as string[],
+      inboxCountChanged: false,
+      addedRunIds: [] as string[],
+      removedRunIds: [] as string[],
+    };
+  }
+
+  const previousProjectionMap = new Map(
+    previousSnapshot.run_projections.map((projection) => [projection.run_id, projection]),
+  );
+  const nextProjectionMap = new Map(
+    nextSnapshot.run_projections.map((projection) => [projection.run_id, projection]),
+  );
+
+  const changedRunIds: string[] = [];
+  const addedRunIds: string[] = [];
+  const removedRunIds: string[] = [];
+
+  for (const [runId, nextProjection] of nextProjectionMap) {
+    const previousProjection = previousProjectionMap.get(runId);
+    if (!previousProjection) {
+      addedRunIds.push(runId);
+      continue;
+    }
+
+    if (getRunProjectionFingerprint(previousProjection) !== getRunProjectionFingerprint(nextProjection)) {
+      changedRunIds.push(runId);
+    }
+  }
+
+  for (const runId of previousProjectionMap.keys()) {
+    if (!nextProjectionMap.has(runId)) {
+      removedRunIds.push(runId);
+    }
+  }
+
+  const inboxCountChanged =
+    previousSnapshot.inbox.summary.item_count !== nextSnapshot.inbox.summary.item_count;
+
+  return {
+    hasMeaningfulChange:
+      inboxCountChanged ||
+      addedRunIds.length > 0 ||
+      removedRunIds.length > 0 ||
+      changedRunIds.length > 0,
+    changedRunIds,
+    inboxCountChanged,
+    addedRunIds,
+    removedRunIds,
+  };
+}
+
+function buildDesktopFollowConversation(
+  previousSnapshot: DesktopSummarySnapshot | null,
+  nextSnapshot: DesktopSummarySnapshot,
+) {
+  const diff = diffDesktopSummarySnapshots(previousSnapshot, nextSnapshot);
+  if (!previousSnapshot || !diff.hasMeaningfulChange) {
+    return [];
+  }
+
+  const timestamp = new Date(nextSnapshot.generated_at).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const previousProjectionMap = new Map(
+    previousSnapshot.run_projections.map((projection) => [projection.run_id, projection]),
+  );
+  const nextProjectionMap = new Map(
+    nextSnapshot.run_projections.map((projection) => [projection.run_id, projection]),
+  );
+  const selected = resolveSelectedRunId(nextSnapshot);
+  const prioritizedChangedRunIds = [
+    ...diff.changedRunIds.filter((runId) => runId === selected),
+    ...diff.addedRunIds.filter((runId) => runId === selected),
+    ...diff.changedRunIds.filter((runId) => runId !== selected),
+    ...diff.addedRunIds.filter((runId) => runId !== selected),
+  ].slice(0, 3);
+
+  const items: ConversationItem[] = [];
+  for (const runId of prioritizedChangedRunIds) {
+    const projection = nextProjectionMap.get(runId);
+    if (!projection) {
+      continue;
+    }
+
+    items.push({
+      type: "system",
+      category:
+        projection.review_state === "PENDING" ||
+        projection.review_state === "FAIL" ||
+        projection.review_state === "FAILED"
+          ? "review"
+          : "activity",
+      timestamp,
+      actor: projection.label || projection.pane_id || "System",
+      title: diff.addedRunIds.includes(runId) ? "Run surfaced" : "Run updated",
+      body:
+        `Next ${projection.next_action || "idle"} · ` +
+        `${projection.changed_files.length} changed files · ` +
+        `review ${projection.review_state || "n/a"}.`,
+      details: [
+        { label: "run", value: runId },
+        { label: "branch", value: projection.branch || "no branch" },
+        { label: "head", value: projection.head_short || "n/a" },
+        { label: "verify", value: projection.verification_outcome || "n/a" },
+      ],
+      tone:
+        projection.review_state === "PASS"
+          ? "success"
+          : projection.review_state === "PENDING"
+            ? "warning"
+            : "info",
+      runId,
+      statusLabel: projection.next_action || projection.review_state || undefined,
+    });
+  }
+
+  for (const runId of diff.removedRunIds.slice(0, 2)) {
+    const previousProjection = previousProjectionMap.get(runId);
+    if (!previousProjection) {
+      continue;
+    }
+
+    items.push({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: previousProjection.label || previousProjection.pane_id || "System",
+      title: "Run removed",
+      body: `Run ${runId} dropped out of the desktop summary snapshot.`,
+      details: [
+        { label: "branch", value: previousProjection.branch || "no branch" },
+        { label: "head", value: previousProjection.head_short || "n/a" },
+      ],
+      tone: "warning",
+      runId,
+      statusLabel: previousProjection.review_state || undefined,
+    });
+  }
+
+  if (diff.inboxCountChanged) {
+    items.push({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "System",
+      title: "Inbox changed",
+      body: `Inbox items moved from ${previousSnapshot.inbox.summary.item_count} to ${nextSnapshot.inbox.summary.item_count}.`,
+      details: [{ label: "inbox", value: `${nextSnapshot.inbox.summary.item_count}` }],
+      tone: "warning",
+    });
+  }
+
+  return items.slice(0, 4);
 }
 
 function setTerminalDrawer(open: boolean) {
@@ -1858,7 +2153,7 @@ function syncResponsiveShell() {
 function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
   const now = new Date();
   const timestamp = `${`${now.getHours()}`.padStart(2, "0")}:${`${now.getMinutes()}`.padStart(2, "0")}`;
-  seedConversation.push({
+  appendRuntimeConversation({
     type: "user",
     category: "user",
     timestamp,
@@ -1870,7 +2165,7 @@ function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
       sizeLabel: attachment.sizeLabel,
     })),
   });
-  seedConversation.push({
+  appendRuntimeConversation({
     type: "operator",
     category: "activity",
     timestamp,
@@ -1884,39 +2179,159 @@ function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
     tone: "info",
   });
   renderRunSummary();
-  renderConversation(seedConversation);
+  renderConversation(getConversationItems());
 }
 
-function findEditorFile(label: string) {
-  const existing = editorFiles.find((editor) => editor.path === label);
+function findEditorFile(target: EditorTarget | null) {
+  if (!target) {
+    return null;
+  }
+
+  const existing = desktopEditorFileCache.get(target.key);
   if (existing) {
     return existing;
   }
 
-  const sourceChange = getProjectionSourceEntries().find((entry) => entry.path === label);
-  if (!sourceChange) {
-    return undefined;
-  }
-
-  const projection = getRunProjectionByRunId(sourceChange.run);
-  const explainSummary = projection?.summary || sourceChange.summary;
-  const branch = projection?.branch || sourceChange.branch;
-  const review = projection?.review_state || sourceChange.review;
-  const state = projection?.task_state || "unknown";
+  const loading = desktopEditorLoadingPaths.has(target.key);
+  const loadError = desktopEditorLoadErrors.get(target.key);
+  const previewBody = loadError
+    ? `Unable to load file preview.\n\n${loadError}`
+    : loading
+      ? "Loading file preview from backend..."
+      : "Select this file to load a real preview from the backend.";
 
   return {
-    path: sourceChange.path,
-    summary: explainSummary,
-    content:
-      `// Backend projection preview\n` +
-      `// ${branch} · ${sourceChange.paneLabel} · ${review}\n` +
-      `// ${sourceChange.lines} · state=${state}\n` +
-      (projection?.reasons?.length ? `// ${projection.reasons.join(" | ")}\n` : ""),
-    language: inferLanguageFromPath(sourceChange.path),
-    lineCount: projection?.changed_files.length || 3,
-    modified: sourceChange.status !== "deleted",
-    origin: "context",
+    key: target.key,
+    path: target.path,
+    summary: target.summary,
+    content: `${previewBody}\n`,
+    language: inferLanguageFromPath(target.path),
+    lineCount: countEditorLines(previewBody),
+    modified: target.modified,
+    origin: target.origin,
   };
+}
+
+function countEditorLines(content: string) {
+  return content.split(/\r?\n/).length;
+}
+
+function buildCachedEditorFile(
+  target: EditorTarget,
+  payload: DesktopEditorFilePayload,
+): EditorFile {
+  const summary = payload.truncated
+    ? `${target.summary} · preview truncated`
+    : target.summary;
+  return {
+    key: target.key,
+    path: payload.path,
+    summary,
+    content: payload.content,
+    language: inferLanguageFromPath(payload.path),
+    lineCount: payload.line_count || countEditorLines(payload.content),
+    modified: target.modified,
+    origin: target.origin,
+  };
+}
+
+function getEditorFiles() {
+  const targets = new Map<string, EditorTarget>();
+  for (const entry of getProjectionSourceEntries()) {
+    const target = getEditorTargetForSourceChange(entry);
+    if (target) {
+      targets.set(target.key, target);
+    }
+  }
+  for (const [key, target] of desktopStandaloneEditorTargets) {
+    if (!targets.has(key)) {
+      targets.set(key, target);
+    }
+  }
+
+  return Array.from(targets.values()).map((target) =>
+    findEditorFile(target) ?? {
+      key: target.key,
+      path: target.path,
+      summary: target.summary,
+      content: "Loading file preview from backend...",
+      language: inferLanguageFromPath(target.path),
+      lineCount: 1,
+      modified: target.modified,
+      origin: target.origin,
+    },
+  );
+}
+
+async function ensureEditorFileLoaded(target: EditorTarget | null) {
+  if (!target) {
+    return;
+  }
+
+  if (!target.path || desktopEditorFileCache.has(target.key) || desktopEditorLoadingPaths.has(target.key)) {
+    return;
+  }
+
+  desktopEditorLoadingPaths.add(target.key);
+  desktopEditorLoadErrors.delete(target.key);
+  renderEditorSurface();
+  renderOpenEditors();
+
+  try {
+    const payload = await getDesktopEditorFile(target.path, target.worktree || undefined);
+    desktopEditorFileCache.set(target.key, buildCachedEditorFile(target, payload));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    desktopEditorLoadErrors.set(target.key, message);
+  } finally {
+    desktopEditorLoadingPaths.delete(target.key);
+    renderEditorSurface();
+    renderOpenEditors();
+    renderSourceSummary();
+    renderContextPanel();
+    renderSourceEntries();
+    renderRunSummary();
+  }
+}
+
+async function openEditorTarget(target: EditorTarget | null) {
+  if (!target) {
+    setEditorSurface(true);
+    return;
+  }
+
+  selectedEditorKey = target.key;
+  setSelectedRun(target.sourceChange?.run ?? selectedRunId);
+  setEditorSurface(true);
+  renderSourceSummary();
+  renderRunSummary();
+  await ensureEditorFileLoaded(target);
+}
+
+async function openEditorSourceChange(sourceChange: SourceChange | undefined) {
+  await openEditorTarget(getEditorTargetForSourceChange(sourceChange));
+}
+
+async function openEditorPath(path: string | undefined, worktree = "") {
+  if (!path) {
+    await openEditorSourceChange(getPrimarySourceChange(getVisibleSourceChanges()));
+    return;
+  }
+
+  const sourceChange = findSourceChangeByPath(path, worktree);
+  if (sourceChange) {
+    setSelectedRun(sourceChange.run);
+    await openEditorSourceChange(sourceChange);
+    return;
+  }
+
+  const target = createStandaloneEditorTarget(path, worktree);
+  desktopStandaloneEditorTargets.set(target.key, target);
+  selectedEditorKey = target.key;
+  setEditorSurface(true);
+  renderOpenEditors();
+  renderEditorSurface();
+  await ensureEditorFileLoaded(target);
 }
 
 function inferLanguageFromPath(path: string) {
@@ -2003,36 +2418,103 @@ function buildDesktopSummaryConversation(snapshot: DesktopSummarySnapshot): Conv
   return items;
 }
 
-async function loadDesktopSummary() {
+function pruneExplainCache(snapshot: DesktopSummarySnapshot, preservedRunId?: string | null) {
+  const activeRunIds = new Set(snapshot.digest.items.map((item) => item.run_id));
+  if (preservedRunId) {
+    activeRunIds.add(preservedRunId);
+  }
+
+  for (const runId of Array.from(desktopExplainCache.keys())) {
+    if (!activeRunIds.has(runId)) {
+      desktopExplainCache.delete(runId);
+    }
+  }
+}
+
+function renderDesktopSurfaces() {
+  renderSessions();
+  renderFooterLane();
+  renderRunSummary();
+  renderSourceSummary();
+  renderSourceEntries();
+  renderContextPanel();
+  renderOpenEditors();
+  renderEditorSurface();
+  renderConversation(getConversationItems());
+}
+
+async function refreshDesktopSummary(forceExplainRunId?: string | null) {
+  if (desktopSummaryRefreshInFlight) {
+    return desktopSummaryRefreshInFlight;
+  }
+
+  desktopSummaryRefreshInFlight = (async () => {
   try {
+    const previousSnapshot = desktopSummarySnapshot;
+    const previousSelectedRunId = selectedRunId;
     const snapshot = await getDesktopSummarySnapshot();
+    const diff = diffDesktopSummarySnapshots(previousSnapshot, snapshot);
     desktopSummarySnapshot = snapshot;
-    const topRunId = snapshot.digest.items[0]?.run_id;
-    if (topRunId && !desktopExplainCache.has(topRunId)) {
+    selectedRunId = resolveSelectedRunId(snapshot, forceExplainRunId);
+    pruneExplainCache(snapshot, forceExplainRunId);
+    const selectedRunHasMaterialChange = Boolean(
+      selectedRunId &&
+        (diff.changedRunIds.includes(selectedRunId) || diff.addedRunIds.includes(selectedRunId)),
+    );
+    const shouldPrefetchExplain =
+      Boolean(selectedRunId) &&
+      (
+        forceExplainRunId === selectedRunId ||
+        !previousSnapshot ||
+        selectedRunId !== previousSelectedRunId ||
+        !desktopExplainCache.has(selectedRunId ?? "") ||
+        selectedRunHasMaterialChange
+      );
+    if (selectedRunId && shouldPrefetchExplain) {
       try {
-        const explainPayload = await getDesktopRunExplain(topRunId);
-        desktopExplainCache.set(topRunId, explainPayload);
+        const explainPayload = await getDesktopRunExplain(selectedRunId);
+        desktopExplainCache.set(selectedRunId, explainPayload);
       } catch (error) {
         console.warn("Failed to prefetch desktop explain payload", error);
       }
     }
 
-    const existingTitles = new Set(["Summary stream connected", "Inbox: review_pending", "Inbox: review_failed", "Inbox: task_blocked"]);
-    const retainedConversation = seedConversation.filter((item) => !item.title || !existingTitles.has(item.title));
-    seedConversation.splice(0, seedConversation.length, ...buildDesktopSummaryConversation(snapshot), ...retainedConversation);
+    if (previousSnapshot && !diff.hasMeaningfulChange && !forceExplainRunId && !shouldPrefetchExplain) {
+      return;
+    }
 
-    renderSessions();
-    renderFooterLane();
-    renderRunSummary();
-    renderSourceSummary();
-    renderSourceEntries();
-    renderContextPanel();
-    renderOpenEditors();
-    renderEditorSurface();
-    renderConversation(seedConversation);
+    backendConversation.splice(0, backendConversation.length, ...buildDesktopSummaryConversation(snapshot));
+    for (const item of buildDesktopFollowConversation(previousSnapshot, snapshot)) {
+      appendRuntimeConversation(item);
+    }
+    renderDesktopSurfaces();
   } catch (error) {
     console.warn("Failed to load desktop summary snapshot", error);
+  } finally {
+    desktopSummaryRefreshInFlight = null;
   }
+  })();
+
+  return desktopSummaryRefreshInFlight;
+}
+
+function registerDesktopSummaryLiveRefresh() {
+  window.setInterval(() => {
+    if (document.visibilityState !== "visible") {
+      return;
+    }
+    void refreshDesktopSummary();
+  }, DESKTOP_SUMMARY_REFRESH_INTERVAL_MS);
+
+  window.addEventListener("focus", () => {
+    void refreshDesktopSummary();
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      void refreshDesktopSummary();
+    }
+  });
 }
 
 function initializeSidebarResize() {
@@ -2059,18 +2541,16 @@ function initializeSidebarResize() {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
-  await listen<string>("pty-output", (event) => {
-    try {
-      const payload = JSON.parse(event.payload);
-      const entry = panes.get(payload.pane_id);
-      if (entry) {
-        entry.terminal.write(payload.data);
-      }
-    } catch {
-      const first = panes.values().next().value as PaneEntry | undefined;
-      if (first) {
-        first.terminal.write(event.payload);
-      }
+  await subscribeToPtyOutput((payload) => {
+    const entry = payload.pane_id ? panes.get(payload.pane_id) : undefined;
+    if (entry) {
+      entry.terminal.write(payload.data);
+      return;
+    }
+
+    const first = panes.values().next().value as PaneEntry | undefined;
+    if (first) {
+      first.terminal.write(payload.data);
     }
   });
 
@@ -2085,12 +2565,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderFooterLane();
   renderTimelineFilters();
   renderRunSummary();
-  renderConversation(seedConversation);
+  renderConversation(getConversationItems());
   renderComposerModes();
   renderAttachmentTray();
   renderCommandBar();
   renderEditorSurface();
-  await loadDesktopSummary();
+  await refreshDesktopSummary();
+  registerDesktopSummaryLiveRefresh();
   syncResponsiveShell();
   setEditorSurface(false);
   setTerminalDrawer(false);

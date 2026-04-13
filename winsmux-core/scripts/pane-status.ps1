@@ -138,6 +138,64 @@ function Get-PaneActualStateFromText {
     return 'busy'
 }
 
+function Get-PaneStatusWorktree {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Entry
+    )
+
+    $entryProjectDir = [string]$Entry.ProjectDir
+    $sessionProjectRoot = if (-not [string]::IsNullOrWhiteSpace($entryProjectDir)) { $entryProjectDir } else { $ProjectDir }
+    $worktreePath = ''
+
+    $launchDir = [string]$Entry.LaunchDir
+    # launch_dir reflects the pane's current cwd, so only prefer it when it points away from the session root.
+    if (
+        -not [string]::IsNullOrWhiteSpace($launchDir) -and
+        $launchDir -ne $ProjectDir -and
+        $launchDir -ne $entryProjectDir
+    ) {
+        $worktreePath = $launchDir
+    }
+
+    if ([string]::IsNullOrWhiteSpace($worktreePath)) {
+        $worktreePath = [string]$Entry.BuilderWorktreePath
+    }
+
+    if ([string]::IsNullOrWhiteSpace($worktreePath)) {
+        $role = [string]$Entry.Role
+        $label = [string]$Entry.Label
+        $branch = [string]$Entry.Branch
+        if (
+            $role -in @('Builder', 'Worker') -and
+            -not [string]::IsNullOrWhiteSpace($label) -and
+            $branch -eq ("worktree-{0}" -f $label)
+        ) {
+            $worktreePath = ".worktrees/$label"
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($worktreePath)) {
+        return ''
+    }
+
+    if (-not [System.IO.Path]::IsPathRooted($worktreePath)) {
+        return ($worktreePath -replace '\\', '/')
+    }
+
+    try {
+        $relativePath = [System.IO.Path]::GetRelativePath($sessionProjectRoot, $worktreePath)
+    } catch {
+        return ($worktreePath -replace '\\', '/')
+    }
+
+    if ([string]::IsNullOrWhiteSpace($relativePath) -or $relativePath -eq '.') {
+        return ''
+    }
+
+    return ($relativePath -replace '\\', '/')
+}
+
 function Get-PaneStatusRecords {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -182,6 +240,7 @@ function Get-PaneStatusRecords {
             TaskOwner       = $entry.TaskOwner
             ReviewState     = $entry.ReviewState
             Branch          = $entry.Branch
+            Worktree        = Get-PaneStatusWorktree -ProjectDir $ProjectDir -Entry $entry
             HeadSha         = $entry.HeadSha
             ChangedFileCount = $entry.ChangedFileCount
             ChangedFiles    = @($entry.ChangedFiles)

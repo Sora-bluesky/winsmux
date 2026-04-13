@@ -103,6 +103,23 @@ When updating planning:
 5. Treat missing Japanese roadmap titles as a sync gate failure, not as acceptable drift.
 6. Treat stale internal planning docs under `docs/internal/` as a sync failure when backlog-driven sections no longer match the external planning source of truth.
 
+## Rust Learning Note Gate
+
+When handoff work includes Rust, Cargo, Tauri, or Rust-adjacent commands used in winsmux development, Codex must also update the beginner-friendly learning note at:
+
+- `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md`
+
+Rules:
+
+1. Keep the note outside the repository. Never commit files under the external `Learning` path.
+2. Update the note during handoff in the same session that used the command, not later.
+3. Explain each command in beginner-friendly Japanese:
+   - what it does,
+   - when to use it,
+   - one concrete example from winsmux work.
+4. Prefer updating existing entries over adding duplicates.
+5. If the session did not use or discuss Rust-adjacent commands, no learning-note update is required.
+
 ## Release Notes Policy
 
 GitHub Release titles and bodies must be written in English, regardless of the conversation language.
