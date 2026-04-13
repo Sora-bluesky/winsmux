@@ -1781,6 +1781,10 @@ function renderEditorSurface() {
     return;
   }
   selectedEditorKey = selected.key;
+  const selectedTarget = getEditorTargetByKey(selected.key);
+  if (selectedTarget && !desktopEditorFileCache.has(selected.key) && !desktopEditorLoadingPaths.has(selected.key)) {
+    void ensureEditorFileLoaded(selectedTarget);
+  }
 
   path.textContent = selected.path;
   meta.innerHTML = "";
@@ -2189,12 +2193,6 @@ function findEditorFile(target: EditorTarget | null) {
     return existing;
   }
 
-  const sourceChange = target.sourceChange;
-  const projection = sourceChange ? getRunProjectionByRunId(sourceChange.run) : null;
-  const explainSummary = projection?.summary || target.summary;
-  const branch = projection?.branch || sourceChange?.branch || "";
-  const review = projection?.review_state || sourceChange?.review || "";
-  const state = projection?.task_state || "unknown";
   const loading = desktopEditorLoadingPaths.has(target.key);
   const loadError = desktopEditorLoadErrors.get(target.key);
   const previewBody = loadError
@@ -2206,16 +2204,10 @@ function findEditorFile(target: EditorTarget | null) {
   return {
     key: target.key,
     path: target.path,
-    summary: explainSummary,
-    content:
-      `// Backend file preview\n` +
-      (sourceChange ? `// ${branch} · ${sourceChange.paneLabel} · ${review}\n` : `// explorer selection\n`) +
-      (target.worktree ? `// worktree=${target.worktree}\n` : "") +
-      (sourceChange ? `// ${sourceChange.lines} · state=${state}\n` : `// state=${state}\n`) +
-      (projection?.reasons?.length ? `// ${projection.reasons.join(" | ")}\n` : "") +
-      `\n${previewBody}\n`,
+    summary: target.summary,
+    content: `${previewBody}\n`,
     language: inferLanguageFromPath(target.path),
-    lineCount: projection?.changed_files.length || 1,
+    lineCount: countEditorLines(previewBody),
     modified: target.modified,
     origin: target.origin,
   };

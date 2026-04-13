@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T04:30:00+09:00
+> Updated: 2026-04-14T04:45:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -122,6 +122,9 @@
   - `appendFallbackExplain()` copy is now shorter and backend-digest-first, without the older explanatory placeholder wording
   - the secondary editor empty state now uses neutral waiting copy instead of source-metadata-like placeholders
   - `refreshDesktopSummary()` now prefetches explain only on first load, selected-run change, cold cache, or explicit explain requests, instead of every material summary change
+- Continued `TASK-291 / TASK-107` on the editor hydration path:
+  - `findEditorFile()` now returns a neutral loading/error body instead of a synthetic metadata block when the backend file content is not cached yet
+  - `renderEditorSurface()` now triggers `ensureEditorFileLoaded()` as soon as the selected editor target is known, so backend preview loading starts without waiting for a second interaction
 - Added a durable Rust learning-note rule to `AGENTS.md` for future handoffs:
   - when a session uses Rust / Cargo / Tauri commands during winsmux work, handoff must also update `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md`
   - the note is kept outside the repo, stays beginner-friendly, and should be updated in the same session rather than deferred
@@ -224,6 +227,11 @@
 - Manual diff review was used provisionally after the initial 30s wait, then superseded by the delayed `PASS` before packaging
 - `npm run build` in `winsmux-app` -> PASS after narrowing explain copy, editor idle copy, and explain prefetch conditions
 - `npm run test:editor-targets` in `winsmux-app` -> PASS after the same narrow follow-up
+- `npm run build` in `winsmux-app` -> PASS after neutralizing editor hydration placeholders and starting selected-target loads eagerly
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the same editor hydration follow-up
+- `/review` follow-up via subagent `Helmholtz` -> `PASS` on the editor hydration slice:
+  - eager selected-target loading is guarded by `desktopEditorFileCache` / `desktopEditorLoadingPaths` and stays consistent with `ensureEditorFileLoaded()`
+  - `findEditorFile()` now stays backend-truth-focused by returning a neutral loading/error body instead of synthetic metadata
 - `/review` follow-up via `codex exec` -> `REQUEST_CHANGES`, then `APPROVE` after:
   - preferring `launch_dir` over stale `builder_worktree_path`
   - relativizing explicit worktrees against `session.project_dir`
