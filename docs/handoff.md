@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T04:45:00+09:00
+> Updated: 2026-04-14T05:20:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -125,6 +125,10 @@
 - Continued `TASK-291 / TASK-107` on the editor hydration path:
   - `findEditorFile()` now returns a neutral loading/error body instead of a synthetic metadata block when the backend file content is not cached yet
   - `renderEditorSurface()` now triggers `ensureEditorFileLoaded()` as soon as the selected editor target is known, so backend preview loading starts without waiting for a second interaction
+- Continued `TASK-289` on the summary follow-through path:
+  - the 15s desktop summary refresh now skips background tabs and relies on `focus` / `visibilitychange` for catch-up when the shell becomes visible again
+  - `getRunProjectionFingerprint()` no longer treats projection summary copy alone as a material change
+  - `refreshDesktopSummary()` now refreshes the selected run explain cache when that run shows a material projection change, instead of relying on copy churn
 - Added a durable Rust learning-note rule to `AGENTS.md` for future handoffs:
   - when a session uses Rust / Cargo / Tauri commands during winsmux work, handoff must also update `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md`
   - the note is kept outside the repo, stays beginner-friendly, and should be updated in the same session rather than deferred
@@ -232,6 +236,11 @@
 - `/review` follow-up via subagent `Helmholtz` -> `PASS` on the editor hydration slice:
   - eager selected-target loading is guarded by `desktopEditorFileCache` / `desktopEditorLoadingPaths` and stays consistent with `ensureEditorFileLoaded()`
   - `findEditorFile()` now stays backend-truth-focused by returning a neutral loading/error body instead of synthetic metadata
+- `npm run build` in `winsmux-app` -> PASS after trimming background polling and moving explain prefetch onto material selected-run changes
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the same `TASK-289` follow-through refinement
+- `/review` follow-up via subagent `Popper` -> delayed `PASS` on the `TASK-289` polling/material-change slice after the initial 30s wait
+  - the provisional manual diff review was superseded by the delayed `PASS`
+  - the reviewed slice stayed scoped to skipping hidden-tab interval refresh, removing `projection.summary` from material-change fingerprinting, and refreshing selected-run explain only when that run itself shows a material projection change
 - `/review` follow-up via `codex exec` -> `REQUEST_CHANGES`, then `APPROVE` after:
   - preferring `launch_dir` over stale `builder_worktree_path`
   - relativizing explicit worktrees against `session.project_dir`

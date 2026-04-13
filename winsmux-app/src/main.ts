@@ -1887,7 +1887,6 @@ function getRunProjectionFingerprint(projection: DesktopRunProjection | null | u
     projection.branch,
     projection.provider_target,
     projection.changed_files.join("|"),
-    projection.summary,
   ]);
 }
 
@@ -2458,13 +2457,18 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
     desktopSummarySnapshot = snapshot;
     selectedRunId = resolveSelectedRunId(snapshot, forceExplainRunId);
     pruneExplainCache(snapshot, forceExplainRunId);
+    const selectedRunHasMaterialChange = Boolean(
+      selectedRunId &&
+        (diff.changedRunIds.includes(selectedRunId) || diff.addedRunIds.includes(selectedRunId)),
+    );
     const shouldPrefetchExplain =
       Boolean(selectedRunId) &&
       (
         forceExplainRunId === selectedRunId ||
         !previousSnapshot ||
         selectedRunId !== previousSelectedRunId ||
-        !desktopExplainCache.has(selectedRunId ?? "")
+        !desktopExplainCache.has(selectedRunId ?? "") ||
+        selectedRunHasMaterialChange
       );
     if (selectedRunId && shouldPrefetchExplain) {
       try {
@@ -2496,6 +2500,9 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
 
 function registerDesktopSummaryLiveRefresh() {
   window.setInterval(() => {
+    if (document.visibilityState !== "visible") {
+      return;
+    }
     void refreshDesktopSummary();
   }, DESKTOP_SUMMARY_REFRESH_INTERVAL_MS);
 
