@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T03:35:00+09:00
+> Updated: 2026-04-14T04:15:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -113,6 +113,11 @@
   - created `codex/task290-detail-lane-20260414` and moved the selected-run editor targeting change there
   - removed the selected-run detail grid, action chips, and verification/security/action-item summarization from the `v0.22.0` branch
   - kept the `TASK-289 / TASK-291` pieces on `codex/task105-json-rpc-transport-20260413`: material-change follow-through and narrower explain prefetch on unchanged refreshes
+- Attempted a broader selected-run metadata surfacing pass for `TASK-291 / TASK-107`, then reverted it after review marked it as `TASK-290` UX drift.
+- Kept the next `v0.22.0` target narrower: backend-truth fallback cleanup should stay in Explain/editor placeholder handling, not in selected-run or source-metadata presentation.
+- Continued the narrower `TASK-291 / TASK-107` cleanup after that review:
+  - `appendFallbackExplain()` now falls back to current digest counts and next action instead of the older generic placeholder copy when explain loading fails
+  - source summary and secondary-editor metadata surfacing were both pared back after review so the `v0.22.0` slice stays out of `TASK-290` territory
 - Added a durable Rust learning-note rule to `AGENTS.md` for future handoffs:
   - when a session uses Rust / Cargo / Tauri commands during winsmux work, handoff must also update `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md`
   - the note is kept outside the repo, stays beginner-friendly, and should be updated in the same session rather than deferred
@@ -207,6 +212,12 @@
 - Manual diff review completed for the action-chip / prefetch-gating follow-up
 - `npm run build` in `winsmux-app` -> PASS after splitting `TASK-290` detail UX back out of the `v0.22.0` branch
 - `npm run test:editor-targets` in `winsmux-app` -> PASS after the same boundary cleanup
+- Fresh reviewer `Russell` -> `FAIL`; broader selected-run metadata presentation was classified as `TASK-290` UX drift and reverted from the `v0.22.0` lane
+- `npm run build` in `winsmux-app` -> PASS after narrowing the fallback cleanup back to Explain/editor placeholder handling
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the same narrowed fallback cleanup
+- Fresh reviewer `Poincare` -> `FAIL`; editor empty-state metadata surfacing was also classified as `TASK-290` UX drift and reverted from the `v0.22.0` lane
+- Fresh reviewer `Carson` -> `PASS` on the narrowed explain-fallback / metadata-reduction follow-up after delayed completion
+- Manual diff review was used provisionally after the initial 30s wait, then superseded by the delayed `PASS` before packaging
 - `/review` follow-up via `codex exec` -> `REQUEST_CHANGES`, then `APPROVE` after:
   - preferring `launch_dir` over stale `builder_worktree_path`
   - relativizing explicit worktrees against `session.project_dir`
@@ -256,7 +267,7 @@
 ## Next actions
 
 1. Update PR #417 from `codex/task105-json-rpc-transport-20260413` with the `v0.22.0` boundary cleanup and verify that only `TASK-105 / TASK-291 / TASK-289` scope remains on the branch.
-2. Continue `TASK-291 / TASK-107` by removing the remaining seeded fallback paths without re-expanding the selected-run detail surface.
+2. Continue `TASK-291 / TASK-107` by removing the remaining seeded fallback paths in Explain/editor hydration flow without re-expanding the selected-run detail surface.
 3. Continue `TASK-289` by reducing polling dependence further, either with narrower refresh triggers or a backend event surface once the transport shape is ready.
 4. Resume `TASK-290` later from `codex/task290-detail-lane-20260414`, after `v0.22.0` closes.
 5. Keep the new Rust learning note current during future handoffs whenever Rust / Cargo / Tauri commands are used in the session.

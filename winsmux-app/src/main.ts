@@ -637,17 +637,15 @@ function renderSourceSummary() {
 
   const activeEntries = getProjectionSourceEntries();
   const visibleChanges = getVisibleSourceChanges();
-  const primaryChange = getPrimarySourceChange(visibleChanges);
   const entryCount = visibleChanges.length;
   const attentionCount = visibleChanges.filter((item) => item.needsAttention).length;
   const commitCandidates = visibleChanges.filter((item) => item.commitCandidate).length;
   const summaryItems = [
-    { label: "Branch", value: primaryChange?.branch ?? "No branch" },
-    { label: "Run", value: primaryChange?.run ?? "No selected run" },
+    { label: "Selected scope", value: getSourceFilterLabel(activeSourceFilter) },
+    { label: "Projected", value: `${activeEntries.length} files` },
     { label: "Changed", value: `${entryCount} files` },
-    { label: "Review", value: primaryChange?.review ?? "No review state" },
     { label: "Ready", value: `${commitCandidates} candidate${commitCandidates === 1 ? "" : "s"}` },
-    { label: "Risk", value: `${attentionCount} attention · ${activeEntries.length} projected` },
+    { label: "Risk", value: `${attentionCount} attention` },
   ];
 
   root.innerHTML = "";
@@ -1437,22 +1435,35 @@ async function openExplainForSelectedRun() {
 function appendFallbackExplain() {
   const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
   const selectedRunId = getSelectedRunId();
+  const digestItem = getPrimaryDigestItem();
+  const hasSelectedDigest = Boolean(selectedRunId && digestItem?.run_id === selectedRunId);
+  const body = hasSelectedDigest
+    ? `Unable to load the latest explain payload for ${selectedRunId}. Backend summary still reports ${digestItem?.changed_file_count ?? 0} changed files and next ${digestItem?.next_action || "idle"}.`
+    : desktopSummarySnapshot && desktopSummarySnapshot.digest.summary.item_count > 0
+      ? "Explain is unavailable until a projected run is selected from the current backend summary."
+      : desktopSummarySnapshot
+        ? "The backend summary is connected, but no projected run is available to explain yet."
+        : "The backend summary is not connected yet. Once the desktop summary loads, Explain will follow the live run state.";
+  const details = hasSelectedDigest
+    ? [
+        { label: "run", value: selectedRunId as string },
+        { label: "next", value: digestItem?.next_action || "idle" },
+        { label: "changed", value: `${digestItem?.changed_file_count ?? 0}` },
+      ]
+    : desktopSummarySnapshot
+      ? [
+          { label: "runs", value: `${desktopSummarySnapshot.digest.summary.item_count}` },
+          { label: "inbox", value: `${desktopSummarySnapshot.inbox.summary.item_count}` },
+        ]
+      : [{ label: "state", value: "backend unavailable" }];
   appendRuntimeConversation({
     type: "operator",
     category: "activity",
     timestamp,
     actor: "Operator",
     title: "Explain opened",
-    body: selectedRunId
-      ? "Unable to load the latest explain payload. The current source context and run summary remain available while the backend refreshes."
-      : desktopSummarySnapshot
-        ? "No active backend run is available to explain yet. Wait for the digest to refresh or select a run from the current summary."
-        : "The backend summary is not connected yet. Once the desktop summary loads, Explain will follow the live run state.",
-    details: selectedRunId
-      ? [{ label: "run", value: selectedRunId }]
-      : desktopSummarySnapshot
-        ? [{ label: "inbox", value: `${desktopSummarySnapshot.inbox.summary.item_count}` }]
-        : [{ label: "state", value: "backend unavailable" }],
+    body,
+    details,
     tone: "info",
     runId: selectedRunId ?? undefined,
   });
@@ -1769,7 +1780,6 @@ function renderEditorSurface() {
     statusbar.textContent = "Secondary work surface: waiting for backend source data";
     return;
   }
-  const sourceChange = findSourceChangeByKey(selected.key);
   selectedEditorKey = selected.key;
 
   path.textContent = selected.path;
@@ -1779,9 +1789,6 @@ function renderEditorSurface() {
     `${selected.lineCount} lines`,
     selected.modified ? "Modified" : "Saved",
     selected.origin === "context" ? "Opened from context" : "Opened from explorer",
-    sourceChange
-      ? `${sourceChange.status} · ${sourceChange.branch}${sourceChange.worktree ? ` · ${sourceChange.worktree}` : ""}`
-      : "No source metadata",
   ]) {
     const chip = document.createElement("span");
     chip.className = `editor-meta-chip ${item === "Modified" ? "is-modified" : ""}`;
@@ -1790,9 +1797,7 @@ function renderEditorSurface() {
     meta.appendChild(chip);
   }
   code.textContent = selected.content;
-  statusbar.textContent = sourceChange
-    ? `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selected.path} · ${sourceChange.branch} · ${sourceChange.review}`
-    : `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selected.path}`;
+  statusbar.textContent = `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selected.path}`;
   tabs.innerHTML = "";
 
   for (const editor of editors) {
