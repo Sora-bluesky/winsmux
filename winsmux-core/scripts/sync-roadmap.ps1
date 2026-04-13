@@ -187,6 +187,23 @@ function Test-VersionGreaterOrEqual {
     return $true
 }
 
+function Test-RequiresJapaneseVersionTitle {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    if ($Version -like 'post-v1.0.0*') {
+        return $true
+    }
+
+    if ($Version -match '^v\d+\.\d+\.\d+$') {
+        return Test-VersionGreaterOrEqual -Version $Version -MinimumVersion 'v0.20.0'
+    }
+
+    return $false
+}
+
 function Convert-TitleFallbackToJapanese {
     param(
         [AllowNull()]
@@ -650,6 +667,7 @@ foreach ($taskBlock in $taskBlocks) {
 $downgradedTasks = New-Object System.Collections.Generic.List[object]
 $validationWarnings = New-Object System.Collections.Generic.List[string]
 $missingJapaneseTitles = New-Object System.Collections.Generic.List[string]
+$missingJapaneseVersionTitles = New-Object System.Collections.Generic.List[string]
 
 foreach ($task in $tasks | Where-Object { $_.Status -eq 'review' }) {
     $referenceFiles = Get-TaskReferenceFiles -Task $task -RoadmapPath $roadmapRelativePath
@@ -767,13 +785,6 @@ foreach ($versionGroup in $versionGroups) {
 [void]$builder.AppendLine('| P2 | 中 |')
 [void]$builder.AppendLine('| P3 | 低 |')
 
-$roadmapDirectory = Split-Path -Parent $resolvedRoadmapPath
-if (-not [string]::IsNullOrWhiteSpace($roadmapDirectory)) {
-    New-Item -ItemType Directory -Force -Path $roadmapDirectory 1>$null
-}
-
-[System.IO.File]::WriteAllText($resolvedRoadmapPath, $builder.ToString(), $utf8NoBom)
-
 foreach ($downgradedTask in $downgradedTasks) {
     Write-Output ("Downgraded {0}: review -> backlog (gitignored: {1})" -f $downgradedTask.Id, ($downgradedTask.Files -join ', '))
 }
@@ -793,11 +804,34 @@ foreach ($task in $tasksWithTargetVersion) {
     }
 }
 
+foreach ($versionGroup in $versionGroups) {
+    if (-not (Test-RequiresJapaneseVersionTitle -Version $versionGroup.Name)) {
+        continue
+    }
+
+    if (-not $roadmapLocalization.VersionTitles.ContainsKey($versionGroup.Name)) {
+        $missingJapaneseVersionTitles.Add($versionGroup.Name)
+    }
+}
+
+if ($missingJapaneseVersionTitles.Count -gt 0) {
+    $missingVersionList = $missingJapaneseVersionTitles | Sort-Object
+    Write-Error ("Roadmap Japanese version-title gate failed. Add version title overrides to {0} for: {1}" -f $resolvedRoadmapTitleJaPath, ($missingVersionList -join ', '))
+    exit 1
+}
+
 if ($missingJapaneseTitles.Count -gt 0) {
     $missingList = $missingJapaneseTitles | Sort-Object
     Write-Error ("Roadmap Japanese title gate failed. Add task title overrides to {0} for: {1}" -f $resolvedRoadmapTitleJaPath, ($missingList -join ', '))
     exit 1
 }
+
+$roadmapDirectory = Split-Path -Parent $resolvedRoadmapPath
+if (-not [string]::IsNullOrWhiteSpace($roadmapDirectory)) {
+    New-Item -ItemType Directory -Force -Path $roadmapDirectory 1>$null
+}
+
+[System.IO.File]::WriteAllText($resolvedRoadmapPath, $builder.ToString(), $utf8NoBom)
 
 $syncInternalDocsScript = Join-Path $PSScriptRoot 'sync-internal-docs.ps1'
 if (Test-Path -LiteralPath $syncInternalDocsScript) {

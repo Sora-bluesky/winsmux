@@ -202,7 +202,13 @@ function Get-PlanningState {
     }
 
     foreach ($status in $statuses) {
-        if ($status -in @('active', 'review', 'in-progress', 'in_progress', 'doing', 'done')) {
+        if ($status -eq 'done') {
+            return '公開済み'
+        }
+    }
+
+    foreach ($status in $statuses) {
+        if ($status -in @('active', 'review', 'in-progress', 'in_progress', 'doing')) {
             return '進行中'
         }
     }

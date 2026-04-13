@@ -8,7 +8,7 @@
 - `v0.20.0`, `v0.20.1`, `v0.20.2`, `v0.20.3`, `v0.21.0`, `v0.21.1`, and `v0.21.2` are released.
 - `v0.21.2` shipped as the terminal-based final form release before the `v0.22.0` Tauri control-plane handoff.
 - `ROADMAP.md` is now treated as the Japanese-facing planning surface, while `backlog.yaml` remains English-first.
-- internal-only docs under `docs/internal/` now include a user-facing feature inventory and a version-by-version manual verification checklist; both stay gitignored.
+- internal-only docs under `docs/internal/` now include a user-facing feature inventory and a version-by-version manual verification checklist; both stay gitignored and now cover the current released, active, and post-`v1.0.0` planned lanes.
 - `winsmux-core/scripts/sync-roadmap.ps1` now refreshes those internal docs as part of the same planning-sync flow, so backlog changes update `ROADMAP.md` and the two internal verification sheets together.
 - Windows-first planning is explicit again; cross-platform work is no longer on the pre-`v1.0.0` path.
 - public autonomous execution is now planned as a post-`v1.0.0` product line:
@@ -110,8 +110,8 @@
   - `winsmux-app/src/ptyClient.ts`
   These are intentionally outside the roadmap-localization slice and must not be staged with it.
 - Added internal-only verification docs:
-  - `docs/internal/winsmux-feature-inventory.md` now covers released / active / planned user-facing capabilities from `v0.1.0` through `v1.0.0`
-  - `docs/internal/winsmux-manual-checklist-by-version.md` now splits manual verification into a separate per-version checklist sheet
+  - `docs/internal/winsmux-feature-inventory.md` now covers released / active / planned user-facing capabilities from `v0.1.0` through the current post-`v1.0.0` roadmap lanes
+  - `docs/internal/winsmux-manual-checklist-by-version.md` now splits manual verification into a separate per-version checklist sheet and tracks the same roadmap horizon
 - Added `TASK-316` to external planning under `v0.24.5`:
   - English title: `Version-by-version manual checklist + guided E2E validation before v1.0.0`
   - purpose: use the new internal docs to run a Codex-guided end-to-end verification pass before `v1.0.0`
@@ -225,10 +225,12 @@
 - `pwsh -NoProfile -File winsmux-core/scripts/sync-roadmap.ps1` -> PASS after the `TASK-144` metadata fix
 - `pwsh -NoProfile -File winsmux-core/scripts/sync-roadmap.ps1` -> PASS after adding internal-doc auto-sync
 - Manual diff review completed for the planning-sync flow (`sync-roadmap.ps1`, `sync-internal-docs.ps1`, `internal-docs-meta.psd1`)
-- `/review` follow-up via subagent `Euclid` -> `no result yet` after the initial 30s wait on the planning/sync-only slice; manual diff review completed and the packaged scope stayed limited to:
-  - roadmap localization gate hardening in `winsmux-core/scripts/sync-roadmap.ps1`
-  - automatic internal-doc regeneration through `winsmux-core/scripts/sync-internal-docs.ps1`
-  - durable repo rules in `AGENTS.md` / `GUARDRAILS.md`
+- `/review` follow-up via subagent `Euclid` -> delayed `FAIL` on the planning/sync-only slice after the initial 30s wait
+- follow-up fix after the delayed `Euclid` review:
+  - `sync-roadmap.ps1` now validates missing Japanese version titles before writing `ROADMAP.md`, so the localization gate fails closed
+  - `sync-internal-docs.ps1` now classifies `done` tasks as `公開済み` instead of leaving them in the generated `進行中` view
+  - `docs/handoff.md` now describes the internal planning docs as extending through the current post-`v1.0.0` lanes
+- follow-up reviewer `Lorentz` -> `PASS` on the fix-up slice for fail-closed roadmap generation, `done` classification, and handoff scope wording
 
 ## Next actions
 
