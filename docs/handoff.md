@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-13T19:32:00+09:00
+> Updated: 2026-04-13T20:05:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -49,6 +49,15 @@
   - `main.ts` no longer invokes `desktop_summary_snapshot` or `desktop_run_explain` directly
   - backend contract types for summary/explain now live in the client module instead of the main shell
   - the current transport remains Tauri `invoke`, but the seam is ready for a later JSON-RPC / SDK swap
+- Merged PR #414 for the first `TASK-105` slice:
+  - branch: `codex/task105-desktop-client-seam-20260413`
+  - title: `feat: add tauri desktop client seam`
+  - `Pester Tests` green before merge
+- Started branch `codex/task105-desktop-client-transport-20260413` for the next `TASK-105` slice.
+- Refactored `winsmux-app/src/desktopClient.ts` to use an injectable `DesktopCommandTransport`:
+  - Tauri `invoke` is now the default transport implementation instead of the hardwired call site
+  - `getDesktopSummarySnapshot` and `getDesktopRunExplain` now resolve through the transport interface
+  - the next JSON-RPC slice can swap transport behavior without touching `main.ts`
 - Landed `TASK-216` slice 1 and slice 2 on `main`:
   - PR #408: leaf wrapper consolidation for `commander-poll`, `pane-status`, and `pane-control`
   - PR #409: wrapper-based `orchestra-layout` session/window/pane flow
@@ -83,6 +92,11 @@
 - `git diff --check` -> warnings only for CRLF normalization, no substantive errors
 - `cargo check` in `winsmux-app/src-tauri` -> PASS after `desktopClient.ts` extraction
 - `npm run build` in `winsmux-app` -> PASS after `desktopClient.ts` extraction
+- `git diff --check` -> warnings only for CRLF normalization, no substantive errors
+- Fresh reviewer `Darwin` -> `PASS` for the `desktopClient.ts` seam slice
+- PR #414 CI -> green (`Pester Tests`)
+- `npm run build` in `winsmux-app` -> PASS after `DesktopCommandTransport` refactor
+- `git diff --check` -> warnings only for CRLF normalization, no substantive errors
 - Fresh reviewer `Dewey` -> `PASS` for the projection-driven source-context slice in PR #412
 - Fresh reviewer `Herschel` -> `FAIL`; backend heuristic join removed after review
 - Fresh reviewer `Singer` -> `FAIL`; field semantics corrected to avoid fake worktree/source identity
@@ -124,8 +138,8 @@
 
 ## Next actions
 
-1. Open a PR for the `TASK-105` desktop client seam slice.
-2. Continue `v0.22.0` with the next backend-first slice after the seam lands, likely JSON-RPC transport substitution inside `desktopClient.ts`.
+1. Open a PR for the `DesktopCommandTransport` abstraction slice on `codex/task105-desktop-client-transport-20260413`.
+2. Continue `v0.22.0` with the next backend-first slice by swapping a concrete JSON-RPC transport implementation into `desktopClient.ts`.
 3. Track startup latency from per-run `explain` fetches inside `desktop_summary_snapshot` if digest volume grows.
 
 ## Notes

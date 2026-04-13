@@ -1,5 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 
+type DesktopCommandName = "desktop_summary_snapshot" | "desktop_run_explain";
+
+export interface DesktopCommandTransport {
+  request<TResponse>(
+    command: DesktopCommandName,
+    payload?: Record<string, unknown>,
+  ): Promise<TResponse>;
+}
+
 export interface DesktopBoardSummary {
   pane_count: number;
   dirty_panes: number;
@@ -133,9 +142,30 @@ function normalizeDesktopError(action: string, error: unknown) {
   return new Error(`${action} failed: ${String(error)}`);
 }
 
+export function createTauriDesktopCommandTransport(
+  invokeCommand: typeof invoke = invoke,
+): DesktopCommandTransport {
+  return {
+    request<TResponse>(command: DesktopCommandName, payload?: Record<string, unknown>) {
+      return invokeCommand<TResponse>(command, payload);
+    },
+  };
+}
+
+let desktopCommandTransport: DesktopCommandTransport =
+  createTauriDesktopCommandTransport();
+
+export function configureDesktopCommandTransport(
+  transport: DesktopCommandTransport,
+) {
+  desktopCommandTransport = transport;
+}
+
 export async function getDesktopSummarySnapshot() {
   try {
-    return await invoke<DesktopSummarySnapshot>("desktop_summary_snapshot");
+    return await desktopCommandTransport.request<DesktopSummarySnapshot>(
+      "desktop_summary_snapshot",
+    );
   } catch (error) {
     throw normalizeDesktopError("desktop_summary_snapshot", error);
   }
@@ -143,7 +173,10 @@ export async function getDesktopSummarySnapshot() {
 
 export async function getDesktopRunExplain(runId: string) {
   try {
-    return await invoke<DesktopExplainPayload>("desktop_run_explain", { runId });
+    return await desktopCommandTransport.request<DesktopExplainPayload>(
+      "desktop_run_explain",
+      { runId },
+    );
   } catch (error) {
     throw normalizeDesktopError(`desktop_run_explain(${runId})`, error);
   }
