@@ -3560,6 +3560,7 @@ Describe 'orchestra-start rollback helpers' {
 
     It 'writes a pane bootstrap plan and launches it with a single bootstrap command after respawn' {
         $sentCommands = [System.Collections.Generic.List[string]]::new()
+        $bridgeCalls = [System.Collections.Generic.List[object]]::new()
         $planRoot = Join-Path $script:orchestraStartTempRoot '.winsmux\orchestra-bootstrap'
         $cleanPtyEnv = [PSCustomObject]@{
             RemoveCommand = "Get-ChildItem Env: | Where-Object { `$_.Name -like 'WINSMUX_*' } | ForEach-Object { Remove-Item -LiteralPath ('Env:' + `$_.Name) -ErrorAction SilentlyContinue }"
@@ -3570,6 +3571,20 @@ Describe 'orchestra-start rollback helpers' {
         }
 
         Mock Wait-PaneShellReady { }
+        Mock Invoke-Bridge {
+            $bridgeCalls.Add([ordered]@{
+                Arguments    = @($Arguments)
+                CaptureOutput = [bool]$CaptureOutput
+                AllowFailure  = [bool]$AllowFailure
+            }) | Out-Null
+
+            return [ordered]@{
+                ExitCode = 0
+                Output   = @()
+            }
+        } -ParameterFilter {
+            $Arguments[0] -eq 'keys'
+        }
         Mock Send-OrchestraBridgeCommand {
             $sentCommands.Add($Text) | Out-Null
         }
@@ -3600,6 +3615,8 @@ Describe 'orchestra-start rollback helpers' {
         [string]$plan.launch_command | Should -Be 'codex --help'
         [string]$plan.startup_token | Should -Be 'token-123'
         [string]$plan.ready_marker_path | Should -Match '[\\/]2-token-123\.ready\.json$'
+        $bridgeCalls.Count | Should -Be 1
+        @($bridgeCalls[0].Arguments) | Should -Be @('keys', '%2', 'C-c')
         $sentCommands.Count | Should -Be 1
         $sentCommands[0] | Should -Match 'orchestra-pane-bootstrap\.ps1'
         $sentCommands[0] | Should -Match '-PlanFile'

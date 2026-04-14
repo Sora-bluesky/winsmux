@@ -763,6 +763,8 @@ function Start-OrchestraPaneBootstrap {
 
     $bootstrapScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'orchestra-pane-bootstrap.ps1'))
     Wait-PaneShellReady -PaneId $PaneId
+    Invoke-Bridge -Arguments @('keys', $PaneId, 'C-c') -AllowFailure | Out-Null
+    Start-Sleep -Milliseconds 200
     Send-OrchestraBridgeCommand -Target $PaneId -Text ("pwsh -NoProfile -File {0} -PlanFile {1}" -f (ConvertTo-PowerShellLiteral -Value $bootstrapScriptPath), (ConvertTo-PowerShellLiteral -Value $PlanPath))
     Start-Sleep -Milliseconds 500
 }
