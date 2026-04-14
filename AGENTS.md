@@ -120,6 +120,73 @@ Rules:
 4. Prefer updating existing entries over adding duplicates.
 5. If the session did not use or discuss Rust-adjacent commands, no learning-note update is required.
 
+## Orchestra Startup Gate
+
+When using `/winsmux-start` or otherwise restoring orchestra-driven work from Claude Code:
+
+1. Treat `external-commander: true` as **"no commander pane is created"**, not as **"worker panes may be absent"**.
+2. A session is **not ready** when the winsmux session exists but the active pane count is smaller than the expected worker count from `.winsmux.yaml` / resolved `agent_slots`.
+3. In that state, do not summarize status, propose task order, or dispatch work yet.
+4. First run the actual startup path (`winsmux-core/scripts/orchestra-start.ps1`) and verify that the pane count reaches the expected worker count.
+5. If pane expansion still fails, stop fail-closed and report the startup blocker clearly instead of falling back to local exploration or pretending orchestra is active.
+6. `/winsmux-start` restoration must distinguish these three states explicitly:
+   - `ready`: expected worker panes exist
+   - `needs-startup`: session exists but worker panes are missing
+   - `blocked`: startup was attempted and failed
+
+## Issue Escalation Gate
+
+When a new product, startup, orchestration, CI, or operator workflow problem is observed:
+
+1. Search for an existing GitHub issue first. Reuse it if the same root cause is already tracked.
+2. If no matching issue exists, create one before treating the problem as resolved.
+3. Every issue must have at least one GitHub label before the session ends.
+4. Prefer existing repository labels first. For winsmux, the default working set is:
+   - `bug`
+   - `chore`
+   - `debug`
+   - `documentation`
+   - `enhancement`
+   - `orchestration`
+   - `question`
+   - `review`
+   - `security`
+   - `testing`
+5. Only create a new custom label when none of the existing labels describe the issue well enough, and record that choice in `docs/handoff.md`.
+6. Record the exact reproduction symptom, current hypothesis, mitigation, and the PR or commit that addressed it.
+7. Update `docs/handoff.md` with the issue number, labels, and current resolution state in the same session.
+8. Do not silently "just fix and move on" for operational failures that could recur.
+9. If the problem is only partially understood, still create the issue and mark the remaining uncertainty explicitly.
+10. After creating or materially updating a non-duplicate issue, map it into planning in the same session unless it is explicitly triage-only, invalid, duplicate, or upstream-only.
+11. Planning mapping means:
+   - link the issue to an existing `TASK-*`, or add a new `TASK-*` in the external `backlog.yaml`,
+   - place it in the most appropriate version lane instead of defaulting to a catch-all bucket,
+   - when a task is created primarily to track a GitHub issue, append the issue reference to the task title itself (for example `(#423)`),
+   - add or update the Japanese title override in `tasks/roadmap-title-ja.psd1` when roadmap sync would expose the task,
+   - run `winsmux-core/scripts/sync-roadmap.ps1`,
+   - and record the issue-to-task mapping in `docs/handoff.md`.
+12. Treat "issue filed but not taskified" as incomplete operational bookkeeping unless the session explicitly documents why taskification is deferred.
+
+## Orchestra Boundary Gate
+
+When changing orchestra startup, restore, attach, watchdog, or rollback behavior:
+
+1. Do not solve the problem by adding more inline branching to one monolithic startup path unless no boundary-preserving option exists.
+2. Keep these responsibilities explicitly separable:
+   - detached session/bootstrap creation,
+   - visible UI attach,
+   - manifest/session-state persistence,
+   - watchdog launch,
+   - rollback/cleanup.
+3. Treat `session-ready`, `ui-attach-launched`, and `ui-attached` as different states. Do not collapse them into one success flag.
+4. If a change touches more than one of the responsibilities above, add or update tests that exercise the boundary directly.
+5. For startup regressions, prefer extracting a helper or state contract over patching more conditions into `orchestra-start.ps1`.
+6. Keep an operator-independent startup smoke path available.
+   - `winsmux orchestra-smoke --json` is the preferred quick check and must expose a structured `operator_contract`.
+   - Treat `operator_contract.operator_state`, `operator_contract.can_dispatch`, and `operator_contract.requires_startup` as the startup source of truth.
+   - Do not make `/winsmux-start` the only way to validate orchestra startup.
+7. If the fix reveals a structural boundary problem rather than a one-off defect, open or update an issue and map it to planning in the same session.
+
 ## Release Notes Policy
 
 GitHub Release titles and bodies must be written in English, regardless of the conversation language.
@@ -180,16 +247,22 @@ Codex must follow these rules:
 
 1. Close completed subagents promptly after their result is integrated.
 2. Prefer fresh review agents for new PR slices instead of keeping completed agents open.
-3. For review requests, wait at least 30 seconds before treating the review as timed out unless the task is explicitly urgent.
+3. For review requests, do not use a single fixed wait time.
+   - Small TypeScript/docs-only slices: wait at least 60 seconds before fallback.
+   - Rust/Tauri/PowerShell/orchestration slices: wait at least 120 seconds before fallback.
 4. A subagent timeout is not a PASS or FAIL result. It is only `no result yet`.
-5. If a review agent times out, Codex may continue with a fallback gate only when:
+5. If the review is merge-critical and still `no result yet`, Codex should allow one additional wait of the same duration before falling back, unless the task is explicitly urgent.
+6. Keep review concurrency at `1` unless the user explicitly asks for broader parallel review.
+7. Avoid `fork_context=true` for review agents unless the diff cannot be reviewed correctly without full thread context.
+8. If a review agent still has `no result yet`, Codex may continue with a fallback gate only when:
    - the diff is small and well-scoped,
    - validation passes,
    - manual diff review is completed,
-   - the timeout is explicitly recorded in `docs/handoff.md` or the PR summary.
-6. Before merge, if a delayed subagent result arrives, Codex must incorporate that result into the final merge decision.
-7. If review agents time out repeatedly across slices, Codex must treat that as a process issue and either:
+   - the `no result yet` status is explicitly recorded in `docs/handoff.md` or the PR summary.
+9. Before merge, if a delayed subagent result arrives, Codex must incorporate that result into the final merge decision.
+10. If review agents repeatedly return `no result yet` across slices, Codex must treat that as a process issue and either:
    - reduce review scope,
    - reduce concurrent agents,
    - increase wait time,
+   - open or update a tracking issue,
    - or document the blocker clearly before continuing.

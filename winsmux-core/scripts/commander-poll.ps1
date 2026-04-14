@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$ManifestPath,
+    [string]$StartupToken = '',
     [int]$Interval = 20
 )
 

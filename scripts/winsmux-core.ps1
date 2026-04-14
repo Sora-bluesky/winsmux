@@ -2320,6 +2320,26 @@ function Invoke-Send {
         }
     }
 
+    $contextLaunchDir = $projectDir
+    $contextGitWorktreeDir = ''
+    if ($null -ne $context) {
+        if ($context -is [System.Collections.IDictionary]) {
+            if ($context.Contains('LaunchDir')) {
+                $contextLaunchDir = [string]$context['LaunchDir']
+            }
+            if ($context.Contains('GitWorktreeDir')) {
+                $contextGitWorktreeDir = [string]$context['GitWorktreeDir']
+            }
+        } else {
+            if ($null -ne $context.PSObject -and $context.PSObject.Properties.Name -contains 'LaunchDir') {
+                $contextLaunchDir = [string]$context.LaunchDir
+            }
+            if ($null -ne $context.PSObject -and $context.PSObject.Properties.Name -contains 'GitWorktreeDir') {
+                $contextGitWorktreeDir = [string]$context.GitWorktreeDir
+            }
+        }
+    }
+
     $transportPlan = Resolve-SendTransportPlan `
         -Text $text `
         -ProjectDir $projectDir `
@@ -2327,8 +2347,8 @@ function Invoke-Send {
         -PromptTransport ([string]$agentConfig.PromptTransport) `
         -TaskSlug $taskSlug `
         -ExecMode:$execMode `
-        -LaunchDir ([string]$context.LaunchDir) `
-        -GitWorktreeDir ([string]$context.GitWorktreeDir) `
+        -LaunchDir $contextLaunchDir `
+        -GitWorktreeDir $contextGitWorktreeDir `
         -Model ([string]$agentConfig.Model)
 
     if ($transportPlan['Mode'] -eq 'codex_exec_file') {
@@ -6279,6 +6299,7 @@ promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>
   pipeline <task>       Run plan-exec-verify-fix loop for a task
   task-run <task>       Alias for pipeline; one-shot orchestration entrypoint
   builder-queue <action> [args]  Manage Builder queue and auto-dispatch next work
+  orchestra-smoke [--json] [--project-dir <path>]  Start Orchestra if needed and report structured startup contract + UI attach state
   vault set <key> [value]   Store a credential securely (DPAPI)
   vault get <key>           Retrieve a stored credential
   vault inject <pane>       Inject all credentials as env vars into a pane
@@ -6600,6 +6621,30 @@ switch ($Command) {
                 Stop-WithError "usage: winsmux builder-queue [add|list|dispatch-next|complete] ..."
             }
         }
+    }
+    'orchestra-smoke' {
+        $smokeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-smoke.ps1'))
+        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
+        $smokeArgs = @()
+        for ($index = 0; $index -lt $remaining.Count; $index++) {
+            switch ($remaining[$index]) {
+                '--json' {
+                    $smokeArgs += '-AsJson'
+                }
+                '--project-dir' {
+                    if ($index + 1 -ge $remaining.Count) {
+                    Stop-WithError "usage: winsmux orchestra-smoke [--json] [--project-dir <path>]"
+                }
+
+                $smokeArgs += @('-ProjectDir', $remaining[$index + 1])
+                $index++
+            }
+                default {
+                    Stop-WithError "usage: winsmux orchestra-smoke [--json] [--project-dir <path>]"
+                }
+            }
+        }
+        & pwsh -NoProfile -File $smokeScript @smokeArgs
     }
     'vault'           {
         switch ($Target) {

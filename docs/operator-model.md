@@ -78,31 +78,36 @@ The current direction is **slot/capability-based orchestration**, not hard-coded
 
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 
-## 4. Public role-definition documents
+## 4. Public docs vs runtime contracts
 
-The public contract is split across these files:
+The public product-facing operator contract is centered on these files:
 
 - `README.md`
 - `.claude/CLAUDE.md`
+- this file
+
+The managed-pane runtime contracts live in:
+
 - `AGENT-BASE.md`
 - `AGENT.md`
 - `GEMINI.md`
-- this file
 
 Their responsibilities are:
 
 - `.claude/CLAUDE.md`
-  - operator role definition
+  - Claude Code operator role definition
 - `AGENT-BASE.md`
-  - pane-wide shared execution contract
+  - shared pane-side execution contract
 - `AGENT.md`
   - Codex-specific pane contract
 - `GEMINI.md`
   - Gemini-specific pane contract
 
+These pane contracts are important for repository-operated and dogfooding flows, but they are not the primary public explanation of winsmux's operator model.
+
 ## 5. Public docs vs contributor docs
 
-The files listed in this document describe the **public product contract** for winsmux.
+The public-facing docs describe the operator model and product shape.
 Contributor workflows, release operations, and repository-specific maintenance rules are documented separately and do not define the public operator or pane contract.
 
 ## 6. Legacy layouts vs current model

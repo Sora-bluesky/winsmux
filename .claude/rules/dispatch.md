@@ -4,6 +4,19 @@ paths: ["winsmux-core/scripts/**", ".claude/**"]
 
 # Commander Dispatch Procedure
 
+## Orchestra restore preflight
+1. If restoration state is `needs-startup`, do not triage PRs, plan merges, read backlog, or dispatch work yet.
+2. First run `pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1`.
+3. Then run `pwsh -NoProfile -File scripts/winsmux-core.ps1 orchestra-smoke --json`.
+4. Verify `operator_contract.operator_state`, `operator_contract.can_dispatch`, and `operator_contract.requires_startup` from the smoke JSON before any PR triage, merge action, backlog reading, or task dispatch.
+5. Allowed dispatchable states are:
+   - `ready`
+   - `ready-with-ui-warning`
+   Any other state is fail-closed.
+6. Never use `psmux --version`, `Get-Process psmux-server`, or similar legacy probe commands for operator-side startup diagnosis.
+7. If pane expansion does not succeed, treat the session as `blocked` and report the smoke/startup failure.
+8. Do not plan merge work while the orchestra session is still not dispatchable.
+
 ## Builder Dispatch
 1. Check pane state: `winsmux capture-pane -t <pane> -p | tail -5`
 2. Write `.builder-prompt.txt` to Builder worktree (from manifest.yaml launch_dir)

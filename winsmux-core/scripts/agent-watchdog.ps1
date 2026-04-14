@@ -2,6 +2,7 @@
 param(
     [string]$ManifestPath = '',
     [string]$SessionName = 'winsmux-orchestra',
+    [string]$StartupToken = '',
     [int]$IdleThreshold = 120,
     [int]$PollInterval = 30
 )
