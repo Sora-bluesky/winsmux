@@ -6278,6 +6278,37 @@ Describe 'winsmux orchestra-smoke command' {
     }
 }
 
+Describe 'operator startup restore contract docs' {
+    BeforeAll {
+        $script:claudeGuidePath = Join-Path (Split-Path -Parent $PSScriptRoot) '.claude\CLAUDE.md'
+        $script:claudeGuideContent = Get-Content -Path $script:claudeGuidePath -Raw -Encoding UTF8
+        $script:dispatchRulePath = Join-Path (Split-Path -Parent $PSScriptRoot) '.claude\rules\dispatch.md'
+        $script:dispatchRuleContent = Get-Content -Path $script:dispatchRulePath -Raw -Encoding UTF8
+    }
+
+    It 'requires orchestra-smoke operator_contract instead of legacy psmux probes' {
+        $script:claudeGuideContent | Should -Match 'winsmux orchestra-smoke --json'
+        $script:claudeGuideContent | Should -Match 'needs-startup'
+        $script:claudeGuideContent | Should -Match 'orchestra-start\.ps1'
+        $script:claudeGuideContent | Should -Match 'operator_contract\.operator_state'
+        $script:claudeGuideContent | Should -Match 'operator_contract\.can_dispatch'
+        $script:claudeGuideContent | Should -Match 'operator_contract\.requires_startup'
+        $script:claudeGuideContent | Should -Match 'ready-with-ui-warning'
+        $script:claudeGuideContent | Should -Match 'psmux --version'
+        $script:claudeGuideContent | Should -Match 'Get-Process psmux-server'
+        $script:claudeGuideContent | Should -Match 'manually start a `psmux` server'
+        $script:dispatchRuleContent | Should -Match 'scripts/winsmux-core\.ps1 orchestra-smoke --json'
+        $script:dispatchRuleContent | Should -Match 'needs-startup'
+        $script:dispatchRuleContent | Should -Match 'orchestra-start\.ps1'
+        $script:dispatchRuleContent | Should -Match 'operator_contract\.operator_state'
+        $script:dispatchRuleContent | Should -Match 'operator_contract\.can_dispatch'
+        $script:dispatchRuleContent | Should -Match 'operator_contract\.requires_startup'
+        $script:dispatchRuleContent | Should -Match 'ready-with-ui-warning'
+        $script:dispatchRuleContent | Should -Match 'psmux --version'
+        $script:dispatchRuleContent | Should -Match 'Get-Process psmux-server'
+    }
+}
+
 Describe 'orchestra pane bootstrap plan' {
     BeforeAll {
         $script:orchestraStartPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1'

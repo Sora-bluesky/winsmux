@@ -8,7 +8,7 @@ paths: ["winsmux-core/scripts/**", ".claude/**"]
 1. If restoration state is `needs-startup`, do not triage PRs, plan merges, read backlog, or dispatch work yet.
 2. First run `pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1`.
 3. Then run `pwsh -NoProfile -File scripts/winsmux-core.ps1 orchestra-smoke --json`.
-4. Verify `operator_contract.operator_state` and `operator_contract.can_dispatch` from the smoke JSON before any PR triage, merge action, backlog reading, or task dispatch.
+4. Verify `operator_contract.operator_state`, `operator_contract.can_dispatch`, and `operator_contract.requires_startup` from the smoke JSON before any PR triage, merge action, backlog reading, or task dispatch.
 5. Allowed dispatchable states are:
    - `ready`
    - `ready-with-ui-warning`

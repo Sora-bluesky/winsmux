@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-15T03:41:00+09:00
+> Updated: 2026-04-15T03:55:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -114,6 +114,10 @@
   - Actions run [24387251545](https://github.com/Sora-bluesky/winsmux/actions/runs/24387251545) は `checks the bootstrap pane count before reporting startup ready` の 1 件だけ失敗していました
   - 原因は `tests/winsmux-bridge.Tests.ps1` の該当試験が `Invoke-Winsmux new-session` を mock しておらず、CI では `winsmux` 実行ファイル非存在に落ちていたことです
   - 試験側で `Invoke-Winsmux` を明示 mock し、`new-session` が 1 回呼ばれることも assertion に追加しました
+- `/winsmux-start` の復元文脈が `operator_contract` を正本として読むことを content regression で固定しました。
+  - `tests/winsmux-bridge.Tests.ps1` に `.claude/CLAUDE.md` と `.claude/rules/dispatch.md` の回帰試験を追加しました
+  - startup 判定は `winsmux orchestra-smoke --json` と `operator_contract.operator_state/can_dispatch/requires_startup` を使うこと
+  - `psmux --version`、`Get-Process psmux-server`、`psmux サーバーを手動起動してください` に戻らないこと
 
 ## Validation
 
@@ -161,6 +165,7 @@
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `200 PASS` after fixing `wt new-tab -- <command>` fallback, CLM-safe plan/marker writes, and `orchestra-smoke` stale-manifest handling
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> PASS after adding the structured `operator_contract` startup contract checks to `orchestra-smoke`
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `200 PASS` after mocking `Invoke-Winsmux new-session` in the bootstrap pane-count test so CI no longer depends on a local `winsmux` executable
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `201 PASS` after adding content-regression coverage for `.claude/CLAUDE.md` and `.claude/rules/dispatch.md` so `/winsmux-start`-side restore guidance stays pinned to `operator_contract`
 - `pwsh -NoProfile -File .\scripts\winsmux-core.ps1 orchestra-smoke --json` -> PASS (`pane_count=6`, `expected_pane_count=6`, `manifest_found=true`, `session_ready=true`, `ui_attach_status=attach_launched_pwsh`, `ui_attached=false`, `smoke_ok=true`)
 - issue [#425](https://github.com/Sora-bluesky/winsmux/issues/425) -> updated with the attach child early-exit model and the absolute-path `winsmux` attach contract
 - `pwsh -NoProfile -File .\winsmux-core\scripts\sync-roadmap.ps1` -> PASS after adding `TASK-342` and syncing the startup-boundary refactor task
