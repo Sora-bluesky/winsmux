@@ -41,15 +41,21 @@ try {
     }
   }
 
-  // Rule 2a: When orchestra is not ready, only startup/diagnostic shell commands are allowed (#424).
+  // Rule 2a: When orchestra is not ready, block PR/merge progression until startup succeeds (#424).
   if (toolName === "Bash") {
     const currentRole = normalizeAgentValue(process.env.WINSMUX_ROLE);
     if (currentRole !== "builder" && currentRole !== "worker") {
+      const orchestraProbeAvailable = hasOrchestraProbeInputs(process.cwd());
       const orchestraState = getOrchestraRestoreGateState(process.cwd());
-      if (orchestraState.state !== "ready" && !isAllowedOrchestraRecoveryCommand(bashCommand)) {
+      const shouldEnforceStartupGate =
+        orchestraState.state === "needs-startup" ||
+        (orchestraProbeAvailable && orchestraState.state === "unknown" && isUnknownStateFailClosedCommand(bashCommand));
+      if (shouldEnforceStartupGate &&
+          isBlockedUntilOrchestraReady(bashCommand) &&
+          !isAllowedOrchestraRecoveryCommand(bashCommand)) {
         deny(
           `Orchestra is ${orchestraState.state} (${orchestraState.current}/${orchestraState.expected} panes, ${orchestraState.reason}). ` +
-          "Run winsmux-core/scripts/orchestra-start.ps1 or pane diagnostics first. PR/merge/planning shell commands are blocked until worker panes are ready.",
+          "Run winsmux-core/scripts/orchestra-start.ps1 or pane diagnostics first. PR/merge progression commands are blocked until worker panes are ready.",
         );
       }
     }
@@ -264,6 +270,14 @@ $state = if ($current -lt $expected) { 'needs-startup' } else { 'ready' }
   }
 }
 
+function hasOrchestraProbeInputs(cwd) {
+  try {
+    return fs.existsSync(path.join(cwd, "winsmux-core", "scripts", "settings.ps1"));
+  } catch {
+    return false;
+  }
+}
+
 function isAllowedOrchestraRecoveryCommand(command) {
   const segments = splitCommandSegments(command);
   if (segments.length === 0) {
@@ -274,13 +288,14 @@ function isAllowedOrchestraRecoveryCommand(command) {
 }
 
 function isAllowedOrchestraRecoverySegment(segment) {
-  const tokens = tokenizeCommandLine(segment);
+  const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
+  const tokens = tokenizeCommandLine(normalizedSegment);
   if (tokens.length === 0) {
     return true;
   }
 
   const executable = getExecutableBasename(tokens[0]);
-  if (isReadOnlySearchCommand(executable)) {
+  if (isReadOnlySearchCommand(executable) || isReadOnlyPowerShellDiagnostic(executable, normalizedSegment)) {
     return true;
   }
 
@@ -331,12 +346,67 @@ function isAllowedOrchestraRecoverySegment(segment) {
   return false;
 }
 
+function isBlockedUntilOrchestraReady(command) {
+  const normalized = normalizePathValue(command);
+  return isReviewGatedCommand(command) ||
+         /\bgh\b(?:\s+(?:-[a-z]|--[a-z][\w-]*)(?:[=\s]+(?:"[^"]*"|'[^']*'|[^\s]+))?)*\s+pr\s+create\b/i.test(command) ||
+         /\bgh\b(?:\s+(?:-[a-z]|--[a-z][\w-]*)(?:[=\s]+(?:"[^"]*"|'[^']*'|[^\s]+))?)*\s+pr\s+ready\b/i.test(command) ||
+         /\/sync-roadmap\.ps1\b/i.test(normalized);
+}
+
+function isUnknownStateFailClosedCommand(command) {
+  return /\bgh\b(?:\s+(?:-[a-z]|--[a-z][\w-]*)(?:[=\s]+(?:"[^"]*"|'[^']*'|[^\s]+))?)*\s+pr\s+(?:merge|create|ready)\b/i.test(command);
+}
+
+function unwrapPowerShellCommandWrapper(segment) {
+  let current = typeof segment === "string" ? segment.trim() : "";
+
+  while (true) {
+    const wrappedWithCallOperator = /^&\s*\{([\s\S]*)\}$/u.exec(current);
+    if (wrappedWithCallOperator) {
+      current = wrappedWithCallOperator[1].trim();
+      continue;
+    }
+
+    const wrappedWithScriptBlock = /^\{([\s\S]*)\}$/u.exec(current);
+    if (wrappedWithScriptBlock) {
+      current = wrappedWithScriptBlock[1].trim();
+      continue;
+    }
+
+    break;
+  }
+
+  return current;
+}
+
 function hasAllowedWinsmuxDiagnosticCommand(tokens, startIndex) {
   return hasStandaloneCommandToken(tokens, "has-session", startIndex) ||
          hasStandaloneCommandToken(tokens, "list-panes", startIndex) ||
          hasStandaloneCommandToken(tokens, "capture-pane", startIndex) ||
          hasStandaloneCommandToken(tokens, "display-message", startIndex) ||
          hasStandaloneCommandToken(tokens, "show-options", startIndex);
+}
+
+function isReadOnlyPowerShellDiagnostic(executable, segment) {
+  const normalizedExecutable = normalizeAgentValue(executable);
+  if (![
+    "get-content",
+    "test-path",
+    "get-childitem",
+    "get-item",
+    "select-string",
+    "write-host",
+    "write-output",
+    "echo",
+    "dir",
+    "ls",
+    "type",
+  ].includes(normalizedExecutable)) {
+    return false;
+  }
+
+  return !/(?:>|>>|\bset-content\b|\badd-content\b|\bout-file\b|\bcopy-item\b|\bmove-item\b|\brename-item\b|\bremove-item\b|\bnew-item\b|\bni\b)/i.test(segment);
 }
 
 function isOrchestraStartScript(value) {
@@ -766,8 +836,10 @@ module.exports = {
   getExecutableBasename,
   getOptionValue,
   getReviewStateHeadSha,
+  hasOrchestraProbeInputs,
   hasStandaloneCommandToken,
   hasValidReviewerPass,
+  isBlockedUntilOrchestraReady,
   isDirectCodexDispatch,
   isDirectCodeWriteBypassCommand,
   isDirectReviewStateWriteCommand,
@@ -776,11 +848,13 @@ module.exports = {
   isGitMergeCommand,
   isPowerShellExecutable,
   isProtectedReviewStatePath,
+  isReadOnlyPowerShellDiagnostic,
   isReadOnlySearchCommand,
   isReviewerOnlyCommand,
   isReviewerOnlySegment,
   isReviewGatedCommand,
   isSettingsLocalHookMutation,
+  isUnknownStateFailClosedCommand,
   isWinsmuxCoreScript,
   isWinsmuxExecutable,
   isWriteCapableAgentMode,
@@ -791,4 +865,5 @@ module.exports = {
   stripHeredocBodies,
   stripOuterQuotes,
   tokenizeCommandLine,
+  unwrapPowerShellCommandWrapper,
 };

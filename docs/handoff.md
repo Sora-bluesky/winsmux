@@ -124,6 +124,7 @@
 - `pwsh -NoProfile -File .\winsmux-core\scripts\sync-roadmap.ps1` -> PASS after adding `TASK-339` and enforcing the issue→task planning flow
 - `pwsh -NoProfile -File .\winsmux-core\scripts\sync-roadmap.ps1` -> PASS after adding `TASK-340` and syncing the new startup-priority rule
 - `node --check .claude\hooks\sh-orchestra-gate.js` -> PASS after adding the executable startup gate for `TASK-340`
+- `Invoke-Pester tests/Integration.GateEnforcement.Tests.ps1` -> `45 PASS` after narrowing the executable startup gate to PR/merge progression commands and allowing `-Command` startup wrappers plus read-only diagnostics
 - reviewer `Euclid` -> delayed `FAIL`
   - roadmap localization gate が write 後判定だった点
   - internal docs の `done` 分類
@@ -204,4 +205,5 @@
   - labels: `bug`, `orchestration`
   - 同じ session で `TASK-340` (`#424`) として `v0.22.0` に追加し、`needs-startup` は worker 展開完了まで hard gate とする方針を planning に反映しました
   - `.claude/CLAUDE.md` と `.claude/rules/dispatch.md` に、`needs-startup` 時は `orchestra-start.ps1` を最優先で走らせ、pane 数確認前に PR/merge/backlog planning に進まないルールを追加しました
-  - さらに `.claude/hooks/sh-orchestra-gate.js` に executable gate を追加し、orchestra が expected pane count 未満の間は startup/diagnostic 以外の operator-side Bash を deny するようにしました
+  - さらに `.claude/hooks/sh-orchestra-gate.js` に executable gate を追加し、orchestra が expected pane count 未満の間は PR/merge progression 系の operator-side Bash を deny するようにしました
+  - `pwsh -Command "& { pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1 ... }"` のような startup wrapper と、`Get-Content` / `Test-Path` / `Get-ChildItem` / `Select-String` / `Write-Host` / `Write-Output` などの read-only diagnostics は通るように調整しました
