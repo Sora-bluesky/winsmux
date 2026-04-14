@@ -16,11 +16,32 @@ function Get-OrchestraSmokeLayoutSettings {
     param([string]$Root)
 
     $settings = Get-BridgeSettings -ProjectDir $Root
-    $rawWorkers = [string](Get-RoleAgentConfig -Role 'worker' -Settings $settings).count
-    $workers = if ([string]::IsNullOrWhiteSpace($rawWorkers)) { 6 } else { [int]$rawWorkers }
+    $workers = [int]$settings.worker_count
+    $agentSlots = @()
+    if ($settings -is [System.Collections.IDictionary]) {
+        if ($settings.Contains('agent_slots')) {
+            $agentSlots = @($settings.agent_slots)
+        }
+    } elseif ($null -ne $settings -and $null -ne $settings.PSObject -and ($settings.PSObject.Properties.Name -contains 'agent_slots')) {
+        $agentSlots = @($settings.agent_slots)
+    }
+
+    if ([bool]$settings.legacy_role_layout) {
+        return [ordered]@{
+            Commanders  = [int]$settings.commanders
+            Workers     = 0
+            Builders    = [int]$settings.builders
+            Researchers = [int]$settings.researchers
+            Reviewers   = [int]$settings.reviewers
+        }
+    }
+
+    if ($agentSlots.Count -gt 0) {
+        $workers = $agentSlots.Count
+    }
 
     return [ordered]@{
-        Commanders = 0
+        Commanders = if ([bool]$settings.external_commander) { 0 } else { 1 }
         Workers    = $workers
         Builders   = 0
         Researchers = 0
@@ -38,6 +59,24 @@ function Get-OrchestraSmokeExpectedPaneCount {
         [int]$LayoutSettings.Reviewers
 }
 
+function ConvertTo-OrchestraSmokeBoolean {
+    param([AllowNull()]$Value)
+
+    if ($Value -is [bool]) {
+        return [bool]$Value
+    }
+
+    $text = ([string]$Value).Trim().ToLowerInvariant()
+    switch ($text) {
+        'true' { return $true }
+        'false' { return $false }
+        '1' { return $true }
+        '0' { return $false }
+        '' { return $false }
+        default { return [bool]$Value }
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($ProjectDir)) {
     $ProjectDir = (Get-Location).Path
 }
@@ -47,9 +86,10 @@ $SessionName = 'winsmux-orchestra'
 $startScript = Join-Path $scriptsRoot 'orchestra-start.ps1'
 $winsmuxCorePath = Join-Path (Split-Path -Parent $scriptsRoot) '..\scripts\winsmux-core.ps1'
 $winsmuxCorePath = [System.IO.Path]::GetFullPath($winsmuxCorePath)
-
-$startOutput = & pwsh -NoProfile -Command "Set-Location -LiteralPath '$ProjectDir'; & '$startScript'" 2>&1
-$startExitCode = $LASTEXITCODE
+$layoutSettings = Get-OrchestraSmokeLayoutSettings -Root $ProjectDir
+$expectedPaneCount = Get-OrchestraSmokeExpectedPaneCount -LayoutSettings $layoutSettings
+$manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+$manifestFound = Test-Path -LiteralPath $manifestPath
 
 $winsmuxBin = ''
 try {
@@ -76,10 +116,33 @@ if (-not [string]::IsNullOrWhiteSpace($winsmuxBin)) {
     $paneProbeError = 'winsmux executable could not be resolved.'
 }
 
-$layoutSettings = Get-OrchestraSmokeLayoutSettings -Root $ProjectDir
-$expectedPaneCount = Get-OrchestraSmokeExpectedPaneCount -LayoutSettings $layoutSettings
-$manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
-$manifestFound = Test-Path -LiteralPath $manifestPath
+$startOutput = ''
+$startExitCode = 0
+$sessionAlreadyHealthy = $paneProbeOk -and $paneCount -ge $expectedPaneCount -and $manifestFound
+if ($sessionAlreadyHealthy) {
+    $startOutput = 'Skipped orchestra-start; existing orchestra session already meets the smoke prerequisites.'
+} else {
+    $startOutput = & pwsh -NoProfile -Command "Set-Location -LiteralPath '$ProjectDir'; & '$startScript'" 2>&1
+    $startExitCode = $LASTEXITCODE
+    $manifestFound = Test-Path -LiteralPath $manifestPath
+    if (-not [string]::IsNullOrWhiteSpace($winsmuxBin)) {
+        try {
+            $paneLines = & $winsmuxBin list-panes -t $SessionName 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $paneCount = @($paneLines | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count
+                $paneProbeOk = $true
+                $paneProbeError = ''
+            } else {
+                $paneProbeOk = $false
+                $paneProbeError = ($paneLines | Out-String).Trim()
+            }
+        } catch {
+            $paneProbeOk = $false
+            $paneProbeError = $_.Exception.Message
+        }
+    }
+}
+
 $sessionReady = $false
 $uiAttachLaunched = $false
 $uiAttached = $false
@@ -87,11 +150,11 @@ $uiAttachStatus = ''
 $uiAttachReason = ''
 
 if ($manifestFound) {
-    $manifest = Read-WinsmuxManifest -ProjectDir $ProjectDir
+    $manifest = Get-WinsmuxManifest -ProjectDir $ProjectDir
     if ($null -ne $manifest -and $null -ne $manifest.session) {
-        $sessionReady = [bool]$manifest.session.session_ready
-        $uiAttachLaunched = [bool]$manifest.session.ui_attach_launched
-        $uiAttached = [bool]$manifest.session.ui_attached
+        $sessionReady = ConvertTo-OrchestraSmokeBoolean $manifest.session.session_ready
+        $uiAttachLaunched = ConvertTo-OrchestraSmokeBoolean $manifest.session.ui_attach_launched
+        $uiAttached = ConvertTo-OrchestraSmokeBoolean $manifest.session.ui_attached
         $uiAttachStatus = [string]$manifest.session.ui_attach_status
         $uiAttachReason = [string]$manifest.session.ui_attach_reason
     }

@@ -6624,7 +6624,7 @@ switch ($Command) {
     }
     'orchestra-smoke' {
         $smokeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-smoke.ps1'))
-        $remaining = @($Target) + @($Rest) | Where-Object { $_ }
+        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
         $smokeArgs = @()
         for ($index = 0; $index -lt $remaining.Count; $index++) {
             switch ($remaining[$index]) {

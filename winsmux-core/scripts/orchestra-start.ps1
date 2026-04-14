@@ -223,11 +223,24 @@ function Try-StartOrchestraUiAttach {
         '-NoProfile', '-NoExit', '-File', $bootstrapScriptPath, '-SessionName', $SessionName, '-WinsmuxPath', $winsmuxPathForAttach, '-AttachOnly'
     )
 
+    $pwshResult = Start-OrchestraAttachProcess `
+        -FilePath $pwshPath `
+        -ArgumentList $bootstrapArguments `
+        -Path $pwshPath `
+        -LaunchedStatus 'attach_launched_pwsh' `
+        -LaunchedReason 'Launched orchestra bootstrap in a standalone PowerShell window.' `
+        -FallbackReason 'Standalone PowerShell attach exited during the early-failure window.'
+
+    if ([string]$pwshResult.Status -ne 'attach_exited_early' -and [string]$pwshResult.Status -ne 'attach_failed') {
+        return $pwshResult
+    }
+
     if ($null -eq $wtResult) {
         $wtArguments = @(
             '--size', "$Width,$Height",
             'new-tab',
             '--title', $SessionName,
+            '--',
             $pwshPath
         ) + $bootstrapArguments
 
@@ -235,31 +248,19 @@ function Try-StartOrchestraUiAttach {
             -FilePath ([string]$terminalInfo.Path) `
             -ArgumentList $wtArguments `
             -Path ([string]$terminalInfo.Path) `
-            -LaunchedStatus 'attach_launched' `
-            -LaunchedReason 'Windows Terminal attach child remained running past the early-failure window; final attach confirmation remains asynchronous.' `
+            -LaunchedStatus 'attach_launched_wt_fallback' `
+            -LaunchedReason 'Standalone PowerShell attach failed; launched Windows Terminal attach child as a fallback.' `
             -FallbackReason 'Windows Terminal attach child exited during the early-failure window.'
 
-        if ([string]$wtResult.Status -ne 'attach_exited_early' -and [string]$wtResult.Status -ne 'attach_failed') {
+        if ([bool]$wtResult.Launched) {
+            $wtResult | Add-Member -NotePropertyName FallbackFrom -NotePropertyValue ([string]$pwshResult.Status) -Force
             return $wtResult
         }
     }
 
-    $fallbackResult = Start-OrchestraAttachProcess `
-        -FilePath $pwshPath `
-        -ArgumentList $bootstrapArguments `
-        -Path $pwshPath `
-        -LaunchedStatus 'attach_launched_pwsh_fallback' `
-        -LaunchedReason 'Windows Terminal attach failed; launched orchestra bootstrap in a standalone PowerShell window instead.' `
-        -FallbackReason 'Windows Terminal attach failed, and the standalone PowerShell fallback exited during the early-failure window.'
-
-    if ([bool]$fallbackResult.Launched) {
-        $fallbackResult | Add-Member -NotePropertyName FallbackFrom -NotePropertyValue ([string]$wtResult.Status) -Force
-        return $fallbackResult
-    }
-
-    $wtResult | Add-Member -NotePropertyName FallbackStatus -NotePropertyValue ([string]$fallbackResult.Status) -Force
-    $wtResult | Add-Member -NotePropertyName FallbackReason -NotePropertyValue ([string]$fallbackResult.Reason) -Force
-    return $wtResult
+    $pwshResult | Add-Member -NotePropertyName FallbackStatus -NotePropertyValue ([string]$wtResult.Status) -Force
+    $pwshResult | Add-Member -NotePropertyName FallbackReason -NotePropertyValue ([string]$wtResult.Reason) -Force
+    return $pwshResult
 }
 
 function Ensure-OrchestraBootstrapSession {
@@ -373,10 +374,10 @@ function Reset-OrchestraServerSession {
         'windows_terminal'
     }
     $health = 'BootstrapOnly'
-    if ($bootstrapMode -ne 'detached_fallback') {
-        $health = (Wait-OrchestraServerHealthy -SessionName $SessionName -WinsmuxBin $WinsmuxBin -TimeoutSeconds 60 -ExpectedPaneCount $ExpectedPaneCount).Health
-    } else {
+    if ($bootstrapMode -eq 'detached_fallback') {
         Write-Warning "Reset-OrchestraServerSession: detached bootstrap fallback used for $SessionName; skipping strict health wait and continuing to layout startup."
+    } else {
+        Write-Warning "Reset-OrchestraServerSession: bootstrap mode $bootstrapMode used for $SessionName; skipping strict pre-layout health wait and continuing to layout startup."
     }
 
     return [PSCustomObject][ordered]@{
@@ -718,6 +719,7 @@ function New-OrchestraPaneBootstrapPlan {
         [Parameter(Mandatory = $true)][string]$Role,
         [Parameter(Mandatory = $true)][string]$Agent,
         [Parameter(Mandatory = $true)][string]$Model,
+        [Parameter(Mandatory = $true)][string]$StartupToken,
         [Parameter(Mandatory = $true)][string]$LaunchDir,
         [Parameter(Mandatory = $true)]$CleanPtyEnv,
         [Parameter(Mandatory = $true)][string]$LaunchCommand
@@ -734,18 +736,22 @@ function New-OrchestraPaneBootstrapPlan {
     }
 
     $planPath = Join-Path $bootstrapDir ("{0}.json" -f $safePaneId)
+    $readyMarkerPath = Join-Path $bootstrapDir ("{0}-{1}.ready.json" -f $safePaneId, $StartupToken)
     $plan = [ordered]@{
         pane_id        = $PaneId
         label          = $Label
         role           = $Role
         agent          = $Agent
         model          = $Model
+        startup_token  = $StartupToken
         launch_dir     = $LaunchDir
         launch_command = $LaunchCommand
+        ready_marker_path = $readyMarkerPath
         environment    = $CleanPtyEnv.Environment
     }
 
-    $plan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $planPath -Encoding UTF8
+    $planJson = ($plan | ConvertTo-Json -Depth 8)
+    Write-WinsmuxTextFile -Path $planPath -Content $planJson
     return $planPath
 }
 
@@ -759,6 +765,17 @@ function Start-OrchestraPaneBootstrap {
     Wait-PaneShellReady -PaneId $PaneId
     Send-OrchestraBridgeCommand -Target $PaneId -Text ("pwsh -NoProfile -File {0} -PlanFile {1}" -f (ConvertTo-PowerShellLiteral -Value $bootstrapScriptPath), (ConvertTo-PowerShellLiteral -Value $PlanPath))
     Start-Sleep -Milliseconds 500
+}
+
+function Get-OrchestraPaneBootstrapMarkerPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$PlanPath,
+        [Parameter(Mandatory = $true)][string]$StartupToken
+    )
+
+    $planDirectory = Split-Path -Parent $PlanPath
+    $planBaseName = [System.IO.Path]::GetFileNameWithoutExtension($PlanPath)
+    return Join-Path $planDirectory ("{0}-{1}.ready.json" -f $planBaseName, $StartupToken)
 }
 
 function Get-AgentLaunchCommand {
@@ -1594,13 +1611,78 @@ function Assert-OrchestraBootstrapVerification {
     }
 }
 
+function Test-PaneCaptureContainsLaunchDir {
+    param(
+        [AllowNull()][string]$CaptureText,
+        [Parameter(Mandatory = $true)][string]$ExpectedLaunchDir
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CaptureText) -or [string]::IsNullOrWhiteSpace($ExpectedLaunchDir)) {
+        return $false
+    }
+
+    $normalizedCapture = $CaptureText.Replace('/', '\').ToLowerInvariant()
+    $normalizedExpected = $ExpectedLaunchDir.Replace('/', '\').ToLowerInvariant()
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $candidates.Add($normalizedExpected) | Out-Null
+
+    $userProfile = [Environment]::GetFolderPath([System.Environment+SpecialFolder]::UserProfile)
+    if (-not [string]::IsNullOrWhiteSpace($userProfile)) {
+        $normalizedUserProfile = $userProfile.Replace('/', '\').ToLowerInvariant()
+        if ($normalizedExpected.StartsWith($normalizedUserProfile)) {
+            $candidates.Add(("~" + $normalizedExpected.Substring($normalizedUserProfile.Length))) | Out-Null
+        }
+    }
+
+    $worktreeMarker = '\.worktrees\'
+    $worktreeIndex = $normalizedExpected.IndexOf($worktreeMarker, [System.StringComparison]::Ordinal)
+    if ($worktreeIndex -ge 0) {
+        $candidates.Add($normalizedExpected.Substring($worktreeIndex)) | Out-Null
+    }
+
+    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $normalizedCapture.Contains($candidate)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Test-OrchestraBootstrapMarker {
+    param(
+        [AllowNull()][string]$BootstrapMarkerPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedLaunchDir
+    )
+
+    if ([string]::IsNullOrWhiteSpace($BootstrapMarkerPath) -or -not (Test-Path -LiteralPath $BootstrapMarkerPath)) {
+        return $false
+    }
+
+    try {
+        $marker = Get-Content -LiteralPath $BootstrapMarkerPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 6
+        $normalizedExpected = $ExpectedLaunchDir.Replace('/', '\').ToLowerInvariant()
+        foreach ($candidate in @([string]$marker.launch_dir, [string]$marker.current_dir)) {
+            if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+                if ($candidate.Replace('/', '\').ToLowerInvariant() -eq $normalizedExpected) {
+                    return $true
+                }
+            }
+        }
+    } catch {
+    }
+
+    return $false
+}
+
 function Test-PaneBootstrapInvariants {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
         [Parameter(Mandatory = $true)][string]$Label,
         [Parameter(Mandatory = $true)][string]$ExpectedRole,
         [Parameter(Mandatory = $true)][string]$ExpectedLaunchDir,
-        [string]$ExpectedWorktreePath = ''
+        [string]$ExpectedWorktreePath = '',
+        [string]$BootstrapMarkerPath = ''
     )
 
     $failures = [System.Collections.Generic.List[string]]::new()
@@ -1619,10 +1701,20 @@ function Test-PaneBootstrapInvariants {
         $actualCwd = ([string]$cwdOutput).Trim().Replace('\', '/')
         $expectedCwd = $ExpectedLaunchDir.Replace('\', '/')
         if ($actualCwd -and $expectedCwd -and ($actualCwd.ToLowerInvariant() -ne $expectedCwd.ToLowerInvariant())) {
-            $failures.Add("cwd mismatch: expected=$ExpectedLaunchDir actual=$actualCwd")
+            if (-not (Test-OrchestraBootstrapMarker -BootstrapMarkerPath $BootstrapMarkerPath -ExpectedLaunchDir $ExpectedLaunchDir)) {
+                $snapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+                $snapshotText = ($snapshot | Out-String).TrimEnd()
+                if (-not (Test-PaneCaptureContainsLaunchDir -CaptureText $snapshotText -ExpectedLaunchDir $ExpectedLaunchDir)) {
+                    $failures.Add("cwd mismatch: expected=$ExpectedLaunchDir actual=$actualCwd")
+                }
+            }
         }
     } catch {
         $failures.Add("could not read pane cwd: $($_.Exception.Message)")
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($BootstrapMarkerPath) -and -not (Test-Path -LiteralPath $BootstrapMarkerPath)) {
+        $failures.Add("bootstrap marker missing: $BootstrapMarkerPath")
     }
 
     return $failures
@@ -1778,10 +1870,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         } else {
             'windows_terminal'
         }
-        if ($bootstrapMode -ne 'detached_fallback') {
-            $null = Wait-OrchestraServerHealthy -SessionName $sessionName -WinsmuxBin $winsmuxBin -TimeoutSeconds 60 -ExpectedPaneCount $bootstrapPaneCount
+        if ($bootstrapMode -eq 'detached_fallback') {
+            Write-Warning "Preflight: detached bootstrap fallback active for $sessionName; proceeding without strict pre-layout health metadata gate."
         } else {
-            Write-Warning "Preflight: detached bootstrap fallback active for $sessionName; proceeding without strict health metadata gate."
+            Write-Warning "Preflight: bootstrap mode $bootstrapMode active for $sessionName; proceeding without strict pre-layout health metadata gate."
         }
         Write-WinsmuxLog -Level INFO -Event 'preflight.session.reuse' -Message "Reusing server-created session $sessionName." -Data ([ordered]@{
             session_name    = $sessionName
@@ -1936,6 +2028,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                     -Role $canonicalRole `
                     -Agent ([string]$slotAgentConfig.Agent) `
                     -Model ([string]$slotAgentConfig.Model) `
+                    -StartupToken $startupToken `
                     -LaunchDir $launchDir `
                     -CleanPtyEnv $cleanPtyEnv `
                     -LaunchCommand $launchCommand
@@ -1966,6 +2059,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             LaunchDir = $launchDir
             BuilderBranch = $builderBranch
             BuilderWorktreePath = $builderWorktreePath
+            BootstrapMarkerPath = if ([string]::IsNullOrWhiteSpace($bootstrapPlanPath)) { '' } else { Get-OrchestraPaneBootstrapMarkerPath -PlanPath $bootstrapPlanPath -StartupToken $startupToken }
             Status = 'ready'
         })
     }
@@ -1988,7 +2082,8 @@ if ($MyInvocation.InvocationName -ne '.') {
             -Label $paneSummary.Label `
             -ExpectedRole $paneSummary.Role `
             -ExpectedLaunchDir $paneSummary.LaunchDir `
-            -ExpectedWorktreePath ([string]$paneSummary.BuilderWorktreePath))
+            -ExpectedWorktreePath ([string]$paneSummary.BuilderWorktreePath) `
+            -BootstrapMarkerPath ([string]$paneSummary.BootstrapMarkerPath))
 
         if ($failures.Count -gt 0) {
             $failureText = $failures -join '; '
@@ -2009,7 +2104,8 @@ if ($MyInvocation.InvocationName -ne '.') {
     Assert-OrchestraBootstrapVerification -PaneSummaries @($paneSummaries) -InvalidCount $invalidCount -ReadyCount $readyCount
 
     $uiAttachResult = Try-StartOrchestraUiAttach -SessionName $sessionName
-    if ($uiAttachResult.Status -ne 'attach_launched') {
+    $successfulAttachStatuses = @('attach_launched', 'attach_launched_pwsh', 'attach_launched_wt_fallback')
+    if ($successfulAttachStatuses -notcontains [string]$uiAttachResult.Status) {
         Write-Warning "Orchestra UI attach status for ${sessionName}: $($uiAttachResult.Status) ($($uiAttachResult.Reason))"
     }
 
