@@ -1424,7 +1424,8 @@ async function openExplainForSelectedRun() {
         runId: payload.run.run_id,
       });
     }
-    await refreshDesktopSummary(payload.run.run_id);
+    renderRunSummary();
+    renderConversation(getConversationItems());
   } catch (error) {
     console.warn("Failed to load desktop explain payload", error);
     appendFallbackExplain();
