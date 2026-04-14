@@ -3005,11 +3005,22 @@ Describe 'orchestra-start server bootstrap' {
     It 'checks the bootstrap pane count before reporting startup ready' {
         $script:probeCount = 0
         $script:paneCountCallCount = 0
+        $script:newSessionCalls = 0
 
         function Test-OrchestraServerSession {
             param([string]$SessionName)
             $script:probeCount++
             return ($script:probeCount -ge 2)
+        }
+
+        function Invoke-Winsmux {
+            param([string[]]$Arguments, [switch]$CaptureOutput)
+            if ($Arguments[0] -eq 'new-session') {
+                $script:newSessionCalls++
+                return
+            }
+
+            throw "unexpected winsmux call: $($Arguments -join ' ')"
         }
 
         function Get-Command {
@@ -3038,6 +3049,9 @@ Describe 'orchestra-start server bootstrap' {
 
         $result.BootstrapReady | Should -Be $true
         $result.StartupReady | Should -Be $false
+        $result.BootstrapMode | Should -Be 'detached_primary'
+        $result.UiAttachStatus | Should -Be 'not_requested'
+        $script:newSessionCalls | Should -Be 1
         $script:paneCountCallCount | Should -Be 1
         $script:probeCount | Should -Be 2
     }
