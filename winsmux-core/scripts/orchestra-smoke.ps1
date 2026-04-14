@@ -77,6 +77,70 @@ function ConvertTo-OrchestraSmokeBoolean {
     }
 }
 
+function Get-OrchestraOperatorContract {
+    param(
+        [Parameter(Mandatory = $true)][bool]$SmokeOk,
+        [Parameter(Mandatory = $true)][bool]$SessionReady,
+        [Parameter(Mandatory = $true)][bool]$UiAttachLaunched,
+        [Parameter(Mandatory = $true)][bool]$UiAttached,
+        [Parameter(Mandatory = $true)][string]$UiAttachStatus,
+        [Parameter(Mandatory = $true)][int]$PaneCount,
+        [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
+        [Parameter(Mandatory = $true)][string[]]$SmokeErrors
+    )
+
+    $state = 'blocked'
+    $message = 'Orchestra startup is blocked. Inspect smoke_errors before continuing.'
+    $canDispatch = $false
+    $requiresStartup = $true
+    $uiWarning = $false
+    $nextAction = 'Inspect smoke_errors and rerun orchestra-start before dispatching work.'
+
+    if ($SmokeOk) {
+        $state = 'ready'
+        $message = 'Orchestra session is ready for dispatch.'
+        $canDispatch = $true
+        $requiresStartup = $false
+        $nextAction = 'Dispatch work or continue operator flow.'
+
+        if ($SessionReady -and ($UiAttachLaunched -or -not $UiAttached)) {
+            $uiAttachWarningStatuses = @(
+                'attach_launched',
+                'attach_launched_pwsh',
+                'attach_launched_wt_fallback',
+                'wt_alias_stub',
+                'wt_unavailable',
+                'attach_exited_early',
+                'attach_failed',
+                'winsmux_unresolved'
+            )
+            if ($uiAttachWarningStatuses -contains $UiAttachStatus -or -not $UiAttached) {
+                $state = 'ready-with-ui-warning'
+                $message = 'Orchestra session is ready, but UI attach needs attention.'
+                $uiWarning = $true
+                $nextAction = 'Dispatch may continue; retry UI attach only if a visible operator window is required.'
+            }
+        }
+    } elseif ($PaneCount -lt $ExpectedPaneCount -or -not $SessionReady) {
+        $state = 'blocked'
+        $message = 'Orchestra startup did not reach session-ready.'
+        $canDispatch = $false
+        $requiresStartup = $true
+        $nextAction = 'Fix startup blockers and rerun orchestra-start, then recheck orchestra-smoke.'
+    }
+
+    return [ordered]@{
+        contract_version = 1
+        operator_state   = $state
+        operator_message = $message
+        can_dispatch     = $canDispatch
+        requires_startup = $requiresStartup
+        ui_warning       = $uiWarning
+        next_action      = $nextAction
+        smoke_errors     = @($SmokeErrors)
+    }
+}
+
 if ([string]::IsNullOrWhiteSpace($ProjectDir)) {
     $ProjectDir = (Get-Location).Path
 }
@@ -166,6 +230,15 @@ if (-not $manifestFound) { $smokeErrors.Add('manifest missing after startup.') |
 if (-not $sessionReady) { $smokeErrors.Add('session_ready is false.') | Out-Null }
 if (-not $paneProbeOk) { $smokeErrors.Add("pane probe failed: $paneProbeError") | Out-Null }
 if ($paneProbeOk -and $paneCount -lt $expectedPaneCount) { $smokeErrors.Add("pane count $paneCount is below expected $expectedPaneCount.") | Out-Null }
+$operatorContract = Get-OrchestraOperatorContract `
+    -SmokeOk ($smokeErrors.Count -eq 0) `
+    -SessionReady $sessionReady `
+    -UiAttachLaunched $uiAttachLaunched `
+    -UiAttached $uiAttached `
+    -UiAttachStatus $uiAttachStatus `
+    -PaneCount $paneCount `
+    -ExpectedPaneCount $expectedPaneCount `
+    -SmokeErrors @($smokeErrors)
 
 $result = [ordered]@{
     project_dir         = $ProjectDir
@@ -184,6 +257,7 @@ $result = [ordered]@{
     ui_attach_reason    = $uiAttachReason
     smoke_ok            = ($smokeErrors.Count -eq 0)
     smoke_errors        = @($smokeErrors)
+    operator_contract   = $operatorContract
     startup_output      = ($startOutput | Out-String).Trim()
 }
 

@@ -8,10 +8,14 @@ paths: ["winsmux-core/scripts/**", ".claude/**"]
 1. If restoration state is `needs-startup`, do not triage PRs, plan merges, read backlog, or dispatch work yet.
 2. First run `pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1`.
 3. Then run `pwsh -NoProfile -File scripts/winsmux-core.ps1 orchestra-smoke --json`.
-4. Verify `session_ready=true` and the expected worker pane count before any PR triage, merge action, backlog reading, or task dispatch.
-5. Never use `psmux --version`, `Get-Process psmux-server`, or similar legacy probe commands for operator-side startup diagnosis.
-6. If pane expansion does not succeed, treat the session as `blocked` and report the smoke/startup failure.
-7. Do not plan merge work while the orchestra session is still missing worker panes.
+4. Verify `operator_contract.operator_state` and `operator_contract.can_dispatch` from the smoke JSON before any PR triage, merge action, backlog reading, or task dispatch.
+5. Allowed dispatchable states are:
+   - `ready`
+   - `ready-with-ui-warning`
+   Any other state is fail-closed.
+6. Never use `psmux --version`, `Get-Process psmux-server`, or similar legacy probe commands for operator-side startup diagnosis.
+7. If pane expansion does not succeed, treat the session as `blocked` and report the smoke/startup failure.
+8. Do not plan merge work while the orchestra session is still not dispatchable.
 
 ## Builder Dispatch
 1. Check pane state: `winsmux capture-pane -t <pane> -p | tail -5`

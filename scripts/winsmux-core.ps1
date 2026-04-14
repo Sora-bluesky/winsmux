@@ -6299,7 +6299,7 @@ promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>
   pipeline <task>       Run plan-exec-verify-fix loop for a task
   task-run <task>       Alias for pipeline; one-shot orchestration entrypoint
   builder-queue <action> [args]  Manage Builder queue and auto-dispatch next work
-  orchestra-smoke [--json] [--project-dir <path>]  Start Orchestra if needed and report session-ready/UI-attach state
+  orchestra-smoke [--json] [--project-dir <path>]  Start Orchestra if needed and report structured startup contract + UI attach state
   vault set <key> [value]   Store a credential securely (DPAPI)
   vault get <key>           Retrieve a stored credential
   vault inject <pane>       Inject all credentials as env vars into a pane

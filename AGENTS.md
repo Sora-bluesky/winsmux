@@ -182,9 +182,10 @@ When changing orchestra startup, restore, attach, watchdog, or rollback behavior
 4. If a change touches more than one of the responsibilities above, add or update tests that exercise the boundary directly.
 5. For startup regressions, prefer extracting a helper or state contract over patching more conditions into `orchestra-start.ps1`.
 6. Keep an operator-independent startup smoke path available.
-   - `winsmux orchestra-smoke --json` is the preferred quick check for `session_ready`, pane count, and UI attach state.
+   - `winsmux orchestra-smoke --json` is the preferred quick check and must expose a structured `operator_contract`.
+   - Treat `operator_contract.operator_state`, `operator_contract.can_dispatch`, and `operator_contract.requires_startup` as the startup source of truth.
    - Do not make `/winsmux-start` the only way to validate orchestra startup.
-6. If the fix reveals a structural boundary problem rather than a one-off defect, open or update an issue and map it to planning in the same session.
+7. If the fix reveals a structural boundary problem rather than a one-off defect, open or update an issue and map it to planning in the same session.
 
 ## Release Notes Policy
 

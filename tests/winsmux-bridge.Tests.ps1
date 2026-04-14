@@ -6240,14 +6240,14 @@ Describe 'winsmux orchestra-smoke command' {
     }
 
     It 'documents orchestra-smoke and dispatches it through the dedicated startup smoke script' {
-        $script:winsmuxCoreRawContent | Should -Match 'orchestra-smoke \[--json\] \[--project-dir <path>\]\s+Start Orchestra if needed and report session-ready/UI-attach state'
+        $script:winsmuxCoreRawContent | Should -Match 'orchestra-smoke \[--json\] \[--project-dir <path>\]\s+Start Orchestra if needed and report structured startup contract \+ UI attach state'
         $script:winsmuxCoreRawContent | Should -Match "'orchestra-smoke'\s*\{"
         $script:winsmuxCoreRawContent | Should -Match 'orchestra-smoke\.ps1'
         $script:winsmuxCoreRawContent | Should -Match '--project-dir <path>'
         $script:winsmuxCoreRawContent | Should -Not -Match '--session-name <name>'
     }
 
-    It 'reports session-ready and UI attach state separately in the startup smoke contract' {
+    It 'reports a structured operator startup contract alongside session-ready and UI attach state' {
         $script:orchestraSmokeContent | Should -Match 'session_ready'
         $script:orchestraSmokeContent | Should -Match 'ui_attach_launched'
         $script:orchestraSmokeContent | Should -Match 'ui_attached'
@@ -6255,6 +6255,12 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'winsmux_bin'
         $script:orchestraSmokeContent | Should -Match 'pane_probe_ok'
         $script:orchestraSmokeContent | Should -Match 'Get-OrchestraSmokeLayoutSettings'
+        $script:orchestraSmokeContent | Should -Match 'function Get-OrchestraOperatorContract'
+        $script:orchestraSmokeContent | Should -Match 'contract_version'
+        $script:orchestraSmokeContent | Should -Match 'operator_state'
+        $script:orchestraSmokeContent | Should -Match 'ready-with-ui-warning'
+        $script:orchestraSmokeContent | Should -Match 'can_dispatch'
+        $script:orchestraSmokeContent | Should -Match 'requires_startup'
     }
 }
 

@@ -81,11 +81,12 @@ When `/winsmux-start` or another restoration flow reports `needs-startup`:
 1. Treat that as a hard blocker, not as advisory status.
 2. Before any PR triage, merge proposal, backlog planning, or dispatch planning, run `winsmux-core/scripts/orchestra-start.ps1`.
 3. Verify readiness with `winsmux orchestra-smoke --json`.
-4. Treat `session_ready`, `pane_count`, and `smoke_ok` from that smoke result as the source of truth.
-5. Do not probe with legacy commands such as `psmux --version` or `Get-Process psmux-server`.
-6. Do not tell the user to manually start a `psmux` server.
-7. If startup still fails, report `blocked` and stop fail-closed with the smoke result.
-8. Do not continue with PR/merge or local exploration while orchestra is still `needs-startup`.
+4. Treat `operator_contract.operator_state`, `operator_contract.can_dispatch`, and `operator_contract.requires_startup` from that smoke result as the source of truth.
+5. Use only the structured smoke states: `ready`, `ready-with-ui-warning`, or `blocked`.
+6. Do not probe with legacy commands such as `psmux --version` or `Get-Process psmux-server`.
+7. Do not tell the user to manually start a `psmux` server.
+8. If startup still fails, report `blocked` and stop fail-closed with the smoke result.
+9. Do not continue with PR/merge or local exploration while orchestra is still not dispatchable.
 
 ## Compatibility and release notes
 
