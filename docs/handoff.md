@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T19:15:00+09:00
+> Updated: 2026-04-14T19:35:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -180,3 +180,7 @@
 - review agent の `no result yet` は、今の観測では silent failure より latency が主因です。今後は Rust/Tauri slice で 60 秒以上待ち、同一 slice の review concurrency を 1 に制限します。
 - `desktop-summary-refresh` は `pty_spawn` / `pty_close` の成功時だけ発火する最小 seam として入れています。汎用 notification 基盤にはまだ広げていません。
 - issue は必ず label 付きで起票・更新します。今回の startup problem は `#421` (`bug`, `orchestration`) に集約します。
+- review subagent の待機閾値が実運用に対して短すぎる問題を issue [#422](https://github.com/Sora-bluesky/winsmux/issues/422) として起票しました。
+  - labels: `bug`, `orchestration`
+  - 原因は silent failure ではなく、重い slice での scheduler/context latency が主因という観測です
+  - `AGENTS.md` は small TS/docs review を 60 秒、Rust/Tauri/PowerShell/orchestration review を 120 秒、merge-critical では同時間の追加 1 回待機、review concurrency=1 に更新しました
