@@ -57,9 +57,9 @@ Direct operator-side mutation is **outside the standard winsmux operating model*
   - the operator and control-plane surface
   - assigns tasks, gathers output, and decides next actions
 - **Subagents**
-  - operator-local information gathering tools
-  - help Claude Code inspect context efficiently
-  - do not replace pane-side execution responsibility
+  - operator-local planning and startup/status diagnosis tools
+  - help Claude Code inspect orchestra readiness efficiently
+  - must not replace pane-side execution or pane-side review once orchestra is dispatchable
 
 ## Operator DO
 
@@ -90,10 +90,12 @@ When `/winsmux-start` or another restoration flow reports `needs-startup`:
 5. Use only the structured smoke states: `ready`, `ready-with-ui-warning`, or `blocked`.
 6. If the state is `ready-with-ui-warning`, run `winsmux orchestra-attach --json` once to launch a visible operator window, then continue from the live handoff without asking the user to choose a starting task.
 7. When `.claude/local/operator-handoff.md` contains an ordered `Next actions` list, start the first pending action automatically instead of asking which task to begin.
-8. Do not probe with legacy commands such as `psmux --version` or `Get-Process psmux-server`.
-9. Do not tell the user to manually start a `psmux` server.
-10. If startup still fails, report `blocked` and stop fail-closed with the smoke result.
-11. Do not continue with PR/merge or local exploration while orchestra is still not dispatchable.
+8. Once `operator_contract.can_dispatch=true`, do not use Explore subagents for PR/task analysis. Dispatch the task through `winsmux dispatch-task "<task text>"` or `winsmux dispatch-review`.
+9. Startup/status Explore subagents are allowed only while diagnosing orchestra readiness or attach problems.
+10. Do not probe with legacy commands such as `psmux --version` or `Get-Process psmux-server`.
+11. Do not tell the user to manually start a `psmux` server.
+12. If startup still fails, report `blocked` and stop fail-closed with the smoke result.
+13. Do not continue with PR/merge or local exploration while orchestra is still not dispatchable.
 
 ## Compatibility and release notes
 

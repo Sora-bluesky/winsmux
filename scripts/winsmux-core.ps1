@@ -6016,6 +6016,93 @@ function Invoke-DispatchReview {
     Write-Output "PENDING confirmed. $reviewRole pane will run review-approve or review-fail. Monitor review-state.json for result."
 }
 
+function Get-DispatchTaskManifestEntry {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) {
+        $entry = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { [string]$_.Label -eq $Label } | Select-Object -First 1)[0]
+        if ($null -ne $entry) {
+            return $entry
+        }
+    }
+
+    $labels = Get-Labels
+    if ($labels.ContainsKey($Label)) {
+        return [PSCustomObject]@{
+            Label  = $Label
+            PaneId = [string]$labels[$Label]
+            Role   = ''
+        }
+    }
+
+    return $null
+}
+
+function Invoke-DispatchTask {
+    $parts = @(
+        @($Target) + @($Rest) |
+            Where-Object { $_ } |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ }
+    )
+    if ($parts.Count -lt 1) {
+        Stop-WithError "usage: winsmux dispatch-task <text>"
+    }
+
+    $taskText = $parts -join ' '
+    $projectDir = (Get-Location).Path
+    $routerScript = Join-Path $PSScriptRoot '..\winsmux-core\scripts\dispatch-router.ps1'
+    if (-not (Test-Path -LiteralPath $routerScript -PathType Leaf)) {
+        Stop-WithError "dispatch router not found: $routerScript"
+    }
+
+    . $routerScript
+
+    $availableTargets = @()
+    if (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) {
+        $availableTargets = @(
+            Get-PaneControlManifestEntries -ProjectDir $projectDir |
+                ForEach-Object { [string]$_.Label } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+    }
+    if ($availableTargets.Count -eq 0) {
+        $availableTargets = @((Get-Labels).Keys | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+
+    $route = Get-DispatchRoute -Text $taskText -AvailableTargets $availableTargets -DefaultRole 'Worker'
+    if ($route.HandleLocally) {
+        Stop-WithError "dispatch-task routed to Commander. Refine the task text so it can be delegated to a managed pane."
+    }
+
+    $selectedLabel = [string]$route.SelectedTarget
+    $paneId = ''
+    $resolvedRole = [string]$route.SelectedRole
+
+    if ($resolvedRole -eq 'Reviewer') {
+        $reviewEntry = Get-PreferredReviewPaneEntry -ProjectDir $projectDir
+        if ($null -eq $reviewEntry) {
+            Stop-WithError "No review-capable pane found in manifest."
+        }
+
+        $selectedLabel = [string]$reviewEntry.Label
+        $paneId = [string]$reviewEntry.PaneId
+    } else {
+        $manifestEntry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $selectedLabel
+        if ($null -eq $manifestEntry -or [string]::IsNullOrWhiteSpace([string]$manifestEntry.PaneId)) {
+            Stop-WithError "dispatch-task could not resolve target '$selectedLabel' to a pane."
+        }
+
+        $paneId = [string]$manifestEntry.PaneId
+    }
+
+    Send-TextToPane -PaneId $paneId -CommandText $taskText
+    Write-Output ("Dispatched to {0} [{1}] as {2}. {3}" -f $selectedLabel, $paneId, $resolvedRole, [string]$route.Reason)
+}
+
 function Invoke-ReviewRequest {
     if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
         Stop-WithError "usage: winsmux review-request"
@@ -6275,6 +6362,7 @@ Commands:
   review-fail               Record review FAIL for the current branch
   review-reset              Clear review PASS for the current branch
   dispatch-review           Dispatch review-request to a review-capable pane (Reviewer/Worker)
+  dispatch-task <text>      Route and send task text to a managed pane using manifest-aware role selection
   consult-request <mode> [--message <text>] [--target-slot <slot>]  Record a consultation request packet/event
   consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>]  Record a consultation result packet/event
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
@@ -6550,6 +6638,7 @@ switch ($Command) {
     'unlock'          { Invoke-Unlock }
     'locks'           { Invoke-Locks }
     'verify'          { Invoke-Verify }
+    'dispatch-task'   { Invoke-DispatchTask }
     'dispatch-route'  {
         $routerScript = Join-Path $PSScriptRoot '..\winsmux-core\scripts\dispatch-router.ps1'
         $fullText = @($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }

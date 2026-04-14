@@ -6303,8 +6303,10 @@ Describe 'winsmux orchestra-smoke command' {
     It 'documents orchestra-smoke and dispatches it through the dedicated startup smoke script' {
         $script:winsmuxCoreRawContent | Should -Match 'orchestra-smoke \[--json\] \[--auto-start\] \[--project-dir <path>\]\s+Report structured startup contract \+ UI attach state \(use --auto-start to start if needed\)'
         $script:winsmuxCoreRawContent | Should -Match 'orchestra-attach \[--json\] \[--project-dir <path>\]\s+Launch a visible attach window for an existing orchestra session'
+        $script:winsmuxCoreRawContent | Should -Match 'dispatch-task <text>\s+Route and send task text to a managed pane using manifest-aware role selection'
         $script:winsmuxCoreRawContent | Should -Match "'orchestra-smoke'\s*\{"
         $script:winsmuxCoreRawContent | Should -Match "'orchestra-attach'\s*\{"
+        $script:winsmuxCoreRawContent | Should -Match "'dispatch-task'\s*\{"
         $script:winsmuxCoreRawContent | Should -Match 'orchestra-smoke\.ps1'
         $script:winsmuxCoreRawContent | Should -Match 'orchestra-attach\.ps1'
         $script:winsmuxCoreRawContent | Should -Match '--project-dir <path>'
@@ -6360,12 +6362,15 @@ Describe 'operator startup restore contract docs' {
         $script:claudeGuideContent | Should -Match 'operator_contract\.requires_startup'
         $script:claudeGuideContent | Should -Match 'ready-with-ui-warning'
         $script:claudeGuideContent | Should -Match 'winsmux orchestra-attach --json'
+        $script:claudeGuideContent | Should -Match 'winsmux dispatch-task'
         $script:claudeGuideContent | Should -Match 'without asking the user to choose a starting task'
+        $script:claudeGuideContent | Should -Match 'do not use Explore subagents for PR/task analysis'
         $script:claudeGuideContent | Should -Match 'psmux --version'
         $script:claudeGuideContent | Should -Match 'Get-Process psmux-server'
         $script:claudeGuideContent | Should -Match 'manually start a `psmux` server'
         $script:dispatchRuleContent | Should -Match 'scripts/winsmux-core\.ps1 orchestra-smoke --json'
         $script:dispatchRuleContent | Should -Match 'scripts/winsmux-core\.ps1 orchestra-attach --json'
+        $script:dispatchRuleContent | Should -Match 'scripts/winsmux-core\.ps1 dispatch-task'
         $script:dispatchRuleContent | Should -Match 'needs-startup'
         $script:dispatchRuleContent | Should -Match 'orchestra-start\.ps1'
         $script:dispatchRuleContent | Should -Match 'operator_contract\.operator_state'
@@ -6373,6 +6378,7 @@ Describe 'operator startup restore contract docs' {
         $script:dispatchRuleContent | Should -Match 'operator_contract\.requires_startup'
         $script:dispatchRuleContent | Should -Match 'ready-with-ui-warning'
         $script:dispatchRuleContent | Should -Match 'Never ask the user which task to begin'
+        $script:dispatchRuleContent | Should -Match 'Explore subagents are reserved for orchestra startup/status diagnosis only'
         $script:dispatchRuleContent | Should -Match 'psmux --version'
         $script:dispatchRuleContent | Should -Match 'Get-Process psmux-server'
     }

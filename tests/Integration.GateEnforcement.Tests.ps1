@@ -447,7 +447,7 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'delegated write bypass blocked'
+        $result.ErrorObject.systemMessage | Should -Match 'delegated execution bypass blocked'
     }
 
     It 'denies Agent auto mode outside worktree isolation' {
@@ -491,10 +491,22 @@ EOF
         & $script:AssertDenyResult -Result $result
     }
 
-    It 'allows Explore subagents even when mode is write-capable' {
+    It 'denies non-startup Explore subagents once operator execution must stay in managed panes' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
             mode          = 'acceptEdits'
             subagent_type = 'Explore'
+            description   = 'Analyze PR #419 diff scope'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'dispatch-task'
+    }
+
+    It 'allows startup-diagnosis Explore subagents' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
+            mode          = 'acceptEdits'
+            subagent_type = 'Explore'
+            description   = 'Investigate orchestra startup blocked manifest pane count'
         })
 
         $result.ExitCode | Should -Be 0

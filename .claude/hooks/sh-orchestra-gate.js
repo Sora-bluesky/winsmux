@@ -128,14 +128,15 @@ try {
     }
   }
 
-  // Rule 10: Commander cannot use write-capable Agent modes — delegate to Builder panes (#347)
+  // Rule 10: Operator-side Agent use is limited to planning and startup diagnosis.
   if (toolName === "Agent") {
     const agentMode = normalizeAgentValue(toolInput.mode);
     const subagentType = normalizeAgentValue(toolInput.subagent_type);
-
-    const isAllowedAgentUse = agentMode === "plan" || subagentType === "explore";
+    const isAllowedAgentUse =
+      agentMode === "plan" ||
+      (subagentType === "explore" && isStartupDiagnosisSubagent(toolInput));
     if (!isAllowedAgentUse) {
-      deny("Operator delegated write bypass blocked. Delegate implementation to managed worker panes. Allowed: plan mode, Explore subagents.");
+      deny("Operator delegated execution bypass blocked. Delegate task execution and review to managed worker panes via winsmux dispatch-task or dispatch-review. Allowed: plan mode, startup-diagnosis Explore subagents.");
     }
   }
 
@@ -219,6 +220,59 @@ function stripHeredocBodies(command) {
   }
 
   return output.join("\n");
+}
+
+function isStartupDiagnosisSubagent(toolInput) {
+  const fragments = [];
+  const pushText = (value) => {
+    if (typeof value === "string" && value.trim().length > 0) {
+      fragments.push(value.trim().toLowerCase());
+    }
+  };
+
+  pushText(toolInput.prompt);
+  pushText(toolInput.description);
+  if (Array.isArray(toolInput.items)) {
+    for (const item of toolInput.items) {
+      if (!item || typeof item !== "object") {
+        continue;
+      }
+      pushText(item.text);
+      pushText(item.name);
+      pushText(item.path);
+    }
+  }
+
+  const haystack = fragments.join(" ");
+  if (!haystack) {
+    return false;
+  }
+
+  const keywords = [
+    "orchestra",
+    "startup",
+    "start-up",
+    "smoke",
+    "attach",
+    "lock",
+    "locked",
+    "session",
+    "pane",
+    "worker pane",
+    "manifest",
+    "needs-startup",
+    "ready-with-ui-warning",
+    "blocked",
+    "起動",
+    "セッション",
+    "ペイン",
+    "ロック",
+    "診断",
+    "復旧",
+    "復元",
+  ];
+
+  return keywords.some((keyword) => haystack.includes(keyword));
 }
 
 function getOrchestraRestoreGateState(cwd) {
