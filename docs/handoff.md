@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T14:28:00+09:00
+> Updated: 2026-04-14T14:40:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -59,6 +59,10 @@
 - Issue [#421](https://github.com/Sora-bluesky/winsmux/issues/421) を起票しました。
   - `/winsmux-start` が external commander mode で worker pane 未展開でも false-ready 扱いになる症状を追跡します
   - PR [#420](https://github.com/Sora-bluesky/winsmux/pull/420) の repo 側修正と、repo 外の hook JSON 症状を切り分けて管理します
+- 公開 docs と dogfooding/runtime docs の境界を整理しました。
+  - `README.md` と `docs/operator-model.md` は Claude Code operator を public-facing の主語として明示します
+  - `AGENT-BASE.md` / `AGENT.md` / `GEMINI.md` は managed pane runtime contract であり、公開の operator 説明そのものではないと明記しました
+  - `AGENT.md` には Codex pane 専用であることを先頭に追記しました
 - サブエージェント遅延の恒久対策を `AGENTS.md` に追加しました。
   - 今回の観測では `Euclid`、`Ptolemy`、`Popper` など delayed result が多く、主因は silent drop ではなく latency です
   - Rust/Tauri review は first timeout を 60 秒以上に伸ばし、review concurrency を 1 に制限し、routine review では `fork_context=true` を避ける運用にしました
