@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T14:47:00+09:00
+> Updated: 2026-04-14T19:15:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -67,6 +67,25 @@
 - サブエージェント遅延の恒久対策を `AGENTS.md` に追加しました。
   - 今回の観測では `Euclid`、`Ptolemy`、`Popper` など delayed result が多く、主因は silent drop ではなく latency です
   - Rust/Tauri review は first timeout を 60 秒以上に伸ばし、review concurrency を 1 に制限し、routine review では `fork_context=true` を避ける運用にしました
+- `/winsmux-start` の再試行で、Windows Terminal ウィンドウは開くが startup が 30 秒で失敗し、1 pane の bootstrap shell だけが残る症状を再現しました。
+  - issue [#421](https://github.com/Sora-bluesky/winsmux/issues/421) を継続更新し、この症状も同一 issue で追跡します
+  - 原因は `orchestra-start.ps1` が `Ensure-OrchestraServer` で session を立てた後に zombie cleanup を走らせていたこと、startup timeout が 30 秒と短いこと、startup / watchdog の topology health が exact pane count を十分に見ていなかったことでした
+  - 修正として、zombie cleanup を `Ensure-OrchestraServer` より前に移動し、server health wait を 60 秒へ延長し、fresh session の ready 条件を `bootstrapPaneCount = 1` に固定しました
+  - existing session の strict health は `Get-OrchestraExpectedPaneCount` 由来の final pane count を使って reset 判断し、post-layout でも exact pane count を assert します
+  - `server-watchdog.ps1` は manifest 欠落 / unreadable を `Unknown` ではなく fail-closed の `Unhealthy` として扱い、false-ready を許さないようにしました
+  - issue [#421](https://github.com/Sora-bluesky/winsmux/issues/421) には、この fix-up と `184/184 PASS` の結果を追記済みです
+- issue [#421](https://github.com/Sora-bluesky/winsmux/issues/421) の follow-up として、stale manifest / stale background job の cleanup をさらに絞りました。
+  - fresh startup (`session missing`) のときだけ preflight で stale manifest cleanup を走らせます
+  - existing session は health 判定後に reset する場合だけ、`kill-session` 後に stale background PID cleanup を走らせます
+  - manifest に書かれた `commander_poll_pid` / `watchdog_pid` / `server_watchdog_pid` は、`script + manifest path + session name` が現在の command line と一致する場合だけ停止します
+  - `Ensure-OrchestraServer` は `Ensure-OrchestraBootstrapSession` に改名し、full readiness ではなく bootstrap session の確保だけを担うことを明示しました
+  - issue [#421](https://github.com/Sora-bluesky/winsmux/issues/421) には、この stale-manifest fix-up と `186/186 PASS` を追記します
+- issue [#421](https://github.com/Sora-bluesky/winsmux/issues/421) の second follow-up として、startup 世代の境界をさらに締めました。
+  - startup lock を cleanup / zombie cleanup / bootstrap より前に取得し、同時 startup を fail-closed にしました
+  - manifest に `session.startup_token` を保存し、`commander-poll.ps1` / `agent-watchdog.ps1` / `server-watchdog.ps1` は同じ token を引数に持つようにしました
+  - stale background cleanup は `script + manifest path + session name + startup token` が一致する世代だけ止めるように狭めました
+  - `Ensure-OrchestraBootstrapSession` と `Reset-OrchestraServerSession` の戻り値は `BootstrapReady` / `StartupReady` に分け、bootstrap shell と full startup を見分けやすくしました
+  - `tests/winsmux-bridge.Tests.ps1` に startup token 必須の targeted cleanup 回帰試験を追加しました
 
 ## Validation
 
@@ -99,6 +118,9 @@
 - `git diff --check` -> LF/CRLF warning のみ after the same slice
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `173/173 PASS` after the `orchestra-start.ps1` strict-mode fix
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> PASS after the bootstrap-invalid fail-closed gate
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `184/184 PASS` after separating bootstrap pane count from final layout count, fail-closing missing manifests in `server-watchdog.ps1`, and extending the startup topology regression coverage
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `186/186 PASS` after restricting stale-manifest cleanup to safe startup/reset paths, validating background PID command lines against `script + manifest path + session`, and renaming the bootstrap session helper
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `187/187 PASS` after moving startup lock acquisition ahead of cleanup/bootstrap, adding `startup_token`-scoped background cleanup, and splitting bootstrap/full-startup readiness fields
 - reviewer `Euclid` -> delayed `FAIL`
   - roadmap localization gate が write 後判定だった点
   - internal docs の `done` 分類
@@ -116,6 +138,25 @@
   - notification slice 自体への finding はなし
 - reviewer `Singer` -> `no result yet` after two 30s waits on the `orchestra-start.ps1` strict-mode fix; diff was kept under manual review because the slice is limited to one PowerShell script, one test file, and handoff text
 - reviewer `Mencius` -> PASS on the bootstrap-invalid fail-closed follow-up
+- issue [#421](https://github.com/Sora-bluesky/winsmux/issues/421) -> updated with the reproduction (`1 pane` bootstrap shell only), startup-order/topology findings, and the follow-up fix summary
+- reviewer `Heisenberg` -> FAIL on the startup-order/topology slice
+  - `ExpectedPaneCount` が startup health に十分入っていない点
+  - exact pane topology と manifest 欠落時の fail-closed が弱い点
+- reviewer `Jason` -> FAIL on the same slice
+  - startup readiness boundary と watchdog fallback の tightening が必要という指摘
+- reviewer `Bohr` -> `no result yet` after 30s on the final fix-up slice; diff is limited to startup/watchdog PowerShell and tests, `184/184 PASS`, so manual diff review fallback で継続
+- reviewer `Maxwell` -> FAIL on the first stale-manifest cleanup attempt
+  - manifest PID cleanup が無条件すぎる点
+  - bootstrap/full-readiness の関数境界がまだ曖昧という指摘
+- reviewer `Popper` -> FAIL on the same slice
+  - stale background PID cleanup の発火条件と本人確認をさらに狭める必要があるという指摘
+- reviewer `Tesla` -> pending on the narrowed cleanup + bootstrap helper rename slice
+- reviewer `Tesla` -> FAIL on the stale-manifest follow-up
+  - startup lock が cleanup より後ろで世代境界が弱い点
+  - helper 戻り値がまだ bootstrap/full-startup を混同しやすい点
+- reviewer `Linnaeus` -> `no result yet` after a 60s wait on the startup-token + early-lock follow-up
+  - diff is limited to orchestra startup/watchdog PowerShell, token plumbing, and regression tests
+  - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` is `187/187 PASS`, so manual diff review fallback is in effect for this slice
 
 ## Next actions
 
@@ -124,8 +165,10 @@
 3. `TASK-289` は event-driven 側をもう 1 段詰め、interval を完全撤去するかどうかを別 slice として判断する。
 4. `TASK-290` は `codex/task290-detail-lane-20260414` で後続に回し、`v0.22.0` に混ぜない。
 5. Rust / Cargo / Tauri を使った handoff では、`C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md` も同じ session で更新する。
-6. `/winsmux-start` で `orchestra-start.ps1` を使う経路は、この strict-mode fix と bootstrap-invalid fail-closed gate、ならびに worker-pane readiness gate を前提に再確認する。
-7. 今回の `/winsmux-start` worker 未展開問題は issue 化し、今後の再発時は issue 更新を正本にする。
+6. PR [#420](https://github.com/Sora-bluesky/winsmux/pull/420) に今回の startup-order / topology fix を push し、CI を通したうえで merge する。
+7. `/winsmux-start` を再試行し、`winsmux-orchestra` が 1 pane で止まらず worker pane まで展開するか確認する。
+8. それでも topology mismatch が残る場合は、issue [#421](https://github.com/Sora-bluesky/winsmux/issues/421) の次段として operator 側 `/winsmux-start` restoration semantics と hook JSON validation を切り分ける。
+9. PR [#420](https://github.com/Sora-bluesky/winsmux/pull/420) に startup-token + early-lock follow-up を push し、CI と review が通ったら merge する。
 
 ## Notes
 
@@ -136,3 +179,4 @@
 - The external learning note under `MainVault\Learning` is intentionally untracked; only the durable handoff rule in `AGENTS.md` is part of the repo.
 - review agent の `no result yet` は、今の観測では silent failure より latency が主因です。今後は Rust/Tauri slice で 60 秒以上待ち、同一 slice の review concurrency を 1 に制限します。
 - `desktop-summary-refresh` は `pty_spawn` / `pty_close` の成功時だけ発火する最小 seam として入れています。汎用 notification 基盤にはまだ広げていません。
+- issue は必ず label 付きで起票・更新します。今回の startup problem は `#421` (`bug`, `orchestration`) に集約します。
