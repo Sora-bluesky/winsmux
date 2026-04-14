@@ -207,7 +207,7 @@
 7. `/winsmux-start` を再試行し、`winsmux-orchestra` が 1 pane で止まらず worker pane まで展開するか確認する。
 8. それでも topology mismatch が残る場合は、issue [#421](https://github.com/Sora-bluesky/winsmux/issues/421) の次段として operator 側 `/winsmux-start` restoration semantics と hook JSON validation を切り分ける。
 9. PR [#420](https://github.com/Sora-bluesky/winsmux/pull/420) に startup-token + early-lock follow-up を push し、CI と review が通ったら merge する。
-10. `TASK-339` として issue [#423](https://github.com/Sora-bluesky/winsmux/issues/423) を進め、operator-facing startup/status 文言の `winsmux` 正規化を実装する。
+10. `TASK-339` として issue [#423](https://github.com/Sora-bluesky/winsmux/issues/423) を進め、operator-facing startup/status/probe 面の `winsmux` 正規化を実装する。
 11. `TASK-340` として issue [#424](https://github.com/Sora-bluesky/winsmux/issues/424) を進め、`needs-startup` 復元時の worker 展開優先ルールが実動作でも守られるか再検証する。
 12. PR [#420](https://github.com/Sora-bluesky/winsmux/pull/420) に `TASK-341 (#425)` の detached-first startup / UI attach 分離と `ui_attach_launched` state split を push し、CI と review を通したうえで merge する。
 13. `/winsmux-start` を再試行し、`winsmux-orchestra` が `session-ready` のまま visible attach failure を warning 扱いにできるか確認する。
@@ -238,11 +238,11 @@
   - `AGENTS.md` は small TS/docs review を 60 秒、Rust/Tauri/PowerShell/orchestration review を 120 秒、merge-critical では同時間の追加 1 回待機、review concurrency=1 に更新しました
 - operator-facing の起動文脈に legacy `psmux` が漏れる問題を issue [#423](https://github.com/Sora-bluesky/winsmux/issues/423) として起票しました。
   - labels: `bug`, `documentation`, `orchestration`
-  - `psmux` / `pmux` / `tmux` は compatibility alias に留め、operator-facing status は `winsmux` に正規化する方針です
+  - `psmux` / `pmux` / `tmux` は compatibility alias に留め、operator-facing status と probe は `winsmux` に正規化する方針です
 - issue 起票後は、duplicate / invalid / upstream-only を除き、同じ session で `TASK-*` に紐付けるか external `backlog.yaml` に追加し、`winsmux-core/scripts/sync-roadmap.ps1` まで流す運用に固定しました。
 - `needs-startup` は advisory ではなく hard gate として扱います。worker pane が期待数に達する前に PR/merge/backlog planning へ進むのは bug として扱います。
 - issue [#423](https://github.com/Sora-bluesky/winsmux/issues/423) を planning に反映し、`TASK-339` として `v0.22.0` に追加しました。
-  - scope は alias 削除ではなく、`/winsmux-start`、startup/status summary、operator-facing help の `winsmux` 正規化です
+  - scope は alias 削除ではなく、`/winsmux-start`、startup/status summary、operator-facing help、`psmux --version` / `Get-Process psmux-server` のような operator-side probe の `winsmux` 正規化です
   - issue 由来 task のため、title 末尾に `(#423)` を付け、`tasks/roadmap-title-ja.psd1` も同じ参照に合わせました
 - issue 起票後の永続ルールも `AGENTS.md` に追加しました。
   - duplicate / invalid / upstream-only を除き、issue は同じ session で既存 `TASK-*` に紐付けるか、新規 `TASK-*` を external `backlog.yaml` に追加します

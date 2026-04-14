@@ -185,7 +185,7 @@
         "TASK-335" = "run 状態モデル — phase/activity/detail と waiting/blocked/offline の意味統一"
         "TASK-337" = "段階的スキル CLI — agent が読める自己説明型コマンド面"
         "TASK-338" = "多様性ポリシー — model/harness 混在チームと明示的 variety 戦略"
-        "TASK-339" = "operator 向け起動・状態文言を winsmux に正規化（互換 alias は維持, #423）"
+        "TASK-339" = "operator 向け起動・状態・診断を winsmux に正規化（互換 alias は維持, #423）"
         "TASK-340" = "needs-startup 時は PR/merge より先に worker 展開を強制（#424）"
         "TASK-341" = "Orchestra の session-ready と Windows Terminal attach を分離（#425）"
         "TASK-342" = "Orchestra startup を bootstrap / attach / manifest / watchdog 境界へ分割（#426）"
