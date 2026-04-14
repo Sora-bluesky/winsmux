@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T13:05:00+09:00
+> Updated: 2026-04-14T14:12:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -45,6 +45,10 @@
   - public-safe な `.winsmux.yaml` から `agent` / `model` を削った後でも、`agent_slots` の `slot.agent` / `slot.model` 未定義アクセスで落ちないようにしました
   - 起動時の `Agent:` / `Model:` 表示は、既定値が無い場合 `per-slot / override only` と表示するようにしました
   - `tests/winsmux-bridge.Tests.ps1` に、strict mode で `agent/model` 省略 slot を許容する回帰試験を追加しました
+- `orchestra-start.ps1` の bootstrap gate を fail-closed に強化しました。
+  - worker の一部だけが `bootstrap_invalid` でも warning で続行していたため、pane 未展開のまま `/winsmux-start` が次の探索へ進めていました
+  - いまは期待 pane のうち 1 つでも `bootstrap_invalid` が出たら throw で startup を中断し、既存の catch/rollback 経路へ流します
+  - `tests/winsmux-bridge.Tests.ps1` に、この fail-closed 条件が throw になる回帰試験を追加しました
 - サブエージェント遅延の恒久対策を `AGENTS.md` に追加しました。
   - 今回の観測では `Euclid`、`Ptolemy`、`Popper` など delayed result が多く、主因は silent drop ではなく latency です
   - Rust/Tauri review は first timeout を 60 秒以上に伸ばし、review concurrency を 1 に制限し、routine review では `fork_context=true` を避ける運用にしました
@@ -79,6 +83,7 @@
 - `pwsh -NoProfile -File .\winsmux-core\scripts\sync-roadmap.ps1` -> PASS after syncing missing `tasks/roadmap-title-ja.psd1` and `docs/internal/*` into this worktree
 - `git diff --check` -> LF/CRLF warning のみ after the same slice
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `173/173 PASS` after the `orchestra-start.ps1` strict-mode fix
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> PASS after the bootstrap-invalid fail-closed gate
 - reviewer `Euclid` -> delayed `FAIL`
   - roadmap localization gate が write 後判定だった点
   - internal docs の `done` 分類
@@ -95,6 +100,7 @@
   - 今回も silent drop ではなく latency が主因だったことを確認
   - notification slice 自体への finding はなし
 - reviewer `Singer` -> `no result yet` after two 30s waits on the `orchestra-start.ps1` strict-mode fix; diff was kept under manual review because the slice is limited to one PowerShell script, one test file, and handoff text
+- reviewer `Mencius` -> PASS on the bootstrap-invalid fail-closed follow-up
 
 ## Next actions
 
@@ -103,7 +109,7 @@
 3. `TASK-289` は event-driven 側をもう 1 段詰め、interval を完全撤去するかどうかを別 slice として判断する。
 4. `TASK-290` は `codex/task290-detail-lane-20260414` で後続に回し、`v0.22.0` に混ぜない。
 5. Rust / Cargo / Tauri を使った handoff では、`C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md` も同じ session で更新する。
-6. `/winsmux-start` で `orchestra-start.ps1` を使う経路は、この strict-mode fix を取り込んだ後に再確認する。
+6. `/winsmux-start` で `orchestra-start.ps1` を使う経路は、この strict-mode fix と bootstrap-invalid fail-closed gate を取り込んだ後に再確認する。
 
 ## Notes
 

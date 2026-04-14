@@ -1103,6 +1103,27 @@ function Invoke-OrchestraStartupRollback {
     }
 }
 
+function Assert-OrchestraBootstrapVerification {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$PaneSummaries,
+
+        [Parameter(Mandatory = $true)]
+        [int]$InvalidCount,
+
+        [Parameter(Mandatory = $true)]
+        [int]$ReadyCount
+    )
+
+    if ($ReadyCount -eq 0) {
+        throw "TASK-240: no panes passed bootstrap verification. All $InvalidCount pane(s) are bootstrap_invalid."
+    }
+
+    if ($InvalidCount -gt 0) {
+        throw "TASK-240: startup aborted because $InvalidCount pane(s) are bootstrap_invalid and only $ReadyCount of $($PaneSummaries.Count) expected pane(s) are ready."
+    }
+}
+
 function Test-PaneBootstrapInvariants {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
@@ -1488,13 +1509,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
     }
     $readyCount = $validPaneSummaries.Count - $invalidCount
-    if ($readyCount -eq 0) {
-        Write-Error "TASK-240: no panes passed bootstrap verification. All $invalidCount pane(s) are bootstrap_invalid."
-        exit 1
-    }
-    if ($invalidCount -gt 0) {
-        Write-Warning "TASK-240: $invalidCount pane(s) marked bootstrap_invalid, $readyCount pane(s) ready."
-    }
+    Assert-OrchestraBootstrapVerification -PaneSummaries @($paneSummaries) -InvalidCount $invalidCount -ReadyCount $readyCount
 
     $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries
     $commanderPollScriptPath = Join-Path $scriptDir 'commander-poll.ps1'

@@ -2818,6 +2818,7 @@ Describe 'orchestra-start server bootstrap' {
 Describe 'orchestra-start session reuse contract' {
     BeforeAll {
         $script:orchestraStartPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1'
+        . $script:orchestraStartPath
         $script:orchestraStartContent = Get-Content -Path $script:orchestraStartPath -Raw -Encoding UTF8
     }
 
@@ -2833,6 +2834,23 @@ Describe 'orchestra-start session reuse contract' {
         $script:orchestraStartContent | Should -Match "per-slot / override only"
         $script:orchestraStartContent | Should -Match '\$defaultAgent'
         $script:orchestraStartContent | Should -Match '\$defaultModel'
+    }
+
+    It 'routes partial bootstrap invalid state into the startup rollback path by throwing' {
+        {
+            Assert-OrchestraBootstrapVerification -PaneSummaries @(
+                [pscustomobject]@{ PaneId = '%1'; Label = 'commander' },
+                [pscustomobject]@{ PaneId = '%2'; Label = 'builder-1' }
+            ) -InvalidCount 1 -ReadyCount 1
+        } | Should -Throw -ExpectedMessage '*startup aborted because 1 pane(s) are bootstrap_invalid and only 1 of 2 expected pane(s) are ready.*'
+    }
+
+    It 'throws when bootstrap verification finds no ready panes' {
+        {
+            Assert-OrchestraBootstrapVerification -PaneSummaries @(
+                [pscustomobject]@{ PaneId = '%1'; Label = 'commander' }
+            ) -InvalidCount 1 -ReadyCount 0
+        } | Should -Throw -ExpectedMessage '*no panes passed bootstrap verification*'
     }
 }
 
