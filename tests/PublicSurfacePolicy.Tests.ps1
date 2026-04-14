@@ -36,6 +36,21 @@ Describe 'Public surface policy' {
         }
     }
 
+    It 'keeps /winsmux-start out of the public UX and advertises future public entrypoints' {
+        $readme | Should -Match '/winsmux-start'
+        $readmeJa | Should -Match '/winsmux-start'
+        $operatorModel | Should -Match '/winsmux-start'
+        $readme | Should -Match 'dogfooding-only flow'
+        $readmeJa | Should -Match 'dogfooding 専用フロー'
+        $operatorModel | Should -Match 'dogfooding flow'
+
+        foreach ($entrypoint in @('winsmux init', 'winsmux launch', 'winsmux compare')) {
+            $readme | Should -Match ([Regex]::Escape($entrypoint))
+            $readmeJa | Should -Match ([Regex]::Escape($entrypoint))
+            $operatorModel | Should -Match ([Regex]::Escape($entrypoint))
+        }
+    }
+
     It 'uses local operator handoff and example roadmap title override in durable repo rules' {
         $agents | Should -Match '\.claude/local/operator-handoff\.md'
         $agents | Should -Match 'tasks/roadmap-title-ja\.example\.psd1'
