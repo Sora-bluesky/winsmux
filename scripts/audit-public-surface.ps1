@@ -41,11 +41,21 @@ function Test-IsTrackedTextSurface {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $normalized = $Path.Replace('\', '/')
-    if ($normalized -match '^tests/') { return $false }
     if ($normalized -match '^\.claude/logs/') { return $false }
     if ($normalized -match '^docs/internal/') { return $false }
+    return $normalized -match '(^README(\.ja)?\.md$)|(^AGENTS?(-BASE)?\.md$)|(^GEMINI\.md$)|(^docs/.+\.md$)|(^\.claude/CLAUDE\.md$)|(^tests/.+\.(ps1|md|json|txt)$)|(^\.github/workflows/.+\.ya?ml$)|(^\.githooks/.+$)|(^scripts/.+\.ps1$)'
+}
+
+function Test-IsMaintainerPathScanSurface {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $normalized = $Path.Replace('\', '/')
+    if ($normalized -match '^tests/') { return $false }
+    if ($normalized -match '^scripts/') { return $false }
+    if ($normalized -match '^\.githooks/') { return $false }
+    if ($normalized -match '^\.github/workflows/') { return $false }
     if ($normalized -eq 'docs/repo-surface-policy.md') { return $false }
-    return $normalized -match '(^README(\.ja)?\.md$)|(^AGENTS?(-BASE)?\.md$)|(^GEMINI\.md$)|(^docs/.+\.md$)|(^\.claude/CLAUDE\.md$)'
+    return Test-IsTrackedTextSurface -Path $Path
 }
 
 $failures = New-Object System.Collections.Generic.List[string]
@@ -65,6 +75,8 @@ if ($trackedIgnored.Count -gt 0) {
 $trackedFiles = Get-TrackedFiles
 
 $forbiddenTracked = @(
+    'HANDOFF.md',
+    'docs/HANDOFF.md',
     'docs/handoff.md',
     'tasks/roadmap-title-ja.psd1'
 )
@@ -79,7 +91,7 @@ $personalPathPatterns = @(
     'iCloudDrive',
     'MainVault'
 )
-foreach ($file in ($trackedFiles | Where-Object { Test-IsTrackedTextSurface -Path $_ })) {
+foreach ($file in ($trackedFiles | Where-Object { Test-IsMaintainerPathScanSurface -Path $_ })) {
     $content = Get-Content -LiteralPath $file -Raw -ErrorAction Stop
     foreach ($pattern in $personalPathPatterns) {
         if ($content -match [Regex]::Escape($pattern)) {

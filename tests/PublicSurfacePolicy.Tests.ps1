@@ -12,6 +12,7 @@ Describe 'Public surface policy' {
         $readmeJa = Get-Content (Join-Path $repoRoot 'README.ja.md') -Raw
         $operatorModel = Get-Content (Join-Path $repoRoot 'docs/operator-model.md') -Raw
         $agents = Get-Content (Join-Path $repoRoot 'AGENTS.md') -Raw
+        $surfacePolicy = Get-Content (Join-Path $repoRoot 'docs/repo-surface-policy.md') -Raw
         $gitignore = Get-Content (Join-Path $repoRoot '.gitignore') -Raw
         $claudeContract = Get-Content (Join-Path $repoRoot '.claude/CLAUDE.md') -Raw
         $syncRoadmap = Get-Content (Join-Path $repoRoot 'winsmux-core/scripts/sync-roadmap.ps1') -Raw
@@ -42,6 +43,21 @@ Describe 'Public surface policy' {
         $agents | Should -Not -Match 'tasks/roadmap-title-ja\.psd1'
     }
 
+    It 'uses the five-surface model consistently in durable policy files' {
+        $agents | Should -Match 'five distinct surfaces'
+        $agents | Should -Match 'runtime contract surface'
+        $agents | Should -Match 'contributor/test surface'
+        $agents | Should -Not -Match 'contributor/runtime surface'
+
+        $surfacePolicy | Should -Match '## 1\. Public product surface'
+        $surfacePolicy | Should -Match '## 2\. Runtime contract surface'
+        $surfacePolicy | Should -Match '## 3\. Contributor/test surface'
+        $surfacePolicy | Should -Match '## 4\. Private live-ops surface'
+        $surfacePolicy | Should -Match '## 5\. Generated/runtime artifacts'
+        $surfacePolicy | Should -Match 'Runtime contract surface'
+        $surfacePolicy | Should -Match 'Contributor/test surface'
+    }
+
     It 'keeps ignore rules aligned with tracked contributor/runtime files' {
         $gitignore | Should -Match '/CLAUDE\.md'
         $gitignore | Should -Match 'docs/handoff\.md'
@@ -54,6 +70,16 @@ Describe 'Public surface policy' {
         $claudeContract | Should -Match 'operator_contract'
         $claudeContract | Should -Match 'Do not probe with legacy commands such as `psmux --version` or `Get-Process psmux-server`'
         $claudeContract | Should -Not -Match 'Check psmux version'
+    }
+
+    It 'does not track bootstrap handoff files in the repository root or docs' {
+        $tracked = @(
+            & git ls-files -- HANDOFF.md docs/HANDOFF.md docs/handoff.md 2>$null |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+
+        @($tracked).Count | Should -Be 0
     }
 
     It 'uses example fallback for roadmap title localization' {

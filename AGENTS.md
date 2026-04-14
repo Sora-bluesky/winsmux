@@ -68,7 +68,8 @@ The live handoff source of truth for Claude Code dogfooding is the ignored local
 
 - `.claude/local/operator-handoff.md`
 
-Treat tracked handoff files under `docs/` or repository root as historical/static notes unless the task is explicitly about migration or public policy docs.
+Treat tracked handoff files under `docs/` or repository root as migration leftovers only.
+They must not be used as live operational state, and they should be removed from tracked history when touched by public-surface cleanup work.
 
 Codex must update `.claude/local/operator-handoff.md` at these points:
 
@@ -269,15 +270,16 @@ Codex must follow these rules:
 
 ## Public Surface Gate
 
-winsmux uses one repository with four distinct surfaces:
+winsmux uses one repository with five distinct surfaces:
 
 - public product surface
-- contributor/runtime surface
+- runtime contract surface
+- contributor/test surface
 - private live-ops surface
 - generated/runtime artifacts
 
 The canonical classification is documented in `docs/repo-surface-policy.md`.
-Tracked files must belong to either the public product surface or the contributor/runtime surface.
+Tracked files must belong to the public product surface, the runtime contract surface, or the contributor/test surface.
 Private live-ops files and generated artifacts must not be tracked.
 
 ## Git-Guard Gate

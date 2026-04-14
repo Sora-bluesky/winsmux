@@ -24,9 +24,9 @@ Rules:
 - must not require private planning roots or live operational notes
 - must not link readers directly into local-only operational files
 
-## 2. Contributor/runtime surface
+## 2. Runtime contract surface
 
-This surface is tracked, but it is for repository contributors and runtime contracts, not for the public product guide.
+This surface is tracked, but it is for repository-operated runtime contracts, not for the public product guide.
 
 Examples:
 
@@ -45,13 +45,35 @@ Rules:
 - may not depend on tracked live handoff files
 - public docs should not use this surface as the primary reader entrypoint
 
-## 3. Private live-ops surface
+## 3. Contributor/test surface
+
+This surface is tracked, but it is for contributors, CI, validation, and fixtures rather than operator/runtime contracts.
+
+Examples:
+
+- `tests/**`
+- `.githooks/**`
+- `.github/workflows/**`
+- `scripts/audit-public-surface.ps1`
+- `scripts/git-guard.ps1`
+- contributor-only maintenance docs
+
+Rules:
+
+- may include CI, validation, fixture, and contributor workflow details
+- should avoid maintainer-local absolute paths in durable docs and scripts
+- may use synthetic or fixture-only sample data in tests when clearly non-secret
+- is not part of the public product guide or pane runtime contract
+
+## 4. Private live-ops surface
 
 This surface is for live operational state and maintainer-only material.
 
 Examples:
 
 - current operator handoff
+- `HANDOFF.md`
+- `docs/handoff.md`
 - live roadmap title overrides
 - local planning notes
 - maintainer-only checklists
@@ -70,7 +92,7 @@ Default external planning location:
 
 - the planning root resolved by `winsmux-core/scripts/planning-paths.ps1`
 
-## 4. Generated/runtime artifacts
+## 5. Generated/runtime artifacts
 
 Generated output and runtime state.
 
@@ -88,7 +110,7 @@ Rules:
 
 ## Durable publication rules
 
-1. A tracked file must belong to `Public product surface` or `Contributor/runtime surface`.
+1. A tracked file must belong to `Public product surface`, `Runtime contract surface`, or `Contributor/test surface`.
 2. A live operational file must not be tracked.
 3. A tracked file must not be ignored by `.gitignore`.
 4. Public docs must not instruct readers to use private live-ops files.
