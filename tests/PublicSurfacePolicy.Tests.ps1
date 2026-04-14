@@ -60,4 +60,13 @@ Describe 'Public surface policy' {
         $syncRoadmap | Should -Match 'tasks/roadmap-title-ja\.example\.psd1'
         $syncInternalDocs | Should -Match 'tasks/roadmap-title-ja\.example\.psd1'
     }
+
+    It 'keeps the tracked roadmap title example scrubbed of live planning data' {
+        $example = Get-Content (Join-Path $repoRoot 'tasks/roadmap-title-ja.example.psd1') -Raw
+
+        $example | Should -Match 'VersionTitles\s*=\s*@\{\}'
+        $example | Should -Match 'TaskTitles\s*=\s*@\{\}'
+        $example | Should -Not -Match '"v0\.'
+        $example | Should -Not -Match '"TASK-'
+    }
 }
