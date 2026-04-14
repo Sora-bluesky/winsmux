@@ -9,10 +9,12 @@ Use these documents for public-facing product behavior instead:
 
 - `README.md` for the product overview
 - `docs/operator-model.md` for operator / pane / channel architecture
-- `.claude/CLAUDE.md` for Claude Code operator guidance
-- `AGENT-BASE.md` for the shared pane-agent contract
-- `AGENT.md` for Codex pane guidance
-- `GEMINI.md` for Gemini pane guidance
+
+Contributor/runtime contracts for managed panes live in:
+
+- `AGENT-BASE.md`
+- `AGENT.md`
+- `GEMINI.md`
 
 ## Windows Sandbox: Constrained Language Mode Workaround (CRITICAL)
 
@@ -62,10 +64,13 @@ Builders operate in isolated git worktrees under `.worktrees/builder-N/`.
 
 ## Handoff Maintenance
 
-`docs/handoff.md` is the only active handoff source of truth for this repo.
-Treat repository-root `HANDOFF.md` files as historical unless the task is explicitly about consolidation.
+The live handoff source of truth for Claude Code dogfooding is the ignored local file:
 
-Codex must update `docs/handoff.md` at these points:
+- `.claude/local/operator-handoff.md`
+
+Treat tracked handoff files under `docs/` or repository root as historical/static notes unless the task is explicitly about migration or public policy docs.
+
+Codex must update `.claude/local/operator-handoff.md` at these points:
 
 1. After any milestone-level state change.
    - Examples: release completion, PR merge, roadmap/backlog progress shift, version closure, planning externalization.
@@ -73,7 +78,7 @@ Codex must update `docs/handoff.md` at these points:
 3. Before ending a session when there are material code, planning, test, or release changes.
 4. When the user asks for current status / handoff / continuation context and the file is stale.
 
-`docs/handoff.md` should stay concise and always include these sections:
+`.claude/local/operator-handoff.md` should stay concise and always include these sections:
 
 - `Current state`
 - `This session`
@@ -81,7 +86,7 @@ Codex must update `docs/handoff.md` at these points:
 - `Next actions`
 - `Notes`
 
-When updating handoff:
+When updating the local operator handoff:
 
 - Replace stale “next actions” that have already completed. Do not leave merged PR steps in place.
 - If work is still in progress, record the active task, branch, changed files scope, and latest validation status.
@@ -97,17 +102,19 @@ When updating planning:
 1. Keep task metadata in `backlog.yaml` in English unless the task explicitly requires otherwise.
 2. Generate planning views through `winsmux-core/scripts/sync-roadmap.ps1`.
    - This now refreshes `ROADMAP.md` and the internal-only planning docs under `docs/internal/`.
-3. Maintain Japanese roadmap title overrides in `tasks/roadmap-title-ja.psd1`.
-4. For `v0.20.0` and later, do not allow English task titles to leak into `ROADMAP.md`.
+3. Maintain live Japanese roadmap title overrides in the external planning root `roadmap-title-ja.psd1`.
+4. The repository copy is only `tasks/roadmap-title-ja.example.psd1` and must remain example-only.
+5. For `v0.20.0` and later, do not allow English task titles to leak into `ROADMAP.md`.
    - If a new task is added or renamed in `backlog.yaml`, update the Japanese title override before considering roadmap sync complete.
-5. Treat missing Japanese roadmap titles as a sync gate failure, not as acceptable drift.
-6. Treat stale internal planning docs under `docs/internal/` as a sync failure when backlog-driven sections no longer match the external planning source of truth.
+6. Treat missing Japanese roadmap titles as a sync gate failure, not as acceptable drift.
+7. Treat stale internal planning docs under `docs/internal/` as a sync failure when backlog-driven sections no longer match the external planning source of truth.
 
 ## Rust Learning Note Gate
 
-When handoff work includes Rust, Cargo, Tauri, or Rust-adjacent commands used in winsmux development, Codex must also update the beginner-friendly learning note at:
+When local operator handoff work includes Rust, Cargo, Tauri, or Rust-adjacent commands used in winsmux development, Codex must also update the beginner-friendly learning note resolved from one of these sources:
 
-- `C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md`
+- `WINSMUX_LEARNING_ROOT\Rust Commands - winsmux.md`
+- `%LOCALAPPDATA%\winsmux\learning-root.txt` marker + `Rust Commands - winsmux.md`
 
 Rules:
 
@@ -152,9 +159,9 @@ When a new product, startup, orchestration, CI, or operator workflow problem is 
    - `review`
    - `security`
    - `testing`
-5. Only create a new custom label when none of the existing labels describe the issue well enough, and record that choice in `docs/handoff.md`.
+5. Only create a new custom label when none of the existing labels describe the issue well enough, and record that choice in `.claude/local/operator-handoff.md`.
 6. Record the exact reproduction symptom, current hypothesis, mitigation, and the PR or commit that addressed it.
-7. Update `docs/handoff.md` with the issue number, labels, and current resolution state in the same session.
+7. Update `.claude/local/operator-handoff.md` with the issue number, labels, and current resolution state in the same session.
 8. Do not silently "just fix and move on" for operational failures that could recur.
 9. If the problem is only partially understood, still create the issue and mark the remaining uncertainty explicitly.
 10. After creating or materially updating a non-duplicate issue, map it into planning in the same session unless it is explicitly triage-only, invalid, duplicate, or upstream-only.
@@ -162,9 +169,9 @@ When a new product, startup, orchestration, CI, or operator workflow problem is 
    - link the issue to an existing `TASK-*`, or add a new `TASK-*` in the external `backlog.yaml`,
    - place it in the most appropriate version lane instead of defaulting to a catch-all bucket,
    - when a task is created primarily to track a GitHub issue, append the issue reference to the task title itself (for example `(#423)`),
-   - add or update the Japanese title override in `tasks/roadmap-title-ja.psd1` when roadmap sync would expose the task,
+   - add or update the external planning root `roadmap-title-ja.psd1` when roadmap sync would expose the task,
    - run `winsmux-core/scripts/sync-roadmap.ps1`,
-   - and record the issue-to-task mapping in `docs/handoff.md`.
+   - and record the issue-to-task mapping in `.claude/local/operator-handoff.md`.
 12. Treat "issue filed but not taskified" as incomplete operational bookkeeping unless the session explicitly documents why taskification is deferred.
 
 ## Orchestra Boundary Gate
@@ -235,7 +242,7 @@ When winsmux directly reuses or closely adapts UI assets, style definitions, men
 1. keep `THIRD_PARTY_NOTICES.md` updated,
 2. record the upstream repository and source file paths,
 3. preserve the original OSS license attribution in-repo,
-4. mention the provenance in `docs/handoff.md` when the change is active in the current session.
+4. mention the provenance in `.claude/local/operator-handoff.md` when the change is active in the current session.
 
 For Codex-derived UI work, use `openai/codex` as the upstream reference and track the exact source areas being reused.
 
@@ -258,7 +265,36 @@ Codex must follow these rules:
    - the diff is small and well-scoped,
    - validation passes,
    - manual diff review is completed,
-   - the `no result yet` status is explicitly recorded in `docs/handoff.md` or the PR summary.
+   - the `no result yet` status is explicitly recorded in `.claude/local/operator-handoff.md` or the PR summary.
+
+## Public Surface Gate
+
+winsmux uses one repository with four distinct surfaces:
+
+- public product surface
+- contributor/runtime surface
+- private live-ops surface
+- generated/runtime artifacts
+
+The canonical classification is documented in `docs/repo-surface-policy.md`.
+Tracked files must belong to either the public product surface or the contributor/runtime surface.
+Private live-ops files and generated artifacts must not be tracked.
+
+## Git-Guard Gate
+
+`git-guard` is mandatory. Do not treat it as optional local hygiene.
+
+1. After cloning or resetting a local workspace, run `pwsh -NoProfile -File scripts/bootstrap-git-guard.ps1`.
+2. The repository-managed hooks under `.githooks/` are the source of truth.
+3. `git config --get core.hooksPath` must resolve to `.githooks` before `commit -> push -> PR -> merge`.
+4. `.githooks/pre-commit` and `.githooks/pre-push` must run the repository `scripts/git-guard.ps1`.
+5. CI must also run `scripts/git-guard.ps1` and `scripts/audit-public-surface.ps1`.
+6. Do not bypass git-guard for:
+   - secret-like files or tokens,
+   - maintainer-local path leaks,
+   - tracked live handoff or planning override files,
+   - runtime artifacts such as `.winsmux/` or `.orchestra-prompts/`.
+7. If git-guard or the public-surface audit fails, stop fail-closed and fix the classification or leak before continuing.
 9. Before merge, if a delayed subagent result arrives, Codex must incorporate that result into the final merge decision.
 10. If review agents repeatedly return `no result yet` across slices, Codex must treat that as a process issue and either:
    - reduce review scope,

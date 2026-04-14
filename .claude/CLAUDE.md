@@ -14,6 +14,11 @@ Claude Code may communicate through:
 
 The design anchor is the **channel boundary**, not a specific messaging product.
 
+## Claude Code startup context
+
+The durable operator contract in this file is repo-safe and tracked.
+If a local-only live handoff exists at `.claude/local/operator-handoff.md`, read it after this file and treat it as ignored operator state, not as public repository documentation.
+
 ## Role definition
 
 Claude Code is the side that:
