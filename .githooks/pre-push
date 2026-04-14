@@ -1,0 +1,32 @@
+#!/bin/bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "$repo_root" ]]; then
+  echo "pre-push: failed to determine repository root." >&2
+  exit 1
+fi
+
+repo_root_pwsh="$repo_root"
+if command -v cygpath >/dev/null 2>&1; then
+  repo_root_pwsh="$(cygpath -w "$repo_root")"
+elif [[ "$repo_root" =~ ^/mnt/([a-zA-Z])/(.*)$ ]]; then
+  drive="${BASH_REMATCH[1]}"
+  rest="${BASH_REMATCH[2]//\//\\}"
+  repo_root_pwsh="${drive^}:\\${rest}"
+fi
+
+pwsh_bin="pwsh.exe"
+if ! command -v "$pwsh_bin" >/dev/null 2>&1; then
+  if command -v pwsh >/dev/null 2>&1; then
+    pwsh_bin="pwsh"
+  elif [[ -x "/c/Program Files/PowerShell/7/pwsh.exe" ]]; then
+    pwsh_bin="/c/Program Files/PowerShell/7/pwsh.exe"
+  else
+    echo "pre-push: failed to locate PowerShell 7." >&2
+    exit 1
+  fi
+fi
+
+"$pwsh_bin" -NoProfile -File "$repo_root_pwsh\\scripts\\git-guard.ps1" -Mode full
+"$pwsh_bin" -NoProfile -File "$repo_root_pwsh\\scripts\\audit-public-surface.ps1"

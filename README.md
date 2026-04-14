@@ -52,8 +52,7 @@ winsmux
 - **Evidence Ledger** supports audit-oriented capture of agent activity and review outcomes
 
 For the public operator/pane architecture, see [docs/operator-model.md](docs/operator-model.md).
-The default operator is Claude Code, described in [`.claude/CLAUDE.md`](.claude/CLAUDE.md).
-The pane-side runtime contracts in [`AGENT-BASE.md`](AGENT-BASE.md), [`AGENT.md`](AGENT.md), and [`GEMINI.md`](GEMINI.md) are dogfooding/runtime documents for managed agents, not the primary public operator guide.
+Contributor/runtime contracts for repository-operated panes remain in repository contributor docs and are not part of the primary public product guide.
 
 ## Core runtime
 

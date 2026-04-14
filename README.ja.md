@@ -51,7 +51,7 @@ winsmux
 - **Worker worktree isolation** は worker ごとに独立した git worktree を与えます
 - **Evidence Ledger** は review や audit 向けの証跡を扱います
 
-公開向けの operator / pane architecture は [docs/operator-model.md](docs/operator-model.md) を参照してください。役割定義は [`.claude/CLAUDE.md`](.claude/CLAUDE.md)、[`AGENT-BASE.md`](AGENT-BASE.md)、[`AGENT.md`](AGENT.md)、[`GEMINI.md`](GEMINI.md) に分割しています。
+公開向けの operator / pane architecture は [docs/operator-model.md](docs/operator-model.md) を参照してください。repository-operated な pane/runtime 契約は contributor 向け資料に残しますが、主要な公開導線には含めません。
 
 ## コアランタイム
 

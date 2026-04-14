@@ -189,5 +189,6 @@
         "TASK-340" = "needs-startup 時は PR/merge より先に worker 展開を強制（#424）"
         "TASK-341" = "Orchestra の session-ready と Windows Terminal attach を分離（#425）"
         "TASK-342" = "Orchestra startup を bootstrap / attach / manifest / watchdog 境界へ分割（#426）"
+        "TASK-343" = "公開 repo surface gate — public docs と live dogfooding 運用を分離（#427）"
     }
 }

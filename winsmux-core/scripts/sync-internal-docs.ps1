@@ -365,7 +365,11 @@ if ([string]::IsNullOrWhiteSpace($BacklogPath)) {
     $BacklogPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $repoRoot -LocalRelativePath 'tasks/backlog.yaml' -EnvironmentVariable 'WINSMUX_BACKLOG_PATH' -DefaultFileName 'backlog.yaml'
 }
 if ([string]::IsNullOrWhiteSpace($RoadmapTitleJaPath)) {
-    $RoadmapTitleJaPath = Join-Path $repoRoot 'tasks/roadmap-title-ja.psd1'
+    $RoadmapTitleJaPath = Resolve-WinsmuxPlanningFilePath `
+        -RepoRoot $repoRoot `
+        -LocalRelativePath 'tasks/roadmap-title-ja.example.psd1' `
+        -EnvironmentVariable 'WINSMUX_ROADMAP_TITLE_JA_PATH' `
+        -DefaultFileName 'roadmap-title-ja.psd1'
 }
 if ([string]::IsNullOrWhiteSpace($FeatureInventoryPath)) {
     $FeatureInventoryPath = Join-Path $repoRoot 'docs\internal\winsmux-feature-inventory.md'
