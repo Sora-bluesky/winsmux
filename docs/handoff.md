@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T14:12:00+09:00
+> Updated: 2026-04-14T14:28:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -53,6 +53,12 @@
   - `external-commander: true` は commander pane を省略するだけで、worker pane 不足を ready 扱いしてよい意味ではありません
   - winsmux session は存在しても expected worker count に満たない場合は `needs-startup` として扱い、状態説明や task 提案より前に `orchestra-start.ps1` を再実行して pane 数を検証する必要があります
   - 再実行後も不足していれば `blocked` として fail-closed し、local explore にフォールバックしない運用にしました
+- operational problem の Issue 起票ルールを追加しました。
+  - 新しい startup / orchestration / CI / operator workflow 問題は、修正だけで終わらせず GitHub Issue を必ず残します
+  - 重複確認、issue 番号、解決 PR を handoff に同一 session で反映する運用にしました
+- Issue [#421](https://github.com/Sora-bluesky/winsmux/issues/421) を起票しました。
+  - `/winsmux-start` が external commander mode で worker pane 未展開でも false-ready 扱いになる症状を追跡します
+  - PR [#420](https://github.com/Sora-bluesky/winsmux/pull/420) の repo 側修正と、repo 外の hook JSON 症状を切り分けて管理します
 - サブエージェント遅延の恒久対策を `AGENTS.md` に追加しました。
   - 今回の観測では `Euclid`、`Ptolemy`、`Popper` など delayed result が多く、主因は silent drop ではなく latency です
   - Rust/Tauri review は first timeout を 60 秒以上に伸ばし、review concurrency を 1 に制限し、routine review では `fork_context=true` を避ける運用にしました
@@ -114,6 +120,7 @@
 4. `TASK-290` は `codex/task290-detail-lane-20260414` で後続に回し、`v0.22.0` に混ぜない。
 5. Rust / Cargo / Tauri を使った handoff では、`C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md` も同じ session で更新する。
 6. `/winsmux-start` で `orchestra-start.ps1` を使う経路は、この strict-mode fix と bootstrap-invalid fail-closed gate、ならびに worker-pane readiness gate を前提に再確認する。
+7. 今回の `/winsmux-start` worker 未展開問題は issue 化し、今後の再発時は issue 更新を正本にする。
 
 ## Notes
 

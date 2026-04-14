@@ -134,6 +134,17 @@ When using `/winsmux-start` or otherwise restoring orchestra-driven work from Cl
    - `needs-startup`: session exists but worker panes are missing
    - `blocked`: startup was attempted and failed
 
+## Issue Escalation Gate
+
+When a new product, startup, orchestration, CI, or operator workflow problem is observed:
+
+1. Search for an existing GitHub issue first. Reuse it if the same root cause is already tracked.
+2. If no matching issue exists, create one before treating the problem as resolved.
+3. Record the exact reproduction symptom, current hypothesis, mitigation, and the PR or commit that addressed it.
+4. Update `docs/handoff.md` with the issue number and current resolution state in the same session.
+5. Do not silently "just fix and move on" for operational failures that could recur.
+6. If the problem is only partially understood, still create the issue and mark the remaining uncertainty explicitly.
+
 ## Release Notes Policy
 
 GitHub Release titles and bodies must be written in English, regardless of the conversation language.
