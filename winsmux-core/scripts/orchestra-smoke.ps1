@@ -83,10 +83,10 @@ function Get-OrchestraOperatorContract {
         [Parameter(Mandatory = $true)][bool]$SessionReady,
         [Parameter(Mandatory = $true)][bool]$UiAttachLaunched,
         [Parameter(Mandatory = $true)][bool]$UiAttached,
-        [Parameter(Mandatory = $true)][string]$UiAttachStatus,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$UiAttachStatus,
         [Parameter(Mandatory = $true)][int]$PaneCount,
         [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
-        [Parameter(Mandatory = $true)][string[]]$SmokeErrors
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$SmokeErrors
     )
 
     $state = 'blocked'

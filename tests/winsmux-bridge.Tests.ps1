@@ -406,6 +406,36 @@ prompt-transport: stdin
         { Get-BridgeSettings } | Should -Throw '*prompt_transport*'
     }
 
+    It 'ignores global prompt_transport probe errors when no winsmux server is running yet' {
+        Mock Get-WinsmuxOption {
+            param($Name, $Default)
+
+            switch ($Name) {
+                '@bridge-prompt-transport' { "psmux: no server running on session 'default'" }
+                default { $null }
+            }
+        }
+
+        $settings = Get-BridgeSettings
+
+        $settings.prompt_transport | Should -Be 'argv'
+    }
+
+    It 'ignores server-not-running probe text during raw global settings normalization' {
+        Mock Get-WinsmuxOption {
+            param($Name, $Default)
+
+            switch ($Name) {
+                '@bridge-prompt-transport' { "psmux: no server running on session 'default'" }
+                default { $null }
+            }
+        }
+
+        $settings = Read-BridgeGlobalSettings
+
+        $settings.Contains('prompt_transport') | Should -BeFalse
+    }
+
     It 'fails closed when config_version is unsupported' {
 @'
 config-version: 2
@@ -6275,6 +6305,14 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'ready-with-ui-warning'
         $script:orchestraSmokeContent | Should -Match 'can_dispatch'
         $script:orchestraSmokeContent | Should -Match 'requires_startup'
+    }
+
+    It 'allows empty ui_attach_status when building the operator contract' {
+        $script:orchestraSmokeContent | Should -Match '\[AllowEmptyString\(\)\]\[string\]\$UiAttachStatus'
+    }
+
+    It 'allows an empty smoke_errors collection when building the operator contract' {
+        $script:orchestraSmokeContent | Should -Match '\[AllowEmptyCollection\(\)\]\[string\[\]\]\$SmokeErrors'
     }
 }
 
