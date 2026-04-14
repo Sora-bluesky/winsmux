@@ -150,6 +150,7 @@ When a new product, startup, orchestration, CI, or operator workflow problem is 
 10. Planning mapping means:
    - link the issue to an existing `TASK-*`, or add a new `TASK-*` in the external `backlog.yaml`,
    - place it in the most appropriate version lane instead of defaulting to a catch-all bucket,
+   - when a task is created primarily to track a GitHub issue, append the issue reference to the task title itself (for example `(#423)`),
    - add or update the Japanese title override in `tasks/roadmap-title-ja.psd1` when roadmap sync would expose the task,
    - run `winsmux-core/scripts/sync-roadmap.ps1`,
    - and record the issue-to-task mapping in `docs/handoff.md`.

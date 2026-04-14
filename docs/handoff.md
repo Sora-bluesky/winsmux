@@ -195,11 +195,11 @@
 - `needs-startup` は advisory ではなく hard gate として扱います。worker pane が期待数に達する前に PR/merge/backlog planning へ進むのは bug として扱います。
 - issue [#423](https://github.com/Sora-bluesky/winsmux/issues/423) を planning に反映し、`TASK-339` として `v0.22.0` に追加しました。
   - scope は alias 削除ではなく、`/winsmux-start`、startup/status summary、operator-facing help の `winsmux` 正規化です
-  - `tasks/roadmap-title-ja.psd1` を更新し、external roadmap sync まで完了させる運用に合わせています
+  - issue 由来 task のため、title 末尾に `(#423)` を付け、`tasks/roadmap-title-ja.psd1` も同じ参照に合わせました
 - issue 起票後の永続ルールも `AGENTS.md` に追加しました。
   - duplicate / invalid / upstream-only を除き、issue は同じ session で既存 `TASK-*` に紐付けるか、新規 `TASK-*` を external `backlog.yaml` に追加します
   - task 化したら `winsmux-core/scripts/sync-roadmap.ps1` を実行し、issue↔task 対応を handoff に残します
 - `/winsmux-start` が `needs-startup` を認識しても PR/merge 計画を先に進める問題を issue [#424](https://github.com/Sora-bluesky/winsmux/issues/424) として起票しました。
   - labels: `bug`, `orchestration`
-  - 同じ session で `TASK-340` として `v0.22.0` に追加し、`needs-startup` は worker 展開完了まで hard gate とする方針を planning に反映しました
+  - 同じ session で `TASK-340` (`#424`) として `v0.22.0` に追加し、`needs-startup` は worker 展開完了まで hard gate とする方針を planning に反映しました
   - `.claude/CLAUDE.md` と `.claude/rules/dispatch.md` に、`needs-startup` 時は `orchestra-start.ps1` を最優先で走らせ、pane 数確認前に PR/merge/backlog planning に進まないルールを追加しました
