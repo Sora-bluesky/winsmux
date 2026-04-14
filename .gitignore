@@ -53,7 +53,6 @@ tests/*
 !tests/PublicSurfacePolicy.Tests.ps1
 !tests/README.md
 /hooks/
-.githooks/
 .worktrees/
 INTERNAL*.md
 HANDOFF.md
