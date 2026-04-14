@@ -307,11 +307,45 @@ function Get-OrchestraLayoutSettings {
 
     if (-not $useLegacyLayout -and $agentSlots.Count -gt 0) {
         foreach ($slot in $agentSlots) {
-            $slotId = [string]$slot.slot_id
-            $slotRole = [string]$slot.runtime_role
-            $slotAgent = [string]$slot.agent
-            $slotModel = [string]$slot.model
-            $slotWorktreeMode = [string]$slot.worktree_mode
+            $slotId = ''
+            $slotRole = ''
+            $slotAgent = ''
+            $slotModel = ''
+            $slotWorktreeMode = ''
+
+            if ($slot -is [System.Collections.IDictionary]) {
+                if ($slot.Contains('slot_id')) {
+                    $slotId = [string]$slot['slot_id']
+                }
+                if ($slot.Contains('runtime_role')) {
+                    $slotRole = [string]$slot['runtime_role']
+                }
+                if ($slot.Contains('agent')) {
+                    $slotAgent = [string]$slot['agent']
+                }
+                if ($slot.Contains('model')) {
+                    $slotModel = [string]$slot['model']
+                }
+                if ($slot.Contains('worktree_mode')) {
+                    $slotWorktreeMode = [string]$slot['worktree_mode']
+                }
+            } elseif ($null -ne $slot -and $null -ne $slot.PSObject) {
+                if ($slot.PSObject.Properties.Name -contains 'slot_id') {
+                    $slotId = [string]$slot.slot_id
+                }
+                if ($slot.PSObject.Properties.Name -contains 'runtime_role') {
+                    $slotRole = [string]$slot.runtime_role
+                }
+                if ($slot.PSObject.Properties.Name -contains 'agent') {
+                    $slotAgent = [string]$slot.agent
+                }
+                if ($slot.PSObject.Properties.Name -contains 'model') {
+                    $slotModel = [string]$slot.model
+                }
+                if ($slot.PSObject.Properties.Name -contains 'worktree_mode') {
+                    $slotWorktreeMode = [string]$slot.worktree_mode
+                }
+            }
 
             if (-not [string]::IsNullOrWhiteSpace($slotRole) -and $slotRole -ne 'worker') {
                 throw "agent_slots runtime_role overrides are not supported yet at runtime (slot '$slotId' requested '$slotRole')."
@@ -1478,8 +1512,25 @@ if ($MyInvocation.InvocationName -ne '.') {
     Write-WinsmuxLog -Level INFO -Event 'preflight.server_watchdog.started' -Message "Started server watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; server_watchdog_pid = $serverWatchdogProcess.Id; process_name = $serverWatchdogProcess.ProcessName } | Out-Null
 
     Write-Output "Orchestra session: $sessionName"
-    Write-Output "Agent: $($settings.agent)"
-    Write-Output "Model: $($settings.model)"
+    $defaultAgent = ''
+    $defaultModel = ''
+    if ($settings -is [System.Collections.IDictionary]) {
+        if ($settings.Contains('agent')) {
+            $defaultAgent = [string]$settings['agent']
+        }
+        if ($settings.Contains('model')) {
+            $defaultModel = [string]$settings['model']
+        }
+    } elseif ($null -ne $settings -and $null -ne $settings.PSObject) {
+        if ($settings.PSObject.Properties.Name -contains 'agent') {
+            $defaultAgent = [string]$settings.agent
+        }
+        if ($settings.PSObject.Properties.Name -contains 'model') {
+            $defaultModel = [string]$settings.model
+        }
+    }
+    Write-Output "Agent: $(if ([string]::IsNullOrWhiteSpace($defaultAgent)) { 'per-slot / override only' } else { $defaultAgent })"
+    Write-Output "Model: $(if ([string]::IsNullOrWhiteSpace($defaultModel)) { 'per-slot / override only' } else { $defaultModel })"
     if ($layoutSettings.LegacyRoleLayout) {
         Write-Output "Mode: legacy role layout"
     } elseif ($layoutSettings.ExternalCommander) {

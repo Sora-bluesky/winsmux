@@ -581,6 +581,35 @@ Describe 'Get-OrchestraLayoutSettings' {
         $layout.Workers | Should -Be 3
     }
 
+    It 'allows agent slots without agent or model fields under strict mode' {
+        $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
+            external_commander = $true
+            worker_count       = 1
+            agent_slots        = @(
+                [pscustomobject]@{
+                    slot_id       = 'worker-1'
+                    runtime_role  = 'worker'
+                    worktree_mode = 'managed'
+                },
+                [ordered]@{
+                    slot_id       = 'worker-2'
+                    runtime_role  = 'worker'
+                    worktree_mode = 'managed'
+                }
+            )
+            legacy_role_layout = $false
+            commanders         = 0
+            builders           = 0
+            researchers        = 0
+            reviewers          = 0
+        })
+
+        $layout.ExternalCommander | Should -Be $true
+        $layout.LegacyRoleLayout | Should -Be $false
+        $layout.Commanders | Should -Be 0
+        $layout.Workers | Should -Be 2
+    }
+
     It 'rejects unsupported non-worker runtime_role overrides until slot runtime wiring expands' {
         {
             Get-OrchestraLayoutSettings -Settings ([ordered]@{
@@ -2798,6 +2827,12 @@ Describe 'orchestra-start session reuse contract' {
         $script:orchestraStartContent | Should -Match 'Session \$sessionName created by Ensure-OrchestraServer\.'
         $script:orchestraStartContent | Should -Not -Match "preflight\.session\.create"
         $script:orchestraStartContent | Should -Not -Match "new-session', '-d'"
+    }
+
+    It 'prints safe labels when default agent and model are omitted from project config' {
+        $script:orchestraStartContent | Should -Match "per-slot / override only"
+        $script:orchestraStartContent | Should -Match '\$defaultAgent'
+        $script:orchestraStartContent | Should -Match '\$defaultModel'
     }
 }
 
