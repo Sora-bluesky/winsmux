@@ -118,6 +118,7 @@ out/
 # =========================
 coverage/
 .nyc_output/
+testResults.xml
 
 # =========================
 # Misc

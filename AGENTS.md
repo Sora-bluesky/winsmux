@@ -156,6 +156,22 @@ When a new product, startup, orchestration, CI, or operator workflow problem is 
    - and record the issue-to-task mapping in `docs/handoff.md`.
 11. Treat "issue filed but not taskified" as incomplete operational bookkeeping unless the session explicitly documents why taskification is deferred.
 
+## Orchestra Boundary Gate
+
+When changing orchestra startup, restore, attach, watchdog, or rollback behavior:
+
+1. Do not solve the problem by adding more inline branching to one monolithic startup path unless no boundary-preserving option exists.
+2. Keep these responsibilities explicitly separable:
+   - detached session/bootstrap creation,
+   - visible UI attach,
+   - manifest/session-state persistence,
+   - watchdog launch,
+   - rollback/cleanup.
+3. Treat `session-ready`, `ui-attach-launched`, and `ui-attached` as different states. Do not collapse them into one success flag.
+4. If a change touches more than one of the responsibilities above, add or update tests that exercise the boundary directly.
+5. For startup regressions, prefer extracting a helper or state contract over patching more conditions into `orchestra-start.ps1`.
+6. If the fix reveals a structural boundary problem rather than a one-off defect, open or update an issue and map it to planning in the same session.
+
 ## Release Notes Policy
 
 GitHub Release titles and bodies must be written in English, regardless of the conversation language.

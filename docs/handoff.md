@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T20:35:00+09:00
+> Updated: 2026-04-14T23:35:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -9,8 +9,10 @@
 - `v0.22.0` の本線は `TASK-105`、`TASK-289`、`TASK-291` です。Tauri desktop control plane を backend-first で収束させています。
 - `TASK-290` の detail UX は `v0.22.1` レーンに分離済みです。`v0.22.0` では backend truth の hydration と material-change follow-through だけを進めます。
 - `v0.22.0` は PR [#419](https://github.com/Sora-bluesky/winsmux/pull/419) 上で継続中です。最小の残 seam は、frontend polling を完全撤去することではなく、summary change の Rust/Tauri 通知入口を詰めることです。
+- dogfooding blocker は issue [#425](https://github.com/Sora-bluesky/winsmux/issues/425) / `TASK-341` と issue [#426](https://github.com/Sora-bluesky/winsmux/issues/426) / `TASK-342` として切り出しました。現状は detached orchestra session/layout は 6 pane まで起動できていますが、visible Windows Terminal attach が `WindowsApps\\wt.exe` alias 経由で失敗しており、startup 本体の責務分離も継続中です。
 - planning は `backlog.yaml` を英語の正本、`ROADMAP.md` を日本語の閲覧面として扱います。
 - `winsmux-core/scripts/sync-roadmap.ps1` は `ROADMAP.md` と `docs/internal/` の 2 つの内部確認資料を同時更新する標準入口です。
+- `testResults.xml` は Pester の生成物として gitignore 管理し、コミット対象外にします。
 
 ## This session
 
@@ -123,8 +125,15 @@
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `187/187 PASS` after moving startup lock acquisition ahead of cleanup/bootstrap, adding `startup_token`-scoped background cleanup, and splitting bootstrap/full-startup readiness fields
 - `pwsh -NoProfile -File .\winsmux-core\scripts\sync-roadmap.ps1` -> PASS after adding `TASK-339` and enforcing the issue→task planning flow
 - `pwsh -NoProfile -File .\winsmux-core\scripts\sync-roadmap.ps1` -> PASS after adding `TASK-340` and syncing the new startup-priority rule
+- `pwsh -NoProfile -File .\winsmux-core\scripts\sync-roadmap.ps1` -> PASS after adding `TASK-341` and syncing the WT attach root-cause task
 - `node --check .claude\hooks\sh-orchestra-gate.js` -> PASS after adding the executable startup gate for `TASK-340`
-- `Invoke-Pester tests/Integration.GateEnforcement.Tests.ps1` -> `45 PASS` after narrowing the executable startup gate to PR/merge progression commands and allowing `-Command` startup wrappers plus read-only diagnostics
+- `Invoke-Pester tests/Integration.GateEnforcement.Tests.ps1` -> `46 PASS` after wiring `WINSMUX_DISABLE_ORCHESTRA_STARTUP_GATE` into the hook and guarding it with a content regression check
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `193 PASS` after restoring caller-controlled bootstrap timeout, removing the `wt_alias_stub` dead branch, and delaying `session_ready` until watchdog launch
+- issue [#425](https://github.com/Sora-bluesky/winsmux/issues/425) -> updated with the attach child early-exit model and the absolute-path `winsmux` attach contract
+- `pwsh -NoProfile -File .\winsmux-core\scripts\sync-roadmap.ps1` -> PASS after adding `TASK-342` and syncing the startup-boundary refactor task
+- repo root `testResults.xml` -> generated Pester artifact; added to `.gitignore` and removed from the worktree
+- manual `winsmux list-panes -t winsmux-orchestra -F '#S|#I|#P|#{pane_current_command}|#{pane_active}|#{pane_id}|#{pane_title}'` -> 6 panes visible after detached fallback
+- manual startup log -> `DEBUG: layout done, panes=6` while visible WT attach still fails with `0x80070002`
 - reviewer `Euclid` -> delayed `FAIL`
   - roadmap localization gate が write 後判定だった点
   - internal docs の `done` 分類
@@ -175,6 +184,10 @@
 9. PR [#420](https://github.com/Sora-bluesky/winsmux/pull/420) に startup-token + early-lock follow-up を push し、CI と review が通ったら merge する。
 10. `TASK-339` として issue [#423](https://github.com/Sora-bluesky/winsmux/issues/423) を進め、operator-facing startup/status 文言の `winsmux` 正規化を実装する。
 11. `TASK-340` として issue [#424](https://github.com/Sora-bluesky/winsmux/issues/424) を進め、`needs-startup` 復元時の worker 展開優先ルールが実動作でも守られるか再検証する。
+12. PR [#420](https://github.com/Sora-bluesky/winsmux/pull/420) に `TASK-341 (#425)` の detached-first startup / UI attach 分離と `ui_attach_launched` state split を push し、CI と review を通したうえで merge する。
+13. `/winsmux-start` を再試行し、`winsmux-orchestra` が `session-ready` のまま visible attach failure を warning 扱いにできるか確認する。
+14. まだ visible attach が失敗する場合は、`TASK-342 (#426)` として `orchestra-start.ps1` の `bootstrap / attach / manifest / watchdog / rollback` 分割を進める。
+15. `wt.exe` alias / attach child 実行の実機再現を採り、`WindowsApps\\wt.exe` を使わない attach 実装へ次段を切る。
 
 ## Notes
 
@@ -207,3 +220,32 @@
   - `.claude/CLAUDE.md` と `.claude/rules/dispatch.md` に、`needs-startup` 時は `orchestra-start.ps1` を最優先で走らせ、pane 数確認前に PR/merge/backlog planning に進まないルールを追加しました
   - さらに `.claude/hooks/sh-orchestra-gate.js` に executable gate を追加し、orchestra が expected pane count 未満の間は PR/merge progression 系の operator-side Bash を deny するようにしました
   - `pwsh -Command "& { pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1 ... }"` のような startup wrapper と、`Get-Content` / `Test-Path` / `Get-ChildItem` / `Select-String` / `Write-Host` / `Write-Output` などの read-only diagnostics は通るように調整しました
+- visible Windows Terminal attach failure を issue [#425](https://github.com/Sora-bluesky/winsmux/issues/425) として起票しました。
+  - labels: `bug`, `orchestration`
+  - 同じ session で `TASK-341` (`#425`) として `v0.22.0` に追加し、startup 成功条件を `session-ready` と `ui-attached` に分ける方向を planning に反映しました
+  - 症状は `0x80070002` で `orchestra-bootstrap.ps1` 欠落に見えるが、実態は `WindowsApps\\wt.exe` alias 経由の attach/bootstrap commandline 解釈が壊れていることです
+  - detached fallback 後に `winsmux list-panes -t winsmux-orchestra` で 6 pane が見えており、Orchestra 本体ではなく visible attach が壊れていると切り分け済みです
+- `TASK-341` の detached-first startup を実装しました。
+  - `winsmux-core/scripts/orchestra-start.ps1` は detached `new-session -d` を起動成功の正本にし、visible Windows Terminal attach は `Try-StartOrchestraUiAttach()` の後段へ分離しました
+  - manifest には `bootstrap_mode` / `session_ready` / `ui_attached` / `ui_attach_status` / `ui_attach_reason` を保存するようにしました
+  - 新規の `winsmux-core/scripts/orchestra-bootstrap.ps1` は attach 専用の薄い経路を持ち、session 既存時は `attach-session`、`-AttachOnly` で session 不在なら fail-closed します
+  - `WindowsApps\\wt.exe` alias は canonical attach path として扱わず、`wt_alias_stub` として UI attach だけを skip します
+  - `tests/winsmux-bridge.Tests.ps1` は detached-first startup、real WT attach、alias-stub skip、missing WT non-fatal の回帰試験へ更新しました
+- `TASK-342` は `TASK-341` で露出した構造問題の追跡です。
+  - issue 由来 task のため、title 末尾に `(#426)` を付与し、`tasks/roadmap-title-ja.psd1` と external planning にも同じ参照を入れました
+  - startup の責務分離が完了するまでは、`orchestra-start.ps1` への inline 分岐追加だけで症状を閉じない方針です
+- `TASK-341` をさらに詰めて、UI attach の状態を `ui_attach_launched` と `ui_attached` に分離しました。
+  - `Start-Process` 成功だけでは attach 完了と見なさず、manifest / startup log / console summary に `ui_attach_launched` を追加しました
+  - `ui_attached` は将来の確証チャネルまで保守的に `false` のままにし、現時点の reliable state は `ui_attach_launched` として扱います
+  - startup log event は generic な `orchestra.startup.ready` ではなく `orchestra.startup.session_ready` に変更し、session-ready と UI attach 未完了を明示するようにしました
+  - `Try-StartOrchestraUiAttach()` は `winsmux` 実行ファイルを絶対パスへ解決できない場合、`winsmux_unresolved` として launch 自体を行いません
+  - attach child の `pwsh` も絶対パス優先で解決し、`wt.exe` へは `--` を使って子コマンドを渡すようにしました
+  - `Ensure-OrchestraBootstrapSession()` は caller が渡した timeout をそのまま使うように戻し、15 秒固定で slow startup を早期失敗させないようにしました
+  - `Save-OrchestraSessionState()` の最初の書き込みでは `session_ready = false` を維持し、`commander_poll` / `watchdog` / `server_watchdog` 起動後の再保存でだけ `session_ready = true` にします
+  - `wt_alias_stub` は unavailable 早期 return に吸われないように整理し、runtime でも alias 専用 reason を返すようにしました
+- issue [#426](https://github.com/Sora-bluesky/winsmux/issues/426) を起票し、`TASK-342` として `v0.22.0` に追加しました。
+  - labels: `bug`, `orchestration`
+  - `orchestra-start.ps1` の責務を `bootstrap / attach / manifest / watchdog / rollback` に分ける構造是正を追跡します
+- `AGENTS.md` に `Orchestra Boundary Gate` を追加しました。
+  - `session-ready`、`ui-attach-launched`、`ui-attached` を別状態として扱います
+  - startup/attach/watchdog/manifest/rollback を 1 本の成功判定へ再結合する変更は禁止し、境界をまたぐ修正では境界テストを必須にしました

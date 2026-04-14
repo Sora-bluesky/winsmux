@@ -11,6 +11,7 @@ const DEBUG_LOG_PATH = path.join(os.tmpdir(), "winsmux-sh-orchestra-gate-command
 const SECRET_PATTERN =
   /\b(?:gho_[A-Za-z0-9_]+|ghp_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b|(?:^|\s)(?:GITHUB_TOKEN|GH_TOKEN|API_KEY)\s*=/i;
 const ORCHESTRA_SESSION_NAME = "winsmux-orchestra";
+const STARTUP_GATE_DISABLED = normalizeAgentValue(process.env.WINSMUX_DISABLE_ORCHESTRA_STARTUP_GATE) === "1";
 
 try {
   const input = fs.readFileSync(0, "utf8");
@@ -44,7 +45,7 @@ try {
   // Rule 2a: When orchestra is not ready, block PR/merge progression until startup succeeds (#424).
   if (toolName === "Bash") {
     const currentRole = normalizeAgentValue(process.env.WINSMUX_ROLE);
-    if (currentRole !== "builder" && currentRole !== "worker") {
+    if (!STARTUP_GATE_DISABLED && currentRole !== "builder" && currentRole !== "worker") {
       const orchestraProbeAvailable = hasOrchestraProbeInputs(process.cwd());
       const orchestraState = getOrchestraRestoreGateState(process.cwd());
       const shouldEnforceStartupGate =

@@ -48,7 +48,8 @@ Describe 'sh-orchestra-gate integration' {
                 [string]$RepoRoot = $script:RepoRoot,
                 [Parameter(Mandatory = $true)][string]$ToolName,
                 [Parameter(Mandatory = $true)][System.Collections.IDictionary]$ToolInput,
-                [System.Collections.IDictionary]$Environment = @{}
+                [System.Collections.IDictionary]$Environment = @{},
+                [bool]$DisableStartupGate = $true
             )
 
             $hookPath = Join-Path $RepoRoot '.claude\hooks\sh-orchestra-gate.js'
@@ -68,6 +69,9 @@ Describe 'sh-orchestra-gate integration' {
             $startInfo.RedirectStandardError = $true
             foreach ($entry in $Environment.GetEnumerator()) {
                 $startInfo.Environment[[string]$entry.Key] = [string]$entry.Value
+            }
+            if ($DisableStartupGate) {
+                $startInfo.Environment['WINSMUX_DISABLE_ORCHESTRA_STARTUP_GATE'] = '1'
             }
 
             $process = [System.Diagnostics.Process]::Start($startInfo)
@@ -105,7 +109,8 @@ Describe 'sh-orchestra-gate integration' {
             param(
                 [Parameter(Mandatory = $true)][string]$RepoRoot,
                 [Parameter(Mandatory = $true)][string[]]$Arguments,
-                [hashtable]$Environment = @{}
+                [hashtable]$Environment = @{},
+                [bool]$DisableStartupGate = $true
             )
 
             $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -124,6 +129,9 @@ Describe 'sh-orchestra-gate integration' {
             $startInfo.RedirectStandardError = $true
             foreach ($entry in $Environment.GetEnumerator()) {
                 $startInfo.Environment[$entry.Key] = [string]$entry.Value
+            }
+            if ($DisableStartupGate) {
+                $startInfo.Environment['WINSMUX_DISABLE_ORCHESTRA_STARTUP_GATE'] = '1'
             }
 
             $process = [System.Diagnostics.Process]::Start($startInfo)
@@ -527,6 +535,13 @@ EOF
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+    }
+
+    It 'wires the startup gate disable environment flag into the orchestra readiness gate' {
+        $hookContent = Get-Content -LiteralPath $script:SourceHookPath -Raw -Encoding UTF8
+
+        $hookContent | Should -Match '!STARTUP_GATE_DISABLED'
+        $hookContent | Should -Match 'WINSMUX_DISABLE_ORCHESTRA_STARTUP_GATE'
     }
 
     It 'denies git commit without Reviewer PASS for the current branch' {

@@ -65,6 +65,161 @@ function Test-OrchestraServerSession {
     return ($LASTEXITCODE -eq 0)
 }
 
+function ConvertTo-CmdArgumentLiteral {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    if ([string]::IsNullOrEmpty($Value)) {
+        return '""'
+    }
+
+    if ($Value -notmatch '[\s"&<>|^]') {
+        return $Value
+    }
+
+    return '"' + ($Value -replace '"', '""') + '"'
+}
+
+function Get-OrchestraWindowsTerminalInfo {
+    $wtExe = Get-Command 'wt.exe' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+    $canonicalWtExe = ''
+    $reason = 'wt_unavailable'
+    $pathSource = ''
+
+    $isAliasStub = $false
+    if (-not [string]::IsNullOrWhiteSpace($wtExe)) {
+        try {
+            $wtItem = Get-Item -LiteralPath $wtExe -ErrorAction Stop
+            $windowsAppsRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
+            $normalizedWtExe = [System.IO.Path]::GetFullPath($wtExe)
+            $normalizedWindowsAppsRoot = [System.IO.Path]::GetFullPath($windowsAppsRoot)
+            if ($wtItem.Length -eq 0 -or $normalizedWtExe.StartsWith($normalizedWindowsAppsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $isAliasStub = $true
+            } else {
+                $canonicalWtExe = $normalizedWtExe
+                $reason = 'ready'
+                $pathSource = 'command'
+            }
+        } catch {
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($canonicalWtExe)) {
+        foreach ($packageName in @('Microsoft.WindowsTerminal', 'Microsoft.WindowsTerminalPreview')) {
+            try {
+                $package = Get-AppxPackage -Name $packageName -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($null -eq $package -or [string]::IsNullOrWhiteSpace([string]$package.InstallLocation)) {
+                    continue
+                }
+
+                $candidatePath = Join-Path ([string]$package.InstallLocation) 'wt.exe'
+                if (-not (Test-Path -LiteralPath $candidatePath)) {
+                    continue
+                }
+
+                $canonicalWtExe = [System.IO.Path]::GetFullPath($candidatePath)
+                $reason = if ($isAliasStub) { 'resolved_from_appx' } else { 'ready' }
+                $pathSource = 'appx'
+                break
+            } catch {
+            }
+        }
+    }
+
+    return [PSCustomObject][ordered]@{
+        Available   = -not [string]::IsNullOrWhiteSpace($canonicalWtExe)
+        Path        = $canonicalWtExe
+        AliasPath   = if ($isAliasStub) { [string]$wtExe } else { '' }
+        IsAliasStub = $isAliasStub
+        PathSource  = $pathSource
+        Reason      = if (-not [string]::IsNullOrWhiteSpace($canonicalWtExe)) { $reason } elseif ($isAliasStub) { 'wt_alias_stub' } else { 'wt_unavailable' }
+    }
+}
+
+function Try-StartOrchestraUiAttach {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [int]$Width = 200,
+        [int]$Height = 70
+    )
+
+    $terminalInfo = Get-OrchestraWindowsTerminalInfo
+    if (-not [bool]$terminalInfo.Available) {
+        return [PSCustomObject][ordered]@{
+            Attempted = $false
+            Launched  = $false
+            Attached  = $false
+            Status    = if ([bool]$terminalInfo.IsAliasStub) { 'wt_alias_stub' } else { 'wt_unavailable' }
+            Reason    = if ([bool]$terminalInfo.IsAliasStub) {
+                'WindowsApps wt.exe alias was found, but no canonical Windows Terminal binary could be resolved.'
+            } else {
+                'Windows Terminal is not installed or not on PATH.'
+            }
+            Path      = if ([bool]$terminalInfo.IsAliasStub) { [string]$terminalInfo.AliasPath } else { '' }
+        }
+    }
+
+    $bootstrapScriptPath = Join-Path $scriptDir 'orchestra-bootstrap.ps1'
+    $pwshPath = Get-Command 'pwsh' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($pwshPath)) {
+        $pwshPath = 'pwsh'
+    }
+
+    $winsmuxPathForAttach = [string]$script:winsmuxBin
+    if (-not [string]::IsNullOrWhiteSpace($winsmuxPathForAttach) -and -not [System.IO.Path]::IsPathRooted($winsmuxPathForAttach)) {
+        $resolvedWinsmuxPath = Get-Command $winsmuxPathForAttach -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+        if (-not [string]::IsNullOrWhiteSpace($resolvedWinsmuxPath)) {
+            $winsmuxPathForAttach = $resolvedWinsmuxPath
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($winsmuxPathForAttach) -or -not [System.IO.Path]::IsPathRooted($winsmuxPathForAttach)) {
+        return [PSCustomObject][ordered]@{
+            Attempted = $false
+            Launched  = $false
+            Attached  = $false
+            Status    = 'winsmux_unresolved'
+            Reason    = 'winsmux executable could not be resolved to an absolute path for the attach child process.'
+            Path      = [string]$terminalInfo.Path
+        }
+    }
+
+    $wtArguments = @(
+        '--size', "$Width,$Height",
+        'new-tab',
+        '--title', $SessionName,
+        '--',
+        $pwshPath, '-NoProfile', '-NoExit', '-File', $bootstrapScriptPath, '-SessionName', $SessionName, '-WinsmuxPath', $winsmuxPathForAttach, '-AttachOnly'
+    )
+
+    try {
+        $attachProcess = Start-Process -FilePath ([string]$terminalInfo.Path) -ArgumentList $wtArguments -PassThru
+        Start-Sleep -Milliseconds 500
+        $attachStillRunning = -not $attachProcess.HasExited
+
+        return [PSCustomObject][ordered]@{
+            Attempted = $true
+            Launched  = $true
+            Attached  = $false
+            Status    = if ($attachStillRunning) { 'attach_launched' } else { 'attach_exited_early' }
+            Reason    = if ($attachStillRunning) {
+                'Windows Terminal attach child remained running past the early-failure window; final attach confirmation remains asynchronous.'
+            } else {
+                'Windows Terminal attach child exited during the early-failure window.'
+            }
+            Path      = [string]$terminalInfo.Path
+        }
+    } catch {
+        return [PSCustomObject][ordered]@{
+            Attempted = $true
+            Launched  = $false
+            Attached  = $false
+            Status    = 'attach_failed'
+            Reason    = $_.Exception.Message
+            Path      = [string]$terminalInfo.Path
+        }
+    }
+}
+
 function Ensure-OrchestraBootstrapSession {
     param(
         [Parameter(Mandatory = $true)]
@@ -74,30 +229,39 @@ function Ensure-OrchestraBootstrapSession {
     )
 
     if (Test-OrchestraServerSession -SessionName $SessionName) {
-        return [ordered]@{
+        return [PSCustomObject][ordered]@{
             SessionName    = $SessionName
             BootstrapReady = $false
             StartupReady   = $false
+            BootstrapMode  = 'existing'
+            UiAttached     = $false
+            UiAttachStatus = 'existing_session'
         }
     }
 
-    # Launch in separate Windows Terminal window (attached session gets real terminal size).
-    # Detached sessions are fixed at 120x30 in the Rust core (resize-window is a no-op on Windows).
-    $wtWidth = 200
-    $wtHeight = 70
-    $wtExe = Get-Command 'wt.exe' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
-    if ([string]::IsNullOrWhiteSpace($wtExe)) {
-        throw "Windows Terminal (wt.exe) is required to create the orchestra session with a usable window size. Install Windows Terminal or ensure wt.exe is in PATH."
+    Invoke-Winsmux -Arguments @('new-session', '-d', '-s', $SessionName)
+    $readiness = Wait-OrchestraBootstrapReadiness -SessionName $SessionName -TimeoutSeconds $TimeoutSeconds -ExpectedPaneCount $ExpectedPaneCount
+    if ($readiness.Ready) {
+        return [PSCustomObject][ordered]@{
+            SessionName    = $SessionName
+            BootstrapReady = $true
+            StartupReady   = $false
+            BootstrapMode  = 'detached_primary'
+            UiAttached     = $false
+            UiAttachStatus = 'not_requested'
+        }
     }
 
-    Start-Process -FilePath $wtExe -ArgumentList @(
-        '--size', "$wtWidth,$wtHeight",
-        '--title', $SessionName,
-        '--',
-        $script:winsmuxBin, 'new-session', '-s', $SessionName
+    throw "Orchestra session '$SessionName' did not reach bootstrap readiness within $TimeoutSeconds seconds after detached startup."
+}
+
+function Wait-OrchestraBootstrapReadiness {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [int]$TimeoutSeconds = 60,
+        [int]$ExpectedPaneCount = 1
     )
 
-    # Poll for readiness: has-session + list-panes must both succeed.
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $pollAttempt = 0
     while ((Get-Date) -lt $deadline) {
@@ -109,9 +273,8 @@ function Ensure-OrchestraBootstrapSession {
                 if ($paneCount -eq $ExpectedPaneCount) {
                     Write-Host "Ensure-OrchestraBootstrapSession: bootstrap session available after $pollAttempt polls"
                     return [ordered]@{
-                        SessionName    = $SessionName
-                        BootstrapReady = $true
-                        StartupReady   = $false
+                        Ready       = $true
+                        PollAttempt = $pollAttempt
                     }
                 }
             } catch {
@@ -125,7 +288,10 @@ function Ensure-OrchestraBootstrapSession {
         Start-Sleep -Milliseconds 500
     }
 
-    throw "Orchestra session '$SessionName' did not reach bootstrap readiness within $TimeoutSeconds seconds. Verify Windows Terminal launched correctly."
+    return [ordered]@{
+        Ready       = $false
+        PollAttempt = $pollAttempt
+    }
 }
 
 function Reset-OrchestraServerSession {
@@ -159,13 +325,24 @@ function Reset-OrchestraServerSession {
         [void](Clear-WinsmuxManifest -ProjectDir $ProjectDir)
     }
     $server = Ensure-OrchestraBootstrapSession -SessionName $SessionName -TimeoutSeconds 60 -ExpectedPaneCount $ExpectedPaneCount
-    $health = Wait-OrchestraServerHealthy -SessionName $SessionName -WinsmuxBin $WinsmuxBin -TimeoutSeconds 60 -ExpectedPaneCount $ExpectedPaneCount
+    $bootstrapMode = if ($null -ne $server.PSObject -and $server.PSObject.Properties.Name -contains 'BootstrapMode') {
+        [string]$server.BootstrapMode
+    } else {
+        'windows_terminal'
+    }
+    $health = 'BootstrapOnly'
+    if ($bootstrapMode -ne 'detached_fallback') {
+        $health = (Wait-OrchestraServerHealthy -SessionName $SessionName -WinsmuxBin $WinsmuxBin -TimeoutSeconds 60 -ExpectedPaneCount $ExpectedPaneCount).Health
+    } else {
+        Write-Warning "Reset-OrchestraServerSession: detached bootstrap fallback used for $SessionName; skipping strict health wait and continuing to layout startup."
+    }
 
-    return [ordered]@{
+    return [PSCustomObject][ordered]@{
         SessionName    = $server.SessionName
         BootstrapReady = $server.BootstrapReady
         StartupReady   = $false
-        Health         = $health.Health
+        BootstrapMode  = $bootstrapMode
+        Health         = $health
     }
 }
 
@@ -810,7 +987,13 @@ function Save-OrchestraSessionState {
         [AllowEmptyString()][string]$StartupToken = '',
         [Nullable[int]]$CommanderPollPid = $null,
         [Nullable[int]]$WatchdogPid = $null,
-        [Nullable[int]]$ServerWatchdogPid = $null
+        [Nullable[int]]$ServerWatchdogPid = $null,
+        [AllowEmptyString()][string]$BootstrapMode = '',
+        [bool]$SessionReady = $false,
+        [bool]$UiAttachLaunched = $false,
+        [bool]$UiAttached = $false,
+        [AllowEmptyString()][string]$UiAttachStatus = '',
+        [AllowEmptyString()][string]$UiAttachReason = ''
     )
 
     $manifestPath = Get-OrchestraManifestPath -ProjectDir $ProjectDir
@@ -846,6 +1029,12 @@ function Save-OrchestraSessionState {
             commander_poll_pid  = $CommanderPollPid
             watchdog_pid        = $WatchdogPid
             server_watchdog_pid = $ServerWatchdogPid
+            bootstrap_mode      = $BootstrapMode
+            session_ready       = $SessionReady
+            ui_attach_launched  = $UiAttachLaunched
+            ui_attached         = $UiAttached
+            ui_attach_status    = $UiAttachStatus
+            ui_attach_reason    = $UiAttachReason
         }
         panes     = $paneMap
         tasks     = [PSCustomObject]@{
@@ -1465,7 +1654,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
 
         $orchestraServer = Ensure-OrchestraBootstrapSession -SessionName $sessionName -TimeoutSeconds 60
-        Write-Warning ("Bootstrap ensure result type: " + $orchestraServer.GetType().FullName + " BootstrapReady=" + $orchestraServer.BootstrapReady)
+        Write-Warning ("Bootstrap ensure result type: " + $orchestraServer.GetType().FullName + " BootstrapReady=" + $orchestraServer.BootstrapReady + " Mode=" + $orchestraServer.BootstrapMode)
 
     # Clean up any leftover orchestra panes in default session (#213)
     try {
@@ -1510,10 +1699,20 @@ if ($MyInvocation.InvocationName -ne '.') {
             }
         }
     } else {
-        $null = Wait-OrchestraServerHealthy -SessionName $sessionName -WinsmuxBin $winsmuxBin -TimeoutSeconds 60 -ExpectedPaneCount $bootstrapPaneCount
+        $bootstrapMode = if ($null -ne $orchestraServer.PSObject -and $orchestraServer.PSObject.Properties.Name -contains 'BootstrapMode') {
+            [string]$orchestraServer.BootstrapMode
+        } else {
+            'windows_terminal'
+        }
+        if ($bootstrapMode -ne 'detached_fallback') {
+            $null = Wait-OrchestraServerHealthy -SessionName $sessionName -WinsmuxBin $winsmuxBin -TimeoutSeconds 60 -ExpectedPaneCount $bootstrapPaneCount
+        } else {
+            Write-Warning "Preflight: detached bootstrap fallback active for $sessionName; proceeding without strict health metadata gate."
+        }
         Write-WinsmuxLog -Level INFO -Event 'preflight.session.reuse' -Message "Reusing server-created session $sessionName." -Data ([ordered]@{
             session_name    = $sessionName
             session_created = $true
+            bootstrap_mode  = $bootstrapMode
         }) | Out-Null
     }
 
@@ -1532,11 +1731,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-WinsmuxLog -Level INFO -Event 'preflight.builder_worktree_cleanup.branch_removed' -Message "Removed stale Builder branch $removedBranch." -Data ([ordered]@{ branch_name = $removedBranch }) | Out-Null
     }
 
-        # Bootstrap session is created by Ensure-OrchestraBootstrapSession (wt.exe attached window).
-        # No fallback detached creation — wt.exe is required.
         Write-WinsmuxLog -Level INFO -Event 'preflight.bootstrap.ready' -Message "Bootstrap session $sessionName created by Ensure-OrchestraBootstrapSession." -Data ([ordered]@{
             session_name    = $sessionName
             session_created = [bool]$orchestraServer.BootstrapReady
+            bootstrap_mode  = [string]$orchestraServer.BootstrapMode
             expected_panes  = $bootstrapPaneCount
         }) | Out-Null
         $bootstrapPaneId = Get-OrchestraBootstrapPaneId -SessionName $sessionName
@@ -1727,7 +1925,12 @@ if ($MyInvocation.InvocationName -ne '.') {
     $readyCount = $validPaneSummaries.Count - $invalidCount
     Assert-OrchestraBootstrapVerification -PaneSummaries @($paneSummaries) -InvalidCount $invalidCount -ReadyCount $readyCount
 
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken
+    $uiAttachResult = Try-StartOrchestraUiAttach -SessionName $sessionName
+    if ($uiAttachResult.Status -ne 'attach_launched') {
+        Write-Warning "Orchestra UI attach status for ${sessionName}: $($uiAttachResult.Status) ($($uiAttachResult.Reason))"
+    }
+
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $false -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason)
     $commanderPollScriptPath = Join-Path $scriptDir 'commander-poll.ps1'
     $commanderPollProcess = Start-CommanderPollJob -CommanderPollScriptPath $commanderPollScriptPath -ManifestPath $manifestPath -StartupToken $startupToken -Interval 20
     Write-WinsmuxLog -Level INFO -Event 'preflight.commander_poll.started' -Message "Started commander poll for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; commander_poll_pid = $commanderPollProcess.Id; process_name = $commanderPollProcess.ProcessName } | Out-Null
@@ -1738,14 +1941,17 @@ if ($MyInvocation.InvocationName -ne '.') {
     Assert-OrchestraBackgroundProcessStarted -Process $commanderPollProcess -Name 'Commander poll job'
     Assert-OrchestraBackgroundProcessStarted -Process $watchdogProcess -Name 'Agent watchdog job'
     Assert-OrchestraBackgroundProcessStarted -Process $serverWatchdogProcess -Name 'Server watchdog job'
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -CommanderPollPid $commanderPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -CommanderPollPid $commanderPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $true -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason)
     Write-WinsmuxLog -Level INFO -Event 'preflight.watchdog.started' -Message "Started agent watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; watchdog_pid = $watchdogProcess.Id; process_name = $watchdogProcess.ProcessName } | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'preflight.server_watchdog.started' -Message "Started server watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; server_watchdog_pid = $serverWatchdogProcess.Id; process_name = $serverWatchdogProcess.ProcessName } | Out-Null
-    Write-WinsmuxLog -Level INFO -Event 'orchestra.startup.ready' -Message "Orchestra session $sessionName is fully ready." -Data ([ordered]@{
+    Write-WinsmuxLog -Level INFO -Event 'orchestra.startup.session_ready' -Message "Orchestra session $sessionName reached session-ready; UI attach remains a separate state." -Data ([ordered]@{
         session_name       = $sessionName
         expected_panes     = $expectedPaneCount
         actual_panes       = @($layout.Panes).Count
         bootstrap_verified = $true
+        ui_attach_launched = [bool]$uiAttachResult.Launched
+        ui_attach_status   = [string]$uiAttachResult.Status
+        ui_attached        = [bool]$uiAttachResult.Attached
     }) | Out-Null
 
     Write-Output "Orchestra session: $sessionName"
@@ -1777,6 +1983,9 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
     Write-Output "ProjectDir: $projectDir"
     Write-Output "GitWorktreeDir: $gitWorktreeDir"
+    Write-Output "SessionReady: true"
+    Write-Output "UI Attach Launched: $([bool]$uiAttachResult.Launched)"
+    Write-Output "UI Attach: $($uiAttachResult.Status)"
     Write-Output ''
     Write-Output 'Panes:'
     foreach ($paneSummary in $paneSummaries) {

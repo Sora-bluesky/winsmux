@@ -336,7 +336,7 @@ function Get-PaneControlManifestEntries {
             $gitWorktreeDir = Get-PaneControlGitWorktreeDir -ProjectDir $launchDir
         }
 
-        $entries += [ordered]@{
+        $entries += [PSCustomObject][ordered]@{
             ManifestPath        = $manifestPath
             ProjectDir          = $projectRoot
             Label               = $label

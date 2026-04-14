@@ -2320,6 +2320,26 @@ function Invoke-Send {
         }
     }
 
+    $contextLaunchDir = $projectDir
+    $contextGitWorktreeDir = ''
+    if ($null -ne $context) {
+        if ($context -is [System.Collections.IDictionary]) {
+            if ($context.Contains('LaunchDir')) {
+                $contextLaunchDir = [string]$context['LaunchDir']
+            }
+            if ($context.Contains('GitWorktreeDir')) {
+                $contextGitWorktreeDir = [string]$context['GitWorktreeDir']
+            }
+        } else {
+            if ($null -ne $context.PSObject -and $context.PSObject.Properties.Name -contains 'LaunchDir') {
+                $contextLaunchDir = [string]$context.LaunchDir
+            }
+            if ($null -ne $context.PSObject -and $context.PSObject.Properties.Name -contains 'GitWorktreeDir') {
+                $contextGitWorktreeDir = [string]$context.GitWorktreeDir
+            }
+        }
+    }
+
     $transportPlan = Resolve-SendTransportPlan `
         -Text $text `
         -ProjectDir $projectDir `
@@ -2327,8 +2347,8 @@ function Invoke-Send {
         -PromptTransport ([string]$agentConfig.PromptTransport) `
         -TaskSlug $taskSlug `
         -ExecMode:$execMode `
-        -LaunchDir ([string]$context.LaunchDir) `
-        -GitWorktreeDir ([string]$context.GitWorktreeDir) `
+        -LaunchDir $contextLaunchDir `
+        -GitWorktreeDir $contextGitWorktreeDir `
         -Model ([string]$agentConfig.Model)
 
     if ($transportPlan['Mode'] -eq 'codex_exec_file') {
