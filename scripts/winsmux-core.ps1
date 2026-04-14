@@ -6299,7 +6299,8 @@ promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>
   pipeline <task>       Run plan-exec-verify-fix loop for a task
   task-run <task>       Alias for pipeline; one-shot orchestration entrypoint
   builder-queue <action> [args]  Manage Builder queue and auto-dispatch next work
-  orchestra-smoke [--json] [--project-dir <path>]  Start Orchestra if needed and report structured startup contract + UI attach state
+  orchestra-smoke [--json] [--auto-start] [--project-dir <path>]  Report structured startup contract + UI attach state (use --auto-start to start if needed)
+  orchestra-attach [--json] [--project-dir <path>]  Launch a visible attach window for an existing orchestra session
   vault set <key> [value]   Store a credential securely (DPAPI)
   vault get <key>           Retrieve a stored credential
   vault inject <pane>       Inject all credentials as env vars into a pane
@@ -6633,18 +6634,45 @@ switch ($Command) {
                 }
                 '--project-dir' {
                     if ($index + 1 -ge $remaining.Count) {
-                    Stop-WithError "usage: winsmux orchestra-smoke [--json] [--project-dir <path>]"
+                    Stop-WithError "usage: winsmux orchestra-smoke [--json] [--auto-start] [--project-dir <path>]"
                 }
 
                 $smokeArgs += @('-ProjectDir', $remaining[$index + 1])
                 $index++
             }
+                '--auto-start' {
+                    $smokeArgs += '-AutoStart'
+                }
                 default {
-                    Stop-WithError "usage: winsmux orchestra-smoke [--json] [--project-dir <path>]"
+                    Stop-WithError "usage: winsmux orchestra-smoke [--json] [--auto-start] [--project-dir <path>]"
                 }
             }
         }
         & pwsh -NoProfile -File $smokeScript @smokeArgs
+    }
+    'orchestra-attach' {
+        $attachScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-attach.ps1'))
+        $attachArgs = @()
+        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
+        for ($index = 0; $index -lt $remaining.Count; $index++) {
+            switch ($remaining[$index]) {
+                '--json' {
+                    $attachArgs += '-AsJson'
+                }
+                '--project-dir' {
+                    if ($index + 1 -ge $remaining.Count) {
+                        Stop-WithError "usage: winsmux orchestra-attach [--json] [--project-dir <path>]"
+                    }
+
+                    $attachArgs += @('-ProjectDir', $remaining[$index + 1])
+                    $index++
+                }
+                default {
+                    Stop-WithError "usage: winsmux orchestra-attach [--json] [--project-dir <path>]"
+                }
+            }
+        }
+        & pwsh -NoProfile -File $attachScript @attachArgs
     }
     'vault'           {
         switch ($Target) {

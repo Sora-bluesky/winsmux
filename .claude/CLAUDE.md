@@ -88,10 +88,12 @@ When `/winsmux-start` or another restoration flow reports `needs-startup`:
 3. Verify readiness with `winsmux orchestra-smoke --json`.
 4. Treat `operator_contract.operator_state`, `operator_contract.can_dispatch`, and `operator_contract.requires_startup` from that smoke result as the source of truth.
 5. Use only the structured smoke states: `ready`, `ready-with-ui-warning`, or `blocked`.
-6. Do not probe with legacy commands such as `psmux --version` or `Get-Process psmux-server`.
-7. Do not tell the user to manually start a `psmux` server.
-8. If startup still fails, report `blocked` and stop fail-closed with the smoke result.
-9. Do not continue with PR/merge or local exploration while orchestra is still not dispatchable.
+6. If the state is `ready-with-ui-warning`, run `winsmux orchestra-attach --json` once to launch a visible operator window, then continue from the live handoff without asking the user to choose a starting task.
+7. When `.claude/local/operator-handoff.md` contains an ordered `Next actions` list, start the first pending action automatically instead of asking which task to begin.
+8. Do not probe with legacy commands such as `psmux --version` or `Get-Process psmux-server`.
+9. Do not tell the user to manually start a `psmux` server.
+10. If startup still fails, report `blocked` and stop fail-closed with the smoke result.
+11. Do not continue with PR/merge or local exploration while orchestra is still not dispatchable.
 
 ## Compatibility and release notes
 

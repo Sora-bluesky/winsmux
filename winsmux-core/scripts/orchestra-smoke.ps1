@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$ProjectDir = '',
-    [switch]$AsJson
+    [switch]$AsJson,
+    [switch]$AutoStart
 )
 
 $ErrorActionPreference = 'Stop'
@@ -185,7 +186,7 @@ $startExitCode = 0
 $sessionAlreadyHealthy = $paneProbeOk -and $paneCount -ge $expectedPaneCount -and $manifestFound
 if ($sessionAlreadyHealthy) {
     $startOutput = 'Skipped orchestra-start; existing orchestra session already meets the smoke prerequisites.'
-} else {
+} elseif ($AutoStart) {
     $startOutput = & pwsh -NoProfile -Command "Set-Location -LiteralPath '$ProjectDir'; & '$startScript'" 2>&1
     $startExitCode = $LASTEXITCODE
     $manifestFound = Test-Path -LiteralPath $manifestPath
@@ -205,6 +206,8 @@ if ($sessionAlreadyHealthy) {
             $paneProbeError = $_.Exception.Message
         }
     }
+} else {
+    $startOutput = 'Skipped orchestra-start; run orchestra-start.ps1 when operator_contract.requires_startup is true.'
 }
 
 $sessionReady = $false

@@ -570,6 +570,17 @@ EOF
         $result.StdErr | Should -Be ''
     }
 
+    It 'allows winsmux orchestra-attach from the operator pane' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = 'pwsh -NoProfile -File scripts/winsmux-core.ps1 orchestra-attach --json'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
     It 'wires the startup gate disable environment flag into the orchestra readiness gate' {
         $hookContent = Get-Content -LiteralPath $script:SourceHookPath -Raw -Encoding UTF8
 
