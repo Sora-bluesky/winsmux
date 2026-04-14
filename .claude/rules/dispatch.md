@@ -13,9 +13,11 @@ paths: ["winsmux-core/scripts/**", ".claude/**"]
    - `ready`
    - `ready-with-ui-warning`
    Any other state is fail-closed.
-6. Never use `psmux --version`, `Get-Process psmux-server`, or similar legacy probe commands for operator-side startup diagnosis.
-7. If pane expansion does not succeed, treat the session as `blocked` and report the smoke/startup failure.
-8. Do not plan merge work while the orchestra session is still not dispatchable.
+6. If the state is `ready-with-ui-warning`, run `pwsh -NoProfile -File scripts/winsmux-core.ps1 orchestra-attach --json` once, then continue from the first pending `Next actions` item in `.claude/local/operator-handoff.md`.
+7. Never ask the user which task to begin when the live handoff already lists ordered next actions.
+8. Never use `psmux --version`, `Get-Process psmux-server`, or similar legacy probe commands for operator-side startup diagnosis.
+9. If pane expansion does not succeed, treat the session as `blocked` and report the smoke/startup failure.
+10. Do not plan merge work while the orchestra session is still not dispatchable.
 
 ## Builder Dispatch
 1. Check pane state: `winsmux capture-pane -t <pane> -p | tail -5`
