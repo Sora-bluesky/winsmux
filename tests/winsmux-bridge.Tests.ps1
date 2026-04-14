@@ -6301,10 +6301,11 @@ Describe 'winsmux orchestra-smoke command' {
     }
 
     It 'documents orchestra-smoke and dispatches it through the dedicated startup smoke script' {
-        $script:winsmuxCoreRawContent | Should -Match 'orchestra-smoke \[--json\] \[--project-dir <path>\]\s+Start Orchestra if needed and report structured startup contract \+ UI attach state'
+        $script:winsmuxCoreRawContent | Should -Match 'orchestra-smoke \[--json\] \[--auto-start\] \[--project-dir <path>\]\s+Report structured startup contract \+ UI attach state \(use --auto-start to start if needed\)'
         $script:winsmuxCoreRawContent | Should -Match "'orchestra-smoke'\s*\{"
         $script:winsmuxCoreRawContent | Should -Match 'orchestra-smoke\.ps1'
         $script:winsmuxCoreRawContent | Should -Match '--project-dir <path>'
+        $script:winsmuxCoreRawContent | Should -Match '--auto-start'
         $script:winsmuxCoreRawContent | Should -Not -Match '--session-name <name>'
     }
 
@@ -6330,6 +6331,12 @@ Describe 'winsmux orchestra-smoke command' {
 
     It 'allows an empty smoke_errors collection when building the operator contract' {
         $script:orchestraSmokeContent | Should -Match '\[AllowEmptyCollection\(\)\]\[string\[\]\]\$SmokeErrors'
+    }
+
+    It 'defaults orchestra-smoke to observation-only and only auto-starts when requested' {
+        $script:orchestraSmokeContent | Should -Match '\[switch\]\$AutoStart'
+        $script:orchestraSmokeContent | Should -Match 'elseif \(\$AutoStart\)'
+        $script:orchestraSmokeContent | Should -Match 'Skipped orchestra-start; run orchestra-start\.ps1 when operator_contract\.requires_startup is true\.'
     }
 }
 
