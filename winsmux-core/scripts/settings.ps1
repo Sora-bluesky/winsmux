@@ -50,6 +50,16 @@ if (-not (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue)) {
 }
 
 if (-not (Get-Command Get-WinsmuxOption -ErrorAction SilentlyContinue)) {
+    function Test-WinsmuxOptionFailureText {
+        param([string]$Value)
+
+        if ([string]::IsNullOrWhiteSpace($Value)) {
+            return $true
+        }
+
+        return ($Value -match 'unknown|error|invalid|no server running on session|not recognized as the name|is not recognized as a name|failed with exit code|failed to connect|could not connect|no such session')
+    }
+
     function Get-WinsmuxOption {
         param(
             [Parameter(Mandatory = $true)][string]$Name,
@@ -63,7 +73,7 @@ if (-not (Get-Command Get-WinsmuxOption -ErrorAction SilentlyContinue)) {
 
         try {
             $value = (& $winsmuxBin show-options -g -v $Name 2>&1 | Out-String).Trim()
-            if ($value -and $value -notmatch 'unknown|error|invalid') {
+            if (-not (Test-WinsmuxOptionFailureText -Value $value)) {
                 return $value
             }
         } catch {
@@ -621,6 +631,10 @@ function Read-BridgeGlobalSettings {
 
         $rawValue = Get-WinsmuxOption -Name $optionName -Default $null
         if ($null -eq $rawValue -or [string]::IsNullOrWhiteSpace($rawValue)) {
+            continue
+        }
+
+        if (Test-WinsmuxOptionFailureText -Value ([string]$rawValue)) {
             continue
         }
 
