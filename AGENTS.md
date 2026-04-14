@@ -120,6 +120,20 @@ Rules:
 4. Prefer updating existing entries over adding duplicates.
 5. If the session did not use or discuss Rust-adjacent commands, no learning-note update is required.
 
+## Orchestra Startup Gate
+
+When using `/winsmux-start` or otherwise restoring orchestra-driven work from Claude Code:
+
+1. Treat `external-commander: true` as **"no commander pane is created"**, not as **"worker panes may be absent"**.
+2. A session is **not ready** when the winsmux session exists but the active pane count is smaller than the expected worker count from `.winsmux.yaml` / resolved `agent_slots`.
+3. In that state, do not summarize status, propose task order, or dispatch work yet.
+4. First run the actual startup path (`winsmux-core/scripts/orchestra-start.ps1`) and verify that the pane count reaches the expected worker count.
+5. If pane expansion still fails, stop fail-closed and report the startup blocker clearly instead of falling back to local exploration or pretending orchestra is active.
+6. `/winsmux-start` restoration must distinguish these three states explicitly:
+   - `ready`: expected worker panes exist
+   - `needs-startup`: session exists but worker panes are missing
+   - `blocked`: startup was attempted and failed
+
 ## Release Notes Policy
 
 GitHub Release titles and bodies must be written in English, regardless of the conversation language.
