@@ -170,6 +170,48 @@ function Start-OrchestraAttachProcess {
     }
 }
 
+function Get-OrchestraAttachedClientSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
+    $clients = @()
+    $error = ''
+    $ok = $false
+
+    if ([string]::IsNullOrWhiteSpace([string]$script:winsmuxBin)) {
+        return [PSCustomObject][ordered]@{
+            Ok      = $false
+            Count   = 0
+            Error   = 'winsmux executable could not be resolved.'
+            Clients = @()
+        }
+    }
+
+    try {
+        $clientLines = & $script:winsmuxBin 'list-clients' '-t' $SessionName 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $clients = @(
+                $clientLines |
+                    ForEach-Object { [string]$_ } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $ok = $true
+        } else {
+            $error = ($clientLines | Out-String).Trim()
+        }
+    } catch {
+        $error = $_.Exception.Message
+    }
+
+    [PSCustomObject][ordered]@{
+        Ok      = $ok
+        Count   = $clients.Count
+        Error   = $error
+        Clients = @($clients)
+    }
+}
+
 function Try-StartOrchestraUiAttach {
     param(
         [Parameter(Mandatory = $true)][string]$SessionName,
@@ -216,6 +258,18 @@ function Try-StartOrchestraUiAttach {
             Status    = 'winsmux_unresolved'
             Reason    = 'winsmux executable could not be resolved to an absolute path for the attach child process.'
             Path      = [string]$terminalInfo.Path
+        }
+    }
+
+    $clientSnapshot = Get-OrchestraAttachedClientSnapshot -SessionName $SessionName
+    if ([bool]$clientSnapshot.Ok -and [int]$clientSnapshot.Count -gt 0) {
+        return [PSCustomObject][ordered]@{
+            Attempted = $false
+            Launched  = $false
+            Attached  = $true
+            Status    = 'attach_already_present'
+            Reason    = "Detected $($clientSnapshot.Count) attached client(s) for session '$SessionName'; skipped spawning another visible attach window."
+            Path      = ''
         }
     }
 
@@ -2106,7 +2160,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     Assert-OrchestraBootstrapVerification -PaneSummaries @($paneSummaries) -InvalidCount $invalidCount -ReadyCount $readyCount
 
     $uiAttachResult = Try-StartOrchestraUiAttach -SessionName $sessionName
-    $successfulAttachStatuses = @('attach_launched', 'attach_launched_pwsh', 'attach_launched_wt_fallback')
+    $successfulAttachStatuses = @('attach_launched', 'attach_launched_pwsh', 'attach_launched_wt_fallback', 'attach_already_present')
     if ($successfulAttachStatuses -notcontains [string]$uiAttachResult.Status) {
         Write-Warning "Orchestra UI attach status for ${sessionName}: $($uiAttachResult.Status) ($($uiAttachResult.Reason))"
     }
