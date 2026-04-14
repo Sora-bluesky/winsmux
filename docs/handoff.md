@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T14:40:00+09:00
+> Updated: 2026-04-14T14:47:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -55,9 +55,10 @@
   - 再実行後も不足していれば `blocked` として fail-closed し、local explore にフォールバックしない運用にしました
 - operational problem の Issue 起票ルールを追加しました。
   - 新しい startup / orchestration / CI / operator workflow 問題は、修正だけで終わらせず GitHub Issue を必ず残します
-  - 重複確認、issue 番号、解決 PR を handoff に同一 session で反映する運用にしました
+  - 重複確認、issue 番号、label、解決 PR を handoff に同一 session で反映する運用にしました
 - Issue [#421](https://github.com/Sora-bluesky/winsmux/issues/421) を起票しました。
   - `/winsmux-start` が external commander mode で worker pane 未展開でも false-ready 扱いになる症状を追跡します
+  - labels: `bug`, `orchestration`
   - PR [#420](https://github.com/Sora-bluesky/winsmux/pull/420) の repo 側修正と、repo 外の hook JSON 症状を切り分けて管理します
 - 公開 docs と dogfooding/runtime docs の境界を整理しました。
   - `README.md` と `docs/operator-model.md` は Claude Code operator を public-facing の主語として明示します

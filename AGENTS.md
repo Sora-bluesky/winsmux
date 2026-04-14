@@ -140,10 +140,12 @@ When a new product, startup, orchestration, CI, or operator workflow problem is 
 
 1. Search for an existing GitHub issue first. Reuse it if the same root cause is already tracked.
 2. If no matching issue exists, create one before treating the problem as resolved.
-3. Record the exact reproduction symptom, current hypothesis, mitigation, and the PR or commit that addressed it.
-4. Update `docs/handoff.md` with the issue number and current resolution state in the same session.
-5. Do not silently "just fix and move on" for operational failures that could recur.
-6. If the problem is only partially understood, still create the issue and mark the remaining uncertainty explicitly.
+3. Every issue must have at least one GitHub label before the session ends.
+4. Prefer the narrowest useful labels available in the repo (for example `bug`, `orchestration`, `testing`, `debug`, `documentation`, `security`).
+5. Record the exact reproduction symptom, current hypothesis, mitigation, and the PR or commit that addressed it.
+6. Update `docs/handoff.md` with the issue number, labels, and current resolution state in the same session.
+7. Do not silently "just fix and move on" for operational failures that could recur.
+8. If the problem is only partially understood, still create the issue and mark the remaining uncertainty explicitly.
 
 ## Release Notes Policy
 
