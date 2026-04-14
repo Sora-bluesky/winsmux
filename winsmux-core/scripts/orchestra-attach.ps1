@@ -100,6 +100,40 @@ function Start-OrchestraAttachProcess {
     }
 }
 
+function Get-OrchestraAttachedClientSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$WinsmuxPath,
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
+    $clients = @()
+    $error = ''
+    $ok = $false
+
+    try {
+        $clientLines = & $WinsmuxPath 'list-clients' '-t' $SessionName 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $clients = @(
+                $clientLines |
+                    ForEach-Object { [string]$_ } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $ok = $true
+        } else {
+            $error = ($clientLines | Out-String).Trim()
+        }
+    } catch {
+        $error = $_.Exception.Message
+    }
+
+    [PSCustomObject][ordered]@{
+        Ok     = $ok
+        Count  = $clients.Count
+        Error  = $error
+        Clients = @($clients)
+    }
+}
+
 $winsmuxPath = Get-Command 'winsmux' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
 if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
     $result = [ordered]@{
@@ -123,6 +157,21 @@ if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
             reason            = "winsmux session '$SessionName' was not found. Run orchestra-start.ps1 first."
         }
     } else {
+        $clientSnapshot = Get-OrchestraAttachedClientSnapshot -WinsmuxPath $winsmuxPath -SessionName $SessionName
+        if ([bool]$clientSnapshot.Ok -and [int]$clientSnapshot.Count -gt 0) {
+            $result = [ordered]@{
+                session_name          = $SessionName
+                session_exists        = $true
+                requires_startup      = $false
+                attempted             = $false
+                launched              = $false
+                attached              = $true
+                attached_client_count = [int]$clientSnapshot.Count
+                status                = 'attach_already_present'
+                reason                = "Detected $($clientSnapshot.Count) attached client(s) for session '$SessionName'; skipped spawning another visible attach window."
+                path                  = ''
+            }
+        } else {
         $pwshPath = Get-Command 'pwsh' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
         if ([string]::IsNullOrWhiteSpace($pwshPath)) {
             $pwshPath = 'pwsh'
@@ -172,9 +221,11 @@ if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
             attempted         = $result.attempted
             launched          = $result.launched
             attached          = $result.attached
+            attached_client_count = 0
             status            = $result.status
             reason            = $result.reason
             path              = $result.path
+        }
         }
     }
 }

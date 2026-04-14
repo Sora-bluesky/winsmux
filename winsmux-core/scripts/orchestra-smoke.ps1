@@ -78,6 +78,49 @@ function ConvertTo-OrchestraSmokeBoolean {
     }
 }
 
+function Get-OrchestraAttachedClientSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin,
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
+    $clients = @()
+    $error = ''
+    $ok = $false
+
+    if ([string]::IsNullOrWhiteSpace($WinsmuxBin)) {
+        return [PSCustomObject][ordered]@{
+            Ok      = $false
+            Count   = 0
+            Error   = 'winsmux executable could not be resolved.'
+            Clients = @()
+        }
+    }
+
+    try {
+        $clientLines = & $WinsmuxBin list-clients -t $SessionName 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $clients = @(
+                $clientLines |
+                    ForEach-Object { [string]$_ } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $ok = $true
+        } else {
+            $error = ($clientLines | Out-String).Trim()
+        }
+    } catch {
+        $error = $_.Exception.Message
+    }
+
+    [PSCustomObject][ordered]@{
+        Ok      = $ok
+        Count   = $clients.Count
+        Error   = $error
+        Clients = @($clients)
+    }
+}
+
 function Get-OrchestraOperatorContract {
     param(
         [Parameter(Mandatory = $true)][bool]$SmokeOk,
@@ -181,6 +224,11 @@ if (-not [string]::IsNullOrWhiteSpace($winsmuxBin)) {
     $paneProbeError = 'winsmux executable could not be resolved.'
 }
 
+$clientSnapshot = Get-OrchestraAttachedClientSnapshot -WinsmuxBin $winsmuxBin -SessionName $SessionName
+$clientProbeOk = [bool]$clientSnapshot.Ok
+$clientProbeError = [string]$clientSnapshot.Error
+$attachedClientCount = [int]$clientSnapshot.Count
+
 $startOutput = ''
 $startExitCode = 0
 $sessionAlreadyHealthy = $paneProbeOk -and $paneCount -ge $expectedPaneCount -and $manifestFound
@@ -227,6 +275,12 @@ if ($manifestFound) {
     }
 }
 
+if ($clientProbeOk -and $attachedClientCount -gt 0) {
+    $uiAttached = $true
+    $uiAttachStatus = 'attach_already_present'
+    $uiAttachReason = "Detected $attachedClientCount attached client(s) for session '$SessionName'."
+}
+
 $smokeErrors = [System.Collections.Generic.List[string]]::new()
 if ($startExitCode -ne 0) { $smokeErrors.Add("orchestra-start exited with code $startExitCode.") | Out-Null }
 if (-not $manifestFound) { $smokeErrors.Add('manifest missing after startup.') | Out-Null }
@@ -251,6 +305,9 @@ $result = [ordered]@{
     pane_count          = $paneCount
     pane_probe_ok       = $paneProbeOk
     pane_probe_error    = $paneProbeError
+    client_probe_ok     = $clientProbeOk
+    client_probe_error  = $clientProbeError
+    attached_client_count = $attachedClientCount
     expected_pane_count = $expectedPaneCount
     manifest_found      = $manifestFound
     session_ready       = $sessionReady

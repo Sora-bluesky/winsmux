@@ -2737,6 +2737,14 @@ Describe 'orchestra-start server bootstrap' {
 
     BeforeEach {
         $script:winsmuxBin = 'winsmux'
+        Mock Get-OrchestraAttachedClientSnapshot {
+            [PSCustomObject][ordered]@{
+                Ok      = $true
+                Count   = 0
+                Error   = ''
+                Clients = @()
+            }
+        }
     }
 
     It 'returns success when the server session already exists' {
@@ -2915,6 +2923,62 @@ Describe 'orchestra-start server bootstrap' {
         $result.Status | Should -Be 'attach_launched_pwsh'
         $script:startProcessCalls.Count | Should -Be 1
         $script:startProcessCalls[0].FilePath | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
+    }
+
+    It 'skips UI attach when an attached client already exists for the session' {
+        $script:startProcessCalls = @()
+
+        function Get-Command {
+            param([string]$Name)
+            if ($Name -eq 'pwsh') {
+                return [PSCustomObject]@{ Source = 'C:\Program Files\PowerShell\7\pwsh.exe' }
+            }
+            if ($Name -eq 'winsmux') {
+                return [PSCustomObject]@{ Source = 'C:\Users\komei\.local\bin\winsmux.exe' }
+            }
+            if ($Name -eq 'wt.exe') {
+                return [PSCustomObject]@{ Source = 'C:\Windows\System32\wt.exe' }
+            }
+
+            throw "unexpected command lookup: $Name"
+        }
+
+        Mock Get-OrchestraWindowsTerminalInfo {
+            [PSCustomObject][ordered]@{
+                Available   = $false
+                Path        = ''
+                AliasPath   = ''
+                IsAliasStub = $false
+                PathSource  = ''
+                Reason      = 'wt_unavailable'
+            }
+        }
+
+        Mock Get-OrchestraAttachedClientSnapshot {
+            [PSCustomObject][ordered]@{
+                Ok      = $true
+                Count   = 2
+                Error   = ''
+                Clients = @('/dev/pts/440', '/dev/pts/618')
+            }
+        }
+
+        function Start-Process {
+            param([string]$FilePath, [object[]]$ArgumentList, [switch]$PassThru)
+            $script:startProcessCalls += ,([PSCustomObject]@{
+                FilePath     = $FilePath
+                ArgumentList = @($ArgumentList)
+            })
+            return [PSCustomObject]@{ HasExited = $false }
+        }
+
+        $result = Try-StartOrchestraUiAttach -SessionName 'winsmux-orchestra'
+
+        $result.Attempted | Should -Be $false
+        $result.Launched | Should -Be $false
+        $result.Attached | Should -Be $true
+        $result.Status | Should -Be 'attach_already_present'
+        $script:startProcessCalls.Count | Should -Be 0
     }
 
     It 'resolves a canonical Windows Terminal path when wt.exe is only a WindowsApps alias' {
@@ -6318,6 +6382,9 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'session_ready'
         $script:orchestraSmokeContent | Should -Match 'ui_attach_launched'
         $script:orchestraSmokeContent | Should -Match 'ui_attached'
+        $script:orchestraSmokeContent | Should -Match 'attached_client_count'
+        $script:orchestraSmokeContent | Should -Match 'client_probe_ok'
+        $script:orchestraSmokeContent | Should -Match 'client_probe_error'
         $script:orchestraSmokeContent | Should -Match 'expected_pane_count'
         $script:orchestraSmokeContent | Should -Match 'winsmux_bin'
         $script:orchestraSmokeContent | Should -Match 'pane_probe_ok'
@@ -6342,6 +6409,12 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match '\[switch\]\$AutoStart'
         $script:orchestraSmokeContent | Should -Match 'elseif \(\$AutoStart\)'
         $script:orchestraSmokeContent | Should -Match 'Skipped orchestra-start; run orchestra-start\.ps1 when operator_contract\.requires_startup is true\.'
+    }
+
+    It 'uses attached clients to suppress duplicate UI attach retries' {
+        $script:orchestraSmokeContent | Should -Match 'Get-OrchestraAttachedClientSnapshot'
+        $script:orchestraSmokeContent | Should -Match 'list-clients -t \$SessionName'
+        $script:orchestraSmokeContent | Should -Match "uiAttachStatus = 'attach_already_present'"
     }
 }
 
