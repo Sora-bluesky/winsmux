@@ -179,6 +179,10 @@ let lastCommandBarFocus: HTMLElement | null = null;
 let pendingAttachments: ComposerAttachment[] = [];
 let desktopSummarySnapshot: DesktopSummarySnapshot | null = null;
 let desktopSummaryRefreshInFlight: Promise<void> | null = null;
+let desktopSummaryRefreshTimeout: number | null = null;
+let desktopSummaryQueuedRunId: string | null = null;
+let desktopSummaryRefreshRequestedVersion = 0;
+let desktopSummaryRefreshRunningVersion = 0;
 const desktopExplainCache = new Map<string, DesktopExplainPayload>();
 const desktopEditorFileCache = new Map<string, EditorFile>();
 const desktopEditorLoadingPaths = new Set<string>();
@@ -290,7 +294,13 @@ function createPane(paneId?: string): string {
   panes.set(id, { terminal, fitAddon, container: paneDiv });
 
   const { cols, rows } = { cols: terminal.cols, rows: terminal.rows };
-  void spawnPtyPane(id, cols, rows);
+  void spawnPtyPane(id, cols, rows)
+    .catch((error) => {
+      console.warn("Failed to spawn PTY pane", error);
+    })
+    .finally(() => {
+      requestDesktopSummaryRefresh(undefined, 500);
+    });
 
   return id;
 }
@@ -314,7 +324,13 @@ function closePane(id: string) {
 
   entry.container.remove();
   panes.delete(id);
-  void closePtyPane(id);
+  void closePtyPane(id)
+    .catch((error) => {
+      console.warn("Failed to close PTY pane", error);
+    })
+    .finally(() => {
+      requestDesktopSummaryRefresh(undefined, 500);
+    });
 
   panes.forEach((pane) => pane.fitAddon.fit());
 }
@@ -2480,14 +2496,50 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
       appendRuntimeConversation(item);
     }
     renderDesktopSurfaces();
-  } catch (error) {
-    console.warn("Failed to load desktop summary snapshot", error);
-  } finally {
-    desktopSummaryRefreshInFlight = null;
-  }
+    } catch (error) {
+      console.warn("Failed to load desktop summary snapshot", error);
+    } finally {
+      desktopSummaryRefreshInFlight = null;
+      if (desktopSummaryRefreshRunningVersion < desktopSummaryRefreshRequestedVersion) {
+        flushDesktopSummaryRefreshQueue();
+      }
+    }
   })();
 
   return desktopSummaryRefreshInFlight;
+}
+
+function flushDesktopSummaryRefreshQueue() {
+  if (desktopSummaryRefreshInFlight) {
+    return;
+  }
+
+  if (desktopSummaryRefreshRunningVersion >= desktopSummaryRefreshRequestedVersion) {
+    return;
+  }
+
+  const queuedRunId = desktopSummaryQueuedRunId;
+  desktopSummaryQueuedRunId = null;
+  desktopSummaryRefreshRunningVersion = desktopSummaryRefreshRequestedVersion;
+  void refreshDesktopSummary(queuedRunId);
+}
+
+function requestDesktopSummaryRefresh(forceExplainRunId?: string | null, delayMs = 150) {
+  desktopSummaryRefreshRequestedVersion += 1;
+  if (forceExplainRunId) {
+    desktopSummaryQueuedRunId = forceExplainRunId;
+  }
+  if (desktopSummaryRefreshTimeout !== null) {
+    window.clearTimeout(desktopSummaryRefreshTimeout);
+  }
+
+  desktopSummaryRefreshTimeout = window.setTimeout(() => {
+    desktopSummaryRefreshTimeout = null;
+    if (desktopSummaryRefreshInFlight) {
+      return;
+    }
+    flushDesktopSummaryRefreshQueue();
+  }, delayMs);
 }
 
 function registerDesktopSummaryLiveRefresh() {
@@ -2495,16 +2547,16 @@ function registerDesktopSummaryLiveRefresh() {
     if (document.visibilityState !== "visible") {
       return;
     }
-    void refreshDesktopSummary();
+    requestDesktopSummaryRefresh(undefined, 0);
   }, DESKTOP_SUMMARY_REFRESH_INTERVAL_MS);
 
   window.addEventListener("focus", () => {
-    void refreshDesktopSummary();
+    requestDesktopSummaryRefresh(undefined, 0);
   });
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
-      void refreshDesktopSummary();
+      requestDesktopSummaryRefresh(undefined, 0);
     }
   });
 }
@@ -2741,6 +2793,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       composerInput.value = "";
       clearPendingAttachments();
       renderAttachmentTray();
+      requestDesktopSummaryRefresh(undefined, 750);
     });
   }
 
