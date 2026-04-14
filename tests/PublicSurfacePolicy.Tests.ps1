@@ -12,7 +12,6 @@ Describe 'Public surface policy' {
         $readmeJa = Get-Content (Join-Path $repoRoot 'README.ja.md') -Raw
         $operatorModel = Get-Content (Join-Path $repoRoot 'docs/operator-model.md') -Raw
         $agents = Get-Content (Join-Path $repoRoot 'AGENTS.md') -Raw
-        $trackedHandoff = Get-Content (Join-Path $repoRoot 'HANDOFF.md') -Raw
         $gitignore = Get-Content (Join-Path $repoRoot '.gitignore') -Raw
         $claudeContract = Get-Content (Join-Path $repoRoot '.claude/CLAUDE.md') -Raw
         $syncRoadmap = Get-Content (Join-Path $repoRoot 'winsmux-core/scripts/sync-roadmap.ps1') -Raw
@@ -57,15 +56,14 @@ Describe 'Public surface policy' {
         $claudeContract | Should -Not -Match 'Check psmux version'
     }
 
-    It 'keeps tracked bootstrap handoff aligned with current startup contract' {
-        $trackedHandoff | Should -Match 'winsmux orchestra-smoke --json'
-        $trackedHandoff | Should -Match 'operator_contract'
-        $trackedHandoff | Should -Match 'TASK-105'
-        $trackedHandoff | Should -Match 'TASK-289'
-        $trackedHandoff | Should -Match 'TASK-291'
-        $trackedHandoff | Should -Not -Match 'psmux サーバー'
-        $trackedHandoff | Should -Not -Match '手動で起動'
-        $trackedHandoff | Should -Not -Match 'v0\.19\.5 進捗 70%'
+    It 'does not track bootstrap handoff files in the repository root or docs' {
+        $tracked = @(
+            & git ls-files -- HANDOFF.md docs/HANDOFF.md docs/handoff.md 2>$null |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+
+        @($tracked).Count | Should -Be 0
     }
 
     It 'uses example fallback for roadmap title localization' {

@@ -68,7 +68,8 @@ The live handoff source of truth for Claude Code dogfooding is the ignored local
 
 - `.claude/local/operator-handoff.md`
 
-Treat tracked handoff files under `docs/` or repository root as historical/static notes unless the task is explicitly about migration or public policy docs.
+Treat tracked handoff files under `docs/` or repository root as migration leftovers only.
+They must not be used as live operational state, and they should be removed from tracked history when touched by public-surface cleanup work.
 
 Codex must update `.claude/local/operator-handoff.md` at these points:
 

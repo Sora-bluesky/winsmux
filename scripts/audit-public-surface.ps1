@@ -65,6 +65,8 @@ if ($trackedIgnored.Count -gt 0) {
 $trackedFiles = Get-TrackedFiles
 
 $forbiddenTracked = @(
+    'HANDOFF.md',
+    'docs/HANDOFF.md',
     'docs/handoff.md',
     'tasks/roadmap-title-ja.psd1'
 )

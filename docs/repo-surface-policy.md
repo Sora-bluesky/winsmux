@@ -52,6 +52,8 @@ This surface is for live operational state and maintainer-only material.
 Examples:
 
 - current operator handoff
+- `HANDOFF.md`
+- `docs/handoff.md`
 - live roadmap title overrides
 - local planning notes
 - maintainer-only checklists
