@@ -5,6 +5,7 @@ import {
   getDesktopEditorFile,
   getDesktopRunExplain,
   getDesktopSummarySnapshot,
+  subscribeToDesktopSummaryRefresh,
   type DesktopEditorFilePayload,
   type DesktopDigestItem,
   type DesktopExplainPayload,
@@ -2543,6 +2544,12 @@ function requestDesktopSummaryRefresh(forceExplainRunId?: string | null, delayMs
 }
 
 function registerDesktopSummaryLiveRefresh() {
+  void subscribeToDesktopSummaryRefresh(() => {
+    requestDesktopSummaryRefresh(undefined, 0);
+  }).catch((error) => {
+    console.warn("Failed to subscribe to desktop summary refresh events", error);
+  });
+
   window.setInterval(() => {
     if (document.visibilityState !== "visible") {
       return;

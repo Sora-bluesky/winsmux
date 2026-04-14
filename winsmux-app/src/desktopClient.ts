@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 type DesktopCommandName =
   | "desktop_summary_snapshot"
@@ -260,6 +261,11 @@ export interface DesktopEditorFilePayload {
   truncated: boolean;
 }
 
+export interface DesktopSummaryRefreshEvent {
+  reason?: string;
+  pane_id?: string;
+}
+
 let nextDesktopJsonRpcId = 0;
 
 function normalizeDesktopError(action: string, error: unknown) {
@@ -371,4 +377,25 @@ export async function getDesktopEditorFile(path: string, worktree?: string) {
     const worktreeSuffix = worktree ? `, ${worktree}` : "";
     throw normalizeDesktopError(`desktop_editor_read(${path}${worktreeSuffix})`, error);
   }
+}
+
+export async function subscribeToDesktopSummaryRefresh(
+  onRefresh: (event: DesktopSummaryRefreshEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<DesktopSummaryRefreshEvent | string>(
+    "desktop-summary-refresh",
+    (event) => {
+      if (typeof event.payload === "string") {
+        try {
+          onRefresh(JSON.parse(event.payload) as DesktopSummaryRefreshEvent);
+          return;
+        } catch {
+          onRefresh({});
+          return;
+        }
+      }
+
+      onRefresh(event.payload ?? {});
+    },
+  );
 }

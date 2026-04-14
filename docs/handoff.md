@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T11:15:00+09:00
+> Updated: 2026-04-14T13:05:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -8,6 +8,7 @@
 - `v0.20.0` から `v0.21.2` までは release 済みです。
 - `v0.22.0` の本線は `TASK-105`、`TASK-289`、`TASK-291` です。Tauri desktop control plane を backend-first で収束させています。
 - `TASK-290` の detail UX は `v0.22.1` レーンに分離済みです。`v0.22.0` では backend truth の hydration と material-change follow-through だけを進めます。
+- `v0.22.0` は PR [#419](https://github.com/Sora-bluesky/winsmux/pull/419) 上で継続中です。最小の残 seam は、frontend polling を完全撤去することではなく、summary change の Rust/Tauri 通知入口を詰めることです。
 - planning は `backlog.yaml` を英語の正本、`ROADMAP.md` を日本語の閲覧面として扱います。
 - `winsmux-core/scripts/sync-roadmap.ps1` は `ROADMAP.md` と `docs/internal/` の 2 つの内部確認資料を同時更新する標準入口です。
 
@@ -36,6 +37,13 @@
   - pane spawn / close、composer submit、focus、visibility restore、interval tick は `requestDesktopSummaryRefresh()` に集約しました
   - queued refresh は `requested/running` version で管理し、in-flight 中に積まれた refresh も完了後に 1 回は必ず流れます
   - `spawnPtyPane()` / `closePtyPane()` の backend call が失敗しても `finally` で refresh を積むようにしました
+- 同じ `#419` で Rust/Tauri 側の最小 notification seam を追加しました。
+  - `winsmux-app/src-tauri/src/lib.rs` で `desktop-summary-refresh` イベントを追加し、`pty_spawn` / `pty_close` 成功時にだけ発火するようにしました
+  - `winsmux-app/src/desktopClient.ts` に Tauri event 購読を追加し、`winsmux-app/src/main.ts` はそのイベントを受けて summary refresh queue を流すようにしました
+  - 15 秒 interval は fallback のまま残していますが、pane topology change は polling を待たずに summary 側へ伝わります
+- サブエージェント遅延の恒久対策を `AGENTS.md` に追加しました。
+  - 今回の観測では `Euclid`、`Ptolemy`、`Popper` など delayed result が多く、主因は silent drop ではなく latency です
+  - Rust/Tauri review は first timeout を 60 秒以上に伸ばし、review concurrency を 1 に制限し、routine review では `fork_context=true` を避ける運用にしました
 
 ## Validation
 
@@ -59,6 +67,13 @@
 - `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (`10 passed`) after the same slice
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `171/171 PASS` after the same slice
 - `git diff --check` -> LF/CRLF warning のみ after the same slice
+- `npm run build` in `winsmux-app` -> PASS after the `desktop-summary-refresh` event slice
+- `npm run test:editor-targets` in `winsmux-app` -> PASS after the same slice
+- `cargo check` in `winsmux-app/src-tauri` -> PASS after the same slice
+- `cargo test --lib` in `winsmux-app/src-tauri` -> PASS (`10 passed`) after the same slice
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `171/171 PASS` after the same slice
+- `pwsh -NoProfile -File .\winsmux-core\scripts\sync-roadmap.ps1` -> PASS after syncing missing `tasks/roadmap-title-ja.psd1` and `docs/internal/*` into this worktree
+- `git diff --check` -> LF/CRLF warning のみ after the same slice
 - reviewer `Euclid` -> delayed `FAIL`
   - roadmap localization gate が write 後判定だった点
   - internal docs の `done` 分類
@@ -69,12 +84,17 @@
 - reviewer `Ptolemy` -> PASS on the `openExplainForSelectedRun()` refresh-decoupling slice
 - reviewer `Cicero` -> `no result yet` after two 30s waits on the first debounce implementation; manual diff review held the slice while the queue semantics were corrected
 - reviewer `Epicurus` -> PASS on the queued explicit-action refresh follow-up
+- subagent `Pascal` -> `desktop-summary-refresh` を `pty_spawn` / `pty_close` 成功時にだけ発火する最小 Rust slice を推奨
+- subagent `Ramanujan` -> `v0.22.0` は小さな Rust/Tauri notification slice 1 本で閉じられる見積もり（2〜4 時間 + review 1 回）
+- reviewer `Darwin` -> first wait 60s では `no result yet`、追加 30s 後に delayed `PASS`
+  - 今回も silent drop ではなく latency が主因だったことを確認
+  - notification slice 自体への finding はなし
 
 ## Next actions
 
-1. PR [#419](https://github.com/Sora-bluesky/winsmux/pull/419) を force-push で `main` に追いつかせ、check を通したうえで merge する。
-2. `TASK-105` の残り backend seam を見直し、frontend からまだ直接残っている fallback / prefetch policy を adapter/backend 側へ寄せる。
-3. `TASK-289` の follow-through をさらに event 寄りに寄せる。次の本丸は timer 除去ではなく、Rust 側に summary-change 通知入口を足せるかの見極めです。
+1. PR [#419](https://github.com/Sora-bluesky/winsmux/pull/419) に今回の Rust/Tauri notification slice を push し、check と review を通したうえで merge する。
+2. `TASK-105` の残り backend seam を再点検し、frontend に残る fallback / prefetch policy のうち `v0.22.0` に不要な seeded copy を削る。
+3. `TASK-289` は event-driven 側をもう 1 段詰め、interval を完全撤去するかどうかを別 slice として判断する。
 4. `TASK-290` は `codex/task290-detail-lane-20260414` で後続に回し、`v0.22.0` に混ぜない。
 5. Rust / Cargo / Tauri を使った handoff では、`C:\Users\komei\iCloudDrive\iCloud~md~obsidian\MainVault\Learning\Rust Commands - winsmux.md` も同じ session で更新する。
 
@@ -85,3 +105,5 @@
 - enterprise isolation は `local-windows` を置き換えるのではなく、post-`v1.0.0` の opt-in profile として扱います。
 - `TASK-290` remains a `v0.22.1` task; only the minimum observability needed for `TASK-289 / TASK-291` stays on the `v0.22.0` branch.
 - The external learning note under `MainVault\Learning` is intentionally untracked; only the durable handoff rule in `AGENTS.md` is part of the repo.
+- review agent の `no result yet` は、今の観測では silent failure より latency が主因です。今後は Rust/Tauri slice で 60 秒以上待ち、同一 slice の review concurrency を 1 に制限します。
+- `desktop-summary-refresh` は `pty_spawn` / `pty_close` の成功時だけ発火する最小 seam として入れています。汎用 notification 基盤にはまだ広げていません。

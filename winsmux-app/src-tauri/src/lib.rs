@@ -14,6 +14,8 @@ use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
+const DESKTOP_SUMMARY_REFRESH_EVENT: &str = "desktop-summary-refresh";
+
 struct SinglePty {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
@@ -26,6 +28,16 @@ struct PtyManager {
 
 struct TauriPtyTransport {
     app: AppHandle,
+}
+
+fn emit_desktop_summary_refresh(app: &AppHandle, reason: &str, pane_id: &str) {
+    let _ = app.emit(
+        DESKTOP_SUMMARY_REFRESH_EVENT,
+        serde_json::json!({
+            "reason": reason,
+            "pane_id": pane_id,
+        }),
+    );
 }
 
 #[tauri::command]
@@ -128,6 +140,8 @@ fn spawn_pty(app: &AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(
         panes.insert(pane_id.clone(), single);
     }
 
+    emit_desktop_summary_refresh(app, "pty.spawn", &pane_id);
+
     // Read PTY output in background thread
     let app_handle = app.clone();
     let pane_id_clone = pane_id.clone();
@@ -196,6 +210,7 @@ fn close_pty(app: &AppHandle, pane_id: &str) -> Result<(), String> {
     // Drop master to signal EOF to reader thread
     drop(entry.master);
     drop(entry.writer);
+    emit_desktop_summary_refresh(app, "pty.close", pane_id);
     Ok(())
 }
 
