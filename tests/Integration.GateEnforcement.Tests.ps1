@@ -537,6 +537,39 @@ EOF
         $result.StdErr | Should -Be ''
     }
 
+    It 'denies legacy psmux version probes from the operator pane' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = 'psmux --version'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'winsmux orchestra-smoke --json'
+    }
+
+    It 'denies legacy psmux-server process probes from the operator pane' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = 'pwsh -Command "Get-Process psmux-server -ErrorAction SilentlyContinue"'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.ErrorObject.systemMessage | Should -Match 'winsmux list-sessions'
+    }
+
+    It 'allows winsmux orchestra-smoke from the operator pane' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = 'pwsh -NoProfile -File scripts/winsmux-core.ps1 orchestra-smoke --json'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
     It 'wires the startup gate disable environment flag into the orchestra readiness gate' {
         $hookContent = Get-Content -LiteralPath $script:SourceHookPath -Raw -Encoding UTF8
 

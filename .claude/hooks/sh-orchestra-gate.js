@@ -62,6 +62,14 @@ try {
     }
   }
 
+  // Rule 2c: Operator-side startup/status diagnosis must not use legacy psmux probes (#423).
+  if (toolName === "Bash") {
+    const currentRole = normalizeAgentValue(process.env.WINSMUX_ROLE);
+    if (currentRole !== "builder" && currentRole !== "worker" && isLegacyOperatorProbeCommand(bashCommand)) {
+      deny("Operator startup/status checks must use winsmux orchestra-smoke --json or winsmux list-sessions, not legacy psmux probes.");
+    }
+  }
+
   // Rule 2b: Operator shell wrappers must not write code-bearing files outside managed worker panes
   if (toolName === "Bash") {
     const currentRole = normalizeAgentValue(process.env.WINSMUX_ROLE);
@@ -353,6 +361,44 @@ function isBlockedUntilOrchestraReady(command) {
          /\bgh\b(?:\s+(?:-[a-z]|--[a-z][\w-]*)(?:[=\s]+(?:"[^"]*"|'[^']*'|[^\s]+))?)*\s+pr\s+create\b/i.test(command) ||
          /\bgh\b(?:\s+(?:-[a-z]|--[a-z][\w-]*)(?:[=\s]+(?:"[^"]*"|'[^']*'|[^\s]+))?)*\s+pr\s+ready\b/i.test(command) ||
          /\/sync-roadmap\.ps1\b/i.test(normalized);
+}
+
+function isLegacyOperatorProbeCommand(command) {
+  const segments = splitCommandSegments(command);
+  if (segments.length === 0) {
+    return false;
+  }
+
+  return segments.some((segment) => isLegacyOperatorProbeSegment(segment));
+}
+
+function isLegacyOperatorProbeSegment(segment) {
+  const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
+  if (/\bget-process\s+psmux-server\b/i.test(normalizedSegment)) {
+    return true;
+  }
+
+  const tokens = tokenizeCommandLine(normalizedSegment);
+  if (tokens.length === 0) {
+    return false;
+  }
+
+  const executable = getExecutableBasename(tokens[0]);
+  if (["psmux", "psmux.exe"].includes(executable)) {
+    return true;
+  }
+
+  if (executable === "cmd" || executable === "cmd.exe") {
+    const nestedCommand = getCmdShellArgument(tokens);
+    return nestedCommand ? isLegacyOperatorProbeCommand(nestedCommand) : false;
+  }
+
+  if (isPowerShellExecutable(executable)) {
+    const commandValue = getOptionValue(tokens, ["-command", "-c"]);
+    return commandValue ? isLegacyOperatorProbeCommand(commandValue) : false;
+  }
+
+  return false;
 }
 
 function isUnknownStateFailClosedCommand(command) {
@@ -845,6 +891,7 @@ module.exports = {
   isDirectCodeWriteBypassCommand,
   isDirectReviewStateWriteCommand,
   isGhPrMergeCommand,
+  isLegacyOperatorProbeCommand,
   isGitCommitCommand,
   isGitMergeCommand,
   isPowerShellExecutable,

@@ -244,6 +244,7 @@
 - issue [#423](https://github.com/Sora-bluesky/winsmux/issues/423) を planning に反映し、`TASK-339` として `v0.22.0` に追加しました。
   - scope は alias 削除ではなく、`/winsmux-start`、startup/status summary、operator-facing help、`psmux --version` / `Get-Process psmux-server` のような operator-side probe の `winsmux` 正規化です
   - issue 由来 task のため、title 末尾に `(#423)` を付け、`tasks/roadmap-title-ja.psd1` も同じ参照に合わせました
+- `TASK-339 (#423)` の実装として、`.claude/CLAUDE.md` と `.claude/rules/dispatch.md` に `winsmux orchestra-smoke --json` を正本とする起動診断ルールを追加し、`.claude/hooks/sh-orchestra-gate.js` では operator pane からの `psmux --version` / `Get-Process psmux-server` などの legacy probe を deny するようにしました。
 - issue 起票後の永続ルールも `AGENTS.md` に追加しました。
   - duplicate / invalid / upstream-only を除き、issue は同じ session で既存 `TASK-*` に紐付けるか、新規 `TASK-*` を external `backlog.yaml` に追加します
   - task 化したら `winsmux-core/scripts/sync-roadmap.ps1` を実行し、issue↔task 対応を handoff に残します
