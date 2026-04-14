@@ -108,11 +108,23 @@ $forbiddenPublicRefs = @(
     'docs/handoff.md',
     'tasks/roadmap-title-ja.psd1'
 )
+$forbiddenPublicKeywords = @(
+    '/winsmux-start',
+    'dogfooding',
+    'maintainer-only',
+    'operator-handoff',
+    'private live-ops'
+)
 foreach ($file in ($trackedFiles | Where-Object { Test-IsPublicDoc -Path $_ })) {
     $content = Get-Content -LiteralPath $file -Raw -ErrorAction Stop
     foreach ($reference in $forbiddenPublicRefs) {
         if ($content -match [Regex]::Escape($reference)) {
             $failures.Add("public doc directly references private/contributor surface '$reference': $file")
+        }
+    }
+    foreach ($keyword in $forbiddenPublicKeywords) {
+        if ($content -match [Regex]::Escape($keyword)) {
+            $failures.Add("public doc contains internal-only keyword '$keyword': $file")
         }
     }
 }
