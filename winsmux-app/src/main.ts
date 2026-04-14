@@ -1437,12 +1437,14 @@ function appendFallbackExplain() {
   const selectedRunId = getSelectedRunId();
   const digestItem = getPrimaryDigestItem();
   const hasSelectedDigest = Boolean(selectedRunId && digestItem?.run_id === selectedRunId);
+  const digestRunCount = desktopSummarySnapshot?.digest.summary.item_count ?? 0;
+  const inboxCount = desktopSummarySnapshot?.inbox.summary.item_count ?? 0;
   const body = hasSelectedDigest
-    ? `Explain is unavailable for ${selectedRunId}. Backend digest still reports next ${digestItem?.next_action || "idle"}.`
-    : desktopSummarySnapshot && desktopSummarySnapshot.digest.summary.item_count > 0
-      ? "Explain is unavailable until a projected run is selected."
+    ? `Digest fallback for ${selectedRunId}.`
+    : desktopSummarySnapshot && digestRunCount > 0
+      ? "Digest fallback without a selected run."
       : desktopSummarySnapshot
-        ? "No projected run is available to explain yet."
+        ? "Digest fallback without projected runs."
         : "Backend summary unavailable.";
   const details = hasSelectedDigest
     ? [
@@ -1452,8 +1454,8 @@ function appendFallbackExplain() {
       ]
     : desktopSummarySnapshot
       ? [
-          { label: "runs", value: `${desktopSummarySnapshot.digest.summary.item_count}` },
-          { label: "inbox", value: `${desktopSummarySnapshot.inbox.summary.item_count}` },
+          { label: "runs", value: `${digestRunCount}` },
+          { label: "inbox", value: `${inboxCount}` },
         ]
       : [{ label: "state", value: "backend unavailable" }];
   appendRuntimeConversation({
@@ -1461,7 +1463,7 @@ function appendFallbackExplain() {
     category: "activity",
     timestamp,
     actor: "Operator",
-    title: "Explain opened",
+    title: "Explain unavailable",
     body,
     details,
     tone: "info",
@@ -1776,8 +1778,8 @@ function renderEditorSurface() {
     path.textContent = "Editor idle";
     meta.innerHTML = "";
     tabs.innerHTML = "";
-    code.textContent = "Backend preview is waiting for a projected file.";
-    statusbar.textContent = "Secondary work surface: waiting for backend preview";
+    code.textContent = "No backend preview cached.";
+    statusbar.textContent = "Secondary work surface: 0 projected files";
     return;
   }
   selectedEditorKey = selected.key;
@@ -2197,8 +2199,8 @@ function findEditorFile(target: EditorTarget | null) {
   const previewBody = loadError
     ? `Backend preview failed to load.\n\n${loadError}`
     : loading
-      ? "Backend preview is hydrating."
-      : "Backend preview is waiting for a selected file.";
+      ? "Backend preview request in flight."
+      : "No backend preview cached.";
 
   return {
     key: target.key,
@@ -2249,18 +2251,7 @@ function getEditorFiles() {
     }
   }
 
-  return Array.from(targets.values()).map((target) =>
-    findEditorFile(target) ?? {
-      key: target.key,
-      path: target.path,
-      summary: target.summary,
-      content: "Backend preview is hydrating.",
-      language: inferLanguageFromPath(target.path),
-      lineCount: 1,
-      modified: target.modified,
-      origin: target.origin,
-    },
-  );
+  return Array.from(targets.values()).map((target) => findEditorFile(target)).filter((item): item is EditorFile => Boolean(item));
 }
 
 async function ensureEditorFileLoaded(target: EditorTarget | null) {
