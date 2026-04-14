@@ -10,6 +10,7 @@ const path = require("path");
 const DEBUG_LOG_PATH = path.join(os.tmpdir(), "winsmux-sh-orchestra-gate-command.log");
 const SECRET_PATTERN =
   /\b(?:gho_[A-Za-z0-9_]+|ghp_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b|(?:^|\s)(?:GITHUB_TOKEN|GH_TOKEN|API_KEY)\s*=/i;
+const ORCHESTRA_SESSION_NAME = "winsmux-orchestra";
 
 try {
   const input = fs.readFileSync(0, "utf8");
@@ -37,6 +38,20 @@ try {
   if (toolName === "Bash") {
     if (/winsmux\s+send-keys/.test(bashCommand) && !/winsmux-core/.test(bashCommand)) {
       deny("Use winsmux send instead of direct winsmux send-keys.");
+    }
+  }
+
+  // Rule 2a: When orchestra is not ready, only startup/diagnostic shell commands are allowed (#424).
+  if (toolName === "Bash") {
+    const currentRole = normalizeAgentValue(process.env.WINSMUX_ROLE);
+    if (currentRole !== "builder" && currentRole !== "worker") {
+      const orchestraState = getOrchestraRestoreGateState(process.cwd());
+      if (orchestraState.state !== "ready" && !isAllowedOrchestraRecoveryCommand(bashCommand)) {
+        deny(
+          `Orchestra is ${orchestraState.state} (${orchestraState.current}/${orchestraState.expected} panes, ${orchestraState.reason}). ` +
+          "Run winsmux-core/scripts/orchestra-start.ps1 or pane diagnostics first. PR/merge/planning shell commands are blocked until worker panes are ready.",
+        );
+      }
     }
   }
 
@@ -189,6 +204,152 @@ function stripHeredocBodies(command) {
   }
 
   return output.join("\n");
+}
+
+function getOrchestraRestoreGateState(cwd) {
+  try {
+    const script = `
+$ErrorActionPreference = 'Stop'
+. '${toPwshLiteral(path.join(cwd, "winsmux-core", "scripts", "settings.ps1"))}'
+$root = '${toPwshLiteral(cwd)}'
+$settings = Get-BridgeSettings -RootPath $root
+$workerCount = [int]$settings.worker_count
+$agentSlots = @()
+if ($settings -is [System.Collections.IDictionary]) {
+  if ($settings.Contains('agent_slots')) { $agentSlots = @($settings['agent_slots']) }
+} elseif ($null -ne $settings -and $null -ne $settings.PSObject -and ($settings.PSObject.Properties.Name -contains 'agent_slots')) {
+  $agentSlots = @($settings.agent_slots)
+}
+if ($agentSlots.Count -gt 0) { $workerCount = $agentSlots.Count }
+$expected = $workerCount + $(if ([bool]$settings.external_commander) { 0 } else { 1 })
+$winsmuxBin = $null
+foreach ($candidate in @('winsmux','pmux','tmux','psmux')) {
+  if (Get-Command $candidate -ErrorAction SilentlyContinue) { $winsmuxBin = $candidate; break }
+}
+if (-not $winsmuxBin) {
+  @{ state = 'unknown'; expected = $expected; current = 0; reason = 'winsmux_bin_missing' } | ConvertTo-Json -Compress
+  exit 0
+}
+$session = '${ORCHESTRA_SESSION_NAME}'
+& $winsmuxBin has-session -t $session *> $null
+if ($LASTEXITCODE -ne 0) {
+  @{ state = 'needs-startup'; expected = $expected; current = 0; reason = 'session_missing' } | ConvertTo-Json -Compress
+  exit 0
+}
+$paneIds = & $winsmuxBin list-panes -t $session -F '#{pane_id}' 2>$null
+$current = @($paneIds | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count
+$state = if ($current -lt $expected) { 'needs-startup' } else { 'ready' }
+@{ state = $state; expected = $expected; current = $current; reason = $(if ($state -eq 'ready') { 'ok' } else { 'pane_count_mismatch' }) } | ConvertTo-Json -Compress
+`;
+    const output = execFileSync("pwsh", ["-NoProfile", "-Command", script], {
+      cwd,
+      encoding: "utf8",
+      timeout: 10000,
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    const parsed = JSON.parse(output);
+    return {
+      state: parsed.state || "unknown",
+      expected: Number(parsed.expected || 0),
+      current: Number(parsed.current || 0),
+      reason: parsed.reason || "unknown",
+    };
+  } catch {
+    return {
+      state: "unknown",
+      expected: 0,
+      current: 0,
+      reason: "state_probe_failed",
+    };
+  }
+}
+
+function isAllowedOrchestraRecoveryCommand(command) {
+  const segments = splitCommandSegments(command);
+  if (segments.length === 0) {
+    return true;
+  }
+
+  return segments.every((segment) => isAllowedOrchestraRecoverySegment(segment));
+}
+
+function isAllowedOrchestraRecoverySegment(segment) {
+  const tokens = tokenizeCommandLine(segment);
+  if (tokens.length === 0) {
+    return true;
+  }
+
+  const executable = getExecutableBasename(tokens[0]);
+  if (isReadOnlySearchCommand(executable)) {
+    return true;
+  }
+
+  if (executable === "cmd" || executable === "cmd.exe") {
+    const nestedCommand = getCmdShellArgument(tokens);
+    return nestedCommand ? isAllowedOrchestraRecoveryCommand(nestedCommand) : false;
+  }
+
+  if (isPowerShellExecutable(executable)) {
+    const commandValue = getOptionValue(tokens, ["-command", "-c"]);
+    if (commandValue) {
+      return isAllowedOrchestraRecoveryCommand(commandValue);
+    }
+
+    const fileArgument = getOptionValue(tokens, ["-file"]);
+    if (fileArgument) {
+      if (isOrchestraStartScript(fileArgument)) {
+        return true;
+      }
+      if (isWinsmuxCoreScript(fileArgument)) {
+        return hasAllowedWinsmuxDiagnosticCommand(tokens, tokens.indexOf(fileArgument) + 1);
+      }
+      return false;
+    }
+
+    const scriptIndex = tokens.findIndex((token) => isWinsmuxCoreScript(token));
+    if (scriptIndex >= 0) {
+      if (isOrchestraStartScript(tokens[scriptIndex])) {
+        return true;
+      }
+      return hasAllowedWinsmuxDiagnosticCommand(tokens, scriptIndex + 1);
+    }
+
+    return false;
+  }
+
+  if (isWinsmuxExecutable(executable)) {
+    return hasAllowedWinsmuxDiagnosticCommand(tokens, 1);
+  }
+
+  if (isWinsmuxCoreScript(tokens[0])) {
+    if (isOrchestraStartScript(tokens[0])) {
+      return true;
+    }
+    return hasAllowedWinsmuxDiagnosticCommand(tokens, 1);
+  }
+
+  return false;
+}
+
+function hasAllowedWinsmuxDiagnosticCommand(tokens, startIndex) {
+  return hasStandaloneCommandToken(tokens, "has-session", startIndex) ||
+         hasStandaloneCommandToken(tokens, "list-panes", startIndex) ||
+         hasStandaloneCommandToken(tokens, "capture-pane", startIndex) ||
+         hasStandaloneCommandToken(tokens, "display-message", startIndex) ||
+         hasStandaloneCommandToken(tokens, "show-options", startIndex);
+}
+
+function isOrchestraStartScript(value) {
+  if (!value) {
+    return false;
+  }
+  const normalized = value.replace(/\\/g, "/").toLowerCase();
+  return normalized.endsWith("/winsmux-core/scripts/orchestra-start.ps1") ||
+         normalized === "winsmux-core/scripts/orchestra-start.ps1";
+}
+
+function toPwshLiteral(value) {
+  return String(value).replace(/'/g, "''");
 }
 
 function isGitCommitCommand(command) {
