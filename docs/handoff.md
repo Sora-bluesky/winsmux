@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T23:35:00+09:00
+> Updated: 2026-04-14T23:59:59+09:00
 > Source of truth: this file
 
 ## Current state
@@ -9,7 +9,7 @@
 - `v0.22.0` の本線は `TASK-105`、`TASK-289`、`TASK-291` です。Tauri desktop control plane を backend-first で収束させています。
 - `TASK-290` の detail UX は `v0.22.1` レーンに分離済みです。`v0.22.0` では backend truth の hydration と material-change follow-through だけを進めます。
 - `v0.22.0` は PR [#419](https://github.com/Sora-bluesky/winsmux/pull/419) 上で継続中です。最小の残 seam は、frontend polling を完全撤去することではなく、summary change の Rust/Tauri 通知入口を詰めることです。
-- dogfooding blocker は issue [#425](https://github.com/Sora-bluesky/winsmux/issues/425) / `TASK-341` と issue [#426](https://github.com/Sora-bluesky/winsmux/issues/426) / `TASK-342` として切り出しました。現状は detached orchestra session/layout は 6 pane まで起動できていますが、visible Windows Terminal attach が `WindowsApps\\wt.exe` alias 経由で失敗しており、startup 本体の責務分離も継続中です。
+- dogfooding blocker は issue [#425](https://github.com/Sora-bluesky/winsmux/issues/425) / `TASK-341` と issue [#426](https://github.com/Sora-bluesky/winsmux/issues/426) / `TASK-342` として切り出しました。現状は detached orchestra session/layout は起動できており、visible Windows Terminal attach は `wt` ヘルプ表示や `0x80070002` を出す経路が残っていますが、standalone `pwsh` attach fallback と `winsmux orchestra-smoke` で operator 非依存に確認できる状態まで進めています。
 - planning は `backlog.yaml` を英語の正本、`ROADMAP.md` を日本語の閲覧面として扱います。
 - `winsmux-core/scripts/sync-roadmap.ps1` は `ROADMAP.md` と `docs/internal/` の 2 つの内部確認資料を同時更新する標準入口です。
 - `testResults.xml` は Pester の生成物として gitignore 管理し、コミット対象外にします。
@@ -88,9 +88,20 @@
   - stale background cleanup は `script + manifest path + session name + startup token` が一致する世代だけ止めるように狭めました
   - `Ensure-OrchestraBootstrapSession` と `Reset-OrchestraServerSession` の戻り値は `BootstrapReady` / `StartupReady` に分け、bootstrap shell と full startup を見分けやすくしました
   - `tests/winsmux-bridge.Tests.ps1` に startup token 必須の targeted cleanup 回帰試験を追加しました
+- `TASK-341 (#425)` の attach 経路をさらに修正しました。
+  - `Try-StartOrchestraUiAttach()` は Windows Terminal CLI を公式の `new-tab <command> <args...>` 形へ寄せ、失敗や alias-stub 時は standalone `pwsh` 別窓で `orchestra-bootstrap.ps1 -AttachOnly` を起動する fallback を持つようにしました
+  - `winsmux-core/scripts/orchestra-smoke.ps1` を追加し、`session_ready` / `pane_count` / `ui_attach_*` を operator 非依存で確認できる startup smoke 契約を用意しました
+  - `scripts/winsmux-core.ps1` には `winsmux orchestra-smoke [--json]` を追加しました
+  - user 観測でも `builder-6` の worker window が standalone attach fallback 経由で立ち上がることを確認しました
+- issue から task を起こすときは、task title の末尾に `(#NNN)` を付けるルールを `AGENTS.md` に永続化しました。
+- issue label は repo 既定 label を優先するルールを `AGENTS.md` に永続化しました。`architecture` のような custom label は既存 label で表せない場合だけ使います。
+- startup regression の未然防止として、`AGENTS.md` に `winsmux orchestra-smoke --json` を operator 非依存の quick check として追加しました。
 
 ## Validation
 
+- `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `195 PASS` after switching Windows Terminal attach to the official `new-tab <command> <args...>` form, adding standalone `pwsh` attach fallback, and introducing `winsmux orchestra-smoke`
+- `Invoke-Pester tests/Integration.GateEnforcement.Tests.ps1 -CI` -> `46 PASS` after the same startup follow-up
+- user observation -> standalone `pwsh` attach fallback opened `builder-6` in a separate window, confirming that dogfooding can proceed even while Windows Terminal attach remains imperfect
 - `gh pr checks 417` -> `Pester Tests` PASS
 - `gh pr merge 417 --merge` -> PASS
 - `gh pr merge 418 --merge` -> PASS
@@ -173,6 +184,9 @@
 
 ## Next actions
 
+1. PR [#420](https://github.com/Sora-bluesky/winsmux/pull/420) に attach fallback と `winsmux orchestra-smoke` の follow-up を push し、CI と review を通したうえで merge する。
+2. `winsmux orchestra-smoke --json` と `/winsmux-start` の両方で、`session_ready` / `pane_count` / `ui_attach_status` の整合を再確認する。
+3. `wt` help ダイアログや `0x80070002` がまだ出る場合は、issue [#425](https://github.com/Sora-bluesky/winsmux/issues/425) で Windows Terminal attach 専用の次段を切る。
 1. PR [#419](https://github.com/Sora-bluesky/winsmux/pull/419) に今回の Rust/Tauri notification slice を push し、check と review を通したうえで merge する。
 2. `TASK-105` の残り backend seam を再点検し、frontend に残る fallback / prefetch policy のうち `v0.22.0` に不要な seeded copy を削る。
 3. `TASK-289` は event-driven 側をもう 1 段詰め、interval を完全撤去するかどうかを別 slice として判断する。
@@ -199,6 +213,14 @@
 - review agent の `no result yet` は、今の観測では silent failure より latency が主因です。今後は Rust/Tauri slice で 60 秒以上待ち、同一 slice の review concurrency を 1 に制限します。
 - `desktop-summary-refresh` は `pty_spawn` / `pty_close` の成功時だけ発火する最小 seam として入れています。汎用 notification 基盤にはまだ広げていません。
 - issue は必ず label 付きで起票・更新します。今回の startup problem は `#421` (`bug`, `orchestration`) に集約します。
+- issue label は repo 既定の label を優先します。`bug` / `chore` / `debug` / `documentation` / `enhancement` / `orchestration` / `question` / `review` / `security` / `testing` を基本とし、custom label は既存で表せない場合だけ作ります。
+- `TASK-341 (#425)` の進行で、pane 起動の operator-facing 表示は 1 行ずつの `cd` / `WINSMUX_*` 環境変数注入から、起動プランファイル + 単一 `pwsh -File orchestra-pane-bootstrap.ps1 -PlanFile ...` へ畳みました。長い bootstrap 手順は debug detail に寄せ、operator には `[winsmux] pane bootstrap: ...` の要約だけを出す方針です。
+- Actions run [24382464204](https://github.com/Sora-bluesky/winsmux/actions/runs/24382464204) の failure は `checks the bootstrap pane count before reporting startup ready` で、ローカル修正との対応は次の 1 対 1 です。
+  - CI failure: bootstrap pane 数と startup ready 判定が混ざっていた
+  - local fix 1: `session_ready` は watchdog / commander poll 起動後の再保存でのみ true にする
+  - local fix 2: `session_ready` と `ui_attach_launched` / `ui_attached` を分離する
+  - local fix 3: `winsmux orchestra-smoke --json` で `pane_count`, `expected_pane_count`, `session_ready`, `ui_attach_*` を別々に検証する
+  - local fix 4: pane bootstrap を plan-driven にして startup 境界を `orchestra-start.ps1` から薄い bootstrap script に逃がす
 - review subagent の待機閾値が実運用に対して短すぎる問題を issue [#422](https://github.com/Sora-bluesky/winsmux/issues/422) として起票しました。
   - labels: `bug`, `orchestration`
   - 原因は silent failure ではなく、重い slice での scheduler/context latency が主因という観測です

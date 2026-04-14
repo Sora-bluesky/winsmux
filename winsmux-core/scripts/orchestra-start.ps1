@@ -135,6 +135,41 @@ function Get-OrchestraWindowsTerminalInfo {
     }
 }
 
+function Start-OrchestraAttachProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][object[]]$ArgumentList,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$LaunchedStatus,
+        [Parameter(Mandatory = $true)][string]$LaunchedReason,
+        [Parameter(Mandatory = $true)][string]$FallbackReason
+    )
+
+    try {
+        $attachProcess = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru
+        Start-Sleep -Milliseconds 500
+        $attachStillRunning = -not $attachProcess.HasExited
+
+        return [PSCustomObject][ordered]@{
+            Attempted = $true
+            Launched  = $true
+            Attached  = $false
+            Status    = if ($attachStillRunning) { $LaunchedStatus } else { 'attach_exited_early' }
+            Reason    = if ($attachStillRunning) { $LaunchedReason } else { $FallbackReason }
+            Path      = $Path
+        }
+    } catch {
+        return [PSCustomObject][ordered]@{
+            Attempted = $true
+            Launched  = $false
+            Attached  = $false
+            Status    = 'attach_failed'
+            Reason    = $_.Exception.Message
+            Path      = $Path
+        }
+    }
+}
+
 function Try-StartOrchestraUiAttach {
     param(
         [Parameter(Mandatory = $true)][string]$SessionName,
@@ -143,8 +178,9 @@ function Try-StartOrchestraUiAttach {
     )
 
     $terminalInfo = Get-OrchestraWindowsTerminalInfo
+    $wtResult = $null
     if (-not [bool]$terminalInfo.Available) {
-        return [PSCustomObject][ordered]@{
+        $wtResult = [PSCustomObject][ordered]@{
             Attempted = $false
             Launched  = $false
             Attached  = $false
@@ -183,41 +219,47 @@ function Try-StartOrchestraUiAttach {
         }
     }
 
-    $wtArguments = @(
-        '--size', "$Width,$Height",
-        'new-tab',
-        '--title', $SessionName,
-        '--',
-        $pwshPath, '-NoProfile', '-NoExit', '-File', $bootstrapScriptPath, '-SessionName', $SessionName, '-WinsmuxPath', $winsmuxPathForAttach, '-AttachOnly'
+    $bootstrapArguments = @(
+        '-NoProfile', '-NoExit', '-File', $bootstrapScriptPath, '-SessionName', $SessionName, '-WinsmuxPath', $winsmuxPathForAttach, '-AttachOnly'
     )
 
-    try {
-        $attachProcess = Start-Process -FilePath ([string]$terminalInfo.Path) -ArgumentList $wtArguments -PassThru
-        Start-Sleep -Milliseconds 500
-        $attachStillRunning = -not $attachProcess.HasExited
+    if ($null -eq $wtResult) {
+        $wtArguments = @(
+            '--size', "$Width,$Height",
+            'new-tab',
+            '--title', $SessionName,
+            $pwshPath
+        ) + $bootstrapArguments
 
-        return [PSCustomObject][ordered]@{
-            Attempted = $true
-            Launched  = $true
-            Attached  = $false
-            Status    = if ($attachStillRunning) { 'attach_launched' } else { 'attach_exited_early' }
-            Reason    = if ($attachStillRunning) {
-                'Windows Terminal attach child remained running past the early-failure window; final attach confirmation remains asynchronous.'
-            } else {
-                'Windows Terminal attach child exited during the early-failure window.'
-            }
-            Path      = [string]$terminalInfo.Path
-        }
-    } catch {
-        return [PSCustomObject][ordered]@{
-            Attempted = $true
-            Launched  = $false
-            Attached  = $false
-            Status    = 'attach_failed'
-            Reason    = $_.Exception.Message
-            Path      = [string]$terminalInfo.Path
+        $wtResult = Start-OrchestraAttachProcess `
+            -FilePath ([string]$terminalInfo.Path) `
+            -ArgumentList $wtArguments `
+            -Path ([string]$terminalInfo.Path) `
+            -LaunchedStatus 'attach_launched' `
+            -LaunchedReason 'Windows Terminal attach child remained running past the early-failure window; final attach confirmation remains asynchronous.' `
+            -FallbackReason 'Windows Terminal attach child exited during the early-failure window.'
+
+        if ([string]$wtResult.Status -ne 'attach_exited_early' -and [string]$wtResult.Status -ne 'attach_failed') {
+            return $wtResult
         }
     }
+
+    $fallbackResult = Start-OrchestraAttachProcess `
+        -FilePath $pwshPath `
+        -ArgumentList $bootstrapArguments `
+        -Path $pwshPath `
+        -LaunchedStatus 'attach_launched_pwsh_fallback' `
+        -LaunchedReason 'Windows Terminal attach failed; launched orchestra bootstrap in a standalone PowerShell window instead.' `
+        -FallbackReason 'Windows Terminal attach failed, and the standalone PowerShell fallback exited during the early-failure window.'
+
+    if ([bool]$fallbackResult.Launched) {
+        $fallbackResult | Add-Member -NotePropertyName FallbackFrom -NotePropertyValue ([string]$wtResult.Status) -Force
+        return $fallbackResult
+    }
+
+    $wtResult | Add-Member -NotePropertyName FallbackStatus -NotePropertyValue ([string]$fallbackResult.Status) -Force
+    $wtResult | Add-Member -NotePropertyName FallbackReason -NotePropertyValue ([string]$fallbackResult.Reason) -Force
+    return $wtResult
 }
 
 function Ensure-OrchestraBootstrapSession {
@@ -668,23 +710,55 @@ function Send-OrchestraBridgeCommand {
     Invoke-Bridge -Arguments @('send', $Target, $Text)
 }
 
-function Initialize-OrchestraPaneEnvironment {
+function New-OrchestraPaneBootstrapPlan {
     param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)][string]$Agent,
+        [Parameter(Mandatory = $true)][string]$Model,
         [Parameter(Mandatory = $true)][string]$LaunchDir,
-        [Parameter(Mandatory = $true)]$CleanPtyEnv
+        [Parameter(Mandatory = $true)]$CleanPtyEnv,
+        [Parameter(Mandatory = $true)][string]$LaunchCommand
     )
 
-    Wait-PaneShellReady -PaneId $PaneId
-    # TASK-236: set cwd via cd (respawn-pane -c unreliable on Windows)
-    Send-OrchestraBridgeCommand -Target $PaneId -Text "cd $(ConvertTo-PowerShellLiteral -Value $LaunchDir)"
-    Start-Sleep -Milliseconds 500
-    Send-OrchestraBridgeCommand -Target $PaneId -Text ([string]$CleanPtyEnv.RemoveCommand)
-    Start-Sleep -Milliseconds 200
-    foreach ($entry in $CleanPtyEnv.Environment.GetEnumerator()) {
-        Send-OrchestraBridgeCommand -Target $PaneId -Text ('{0} = {1}' -f ('$env:' + [string]$entry.Key), (ConvertTo-PowerShellLiteral -Value ([string]$entry.Value)))
+    $bootstrapDir = Join-Path (Join-Path $ProjectDir '.winsmux') 'orchestra-bootstrap'
+    if (-not (Test-Path -LiteralPath $bootstrapDir)) {
+        New-Item -ItemType Directory -Path $bootstrapDir -Force | Out-Null
     }
-    Start-Sleep -Milliseconds 300
+
+    $safePaneId = (($PaneId -replace '[^a-zA-Z0-9_-]', '_').Trim('_'))
+    if ([string]::IsNullOrWhiteSpace($safePaneId)) {
+        $safePaneId = 'pane'
+    }
+
+    $planPath = Join-Path $bootstrapDir ("{0}.json" -f $safePaneId)
+    $plan = [ordered]@{
+        pane_id        = $PaneId
+        label          = $Label
+        role           = $Role
+        agent          = $Agent
+        model          = $Model
+        launch_dir     = $LaunchDir
+        launch_command = $LaunchCommand
+        environment    = $CleanPtyEnv.Environment
+    }
+
+    $plan | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $planPath -Encoding UTF8
+    return $planPath
+}
+
+function Start-OrchestraPaneBootstrap {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$PlanPath
+    )
+
+    $bootstrapScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'orchestra-pane-bootstrap.ps1'))
+    Wait-PaneShellReady -PaneId $PaneId
+    Send-OrchestraBridgeCommand -Target $PaneId -Text ("pwsh -NoProfile -File {0} -PlanFile {1}" -f (ConvertTo-PowerShellLiteral -Value $bootstrapScriptPath), (ConvertTo-PowerShellLiteral -Value $PlanPath))
+    Start-Sleep -Milliseconds 500
 }
 
 function Get-AgentLaunchCommand {
@@ -1852,17 +1926,26 @@ if ($MyInvocation.InvocationName -ne '.') {
                 }
             }
             Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
-            Initialize-OrchestraPaneEnvironment -PaneId $paneId -LaunchDir $launchDir -CleanPtyEnv $cleanPtyEnv
-            # TASK-231: verify pane exists after respawn
-            try {
-                Invoke-Winsmux -Arguments @('display-message', '-t', $paneId, '-p', '#{pane_id}') -CaptureOutput | Out-Null
-            } catch {
-                Write-Warning "TASK-231: pane $paneId ($label) not found after respawn-pane."
-            }
-            if (-not [string]::IsNullOrWhiteSpace($launchCommand)) {
-                Send-OrchestraBridgeCommand -Target $paneId -Text $launchCommand
-            } else {
+            if ([string]::IsNullOrWhiteSpace($launchCommand)) {
                 Write-Warning "TASK-231: empty launch command for pane $paneId ($label, role=$canonicalRole, execMode=$execMode). Agent will not start automatically."
+            } else {
+                $bootstrapPlanPath = New-OrchestraPaneBootstrapPlan `
+                    -ProjectDir $projectDir `
+                    -PaneId $paneId `
+                    -Label $label `
+                    -Role $canonicalRole `
+                    -Agent ([string]$slotAgentConfig.Agent) `
+                    -Model ([string]$slotAgentConfig.Model) `
+                    -LaunchDir $launchDir `
+                    -CleanPtyEnv $cleanPtyEnv `
+                    -LaunchCommand $launchCommand
+                Start-OrchestraPaneBootstrap -PaneId $paneId -PlanPath $bootstrapPlanPath
+                # TASK-231: verify pane exists after respawn
+                try {
+                    Invoke-Winsmux -Arguments @('display-message', '-t', $paneId, '-p', '#{pane_id}') -CaptureOutput | Out-Null
+                } catch {
+                    Write-Warning "TASK-231: pane $paneId ($label) not found after respawn-pane."
+                }
             }
         } finally {
             foreach ($envName in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {

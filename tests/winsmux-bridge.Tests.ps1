@@ -2773,8 +2773,7 @@ Describe 'orchestra-start server bootstrap' {
     }
 
     It 'launches a best-effort UI attach with a real Windows Terminal path' {
-        $script:startProcessFilePath = $null
-        $script:startProcessArgumentList = @()
+        $script:startProcessCalls = @()
 
         function Get-Command {
             param([string]$Name)
@@ -2803,8 +2802,10 @@ Describe 'orchestra-start server bootstrap' {
                 [switch]$PassThru
             )
 
-            $script:startProcessFilePath = $FilePath
-            $script:startProcessArgumentList = @($ArgumentList)
+            $script:startProcessCalls += ,([PSCustomObject]@{
+                FilePath     = $FilePath
+                ArgumentList = @($ArgumentList)
+            })
             return [PSCustomObject]@{ HasExited = $true }
         }
 
@@ -2818,19 +2819,23 @@ Describe 'orchestra-start server bootstrap' {
         $result.Launched | Should -Be $true
         $result.Attached | Should -Be $false
         $result.Status | Should -Be 'attach_exited_early'
-        $script:startProcessFilePath | Should -Be 'C:\Windows\System32\wt.exe'
-        $script:startProcessArgumentList | Should -Be @(
+        $result.FallbackFrom | Should -Be 'attach_exited_early'
+        $script:startProcessCalls.Count | Should -Be 2
+        $script:startProcessCalls[0].FilePath | Should -Be 'C:\Windows\System32\wt.exe'
+        $script:startProcessCalls[0].ArgumentList | Should -Be @(
             '--size', '200,70',
             'new-tab',
             '--title', 'winsmux-orchestra',
-            '--',
             'C:\Program Files\PowerShell\7\pwsh.exe', '-NoProfile', '-NoExit', '-File', ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-bootstrap.ps1'))), '-SessionName', 'winsmux-orchestra', '-WinsmuxPath', 'C:\Users\komei\.local\bin\winsmux.exe', '-AttachOnly'
+        )
+        $script:startProcessCalls[1].FilePath | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
+        $script:startProcessCalls[1].ArgumentList | Should -Be @(
+            '-NoProfile', '-NoExit', '-File', ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-bootstrap.ps1'))), '-SessionName', 'winsmux-orchestra', '-WinsmuxPath', 'C:\Users\komei\.local\bin\winsmux.exe', '-AttachOnly'
         )
     }
 
     It 'keeps ui_attached false while marking attach_launched when the attach child survives the early-failure window' {
-        $script:startProcessFilePath = $null
-        $script:startProcessArgumentList = @()
+        $script:startProcessCalls = @()
 
         function Get-Command {
             param([string]$Name)
@@ -2859,8 +2864,10 @@ Describe 'orchestra-start server bootstrap' {
                 [switch]$PassThru
             )
 
-            $script:startProcessFilePath = $FilePath
-            $script:startProcessArgumentList = @($ArgumentList)
+            $script:startProcessCalls += ,([PSCustomObject]@{
+                FilePath     = $FilePath
+                ArgumentList = @($ArgumentList)
+            })
             return [PSCustomObject]@{ HasExited = $false }
         }
 
@@ -2874,12 +2881,12 @@ Describe 'orchestra-start server bootstrap' {
         $result.Launched | Should -Be $true
         $result.Attached | Should -Be $false
         $result.Status | Should -Be 'attach_launched'
-        $script:startProcessFilePath | Should -Be 'C:\Windows\System32\wt.exe'
+        $script:startProcessCalls.Count | Should -Be 1
+        $script:startProcessCalls[0].FilePath | Should -Be 'C:\Windows\System32\wt.exe'
     }
 
     It 'resolves a canonical Windows Terminal path when wt.exe is only a WindowsApps alias' {
-        $script:startProcessFilePath = $null
-        $script:startProcessArgumentList = @()
+        $script:startProcessCalls = @()
 
         function Get-Command {
             param([string]$Name)
@@ -2917,8 +2924,10 @@ Describe 'orchestra-start server bootstrap' {
 
         function Start-Process {
             param([string]$FilePath, [object[]]$ArgumentList, [switch]$PassThru)
-            $script:startProcessFilePath = $FilePath
-            $script:startProcessArgumentList = @($ArgumentList)
+            $script:startProcessCalls += ,([PSCustomObject]@{
+                FilePath     = $FilePath
+                ArgumentList = @($ArgumentList)
+            })
             return [PSCustomObject]@{ HasExited = $true }
         }
 
@@ -2932,12 +2941,27 @@ Describe 'orchestra-start server bootstrap' {
         $result.Launched | Should -Be $true
         $result.Attached | Should -Be $false
         $result.Status | Should -Be 'attach_exited_early'
-        $script:startProcessFilePath | Should -Be 'C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\wt.exe'
-        $script:startProcessArgumentList[0] | Should -Be '--size'
+        $result.FallbackFrom | Should -Be 'attach_exited_early'
+        $script:startProcessCalls.Count | Should -Be 2
+        $script:startProcessCalls[0].FilePath | Should -Be 'C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\wt.exe'
+        $script:startProcessCalls[0].ArgumentList[0] | Should -Be '--size'
+        $script:startProcessCalls[1].FilePath | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
     }
 
-    It 'skips UI attach when wt.exe resolves to the WindowsApps alias stub and no canonical binary is available' {
-        $script:startProcessFilePath = $null
+    It 'falls back to a standalone PowerShell attach window when wt.exe is only an alias stub and no canonical binary is available' {
+        $script:startProcessCalls = @()
+
+        function Get-Command {
+            param([string]$Name)
+            if ($Name -eq 'pwsh') {
+                return [PSCustomObject]@{ Source = 'C:\Program Files\PowerShell\7\pwsh.exe' }
+            }
+            if ($Name -eq 'winsmux') {
+                return [PSCustomObject]@{ Source = 'C:\Users\komei\.local\bin\winsmux.exe' }
+            }
+
+            throw "unexpected command lookup: $Name"
+        }
 
         Mock Get-OrchestraWindowsTerminalInfo {
             [PSCustomObject][ordered]@{
@@ -2952,17 +2976,22 @@ Describe 'orchestra-start server bootstrap' {
 
         function Start-Process {
             param([string]$FilePath, [object[]]$ArgumentList, [switch]$PassThru)
-            $script:startProcessFilePath = $FilePath
-            return [PSCustomObject]@{ HasExited = $true }
+            $script:startProcessCalls += ,([PSCustomObject]@{
+                FilePath     = $FilePath
+                ArgumentList = @($ArgumentList)
+            })
+            return [PSCustomObject]@{ HasExited = $false }
         }
 
         $result = Try-StartOrchestraUiAttach -SessionName 'winsmux-orchestra'
 
-        $result.Attempted | Should -Be $false
-        $result.Launched | Should -Be $false
+        $result.Attempted | Should -Be $true
+        $result.Launched | Should -Be $true
         $result.Attached | Should -Be $false
-        @('wt_alias_stub', 'wt_unavailable') | Should -Contain $result.Status
-        $script:startProcessFilePath | Should -Be $null
+        $result.Status | Should -Be 'attach_launched_pwsh_fallback'
+        $result.FallbackFrom | Should -Be 'wt_alias_stub'
+        $script:startProcessCalls.Count | Should -Be 1
+        $script:startProcessCalls[0].FilePath | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
     }
 
     It 'checks the bootstrap pane count before reporting startup ready' {
@@ -3087,6 +3116,20 @@ Describe 'orchestra-start server bootstrap' {
     }
 
     It 'treats missing Windows Terminal as a non-fatal UI attach condition' {
+        $script:startProcessCalls = @()
+
+        function Get-Command {
+            param([string]$Name)
+            if ($Name -eq 'pwsh') {
+                return [PSCustomObject]@{ Source = 'C:\Program Files\PowerShell\7\pwsh.exe' }
+            }
+            if ($Name -eq 'winsmux') {
+                return [PSCustomObject]@{ Source = 'C:\Users\komei\.local\bin\winsmux.exe' }
+            }
+
+            throw "unexpected command lookup: $Name"
+        }
+
         Mock Get-OrchestraWindowsTerminalInfo {
             [PSCustomObject][ordered]@{
                 Available   = $false
@@ -3098,12 +3141,28 @@ Describe 'orchestra-start server bootstrap' {
             }
         }
 
+        function Start-Process {
+            param([string]$FilePath, [object[]]$ArgumentList, [switch]$PassThru)
+            $script:startProcessCalls += ,([PSCustomObject]@{
+                FilePath     = $FilePath
+                ArgumentList = @($ArgumentList)
+            })
+            return [PSCustomObject]@{ HasExited = $false }
+        }
+
+        function Start-Sleep {
+            param([int]$Milliseconds)
+        }
+
         $result = Try-StartOrchestraUiAttach -SessionName 'winsmux-orchestra'
 
-        $result.Attempted | Should -Be $false
-        $result.Launched | Should -Be $false
+        $result.Attempted | Should -Be $true
+        $result.Launched | Should -Be $true
         $result.Attached | Should -Be $false
-        $result.Status | Should -Be 'wt_unavailable'
+        $result.Status | Should -Be 'attach_launched_pwsh_fallback'
+        $result.FallbackFrom | Should -Be 'wt_unavailable'
+        $script:startProcessCalls.Count | Should -Be 1
+        $script:startProcessCalls[0].FilePath | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
     }
 
     It 'skips UI attach when winsmux cannot be resolved to an absolute path for the child process' {
@@ -3393,8 +3452,9 @@ Describe 'orchestra-start rollback helpers' {
         (Test-Path (Join-Path $manifestDir 'manifest.yaml')) | Should -Be $false
     }
 
-    It 'scrubs WINSMUX variables before reinjecting pane environment after respawn' {
+    It 'writes a pane bootstrap plan and launches it with a single bootstrap command after respawn' {
         $sentCommands = [System.Collections.Generic.List[string]]::new()
+        $planRoot = Join-Path $script:orchestraStartTempRoot '.winsmux\orchestra-bootstrap'
         $cleanPtyEnv = [PSCustomObject]@{
             RemoveCommand = "Get-ChildItem Env: | Where-Object { `$_.Name -like 'WINSMUX_*' } | ForEach-Object { Remove-Item -LiteralPath ('Env:' + `$_.Name) -ErrorAction SilentlyContinue }"
             Environment   = [ordered]@{
@@ -3408,17 +3468,32 @@ Describe 'orchestra-start rollback helpers' {
             $sentCommands.Add($Text) | Out-Null
         }
 
-        Initialize-OrchestraPaneEnvironment -PaneId '%2' -LaunchDir 'C:\repo\.worktrees\builder-1' -CleanPtyEnv $cleanPtyEnv
+        $planPath = New-OrchestraPaneBootstrapPlan `
+            -ProjectDir $script:orchestraStartTempRoot `
+            -PaneId '%2' `
+            -Label 'worker-1' `
+            -Role 'Worker' `
+            -Agent 'codex' `
+            -Model 'gpt-5.4' `
+            -LaunchDir 'C:\repo\.worktrees\builder-1' `
+            -CleanPtyEnv $cleanPtyEnv `
+            -LaunchCommand 'codex --help'
+
+        Start-OrchestraPaneBootstrap -PaneId '%2' -PlanPath $planPath
 
         Should -Invoke Wait-PaneShellReady -Times 1 -Exactly -ParameterFilter {
             $PaneId -eq '%2'
         }
-        $sentCommands.Count | Should -Be 4
-        $sentCommands[0] | Should -Be "cd 'C:\repo\.worktrees\builder-1'"
-        $sentCommands[1] | Should -Match 'WINSMUX_\*'
-        $sentCommands[1] | Should -Match 'Remove-Item'
-        $sentCommands[2] | Should -Be '$env:WINSMUX_ROLE = ''Worker'''
-        $sentCommands[3] | Should -Be '$env:WINSMUX_GOVERNANCE_MODE = ''enhanced'''
+        (Test-Path -LiteralPath $planRoot) | Should -Be $true
+        (Test-Path -LiteralPath $planPath) | Should -Be $true
+        $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 8
+        [string]$plan.launch_dir | Should -Be 'C:\repo\.worktrees\builder-1'
+        [string]$plan.environment.WINSMUX_ROLE | Should -Be 'Worker'
+        [string]$plan.environment.WINSMUX_GOVERNANCE_MODE | Should -Be 'enhanced'
+        [string]$plan.launch_command | Should -Be 'codex --help'
+        $sentCommands.Count | Should -Be 1
+        $sentCommands[0] | Should -Match 'orchestra-pane-bootstrap\.ps1'
+        $sentCommands[0] | Should -Match '-PlanFile'
     }
 }
 
@@ -6088,6 +6163,55 @@ Describe 'winsmux task-run command' {
         $script:winsmuxCoreRawContent | Should -Match 'task-run <task>\s+Alias for pipeline; one-shot orchestration entrypoint'
         $script:winsmuxCoreRawContent | Should -Match "'task-run'\s*\{"
         $script:winsmuxCoreRawContent | Should -Match "team-pipeline\.ps1"
+    }
+}
+
+Describe 'winsmux orchestra-smoke command' {
+    BeforeAll {
+        $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreRawContent = Get-Content -Path $script:winsmuxCoreRawPath -Raw -Encoding UTF8
+        $script:orchestraSmokePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-smoke.ps1'
+        $script:orchestraSmokeContent = Get-Content -Path $script:orchestraSmokePath -Raw -Encoding UTF8
+    }
+
+    It 'documents orchestra-smoke and dispatches it through the dedicated startup smoke script' {
+        $script:winsmuxCoreRawContent | Should -Match 'orchestra-smoke \[--json\] \[--project-dir <path>\]\s+Start Orchestra if needed and report session-ready/UI-attach state'
+        $script:winsmuxCoreRawContent | Should -Match "'orchestra-smoke'\s*\{"
+        $script:winsmuxCoreRawContent | Should -Match 'orchestra-smoke\.ps1'
+        $script:winsmuxCoreRawContent | Should -Match '--project-dir <path>'
+        $script:winsmuxCoreRawContent | Should -Not -Match '--session-name <name>'
+    }
+
+    It 'reports session-ready and UI attach state separately in the startup smoke contract' {
+        $script:orchestraSmokeContent | Should -Match 'session_ready'
+        $script:orchestraSmokeContent | Should -Match 'ui_attach_launched'
+        $script:orchestraSmokeContent | Should -Match 'ui_attached'
+        $script:orchestraSmokeContent | Should -Match 'expected_pane_count'
+        $script:orchestraSmokeContent | Should -Match 'winsmux_bin'
+        $script:orchestraSmokeContent | Should -Match 'pane_probe_ok'
+        $script:orchestraSmokeContent | Should -Match 'Get-OrchestraSmokeLayoutSettings'
+    }
+}
+
+Describe 'orchestra pane bootstrap plan' {
+    BeforeAll {
+        $script:orchestraStartPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1'
+        $script:orchestraStartContent = Get-Content -Path $script:orchestraStartPath -Raw -Encoding UTF8
+        $script:orchestraPaneBootstrapPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-pane-bootstrap.ps1'
+        $script:orchestraPaneBootstrapContent = Get-Content -Path $script:orchestraPaneBootstrapPath -Raw -Encoding UTF8
+    }
+
+    It 'uses a plan file driven pane bootstrap instead of sending many environment commands directly' {
+        $script:orchestraStartContent | Should -Match 'function New-OrchestraPaneBootstrapPlan'
+        $script:orchestraStartContent | Should -Match 'function Start-OrchestraPaneBootstrap'
+        $script:orchestraStartContent | Should -Match 'orchestra-pane-bootstrap\.ps1'
+        $script:orchestraStartContent | Should -Match 'Start-OrchestraPaneBootstrap -PaneId \$paneId -PlanPath \$bootstrapPlanPath'
+    }
+
+    It 'prints a concise startup summary before invoking the agent launch command' {
+        $script:orchestraPaneBootstrapContent | Should -Match '\[winsmux\] pane bootstrap:'
+        $script:orchestraPaneBootstrapContent | Should -Match 'launch_command'
+        $script:orchestraPaneBootstrapContent | Should -Match 'Invoke-Expression \$launchCommand'
     }
 }
 

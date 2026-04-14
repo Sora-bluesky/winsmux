@@ -6299,6 +6299,7 @@ promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>
   pipeline <task>       Run plan-exec-verify-fix loop for a task
   task-run <task>       Alias for pipeline; one-shot orchestration entrypoint
   builder-queue <action> [args]  Manage Builder queue and auto-dispatch next work
+  orchestra-smoke [--json] [--project-dir <path>]  Start Orchestra if needed and report session-ready/UI-attach state
   vault set <key> [value]   Store a credential securely (DPAPI)
   vault get <key>           Retrieve a stored credential
   vault inject <pane>       Inject all credentials as env vars into a pane
@@ -6620,6 +6621,30 @@ switch ($Command) {
                 Stop-WithError "usage: winsmux builder-queue [add|list|dispatch-next|complete] ..."
             }
         }
+    }
+    'orchestra-smoke' {
+        $smokeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-smoke.ps1'))
+        $remaining = @($Target) + @($Rest) | Where-Object { $_ }
+        $smokeArgs = @()
+        for ($index = 0; $index -lt $remaining.Count; $index++) {
+            switch ($remaining[$index]) {
+                '--json' {
+                    $smokeArgs += '-AsJson'
+                }
+                '--project-dir' {
+                    if ($index + 1 -ge $remaining.Count) {
+                    Stop-WithError "usage: winsmux orchestra-smoke [--json] [--project-dir <path>]"
+                }
+
+                $smokeArgs += @('-ProjectDir', $remaining[$index + 1])
+                $index++
+            }
+                default {
+                    Stop-WithError "usage: winsmux orchestra-smoke [--json] [--project-dir <path>]"
+                }
+            }
+        }
+        & pwsh -NoProfile -File $smokeScript @smokeArgs
     }
     'vault'           {
         switch ($Target) {
