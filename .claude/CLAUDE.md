@@ -74,6 +74,16 @@ Direct operator-side mutation is **outside the standard winsmux operating model*
 4. Do not let panes talk directly to the user.
 5. Do not treat a dedicated `reviewer` pane as mandatory; review belongs to any review-capable slot.
 
+## Orchestra restoration gate
+
+When `/winsmux-start` or another restoration flow reports `needs-startup`:
+
+1. Treat that as a hard blocker, not as advisory status.
+2. Before any PR triage, merge proposal, backlog planning, or dispatch planning, run `winsmux-core/scripts/orchestra-start.ps1`.
+3. Verify that the worker pane count reaches the expected value from `.winsmux.yaml` / resolved `agent_slots`.
+4. If startup still fails, report `blocked` and stop fail-closed.
+5. Do not continue with PR/merge or local exploration while orchestra is still `needs-startup`.
+
 ## Compatibility and release notes
 
 - Legacy `Builder / Researcher / Reviewer` layouts are compatibility mode only.

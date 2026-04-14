@@ -4,6 +4,13 @@ paths: ["winsmux-core/scripts/**", ".claude/**"]
 
 # Commander Dispatch Procedure
 
+## Orchestra restore preflight
+1. If restoration state is `needs-startup`, stop here.
+2. Run `pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1`.
+3. Verify expected worker pane count before any PR triage, merge action, backlog reading, or task dispatch.
+4. If pane expansion does not succeed, treat the session as `blocked` and report the startup failure.
+5. Do not plan merge work while the orchestra session is still missing worker panes.
+
 ## Builder Dispatch
 1. Check pane state: `winsmux capture-pane -t <pane> -p | tail -5`
 2. Write `.builder-prompt.txt` to Builder worktree (from manifest.yaml launch_dir)

@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T20:10:00+09:00
+> Updated: 2026-04-14T20:35:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -122,6 +122,7 @@
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `186/186 PASS` after restricting stale-manifest cleanup to safe startup/reset paths, validating background PID command lines against `script + manifest path + session`, and renaming the bootstrap session helper
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `187/187 PASS` after moving startup lock acquisition ahead of cleanup/bootstrap, adding `startup_token`-scoped background cleanup, and splitting bootstrap/full-startup readiness fields
 - `pwsh -NoProfile -File .\winsmux-core\scripts\sync-roadmap.ps1` -> PASS after adding `TASK-339` and enforcing the issue→task planning flow
+- `pwsh -NoProfile -File .\winsmux-core\scripts\sync-roadmap.ps1` -> PASS after adding `TASK-340` and syncing the new startup-priority rule
 - reviewer `Euclid` -> delayed `FAIL`
   - roadmap localization gate が write 後判定だった点
   - internal docs の `done` 分類
@@ -171,6 +172,7 @@
 8. それでも topology mismatch が残る場合は、issue [#421](https://github.com/Sora-bluesky/winsmux/issues/421) の次段として operator 側 `/winsmux-start` restoration semantics と hook JSON validation を切り分ける。
 9. PR [#420](https://github.com/Sora-bluesky/winsmux/pull/420) に startup-token + early-lock follow-up を push し、CI と review が通ったら merge する。
 10. `TASK-339` として issue [#423](https://github.com/Sora-bluesky/winsmux/issues/423) を進め、operator-facing startup/status 文言の `winsmux` 正規化を実装する。
+11. `TASK-340` として issue [#424](https://github.com/Sora-bluesky/winsmux/issues/424) を進め、`needs-startup` 復元時の worker 展開優先ルールが実動作でも守られるか再検証する。
 
 ## Notes
 
@@ -190,9 +192,14 @@
   - labels: `bug`, `documentation`, `orchestration`
   - `psmux` / `pmux` / `tmux` は compatibility alias に留め、operator-facing status は `winsmux` に正規化する方針です
 - issue 起票後は、duplicate / invalid / upstream-only を除き、同じ session で `TASK-*` に紐付けるか external `backlog.yaml` に追加し、`winsmux-core/scripts/sync-roadmap.ps1` まで流す運用に固定しました。
+- `needs-startup` は advisory ではなく hard gate として扱います。worker pane が期待数に達する前に PR/merge/backlog planning へ進むのは bug として扱います。
 - issue [#423](https://github.com/Sora-bluesky/winsmux/issues/423) を planning に反映し、`TASK-339` として `v0.22.0` に追加しました。
   - scope は alias 削除ではなく、`/winsmux-start`、startup/status summary、operator-facing help の `winsmux` 正規化です
   - `tasks/roadmap-title-ja.psd1` を更新し、external roadmap sync まで完了させる運用に合わせています
 - issue 起票後の永続ルールも `AGENTS.md` に追加しました。
   - duplicate / invalid / upstream-only を除き、issue は同じ session で既存 `TASK-*` に紐付けるか、新規 `TASK-*` を external `backlog.yaml` に追加します
   - task 化したら `winsmux-core/scripts/sync-roadmap.ps1` を実行し、issue↔task 対応を handoff に残します
+- `/winsmux-start` が `needs-startup` を認識しても PR/merge 計画を先に進める問題を issue [#424](https://github.com/Sora-bluesky/winsmux/issues/424) として起票しました。
+  - labels: `bug`, `orchestration`
+  - 同じ session で `TASK-340` として `v0.22.0` に追加し、`needs-startup` は worker 展開完了まで hard gate とする方針を planning に反映しました
+  - `.claude/CLAUDE.md` と `.claude/rules/dispatch.md` に、`needs-startup` 時は `orchestra-start.ps1` を最優先で走らせ、pane 数確認前に PR/merge/backlog planning に進まないルールを追加しました
