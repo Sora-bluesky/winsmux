@@ -146,6 +146,14 @@ When a new product, startup, orchestration, CI, or operator workflow problem is 
 6. Update `docs/handoff.md` with the issue number, labels, and current resolution state in the same session.
 7. Do not silently "just fix and move on" for operational failures that could recur.
 8. If the problem is only partially understood, still create the issue and mark the remaining uncertainty explicitly.
+9. After creating or materially updating a non-duplicate issue, map it into planning in the same session unless it is explicitly triage-only, invalid, duplicate, or upstream-only.
+10. Planning mapping means:
+   - link the issue to an existing `TASK-*`, or add a new `TASK-*` in the external `backlog.yaml`,
+   - place it in the most appropriate version lane instead of defaulting to a catch-all bucket,
+   - add or update the Japanese title override in `tasks/roadmap-title-ja.psd1` when roadmap sync would expose the task,
+   - run `winsmux-core/scripts/sync-roadmap.ps1`,
+   - and record the issue-to-task mapping in `docs/handoff.md`.
+11. Treat "issue filed but not taskified" as incomplete operational bookkeeping unless the session explicitly documents why taskification is deferred.
 
 ## Release Notes Policy
 

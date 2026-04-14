@@ -1,6 +1,6 @@
 # Handoff
 
-> Updated: 2026-04-14T19:35:00+09:00
+> Updated: 2026-04-14T20:10:00+09:00
 > Source of truth: this file
 
 ## Current state
@@ -121,6 +121,7 @@
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `184/184 PASS` after separating bootstrap pane count from final layout count, fail-closing missing manifests in `server-watchdog.ps1`, and extending the startup topology regression coverage
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `186/186 PASS` after restricting stale-manifest cleanup to safe startup/reset paths, validating background PID command lines against `script + manifest path + session`, and renaming the bootstrap session helper
 - `Invoke-Pester tests/winsmux-bridge.Tests.ps1 -CI` -> `187/187 PASS` after moving startup lock acquisition ahead of cleanup/bootstrap, adding `startup_token`-scoped background cleanup, and splitting bootstrap/full-startup readiness fields
+- `pwsh -NoProfile -File .\winsmux-core\scripts\sync-roadmap.ps1` -> PASS after adding `TASK-339` and enforcing the issue→task planning flow
 - reviewer `Euclid` -> delayed `FAIL`
   - roadmap localization gate が write 後判定だった点
   - internal docs の `done` 分類
@@ -169,6 +170,7 @@
 7. `/winsmux-start` を再試行し、`winsmux-orchestra` が 1 pane で止まらず worker pane まで展開するか確認する。
 8. それでも topology mismatch が残る場合は、issue [#421](https://github.com/Sora-bluesky/winsmux/issues/421) の次段として operator 側 `/winsmux-start` restoration semantics と hook JSON validation を切り分ける。
 9. PR [#420](https://github.com/Sora-bluesky/winsmux/pull/420) に startup-token + early-lock follow-up を push し、CI と review が通ったら merge する。
+10. `TASK-339` として issue [#423](https://github.com/Sora-bluesky/winsmux/issues/423) を進め、operator-facing startup/status 文言の `winsmux` 正規化を実装する。
 
 ## Notes
 
@@ -184,3 +186,13 @@
   - labels: `bug`, `orchestration`
   - 原因は silent failure ではなく、重い slice での scheduler/context latency が主因という観測です
   - `AGENTS.md` は small TS/docs review を 60 秒、Rust/Tauri/PowerShell/orchestration review を 120 秒、merge-critical では同時間の追加 1 回待機、review concurrency=1 に更新しました
+- operator-facing の起動文脈に legacy `psmux` が漏れる問題を issue [#423](https://github.com/Sora-bluesky/winsmux/issues/423) として起票しました。
+  - labels: `bug`, `documentation`, `orchestration`
+  - `psmux` / `pmux` / `tmux` は compatibility alias に留め、operator-facing status は `winsmux` に正規化する方針です
+- issue 起票後は、duplicate / invalid / upstream-only を除き、同じ session で `TASK-*` に紐付けるか external `backlog.yaml` に追加し、`winsmux-core/scripts/sync-roadmap.ps1` まで流す運用に固定しました。
+- issue [#423](https://github.com/Sora-bluesky/winsmux/issues/423) を planning に反映し、`TASK-339` として `v0.22.0` に追加しました。
+  - scope は alias 削除ではなく、`/winsmux-start`、startup/status summary、operator-facing help の `winsmux` 正規化です
+  - `tasks/roadmap-title-ja.psd1` を更新し、external roadmap sync まで完了させる運用に合わせています
+- issue 起票後の永続ルールも `AGENTS.md` に追加しました。
+  - duplicate / invalid / upstream-only を除き、issue は同じ session で既存 `TASK-*` に紐付けるか、新規 `TASK-*` を external `backlog.yaml` に追加します
+  - task 化したら `winsmux-core/scripts/sync-roadmap.ps1` を実行し、issue↔task 対応を handoff に残します
