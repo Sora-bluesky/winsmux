@@ -97,7 +97,11 @@ function ConvertTo-ManifestYamlValue {
         }
 
         $encodedItems = foreach ($item in $items) {
-            ConvertTo-ManifestYamlScalar -Value $item
+            if ($null -ne $item -and ($item -is [System.Collections.IDictionary] -or (($null -ne $item.PSObject) -and -not ($item -is [string]) -and -not ($item -is [bool]) -and -not ($item -is [System.ValueType])))) {
+                ConvertTo-ManifestYamlScalar -Value ($item | ConvertTo-Json -Compress -Depth 8)
+            } else {
+                ConvertTo-ManifestYamlScalar -Value $item
+            }
         }
 
         return '[' + ($encodedItems -join ', ') + ']'
@@ -369,7 +373,7 @@ function ConvertTo-ManifestYaml {
     $lines.Add(('saved_at: {0}' -f (ConvertTo-ManifestYamlScalar -Value $(if ($manifestMap.Contains('saved_at')) { $manifestMap['saved_at'] } else { [System.DateTimeOffset]::Now.ToString('o') })))) | Out-Null
     $lines.Add('session:') | Out-Null
     foreach ($key in $sessionMap.Keys) {
-        $lines.Add(('  {0}: {1}' -f $key, (ConvertTo-ManifestYamlScalar -Value $sessionMap[$key]))) | Out-Null
+        $lines.Add(('  {0}: {1}' -f $key, (ConvertTo-ManifestYamlValue -Value $sessionMap[$key]))) | Out-Null
     }
 
     $lines.Add('panes:') | Out-Null

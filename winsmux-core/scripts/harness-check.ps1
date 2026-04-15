@@ -291,30 +291,106 @@ $attachPathWritable = Test-HarnessWritableFile -Path $attachProbePath
 $attachWritableMessage = if ($attachPathWritable) { 'Attach handshake path is writable.' } else { 'Attach handshake path is not writable.' }
 $results.Add((New-HarnessCheckRecord -Name 'attach-handshake-path-writable' -Passed $attachPathWritable -Message $attachWritableMessage -Data $attachProbePath)) | Out-Null
 
+$hostCandidates = @(Get-OrchestraVisibleAttachHostCandidates -ProjectDir $ProjectDir)
+$availableHostCandidates = @($hostCandidates | Where-Object { [bool]$_.Available })
+$hostAdapterPassed = ($availableHostCandidates.Count -gt 0)
+$hostAdapterMessage = if ($hostAdapterPassed) {
+    'At least one visible attach host adapter is available.'
+} else {
+    'No visible attach host adapter is currently available.'
+}
+$results.Add((New-HarnessCheckRecord -Name 'visible-attach-host-adapters' -Passed $hostAdapterPassed -Message $hostAdapterMessage -Data @(
+    $hostCandidates | ForEach-Object {
+        [ordered]@{
+            host_kind = [string]$_.HostKind
+            available = [bool]$_.Available
+            reason    = [string]$_.Reason
+            path      = [string]$_.Path
+        }
+    }
+))) | Out-Null
+
 $smokeProbe = Test-HarnessSmokeContract -RepoRoot $ProjectDir
 $smokePassed = $false
 $smokeMessage = ''
+$attachRegistryPassed = $false
+$attachRegistryMessage = ''
+$attachConsistencyPassed = $false
+$attachConsistencyMessage = ''
 if ($null -eq $smokeProbe.parsed) {
     $smokeMessage = if ([string]::IsNullOrWhiteSpace($smokeProbe.error)) { 'orchestra-smoke did not return JSON.' } else { "orchestra-smoke JSON parse failed: $($smokeProbe.error)" }
+    $attachRegistryMessage = $smokeMessage
+    $attachConsistencyMessage = $smokeMessage
 } else {
     $contract = $smokeProbe.parsed.operator_contract
     $hasContract = $null -ne $contract -and
         (Test-HarnessHasProperty -Object $contract -Name 'operator_state') -and
         (Test-HarnessHasProperty -Object $contract -Name 'can_dispatch') -and
         (Test-HarnessHasProperty -Object $contract -Name 'requires_startup')
+    $hasAttachRegistryFields = @(
+        'attached_client_count',
+        'attached_client_registry_count',
+        'attached_client_snapshot',
+        'ui_attach_source',
+        'ui_host_kind',
+        'ui_attach_launched',
+        'ui_attached',
+        'session_ready'
+    ) | ForEach-Object {
+        Test-HarnessHasProperty -Object $smokeProbe.parsed -Name $_
+    }
     if (-not $hasContract) {
         $smokeMessage = 'orchestra-smoke result is missing operator_contract fields.'
-    } elseif ($smokeProbe.parsed.session_ready -and -not $smokeProbe.parsed.ui_attached -and $contract.can_dispatch) {
+        $attachConsistencyMessage = $smokeMessage
+    } elseif ($smokeProbe.parsed.external_operator_mode -and $smokeProbe.parsed.session_ready -and -not $smokeProbe.parsed.ui_attached -and $contract.can_dispatch) {
         $smokeMessage = 'operator_contract.can_dispatch must stay false until attached-client confirmation is recorded.'
+        $attachConsistencyMessage = $smokeMessage
     } else {
         $smokePassed = $true
         $smokeMessage = 'orchestra-smoke contract is structurally consistent.'
+    }
+
+    if ($hasAttachRegistryFields -contains $false) {
+        $attachRegistryMessage = 'orchestra-smoke result is missing attached-client registry fields.'
+    } else {
+        $attachRegistryPassed = $true
+        $attachRegistryMessage = 'orchestra-smoke exposes attached-client registry and attach-source fields.'
+    }
+
+    if (-not (Test-HarnessHasProperty -Object $smokeProbe.parsed -Name 'session_ready') -or
+        -not (Test-HarnessHasProperty -Object $smokeProbe.parsed -Name 'ui_attached') -or
+        -not (Test-HarnessHasProperty -Object $smokeProbe.parsed -Name 'ui_attach_launched')) {
+        $attachConsistencyMessage = 'orchestra-smoke result is missing startup/attach consistency fields.'
+    } elseif (($contract.operator_state -eq 'ready') -and (-not $smokeProbe.parsed.session_ready -or -not $smokeProbe.parsed.ui_attached)) {
+        $attachConsistencyMessage = 'operator_state=ready requires session_ready=true and ui_attached=true.'
+    } elseif (($contract.operator_state -eq 'blocked') -and $contract.can_dispatch) {
+        $attachConsistencyMessage = 'operator_state=blocked must not allow dispatch.'
+    } elseif ((-not $smokeProbe.parsed.session_ready) -and $smokeProbe.parsed.ui_attached) {
+        $attachConsistencyMessage = 'ui_attached=true is invalid while session_ready=false.'
+    } else {
+        $attachConsistencyPassed = $true
+        $attachConsistencyMessage = 'Startup truth and attach truth remain internally consistent.'
     }
 }
 $results.Add((New-HarnessCheckRecord -Name 'orchestra-smoke-contract' -Passed $smokePassed -Message $smokeMessage -Data ([ordered]@{
     exit_code = $smokeProbe.exit_code
     smoke_ok  = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.smoke_ok } else { $null })
     ui_attached = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.ui_attached } else { $null })
+    external_operator_mode = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.external_operator_mode } else { $null })
+    can_dispatch = $(if ($null -ne $smokeProbe.parsed -and $null -ne $smokeProbe.parsed.operator_contract) { $smokeProbe.parsed.operator_contract.can_dispatch } else { $null })
+})) ) | Out-Null
+$results.Add((New-HarnessCheckRecord -Name 'attached-client-registry-contract' -Passed $attachRegistryPassed -Message $attachRegistryMessage -Data ([ordered]@{
+    client_probe_ok = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.client_probe_ok } else { $null })
+    attached_client_count = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.attached_client_count } else { $null })
+    attached_client_registry_count = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.attached_client_registry_count } else { $null })
+    ui_attach_source = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.ui_attach_source } else { $null })
+    ui_host_kind = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.ui_host_kind } else { $null })
+})) ) | Out-Null
+$results.Add((New-HarnessCheckRecord -Name 'startup-attach-consistency' -Passed $attachConsistencyPassed -Message $attachConsistencyMessage -Data ([ordered]@{
+    session_ready = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.session_ready } else { $null })
+    ui_attach_launched = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.ui_attach_launched } else { $null })
+    ui_attached = $(if ($null -ne $smokeProbe.parsed) { $smokeProbe.parsed.ui_attached } else { $null })
+    operator_state = $(if ($null -ne $smokeProbe.parsed -and $null -ne $smokeProbe.parsed.operator_contract) { $smokeProbe.parsed.operator_contract.operator_state } else { $null })
     can_dispatch = $(if ($null -ne $smokeProbe.parsed -and $null -ne $smokeProbe.parsed.operator_contract) { $smokeProbe.parsed.operator_contract.can_dispatch } else { $null })
 })) ) | Out-Null
 

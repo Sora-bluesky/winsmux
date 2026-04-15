@@ -1616,12 +1616,32 @@ param(
         (Test-Path -LiteralPath $lockDir -PathType Container) | Should -Be $false
     }
 
+    It 'reclaims file locks when the owner pid has been reused by a different process instance' {
+        $logPath = Join-Path $script:loggerTempRoot '.winsmux\logs\pid-reuse.jsonl'
+        $lockDir = "$logPath.lock"
+        $metadataPath = Join-Path $lockDir 'owner.json'
+
+        New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+        @"
+{"pid":$PID,"started_at":"2000-01-01T00:00:00Z","process_started_at":"2000-01-01T00:00:00Z"}
+"@ | Set-Content -Path $metadataPath -Encoding UTF8
+
+        Write-WinsmuxTextFile -Path $logPath -Content 'pid-reuse-recovered' -Append
+
+        $lines = @(Get-Content -Path $logPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $lines.Count | Should -Be 1
+        $lines[0] | Should -Be 'pid-reuse-recovered'
+        (Test-Path -LiteralPath $lockDir -PathType Container) | Should -Be $false
+    }
+
     It 'keeps CLM-safe writes on cmd-based lock and replace primitives' {
         $script:clmSafeIoContent | Should -Match 'function Get-WinsmuxFileLockDir'
         $script:clmSafeIoContent | Should -Match 'function Test-WinsmuxFileLockStale'
+        $script:clmSafeIoContent | Should -Match 'function Get-WinsmuxProcessStartedAt'
         $script:clmSafeIoContent | Should -Match 'cmd /d /c \(''mkdir'
         $script:clmSafeIoContent | Should -Match 'cmd /d /c \(''move /y'
         $script:clmSafeIoContent | Should -Match 'owner\.json'
+        $script:clmSafeIoContent | Should -Match 'process_started_at'
         $script:clmSafeIoContent | Should -Not -Match 'System\.Threading\.Mutex'
         $script:clmSafeIoContent | Should -Not -Match 'System\.IO\.File'
         $script:clmSafeIoContent | Should -Not -Match 'StreamWriter'
@@ -2801,6 +2821,29 @@ Describe 'orchestra-start server bootstrap' {
 
     BeforeEach {
         $script:winsmuxBin = 'winsmux'
+        $script:attachStateStore = $null
+
+        Mock Read-OrchestraAttachState {
+            $script:attachStateStore
+        }
+
+        Mock Write-OrchestraAttachState {
+            param([string]$SessionName, [hashtable]$Properties)
+
+            $merged = [ordered]@{}
+            if ($null -ne $script:attachStateStore) {
+                foreach ($property in $script:attachStateStore.PSObject.Properties) {
+                    $merged[$property.Name] = $property.Value
+                }
+            }
+
+            foreach ($key in $Properties.Keys) {
+                $merged[$key] = $Properties[$key]
+            }
+
+            $script:attachStateStore = [pscustomobject]$merged
+            return $script:attachStateStore
+        }
     }
 
     It 'returns success when the server session already exists' {
@@ -2891,7 +2934,18 @@ Describe 'orchestra-start server bootstrap' {
             }
         }
         Mock Write-OrchestraAttachState {
-            [pscustomobject]@{}
+            param([string]$SessionName, [hashtable]$Properties)
+            $merged = [ordered]@{}
+            if ($null -ne $script:attachStateStore) {
+                foreach ($property in $script:attachStateStore.PSObject.Properties) {
+                    $merged[$property.Name] = $property.Value
+                }
+            }
+            foreach ($key in $Properties.Keys) {
+                $merged[$key] = $Properties[$key]
+            }
+            $script:attachStateStore = [pscustomobject]$merged
+            return $script:attachStateStore
         }
         Mock Wait-OrchestraAttachLaunchObservation {
             [PSCustomObject]@{ Observed = $true; Reason = 'launch observed' }
@@ -2903,7 +2957,11 @@ Describe 'orchestra-start server bootstrap' {
                 Status              = 'attach_confirmed'
                 Reason              = 'Attach confirmed'
                 AttachedClientCount = 1
-                State               = [pscustomobject]@{}
+                State               = [pscustomobject]@{
+                    attach_request_id      = 'req-123'
+                    attached_client_snapshot = @('client-1')
+                    ui_host_kind           = 'windows-terminal'
+                }
             }
         }
 
@@ -2932,6 +2990,12 @@ Describe 'orchestra-start server bootstrap' {
         $result.Attached | Should -Be $true
         $result.Status | Should -Be 'attach_confirmed'
         $result.Source | Should -Be 'handshake'
+        $result.attach_request_id | Should -Be 'req-123'
+        $result.attached_client_snapshot | Should -Be @('client-1')
+        $result.ui_host_kind | Should -Be 'windows-terminal'
+        $result.attach_adapter_trace.Count | Should -Be 1
+        $result.attach_adapter_trace[0].host_kind | Should -Be 'windows-terminal'
+        $result.attach_adapter_trace[0].launch_result | Should -Be 'attach_confirmed'
         $script:startProcessCalls.Count | Should -Be 1
         $script:startProcessCalls[0].FilePath | Should -Be 'C:\Windows\System32\wt.exe'
         $script:startProcessCalls[0].ArgumentList | Should -Be @('-w', '-1', 'new-window', '-p', 'winsmux orchestra attach')
@@ -2954,7 +3018,18 @@ Describe 'orchestra-start server bootstrap' {
         }
         Mock Test-OrchestraLiveVisibleAttachState { $true }
         Mock Write-OrchestraAttachState {
-            [pscustomobject]@{}
+            param([string]$SessionName, [hashtable]$Properties)
+            $merged = [ordered]@{}
+            if ($null -ne $script:attachStateStore) {
+                foreach ($property in $script:attachStateStore.PSObject.Properties) {
+                    $merged[$property.Name] = $property.Value
+                }
+            }
+            foreach ($key in $Properties.Keys) {
+                $merged[$key] = $Properties[$key]
+            }
+            $script:attachStateStore = [pscustomobject]$merged
+            return $script:attachStateStore
         }
 
         function Start-Process {
@@ -2993,7 +3068,18 @@ Describe 'orchestra-start server bootstrap' {
         }
         Mock Test-OrchestraProcessAlive { $true }
         Mock Write-OrchestraAttachState {
-            [pscustomobject]@{}
+            param([string]$SessionName, [hashtable]$Properties)
+            $merged = [ordered]@{}
+            if ($null -ne $script:attachStateStore) {
+                foreach ($property in $script:attachStateStore.PSObject.Properties) {
+                    $merged[$property.Name] = $property.Value
+                }
+            }
+            foreach ($key in $Properties.Keys) {
+                $merged[$key] = $Properties[$key]
+            }
+            $script:attachStateStore = [pscustomobject]$merged
+            return $script:attachStateStore
         }
 
         $result = Try-StartOrchestraUiAttach -SessionName 'winsmux-orchestra'
@@ -3013,7 +3099,7 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-OrchestraAttachedClientSnapshot {
             [PSCustomObject]@{ Ok = $true; Count = 1; Error = ''; Clients = @('client-1') }
         }
-        Mock Read-OrchestraAttachState { $null }
+        Mock Read-OrchestraAttachState { $script:attachStateStore }
         Mock Test-OrchestraLiveVisibleAttachState { $false }
         Mock Get-OrchestraWindowsTerminalInfo {
             [PSCustomObject][ordered]@{
@@ -3033,7 +3119,18 @@ Describe 'orchestra-start server bootstrap' {
             }
         }
         Mock Write-OrchestraAttachState {
-            [pscustomobject]@{}
+            param([string]$SessionName, [hashtable]$Properties)
+            $merged = [ordered]@{}
+            if ($null -ne $script:attachStateStore) {
+                foreach ($property in $script:attachStateStore.PSObject.Properties) {
+                    $merged[$property.Name] = $property.Value
+                }
+            }
+            foreach ($key in $Properties.Keys) {
+                $merged[$key] = $Properties[$key]
+            }
+            $script:attachStateStore = [pscustomobject]$merged
+            return $script:attachStateStore
         }
         Mock Wait-OrchestraAttachLaunchObservation {
             [PSCustomObject]@{ Observed = $true; Reason = 'launch observed' }
@@ -3075,7 +3172,7 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-OrchestraAttachedClientSnapshot {
             [PSCustomObject]@{ Ok = $true; Count = 1; Error = ''; Clients = @('client-1') }
         }
-        Mock Read-OrchestraAttachState { $null }
+        Mock Read-OrchestraAttachState { $script:attachStateStore }
         Mock Test-OrchestraLiveVisibleAttachState { $false }
         Mock Get-OrchestraWindowsTerminalInfo {
             [PSCustomObject][ordered]@{
@@ -3095,7 +3192,18 @@ Describe 'orchestra-start server bootstrap' {
             }
         }
         Mock Write-OrchestraAttachState {
-            [pscustomobject]@{}
+            param([string]$SessionName, [hashtable]$Properties)
+            $merged = [ordered]@{}
+            if ($null -ne $script:attachStateStore) {
+                foreach ($property in $script:attachStateStore.PSObject.Properties) {
+                    $merged[$property.Name] = $property.Value
+                }
+            }
+            foreach ($key in $Properties.Keys) {
+                $merged[$key] = $Properties[$key]
+            }
+            $script:attachStateStore = [pscustomobject]$merged
+            return $script:attachStateStore
         }
         Mock Wait-OrchestraAttachLaunchObservation {
             [PSCustomObject]@{ Observed = $false; Reason = 'no attach state change observed' }
@@ -3129,6 +3237,11 @@ Describe 'orchestra-start server bootstrap' {
         $result.Attached | Should -Be $true
         $result.Status | Should -Be 'attach_confirmed'
         $result.Path | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
+        $result.attach_adapter_trace.Count | Should -Be 2
+        $result.attach_adapter_trace[0].host_kind | Should -Be 'windows-terminal'
+        $result.attach_adapter_trace[0].launch_result | Should -Be 'launch_unobserved'
+        $result.attach_adapter_trace[1].host_kind | Should -Be 'powershell-window'
+        $result.attach_adapter_trace[1].launch_result | Should -Be 'attach_confirmed'
         $script:startProcessCalls.Count | Should -Be 2
         $script:startProcessCalls[0].FilePath | Should -Be 'C:\Windows\System32\wt.exe'
         $script:startProcessCalls[1].FilePath | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
@@ -3140,7 +3253,7 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-OrchestraAttachedClientSnapshot {
             [PSCustomObject]@{ Ok = $true; Count = 0; Error = ''; Clients = @() }
         }
-        Mock Read-OrchestraAttachState { $null }
+        Mock Read-OrchestraAttachState { $script:attachStateStore }
         Mock Test-OrchestraLiveVisibleAttachState { $false }
         Mock Get-OrchestraWindowsTerminalInfo {
             [PSCustomObject][ordered]@{
@@ -3153,7 +3266,18 @@ Describe 'orchestra-start server bootstrap' {
             }
         }
         Mock Write-OrchestraAttachState {
-            [pscustomobject]@{}
+            param([string]$SessionName, [hashtable]$Properties)
+            $merged = [ordered]@{}
+            if ($null -ne $script:attachStateStore) {
+                foreach ($property in $script:attachStateStore.PSObject.Properties) {
+                    $merged[$property.Name] = $property.Value
+                }
+            }
+            foreach ($key in $Properties.Keys) {
+                $merged[$key] = $Properties[$key]
+            }
+            $script:attachStateStore = [pscustomobject]$merged
+            return $script:attachStateStore
         }
         Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
@@ -3185,8 +3309,114 @@ Describe 'orchestra-start server bootstrap' {
         $result.Status | Should -Be 'attach_confirmed'
         $result.Path | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
         $result.Source | Should -Be 'handshake'
+        $result.attach_adapter_trace.Count | Should -Be 2
+        $result.attach_adapter_trace[0].host_kind | Should -Be 'windows-terminal'
+        $result.attach_adapter_trace[0].launch_result | Should -Be 'skipped_unavailable'
+        $result.attach_adapter_trace[1].host_kind | Should -Be 'powershell-window'
+        $result.attach_adapter_trace[1].launch_result | Should -Be 'attach_confirmed'
         $script:startProcessCalls.Count | Should -Be 1
         $script:startProcessCalls[0].FilePath | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
+    }
+
+    It 'falls back to the next visible attach host when the first host fails handshake confirmation' {
+        $script:startProcessCalls = @()
+        $script:attachStateStore = $null
+        $script:handshakeCalls = 0
+        $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
+
+        Mock Get-OrchestraAttachedClientSnapshot {
+            [PSCustomObject]@{ Ok = $true; Count = 1; Error = ''; Clients = @('client-1') }
+        }
+        Mock Read-OrchestraAttachState { $script:attachStateStore }
+        Mock Test-OrchestraLiveVisibleAttachState { $false }
+        Mock Get-OrchestraWindowsTerminalInfo {
+            [PSCustomObject][ordered]@{
+                Available   = $true
+                Path        = 'C:\Windows\System32\wt.exe'
+                AliasPath   = ''
+                IsAliasStub = $false
+                PathSource  = 'command'
+                Reason      = 'ready'
+            }
+        }
+        Mock Ensure-OrchestraAttachProfile {
+            [PSCustomObject][ordered]@{
+                ProfileName  = 'winsmux orchestra attach'
+                FragmentPath = 'C:\Users\komei\AppData\Local\Microsoft\Windows Terminal\Fragments\winsmux\winsmux-orchestra-attach.json'
+                Commandline  = '"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -NoExit -File "C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1"'
+            }
+        }
+        Mock Write-OrchestraAttachState {
+            param([string]$SessionName, [hashtable]$Properties)
+            $merged = [ordered]@{}
+            if ($null -ne $script:attachStateStore) {
+                foreach ($property in $script:attachStateStore.PSObject.Properties) {
+                    $merged[$property.Name] = $property.Value
+                }
+            }
+            foreach ($key in $Properties.Keys) {
+                $merged[$key] = $Properties[$key]
+            }
+            $script:attachStateStore = [pscustomobject]$merged
+            return $script:attachStateStore
+        }
+        Mock Wait-OrchestraAttachLaunchObservation {
+            [PSCustomObject]@{ Observed = $true; Reason = 'launch observed' }
+        }
+        Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
+        Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
+        Mock Wait-OrchestraAttachHandshake {
+            $script:handshakeCalls++
+            if ($script:handshakeCalls -eq 1) {
+                return [PSCustomObject][ordered]@{
+                    Confirmed           = $false
+                    Source              = 'timeout'
+                    Status              = 'attach_failed'
+                    Reason              = 'first host timed out'
+                    AttachedClientCount = 1
+                    State               = [pscustomobject]@{
+                        attach_request_id = 'req-fail-1'
+                        ui_host_kind      = 'windows-terminal'
+                    }
+                }
+            }
+
+            return [PSCustomObject][ordered]@{
+                Confirmed           = $true
+                Source              = 'handshake'
+                Status              = 'attach_confirmed'
+                Reason              = 'fallback host confirmed'
+                AttachedClientCount = 1
+                State               = [pscustomobject]@{
+                    attach_request_id        = 'req-ok-2'
+                    attached_client_snapshot = @('client-1')
+                    ui_host_kind             = 'powershell-window'
+                }
+            }
+        }
+
+        function Start-Process {
+            param([string]$FilePath, [object[]]$ArgumentList, [switch]$PassThru)
+            $script:startProcessCalls += ,([PSCustomObject]@{
+                FilePath     = $FilePath
+                ArgumentList = @($ArgumentList)
+            })
+            return [PSCustomObject]@{ HasExited = $false }
+        }
+
+        $result = Try-StartOrchestraUiAttach -SessionName 'winsmux-orchestra'
+
+        $result.Attached | Should -Be $true
+        $result.Status | Should -Be 'attach_confirmed'
+        $result.Path | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
+        $result.attach_request_id | Should -Be 'req-ok-2'
+        $result.ui_host_kind | Should -Be 'powershell-window'
+        $result.attach_adapter_trace.Count | Should -Be 2
+        $result.attach_adapter_trace[0].host_kind | Should -Be 'windows-terminal'
+        $result.attach_adapter_trace[0].launch_result | Should -Be 'attach_failed'
+        $result.attach_adapter_trace[1].host_kind | Should -Be 'powershell-window'
+        $result.attach_adapter_trace[1].launch_result | Should -Be 'attach_confirmed'
+        $script:startProcessCalls.Count | Should -Be 2
     }
 
     It 'confirms visible attach on client transition even when client count does not increase' {
@@ -3486,7 +3716,20 @@ Describe 'orchestra-start server bootstrap' {
         }
         Mock Read-OrchestraAttachState { $null }
         Mock Test-OrchestraLiveVisibleAttachState { $false }
-        Mock Write-OrchestraAttachState { [pscustomobject]@{} }
+        Mock Write-OrchestraAttachState {
+            param([string]$SessionName, [hashtable]$Properties)
+            $merged = [ordered]@{}
+            if ($null -ne $script:attachStateStore) {
+                foreach ($property in $script:attachStateStore.PSObject.Properties) {
+                    $merged[$property.Name] = $property.Value
+                }
+            }
+            foreach ($key in $Properties.Keys) {
+                $merged[$key] = $Properties[$key]
+            }
+            $script:attachStateStore = [pscustomobject]$merged
+            return $script:attachStateStore
+        }
         Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
@@ -3623,6 +3866,7 @@ Describe 'orchestra-start session reuse contract' {
         $script:orchestraStartContent | Should -Match 'UiAttachLaunched'
         $script:orchestraStartContent | Should -Match 'ui_attach_launched'
         $script:orchestraStartContent | Should -Match 'ui_attach_status'
+        $script:orchestraStartContent | Should -Match 'attach_adapter_trace'
     }
 
     It 'does not mark session_ready true in the manifest until watchdog processes are started' {
@@ -6753,6 +6997,65 @@ Describe 'winsmux orchestra-smoke command' {
                     -SmokeErrors $SmokeErrors
             }
         }
+
+        function Invoke-TestOrchestraAttachResolution {
+            param(
+                [Parameter(Mandatory = $true)]$ProbeState,
+                [AllowNull()]$AttachState,
+                [Parameter(Mandatory = $true)][bool]$ClientProbeOk,
+                [AllowNull()]$ClientSnapshot,
+                [bool]$LiveVisibleAttach = $false
+            )
+
+            $resolverSource = [regex]::Match(
+                $script:orchestraSmokeContent,
+                '(?s)function Resolve-OrchestraSmokeAttachState \{.*?\r?\n\}\r?\n\r?\nif \(\[string\]::IsNullOrWhiteSpace\(\$ProjectDir\)\)'
+            ).Value
+
+            if ([string]::IsNullOrWhiteSpace($resolverSource)) {
+                throw 'Failed to extract Resolve-OrchestraSmokeAttachState from orchestra-smoke.ps1.'
+            }
+
+            $resolverSource = $resolverSource -replace '\r?\n\r?\nif \(\[string\]::IsNullOrWhiteSpace\(\$ProjectDir\)\)$', ''
+
+            & {
+                param($ProbeState, $AttachState, $ClientProbeOk, $ClientSnapshot, $LiveVisibleAttach)
+
+                Set-StrictMode -Version Latest
+
+                function Test-OrchestraLiveVisibleAttachState {
+                    param($State, [string]$SessionName)
+                    return $LiveVisibleAttach
+                }
+
+                function Test-OrchestraAttachClientSnapshotMatch {
+                    param([string[]]$ExpectedClients, [string[]]$CurrentClients)
+                    if ($ExpectedClients.Count -ne $CurrentClients.Count) {
+                        return $false
+                    }
+
+                    for ($i = 0; $i -lt $ExpectedClients.Count; $i++) {
+                        if ($ExpectedClients[$i] -ne $CurrentClients[$i]) {
+                            return $false
+                        }
+                    }
+
+                    return $true
+                }
+
+                function Get-OrchestraAttachTraceEntries {
+                    param($State)
+                    if ($null -eq $State -or $null -eq $State.PSObject.Properties['attach_adapter_trace']) {
+                        return @()
+                    }
+
+                    return @($State.attach_adapter_trace)
+                }
+
+                Invoke-Expression $resolverSource
+                Resolve-OrchestraSmokeAttachState -ProbeState $ProbeState -AttachState $AttachState -ClientProbeOk $ClientProbeOk -ClientSnapshot $ClientSnapshot
+            } $ProbeState $AttachState $ClientProbeOk $ClientSnapshot $LiveVisibleAttach
+        }
     }
 
     It 'documents orchestra-smoke and dispatches it through the dedicated startup smoke script' {
@@ -6773,6 +7076,13 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'session_ready'
         $script:orchestraSmokeContent | Should -Match 'ui_attach_launched'
         $script:orchestraSmokeContent | Should -Match 'ui_attached'
+        $script:orchestraSmokeContent | Should -Match 'attach_request_id'
+        $script:orchestraSmokeContent | Should -Match 'attached_client_snapshot'
+        $script:orchestraSmokeContent | Should -Match 'attached_client_registry_count'
+        $script:orchestraSmokeContent | Should -Match 'attach_adapter_trace'
+        $script:orchestraSmokeContent | Should -Match 'ui_host_kind'
+        $script:orchestraSmokeContent | Should -Match 'runtime_attached_client_count'
+        $script:orchestraSmokeContent | Should -Match 'external_operator_mode'
         $script:orchestraSmokeContent | Should -Match 'expected_pane_count'
         $script:orchestraSmokeContent | Should -Match 'winsmux_bin'
         $script:orchestraSmokeContent | Should -Match 'pane_probe_ok'
@@ -6845,9 +7155,66 @@ Describe 'winsmux orchestra-smoke command' {
     }
 
     It 'accepts attached-client registry matches as attach truth when the host launcher process is gone' {
-        $script:orchestraSmokeContent | Should -Match 'Test-OrchestraAttachClientSnapshotMatch'
-        $script:orchestraSmokeContent | Should -Match 'attached_client_snapshot'
-        $script:orchestraSmokeContent | Should -Match 'attached-client-registry'
+        $resolution = Invoke-TestOrchestraAttachResolution `
+            -ProbeState ([pscustomobject]@{
+                SessionName      = 'winsmux-orchestra'
+                UiAttachLaunched = $true
+                UiAttachStatus   = 'attach_confirmed'
+                UiAttachReason   = ''
+                UiAttachSource   = 'handshake'
+                UiHostKind       = ''
+                AttachRequestId  = ''
+            }) `
+            -AttachState ([pscustomobject]@{
+                attach_status           = 'attach_confirmed'
+                attach_request_id       = 'req-456'
+                attached_client_count   = 1
+                attached_client_snapshot = @('/dev/pts/7: winsmux-orchestra: node')
+                ui_host_kind            = 'powershell-window'
+                error                   = ''
+            }) `
+            -ClientProbeOk $true `
+            -ClientSnapshot ([pscustomobject]@{
+                Clients = @('/dev/pts/7: winsmux-orchestra: node')
+            }) `
+            -LiveVisibleAttach $false
+
+        $resolution.UiAttached | Should -Be $true
+        $resolution.UiAttachStatus | Should -Be 'attach_confirmed'
+        $resolution.UiAttachSource | Should -Be 'attached-client-registry'
+        $resolution.AttachedClientRegistryCount | Should -Be 1
+        $resolution.AttachRequestId | Should -Be 'req-456'
+        $resolution.AttachedClientSnapshot | Should -Be @('/dev/pts/7: winsmux-orchestra: node')
+        $resolution.UiHostKind | Should -Be 'powershell-window'
+    }
+
+    It 'falls back to probe-state attach adapter trace when runtime attach state is missing' {
+        $resolution = Invoke-TestOrchestraAttachResolution `
+            -ProbeState ([pscustomobject]@{
+                SessionName       = 'winsmux-orchestra'
+                UiAttachLaunched  = $false
+                UiAttachStatus    = 'attach_failed'
+                UiAttachReason    = 'manifest only'
+                UiAttachSource    = 'handshake'
+                UiHostKind        = 'windows-terminal'
+                AttachRequestId   = 'req-manifest'
+                AttachAdapterTrace = @(
+                    [pscustomobject]@{
+                        sequence      = 1
+                        host_kind     = 'windows-terminal'
+                        launch_result = 'launch_failed'
+                    }
+                )
+            }) `
+            -AttachState $null `
+            -ClientProbeOk $true `
+            -ClientSnapshot ([pscustomobject]@{
+                Clients = @('/dev/pts/7: winsmux-orchestra: node')
+            })
+
+        $resolution.AttachAdapterTrace.Count | Should -Be 1
+        $resolution.AttachAdapterTrace[0].host_kind | Should -Be 'windows-terminal'
+        $resolution.AttachAdapterTrace[0].launch_result | Should -Be 'launch_failed'
     }
 
     It 'allows empty ui_attach_status when building the operator contract' {
