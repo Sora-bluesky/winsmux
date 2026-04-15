@@ -5,6 +5,7 @@ import {
   getDesktopEditorFile,
   getDesktopRunExplain,
   getDesktopSummarySnapshot,
+  subscribeToDesktopSummaryRefresh,
   type DesktopEditorFilePayload,
   type DesktopDigestItem,
   type DesktopExplainPayload,
@@ -179,6 +180,10 @@ let lastCommandBarFocus: HTMLElement | null = null;
 let pendingAttachments: ComposerAttachment[] = [];
 let desktopSummarySnapshot: DesktopSummarySnapshot | null = null;
 let desktopSummaryRefreshInFlight: Promise<void> | null = null;
+let desktopSummaryRefreshTimeout: number | null = null;
+let desktopSummaryQueuedRunId: string | null = null;
+let desktopSummaryRefreshRequestedVersion = 0;
+let desktopSummaryRefreshRunningVersion = 0;
 const desktopExplainCache = new Map<string, DesktopExplainPayload>();
 const desktopEditorFileCache = new Map<string, EditorFile>();
 const desktopEditorLoadingPaths = new Set<string>();
@@ -290,7 +295,13 @@ function createPane(paneId?: string): string {
   panes.set(id, { terminal, fitAddon, container: paneDiv });
 
   const { cols, rows } = { cols: terminal.cols, rows: terminal.rows };
-  void spawnPtyPane(id, cols, rows);
+  void spawnPtyPane(id, cols, rows)
+    .catch((error) => {
+      console.warn("Failed to spawn PTY pane", error);
+    })
+    .finally(() => {
+      requestDesktopSummaryRefresh(undefined, 500);
+    });
 
   return id;
 }
@@ -314,7 +325,13 @@ function closePane(id: string) {
 
   entry.container.remove();
   panes.delete(id);
-  void closePtyPane(id);
+  void closePtyPane(id)
+    .catch((error) => {
+      console.warn("Failed to close PTY pane", error);
+    })
+    .finally(() => {
+      requestDesktopSummaryRefresh(undefined, 500);
+    });
 
   panes.forEach((pane) => pane.fitAddon.fit());
 }
@@ -1424,7 +1441,8 @@ async function openExplainForSelectedRun() {
         runId: payload.run.run_id,
       });
     }
-    await refreshDesktopSummary(payload.run.run_id);
+    renderRunSummary();
+    renderConversation(getConversationItems());
   } catch (error) {
     console.warn("Failed to load desktop explain payload", error);
     appendFallbackExplain();
@@ -1437,12 +1455,14 @@ function appendFallbackExplain() {
   const selectedRunId = getSelectedRunId();
   const digestItem = getPrimaryDigestItem();
   const hasSelectedDigest = Boolean(selectedRunId && digestItem?.run_id === selectedRunId);
+  const digestRunCount = desktopSummarySnapshot?.digest.summary.item_count ?? 0;
+  const inboxCount = desktopSummarySnapshot?.inbox.summary.item_count ?? 0;
   const body = hasSelectedDigest
-    ? `Explain is unavailable for ${selectedRunId}. Backend digest still reports next ${digestItem?.next_action || "idle"}.`
-    : desktopSummarySnapshot && desktopSummarySnapshot.digest.summary.item_count > 0
-      ? "Explain is unavailable until a projected run is selected."
+    ? `Digest fallback for ${selectedRunId}.`
+    : desktopSummarySnapshot && digestRunCount > 0
+      ? "Digest fallback without a selected run."
       : desktopSummarySnapshot
-        ? "No projected run is available to explain yet."
+        ? "Digest fallback without projected runs."
         : "Backend summary unavailable.";
   const details = hasSelectedDigest
     ? [
@@ -1452,8 +1472,8 @@ function appendFallbackExplain() {
       ]
     : desktopSummarySnapshot
       ? [
-          { label: "runs", value: `${desktopSummarySnapshot.digest.summary.item_count}` },
-          { label: "inbox", value: `${desktopSummarySnapshot.inbox.summary.item_count}` },
+          { label: "runs", value: `${digestRunCount}` },
+          { label: "inbox", value: `${inboxCount}` },
         ]
       : [{ label: "state", value: "backend unavailable" }];
   appendRuntimeConversation({
@@ -1461,7 +1481,7 @@ function appendFallbackExplain() {
     category: "activity",
     timestamp,
     actor: "Operator",
-    title: "Explain opened",
+    title: "Explain unavailable",
     body,
     details,
     tone: "info",
@@ -1776,8 +1796,8 @@ function renderEditorSurface() {
     path.textContent = "Editor idle";
     meta.innerHTML = "";
     tabs.innerHTML = "";
-    code.textContent = "Open a projected file to load a backend preview.";
-    statusbar.textContent = "Secondary work surface: waiting for file selection";
+    code.textContent = "No backend preview cached.";
+    statusbar.textContent = "Secondary work surface: 0 projected files";
     return;
   }
   selectedEditorKey = selected.key;
@@ -2195,10 +2215,10 @@ function findEditorFile(target: EditorTarget | null) {
   const loading = desktopEditorLoadingPaths.has(target.key);
   const loadError = desktopEditorLoadErrors.get(target.key);
   const previewBody = loadError
-    ? `Unable to load file preview.\n\n${loadError}`
+    ? `Backend preview failed to load.\n\n${loadError}`
     : loading
-      ? "Loading file preview from backend..."
-      : "Select this file to load a real preview from the backend.";
+      ? "Backend preview request in flight."
+      : "No backend preview cached.";
 
   return {
     key: target.key,
@@ -2249,18 +2269,7 @@ function getEditorFiles() {
     }
   }
 
-  return Array.from(targets.values()).map((target) =>
-    findEditorFile(target) ?? {
-      key: target.key,
-      path: target.path,
-      summary: target.summary,
-      content: "Loading file preview from backend...",
-      language: inferLanguageFromPath(target.path),
-      lineCount: 1,
-      modified: target.modified,
-      origin: target.origin,
-    },
-  );
+  return Array.from(targets.values()).map((target) => findEditorFile(target)).filter((item): item is EditorFile => Boolean(item));
 }
 
 async function ensureEditorFileLoaded(target: EditorTarget | null) {
@@ -2488,31 +2497,73 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
       appendRuntimeConversation(item);
     }
     renderDesktopSurfaces();
-  } catch (error) {
-    console.warn("Failed to load desktop summary snapshot", error);
-  } finally {
-    desktopSummaryRefreshInFlight = null;
-  }
+    } catch (error) {
+      console.warn("Failed to load desktop summary snapshot", error);
+    } finally {
+      desktopSummaryRefreshInFlight = null;
+      if (desktopSummaryRefreshRunningVersion < desktopSummaryRefreshRequestedVersion) {
+        flushDesktopSummaryRefreshQueue();
+      }
+    }
   })();
 
   return desktopSummaryRefreshInFlight;
 }
 
+function flushDesktopSummaryRefreshQueue() {
+  if (desktopSummaryRefreshInFlight) {
+    return;
+  }
+
+  if (desktopSummaryRefreshRunningVersion >= desktopSummaryRefreshRequestedVersion) {
+    return;
+  }
+
+  const queuedRunId = desktopSummaryQueuedRunId;
+  desktopSummaryQueuedRunId = null;
+  desktopSummaryRefreshRunningVersion = desktopSummaryRefreshRequestedVersion;
+  void refreshDesktopSummary(queuedRunId);
+}
+
+function requestDesktopSummaryRefresh(forceExplainRunId?: string | null, delayMs = 150) {
+  desktopSummaryRefreshRequestedVersion += 1;
+  if (forceExplainRunId) {
+    desktopSummaryQueuedRunId = forceExplainRunId;
+  }
+  if (desktopSummaryRefreshTimeout !== null) {
+    window.clearTimeout(desktopSummaryRefreshTimeout);
+  }
+
+  desktopSummaryRefreshTimeout = window.setTimeout(() => {
+    desktopSummaryRefreshTimeout = null;
+    if (desktopSummaryRefreshInFlight) {
+      return;
+    }
+    flushDesktopSummaryRefreshQueue();
+  }, delayMs);
+}
+
 function registerDesktopSummaryLiveRefresh() {
+  void subscribeToDesktopSummaryRefresh(() => {
+    requestDesktopSummaryRefresh(undefined, 0);
+  }).catch((error) => {
+    console.warn("Failed to subscribe to desktop summary refresh events", error);
+  });
+
   window.setInterval(() => {
     if (document.visibilityState !== "visible") {
       return;
     }
-    void refreshDesktopSummary();
+    requestDesktopSummaryRefresh(undefined, 0);
   }, DESKTOP_SUMMARY_REFRESH_INTERVAL_MS);
 
   window.addEventListener("focus", () => {
-    void refreshDesktopSummary();
+    requestDesktopSummaryRefresh(undefined, 0);
   });
 
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
-      void refreshDesktopSummary();
+      requestDesktopSummaryRefresh(undefined, 0);
     }
   });
 }
@@ -2749,6 +2800,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       composerInput.value = "";
       clearPendingAttachments();
       renderAttachmentTray();
+      requestDesktopSummaryRefresh(undefined, 750);
     });
   }
 

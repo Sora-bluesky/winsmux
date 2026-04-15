@@ -304,3 +304,19 @@ Private live-ops files and generated artifacts must not be tracked.
    - increase wait time,
    - open or update a tracking issue,
    - or document the blocker clearly before continuing.
+
+## Subagent Latency Mitigation
+
+Repeated `no result yet` responses are treated as a latency problem first, not as an implicit PASS.
+
+Codex must follow these rules when review or audit agents are slow:
+
+1. For Rust/Tauri slices, or any review touching more than 2 files, wait at least 60 seconds before the first timeout decision.
+2. For small TypeScript / docs-only slices, 30 seconds remains the default first wait.
+3. Keep review concurrency to 1 agent at a time for Rust/Tauri work. If a separate explorer is needed, do not run more than 2 total subagents on the same slice.
+4. Prefer narrow prompts and explicit file paths over `fork_context=true` for routine reviews. Only fork full context when the review truly depends on prior thread state.
+5. If two consecutive review agents on the same slice return `no result yet`, stop spawning more review agents for that slice until either:
+   - the diff is reduced,
+   - the wait time is increased,
+   - or the blocker is documented and manual diff fallback is used.
+6. When a delayed review result arrives after a timeout, record the latency pattern in `.claude/local/operator-handoff.md` and use that result in the final decision.
