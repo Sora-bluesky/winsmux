@@ -18,8 +18,8 @@ try {
         winsmux_path       = $WinsmuxPath
         attach_status      = 'attach_confirming'
         ui_attach_source   = 'none'
-        attach_process_id  = $PID
-        started_at         = (Get-Date).ToString('o')
+        confirm_process_id = $PID
+        confirm_started_at = (Get-Date).ToString('o')
         client_count_seen  = $BaselineClientCount
         error              = ''
     } | Out-Null
@@ -29,7 +29,7 @@ try {
     Write-OrchestraAttachState -SessionName $SessionName -Properties @{
         attach_status     = 'attach_failed'
         ui_attach_source  = 'none'
-        attach_process_id = $PID
+        confirm_process_id = $PID
         client_count_seen = $BaselineClientCount
         error             = $_.Exception.Message
     } | Out-Null

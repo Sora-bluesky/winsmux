@@ -200,14 +200,21 @@ function Try-StartOrchestraUiAttach {
 
     $clientSnapshot = Get-OrchestraAttachedClientSnapshot -WinsmuxBin $winsmuxPathForAttach -SessionName $SessionName
     $baselineClientCount = if ([bool]$clientSnapshot.Ok) { [int]$clientSnapshot.Count } else { 0 }
-    if ([bool]$clientSnapshot.Ok -and $baselineClientCount -ge 1) {
+    $baselineClients = if ([bool]$clientSnapshot.Ok) { @($clientSnapshot.Clients) } else { @() }
+    $existingAttachState = Read-OrchestraAttachState -SessionName $SessionName
+    $existingAttachSource = if ($null -eq $existingAttachState) { '' } else { [string]$existingAttachState.ui_attach_source }
+    if ([string]::IsNullOrWhiteSpace($existingAttachSource)) {
+        $existingAttachSource = 'handshake'
+    }
+    $hasLiveVisibleAttach = (Test-OrchestraLiveVisibleAttachState -State $existingAttachState -SessionName $SessionName)
+    if ($hasLiveVisibleAttach -and [bool]$clientSnapshot.Ok -and $baselineClientCount -ge 1) {
         Write-OrchestraAttachState -SessionName $SessionName -Properties @{
             session_name       = $SessionName
             winsmux_path       = $winsmuxPathForAttach
             attach_status      = 'attach_confirmed'
             attach_confirmed_at = (Get-Date).ToString('o')
             client_count_seen  = $baselineClientCount
-            ui_attach_source   = 'client-probe'
+            ui_attach_source   = $existingAttachSource
             error              = "Detected $baselineClientCount attached client(s) for session '$SessionName'."
         } | Out-Null
 
@@ -216,39 +223,72 @@ function Try-StartOrchestraUiAttach {
             Launched  = $false
             Attached  = $true
             Status    = 'attach_already_present'
-            Reason    = "Detected $baselineClientCount attached client(s) for session '$SessionName'; skipped spawning another visible attach window."
+            Reason    = "Detected an existing live visible attach for session '$SessionName'; skipped spawning another visible attach window."
             Path      = ''
-            Source    = 'client-probe'
+            Source    = $existingAttachSource
         }
     }
 
     $terminalInfo = Get-OrchestraWindowsTerminalInfo
     if (-not [bool]$terminalInfo.Available) {
-        $reason = if ([bool]$terminalInfo.IsAliasStub) {
-            'WindowsApps wt.exe alias was found, but no canonical Windows Terminal binary could be resolved.'
-        } else {
-            'Windows Terminal is not installed or not on PATH.'
-        }
-
         Write-OrchestraAttachState -SessionName $SessionName -Properties @{
             session_name          = $SessionName
             winsmux_path          = $winsmuxPathForAttach
             requested_at          = (Get-Date).ToString('o')
             baseline_client_count = $baselineClientCount
+            baseline_clients      = @($baselineClients)
             client_count_seen     = $baselineClientCount
-            attach_status         = 'attach_failed'
+            attach_process_id     = 0
+            attach_status         = 'attach_requested'
+            attach_confirmed_at   = ''
+            started_at            = ''
             ui_attach_source      = 'none'
-            error                 = $reason
+            error                 = ''
         } | Out-Null
 
-        return [PSCustomObject][ordered]@{
-            Attempted = $false
-            Launched  = $false
-            Attached  = $false
-            Status    = 'attach_failed'
-            Reason    = $reason
-            Path      = [string]$terminalInfo.Path
-            Source    = 'none'
+        try {
+            $attachLaunch = Start-OrchestraPowerShellVisibleAttach
+            $launchedPath = [string]$attachLaunch.Path
+            if ($null -ne $attachLaunch.Process -and $null -ne $attachLaunch.Process.PSObject -and ($attachLaunch.Process.PSObject.Properties.Name -contains 'Id')) {
+                Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+                    attach_process_id = $attachLaunch.Process.Id
+                    started_at        = (Get-Date).ToString('o')
+                    ui_host_kind      = [string]$attachLaunch.HostKind
+                } | Out-Null
+            }
+            $confirmed = Wait-OrchestraAttachHandshake -SessionName $SessionName -WinsmuxBin $winsmuxPathForAttach -BaselineClientCount $baselineClientCount -BaselineClients $baselineClients
+            return [PSCustomObject][ordered]@{
+                Attempted = $true
+                Launched  = $true
+                Attached  = [bool]$confirmed.Confirmed
+                Status    = [string]$confirmed.Status
+                Reason    = [string]$confirmed.Reason
+                Path      = $launchedPath
+                Source    = [string]$confirmed.Source
+            }
+        } catch {
+            $reason = if ([bool]$terminalInfo.IsAliasStub) {
+                'WindowsApps wt.exe alias was found, but no canonical Windows Terminal binary could be resolved.'
+            } else {
+                'Windows Terminal is not installed or not on PATH.'
+            }
+
+            $failureReason = "$reason Fallback host launch failed: $($_.Exception.Message)"
+            Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+                attach_status     = 'attach_failed'
+                ui_attach_source  = 'none'
+                error             = $failureReason
+            } | Out-Null
+
+            return [PSCustomObject][ordered]@{
+                Attempted = $true
+                Launched  = $false
+                Attached  = $false
+                Status    = 'attach_failed'
+                Reason    = $failureReason
+                Path      = ''
+                Source    = 'none'
+            }
         }
     }
 
@@ -260,40 +300,97 @@ function Try-StartOrchestraUiAttach {
         requested_at          = (Get-Date).ToString('o')
         request_id            = [guid]::NewGuid().ToString('N')
         baseline_client_count = $baselineClientCount
+        baseline_clients      = @($baselineClients)
         client_count_seen     = $baselineClientCount
+        attach_process_id     = 0
         attach_status         = 'attach_requested'
+        attach_confirmed_at   = ''
+        started_at            = ''
         ui_attach_source      = 'none'
         error                 = ''
     } | Out-Null
 
     try {
-        Start-Process -FilePath ([string]$terminalInfo.Path) -ArgumentList @('-w', '-1', 'new-tab', '-p', [string]$profile.ProfileName) -PassThru | Out-Null
+        $attachLaunch = Start-OrchestraWindowsTerminalVisibleAttach -TerminalPath ([string]$terminalInfo.Path) -ProfileName ([string]$profile.ProfileName)
+        $launchedPath = [string]$attachLaunch.Path
+        if ($null -ne $attachLaunch.Process -and $null -ne $attachLaunch.Process.PSObject -and ($attachLaunch.Process.PSObject.Properties.Name -contains 'Id')) {
+            Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+                attach_process_id = $attachLaunch.Process.Id
+                started_at        = (Get-Date).ToString('o')
+                ui_host_kind      = [string]$attachLaunch.HostKind
+            } | Out-Null
+        }
     } catch {
-        Write-OrchestraAttachState -SessionName $SessionName -Properties @{
-            attach_status     = 'attach_failed'
-            ui_attach_source  = 'none'
-            error             = $_.Exception.Message
-        } | Out-Null
+        try {
+            $attachLaunch = Start-OrchestraPowerShellVisibleAttach
+            $launchedPath = [string]$attachLaunch.Path
+            if ($null -ne $attachLaunch.Process -and $null -ne $attachLaunch.Process.PSObject -and ($attachLaunch.Process.PSObject.Properties.Name -contains 'Id')) {
+                Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+                    attach_process_id = $attachLaunch.Process.Id
+                    started_at        = (Get-Date).ToString('o')
+                    ui_host_kind      = [string]$attachLaunch.HostKind
+                } | Out-Null
+            }
+        } catch {
+            Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+                attach_status     = 'attach_failed'
+                ui_attach_source  = 'none'
+                error             = $_.Exception.Message
+            } | Out-Null
 
-        return [PSCustomObject][ordered]@{
-            Attempted = $true
-            Launched  = $false
-            Attached  = $false
-            Status    = 'attach_failed'
-            Reason    = $_.Exception.Message
-            Path      = [string]$terminalInfo.Path
-            Source    = 'none'
+            return [PSCustomObject][ordered]@{
+                Attempted = $true
+                Launched  = $false
+                Attached  = $false
+                Status    = 'attach_failed'
+                Reason    = $_.Exception.Message
+                Path      = [string]$terminalInfo.Path
+                Source    = 'none'
+            }
         }
     }
 
-    $confirmed = Wait-OrchestraAttachHandshake -SessionName $SessionName -WinsmuxBin $winsmuxPathForAttach -BaselineClientCount $baselineClientCount
+    if ($launchedPath -eq [string]$terminalInfo.Path) {
+        $launchObserved = Wait-OrchestraAttachLaunchObservation -SessionName $SessionName -WinsmuxBin $winsmuxPathForAttach -BaselineClientCount $baselineClientCount -BaselineClients $baselineClients
+        if (-not [bool]$launchObserved.Observed) {
+            try {
+                $attachLaunch = Start-OrchestraPowerShellVisibleAttach
+                $launchedPath = [string]$attachLaunch.Path
+                if ($null -ne $attachLaunch.Process -and $null -ne $attachLaunch.Process.PSObject -and ($attachLaunch.Process.PSObject.Properties.Name -contains 'Id')) {
+                    Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+                        attach_process_id = $attachLaunch.Process.Id
+                        started_at        = (Get-Date).ToString('o')
+                        ui_host_kind      = [string]$attachLaunch.HostKind
+                    } | Out-Null
+                }
+            } catch {
+                Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+                    attach_status     = 'attach_failed'
+                    ui_attach_source  = 'none'
+                    error             = $_.Exception.Message
+                } | Out-Null
+
+                return [PSCustomObject][ordered]@{
+                    Attempted = $true
+                    Launched  = $false
+                    Attached  = $false
+                    Status    = 'attach_failed'
+                    Reason    = $_.Exception.Message
+                    Path      = [string]$terminalInfo.Path
+                    Source    = 'none'
+                }
+            }
+        }
+    }
+
+    $confirmed = Wait-OrchestraAttachHandshake -SessionName $SessionName -WinsmuxBin $winsmuxPathForAttach -BaselineClientCount $baselineClientCount -BaselineClients $baselineClients
     return [PSCustomObject][ordered]@{
         Attempted = $true
         Launched  = $true
         Attached  = [bool]$confirmed.Confirmed
         Status    = [string]$confirmed.Status
         Reason    = [string]$confirmed.Reason
-        Path      = [string]$terminalInfo.Path
+        Path      = $launchedPath
         Source    = [string]$confirmed.Source
     }
 }
@@ -386,8 +483,9 @@ function Reset-OrchestraServerSession {
     if (Test-OrchestraServerSession -SessionName $SessionName) {
         try {
             Invoke-Winsmux -Arguments @('kill-session', '-t', $SessionName)
+            Wait-OrchestraServerSessionAbsent -SessionName $SessionName -TimeoutSeconds 20 | Out-Null
         } catch {
-            Write-Warning "Reset-OrchestraServerSession: failed to kill $SessionName during ${Reason}: $($_.Exception.Message)"
+            throw "Reset-OrchestraServerSession: failed to fully reset $SessionName during ${Reason}: $($_.Exception.Message)"
         }
     }
 
@@ -422,6 +520,33 @@ function Reset-OrchestraServerSession {
         BootstrapMode  = $bootstrapMode
         Health         = $health
     }
+}
+
+function Wait-OrchestraServerSessionAbsent {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [int]$TimeoutSeconds = 20
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $pollAttempt = 0
+    while ((Get-Date) -lt $deadline) {
+        $pollAttempt++
+        if (-not (Test-OrchestraServerSession -SessionName $SessionName)) {
+            return [ordered]@{
+                Ready       = $true
+                PollAttempt = $pollAttempt
+            }
+        }
+
+        if ($pollAttempt -le 5 -or $pollAttempt % 10 -eq 0) {
+            Write-Warning "Wait-OrchestraServerSessionAbsent: poll $pollAttempt still sees session $SessionName"
+        }
+
+        Start-Sleep -Milliseconds 500
+    }
+
+    throw "Timed out waiting for session '$SessionName' to disappear after kill-session."
 }
 
 function Get-OrchestraStartupLockPath {
@@ -1463,6 +1588,7 @@ function Remove-OrchestraCreatedWorktrees {
     )
 
     $removedWorktrees = [System.Collections.Generic.List[object]]::new()
+    $cleanupErrors = [System.Collections.Generic.List[string]]::new()
     foreach ($createdWorktree in @($CreatedWorktrees)) {
         if ($null -eq $createdWorktree) {
             continue
@@ -1477,14 +1603,23 @@ function Remove-OrchestraCreatedWorktrees {
         if (-not [string]::IsNullOrWhiteSpace($worktreePath) -and (Test-Path -LiteralPath $worktreePath)) {
             try {
                 & git -C $ProjectDir worktree remove $worktreePath --force 2>$null | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    $cleanupErrors.Add("worktree remove $worktreePath failed with exit code $LASTEXITCODE.") | Out-Null
+                }
             } catch {
+                $cleanupErrors.Add("worktree remove $worktreePath failed: $($_.Exception.Message)") | Out-Null
             }
         }
 
         if (-not [string]::IsNullOrWhiteSpace($branchName)) {
             try {
                 & git -C $ProjectDir branch -D $branchName 2>$null | Out-Null
+                $branchDeleteExitCode = $LASTEXITCODE
+                if ($branchDeleteExitCode -ne 0) {
+                    $cleanupErrors.Add("branch delete $branchName failed with exit code $branchDeleteExitCode.") | Out-Null
+                }
             } catch {
+                $cleanupErrors.Add("branch delete $branchName failed: $($_.Exception.Message)") | Out-Null
             }
         }
 
@@ -1494,7 +1629,10 @@ function Remove-OrchestraCreatedWorktrees {
         }) | Out-Null
     }
 
-    return @($removedWorktrees)
+    return [ordered]@{
+        RemovedWorktrees = @($removedWorktrees)
+        Errors           = @($cleanupErrors)
+    }
 }
 
 function Write-OrchestraStartupFailureEvent {
@@ -1617,7 +1755,32 @@ function Invoke-OrchestraStartupRollback {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($ProjectDir)) {
-        $removedWorktrees = @(Remove-OrchestraCreatedWorktrees -ProjectDir $ProjectDir -CreatedWorktrees $CreatedWorktrees)
+        $worktreeCleanup = Remove-OrchestraCreatedWorktrees -ProjectDir $ProjectDir -CreatedWorktrees $CreatedWorktrees
+        $hasStructuredCleanup = $false
+        $cleanupResultRemoved = @()
+        $cleanupResultErrors = @()
+        if ($worktreeCleanup -is [System.Collections.IDictionary]) {
+            $hasStructuredCleanup = $worktreeCleanup.Contains('RemovedWorktrees')
+            if ($hasStructuredCleanup) {
+                $cleanupResultRemoved = @($worktreeCleanup['RemovedWorktrees'])
+                $cleanupResultErrors = @($worktreeCleanup['Errors'])
+            }
+        } elseif (($null -ne $worktreeCleanup) -and ($null -ne $worktreeCleanup.PSObject) -and ($worktreeCleanup.PSObject.Properties.Name -contains 'RemovedWorktrees')) {
+            $hasStructuredCleanup = $true
+            $cleanupResultRemoved = @($worktreeCleanup.RemovedWorktrees)
+            $cleanupResultErrors = @($worktreeCleanup.Errors)
+        }
+
+        if ($hasStructuredCleanup) {
+            $removedWorktrees = @($cleanupResultRemoved)
+            foreach ($cleanupError in @($cleanupResultErrors)) {
+                if (-not [string]::IsNullOrWhiteSpace([string]$cleanupError)) {
+                    $rollbackErrors.Add([string]$cleanupError) | Out-Null
+                }
+            }
+        } else {
+            $removedWorktrees = @($worktreeCleanup)
+        }
         $null = Write-OrchestraStartupFailureEvent -ProjectDir $ProjectDir -SessionName $SessionName -FailureMessage $FailureMessage -BootstrapPaneId $BootstrapPaneId -RemovedPaneIds @($removedPaneIds) -RemovedWorktrees $removedWorktrees -BootstrapRespawned $bootstrapRespawned -RollbackErrors @($rollbackErrors)
     }
 
@@ -1774,7 +1937,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         $script:winsmuxBin = Get-WinsmuxBin
         $winsmuxBin = $script:winsmuxBin
         if (-not $winsmuxBin) {
-            Write-Error 'Could not find a winsmux binary. Tried: winsmux, pmux, tmux.'
+            Write-Error (Get-WinsmuxOperatorNotFoundMessage)
             exit 1
         }
 

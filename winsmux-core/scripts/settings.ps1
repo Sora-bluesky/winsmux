@@ -49,6 +49,12 @@ if (-not (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue)) {
     }
 }
 
+if (-not (Get-Command Get-WinsmuxOperatorNotFoundMessage -ErrorAction SilentlyContinue)) {
+    function Get-WinsmuxOperatorNotFoundMessage {
+        return 'Could not resolve the winsmux executable from PATH. Install winsmux or expose the winsmux binary before running startup, status, or probe commands.'
+    }
+}
+
 if (-not (Get-Command Get-WinsmuxOption -ErrorAction SilentlyContinue)) {
     function Test-WinsmuxOptionFailureText {
         param([string]$Value)
@@ -1040,7 +1046,7 @@ function Save-BridgeSettings {
 
     $winsmuxBin = Get-WinsmuxBin
     if (-not $winsmuxBin) {
-        throw 'Could not find a winsmux binary. Tried: winsmux, pmux, tmux.'
+        throw (Get-WinsmuxOperatorNotFoundMessage)
     }
 
     foreach ($key in $normalized.Keys) {

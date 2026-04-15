@@ -57,7 +57,7 @@ function Invoke-MonitorWinsmux {
 
     $winsmuxBin = Get-WinsmuxBin
     if (-not $winsmuxBin) {
-        throw 'Could not find a winsmux binary. Tried: winsmux, pmux, tmux.'
+        throw (Get-WinsmuxOperatorNotFoundMessage)
     }
 
     if ($CaptureOutput) {

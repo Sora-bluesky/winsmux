@@ -144,10 +144,14 @@ function Get-OrchestraOperatorContract {
 
     if ($SmokeOk) {
         $state = 'ready-with-ui-warning'
-        $message = 'Orchestra session is session-ready, but visible attach still needs confirmation.'
         $canDispatch = -not $ExternalOperatorMode
         $requiresStartup = $false
-        $nextAction = if ($ExternalOperatorMode) { 'Confirm visible attach before dispatching work.' } else { 'Dispatch work or continue operator flow.' }
+        $message = if ($ExternalOperatorMode) {
+            'Orchestra session is session-ready, but external operator dispatch stays blocked until attached-client confirmation succeeds.'
+        } else {
+            'Orchestra session is session-ready. Visible attach is still unconfirmed, but internal operator mode may continue dispatch.'
+        }
+        $nextAction = if ($ExternalOperatorMode) { 'Run the visible attach step and wait for attached-client confirmation before dispatching work.' } else { 'Dispatch work or continue operator flow.' }
 
         if ($SessionReady -and $UiAttached) {
             $state = 'ready'
@@ -179,6 +183,109 @@ function Get-OrchestraOperatorContract {
     }
 }
 
+function Get-OrchestraSmokeProbeState {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
+        [AllowEmptyString()][string]$WinsmuxBin = ''
+    )
+
+    $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+    $manifestFound = Test-Path -LiteralPath $manifestPath
+    $manifestReadable = $true
+    $manifestReadError = ''
+
+    $paneCount = 0
+    $paneProbeOk = $false
+    $paneProbeError = ''
+    if (-not [string]::IsNullOrWhiteSpace($WinsmuxBin)) {
+        try {
+            $paneLines = & $WinsmuxBin list-panes -t $SessionName 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                $paneCount = @($paneLines | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count
+                $paneProbeOk = $true
+            } else {
+                $paneProbeError = ($paneLines | Out-String).Trim()
+            }
+        } catch {
+            $paneProbeError = $_.Exception.Message
+        }
+    } else {
+        $paneProbeError = 'winsmux executable could not be resolved.'
+    }
+
+    $sessionReady = $false
+    $uiAttachLaunched = $false
+    $uiAttached = $false
+    $uiAttachStatus = ''
+    $uiAttachReason = ''
+    $uiAttachSource = 'none'
+
+    if ($manifestFound) {
+        try {
+            $manifest = Get-WinsmuxManifest -ProjectDir $ProjectDir
+            if ($null -ne $manifest -and $null -ne $manifest.session) {
+                $sessionReady = ConvertTo-OrchestraSmokeBoolean $manifest.session.session_ready
+                $uiAttachLaunched = ConvertTo-OrchestraSmokeBoolean $manifest.session.ui_attach_launched
+                $uiAttached = ConvertTo-OrchestraSmokeBoolean $manifest.session.ui_attached
+                $uiAttachStatus = [string]$manifest.session.ui_attach_status
+                $uiAttachReason = [string]$manifest.session.ui_attach_reason
+                if ($manifest.session.PSObject.Properties.Name -contains 'ui_attach_source') {
+                    $uiAttachSource = [string]$manifest.session.ui_attach_source
+                }
+            }
+        } catch {
+            $manifestReadable = $false
+            $manifestReadError = $_.Exception.Message
+        }
+    }
+
+    return [ordered]@{
+        ManifestPath      = $manifestPath
+        ManifestFound     = $manifestFound
+        ManifestReadable  = $manifestReadable
+        ManifestReadError = $manifestReadError
+        PaneCount         = $paneCount
+        PaneProbeOk       = $paneProbeOk
+        PaneProbeError    = $paneProbeError
+        SessionReady      = $sessionReady
+        UiAttachLaunched  = $uiAttachLaunched
+        UiAttached        = $uiAttached
+        UiAttachStatus    = $uiAttachStatus
+        UiAttachReason    = $uiAttachReason
+        UiAttachSource    = $uiAttachSource
+        ExpectedPaneCount = $ExpectedPaneCount
+    }
+}
+
+function Wait-OrchestraSmokeConvergence {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
+        [AllowEmptyString()][string]$WinsmuxBin = '',
+        [int]$TimeoutSeconds = 10
+    )
+
+    $state = Get-OrchestraSmokeProbeState -ProjectDir $ProjectDir -SessionName $SessionName -ExpectedPaneCount $ExpectedPaneCount -WinsmuxBin $WinsmuxBin
+    $needsConvergence = (-not $state.ManifestFound) -or (-not $state.ManifestReadable) -or (-not $state.SessionReady) -or ((-not [string]::IsNullOrWhiteSpace($WinsmuxBin)) -and ((-not $state.PaneProbeOk) -or ($state.PaneCount -lt $ExpectedPaneCount)))
+    if (-not $needsConvergence) {
+        return $state
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 1
+        $state = Get-OrchestraSmokeProbeState -ProjectDir $ProjectDir -SessionName $SessionName -ExpectedPaneCount $ExpectedPaneCount -WinsmuxBin $WinsmuxBin
+        if ($state.ManifestFound -and $state.ManifestReadable -and $state.SessionReady -and $state.PaneProbeOk -and $state.PaneCount -ge $ExpectedPaneCount) {
+            return $state
+        }
+    }
+
+    return $state
+}
+
 if ([string]::IsNullOrWhiteSpace($ProjectDir)) {
     $ProjectDir = (Get-Location).Path
 }
@@ -191,8 +298,6 @@ $winsmuxCorePath = [System.IO.Path]::GetFullPath($winsmuxCorePath)
 $layoutSettings = Get-OrchestraSmokeLayoutSettings -Root $ProjectDir
 $externalOperatorMode = ([int]$layoutSettings.Commanders -eq 0)
 $expectedPaneCount = Get-OrchestraSmokeExpectedPaneCount -LayoutSettings $layoutSettings
-$manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
-$manifestFound = Test-Path -LiteralPath $manifestPath
 
 $winsmuxBin = ''
 try {
@@ -200,24 +305,14 @@ try {
 } catch {
 }
 
-$paneCount = 0
-$paneProbeOk = $false
-$paneProbeError = ''
-if (-not [string]::IsNullOrWhiteSpace($winsmuxBin)) {
-    try {
-        $paneLines = & $winsmuxBin list-panes -t $SessionName 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            $paneCount = @($paneLines | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count
-            $paneProbeOk = $true
-        } else {
-            $paneProbeError = ($paneLines | Out-String).Trim()
-        }
-    } catch {
-        $paneProbeError = $_.Exception.Message
-    }
-} else {
-    $paneProbeError = 'winsmux executable could not be resolved.'
-}
+$probeState = Get-OrchestraSmokeProbeState -ProjectDir $ProjectDir -SessionName $SessionName -ExpectedPaneCount $expectedPaneCount -WinsmuxBin $winsmuxBin
+$manifestPath = [string]$probeState.ManifestPath
+$manifestFound = [bool]$probeState.ManifestFound
+$manifestReadable = [bool]$probeState.ManifestReadable
+$manifestReadError = [string]$probeState.ManifestReadError
+$paneCount = [int]$probeState.PaneCount
+$paneProbeOk = [bool]$probeState.PaneProbeOk
+$paneProbeError = [string]$probeState.PaneProbeError
 
 $clientSnapshot = if ([string]::IsNullOrWhiteSpace($winsmuxBin)) {
     [PSCustomObject][ordered]@{
@@ -235,99 +330,90 @@ $attachedClientCount = [int]$clientSnapshot.Count
 
 $startOutput = ''
 $startExitCode = 0
-$sessionAlreadyHealthy = $paneProbeOk -and $paneCount -ge $expectedPaneCount -and $manifestFound
+$sessionAlreadyHealthy = $paneProbeOk -and $paneCount -ge $expectedPaneCount -and $manifestFound -and $manifestReadable
 if ($sessionAlreadyHealthy) {
     $startOutput = 'Skipped orchestra-start; existing orchestra session already meets the smoke prerequisites.'
 } elseif ($AutoStart) {
     $startOutput = & pwsh -NoProfile -Command "Set-Location -LiteralPath '$ProjectDir'; & '$startScript'" 2>&1
     $startExitCode = $LASTEXITCODE
-    $manifestFound = Test-Path -LiteralPath $manifestPath
-    if (-not [string]::IsNullOrWhiteSpace($winsmuxBin)) {
-        try {
-            $paneLines = & $winsmuxBin list-panes -t $SessionName 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                $paneCount = @($paneLines | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count
-                $paneProbeOk = $true
-                $paneProbeError = ''
-            } else {
-                $paneProbeOk = $false
-                $paneProbeError = ($paneLines | Out-String).Trim()
-            }
-        } catch {
-            $paneProbeOk = $false
-            $paneProbeError = $_.Exception.Message
-        }
-    }
+    $probeState = Wait-OrchestraSmokeConvergence -ProjectDir $ProjectDir -SessionName $SessionName -ExpectedPaneCount $expectedPaneCount -WinsmuxBin $winsmuxBin -TimeoutSeconds 10
+    $manifestPath = [string]$probeState.ManifestPath
+    $manifestFound = [bool]$probeState.ManifestFound
+    $manifestReadable = [bool]$probeState.ManifestReadable
+    $manifestReadError = [string]$probeState.ManifestReadError
+    $paneCount = [int]$probeState.PaneCount
+    $paneProbeOk = [bool]$probeState.PaneProbeOk
+    $paneProbeError = [string]$probeState.PaneProbeError
 } else {
     $startOutput = 'Skipped orchestra-start; run orchestra-start.ps1 when operator_contract.requires_startup is true.'
 }
 
-$sessionReady = $false
-$uiAttachLaunched = $false
+$sessionReady = [bool]$probeState.SessionReady
+$uiAttachLaunched = [bool]$probeState.UiAttachLaunched
 $uiAttached = $false
-$uiAttachStatus = ''
-$uiAttachReason = ''
-$uiAttachSource = 'none'
-
-if ($manifestFound) {
-    $manifest = Get-WinsmuxManifest -ProjectDir $ProjectDir
-    if ($null -ne $manifest -and $null -ne $manifest.session) {
-        $sessionReady = ConvertTo-OrchestraSmokeBoolean $manifest.session.session_ready
-        $uiAttachLaunched = ConvertTo-OrchestraSmokeBoolean $manifest.session.ui_attach_launched
-        $uiAttached = ConvertTo-OrchestraSmokeBoolean $manifest.session.ui_attached
-        $uiAttachStatus = [string]$manifest.session.ui_attach_status
-        $uiAttachReason = [string]$manifest.session.ui_attach_reason
-        if ($manifest.session.PSObject.Properties.Name -contains 'ui_attach_source') {
-            $uiAttachSource = [string]$manifest.session.ui_attach_source
-        }
-    }
-}
+$uiAttachStatus = [string]$probeState.UiAttachStatus
+$uiAttachReason = [string]$probeState.UiAttachReason
+$uiAttachSource = [string]$probeState.UiAttachSource
 
 $attachState = Read-OrchestraAttachState -SessionName $SessionName
-if ($null -ne $attachState) {
+if ($null -eq $attachState) {
+    $uiAttached = $false
+    if ($uiAttachLaunched) {
+        $uiAttachStatus = 'attach_unconfirmed'
+        $uiAttachReason = 'Visible attach state is missing; runtime attach confirmation is unavailable.'
+    } else {
+        $uiAttachStatus = ''
+        $uiAttachReason = ''
+    }
+    $uiAttachSource = 'none'
+} else {
     $attachStateStatus = [string]$attachState.attach_status
-    if ($attachStateStatus -eq 'attach_confirmed') {
+    if (($attachStateStatus -eq 'attach_confirmed') -and [bool]$clientProbeOk -and (Test-OrchestraLiveVisibleAttachState -State $attachState -SessionName $SessionName)) {
         $uiAttached = $true
         $uiAttachStatus = 'attach_confirmed'
         $uiAttachReason = [string]$attachState.error
         $uiAttachSource = if ([string]::IsNullOrWhiteSpace([string]$attachState.ui_attach_source)) { 'handshake' } else { [string]$attachState.ui_attach_source }
+    } elseif (($attachStateStatus -eq 'attach_confirmed') -and [bool]$clientProbeOk -and (Test-OrchestraAttachClientSnapshotMatch -ExpectedClients $attachState.attached_client_snapshot -CurrentClients $clientSnapshot.Clients)) {
+        $uiAttached = $true
+        $uiAttachStatus = 'attach_confirmed'
+        $uiAttachReason = if ([string]::IsNullOrWhiteSpace([string]$attachState.error)) {
+            'Attached-client registry matches the current runtime client snapshot.'
+        } else {
+            [string]$attachState.error
+        }
+        $uiAttachSource = 'attached-client-registry'
+    } elseif ($attachStateStatus -eq 'attach_confirmed') {
+        $uiAttached = $false
+        $uiAttachStatus = 'attach_unconfirmed'
+        $uiAttachReason = if (-not [bool]$clientProbeOk) {
+            'Attach state exists, but the runtime client probe is unavailable.'
+        } else {
+            'Attach state exists, but no live visible attach process is associated with it.'
+        }
+        $uiAttachSource = if ([string]::IsNullOrWhiteSpace([string]$attachState.ui_attach_source)) { 'none' } else { [string]$attachState.ui_attach_source }
     } elseif ($attachStateStatus -eq 'attach_failed') {
         $uiAttachStatus = 'attach_failed'
         $uiAttachReason = [string]$attachState.error
         $uiAttachSource = 'none'
-    }
-}
-
-if (-not $uiAttached) {
-    $clientSnapshot = if ([string]::IsNullOrWhiteSpace($winsmuxBin)) {
-        [PSCustomObject][ordered]@{
-            Ok      = $false
-            Count   = 0
-            Error   = 'winsmux executable could not be resolved.'
-            Clients = @()
+    } elseif ($attachStateStatus -in @('attach_requested', 'attach_entry_started', 'attach_confirming')) {
+        $uiAttached = $false
+        $uiAttachStatus = 'attach_pending'
+        $uiAttachReason = if ([string]::IsNullOrWhiteSpace([string]$attachState.error)) {
+            'Visible attach is still pending confirmation.'
+        } else {
+            [string]$attachState.error
         }
-    } else {
-        Get-OrchestraAttachedClientSnapshot -WinsmuxBin $winsmuxBin -SessionName $SessionName
+        $uiAttachSource = 'none'
     }
-    if ([bool]$clientSnapshot.Ok -and [int]$clientSnapshot.Count -ge 1) {
-        $uiAttached = $true
-        if ([string]::IsNullOrWhiteSpace($uiAttachStatus) -or $uiAttachStatus -eq 'attach_failed') {
-            $uiAttachStatus = 'attach_confirmed'
-            $uiAttachReason = "Detected $($clientSnapshot.Count) attached client(s) for session '$SessionName'."
-        }
-        $uiAttachSource = 'client-probe'
-    }
-}
-
-if ($clientProbeOk -and $attachedClientCount -gt 0) {
-    $uiAttached = $true
-    $uiAttachStatus = 'attach_already_present'
-    $uiAttachReason = "Detected $attachedClientCount attached client(s) for session '$SessionName'."
 }
 
 $smokeErrors = [System.Collections.Generic.List[string]]::new()
 if ($startExitCode -ne 0) { $smokeErrors.Add("orchestra-start exited with code $startExitCode.") | Out-Null }
-if (-not $manifestFound) { $smokeErrors.Add('manifest missing after startup.') | Out-Null }
+if (-not $manifestFound) {
+    $smokeErrors.Add('manifest missing after startup.') | Out-Null
+} elseif (-not $manifestReadable) {
+    $smokeErrors.Add("manifest read failed during startup convergence: $manifestReadError") | Out-Null
+}
 if (-not $sessionReady) { $smokeErrors.Add('session_ready is false.') | Out-Null }
 if (-not $paneProbeOk) { $smokeErrors.Add("pane probe failed: $paneProbeError") | Out-Null }
 if ($paneProbeOk -and $paneCount -lt $expectedPaneCount) { $smokeErrors.Add("pane count $paneCount is below expected $expectedPaneCount.") | Out-Null }

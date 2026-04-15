@@ -43,17 +43,8 @@ try {
     // Evidence failure is non-blocking
   }
 
-  // Show checklist and allow stop
-  allow(
-    [
-      "[session-end] チェックリスト:",
-      "  □ Worktree 未コミット変更はないか？ (git worktree list)",
-      "  □ PR 提出済み / Builder への差し戻し完了？",
-      "  □ 外部 planning backlog のタスクステータスは最新か？",
-      "  □ 外部 ROADMAP の再 sync が必要か？ (sync-roadmap.ps1)",
-      "  □ HANDOFF.md は更新済みか？",
-    ].join("\n"),
-  );
+  // Stop hooks do not use hookSpecificOutput additionalContext. Keep this allow path silent.
+  allow();
 } catch (_err) {
   // Control hook — fail-open (allow stop on error)
   allow();
