@@ -34,7 +34,7 @@ function deny(reason) {
   const input = readHookInput();
   if (isPreToolUseEvent(input)) {
     const eventName = getHookEventName(input) || "PreToolUse";
-    process.stdout.write(
+    writeStdout(
       `${JSON.stringify({
         hookSpecificOutput: {
           hookEventName: eventName,
@@ -52,8 +52,10 @@ function deny(reason) {
 
 function allow(additionalContext) {
   if (additionalContext) {
-    process.stdout.write(
-      `${JSON.stringify({ hookSpecificOutput: { additionalContext } })}\n`,
+    writeStdout(
+      `${JSON.stringify({
+        hookSpecificOutput: buildHookSpecificOutput({ additionalContext }),
+      })}\n`,
     );
   }
   process.exit(0);
@@ -78,17 +80,33 @@ function sha256(data) {
 }
 
 function allowWithUpdate(updatedInput) {
-  process.stdout.write(
-    `${JSON.stringify({ hookSpecificOutput: { updatedInput } })}\n`,
+  writeStdout(
+    `${JSON.stringify({
+      hookSpecificOutput: buildHookSpecificOutput({ updatedInput }),
+    })}\n`,
   );
   process.exit(0);
 }
 
-function allowWithResult(resultObj) {
-  process.stdout.write(
-    `${JSON.stringify({ hookSpecificOutput: { result: resultObj } })}\n`,
+function allowWithResult(resultObj, additionalContext) {
+  writeStdout(
+    `${JSON.stringify({
+      hookSpecificOutput: buildHookSpecificOutput({
+        updatedMCPToolOutput: resultObj,
+        ...(additionalContext ? { additionalContext } : {}),
+      }),
+    })}\n`,
   );
   process.exit(0);
+}
+
+function buildHookSpecificOutput(extraFields = {}) {
+  const input = readHookInput();
+  const eventName = getHookEventName(input) || "Unknown";
+  return {
+    hookEventName: eventName,
+    ...extraFields,
+  };
 }
 
 function getHookEventName(input = null) {
@@ -109,8 +127,16 @@ function isPreToolUseEvent(input = null) {
 }
 
 function failClosed(message) {
-  process.stderr.write(`${String(message)}\n`);
+  writeStderr(`${String(message)}\n`);
   process.exit(2);
+}
+
+function writeStdout(payload) {
+  fs.writeSync(process.stdout.fd, payload, null, "utf8");
+}
+
+function writeStderr(payload) {
+  fs.writeSync(process.stderr.fd, payload, null, "utf8");
 }
 
 function readSession() {
@@ -572,3 +598,11 @@ module.exports = {
   getBacklogPath,
   getRoadmapPath,
 };
+
+
+
+
+
+
+
+

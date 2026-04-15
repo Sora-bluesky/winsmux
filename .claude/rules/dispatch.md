@@ -17,12 +17,14 @@ paths: ["winsmux-core/scripts/**", ".claude/**"]
    Any other state is fail-closed.
 8. If the state is `ready-with-ui-warning`, run `pwsh -NoProfile -File scripts/winsmux-core.ps1 orchestra-attach --json` once, rerun `orchestra-smoke --json`, and continue only after `operator_contract.can_dispatch=true`.
 9. External operator mode is fail-closed: visible attach unconfirmed means no dispatch.
-10. Never ask the user which task to begin when the live handoff already lists ordered next actions.
-11. Once `operator_contract.can_dispatch=true`, do not use Explore subagents for PR/task analysis. Use `pwsh -NoProfile -File scripts/winsmux-core.ps1 dispatch-task "<task text>"` or `dispatch-review`.
-12. Explore subagents are reserved for orchestra startup/status diagnosis only.
-13. Never use `psmux --version`, `Get-Process psmux-server`, or similar legacy probe commands for operator-side startup diagnosis.
-14. If pane expansion or attach confirmation does not succeed, treat the session as `blocked` and report the smoke/startup failure.
-15. Do not plan merge work while the orchestra session is still not dispatchable.
+10. Treat `called MCP`, plugin initialization chatter, and channel notifications as side output only. They must not be used as readiness evidence and must not override `operator_contract`.
+11. If hook validation noise, schema warnings, or an `Interrupted` result prevents a clean `orchestra-smoke --json` result from being obtained, treat startup as `blocked` and rerun the startup contract instead of continuing.
+12. Never ask the user which task to begin when the live handoff already lists ordered next actions.
+13. Once `operator_contract.can_dispatch=true`, do not use Explore subagents for PR/task analysis. Use `pwsh -NoProfile -File scripts/winsmux-core.ps1 dispatch-task "<task text>"` or `dispatch-review`.
+14. Explore subagents are reserved for orchestra startup/status diagnosis only.
+15. Never use `psmux --version`, `Get-Process psmux-server`, or similar legacy probe commands for operator-side startup diagnosis.
+16. If pane expansion or attach confirmation does not succeed, treat the session as `blocked` and report the smoke/startup failure.
+17. Do not plan merge work while the orchestra session is still not dispatchable.
 
 ## Builder Dispatch
 1. Check pane state: `winsmux capture-pane -t <pane> -p | tail -5`

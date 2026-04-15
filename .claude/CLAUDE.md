@@ -92,13 +92,15 @@ When `/winsmux-start` or another restoration flow reports `needs-startup`:
 7. Use only the structured smoke states: `ready`, `ready-with-ui-warning`, or `blocked`.
 8. If the state is `ready-with-ui-warning`, run `winsmux orchestra-attach --json` once to launch a visible operator window, then rerun `winsmux orchestra-smoke --json`.
 9. External operator mode remains fail-closed: if `ui_attached=false`, `operator_contract.can_dispatch` must stay `false`.
-10. When `.claude/local/operator-handoff.md` contains an ordered `Next actions` list, start the first pending action automatically instead of asking which task to begin.
-11. Once `operator_contract.can_dispatch=true`, do not use Explore subagents for PR/task analysis. Dispatch the task through `winsmux dispatch-task "<task text>"` or `winsmux dispatch-review`.
-12. Startup/status Explore subagents are allowed only while diagnosing orchestra readiness or attach problems.
-13. Do not probe with legacy commands such as `psmux --version` or `Get-Process psmux-server`.
-14. Do not tell the user to manually start a `psmux` server.
-15. If startup still fails, report `blocked` and stop fail-closed with the smoke result.
-16. Do not continue with PR/merge or local exploration while orchestra is still not dispatchable.
+10. Treat MCP or plugin chatter during startup as non-authoritative side output. `called MCP`, channel notifications, and plugin bootstrap messages must not be used as readiness evidence and must not override `operator_contract`.
+11. If hook validation noise, schema warnings, or an `Interrupted` result prevents a clean `winsmux orchestra-smoke --json` result from being obtained, stop fail-closed and treat the session as `blocked` until the startup contract is re-run cleanly.
+12. When `.claude/local/operator-handoff.md` contains an ordered `Next actions` list, start the first pending action automatically instead of asking which task to begin.
+13. Once `operator_contract.can_dispatch=true`, do not use Explore subagents for PR/task analysis. Dispatch the task through `winsmux dispatch-task "<task text>"` or `winsmux dispatch-review`.
+14. Startup/status Explore subagents are allowed only while diagnosing orchestra readiness or attach problems.
+15. Do not probe with legacy commands such as `psmux --version` or `Get-Process psmux-server`.
+16. Do not tell the user to manually start a `psmux` server.
+17. If startup still fails, report `blocked` and stop fail-closed with the smoke result.
+18. Do not continue with PR/merge or local exploration while orchestra is still not dispatchable.
 
 ## Compatibility and release notes
 
