@@ -146,6 +146,7 @@ Describe 'agent launch helpers' {
 Describe 'manifest round-trip' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\manifest.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-ui-attach.ps1')
     }
 
     BeforeEach {
@@ -211,6 +212,48 @@ panes:
         $loaded.panes['builder-1'].pane_id | Should -Be '%2'
         $loaded.panes['builder-1'].exec_mode | Should -Be 'true'
         $loaded.panes['builder-1'].launch_dir | Should -Be 'C:\repo\.worktrees\builder-1'
+    }
+
+    It 'round-trips structured session arrays such as attach adapter trace entries' {
+        $manifest = [PSCustomObject]@{
+            version  = 1
+            saved_at = '2026-04-15T23:30:00+09:00'
+            session  = [PSCustomObject]@{
+                name              = 'winsmux-orchestra'
+                status            = 'running'
+                attach_request_id = 'req-123'
+                attach_adapter_trace = @(
+                    [pscustomobject]@{
+                        sequence      = 1
+                        host_kind     = 'windows-terminal'
+                        launch_result = 'launch_unobserved'
+                    },
+                    [pscustomobject]@{
+                        sequence      = 2
+                        host_kind     = 'powershell-window'
+                        launch_result = 'attach_confirmed'
+                    }
+                )
+            }
+            panes = [ordered]@{}
+            tasks = [PSCustomObject]@{
+                queued      = @()
+                in_progress = @()
+                completed   = @()
+            }
+            worktrees = [ordered]@{}
+        }
+
+        Save-WinsmuxManifest -ProjectDir $script:manifestTempRoot -Manifest $manifest
+        $loaded = Get-WinsmuxManifest -ProjectDir $script:manifestTempRoot
+
+        $loaded.session.attach_request_id | Should -Be 'req-123'
+        $traceEntries = @(Get-OrchestraAttachTraceEntries -State $loaded.session)
+        $traceEntries.Count | Should -Be 2
+        $traceEntries[0].host_kind | Should -Be 'windows-terminal'
+        $traceEntries[0].launch_result | Should -Be 'launch_unobserved'
+        $traceEntries[1].host_kind | Should -Be 'powershell-window'
+        $traceEntries[1].launch_result | Should -Be 'attach_confirmed'
     }
 }
 

@@ -223,6 +223,7 @@ function Get-OrchestraSmokeProbeState {
     $uiAttachSource = 'none'
     $uiHostKind = ''
     $attachRequestId = ''
+    $attachAdapterTrace = @()
 
     if ($manifestFound) {
         try {
@@ -241,6 +242,9 @@ function Get-OrchestraSmokeProbeState {
                 }
                 if ($manifest.session.PSObject.Properties.Name -contains 'attach_request_id') {
                     $attachRequestId = [string]$manifest.session.attach_request_id
+                }
+                if ($manifest.session.PSObject.Properties.Name -contains 'attach_adapter_trace') {
+                    $attachAdapterTrace = @($manifest.session.attach_adapter_trace)
                 }
             }
         } catch {
@@ -265,6 +269,7 @@ function Get-OrchestraSmokeProbeState {
         UiAttachSource    = $uiAttachSource
         UiHostKind        = $uiHostKind
         AttachRequestId   = $attachRequestId
+        AttachAdapterTrace = @($attachAdapterTrace)
         ExpectedPaneCount = $ExpectedPaneCount
     }
 }
@@ -312,8 +317,12 @@ function Resolve-OrchestraSmokeAttachState {
     $attachRequestId = [string]$ProbeState.AttachRequestId
     $attachedClientRegistryCount = 0
     $attachedClientSnapshot = @()
+    $attachAdapterTrace = @()
 
     if ($null -eq $AttachState) {
+        if ($ProbeState.PSObject.Properties.Name -contains 'AttachAdapterTrace') {
+            $attachAdapterTrace = @($ProbeState.AttachAdapterTrace)
+        }
         if ([bool]$ProbeState.UiAttachLaunched) {
             $uiAttachStatus = 'attach_unconfirmed'
             $uiAttachReason = 'Visible attach state is missing; runtime attach confirmation is unavailable.'
@@ -343,6 +352,7 @@ function Resolve-OrchestraSmokeAttachState {
         if ($null -ne $AttachState.PSObject.Properties['attached_client_snapshot']) {
             $attachedClientSnapshot = @($AttachState.attached_client_snapshot | ForEach-Object { [string]$_ })
         }
+        $attachAdapterTrace = @(Get-OrchestraAttachTraceEntries -State $AttachState)
 
         $attachStateError = if ($null -ne $AttachState.PSObject.Properties['error']) { [string]$AttachState.error } else { '' }
         $attachStateSource = if ($null -ne $AttachState.PSObject.Properties['ui_attach_source']) { [string]$AttachState.ui_attach_source } else { '' }
@@ -396,6 +406,7 @@ function Resolve-OrchestraSmokeAttachState {
         AttachRequestId             = $attachRequestId
         AttachedClientRegistryCount = $attachedClientRegistryCount
         AttachedClientSnapshot      = @($attachedClientSnapshot)
+        AttachAdapterTrace          = @($attachAdapterTrace)
     }
 }
 
@@ -465,13 +476,14 @@ $sessionReady = [bool]$probeState.SessionReady
 $uiAttachLaunched = [bool]$probeState.UiAttachLaunched
 $attachState = Read-OrchestraAttachState -SessionName $SessionName
 $attachResolution = Resolve-OrchestraSmokeAttachState -ProbeState ([pscustomobject]@{
-    SessionName      = $SessionName
-    UiAttachLaunched = $uiAttachLaunched
-    UiAttachStatus   = $probeState.UiAttachStatus
-    UiAttachReason   = $probeState.UiAttachReason
-    UiAttachSource   = $probeState.UiAttachSource
-    UiHostKind       = $probeState.UiHostKind
-    AttachRequestId  = $probeState.AttachRequestId
+    SessionName       = $SessionName
+    UiAttachLaunched  = $uiAttachLaunched
+    UiAttachStatus    = $probeState.UiAttachStatus
+    UiAttachReason    = $probeState.UiAttachReason
+    UiAttachSource    = $probeState.UiAttachSource
+    UiHostKind        = $probeState.UiHostKind
+    AttachRequestId   = $probeState.AttachRequestId
+    AttachAdapterTrace = @($probeState.AttachAdapterTrace)
 }) -AttachState $attachState -ClientProbeOk $clientProbeOk -ClientSnapshot $clientSnapshot
 $uiAttached = [bool]$attachResolution.UiAttached
 $uiAttachStatus = [string]$attachResolution.UiAttachStatus
@@ -481,6 +493,7 @@ $uiHostKind = [string]$attachResolution.UiHostKind
 $attachRequestId = [string]$attachResolution.AttachRequestId
 $attachedClientRegistryCount = [int]$attachResolution.AttachedClientRegistryCount
 $attachedClientSnapshot = @($attachResolution.AttachedClientSnapshot)
+$attachAdapterTrace = @($attachResolution.AttachAdapterTrace)
 
 $smokeErrors = [System.Collections.Generic.List[string]]::new()
 if ($startExitCode -ne 0) { $smokeErrors.Add("orchestra-start exited with code $startExitCode.") | Out-Null }
@@ -517,7 +530,9 @@ $result = [ordered]@{
     attached_client_count = $attachedClientCount
     attached_client_registry_count = $attachedClientRegistryCount
     attached_client_snapshot = @($attachedClientSnapshot)
+    attach_adapter_trace = @($attachAdapterTrace)
     attach_request_id   = $attachRequestId
+    external_operator_mode = $externalOperatorMode
     expected_pane_count = $expectedPaneCount
     manifest_found      = $manifestFound
     session_ready       = $sessionReady

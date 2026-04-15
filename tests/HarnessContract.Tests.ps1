@@ -127,6 +127,9 @@ Describe 'harness-check contract' {
         $result.ExitCode | Should -Be 0
         $result.Json.passed | Should -Be $true
         ($result.Json.results | Where-Object { -not $_.passed }).Count | Should -Be 0
+        @($result.Json.results.name) | Should -Contain 'visible-attach-host-adapters'
+        @($result.Json.results.name) | Should -Contain 'attached-client-registry-contract'
+        @($result.Json.results.name) | Should -Contain 'startup-attach-consistency'
     }
 
     It 'fails when shared settings stop registering the orchestra gate hook' {
