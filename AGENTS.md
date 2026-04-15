@@ -319,4 +319,4 @@ Codex must follow these rules when review or audit agents are slow:
    - the diff is reduced,
    - the wait time is increased,
    - or the blocker is documented and manual diff fallback is used.
-6. When a delayed review result arrives after a timeout, record the latency pattern in `docs/handoff.md` and use that result in the final decision.
+6. When a delayed review result arrives after a timeout, record the latency pattern in `.claude/local/operator-handoff.md` and use that result in the final decision.
