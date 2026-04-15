@@ -36,13 +36,12 @@ Describe 'Public surface policy' {
         }
     }
 
-    It 'keeps /winsmux-start out of the public UX and advertises future public entrypoints' {
-        $readme | Should -Match '/winsmux-start'
-        $readmeJa | Should -Match '/winsmux-start'
-        $operatorModel | Should -Match '/winsmux-start'
-        $readme | Should -Match 'dogfooding-only flow'
-        $readmeJa | Should -Match 'dogfooding 専用フロー'
-        $operatorModel | Should -Match 'dogfooding flow'
+    It 'keeps internal startup helpers and dogfooding terminology out of public docs while advertising future public entrypoints' {
+        foreach ($forbidden in @('/winsmux-start', 'dogfooding', 'maintainer-only', 'operator-handoff', 'private live-ops')) {
+            $readme | Should -Not -Match ([Regex]::Escape($forbidden))
+            $readmeJa | Should -Not -Match ([Regex]::Escape($forbidden))
+            $operatorModel | Should -Not -Match ([Regex]::Escape($forbidden))
+        }
 
         foreach ($entrypoint in @('winsmux init', 'winsmux launch', 'winsmux compare')) {
             $readme | Should -Match ([Regex]::Escape($entrypoint))

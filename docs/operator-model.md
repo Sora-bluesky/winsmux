@@ -91,14 +91,14 @@ The public future entrypoints are intended to converge on:
 - `winsmux launch`
 - `winsmux compare`
 
-That direction is public product behavior. `/winsmux-start` remains a repository-operated Claude Code dogfooding flow and is not part of the primary public UX.
+That direction is public product behavior. Repo-local contributor startup helpers are separate and are not part of the primary public UX.
 
-Repository-operated runtime contracts also exist for dogfooding and contributor flows, but they are maintained as contributor/runtime documents rather than primary public product docs.
+Runtime contracts for contributors and repository operations are maintained separately and do not define the public interface.
 
 ## 5. Public docs vs contributor docs
 
 The public-facing docs describe the operator model and product shape.
-Contributor workflows, release operations, repository-specific runtime contracts, and dogfooding procedures are documented separately and do not define the public operator or pane contract.
+Contributor workflows, release operations, and repository-specific runtime contracts are documented separately and do not define the public operator or pane contract.
 
 ## 6. Legacy layouts vs current model
 

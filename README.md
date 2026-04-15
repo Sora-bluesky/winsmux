@@ -99,7 +99,7 @@ You can also download a release `.zip` from GitHub Releases or build from source
 
 ## Quick start
 
-The current public quick start is still the terminal-first runtime flow shown below. The public product direction is to converge on `winsmux init`, `winsmux launch`, and `winsmux compare` as the future first-run entrypoints, while keeping `/winsmux-start` as a Claude Code dogfooding-only flow.
+The current public quick start is still the terminal-first runtime flow shown below. The public product direction is to converge on `winsmux init`, `winsmux launch`, and `winsmux compare` as the future first-run entrypoints. Repo-local contributor startup helpers exist, but they are not part of the public interface.
 
 ```powershell
 # Verify the environment
