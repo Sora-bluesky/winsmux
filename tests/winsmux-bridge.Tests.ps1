@@ -2804,6 +2804,7 @@ Describe 'orchestra-start server bootstrap' {
 
     It 'launches visible attach through a fixed Windows Terminal profile and handshake' {
         $script:startProcessCalls = @()
+        $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
 
         Mock Get-OrchestraAttachedClientSnapshot {
             [PSCustomObject]@{ Ok = $true; Count = 0; Error = ''; Clients = @() }
@@ -2871,6 +2872,7 @@ Describe 'orchestra-start server bootstrap' {
 
     It 'returns attach_already_present when a visible client already exists' {
         $script:startProcessCalls = @()
+        $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
 
         Mock Get-OrchestraAttachedClientSnapshot {
             [PSCustomObject]@{ Ok = $true; Count = 1; Error = ''; Clients = @('client-1') }
@@ -2899,6 +2901,7 @@ Describe 'orchestra-start server bootstrap' {
     }
 
     It 'fails closed when Windows Terminal is unavailable instead of falling back to dynamic attach commands' {
+        $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
         Mock Get-OrchestraAttachedClientSnapshot {
             [PSCustomObject]@{ Ok = $true; Count = 0; Error = ''; Clients = @() }
         }

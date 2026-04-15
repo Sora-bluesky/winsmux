@@ -219,7 +219,16 @@ if (-not [string]::IsNullOrWhiteSpace($winsmuxBin)) {
     $paneProbeError = 'winsmux executable could not be resolved.'
 }
 
-$clientSnapshot = Get-OrchestraAttachedClientSnapshot -WinsmuxBin $winsmuxBin -SessionName $SessionName
+$clientSnapshot = if ([string]::IsNullOrWhiteSpace($winsmuxBin)) {
+    [PSCustomObject][ordered]@{
+        Ok      = $false
+        Count   = 0
+        Error   = 'winsmux executable could not be resolved.'
+        Clients = @()
+    }
+} else {
+    Get-OrchestraAttachedClientSnapshot -WinsmuxBin $winsmuxBin -SessionName $SessionName
+}
 $clientProbeOk = [bool]$clientSnapshot.Ok
 $clientProbeError = [string]$clientSnapshot.Error
 $attachedClientCount = [int]$clientSnapshot.Count
@@ -290,7 +299,16 @@ if ($null -ne $attachState) {
 }
 
 if (-not $uiAttached) {
-    $clientSnapshot = Get-OrchestraAttachedClientSnapshot -WinsmuxBin $winsmuxBin -SessionName $SessionName
+    $clientSnapshot = if ([string]::IsNullOrWhiteSpace($winsmuxBin)) {
+        [PSCustomObject][ordered]@{
+            Ok      = $false
+            Count   = 0
+            Error   = 'winsmux executable could not be resolved.'
+            Clients = @()
+        }
+    } else {
+        Get-OrchestraAttachedClientSnapshot -WinsmuxBin $winsmuxBin -SessionName $SessionName
+    }
     if ([bool]$clientSnapshot.Ok -and [int]$clientSnapshot.Count -ge 1) {
         $uiAttached = $true
         if ([string]::IsNullOrWhiteSpace($uiAttachStatus) -or $uiAttachStatus -eq 'attach_failed') {
