@@ -1616,12 +1616,32 @@ param(
         (Test-Path -LiteralPath $lockDir -PathType Container) | Should -Be $false
     }
 
+    It 'reclaims file locks when the owner pid has been reused by a different process instance' {
+        $logPath = Join-Path $script:loggerTempRoot '.winsmux\logs\pid-reuse.jsonl'
+        $lockDir = "$logPath.lock"
+        $metadataPath = Join-Path $lockDir 'owner.json'
+
+        New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+        @"
+{"pid":$PID,"started_at":"2000-01-01T00:00:00Z","process_started_at":"2000-01-01T00:00:00Z"}
+"@ | Set-Content -Path $metadataPath -Encoding UTF8
+
+        Write-WinsmuxTextFile -Path $logPath -Content 'pid-reuse-recovered' -Append
+
+        $lines = @(Get-Content -Path $logPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $lines.Count | Should -Be 1
+        $lines[0] | Should -Be 'pid-reuse-recovered'
+        (Test-Path -LiteralPath $lockDir -PathType Container) | Should -Be $false
+    }
+
     It 'keeps CLM-safe writes on cmd-based lock and replace primitives' {
         $script:clmSafeIoContent | Should -Match 'function Get-WinsmuxFileLockDir'
         $script:clmSafeIoContent | Should -Match 'function Test-WinsmuxFileLockStale'
+        $script:clmSafeIoContent | Should -Match 'function Get-WinsmuxProcessStartedAt'
         $script:clmSafeIoContent | Should -Match 'cmd /d /c \(''mkdir'
         $script:clmSafeIoContent | Should -Match 'cmd /d /c \(''move /y'
         $script:clmSafeIoContent | Should -Match 'owner\.json'
+        $script:clmSafeIoContent | Should -Match 'process_started_at'
         $script:clmSafeIoContent | Should -Not -Match 'System\.Threading\.Mutex'
         $script:clmSafeIoContent | Should -Not -Match 'System\.IO\.File'
         $script:clmSafeIoContent | Should -Not -Match 'StreamWriter'

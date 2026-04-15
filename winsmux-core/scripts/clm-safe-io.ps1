@@ -13,6 +13,17 @@ function Get-WinsmuxFileLockMetadataPath {
     return Join-Path (Get-WinsmuxFileLockDir -Path $Path) 'owner.json'
 }
 
+function Get-WinsmuxProcessStartedAt {
+    param([Parameter(Mandatory = $true)][int]$Id)
+
+    try {
+        $process = Get-Process -Id $Id -ErrorAction Stop
+        return $process.StartTime.ToUniversalTime().ToString('o')
+    } catch {
+        return $null
+    }
+}
+
 function Test-WinsmuxFileLockStale {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -41,7 +52,24 @@ function Test-WinsmuxFileLockStale {
         }
 
         if ($ownerPid -gt 0) {
-            return ($null -eq (Get-Process -Id $ownerPid -ErrorAction SilentlyContinue))
+            $ownerProcess = Get-Process -Id $ownerPid -ErrorAction SilentlyContinue
+            if ($null -eq $ownerProcess) {
+                return $true
+            }
+
+            if (($metadata.PSObject.Properties.Name -contains 'process_started_at') -and -not [string]::IsNullOrWhiteSpace([string]$metadata.process_started_at)) {
+                try {
+                    $expectedStart = ([datetime]$metadata.process_started_at).ToUniversalTime()
+                    $actualStart = $ownerProcess.StartTime.ToUniversalTime()
+                    if ([math]::Abs(($actualStart - $expectedStart).TotalSeconds) -gt 1) {
+                        return $true
+                    }
+                } catch {
+                    return $true
+                }
+            }
+
+            return $false
         }
 
         if ($metadata.PSObject.Properties.Name -contains 'started_at') {
@@ -66,13 +94,36 @@ function Test-WinsmuxFileLockStale {
 function Remove-WinsmuxFileLock {
     param([Parameter(Mandatory = $true)][string]$Path)
 
+    [void](Clear-WinsmuxFileLock -Path $Path)
+}
+
+function Clear-WinsmuxFileLock {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
     $lockDir = Get-WinsmuxFileLockDir -Path $Path
     if (-not (Test-Path -LiteralPath $lockDir -PathType Container)) {
-        return
+        return $true
     }
 
     $escapedLockDir = $lockDir -replace '"', '""'
-    cmd /d /c ('rmdir /s /q "{0}"' -f $escapedLockDir) 1>$null 2>$null
+    $metadataPath = Get-WinsmuxFileLockMetadataPath -Path $Path
+    $escapedMetadataPath = $metadataPath -replace '"', '""'
+    foreach ($attempt in 1..5) {
+        cmd /d /c ('rmdir /s /q "{0}"' -f $escapedLockDir) 1>$null 2>$null
+        if (-not (Test-Path -LiteralPath $lockDir -PathType Container)) {
+            return $true
+        }
+
+        cmd /d /c ('del /f /q "{0}"' -f $escapedMetadataPath) 1>$null 2>$null
+        cmd /d /c ('rmdir /s /q "{0}"' -f $escapedLockDir) 1>$null 2>$null
+        if (-not (Test-Path -LiteralPath $lockDir -PathType Container)) {
+            return $true
+        }
+
+        Start-Sleep -Milliseconds (25 * $attempt)
+    }
+
+    return (-not (Test-Path -LiteralPath $lockDir -PathType Container))
 }
 
 function Invoke-WinsmuxWithFileLock {
@@ -94,18 +145,24 @@ function Invoke-WinsmuxWithFileLock {
             cmd /d /c ('mkdir "{0}"' -f $escapedLockDir) 1>$null 2>$null
             if ($LASTEXITCODE -eq 0) {
                 $hasLock = $true
-                $metadataJson = ([ordered]@{
+                $metadata = [ordered]@{
                         pid        = $PID
                         started_at = (Get-Date).ToString('o')
                         path       = $Path
-                    } | ConvertTo-Json)
+                    }
+                $processStartedAt = Get-WinsmuxProcessStartedAt -Id $PID
+                if (-not [string]::IsNullOrWhiteSpace($processStartedAt)) {
+                    $metadata.process_started_at = $processStartedAt
+                }
+                $metadataJson = ($metadata | ConvertTo-Json)
                 $metadataJson | cmd /d /c ('more > "{0}"' -f $escapedMetadataPath) | Out-Null
                 break
             }
 
             if (Test-WinsmuxFileLockStale -Path $Path -StaleAfterSeconds $StaleAfterSeconds) {
-                Remove-WinsmuxFileLock -Path $Path
-                continue
+                if (Clear-WinsmuxFileLock -Path $Path) {
+                    continue
+                }
             }
 
             Start-Sleep -Milliseconds 100
@@ -142,8 +199,18 @@ function Write-WinsmuxTextFile {
                 return
             }
 
-            $Content | cmd /d /c ('more >> "{0}"' -f $escapedPath) | Out-Null
-            if ($LASTEXITCODE -ne 0) {
+            $appendSucceeded = $false
+            foreach ($attempt in 1..10) {
+                $Content | cmd /d /c ('more >> "{0}"' -f $escapedPath) | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    $appendSucceeded = $true
+                    break
+                }
+
+                Start-Sleep -Milliseconds (15 * $attempt)
+            }
+
+            if (-not $appendSucceeded) {
                 throw "cmd.exe failed to append $Path"
             }
 
