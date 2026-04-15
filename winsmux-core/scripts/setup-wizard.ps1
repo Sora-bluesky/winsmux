@@ -163,13 +163,13 @@ function Set-GitHubTokenVault {
 
 $winsmuxBin = Get-WinsmuxBin
 if (-not $winsmuxBin) {
-    Write-Error "Could not find a winsmux binary. Tried: winsmux, pmux, tmux."
+    Write-Error (Get-WinsmuxOperatorNotFoundMessage)
     exit 1
 }
 
 Write-Host 'winsmux setup wizard'
 Write-Host ''
-Write-Host "Using multiplexer binary: $winsmuxBin"
+Write-Host 'winsmux CLI detected on PATH.'
 Write-Host ''
 
 $agentCli = Read-AgentCli -Default 'codex'

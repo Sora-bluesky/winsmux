@@ -13,6 +13,7 @@ const WINSMUX_DIR = path.join(PROJECT_ROOT, ".winsmux");
 const EVENTS_PATH = path.join(WINSMUX_DIR, "events.jsonl");
 const CURSOR_FILE_PREFIX = "monitor-cursor";
 const CURSOR_PATH = path.join(WINSMUX_DIR, `${CURSOR_FILE_PREFIX}.txt`);
+const MAX_ALERT_COUNT = 20;
 const ALERT_EVENTS = new Set([
   "pane.completed",
   "pane.crashed",
@@ -166,6 +167,14 @@ function readCursor(cursorPath = CURSOR_PATH) {
   }
 }
 
+function hasCursor(cursorPath = CURSOR_PATH) {
+  try {
+    return fs.existsSync(cursorPath);
+  } catch {
+    return false;
+  }
+}
+
 function writeCursor(cursor, cursorPath = CURSOR_PATH) {
   fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
   fs.writeFileSync(cursorPath, `${cursor}\n`, "utf8");
@@ -252,17 +261,38 @@ function collectAlerts(content) {
     .filter(Boolean);
 }
 
+function formatAlertBatch(alerts) {
+  if (!Array.isArray(alerts) || alerts.length === 0) {
+    return "";
+  }
+
+  const visibleAlerts = alerts.slice(0, MAX_ALERT_COUNT);
+  if (alerts.length <= MAX_ALERT_COUNT) {
+    return visibleAlerts.join("\n");
+  }
+
+  const omittedCount = alerts.length - MAX_ALERT_COUNT;
+  return `${visibleAlerts.join("\n")}\n[PANE ALERT] ${omittedCount} older alerts omitted`;
+}
+
 function main() {
   try {
     const input = readHookInput();
     const cursorPath = getCursorPath(input);
+
+    if (!hasCursor(cursorPath)) {
+      const initialCursor = fs.existsSync(EVENTS_PATH) ? fs.statSync(EVENTS_PATH).size : 0;
+      writeCursor(initialCursor, cursorPath);
+      allow();
+      return;
+    }
 
     const chunk = readNewEventChunk(EVENTS_PATH, cursorPath);
     writeCursor(chunk.cursor, cursorPath);
 
     const alerts = collectAlerts(chunk.content);
     if (alerts.length > 0) {
-      allow(alerts.join("\n"));
+      allow(formatAlertBatch(alerts));
       return;
     }
   } catch {
@@ -289,6 +319,8 @@ module.exports = {
   isAlertEvent,
   parseManifestProjectDir,
   parseEventLines,
+  formatAlertBatch,
+  hasCursor,
   readCursor,
   readProjectDirFromManifest,
   readNewEventChunk,

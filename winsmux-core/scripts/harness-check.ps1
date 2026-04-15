@@ -305,7 +305,7 @@ if ($null -eq $smokeProbe.parsed) {
     if (-not $hasContract) {
         $smokeMessage = 'orchestra-smoke result is missing operator_contract fields.'
     } elseif ($smokeProbe.parsed.session_ready -and -not $smokeProbe.parsed.ui_attached -and $contract.can_dispatch) {
-        $smokeMessage = 'operator_contract.can_dispatch must stay false until visible attach is confirmed.'
+        $smokeMessage = 'operator_contract.can_dispatch must stay false until attached-client confirmation is recorded.'
     } else {
         $smokePassed = $true
         $smokeMessage = 'orchestra-smoke contract is structurally consistent.'

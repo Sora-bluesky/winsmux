@@ -293,7 +293,7 @@ function Invoke-CommanderPollWinsmux {
 
     $winsmuxBin = Get-WinsmuxBin
     if (-not $winsmuxBin) {
-        throw 'Could not find a winsmux binary. Tried: winsmux, pmux, tmux.'
+        throw (Get-WinsmuxOperatorNotFoundMessage)
     }
 
     $output = & $winsmuxBin @Arguments 2>&1

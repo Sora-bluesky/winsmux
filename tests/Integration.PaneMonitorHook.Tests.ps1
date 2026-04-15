@@ -123,7 +123,7 @@ session:
         $script:FixtureRoot = $null
     }
 
-    It 'reads new pane events and emits alerts' {
+    It 'bootstraps a new session cursor at EOF without replaying historical alerts' {
         $fixture = New-PaneMonitorFixture
         $script:FixtureRoot = $fixture.Root
 
@@ -143,11 +143,7 @@ session:
         })
 
         $result['ExitCode'] | Should -Be 0
-        $result['OutputObject'] | Should -Not -BeNullOrEmpty
-        $context = [string]$result['OutputObject'].hookSpecificOutput.additionalContext
-        $context | Should -Match '\[PANE ALERT\] builder-1 completed'
-        $context | Should -Match '\[PANE ALERT\] reviewer crashed'
-        $context | Should -Match '\[PANE ALERT\] approver awaiting approval'
+        $result['OutputObject'] | Should -Be $null
 
         $expectedCursor = (Get-Item -LiteralPath $fixture.EventsPath).Length
         $cursorPath = Join-Path $fixture.WinsmuxDir 'monitor-cursor-session-1.txt'
@@ -171,7 +167,7 @@ session:
         $second['OutputObject'] | Should -Be $null
     }
 
-    It 'persists the cursor and only reports newly appended events' {
+    It 'reports only events appended after the initial cursor bootstrap' {
         $fixture = New-PaneMonitorFixture
         $script:FixtureRoot = $fixture.Root
 
@@ -180,7 +176,7 @@ session:
 
         $first = Invoke-PaneMonitorHook -RepoRoot $fixture.RepoRoot -Payload (New-PaneMonitorPayload -ToolName 'Read' -ToolInput ([ordered]@{ file_path = 'docs\handoff.md' }))
         $first['ExitCode'] | Should -Be 0
-        ([string]$first['OutputObject'].hookSpecificOutput.additionalContext) | Should -Match '\[PANE ALERT\] builder-1 completed'
+        $first['OutputObject'] | Should -Be $null
 
         Add-Content -Path $fixture.EventsPath -Value ([ordered]@{ event = 'pane.crashed'; label = 'reviewer'; pane_id = '%4' } | ConvertTo-Json -Compress) -Encoding UTF8
 
@@ -196,7 +192,7 @@ session:
         (Get-Content -LiteralPath $cursorPath -Raw -Encoding UTF8).Trim() | Should -Be "$expectedCursor"
     }
 
-    It 'keeps cursor state isolated per session' {
+    It 'keeps cursor state isolated per session after bootstrap' {
         $fixture = New-PaneMonitorFixture
         $script:FixtureRoot = $fixture.Root
 
@@ -208,14 +204,16 @@ session:
 
         $sessionOneFirst['ExitCode'] | Should -Be 0
         $sessionTwoFirst['ExitCode'] | Should -Be 0
-        ([string]$sessionOneFirst['OutputObject'].hookSpecificOutput.additionalContext) | Should -Match '\[PANE ALERT\] builder-1 completed'
-        ([string]$sessionTwoFirst['OutputObject'].hookSpecificOutput.additionalContext) | Should -Match '\[PANE ALERT\] builder-1 completed'
+        $sessionOneFirst['OutputObject'] | Should -Be $null
+        $sessionTwoFirst['OutputObject'] | Should -Be $null
+
+        Add-Content -Path $fixture.EventsPath -Value ([ordered]@{ event = 'pane.crashed'; label = 'reviewer'; pane_id = '%4' } | ConvertTo-Json -Compress) -Encoding UTF8
 
         $sessionOneSecond = Invoke-PaneMonitorHook -RepoRoot $fixture.RepoRoot -Payload (New-PaneMonitorPayload -ToolName 'Read' -ToolInput ([ordered]@{ file_path = 'docs\handoff.md' }) -SessionId 'session-1')
         $sessionTwoSecond = Invoke-PaneMonitorHook -RepoRoot $fixture.RepoRoot -Payload (New-PaneMonitorPayload -ToolName 'Read' -ToolInput ([ordered]@{ file_path = 'docs\handoff.md' }) -SessionId 'session-2')
 
-        $sessionOneSecond['OutputObject'] | Should -Be $null
-        $sessionTwoSecond['OutputObject'] | Should -Be $null
+        ([string]$sessionOneSecond['OutputObject'].hookSpecificOutput.additionalContext) | Should -Match '\[PANE ALERT\] reviewer crashed'
+        ([string]$sessionTwoSecond['OutputObject'].hookSpecificOutput.additionalContext) | Should -Match '\[PANE ALERT\] reviewer crashed'
         Test-Path (Join-Path $fixture.WinsmuxDir 'monitor-cursor-session-1.txt') | Should -BeTrue
         Test-Path (Join-Path $fixture.WinsmuxDir 'monitor-cursor-session-2.txt') | Should -BeTrue
     }
