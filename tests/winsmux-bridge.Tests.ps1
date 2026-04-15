@@ -2737,14 +2737,6 @@ Describe 'orchestra-start server bootstrap' {
 
     BeforeEach {
         $script:winsmuxBin = 'winsmux'
-        Mock Get-OrchestraAttachedClientSnapshot {
-            [PSCustomObject][ordered]@{
-                Ok      = $true
-                Count   = 0
-                Error   = ''
-                Clients = @()
-            }
-        }
     }
 
     It 'returns success when the server session already exists' {
@@ -2810,27 +2802,42 @@ Describe 'orchestra-start server bootstrap' {
         $script:probeCount | Should -Be 2
     }
 
-    It 'launches a best-effort UI attach with a real Windows Terminal path' {
+    It 'launches visible attach through a fixed Windows Terminal profile and handshake' {
         $script:startProcessCalls = @()
+        $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
 
-        function Get-Command {
-            param([string]$Name)
-            if ($Name -eq 'wt.exe') {
-                return [PSCustomObject]@{ Source = 'C:\Windows\System32\wt.exe' }
-            }
-            if ($Name -eq 'pwsh') {
-                return [PSCustomObject]@{ Source = 'C:\Program Files\PowerShell\7\pwsh.exe' }
-            }
-            if ($Name -eq 'winsmux') {
-                return [PSCustomObject]@{ Source = 'C:\Users\komei\.local\bin\winsmux.exe' }
-            }
-
-            throw "unexpected command lookup: $Name"
+        Mock Get-OrchestraAttachedClientSnapshot {
+            [PSCustomObject]@{ Ok = $true; Count = 0; Error = ''; Clients = @() }
         }
-
-        function Get-Item {
-            param([string]$LiteralPath)
-            return [PSCustomObject]@{ Length = 4096 }
+        Mock Get-OrchestraWindowsTerminalInfo {
+            [PSCustomObject][ordered]@{
+                Available   = $true
+                Path        = 'C:\Windows\System32\wt.exe'
+                AliasPath   = ''
+                IsAliasStub = $false
+                PathSource  = 'command'
+                Reason      = 'ready'
+            }
+        }
+        Mock Ensure-OrchestraAttachProfile {
+            [PSCustomObject][ordered]@{
+                ProfileName  = 'winsmux orchestra attach'
+                FragmentPath = 'C:\Users\komei\AppData\Local\Microsoft\Windows Terminal\Fragments\winsmux\winsmux-orchestra-attach.json'
+                Commandline  = '"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -NoExit -File "C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1"'
+            }
+        }
+        Mock Write-OrchestraAttachState {
+            [pscustomobject]@{}
+        }
+        Mock Wait-OrchestraAttachHandshake {
+            [PSCustomObject][ordered]@{
+                Confirmed           = $true
+                Source              = 'handshake'
+                Status              = 'attach_confirmed'
+                Reason              = 'Attach confirmed'
+                AttachedClientCount = 1
+                State               = [pscustomobject]@{}
+            }
         }
 
         function Start-Process {
@@ -2855,112 +2862,23 @@ Describe 'orchestra-start server bootstrap' {
 
         $result.Attempted | Should -Be $true
         $result.Launched | Should -Be $true
-        $result.Attached | Should -Be $false
-        $result.Status | Should -Be 'attach_exited_early'
-        $result.PSObject.Properties.Name | Should -Contain 'FallbackFrom'
-        $result.FallbackFrom | Should -Be 'attach_exited_early'
-        $script:startProcessCalls.Count | Should -Be 2
-        $script:startProcessCalls[0].FilePath | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
-        $script:startProcessCalls[0].ArgumentList | Should -Be @(
-            '-NoProfile', '-NoExit', '-File', ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-bootstrap.ps1'))), '-SessionName', 'winsmux-orchestra', '-WinsmuxPath', 'C:\Users\komei\.local\bin\winsmux.exe', '-AttachOnly'
-        )
-        $script:startProcessCalls[1].FilePath | Should -Be 'C:\Windows\System32\wt.exe'
-        $script:startProcessCalls[1].ArgumentList | Should -Be @(
-            '--size', '200,70',
-            'new-tab',
-            '--title', 'winsmux-orchestra',
-            '--',
-            'C:\Program Files\PowerShell\7\pwsh.exe', '-NoProfile', '-NoExit', '-File', ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-bootstrap.ps1'))), '-SessionName', 'winsmux-orchestra', '-WinsmuxPath', 'C:\Users\komei\.local\bin\winsmux.exe', '-AttachOnly'
-        )
-    }
-
-    It 'keeps ui_attached false while marking attach_launched when the attach child survives the early-failure window' {
-        $script:startProcessCalls = @()
-
-        function Get-Command {
-            param([string]$Name)
-            if ($Name -eq 'wt.exe') {
-                return [PSCustomObject]@{ Source = 'C:\Windows\System32\wt.exe' }
-            }
-            if ($Name -eq 'pwsh') {
-                return [PSCustomObject]@{ Source = 'C:\Program Files\PowerShell\7\pwsh.exe' }
-            }
-            if ($Name -eq 'winsmux') {
-                return [PSCustomObject]@{ Source = 'C:\Users\komei\.local\bin\winsmux.exe' }
-            }
-
-            throw "unexpected command lookup: $Name"
-        }
-
-        function Get-Item {
-            param([string]$LiteralPath)
-            return [PSCustomObject]@{ Length = 4096 }
-        }
-
-        function Start-Process {
-            param(
-                [string]$FilePath,
-                [object[]]$ArgumentList,
-                [switch]$PassThru
-            )
-
-            $script:startProcessCalls += ,([PSCustomObject]@{
-                FilePath     = $FilePath
-                ArgumentList = @($ArgumentList)
-            })
-            return [PSCustomObject]@{ HasExited = $false }
-        }
-
-        function Start-Sleep {
-            param([int]$Milliseconds)
-        }
-
-        $result = Try-StartOrchestraUiAttach -SessionName 'winsmux-orchestra'
-
-        $result.Attempted | Should -Be $true
-        $result.Launched | Should -Be $true
-        $result.Attached | Should -Be $false
-        $result.Status | Should -Be 'attach_launched_pwsh'
+        $result.Attached | Should -Be $true
+        $result.Status | Should -Be 'attach_confirmed'
+        $result.Source | Should -Be 'handshake'
         $script:startProcessCalls.Count | Should -Be 1
-        $script:startProcessCalls[0].FilePath | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
+        $script:startProcessCalls[0].FilePath | Should -Be 'C:\Windows\System32\wt.exe'
+        $script:startProcessCalls[0].ArgumentList | Should -Be @('-w', '-1', 'new-tab', '-p', 'winsmux orchestra attach')
     }
 
-    It 'skips UI attach when an attached client already exists for the session' {
+    It 'returns attach_already_present when a visible client already exists' {
         $script:startProcessCalls = @()
-
-        function Get-Command {
-            param([string]$Name)
-            if ($Name -eq 'pwsh') {
-                return [PSCustomObject]@{ Source = 'C:\Program Files\PowerShell\7\pwsh.exe' }
-            }
-            if ($Name -eq 'winsmux') {
-                return [PSCustomObject]@{ Source = 'C:\Users\komei\.local\bin\winsmux.exe' }
-            }
-            if ($Name -eq 'wt.exe') {
-                return [PSCustomObject]@{ Source = 'C:\Windows\System32\wt.exe' }
-            }
-
-            throw "unexpected command lookup: $Name"
-        }
-
-        Mock Get-OrchestraWindowsTerminalInfo {
-            [PSCustomObject][ordered]@{
-                Available   = $false
-                Path        = ''
-                AliasPath   = ''
-                IsAliasStub = $false
-                PathSource  = ''
-                Reason      = 'wt_unavailable'
-            }
-        }
+        $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
 
         Mock Get-OrchestraAttachedClientSnapshot {
-            [PSCustomObject][ordered]@{
-                Ok      = $true
-                Count   = 2
-                Error   = ''
-                Clients = @('/dev/pts/440', '/dev/pts/618')
-            }
+            [PSCustomObject]@{ Ok = $true; Count = 1; Error = ''; Clients = @('client-1') }
+        }
+        Mock Write-OrchestraAttachState {
+            [pscustomobject]@{}
         }
 
         function Start-Process {
@@ -2978,122 +2896,36 @@ Describe 'orchestra-start server bootstrap' {
         $result.Launched | Should -Be $false
         $result.Attached | Should -Be $true
         $result.Status | Should -Be 'attach_already_present'
+        $result.Source | Should -Be 'client-probe'
         $script:startProcessCalls.Count | Should -Be 0
     }
 
-    It 'resolves a canonical Windows Terminal path when wt.exe is only a WindowsApps alias' {
-        $script:startProcessCalls = @()
-
-        function Get-Command {
-            param([string]$Name)
-            if ($Name -eq 'wt.exe') {
-                return [PSCustomObject]@{ Source = 'C:\Users\komei\AppData\Local\Microsoft\WindowsApps\wt.exe' }
-            }
-            if ($Name -eq 'pwsh') {
-                return [PSCustomObject]@{ Source = 'C:\Program Files\PowerShell\7\pwsh.exe' }
-            }
-            if ($Name -eq 'winsmux') {
-                return [PSCustomObject]@{ Source = 'C:\Users\komei\.local\bin\winsmux.exe' }
-            }
-
-            throw "unexpected command lookup: $Name"
+    It 'fails closed when Windows Terminal is unavailable instead of falling back to dynamic attach commands' {
+        $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
+        Mock Get-OrchestraAttachedClientSnapshot {
+            [PSCustomObject]@{ Ok = $true; Count = 0; Error = ''; Clients = @() }
         }
-
-        function Get-Item {
-            param([string]$LiteralPath)
-            return [PSCustomObject]@{ Length = 0 }
-        }
-
-        function Get-AppxPackage {
-            param([string]$Name)
-            if ($Name -eq 'Microsoft.WindowsTerminal') {
-                return [PSCustomObject]@{ InstallLocation = 'C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe' }
-            }
-
-            return $null
-        }
-
-        function Test-Path {
-            param([string]$LiteralPath)
-            return $LiteralPath -eq 'C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\wt.exe'
-        }
-
-        function Start-Process {
-            param([string]$FilePath, [object[]]$ArgumentList, [switch]$PassThru)
-            $script:startProcessCalls += ,([PSCustomObject]@{
-                FilePath     = $FilePath
-                ArgumentList = @($ArgumentList)
-            })
-            return [PSCustomObject]@{ HasExited = $true }
-        }
-
-        function Start-Sleep {
-            param([int]$Milliseconds)
-        }
-
-        $result = Try-StartOrchestraUiAttach -SessionName 'winsmux-orchestra'
-
-        $result.Attempted | Should -Be $true
-        $result.Launched | Should -Be $true
-        $result.Attached | Should -Be $false
-        $result.Status | Should -Be 'attach_exited_early'
-        $result.PSObject.Properties.Name | Should -Contain 'FallbackFrom'
-        $result.FallbackFrom | Should -Be 'attach_exited_early'
-        $script:startProcessCalls.Count | Should -Be 2
-        $script:startProcessCalls[0].FilePath | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
-        $script:startProcessCalls[1].FilePath | Should -Be 'C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.23.20211.0_x64__8wekyb3d8bbwe\wt.exe'
-        $script:startProcessCalls[1].ArgumentList | Should -Be @(
-            '--size', '200,70',
-            'new-tab',
-            '--title', 'winsmux-orchestra',
-            '--',
-            'C:\Program Files\PowerShell\7\pwsh.exe', '-NoProfile', '-NoExit', '-File', ([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-bootstrap.ps1'))), '-SessionName', 'winsmux-orchestra', '-WinsmuxPath', 'C:\Users\komei\.local\bin\winsmux.exe', '-AttachOnly'
-        )
-    }
-
-    It 'falls back to a standalone PowerShell attach window when wt.exe is only an alias stub and no canonical binary is available' {
-        $script:startProcessCalls = @()
-
-        function Get-Command {
-            param([string]$Name)
-            if ($Name -eq 'pwsh') {
-                return [PSCustomObject]@{ Source = 'C:\Program Files\PowerShell\7\pwsh.exe' }
-            }
-            if ($Name -eq 'winsmux') {
-                return [PSCustomObject]@{ Source = 'C:\Users\komei\.local\bin\winsmux.exe' }
-            }
-
-            throw "unexpected command lookup: $Name"
-        }
-
         Mock Get-OrchestraWindowsTerminalInfo {
             [PSCustomObject][ordered]@{
                 Available   = $false
                 Path        = ''
-                AliasPath   = 'C:\Users\komei\AppData\Local\Microsoft\WindowsApps\wt.exe'
-                IsAliasStub = $true
+                AliasPath   = ''
+                IsAliasStub = $false
                 PathSource  = ''
-                Reason      = 'wt_alias_stub'
+                Reason      = 'wt_unavailable'
             }
         }
-
-        function Start-Process {
-            param([string]$FilePath, [object[]]$ArgumentList, [switch]$PassThru)
-            $script:startProcessCalls += ,([PSCustomObject]@{
-                FilePath     = $FilePath
-                ArgumentList = @($ArgumentList)
-            })
-            return [PSCustomObject]@{ HasExited = $false }
+        Mock Write-OrchestraAttachState {
+            [pscustomobject]@{}
         }
 
         $result = Try-StartOrchestraUiAttach -SessionName 'winsmux-orchestra'
 
-        $result.Attempted | Should -Be $true
-        $result.Launched | Should -Be $true
+        $result.Attempted | Should -Be $false
+        $result.Launched | Should -Be $false
         $result.Attached | Should -Be $false
-        $result.Status | Should -Be 'attach_launched_pwsh'
-        $script:startProcessCalls.Count | Should -Be 1
-        $script:startProcessCalls[0].FilePath | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
+        $result.Status | Should -Be 'attach_failed'
+        $result.Source | Should -Be 'none'
     }
 
     It 'checks the bootstrap pane count before reporting startup ready' {
@@ -3304,6 +3136,13 @@ Describe 'orchestra-start server bootstrap' {
             }
         }
 
+        Mock Get-OrchestraAttachedClientSnapshot {
+            [PSCustomObject][ordered]@{
+                Ok    = $true
+                Count = 0
+            }
+        }
+
         function Start-Process {
             param([string]$FilePath, [object[]]$ArgumentList, [switch]$PassThru)
             $script:startProcessCalls += ,([PSCustomObject]@{
@@ -3319,12 +3158,12 @@ Describe 'orchestra-start server bootstrap' {
 
         $result = Try-StartOrchestraUiAttach -SessionName 'winsmux-orchestra'
 
-        $result.Attempted | Should -Be $true
-        $result.Launched | Should -Be $true
+        $result.Attempted | Should -Be $false
+        $result.Launched | Should -Be $false
         $result.Attached | Should -Be $false
-        $result.Status | Should -Be 'attach_launched_pwsh'
-        $script:startProcessCalls.Count | Should -Be 1
-        $script:startProcessCalls[0].FilePath | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
+        $result.Status | Should -Be 'attach_failed'
+        $result.Reason | Should -Match 'Windows Terminal is not installed or not on PATH'
+        $script:startProcessCalls.Count | Should -Be 0
     }
 
     It 'skips UI attach when winsmux cannot be resolved to an absolute path for the child process' {
@@ -6382,9 +6221,6 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'session_ready'
         $script:orchestraSmokeContent | Should -Match 'ui_attach_launched'
         $script:orchestraSmokeContent | Should -Match 'ui_attached'
-        $script:orchestraSmokeContent | Should -Match 'attached_client_count'
-        $script:orchestraSmokeContent | Should -Match 'client_probe_ok'
-        $script:orchestraSmokeContent | Should -Match 'client_probe_error'
         $script:orchestraSmokeContent | Should -Match 'expected_pane_count'
         $script:orchestraSmokeContent | Should -Match 'winsmux_bin'
         $script:orchestraSmokeContent | Should -Match 'pane_probe_ok'
@@ -6410,12 +6246,6 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'elseif \(\$AutoStart\)'
         $script:orchestraSmokeContent | Should -Match 'Skipped orchestra-start; run orchestra-start\.ps1 when operator_contract\.requires_startup is true\.'
     }
-
-    It 'uses attached clients to suppress duplicate UI attach retries' {
-        $script:orchestraSmokeContent | Should -Match 'Get-OrchestraAttachedClientSnapshot'
-        $script:orchestraSmokeContent | Should -Match 'list-clients -t \$SessionName'
-        $script:orchestraSmokeContent | Should -Match "uiAttachStatus = 'attach_already_present'"
-    }
 }
 
 Describe 'operator startup restore contract docs' {
@@ -6436,7 +6266,7 @@ Describe 'operator startup restore contract docs' {
         $script:claudeGuideContent | Should -Match 'ready-with-ui-warning'
         $script:claudeGuideContent | Should -Match 'winsmux orchestra-attach --json'
         $script:claudeGuideContent | Should -Match 'winsmux dispatch-task'
-        $script:claudeGuideContent | Should -Match 'without asking the user to choose a starting task'
+        $script:claudeGuideContent | Should -Match 'start the first pending action automatically instead of asking which task to begin'
         $script:claudeGuideContent | Should -Match 'do not use Explore subagents for PR/task analysis'
         $script:claudeGuideContent | Should -Match 'psmux --version'
         $script:claudeGuideContent | Should -Match 'Get-Process psmux-server'

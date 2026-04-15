@@ -6,7 +6,7 @@
 // Target response time: < 50ms
 "use strict";
 
-const { readHookInput, allow, deny } = require("./lib/sh-utils");
+const { readHookInput, allow, deny, failClosed } = require("./lib/sh-utils");
 
 // ---------------------------------------------------------------------------
 // Category Constants
@@ -149,11 +149,5 @@ try {
       break;
   }
 } catch (err) {
-  // fail-close: any uncaught error = deny
-  process.stdout.write(
-    JSON.stringify({
-      reason: `Hook error (sh-permission): ${err.message}`,
-    }),
-  );
-  process.exit(2);
+  failClosed(`Hook error (sh-permission): ${err.message}`);
 }

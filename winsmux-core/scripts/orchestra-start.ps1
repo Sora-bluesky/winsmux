@@ -8,6 +8,7 @@ $scriptDir = $PSScriptRoot
 . "$scriptDir/orchestra-preflight.ps1"
 . "$scriptDir/manifest.ps1"
 . "$scriptDir/pane-env.ps1"
+. "$scriptDir/orchestra-ui-attach.ps1"
 
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -170,77 +171,12 @@ function Start-OrchestraAttachProcess {
     }
 }
 
-function Get-OrchestraAttachedClientSnapshot {
-    param(
-        [Parameter(Mandatory = $true)][string]$SessionName
-    )
-
-    $clients = @()
-    $error = ''
-    $ok = $false
-
-    if ([string]::IsNullOrWhiteSpace([string]$script:winsmuxBin)) {
-        return [PSCustomObject][ordered]@{
-            Ok      = $false
-            Count   = 0
-            Error   = 'winsmux executable could not be resolved.'
-            Clients = @()
-        }
-    }
-
-    try {
-        $clientLines = & $script:winsmuxBin 'list-clients' '-t' $SessionName 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            $clients = @(
-                $clientLines |
-                    ForEach-Object { [string]$_ } |
-                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-            )
-            $ok = $true
-        } else {
-            $error = ($clientLines | Out-String).Trim()
-        }
-    } catch {
-        $error = $_.Exception.Message
-    }
-
-    [PSCustomObject][ordered]@{
-        Ok      = $ok
-        Count   = $clients.Count
-        Error   = $error
-        Clients = @($clients)
-    }
-}
-
 function Try-StartOrchestraUiAttach {
     param(
         [Parameter(Mandatory = $true)][string]$SessionName,
         [int]$Width = 200,
         [int]$Height = 70
     )
-
-    $terminalInfo = Get-OrchestraWindowsTerminalInfo
-    $wtResult = $null
-    if (-not [bool]$terminalInfo.Available) {
-        $wtResult = [PSCustomObject][ordered]@{
-            Attempted = $false
-            Launched  = $false
-            Attached  = $false
-            Status    = if ([bool]$terminalInfo.IsAliasStub) { 'wt_alias_stub' } else { 'wt_unavailable' }
-            Reason    = if ([bool]$terminalInfo.IsAliasStub) {
-                'WindowsApps wt.exe alias was found, but no canonical Windows Terminal binary could be resolved.'
-            } else {
-                'Windows Terminal is not installed or not on PATH.'
-            }
-            Path      = if ([bool]$terminalInfo.IsAliasStub) { [string]$terminalInfo.AliasPath } else { '' }
-        }
-    }
-
-    $bootstrapScriptPath = Join-Path $scriptDir 'orchestra-bootstrap.ps1'
-    $pwshPath = Get-Command 'pwsh' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
-    if ([string]::IsNullOrWhiteSpace($pwshPath)) {
-        $pwshPath = 'pwsh'
-    }
 
     $winsmuxPathForAttach = [string]$script:winsmuxBin
     if (-not [string]::IsNullOrWhiteSpace($winsmuxPathForAttach) -and -not [System.IO.Path]::IsPathRooted($winsmuxPathForAttach)) {
@@ -256,65 +192,110 @@ function Try-StartOrchestraUiAttach {
             Launched  = $false
             Attached  = $false
             Status    = 'winsmux_unresolved'
-            Reason    = 'winsmux executable could not be resolved to an absolute path for the attach child process.'
-            Path      = [string]$terminalInfo.Path
+            Reason    = 'winsmux executable could not be resolved to an absolute path for UI attach.'
+            Path      = ''
+            Source    = 'none'
         }
     }
 
-    $clientSnapshot = Get-OrchestraAttachedClientSnapshot -SessionName $SessionName
-    if ([bool]$clientSnapshot.Ok -and [int]$clientSnapshot.Count -gt 0) {
+    $clientSnapshot = Get-OrchestraAttachedClientSnapshot -WinsmuxBin $winsmuxPathForAttach -SessionName $SessionName
+    $baselineClientCount = if ([bool]$clientSnapshot.Ok) { [int]$clientSnapshot.Count } else { 0 }
+    if ([bool]$clientSnapshot.Ok -and $baselineClientCount -ge 1) {
+        Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+            session_name       = $SessionName
+            winsmux_path       = $winsmuxPathForAttach
+            attach_status      = 'attach_confirmed'
+            attach_confirmed_at = (Get-Date).ToString('o')
+            client_count_seen  = $baselineClientCount
+            ui_attach_source   = 'client-probe'
+            error              = "Detected $baselineClientCount attached client(s) for session '$SessionName'."
+        } | Out-Null
+
         return [PSCustomObject][ordered]@{
             Attempted = $false
             Launched  = $false
             Attached  = $true
             Status    = 'attach_already_present'
-            Reason    = "Detected $($clientSnapshot.Count) attached client(s) for session '$SessionName'; skipped spawning another visible attach window."
+            Reason    = "Detected $baselineClientCount attached client(s) for session '$SessionName'; skipped spawning another visible attach window."
             Path      = ''
+            Source    = 'client-probe'
         }
     }
 
-    $bootstrapArguments = @(
-        '-NoProfile', '-NoExit', '-File', $bootstrapScriptPath, '-SessionName', $SessionName, '-WinsmuxPath', $winsmuxPathForAttach, '-AttachOnly'
-    )
+    $terminalInfo = Get-OrchestraWindowsTerminalInfo
+    if (-not [bool]$terminalInfo.Available) {
+        $reason = if ([bool]$terminalInfo.IsAliasStub) {
+            'WindowsApps wt.exe alias was found, but no canonical Windows Terminal binary could be resolved.'
+        } else {
+            'Windows Terminal is not installed or not on PATH.'
+        }
 
-    $pwshResult = Start-OrchestraAttachProcess `
-        -FilePath $pwshPath `
-        -ArgumentList $bootstrapArguments `
-        -Path $pwshPath `
-        -LaunchedStatus 'attach_launched_pwsh' `
-        -LaunchedReason 'Launched orchestra bootstrap in a standalone PowerShell window.' `
-        -FallbackReason 'Standalone PowerShell attach exited during the early-failure window.'
+        Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+            session_name          = $SessionName
+            winsmux_path          = $winsmuxPathForAttach
+            requested_at          = (Get-Date).ToString('o')
+            baseline_client_count = $baselineClientCount
+            client_count_seen     = $baselineClientCount
+            attach_status         = 'attach_failed'
+            ui_attach_source      = 'none'
+            error                 = $reason
+        } | Out-Null
 
-    if ([string]$pwshResult.Status -ne 'attach_exited_early' -and [string]$pwshResult.Status -ne 'attach_failed') {
-        return $pwshResult
-    }
-
-    if ($null -eq $wtResult) {
-        $wtArguments = @(
-            '--size', "$Width,$Height",
-            'new-tab',
-            '--title', $SessionName,
-            '--',
-            $pwshPath
-        ) + $bootstrapArguments
-
-        $wtResult = Start-OrchestraAttachProcess `
-            -FilePath ([string]$terminalInfo.Path) `
-            -ArgumentList $wtArguments `
-            -Path ([string]$terminalInfo.Path) `
-            -LaunchedStatus 'attach_launched_wt_fallback' `
-            -LaunchedReason 'Standalone PowerShell attach failed; launched Windows Terminal attach child as a fallback.' `
-            -FallbackReason 'Windows Terminal attach child exited during the early-failure window.'
-
-        if ([bool]$wtResult.Launched) {
-            $wtResult | Add-Member -NotePropertyName FallbackFrom -NotePropertyValue ([string]$pwshResult.Status) -Force
-            return $wtResult
+        return [PSCustomObject][ordered]@{
+            Attempted = $false
+            Launched  = $false
+            Attached  = $false
+            Status    = 'attach_failed'
+            Reason    = $reason
+            Path      = [string]$terminalInfo.Path
+            Source    = 'none'
         }
     }
 
-    $pwshResult | Add-Member -NotePropertyName FallbackStatus -NotePropertyValue ([string]$wtResult.Status) -Force
-    $pwshResult | Add-Member -NotePropertyName FallbackReason -NotePropertyValue ([string]$wtResult.Reason) -Force
-    return $pwshResult
+    $profile = Ensure-OrchestraAttachProfile -ProjectDir $projectDir
+    Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+        session_name          = $SessionName
+        winsmux_path          = $winsmuxPathForAttach
+        project_dir           = $projectDir
+        requested_at          = (Get-Date).ToString('o')
+        request_id            = [guid]::NewGuid().ToString('N')
+        baseline_client_count = $baselineClientCount
+        client_count_seen     = $baselineClientCount
+        attach_status         = 'attach_requested'
+        ui_attach_source      = 'none'
+        error                 = ''
+    } | Out-Null
+
+    try {
+        Start-Process -FilePath ([string]$terminalInfo.Path) -ArgumentList @('-w', '-1', 'new-tab', '-p', [string]$profile.ProfileName) -PassThru | Out-Null
+    } catch {
+        Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+            attach_status     = 'attach_failed'
+            ui_attach_source  = 'none'
+            error             = $_.Exception.Message
+        } | Out-Null
+
+        return [PSCustomObject][ordered]@{
+            Attempted = $true
+            Launched  = $false
+            Attached  = $false
+            Status    = 'attach_failed'
+            Reason    = $_.Exception.Message
+            Path      = [string]$terminalInfo.Path
+            Source    = 'none'
+        }
+    }
+
+    $confirmed = Wait-OrchestraAttachHandshake -SessionName $SessionName -WinsmuxBin $winsmuxPathForAttach -BaselineClientCount $baselineClientCount
+    return [PSCustomObject][ordered]@{
+        Attempted = $true
+        Launched  = $true
+        Attached  = [bool]$confirmed.Confirmed
+        Status    = [string]$confirmed.Status
+        Reason    = [string]$confirmed.Reason
+        Path      = [string]$terminalInfo.Path
+        Source    = [string]$confirmed.Source
+    }
 }
 
 function Ensure-OrchestraBootstrapSession {
@@ -1140,7 +1121,8 @@ function Save-OrchestraSessionState {
         [bool]$UiAttachLaunched = $false,
         [bool]$UiAttached = $false,
         [AllowEmptyString()][string]$UiAttachStatus = '',
-        [AllowEmptyString()][string]$UiAttachReason = ''
+        [AllowEmptyString()][string]$UiAttachReason = '',
+        [AllowEmptyString()][string]$UiAttachSource = 'none'
     )
 
     $manifestPath = Get-OrchestraManifestPath -ProjectDir $ProjectDir
@@ -1182,6 +1164,7 @@ function Save-OrchestraSessionState {
             ui_attached         = $UiAttached
             ui_attach_status    = $UiAttachStatus
             ui_attach_reason    = $UiAttachReason
+            ui_attach_source    = $UiAttachSource
         }
         panes     = $paneMap
         tasks     = [PSCustomObject]@{
@@ -2160,12 +2143,12 @@ if ($MyInvocation.InvocationName -ne '.') {
     Assert-OrchestraBootstrapVerification -PaneSummaries @($paneSummaries) -InvalidCount $invalidCount -ReadyCount $readyCount
 
     $uiAttachResult = Try-StartOrchestraUiAttach -SessionName $sessionName
-    $successfulAttachStatuses = @('attach_launched', 'attach_launched_pwsh', 'attach_launched_wt_fallback', 'attach_already_present')
+    $successfulAttachStatuses = @('attach_confirmed', 'attach_already_present')
     if ($successfulAttachStatuses -notcontains [string]$uiAttachResult.Status) {
         Write-Warning "Orchestra UI attach status for ${sessionName}: $($uiAttachResult.Status) ($($uiAttachResult.Reason))"
     }
 
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $false -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason)
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $false -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source)
     $commanderPollScriptPath = Join-Path $scriptDir 'commander-poll.ps1'
     $commanderPollProcess = Start-CommanderPollJob -CommanderPollScriptPath $commanderPollScriptPath -ManifestPath $manifestPath -StartupToken $startupToken -Interval 20
     Write-WinsmuxLog -Level INFO -Event 'preflight.commander_poll.started' -Message "Started commander poll for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; commander_poll_pid = $commanderPollProcess.Id; process_name = $commanderPollProcess.ProcessName } | Out-Null
@@ -2176,7 +2159,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     Assert-OrchestraBackgroundProcessStarted -Process $commanderPollProcess -Name 'Commander poll job'
     Assert-OrchestraBackgroundProcessStarted -Process $watchdogProcess -Name 'Agent watchdog job'
     Assert-OrchestraBackgroundProcessStarted -Process $serverWatchdogProcess -Name 'Server watchdog job'
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -CommanderPollPid $commanderPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $true -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason)
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -CommanderPollPid $commanderPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $true -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source)
     Write-WinsmuxLog -Level INFO -Event 'preflight.watchdog.started' -Message "Started agent watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; watchdog_pid = $watchdogProcess.Id; process_name = $watchdogProcess.ProcessName } | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'preflight.server_watchdog.started' -Message "Started server watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; server_watchdog_pid = $serverWatchdogProcess.Id; process_name = $serverWatchdogProcess.ProcessName } | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'orchestra.startup.session_ready' -Message "Orchestra session $sessionName reached session-ready; UI attach remains a separate state." -Data ([ordered]@{
@@ -2187,6 +2170,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         ui_attach_launched = [bool]$uiAttachResult.Launched
         ui_attach_status   = [string]$uiAttachResult.Status
         ui_attached        = [bool]$uiAttachResult.Attached
+        ui_attach_source   = [string]$uiAttachResult.Source
     }) | Out-Null
 
     Write-Output "Orchestra session: $sessionName"

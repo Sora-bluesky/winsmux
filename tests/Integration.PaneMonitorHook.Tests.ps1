@@ -40,20 +40,27 @@ Describe 'sh-pane-monitor integration' {
                 $stderr = $process.StandardError.ReadToEnd()
                 $process.WaitForExit()
 
+                $stdoutTrimmed = $stdout.Trim()
                 $stderrTrimmed = $stderr.Trim()
-                $parsedError = $null
-                if (-not [string]::IsNullOrWhiteSpace($stderrTrimmed)) {
+                $parsedOutput = $null
+                if (-not [string]::IsNullOrWhiteSpace($stdoutTrimmed)) {
                     try {
-                        $parsedError = $stderrTrimmed | ConvertFrom-Json -ErrorAction Stop
+                        $parsedOutput = $stdoutTrimmed | ConvertFrom-Json -ErrorAction Stop
+                    } catch {
+                    }
+                }
+                if ($null -eq $parsedOutput -and -not [string]::IsNullOrWhiteSpace($stderrTrimmed)) {
+                    try {
+                        $parsedOutput = $stderrTrimmed | ConvertFrom-Json -ErrorAction Stop
                     } catch {
                     }
                 }
 
                 return [ordered]@{
                     ExitCode    = $process.ExitCode
-                    StdOut      = $stdout.Trim()
+                    StdOut      = $stdoutTrimmed
                     StdErr      = $stderrTrimmed
-                    ErrorObject = $parsedError
+                    OutputObject = $parsedOutput
                 }
             } finally {
                 $process.Dispose()
@@ -136,8 +143,8 @@ session:
         })
 
         $result['ExitCode'] | Should -Be 0
-        $result['ErrorObject'] | Should -Not -BeNullOrEmpty
-        $context = [string]$result['ErrorObject'].hookSpecificOutput.additionalContext
+        $result['OutputObject'] | Should -Not -BeNullOrEmpty
+        $context = [string]$result['OutputObject'].hookSpecificOutput.additionalContext
         $context | Should -Match '\[PANE ALERT\] builder-1 completed'
         $context | Should -Match '\[PANE ALERT\] reviewer crashed'
         $context | Should -Match '\[PANE ALERT\] approver awaiting approval'
@@ -161,7 +168,7 @@ session:
 
         $second['ExitCode'] | Should -Be 0
         $second['StdErr'] | Should -Be ''
-        $second['ErrorObject'] | Should -Be $null
+        $second['OutputObject'] | Should -Be $null
     }
 
     It 'persists the cursor and only reports newly appended events' {
@@ -173,14 +180,14 @@ session:
 
         $first = Invoke-PaneMonitorHook -RepoRoot $fixture.RepoRoot -Payload (New-PaneMonitorPayload -ToolName 'Read' -ToolInput ([ordered]@{ file_path = 'docs\handoff.md' }))
         $first['ExitCode'] | Should -Be 0
-        ([string]$first['ErrorObject'].hookSpecificOutput.additionalContext) | Should -Match '\[PANE ALERT\] builder-1 completed'
+        ([string]$first['OutputObject'].hookSpecificOutput.additionalContext) | Should -Match '\[PANE ALERT\] builder-1 completed'
 
         Add-Content -Path $fixture.EventsPath -Value ([ordered]@{ event = 'pane.crashed'; label = 'reviewer'; pane_id = '%4' } | ConvertTo-Json -Compress) -Encoding UTF8
 
         $second = Invoke-PaneMonitorHook -RepoRoot $fixture.RepoRoot -Payload (New-PaneMonitorPayload -ToolName 'Read' -ToolInput ([ordered]@{ file_path = 'docs\handoff.md' }))
 
         $second['ExitCode'] | Should -Be 0
-        $context = [string]$second['ErrorObject'].hookSpecificOutput.additionalContext
+        $context = [string]$second['OutputObject'].hookSpecificOutput.additionalContext
         $context | Should -Match '\[PANE ALERT\] reviewer crashed'
         $context | Should -Not -Match '\[PANE ALERT\] builder-1 completed'
 
@@ -201,14 +208,14 @@ session:
 
         $sessionOneFirst['ExitCode'] | Should -Be 0
         $sessionTwoFirst['ExitCode'] | Should -Be 0
-        ([string]$sessionOneFirst['ErrorObject'].hookSpecificOutput.additionalContext) | Should -Match '\[PANE ALERT\] builder-1 completed'
-        ([string]$sessionTwoFirst['ErrorObject'].hookSpecificOutput.additionalContext) | Should -Match '\[PANE ALERT\] builder-1 completed'
+        ([string]$sessionOneFirst['OutputObject'].hookSpecificOutput.additionalContext) | Should -Match '\[PANE ALERT\] builder-1 completed'
+        ([string]$sessionTwoFirst['OutputObject'].hookSpecificOutput.additionalContext) | Should -Match '\[PANE ALERT\] builder-1 completed'
 
         $sessionOneSecond = Invoke-PaneMonitorHook -RepoRoot $fixture.RepoRoot -Payload (New-PaneMonitorPayload -ToolName 'Read' -ToolInput ([ordered]@{ file_path = 'docs\handoff.md' }) -SessionId 'session-1')
         $sessionTwoSecond = Invoke-PaneMonitorHook -RepoRoot $fixture.RepoRoot -Payload (New-PaneMonitorPayload -ToolName 'Read' -ToolInput ([ordered]@{ file_path = 'docs\handoff.md' }) -SessionId 'session-2')
 
-        $sessionOneSecond['ErrorObject'] | Should -Be $null
-        $sessionTwoSecond['ErrorObject'] | Should -Be $null
+        $sessionOneSecond['OutputObject'] | Should -Be $null
+        $sessionTwoSecond['OutputObject'] | Should -Be $null
         Test-Path (Join-Path $fixture.WinsmuxDir 'monitor-cursor-session-1.txt') | Should -BeTrue
         Test-Path (Join-Path $fixture.WinsmuxDir 'monitor-cursor-session-2.txt') | Should -BeTrue
     }
