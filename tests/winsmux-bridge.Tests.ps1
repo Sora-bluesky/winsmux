@@ -6246,6 +6246,13 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'elseif \(\$AutoStart\)'
         $script:orchestraSmokeContent | Should -Match 'Skipped orchestra-start; run orchestra-start\.ps1 when operator_contract\.requires_startup is true\.'
     }
+
+    It 'keeps the structured operator contract independent from MCP or plugin chatter inputs' {
+        $script:orchestraSmokeContent | Should -Not -Match 'called MCP'
+        $script:orchestraSmokeContent | Should -Not -Match 'plugin initialization'
+        $script:orchestraSmokeContent | Should -Not -Match 'channel notifications'
+        $script:orchestraSmokeContent | Should -Match 'Get-OrchestraOperatorContract'
+    }
 }
 
 Describe 'operator startup restore contract docs' {
@@ -6266,6 +6273,10 @@ Describe 'operator startup restore contract docs' {
         $script:claudeGuideContent | Should -Match 'ready-with-ui-warning'
         $script:claudeGuideContent | Should -Match 'winsmux orchestra-attach --json'
         $script:claudeGuideContent | Should -Match 'winsmux dispatch-task'
+        $script:claudeGuideContent | Should -Match 'called MCP'
+        $script:claudeGuideContent | Should -Match 'plugin bootstrap messages must not be used as readiness evidence'
+        $script:claudeGuideContent | Should -Match 'hook validation noise'
+        $script:claudeGuideContent | Should -Match 'prevents a clean `winsmux orchestra-smoke --json` result from being obtained'
         $script:claudeGuideContent | Should -Match 'start the first pending action automatically instead of asking which task to begin'
         $script:claudeGuideContent | Should -Match 'do not use Explore subagents for PR/task analysis'
         $script:claudeGuideContent | Should -Match 'psmux --version'
@@ -6280,6 +6291,10 @@ Describe 'operator startup restore contract docs' {
         $script:dispatchRuleContent | Should -Match 'operator_contract\.can_dispatch'
         $script:dispatchRuleContent | Should -Match 'operator_contract\.requires_startup'
         $script:dispatchRuleContent | Should -Match 'ready-with-ui-warning'
+        $script:dispatchRuleContent | Should -Match 'called MCP'
+        $script:dispatchRuleContent | Should -Match 'must not be used as readiness evidence'
+        $script:dispatchRuleContent | Should -Match 'hook validation noise'
+        $script:dispatchRuleContent | Should -Match 'prevents a clean `orchestra-smoke --json` result from being obtained'
         $script:dispatchRuleContent | Should -Match 'Never ask the user which task to begin'
         $script:dispatchRuleContent | Should -Match 'Explore subagents are reserved for orchestra startup/status diagnosis only'
         $script:dispatchRuleContent | Should -Match 'psmux --version'

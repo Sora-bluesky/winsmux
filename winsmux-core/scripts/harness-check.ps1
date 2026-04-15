@@ -93,6 +93,73 @@ function Test-HarnessSettingsLocalTracked {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Test-HarnessSettingsHasHookCommand {
+    param(
+        [AllowNull()]$SettingsObject,
+        [Parameter(Mandatory = $true)][string]$EventName,
+        [Parameter(Mandatory = $true)][string]$Command,
+        [string]$Matcher = ''
+    )
+
+    if ($null -eq $SettingsObject -or -not (Test-HarnessHasProperty -Object $SettingsObject -Name 'hooks')) {
+        return $false
+    }
+
+    $hooksRoot = $SettingsObject.hooks
+    if (-not (Test-HarnessHasProperty -Object $hooksRoot -Name $EventName)) {
+        return $false
+    }
+
+    $eventHooks = @($hooksRoot.$EventName)
+    foreach ($group in $eventHooks) {
+        if (-not (Test-HarnessHasProperty -Object $group -Name 'hooks')) {
+            continue
+        }
+
+        $groupMatcher = if (Test-HarnessHasProperty -Object $group -Name 'matcher') { [string]$group.matcher } else { '' }
+        if ($groupMatcher -ne $Matcher) {
+            continue
+        }
+
+        foreach ($hook in @($group.hooks)) {
+            if ((Test-HarnessHasProperty -Object $hook -Name 'command') -and $hook.command -eq $Command) {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
+
+function Get-HarnessJsFunctionBlock {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$FunctionName
+    )
+
+    $functionMatches = [regex]::Matches($Source, '(?m)^\s*function\s+[A-Za-z0-9_]+\s*\(')
+    if ($functionMatches.Count -eq 0) {
+        return ''
+    }
+
+    $targetPattern = '(?m)^\s*function\s+' + [regex]::Escape($FunctionName) + '\s*\('
+    $targetMatch = [regex]::Match($Source, $targetPattern)
+    if (-not $targetMatch.Success) {
+        return ''
+    }
+
+    $startIndex = $targetMatch.Index
+    $endIndex = $Source.Length
+    foreach ($match in $functionMatches) {
+        if ($match.Index -gt $startIndex) {
+            $endIndex = $match.Index
+            break
+        }
+    }
+
+    return $Source.Substring($startIndex, $endIndex - $startIndex)
+}
+
 function Get-HarnessHookSignatureViolations {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
 
@@ -128,6 +195,15 @@ function Get-HarnessHookSignatureViolations {
         }
         if ($utilsContent -notmatch 'process\.exit\(0\)') {
             $violations.Add('.claude/hooks/lib/sh-utils.js does not keep successful structured hook replies on exit 0.') | Out-Null
+        }
+        if ($utilsContent -notmatch 'function\s+buildHookSpecificOutput\s*\(') {
+            $violations.Add('.claude/hooks/lib/sh-utils.js does not define a shared hookSpecificOutput builder.') | Out-Null
+        }
+        foreach ($functionName in @('allow', 'allowWithUpdate', 'allowWithResult')) {
+            $functionBlock = Get-HarnessJsFunctionBlock -Source $utilsContent -FunctionName $functionName
+            if ([string]::IsNullOrWhiteSpace($functionBlock) -or $functionBlock -notmatch 'buildHookSpecificOutput\s*\(') {
+                $violations.Add(".claude/hooks/lib/sh-utils.js $functionName reply does not include hookEventName via buildHookSpecificOutput.") | Out-Null
+            }
         }
     }
 
@@ -170,6 +246,10 @@ $settingsLocal = Get-HarnessSettingsObject -Path $settingsLocalPath
 $settingsExists = Test-Path -LiteralPath $settingsPath -PathType Leaf
 $settingsMessage = if ($settingsExists) { 'Project settings.json found.' } else { 'Missing .claude/settings.json.' }
 $results.Add((New-HarnessCheckRecord -Name 'settings-json-exists' -Passed $settingsExists -Message $settingsMessage -Data $settingsPath)) | Out-Null
+
+$sharedOrchestraGate = Test-HarnessSettingsHasHookCommand -SettingsObject $settings -EventName 'PreToolUse' -Matcher '' -Command 'node .claude/hooks/sh-orchestra-gate.js'
+$sharedOrchestraGateMessage = if ($sharedOrchestraGate) { 'Project settings.json registers the orchestra gate hook in the empty-matcher PreToolUse group.' } else { 'settings.json must register node .claude/hooks/sh-orchestra-gate.js in the empty-matcher PreToolUse group.' }
+$results.Add((New-HarnessCheckRecord -Name 'settings-shared-registers-orchestra-gate' -Passed $sharedOrchestraGate -Message $sharedOrchestraGateMessage -Data $settingsPath)) | Out-Null
 
 $localHasHooks = $false
 if ($null -ne $settingsLocal) {

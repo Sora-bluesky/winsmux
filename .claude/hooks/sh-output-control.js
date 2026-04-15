@@ -150,6 +150,14 @@ function trackTokenBudget(outputSize) {
   }
 }
 
+function isMcpTool(toolName) {
+  if (typeof toolName !== "string" || toolName.trim() === "") {
+    return false;
+  }
+
+  return /^(mcp__|plugin:)/i.test(toolName.trim());
+}
+
 // ---------------------------------------------------------------------------
 // Main — only execute when run directly (not when require'd for testing)
 // ---------------------------------------------------------------------------
@@ -161,7 +169,11 @@ if (require.main === module) {
     const toolInput = input.tool_input || input.toolInput || {};
     const sessionId = input.session_id || input.sessionId || "";
     const toolResult =
-      input.tool_result !== undefined ? input.tool_result : input.toolResult;
+      input.tool_response !== undefined
+        ? input.tool_response
+        : input.tool_result !== undefined
+          ? input.tool_result
+          : input.toolResult;
     void toolInput;
     void sessionId;
 
@@ -190,13 +202,17 @@ if (require.main === module) {
 
     // Output result
     if (truncated) {
-      // Must use allowWithResult to replace the tool output
-      if (context.length > 0) {
-        // allowWithResult doesn't support additionalContext, so prepend warnings to the result
-        const contextHeader = context.join("\n") + "\n\n";
-        allowWithResult(contextHeader + text);
+      if (isMcpTool(toolName)) {
+        if (context.length > 0) {
+          allowWithResult(text, context.join("\n"));
+        } else {
+          allowWithResult(text);
+        }
       } else {
-        allowWithResult(text);
+        context.push(
+          `[${HOOK_NAME}] ${toolName} の出力置換は MCP tool のみ対応です。出力は保持し、通知だけ追加します。`,
+        );
+        allow(context.join("\n"));
       }
     } else if (context.length > 0) {
       allow(context.join("\n"));
@@ -220,4 +236,5 @@ module.exports = {
   estimateTokens,
   getLimits,
   trackTokenBudget,
+  isMcpTool,
 };

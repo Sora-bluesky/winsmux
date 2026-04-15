@@ -83,6 +83,10 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node .claude/hooks/sh-orchestra-gate.js"
+          },
+          {
+            "type": "command",
             "command": "node .claude/hooks/sh-permission.js"
           }
         ]
@@ -252,3 +256,11 @@
     ]
   }
 }
+
+
+
+
+
+
+
+

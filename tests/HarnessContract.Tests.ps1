@@ -41,6 +41,32 @@ Describe 'harness-check contract' {
             $null = $LASTEXITCODE
         }
 
+        function Backup-TestFile {
+            param([Parameter(Mandatory = $true)][string]$Path)
+
+            if (Test-Path -LiteralPath $Path -PathType Leaf) {
+                return Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+            }
+
+            return $null
+        }
+
+        function Restore-TestFile {
+            param(
+                [Parameter(Mandatory = $true)][string]$Path,
+                [AllowNull()][string]$Content
+            )
+
+            if ($null -eq $Content) {
+                if (Test-Path -LiteralPath $Path -PathType Leaf) {
+                    Remove-Item -LiteralPath $Path -Force
+                }
+                return
+            }
+
+            Write-TestFileWithCmd -Path $Path -Content $Content
+        }
+
         function Invoke-HarnessCheckJson {
             param([string[]]$Arguments)
 
@@ -103,6 +129,29 @@ Describe 'harness-check contract' {
         ($result.Json.results | Where-Object { -not $_.passed }).Count | Should -Be 0
     }
 
+    It 'fails when shared settings stop registering the orchestra gate hook' {
+        $settingsPath = Join-Path $script:RepoRoot '.claude\settings.json'
+        $original = Backup-TestFile -Path $settingsPath
+        try {
+            $settings = $original | ConvertFrom-Json -Depth 32
+            $group = @($settings.hooks.PreToolUse) | Where-Object {
+                @($_.hooks | Where-Object { $_.command -eq 'node .claude/hooks/sh-orchestra-gate.js' }).Count -gt 0
+            } | Select-Object -First 1
+            $group.matcher = 'Bash'
+            $mutated = $settings | ConvertTo-Json -Depth 32
+            Write-TestFileWithCmd -Path $settingsPath -Content $mutated
+
+            $result = Invoke-HarnessCheckJson -Arguments @('-ProjectDir', $script:RepoRoot, '-AsJson')
+            $record = $result.Json.results | Where-Object { $_.name -eq 'settings-shared-registers-orchestra-gate' } | Select-Object -First 1
+
+            $result.ExitCode | Should -Be 1
+            $record.passed | Should -Be $false
+            $record.message | Should -Match 'must register'
+        } finally {
+            Restore-TestFile -Path $settingsPath -Content $original
+        }
+    }
+
     It 'fails when settings.local.json registers hooks' {
         Write-TestFileWithCmd -Path $script:SettingsLocalPath -Content '{"hooks":{"PreToolUse":[]}}'
 
@@ -129,6 +178,24 @@ Describe 'harness-check contract' {
         $result.Json.passed | Should -Be $false
         $trackedRecord.passed | Should -Be $false
         $trackedRecord.message | Should -Match 'must stay untracked'
+    }
+
+    It 'fails when sh-utils success replies omit hookEventName support' {
+        $utilsPath = Join-Path $script:RepoRoot '.claude\hooks\lib\sh-utils.js'
+        $original = Backup-TestFile -Path $utilsPath
+        try {
+            $mutated = $original -replace 'hookSpecificOutput:\s*buildHookSpecificOutput\(\{\s*additionalContext\s*\}\)', 'hookSpecificOutput: { additionalContext }'
+            Write-TestFileWithCmd -Path $utilsPath -Content $mutated
+
+            $result = Invoke-HarnessCheckJson -Arguments @('-ProjectDir', $script:RepoRoot, '-AsJson')
+            $record = $result.Json.results | Where-Object { $_.name -eq 'hook-output-contract' } | Select-Object -First 1
+
+            $result.ExitCode | Should -Be 1
+            $record.passed | Should -Be $false
+            (($record.data | Out-String)) | Should -Match 'allow reply does not include hookEventName'
+        } finally {
+            Restore-TestFile -Path $utilsPath -Content $original
+        }
     }
 
     It 'is exposed through winsmux-core as harness-check --json' {
