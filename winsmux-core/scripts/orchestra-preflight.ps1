@@ -425,11 +425,30 @@ function Invoke-OrchestraHasSessionProbe {
     return ($LASTEXITCODE -eq 0)
 }
 
+function Get-OrchestraSessionPaneCount {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin
+    )
+
+    $paneOutput = & $WinsmuxBin list-panes -t $SessionName -F '#{pane_id}' 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return $null
+    }
+
+    return @(
+        $paneOutput |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { $_ -match '^%\d+$' }
+    ).Count
+}
+
 function Test-OrchestraServerHealth {
     param(
         [Parameter(Mandatory = $true)][string]$SessionName,
         [Parameter(Mandatory = $true)][string]$WinsmuxBin,
-        [int]$TimeoutMs = 500
+        [int]$TimeoutMs = 500,
+        [int]$ExpectedPaneCount = 0
     )
 
     $portFilePath = Get-OrchestraSessionPortFilePath -SessionName $SessionName
@@ -454,6 +473,13 @@ function Test-OrchestraServerHealth {
         return 'Unhealthy'
     }
 
+    if ($ExpectedPaneCount -gt 0) {
+        $paneCount = Get-OrchestraSessionPaneCount -SessionName $SessionName -WinsmuxBin $WinsmuxBin
+        if ($null -eq $paneCount -or $paneCount -ne $ExpectedPaneCount) {
+            return 'Unhealthy'
+        }
+    }
+
     return 'Healthy'
 }
 
@@ -462,7 +488,8 @@ function Wait-OrchestraServerHealthy {
         [Parameter(Mandatory = $true)][string]$SessionName,
         [Parameter(Mandatory = $true)][string]$WinsmuxBin,
         [ValidateRange(1, 120)][int]$TimeoutSeconds = 15,
-        [ValidateRange(100, 5000)][int]$PollIntervalMilliseconds = 500
+        [ValidateRange(100, 5000)][int]$PollIntervalMilliseconds = 500,
+        [int]$ExpectedPaneCount = 0
     )
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -470,7 +497,7 @@ function Wait-OrchestraServerHealthy {
     $lastHealth = 'Unknown'
     while ((Get-Date) -lt $deadline) {
         $attempt++
-        $lastHealth = Test-OrchestraServerHealth -SessionName $SessionName -WinsmuxBin $WinsmuxBin -TimeoutMs ([Math]::Max($PollIntervalMilliseconds, 500))
+        $lastHealth = Test-OrchestraServerHealth -SessionName $SessionName -WinsmuxBin $WinsmuxBin -TimeoutMs ([Math]::Max($PollIntervalMilliseconds, 500)) -ExpectedPaneCount $ExpectedPaneCount
         if ($lastHealth -eq 'Healthy') {
             return [ordered]@{
                 SessionName = $SessionName

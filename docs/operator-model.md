@@ -5,7 +5,7 @@ winsmux is built around a **two-layer orchestration model**:
 - an **external operator layer**
 - a **managed pane execution layer**
 
-This separation is the main contract of the product.
+This separation is the main contract of the product. winsmux is positioned as a Windows-native, local-first multi-agent control plane rather than an editor-first IDE shell.
 
 ## 1. Standard control chain
 
@@ -78,32 +78,27 @@ The current direction is **slot/capability-based orchestration**, not hard-coded
 
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 
-## 4. Public role-definition documents
+## 4. Public docs vs runtime contracts
 
-The public contract is split across these files:
+The public product-facing operator contract is centered on:
 
 - `README.md`
-- `.claude/CLAUDE.md`
-- `AGENT-BASE.md`
-- `AGENT.md`
-- `GEMINI.md`
 - this file
 
-Their responsibilities are:
+The public future entrypoints are intended to converge on:
 
-- `.claude/CLAUDE.md`
-  - operator role definition
-- `AGENT-BASE.md`
-  - pane-wide shared execution contract
-- `AGENT.md`
-  - Codex-specific pane contract
-- `GEMINI.md`
-  - Gemini-specific pane contract
+- `winsmux init`
+- `winsmux launch`
+- `winsmux compare`
+
+That direction is public product behavior. `/winsmux-start` remains a repository-operated Claude Code dogfooding flow and is not part of the primary public UX.
+
+Repository-operated runtime contracts also exist for dogfooding and contributor flows, but they are maintained as contributor/runtime documents rather than primary public product docs.
 
 ## 5. Public docs vs contributor docs
 
-The files listed in this document describe the **public product contract** for winsmux.
-Contributor workflows, release operations, and repository-specific maintenance rules are documented separately and do not define the public operator or pane contract.
+The public-facing docs describe the operator model and product shape.
+Contributor workflows, release operations, repository-specific runtime contracts, and dogfooding procedures are documented separately and do not define the public operator or pane contract.
 
 ## 6. Legacy layouts vs current model
 
@@ -124,6 +119,12 @@ The Tauri desktop direction follows the same contract:
 - **context side sheet** for run, slot, evidence, branch, and review state
 - **secondary editor surface** for source-level drill-down
 - **terminal drawer** for raw PTY and diagnostics only
+
+The roadmap groups these desktop surfaces into three UX layers:
+
+- **Decision Cockpit** for compare, evidence, code browser, and localhost preview
+- **Fast Start + Launcher + Coordination Guard** for quick entry, multi-agent launch, and conflict preflight
+- **Managed Team Intelligence** for durable memory, playbooks, and diversity-aware follow-up runs
 
 `TASK-286` aligns the timeline grammar with the docs contract:
 

@@ -7,9 +7,36 @@ on:
     branches: [main]
 
 jobs:
+  public-surface:
+    name: Public Surface Audit
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Bootstrap repo hooks
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/bootstrap-git-guard.ps1
+
+      - name: Assert hooks path
+        shell: pwsh
+        run: |
+          $hooksPath = (git config --get core.hooksPath).Trim()
+          if ($hooksPath -notmatch '(^|[\\/])\.githooks$') {
+            throw "core.hooksPath must point to .githooks, got '$hooksPath'"
+          }
+
+      - name: Run git-guard
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/git-guard.ps1 -Mode full
+
+      - name: Run public surface audit
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/audit-public-surface.ps1
+
   pester:
     name: Pester Tests
     runs-on: windows-latest
+    needs: public-surface
     steps:
       - uses: actions/checkout@v6
 

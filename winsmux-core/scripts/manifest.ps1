@@ -228,6 +228,18 @@ function Get-ManifestPath {
     return Join-Path (Get-ManifestDir -ProjectDir $ProjectDir) $script:ManifestFileName
 }
 
+function Clear-WinsmuxManifest {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $path = Get-ManifestPath -ProjectDir $ProjectDir
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        return $false
+    }
+
+    Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+    return $true
+}
+
 function New-WinsmuxManifest {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 

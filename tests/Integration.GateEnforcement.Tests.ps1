@@ -48,7 +48,8 @@ Describe 'sh-orchestra-gate integration' {
                 [string]$RepoRoot = $script:RepoRoot,
                 [Parameter(Mandatory = $true)][string]$ToolName,
                 [Parameter(Mandatory = $true)][System.Collections.IDictionary]$ToolInput,
-                [System.Collections.IDictionary]$Environment = @{}
+                [System.Collections.IDictionary]$Environment = @{},
+                [bool]$DisableStartupGate = $true
             )
 
             $hookPath = Join-Path $RepoRoot '.claude\hooks\sh-orchestra-gate.js'
@@ -69,6 +70,9 @@ Describe 'sh-orchestra-gate integration' {
             foreach ($entry in $Environment.GetEnumerator()) {
                 $startInfo.Environment[[string]$entry.Key] = [string]$entry.Value
             }
+            if ($DisableStartupGate) {
+                $startInfo.Environment['WINSMUX_DISABLE_ORCHESTRA_STARTUP_GATE'] = '1'
+            }
 
             $process = [System.Diagnostics.Process]::Start($startInfo)
             $exitCode = $null
@@ -85,19 +89,26 @@ Describe 'sh-orchestra-gate integration' {
             }
 
             $stderrTrimmed = $stderr.Trim()
-            $parsedError = $null
-            if (-not [string]::IsNullOrWhiteSpace($stderrTrimmed)) {
+            $stdoutTrimmed = $stdout.Trim()
+            $parsedOutput = $null
+            if (-not [string]::IsNullOrWhiteSpace($stdoutTrimmed)) {
                 try {
-                    $parsedError = $stderrTrimmed | ConvertFrom-Json -ErrorAction Stop
+                    $parsedOutput = $stdoutTrimmed | ConvertFrom-Json -ErrorAction Stop
+                } catch {
+                }
+            }
+            if ($null -eq $parsedOutput -and -not [string]::IsNullOrWhiteSpace($stderrTrimmed)) {
+                try {
+                    $parsedOutput = $stderrTrimmed | ConvertFrom-Json -ErrorAction Stop
                 } catch {
                 }
             }
 
             return [PSCustomObject]@{
                 ExitCode    = $exitCode
-                StdOut      = $stdout.Trim()
+                StdOut      = $stdoutTrimmed
                 StdErr      = $stderrTrimmed
-                ErrorObject = $parsedError
+                OutputObject = $parsedOutput
             }
         }
 
@@ -105,7 +116,8 @@ Describe 'sh-orchestra-gate integration' {
             param(
                 [Parameter(Mandatory = $true)][string]$RepoRoot,
                 [Parameter(Mandatory = $true)][string[]]$Arguments,
-                [hashtable]$Environment = @{}
+                [hashtable]$Environment = @{},
+                [bool]$DisableStartupGate = $true
             )
 
             $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -124,6 +136,9 @@ Describe 'sh-orchestra-gate integration' {
             $startInfo.RedirectStandardError = $true
             foreach ($entry in $Environment.GetEnumerator()) {
                 $startInfo.Environment[$entry.Key] = [string]$entry.Value
+            }
+            if ($DisableStartupGate) {
+                $startInfo.Environment['WINSMUX_DISABLE_ORCHESTRA_STARTUP_GATE'] = '1'
             }
 
             $process = [System.Diagnostics.Process]::Start($startInfo)
@@ -145,10 +160,9 @@ Describe 'sh-orchestra-gate integration' {
         $script:AssertDenyResult = {
             param([Parameter(Mandatory = $true)]$Result)
 
-            $Result.ExitCode | Should -Be 2
-            $Result.StdErr | Should -Not -BeNullOrEmpty
-            $Result.ErrorObject | Should -Not -BeNullOrEmpty
-            $Result.ErrorObject.hookSpecificOutput.permissionDecision | Should -Be 'deny'
+            $Result.ExitCode | Should -Be 0
+            $Result.OutputObject | Should -Not -BeNullOrEmpty
+            $Result.OutputObject.hookSpecificOutput.permissionDecision | Should -Be 'deny'
         }
 
         function New-GateFixture {
@@ -242,7 +256,7 @@ panes:
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'review-state\.json'
+        $result.OutputObject.systemMessage | Should -Match 'review-state\.json'
     }
 
     It 'denies direct winsmux send-keys usage' {
@@ -259,7 +273,7 @@ panes:
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'settings\.local\.json'
+        $result.OutputObject.systemMessage | Should -Match 'settings\.local\.json'
     }
 
     It 'denies direct codex exec usage' {
@@ -268,7 +282,7 @@ panes:
         }
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Be 'Use winsmux send to dispatch Codex to panes'
+        $result.OutputObject.systemMessage | Should -Be 'Use winsmux send to dispatch Codex to panes'
     }
 
     It 'denies direct codex sandbox usage' {
@@ -277,7 +291,7 @@ panes:
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Be 'Use winsmux send to dispatch Codex to panes'
+        $result.OutputObject.systemMessage | Should -Be 'Use winsmux send to dispatch Codex to panes'
     }
 
     It 'allows winsmux send codex exec usage' {
@@ -333,7 +347,7 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'review-state\.json'
+        $result.OutputObject.systemMessage | Should -Match 'review-state\.json'
     }
 
     It 'allows Bash reads from review-state.json' {
@@ -353,7 +367,7 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'review-capable pane'
+        $result.OutputObject.systemMessage | Should -Match 'review-capable pane'
     }
 
     It 'allows review-approve when WINSMUX_ROLE is Reviewer' {
@@ -408,7 +422,7 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'Operator shell write bypass blocked'
+        $result.OutputObject.systemMessage | Should -Match 'Operator shell write bypass blocked'
     }
 
     It 'denies cmd /c writing a code file from the operator pane' {
@@ -419,7 +433,7 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'Operator shell write bypass blocked'
+        $result.OutputObject.systemMessage | Should -Match 'Operator shell write bypass blocked'
     }
 
     It 'denies python -c writing a code file from the operator pane' {
@@ -430,7 +444,7 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'Operator shell write bypass blocked'
+        $result.OutputObject.systemMessage | Should -Match 'Operator shell write bypass blocked'
     }
 
     It 'denies Agent acceptEdits mode' {
@@ -439,7 +453,7 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'delegated write bypass blocked'
+        $result.OutputObject.systemMessage | Should -Match 'delegated execution bypass blocked'
     }
 
     It 'denies Agent auto mode outside worktree isolation' {
@@ -483,10 +497,22 @@ EOF
         & $script:AssertDenyResult -Result $result
     }
 
-    It 'allows Explore subagents even when mode is write-capable' {
+    It 'denies non-startup Explore subagents once operator execution must stay in managed panes' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
             mode          = 'acceptEdits'
             subagent_type = 'Explore'
+            description   = 'Analyze PR #419 diff scope'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'dispatch-task'
+    }
+
+    It 'allows startup-diagnosis Explore subagents' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Agent' -ToolInput ([ordered]@{
+            mode          = 'acceptEdits'
+            subagent_type = 'Explore'
+            description   = 'Investigate orchestra startup blocked manifest pane count'
         })
 
         $result.ExitCode | Should -Be 0
@@ -529,6 +555,57 @@ EOF
         $result.StdErr | Should -Be ''
     }
 
+    It 'denies legacy psmux version probes from the operator pane' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = 'psmux --version'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'winsmux orchestra-smoke --json'
+    }
+
+    It 'denies legacy psmux-server process probes from the operator pane' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = 'pwsh -Command "Get-Process psmux-server -ErrorAction SilentlyContinue"'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'winsmux list-sessions'
+    }
+
+    It 'allows winsmux orchestra-smoke from the operator pane' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = 'pwsh -NoProfile -File scripts/winsmux-core.ps1 orchestra-smoke --json'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'allows winsmux orchestra-attach from the operator pane' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = 'pwsh -NoProfile -File scripts/winsmux-core.ps1 orchestra-attach --json'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Commander'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'wires the startup gate disable environment flag into the orchestra readiness gate' {
+        $hookContent = Get-Content -LiteralPath $script:SourceHookPath -Raw -Encoding UTF8
+
+        $hookContent | Should -Match '!STARTUP_GATE_DISABLED'
+        $hookContent | Should -Match 'WINSMUX_DISABLE_ORCHESTRA_STARTUP_GATE'
+    }
+
     It 'denies git commit without Reviewer PASS for the current branch' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
@@ -538,8 +615,8 @@ EOF
         }
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'review-request'
-        $result.ErrorObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
     }
 
     It 'denies git merge without Reviewer PASS for the current branch' {
@@ -551,8 +628,8 @@ EOF
         }
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'review-approve'
-        $result.ErrorObject.systemMessage | Should -Match 'review-request'
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
     }
 
     It 'denies gh pr merge without Reviewer PASS for the current branch' {
@@ -564,8 +641,8 @@ EOF
         }
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'review-approve'
-        $result.ErrorObject.systemMessage | Should -Match 'review-request'
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
     }
 
     It 'denies git commit when PASS head_sha does not match current HEAD' {
@@ -593,8 +670,8 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'review-approve'
-        $result.ErrorObject.systemMessage | Should -Match 'review-request'
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-request'
     }
 
     It 'denies git commit when reviewer role is not review-capable' {
@@ -622,7 +699,7 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
     }
 
     It 'denies git commit when reviewer pane_id is empty' {
@@ -650,7 +727,7 @@ EOF
         })
 
         & $script:AssertDenyResult -Result $result
-        $result.ErrorObject.systemMessage | Should -Match 'review-approve'
+        $result.OutputObject.systemMessage | Should -Match 'review-approve'
     }
 
     It 'allows git commit after review-approve records PASS for the current branch' {

@@ -6,9 +6,9 @@
 
 # winsmux
 
-**winsmux is a Windows-native AI agent orchestration platform.**
+**winsmux is a Windows-native, local-first multi-agent control plane.**
 
-It provides the runtime and coordination layer for running multiple agent CLIs in one operator-controlled workspace on Windows. Instead of locking teams into a single model vendor, winsmux combines pane-based execution, live supervision, and governance controls that fit real engineering workflows.
+It provides the runtime and coordination layer for running multiple agent CLIs in one operator-controlled workspace on Windows. Instead of locking teams into a single model vendor, winsmux combines pane-based execution, compare-first review surfaces, live supervision, and governance controls that fit real engineering workflows.
 
 `v0.21.2` is the terminal-based final form release. It closes the pre-Tauri runtime shape around the Windows-native terminal surface, external operator model, managed worker panes, and evidence/review controls. `v0.22.0` begins the desktop control-plane handoff into the Tauri backend and frontend adapter layers.
 
@@ -52,7 +52,7 @@ winsmux
 - **Evidence Ledger** supports audit-oriented capture of agent activity and review outcomes
 
 For the public operator/pane architecture, see [docs/operator-model.md](docs/operator-model.md).
-Agent role definitions are split into [`.claude/CLAUDE.md`](.claude/CLAUDE.md), [`AGENT-BASE.md`](AGENT-BASE.md), [`AGENT.md`](AGENT.md), and [`GEMINI.md`](GEMINI.md).
+Contributor/runtime contracts for repository-operated panes remain in repository contributor docs and are not part of the primary public product guide.
 
 ## Core runtime
 
@@ -99,6 +99,8 @@ You can also download a release `.zip` from GitHub Releases or build from source
 
 ## Quick start
 
+The current public quick start is still the terminal-first runtime flow shown below. The public product direction is to converge on `winsmux init`, `winsmux launch`, and `winsmux compare` as the future first-run entrypoints, while keeping `/winsmux-start` as a Claude Code dogfooding-only flow.
+
 ```powershell
 # Verify the environment
 winsmux doctor
@@ -121,6 +123,12 @@ The default layout is now:
 - legacy `Commander / Builder / Researcher / Reviewer` pane layouts only when explicitly enabled for compatibility
 
 This is the last release line where the terminal surface is the primary control plane. The next train (`v0.22.0`) keeps the terminal runtime, but hands primary desktop orchestration to the Tauri control plane.
+
+The desktop roadmap is organized around:
+
+- **Decision Cockpit**: compare runs, inspect evidence, browse code, and review localhost previews
+- **Fast Start + Launcher + Coordination Guard**: shorten first-run setup, launch multi-agent work quickly, and surface conflict risk before merge
+- **Managed Team Intelligence**: durable run memory, follow-up playbooks, and diversity-aware team strategies
 
 Inside the session, label and inspect panes:
 

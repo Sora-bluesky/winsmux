@@ -1,0 +1,80 @@
+#!/bin/bash
+# pre-commit hook: safety checks for winsmux
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -z "$repo_root" ]]; then
+  echo "pre-commit: failed to determine repository root." >&2
+  exit 1
+fi
+
+repo_root_pwsh="$repo_root"
+if command -v cygpath >/dev/null 2>&1; then
+  repo_root_pwsh="$(cygpath -w "$repo_root")"
+elif [[ "$repo_root" =~ ^/mnt/([a-zA-Z])/(.*)$ ]]; then
+  drive="${BASH_REMATCH[1]}"
+  rest="${BASH_REMATCH[2]//\//\\}"
+  repo_root_pwsh="${drive^}:\\${rest}"
+fi
+
+pwsh_bin="pwsh.exe"
+if ! command -v "$pwsh_bin" >/dev/null 2>&1; then
+  if command -v pwsh >/dev/null 2>&1; then
+    pwsh_bin="pwsh"
+  elif [[ -x "/c/Program Files/PowerShell/7/pwsh.exe" ]]; then
+    pwsh_bin="/c/Program Files/PowerShell/7/pwsh.exe"
+  else
+    echo "pre-commit: failed to locate PowerShell 7." >&2
+    exit 1
+  fi
+fi
+
+"$pwsh_bin" -NoProfile -File "$repo_root_pwsh\\scripts\\git-guard.ps1" -Mode staged
+
+# --- Guard: no commits on main with commander prompt ---
+branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+if [[ "$branch" == "main" && -f ".commander-prompt.txt" ]]; then
+  echo "pre-commit: refusing to commit on main while .commander-prompt.txt exists." >&2
+  exit 1
+fi
+
+"$pwsh_bin" -NoProfile -File "$repo_root_pwsh\\.githooks\\pre-commit-whitelist.ps1"
+
+# --- Gate: version consistency check ---
+# All version locations must match the VERSION file (single source of truth).
+# Run bump-version.ps1 if they diverge.
+VERSION_FILE="VERSION"
+if [[ -f "$VERSION_FILE" ]]; then
+  expected="$(tr -d '[:space:]' < "$VERSION_FILE")"
+  fail=0
+
+  # Extract version from a file using sed (portable, no grep -P)
+  extract_ver() {
+    local file="$1" sed_expr="$2"
+    sed -n "$sed_expr" "$file" 2>/dev/null | head -1 || true
+  }
+
+  check_version() {
+    local file="$1" sed_expr="$2" label="$3"
+    if [[ -f "$file" ]]; then
+      local found
+      found="$(extract_ver "$file" "$sed_expr")"
+      if [[ -n "$found" && "$found" != "$expected" ]]; then
+        echo "pre-commit: VERSION DRIFT — $label has '$found', expected '$expected'" >&2
+        echo "  Fix: pwsh scripts/bump-version.ps1" >&2
+        fail=1
+      fi
+    fi
+  }
+
+  check_version "install.ps1"                              's/.*\$VERSION *= *"\([^"]*\)".*/\1/p' "install.ps1"
+  check_version "scripts/psmux-bridge.ps1"                 's/.*\$VERSION *= *"\([^"]*\)".*/\1/p' "psmux-bridge.ps1"
+  check_version "skills/winsmux/SKILL.md"                  's/.*version: *"\([^"]*\)".*/\1/p'     "SKILL.md"
+  check_version "skills/winsmux/references/psmux-bridge.md" 's/.*Version: *\([^ ]*\).*/\1/p'      "psmux-bridge.md"
+
+  if (( fail )); then
+    echo "" >&2
+    echo "pre-commit: Run 'pwsh scripts/bump-version.ps1' to sync all version files." >&2
+    exit 1
+  fi
+fi

@@ -4,6 +4,7 @@
 const fs = require("fs");
 const path = require("path");
 const { ZERO_WIDTH_RE } = require("./sh-injection-guard");
+const { allow, deny, failClosed } = require("./lib/sh-utils");
 
 const HOOK_NAME = "sh-invisible-char-scan";
 const BLOCKED_EXTENSIONS = new Set([
@@ -236,15 +237,6 @@ function buildMessage(results) {
   return lines.join("\n");
 }
 
-function writeHookMessage(message, permissionDecision) {
-  const output = { hookSpecificOutput: {} };
-  if (permissionDecision) {
-    output.hookSpecificOutput.permissionDecision = permissionDecision;
-  }
-  output.systemMessage = message;
-  process.stderr.write(JSON.stringify(output) + "\n");
-}
-
 function main() {
   const { payload, rawInput, rawTextMode } = readInputPayload();
   const targets = extractTargets(payload, rawInput, rawTextMode);
@@ -262,24 +254,18 @@ function main() {
 
   const message = buildMessage(results);
   if (results.some((result) => result.blocked)) {
-    writeHookMessage(message, "deny");
-    process.exit(2);
+    deny(message);
     return;
   }
 
-  writeHookMessage(message);
-  process.exit(0);
+  allow(message);
 }
 
 if (require.main === module) {
   try {
     main();
   } catch (error) {
-    writeHookMessage(
-      `[${HOOK_NAME}] Hook error: ${error.message}`,
-      "deny",
-    );
-    process.exit(2);
+    failClosed(`[${HOOK_NAME}] Hook error: ${error.message}`);
   }
 }
 

@@ -1,5 +1,9 @@
 # Codex Pane Contract
 
+This is a **Codex-managed pane runtime contract**.
+It is not the Claude Code operator guide and not the primary public introduction to winsmux.
+For the external operator model, start with `.claude/CLAUDE.md` and `docs/operator-model.md`.
+
 > This file assumes the shared rules in `AGENT-BASE.md`.
 
 ## Position

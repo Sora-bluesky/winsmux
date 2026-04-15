@@ -28,15 +28,31 @@ const PLANNING_ROOT_MARKER = path.join(
   "planning-root.txt",
 );
 let cachedPlanningRoot = null;
+let cachedHookInput = null;
 
 function deny(reason) {
-  process.stdout.write(`${JSON.stringify({ decision: "deny", reason })}\n`);
-  process.exit(2);
+  const input = readHookInput();
+  if (isPreToolUseEvent(input)) {
+    const eventName = getHookEventName(input) || "PreToolUse";
+    process.stdout.write(
+      `${JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: eventName,
+          permissionDecision: "deny",
+          permissionDecisionReason: reason,
+        },
+        systemMessage: reason,
+      })}\n`,
+    );
+    process.exit(0);
+  }
+
+  failClosed(reason);
 }
 
 function allow(additionalContext) {
   if (additionalContext) {
-    process.stderr.write(
+    process.stdout.write(
       `${JSON.stringify({ hookSpecificOutput: { additionalContext } })}\n`,
     );
   }
@@ -49,7 +65,12 @@ function readStdin() {
 }
 
 function readHookInput() {
-  return readStdin();
+  if (cachedHookInput !== null) {
+    return cachedHookInput;
+  }
+
+  cachedHookInput = readStdin();
+  return cachedHookInput;
 }
 
 function sha256(data) {
@@ -57,17 +78,39 @@ function sha256(data) {
 }
 
 function allowWithUpdate(updatedInput) {
-  process.stderr.write(
+  process.stdout.write(
     `${JSON.stringify({ hookSpecificOutput: { updatedInput } })}\n`,
   );
   process.exit(0);
 }
 
 function allowWithResult(resultObj) {
-  process.stderr.write(
+  process.stdout.write(
     `${JSON.stringify({ hookSpecificOutput: { result: resultObj } })}\n`,
   );
   process.exit(0);
+}
+
+function getHookEventName(input = null) {
+  const payload = input || cachedHookInput || {};
+  return (
+    payload.hook_event_name ||
+    payload.hookEventName ||
+    payload.event_name ||
+    payload.eventName ||
+    payload.hook_name ||
+    payload.hookName ||
+    ""
+  );
+}
+
+function isPreToolUseEvent(input = null) {
+  return getHookEventName(input).toLowerCase() === "pretooluse";
+}
+
+function failClosed(message) {
+  process.stderr.write(`${String(message)}\n`);
+  process.exit(2);
 }
 
 function readSession() {
@@ -507,6 +550,9 @@ module.exports = {
   allow,
   readStdin,
   readHookInput,
+  getHookEventName,
+  isPreToolUseEvent,
+  failClosed,
   sha256,
   allowWithUpdate,
   allowWithResult,

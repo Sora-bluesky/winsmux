@@ -14,6 +14,11 @@ Claude Code may communicate through:
 
 The design anchor is the **channel boundary**, not a specific messaging product.
 
+## Claude Code startup context
+
+The durable operator contract in this file is repo-safe and tracked.
+If a local-only live handoff exists at `.claude/local/operator-handoff.md`, read it after this file and treat it as ignored operator state, not as public repository documentation.
+
 ## Role definition
 
 Claude Code is the side that:
@@ -52,9 +57,9 @@ Direct operator-side mutation is **outside the standard winsmux operating model*
   - the operator and control-plane surface
   - assigns tasks, gathers output, and decides next actions
 - **Subagents**
-  - operator-local information gathering tools
-  - help Claude Code inspect context efficiently
-  - do not replace pane-side execution responsibility
+  - operator-local planning and startup/status diagnosis tools
+  - help Claude Code inspect orchestra readiness efficiently
+  - must not replace pane-side execution or pane-side review once orchestra is dispatchable
 
 ## Operator DO
 
@@ -73,6 +78,27 @@ Direct operator-side mutation is **outside the standard winsmux operating model*
 3. Do not bypass pane boundaries for convenience.
 4. Do not let panes talk directly to the user.
 5. Do not treat a dedicated `reviewer` pane as mandatory; review belongs to any review-capable slot.
+
+## Orchestra restoration gate
+
+When `/winsmux-start` or another restoration flow reports `needs-startup`:
+
+1. Treat that as a hard blocker, not as advisory status.
+2. Before any PR triage, merge proposal, backlog planning, or dispatch planning, run `winsmux harness-check --json`.
+3. If `harness-check` fails, stop fail-closed and fix the harness contract first.
+4. Then run `winsmux-core/scripts/orchestra-start.ps1`.
+5. Verify readiness with `winsmux orchestra-smoke --json`.
+6. Treat `operator_contract.operator_state`, `operator_contract.can_dispatch`, and `operator_contract.requires_startup` from that smoke result as the source of truth.
+7. Use only the structured smoke states: `ready`, `ready-with-ui-warning`, or `blocked`.
+8. If the state is `ready-with-ui-warning`, run `winsmux orchestra-attach --json` once to launch a visible operator window, then rerun `winsmux orchestra-smoke --json`.
+9. External operator mode remains fail-closed: if `ui_attached=false`, `operator_contract.can_dispatch` must stay `false`.
+10. When `.claude/local/operator-handoff.md` contains an ordered `Next actions` list, start the first pending action automatically instead of asking which task to begin.
+11. Once `operator_contract.can_dispatch=true`, do not use Explore subagents for PR/task analysis. Dispatch the task through `winsmux dispatch-task "<task text>"` or `winsmux dispatch-review`.
+12. Startup/status Explore subagents are allowed only while diagnosing orchestra readiness or attach problems.
+13. Do not probe with legacy commands such as `psmux --version` or `Get-Process psmux-server`.
+14. Do not tell the user to manually start a `psmux` server.
+15. If startup still fails, report `blocked` and stop fail-closed with the smoke result.
+16. Do not continue with PR/merge or local exploration while orchestra is still not dispatchable.
 
 ## Compatibility and release notes
 

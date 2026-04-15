@@ -11,6 +11,7 @@ const {
   readHookInput,
   allow,
   deny,
+  failClosed,
   appendEvidence,
 } = require("./lib/sh-utils");
 
@@ -207,13 +208,7 @@ try {
 
   allow();
 } catch (err) {
-  // SECURITY hook — fail-close
-  process.stdout.write(
-    JSON.stringify({
-      reason: `[${HOOK_NAME}] Hook error (fail-close): ${err.message}`,
-    }),
-  );
-  process.exit(2);
+  failClosed(`[${HOOK_NAME}] Hook error (fail-close): ${err.message}`);
 }
 
 // ---------------------------------------------------------------------------

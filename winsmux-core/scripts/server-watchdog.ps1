@@ -2,6 +2,7 @@
 param(
     [string]$ManifestPath = '',
     [string]$SessionName = 'winsmux-orchestra',
+    [string]$StartupToken = '',
     [ValidateRange(5, 10)][int]$PollInterval = 5,
     [int]$MaxRestartAttempts = 3,
     [int]$RestartWindowMinutes = 10
@@ -13,6 +14,7 @@ Set-StrictMode -Version Latest
 
 $scriptDir = $PSScriptRoot
 . (Join-Path $scriptDir 'orchestra-preflight.ps1')
+. (Join-Path $scriptDir 'manifest.ps1')
 . (Join-Path $scriptDir 'settings.ps1')
 
 function Write-ServerWatchdogTextFile {
@@ -153,13 +155,44 @@ function Invoke-ServerWatchdogRestart {
     return (Invoke-ServerWatchdogWinsmux -Arguments @('new-session', '-d', '-s', $SessionName) -AllowFailure)
 }
 
-function Get-ServerWatchdogHealthStatus {
-    param([Parameter(Mandatory = $true)][string]$SessionName)
+function Get-ServerWatchdogExpectedPaneCount {
+    param([Parameter(Mandatory = $true)][string]$ManifestPath)
+
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        return -1
+    }
 
     try {
-        return [string](Test-OrchestraServerHealth -SessionName $SessionName -WinsmuxBin (Get-WinsmuxBin))
+        $projectDir = Get-ServerWatchdogProjectDir -ManifestPath $ManifestPath
+        $manifest = Get-WinsmuxManifest -ProjectDir $projectDir
+        if ($null -eq $manifest -or $null -eq $manifest.panes) {
+            return -1
+        }
+
+        if ($manifest.panes -is [System.Collections.IDictionary]) {
+            return @($manifest.panes.Keys).Count
+        }
+
+        return @($manifest.panes).Count
     } catch {
-        return 'Unknown'
+        return -1
+    }
+}
+
+function Get-ServerWatchdogHealthStatus {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][string]$ManifestPath
+    )
+
+    try {
+        $expectedPaneCount = Get-ServerWatchdogExpectedPaneCount -ManifestPath $ManifestPath
+        if ($expectedPaneCount -lt 1) {
+            return 'Unhealthy'
+        }
+        return [string](Test-OrchestraServerHealth -SessionName $SessionName -WinsmuxBin (Get-WinsmuxBin) -ExpectedPaneCount $expectedPaneCount)
+    } catch {
+        return 'Unhealthy'
     }
 }
 
@@ -228,7 +261,7 @@ function Invoke-ServerWatchdogCycle {
         return $result
     }
 
-    $healthStatus = Get-ServerWatchdogHealthStatus -SessionName $SessionName
+    $healthStatus = Get-ServerWatchdogHealthStatus -SessionName $SessionName -ManifestPath $ManifestPath
     $result['HealthStatus'] = $healthStatus
 
     if ($healthStatus -eq 'Healthy') {

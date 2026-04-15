@@ -8,6 +8,7 @@ $scriptDir = $PSScriptRoot
 . "$scriptDir/orchestra-preflight.ps1"
 . "$scriptDir/manifest.ps1"
 . "$scriptDir/pane-env.ps1"
+. "$scriptDir/orchestra-ui-attach.ps1"
 
 Set-StrictMode -Version Latest
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -65,37 +66,280 @@ function Test-OrchestraServerSession {
     return ($LASTEXITCODE -eq 0)
 }
 
-function Ensure-OrchestraServer {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$SessionName,
-        [int]$TimeoutSeconds = 30
-    )
+function ConvertTo-CmdArgumentLiteral {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
 
-    if (Test-OrchestraServerSession -SessionName $SessionName) {
-        return [ordered]@{
-            SessionName    = $SessionName
-            SessionCreated = $false
+    if ([string]::IsNullOrEmpty($Value)) {
+        return '""'
+    }
+
+    if ($Value -notmatch '[\s"&<>|^]') {
+        return $Value
+    }
+
+    return '"' + ($Value -replace '"', '""') + '"'
+}
+
+function Get-OrchestraWindowsTerminalInfo {
+    $wtExe = Get-Command 'wt.exe' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+    $canonicalWtExe = ''
+    $reason = 'wt_unavailable'
+    $pathSource = ''
+
+    $isAliasStub = $false
+    if (-not [string]::IsNullOrWhiteSpace($wtExe)) {
+        try {
+            $wtItem = Get-Item -LiteralPath $wtExe -ErrorAction Stop
+            $windowsAppsRoot = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps'
+            $normalizedWtExe = [System.IO.Path]::GetFullPath($wtExe)
+            $normalizedWindowsAppsRoot = [System.IO.Path]::GetFullPath($windowsAppsRoot)
+            if ($wtItem.Length -eq 0 -or $normalizedWtExe.StartsWith($normalizedWindowsAppsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $isAliasStub = $true
+            } else {
+                $canonicalWtExe = $normalizedWtExe
+                $reason = 'ready'
+                $pathSource = 'command'
+            }
+        } catch {
         }
     }
 
-    # Launch in separate Windows Terminal window (attached session gets real terminal size).
-    # Detached sessions are fixed at 120x30 in the Rust core (resize-window is a no-op on Windows).
-    $wtWidth = 200
-    $wtHeight = 70
-    $wtExe = Get-Command 'wt.exe' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
-    if ([string]::IsNullOrWhiteSpace($wtExe)) {
-        throw "Windows Terminal (wt.exe) is required to create the orchestra session with a usable window size. Install Windows Terminal or ensure wt.exe is in PATH."
+    if ([string]::IsNullOrWhiteSpace($canonicalWtExe)) {
+        foreach ($packageName in @('Microsoft.WindowsTerminal', 'Microsoft.WindowsTerminalPreview')) {
+            try {
+                $package = Get-AppxPackage -Name $packageName -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($null -eq $package -or [string]::IsNullOrWhiteSpace([string]$package.InstallLocation)) {
+                    continue
+                }
+
+                $candidatePath = Join-Path ([string]$package.InstallLocation) 'wt.exe'
+                if (-not (Test-Path -LiteralPath $candidatePath)) {
+                    continue
+                }
+
+                $canonicalWtExe = [System.IO.Path]::GetFullPath($candidatePath)
+                $reason = if ($isAliasStub) { 'resolved_from_appx' } else { 'ready' }
+                $pathSource = 'appx'
+                break
+            } catch {
+            }
+        }
     }
 
-    Start-Process -FilePath $wtExe -ArgumentList @(
-        '--size', "$wtWidth,$wtHeight",
-        '--title', $SessionName,
-        '--',
-        $script:winsmuxBin, 'new-session', '-s', $SessionName
+    return [PSCustomObject][ordered]@{
+        Available   = -not [string]::IsNullOrWhiteSpace($canonicalWtExe)
+        Path        = $canonicalWtExe
+        AliasPath   = if ($isAliasStub) { [string]$wtExe } else { '' }
+        IsAliasStub = $isAliasStub
+        PathSource  = $pathSource
+        Reason      = if (-not [string]::IsNullOrWhiteSpace($canonicalWtExe)) { $reason } elseif ($isAliasStub) { 'wt_alias_stub' } else { 'wt_unavailable' }
+    }
+}
+
+function Start-OrchestraAttachProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][object[]]$ArgumentList,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$LaunchedStatus,
+        [Parameter(Mandatory = $true)][string]$LaunchedReason,
+        [Parameter(Mandatory = $true)][string]$FallbackReason
     )
 
-    # Poll for readiness: has-session + list-panes must both succeed.
+    try {
+        $attachProcess = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru
+        Start-Sleep -Milliseconds 500
+        $attachStillRunning = -not $attachProcess.HasExited
+
+        return [PSCustomObject][ordered]@{
+            Attempted = $true
+            Launched  = $true
+            Attached  = $false
+            Status    = if ($attachStillRunning) { $LaunchedStatus } else { 'attach_exited_early' }
+            Reason    = if ($attachStillRunning) { $LaunchedReason } else { $FallbackReason }
+            Path      = $Path
+        }
+    } catch {
+        return [PSCustomObject][ordered]@{
+            Attempted = $true
+            Launched  = $false
+            Attached  = $false
+            Status    = 'attach_failed'
+            Reason    = $_.Exception.Message
+            Path      = $Path
+        }
+    }
+}
+
+function Try-StartOrchestraUiAttach {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [int]$Width = 200,
+        [int]$Height = 70
+    )
+
+    $winsmuxPathForAttach = [string]$script:winsmuxBin
+    if (-not [string]::IsNullOrWhiteSpace($winsmuxPathForAttach) -and -not [System.IO.Path]::IsPathRooted($winsmuxPathForAttach)) {
+        $resolvedWinsmuxPath = Get-Command $winsmuxPathForAttach -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue
+        if (-not [string]::IsNullOrWhiteSpace($resolvedWinsmuxPath)) {
+            $winsmuxPathForAttach = $resolvedWinsmuxPath
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($winsmuxPathForAttach) -or -not [System.IO.Path]::IsPathRooted($winsmuxPathForAttach)) {
+        return [PSCustomObject][ordered]@{
+            Attempted = $false
+            Launched  = $false
+            Attached  = $false
+            Status    = 'winsmux_unresolved'
+            Reason    = 'winsmux executable could not be resolved to an absolute path for UI attach.'
+            Path      = ''
+            Source    = 'none'
+        }
+    }
+
+    $clientSnapshot = Get-OrchestraAttachedClientSnapshot -WinsmuxBin $winsmuxPathForAttach -SessionName $SessionName
+    $baselineClientCount = if ([bool]$clientSnapshot.Ok) { [int]$clientSnapshot.Count } else { 0 }
+    if ([bool]$clientSnapshot.Ok -and $baselineClientCount -ge 1) {
+        Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+            session_name       = $SessionName
+            winsmux_path       = $winsmuxPathForAttach
+            attach_status      = 'attach_confirmed'
+            attach_confirmed_at = (Get-Date).ToString('o')
+            client_count_seen  = $baselineClientCount
+            ui_attach_source   = 'client-probe'
+            error              = "Detected $baselineClientCount attached client(s) for session '$SessionName'."
+        } | Out-Null
+
+        return [PSCustomObject][ordered]@{
+            Attempted = $false
+            Launched  = $false
+            Attached  = $true
+            Status    = 'attach_already_present'
+            Reason    = "Detected $baselineClientCount attached client(s) for session '$SessionName'; skipped spawning another visible attach window."
+            Path      = ''
+            Source    = 'client-probe'
+        }
+    }
+
+    $terminalInfo = Get-OrchestraWindowsTerminalInfo
+    if (-not [bool]$terminalInfo.Available) {
+        $reason = if ([bool]$terminalInfo.IsAliasStub) {
+            'WindowsApps wt.exe alias was found, but no canonical Windows Terminal binary could be resolved.'
+        } else {
+            'Windows Terminal is not installed or not on PATH.'
+        }
+
+        Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+            session_name          = $SessionName
+            winsmux_path          = $winsmuxPathForAttach
+            requested_at          = (Get-Date).ToString('o')
+            baseline_client_count = $baselineClientCount
+            client_count_seen     = $baselineClientCount
+            attach_status         = 'attach_failed'
+            ui_attach_source      = 'none'
+            error                 = $reason
+        } | Out-Null
+
+        return [PSCustomObject][ordered]@{
+            Attempted = $false
+            Launched  = $false
+            Attached  = $false
+            Status    = 'attach_failed'
+            Reason    = $reason
+            Path      = [string]$terminalInfo.Path
+            Source    = 'none'
+        }
+    }
+
+    $profile = Ensure-OrchestraAttachProfile -ProjectDir $projectDir
+    Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+        session_name          = $SessionName
+        winsmux_path          = $winsmuxPathForAttach
+        project_dir           = $projectDir
+        requested_at          = (Get-Date).ToString('o')
+        request_id            = [guid]::NewGuid().ToString('N')
+        baseline_client_count = $baselineClientCount
+        client_count_seen     = $baselineClientCount
+        attach_status         = 'attach_requested'
+        ui_attach_source      = 'none'
+        error                 = ''
+    } | Out-Null
+
+    try {
+        Start-Process -FilePath ([string]$terminalInfo.Path) -ArgumentList @('-w', '-1', 'new-tab', '-p', [string]$profile.ProfileName) -PassThru | Out-Null
+    } catch {
+        Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+            attach_status     = 'attach_failed'
+            ui_attach_source  = 'none'
+            error             = $_.Exception.Message
+        } | Out-Null
+
+        return [PSCustomObject][ordered]@{
+            Attempted = $true
+            Launched  = $false
+            Attached  = $false
+            Status    = 'attach_failed'
+            Reason    = $_.Exception.Message
+            Path      = [string]$terminalInfo.Path
+            Source    = 'none'
+        }
+    }
+
+    $confirmed = Wait-OrchestraAttachHandshake -SessionName $SessionName -WinsmuxBin $winsmuxPathForAttach -BaselineClientCount $baselineClientCount
+    return [PSCustomObject][ordered]@{
+        Attempted = $true
+        Launched  = $true
+        Attached  = [bool]$confirmed.Confirmed
+        Status    = [string]$confirmed.Status
+        Reason    = [string]$confirmed.Reason
+        Path      = [string]$terminalInfo.Path
+        Source    = [string]$confirmed.Source
+    }
+}
+
+function Ensure-OrchestraBootstrapSession {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SessionName,
+        [int]$TimeoutSeconds = 60,
+        [int]$ExpectedPaneCount = 1
+    )
+
+    if (Test-OrchestraServerSession -SessionName $SessionName) {
+        return [PSCustomObject][ordered]@{
+            SessionName    = $SessionName
+            BootstrapReady = $false
+            StartupReady   = $false
+            BootstrapMode  = 'existing'
+            UiAttached     = $false
+            UiAttachStatus = 'existing_session'
+        }
+    }
+
+    Invoke-Winsmux -Arguments @('new-session', '-d', '-s', $SessionName)
+    $readiness = Wait-OrchestraBootstrapReadiness -SessionName $SessionName -TimeoutSeconds $TimeoutSeconds -ExpectedPaneCount $ExpectedPaneCount
+    if ($readiness.Ready) {
+        return [PSCustomObject][ordered]@{
+            SessionName    = $SessionName
+            BootstrapReady = $true
+            StartupReady   = $false
+            BootstrapMode  = 'detached_primary'
+            UiAttached     = $false
+            UiAttachStatus = 'not_requested'
+        }
+    }
+
+    throw "Orchestra session '$SessionName' did not reach bootstrap readiness within $TimeoutSeconds seconds after detached startup."
+}
+
+function Wait-OrchestraBootstrapReadiness {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [int]$TimeoutSeconds = 60,
+        [int]$ExpectedPaneCount = 1
+    )
+
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     $pollAttempt = 0
     while ((Get-Date) -lt $deadline) {
@@ -103,35 +347,40 @@ function Ensure-OrchestraServer {
         $hasSession = Test-OrchestraServerSession -SessionName $SessionName
         if ($hasSession) {
             try {
-                $paneOutput = Invoke-Winsmux -Arguments @('list-panes', '-t', $SessionName, '-F', '#{pane_id}') -CaptureOutput
-                $paneText = ($paneOutput | Out-String).Trim()
-                if (-not [string]::IsNullOrWhiteSpace($paneText)) {
-                    $null = Wait-OrchestraServerHealthy -SessionName $SessionName -WinsmuxBin $script:winsmuxBin -TimeoutSeconds ([Math]::Min($TimeoutSeconds, 15))
-                    Write-Host "Ensure-OrchestraServer: ready after $pollAttempt polls"
+                $paneCount = Get-OrchestraSessionPaneCount -SessionName $SessionName -WinsmuxBin $script:winsmuxBin
+                if ($paneCount -eq $ExpectedPaneCount) {
+                    Write-Host "Ensure-OrchestraBootstrapSession: bootstrap session available after $pollAttempt polls"
                     return [ordered]@{
-                        SessionName    = $SessionName
-                        SessionCreated = $true
+                        Ready       = $true
+                        PollAttempt = $pollAttempt
                     }
                 }
             } catch {
-                Write-Warning "Ensure-OrchestraServer: poll $pollAttempt list-panes error: $($_.Exception.Message)"
+                Write-Warning "Ensure-OrchestraBootstrapSession: poll $pollAttempt pane-count error: $($_.Exception.Message)"
             }
         } else {
             if ($pollAttempt -le 5 -or $pollAttempt % 10 -eq 0) {
-                Write-Warning "Ensure-OrchestraServer: poll $pollAttempt has-session=false"
+                Write-Warning "Ensure-OrchestraBootstrapSession: poll $pollAttempt has-session=false"
             }
         }
         Start-Sleep -Milliseconds 500
     }
 
-    throw "Orchestra session '$SessionName' did not become ready within $TimeoutSeconds seconds. Verify Windows Terminal launched correctly."
+    return [ordered]@{
+        Ready       = $false
+        PollAttempt = $pollAttempt
+    }
 }
 
 function Reset-OrchestraServerSession {
     param(
         [Parameter(Mandatory = $true)][string]$SessionName,
         [Parameter(Mandatory = $true)][string]$WinsmuxBin,
-        [string]$Reason = 'reset'
+        [AllowNull()][string]$ProjectDir = $null,
+        [AllowNull()][string]$GitWorktreeDir = $null,
+        [AllowNull()][string]$BridgeScript = $null,
+        [string]$Reason = 'reset',
+        [int]$ExpectedPaneCount = 1
     )
 
     if (Test-OrchestraServerSession -SessionName $SessionName) {
@@ -142,14 +391,84 @@ function Reset-OrchestraServerSession {
         }
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($ProjectDir) -and -not [string]::IsNullOrWhiteSpace($GitWorktreeDir) -and -not [string]::IsNullOrWhiteSpace($BridgeScript)) {
+        $cleanup = Stop-OrchestraBackgroundProcessesFromManifest -ProjectDir $ProjectDir -GitWorktreeDir $GitWorktreeDir -BridgeScript $BridgeScript -SessionName $SessionName
+        foreach ($cleanupError in @($cleanup.Errors)) {
+            Write-Warning "Reset-OrchestraServerSession: stale orchestra background cleanup error: $cleanupError"
+        }
+    }
+
     Clear-OrchestraSessionRegistration -SessionName $SessionName
-    $server = Ensure-OrchestraServer -SessionName $SessionName
-    $health = Wait-OrchestraServerHealthy -SessionName $SessionName -WinsmuxBin $WinsmuxBin
+    if (-not [string]::IsNullOrWhiteSpace($ProjectDir)) {
+        [void](Clear-WinsmuxManifest -ProjectDir $ProjectDir)
+    }
+    $server = Ensure-OrchestraBootstrapSession -SessionName $SessionName -TimeoutSeconds 60 -ExpectedPaneCount $ExpectedPaneCount
+    $bootstrapMode = if ($null -ne $server.PSObject -and $server.PSObject.Properties.Name -contains 'BootstrapMode') {
+        [string]$server.BootstrapMode
+    } else {
+        'windows_terminal'
+    }
+    $health = 'BootstrapOnly'
+    if ($bootstrapMode -eq 'detached_fallback') {
+        Write-Warning "Reset-OrchestraServerSession: detached bootstrap fallback used for $SessionName; skipping strict health wait and continuing to layout startup."
+    } else {
+        Write-Warning "Reset-OrchestraServerSession: bootstrap mode $bootstrapMode used for $SessionName; skipping strict pre-layout health wait and continuing to layout startup."
+    }
+
+    return [PSCustomObject][ordered]@{
+        SessionName    = $server.SessionName
+        BootstrapReady = $server.BootstrapReady
+        StartupReady   = $false
+        BootstrapMode  = $bootstrapMode
+        Health         = $health
+    }
+}
+
+function Get-OrchestraStartupLockPath {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    return Join-Path (Join-Path $ProjectDir '.winsmux') 'orchestra.lock'
+}
+
+function Acquire-OrchestraStartupLock {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
+    $lockFile = Get-OrchestraStartupLockPath -ProjectDir $ProjectDir
+    if (Test-Path $lockFile) {
+        try {
+            $lockData = Get-Content $lockFile -Raw | ConvertFrom-Json
+            $lockAge = ((Get-Date) - [datetime]$lockData.started_at).TotalSeconds
+            $lockPid = $lockData.pid
+            $processAlive = $null -ne (Get-Process -Id $lockPid -ErrorAction SilentlyContinue)
+            if ($processAlive -and $lockAge -lt 300) {
+                throw "Orchestra already starting (lock PID=$lockPid, age=${lockAge}s). Remove $lockFile to force."
+            }
+        } catch [System.Management.Automation.RuntimeException] {
+            throw
+        } catch {
+            # stale/corrupt lock; overwrite below
+        }
+    }
+
+    $lockDir = Split-Path $lockFile -Parent
+    if (-not (Test-Path $lockDir)) {
+        New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+    }
+
+    $startupToken = [guid]::NewGuid().ToString('N')
+    Write-OrchestraTextFile -Path $lockFile -Content ([ordered]@{
+            pid           = $PID
+            started_at    = (Get-Date).ToString('o')
+            session_name  = $SessionName
+            startup_token = $startupToken
+        } | ConvertTo-Json)
 
     return [ordered]@{
-        SessionName    = $server.SessionName
-        SessionCreated = $server.SessionCreated
-        Health         = $health.Health
+        LockPath     = $lockFile
+        StartupToken = $startupToken
     }
 }
 
@@ -307,11 +626,45 @@ function Get-OrchestraLayoutSettings {
 
     if (-not $useLegacyLayout -and $agentSlots.Count -gt 0) {
         foreach ($slot in $agentSlots) {
-            $slotId = [string]$slot.slot_id
-            $slotRole = [string]$slot.runtime_role
-            $slotAgent = [string]$slot.agent
-            $slotModel = [string]$slot.model
-            $slotWorktreeMode = [string]$slot.worktree_mode
+            $slotId = ''
+            $slotRole = ''
+            $slotAgent = ''
+            $slotModel = ''
+            $slotWorktreeMode = ''
+
+            if ($slot -is [System.Collections.IDictionary]) {
+                if ($slot.Contains('slot_id')) {
+                    $slotId = [string]$slot['slot_id']
+                }
+                if ($slot.Contains('runtime_role')) {
+                    $slotRole = [string]$slot['runtime_role']
+                }
+                if ($slot.Contains('agent')) {
+                    $slotAgent = [string]$slot['agent']
+                }
+                if ($slot.Contains('model')) {
+                    $slotModel = [string]$slot['model']
+                }
+                if ($slot.Contains('worktree_mode')) {
+                    $slotWorktreeMode = [string]$slot['worktree_mode']
+                }
+            } elseif ($null -ne $slot -and $null -ne $slot.PSObject) {
+                if ($slot.PSObject.Properties.Name -contains 'slot_id') {
+                    $slotId = [string]$slot.slot_id
+                }
+                if ($slot.PSObject.Properties.Name -contains 'runtime_role') {
+                    $slotRole = [string]$slot.runtime_role
+                }
+                if ($slot.PSObject.Properties.Name -contains 'agent') {
+                    $slotAgent = [string]$slot.agent
+                }
+                if ($slot.PSObject.Properties.Name -contains 'model') {
+                    $slotModel = [string]$slot.model
+                }
+                if ($slot.PSObject.Properties.Name -contains 'worktree_mode') {
+                    $slotWorktreeMode = [string]$slot.worktree_mode
+                }
+            }
 
             if (-not [string]::IsNullOrWhiteSpace($slotRole) -and $slotRole -ne 'worker') {
                 throw "agent_slots runtime_role overrides are not supported yet at runtime (slot '$slotId' requested '$slotRole')."
@@ -355,6 +708,16 @@ function Get-OrchestraLayoutSettings {
     }
 }
 
+function Get-OrchestraExpectedPaneCount {
+    param([Parameter(Mandatory = $true)]$LayoutSettings)
+
+    return [int]$LayoutSettings.Commanders +
+        [int]$LayoutSettings.Workers +
+        [int]$LayoutSettings.Builders +
+        [int]$LayoutSettings.Researchers +
+        [int]$LayoutSettings.Reviewers
+}
+
 function Set-OrchestraSessionEnvironment {
     param(
         [Parameter(Mandatory = $true)][string]$SessionName,
@@ -383,23 +746,73 @@ function Send-OrchestraBridgeCommand {
     Invoke-Bridge -Arguments @('send', $Target, $Text)
 }
 
-function Initialize-OrchestraPaneEnvironment {
+function New-OrchestraPaneBootstrapPlan {
     param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)][string]$Agent,
+        [Parameter(Mandatory = $true)][string]$Model,
+        [Parameter(Mandatory = $true)][string]$StartupToken,
         [Parameter(Mandatory = $true)][string]$LaunchDir,
-        [Parameter(Mandatory = $true)]$CleanPtyEnv
+        [Parameter(Mandatory = $true)]$CleanPtyEnv,
+        [Parameter(Mandatory = $true)][string]$LaunchCommand
     )
 
-    Wait-PaneShellReady -PaneId $PaneId
-    # TASK-236: set cwd via cd (respawn-pane -c unreliable on Windows)
-    Send-OrchestraBridgeCommand -Target $PaneId -Text "cd $(ConvertTo-PowerShellLiteral -Value $LaunchDir)"
-    Start-Sleep -Milliseconds 500
-    Send-OrchestraBridgeCommand -Target $PaneId -Text ([string]$CleanPtyEnv.RemoveCommand)
-    Start-Sleep -Milliseconds 200
-    foreach ($entry in $CleanPtyEnv.Environment.GetEnumerator()) {
-        Send-OrchestraBridgeCommand -Target $PaneId -Text ('{0} = {1}' -f ('$env:' + [string]$entry.Key), (ConvertTo-PowerShellLiteral -Value ([string]$entry.Value)))
+    $bootstrapDir = Join-Path (Join-Path $ProjectDir '.winsmux') 'orchestra-bootstrap'
+    if (-not (Test-Path -LiteralPath $bootstrapDir)) {
+        New-Item -ItemType Directory -Path $bootstrapDir -Force | Out-Null
     }
-    Start-Sleep -Milliseconds 300
+
+    $safePaneId = (($PaneId -replace '[^a-zA-Z0-9_-]', '_').Trim('_'))
+    if ([string]::IsNullOrWhiteSpace($safePaneId)) {
+        $safePaneId = 'pane'
+    }
+
+    $planPath = Join-Path $bootstrapDir ("{0}.json" -f $safePaneId)
+    $readyMarkerPath = Join-Path $bootstrapDir ("{0}-{1}.ready.json" -f $safePaneId, $StartupToken)
+    $plan = [ordered]@{
+        pane_id        = $PaneId
+        label          = $Label
+        role           = $Role
+        agent          = $Agent
+        model          = $Model
+        startup_token  = $StartupToken
+        launch_dir     = $LaunchDir
+        launch_command = $LaunchCommand
+        ready_marker_path = $readyMarkerPath
+        environment    = $CleanPtyEnv.Environment
+    }
+
+    $planJson = ($plan | ConvertTo-Json -Depth 8)
+    Write-WinsmuxTextFile -Path $planPath -Content $planJson
+    return $planPath
+}
+
+function Start-OrchestraPaneBootstrap {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$PlanPath
+    )
+
+    $bootstrapScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'orchestra-pane-bootstrap.ps1'))
+    Wait-PaneShellReady -PaneId $PaneId
+    Invoke-Bridge -Arguments @('keys', $PaneId, 'C-c') -AllowFailure | Out-Null
+    Start-Sleep -Milliseconds 200
+    Send-OrchestraBridgeCommand -Target $PaneId -Text ("pwsh -NoProfile -File {0} -PlanFile {1}" -f (ConvertTo-PowerShellLiteral -Value $bootstrapScriptPath), (ConvertTo-PowerShellLiteral -Value $PlanPath))
+    Start-Sleep -Milliseconds 500
+}
+
+function Get-OrchestraPaneBootstrapMarkerPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$PlanPath,
+        [Parameter(Mandatory = $true)][string]$StartupToken
+    )
+
+    $planDirectory = Split-Path -Parent $PlanPath
+    $planBaseName = [System.IO.Path]::GetFileNameWithoutExtension($PlanPath)
+    return Join-Path $planDirectory ("{0}-{1}.ready.json" -f $planBaseName, $StartupToken)
 }
 
 function Get-AgentLaunchCommand {
@@ -699,9 +1112,17 @@ function Save-OrchestraSessionState {
         [Parameter(Mandatory = $true)]$Settings,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [Parameter(Mandatory = $true)][System.Collections.IEnumerable]$PaneSummaries,
+        [AllowEmptyString()][string]$StartupToken = '',
         [Nullable[int]]$CommanderPollPid = $null,
         [Nullable[int]]$WatchdogPid = $null,
-        [Nullable[int]]$ServerWatchdogPid = $null
+        [Nullable[int]]$ServerWatchdogPid = $null,
+        [AllowEmptyString()][string]$BootstrapMode = '',
+        [bool]$SessionReady = $false,
+        [bool]$UiAttachLaunched = $false,
+        [bool]$UiAttached = $false,
+        [AllowEmptyString()][string]$UiAttachStatus = '',
+        [AllowEmptyString()][string]$UiAttachReason = '',
+        [AllowEmptyString()][string]$UiAttachSource = 'none'
     )
 
     $manifestPath = Get-OrchestraManifestPath -ProjectDir $ProjectDir
@@ -733,9 +1154,17 @@ function Save-OrchestraSessionState {
             model               = $Settings.model
             project_dir         = $ProjectDir
             git_worktree_dir    = $GitWorktreeDir
+            startup_token       = $StartupToken
             commander_poll_pid  = $CommanderPollPid
             watchdog_pid        = $WatchdogPid
             server_watchdog_pid = $ServerWatchdogPid
+            bootstrap_mode      = $BootstrapMode
+            session_ready       = $SessionReady
+            ui_attach_launched  = $UiAttachLaunched
+            ui_attached         = $UiAttached
+            ui_attach_status    = $UiAttachStatus
+            ui_attach_reason    = $UiAttachReason
+            ui_attach_source    = $UiAttachSource
         }
         panes     = $paneMap
         tasks     = [PSCustomObject]@{
@@ -748,6 +1177,110 @@ function Save-OrchestraSessionState {
 
     Save-WinsmuxManifest -ProjectDir $ProjectDir -Manifest $manifest
     return $manifestPath
+}
+
+function Stop-OrchestraBackgroundProcessesFromManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
+        [Parameter(Mandatory = $true)][string]$BridgeScript,
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
+    $stopped = [System.Collections.Generic.List[object]]::new()
+    $errors = [System.Collections.Generic.List[string]]::new()
+    $manifest = Get-WinsmuxManifest -ProjectDir $ProjectDir
+    if ($null -eq $manifest -or $null -eq $manifest.session) {
+        return [ordered]@{
+            Stopped = @()
+            Errors  = @()
+        }
+    }
+
+    $startupToken = ''
+    if ($manifest.session -is [System.Collections.IDictionary]) {
+        if ($manifest.session.Contains('startup_token')) {
+            $startupToken = [string]$manifest.session['startup_token']
+        }
+    } elseif ($null -ne $manifest.session.PSObject -and $manifest.session.PSObject.Properties.Name -contains 'startup_token') {
+        $startupToken = [string]$manifest.session.startup_token
+    }
+
+    if ([string]::IsNullOrWhiteSpace($startupToken)) {
+        $errors.Add('manifest does not contain startup_token; skipping targeted background cleanup') | Out-Null
+        return [ordered]@{
+            Stopped = @()
+            Errors  = @($errors)
+        }
+    }
+
+    $pidMap = [ordered]@{}
+    foreach ($propertyName in @('commander_poll_pid', 'watchdog_pid', 'server_watchdog_pid')) {
+        $rawPid = $null
+        if ($manifest.session -is [System.Collections.IDictionary]) {
+            if ($manifest.session.Contains($propertyName)) {
+                $rawPid = $manifest.session[$propertyName]
+            }
+        } elseif ($null -ne $manifest.session.PSObject -and $manifest.session.PSObject.Properties.Name -contains $propertyName) {
+            $rawPid = $manifest.session.$propertyName
+        }
+
+        $resolvedPid = 0
+        if ($null -eq $rawPid -or -not [int]::TryParse(([string]$rawPid), [ref]$resolvedPid) -or $resolvedPid -lt 1) {
+            continue
+        }
+
+        $resolvedPidKey = [string]$resolvedPid
+        if (-not $pidMap.Contains($resolvedPidKey)) {
+            $pidMap[$resolvedPidKey] = $propertyName
+        }
+    }
+
+    $manifestPath = Get-OrchestraManifestPath -ProjectDir $ProjectDir
+    $snapshot = Get-ProcessSnapshot
+    foreach ($entry in $pidMap.GetEnumerator()) {
+        $processId = [int]$entry.Key
+        $label = [string]$entry.Value
+        try {
+            if (-not $snapshot.ById.ContainsKey($processId)) {
+                continue
+            }
+
+            $process = $snapshot.ById[$processId]
+            $commandLine = [string]$process.CommandLine
+            $requiredScript = switch ($label) {
+                'commander_poll_pid' { 'commander-poll.ps1' }
+                'watchdog_pid' { 'agent-watchdog.ps1' }
+                'server_watchdog_pid' { 'server-watchdog.ps1' }
+                default { '' }
+            }
+            $matchesExactMarkers = -not [string]::IsNullOrWhiteSpace($commandLine)
+            foreach ($marker in @($requiredScript, $manifestPath, $SessionName, $startupToken) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) {
+                if ($commandLine.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+                    $matchesExactMarkers = $false
+                    break
+                }
+            }
+
+            if (-not $matchesExactMarkers -or -not (Test-OrchestraZombieProcessMatch -Process $process -ProjectDir $ProjectDir -GitWorktreeDir $GitWorktreeDir -BridgeScript $BridgeScript -SessionName $SessionName)) {
+                $errors.Add("${label}(${processId}): process no longer matches the recorded orchestra background command line") | Out-Null
+                continue
+            }
+
+            Stop-Process -Id $processId -Force -ErrorAction Stop
+            $stopped.Add([ordered]@{
+                pid   = $processId
+                label = $label
+            }) | Out-Null
+        } catch {
+            $errors.Add("${label}(${processId}): $($_.Exception.Message)") | Out-Null
+        }
+    }
+
+    return [ordered]@{
+        Stopped = @($stopped)
+        Errors  = @($errors)
+    }
 }
 
 function Wait-AgentReady {
@@ -778,6 +1311,7 @@ function Start-AgentWatchdogJob {
         [Parameter(Mandatory = $true)][string]$WatchdogScriptPath,
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [Parameter(Mandatory = $true)][string]$SessionName,
+        [AllowEmptyString()][string]$StartupToken = '',
         [int]$IdleThreshold = 120,
         [int]$PollInterval = 30
     )
@@ -790,6 +1324,8 @@ function Start-AgentWatchdogJob {
             $ManifestPath,
             '-SessionName',
             $SessionName,
+            '-StartupToken',
+            $StartupToken,
             '-IdleThreshold',
             $IdleThreshold,
             '-PollInterval',
@@ -801,6 +1337,7 @@ function Start-CommanderPollJob {
     param(
         [Parameter(Mandatory = $true)][string]$CommanderPollScriptPath,
         [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [AllowEmptyString()][string]$StartupToken = '',
         [int]$Interval = 20
     )
 
@@ -810,6 +1347,8 @@ function Start-CommanderPollJob {
             $CommanderPollScriptPath,
             '-ManifestPath',
             $ManifestPath,
+            '-StartupToken',
+            $StartupToken,
             '-Interval',
             $Interval
         ) -WindowStyle Hidden -PassThru)
@@ -820,6 +1359,7 @@ function Start-ServerWatchdogJob {
         [Parameter(Mandatory = $true)][string]$WatchdogScriptPath,
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [Parameter(Mandatory = $true)][string]$SessionName,
+        [AllowEmptyString()][string]$StartupToken = '',
         [ValidateRange(5, 10)][int]$PollInterval = 5,
         [int]$MaxRestartAttempts = 3,
         [int]$RestartWindowMinutes = 10
@@ -833,6 +1373,8 @@ function Start-ServerWatchdogJob {
             $ManifestPath,
             '-SessionName',
             $SessionName,
+            '-StartupToken',
+            $StartupToken,
             '-PollInterval',
             $PollInterval,
             '-MaxRestartAttempts',
@@ -899,6 +1441,19 @@ function Get-OrchestraBootstrapPaneId {
     }
 
     throw "Could not resolve bootstrap pane id for session $SessionName."
+}
+
+function Assert-OrchestraSessionPaneCount {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
+        [Parameter(Mandatory = $true)][string]$StageName
+    )
+
+    $actualPaneCount = @(Get-OrchestraSessionPaneIds -SessionName $SessionName).Count
+    if ($actualPaneCount -ne $ExpectedPaneCount) {
+        throw "TASK-421: $StageName expected $ExpectedPaneCount pane(s) in session $SessionName but found $actualPaneCount."
+    }
 }
 
 function Remove-OrchestraCreatedWorktrees {
@@ -1031,6 +1586,11 @@ function Invoke-OrchestraStartupRollback {
 
         $timestamp = Get-Date -Format 'yyyy-MM-ddTHH:mm:sszzz'
         Write-OrchestraTextFile -Path $journalPath -Content "[$timestamp] FAILED: $FailureMessage" -Append
+        try {
+            [void](Clear-WinsmuxManifest -ProjectDir $ProjectDir)
+        } catch {
+            $rollbackErrors.Add("clear manifest failed: $($_.Exception.Message)") | Out-Null
+        }
     }
 
     foreach ($trackedPaneId in @($trackedPaneIds)) {
@@ -1069,13 +1629,99 @@ function Invoke-OrchestraStartupRollback {
     }
 }
 
+function Assert-OrchestraBootstrapVerification {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object[]]$PaneSummaries,
+
+        [Parameter(Mandatory = $true)]
+        [int]$InvalidCount,
+
+        [Parameter(Mandatory = $true)]
+        [int]$ReadyCount
+    )
+
+    if ($ReadyCount -eq 0) {
+        throw "TASK-240: no panes passed bootstrap verification. All $InvalidCount pane(s) are bootstrap_invalid."
+    }
+
+    if ($InvalidCount -gt 0) {
+        throw "TASK-240: startup aborted because $InvalidCount pane(s) are bootstrap_invalid and only $ReadyCount of $($PaneSummaries.Count) expected pane(s) are ready."
+    }
+}
+
+function Test-PaneCaptureContainsLaunchDir {
+    param(
+        [AllowNull()][string]$CaptureText,
+        [Parameter(Mandatory = $true)][string]$ExpectedLaunchDir
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CaptureText) -or [string]::IsNullOrWhiteSpace($ExpectedLaunchDir)) {
+        return $false
+    }
+
+    $normalizedCapture = $CaptureText.Replace('/', '\').ToLowerInvariant()
+    $normalizedExpected = $ExpectedLaunchDir.Replace('/', '\').ToLowerInvariant()
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $candidates.Add($normalizedExpected) | Out-Null
+
+    $userProfile = [Environment]::GetFolderPath([System.Environment+SpecialFolder]::UserProfile)
+    if (-not [string]::IsNullOrWhiteSpace($userProfile)) {
+        $normalizedUserProfile = $userProfile.Replace('/', '\').ToLowerInvariant()
+        if ($normalizedExpected.StartsWith($normalizedUserProfile)) {
+            $candidates.Add(("~" + $normalizedExpected.Substring($normalizedUserProfile.Length))) | Out-Null
+        }
+    }
+
+    $worktreeMarker = '\.worktrees\'
+    $worktreeIndex = $normalizedExpected.IndexOf($worktreeMarker, [System.StringComparison]::Ordinal)
+    if ($worktreeIndex -ge 0) {
+        $candidates.Add($normalizedExpected.Substring($worktreeIndex)) | Out-Null
+    }
+
+    foreach ($candidate in @($candidates | Select-Object -Unique)) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $normalizedCapture.Contains($candidate)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Test-OrchestraBootstrapMarker {
+    param(
+        [AllowNull()][string]$BootstrapMarkerPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedLaunchDir
+    )
+
+    if ([string]::IsNullOrWhiteSpace($BootstrapMarkerPath) -or -not (Test-Path -LiteralPath $BootstrapMarkerPath)) {
+        return $false
+    }
+
+    try {
+        $marker = Get-Content -LiteralPath $BootstrapMarkerPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 6
+        $normalizedExpected = $ExpectedLaunchDir.Replace('/', '\').ToLowerInvariant()
+        foreach ($candidate in @([string]$marker.launch_dir, [string]$marker.current_dir)) {
+            if (-not [string]::IsNullOrWhiteSpace($candidate)) {
+                if ($candidate.Replace('/', '\').ToLowerInvariant() -eq $normalizedExpected) {
+                    return $true
+                }
+            }
+        }
+    } catch {
+    }
+
+    return $false
+}
+
 function Test-PaneBootstrapInvariants {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
         [Parameter(Mandatory = $true)][string]$Label,
         [Parameter(Mandatory = $true)][string]$ExpectedRole,
         [Parameter(Mandatory = $true)][string]$ExpectedLaunchDir,
-        [string]$ExpectedWorktreePath = ''
+        [string]$ExpectedWorktreePath = '',
+        [string]$BootstrapMarkerPath = ''
     )
 
     $failures = [System.Collections.Generic.List[string]]::new()
@@ -1094,10 +1740,20 @@ function Test-PaneBootstrapInvariants {
         $actualCwd = ([string]$cwdOutput).Trim().Replace('\', '/')
         $expectedCwd = $ExpectedLaunchDir.Replace('\', '/')
         if ($actualCwd -and $expectedCwd -and ($actualCwd.ToLowerInvariant() -ne $expectedCwd.ToLowerInvariant())) {
-            $failures.Add("cwd mismatch: expected=$ExpectedLaunchDir actual=$actualCwd")
+            if (-not (Test-OrchestraBootstrapMarker -BootstrapMarkerPath $BootstrapMarkerPath -ExpectedLaunchDir $ExpectedLaunchDir)) {
+                $snapshot = Invoke-Winsmux -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-80') -CaptureOutput
+                $snapshotText = ($snapshot | Out-String).TrimEnd()
+                if (-not (Test-PaneCaptureContainsLaunchDir -CaptureText $snapshotText -ExpectedLaunchDir $ExpectedLaunchDir)) {
+                    $failures.Add("cwd mismatch: expected=$ExpectedLaunchDir actual=$actualCwd")
+                }
+            }
         }
     } catch {
         $failures.Add("could not read pane cwd: $($_.Exception.Message)")
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($BootstrapMarkerPath) -and -not (Test-Path -LiteralPath $BootstrapMarkerPath)) {
+        $failures.Add("bootstrap marker missing: $BootstrapMarkerPath")
     }
 
     return $failures
@@ -1109,6 +1765,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     $serverWatchdogProcess = $null
     $projectDir = $null
     $gitWorktreeDir = $null
+    $startupToken = ''
     $orchestraServer = $null
     $createdPaneIds = @()
     $bootstrapPaneId = $null
@@ -1121,9 +1778,6 @@ if ($MyInvocation.InvocationName -ne '.') {
             exit 1
         }
 
-        $orchestraServer = Ensure-OrchestraServer -SessionName $sessionName
-        Write-Warning ("Ensure result type: " + $orchestraServer.GetType().FullName + " SessionCreated=" + $orchestraServer.SessionCreated)
-
         if (-not (Test-Path $bridgeScript)) {
             Write-Error "Bridge CLI not found: $bridgeScript"
             exit 1
@@ -1132,6 +1786,8 @@ if ($MyInvocation.InvocationName -ne '.') {
         $projectDir = Get-ProjectDir
         $settings = Get-BridgeSettings -RootPath $projectDir
         $layoutSettings = Get-OrchestraLayoutSettings -Settings $settings
+        $bootstrapPaneCount = 1
+        $expectedPaneCount = Get-OrchestraExpectedPaneCount -LayoutSettings $layoutSettings
         Initialize-WinsmuxLog -ProjectDir $projectDir -SessionName $sessionName | Out-Null
         Write-WinsmuxLog -Level INFO -Event 'preflight.settings.loaded' -Message 'Loaded orchestra settings.' -Data @{
             agent              = $settings.agent
@@ -1149,7 +1805,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-WinsmuxLog -Level INFO -Event 'preflight.project_dir.resolved' -Message "Resolved project directory: $projectDir." -Data @{ project_dir = $projectDir } | Out-Null
         $gitWorktreeDir = Get-GitWorktreeDir -ProjectDir $projectDir
         Write-WinsmuxLog -Level INFO -Event 'preflight.git_worktree.resolved' -Message "Resolved git worktree directory: $gitWorktreeDir." -Data @{ git_worktree_dir = $gitWorktreeDir } | Out-Null
-
+        $startupLock = Acquire-OrchestraStartupLock -ProjectDir $projectDir -SessionName $sessionName
+        $startupToken = [string]$startupLock.StartupToken
+        Write-WinsmuxLog -Level INFO -Event 'preflight.startup_lock.acquired' -Message "Acquired orchestra startup lock for $sessionName." -Data @{ session_name = $sessionName; startup_token = $startupToken } | Out-Null
+        $sessionExistedAtStart = Test-OrchestraServerSession -SessionName $sessionName
         Write-WinsmuxLog -Level INFO -Event 'preflight.vault.start' -Message 'Running vault preflight.' | Out-Null
         Invoke-VaultPreflight -Settings $settings
         Write-WinsmuxLog -Level INFO -Event 'preflight.codex_trust.start' -Message 'Running Codex trust preflight.' | Out-Null
@@ -1170,12 +1829,37 @@ if ($MyInvocation.InvocationName -ne '.') {
             }
         }
 
+        if (-not $sessionExistedAtStart) {
+            Write-WinsmuxLog -Level INFO -Event 'preflight.manifest_cleanup.start' -Message 'Stopping stale orchestra background processes and clearing stale manifest before fresh startup.' | Out-Null
+            $manifestBackgroundCleanup = Stop-OrchestraBackgroundProcessesFromManifest -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -SessionName $sessionName
+            foreach ($stoppedProcess in @($manifestBackgroundCleanup.Stopped)) {
+                Write-WinsmuxLog -Level INFO -Event 'preflight.manifest_cleanup.process_stopped' -Message "Stopped stale orchestra background process $($stoppedProcess.label) ($($stoppedProcess.pid))." -Data ([ordered]@{
+                    label = $stoppedProcess.label
+                    pid   = $stoppedProcess.pid
+                }) | Out-Null
+            }
+            foreach ($cleanupError in @($manifestBackgroundCleanup.Errors)) {
+                Write-Warning "Preflight: stale orchestra background cleanup error: $cleanupError"
+                Write-WinsmuxLog -Level WARN -Event 'preflight.manifest_cleanup.process_error' -Message "Stale orchestra background cleanup error: $cleanupError" -Data ([ordered]@{
+                    error = $cleanupError
+                }) | Out-Null
+            }
+            if (Clear-WinsmuxManifest -ProjectDir $projectDir) {
+                Write-WinsmuxLog -Level INFO -Event 'preflight.manifest_cleanup.cleared' -Message "Cleared stale orchestra manifest for $projectDir." -Data ([ordered]@{
+                    project_dir = $projectDir
+                }) | Out-Null
+            }
+        }
+
         Write-WinsmuxLog -Level INFO -Event 'preflight.zombie_cleanup.start' -Message 'Removing orchestra zombie processes.' | Out-Null
         $zombieCleanup = Remove-OrchestraZombieProcesses -SessionName $sessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -WinsmuxBin $winsmuxBin
         if (@($zombieCleanup.Killed).Count -gt 0) {
             Write-WinsmuxLog -Level INFO -Event 'preflight.git_worktree.prune_after_zombie_cleanup' -Message 'Pruning git worktree metadata after zombie cleanup.' -Data @{ killed_count = @($zombieCleanup.Killed).Count } | Out-Null
             Invoke-BuilderWorktreeGit -ProjectDir $projectDir -Arguments @('worktree', 'prune') | Out-Null
         }
+
+        $orchestraServer = Ensure-OrchestraBootstrapSession -SessionName $sessionName -TimeoutSeconds 60
+        Write-Warning ("Bootstrap ensure result type: " + $orchestraServer.GetType().FullName + " BootstrapReady=" + $orchestraServer.BootstrapReady + " Mode=" + $orchestraServer.BootstrapMode)
 
     # Clean up any leftover orchestra panes in default session (#213)
     try {
@@ -1199,54 +1883,43 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
     } catch { }
 
-    if (-not [bool]$orchestraServer.SessionCreated) {
+    if (-not [bool]$orchestraServer.BootstrapReady) {
         Write-WinsmuxLog -Level INFO -Event 'preflight.session.check' -Message "Checking for existing session $sessionName." -Data @{ session_name = $sessionName } | Out-Null
-        $sessionHealth = Test-OrchestraServerHealth -SessionName $sessionName -WinsmuxBin $winsmuxBin
+        $sessionHealth = Test-OrchestraServerHealth -SessionName $sessionName -WinsmuxBin $winsmuxBin -ExpectedPaneCount $expectedPaneCount
         Write-WinsmuxLog -Level INFO -Event 'preflight.session.health' -Message "Session health for ${sessionName}: $sessionHealth." -Data @{ session_name = $sessionName; health = $sessionHealth } | Out-Null
         switch ($sessionHealth) {
             'Healthy' {
                 Write-WinsmuxLog -Level INFO -Event 'preflight.session.reset' -Message "Resetting existing healthy session $sessionName before startup." -Data @{ session_name = $sessionName; health = $sessionHealth } | Out-Null
-                $orchestraServer = Reset-OrchestraServerSession -SessionName $sessionName -WinsmuxBin $winsmuxBin -Reason 'healthy_existing_session'
+                $orchestraServer = Reset-OrchestraServerSession -SessionName $sessionName -WinsmuxBin $winsmuxBin -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -Reason 'healthy_existing_session' -ExpectedPaneCount $bootstrapPaneCount
             }
             'Unhealthy' {
                 Write-Warning "Preflight: removing stale session registration for $sessionName"
                 Write-WinsmuxLog -Level WARN -Event 'preflight.session.registration_cleared' -Message "Cleared stale session registration for $sessionName." -Data @{ session_name = $sessionName } | Out-Null
-                $orchestraServer = Reset-OrchestraServerSession -SessionName $sessionName -WinsmuxBin $winsmuxBin -Reason 'unhealthy_existing_session'
+                $orchestraServer = Reset-OrchestraServerSession -SessionName $sessionName -WinsmuxBin $winsmuxBin -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -Reason 'unhealthy_existing_session' -ExpectedPaneCount $bootstrapPaneCount
             }
             default {
                 Write-Warning "Preflight: session $sessionName is missing strict health metadata; recreating it"
                 Write-WinsmuxLog -Level WARN -Event 'preflight.session.reset' -Message "Resetting session $sessionName after missing strict health metadata." -Data @{ session_name = $sessionName; health = $sessionHealth } | Out-Null
-                $orchestraServer = Reset-OrchestraServerSession -SessionName $sessionName -WinsmuxBin $winsmuxBin -Reason 'missing_strict_health'
+                $orchestraServer = Reset-OrchestraServerSession -SessionName $sessionName -WinsmuxBin $winsmuxBin -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -Reason 'missing_strict_health' -ExpectedPaneCount $bootstrapPaneCount
             }
         }
     } else {
-        $null = Wait-OrchestraServerHealthy -SessionName $sessionName -WinsmuxBin $winsmuxBin
+        $bootstrapMode = if ($null -ne $orchestraServer.PSObject -and $orchestraServer.PSObject.Properties.Name -contains 'BootstrapMode') {
+            [string]$orchestraServer.BootstrapMode
+        } else {
+            'windows_terminal'
+        }
+        if ($bootstrapMode -eq 'detached_fallback') {
+            Write-Warning "Preflight: detached bootstrap fallback active for $sessionName; proceeding without strict pre-layout health metadata gate."
+        } else {
+            Write-Warning "Preflight: bootstrap mode $bootstrapMode active for $sessionName; proceeding without strict pre-layout health metadata gate."
+        }
         Write-WinsmuxLog -Level INFO -Event 'preflight.session.reuse' -Message "Reusing server-created session $sessionName." -Data ([ordered]@{
             session_name    = $sessionName
             session_created = $true
+            bootstrap_mode  = $bootstrapMode
         }) | Out-Null
     }
-
-    # --- Startup lock (TASK-117) ---
-    $lockFile = Join-Path $projectDir '.winsmux' 'orchestra.lock'
-    if (Test-Path $lockFile) {
-        try {
-            $lockData = Get-Content $lockFile -Raw | ConvertFrom-Json
-            $lockAge = ((Get-Date) - [datetime]$lockData.started_at).TotalSeconds
-            $lockPid = $lockData.pid
-            $processAlive = $null -ne (Get-Process -Id $lockPid -ErrorAction SilentlyContinue)
-            if ($processAlive -and $lockAge -lt 300) {
-                throw "Orchestra already starting (lock PID=$lockPid, age=${lockAge}s). Remove $lockFile to force."
-            }
-        } catch [System.Management.Automation.RuntimeException] {
-            throw
-        } catch {
-            # Stale/corrupt lock — overwrite
-        }
-    }
-    $lockDir = Split-Path $lockFile -Parent
-    if (-not (Test-Path $lockDir)) { New-Item -ItemType Directory -Path $lockDir -Force | Out-Null }
-    Write-OrchestraTextFile -Path $lockFile -Content ([ordered]@{ pid = $PID; started_at = (Get-Date).ToString('o') } | ConvertTo-Json)
 
     Write-WinsmuxLog -Level INFO -Event 'preflight.builder_worktree_cleanup.start' -Message 'Cleaning stale Builder worktrees.' | Out-Null
     $builderCleanup = Invoke-StaleBuilderWorktreeCleanup -ProjectDir $projectDir
@@ -1263,11 +1936,11 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-WinsmuxLog -Level INFO -Event 'preflight.builder_worktree_cleanup.branch_removed' -Message "Removed stale Builder branch $removedBranch." -Data ([ordered]@{ branch_name = $removedBranch }) | Out-Null
     }
 
-        # Session is created by Ensure-OrchestraServer (wt.exe attached window).
-        # No fallback detached creation — wt.exe is required.
-        Write-WinsmuxLog -Level INFO -Event 'preflight.session.ready' -Message "Session $sessionName created by Ensure-OrchestraServer." -Data ([ordered]@{
+        Write-WinsmuxLog -Level INFO -Event 'preflight.bootstrap.ready' -Message "Bootstrap session $sessionName created by Ensure-OrchestraBootstrapSession." -Data ([ordered]@{
             session_name    = $sessionName
-            session_created = [bool]$orchestraServer.SessionCreated
+            session_created = [bool]$orchestraServer.BootstrapReady
+            bootstrap_mode  = [string]$orchestraServer.BootstrapMode
+            expected_panes  = $bootstrapPaneCount
         }) | Out-Null
         $bootstrapPaneId = Get-OrchestraBootstrapPaneId -SessionName $sessionName
         $createdPaneIds = @($bootstrapPaneId)
@@ -1301,6 +1974,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                         $createdPaneIds += $sessionPaneId
                     }
                 }
+                Assert-OrchestraSessionPaneCount -SessionName $sessionName -ExpectedPaneCount $layout.Panes.Count -StageName 'layout'
             } catch {
                 if (-not [string]::IsNullOrWhiteSpace($bootstrapPaneId)) {
                     foreach ($sessionPaneId in @(Get-OrchestraSessionPaneIds -SessionName $sessionName)) {
@@ -1383,17 +2057,27 @@ if ($MyInvocation.InvocationName -ne '.') {
                 }
             }
             Invoke-Winsmux -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
-            Initialize-OrchestraPaneEnvironment -PaneId $paneId -LaunchDir $launchDir -CleanPtyEnv $cleanPtyEnv
-            # TASK-231: verify pane exists after respawn
-            try {
-                Invoke-Winsmux -Arguments @('display-message', '-t', $paneId, '-p', '#{pane_id}') -CaptureOutput | Out-Null
-            } catch {
-                Write-Warning "TASK-231: pane $paneId ($label) not found after respawn-pane."
-            }
-            if (-not [string]::IsNullOrWhiteSpace($launchCommand)) {
-                Send-OrchestraBridgeCommand -Target $paneId -Text $launchCommand
-            } else {
+            if ([string]::IsNullOrWhiteSpace($launchCommand)) {
                 Write-Warning "TASK-231: empty launch command for pane $paneId ($label, role=$canonicalRole, execMode=$execMode). Agent will not start automatically."
+            } else {
+                $bootstrapPlanPath = New-OrchestraPaneBootstrapPlan `
+                    -ProjectDir $projectDir `
+                    -PaneId $paneId `
+                    -Label $label `
+                    -Role $canonicalRole `
+                    -Agent ([string]$slotAgentConfig.Agent) `
+                    -Model ([string]$slotAgentConfig.Model) `
+                    -StartupToken $startupToken `
+                    -LaunchDir $launchDir `
+                    -CleanPtyEnv $cleanPtyEnv `
+                    -LaunchCommand $launchCommand
+                Start-OrchestraPaneBootstrap -PaneId $paneId -PlanPath $bootstrapPlanPath
+                # TASK-231: verify pane exists after respawn
+                try {
+                    Invoke-Winsmux -Arguments @('display-message', '-t', $paneId, '-p', '#{pane_id}') -CaptureOutput | Out-Null
+                } catch {
+                    Write-Warning "TASK-231: pane $paneId ($label) not found after respawn-pane."
+                }
             }
         } finally {
             foreach ($envName in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {
@@ -1414,6 +2098,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             LaunchDir = $launchDir
             BuilderBranch = $builderBranch
             BuilderWorktreePath = $builderWorktreePath
+            BootstrapMarkerPath = if ([string]::IsNullOrWhiteSpace($bootstrapPlanPath)) { '' } else { Get-OrchestraPaneBootstrapMarkerPath -PlanPath $bootstrapPlanPath -StartupToken $startupToken }
             Status = 'ready'
         })
     }
@@ -1436,7 +2121,8 @@ if ($MyInvocation.InvocationName -ne '.') {
             -Label $paneSummary.Label `
             -ExpectedRole $paneSummary.Role `
             -ExpectedLaunchDir $paneSummary.LaunchDir `
-            -ExpectedWorktreePath ([string]$paneSummary.BuilderWorktreePath))
+            -ExpectedWorktreePath ([string]$paneSummary.BuilderWorktreePath) `
+            -BootstrapMarkerPath ([string]$paneSummary.BootstrapMarkerPath))
 
         if ($failures.Count -gt 0) {
             $failureText = $failures -join '; '
@@ -1454,32 +2140,59 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
     }
     $readyCount = $validPaneSummaries.Count - $invalidCount
-    if ($readyCount -eq 0) {
-        Write-Error "TASK-240: no panes passed bootstrap verification. All $invalidCount pane(s) are bootstrap_invalid."
-        exit 1
-    }
-    if ($invalidCount -gt 0) {
-        Write-Warning "TASK-240: $invalidCount pane(s) marked bootstrap_invalid, $readyCount pane(s) ready."
+    Assert-OrchestraBootstrapVerification -PaneSummaries @($paneSummaries) -InvalidCount $invalidCount -ReadyCount $readyCount
+
+    $uiAttachResult = Try-StartOrchestraUiAttach -SessionName $sessionName
+    $successfulAttachStatuses = @('attach_confirmed', 'attach_already_present')
+    if ($successfulAttachStatuses -notcontains [string]$uiAttachResult.Status) {
+        Write-Warning "Orchestra UI attach status for ${sessionName}: $($uiAttachResult.Status) ($($uiAttachResult.Reason))"
     }
 
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $false -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source)
     $commanderPollScriptPath = Join-Path $scriptDir 'commander-poll.ps1'
-    $commanderPollProcess = Start-CommanderPollJob -CommanderPollScriptPath $commanderPollScriptPath -ManifestPath $manifestPath -Interval 20
+    $commanderPollProcess = Start-CommanderPollJob -CommanderPollScriptPath $commanderPollScriptPath -ManifestPath $manifestPath -StartupToken $startupToken -Interval 20
     Write-WinsmuxLog -Level INFO -Event 'preflight.commander_poll.started' -Message "Started commander poll for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; commander_poll_pid = $commanderPollProcess.Id; process_name = $commanderPollProcess.ProcessName } | Out-Null
     $watchdogScriptPath = Join-Path $scriptDir 'agent-watchdog.ps1'
-    $watchdogProcess = Start-AgentWatchdogJob -WatchdogScriptPath $watchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName
+    $watchdogProcess = Start-AgentWatchdogJob -WatchdogScriptPath $watchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName -StartupToken $startupToken
     $serverWatchdogScriptPath = Join-Path $scriptDir 'server-watchdog.ps1'
-    $serverWatchdogProcess = Start-ServerWatchdogJob -WatchdogScriptPath $serverWatchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName
+    $serverWatchdogProcess = Start-ServerWatchdogJob -WatchdogScriptPath $serverWatchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName -StartupToken $startupToken
     Assert-OrchestraBackgroundProcessStarted -Process $commanderPollProcess -Name 'Commander poll job'
     Assert-OrchestraBackgroundProcessStarted -Process $watchdogProcess -Name 'Agent watchdog job'
     Assert-OrchestraBackgroundProcessStarted -Process $serverWatchdogProcess -Name 'Server watchdog job'
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -CommanderPollPid $commanderPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -CommanderPollPid $commanderPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $true -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source)
     Write-WinsmuxLog -Level INFO -Event 'preflight.watchdog.started' -Message "Started agent watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; watchdog_pid = $watchdogProcess.Id; process_name = $watchdogProcess.ProcessName } | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'preflight.server_watchdog.started' -Message "Started server watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; server_watchdog_pid = $serverWatchdogProcess.Id; process_name = $serverWatchdogProcess.ProcessName } | Out-Null
+    Write-WinsmuxLog -Level INFO -Event 'orchestra.startup.session_ready' -Message "Orchestra session $sessionName reached session-ready; UI attach remains a separate state." -Data ([ordered]@{
+        session_name       = $sessionName
+        expected_panes     = $expectedPaneCount
+        actual_panes       = @($layout.Panes).Count
+        bootstrap_verified = $true
+        ui_attach_launched = [bool]$uiAttachResult.Launched
+        ui_attach_status   = [string]$uiAttachResult.Status
+        ui_attached        = [bool]$uiAttachResult.Attached
+        ui_attach_source   = [string]$uiAttachResult.Source
+    }) | Out-Null
 
     Write-Output "Orchestra session: $sessionName"
-    Write-Output "Agent: $($settings.agent)"
-    Write-Output "Model: $($settings.model)"
+    $defaultAgent = ''
+    $defaultModel = ''
+    if ($settings -is [System.Collections.IDictionary]) {
+        if ($settings.Contains('agent')) {
+            $defaultAgent = [string]$settings['agent']
+        }
+        if ($settings.Contains('model')) {
+            $defaultModel = [string]$settings['model']
+        }
+    } elseif ($null -ne $settings -and $null -ne $settings.PSObject) {
+        if ($settings.PSObject.Properties.Name -contains 'agent') {
+            $defaultAgent = [string]$settings.agent
+        }
+        if ($settings.PSObject.Properties.Name -contains 'model') {
+            $defaultModel = [string]$settings.model
+        }
+    }
+    Write-Output "Agent: $(if ([string]::IsNullOrWhiteSpace($defaultAgent)) { 'per-slot / override only' } else { $defaultAgent })"
+    Write-Output "Model: $(if ([string]::IsNullOrWhiteSpace($defaultModel)) { 'per-slot / override only' } else { $defaultModel })"
     if ($layoutSettings.LegacyRoleLayout) {
         Write-Output "Mode: legacy role layout"
     } elseif ($layoutSettings.ExternalCommander) {
@@ -1489,6 +2202,9 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
     Write-Output "ProjectDir: $projectDir"
     Write-Output "GitWorktreeDir: $gitWorktreeDir"
+    Write-Output "SessionReady: true"
+    Write-Output "UI Attach Launched: $([bool]$uiAttachResult.Launched)"
+    Write-Output "UI Attach: $($uiAttachResult.Status)"
     Write-Output ''
     Write-Output 'Panes:'
     foreach ($paneSummary in $paneSummaries) {
@@ -1533,7 +2249,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 } finally {
     # Release startup lock (TASK-117)
     $lockProjectDir = if ([string]::IsNullOrWhiteSpace($projectDir)) { (Get-Location).Path } else { $projectDir }
-    $lockFile = Join-Path $lockProjectDir '.winsmux' 'orchestra.lock'
+    $lockFile = Get-OrchestraStartupLockPath -ProjectDir $lockProjectDir
     if (Test-Path $lockFile) { Remove-Item $lockFile -Force -ErrorAction SilentlyContinue }
 }
 }

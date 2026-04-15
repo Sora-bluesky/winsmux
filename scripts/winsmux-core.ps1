@@ -2320,6 +2320,26 @@ function Invoke-Send {
         }
     }
 
+    $contextLaunchDir = $projectDir
+    $contextGitWorktreeDir = ''
+    if ($null -ne $context) {
+        if ($context -is [System.Collections.IDictionary]) {
+            if ($context.Contains('LaunchDir')) {
+                $contextLaunchDir = [string]$context['LaunchDir']
+            }
+            if ($context.Contains('GitWorktreeDir')) {
+                $contextGitWorktreeDir = [string]$context['GitWorktreeDir']
+            }
+        } else {
+            if ($null -ne $context.PSObject -and $context.PSObject.Properties.Name -contains 'LaunchDir') {
+                $contextLaunchDir = [string]$context.LaunchDir
+            }
+            if ($null -ne $context.PSObject -and $context.PSObject.Properties.Name -contains 'GitWorktreeDir') {
+                $contextGitWorktreeDir = [string]$context.GitWorktreeDir
+            }
+        }
+    }
+
     $transportPlan = Resolve-SendTransportPlan `
         -Text $text `
         -ProjectDir $projectDir `
@@ -2327,8 +2347,8 @@ function Invoke-Send {
         -PromptTransport ([string]$agentConfig.PromptTransport) `
         -TaskSlug $taskSlug `
         -ExecMode:$execMode `
-        -LaunchDir ([string]$context.LaunchDir) `
-        -GitWorktreeDir ([string]$context.GitWorktreeDir) `
+        -LaunchDir $contextLaunchDir `
+        -GitWorktreeDir $contextGitWorktreeDir `
         -Model ([string]$agentConfig.Model)
 
     if ($transportPlan['Mode'] -eq 'codex_exec_file') {
@@ -5996,6 +6016,93 @@ function Invoke-DispatchReview {
     Write-Output "PENDING confirmed. $reviewRole pane will run review-approve or review-fail. Monitor review-state.json for result."
 }
 
+function Get-DispatchTaskManifestEntry {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) {
+        $entry = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir | Where-Object { [string]$_.Label -eq $Label } | Select-Object -First 1)[0]
+        if ($null -ne $entry) {
+            return $entry
+        }
+    }
+
+    $labels = Get-Labels
+    if ($labels.ContainsKey($Label)) {
+        return [PSCustomObject]@{
+            Label  = $Label
+            PaneId = [string]$labels[$Label]
+            Role   = ''
+        }
+    }
+
+    return $null
+}
+
+function Invoke-DispatchTask {
+    $parts = @(
+        @($Target) + @($Rest) |
+            Where-Object { $_ } |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ }
+    )
+    if ($parts.Count -lt 1) {
+        Stop-WithError "usage: winsmux dispatch-task <text>"
+    }
+
+    $taskText = $parts -join ' '
+    $projectDir = (Get-Location).Path
+    $routerScript = Join-Path $PSScriptRoot '..\winsmux-core\scripts\dispatch-router.ps1'
+    if (-not (Test-Path -LiteralPath $routerScript -PathType Leaf)) {
+        Stop-WithError "dispatch router not found: $routerScript"
+    }
+
+    . $routerScript
+
+    $availableTargets = @()
+    if (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) {
+        $availableTargets = @(
+            Get-PaneControlManifestEntries -ProjectDir $projectDir |
+                ForEach-Object { [string]$_.Label } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+    }
+    if ($availableTargets.Count -eq 0) {
+        $availableTargets = @((Get-Labels).Keys | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+
+    $route = Get-DispatchRoute -Text $taskText -AvailableTargets $availableTargets -DefaultRole 'Worker'
+    if ($route.HandleLocally) {
+        Stop-WithError "dispatch-task routed to Commander. Refine the task text so it can be delegated to a managed pane."
+    }
+
+    $selectedLabel = [string]$route.SelectedTarget
+    $paneId = ''
+    $resolvedRole = [string]$route.SelectedRole
+
+    if ($resolvedRole -eq 'Reviewer') {
+        $reviewEntry = Get-PreferredReviewPaneEntry -ProjectDir $projectDir
+        if ($null -eq $reviewEntry) {
+            Stop-WithError "No review-capable pane found in manifest."
+        }
+
+        $selectedLabel = [string]$reviewEntry.Label
+        $paneId = [string]$reviewEntry.PaneId
+    } else {
+        $manifestEntry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $selectedLabel
+        if ($null -eq $manifestEntry -or [string]::IsNullOrWhiteSpace([string]$manifestEntry.PaneId)) {
+            Stop-WithError "dispatch-task could not resolve target '$selectedLabel' to a pane."
+        }
+
+        $paneId = [string]$manifestEntry.PaneId
+    }
+
+    Send-TextToPane -PaneId $paneId -CommandText $taskText
+    Write-Output ("Dispatched to {0} [{1}] as {2}. {3}" -f $selectedLabel, $paneId, $resolvedRole, [string]$route.Reason)
+}
+
 function Invoke-ReviewRequest {
     if ($Target -or ($Rest -and $Rest.Count -gt 0)) {
         Stop-WithError "usage: winsmux review-request"
@@ -6255,6 +6362,7 @@ Commands:
   review-fail               Record review FAIL for the current branch
   review-reset              Clear review PASS for the current branch
   dispatch-review           Dispatch review-request to a review-capable pane (Reviewer/Worker)
+  dispatch-task <text>      Route and send task text to a managed pane using manifest-aware role selection
   consult-request <mode> [--message <text>] [--target-slot <slot>]  Record a consultation request packet/event
   consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>]  Record a consultation result packet/event
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
@@ -6279,6 +6387,9 @@ promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>
   pipeline <task>       Run plan-exec-verify-fix loop for a task
   task-run <task>       Alias for pipeline; one-shot orchestration entrypoint
   builder-queue <action> [args]  Manage Builder queue and auto-dispatch next work
+  orchestra-smoke [--json] [--auto-start] [--project-dir <path>]  Report structured startup contract + UI attach state (use --auto-start to start if needed)
+  orchestra-attach [--json] [--project-dir <path>]  Launch a visible attach window for an existing orchestra session
+  harness-check [--json] [--project-dir <path>]  Validate hook/settings/attach contracts before external-operator startup
   vault set <key> [value]   Store a credential securely (DPAPI)
   vault get <key>           Retrieve a stored credential
   vault inject <pane>       Inject all credentials as env vars into a pane
@@ -6528,6 +6639,7 @@ switch ($Command) {
     'unlock'          { Invoke-Unlock }
     'locks'           { Invoke-Locks }
     'verify'          { Invoke-Verify }
+    'dispatch-task'   { Invoke-DispatchTask }
     'dispatch-route'  {
         $routerScript = Join-Path $PSScriptRoot '..\winsmux-core\scripts\dispatch-router.ps1'
         $fullText = @($Target) + @($Rest) | Where-Object { $_ } | ForEach-Object { $_.Trim() } | Where-Object { $_ }
@@ -6600,6 +6712,81 @@ switch ($Command) {
                 Stop-WithError "usage: winsmux builder-queue [add|list|dispatch-next|complete] ..."
             }
         }
+    }
+    'orchestra-smoke' {
+        $smokeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-smoke.ps1'))
+        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
+        $smokeArgs = @()
+        for ($index = 0; $index -lt $remaining.Count; $index++) {
+            switch ($remaining[$index]) {
+                '--json' {
+                    $smokeArgs += '-AsJson'
+                }
+                '--project-dir' {
+                    if ($index + 1 -ge $remaining.Count) {
+                    Stop-WithError "usage: winsmux orchestra-smoke [--json] [--auto-start] [--project-dir <path>]"
+                }
+
+                $smokeArgs += @('-ProjectDir', $remaining[$index + 1])
+                $index++
+            }
+                '--auto-start' {
+                    $smokeArgs += '-AutoStart'
+                }
+                default {
+                    Stop-WithError "usage: winsmux orchestra-smoke [--json] [--auto-start] [--project-dir <path>]"
+                }
+            }
+        }
+        & pwsh -NoProfile -File $smokeScript @smokeArgs
+    }
+    'orchestra-attach' {
+        $attachScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-attach.ps1'))
+        $attachArgs = @()
+        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
+        for ($index = 0; $index -lt $remaining.Count; $index++) {
+            switch ($remaining[$index]) {
+                '--json' {
+                    $attachArgs += '-AsJson'
+                }
+                '--project-dir' {
+                    if ($index + 1 -ge $remaining.Count) {
+                        Stop-WithError "usage: winsmux orchestra-attach [--json] [--project-dir <path>]"
+                    }
+
+                    $attachArgs += @('-ProjectDir', $remaining[$index + 1])
+                    $index++
+                }
+                default {
+                    Stop-WithError "usage: winsmux orchestra-attach [--json] [--project-dir <path>]"
+                }
+            }
+        }
+        & pwsh -NoProfile -File $attachScript @attachArgs
+    }
+    'harness-check' {
+        $checkScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\harness-check.ps1'))
+        $checkArgs = @()
+        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
+        for ($index = 0; $index -lt $remaining.Count; $index++) {
+            switch ($remaining[$index]) {
+                '--json' {
+                    $checkArgs += '-AsJson'
+                }
+                '--project-dir' {
+                    if ($index + 1 -ge $remaining.Count) {
+                        Stop-WithError "usage: winsmux harness-check [--json] [--project-dir <path>]"
+                    }
+
+                    $checkArgs += @('-ProjectDir', $remaining[$index + 1])
+                    $index++
+                }
+                default {
+                    Stop-WithError "usage: winsmux harness-check [--json] [--project-dir <path>]"
+                }
+            }
+        }
+        & pwsh -NoProfile -File $checkScript @checkArgs
     }
     'vault'           {
         switch ($Target) {

@@ -637,7 +637,11 @@ if ([string]::IsNullOrWhiteSpace($RoadmapPath)) {
     $RoadmapPath = Resolve-WinsmuxPlanningFilePath -RepoRoot $repoRoot -LocalRelativePath 'docs/project/ROADMAP.md' -EnvironmentVariable 'WINSMUX_ROADMAP_PATH' -DefaultFileName 'ROADMAP.md'
 }
 if ([string]::IsNullOrWhiteSpace($RoadmapTitleJaPath)) {
-    $RoadmapTitleJaPath = Join-Path $repoRoot 'tasks/roadmap-title-ja.psd1'
+    $RoadmapTitleJaPath = Resolve-WinsmuxPlanningFilePath `
+        -RepoRoot $repoRoot `
+        -LocalRelativePath 'tasks/roadmap-title-ja.example.psd1' `
+        -EnvironmentVariable 'WINSMUX_ROADMAP_TITLE_JA_PATH' `
+        -DefaultFileName 'roadmap-title-ja.psd1'
 }
 
 $resolvedBacklogPath = Resolve-WorkspacePath -Path $BacklogPath
