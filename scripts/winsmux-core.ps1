@@ -6389,6 +6389,7 @@ promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>
   builder-queue <action> [args]  Manage Builder queue and auto-dispatch next work
   orchestra-smoke [--json] [--auto-start] [--project-dir <path>]  Report structured startup contract + UI attach state (use --auto-start to start if needed)
   orchestra-attach [--json] [--project-dir <path>]  Launch a visible attach window for an existing orchestra session
+  harness-check [--json] [--project-dir <path>]  Validate hook/settings/attach contracts before external-operator startup
   vault set <key> [value]   Store a credential securely (DPAPI)
   vault get <key>           Retrieve a stored credential
   vault inject <pane>       Inject all credentials as env vars into a pane
@@ -6762,6 +6763,30 @@ switch ($Command) {
             }
         }
         & pwsh -NoProfile -File $attachScript @attachArgs
+    }
+    'harness-check' {
+        $checkScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\harness-check.ps1'))
+        $checkArgs = @()
+        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
+        for ($index = 0; $index -lt $remaining.Count; $index++) {
+            switch ($remaining[$index]) {
+                '--json' {
+                    $checkArgs += '-AsJson'
+                }
+                '--project-dir' {
+                    if ($index + 1 -ge $remaining.Count) {
+                        Stop-WithError "usage: winsmux harness-check [--json] [--project-dir <path>]"
+                    }
+
+                    $checkArgs += @('-ProjectDir', $remaining[$index + 1])
+                    $index++
+                }
+                default {
+                    Stop-WithError "usage: winsmux harness-check [--json] [--project-dir <path>]"
+                }
+            }
+        }
+        & pwsh -NoProfile -File $checkScript @checkArgs
     }
     'vault'           {
         switch ($Target) {

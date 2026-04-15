@@ -27,6 +27,7 @@ $whitelistPatterns = @(
     'scripts/audit-public-surface.ps1',
     '.githooks/**',
     'tests/PublicSurfacePolicy.Tests.ps1',
+    'tests/HarnessContract.Tests.ps1',
     'winsmux-core/**',
     '.claude/CLAUDE.md',
     '.claude/hooks/**',

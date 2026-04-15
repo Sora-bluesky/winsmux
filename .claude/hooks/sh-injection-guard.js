@@ -10,6 +10,7 @@ const {
   readHookInput,
   allow,
   deny,
+  failClosed,
   nfkcNormalize,
   loadPatterns,
   appendEvidence,
@@ -194,13 +195,7 @@ if (require.main === module) {
     // All patterns passed — allow
     allow();
   } catch (err) {
-    // fail-close: any uncaught error = deny
-    process.stdout.write(
-      JSON.stringify({
-        reason: `Hook error (sh-injection-guard): ${err.message}`,
-      }),
-    );
-    process.exit(2);
+    failClosed(`Hook error (sh-injection-guard): ${err.message}`);
   }
 } // end require.main guard
 

@@ -12,6 +12,7 @@ const {
   readHookInput,
   allow,
   deny,
+  failClosed,
   readSession,
   appendEvidence,
 } = require("./lib/sh-utils");
@@ -388,13 +389,7 @@ if (require.main === module) {
     // --- Step 4: All checks passed ---
     allow();
   } catch (err) {
-    // fail-close: any uncaught error = deny
-    process.stdout.write(
-      JSON.stringify({
-        reason: `Hook error (sh-data-boundary): ${err.message}`,
-      }),
-    );
-    process.exit(2);
+    failClosed(`Hook error (sh-data-boundary): ${err.message}`);
   }
 } // end require.main === module
 

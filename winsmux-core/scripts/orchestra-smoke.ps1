@@ -12,6 +12,7 @@ Set-StrictMode -Version Latest
 $scriptsRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $scriptsRoot 'settings.ps1')
 . (Join-Path $scriptsRoot 'manifest.ps1')
+. (Join-Path $scriptsRoot 'orchestra-ui-attach.ps1')
 
 function Get-OrchestraSmokeLayoutSettings {
     param([string]$Root)
@@ -85,6 +86,7 @@ function Get-OrchestraOperatorContract {
         [Parameter(Mandatory = $true)][bool]$UiAttachLaunched,
         [Parameter(Mandatory = $true)][bool]$UiAttached,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$UiAttachStatus,
+        [Parameter(Mandatory = $true)][bool]$ExternalOperatorMode,
         [Parameter(Mandatory = $true)][int]$PaneCount,
         [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$SmokeErrors
@@ -98,29 +100,21 @@ function Get-OrchestraOperatorContract {
     $nextAction = 'Inspect smoke_errors and rerun orchestra-start before dispatching work.'
 
     if ($SmokeOk) {
-        $state = 'ready'
-        $message = 'Orchestra session is ready for dispatch.'
-        $canDispatch = $true
+        $state = 'ready-with-ui-warning'
+        $message = 'Orchestra session is session-ready, but visible attach still needs confirmation.'
+        $canDispatch = -not $ExternalOperatorMode
         $requiresStartup = $false
-        $nextAction = 'Dispatch work or continue operator flow.'
+        $nextAction = if ($ExternalOperatorMode) { 'Confirm visible attach before dispatching work.' } else { 'Dispatch work or continue operator flow.' }
 
-        if ($SessionReady -and ($UiAttachLaunched -or -not $UiAttached)) {
-            $uiAttachWarningStatuses = @(
-                'attach_launched',
-                'attach_launched_pwsh',
-                'attach_launched_wt_fallback',
-                'wt_alias_stub',
-                'wt_unavailable',
-                'attach_exited_early',
-                'attach_failed',
-                'winsmux_unresolved'
-            )
-            if ($uiAttachWarningStatuses -contains $UiAttachStatus -or -not $UiAttached) {
-                $state = 'ready-with-ui-warning'
-                $message = 'Orchestra session is ready, but UI attach needs attention.'
-                $uiWarning = $true
-                $nextAction = 'Dispatch may continue; retry UI attach only if a visible operator window is required.'
-            }
+        if ($SessionReady -and $UiAttached) {
+            $state = 'ready'
+            $message = 'Orchestra session is ready for dispatch.'
+            $canDispatch = $true
+            $requiresStartup = $false
+            $uiWarning = $false
+            $nextAction = 'Dispatch work or continue operator flow.'
+        } elseif ($SessionReady) {
+            $uiWarning = $true
         }
     } elseif ($PaneCount -lt $ExpectedPaneCount -or -not $SessionReady) {
         $state = 'blocked'
@@ -152,6 +146,7 @@ $startScript = Join-Path $scriptsRoot 'orchestra-start.ps1'
 $winsmuxCorePath = Join-Path (Split-Path -Parent $scriptsRoot) '..\scripts\winsmux-core.ps1'
 $winsmuxCorePath = [System.IO.Path]::GetFullPath($winsmuxCorePath)
 $layoutSettings = Get-OrchestraSmokeLayoutSettings -Root $ProjectDir
+$externalOperatorMode = ([int]$layoutSettings.Commanders -eq 0)
 $expectedPaneCount = Get-OrchestraSmokeExpectedPaneCount -LayoutSettings $layoutSettings
 $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
 $manifestFound = Test-Path -LiteralPath $manifestPath
@@ -215,6 +210,7 @@ $uiAttachLaunched = $false
 $uiAttached = $false
 $uiAttachStatus = ''
 $uiAttachReason = ''
+$uiAttachSource = 'none'
 
 if ($manifestFound) {
     $manifest = Get-WinsmuxManifest -ProjectDir $ProjectDir
@@ -224,6 +220,36 @@ if ($manifestFound) {
         $uiAttached = ConvertTo-OrchestraSmokeBoolean $manifest.session.ui_attached
         $uiAttachStatus = [string]$manifest.session.ui_attach_status
         $uiAttachReason = [string]$manifest.session.ui_attach_reason
+        if ($manifest.session.PSObject.Properties.Name -contains 'ui_attach_source') {
+            $uiAttachSource = [string]$manifest.session.ui_attach_source
+        }
+    }
+}
+
+$attachState = Read-OrchestraAttachState -SessionName $SessionName
+if ($null -ne $attachState) {
+    $attachStateStatus = [string]$attachState.attach_status
+    if ($attachStateStatus -eq 'attach_confirmed') {
+        $uiAttached = $true
+        $uiAttachStatus = 'attach_confirmed'
+        $uiAttachReason = [string]$attachState.error
+        $uiAttachSource = if ([string]::IsNullOrWhiteSpace([string]$attachState.ui_attach_source)) { 'handshake' } else { [string]$attachState.ui_attach_source }
+    } elseif ($attachStateStatus -eq 'attach_failed') {
+        $uiAttachStatus = 'attach_failed'
+        $uiAttachReason = [string]$attachState.error
+        $uiAttachSource = 'none'
+    }
+}
+
+if (-not $uiAttached) {
+    $clientSnapshot = Get-OrchestraAttachedClientSnapshot -WinsmuxBin $winsmuxBin -SessionName $SessionName
+    if ([bool]$clientSnapshot.Ok -and [int]$clientSnapshot.Count -ge 1) {
+        $uiAttached = $true
+        if ([string]::IsNullOrWhiteSpace($uiAttachStatus) -or $uiAttachStatus -eq 'attach_failed') {
+            $uiAttachStatus = 'attach_confirmed'
+            $uiAttachReason = "Detected $($clientSnapshot.Count) attached client(s) for session '$SessionName'."
+        }
+        $uiAttachSource = 'client-probe'
     }
 }
 
@@ -239,6 +265,7 @@ $operatorContract = Get-OrchestraOperatorContract `
     -UiAttachLaunched $uiAttachLaunched `
     -UiAttached $uiAttached `
     -UiAttachStatus $uiAttachStatus `
+    -ExternalOperatorMode $externalOperatorMode `
     -PaneCount $paneCount `
     -ExpectedPaneCount $expectedPaneCount `
     -SmokeErrors @($smokeErrors)
@@ -258,6 +285,7 @@ $result = [ordered]@{
     ui_attached         = $uiAttached
     ui_attach_status    = $uiAttachStatus
     ui_attach_reason    = $uiAttachReason
+    ui_attach_source    = $uiAttachSource
     smoke_ok            = ($smokeErrors.Count -eq 0)
     smoke_errors        = @($smokeErrors)
     operator_contract   = $operatorContract

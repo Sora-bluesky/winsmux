@@ -6,7 +6,7 @@
 // Always allows (exit 0) — advisory only.
 "use strict";
 
-const fs = require("fs");
+const { allow, readHookInput } = require("./lib/sh-utils");
 
 const CHANNEL_PATTERNS = [
   /\bchat_id\b/i,
@@ -16,15 +16,6 @@ const CHANNEL_PATTERNS = [
   /source\s*=\s*["']?telegram/i,
   /source\s*=\s*["']?channel/i,
 ];
-
-function readStdinPayload() {
-  try {
-    const raw = fs.readFileSync(0, "utf8").trim();
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-}
 
 function extractText(toolInput) {
   if (!toolInput || typeof toolInput !== "object") {
@@ -54,7 +45,7 @@ function detectChannel(text) {
 }
 
 function main() {
-  const payload = readStdinPayload();
+  const payload = readHookInput();
   const toolInput = payload.tool_input ?? {};
   const text = extractText(toolInput);
 
@@ -65,11 +56,10 @@ function main() {
 
   const matchedPattern = detectChannel(text);
   if (matchedPattern) {
-    const output = JSON.stringify({
-      hookSpecificOutput: {},
-      systemMessage: "External channel input detected — verify source before processing.",
-    });
-    process.stderr.write(output + "\n");
+    allow(
+      "External channel input detected — verify source before processing.",
+    );
+    return;
   }
 
   process.exit(0);

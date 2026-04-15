@@ -177,7 +177,8 @@ try {
 
   process.exit(0);
 } catch (e) {
-  deny("Hook parse error: " + e.message);
+  process.stderr.write(`Hook parse error: ${e.message}\n`);
+  process.exit(2);
 }
 
 function logCommand(toolName, command) {
@@ -921,11 +922,15 @@ function resolveGitDir(repoRoot) {
 }
 
 function deny(reason) {
-  process.stderr.write(JSON.stringify({
-    hookSpecificOutput: { permissionDecision: "deny" },
+  process.stdout.write(`${JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision: "deny",
+      permissionDecisionReason: reason,
+    },
     systemMessage: reason,
-  }));
-  process.exit(2);
+  })}\n`);
+  process.exit(0);
 }
 
 module.exports = {

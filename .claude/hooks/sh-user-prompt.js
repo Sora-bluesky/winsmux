@@ -6,6 +6,7 @@ const {
   allow,
   loadPatterns,
   nfkcNormalize,
+  failClosed,
 } = require("./lib/sh-utils");
 
 const SEVERITY_ORDER = ["low", "medium", "high", "critical"];
@@ -97,11 +98,6 @@ function resolveSeverity(baseSeverity, promptContext) {
   return boostSeverity(baseSeverity, boostCount);
 }
 
-function writeDeny(decision) {
-  process.stdout.write(`${JSON.stringify(decision)}\n`);
-  process.exit(2);
-}
-
 function main() {
   const input = readHookInput();
   const toolName = input.tool_name || input.toolName || "";
@@ -133,14 +129,9 @@ function main() {
   }
 
   if (matchedDecision && toSeverityIndex(matchedDecision.severity) >= toSeverityIndex("high")) {
-    writeDeny({
-      decision: "deny",
-      result: "deny",
-      reason: "Injection pattern detected",
-      category: matchedDecision.category,
-      pattern: matchedDecision.pattern,
-      severity: matchedDecision.severity,
-    });
+    failClosed(
+      `Injection pattern detected (${matchedDecision.category}, severity: ${matchedDecision.severity})`,
+    );
     return;
   }
 
@@ -150,8 +141,8 @@ function main() {
 if (require.main === module) {
   try {
     main();
-  } catch {
-    allow();
+  } catch (error) {
+    failClosed(`[sh-user-prompt] Hook error (fail-close): ${error.message}`);
   }
 }
 
@@ -165,5 +156,4 @@ module.exports = {
   flattenPatterns,
   detectPromptContext,
   resolveSeverity,
-  writeDeny,
 };
