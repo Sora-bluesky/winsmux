@@ -2903,7 +2903,11 @@ Describe 'orchestra-start server bootstrap' {
                 Status              = 'attach_confirmed'
                 Reason              = 'Attach confirmed'
                 AttachedClientCount = 1
-                State               = [pscustomobject]@{}
+                State               = [pscustomobject]@{
+                    attach_request_id      = 'req-123'
+                    attached_client_snapshot = @('client-1')
+                    ui_host_kind           = 'windows-terminal'
+                }
             }
         }
 
@@ -2932,6 +2936,9 @@ Describe 'orchestra-start server bootstrap' {
         $result.Attached | Should -Be $true
         $result.Status | Should -Be 'attach_confirmed'
         $result.Source | Should -Be 'handshake'
+        $result.attach_request_id | Should -Be 'req-123'
+        $result.attached_client_snapshot | Should -Be @('client-1')
+        $result.ui_host_kind | Should -Be 'windows-terminal'
         $script:startProcessCalls.Count | Should -Be 1
         $script:startProcessCalls[0].FilePath | Should -Be 'C:\Windows\System32\wt.exe'
         $script:startProcessCalls[0].ArgumentList | Should -Be @('-w', '-1', 'new-window', '-p', 'winsmux orchestra attach')
@@ -6753,6 +6760,56 @@ Describe 'winsmux orchestra-smoke command' {
                     -SmokeErrors $SmokeErrors
             }
         }
+
+        function Invoke-TestOrchestraAttachResolution {
+            param(
+                [Parameter(Mandatory = $true)]$ProbeState,
+                [AllowNull()]$AttachState,
+                [Parameter(Mandatory = $true)][bool]$ClientProbeOk,
+                [AllowNull()]$ClientSnapshot,
+                [bool]$LiveVisibleAttach = $false
+            )
+
+            $resolverSource = [regex]::Match(
+                $script:orchestraSmokeContent,
+                '(?s)function Resolve-OrchestraSmokeAttachState \{.*?\r?\n\}\r?\n\r?\nif \(\[string\]::IsNullOrWhiteSpace\(\$ProjectDir\)\)'
+            ).Value
+
+            if ([string]::IsNullOrWhiteSpace($resolverSource)) {
+                throw 'Failed to extract Resolve-OrchestraSmokeAttachState from orchestra-smoke.ps1.'
+            }
+
+            $resolverSource = $resolverSource -replace '\r?\n\r?\nif \(\[string\]::IsNullOrWhiteSpace\(\$ProjectDir\)\)$', ''
+
+            & {
+                param($ProbeState, $AttachState, $ClientProbeOk, $ClientSnapshot, $LiveVisibleAttach)
+
+                Set-StrictMode -Version Latest
+
+                function Test-OrchestraLiveVisibleAttachState {
+                    param($State, [string]$SessionName)
+                    return $LiveVisibleAttach
+                }
+
+                function Test-OrchestraAttachClientSnapshotMatch {
+                    param([string[]]$ExpectedClients, [string[]]$CurrentClients)
+                    if ($ExpectedClients.Count -ne $CurrentClients.Count) {
+                        return $false
+                    }
+
+                    for ($i = 0; $i -lt $ExpectedClients.Count; $i++) {
+                        if ($ExpectedClients[$i] -ne $CurrentClients[$i]) {
+                            return $false
+                        }
+                    }
+
+                    return $true
+                }
+
+                Invoke-Expression $resolverSource
+                Resolve-OrchestraSmokeAttachState -ProbeState $ProbeState -AttachState $AttachState -ClientProbeOk $ClientProbeOk -ClientSnapshot $ClientSnapshot
+            } $ProbeState $AttachState $ClientProbeOk $ClientSnapshot $LiveVisibleAttach
+        }
     }
 
     It 'documents orchestra-smoke and dispatches it through the dedicated startup smoke script' {
@@ -6773,6 +6830,11 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'session_ready'
         $script:orchestraSmokeContent | Should -Match 'ui_attach_launched'
         $script:orchestraSmokeContent | Should -Match 'ui_attached'
+        $script:orchestraSmokeContent | Should -Match 'attach_request_id'
+        $script:orchestraSmokeContent | Should -Match 'attached_client_snapshot'
+        $script:orchestraSmokeContent | Should -Match 'attached_client_registry_count'
+        $script:orchestraSmokeContent | Should -Match 'ui_host_kind'
+        $script:orchestraSmokeContent | Should -Match 'runtime_attached_client_count'
         $script:orchestraSmokeContent | Should -Match 'expected_pane_count'
         $script:orchestraSmokeContent | Should -Match 'winsmux_bin'
         $script:orchestraSmokeContent | Should -Match 'pane_probe_ok'
@@ -6845,9 +6907,37 @@ Describe 'winsmux orchestra-smoke command' {
     }
 
     It 'accepts attached-client registry matches as attach truth when the host launcher process is gone' {
-        $script:orchestraSmokeContent | Should -Match 'Test-OrchestraAttachClientSnapshotMatch'
-        $script:orchestraSmokeContent | Should -Match 'attached_client_snapshot'
-        $script:orchestraSmokeContent | Should -Match 'attached-client-registry'
+        $resolution = Invoke-TestOrchestraAttachResolution `
+            -ProbeState ([pscustomobject]@{
+                SessionName      = 'winsmux-orchestra'
+                UiAttachLaunched = $true
+                UiAttachStatus   = 'attach_confirmed'
+                UiAttachReason   = ''
+                UiAttachSource   = 'handshake'
+                UiHostKind       = ''
+                AttachRequestId  = ''
+            }) `
+            -AttachState ([pscustomobject]@{
+                attach_status           = 'attach_confirmed'
+                attach_request_id       = 'req-456'
+                attached_client_count   = 1
+                attached_client_snapshot = @('/dev/pts/7: winsmux-orchestra: node')
+                ui_host_kind            = 'powershell-window'
+                error                   = ''
+            }) `
+            -ClientProbeOk $true `
+            -ClientSnapshot ([pscustomobject]@{
+                Clients = @('/dev/pts/7: winsmux-orchestra: node')
+            }) `
+            -LiveVisibleAttach $false
+
+        $resolution.UiAttached | Should -Be $true
+        $resolution.UiAttachStatus | Should -Be 'attach_confirmed'
+        $resolution.UiAttachSource | Should -Be 'attached-client-registry'
+        $resolution.AttachedClientRegistryCount | Should -Be 1
+        $resolution.AttachRequestId | Should -Be 'req-456'
+        $resolution.AttachedClientSnapshot | Should -Be @('/dev/pts/7: winsmux-orchestra: node')
+        $resolution.UiHostKind | Should -Be 'powershell-window'
     }
 
     It 'allows empty ui_attach_status when building the operator contract' {

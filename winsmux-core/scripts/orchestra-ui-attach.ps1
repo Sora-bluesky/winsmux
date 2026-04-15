@@ -72,6 +72,59 @@ function Read-OrchestraAttachState {
     }
 }
 
+function Get-OrchestraAttachRequestId {
+    param([AllowNull()]$State)
+
+    if ($null -eq $State) {
+        return ''
+    }
+
+    foreach ($name in @('attach_request_id', 'request_id')) {
+        if ($null -ne $State.PSObject.Properties[$name]) {
+            $value = [string]$State.$name
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                return $value
+            }
+        }
+    }
+
+    return ''
+}
+
+function Get-OrchestraAttachStateString {
+    param(
+        [AllowNull()]$State,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $State) {
+        return ''
+    }
+
+    if ($null -ne $State.PSObject.Properties[$Name]) {
+        return [string]$State.$Name
+    }
+
+    return ''
+}
+
+function Get-OrchestraAttachStateStringArray {
+    param(
+        [AllowNull()]$State,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $State) {
+        return @()
+    }
+
+    if ($null -ne $State.PSObject.Properties[$Name]) {
+        return @($State.$Name | ForEach-Object { [string]$_ })
+    }
+
+    return @()
+}
+
 function ConvertTo-OrchestraAttachProcessId {
     param([AllowNull()]$Value)
 
@@ -229,8 +282,25 @@ function Write-OrchestraAttachState {
         }
     }
 
+    if ($state.Contains('request_id') -and -not $state.Contains('attach_request_id')) {
+        $state['attach_request_id'] = [string]$state['request_id']
+    }
+
+    $normalizedProperties = [ordered]@{}
     foreach ($key in $Properties.Keys) {
-        $state[$key] = $Properties[$key]
+        $normalizedProperties[$key] = $Properties[$key]
+    }
+
+    if ($normalizedProperties.Contains('request_id') -and -not $normalizedProperties.Contains('attach_request_id')) {
+        $normalizedProperties['attach_request_id'] = $normalizedProperties['request_id']
+    }
+
+    if ($normalizedProperties.Contains('attach_request_id')) {
+        $normalizedProperties['request_id'] = $normalizedProperties['attach_request_id']
+    }
+
+    foreach ($key in $normalizedProperties.Keys) {
+        $state[$key] = $normalizedProperties[$key]
     }
 
     $statePath = Get-OrchestraAttachStatePath -SessionName $SessionName

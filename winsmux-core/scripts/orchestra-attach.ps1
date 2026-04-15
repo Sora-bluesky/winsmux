@@ -30,7 +30,10 @@ function New-OrchestraAttachResult {
         [Parameter(Mandatory = $true)][string]$Reason,
         [AllowEmptyString()][string]$Path = '',
         [int]$AttachedClientCount = 0,
-        [AllowEmptyString()][string]$AttachSource = 'none'
+        [AllowEmptyString()][string]$AttachSource = 'none',
+        [AllowEmptyString()][string]$AttachRequestId = '',
+        [AllowEmptyCollection()][string[]]$AttachedClientSnapshot = @(),
+        [AllowEmptyString()][string]$UiHostKind = ''
     )
 
     return [ordered]@{
@@ -41,10 +44,13 @@ function New-OrchestraAttachResult {
         launched              = $Launched
         attached              = $Attached
         attached_client_count = $AttachedClientCount
+        attach_request_id     = $AttachRequestId
+        attached_client_snapshot = @($AttachedClientSnapshot)
         status                = $Status
         reason                = $Reason
         path                  = $Path
         ui_attach_source      = $AttachSource
+        ui_host_kind          = $UiHostKind
     }
 }
 
@@ -68,7 +74,7 @@ if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
         }
         $hasLiveVisibleAttach = (Test-OrchestraLiveVisibleAttachState -State $existingAttachState -SessionName $SessionName)
         if ($hasLiveVisibleAttach -and [bool]$clientSnapshot.Ok -and $baselineClientCount -ge 1) {
-            Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+            $existingAttachState = Write-OrchestraAttachState -SessionName $SessionName -Properties @{
                 session_name       = $SessionName
                 winsmux_path       = $winsmuxPath
                 attach_status      = 'attach_confirmed'
@@ -76,16 +82,18 @@ if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
                 client_count_seen  = $baselineClientCount
                 ui_attach_source   = $existingAttachSource
                 error              = "Detected $baselineClientCount attached client(s) for session '$SessionName'."
-            } | Out-Null
+            }
 
-            $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $true -RequiresStartup $false -Attempted $false -Launched $false -Attached $true -Status 'attach_already_present' -Reason "Detected an existing live visible attach for session '$SessionName'; skipped spawning another visible attach window." -AttachedClientCount $baselineClientCount -AttachSource $existingAttachSource
+            $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $true -RequiresStartup $false -Attempted $false -Launched $false -Attached $true -Status 'attach_already_present' -Reason "Detected an existing live visible attach for session '$SessionName'; skipped spawning another visible attach window." -AttachedClientCount $baselineClientCount -AttachSource $existingAttachSource -AttachRequestId (Get-OrchestraAttachRequestId -State $existingAttachState) -AttachedClientSnapshot @(Get-OrchestraAttachStateStringArray -State $existingAttachState -Name 'attached_client_snapshot') -UiHostKind (Get-OrchestraAttachStateString -State $existingAttachState -Name 'ui_host_kind')
         } else {
             $terminalInfo = Get-OrchestraWindowsTerminalInfo
+            $attachRequestId = [guid]::NewGuid().ToString('N')
             if (-not [bool]$terminalInfo.Available) {
-                Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+                $state = Write-OrchestraAttachState -SessionName $SessionName -Properties @{
                     session_name          = $SessionName
                     winsmux_path          = $winsmuxPath
                     requested_at          = (Get-Date).ToString('o')
+                    attach_request_id     = $attachRequestId
                     baseline_client_count = $baselineClientCount
                     baseline_clients      = @($baselineClients)
                     client_count_seen     = $baselineClientCount
@@ -107,7 +115,8 @@ if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
                         } | Out-Null
                     }
                     $confirmed = Wait-OrchestraAttachHandshake -SessionName $SessionName -WinsmuxBin $winsmuxPath -BaselineClientCount $baselineClientCount -BaselineClients $baselineClients
-                    $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $true -RequiresStartup $false -Attempted $true -Launched $true -Attached ([bool]$confirmed.Confirmed) -Status ([string]$confirmed.Status) -Reason ([string]$confirmed.Reason) -Path ([string]$attachLaunch.Path) -AttachedClientCount ([int]$confirmed.AttachedClientCount) -AttachSource ([string]$confirmed.Source)
+                    $confirmedState = if ($null -ne $confirmed.State) { $confirmed.State } else { $state }
+                    $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $true -RequiresStartup $false -Attempted $true -Launched $true -Attached ([bool]$confirmed.Confirmed) -Status ([string]$confirmed.Status) -Reason ([string]$confirmed.Reason) -Path ([string]$attachLaunch.Path) -AttachedClientCount ([int]$confirmed.AttachedClientCount) -AttachSource ([string]$confirmed.Source) -AttachRequestId (Get-OrchestraAttachRequestId -State $confirmedState) -AttachedClientSnapshot @(Get-OrchestraAttachStateStringArray -State $confirmedState -Name 'attached_client_snapshot') -UiHostKind (Get-OrchestraAttachStateString -State $confirmedState -Name 'ui_host_kind')
                 } catch {
                     $reason = if ([bool]$terminalInfo.IsAliasStub) {
                         'WindowsApps wt.exe alias was found, but no canonical Windows Terminal binary could be resolved.'
@@ -122,7 +131,7 @@ if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
                         error             = $failureReason
                     } | Out-Null
 
-                    $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $true -RequiresStartup $false -Attempted $true -Launched $false -Attached $false -Status 'attach_failed' -Reason $failureReason -Path '' -AttachedClientCount $baselineClientCount -AttachSource 'none'
+                    $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $true -RequiresStartup $false -Attempted $true -Launched $false -Attached $false -Status 'attach_failed' -Reason $failureReason -Path '' -AttachedClientCount $baselineClientCount -AttachSource 'none' -AttachRequestId $attachRequestId -AttachedClientSnapshot @() -UiHostKind ''
                 }
             } else {
                 $profile = Ensure-OrchestraAttachProfile -ProjectDir $ProjectDir
@@ -131,7 +140,7 @@ if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
                     winsmux_path          = $winsmuxPath
                     project_dir           = $ProjectDir
                     requested_at          = (Get-Date).ToString('o')
-                    request_id            = [guid]::NewGuid().ToString('N')
+                    attach_request_id     = $attachRequestId
                     baseline_client_count = $baselineClientCount
                     baseline_clients      = @($baselineClients)
                     client_count_seen     = $baselineClientCount
@@ -171,7 +180,7 @@ if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
                             error             = $_.Exception.Message
                         } | Out-Null
 
-                        $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $true -RequiresStartup $false -Attempted $true -Launched $false -Attached $false -Status 'attach_failed' -Reason $_.Exception.Message -Path ([string]$terminalInfo.Path) -AttachedClientCount $baselineClientCount -AttachSource 'none'
+                        $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $true -RequiresStartup $false -Attempted $true -Launched $false -Attached $false -Status 'attach_failed' -Reason $_.Exception.Message -Path ([string]$terminalInfo.Path) -AttachedClientCount $baselineClientCount -AttachSource 'none' -AttachRequestId (Get-OrchestraAttachRequestId -State $state) -AttachedClientSnapshot @(Get-OrchestraAttachStateStringArray -State $state -Name 'attached_client_snapshot') -UiHostKind (Get-OrchestraAttachStateString -State $state -Name 'ui_host_kind')
                     }
                 }
 
@@ -196,7 +205,7 @@ if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
                                     error             = $_.Exception.Message
                                 } | Out-Null
 
-                                $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $true -RequiresStartup $false -Attempted $true -Launched $false -Attached $false -Status 'attach_failed' -Reason $_.Exception.Message -Path ([string]$terminalInfo.Path) -AttachedClientCount $baselineClientCount -AttachSource 'none'
+                                $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $true -RequiresStartup $false -Attempted $true -Launched $false -Attached $false -Status 'attach_failed' -Reason $_.Exception.Message -Path ([string]$terminalInfo.Path) -AttachedClientCount $baselineClientCount -AttachSource 'none' -AttachRequestId (Get-OrchestraAttachRequestId -State $state) -AttachedClientSnapshot @(Get-OrchestraAttachStateStringArray -State $state -Name 'attached_client_snapshot') -UiHostKind (Get-OrchestraAttachStateString -State $state -Name 'ui_host_kind')
                             }
                         }
                     }
@@ -204,7 +213,8 @@ if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
 
                 if ($null -eq $result) {
                     $confirmed = Wait-OrchestraAttachHandshake -SessionName $SessionName -WinsmuxBin $winsmuxPath -BaselineClientCount $baselineClientCount -BaselineClients $baselineClients
-                    $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $true -RequiresStartup $false -Attempted $true -Launched $true -Attached ([bool]$confirmed.Confirmed) -Status ([string]$confirmed.Status) -Reason ([string]$confirmed.Reason) -Path $launchedPath -AttachedClientCount ([int]$confirmed.AttachedClientCount) -AttachSource ([string]$confirmed.Source)
+                    $confirmedState = if ($null -ne $confirmed.State) { $confirmed.State } else { $state }
+                    $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $true -RequiresStartup $false -Attempted $true -Launched $true -Attached ([bool]$confirmed.Confirmed) -Status ([string]$confirmed.Status) -Reason ([string]$confirmed.Reason) -Path $launchedPath -AttachedClientCount ([int]$confirmed.AttachedClientCount) -AttachSource ([string]$confirmed.Source) -AttachRequestId (Get-OrchestraAttachRequestId -State $confirmedState) -AttachedClientSnapshot @(Get-OrchestraAttachStateStringArray -State $confirmedState -Name 'attached_client_snapshot') -UiHostKind (Get-OrchestraAttachStateString -State $confirmedState -Name 'ui_host_kind')
                 }
             }
         }

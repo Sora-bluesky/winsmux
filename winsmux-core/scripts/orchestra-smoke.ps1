@@ -221,6 +221,8 @@ function Get-OrchestraSmokeProbeState {
     $uiAttachStatus = ''
     $uiAttachReason = ''
     $uiAttachSource = 'none'
+    $uiHostKind = ''
+    $attachRequestId = ''
 
     if ($manifestFound) {
         try {
@@ -233,6 +235,12 @@ function Get-OrchestraSmokeProbeState {
                 $uiAttachReason = [string]$manifest.session.ui_attach_reason
                 if ($manifest.session.PSObject.Properties.Name -contains 'ui_attach_source') {
                     $uiAttachSource = [string]$manifest.session.ui_attach_source
+                }
+                if ($manifest.session.PSObject.Properties.Name -contains 'ui_host_kind') {
+                    $uiHostKind = [string]$manifest.session.ui_host_kind
+                }
+                if ($manifest.session.PSObject.Properties.Name -contains 'attach_request_id') {
+                    $attachRequestId = [string]$manifest.session.attach_request_id
                 }
             }
         } catch {
@@ -255,6 +263,8 @@ function Get-OrchestraSmokeProbeState {
         UiAttachStatus    = $uiAttachStatus
         UiAttachReason    = $uiAttachReason
         UiAttachSource    = $uiAttachSource
+        UiHostKind        = $uiHostKind
+        AttachRequestId   = $attachRequestId
         ExpectedPaneCount = $ExpectedPaneCount
     }
 }
@@ -284,6 +294,109 @@ function Wait-OrchestraSmokeConvergence {
     }
 
     return $state
+}
+
+function Resolve-OrchestraSmokeAttachState {
+    param(
+        [Parameter(Mandatory = $true)]$ProbeState,
+        [AllowNull()]$AttachState,
+        [Parameter(Mandatory = $true)][bool]$ClientProbeOk,
+        [AllowNull()]$ClientSnapshot
+    )
+
+    $uiAttached = $false
+    $uiAttachStatus = [string]$ProbeState.UiAttachStatus
+    $uiAttachReason = [string]$ProbeState.UiAttachReason
+    $uiAttachSource = [string]$ProbeState.UiAttachSource
+    $uiHostKind = [string]$ProbeState.UiHostKind
+    $attachRequestId = [string]$ProbeState.AttachRequestId
+    $attachedClientRegistryCount = 0
+    $attachedClientSnapshot = @()
+
+    if ($null -eq $AttachState) {
+        if ([bool]$ProbeState.UiAttachLaunched) {
+            $uiAttachStatus = 'attach_unconfirmed'
+            $uiAttachReason = 'Visible attach state is missing; runtime attach confirmation is unavailable.'
+        } else {
+            $uiAttachStatus = ''
+            $uiAttachReason = ''
+        }
+
+        $uiAttachSource = 'none'
+    } else {
+        $attachStateStatus = if ($null -ne $AttachState.PSObject.Properties['attach_status']) { [string]$AttachState.attach_status } else { '' }
+        $attachRequestId = if ($null -ne $AttachState.PSObject.Properties['attach_request_id']) {
+            [string]$AttachState.attach_request_id
+        } elseif ($null -ne $AttachState.PSObject.Properties['request_id']) {
+            [string]$AttachState.request_id
+        } else {
+            ''
+        }
+        $uiHostKind = if ($null -ne $AttachState.PSObject.Properties['ui_host_kind']) { [string]$AttachState.ui_host_kind } else { '' }
+
+        if ($null -ne $AttachState.PSObject.Properties['attached_client_count']) {
+            [void][int]::TryParse(([string]$AttachState.attached_client_count), [ref]$attachedClientRegistryCount)
+        } elseif ($null -ne $AttachState.PSObject.Properties['client_count_seen']) {
+            [void][int]::TryParse(([string]$AttachState.client_count_seen), [ref]$attachedClientRegistryCount)
+        }
+
+        if ($null -ne $AttachState.PSObject.Properties['attached_client_snapshot']) {
+            $attachedClientSnapshot = @($AttachState.attached_client_snapshot | ForEach-Object { [string]$_ })
+        }
+
+        $attachStateError = if ($null -ne $AttachState.PSObject.Properties['error']) { [string]$AttachState.error } else { '' }
+        $attachStateSource = if ($null -ne $AttachState.PSObject.Properties['ui_attach_source']) { [string]$AttachState.ui_attach_source } else { '' }
+        $currentClients = if ($null -ne $ClientSnapshot -and $null -ne $ClientSnapshot.PSObject.Properties['Clients']) { @($ClientSnapshot.Clients) } else { @() }
+
+        if (($attachStateStatus -eq 'attach_confirmed') -and $ClientProbeOk -and (Test-OrchestraLiveVisibleAttachState -State $AttachState -SessionName ([string]$ProbeState.SessionName))) {
+            $uiAttached = $true
+            $uiAttachStatus = 'attach_confirmed'
+            $uiAttachReason = $attachStateError
+            $uiAttachSource = if ([string]::IsNullOrWhiteSpace($attachStateSource)) { 'handshake' } else { $attachStateSource }
+        } elseif (($attachStateStatus -eq 'attach_confirmed') -and $ClientProbeOk -and (Test-OrchestraAttachClientSnapshotMatch -ExpectedClients $attachedClientSnapshot -CurrentClients $currentClients)) {
+            $uiAttached = $true
+            $uiAttachStatus = 'attach_confirmed'
+            $uiAttachReason = if ([string]::IsNullOrWhiteSpace($attachStateError)) {
+                'Attached-client registry matches the current runtime client snapshot.'
+            } else {
+                $attachStateError
+            }
+            $uiAttachSource = 'attached-client-registry'
+        } elseif ($attachStateStatus -eq 'attach_confirmed') {
+            $uiAttached = $false
+            $uiAttachStatus = 'attach_unconfirmed'
+            $uiAttachReason = if (-not $ClientProbeOk) {
+                'Attach state exists, but the runtime client probe is unavailable.'
+            } else {
+                'Attach state exists, but no live visible attach process is associated with it.'
+            }
+            $uiAttachSource = if ([string]::IsNullOrWhiteSpace($attachStateSource)) { 'none' } else { $attachStateSource }
+        } elseif ($attachStateStatus -eq 'attach_failed') {
+            $uiAttachStatus = 'attach_failed'
+            $uiAttachReason = $attachStateError
+            $uiAttachSource = 'none'
+        } elseif ($attachStateStatus -in @('attach_requested', 'attach_entry_started', 'attach_confirming')) {
+            $uiAttached = $false
+            $uiAttachStatus = 'attach_pending'
+            $uiAttachReason = if ([string]::IsNullOrWhiteSpace($attachStateError)) {
+                'Visible attach is still pending confirmation.'
+            } else {
+                $attachStateError
+            }
+            $uiAttachSource = 'none'
+        }
+    }
+
+    return [ordered]@{
+        UiAttached                  = $uiAttached
+        UiAttachStatus              = $uiAttachStatus
+        UiAttachReason              = $uiAttachReason
+        UiAttachSource              = $uiAttachSource
+        UiHostKind                  = $uiHostKind
+        AttachRequestId             = $attachRequestId
+        AttachedClientRegistryCount = $attachedClientRegistryCount
+        AttachedClientSnapshot      = @($attachedClientSnapshot)
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($ProjectDir)) {
@@ -350,62 +463,24 @@ if ($sessionAlreadyHealthy) {
 
 $sessionReady = [bool]$probeState.SessionReady
 $uiAttachLaunched = [bool]$probeState.UiAttachLaunched
-$uiAttached = $false
-$uiAttachStatus = [string]$probeState.UiAttachStatus
-$uiAttachReason = [string]$probeState.UiAttachReason
-$uiAttachSource = [string]$probeState.UiAttachSource
-
 $attachState = Read-OrchestraAttachState -SessionName $SessionName
-if ($null -eq $attachState) {
-    $uiAttached = $false
-    if ($uiAttachLaunched) {
-        $uiAttachStatus = 'attach_unconfirmed'
-        $uiAttachReason = 'Visible attach state is missing; runtime attach confirmation is unavailable.'
-    } else {
-        $uiAttachStatus = ''
-        $uiAttachReason = ''
-    }
-    $uiAttachSource = 'none'
-} else {
-    $attachStateStatus = [string]$attachState.attach_status
-    if (($attachStateStatus -eq 'attach_confirmed') -and [bool]$clientProbeOk -and (Test-OrchestraLiveVisibleAttachState -State $attachState -SessionName $SessionName)) {
-        $uiAttached = $true
-        $uiAttachStatus = 'attach_confirmed'
-        $uiAttachReason = [string]$attachState.error
-        $uiAttachSource = if ([string]::IsNullOrWhiteSpace([string]$attachState.ui_attach_source)) { 'handshake' } else { [string]$attachState.ui_attach_source }
-    } elseif (($attachStateStatus -eq 'attach_confirmed') -and [bool]$clientProbeOk -and (Test-OrchestraAttachClientSnapshotMatch -ExpectedClients $attachState.attached_client_snapshot -CurrentClients $clientSnapshot.Clients)) {
-        $uiAttached = $true
-        $uiAttachStatus = 'attach_confirmed'
-        $uiAttachReason = if ([string]::IsNullOrWhiteSpace([string]$attachState.error)) {
-            'Attached-client registry matches the current runtime client snapshot.'
-        } else {
-            [string]$attachState.error
-        }
-        $uiAttachSource = 'attached-client-registry'
-    } elseif ($attachStateStatus -eq 'attach_confirmed') {
-        $uiAttached = $false
-        $uiAttachStatus = 'attach_unconfirmed'
-        $uiAttachReason = if (-not [bool]$clientProbeOk) {
-            'Attach state exists, but the runtime client probe is unavailable.'
-        } else {
-            'Attach state exists, but no live visible attach process is associated with it.'
-        }
-        $uiAttachSource = if ([string]::IsNullOrWhiteSpace([string]$attachState.ui_attach_source)) { 'none' } else { [string]$attachState.ui_attach_source }
-    } elseif ($attachStateStatus -eq 'attach_failed') {
-        $uiAttachStatus = 'attach_failed'
-        $uiAttachReason = [string]$attachState.error
-        $uiAttachSource = 'none'
-    } elseif ($attachStateStatus -in @('attach_requested', 'attach_entry_started', 'attach_confirming')) {
-        $uiAttached = $false
-        $uiAttachStatus = 'attach_pending'
-        $uiAttachReason = if ([string]::IsNullOrWhiteSpace([string]$attachState.error)) {
-            'Visible attach is still pending confirmation.'
-        } else {
-            [string]$attachState.error
-        }
-        $uiAttachSource = 'none'
-    }
-}
+$attachResolution = Resolve-OrchestraSmokeAttachState -ProbeState ([pscustomobject]@{
+    SessionName      = $SessionName
+    UiAttachLaunched = $uiAttachLaunched
+    UiAttachStatus   = $probeState.UiAttachStatus
+    UiAttachReason   = $probeState.UiAttachReason
+    UiAttachSource   = $probeState.UiAttachSource
+    UiHostKind       = $probeState.UiHostKind
+    AttachRequestId  = $probeState.AttachRequestId
+}) -AttachState $attachState -ClientProbeOk $clientProbeOk -ClientSnapshot $clientSnapshot
+$uiAttached = [bool]$attachResolution.UiAttached
+$uiAttachStatus = [string]$attachResolution.UiAttachStatus
+$uiAttachReason = [string]$attachResolution.UiAttachReason
+$uiAttachSource = [string]$attachResolution.UiAttachSource
+$uiHostKind = [string]$attachResolution.UiHostKind
+$attachRequestId = [string]$attachResolution.AttachRequestId
+$attachedClientRegistryCount = [int]$attachResolution.AttachedClientRegistryCount
+$attachedClientSnapshot = @($attachResolution.AttachedClientSnapshot)
 
 $smokeErrors = [System.Collections.Generic.List[string]]::new()
 if ($startExitCode -ne 0) { $smokeErrors.Add("orchestra-start exited with code $startExitCode.") | Out-Null }
@@ -438,7 +513,11 @@ $result = [ordered]@{
     pane_probe_error    = $paneProbeError
     client_probe_ok     = $clientProbeOk
     client_probe_error  = $clientProbeError
+    runtime_attached_client_count = $attachedClientCount
     attached_client_count = $attachedClientCount
+    attached_client_registry_count = $attachedClientRegistryCount
+    attached_client_snapshot = @($attachedClientSnapshot)
+    attach_request_id   = $attachRequestId
     expected_pane_count = $expectedPaneCount
     manifest_found      = $manifestFound
     session_ready       = $sessionReady
@@ -447,6 +526,7 @@ $result = [ordered]@{
     ui_attach_status    = $uiAttachStatus
     ui_attach_reason    = $uiAttachReason
     ui_attach_source    = $uiAttachSource
+    ui_host_kind        = $uiHostKind
     smoke_ok            = ($smokeErrors.Count -eq 0)
     smoke_errors        = @($smokeErrors)
     operator_contract   = $operatorContract
