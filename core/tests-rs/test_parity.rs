@@ -1,11 +1,75 @@
-use super::*;
 use crate::types::{AppState, ClientInfo};
+use serde_json::Value;
+use std::fs;
+use std::path::PathBuf;
 
 fn mock_app() -> AppState {
     let mut app = AppState::new("test_session".to_string());
     app.window_base_index = 0;
     app.pane_base_index = 0;
     app
+}
+
+fn rust_parity_fixture_path(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("tests")
+        .join("fixtures")
+        .join("rust-parity")
+        .join(name)
+}
+
+fn read_rust_parity_fixture(name: &str) -> Value {
+    let path = rust_parity_fixture_path(name);
+    let raw = fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read fixture {}: {}", path.display(), err));
+    serde_json::from_str(&raw)
+        .unwrap_or_else(|err| panic!("failed to parse fixture {}: {}", path.display(), err))
+}
+
+#[test]
+fn rust_parity_board_fixture_deserializes() {
+    let fixture = read_rust_parity_fixture("board.json");
+    assert_eq!(fixture["generated_at"], "__GENERATED_AT__");
+    assert_eq!(fixture["project_dir"], "__PROJECT_DIR__");
+    assert!(fixture["summary"]["pane_count"].is_number());
+    let panes = fixture["panes"].as_array().expect("board panes must be an array");
+    assert!(!panes.is_empty(), "board fixture should contain at least one pane");
+    assert_eq!(panes[0]["last_event_at"], "__LAST_EVENT_AT__");
+}
+
+#[test]
+fn rust_parity_inbox_fixture_deserializes() {
+    let fixture = read_rust_parity_fixture("inbox.json");
+    assert_eq!(fixture["generated_at"], "__GENERATED_AT__");
+    assert_eq!(fixture["project_dir"], "__PROJECT_DIR__");
+    assert!(fixture["summary"]["item_count"].is_number());
+    let items = fixture["items"].as_array().expect("inbox items must be an array");
+    assert!(!items.is_empty(), "inbox fixture should contain at least one item");
+    assert_eq!(items[0]["timestamp"], "__TIMESTAMP__");
+}
+
+#[test]
+fn rust_parity_digest_fixture_deserializes() {
+    let fixture = read_rust_parity_fixture("digest.json");
+    assert_eq!(fixture["generated_at"], "__GENERATED_AT__");
+    assert_eq!(fixture["project_dir"], "__PROJECT_DIR__");
+    let items = fixture["items"].as_array().expect("digest items must be an array");
+    assert_eq!(items.len(), 1, "digest fixture should keep the minimal single-run shape");
+    assert_eq!(items[0]["last_event_at"], "__LAST_EVENT_AT__");
+}
+
+#[test]
+fn rust_parity_explain_fixture_deserializes() {
+    let fixture = read_rust_parity_fixture("explain.json");
+    assert_eq!(fixture["generated_at"], "__GENERATED_AT__");
+    assert_eq!(fixture["project_dir"], "__PROJECT_DIR__");
+    assert_eq!(fixture["run"]["last_event_at"], "__LAST_EVENT_AT__");
+    let action_items = fixture["run"]["action_items"]
+        .as_array()
+        .expect("run.action_items must be an array");
+    assert!(!action_items.is_empty(), "explain fixture should contain at least one action item");
+    assert_eq!(action_items[0]["timestamp"], "__TIMESTAMP__");
 }
 
 // ════════════════════════════════════════════════════════════════════════════
