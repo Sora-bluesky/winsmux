@@ -1,10 +1,14 @@
 use crate::types::{AppState, ClientInfo};
-use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::Value;
 use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
+
+mod rust_parity_support {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../tests/test_support/rust_parity.rs"
+    ));
+}
 
 fn mock_app() -> AppState {
     let mut app = AppState::new("test_session".to_string());
@@ -13,29 +17,12 @@ fn mock_app() -> AppState {
     app
 }
 
-fn rust_parity_fixture_path(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("tests")
-        .join("fixtures")
-        .join("rust-parity")
-        .join(name)
+fn rust_parity_repo_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
 }
 
-fn read_rust_parity_fixture(name: &str) -> Value {
-    let path = rust_parity_fixture_path(name);
-    let raw = fs::read_to_string(&path)
-        .unwrap_or_else(|err| panic!("failed to read fixture {}: {}", path.display(), err));
-    serde_json::from_str(&raw)
-        .unwrap_or_else(|err| panic!("failed to parse fixture {}: {}", path.display(), err))
-}
-
-fn read_rust_parity_fixture_typed<T: DeserializeOwned>(name: &str) -> T {
-    let path = rust_parity_fixture_path(name);
-    let raw = fs::read_to_string(&path)
-        .unwrap_or_else(|err| panic!("failed to read fixture {}: {}", path.display(), err));
-    serde_json::from_str(&raw)
-        .unwrap_or_else(|err| panic!("failed to parse typed fixture {}: {}", path.display(), err))
+fn read_rust_parity_fixture_typed<T: serde::de::DeserializeOwned>(name: &str) -> T {
+    rust_parity_support::read_json_fixture_typed(&rust_parity_repo_root(), name)
 }
 
 #[derive(Deserialize)]

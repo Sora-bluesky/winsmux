@@ -30,6 +30,7 @@ $whitelistPatterns = @(
     'tests/PublicSurfacePolicy.Tests.ps1',
     'tests/HarnessContract.Tests.ps1',
     'tests/fixtures/rust-parity/*.json',
+    'tests/test_support/rust_parity.rs',
     'winsmux-core/**',
     '.claude/CLAUDE.md',
     '.claude/hooks/**',

@@ -785,8 +785,14 @@ fn run_winsmux_json(project_dir: Option<String>, args: &[String]) -> Result<Valu
 mod tests {
     use super::*;
     use std::cell::RefCell;
-    use std::fs;
     use std::path::PathBuf;
+
+    mod rust_parity_support {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/test_support/rust_parity.rs"
+        ));
+    }
 
     struct FakeTransport {
         requests: RefCell<Vec<String>>,
@@ -802,22 +808,14 @@ mod tests {
         }
     }
 
-    fn rust_parity_fixture_path(name: &str) -> PathBuf {
+    fn rust_parity_repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
-            .join("tests")
-            .join("fixtures")
-            .join("rust-parity")
-            .join(name)
     }
 
     fn read_rust_parity_fixture(name: &str) -> Value {
-        let path = rust_parity_fixture_path(name);
-        let raw = fs::read_to_string(&path)
-            .unwrap_or_else(|err| panic!("failed to read fixture {}: {}", path.display(), err));
-        serde_json::from_str(&raw)
-            .unwrap_or_else(|err| panic!("failed to parse fixture {}: {}", path.display(), err))
+        rust_parity_support::read_json_fixture(&rust_parity_repo_root(), name)
     }
 
     fn rust_parity_explain_payload() -> Value {
