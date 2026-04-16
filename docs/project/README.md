@@ -9,3 +9,7 @@ For the public operator model and user-facing product docs, see:
 - [docs/operator-model.md](../operator-model.md)
 
 The active planning source of truth is maintained outside the public product docs.
+
+Contributor-facing contract inventory:
+
+- [Rust Schema Freeze Inventory](./rust-schema-freeze-inventory.md)
