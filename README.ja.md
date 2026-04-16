@@ -6,17 +6,17 @@
 
 # winsmux
 
-**winsmux は Windows ネイティブ・local-first のマルチエージェント control plane です。**
+**winsmux は、Windows ネイティブでローカル完結型のマルチエージェント統制基盤です。**
 
-1 つのオペレーターが Windows 上の複数のエージェント CLI を統括するための、ランタイムと制御レイヤーを提供します。単一ベンダーに閉じず、ペイン実行、比較中心の判断面、ライブ監督、レビュー統制を同じワークスペースで扱えるようにします。
+1 人のオペレーターが、Windows 上で動く複数の AI エージェント CLI を束ねて運用するためのランタイムと制御レイヤーを提供します。特定のベンダーに依存せず、ペインの実行、比較、ライブ監視、レビューを同じワークスペース内で扱えます。
 
-`v0.21.2` は terminal-based final form の release です。Windows ネイティブ terminal surface、external operator model、managed worker panes、evidence/review controls を中心にした pre-Tauri の最終形をここで閉じます。`v0.22.0` からは Tauri backend / frontend adapter への desktop control-plane handoff が始まります。
+`v0.21.2` は、Tauri 移行前のターミナル中心の最終リリースです。Windows ネイティブのターミナル画面、外部オペレーター方式、管理対象ワーカーペイン、証跡とレビューの統制をここで一度固めます。`v0.22.0` からは、Tauri の backend と frontend adapter へのデスクトップ移行が始まります。
 
 ## winsmux が提供するもの
 
 - **マルチベンダー対応**: Codex、Claude、Gemini など複数の CLI エージェントを同じセッションで並行運用
-- **リアルタイム可視化**: 事後要約ではなく、`winsmux` ペインを通じて各エージェントの状態をライブで監督
-- **統制しやすい実行基盤**: 1 人の外部オペレーター、managed pane agents、review/evidence の導線を分離
+- **リアルタイム監視**: 事後要約ではなく、`winsmux` のペインを通じて各エージェントの状態をライブで確認
+- **統制された実行基盤**: 外部オペレーターと管理対象エージェントの権限を分け、レビューと証跡の導線を組み込み
 
 ```powershell
 winsmux read worker-1 20
@@ -24,13 +24,46 @@ winsmux send worker-2 "最新の auth 変更をレビューしてください。
 winsmux health-check
 ```
 
+## 認証方針
+
+winsmux は、複数の CLI エージェントを安全に運用するための統制基盤です。  
+そのため、winsmux 自身が OAuth ログインを代行したり、認証情報を中継したりする設計は採りません。
+
+- 対応状況は、ツールごとではなく **認証方式ごと** に分けて扱います
+- winsmux 自身は OAuth ログインを代行しません
+- CLI 自体にその認証方式があっても、その認証方式を winsmux が正式に支えるとは限りません
+
+| ツール | 認証方式 | winsmux での扱い |
+| ------- | ------- | ------- |
+| Claude Code | API key / 公式の企業向け認証 | 正式サポート |
+| Claude Code | Pro / Max OAuth | サポート対象外 |
+| Codex CLI | API key | 正式サポート |
+| Codex CLI | ChatGPT OAuth | 当該 PC での対話利用のみ |
+| Gemini CLI | Gemini API key | 正式サポート |
+| Gemini CLI | Vertex AI | 正式サポート |
+| Gemini CLI | Google OAuth | サポート対象外 |
+
+### 用語補足
+
+- **正式サポート**  
+  winsmux の標準の使い方として案内する認証方式です。起動、比較、複数エージェント運用で使えます。
+
+- **当該 PC での対話利用のみ**  
+  その CLI 自身が、その PC 上で公式のログイン手順を完了した状態に限って使えます。  
+  winsmux 自身がログインを代行したり、認証情報を取り出したり、他のペインや他のユーザーに共有したりはしません。
+
+- **サポート対象外**  
+  winsmux の標準の使い方としては案内しない認証方式です。起動前の確認で止める対象です。
+
+認証方針の詳細は [docs/authentication-support.ja.md](docs/authentication-support.ja.md) を参照してください。
+
 ## winsmux が向いている場面
 
-多くの agent ツールは、単一ベンダー・単一実行モデルに最適化されています。winsmux は、Windows で複数エージェントを同時に動かしつつ、全体を観測可能かつ統制可能に保ちたいチーム向けに設計されています。
+多くのエージェントツールは、単一ベンダー・単一実行モデルに最適化されています。winsmux は、Windows で複数エージェントを同時に動かしつつ、全体を観測可能かつ統制可能に保ちたいチーム向けに設計されています。
 
-- **ベンダー非依存のオーケストレーション**: 1 つの operator loop の下で Codex、Claude、Gemini、将来のローカルモデルを混在運用
-- **pane-native な運用**: `winsmux` を通じて、ライブのペインを inspect / interrupt / redirect / relabel
-- **統制された実行**: read-before-act、review-capable slot、worker worktree isolation を組み合わせて事故を減らす
+- **ベンダー非依存の複数エージェント運用**: 1 つのオペレーターの下で Codex、Claude、Gemini、将来のローカルモデルを混在運用
+- **ペインを直接扱う運用**: `winsmux` を通じて、ライブのペインを確認し、中断し、切り替え、名前を付け直せる
+- **統制された実行**: 実行前に読む運用、レビュー可能なスロット、ワーカーワークツリー分離を組み合わせて事故を減らす
 - **Windows-first**: WSL2 や Linux 経由を前提にしない
 
 ## プラットフォームモデル
@@ -45,13 +78,13 @@ winsmux
 └── Evidence Ledger
 ```
 
-- **`winsmux`** は pane targeting、messaging、health-check、vault injection、operator controls を担います
-- **Orchestra** は 1 人の external operator と複数の managed pane agents を既定モデルにします
-- **Role gates** は operator と pane agents の実行権限を分離します
-- **Worker worktree isolation** は worker ごとに独立した git worktree を与えます
-- **Evidence Ledger** は review や audit 向けの証跡を扱います
+- **`winsmux`** はペインの指定、メッセージ送信、状態確認、資格情報の注入、オペレーターによる制御を担います
+- **Orchestra** は 1 人の外部オペレーターと複数の管理対象エージェントを既定モデルにします
+- **Role gates** はオペレーターと管理対象エージェントの実行権限を分離します
+- **Worker worktree isolation** はワーカーごとに独立した git ワークツリーを与えます
+- **Evidence Ledger** はレビューや監査向けの証跡を扱います
 
-公開向けの operator / pane architecture は [docs/operator-model.md](docs/operator-model.md) を参照してください。repository-operated な pane/runtime 契約は contributor 向け資料に残しますが、主要な公開導線には含めません。
+公開向けのオペレーター / ペイン構成は [docs/operator-model.md](docs/operator-model.md) を参照してください。repository 運用専用のペイン / ランタイム契約は contributor 向け資料に残しますが、主要な公開導線には含めません。
 
 ## コアランタイム
 
