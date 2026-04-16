@@ -1393,6 +1393,102 @@ function Test-ReviewContractPresent {
     return @($contract['required_scope']).Count -gt 0
 }
 
+function Assert-ReviewStateRecordShape {
+    param(
+        [AllowNull()]$Record,
+        [Parameter(Mandatory = $true)][string]$Branch
+    )
+
+    if ($null -eq $Record -or -not ($Record -is [System.Collections.IDictionary])) {
+        Stop-WithError "invalid review state: branch '$Branch' entry must be an object"
+    }
+
+    $status = [string](Get-ReviewStatePropertyValue -InputObject $Record -Name 'status')
+    if ([string]::IsNullOrWhiteSpace($status)) {
+        Stop-WithError "invalid review state: branch '$Branch' entry is missing status"
+    }
+
+    $recordBranch = [string](Get-ReviewStatePropertyValue -InputObject $Record -Name 'branch')
+    if ([string]::IsNullOrWhiteSpace($recordBranch)) {
+        Stop-WithError "invalid review state: branch '$Branch' entry is missing branch"
+    }
+
+    $recordHeadSha = [string](Get-ReviewStatePropertyValue -InputObject $Record -Name 'head_sha')
+    if ([string]::IsNullOrWhiteSpace($recordHeadSha)) {
+        Stop-WithError "invalid review state: branch '$Branch' entry is missing head_sha"
+    }
+
+    $request = ConvertTo-ReviewStateValue -Value (Get-ReviewStatePropertyValue -InputObject $Record -Name 'request')
+    if ($null -eq $request -or -not ($request -is [System.Collections.IDictionary])) {
+        Stop-WithError "invalid review state: branch '$Branch' entry is missing request"
+    }
+
+    $requestBranch = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'branch')
+    if ([string]::IsNullOrWhiteSpace($requestBranch)) {
+        Stop-WithError "invalid review state: branch '$Branch' request is missing branch"
+    }
+
+    $requestHeadSha = [string](Get-ReviewStatePropertyValue -InputObject $request -Name 'head_sha')
+    if ([string]::IsNullOrWhiteSpace($requestHeadSha)) {
+        Stop-WithError "invalid review state: branch '$Branch' request is missing head_sha"
+    }
+
+    $targetPaneId = [string](Get-ReviewRequestTargetValue -Request $request -Name 'pane_id')
+    if ([string]::IsNullOrWhiteSpace($targetPaneId)) {
+        Stop-WithError "invalid review state: branch '$Branch' request is missing target review pane id"
+    }
+
+    $targetLabel = [string](Get-ReviewRequestTargetValue -Request $request -Name 'label')
+    if ([string]::IsNullOrWhiteSpace($targetLabel)) {
+        Stop-WithError "invalid review state: branch '$Branch' request is missing target review label"
+    }
+
+    $targetRole = [string](Get-ReviewRequestTargetValue -Request $request -Name 'role')
+    if ([string]::IsNullOrWhiteSpace($targetRole)) {
+        Stop-WithError "invalid review state: branch '$Branch' request is missing target review role"
+    }
+
+    if (-not (Test-ReviewContractPresent -Request $request)) {
+        Stop-WithError "invalid review state: branch '$Branch' request is missing review_contract.required_scope"
+    }
+
+    $reviewer = ConvertTo-ReviewStateValue -Value (Get-ReviewStatePropertyValue -InputObject $Record -Name 'reviewer')
+    if ($null -eq $reviewer -or -not ($reviewer -is [System.Collections.IDictionary])) {
+        Stop-WithError "invalid review state: branch '$Branch' entry is missing reviewer"
+    }
+
+    foreach ($fieldName in @('pane_id', 'label', 'role')) {
+        $fieldValue = [string](Get-ReviewStatePropertyValue -InputObject $reviewer -Name $fieldName)
+        if ([string]::IsNullOrWhiteSpace($fieldValue)) {
+            Stop-WithError "invalid review state: branch '$Branch' reviewer is missing $fieldName"
+        }
+    }
+
+    $updatedAt = [string](Get-ReviewStatePropertyValue -InputObject $Record -Name 'updatedAt')
+    if ([string]::IsNullOrWhiteSpace($updatedAt)) {
+        Stop-WithError "invalid review state: branch '$Branch' entry is missing updatedAt"
+    }
+
+    $evidence = Get-ReviewStatePropertyValue -InputObject $Record -Name 'evidence'
+    if ($null -eq $evidence) {
+        return
+    }
+
+    $evidenceRecord = ConvertTo-ReviewStateValue -Value $evidence
+    if (-not ($evidenceRecord -is [System.Collections.IDictionary])) {
+        Stop-WithError "invalid review state: branch '$Branch' evidence must be an object"
+    }
+
+    $snapshot = ConvertTo-ReviewStateValue -Value (Get-ReviewStatePropertyValue -InputObject $evidenceRecord -Name 'review_contract_snapshot')
+    if ($null -eq $snapshot -or -not ($snapshot -is [System.Collections.IDictionary])) {
+        Stop-WithError "invalid review state: branch '$Branch' evidence is missing review_contract_snapshot"
+    }
+
+    if (-not $snapshot.Contains('required_scope') -or @($snapshot['required_scope']).Count -eq 0) {
+        Stop-WithError "invalid review state: branch '$Branch' evidence is missing review_contract_snapshot.required_scope"
+    }
+}
+
 # --- Helper: Labels ---
 function Get-Labels {
     if (Test-Path $LabelsFile) {
@@ -4815,6 +4911,7 @@ function Get-ExplainPayload {
         $state = Get-ReviewState -ProjectDir $ProjectDir
         if ($state.Contains($branch)) {
             $reviewState = ConvertTo-ReviewStateValue -Value $state[$branch]
+            Assert-ReviewStateRecordShape -Record $reviewState -Branch $branch
         }
     }
 

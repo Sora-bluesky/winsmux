@@ -6622,12 +6622,18 @@ panes:
 {
   "worktree-builder-1": {
     "status": "PENDING",
+    "branch": "worktree-builder-1",
     "head_sha": "abc1234def5678",
     "request": {
+      "id": "review-request-__ID__",
       "branch": "worktree-builder-1",
       "head_sha": "abc1234def5678",
+      "target_review_label": "reviewer-1",
+      "target_review_pane_id": "%3",
+      "target_review_role": "Reviewer",
       "target_reviewer_label": "reviewer-1",
       "target_reviewer_pane_id": "%3",
+      "target_reviewer_role": "Reviewer",
       "review_contract": {
         "version": 1,
         "source_task": "TASK-210",
@@ -6638,8 +6644,16 @@ panes:
           "replacement_coverage",
           "orphaned_artifacts"
         ]
-      }
-    }
+      },
+      "dispatched_at": "__TIMESTAMP__"
+    },
+    "reviewer": {
+      "pane_id": "%3",
+      "label": "reviewer-1",
+      "role": "Reviewer",
+      "agent_name": "codex"
+    },
+    "updatedAt": "__TIMESTAMP__"
   }
 }
 '@ | Set-Content -Path $script:explainReviewStatePath -Encoding UTF8
@@ -6726,6 +6740,84 @@ panes:
         ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).hypothesis | Should -Be 'experiment packet should flow into explain'
         ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).observation_pack.packet_type | Should -Be 'observation_pack'
         ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).consultation_packet.kind | Should -Be 'consult_result'
+    }
+
+    It 'rejects explain when matching review-state record is missing reviewer' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:explainTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    task: Implement run ledger
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
+
+        ([ordered]@{
+            timestamp = '2026-04-10T12:01:00+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'commander.review_requested'
+            message   = 'review requested'
+            label     = 'reviewer-1'
+            pane_id   = '%3'
+            role      = 'Reviewer'
+            branch    = 'worktree-builder-1'
+            head_sha  = 'abc1234def5678'
+            data      = [ordered]@{
+                task_id = 'task-256'
+            }
+        } | ConvertTo-Json -Compress) | Set-Content -Path $script:explainEventsPath -Encoding UTF8
+
+@'
+{
+  "worktree-builder-1": {
+    "status": "PENDING",
+    "branch": "worktree-builder-1",
+    "head_sha": "abc1234def5678",
+    "request": {
+      "branch": "worktree-builder-1",
+      "head_sha": "abc1234def5678",
+      "target_review_label": "reviewer-1",
+      "target_review_pane_id": "%3",
+      "target_review_role": "Reviewer",
+      "review_contract": {
+        "version": 1,
+        "source_task": "TASK-210",
+        "issue_ref": "#315",
+        "style": "utility_first",
+        "required_scope": [
+          "design_impact",
+          "replacement_coverage",
+          "orphaned_artifacts"
+        ]
+      }
+    },
+    "updatedAt": "2026-04-10T12:01:00+09:00"
+  }
+}
+'@ | Set-Content -Path $script:explainReviewStatePath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        { Get-ExplainPayload -ProjectDir $script:explainTempRoot -RunId 'task:task-256' } | Should -Throw '*invalid review state*reviewer*'
     }
 
     It 'keeps refs and returns null packets when artifact files are missing or malformed' {
