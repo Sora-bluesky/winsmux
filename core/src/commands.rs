@@ -1375,7 +1375,7 @@ pub fn execute_command_string(app: &mut AppState, cmd: &str) -> io::Result<()> {
             if let Some(port) = app.control_port {
                 let _ = send_control_to_port(port, "server-info\n", &app.session_key);
             } else {
-                let output = format!("psmux {}\nSession: {}\nWindows: {}\nActive: {}\n",
+                let output = format!("winsmux {}\nSession: {}\nWindows: {}\nActive: {}\n",
                     crate::types::VERSION, app.session_name, app.windows.len(), app.active_idx);
                 show_output_popup(app, "server-info", output);
             }

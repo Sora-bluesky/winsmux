@@ -69,6 +69,21 @@ fn should_spawn_warm_server(app: &AppState) -> bool {
     app.warm_enabled && app.session_name != "__warm__" && !app.destroy_unattached
 }
 
+fn build_server_info_text(app: &AppState) -> String {
+    format!(
+        "winsmux {} (Windows)\npid: {}\nsession: {}\nwindows: {}\nuptime: {}s\nsocket: {}",
+        VERSION,
+        std::process::id(),
+        app.session_name,
+        app.windows.len(),
+        (chrono::Local::now() - app.created_at).num_seconds(),
+        {
+            let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
+            format!("{}\\.psmux\\{}.port", home, app.port_file_base())
+        }
+    )
+}
+
 /// Check if the active pane is currently squelched (hiding injected cd+cls).
 /// Uses the non-consuming `squelch_cleared()` so the layout serialiser can
 /// still properly consume the sentinel via `take_squelch_cleared()`.
@@ -3164,19 +3179,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                     let _ = resp.send(output);
                 }
                 CtrlReq::ServerInfo(resp) => {
-                    let info = format!(
-                        "psmux {} (Windows)\npid: {}\nsession: {}\nwindows: {}\nuptime: {}s\nsocket: {}",
-                        VERSION,
-                        std::process::id(),
-                        app.session_name,
-                        app.windows.len(),
-                        (chrono::Local::now() - app.created_at).num_seconds(),
-                        {
-                            let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
-                            format!("{}\\.psmux\\{}.port", home, app.port_file_base())
-                        }
-                    );
-                    let _ = resp.send(info);
+                    let _ = resp.send(build_server_info_text(&app));
                 }
                 CtrlReq::SendPrefix => {
                     // Send the prefix key to the active pane as if typed
