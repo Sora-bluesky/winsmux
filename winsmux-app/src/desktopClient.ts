@@ -90,7 +90,7 @@ export interface DesktopDigestItem {
   label: string;
   pane_id: string;
   role: string;
-  provider_target?: string;
+  provider_target: string;
   task_state: string;
   review_state: string;
   next_action: string;
@@ -100,12 +100,12 @@ export interface DesktopDigestItem {
   head_short: string;
   changed_file_count: number;
   changed_files: string[];
-  verification_outcome?: string;
-  security_blocked?: string;
-  hypothesis?: string;
-  confidence?: number | null;
-  observation_pack_ref?: string;
-  consultation_ref?: string;
+  verification_outcome: string;
+  security_blocked: string;
+  hypothesis: string;
+  confidence: number | null;
+  observation_pack_ref: string;
+  consultation_ref: string;
 }
 
 export interface DesktopRunProjection {
