@@ -155,23 +155,12 @@ export interface DesktopExplainPayload {
   project_dir?: string;
   run: {
     run_id: string;
-    task_id?: string;
-    parent_run_id?: string;
     task: string;
-    goal?: string;
-    task_type?: string;
     state: string;
     task_state: string;
     review_state: string;
-    priority?: string;
-    blocking?: string[];
-    review_required?: boolean;
     provider_target?: string;
     agent_role?: string;
-    timeout_policy?: string;
-    tokens_remaining?: number | null;
-    last_event?: string;
-    last_event_at?: string;
     branch: string;
     head_sha: string;
     worktree?: string;
@@ -181,12 +170,6 @@ export interface DesktopExplainPayload {
     summary: string;
     reasons: string[];
     next_action: string;
-    current_state?: {
-      state?: string;
-      task_state?: string;
-      review_state?: string;
-      last_event?: string;
-    };
   };
   evidence_digest: {
     next_action: string;
@@ -194,57 +177,6 @@ export interface DesktopExplainPayload {
     changed_files: string[];
     verification_outcome?: string;
     security_blocked?: string;
-  };
-  review_state?: {
-    status?: string;
-  };
-  consultation_summary?: {
-    kind?: string;
-    recommendation?: string;
-    next_test?: string;
-  } | null;
-  action_items?: Array<{
-    kind?: string;
-    message?: string;
-    event?: string;
-    timestamp?: string;
-    source?: string;
-  }>;
-  verification_contract?: {
-    mode?: string;
-    required?: boolean;
-    checks?: string[];
-    commands?: string[];
-  } | null;
-  verification_result?: {
-    outcome?: string;
-    summary?: string;
-    next_action?: string;
-    failed_checks?: string[];
-    passed_checks?: string[];
-  } | null;
-  security_policy?: {
-    mode?: string;
-    stage?: string;
-    task?: string;
-    allow?: string[];
-    block?: string[];
-  } | null;
-  security_verdict?: {
-    verdict?: string;
-    reason?: string;
-    next_action?: string;
-    advisory_mode?: boolean;
-    stage?: string;
-    allow?: string[];
-    block?: string[];
-  } | null;
-  run_packet?: {
-    provider_target?: string;
-  };
-  result_packet?: {
-    summary?: string;
-    next_action_hint?: string;
   };
   recent_events: Array<{
     timestamp: string;
