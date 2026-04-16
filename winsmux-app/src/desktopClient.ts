@@ -90,6 +90,7 @@ export interface DesktopDigestSummary {
 
 export interface DesktopDigestItem {
   run_id: string;
+  task_id: string;
   task: string;
   label: string;
   pane_id: string;
@@ -104,6 +105,8 @@ export interface DesktopDigestItem {
   head_short: string;
   changed_file_count: number;
   changed_files: string[];
+  action_item_count: number;
+  last_event: string;
   verification_outcome: string;
   security_blocked: string;
   hypothesis: string;
