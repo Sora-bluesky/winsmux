@@ -118,7 +118,8 @@ Describe 'harness-check contract' {
             param(
                 [Parameter(Mandatory = $true)][string]$RepoRoot,
                 [Parameter(Mandatory = $true)][string]$HookRelativePath,
-                [Parameter(Mandatory = $true)][object]$Payload
+                [Parameter(Mandatory = $true)][object]$Payload,
+                [hashtable]$EnvironmentVariables = @{}
             )
 
             $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
@@ -130,6 +131,9 @@ Describe 'harness-check contract' {
             $startInfo.RedirectStandardInput = $true
             $startInfo.RedirectStandardOutput = $true
             $startInfo.RedirectStandardError = $true
+            foreach ($entry in $EnvironmentVariables.GetEnumerator()) {
+                $startInfo.Environment[$entry.Key] = [string]$entry.Value
+            }
 
             $process = [System.Diagnostics.Process]::Start($startInfo)
             try {
@@ -306,6 +310,104 @@ Describe 'harness-check contract' {
             $sessionEndRecord.event | Should -Be 'SessionEnd'
             $sessionEndRecord.summary.tool_calls | Should -Be 2
             $sessionEndRecord.summary.denials | Should -Be 1
+        } finally {
+            if (Test-Path -LiteralPath $fixtureRoot) {
+                Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'blocks PR merge commands while orchestra restore is still needs-startup' {
+        $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-startup-gate-" + [guid]::NewGuid().ToString('N'))
+        try {
+            $hooksDir = Join-Path $fixtureRoot '.claude\hooks'
+            $scriptsDir = Join-Path $fixtureRoot 'winsmux-core\scripts'
+            $fakeBinDir = Join-Path $fixtureRoot 'fake-bin'
+
+            New-Item -ItemType Directory -Path $hooksDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $fakeBinDir -Force | Out-Null
+
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-orchestra-gate.js') -Destination (Join-Path $hooksDir 'sh-orchestra-gate.js') -Force
+
+            Write-TestFileWithCmd -Path (Join-Path $scriptsDir 'settings.ps1') -Content @'
+function Get-BridgeSettings {
+    param([string]$RootPath)
+    [pscustomobject]@{
+        worker_count       = 6
+        external_commander = $true
+    }
+}
+'@
+
+            Write-TestFileWithCmd -Path (Join-Path $fakeBinDir 'winsmux.cmd') -Content @'
+@echo off
+if "%1"=="has-session" exit /b 1
+exit /b 0
+'@
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixtureRoot -HookRelativePath '.claude\hooks\sh-orchestra-gate.js' -Payload ([ordered]@{
+                tool_name  = 'Bash'
+                tool_input = [ordered]@{
+                    command = 'gh pr merge 424 --repo Sora-bluesky/winsmux'
+                }
+            }) -EnvironmentVariables @{
+                PATH = "$fakeBinDir;$env:PATH"
+            }
+
+            $result.ExitCode | Should -Be 0
+            $result.Json.hookSpecificOutput.permissionDecision | Should -Be 'deny'
+            $result.Json.hookSpecificOutput.permissionDecisionReason | Should -Match 'Orchestra is needs-startup'
+            $result.Json.systemMessage | Should -Match 'PR/merge progression commands are blocked until worker panes are ready'
+        } finally {
+            if (Test-Path -LiteralPath $fixtureRoot) {
+                Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'allows orchestra-start recovery commands while orchestra restore is needs-startup' {
+        $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-startup-allow-" + [guid]::NewGuid().ToString('N'))
+        try {
+            $hooksDir = Join-Path $fixtureRoot '.claude\hooks'
+            $scriptsDir = Join-Path $fixtureRoot 'winsmux-core\scripts'
+            $fakeBinDir = Join-Path $fixtureRoot 'fake-bin'
+
+            New-Item -ItemType Directory -Path $hooksDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $scriptsDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $fakeBinDir -Force | Out-Null
+
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-orchestra-gate.js') -Destination (Join-Path $hooksDir 'sh-orchestra-gate.js') -Force
+
+            Write-TestFileWithCmd -Path (Join-Path $scriptsDir 'settings.ps1') -Content @'
+function Get-BridgeSettings {
+    param([string]$RootPath)
+    [pscustomobject]@{
+        worker_count       = 6
+        external_commander = $true
+    }
+}
+'@
+
+            Write-TestFileWithCmd -Path (Join-Path $fakeBinDir 'winsmux.cmd') -Content @'
+@echo off
+if "%1"=="has-session" exit /b 1
+exit /b 0
+'@
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixtureRoot -HookRelativePath '.claude\hooks\sh-orchestra-gate.js' -Payload ([ordered]@{
+                tool_name  = 'Bash'
+                tool_input = [ordered]@{
+                    command = 'pwsh -NoProfile -File winsmux-core/scripts/orchestra-start.ps1'
+                }
+            }) -EnvironmentVariables @{
+                PATH = "$fakeBinDir;$env:PATH"
+            }
+
+            $result.ExitCode | Should -Be 0
+            $result.StdOut | Should -Be ''
+            $result.StdErr | Should -Be ''
+            $result.Json | Should -Be $null
         } finally {
             if (Test-Path -LiteralPath $fixtureRoot) {
                 Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
