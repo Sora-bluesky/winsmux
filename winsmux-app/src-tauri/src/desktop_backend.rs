@@ -83,6 +83,7 @@ pub struct DesktopBoardPane {
 #[derive(Serialize, Deserialize)]
 pub struct DesktopDigestItem {
     pub run_id: String,
+    pub task_id: String,
     pub task: String,
     pub label: String,
     pub pane_id: String,
@@ -97,6 +98,8 @@ pub struct DesktopDigestItem {
     pub head_short: String,
     pub changed_file_count: usize,
     pub changed_files: Vec<String>,
+    pub action_item_count: usize,
+    pub last_event: String,
     pub verification_outcome: String,
     pub security_blocked: String,
     pub hypothesis: String,
@@ -887,7 +890,13 @@ mod tests {
         assert_eq!(snapshot.digest.summary.actionable_items, 1);
         assert_eq!(snapshot.digest.summary.dirty_items, 1);
         assert_eq!(snapshot.digest.items[0].run_id, "task:task-246");
+        assert_eq!(snapshot.digest.items[0].task_id, "task-246");
         assert_eq!(snapshot.digest.items[0].provider_target, "");
+        assert_eq!(snapshot.digest.items[0].action_item_count, 3);
+        assert_eq!(
+            snapshot.digest.items[0].last_event,
+            "commander.review_failed"
+        );
         assert_eq!(snapshot.digest.items[0].verification_outcome, "");
         assert_eq!(snapshot.digest.items[0].security_blocked, "");
         assert_eq!(
@@ -978,6 +987,30 @@ mod tests {
     }
 
     #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_digest_task_id() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["digest"]["items"][0]
+            .as_object_mut()
+            .expect("digest.items[0] must be an object")
+            .remove("task_id");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing task_id"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("task_id"),
+            "expected missing task_id error, got {err}"
+        );
+    }
+
+    #[test]
     fn load_desktop_summary_snapshot_rejects_missing_digest_head_sha() {
         let mut response = rust_parity_summary_snapshot_payload();
         response["digest"]["items"][0]
@@ -998,6 +1031,32 @@ mod tests {
         assert!(
             err.contains("head_sha"),
             "expected missing head_sha error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_digest_action_item_count() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["digest"]["items"][0]
+            .as_object_mut()
+            .expect("digest.items[0] must be an object")
+            .remove("action_item_count");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => {
+                panic!("expected summary snapshot parse failure for missing action_item_count")
+            }
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("action_item_count"),
+            "expected missing action_item_count error, got {err}"
         );
     }
 
@@ -1026,6 +1085,30 @@ mod tests {
     }
 
     #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_digest_last_event() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["digest"]["items"][0]
+            .as_object_mut()
+            .expect("digest.items[0] must be an object")
+            .remove("last_event");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing last_event"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("last_event"),
+            "expected missing last_event error, got {err}"
+        );
+    }
+
+    #[test]
     fn load_desktop_summary_snapshot_rejects_missing_digest_verification_outcome() {
         let mut response = rust_parity_summary_snapshot_payload();
         response["digest"]["items"][0]
@@ -1039,7 +1122,9 @@ mod tests {
         };
 
         let err = match load_desktop_summary_snapshot(&transport, None) {
-            Ok(_) => panic!("expected summary snapshot parse failure for missing verification_outcome"),
+            Ok(_) => {
+                panic!("expected summary snapshot parse failure for missing verification_outcome")
+            }
             Err(err) => err,
         };
 
