@@ -1,0 +1,43 @@
+{
+  "generated_at": "__GENERATED_AT__",
+  "project_dir": "__PROJECT_DIR__",
+  "summary": {
+    "item_count": 1,
+    "dirty_items": 1,
+    "review_pending": 0,
+    "review_failed": 1,
+    "actionable_items": 1
+  },
+  "items": [
+    {
+      "run_id": "task:task-246",
+      "task_id": "task-246",
+      "task": "Build evidence digest",
+      "label": "builder-1",
+      "pane_id": "%2",
+      "role": "Builder",
+      "provider_target": "",
+      "task_state": "blocked",
+      "review_state": "FAIL",
+      "next_action": "review_failed",
+      "branch": "worktree-builder-1",
+      "worktree": ".worktrees/builder-1",
+      "head_sha": "abc1234def5678",
+      "head_short": "abc1234",
+      "changed_file_count": 1,
+      "changed_files": [
+        "scripts/winsmux-core.ps1"
+      ],
+      "action_item_count": 3,
+      "last_event": "commander.review_failed",
+      "last_event_at": "__LAST_EVENT_AT__",
+      "verification_outcome": "",
+      "security_blocked": "",
+      "hypothesis": "result summary should appear in digest",
+      "confidence": 0.88,
+      "observation_pack_ref": ".winsmux/observation-packs/observation-pack-__ID__.json",
+      "consultation_ref": ".winsmux/consultations/consult-result-__ID__.json"
+    }
+  ]
+}
+

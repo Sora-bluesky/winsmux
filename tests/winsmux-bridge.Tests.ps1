@@ -11,16 +11,69 @@ function script:Write-PsmuxBridgeTestFile {
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
     }
 
-    $escapedPath = $Path -replace '"', '""'
     if ([string]::IsNullOrEmpty($Content)) {
-        cmd /d /c ('type nul > "{0}"' -f $escapedPath) | Out-Null
+        Set-Content -Path $Path -Value '' -Encoding UTF8
     } else {
-        $Content | cmd /d /c ('more > "{0}"' -f $escapedPath) | Out-Null
+        Set-Content -Path $Path -Value $Content -Encoding UTF8
+    }
+}
+
+function script:ConvertTo-GoldenCorpusJson {
+    param(
+        [Parameter(Mandatory = $true)][object]$InputObject,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $json = $InputObject | ConvertTo-Json -Depth 20
+    $escapedProjectDir = [Regex]::Escape(($ProjectDir -replace '\\', '\\'))
+    $normalized = $json -replace $escapedProjectDir, '__PROJECT_DIR__'
+    $normalized = [Regex]::Replace(
+        $normalized,
+        '"generated_at"\s*:\s*"[^"]+"',
+        '"generated_at": "__GENERATED_AT__"'
+    )
+    $normalized = [Regex]::Replace(
+        $normalized,
+        '"timestamp"\s*:\s*"[^"]+"',
+        '"timestamp": "__TIMESTAMP__"'
+    )
+    $normalized = [Regex]::Replace(
+        $normalized,
+        '"last_event_at"\s*:\s*"[^"]+"',
+        '"last_event_at": "__LAST_EVENT_AT__"'
+    )
+    $normalized = [Regex]::Replace(
+        $normalized,
+        'observation-pack-[a-f0-9]+\.json',
+        'observation-pack-__ID__.json'
+    )
+    $normalized = [Regex]::Replace(
+        $normalized,
+        'consult-result-[a-f0-9]+\.json',
+        'consult-result-__ID__.json'
+    )
+
+    return ($normalized.TrimEnd() + "`n")
+}
+
+function script:Assert-GoldenCorpusFixture {
+    param(
+        [Parameter(Mandatory = $true)][string]$FixturePath,
+        [Parameter(Mandatory = $true)][object]$InputObject,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $fullFixturePath = Join-Path $repoRoot $FixturePath
+    $actual = ConvertTo-GoldenCorpusJson -InputObject $InputObject -ProjectDir $ProjectDir
+
+    if ($env:WINSMUX_UPDATE_GOLDEN -eq '1') {
+        Write-PsmuxBridgeTestFile -Path $fullFixturePath -Content $actual
     }
 
-    if ($LASTEXITCODE -ne 0) {
-        throw "cmd.exe failed to write $Path"
-    }
+    Test-Path -LiteralPath $fullFixturePath | Should -Be $true
+    $expected = (Get-Content -Raw -Path $fullFixturePath -Encoding UTF8).TrimEnd("`r", "`n")
+    $actual.TrimEnd("`r", "`n") | Should -Be $expected
 }
 
 Describe 'Assert-Role' {
@@ -7365,6 +7418,423 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraPaneBootstrapContent | Should -Match '\[winsmux\] pane bootstrap:'
         $script:orchestraPaneBootstrapContent | Should -Match 'launch_command'
         $script:orchestraPaneBootstrapContent | Should -Match 'Invoke-Expression \$launchCommand'
+    }
+}
+
+Describe 'TASK-278 golden corpus fixtures' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    AfterEach {
+        $global:Target = $null
+        $global:Rest = @()
+        Remove-Item function:\winsmux -ErrorAction SilentlyContinue
+    }
+
+    It 'keeps board json fixture stable' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-board-golden-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+
+        try {
+            Push-Location $tempRoot
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-244
+    task: Implement session board
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    builder_worktree_path: .worktrees/builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 2
+    changed_files: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
+    last_event: pane.ready
+    last_event_at: 2026-04-10T10:00:00+09:00
+  worker-1:
+    pane_id: %6
+    role: Worker
+    task_id: ''
+    task: ''
+    task_state: backlog
+    task_owner: ''
+    review_state: ''
+    branch: ''
+    head_sha: ''
+    changed_file_count: 0
+    changed_files: '[]'
+    last_event: pane.idle
+    last_event_at: 2026-04-10T10:05:00+09:00
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+            function global:winsmux {
+                $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+                switch -Regex ($commandLine) {
+                    '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                    '^capture-pane .*%6' { return @('gpt-5.4   52% context left', 'thinking', 'Esc to interrupt') }
+                    default { throw "unexpected winsmux call: $commandLine" }
+                }
+            }
+
+            $result = (Invoke-Board -BoardTarget '--json' | Out-String | ConvertFrom-Json -AsHashtable)
+            Assert-GoldenCorpusFixture -FixturePath 'tests/fixtures/rust-parity/board.json' -InputObject $result -ProjectDir $tempRoot
+        } finally {
+            Pop-Location
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'keeps inbox json fixture stable' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-inbox-golden-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        $eventsPath = Join-Path $manifestDir 'events.jsonl'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+
+        try {
+            Push-Location $tempRoot
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-245
+    task: Build inbox surface
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: review.requested
+    last_event_at: 2026-04-10T11:00:00+09:00
+  worker-1:
+    pane_id: %6
+    role: Worker
+    task_id: task-999
+    task: Fix blocker
+    task_state: blocked
+    task_owner: worker-1
+    review_state: ''
+    branch: worktree-worker-1
+    head_sha: def5678abc1234
+    changed_file_count: 0
+    changed_files: '[]'
+    last_event: commander.state_transition
+    last_event_at: 2026-04-10T11:05:00+09:00
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+            @(
+                ([ordered]@{
+                    timestamp = '2026-04-10T11:02:00+09:00'
+                    session   = 'winsmux-orchestra'
+                    event     = 'pane.approval_waiting'
+                    message   = 'approval prompt detected'
+                    label     = 'builder-1'
+                    pane_id   = '%2'
+                    role      = 'Builder'
+                    status    = 'approval_waiting'
+                } | ConvertTo-Json -Compress),
+                ([ordered]@{
+                    timestamp = '2026-04-10T11:06:00+09:00'
+                    session   = 'winsmux-orchestra'
+                    event     = 'commander.state_transition'
+                    message   = 'State: review_requested -> blocked_no_review_target'
+                    label     = ''
+                    pane_id   = ''
+                    role      = 'Commander'
+                    status    = 'blocked_no_review_target'
+                    data      = [ordered]@{
+                        from = 'review_requested'
+                        to   = 'blocked_no_review_target'
+                    }
+                } | ConvertTo-Json -Compress),
+                ([ordered]@{
+                    timestamp = '2026-04-10T11:08:00+09:00'
+                    session   = 'winsmux-orchestra'
+                    event     = 'commander.commit_ready'
+                    message   = 'コミット準備完了。'
+                    label     = ''
+                    pane_id   = ''
+                    role      = 'Commander'
+                    status    = 'commit_ready'
+                    head_sha  = 'abc1234def5678'
+                } | ConvertTo-Json -Compress)
+            ) | Set-Content -Path $eventsPath -Encoding UTF8
+
+            function global:winsmux {
+                $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+                switch -Regex ($commandLine) {
+                    '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                    default { throw "unexpected winsmux call: $commandLine" }
+                }
+            }
+
+            $result = (Invoke-Inbox -InboxTarget '--json' | Out-String | ConvertFrom-Json -AsHashtable)
+            Assert-GoldenCorpusFixture -FixturePath 'tests/fixtures/rust-parity/inbox.json' -InputObject $result -ProjectDir $tempRoot
+        } finally {
+            Pop-Location
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'keeps digest json fixture stable' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-digest-golden-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        $eventsPath = Join-Path $manifestDir 'events.jsonl'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+
+        try {
+            Push-Location $tempRoot
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-246
+    task: Build evidence digest
+    task_state: blocked
+    task_owner: builder-1
+    review_state: FAIL
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_failed
+    last_event_at: 2026-04-10T14:00:00+09:00
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+            $digestObservationPack = New-ObservationPackFile -ProjectDir $tempRoot -ObservationPack ([ordered]@{
+                run_id          = 'task:task-246'
+                task_id         = 'task-246'
+                pane_id         = '%2'
+                slot            = 'slot-builder-1'
+                hypothesis      = 'result summary should appear in digest'
+                env_fingerprint = 'env:abc123'
+            })
+            $digestConsultationPacket = New-ConsultationPacketFile -ProjectDir $tempRoot -ConsultationPacket ([ordered]@{
+                run_id         = 'task:task-246'
+                task_id        = 'task-246'
+                pane_id        = '%2'
+                slot           = 'slot-builder-1'
+                kind           = 'consult_result'
+                mode           = 'reconcile'
+                target_slot    = 'slot-review-1'
+                confidence     = 0.88
+                recommendation = 'treat review failure as blocking'
+                next_test      = 'review_failed'
+            })
+
+            ([ordered]@{
+                timestamp = '2026-04-10T14:03:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'commander.review_failed'
+                message   = 'review failed'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                status    = 'review_failed'
+                branch    = 'worktree-builder-1'
+                head_sha  = 'abc1234def5678'
+                data      = [ordered]@{
+                    task_id              = 'task-246'
+                    hypothesis           = 'result summary should appear in digest'
+                    result               = 'review failure reproduced'
+                    confidence           = 0.88
+                    next_action          = 'review_failed'
+                    observation_pack_ref = $digestObservationPack.reference
+                    consultation_ref     = $digestConsultationPacket.reference
+                }
+            } | ConvertTo-Json -Compress) | Set-Content -Path $eventsPath -Encoding UTF8
+
+            function global:winsmux {
+                $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+                switch -Regex ($commandLine) {
+                    '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                    default { throw "unexpected winsmux call: $commandLine" }
+                }
+            }
+
+            $result = (Invoke-Digest -DigestTarget '--json' | Out-String | ConvertFrom-Json -AsHashtable)
+            Assert-GoldenCorpusFixture -FixturePath 'tests/fixtures/rust-parity/digest.json' -InputObject $result -ProjectDir $tempRoot
+        } finally {
+            Pop-Location
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'keeps explain json fixture stable' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-explain-golden-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        $eventsPath = Join-Path $manifestDir 'events.jsonl'
+        $reviewStatePath = Join-Path $manifestDir 'review-state.json'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+
+        try {
+            Push-Location $tempRoot
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    parent_run_id: operator:session-1
+    goal: Ship run contract primitives
+    task: Implement run ledger
+    task_type: implementation
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    priority: P0
+    blocking: true
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    write_scope: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
+    read_scope: '["winsmux-core/scripts/pane-status.ps1"]'
+    constraints: '["preserve existing board schema"]'
+    expected_output: Stable run_packet JSON
+    verification_plan: '["Invoke-Pester tests/winsmux-bridge.Tests.ps1","verify explain --json contract"]'
+    review_required: true
+    provider_target: codex:gpt-5.4
+    agent_role: worker
+    timeout_policy: standard
+    handoff_refs: '["docs/handoff.md"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+            $explainObservationPack = New-ObservationPackFile -ProjectDir $tempRoot -ObservationPack ([ordered]@{
+                run_id               = 'task:task-256'
+                task_id              = 'task-256'
+                pane_id              = '%2'
+                slot                 = 'slot-builder-1'
+                hypothesis           = 'experiment packet should flow into explain'
+                test_plan            = @('collect matching events', 'normalize packet')
+                changed_files        = @('scripts/winsmux-core.ps1')
+                working_tree_summary = '1 file modified'
+                failing_command      = 'Invoke-Pester tests/winsmux-bridge.Tests.ps1'
+                env_fingerprint      = 'env:abc123'
+                command_hash         = 'cmd:def456'
+            })
+            $explainConsultationPacket = New-ConsultationPacketFile -ProjectDir $tempRoot -ConsultationPacket ([ordered]@{
+                run_id         = 'task:task-256'
+                task_id        = 'task-256'
+                pane_id        = '%2'
+                slot           = 'slot-builder-1'
+                kind           = 'consult_result'
+                mode           = 'early'
+                target_slot    = 'slot-review-1'
+                confidence     = 0.66
+                recommendation = 'consult before work'
+                next_test      = 'approval_waiting'
+                risks          = @('needs reviewer confirmation')
+            })
+
+            @(
+                ([ordered]@{
+                    timestamp = '2026-04-10T12:01:00+09:00'
+                    session   = 'winsmux-orchestra'
+                    event     = 'commander.review_requested'
+                    message   = 'review requested'
+                    label     = 'reviewer-1'
+                    pane_id   = '%3'
+                    role      = 'Reviewer'
+                    branch    = 'worktree-builder-1'
+                    head_sha  = 'abc1234def5678'
+                    data      = [ordered]@{
+                        task_id = 'task-256'
+                        slot    = 'slot-builder-1'
+                    }
+                } | ConvertTo-Json -Compress),
+                ([ordered]@{
+                    timestamp = '2026-04-10T12:02:00+09:00'
+                    session   = 'winsmux-orchestra'
+                    event     = 'consult.result'
+                    message   = 'consult before work'
+                    label     = 'builder-1'
+                    pane_id   = '%2'
+                    role      = 'Builder'
+                    branch    = 'worktree-builder-1'
+                    head_sha  = 'abc1234def5678'
+                    data      = [ordered]@{
+                        task_id              = 'task-256'
+                        result               = 'consult before work'
+                        confidence           = 0.66
+                        next_action          = 'approval_waiting'
+                        observation_pack_ref = $explainObservationPack.reference
+                        consultation_ref     = $explainConsultationPacket.reference
+                    }
+                } | ConvertTo-Json -Compress)
+            ) | Set-Content -Path $eventsPath -Encoding UTF8
+
+@'
+{
+  "task:task-256": {
+    "verification_contract": {
+      "mode": "adversarial_verify",
+      "required_evidence": [
+        "tests",
+        "review"
+      ]
+    },
+    "verification_result": {
+      "outcome": "PARTIAL",
+      "summary": "review pending"
+    }
+  }
+}
+'@ | Set-Content -Path $reviewStatePath -Encoding UTF8
+
+            function global:winsmux {
+                $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+                switch -Regex ($commandLine) {
+                    '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                    default { throw "unexpected winsmux call: $commandLine" }
+                }
+            }
+
+            $result = (Invoke-Explain -ExplainTarget 'task:task-256' -ExplainRest @('--json') | Out-String | ConvertFrom-Json -AsHashtable)
+            Assert-GoldenCorpusFixture -FixturePath 'tests/fixtures/rust-parity/explain.json' -InputObject $result -ProjectDir $tempRoot
+        } finally {
+            Pop-Location
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
     }
 }
 

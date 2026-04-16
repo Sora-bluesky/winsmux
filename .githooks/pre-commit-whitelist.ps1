@@ -29,6 +29,7 @@ $whitelistPatterns = @(
     '.githooks/**',
     'tests/PublicSurfacePolicy.Tests.ps1',
     'tests/HarnessContract.Tests.ps1',
+    'tests/fixtures/rust-parity/*.json',
     'winsmux-core/**',
     '.claude/CLAUDE.md',
     '.claude/hooks/**',
