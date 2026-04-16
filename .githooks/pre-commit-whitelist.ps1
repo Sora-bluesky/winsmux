@@ -24,6 +24,7 @@ $whitelistPatterns = @(
     'docs/authentication-support.md',
     'docs/authentication-support.ja.md',
     'docs/repo-surface-policy.md',
+    'docs/project/rust-schema-freeze-inventory.md',
     '.agents/README.md',
     'scripts/bootstrap-git-guard.ps1',
     'scripts/git-guard.ps1',

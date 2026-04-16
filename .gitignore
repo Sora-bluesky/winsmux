@@ -24,6 +24,7 @@ docs/project/
 !docs/project/
 docs/project/*
 !docs/project/README.md
+!docs/project/rust-schema-freeze-inventory.md
 docs/*-research*.md
 docs/review-notes*.md
 docs/ci-checklist*.md
