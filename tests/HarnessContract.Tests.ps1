@@ -13,6 +13,12 @@ Describe 'harness-check contract' {
         }
 
         $script:PwshPath = if ($pwshCommand.Path) { $pwshCommand.Path } else { $pwshCommand.Name }
+        $nodeCommand = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -eq $nodeCommand) {
+            throw 'node was not found in PATH.'
+        }
+
+        $script:NodePath = if ($nodeCommand.Path) { $nodeCommand.Path } else { $nodeCommand.Name }
 
         function Write-TestFileWithCmd {
             param(
@@ -107,6 +113,48 @@ Describe 'harness-check contract' {
                 Json     = $parsed
             }
         }
+
+        function Invoke-NodeHookJson {
+            param(
+                [Parameter(Mandatory = $true)][string]$RepoRoot,
+                [Parameter(Mandatory = $true)][string]$HookRelativePath,
+                [Parameter(Mandatory = $true)][object]$Payload
+            )
+
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $script:NodePath
+            $startInfo.ArgumentList.Add((Join-Path $RepoRoot $HookRelativePath))
+            $startInfo.WorkingDirectory = $RepoRoot
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardInput = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+
+            $process = [System.Diagnostics.Process]::Start($startInfo)
+            try {
+                $process.StandardInput.Write(($Payload | ConvertTo-Json -Compress -Depth 20))
+                $process.StandardInput.Close()
+
+                $stdout = $process.StandardOutput.ReadToEnd()
+                $stderr = $process.StandardError.ReadToEnd()
+                $process.WaitForExit()
+
+                $parsed = $null
+                if (-not [string]::IsNullOrWhiteSpace($stdout.Trim())) {
+                    $parsed = $stdout | ConvertFrom-Json -Depth 20
+                }
+
+                [PSCustomObject]@{
+                    ExitCode = $process.ExitCode
+                    StdOut   = $stdout.Trim()
+                    StdErr   = $stderr.Trim()
+                    Json     = $parsed
+                }
+            } finally {
+                $process.Dispose()
+            }
+        }
     }
 
     BeforeEach {
@@ -198,6 +246,70 @@ Describe 'harness-check contract' {
             (($record.data | Out-String)) | Should -Match 'allow reply does not include hookEventName'
         } finally {
             Restore-TestFile -Path $utilsPath -Content $original
+        }
+    }
+
+    It 'keeps SessionEnd replies free of hookSpecificOutput while preserving evidence' {
+        $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-session-end-" + [guid]::NewGuid().ToString('N'))
+        try {
+            $hooksDir = Join-Path $fixtureRoot '.claude\hooks'
+            $libDir = Join-Path $hooksDir 'lib'
+            $logsDir = Join-Path $fixtureRoot '.claude\logs'
+            $shieldDir = Join-Path $fixtureRoot '.shield-harness'
+
+            New-Item -ItemType Directory -Path $libDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $shieldDir -Force | Out-Null
+
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-session-end.js') -Destination (Join-Path $hooksDir 'sh-session-end.js') -Force
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\lib\sh-utils.js') -Destination (Join-Path $libDir 'sh-utils.js') -Force
+
+            Set-Content -LiteralPath (Join-Path $shieldDir 'session.json') -Value '{"retry_count":2,"stop_hook_active":true}' -Encoding UTF8
+            @(
+                ([ordered]@{
+                    event       = 'SessionStart'
+                    session_id  = 'session-end-test'
+                    recorded_at = '2026-04-16T00:00:00.000Z'
+                } | ConvertTo-Json -Compress),
+                ([ordered]@{
+                    event       = 'tool'
+                    tool        = 'Bash'
+                    decision    = 'allow'
+                    session_id  = 'session-end-test'
+                    recorded_at = '2026-04-16T00:01:00.000Z'
+                } | ConvertTo-Json -Compress),
+                ([ordered]@{
+                    event       = 'tool'
+                    tool        = 'Edit'
+                    decision    = 'deny'
+                    session_id  = 'session-end-test'
+                    recorded_at = '2026-04-16T00:02:00.000Z'
+                } | ConvertTo-Json -Compress)
+            ) | Set-Content -LiteralPath (Join-Path $logsDir 'evidence-ledger.jsonl') -Encoding UTF8
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixtureRoot -HookRelativePath '.claude\hooks\sh-session-end.js' -Payload ([ordered]@{
+                session_id      = 'session-end-test'
+                hook_event_name = 'SessionEnd'
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $result.Json | Should -Be $null
+
+            $entries = Get-Content -LiteralPath (Join-Path $logsDir 'evidence-ledger.jsonl') -Encoding UTF8 | ForEach-Object {
+                if (-not [string]::IsNullOrWhiteSpace($_)) {
+                    $_ | ConvertFrom-Json -Depth 20
+                }
+            }
+
+            $sessionEndRecord = $entries | Select-Object -Last 1
+            $sessionEndRecord.event | Should -Be 'SessionEnd'
+            $sessionEndRecord.summary.tool_calls | Should -Be 2
+            $sessionEndRecord.summary.denials | Should -Be 1
+        } finally {
+            if (Test-Path -LiteralPath $fixtureRoot) {
+                Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
+            }
         }
     }
 
