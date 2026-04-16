@@ -151,19 +151,19 @@ export interface DesktopSummarySnapshot {
 }
 
 export interface DesktopExplainPayload {
-  generated_at?: string;
-  project_dir?: string;
+  generated_at: string;
+  project_dir: string;
   run: {
     run_id: string;
     task: string;
     state: string;
     task_state: string;
     review_state: string;
-    provider_target?: string;
-    agent_role?: string;
+    provider_target: string;
+    agent_role: string;
     branch: string;
     head_sha: string;
-    worktree?: string;
+    worktree: string;
     changed_files: string[];
   };
   explanation: {
@@ -175,8 +175,8 @@ export interface DesktopExplainPayload {
     next_action: string;
     changed_file_count: number;
     changed_files: string[];
-    verification_outcome?: string;
-    security_blocked?: string;
+    verification_outcome: string;
+    security_blocked: string;
   };
   recent_events: Array<{
     timestamp: string;
