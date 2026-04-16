@@ -184,6 +184,17 @@ Describe 'harness-check contract' {
         @($result.Json.results.name) | Should -Contain 'startup-attach-consistency'
     }
 
+    It 'keeps critical .claude files trimmed to a single final newline' {
+        foreach ($relativePath in @(
+            '.claude\hooks\lib\sh-utils.js',
+            '.claude\settings.json'
+        )) {
+            $absolutePath = Join-Path $script:RepoRoot $relativePath
+            $content = Get-Content -LiteralPath $absolutePath -Raw -Encoding UTF8
+            $content | Should -Not -Match '(?:\r?\n){2,}$'
+        }
+    }
+
     It 'fails when shared settings stop registering the orchestra gate hook' {
         $settingsPath = Join-Path $script:RepoRoot '.claude\settings.json'
         $original = Backup-TestFile -Path $settingsPath

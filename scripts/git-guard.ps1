@@ -97,6 +97,28 @@ function Test-ContentLeak {
     return $null
 }
 
+function Test-ExcessTrailingBlankLines {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Content
+    )
+
+    $criticalPaths = @(
+        '.claude/hooks/lib/sh-utils.js',
+        '.claude/settings.json'
+    )
+
+    if ($criticalPaths -notcontains $Path) {
+        return $null
+    }
+
+    if ($Content -match '(?:\r?\n){2,}$') {
+        return 'extra trailing blank lines'
+    }
+
+    return $null
+}
+
 $repoRoot = (Resolve-Path '.').Path
 $files = Get-TrackedOrStagedFiles -SelectedMode $Mode
 $failures = [System.Collections.Generic.List[string]]::new()
@@ -126,6 +148,11 @@ foreach ($file in $files) {
     $contentFailure = Test-ContentLeak -Path $normalized -Content $content
     if ($contentFailure) {
         $failures.Add("${contentFailure}: $normalized") | Out-Null
+    }
+
+    $trailingBlankLineFailure = Test-ExcessTrailingBlankLines -Path $normalized -Content $content
+    if ($trailingBlankLineFailure) {
+        $failures.Add("${trailingBlankLineFailure}: $normalized") | Out-Null
     }
 }
 
