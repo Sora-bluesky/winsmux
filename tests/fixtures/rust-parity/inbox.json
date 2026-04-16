@@ -1,0 +1,88 @@
+{
+  "generated_at": "__GENERATED_AT__",
+  "project_dir": "__PROJECT_DIR__",
+  "summary": {
+    "item_count": 4,
+    "by_kind": {
+      "task_blocked": 1,
+      "review_pending": 1,
+      "approval_waiting": 1,
+      "commit_ready": 1
+    }
+  },
+  "items": [
+    {
+      "kind": "task_blocked",
+      "priority": 0,
+      "message": "worker-1 が blocked。",
+      "label": "worker-1",
+      "pane_id": "%6",
+      "role": "Worker",
+      "task_id": "task-999",
+      "task": "Fix blocker",
+      "task_state": "blocked",
+      "review_state": "",
+      "branch": "worktree-worker-1",
+      "head_sha": "def5678abc1234",
+      "changed_file_count": 0,
+      "event": "commander.state_transition",
+      "timestamp": "__TIMESTAMP__",
+      "source": "manifest"
+    },
+    {
+      "kind": "review_pending",
+      "priority": 1,
+      "message": "builder-1 が review 待機中。",
+      "label": "builder-1",
+      "pane_id": "%2",
+      "role": "Builder",
+      "task_id": "task-245",
+      "task": "Build inbox surface",
+      "task_state": "in_progress",
+      "review_state": "PENDING",
+      "branch": "worktree-builder-1",
+      "head_sha": "abc1234def5678",
+      "changed_file_count": 1,
+      "event": "review.requested",
+      "timestamp": "__TIMESTAMP__",
+      "source": "manifest"
+    },
+    {
+      "kind": "approval_waiting",
+      "priority": 1,
+      "message": "approval prompt detected",
+      "label": "builder-1",
+      "pane_id": "%2",
+      "role": "Builder",
+      "task_id": "",
+      "task": "",
+      "task_state": "",
+      "review_state": "",
+      "branch": "",
+      "head_sha": "",
+      "changed_file_count": 0,
+      "event": "approval_waiting",
+      "timestamp": "__TIMESTAMP__",
+      "source": "events"
+    },
+    {
+      "kind": "commit_ready",
+      "priority": 2,
+      "message": "コミット準備完了。",
+      "label": "",
+      "pane_id": "",
+      "role": "Commander",
+      "task_id": "",
+      "task": "",
+      "task_state": "",
+      "review_state": "",
+      "branch": "",
+      "head_sha": "abc1234def5678",
+      "changed_file_count": 0,
+      "event": "commit_ready",
+      "timestamp": "__TIMESTAMP__",
+      "source": "events"
+    }
+  ]
+}
+

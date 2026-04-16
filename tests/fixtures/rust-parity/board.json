@@ -1,0 +1,101 @@
+{
+  "generated_at": "__GENERATED_AT__",
+  "project_dir": "__PROJECT_DIR__",
+  "summary": {
+    "pane_count": 2,
+    "dirty_panes": 1,
+    "review_pending": 1,
+    "review_failed": 0,
+    "review_passed": 0,
+    "tasks_in_progress": 1,
+    "tasks_blocked": 0,
+    "by_state": {
+      "idle": 1,
+      "busy": 1
+    },
+    "by_review": {
+      "PENDING": 1,
+      "unknown": 1
+    },
+    "by_task_state": {
+      "in_progress": 1,
+      "backlog": 1
+    }
+  },
+  "panes": [
+    {
+      "label": "builder-1",
+      "role": "Builder",
+      "pane_id": "%2",
+      "state": "idle",
+      "tokens_remaining": "64% context left",
+      "task_id": "task-244",
+      "task": "Implement session board",
+      "task_state": "in_progress",
+      "task_owner": "builder-1",
+      "review_state": "PENDING",
+      "branch": "worktree-builder-1",
+      "worktree": ".worktrees/builder-1",
+      "head_sha": "abc1234def5678",
+      "changed_file_count": 2,
+      "changed_files": [
+        "scripts/winsmux-core.ps1",
+        "tests/winsmux-bridge.Tests.ps1"
+      ],
+      "last_event": "pane.ready",
+      "last_event_at": "2026-04-10T10:00:00+09:00",
+      "parent_run_id": "",
+      "goal": "",
+      "task_type": "",
+      "priority": "",
+      "blocking": false,
+      "write_scope": [],
+      "read_scope": [],
+      "constraints": [],
+      "expected_output": "",
+      "verification_plan": [],
+      "review_required": false,
+      "provider_target": "",
+      "agent_role": "",
+      "timeout_policy": "",
+      "handoff_refs": [],
+      "security_policy": null
+    },
+    {
+      "label": "worker-1",
+      "role": "Worker",
+      "pane_id": "%6",
+      "state": "busy",
+      "tokens_remaining": "52% context left",
+      "task_id": "",
+      "task": "",
+      "task_state": "backlog",
+      "task_owner": "",
+      "review_state": "",
+      "branch": "",
+      "worktree": "",
+      "head_sha": "",
+      "changed_file_count": 0,
+      "changed_files": [],
+      "last_event": "pane.idle",
+      "last_event_at": "2026-04-10T10:05:00+09:00",
+      "parent_run_id": "",
+      "goal": "",
+      "task_type": "",
+      "priority": "",
+      "blocking": false,
+      "write_scope": [],
+      "read_scope": [],
+      "constraints": [],
+      "expected_output": "",
+      "verification_plan": [],
+      "review_required": false,
+      "provider_target": "",
+      "agent_role": "",
+      "timeout_policy": "",
+      "handoff_refs": [],
+      "security_policy": null
+    }
+  ]
+}
+

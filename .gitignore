@@ -53,6 +53,10 @@ tests/*
 !tests/PublicSurfacePolicy.Tests.ps1
 !tests/HarnessContract.Tests.ps1
 !tests/README.md
+!tests/fixtures/
+tests/fixtures/*
+!tests/fixtures/rust-parity/
+!tests/fixtures/rust-parity/*.json
 /hooks/
 .worktrees/
 INTERNAL*.md
