@@ -17,12 +17,66 @@ const JSON_RPC_INTERNAL_ERROR: i32 = -32603;
 const JSON_RPC_SERVER_ERROR: i32 = -32000;
 
 #[derive(Serialize, Deserialize)]
+pub struct DesktopBoardSummary {
+    pub pane_count: usize,
+    pub dirty_panes: usize,
+    pub review_pending: usize,
+    pub review_failed: usize,
+    pub review_passed: usize,
+    pub tasks_in_progress: usize,
+    pub tasks_blocked: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopBoardSnapshot {
+    pub summary: DesktopBoardSummary,
+    pub panes: Value,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopInboxSummary {
+    pub item_count: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopInboxItem {
+    pub kind: String,
+    pub message: String,
+    pub label: String,
+    pub pane_id: String,
+    pub task_state: String,
+    pub review_state: String,
+    pub branch: String,
+    pub changed_file_count: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopInboxSnapshot {
+    pub summary: DesktopInboxSummary,
+    pub items: Vec<DesktopInboxItem>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopDigestSummary {
+    pub item_count: usize,
+    pub actionable_items: usize,
+    pub review_pending: usize,
+    pub review_failed: usize,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopDigestSnapshot {
+    pub summary: DesktopDigestSummary,
+    pub items: Value,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct DesktopSummarySnapshot {
     pub generated_at: String,
     pub project_dir: String,
-    pub board: serde_json::Value,
-    pub inbox: serde_json::Value,
-    pub digest: serde_json::Value,
+    pub board: DesktopBoardSnapshot,
+    pub inbox: DesktopInboxSnapshot,
+    pub digest: DesktopDigestSnapshot,
     pub run_projections: Vec<DesktopRunProjection>,
 }
 
@@ -725,9 +779,40 @@ mod tests {
             response: serde_json::json!({
                 "generated_at": "2026-04-13T00:00:00Z",
                 "project_dir": "C:/repo",
-                "board": { "summary": { "pane_count": 1 }, "panes": [] },
-                "inbox": { "summary": { "item_count": 0 }, "items": [] },
-                "digest": { "summary": { "item_count": 1 }, "items": [] },
+                "board": {
+                    "summary": {
+                        "pane_count": 1,
+                        "dirty_panes": 0,
+                        "review_pending": 3,
+                        "review_failed": 0,
+                        "review_passed": 0,
+                        "tasks_in_progress": 1,
+                        "tasks_blocked": 2
+                    },
+                    "panes": []
+                },
+                "inbox": {
+                    "summary": { "item_count": 1 },
+                    "items": [{
+                        "kind": "task",
+                        "message": "Investigate",
+                        "label": "builder-1",
+                        "pane_id": "%4",
+                        "task_state": "blocked",
+                        "review_state": "PENDING",
+                        "branch": "codex/task",
+                        "changed_file_count": 2
+                    }]
+                },
+                "digest": {
+                    "summary": {
+                        "item_count": 1,
+                        "actionable_items": 1,
+                        "review_pending": 1,
+                        "review_failed": 0
+                    },
+                    "items": []
+                },
                 "run_projections": [{
                     "run_id": "run-1",
                     "pane_id": "%1",
@@ -757,11 +842,67 @@ mod tests {
         let snapshot = load_desktop_summary_snapshot(&transport, None).unwrap();
 
         assert_eq!(snapshot.project_dir, "C:/repo");
+        assert_eq!(snapshot.board.summary.pane_count, 1);
+        assert_eq!(snapshot.board.summary.tasks_blocked, 2);
+        assert_eq!(snapshot.inbox.summary.item_count, 1);
+        assert_eq!(snapshot.inbox.items[0].pane_id, "%4");
+        assert_eq!(snapshot.digest.summary.actionable_items, 1);
         assert_eq!(snapshot.run_projections.len(), 1);
         assert_eq!(
             transport.requests.borrow().as_slice(),
             ["desktop-summary --json"]
         );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_required_narrowed_fields() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({
+                "generated_at": "2026-04-13T00:00:00Z",
+                "project_dir": "C:/repo",
+                "board": {
+                    "summary": {
+                        "pane_count": 1,
+                        "dirty_panes": 0,
+                        "review_pending": 0,
+                        "review_failed": 0,
+                        "review_passed": 0,
+                        "tasks_in_progress": 1
+                    },
+                    "panes": []
+                },
+                "inbox": {
+                    "summary": { "item_count": 1 },
+                    "items": [{
+                        "kind": "task",
+                        "message": "Investigate",
+                        "label": "builder-1",
+                        "pane_id": "%4",
+                        "task_state": "blocked",
+                        "review_state": "PENDING",
+                        "branch": "codex/task"
+                    }]
+                },
+                "digest": {
+                    "summary": {
+                        "item_count": 1,
+                        "actionable_items": 1,
+                        "review_pending": 1,
+                        "review_failed": 0
+                    },
+                    "items": []
+                },
+                "run_projections": []
+            }),
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected narrowed payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("tasks_blocked") || err.contains("changed_file_count"));
     }
 
     #[test]
@@ -983,9 +1124,23 @@ mod tests {
             response: serde_json::json!({
                 "generated_at": "2026-04-13T00:00:00Z",
                 "project_dir": "C:/repo",
-                "board": { "summary": { "pane_count": 1 }, "panes": [] },
+                "board": {
+                    "summary": {
+                        "pane_count": 1,
+                        "dirty_panes": 0,
+                        "review_pending": 0,
+                        "review_failed": 0,
+                        "review_passed": 0,
+                        "tasks_in_progress": 0,
+                        "tasks_blocked": 1
+                    },
+                    "panes": []
+                },
                 "inbox": { "summary": { "item_count": 0 }, "items": [] },
-                "digest": { "summary": { "item_count": 1 }, "items": [] },
+                "digest": {
+                    "summary": { "item_count": 1, "actionable_items": 1, "review_pending": 1, "review_failed": 0 },
+                    "items": []
+                },
                 "run_projections": []
             }),
         };
@@ -1004,6 +1159,8 @@ mod tests {
             DesktopJsonRpcResponse::Success { id, result, .. } => {
                 assert_eq!(id, serde_json::json!("req-1"));
                 assert_eq!(result["project_dir"], "C:/repo");
+                assert_eq!(result["board"]["summary"]["tasks_blocked"], 1);
+                assert_eq!(result["digest"]["summary"]["actionable_items"], 1);
             }
             DesktopJsonRpcResponse::Error { error, .. } => {
                 panic!("expected success, got {:?}", error);
