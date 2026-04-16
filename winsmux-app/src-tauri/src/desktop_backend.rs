@@ -87,6 +87,7 @@ pub struct DesktopDigestItem {
     pub label: String,
     pub pane_id: String,
     pub role: String,
+    pub provider_target: String,
     pub task_state: String,
     pub review_state: String,
     pub next_action: String,
@@ -96,6 +97,12 @@ pub struct DesktopDigestItem {
     pub head_short: String,
     pub changed_file_count: usize,
     pub changed_files: Vec<String>,
+    pub verification_outcome: String,
+    pub security_blocked: String,
+    pub hypothesis: String,
+    pub confidence: Option<f64>,
+    pub observation_pack_ref: String,
+    pub consultation_ref: String,
     pub last_event_at: String,
 }
 
@@ -880,6 +887,13 @@ mod tests {
         assert_eq!(snapshot.digest.summary.actionable_items, 1);
         assert_eq!(snapshot.digest.summary.dirty_items, 1);
         assert_eq!(snapshot.digest.items[0].run_id, "task:task-246");
+        assert_eq!(snapshot.digest.items[0].provider_target, "");
+        assert_eq!(snapshot.digest.items[0].verification_outcome, "");
+        assert_eq!(snapshot.digest.items[0].security_blocked, "");
+        assert_eq!(
+            snapshot.digest.items[0].observation_pack_ref,
+            ".winsmux/observation-packs/observation-pack-__ID__.json"
+        );
         assert_eq!(snapshot.digest.items[0].last_event_at, "__LAST_EVENT_AT__");
         assert_eq!(snapshot.run_projections.len(), 1);
         assert_eq!(snapshot.run_projections[0].run_id, "task:task-246");
@@ -984,6 +998,54 @@ mod tests {
         assert!(
             err.contains("head_sha"),
             "expected missing head_sha error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_digest_provider_target() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["digest"]["items"][0]
+            .as_object_mut()
+            .expect("digest.items[0] must be an object")
+            .remove("provider_target");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing provider_target"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("provider_target"),
+            "expected missing provider_target error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_digest_verification_outcome() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["digest"]["items"][0]
+            .as_object_mut()
+            .expect("digest.items[0] must be an object")
+            .remove("verification_outcome");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing verification_outcome"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("verification_outcome"),
+            "expected missing verification_outcome error, got {err}"
         );
     }
 
