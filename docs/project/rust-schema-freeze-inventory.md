@@ -103,6 +103,8 @@ Current gap:
   - `review_state` requires `branch` and `head_sha`
   - `changed_file_count > 0` requires non-empty `changed_files`
   - `last_event` requires `last_event_at`
+- A second PowerShell-side planning metadata slice now exists for run/explain consumers:
+  - if any of `parent_run_id`, `goal`, `task_type`, or `priority` is present, all four fields are required
 - The remaining work is to inventory and freeze the wider pane/session/task fields without widening this slice back into a full manifest rewrite.
 
 ### 4. `state`
