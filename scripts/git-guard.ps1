@@ -54,7 +54,8 @@ function Test-PathLikeSecretPattern {
         '(^|/)\.orchestra-prompts(/|$)',
         '(^|/)docs/handoff\.md$',
         '(^|/)tasks/roadmap-title-ja\.psd1$',
-        '(^|/)\.claude/local(/|$)'
+        '(^|/)\.claude/local(/|$)',
+        '(^|/)\.agents/skills(/|$)'
     )
 
     foreach ($pattern in $blockedRegexes) {
@@ -76,7 +77,7 @@ function Test-ContentLeak {
         return $null
     }
 
-    $docCandidate = $Path -match '(^|/)(README(\.ja)?\.md|AGENTS\.md|AGENT(-BASE)?\.md|GEMINI\.md|GUARDRAILS\.md|docs/.*\.md|\.claude/CLAUDE\.md)$'
+    $docCandidate = $Path -match '(^|/)(README(\.ja)?\.md|AGENTS\.md|AGENT(-BASE)?\.md|GEMINI\.md|GUARDRAILS\.md|docs/.*\.md|\.claude/CLAUDE\.md|\.agents/.*\.md)$'
     if (-not $docCandidate) {
         return $null
     }

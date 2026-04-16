@@ -43,7 +43,7 @@ function Test-IsTrackedTextSurface {
     $normalized = $Path.Replace('\', '/')
     if ($normalized -match '^\.claude/logs/') { return $false }
     if ($normalized -match '^docs/internal/') { return $false }
-    return $normalized -match '(^README(\.ja)?\.md$)|(^AGENTS?(-BASE)?\.md$)|(^GEMINI\.md$)|(^docs/.+\.md$)|(^\.claude/CLAUDE\.md$)|(^tests/.+\.(ps1|md|json|txt)$)|(^\.github/workflows/.+\.ya?ml$)|(^\.githooks/.+$)|(^scripts/.+\.ps1$)'
+    return $normalized -match '(^README(\.ja)?\.md$)|(^AGENTS?(-BASE)?\.md$)|(^GEMINI\.md$)|(^docs/.+\.md$)|(^\.claude/CLAUDE\.md$)|(^\.agents/.+\.md$)|(^tests/.+\.(ps1|md|json|txt)$)|(^\.github/workflows/.+\.ya?ml$)|(^\.githooks/.+$)|(^scripts/.+\.ps1$)'
 }
 
 function Test-IsMaintainerPathScanSurface {
@@ -86,6 +86,14 @@ foreach ($path in $forbiddenTracked) {
     }
 }
 
+$trackedPrivateSkillFiles = @(
+    $trackedFiles |
+        Where-Object { $_.Replace('\', '/') -match '^\.agents/skills/' }
+)
+if ($trackedPrivateSkillFiles.Count -gt 0) {
+    $failures.Add("private maintainer skill pack must not be tracked in the public repo: $($trackedPrivateSkillFiles -join ', ')")
+}
+
 $personalPathPatterns = @(
     'C:\\Users\\',
     'iCloudDrive',
@@ -106,7 +114,8 @@ $forbiddenPublicRefs = @(
     'GEMINI.md',
     'docs/internal/',
     'docs/handoff.md',
-    'tasks/roadmap-title-ja.psd1'
+    'tasks/roadmap-title-ja.psd1',
+    '.agents/skills/'
 )
 foreach ($file in ($trackedFiles | Where-Object { Test-IsPublicDoc -Path $_ })) {
     $content = Get-Content -LiteralPath $file -Raw -ErrorAction Stop

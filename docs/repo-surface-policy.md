@@ -36,7 +36,6 @@ Examples:
 - `GEMINI.md`
 - `AGENTS.md`
 - `GUARDRAILS.md`
-- `.agents/skills/**`
 
 Rules:
 
@@ -54,6 +53,7 @@ Examples:
 - `tests/**`
 - `.githooks/**`
 - `.github/workflows/**`
+- `.agents/README.md`
 - `scripts/audit-public-surface.ps1`
 - `scripts/git-guard.ps1`
 - contributor-only maintenance docs
@@ -64,6 +64,8 @@ Rules:
 - should avoid maintainer-local absolute paths in durable docs and scripts
 - may use synthetic or fixture-only sample data in tests when clearly non-secret
 - is not part of the public product guide or pane runtime contract
+- public-repo files under `.agents/**` must stay public-safe and boundary-oriented only
+- internal maintainer skill packs must live outside the public repository
 
 ## 4. Private live-ops surface
 
