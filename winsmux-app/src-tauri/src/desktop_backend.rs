@@ -940,6 +940,54 @@ mod tests {
     }
 
     #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_digest_worktree() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["digest"]["items"][0]
+            .as_object_mut()
+            .expect("digest.items[0] must be an object")
+            .remove("worktree");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing worktree"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("worktree"),
+            "expected missing worktree error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_digest_head_sha() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["digest"]["items"][0]
+            .as_object_mut()
+            .expect("digest.items[0] must be an object")
+            .remove("head_sha");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing head_sha"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("head_sha"),
+            "expected missing head_sha error, got {err}"
+        );
+    }
+
+    #[test]
     fn load_desktop_run_explain_uses_explain_command() {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
