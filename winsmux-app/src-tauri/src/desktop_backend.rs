@@ -1078,6 +1078,54 @@ mod tests {
     }
 
     #[test]
+    fn load_desktop_run_explain_rejects_missing_run_worktree() {
+        let mut response = rust_parity_explain_payload();
+        response["run"]
+            .as_object_mut()
+            .expect("run must be an object")
+            .remove("worktree");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!("expected explain payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("worktree"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_evidence_verification_outcome() {
+        let mut response = rust_parity_explain_payload();
+        response["evidence_digest"]
+            .as_object_mut()
+            .expect("evidence_digest must be an object")
+            .remove("verification_outcome");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!("expected explain payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("verification_outcome"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
     fn load_desktop_run_explain_rejects_missing_evidence_security_blocked() {
         let mut response = rust_parity_explain_payload();
         response["evidence_digest"]
