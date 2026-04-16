@@ -128,6 +128,35 @@ Rules:
 4. Prefer updating existing entries over adding duplicates.
 5. If the session did not use or discuss Rust-adjacent commands, no learning-note update is required.
 
+## Private Maintainer Skill Gate
+
+Internal maintainer skill packs must not be tracked in the public repository.
+
+When a maintainer-only workflow needs private skills:
+
+1. Resolve the private skills root in this order:
+   - `WINSMUX_PRIVATE_SKILLS_ROOT`
+   - `%LOCALAPPDATA%\winsmux\private-skills-root.txt`
+2. The resolved root is expected to contain maintainer-only skill content outside the public repo.
+   - The exact skill names and bodies stay outside the public repository.
+3. If the private skills root is unavailable, treat that as a maintainer warning, not a public-repo blocker.
+   - Do not recreate or track the missing skill bodies inside this repository.
+4. Do not expose private maintainer skills in public product docs, README flows, or tracked public-facing guidance.
+
+When editing or reviewing Rust, Cargo, or Tauri code in this repository:
+
+1. Use the private maintainer Rust guard skill from the resolved private skills root.
+2. Public repo files under `.agents/**` must stay public-safe only.
+   - They may document the boundary, but they must not contain maintainer-only skill bodies.
+3. For merge-critical or ecosystem-sensitive Rust/Tauri slices, run one explorer-style subagent using the private Rust ecosystem radar skill before the final review or merge decision.
+   - Typical triggers:
+     - Windows subprocess / path / current-dir logic
+     - Cargo workspace or bootstrap behavior
+     - security-sensitive dependency or registry changes
+     - Tauri runtime / desktop backend contract changes
+4. If the radar pass finds material drift, record the date and takeaway in `.claude/local/operator-handoff.md`.
+5. If the radar pass finds no material drift, that is still a valid result; record it briefly when the slice is merge-critical.
+
 ## Orchestra Startup Gate
 
 When using `/winsmux-start` or otherwise restoring orchestra-driven work from Claude Code:

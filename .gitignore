@@ -140,3 +140,4 @@ testResults.xml
 *-prompt.txt
 .tmp-worktree-hook-tests/
 core/target/
+.agents/skills/

@@ -22,6 +22,7 @@ $whitelistPatterns = @(
     'docs/pane-border-guide.md',
     'docs/operator-model.md',
     'docs/repo-surface-policy.md',
+    '.agents/README.md',
     'scripts/bootstrap-git-guard.ps1',
     'scripts/git-guard.ps1',
     'scripts/audit-public-surface.ps1',
