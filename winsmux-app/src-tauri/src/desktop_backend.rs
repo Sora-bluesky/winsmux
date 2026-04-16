@@ -177,6 +177,8 @@ pub struct DesktopExplainPayload {
     pub explanation: DesktopExplainExplanation,
     pub evidence_digest: DesktopExplainEvidenceDigest,
     #[serde(default)]
+    pub review_state: Option<DesktopReviewStateRecord>,
+    #[serde(default)]
     pub recent_events: Vec<DesktopExplainRecentEvent>,
 }
 
@@ -220,6 +222,72 @@ pub struct DesktopExplainRecentEvent {
     pub event: String,
     pub label: String,
     pub message: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopReviewStateRecord {
+    pub status: String,
+    pub branch: String,
+    pub head_sha: String,
+    pub request: DesktopReviewStateRequest,
+    pub reviewer: DesktopReviewStateReviewer,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
+    #[serde(default)]
+    pub evidence: Option<DesktopReviewStateEvidence>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopReviewStateRequest {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub branch: String,
+    pub head_sha: String,
+    pub target_review_pane_id: String,
+    pub target_review_label: String,
+    pub target_review_role: String,
+    #[serde(default)]
+    pub target_reviewer_pane_id: Option<String>,
+    #[serde(default)]
+    pub target_reviewer_label: Option<String>,
+    #[serde(default)]
+    pub target_reviewer_role: Option<String>,
+    pub review_contract: DesktopReviewContract,
+    #[serde(default)]
+    pub dispatched_at: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopReviewStateReviewer {
+    pub pane_id: String,
+    pub label: String,
+    pub role: String,
+    #[serde(default)]
+    pub agent_name: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopReviewStateEvidence {
+    #[serde(default)]
+    pub approved_at: Option<String>,
+    #[serde(default)]
+    pub approved_via: Option<String>,
+    #[serde(default)]
+    pub failed_at: Option<String>,
+    #[serde(default)]
+    pub failed_via: Option<String>,
+    pub review_contract_snapshot: DesktopReviewContract,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopReviewContract {
+    pub version: u32,
+    pub source_task: String,
+    pub issue_ref: String,
+    pub style: String,
+    pub required_scope: Vec<String>,
+    pub checklist_labels: Vec<String>,
+    pub rationale: String,
 }
 
 #[derive(Deserialize)]
@@ -833,6 +901,16 @@ mod tests {
         read_rust_parity_fixture("explain.json")
     }
 
+    fn rust_parity_review_state_payload() -> Value {
+        read_rust_parity_fixture("review-state.json")
+    }
+
+    fn rust_parity_explain_payload_with_review_state() -> Value {
+        let mut payload = rust_parity_explain_payload();
+        payload["review_state"] = rust_parity_review_state_payload();
+        payload
+    }
+
     fn rust_parity_run_projection_payload() -> Value {
         let digest = read_rust_parity_fixture("digest.json");
         let item = &digest["items"][0];
@@ -1166,7 +1244,7 @@ mod tests {
     fn load_desktop_run_explain_uses_explain_command() {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
-            response: rust_parity_explain_payload(),
+            response: rust_parity_explain_payload_with_review_state(),
         };
 
         let payload =
@@ -1182,6 +1260,27 @@ mod tests {
         assert_eq!(payload.evidence_digest.next_action, "review_pending");
         assert_eq!(payload.evidence_digest.verification_outcome, "");
         assert_eq!(payload.evidence_digest.security_blocked, "");
+        assert_eq!(
+            payload
+                .review_state
+                .as_ref()
+                .map(|state| state.status.as_str()),
+            Some("PENDING")
+        );
+        assert_eq!(
+            payload
+                .review_state
+                .as_ref()
+                .map(|state| state.updated_at.as_str()),
+            Some("__TIMESTAMP__")
+        );
+        assert_eq!(
+            payload
+                .review_state
+                .as_ref()
+                .map(|state| state.request.review_contract.style.as_str()),
+            Some("utility_first")
+        );
         assert_eq!(payload.recent_events.len(), 2);
         assert_eq!(
             transport.requests.borrow().as_slice(),
@@ -1193,7 +1292,7 @@ mod tests {
     fn handle_desktop_json_rpc_routes_run_explain_and_prunes_extra_packets() {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
-            response: rust_parity_explain_payload(),
+            response: rust_parity_explain_payload_with_review_state(),
         };
         let response = handle_desktop_json_rpc(
             &transport,
@@ -1214,6 +1313,7 @@ mod tests {
                 assert_eq!(result["run"]["run_id"], "task:task-256");
                 assert_eq!(result["run"]["provider_target"], "codex:gpt-5.4");
                 assert_eq!(result["evidence_digest"]["next_action"], "review_pending");
+                assert_eq!(result["review_state"]["status"], "PENDING");
                 assert!(result.get("run_packet").is_none());
                 assert!(result.get("result_packet").is_none());
                 assert!(result.get("consultation_packet").is_none());
@@ -1250,6 +1350,19 @@ mod tests {
             err.contains("head_sha"),
             "unexpected explain parse error: {err}"
         );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_allows_null_review_state() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: rust_parity_explain_payload(),
+        };
+
+        let payload =
+            load_desktop_run_explain(&transport, "task:task-256".to_string(), None).unwrap();
+
+        assert!(payload.review_state.is_none());
     }
 
     #[test]
@@ -1368,6 +1481,54 @@ mod tests {
 
         assert!(
             err.contains("security_blocked"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_review_state_status_when_present() {
+        let mut response = rust_parity_explain_payload_with_review_state();
+        response["review_state"]
+            .as_object_mut()
+            .expect("review_state must be an object")
+            .remove("status");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!("expected explain payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("status"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_review_contract_required_scope() {
+        let mut response = rust_parity_explain_payload_with_review_state();
+        response["review_state"]["request"]["review_contract"]
+            .as_object_mut()
+            .expect("review_state.request.review_contract must be an object")
+            .remove("required_scope");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!("expected explain payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("required_scope"),
             "unexpected explain parse error: {err}"
         );
     }

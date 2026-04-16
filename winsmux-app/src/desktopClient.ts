@@ -187,12 +187,62 @@ export interface DesktopExplainPayload {
     verification_outcome: string;
     security_blocked: string;
   };
+  review_state?: DesktopReviewStateRecord | null;
   recent_events: Array<{
     timestamp: string;
     event: string;
     label: string;
     message: string;
   }>;
+}
+
+export interface DesktopReviewStateRecord {
+  status: string;
+  branch: string;
+  head_sha: string;
+  request: DesktopReviewStateRequest;
+  reviewer: DesktopReviewStateReviewer;
+  updatedAt: string;
+  evidence?: DesktopReviewStateEvidence | null;
+}
+
+export interface DesktopReviewStateRequest {
+  id?: string | null;
+  branch: string;
+  head_sha: string;
+  target_review_pane_id: string;
+  target_review_label: string;
+  target_review_role: string;
+  target_reviewer_pane_id?: string | null;
+  target_reviewer_label?: string | null;
+  target_reviewer_role?: string | null;
+  review_contract: DesktopReviewContract;
+  dispatched_at?: string | null;
+}
+
+export interface DesktopReviewStateReviewer {
+  pane_id: string;
+  label: string;
+  role: string;
+  agent_name?: string | null;
+}
+
+export interface DesktopReviewStateEvidence {
+  approved_at?: string | null;
+  approved_via?: string | null;
+  failed_at?: string | null;
+  failed_via?: string | null;
+  review_contract_snapshot: DesktopReviewContract;
+}
+
+export interface DesktopReviewContract {
+  version: number;
+  source_task: string;
+  issue_ref: string;
+  style: string;
+  required_scope: string[];
+  checklist_labels: string[];
+  rationale: string;
 }
 
 export interface DesktopEditorFilePayload {
