@@ -21,6 +21,7 @@ $whitelistPatterns = @(
     'docs/banner.png',
     'docs/pane-border-guide.md',
     'docs/operator-model.md',
+    'docs/authentication-support.ja.md',
     'docs/repo-surface-policy.md',
     '.agents/README.md',
     'scripts/bootstrap-git-guard.ps1',
