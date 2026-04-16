@@ -160,10 +160,8 @@ pub struct DesktopEditorFilePayload {
 
 #[derive(Serialize, Deserialize)]
 pub struct DesktopExplainPayload {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub generated_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub project_dir: Option<String>,
+    pub generated_at: String,
+    pub project_dir: String,
     pub run: DesktopExplainRun,
     pub explanation: DesktopExplainExplanation,
     pub evidence_digest: DesktopExplainEvidenceDigest,
@@ -178,14 +176,11 @@ pub struct DesktopExplainRun {
     pub state: String,
     pub task_state: String,
     pub review_state: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_target: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_role: Option<String>,
+    pub provider_target: String,
+    pub agent_role: String,
     pub branch: String,
     pub head_sha: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub worktree: Option<String>,
+    pub worktree: String,
     #[serde(default)]
     pub changed_files: Vec<String>,
 }
@@ -204,10 +199,8 @@ pub struct DesktopExplainEvidenceDigest {
     pub changed_file_count: usize,
     #[serde(default)]
     pub changed_files: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub verification_outcome: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub security_blocked: Option<String>,
+    pub verification_outcome: String,
+    pub security_blocked: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -960,12 +953,14 @@ mod tests {
 
         assert_eq!(payload.run.run_id, "task:task-256");
         assert_eq!(payload.run.task, "Implement run ledger");
-        assert_eq!(
-            payload.run.provider_target.as_deref(),
-            Some("codex:gpt-5.4")
-        );
-        assert_eq!(payload.run.agent_role.as_deref(), Some("worker"));
+        assert_eq!(payload.generated_at, "__GENERATED_AT__");
+        assert_eq!(payload.project_dir, "__PROJECT_DIR__");
+        assert_eq!(payload.run.provider_target, "codex:gpt-5.4");
+        assert_eq!(payload.run.agent_role, "worker");
+        assert_eq!(payload.run.worktree, ".worktrees/builder-1");
         assert_eq!(payload.evidence_digest.next_action, "review_pending");
+        assert_eq!(payload.evidence_digest.verification_outcome, "");
+        assert_eq!(payload.evidence_digest.security_blocked, "");
         assert_eq!(payload.recent_events.len(), 2);
         assert_eq!(
             transport.requests.borrow().as_slice(),
@@ -1056,6 +1051,54 @@ mod tests {
 
         assert!(
             err.contains("next_action"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_provider_target() {
+        let mut response = rust_parity_explain_payload();
+        response["run"]
+            .as_object_mut()
+            .expect("run must be an object")
+            .remove("provider_target");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!("expected explain payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("provider_target"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_evidence_security_blocked() {
+        let mut response = rust_parity_explain_payload();
+        response["evidence_digest"]
+            .as_object_mut()
+            .expect("evidence_digest must be an object")
+            .remove("security_blocked");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!("expected explain payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("security_blocked"),
             "unexpected explain parse error: {err}"
         );
     }
