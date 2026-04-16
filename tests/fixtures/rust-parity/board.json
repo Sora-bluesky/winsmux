@@ -43,7 +43,7 @@
         "tests/winsmux-bridge.Tests.ps1"
       ],
       "last_event": "pane.ready",
-      "last_event_at": "2026-04-10T10:00:00+09:00",
+      "last_event_at": "__LAST_EVENT_AT__",
       "parent_run_id": "",
       "goal": "",
       "task_type": "",
@@ -78,7 +78,7 @@
       "changed_file_count": 0,
       "changed_files": [],
       "last_event": "pane.idle",
-      "last_event_at": "2026-04-10T10:05:00+09:00",
+      "last_event_at": "__LAST_EVENT_AT__",
       "parent_run_id": "",
       "goal": "",
       "task_type": "",
