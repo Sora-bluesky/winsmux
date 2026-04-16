@@ -124,15 +124,8 @@ try {
   session.session_end = new Date().toISOString();
   writeSession(session);
 
-  // Output summary
-  const summary = [
-    `[${HOOK_NAME}] Session closed.`,
-    `  Tool calls: ${stats.toolCalls}, Denials: ${stats.denials}`,
-    `  Top tools: ${stats.topTools.join(", ") || "none"}`,
-    `  Duration: ${stats.duration}`,
-  ].join("\n");
-
-  allow(summary);
+  // SessionEnd must not emit hookSpecificOutput. Summary is already preserved in evidence.
+  allow();
 } catch (_err) {
   // Operational hook — fail-open
   allow();
