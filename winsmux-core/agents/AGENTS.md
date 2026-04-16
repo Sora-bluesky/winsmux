@@ -50,5 +50,6 @@ printf '%s\n' "Implement TASK-140" | WORKTREE=/path/to/worktree ./builder.sh
 ## Notes
 
 - `WORKTREE` is required for all three roles. Dispatchers must provide a trusted, single-line workspace path.
+- This stdin support belongs to the shell wrappers in this directory. It is separate from the repository-level `.winsmux.yaml` `prompt_transport` setting, whose stable pane-dispatch contract currently supports only `argv` and `file`.
 - These scripts generate prompts only. They do not dispatch panes on their own.
 - `builder.sh` attempts to source `winsmux-core/scripts/builder-queue.ps1` through `pwsh` to stay aligned with the current Builder queue prompt. If that is not available, it falls back to an embedded prompt with the same structure.

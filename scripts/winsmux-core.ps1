@@ -496,6 +496,10 @@ function New-SendDispatchPointerText {
     return "Read the full prompt from '$promptRef' and follow it exactly. This pointer was sent because the original prompt exceeded the send buffer."
 }
 
+function Get-SupportedPromptTransportValues {
+    return @('argv', 'file')
+}
+
 function Resolve-SupportedPromptTransport {
     param([AllowEmptyString()][string]$PromptTransport = 'argv')
 
@@ -505,8 +509,10 @@ function Resolve-SupportedPromptTransport {
         $PromptTransport.Trim().ToLowerInvariant()
     }
 
-    if ($resolved -notin @('argv', 'file')) {
-        throw "Unsupported prompt_transport setting: $PromptTransport"
+    $supportedValues = @(Get-SupportedPromptTransportValues)
+    if ($resolved -notin $supportedValues) {
+        $supportedText = $supportedValues -join ', '
+        throw "Unsupported prompt_transport setting: $PromptTransport. Supported values: $supportedText. stdin is not implemented for pane dispatch."
     }
 
     return $resolved

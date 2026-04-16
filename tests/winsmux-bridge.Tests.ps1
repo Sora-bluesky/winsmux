@@ -6888,6 +6888,13 @@ Describe 'winsmux send dispatch payload' {
         (Get-Content -LiteralPath $payload['PromptPath'] -Raw -Encoding UTF8).TrimEnd("`r", "`n") | Should -BeExactly 'Write-Host short'
     }
 
+    It 'normalizes blank prompt_transport to argv' {
+        $payload = Resolve-SendDispatchPayload -Text 'Write-Host short' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -PromptTransport '   '
+
+        $payload['PromptTransport'] | Should -Be 'argv'
+        $payload['IsFileBacked'] | Should -Be $false
+    }
+
     It 'normalizes task prompt slugs and writes a stable task prompt file when task_slug is supplied' {
         (ConvertTo-TaskPromptSlug -TaskSlug ' Cache Drift / Build ') | Should -Be 'cache-drift-build'
 
@@ -6910,8 +6917,8 @@ Describe 'winsmux send dispatch payload' {
         (Get-Content -LiteralPath $second['PromptPath'] -Raw -Encoding UTF8).TrimEnd("`r", "`n") | Should -BeExactly 'second prompt'
     }
 
-    It 'rejects unsupported prompt transport values' {
-        { Resolve-SendDispatchPayload -Text 'Write-Host short' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -PromptTransport 'stdin' } | Should -Throw '*prompt_transport*'
+    It 'rejects unsupported prompt transport values with the stable-core contract in the error' {
+        { Resolve-SendDispatchPayload -Text 'Write-Host short' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -PromptTransport 'stdin' } | Should -Throw '*Supported values: argv, file*'
     }
 
     It 'blocks send text when a blocklist security policy pattern matches' {
