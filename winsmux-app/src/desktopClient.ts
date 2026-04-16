@@ -262,8 +262,10 @@ export interface DesktopEditorFilePayload {
 }
 
 export interface DesktopSummaryRefreshEvent {
+  source?: string;
   reason?: string;
   pane_id?: string;
+  run_id?: string;
 }
 
 let nextDesktopJsonRpcId = 0;

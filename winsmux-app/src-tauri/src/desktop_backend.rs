@@ -1,8 +1,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
 
 const DESKTOP_JSON_RPC_VERSION: &str = "2.0";
 const JSON_RPC_INVALID_REQUEST: i32 = -32600;
@@ -19,6 +24,16 @@ pub struct DesktopSummarySnapshot {
     pub inbox: serde_json::Value,
     pub digest: serde_json::Value,
     pub run_projections: Vec<DesktopRunProjection>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DesktopSummaryRefreshSignal {
+    pub source: String,
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pane_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -94,6 +109,11 @@ pub enum DesktopCommand {
     },
 }
 
+pub enum DesktopStreamCommand {
+    Inbox { project_dir: Option<String> },
+    Digest { project_dir: Option<String> },
+}
+
 impl DesktopCommand {
     fn project_dir(&self) -> Option<&str> {
         match self {
@@ -110,6 +130,41 @@ impl DesktopCommand {
             DesktopCommand::RunExplain { run_id, .. } => {
                 vec!["explain".to_string(), run_id.clone(), "--json".to_string()]
             }
+        }
+    }
+}
+
+impl DesktopStreamCommand {
+    fn project_dir(&self) -> Option<&str> {
+        match self {
+            DesktopStreamCommand::Inbox { project_dir } => project_dir.as_deref(),
+            DesktopStreamCommand::Digest { project_dir } => project_dir.as_deref(),
+        }
+    }
+
+    fn winsmux_args(&self) -> Vec<String> {
+        match self {
+            DesktopStreamCommand::Inbox { .. } => {
+                vec![
+                    "inbox".to_string(),
+                    "--stream".to_string(),
+                    "--json".to_string(),
+                ]
+            }
+            DesktopStreamCommand::Digest { .. } => {
+                vec![
+                    "digest".to_string(),
+                    "--stream".to_string(),
+                    "--json".to_string(),
+                ]
+            }
+        }
+    }
+
+    fn source_name(&self) -> &'static str {
+        match self {
+            DesktopStreamCommand::Inbox { .. } => "inbox",
+            DesktopStreamCommand::Digest { .. } => "digest",
         }
     }
 }
@@ -310,6 +365,160 @@ fn resolve_effective_project_dir(project_dir: Option<String>) -> Result<PathBuf,
     })
 }
 
+fn build_winsmux_command_text(script_path: &Path, args: &[String]) -> String {
+    let script_literal = script_path.to_string_lossy().replace('\'', "''");
+    let args_literal = args
+        .iter()
+        .map(|item| format!("'{}'", item.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(" ");
+
+    format!("& {{ & '{}' {} }}", script_literal, args_literal)
+}
+
+pub fn parse_desktop_summary_stream_signal(
+    source: &str,
+    line: &str,
+) -> Option<DesktopSummaryRefreshSignal> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let payload: Value = serde_json::from_str(trimmed).ok()?;
+    let object = payload.as_object()?;
+
+    let is_valid = match source {
+        "digest" => object
+            .get("run_id")
+            .and_then(|value| value.as_str())
+            .is_some(),
+        "inbox" => {
+            object
+                .get("kind")
+                .and_then(|value| value.as_str())
+                .is_some()
+                && object
+                    .get("pane_id")
+                    .and_then(|value| value.as_str())
+                    .is_some()
+        }
+        _ => false,
+    };
+    if !is_valid {
+        return None;
+    }
+
+    Some(DesktopSummaryRefreshSignal {
+        source: source.to_string(),
+        reason: format!("{}.stream", source),
+        pane_id: object
+            .get("pane_id")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string()),
+        run_id: object
+            .get("run_id")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string()),
+    })
+}
+
+pub fn spawn_desktop_summary_refresh_stream<F>(
+    command: DesktopStreamCommand,
+    stop_requested: Arc<AtomicBool>,
+    mut on_signal: F,
+) -> Result<(), String>
+where
+    F: FnMut(DesktopSummaryRefreshSignal) + Send + 'static,
+{
+    let repo_root = resolve_repo_root()?;
+    let effective_project_dir =
+        resolve_effective_project_dir(command.project_dir().map(|value| value.to_string()))?;
+    let script_path = repo_root.join("scripts").join("winsmux-core.ps1");
+    let command_text = build_winsmux_command_text(&script_path, &command.winsmux_args());
+    let source = command.source_name().to_string();
+
+    thread::spawn(move || {
+        while !stop_requested.load(Ordering::Relaxed) {
+            let mut child = match Command::new("pwsh")
+                .arg("-NoProfile")
+                .arg("-ExecutionPolicy")
+                .arg("Bypass")
+                .arg("-Command")
+                .arg(&command_text)
+                .current_dir(&effective_project_dir)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(err) => {
+                    eprintln!("Failed to start {} summary stream: {}", source, err);
+                    if stop_requested.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+            };
+
+            if let Some(stderr) = child.stderr.take() {
+                let stderr_source = source.clone();
+                thread::spawn(move || {
+                    let reader = BufReader::new(stderr);
+                    for line in reader.lines().map_while(Result::ok) {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() {
+                            eprintln!("winsmux {} stream stderr: {}", stderr_source, trimmed);
+                        }
+                    }
+                });
+            }
+
+            let stdout = match child.stdout.take() {
+                Some(stdout) => stdout,
+                None => {
+                    eprintln!("winsmux {} stream stdout pipe missing", source);
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    if stop_requested.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+            };
+
+            let reader = BufReader::new(stdout);
+            for line in reader.lines() {
+                if stop_requested.load(Ordering::Relaxed) {
+                    let _ = child.kill();
+                    break;
+                }
+                match line {
+                    Ok(line) => {
+                        if let Some(signal) = parse_desktop_summary_stream_signal(&source, &line) {
+                            on_signal(signal);
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("winsmux {} stream read failed: {}", source, err);
+                        break;
+                    }
+                }
+            }
+
+            let _ = child.wait();
+            if stop_requested.load(Ordering::Relaxed) {
+                break;
+            }
+            thread::sleep(Duration::from_secs(2));
+        }
+    });
+
+    Ok(())
+}
+
 fn resolve_desktop_read_root(
     project_dir: Option<String>,
     worktree: Option<String>,
@@ -391,13 +600,7 @@ fn run_winsmux_json(project_dir: Option<String>, args: &[String]) -> Result<Valu
     let repo_root = resolve_repo_root()?;
     let effective_project_dir = resolve_effective_project_dir(project_dir)?;
     let script_path = repo_root.join("scripts").join("winsmux-core.ps1");
-    let script_literal = script_path.to_string_lossy().replace('\'', "''");
-    let args_literal = args
-        .iter()
-        .map(|item| format!("'{}'", item.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let command_text = format!("& {{ & '{}' {} }}", script_literal, args_literal);
+    let command_text = build_winsmux_command_text(&script_path, args);
 
     let output = Command::new("pwsh")
         .arg("-NoProfile")
@@ -697,5 +900,46 @@ mod tests {
             DesktopJsonRpcResponse::Success { .. } => panic!("expected invalid params error"),
         }
         assert!(transport.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn parse_desktop_summary_stream_signal_extracts_digest_run_and_pane() {
+        let signal = parse_desktop_summary_stream_signal(
+            "digest",
+            r#"{"run_id":"task:task-289","pane_id":"%4","label":"builder-1"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            signal,
+            DesktopSummaryRefreshSignal {
+                source: "digest".to_string(),
+                reason: "digest.stream".to_string(),
+                pane_id: Some("%4".to_string()),
+                run_id: Some("task:task-289".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn parse_desktop_summary_stream_signal_accepts_inbox_items_without_run_id() {
+        let signal = parse_desktop_summary_stream_signal(
+            "inbox",
+            r#"{"kind":"review_requested","pane_id":"%7","label":"reviewer-1"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(signal.source, "inbox");
+        assert_eq!(signal.reason, "inbox.stream");
+        assert_eq!(signal.pane_id.as_deref(), Some("%7"));
+        assert_eq!(signal.run_id, None);
+    }
+
+    #[test]
+    fn parse_desktop_summary_stream_signal_rejects_untyped_json_lines() {
+        assert!(parse_desktop_summary_stream_signal("digest", r#"{"pane_id":"%2"}"#).is_none());
+        assert!(
+            parse_desktop_summary_stream_signal("inbox", r#"{"message":"missing kind"}"#).is_none()
+        );
     }
 }
