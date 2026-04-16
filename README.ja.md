@@ -10,7 +10,7 @@
 
 1 人のオペレーターが、Windows 上で動く複数の AI エージェント CLI を束ねて運用するためのランタイムと制御レイヤーを提供します。特定のベンダーに依存せず、ペインの実行、比較、ライブ監視、レビューを同じワークスペース内で扱えます。
 
-`v0.21.2` は、Tauri 移行前のターミナル中心の最終リリースです。Windows ネイティブのターミナル画面、外部オペレーター方式、管理対象ワーカーペイン、証跡とレビューの統制をここで一度固めます。`v0.22.0` からは、Tauri の backend と frontend adapter へのデスクトップ移行が始まります。
+`v0.21.2` は、デスクトップ移行前のターミナル中心の最終リリースです。Windows ネイティブのターミナル画面、外部オペレーター方式、管理対象ワーカーペイン、証跡とレビューの統制をここで一度固めます。`v0.22.0` からは Tauri デスクトップへの引き継ぎが始まり、`v0.24.0` では将来のデスクトップ / バックエンド形に向けた Rust 契約整備が始まります。
 
 ## winsmux が提供するもの
 
@@ -79,32 +79,34 @@ winsmux
 ```
 
 - **`winsmux`** はペインの指定、メッセージ送信、状態確認、資格情報の注入、オペレーターによる制御を担います
-- **Orchestra** は 1 人の外部オペレーターと複数の管理対象エージェントを既定モデルにします
+- **Orchestra** は、1 人の外部オペレーターが複数の管理対象エージェントを統制する構成を標準とします
 - **Role gates** はオペレーターと管理対象エージェントの実行権限を分離します
-- **Worker worktree isolation** はワーカーごとに独立した git ワークツリーを与えます
+- **Worker worktree isolation** は、ワーカーごとに独立した git ワークツリーを与えます
 - **Evidence Ledger** はレビューや監査向けの証跡を扱います
 
 公開向けのオペレーター / ペイン構成は [docs/operator-model.md](docs/operator-model.md) を参照してください。repository 運用専用のペイン / ランタイム契約は contributor 向け資料に残しますが、主要な公開導線には含めません。
 
 ## コアランタイム
 
-オーケストレーション層の下には、Rust 製の Windows ネイティブ terminal multiplexer runtime があります。
+オーケストレーション層の下には、Rust 製の Windows ネイティブなターミナル多重化ランタイムがあります。
 
-- **tmux 互換ランタイム**: tmux 風のコマンド体系を話し、`~/.tmux.conf` や既存テーマを利用可能
-- **Windows ネイティブ UX**: ConPTY ベース、マウス対応、WSL/Cygwin/MSYS2 依存なし
+- **tmux 互換ランタイム**: tmux 互換のコマンド体系を備え、`~/.tmux.conf` や既存テーマを利用可能
+- **Windows ネイティブ操作性**: ConPTY ベース、マウス対応、WSL/Cygwin/MSYS2 依存なし
 - **複数エントリポイント**: `winsmux`、`pmux`、`tmux`
-- **自動化向け**: 76 個の tmux 互換コマンドと 126+ の format 変数
+- **自動化向け**: 76 個の tmux 互換コマンドと 126+ の書式変数
 
 | ランタイム資料 | 内容 |
 | ------- | ------- |
-| [Features](core/docs/features.md) | マウス、copy mode、layout、format、script surface |
+| [Features](core/docs/features.md) | マウス、copy mode、レイアウト、書式、スクリプト操作面 |
 | [Compatibility](core/docs/compatibility.md) | tmux 互換マトリクスとコマンド実装状況 |
-| [Configuration](core/docs/configuration.md) | config file、option、environment variable、`.tmux.conf` 対応 |
+| [Configuration](core/docs/configuration.md) | 設定ファイル、option、environment variable、`.tmux.conf` 対応 |
 | [Key Bindings](core/docs/keybindings.md) | 既定のキーボード操作とマウス操作 |
 | [Mouse over SSH](core/docs/mouse-ssh.md) | SSH 越しのマウス動作と Windows 版要件 |
 | [Claude Code](core/docs/claude-code.md) | teammate pane がランタイム上でどう動くか |
 
 ## インストール
+
+### 現在利用できる導入方法
 
 ```powershell
 irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | iex
@@ -129,9 +131,16 @@ choco install winsmux
 
 GitHub Releases の `.zip` を使うか、[`core/`](core) でソースからビルドすることもできます。
 
+### 今後の導入方法（予定）
+
+- `winsmux init`、`winsmux launch`、`winsmux compare` を公開向けの主要導線へ寄せる予定です
+- `npm install` による導入も予定しています
+- 公開向けの npm install は **単一の `winsmux` package** を前提に設計します
+- 現在の `winsmux-mcp` や非公開の `winsmux-app` build は、そのまま公開向けの npm パッケージには使いません
+
 ## クイックスタート
 
-現在の public quick start は、下記の terminal-first runtime flow です。将来の public entrypoint は `winsmux init`、`winsmux launch`、`winsmux compare` に収束させ、`/winsmux-start` は Claude Code による dogfooding 専用フローとして扱います。
+現在公開しているクイックスタートは、下記のターミナル操作が起点となる手順です。`winsmux init`、`winsmux launch`、`winsmux compare` は今後追加予定の公開向けエントリポイントです。`/winsmux-start` は Claude Code による内部検証専用フローとして扱います。
 
 ```powershell
 # 環境チェック
@@ -144,25 +153,25 @@ winsmux new-session -s orchestra
 pwsh winsmux-core/scripts/orchestra-start.ps1
 ```
 
-Windows で `winsmux doctor` が worktree git sandbox limitation を報告した場合は、sandboxed pane では file edit / test を続けつつ、`.git/worktrees/*/index.lock` を作れないときの `git add` / `git commit` / `git push` だけを通常の shell から実行してください。
+Windows で `winsmux doctor` がワークツリーの sandbox 制限を報告した場合は、サンドボックス内のペインでファイル編集やテストを続けつつ、`.git/worktrees/*/index.lock` を作れない場合の `git add`、`git commit`、`git push` だけを通常のシェルから実行してください。
 
 Windows の `ConstrainedLanguageMode` を含む詳細な回避策は [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) を参照してください。
 
 現在の既定レイアウトは次です。
 
-- 管理対象ウィンドウの外に external operator terminal
-- 管理対象ウィンドウの中に複数の `worker-*` pane
-- 旧 `Commander / Builder / Researcher / Reviewer` レイアウトは compatibility mode でのみ有効
+- 管理対象ウィンドウの外に外部オペレーター用ターミナル
+- 管理対象ウィンドウの中に複数の `worker-*` ペイン
+- 旧 `Commander / Builder / Researcher / Reviewer` レイアウトは互換モードでのみ有効
 
-デスクトップ側の roadmap は、次の 3 本の UX narrative に再整理しています。
+デスクトップ側のロードマップは、次の 3 つの UX レイヤーに再整理しています。
 
-- **Decision Cockpit**: run を見て、比べて、選ぶための compare / browser / preview 面
-- **Fast Start + Launcher + Coordination Guard**: first-run setup を短くし、multi-agent 起動と conflict 予防をまとめる面
-- **Managed Team Intelligence**: durable memory、follow-up playbook、多様性戦略を持つ上位 orchestration 面
+- **Decision Cockpit**: 実行結果を見て、比べて、選ぶための画面群
+- **Fast Start + Launcher + Coordination Guard**: 初回セットアップを短くし、複数エージェント起動と競合予防をまとめる画面群
+- **Managed Team Intelligence**: 永続メモリ、フォローアップ手順、多様性戦略を扱う上位レイヤー
 
-この版が、terminal surface を primary control plane として使う最後の release train です。次の `v0.22.0` では terminal runtime を維持しつつ、desktop orchestration の主軸を Tauri control plane へ移します。
+この版が、ターミナルを主要な制御面として使う最後のリリース系列です。次の `v0.22.0` ではターミナルランタイムを維持しつつ、デスクトップ統制の主軸を Tauri 側へ移します。
 
-セッション内では、pane を一覧・読取・送信できます。
+セッション内では、ペインを一覧表示し、読み取り、送信できます。
 
 ```powershell
 winsmux list
@@ -172,22 +181,22 @@ winsmux send worker-3 "upstream issue を要約してください。"
 
 ## ガバナンスの要点
 
-- **Role gates**: external operator と managed pane agents に同じ command surface を与えない
-- **Read Guard**: 読んでいない pane への blind input を防ぐ
-- **Worktree isolation**: worker ごとに独立した git worktree を持てる
+- **Role gates**: 外部オペレーターと管理対象エージェントに同じコマンド操作面を与えない
+- **Read Guard**: 読んでいないペインへの盲目的な入力を防ぐ
+- **Worktree isolation**: ワーカーごとに独立した git ワークツリーを持てる
 - **Credential Vault**: Windows DPAPI でシークレットを管理し、repo に `.env` を置かない
-- **Evidence Ledger**: prompt、action、review evidence を記録できる
+- **Evidence Ledger**: プロンプト、操作、レビュー証跡を記録できる
 
 ## 主要コマンド
 
 | コマンド | 用途 |
 | ------- | ------- |
-| `winsmux list` | pane、label、process を表示 |
-| `winsmux read <target> [lines]` | 実行前に pane output を読む |
-| `winsmux send <target> <text>` | text を送って Enter を押す |
-| `winsmux health-check` | label 付き pane の READY/BUSY/HUNG/DEAD を報告 |
-| `winsmux vault set <key> [value]` | DPAPI-backed vault に資格情報を保存 |
-| `winsmux vault inject <pane>` | 保存済み資格情報を対象 pane に注入 |
+| `winsmux list` | ペイン、ラベル、プロセスを表示 |
+| `winsmux read <target> [lines]` | 実行前にペインの出力を読む |
+| `winsmux send <target> <text>` | テキストを送信して Enter を押す |
+| `winsmux health-check` | ラベル付きペインの READY/BUSY/HUNG/DEAD を報告 |
+| `winsmux vault set <key> [value]` | DPAPI で保護された保管庫に資格情報を保存 |
+| `winsmux vault inject <pane>` | 保存済み資格情報を対象ペインに注入 |
 | `winsmux update` | 最新版へ更新 |
 | `winsmux uninstall` | winsmux を削除 |
 
@@ -199,4 +208,4 @@ winsmux send worker-3 "upstream issue を要約してください。"
 
 ## ライセンス
 
-MIT
+Apache License 2.0
