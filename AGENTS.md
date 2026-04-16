@@ -114,19 +114,23 @@ When updating planning:
 
 When local operator handoff work includes Rust, Cargo, Tauri, or Rust-adjacent commands used in winsmux development, Codex must also update the beginner-friendly learning note resolved from one of these sources:
 
-- `WINSMUX_LEARNING_ROOT\Rust Commands - winsmux.md`
-- `%LOCALAPPDATA%\winsmux\learning-root.txt` marker + `Rust Commands - winsmux.md`
+- `WINSMUX_LEARNING_ROOT\Rust learning note.md`
+- `%LOCALAPPDATA%\winsmux\learning-root.txt` marker + `Rust learning note.md`
+- compatibility fallback:
+  - `WINSMUX_LEARNING_ROOT\Rust Commands - winsmux.md`
+  - `%LOCALAPPDATA%\winsmux\learning-root.txt` marker + `Rust Commands - winsmux.md`
 
 Rules:
 
 1. Keep the note outside the repository. Never commit files under the external `Learning` path.
 2. Update the note during handoff in the same session that used the command, not later.
-3. Explain each command in beginner-friendly Japanese:
+3. Prefer `Rust learning note.md` as the canonical filename for new updates. Use the old filename only as a backward-compatibility fallback.
+4. Explain each command in beginner-friendly Japanese:
    - what it does,
    - when to use it,
    - one concrete example from winsmux work.
-4. Prefer updating existing entries over adding duplicates.
-5. If the session did not use or discuss Rust-adjacent commands, no learning-note update is required.
+5. Prefer updating existing entries over adding duplicates.
+6. If the session did not use or discuss Rust-adjacent commands, no learning-note update is required.
 
 ## Private Maintainer Skill Gate
 
