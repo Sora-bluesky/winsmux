@@ -125,12 +125,20 @@ Rules:
 1. Keep the note outside the repository. Never commit files under the external `Learning` path.
 2. Update the note during handoff in the same session that used the command, not later.
 3. Prefer `Rust learning note.md` as the canonical filename for new updates. Use the old filename only as a backward-compatibility fallback.
-4. Explain each command in beginner-friendly Japanese:
+4. Every Rust-adjacent session note update must preserve these three fields for each command or concept entry:
+   - the command or concept itself,
+   - one concrete example from winsmux work,
+   - the corresponding Rust Book chapter or nearest beginner-facing Rust concept.
+5. Explain each command in beginner-friendly Japanese:
    - what it does,
    - when to use it,
    - one concrete example from winsmux work.
-5. Prefer updating existing entries over adding duplicates.
-6. If the session did not use or discuss Rust-adjacent commands, no learning-note update is required.
+6. Prefer updating existing entries over adding duplicates.
+7. Keep the note structure readable in Obsidian sidebar form.
+   - Maintain the root `Rust learning note.md` as the entry page.
+   - Maintain numbered chapter notes under `Rust learning note/`.
+   - Update the index note when a new chapter note is added.
+8. If the session did not use or discuss Rust-adjacent commands, no learning-note update is required.
 
 ## Private Maintainer Skill Gate
 
