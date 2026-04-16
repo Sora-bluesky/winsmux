@@ -55,11 +55,14 @@ export interface DesktopBoardPane {
   label: string;
   pane_id: string;
   role: string;
+  state: string;
   task: string;
   task_state: string;
   review_state: string;
   branch: string;
+  head_sha: string;
   changed_file_count: number;
+  last_event_at: string;
 }
 
 export interface DesktopInboxSummary {
@@ -79,6 +82,7 @@ export interface DesktopInboxItem {
 
 export interface DesktopDigestSummary {
   item_count: number;
+  dirty_items: number;
   actionable_items: number;
   review_pending: number;
   review_failed: number;
