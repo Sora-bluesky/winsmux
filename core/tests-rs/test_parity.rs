@@ -1,5 +1,8 @@
 use crate::types::{AppState, ClientInfo};
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -27,49 +30,252 @@ fn read_rust_parity_fixture(name: &str) -> Value {
         .unwrap_or_else(|err| panic!("failed to parse fixture {}: {}", path.display(), err))
 }
 
+fn read_rust_parity_fixture_typed<T: DeserializeOwned>(name: &str) -> T {
+    let path = rust_parity_fixture_path(name);
+    let raw = fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("failed to read fixture {}: {}", path.display(), err));
+    serde_json::from_str(&raw)
+        .unwrap_or_else(|err| panic!("failed to parse typed fixture {}: {}", path.display(), err))
+}
+
+#[derive(Deserialize)]
+struct RustParityBoardFixture {
+    generated_at: String,
+    project_dir: String,
+    summary: RustParityBoardSummary,
+    panes: Vec<RustParityBoardPane>,
+}
+
+#[derive(Deserialize)]
+struct RustParityBoardSummary {
+    pane_count: usize,
+    dirty_panes: usize,
+    review_pending: usize,
+    review_failed: usize,
+    review_passed: usize,
+    tasks_in_progress: usize,
+    tasks_blocked: usize,
+    by_state: HashMap<String, usize>,
+    by_review: HashMap<String, usize>,
+    by_task_state: HashMap<String, usize>,
+}
+
+#[derive(Deserialize)]
+struct RustParityBoardPane {
+    label: String,
+    pane_id: String,
+    task_state: String,
+    changed_file_count: usize,
+    last_event_at: String,
+}
+
+#[derive(Deserialize)]
+struct RustParityInboxFixture {
+    generated_at: String,
+    project_dir: String,
+    summary: RustParityInboxSummary,
+    items: Vec<RustParityInboxItem>,
+}
+
+#[derive(Deserialize)]
+struct RustParityInboxSummary {
+    item_count: usize,
+}
+
+#[derive(Deserialize)]
+struct RustParityInboxItem {
+    kind: String,
+    message: String,
+    label: String,
+    pane_id: String,
+    task_state: String,
+    review_state: String,
+    branch: String,
+    changed_file_count: usize,
+    timestamp: String,
+}
+
+#[derive(Deserialize)]
+struct RustParityDigestFixture {
+    generated_at: String,
+    project_dir: String,
+    summary: RustParityDigestSummary,
+    items: Vec<RustParityDigestItem>,
+}
+
+#[derive(Deserialize)]
+struct RustParityDigestSummary {
+    item_count: usize,
+    dirty_items: usize,
+    actionable_items: usize,
+    review_pending: usize,
+    review_failed: usize,
+}
+
+#[derive(Deserialize)]
+struct RustParityDigestItem {
+    run_id: String,
+    task: String,
+    label: String,
+    pane_id: String,
+    task_state: String,
+    review_state: String,
+    next_action: String,
+    branch: String,
+    changed_file_count: usize,
+    last_event_at: String,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainFixture {
+    generated_at: String,
+    project_dir: String,
+    run: RustParityExplainRun,
+    evidence_digest: RustParityExplainEvidenceDigest,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainRun {
+    run_id: String,
+    task: String,
+    state: String,
+    task_state: String,
+    review_state: String,
+    branch: String,
+    head_sha: String,
+    worktree: String,
+    changed_files: Vec<String>,
+    last_event_at: String,
+    action_items: Vec<RustParityExplainActionItem>,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainActionItem {
+    kind: String,
+    event: String,
+    timestamp: String,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainEvidenceDigest {
+    next_action: String,
+    changed_file_count: usize,
+    consultation_ref: String,
+}
+
 #[test]
 fn rust_parity_board_fixture_deserializes() {
-    let fixture = read_rust_parity_fixture("board.json");
-    assert_eq!(fixture["generated_at"], "__GENERATED_AT__");
-    assert_eq!(fixture["project_dir"], "__PROJECT_DIR__");
-    assert!(fixture["summary"]["pane_count"].is_number());
-    let panes = fixture["panes"].as_array().expect("board panes must be an array");
-    assert!(!panes.is_empty(), "board fixture should contain at least one pane");
-    assert_eq!(panes[0]["last_event_at"], "__LAST_EVENT_AT__");
+    let fixture: RustParityBoardFixture = read_rust_parity_fixture_typed("board.json");
+    assert_eq!(fixture.generated_at, "__GENERATED_AT__");
+    assert_eq!(fixture.project_dir, "__PROJECT_DIR__");
+    assert_eq!(fixture.summary.pane_count, 2);
+    assert_eq!(fixture.summary.dirty_panes, 1);
+    assert_eq!(fixture.summary.review_pending, 1);
+    assert_eq!(fixture.summary.review_failed, 0);
+    assert_eq!(fixture.summary.review_passed, 0);
+    assert_eq!(fixture.summary.tasks_in_progress, 1);
+    assert_eq!(fixture.summary.tasks_blocked, 0);
+    assert_eq!(fixture.summary.by_state["idle"], 1);
+    assert_eq!(fixture.summary.by_state["busy"], 1);
+    assert_eq!(fixture.summary.by_review["PENDING"], 1);
+    assert_eq!(fixture.summary.by_task_state["in_progress"], 1);
+    assert!(
+        !fixture.panes.is_empty(),
+        "board fixture should contain at least one pane"
+    );
+    let builder_pane = fixture
+        .panes
+        .iter()
+        .find(|pane| pane.label == "builder-1")
+        .expect("board fixture should contain builder-1");
+    assert_eq!(builder_pane.pane_id, "%2");
+    assert_eq!(builder_pane.task_state, "in_progress");
+    assert_eq!(builder_pane.changed_file_count, 2);
+    assert_eq!(builder_pane.last_event_at, "__LAST_EVENT_AT__");
 }
 
 #[test]
 fn rust_parity_inbox_fixture_deserializes() {
-    let fixture = read_rust_parity_fixture("inbox.json");
-    assert_eq!(fixture["generated_at"], "__GENERATED_AT__");
-    assert_eq!(fixture["project_dir"], "__PROJECT_DIR__");
-    assert!(fixture["summary"]["item_count"].is_number());
-    let items = fixture["items"].as_array().expect("inbox items must be an array");
-    assert!(!items.is_empty(), "inbox fixture should contain at least one item");
-    assert_eq!(items[0]["timestamp"], "__TIMESTAMP__");
+    let fixture: RustParityInboxFixture = read_rust_parity_fixture_typed("inbox.json");
+    assert_eq!(fixture.generated_at, "__GENERATED_AT__");
+    assert_eq!(fixture.project_dir, "__PROJECT_DIR__");
+    assert_eq!(fixture.summary.item_count, 4);
+    assert!(
+        !fixture.items.is_empty(),
+        "inbox fixture should contain at least one item"
+    );
+    let blocked_item = fixture
+        .items
+        .iter()
+        .find(|item| item.kind == "task_blocked")
+        .expect("inbox fixture should contain task_blocked");
+    assert_eq!(blocked_item.message, "worker-1 が blocked。");
+    assert_eq!(blocked_item.label, "worker-1");
+    assert_eq!(blocked_item.pane_id, "%6");
+    assert_eq!(blocked_item.task_state, "blocked");
+    assert_eq!(blocked_item.review_state, "");
+    assert_eq!(blocked_item.branch, "worktree-worker-1");
+    assert_eq!(blocked_item.changed_file_count, 0);
+    assert_eq!(blocked_item.timestamp, "__TIMESTAMP__");
 }
 
 #[test]
 fn rust_parity_digest_fixture_deserializes() {
-    let fixture = read_rust_parity_fixture("digest.json");
-    assert_eq!(fixture["generated_at"], "__GENERATED_AT__");
-    assert_eq!(fixture["project_dir"], "__PROJECT_DIR__");
-    let items = fixture["items"].as_array().expect("digest items must be an array");
-    assert_eq!(items.len(), 1, "digest fixture should keep the minimal single-run shape");
-    assert_eq!(items[0]["last_event_at"], "__LAST_EVENT_AT__");
+    let fixture: RustParityDigestFixture = read_rust_parity_fixture_typed("digest.json");
+    assert_eq!(fixture.generated_at, "__GENERATED_AT__");
+    assert_eq!(fixture.project_dir, "__PROJECT_DIR__");
+    assert_eq!(fixture.summary.item_count, 1);
+    assert_eq!(fixture.summary.dirty_items, 1);
+    assert_eq!(fixture.summary.actionable_items, 1);
+    assert_eq!(fixture.summary.review_pending, 0);
+    assert_eq!(fixture.summary.review_failed, 1);
+    assert_eq!(
+        fixture.items.len(),
+        1,
+        "digest fixture should keep the minimal single-run shape"
+    );
+    assert_eq!(fixture.items[0].run_id, "task:task-246");
+    assert_eq!(fixture.items[0].task, "Build evidence digest");
+    assert_eq!(fixture.items[0].label, "builder-1");
+    assert_eq!(fixture.items[0].pane_id, "%2");
+    assert_eq!(fixture.items[0].task_state, "blocked");
+    assert_eq!(fixture.items[0].review_state, "FAIL");
+    assert_eq!(fixture.items[0].next_action, "review_failed");
+    assert_eq!(fixture.items[0].branch, "worktree-builder-1");
+    assert_eq!(fixture.items[0].changed_file_count, 1);
+    assert_eq!(fixture.items[0].last_event_at, "__LAST_EVENT_AT__");
 }
 
 #[test]
 fn rust_parity_explain_fixture_deserializes() {
-    let fixture = read_rust_parity_fixture("explain.json");
-    assert_eq!(fixture["generated_at"], "__GENERATED_AT__");
-    assert_eq!(fixture["project_dir"], "__PROJECT_DIR__");
-    assert_eq!(fixture["run"]["last_event_at"], "__LAST_EVENT_AT__");
-    let action_items = fixture["run"]["action_items"]
-        .as_array()
-        .expect("run.action_items must be an array");
-    assert!(!action_items.is_empty(), "explain fixture should contain at least one action item");
-    assert_eq!(action_items[0]["timestamp"], "__TIMESTAMP__");
+    let fixture: RustParityExplainFixture = read_rust_parity_fixture_typed("explain.json");
+    assert_eq!(fixture.generated_at, "__GENERATED_AT__");
+    assert_eq!(fixture.project_dir, "__PROJECT_DIR__");
+    assert_eq!(fixture.run.run_id, "task:task-256");
+    assert_eq!(fixture.run.task, "Implement run ledger");
+    assert_eq!(fixture.run.state, "idle");
+    assert_eq!(fixture.run.task_state, "in_progress");
+    assert_eq!(fixture.run.review_state, "PENDING");
+    assert_eq!(fixture.run.branch, "worktree-builder-1");
+    assert_eq!(fixture.run.head_sha, "abc1234def5678");
+    assert_eq!(fixture.run.worktree, ".worktrees/builder-1");
+    assert_eq!(fixture.run.changed_files, vec!["scripts/winsmux-core.ps1"]);
+    assert_eq!(fixture.run.last_event_at, "__LAST_EVENT_AT__");
+    assert!(
+        !fixture.run.action_items.is_empty(),
+        "explain fixture should contain at least one action item"
+    );
+    let review_pending = fixture
+        .run
+        .action_items
+        .iter()
+        .find(|item| item.kind == "review_pending")
+        .expect("explain fixture should contain review_pending action item");
+    assert_eq!(review_pending.event, "commander.review_requested");
+    assert_eq!(review_pending.timestamp, "__TIMESTAMP__");
+    assert_eq!(fixture.evidence_digest.next_action, "review_pending");
+    assert_eq!(fixture.evidence_digest.changed_file_count, 1);
+    assert!(fixture.evidence_digest.consultation_ref.contains("__ID__"));
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -79,44 +285,68 @@ fn rust_parity_explain_fixture_deserializes() {
 #[test]
 fn hook_before_new_window_found_in_hooks_map() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g before-new-window 'display-message creating'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g before-new-window 'display-message creating'",
+    );
     assert!(app.hooks.contains_key("before-new-window"));
-    assert_eq!(app.hooks["before-new-window"][0], "display-message creating");
+    assert_eq!(
+        app.hooks["before-new-window"][0],
+        "display-message creating"
+    );
 }
 
 #[test]
 fn hook_before_split_window_found_in_hooks_map() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g before-split-window 'display-message splitting'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g before-split-window 'display-message splitting'",
+    );
     assert!(app.hooks.contains_key("before-split-window"));
-    assert_eq!(app.hooks["before-split-window"][0], "display-message splitting");
+    assert_eq!(
+        app.hooks["before-split-window"][0],
+        "display-message splitting"
+    );
 }
 
 #[test]
 fn hook_before_kill_pane_found_in_hooks_map() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g before-kill-pane 'display-message killing'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g before-kill-pane 'display-message killing'",
+    );
     assert!(app.hooks.contains_key("before-kill-pane"));
 }
 
 #[test]
 fn hook_before_select_window_found_in_hooks_map() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g before-select-window 'display-message switching'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g before-select-window 'display-message switching'",
+    );
     assert!(app.hooks.contains_key("before-select-window"));
 }
 
 #[test]
 fn hook_before_rename_window_found_in_hooks_map() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g before-rename-window 'display-message renaming'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g before-rename-window 'display-message renaming'",
+    );
     assert!(app.hooks.contains_key("before-rename-window"));
 }
 
 #[test]
 fn hook_after_new_window_still_works() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g after-new-window 'display-message created'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-new-window 'display-message created'",
+    );
     assert!(app.hooks.contains_key("after-new-window"));
     assert_eq!(app.hooks["after-new-window"][0], "display-message created");
 }
@@ -124,28 +354,40 @@ fn hook_after_new_window_still_works() {
 #[test]
 fn hook_after_split_window_still_works() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g after-split-window 'display-message split'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-split-window 'display-message split'",
+    );
     assert!(app.hooks.contains_key("after-split-window"));
 }
 
 #[test]
 fn hook_after_kill_pane_still_works() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g after-kill-pane 'display-message killed'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-kill-pane 'display-message killed'",
+    );
     assert!(app.hooks.contains_key("after-kill-pane"));
 }
 
 #[test]
 fn hook_after_select_window_still_works() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g after-select-window 'display-message switched'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-select-window 'display-message switched'",
+    );
     assert!(app.hooks.contains_key("after-select-window"));
 }
 
 #[test]
 fn hook_after_resize_pane_still_works() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g after-resize-pane 'display-message resized'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-resize-pane 'display-message resized'",
+    );
     assert!(app.hooks.contains_key("after-resize-pane"));
 }
 
@@ -159,7 +401,10 @@ fn hook_client_attached_still_works() {
 #[test]
 fn hook_session_created_still_works() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g session-created 'display-message new'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g session-created 'display-message new'",
+    );
     assert!(app.hooks.contains_key("session-created"));
 }
 
@@ -173,9 +418,18 @@ fn hook_pane_set_clipboard_still_works() {
 #[test]
 fn hook_multiple_commands_via_append() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g after-new-window 'display-message first'");
-    crate::config::parse_config_line(&mut app, "set-hook -ga after-new-window 'display-message second'");
-    crate::config::parse_config_line(&mut app, "set-hook -ga after-new-window 'display-message third'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-new-window 'display-message first'",
+    );
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -ga after-new-window 'display-message second'",
+    );
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -ga after-new-window 'display-message third'",
+    );
     let cmds = app.hooks.get("after-new-window").unwrap();
     assert_eq!(cmds.len(), 3);
     assert_eq!(cmds[0], "display-message first");
@@ -186,8 +440,14 @@ fn hook_multiple_commands_via_append() {
 #[test]
 fn hook_before_and_after_coexist() {
     let mut app = mock_app();
-    crate::config::parse_config_line(&mut app, "set-hook -g before-new-window 'display-message before'");
-    crate::config::parse_config_line(&mut app, "set-hook -g after-new-window 'display-message after'");
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g before-new-window 'display-message before'",
+    );
+    crate::config::parse_config_line(
+        &mut app,
+        "set-hook -g after-new-window 'display-message after'",
+    );
     assert!(app.hooks.contains_key("before-new-window"));
     assert!(app.hooks.contains_key("after-new-window"));
     assert_eq!(app.hooks.len(), 2);
@@ -262,15 +522,18 @@ fn client_registry_add_client() {
 fn client_registry_add_multiple_clients() {
     let mut app = mock_app();
     for i in 0..5 {
-        app.client_registry.insert(i, ClientInfo {
-            id: i,
-            width: 120,
-            height: 30,
-            connected_at: std::time::Instant::now(),
-            last_activity: std::time::Instant::now(),
-            tty_name: format!("/dev/pts/{}", i),
-            is_control: false,
-        });
+        app.client_registry.insert(
+            i,
+            ClientInfo {
+                id: i,
+                width: 120,
+                height: 30,
+                connected_at: std::time::Instant::now(),
+                last_activity: std::time::Instant::now(),
+                tty_name: format!("/dev/pts/{}", i),
+                is_control: false,
+            },
+        );
     }
     assert_eq!(app.client_registry.len(), 5);
 }
@@ -278,24 +541,30 @@ fn client_registry_add_multiple_clients() {
 #[test]
 fn client_registry_remove_client() {
     let mut app = mock_app();
-    app.client_registry.insert(1, ClientInfo {
-        id: 1,
-        width: 120,
-        height: 30,
-        connected_at: std::time::Instant::now(),
-        last_activity: std::time::Instant::now(),
-        tty_name: "/dev/pts/0".to_string(),
-        is_control: false,
-    });
-    app.client_registry.insert(2, ClientInfo {
-        id: 2,
-        width: 80,
-        height: 24,
-        connected_at: std::time::Instant::now(),
-        last_activity: std::time::Instant::now(),
-        tty_name: "/dev/pts/1".to_string(),
-        is_control: false,
-    });
+    app.client_registry.insert(
+        1,
+        ClientInfo {
+            id: 1,
+            width: 120,
+            height: 30,
+            connected_at: std::time::Instant::now(),
+            last_activity: std::time::Instant::now(),
+            tty_name: "/dev/pts/0".to_string(),
+            is_control: false,
+        },
+    );
+    app.client_registry.insert(
+        2,
+        ClientInfo {
+            id: 2,
+            width: 80,
+            height: 24,
+            connected_at: std::time::Instant::now(),
+            last_activity: std::time::Instant::now(),
+            tty_name: "/dev/pts/1".to_string(),
+            is_control: false,
+        },
+    );
     assert_eq!(app.client_registry.len(), 2);
     app.client_registry.remove(&1);
     assert_eq!(app.client_registry.len(), 1);
@@ -345,12 +614,21 @@ fn option_catalog_contains_common_options() {
     let app = mock_app();
     let options = crate::server::option_catalog::build_option_list(&app);
     let names: Vec<&str> = options.iter().map(|(n, _, _)| n.as_str()).collect();
-    assert!(names.contains(&"escape-time"), "catalog should contain escape-time");
+    assert!(
+        names.contains(&"escape-time"),
+        "catalog should contain escape-time"
+    );
     assert!(names.contains(&"mouse"), "catalog should contain mouse");
     assert!(names.contains(&"prefix"), "catalog should contain prefix");
     assert!(names.contains(&"status"), "catalog should contain status");
-    assert!(names.contains(&"base-index"), "catalog should contain base-index");
-    assert!(names.contains(&"mode-keys"), "catalog should contain mode-keys");
+    assert!(
+        names.contains(&"base-index"),
+        "catalog should contain base-index"
+    );
+    assert!(
+        names.contains(&"mode-keys"),
+        "catalog should contain mode-keys"
+    );
 }
 
 #[test]
@@ -358,9 +636,18 @@ fn option_catalog_entries_have_scope() {
     let app = mock_app();
     let options = crate::server::option_catalog::build_option_list(&app);
     let scopes: Vec<&str> = options.iter().map(|(_, _, s)| s.as_str()).collect();
-    assert!(scopes.contains(&"server"), "catalog should have server scope entries");
-    assert!(scopes.contains(&"session"), "catalog should have session scope entries");
-    assert!(scopes.contains(&"window"), "catalog should have window scope entries");
+    assert!(
+        scopes.contains(&"server"),
+        "catalog should have server scope entries"
+    );
+    assert!(
+        scopes.contains(&"session"),
+        "catalog should have session scope entries"
+    );
+    assert!(
+        scopes.contains(&"window"),
+        "catalog should have window scope entries"
+    );
 }
 
 #[test]
@@ -400,7 +687,9 @@ fn option_catalog_all_entries_have_valid_types() {
         assert!(
             valid_types.contains(&def.option_type),
             "option '{}' has invalid type '{}' (expected one of {:?})",
-            def.name, def.option_type, valid_types
+            def.name,
+            def.option_type,
+            valid_types
         );
     }
 }
@@ -412,7 +701,9 @@ fn option_catalog_all_entries_have_valid_scopes() {
         assert!(
             valid_scopes.contains(&def.scope),
             "option '{}' has invalid scope '{}' (expected one of {:?})",
-            def.name, def.scope, valid_scopes
+            def.name,
+            def.scope,
+            valid_scopes
         );
     }
 }
@@ -423,24 +714,34 @@ fn option_catalog_no_duplicate_names() {
     for def in crate::server::option_catalog::OPTION_CATALOG {
         assert!(
             seen.insert(def.name),
-            "duplicate option name in catalog: '{}'", def.name
+            "duplicate option name in catalog: '{}'",
+            def.name
         );
     }
 }
 
 #[test]
 fn option_catalog_default_for_base_index() {
-    assert_eq!(crate::server::option_catalog::default_for("base-index"), Some("0"));
+    assert_eq!(
+        crate::server::option_catalog::default_for("base-index"),
+        Some("0")
+    );
 }
 
 #[test]
 fn option_catalog_default_for_history_limit() {
-    assert_eq!(crate::server::option_catalog::default_for("history-limit"), Some("2000"));
+    assert_eq!(
+        crate::server::option_catalog::default_for("history-limit"),
+        Some("2000")
+    );
 }
 
 #[test]
 fn option_catalog_default_for_remain_on_exit() {
-    assert_eq!(crate::server::option_catalog::default_for("remain-on-exit"), Some("off"));
+    assert_eq!(
+        crate::server::option_catalog::default_for("remain-on-exit"),
+        Some("off")
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -504,7 +805,10 @@ fn prompt_history_capped_at_100() {
 #[test]
 fn prompt_history_vi_mode_default_insert() {
     let app = mock_app();
-    assert!(!app.command_vi_normal, "command prompt should start in insert mode");
+    assert!(
+        !app.command_vi_normal,
+        "command prompt should start in insert mode"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -526,7 +830,8 @@ fn search_next_wraps_by_default() {
 #[test]
 fn search_next_does_not_wrap_when_off() {
     let mut app = mock_app();
-    app.user_options.insert("wrap-search".to_string(), "off".to_string());
+    app.user_options
+        .insert("wrap-search".to_string(), "off".to_string());
     app.copy_search_matches = vec![(0, 5, 8), (1, 10, 13), (2, 0, 3)];
     app.copy_search_idx = 2; // at last match
     crate::copy_mode::search_next(&mut app);
@@ -558,7 +863,8 @@ fn search_prev_wraps_by_default() {
 #[test]
 fn search_prev_does_not_wrap_when_off() {
     let mut app = mock_app();
-    app.user_options.insert("wrap-search".to_string(), "off".to_string());
+    app.user_options
+        .insert("wrap-search".to_string(), "off".to_string());
     app.copy_search_matches = vec![(0, 5, 8), (1, 10, 13), (2, 0, 3)];
     app.copy_search_idx = 0; // at first match
     crate::copy_mode::search_prev(&mut app);
@@ -643,7 +949,10 @@ fn session_group_can_be_set() {
 fn session_id_is_unique() {
     let app1 = AppState::new("s1".to_string());
     let app2 = AppState::new("s2".to_string());
-    assert_ne!(app1.session_id, app2.session_id, "each AppState should get a unique session_id");
+    assert_ne!(
+        app1.session_id, app2.session_id,
+        "each AppState should get a unique session_id"
+    );
 }
 
 #[test]

@@ -30,7 +30,7 @@ pub struct DesktopBoardSummary {
 #[derive(Serialize, Deserialize)]
 pub struct DesktopBoardSnapshot {
     pub summary: DesktopBoardSummary,
-    pub panes: Value,
+    pub panes: Vec<DesktopBoardPane>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -59,15 +59,50 @@ pub struct DesktopInboxSnapshot {
 #[derive(Serialize, Deserialize)]
 pub struct DesktopDigestSummary {
     pub item_count: usize,
+    pub dirty_items: usize,
     pub actionable_items: usize,
     pub review_pending: usize,
     pub review_failed: usize,
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct DesktopBoardPane {
+    pub label: String,
+    pub pane_id: String,
+    pub role: String,
+    pub state: String,
+    pub task: String,
+    pub task_state: String,
+    pub review_state: String,
+    pub branch: String,
+    pub head_sha: String,
+    pub changed_file_count: usize,
+    pub last_event_at: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopDigestItem {
+    pub run_id: String,
+    pub task: String,
+    pub label: String,
+    pub pane_id: String,
+    pub role: String,
+    pub task_state: String,
+    pub review_state: String,
+    pub next_action: String,
+    pub branch: String,
+    pub worktree: String,
+    pub head_sha: String,
+    pub head_short: String,
+    pub changed_file_count: usize,
+    pub changed_files: Vec<String>,
+    pub last_event_at: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct DesktopDigestSnapshot {
     pub summary: DesktopDigestSummary,
-    pub items: Value,
+    pub items: Vec<DesktopDigestItem>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -757,6 +792,8 @@ fn run_winsmux_json(project_dir: Option<String>, args: &[String]) -> Result<Valu
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::fs;
+    use std::path::PathBuf;
 
     struct FakeTransport {
         requests: RefCell<Vec<String>>,
@@ -772,81 +809,77 @@ mod tests {
         }
     }
 
+    fn rust_parity_fixture_path(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("tests")
+            .join("fixtures")
+            .join("rust-parity")
+            .join(name)
+    }
+
+    fn read_rust_parity_fixture(name: &str) -> Value {
+        let path = rust_parity_fixture_path(name);
+        let raw = fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("failed to read fixture {}: {}", path.display(), err));
+        serde_json::from_str(&raw)
+            .unwrap_or_else(|err| panic!("failed to parse fixture {}: {}", path.display(), err))
+    }
+
+    fn rust_parity_summary_snapshot_payload() -> Value {
+        serde_json::json!({
+            "generated_at": "__GENERATED_AT__",
+            "project_dir": "__PROJECT_DIR__",
+            "board": read_rust_parity_fixture("board.json"),
+            "inbox": read_rust_parity_fixture("inbox.json"),
+            "digest": read_rust_parity_fixture("digest.json"),
+            "run_projections": [{
+                "run_id": "task:task-246",
+                "pane_id": "%2",
+                "label": "builder-1",
+                "branch": "worktree-builder-1",
+                "worktree": ".worktrees/builder-1",
+                "head_sha": "abc1234def5678",
+                "head_short": "abc1234",
+                "provider_target": "codex:gpt-5.4",
+                "task": "Build evidence digest",
+                "task_state": "blocked",
+                "review_state": "FAIL",
+                "verification_outcome": "",
+                "security_blocked": "",
+                "changed_files": ["scripts/winsmux-core.ps1"],
+                "next_action": "review_failed",
+                "summary": "Build evidence digest",
+                "reasons": ["review_state=FAIL"],
+                "hypothesis": "result summary should appear in digest",
+                "confidence": 0.88,
+                "observation_pack_ref": ".winsmux/observation-packs/observation-pack-__ID__.json",
+                "consultation_ref": ".winsmux/consultations/consult-result-__ID__.json"
+            }]
+        })
+    }
+
     #[test]
     fn load_desktop_summary_snapshot_deserializes_transport_payload() {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
-            response: serde_json::json!({
-                "generated_at": "2026-04-13T00:00:00Z",
-                "project_dir": "C:/repo",
-                "board": {
-                    "summary": {
-                        "pane_count": 1,
-                        "dirty_panes": 0,
-                        "review_pending": 3,
-                        "review_failed": 0,
-                        "review_passed": 0,
-                        "tasks_in_progress": 1,
-                        "tasks_blocked": 2
-                    },
-                    "panes": []
-                },
-                "inbox": {
-                    "summary": { "item_count": 1 },
-                    "items": [{
-                        "kind": "task",
-                        "message": "Investigate",
-                        "label": "builder-1",
-                        "pane_id": "%4",
-                        "task_state": "blocked",
-                        "review_state": "PENDING",
-                        "branch": "codex/task",
-                        "changed_file_count": 2
-                    }]
-                },
-                "digest": {
-                    "summary": {
-                        "item_count": 1,
-                        "actionable_items": 1,
-                        "review_pending": 1,
-                        "review_failed": 0
-                    },
-                    "items": []
-                },
-                "run_projections": [{
-                    "run_id": "run-1",
-                    "pane_id": "%1",
-                    "label": "builder-1",
-                    "branch": "codex/task",
-                    "worktree": ".worktrees/builder-1",
-                    "head_sha": "abc1234def5678",
-                    "head_short": "abc1234",
-                    "provider_target": "codex:gpt-5.4",
-                    "task": "Implement",
-                    "task_state": "in_progress",
-                    "review_state": "PENDING",
-                    "verification_outcome": "",
-                    "security_blocked": "",
-                    "changed_files": ["winsmux-app/src/main.ts"],
-                    "next_action": "review_requested",
-                    "summary": "Implement",
-                    "reasons": ["task_state=in_progress"],
-                    "hypothesis": "projection should surface detail",
-                    "confidence": 0.75,
-                    "observation_pack_ref": "obs-1",
-                    "consultation_ref": "consult-1"
-                }]
-            }),
+            response: rust_parity_summary_snapshot_payload(),
         };
 
         let snapshot = load_desktop_summary_snapshot(&transport, None).unwrap();
 
-        assert_eq!(snapshot.project_dir, "C:/repo");
-        assert_eq!(snapshot.board.summary.pane_count, 1);
-        assert_eq!(snapshot.board.summary.tasks_blocked, 2);
-        assert_eq!(snapshot.inbox.summary.item_count, 1);
-        assert_eq!(snapshot.inbox.items[0].pane_id, "%4");
+        assert_eq!(snapshot.project_dir, "__PROJECT_DIR__");
+        assert_eq!(snapshot.board.summary.pane_count, 2);
+        assert_eq!(snapshot.board.summary.tasks_blocked, 0);
+        assert_eq!(snapshot.board.panes[0].pane_id, "%2");
+        assert_eq!(snapshot.board.panes[0].last_event_at, "__LAST_EVENT_AT__");
+        assert_eq!(snapshot.inbox.summary.item_count, 4);
+        assert_eq!(snapshot.inbox.items[0].pane_id, "%6");
         assert_eq!(snapshot.digest.summary.actionable_items, 1);
+        assert_eq!(snapshot.digest.summary.dirty_items, 1);
+        assert_eq!(snapshot.digest.items[0].run_id, "task:task-246");
+        assert_eq!(snapshot.digest.items[0].last_event_at, "__LAST_EVENT_AT__");
         assert_eq!(snapshot.run_projections.len(), 1);
         assert_eq!(
             transport.requests.borrow().as_slice(),
@@ -856,45 +889,27 @@ mod tests {
 
     #[test]
     fn load_desktop_summary_snapshot_rejects_missing_required_narrowed_fields() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["board"]["summary"]
+            .as_object_mut()
+            .expect("board.summary must be an object")
+            .remove("tasks_blocked");
+        response["inbox"]["items"][0]
+            .as_object_mut()
+            .expect("inbox.items[0] must be an object")
+            .remove("changed_file_count");
+        response["board"]["panes"][0]
+            .as_object_mut()
+            .expect("board.panes[0] must be an object")
+            .remove("pane_id");
+        response["digest"]["items"][0]
+            .as_object_mut()
+            .expect("digest.items[0] must be an object")
+            .remove("last_event_at");
+
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
-            response: serde_json::json!({
-                "generated_at": "2026-04-13T00:00:00Z",
-                "project_dir": "C:/repo",
-                "board": {
-                    "summary": {
-                        "pane_count": 1,
-                        "dirty_panes": 0,
-                        "review_pending": 0,
-                        "review_failed": 0,
-                        "review_passed": 0,
-                        "tasks_in_progress": 1
-                    },
-                    "panes": []
-                },
-                "inbox": {
-                    "summary": { "item_count": 1 },
-                    "items": [{
-                        "kind": "task",
-                        "message": "Investigate",
-                        "label": "builder-1",
-                        "pane_id": "%4",
-                        "task_state": "blocked",
-                        "review_state": "PENDING",
-                        "branch": "codex/task"
-                    }]
-                },
-                "digest": {
-                    "summary": {
-                        "item_count": 1,
-                        "actionable_items": 1,
-                        "review_pending": 1,
-                        "review_failed": 0
-                    },
-                    "items": []
-                },
-                "run_projections": []
-            }),
+            response,
         };
 
         let err = match load_desktop_summary_snapshot(&transport, None) {
@@ -902,7 +917,12 @@ mod tests {
             Err(err) => err,
         };
 
-        assert!(err.contains("tasks_blocked") || err.contains("changed_file_count"));
+        assert!(
+            err.contains("tasks_blocked")
+                || err.contains("changed_file_count")
+                || err.contains("pane_id")
+                || err.contains("last_event_at")
+        );
     }
 
     #[test]
@@ -1121,28 +1141,7 @@ mod tests {
     fn handle_desktop_json_rpc_routes_summary_snapshot() {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
-            response: serde_json::json!({
-                "generated_at": "2026-04-13T00:00:00Z",
-                "project_dir": "C:/repo",
-                "board": {
-                    "summary": {
-                        "pane_count": 1,
-                        "dirty_panes": 0,
-                        "review_pending": 0,
-                        "review_failed": 0,
-                        "review_passed": 0,
-                        "tasks_in_progress": 0,
-                        "tasks_blocked": 1
-                    },
-                    "panes": []
-                },
-                "inbox": { "summary": { "item_count": 0 }, "items": [] },
-                "digest": {
-                    "summary": { "item_count": 1, "actionable_items": 1, "review_pending": 1, "review_failed": 0 },
-                    "items": []
-                },
-                "run_projections": []
-            }),
+            response: rust_parity_summary_snapshot_payload(),
         };
         let response = handle_desktop_json_rpc(
             &transport,
@@ -1158,9 +1157,13 @@ mod tests {
         match response {
             DesktopJsonRpcResponse::Success { id, result, .. } => {
                 assert_eq!(id, serde_json::json!("req-1"));
-                assert_eq!(result["project_dir"], "C:/repo");
-                assert_eq!(result["board"]["summary"]["tasks_blocked"], 1);
+                assert_eq!(result["project_dir"], "__PROJECT_DIR__");
+                assert_eq!(result["board"]["summary"]["tasks_blocked"], 0);
                 assert_eq!(result["digest"]["summary"]["actionable_items"], 1);
+                assert_eq!(result["digest"]["summary"]["dirty_items"], 1);
+                assert_eq!(result["inbox"]["items"][0]["pane_id"], "%6");
+                assert_eq!(result["board"]["panes"][0]["pane_id"], "%2");
+                assert_eq!(result["digest"]["items"][0]["run_id"], "task:task-246");
             }
             DesktopJsonRpcResponse::Error { error, .. } => {
                 panic!("expected success, got {:?}", error);
