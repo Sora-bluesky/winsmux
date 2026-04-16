@@ -6820,6 +6820,103 @@ panes:
         { Get-ExplainPayload -ProjectDir $script:explainTempRoot -RunId 'task:task-256' } | Should -Throw '*invalid review state*reviewer*'
     }
 
+    It 'rejects explain when PASS review-state evidence is missing approved_via' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:explainTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    task: Implement run ledger
+    task_state: done
+    task_owner: builder-1
+    review_state: PASS
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: review.pass
+    last_event_at: 2026-04-10T12:10:00+09:00
+"@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
+
+        ([ordered]@{
+            timestamp = '2026-04-10T12:10:00+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'review.pass'
+            message   = 'review PASS recorded'
+            label     = 'reviewer-1'
+            pane_id   = '%3'
+            role      = 'Reviewer'
+            branch    = 'worktree-builder-1'
+            head_sha  = 'abc1234def5678'
+            data      = [ordered]@{
+                task_id = 'task-256'
+            }
+        } | ConvertTo-Json -Compress) | Set-Content -Path $script:explainEventsPath -Encoding UTF8
+
+@'
+{
+  "worktree-builder-1": {
+    "status": "PASS",
+    "branch": "worktree-builder-1",
+    "head_sha": "abc1234def5678",
+    "request": {
+      "branch": "worktree-builder-1",
+      "head_sha": "abc1234def5678",
+      "target_review_label": "reviewer-1",
+      "target_review_pane_id": "%3",
+      "target_review_role": "Reviewer",
+      "review_contract": {
+        "version": 1,
+        "source_task": "TASK-210",
+        "issue_ref": "#315",
+        "style": "utility_first",
+        "required_scope": [
+          "design_impact",
+          "replacement_coverage",
+          "orphaned_artifacts"
+        ]
+      }
+    },
+    "reviewer": {
+      "pane_id": "%3",
+      "label": "reviewer-1",
+      "role": "Reviewer"
+    },
+    "updatedAt": "2026-04-10T12:10:00+09:00",
+    "evidence": {
+      "approved_at": "2026-04-10T12:10:00+09:00",
+      "review_contract_snapshot": {
+        "version": 1,
+        "source_task": "TASK-210",
+        "issue_ref": "#315",
+        "style": "utility_first",
+        "required_scope": [
+          "design_impact",
+          "replacement_coverage",
+          "orphaned_artifacts"
+        ]
+      }
+    }
+  }
+}
+'@ | Set-Content -Path $script:explainReviewStatePath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        { Get-ExplainPayload -ProjectDir $script:explainTempRoot -RunId 'task:task-256' } | Should -Throw '*invalid review state*approved_via*'
+    }
+
     It 'keeps refs and returns null packets when artifact files are missing or malformed' {
 @"
 version: 1

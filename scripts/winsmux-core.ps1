@@ -1487,6 +1487,31 @@ function Assert-ReviewStateRecordShape {
     if (-not $snapshot.Contains('required_scope') -or @($snapshot['required_scope']).Count -eq 0) {
         Stop-WithError "invalid review state: branch '$Branch' evidence is missing review_contract_snapshot.required_scope"
     }
+
+    switch ($status.ToUpperInvariant()) {
+        'PASS' {
+            $approvedAt = [string](Get-ReviewStatePropertyValue -InputObject $evidenceRecord -Name 'approved_at')
+            if ([string]::IsNullOrWhiteSpace($approvedAt)) {
+                Stop-WithError "invalid review state: branch '$Branch' PASS evidence is missing approved_at"
+            }
+
+            $approvedVia = [string](Get-ReviewStatePropertyValue -InputObject $evidenceRecord -Name 'approved_via')
+            if ([string]::IsNullOrWhiteSpace($approvedVia)) {
+                Stop-WithError "invalid review state: branch '$Branch' PASS evidence is missing approved_via"
+            }
+        }
+        'FAIL' {
+            $failedAt = [string](Get-ReviewStatePropertyValue -InputObject $evidenceRecord -Name 'failed_at')
+            if ([string]::IsNullOrWhiteSpace($failedAt)) {
+                Stop-WithError "invalid review state: branch '$Branch' FAIL evidence is missing failed_at"
+            }
+
+            $failedVia = [string](Get-ReviewStatePropertyValue -InputObject $evidenceRecord -Name 'failed_via')
+            if ([string]::IsNullOrWhiteSpace($failedVia)) {
+                Stop-WithError "invalid review state: branch '$Branch' FAIL evidence is missing failed_via"
+            }
+        }
+    }
 }
 
 # --- Helper: Labels ---
