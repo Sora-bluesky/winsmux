@@ -3,7 +3,8 @@ mod pty_backend;
 
 use desktop_backend::{
     handle_desktop_json_rpc, load_desktop_run_explain, load_desktop_summary_snapshot,
-    DesktopJsonRpcRequest, DesktopJsonRpcResponse, DesktopSummarySnapshot, PwshScriptTransport,
+    spawn_desktop_summary_refresh_stream, DesktopJsonRpcRequest, DesktopJsonRpcResponse,
+    DesktopStreamCommand, DesktopSummaryRefreshSignal, DesktopSummarySnapshot, PwshScriptTransport,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use pty_backend::{
@@ -11,6 +12,7 @@ use pty_backend::{
 };
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -26,18 +28,46 @@ struct PtyManager {
     panes: Arc<Mutex<HashMap<String, SinglePty>>>,
 }
 
+struct DesktopSummaryStreamManager {
+    started: AtomicBool,
+    stop_requested: Arc<AtomicBool>,
+}
+
 struct TauriPtyTransport {
     app: AppHandle,
 }
 
-fn emit_desktop_summary_refresh(app: &AppHandle, reason: &str, pane_id: &str) {
-    let _ = app.emit(
-        DESKTOP_SUMMARY_REFRESH_EVENT,
-        serde_json::json!({
-            "reason": reason,
-            "pane_id": pane_id,
-        }),
-    );
+fn emit_desktop_summary_refresh(app: &AppHandle, signal: DesktopSummaryRefreshSignal) {
+    let _ = app.emit(DESKTOP_SUMMARY_REFRESH_EVENT, signal);
+}
+
+fn start_desktop_summary_refresh_streams(app: &AppHandle) {
+    let manager = app.state::<DesktopSummaryStreamManager>();
+    if manager.started.swap(true, Ordering::SeqCst) {
+        return;
+    }
+
+    let inbox_app = app.clone();
+    if let Err(err) = spawn_desktop_summary_refresh_stream(
+        DesktopStreamCommand::Inbox { project_dir: None },
+        manager.stop_requested.clone(),
+        move |signal| {
+            emit_desktop_summary_refresh(&inbox_app, signal);
+        },
+    ) {
+        eprintln!("Failed to start inbox summary stream adapter: {}", err);
+    }
+
+    let digest_app = app.clone();
+    if let Err(err) = spawn_desktop_summary_refresh_stream(
+        DesktopStreamCommand::Digest { project_dir: None },
+        manager.stop_requested.clone(),
+        move |signal| {
+            emit_desktop_summary_refresh(&digest_app, signal);
+        },
+    ) {
+        eprintln!("Failed to start digest summary stream adapter: {}", err);
+    }
 }
 
 #[tauri::command]
@@ -140,7 +170,15 @@ fn spawn_pty(app: &AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(
         panes.insert(pane_id.clone(), single);
     }
 
-    emit_desktop_summary_refresh(app, "pty.spawn", &pane_id);
+    emit_desktop_summary_refresh(
+        app,
+        DesktopSummaryRefreshSignal {
+            source: "pty".to_string(),
+            reason: "pty.spawn".to_string(),
+            pane_id: Some(pane_id.clone()),
+            run_id: None,
+        },
+    );
 
     // Read PTY output in background thread
     let app_handle = app.clone();
@@ -210,7 +248,15 @@ fn close_pty(app: &AppHandle, pane_id: &str) -> Result<(), String> {
     // Drop master to signal EOF to reader thread
     drop(entry.master);
     drop(entry.writer);
-    emit_desktop_summary_refresh(app, "pty.close", pane_id);
+    emit_desktop_summary_refresh(
+        app,
+        DesktopSummaryRefreshSignal {
+            source: "pty".to_string(),
+            reason: "pty.close".to_string(),
+            pane_id: Some(pane_id.to_string()),
+            run_id: None,
+        },
+    );
     Ok(())
 }
 
@@ -247,10 +293,18 @@ impl PtyCommandTransport for TauriPtyTransport {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(PtyManager {
             panes: Arc::new(Mutex::new(HashMap::new())),
+        })
+        .manage(DesktopSummaryStreamManager {
+            started: AtomicBool::new(false),
+            stop_requested: Arc::new(AtomicBool::new(false)),
+        })
+        .setup(|app| {
+            start_desktop_summary_refresh_streams(&app.handle().clone());
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             desktop_summary_snapshot,
@@ -262,6 +316,16 @@ pub fn run() {
             pty_resize,
             pty_close
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app_handle, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            let manager = app_handle.state::<DesktopSummaryStreamManager>();
+            manager.stop_requested.store(true, Ordering::SeqCst);
+        }
+    });
 }
