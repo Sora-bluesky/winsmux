@@ -7259,6 +7259,7 @@ Describe 'operator startup restore contract docs' {
 
     It 'requires orchestra-smoke operator_contract instead of legacy psmux probes' {
         $script:claudeGuideContent | Should -Match 'winsmux orchestra-smoke --json'
+        $script:claudeGuideContent | Should -Match 'use the term\s+\*\*operator\*\*'
         $script:claudeGuideContent | Should -Match 'needs-startup'
         $script:claudeGuideContent | Should -Match 'orchestra-start\.ps1'
         $script:claudeGuideContent | Should -Match 'operator_contract\.operator_state'
@@ -7275,9 +7276,14 @@ Describe 'operator startup restore contract docs' {
         $script:claudeGuideContent | Should -Match 'prevents a clean `winsmux orchestra-smoke --json` result from being obtained'
         $script:claudeGuideContent | Should -Match 'start the first pending action automatically instead of asking which task to begin'
         $script:claudeGuideContent | Should -Match 'do not use Explore subagents for PR/task analysis'
+        $script:claudeGuideContent | Should -Match 'Do not perform operator-side code review judgements'
+        $script:claudeGuideContent | Should -Match 'Do not report that review was dispatched until formal review evidence is observed'
+        $script:claudeGuideContent | Should -Match 'review dispatch blocked'
         $script:claudeGuideContent | Should -Match 'psmux --version'
         $script:claudeGuideContent | Should -Match 'Get-Process psmux-server'
         $script:claudeGuideContent | Should -Match 'manually start a `psmux` server'
+        $script:dispatchRuleContent | Should -Match '# Operator Dispatch Procedure'
+        $script:dispatchRuleContent | Should -Match 'User-facing progress updates must use \*\*operator\*\*'
         $script:dispatchRuleContent | Should -Match 'scripts/winsmux-core\.ps1 orchestra-smoke --json'
         $script:dispatchRuleContent | Should -Match 'scripts/winsmux-core\.ps1 orchestra-attach --json'
         $script:dispatchRuleContent | Should -Match 'scripts/winsmux-core\.ps1 dispatch-task'
@@ -7296,6 +7302,10 @@ Describe 'operator startup restore contract docs' {
         $script:dispatchRuleContent | Should -Match 'prevents a clean `orchestra-smoke --json` result from being obtained'
         $script:dispatchRuleContent | Should -Match 'Never ask the user which task to begin'
         $script:dispatchRuleContent | Should -Match 'Explore subagents are reserved for orchestra startup/status diagnosis only'
+        $script:dispatchRuleContent | Should -Match 'Operator runs tests'
+        $script:dispatchRuleContent | Should -Match 'operator-side code review judgement is not'
+        $script:dispatchRuleContent | Should -Match 'Before reporting that review was dispatched'
+        $script:dispatchRuleContent | Should -Match 'review dispatch blocked'
         $script:dispatchRuleContent | Should -Match 'psmux --version'
         $script:dispatchRuleContent | Should -Match 'Get-Process psmux-server'
     }

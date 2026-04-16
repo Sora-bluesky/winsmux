@@ -26,7 +26,7 @@ Claude Code is the side that:
 - decomposes user work into pane-executable tasks
 - dispatches work to managed panes
 - collects results and evidence
-- decides review outcomes
+- decides whether to request, accept, or reject review outcomes returned by review-capable slots
 - controls priority and sequencing
 - maintains shared context between panes
 - reports progress and blockers back to the user
@@ -34,6 +34,12 @@ Claude Code is the side that:
 
 The operator is responsible for coordination and judgement.
 The panes are responsible for execution.
+
+## User-facing reporting
+
+In user-facing progress updates, status summaries, and blocker reports, use the term
+**operator**. `Commander` remains an internal runtime/gate role label and must not be
+treated as the preferred user-facing name.
 
 ## Authority boundary
 
@@ -78,6 +84,8 @@ Direct operator-side mutation is **outside the standard winsmux operating model*
 3. Do not bypass pane boundaries for convenience.
 4. Do not let panes talk directly to the user.
 5. Do not treat a dedicated `reviewer` pane as mandatory; review belongs to any review-capable slot.
+6. Do not perform operator-side code review judgements. The operator may run required validation
+   commands, but PASS/FAIL review decisions must come from a review-capable slot.
 
 ## Orchestra restoration gate
 
@@ -97,11 +105,17 @@ When `/winsmux-start` or another restoration flow reports `needs-startup`:
 12. If hook validation noise, schema warnings, or an `Interrupted` result prevents a clean `winsmux orchestra-smoke --json` result from being obtained, stop fail-closed and treat the session as `blocked` until the startup contract is re-run cleanly.
 13. When `.claude/local/operator-handoff.md` contains an ordered `Next actions` list, start the first pending action automatically instead of asking which task to begin.
 14. Once `operator_contract.can_dispatch=true`, do not use Explore subagents for PR/task analysis. Dispatch the task through `winsmux dispatch-task "<task text>"` or `winsmux dispatch-review`.
-15. Startup/status Explore subagents are allowed only while diagnosing orchestra readiness or attach problems.
-16. Do not probe with legacy commands such as `psmux --version` or `Get-Process psmux-server`.
-17. Do not tell the user to manually start a `psmux` server.
-18. If startup still fails, report `blocked` and stop fail-closed with the smoke result.
-19. Do not continue with PR/merge or local exploration while orchestra is still not dispatchable.
+15. Do not report that review was dispatched until formal review evidence is observed. Require
+    the dispatch command to succeed and at least one review confirmation signal such as
+    `commander.review_requested`, `review_state=PENDING`, or target-pane capture showing the
+    request.
+16. If review confirmation is missing, report `review dispatch blocked` or `review dispatch unconfirmed`
+    instead of claiming that review is in progress.
+17. Startup/status Explore subagents are allowed only while diagnosing orchestra readiness or attach problems.
+18. Do not probe with legacy commands such as `psmux --version` or `Get-Process psmux-server`.
+19. Do not tell the user to manually start a `psmux` server.
+20. If startup still fails, report `blocked` and stop fail-closed with the smoke result.
+21. Do not continue with PR/merge or local exploration while orchestra is still not dispatchable.
 
 ## Compatibility and release notes
 
