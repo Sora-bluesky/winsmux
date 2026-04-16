@@ -60,6 +60,7 @@ export interface DesktopBoardPane {
   task_state: string;
   review_state: string;
   branch: string;
+  worktree: string;
   head_sha: string;
   changed_file_count: number;
   last_event_at: string;
