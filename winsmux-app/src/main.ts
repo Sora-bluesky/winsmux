@@ -7,7 +7,6 @@ import {
   getDesktopSummarySnapshot,
   subscribeToDesktopSummaryRefresh,
   type DesktopEditorFilePayload,
-  type DesktopDigestItem,
   type DesktopExplainPayload,
   type DesktopRunProjection,
   type DesktopSummarySnapshot,
@@ -384,14 +383,7 @@ function getAvailableRunIds(snapshot: DesktopSummarySnapshot | null = desktopSum
     return [] as string[];
   }
 
-  const runIds = new Set<string>();
-  for (const item of snapshot.digest.items) {
-    runIds.add(item.run_id);
-  }
-  for (const projection of snapshot.run_projections) {
-    runIds.add(projection.run_id);
-  }
-  return Array.from(runIds);
+  return snapshot.run_projections.map((projection) => projection.run_id);
 }
 
 function resolveSelectedRunId(snapshot: DesktopSummarySnapshot | null = desktopSummarySnapshot, preferredRunId?: string | null) {
@@ -416,6 +408,11 @@ function getRunProjectionByRunId(runId: string | null) {
     return null;
   }
   return getRunProjections().find((projection) => projection.run_id === runId) ?? null;
+}
+
+function getPrimaryRunProjection() {
+  const resolvedRunId = resolveSelectedRunId();
+  return getRunProjectionByRunId(resolvedRunId) ?? getRunProjections()[0] ?? null;
 }
 
 function setSelectedRun(runId: string | null) {
@@ -760,45 +757,6 @@ function getSourceFilterLabel(filter: SourceFilter) {
   }
 }
 
-function getPrimaryDigestItem() {
-  if (desktopSummarySnapshot?.digest.items?.length) {
-    const resolvedRunId = resolveSelectedRunId();
-    if (resolvedRunId) {
-      const selectedDigestItem = desktopSummarySnapshot.digest.items.find((item) => item.run_id === resolvedRunId);
-      if (selectedDigestItem) {
-        return selectedDigestItem;
-      }
-    }
-
-    return desktopSummarySnapshot.digest.items[0];
-  }
-
-  const resolvedRunId = resolveSelectedRunId();
-  const projection =
-    getRunProjectionByRunId(resolvedRunId) ??
-    getRunProjections()[0];
-  if (!projection) {
-    return null;
-  }
-
-  return {
-    run_id: projection.run_id,
-    task: projection.task,
-    label: projection.label,
-    pane_id: projection.pane_id,
-    role: "",
-    task_state: projection.task_state,
-    review_state: projection.review_state,
-    next_action: projection.next_action,
-    branch: projection.branch,
-    head_short: "",
-    changed_file_count: projection.changed_files.length,
-    changed_files: projection.changed_files,
-    verification_outcome: projection.verification_outcome,
-    security_blocked: projection.security_blocked,
-  } satisfies DesktopDigestItem;
-}
-
 function getSelectedRunId() {
   return resolveSelectedRunId();
 }
@@ -813,16 +771,16 @@ function renderContextPanel() {
 
   const visibleChanges = getVisibleSourceChanges();
   const primaryChange = getPrimarySourceChange(visibleChanges);
-  const selectedDigestItem = getPrimaryDigestItem();
+  const selectedProjection = getPrimaryRunProjection();
 
   sectionRoot.innerHTML = "";
   const resolvedContextSections = [
-    { label: "next", value: selectedDigestItem?.next_action || "Open Explain" },
-    { label: "run", value: selectedDigestItem?.run_id || primaryChange?.run || "No active run" },
+    { label: "next", value: selectedProjection?.next_action || "Open Explain" },
+    { label: "run", value: selectedProjection?.run_id || primaryChange?.run || "No active run" },
     { label: "pane", value: primaryChange?.paneLabel ?? "No pane label" },
-    { label: "branch", value: primaryChange?.branch ?? "No branch" },
-    { label: "worktree", value: primaryChange?.worktree || "Project root" },
-    { label: "review", value: primaryChange?.review ?? "No review state" },
+    { label: "branch", value: selectedProjection?.branch || primaryChange?.branch || "No branch" },
+    { label: "worktree", value: selectedProjection?.worktree || primaryChange?.worktree || "Project root" },
+    { label: "review", value: selectedProjection?.review_state || primaryChange?.review || "No review state" },
   ];
   for (const item of resolvedContextSections) {
     const row = document.createElement("div");
@@ -888,7 +846,7 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
   const inboxStatus = desktopSummarySnapshot
     ? `${desktopSummarySnapshot.inbox.summary.item_count} inbox`
     : "config.toml";
-  const branchStatus = getPrimaryDigestItem()?.branch || "main";
+  const branchStatus = getPrimaryRunProjection()?.branch || "main";
 
   return {
     left: [
@@ -1199,39 +1157,39 @@ function renderRunSummary() {
     return;
   }
 
-  const digestItem = getPrimaryDigestItem();
-  if (digestItem) {
+  const projection = getPrimaryRunProjection();
+  if (projection) {
     const statusTone =
-      digestItem.review_state === "PASS"
+      projection.review_state === "PASS"
         ? "success"
-        : digestItem.review_state === "PENDING"
+        : projection.review_state === "PENDING"
           ? "warning"
-          : digestItem.review_state === "FAIL" || digestItem.review_state === "FAILED"
+          : projection.review_state === "FAIL" || projection.review_state === "FAILED"
             ? "danger"
             : "info";
-    const verification = digestItem.verification_outcome ? `verify ${digestItem.verification_outcome}` : "verify n/a";
-    const security = digestItem.security_blocked ? `security ${digestItem.security_blocked}` : "security n/a";
+    const verification = projection.verification_outcome ? `verify ${projection.verification_outcome}` : "verify n/a";
+    const security = projection.security_blocked ? `security ${projection.security_blocked}` : "security n/a";
 
     root.innerHTML = `
       <div class="run-summary-card">
         <div class="run-summary-header">
           <div>
             <div class="timeline-eyebrow">Selected run</div>
-            <div class="run-summary-title">${digestItem.run_id}</div>
+            <div class="run-summary-title">${projection.run_id}</div>
           </div>
           <div class="run-summary-status" data-tone="${statusTone}">
-            ${digestItem.review_state || "ready"}
+            ${projection.review_state || "ready"}
           </div>
         </div>
         <div class="run-summary-meta-row">
-          <span class="run-summary-pill">${digestItem.label || digestItem.pane_id || "summary-stream"}</span>
-          <span class="run-summary-pill">${digestItem.branch || "no branch"}</span>
-          <span class="run-summary-pill">${digestItem.changed_file_count} changed</span>
-          <span class="run-summary-pill">${digestItem.next_action || "no next action"}</span>
+          <span class="run-summary-pill">${projection.label || projection.pane_id || "summary-stream"}</span>
+          <span class="run-summary-pill">${projection.branch || "no branch"}</span>
+          <span class="run-summary-pill">${projection.changed_files.length} changed</span>
+          <span class="run-summary-pill">${projection.next_action || "no next action"}</span>
           <span class="run-summary-pill">${verification}</span>
           <span class="run-summary-pill">${security}</span>
         </div>
-        <div class="run-summary-body">${digestItem.task || "Summary-stream run surfaced by the backend adapter."}</div>
+        <div class="run-summary-body">${projection.summary || projection.task || "Projected run surfaced by the backend adapter."}</div>
         <div class="timeline-chip-row">
           <button type="button" class="timeline-chip" data-action="open-explain">Open Explain</button>
           <button type="button" class="timeline-chip" data-action="open-source-context">Source Context</button>
@@ -1453,26 +1411,26 @@ async function openExplainForSelectedRun() {
 function appendFallbackExplain() {
   const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
   const selectedRunId = getSelectedRunId();
-  const digestItem = getPrimaryDigestItem();
-  const hasSelectedDigest = Boolean(selectedRunId && digestItem?.run_id === selectedRunId);
-  const digestRunCount = desktopSummarySnapshot?.digest.summary.item_count ?? 0;
+  const projection = getPrimaryRunProjection();
+  const hasSelectedProjection = Boolean(selectedRunId && projection?.run_id === selectedRunId);
+  const runCount = getRunProjections().length;
   const inboxCount = desktopSummarySnapshot?.inbox.summary.item_count ?? 0;
-  const body = hasSelectedDigest
-    ? `Digest fallback for ${selectedRunId}.`
-    : desktopSummarySnapshot && digestRunCount > 0
-      ? "Digest fallback without a selected run."
+  const body = hasSelectedProjection
+    ? `Explain unavailable for ${selectedRunId}.`
+    : desktopSummarySnapshot && runCount > 0
+      ? "Explain unavailable without a selected run."
       : desktopSummarySnapshot
-        ? "Digest fallback without projected runs."
+        ? "Explain unavailable without projected runs."
         : "Backend summary unavailable.";
-  const details = hasSelectedDigest
+  const details = hasSelectedProjection
     ? [
         { label: "run", value: selectedRunId as string },
-        { label: "next", value: digestItem?.next_action || "idle" },
-        { label: "changed", value: `${digestItem?.changed_file_count ?? 0}` },
+        { label: "next", value: projection?.next_action || "idle" },
+        { label: "changed", value: `${projection?.changed_files.length ?? 0}` },
       ]
     : desktopSummarySnapshot
       ? [
-          { label: "runs", value: `${digestRunCount}` },
+          { label: "runs", value: `${runCount}` },
           { label: "inbox", value: `${inboxCount}` },
         ]
       : [{ label: "state", value: "backend unavailable" }];
@@ -1876,18 +1834,12 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.run.changed_files.join("|"),
     payload.explanation.summary,
     payload.explanation.next_action,
-    payload.explanation.current_state?.state,
-    payload.explanation.current_state?.task_state,
-    payload.explanation.current_state?.review_state,
-    payload.explanation.current_state?.last_event,
     payload.explanation.reasons.join("|"),
     payload.evidence_digest.next_action,
     payload.evidence_digest.verification_outcome,
     payload.evidence_digest.security_blocked,
     payload.evidence_digest.changed_files.join("|"),
-    payload.review_state?.status,
-    payload.result_packet?.summary,
-    payload.result_packet?.next_action_hint,
+    payload.recent_events.map((item) => `${item.event}:${item.message}`).join("|"),
   ]);
 }
 
@@ -2428,7 +2380,7 @@ function buildDesktopSummaryConversation(snapshot: DesktopSummarySnapshot): Conv
 }
 
 function pruneExplainCache(snapshot: DesktopSummarySnapshot, preservedRunId?: string | null) {
-  const activeRunIds = new Set(snapshot.digest.items.map((item) => item.run_id));
+  const activeRunIds = new Set(snapshot.run_projections.map((projection) => projection.run_id));
   if (preservedRunId) {
     activeRunIds.add(preservedRunId);
   }

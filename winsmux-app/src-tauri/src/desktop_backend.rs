@@ -69,6 +69,66 @@ pub struct DesktopEditorFilePayload {
     pub truncated: bool,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_dir: Option<String>,
+    pub run: DesktopExplainRun,
+    pub explanation: DesktopExplainExplanation,
+    pub evidence_digest: DesktopExplainEvidenceDigest,
+    #[serde(default)]
+    pub recent_events: Vec<DesktopExplainRecentEvent>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainRun {
+    pub run_id: String,
+    pub task: String,
+    pub state: String,
+    pub task_state: String,
+    pub review_state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_role: Option<String>,
+    pub branch: String,
+    pub head_sha: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree: Option<String>,
+    #[serde(default)]
+    pub changed_files: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainExplanation {
+    pub summary: String,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    pub next_action: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainEvidenceDigest {
+    pub next_action: String,
+    pub changed_file_count: usize,
+    #[serde(default)]
+    pub changed_files: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_blocked: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainRecentEvent {
+    pub timestamp: String,
+    pub event: String,
+    pub label: String,
+    pub message: String,
+}
+
 #[derive(Deserialize)]
 pub struct DesktopJsonRpcRequest {
     pub jsonrpc: String,
@@ -197,11 +257,13 @@ pub fn load_desktop_run_explain(
     transport: &dyn DesktopCommandTransport,
     run_id: String,
     project_dir: Option<String>,
-) -> Result<Value, String> {
-    transport.request_json(&DesktopCommand::RunExplain {
+) -> Result<DesktopExplainPayload, String> {
+    let payload = transport.request_json(&DesktopCommand::RunExplain {
         run_id,
         project_dir,
-    })
+    })?;
+    serde_json::from_value(payload)
+        .map_err(|err| format!("Failed to parse desktop explain payload: {err}"))
 }
 
 pub fn load_desktop_editor_file(
@@ -252,7 +314,14 @@ pub fn handle_desktop_json_rpc(
             };
 
             match load_desktop_run_explain(transport, run_id, resolved_project_dir) {
-                Ok(result) => json_rpc_result(request_id, result),
+                Ok(result) => match serde_json::to_value(result) {
+                    Ok(value) => json_rpc_result(request_id, value),
+                    Err(err) => json_rpc_error(
+                        request_id,
+                        JSON_RPC_INTERNAL_ERROR,
+                        format!("Failed to serialize desktop explain payload: {err}"),
+                    ),
+                },
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
             }
         }
@@ -301,9 +370,11 @@ fn get_required_string_param(params: Option<&Value>, keys: &[&str]) -> Result<St
 fn get_optional_string_param(params: Option<&Value>, keys: &[&str]) -> Option<String> {
     let object = params?.as_object()?;
     for key in keys {
-        let value = object.get(*key)?.as_str()?.trim();
-        if !value.is_empty() {
-            return Some(value.to_string());
+        if let Some(value) = object.get(*key).and_then(Value::as_str) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
         }
     }
 
@@ -698,19 +769,114 @@ mod tests {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
             response: serde_json::json!({
-                "run": { "run_id": "run-7" },
+                "generated_at": "2026-04-16T00:00:00Z",
+                "project_dir": "C:/repo",
+                "run": {
+                    "run_id": "run-7",
+                    "task": "Explain payload",
+                    "state": "running",
+                    "task_state": "in_progress",
+                    "review_state": "PENDING",
+                    "provider_target": "codex:gpt-5.4",
+                    "agent_role": "worker",
+                    "branch": "codex/task291",
+                    "head_sha": "abc1234def5678",
+                    "worktree": ".worktrees/builder-1",
+                    "changed_files": ["winsmux-app/src/main.ts"]
+                },
                 "explanation": { "summary": "ok", "reasons": [], "next_action": "idle" },
-                "evidence_digest": { "changed_files": [], "changed_file_count": 0 },
+                "evidence_digest": {
+                    "next_action": "idle",
+                    "changed_files": [],
+                    "changed_file_count": 0
+                },
+                "run_packet": { "provider_target": "should-not-leak" },
                 "recent_events": []
             }),
         };
 
         let payload = load_desktop_run_explain(&transport, "run-7".to_string(), None).unwrap();
 
-        assert_eq!(payload["run"]["run_id"], "run-7");
+        assert_eq!(payload.run.run_id, "run-7");
+        assert_eq!(
+            payload.run.provider_target.as_deref(),
+            Some("codex:gpt-5.4")
+        );
         assert_eq!(
             transport.requests.borrow().as_slice(),
             ["explain run-7 --json"]
+        );
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_routes_run_explain_and_prunes_extra_packets() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({
+                "generated_at": "2026-04-16T00:00:00Z",
+                "project_dir": "C:/repo",
+                "run": {
+                    "run_id": "run-8",
+                    "task": "Explain payload",
+                    "state": "running",
+                    "task_state": "in_progress",
+                    "review_state": "PENDING",
+                    "provider_target": "codex:gpt-5.4",
+                    "agent_role": "worker",
+                    "branch": "codex/task291",
+                    "head_sha": "abc1234def5678",
+                    "worktree": ".worktrees/builder-1",
+                    "changed_files": ["winsmux-app/src/main.ts"]
+                },
+                "explanation": {
+                    "summary": "Explain is available",
+                    "reasons": ["task_state=in_progress"],
+                    "next_action": "review_requested"
+                },
+                "evidence_digest": {
+                    "next_action": "review_requested",
+                    "changed_file_count": 1,
+                    "changed_files": ["winsmux-app/src/main.ts"],
+                    "verification_outcome": "PASS",
+                    "security_blocked": "ALLOW"
+                },
+                "recent_events": [{
+                    "timestamp": "2026-04-16T00:00:00Z",
+                    "event": "commander.review_requested",
+                    "label": "builder-1",
+                    "message": "Need review"
+                }],
+                "run_packet": { "provider_target": "should-not-leak" },
+                "result_packet": { "summary": "should-not-leak" }
+            }),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-explain"),
+                method: "desktop.run.explain".to_string(),
+                params: Some(serde_json::json!({
+                    "run_id": "run-8"
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Success { id, result, .. } => {
+                assert_eq!(id, serde_json::json!("req-explain"));
+                assert_eq!(result["run"]["run_id"], "run-8");
+                assert!(result.get("run_packet").is_none());
+                assert!(result.get("result_packet").is_none());
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+        assert_eq!(
+            transport.requests.borrow().as_slice(),
+            ["explain run-8 --json"]
         );
     }
 

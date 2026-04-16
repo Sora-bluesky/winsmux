@@ -3,8 +3,9 @@ mod pty_backend;
 
 use desktop_backend::{
     handle_desktop_json_rpc, load_desktop_run_explain, load_desktop_summary_snapshot,
-    spawn_desktop_summary_refresh_stream, DesktopJsonRpcRequest, DesktopJsonRpcResponse,
-    DesktopStreamCommand, DesktopSummaryRefreshSignal, DesktopSummarySnapshot, PwshScriptTransport,
+    spawn_desktop_summary_refresh_stream, DesktopExplainPayload, DesktopJsonRpcRequest,
+    DesktopJsonRpcResponse, DesktopStreamCommand, DesktopSummaryRefreshSignal,
+    DesktopSummarySnapshot, PwshScriptTransport,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use pty_backend::{
@@ -82,7 +83,7 @@ async fn desktop_summary_snapshot(
 async fn desktop_run_explain(
     run_id: String,
     project_dir: Option<String>,
-) -> Result<serde_json::Value, String> {
+) -> Result<DesktopExplainPayload, String> {
     let transport = PwshScriptTransport;
     load_desktop_run_explain(&transport, run_id, project_dir)
 }
