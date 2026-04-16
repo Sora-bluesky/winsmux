@@ -75,6 +75,7 @@ pub struct DesktopBoardPane {
     pub task_state: String,
     pub review_state: String,
     pub branch: String,
+    pub worktree: String,
     pub head_sha: String,
     pub changed_file_count: usize,
     pub last_event_at: String,
@@ -884,6 +885,7 @@ mod tests {
         assert_eq!(snapshot.board.summary.pane_count, 2);
         assert_eq!(snapshot.board.summary.tasks_blocked, 0);
         assert_eq!(snapshot.board.panes[0].pane_id, "%2");
+        assert_eq!(snapshot.board.panes[0].worktree, ".worktrees/builder-1");
         assert_eq!(snapshot.board.panes[0].last_event_at, "__LAST_EVENT_AT__");
         assert_eq!(snapshot.inbox.summary.item_count, 4);
         assert_eq!(snapshot.inbox.items[0].pane_id, "%6");
@@ -983,6 +985,32 @@ mod tests {
         assert!(
             err.contains("worktree"),
             "expected missing worktree error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_board_pane_worktree() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["board"]["panes"][0]
+            .as_object_mut()
+            .expect("board.panes[0] must be an object")
+            .remove("worktree");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => {
+                panic!("expected summary snapshot parse failure for missing board pane worktree")
+            }
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("worktree"),
+            "expected missing board pane worktree error, got {err}"
         );
     }
 
