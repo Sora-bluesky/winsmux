@@ -598,6 +598,3 @@ module.exports = {
   getBacklogPath,
   getRoadmapPath,
 };
-
-
-
