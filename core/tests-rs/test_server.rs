@@ -1,3 +1,4 @@
+use super::build_server_info_text;
 use super::should_spawn_warm_server;
 use super::helpers::combined_data_version;
 use crate::types::AppState;
@@ -131,6 +132,37 @@ fn warm_server_is_disabled_when_warm_enabled_is_false() {
 fn warm_server_is_allowed_for_normal_sessions() {
     let app = AppState::new("demo".to_string());
     assert!(should_spawn_warm_server(&app));
+}
+
+#[test]
+fn server_info_text_uses_winsmux_branding() {
+    let mut app = AppState::new("demo".to_string());
+    app.windows.push(crate::types::Window {
+        root: crate::types::Node::Split {
+            kind: crate::types::LayoutKind::Horizontal,
+            sizes: vec![],
+            children: vec![],
+        },
+        active_path: vec![],
+        name: "shell".to_string(),
+        id: 0,
+        activity_flag: false,
+        bell_flag: false,
+        silence_flag: false,
+        last_output_time: std::time::Instant::now(),
+        last_seen_version: 0,
+        manual_rename: false,
+        layout_index: 0,
+        pane_mru: vec![],
+        zoom_saved: None,
+        linked_from: None,
+    });
+
+    let text = build_server_info_text(&app);
+    assert!(text.starts_with("winsmux "));
+    assert!(text.contains("session: demo"));
+    assert!(text.contains("windows: 1"));
+    assert!(!text.contains("psmux "));
 }
 
 // ── Options get/set tests ───────────────────────────────────────

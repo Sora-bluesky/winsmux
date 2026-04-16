@@ -458,7 +458,7 @@ fn server_info_shows_popup_with_version_and_session() {
     execute_command_string(&mut app, "server-info").unwrap();
     let (cmd, out) = extract_popup(&app);
     assert_eq!(cmd, "server-info");
-    assert!(out.contains("psmux"), "should contain 'psmux'");
+    assert!(out.contains("winsmux"), "should contain 'winsmux'");
     assert!(out.contains("my_sess"), "should contain session name");
     assert!(out.contains("Windows:"), "should contain window count");
 }

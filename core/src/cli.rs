@@ -1,17 +1,23 @@
 use crate::types::{ParsedTarget, VERSION};
 
+fn canonical_program_name_for_display(name: &str) -> String {
+    let normalized = name.to_lowercase().replace(".exe", "");
+    match normalized.as_str() {
+        "" | "winsmux" | "psmux" | "pmux" | "tmux" => "winsmux".to_string(),
+        other => other.to_string(),
+    }
+}
+
 pub fn get_program_name() -> String {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-        .unwrap_or_else(|| "psmux".to_string())
-        .to_lowercase()
-        .replace(".exe", "")
+        .map(|name| canonical_program_name_for_display(&name))
+        .unwrap_or_else(|| "winsmux".to_string())
 }
 
-pub fn print_help() {
-    let prog = get_program_name();
-    println!(r#"{prog} v{ver} - Terminal multiplexer for Windows (tmux alternative)
+fn help_text(prog: &str) -> String {
+    format!(r#"{prog} v{ver} - Terminal multiplexer for Windows (tmux alternative)
 
 USAGE:
     {prog} [COMMAND] [OPTIONS]
@@ -158,7 +164,7 @@ TARGET SYNTAX (-t):
     work:2                  Window 2 in session "work"
 
 CONFIGURATION:
-    psmux reads config on startup from the first file found:
+    winsmux reads config on startup from the first compatible file found:
         %USERPROFILE%\.psmux.conf
         %USERPROFILE%\.psmuxrc
         %USERPROFILE%\.tmux.conf
@@ -184,7 +190,7 @@ CONFIGURATION:
         bind-key -T prefix v split-window -v
 
 SHELL CONFIGURATION:
-    psmux launches PowerShell 7 (pwsh) by default. To change:
+    winsmux launches PowerShell 7 (pwsh) by default. To change:
 
     Use cmd.exe:
         set -g default-shell cmd
@@ -203,8 +209,8 @@ SHELL CONFIGURATION:
         set -g default-shell nu
 
     Launch a window with a specific command:
-        psmux new-window -- cmd /K echo hello
-        psmux new-session -- python
+        {prog} new-window -- cmd /K echo hello
+        {prog} new-session -- python
 
 SET OPTIONS (use with: set -g <option> <value>):
     prefix              Key  Prefix key (default: C-b)
@@ -342,7 +348,7 @@ ENVIRONMENT VARIABLES:
     PSMUX_CURSOR_STYLE       Cursor style (block, underline, bar)
     PSMUX_CURSOR_BLINK       Cursor blinking (1/0)
     PSMUX_DIM_PREDICTIONS    Prediction dimming (1 to enable)
-    TMUX                     Set inside psmux panes (tmux-compatible)
+    TMUX                     Set inside winsmux panes (tmux-compatible)
     TMUX_PANE                Current pane ID (e.g. %1)
 
 EXAMPLES:
@@ -358,10 +364,15 @@ EXAMPLES:
     {prog} set -g default-shell cmd Use cmd.exe as default shell
     {prog} source-file ~/.psmux.conf Reload config
 
-NOTE: psmux ships as 'psmux', 'pmux', and 'tmux' - use whichever you prefer!
+NOTE: winsmux preserves compatibility aliases 'psmux', 'pmux', and 'tmux' where supported.
 
-For more information: https://github.com/psmux/psmux
-"#, prog = prog, ver = VERSION);
+For more information: https://github.com/Sora-bluesky/winsmux
+"#, prog = prog, ver = VERSION)
+}
+
+pub fn print_help() {
+    let prog = get_program_name();
+    println!("{}", help_text(&prog));
 }
 
 pub fn print_version() {
@@ -369,8 +380,8 @@ pub fn print_version() {
     println!("{} {}", prog, VERSION);
 }
 
-pub fn print_commands() {
-    println!(r#"Available commands:
+fn commands_text() -> &'static str {
+    r#"Available commands:
   attach-session (attach)   - Attach to a session
   bind-key (bind)           - Bind a key to a command
   break-pane                - Break a pane into a new window
@@ -392,7 +403,7 @@ pub fn print_commands() {
   if-shell (if)             - Conditional command execution
   join-pane                 - Join a pane to a window
   kill-pane                 - Kill a pane
-  kill-server               - Kill the psmux server
+  kill-server               - Kill the winsmux server
   kill-session              - Kill a session
   kill-window               - Kill a window
   last-pane                 - Select the previously active pane
@@ -448,7 +459,11 @@ pub fn print_commands() {
   unlink-window (unlinkw)   - Unlink a window
   wait-for (wait)           - Wait for a signal
   zoom-pane (zoom)          - Toggle pane zoom
-"#);
+"#
+}
+
+pub fn print_commands() {
+    println!("{}", commands_text());
 }
 
 /// Parse a tmux-style target specification
@@ -523,6 +538,37 @@ pub fn parse_target(target: &str) -> ParsedTarget {
     }
     
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{canonical_program_name_for_display, commands_text, help_text};
+
+    #[test]
+    fn canonical_program_name_prefers_winsmux_for_legacy_aliases() {
+        for alias in ["winsmux", "winsmux.exe", "psmux", "pmux.exe", "tmux"] {
+            assert_eq!(canonical_program_name_for_display(alias), "winsmux");
+        }
+        assert_eq!(canonical_program_name_for_display("custom-tool.exe"), "custom-tool");
+    }
+
+    #[test]
+    fn help_text_uses_winsmux_operator_wording() {
+        let text = help_text("winsmux");
+        assert!(text.contains("winsmux reads config on startup from the first compatible file found:"));
+        assert!(text.contains("winsmux launches PowerShell 7 (pwsh) by default."));
+        assert!(text.contains("winsmux preserves compatibility aliases 'psmux', 'pmux', and 'tmux' where supported."));
+        assert!(text.contains("For more information: https://github.com/Sora-bluesky/winsmux"));
+        assert!(!text.contains("psmux reads config on startup from the first file found:"));
+        assert!(!text.contains("psmux launches PowerShell 7 (pwsh) by default."));
+    }
+
+    #[test]
+    fn commands_text_uses_winsmux_server_wording() {
+        let text = commands_text();
+        assert!(text.contains("kill-server               - Kill the winsmux server"));
+        assert!(!text.contains("Kill the psmux server"));
+    }
 }
 
 /// Extract the session name from a target string (for port file lookup)
