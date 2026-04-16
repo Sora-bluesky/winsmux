@@ -95,8 +95,8 @@ export interface DesktopDigestItem {
   review_state: string;
   next_action: string;
   branch: string;
-  worktree?: string;
-  head_sha?: string;
+  worktree: string;
+  head_sha: string;
   head_short: string;
   changed_file_count: number;
   changed_files: string[];
