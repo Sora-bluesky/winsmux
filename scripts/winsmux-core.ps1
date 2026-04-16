@@ -1514,6 +1514,60 @@ function Assert-ReviewStateRecordShape {
     }
 }
 
+function Assert-ManifestBackedRunShape {
+    param([Parameter(Mandatory = $true)]$PaneRecord)
+
+    $getFieldValue = {
+        param($InputObject, [string[]]$Names)
+
+        foreach ($name in @($Names)) {
+            if ($InputObject -is [System.Collections.IDictionary] -and $InputObject.Contains($name)) {
+                return $InputObject[$name]
+            }
+
+            if ($null -ne $InputObject.PSObject -and $InputObject.PSObject.Properties.Name -contains $name) {
+                return $InputObject.PSObject.Properties[$name].Value
+            }
+        }
+
+        return $null
+    }
+
+    $label = [string](& $getFieldValue $PaneRecord @('label', 'Label'))
+    if ([string]::IsNullOrWhiteSpace($label)) {
+        $label = '<unknown>'
+    }
+
+    $reviewState = [string](& $getFieldValue $PaneRecord @('review_state', 'ReviewState'))
+    if (-not [string]::IsNullOrWhiteSpace($reviewState)) {
+        $branch = [string](& $getFieldValue $PaneRecord @('branch', 'Branch'))
+        if ([string]::IsNullOrWhiteSpace($branch)) {
+            Stop-WithError "invalid manifest: pane '$label' review_state requires branch"
+        }
+
+        $headSha = [string](& $getFieldValue $PaneRecord @('head_sha', 'HeadSha'))
+        if ([string]::IsNullOrWhiteSpace($headSha)) {
+            Stop-WithError "invalid manifest: pane '$label' review_state requires head_sha"
+        }
+    }
+
+    $changedFileCount = & $getFieldValue $PaneRecord @('changed_file_count', 'ChangedFileCount')
+    if ([int]$changedFileCount -gt 0) {
+        $changedFiles = @(& $getFieldValue $PaneRecord @('changed_files', 'ChangedFiles'))
+        if (@($changedFiles).Count -eq 0) {
+            Stop-WithError "invalid manifest: pane '$label' changed_file_count requires changed_files"
+        }
+    }
+
+    $lastEvent = [string](& $getFieldValue $PaneRecord @('last_event', 'LastEvent'))
+    if (-not [string]::IsNullOrWhiteSpace($lastEvent)) {
+        $lastEventAt = [string](& $getFieldValue $PaneRecord @('last_event_at', 'LastEventAt'))
+        if ([string]::IsNullOrWhiteSpace($lastEventAt)) {
+            Stop-WithError "invalid manifest: pane '$label' last_event requires last_event_at"
+        }
+    }
+}
+
 # --- Helper: Labels ---
 function Get-Labels {
     if (Test-Path $LabelsFile) {
@@ -4150,6 +4204,7 @@ function Get-RunsPayload {
     $runsById = [ordered]@{}
 
     foreach ($pane in @($boardPayload.panes)) {
+        Assert-ManifestBackedRunShape -PaneRecord $pane
         $runId = Get-RunIdFromPaneRecord -PaneRecord $pane
         if (-not $runsById.Contains($runId)) {
             $runsById[$runId] = [ordered]@{
