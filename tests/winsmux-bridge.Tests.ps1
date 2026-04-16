@@ -7017,6 +7017,154 @@ panes:
         { Get-ExplainPayload -ProjectDir $script:explainTempRoot -RunId 'task:task-256' } | Should -Throw '*invalid manifest*pane ''builder-1'' last_event requires last_event_at*'
     }
 
+    It 'rejects explain when manifest planning metadata is missing parent_run_id' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:explainTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    task: Implement run ledger
+    goal: Ship run contract primitives
+    task_type: implementation
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    priority: P0
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        { Get-ExplainPayload -ProjectDir $script:explainTempRoot -RunId 'task:task-256' } | Should -Throw '*invalid manifest*pane ''builder-1'' planning metadata requires parent_run_id*'
+    }
+
+    It 'rejects explain when manifest planning metadata is missing goal' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:explainTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    parent_run_id: operator:session-1
+    task: Implement run ledger
+    task_type: implementation
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    priority: P0
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        { Get-ExplainPayload -ProjectDir $script:explainTempRoot -RunId 'task:task-256' } | Should -Throw '*invalid manifest*pane ''builder-1'' planning metadata requires goal*'
+    }
+
+    It 'rejects explain when manifest planning metadata is missing task_type' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:explainTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    parent_run_id: operator:session-1
+    task: Implement run ledger
+    goal: Ship run contract primitives
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    priority: P0
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        { Get-ExplainPayload -ProjectDir $script:explainTempRoot -RunId 'task:task-256' } | Should -Throw '*invalid manifest*pane ''builder-1'' planning metadata requires task_type*'
+    }
+
+    It 'rejects explain when manifest planning metadata is missing priority' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:explainTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    parent_run_id: operator:session-1
+    task: Implement run ledger
+    goal: Ship run contract primitives
+    task_type: implementation
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        { Get-ExplainPayload -ProjectDir $script:explainTempRoot -RunId 'task:task-256' } | Should -Throw '*invalid manifest*pane ''builder-1'' planning metadata requires priority*'
+    }
+
     It 'keeps refs and returns null packets when artifact files are missing or malformed' {
 @"
 version: 1

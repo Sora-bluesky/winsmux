@@ -1566,6 +1566,31 @@ function Assert-ManifestBackedRunShape {
             Stop-WithError "invalid manifest: pane '$label' last_event requires last_event_at"
         }
     }
+
+    $parentRunId = [string](& $getFieldValue $PaneRecord @('parent_run_id', 'ParentRunId'))
+    $goal = [string](& $getFieldValue $PaneRecord @('goal', 'Goal'))
+    $taskType = [string](& $getFieldValue $PaneRecord @('task_type', 'TaskType'))
+    $priority = [string](& $getFieldValue $PaneRecord @('priority', 'Priority'))
+    $hasPlanningMetadata =
+        -not [string]::IsNullOrWhiteSpace($parentRunId) -or
+        -not [string]::IsNullOrWhiteSpace($goal) -or
+        -not [string]::IsNullOrWhiteSpace($taskType) -or
+        -not [string]::IsNullOrWhiteSpace($priority)
+
+    if ($hasPlanningMetadata) {
+        if ([string]::IsNullOrWhiteSpace($parentRunId)) {
+            Stop-WithError "invalid manifest: pane '$label' planning metadata requires parent_run_id"
+        }
+        if ([string]::IsNullOrWhiteSpace($goal)) {
+            Stop-WithError "invalid manifest: pane '$label' planning metadata requires goal"
+        }
+        if ([string]::IsNullOrWhiteSpace($taskType)) {
+            Stop-WithError "invalid manifest: pane '$label' planning metadata requires task_type"
+        }
+        if ([string]::IsNullOrWhiteSpace($priority)) {
+            Stop-WithError "invalid manifest: pane '$label' planning metadata requires priority"
+        }
+    }
 }
 
 # --- Helper: Labels ---
