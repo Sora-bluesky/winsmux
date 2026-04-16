@@ -2,7 +2,9 @@
 paths: ["winsmux-core/scripts/**", ".claude/**"]
 ---
 
-# Commander Dispatch Procedure
+# Operator Dispatch Procedure
+
+User-facing progress updates must use **operator**. `Commander` is an internal role/gate term only.
 
 ## Orchestra restore preflight
 1. If restoration state is `needs-startup`, do not triage PRs, plan merges, read backlog, or dispatch work yet.
@@ -33,17 +35,24 @@ paths: ["winsmux-core/scripts/**", ".claude/**"]
 3. Send: `winsmux send -t <pane> "Read .builder-prompt.txt and implement"` + Enter via `pwsh -NoProfile -File scripts/winsmux-core.ps1 keys <pane> Enter`
 4. Monitor: `winsmux capture-pane -t <pane> -p | tail -15`
 5. Verify: `git -C <worktree> diff --stat HEAD`
-6. **Commander runs tests** (Builder cannot — CLM #319): `NO_COLOR=1 pwsh -Command "Invoke-Pester <worktree>/tests/ -Output Minimal"`
+6. **Operator runs tests** when the flow requires it (Builder cannot — CLM #319): `NO_COLOR=1 pwsh -Command "Invoke-Pester <worktree>/tests/ -Output Minimal"`
+7. Running tests is allowed; operator-side code review judgement is not. PASS/FAIL review decisions must come from a review-capable slot.
 
 ## Reviewer Dispatch
-1. Send review request: `winsmux send -t reviewer-1 "Review diffs in .worktrees/builder-N"` + Enter
-2. Wait for PASS/FAIL in capture output
-3. On PASS: proceed to commit. On FAIL: re-dispatch fix to Builder
+1. Use `pwsh -NoProfile -File scripts/winsmux-core.ps1 dispatch-review "<task text>"` when the next action is to request a formal review-state transition from a review-capable slot.
+2. Do not perform local diff review as operator. The operator may inspect dispatch evidence and test output only.
+3. Before reporting that review was dispatched, require command success and at least one confirmation signal:
+   - `commander.review_requested`
+   - `review_state=PENDING`
+   - target pane capture showing the review request
+4. If confirmation is missing, report `review dispatch blocked` or `review dispatch unconfirmed` instead of saying that review is in progress.
+5. On PASS: proceed to commit. On FAIL: re-dispatch fix to Builder.
 
 ## Standard Dispatch
 1. Use `pwsh -NoProfile -File scripts/winsmux-core.ps1 dispatch-task "<task text>"` as the default operator-to-pane dispatch path.
 2. Use `dispatch-review` only when the next action is to request a formal review-state transition.
 3. Verify the chosen pane with `winsmux capture-pane -t <pane_id> -p | tail -15` before reporting that work was dispatched.
+4. In user-facing progress messages, say `operator` rather than `Commander`.
 
 ## Post-Review Commit
 1. Verify `review-state.json` has PASS
