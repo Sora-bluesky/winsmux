@@ -106,6 +106,7 @@ export interface DesktopDigestItem {
   confidence: number | null;
   observation_pack_ref: string;
   consultation_ref: string;
+  last_event_at: string;
 }
 
 export interface DesktopRunProjection {
