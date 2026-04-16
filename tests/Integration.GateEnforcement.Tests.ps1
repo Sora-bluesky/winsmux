@@ -758,6 +758,8 @@ EOF
         $reviewState.'feature/review-gate'.request.review_contract.source_task | Should -Be 'TASK-210'
         $reviewState.'feature/review-gate'.request.review_contract.style | Should -Be 'utility_first'
         $reviewState.'feature/review-gate'.request.review_contract.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
+        $reviewState.'feature/review-gate'.evidence.approved_at | Should -Not -BeNullOrEmpty
+        $reviewState.'feature/review-gate'.evidence.approved_via | Should -Be 'winsmux review-approve'
         $reviewState.'feature/review-gate'.evidence.review_contract_snapshot.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
 
         $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
@@ -896,5 +898,30 @@ EOF
         $approveResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-approve') -Environment $reviewerEnv
         $approveResult.ExitCode | Should -Be 1
         $approveResult.StdErr | Should -Match 'missing review_contract'
+    }
+
+    It 'records fail evidence when review-fail is used for the current branch' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $reviewerEnv = @{
+            WINSMUX_ROLE       = 'Reviewer'
+            WINSMUX_PANE_ID    = '%4'
+            WINSMUX_ROLE_MAP   = '{"%4":"Reviewer"}'
+            WINSMUX_AGENT_NAME = 'codex'
+        }
+
+        $requestResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-request') -Environment $reviewerEnv
+        $requestResult.ExitCode | Should -Be 0
+
+        $failResult = & $script:InvokeWinsmuxCore -RepoRoot $fixture.RepoRoot -Arguments @('review-fail') -Environment $reviewerEnv
+        $failResult.ExitCode | Should -Be 0
+
+        $reviewStatePath = Join-Path $fixture.RepoRoot '.winsmux\review-state.json'
+        $reviewState = Get-Content -LiteralPath $reviewStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $reviewState.'feature/review-gate'.status | Should -Be 'FAIL'
+        $reviewState.'feature/review-gate'.evidence.failed_at | Should -Not -BeNullOrEmpty
+        $reviewState.'feature/review-gate'.evidence.failed_via | Should -Be 'winsmux review-fail'
+        $reviewState.'feature/review-gate'.evidence.review_contract_snapshot.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
     }
 }
