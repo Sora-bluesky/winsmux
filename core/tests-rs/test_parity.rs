@@ -144,6 +144,10 @@ struct RustParityExplainRun {
     branch: String,
     head_sha: String,
     worktree: String,
+    primary_label: String,
+    primary_pane_id: String,
+    provider_target: String,
+    agent_role: String,
     changed_files: Vec<String>,
     last_event_at: String,
     action_items: Vec<RustParityExplainActionItem>,
@@ -259,6 +263,10 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.run.branch, "worktree-builder-1");
     assert_eq!(fixture.run.head_sha, "abc1234def5678");
     assert_eq!(fixture.run.worktree, ".worktrees/builder-1");
+    assert_eq!(fixture.run.primary_label, "builder-1");
+    assert_eq!(fixture.run.primary_pane_id, "%2");
+    assert_eq!(fixture.run.provider_target, "codex:gpt-5.4");
+    assert_eq!(fixture.run.agent_role, "worker");
     assert_eq!(fixture.run.changed_files, vec!["scripts/winsmux-core.ps1"]);
     assert_eq!(fixture.run.last_event_at, "__LAST_EVENT_AT__");
     assert!(

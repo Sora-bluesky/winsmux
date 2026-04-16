@@ -827,6 +827,38 @@ mod tests {
             .unwrap_or_else(|err| panic!("failed to parse fixture {}: {}", path.display(), err))
     }
 
+    fn rust_parity_explain_payload() -> Value {
+        read_rust_parity_fixture("explain.json")
+    }
+
+    fn rust_parity_run_projection_payload() -> Value {
+        let digest = read_rust_parity_fixture("digest.json");
+        let item = &digest["items"][0];
+        serde_json::json!({
+            "run_id": item["run_id"].clone(),
+            "pane_id": item["pane_id"].clone(),
+            "label": item["label"].clone(),
+            "branch": item["branch"].clone(),
+            "worktree": item["worktree"].clone(),
+            "head_sha": item["head_sha"].clone(),
+            "head_short": item["head_short"].clone(),
+            "provider_target": item["provider_target"].clone(),
+            "task": item["task"].clone(),
+            "task_state": item["task_state"].clone(),
+            "review_state": item["review_state"].clone(),
+            "verification_outcome": item["verification_outcome"].clone(),
+            "security_blocked": item["security_blocked"].clone(),
+            "changed_files": item["changed_files"].clone(),
+            "next_action": item["next_action"].clone(),
+            "summary": item["task"].clone(),
+            "reasons": [format!("review_state={}", item["review_state"].as_str().unwrap_or_default())],
+            "hypothesis": item["hypothesis"].clone(),
+            "confidence": item["confidence"].clone(),
+            "observation_pack_ref": item["observation_pack_ref"].clone(),
+            "consultation_ref": item["consultation_ref"].clone()
+        })
+    }
+
     fn rust_parity_summary_snapshot_payload() -> Value {
         serde_json::json!({
             "generated_at": "__GENERATED_AT__",
@@ -834,29 +866,7 @@ mod tests {
             "board": read_rust_parity_fixture("board.json"),
             "inbox": read_rust_parity_fixture("inbox.json"),
             "digest": read_rust_parity_fixture("digest.json"),
-            "run_projections": [{
-                "run_id": "task:task-246",
-                "pane_id": "%2",
-                "label": "builder-1",
-                "branch": "worktree-builder-1",
-                "worktree": ".worktrees/builder-1",
-                "head_sha": "abc1234def5678",
-                "head_short": "abc1234",
-                "provider_target": "codex:gpt-5.4",
-                "task": "Build evidence digest",
-                "task_state": "blocked",
-                "review_state": "FAIL",
-                "verification_outcome": "",
-                "security_blocked": "",
-                "changed_files": ["scripts/winsmux-core.ps1"],
-                "next_action": "review_failed",
-                "summary": "Build evidence digest",
-                "reasons": ["review_state=FAIL"],
-                "hypothesis": "result summary should appear in digest",
-                "confidence": 0.88,
-                "observation_pack_ref": ".winsmux/observation-packs/observation-pack-__ID__.json",
-                "consultation_ref": ".winsmux/consultations/consult-result-__ID__.json"
-            }]
+            "run_projections": [rust_parity_run_projection_payload()]
         })
     }
 
@@ -881,6 +891,14 @@ mod tests {
         assert_eq!(snapshot.digest.items[0].run_id, "task:task-246");
         assert_eq!(snapshot.digest.items[0].last_event_at, "__LAST_EVENT_AT__");
         assert_eq!(snapshot.run_projections.len(), 1);
+        assert_eq!(snapshot.run_projections[0].run_id, "task:task-246");
+        assert_eq!(snapshot.run_projections[0].pane_id, "%2");
+        assert_eq!(snapshot.run_projections[0].provider_target, "");
+        assert_eq!(
+            snapshot.run_projections[0].changed_files,
+            vec!["scripts/winsmux-core.ps1"]
+        );
+        assert_eq!(snapshot.run_projections[0].next_action, "review_failed");
         assert_eq!(
             transport.requests.borrow().as_slice(),
             ["desktop-summary --json"]
@@ -906,6 +924,10 @@ mod tests {
             .as_object_mut()
             .expect("digest.items[0] must be an object")
             .remove("last_event_at");
+        response["run_projections"][0]
+            .as_object_mut()
+            .expect("run_projections[0] must be an object")
+            .remove("provider_target");
 
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
@@ -922,6 +944,7 @@ mod tests {
                 || err.contains("changed_file_count")
                 || err.contains("pane_id")
                 || err.contains("last_event_at")
+                || err.contains("provider_target")
         );
     }
 
@@ -929,43 +952,24 @@ mod tests {
     fn load_desktop_run_explain_uses_explain_command() {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
-            response: serde_json::json!({
-                "generated_at": "2026-04-16T00:00:00Z",
-                "project_dir": "C:/repo",
-                "run": {
-                    "run_id": "run-7",
-                    "task": "Explain payload",
-                    "state": "running",
-                    "task_state": "in_progress",
-                    "review_state": "PENDING",
-                    "provider_target": "codex:gpt-5.4",
-                    "agent_role": "worker",
-                    "branch": "codex/task291",
-                    "head_sha": "abc1234def5678",
-                    "worktree": ".worktrees/builder-1",
-                    "changed_files": ["winsmux-app/src/main.ts"]
-                },
-                "explanation": { "summary": "ok", "reasons": [], "next_action": "idle" },
-                "evidence_digest": {
-                    "next_action": "idle",
-                    "changed_files": [],
-                    "changed_file_count": 0
-                },
-                "run_packet": { "provider_target": "should-not-leak" },
-                "recent_events": []
-            }),
+            response: rust_parity_explain_payload(),
         };
 
-        let payload = load_desktop_run_explain(&transport, "run-7".to_string(), None).unwrap();
+        let payload =
+            load_desktop_run_explain(&transport, "task:task-256".to_string(), None).unwrap();
 
-        assert_eq!(payload.run.run_id, "run-7");
+        assert_eq!(payload.run.run_id, "task:task-256");
+        assert_eq!(payload.run.task, "Implement run ledger");
         assert_eq!(
             payload.run.provider_target.as_deref(),
             Some("codex:gpt-5.4")
         );
+        assert_eq!(payload.run.agent_role.as_deref(), Some("worker"));
+        assert_eq!(payload.evidence_digest.next_action, "review_pending");
+        assert_eq!(payload.recent_events.len(), 2);
         assert_eq!(
             transport.requests.borrow().as_slice(),
-            ["explain run-7 --json"]
+            ["explain task:task-256 --json"]
         );
     }
 
@@ -973,43 +977,7 @@ mod tests {
     fn handle_desktop_json_rpc_routes_run_explain_and_prunes_extra_packets() {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
-            response: serde_json::json!({
-                "generated_at": "2026-04-16T00:00:00Z",
-                "project_dir": "C:/repo",
-                "run": {
-                    "run_id": "run-8",
-                    "task": "Explain payload",
-                    "state": "running",
-                    "task_state": "in_progress",
-                    "review_state": "PENDING",
-                    "provider_target": "codex:gpt-5.4",
-                    "agent_role": "worker",
-                    "branch": "codex/task291",
-                    "head_sha": "abc1234def5678",
-                    "worktree": ".worktrees/builder-1",
-                    "changed_files": ["winsmux-app/src/main.ts"]
-                },
-                "explanation": {
-                    "summary": "Explain is available",
-                    "reasons": ["task_state=in_progress"],
-                    "next_action": "review_requested"
-                },
-                "evidence_digest": {
-                    "next_action": "review_requested",
-                    "changed_file_count": 1,
-                    "changed_files": ["winsmux-app/src/main.ts"],
-                    "verification_outcome": "PASS",
-                    "security_blocked": "ALLOW"
-                },
-                "recent_events": [{
-                    "timestamp": "2026-04-16T00:00:00Z",
-                    "event": "commander.review_requested",
-                    "label": "builder-1",
-                    "message": "Need review"
-                }],
-                "run_packet": { "provider_target": "should-not-leak" },
-                "result_packet": { "summary": "should-not-leak" }
-            }),
+            response: rust_parity_explain_payload(),
         };
         let response = handle_desktop_json_rpc(
             &transport,
@@ -1018,7 +986,7 @@ mod tests {
                 id: serde_json::json!("req-explain"),
                 method: "desktop.run.explain".to_string(),
                 params: Some(serde_json::json!({
-                    "run_id": "run-8"
+                    "run_id": "task:task-256"
                 })),
             },
             None,
@@ -1027,9 +995,12 @@ mod tests {
         match response {
             DesktopJsonRpcResponse::Success { id, result, .. } => {
                 assert_eq!(id, serde_json::json!("req-explain"));
-                assert_eq!(result["run"]["run_id"], "run-8");
+                assert_eq!(result["run"]["run_id"], "task:task-256");
+                assert_eq!(result["run"]["provider_target"], "codex:gpt-5.4");
+                assert_eq!(result["evidence_digest"]["next_action"], "review_pending");
                 assert!(result.get("run_packet").is_none());
                 assert!(result.get("result_packet").is_none());
+                assert!(result.get("consultation_packet").is_none());
             }
             DesktopJsonRpcResponse::Error { error, .. } => {
                 panic!("expected success, got {:?}", error);
@@ -1037,7 +1008,55 @@ mod tests {
         }
         assert_eq!(
             transport.requests.borrow().as_slice(),
-            ["explain run-8 --json"]
+            ["explain task:task-256 --json"]
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_head_sha() {
+        let mut response = rust_parity_explain_payload();
+        response["run"]
+            .as_object_mut()
+            .expect("run must be an object")
+            .remove("head_sha");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!("expected explain payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("head_sha"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_explanation_next_action() {
+        let mut response = rust_parity_explain_payload();
+        response["explanation"]
+            .as_object_mut()
+            .expect("explanation must be an object")
+            .remove("next_action");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!("expected explain payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("next_action"),
+            "unexpected explain parse error: {err}"
         );
     }
 
