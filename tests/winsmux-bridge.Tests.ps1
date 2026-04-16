@@ -6917,6 +6917,106 @@ panes:
         { Get-ExplainPayload -ProjectDir $script:explainTempRoot -RunId 'task:task-256' } | Should -Throw '*invalid review state*approved_via*'
     }
 
+    It 'rejects explain when manifest review_state is present without head_sha' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:explainTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    task: Implement run ledger
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        { Get-ExplainPayload -ProjectDir $script:explainTempRoot -RunId 'task:task-256' } | Should -Throw '*invalid manifest*pane ''builder-1'' review_state requires head_sha*'
+    }
+
+    It 'rejects explain when manifest changed_file_count is present without changed_files' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:explainTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    task: Implement run ledger
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '[]'
+    last_event: commander.review_requested
+    last_event_at: 2026-04-10T12:00:00+09:00
+"@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        { Get-ExplainPayload -ProjectDir $script:explainTempRoot -RunId 'task:task-256' } | Should -Throw '*invalid manifest*pane ''builder-1'' changed_file_count requires changed_files*'
+    }
+
+    It 'rejects explain when manifest last_event is present without last_event_at' {
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:explainTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-256
+    task: Implement run ledger
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: commander.review_requested
+"@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
+
+        function global:winsmux {
+            $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
+            switch -Regex ($commandLine) {
+                '^capture-pane .*%2' { return @('gpt-5.4   64% context left', '? send   Ctrl+J newline', '>') }
+                default { throw "unexpected winsmux call: $commandLine" }
+            }
+        }
+
+        { Get-ExplainPayload -ProjectDir $script:explainTempRoot -RunId 'task:task-256' } | Should -Throw '*invalid manifest*pane ''builder-1'' last_event requires last_event_at*'
+    }
+
     It 'keeps refs and returns null packets when artifact files are missing or malformed' {
 @"
 version: 1

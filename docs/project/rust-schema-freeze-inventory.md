@@ -98,8 +98,12 @@ Main PowerShell readers:
 
 Current gap:
 
-- The runtime depends on specific YAML fields, but there is no typed Rust schema or fixture set that freezes the manifest shape.
-- Most validation is still embedded in PowerShell control flow.
+- The runtime still depends on specific YAML fields, and there is still no typed Rust schema or fixture set that freezes the full manifest shape.
+- A first PowerShell-side minimum shape now exists for run/explain consumers:
+  - `review_state` requires `branch` and `head_sha`
+  - `changed_file_count > 0` requires non-empty `changed_files`
+  - `last_event` requires `last_event_at`
+- The remaining work is to inventory and freeze the wider pane/session/task fields without widening this slice back into a full manifest rewrite.
 
 ### 4. `state`
 
