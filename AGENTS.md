@@ -138,7 +138,8 @@ Rules:
 6. Prefer updating existing entries over adding duplicates.
 7. Keep the note structure readable in Obsidian sidebar form.
    - Maintain `Rust learning note/00 Index.md` as the entry page.
-   - Maintain numbered chapter notes under `Rust learning note/`.
+   - Prefer Rust Book-aligned chapter titles under `Rust learning note/` (for example `4. 所有権を理解する`, `11. 自動テストを書く`, `21.4. 付録D：便利な開発ツール`).
+   - Keep helper files such as templates outside the main TOC by using a non-book prefix like `_`.
    - Update the index note when a new chapter note is added.
 8. If the session did not use or discuss Rust-adjacent commands, no learning-note update is required.
 
