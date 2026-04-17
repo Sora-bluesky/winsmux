@@ -479,6 +479,10 @@ function Test-BridgeSettingValue {
                     $NormalizedValue.Value = 'file'
                     return $true
                 }
+                'stdin' {
+                    $NormalizedValue.Value = 'stdin'
+                    return $true
+                }
                 default {
                     return $false
                 }

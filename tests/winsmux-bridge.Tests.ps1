@@ -449,9 +449,21 @@ model: gpt-5.4
         $metadata.SlotCount | Should -BeGreaterThan 0
     }
 
-    It 'fails closed when prompt_transport is unsupported' {
+    It 'accepts stdin prompt_transport from project settings' {
 @'
 prompt-transport: stdin
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+
+        $settings.prompt_transport | Should -Be 'stdin'
+    }
+
+    It 'fails closed when prompt_transport is unsupported' {
+@'
+prompt-transport: socket
 '@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
 
         Mock Get-WinsmuxOption { param($Name, $Default) return $null }
@@ -7385,6 +7397,35 @@ Describe 'winsmux send dispatch payload' {
         $payload['IsFileBacked'] | Should -Be $false
     }
 
+    It 'keeps stdin prompt_transport inline even when the payload exceeds the argv length limit' {
+        $payload = Resolve-SendDispatchPayload -Text ('a' * 5000) -ProjectDir $script:sendTempRoot -LengthLimit 4000 -PromptTransport 'stdin'
+
+        $payload['PromptTransport'] | Should -Be 'stdin'
+        $payload['IsFileBacked'] | Should -Be $false
+        $payload['PromptPath'] | Should -Be $null
+        $payload['TextLength'] | Should -Be 5000
+    }
+
+    It 'keeps exec-mode transport file-backed even when prompt_transport is stdin' {
+        $plan = Resolve-SendTransportPlan `
+            -Text ('a' * 5000) `
+            -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 `
+            -PromptTransport 'stdin' `
+            -ExecMode:$true `
+            -LaunchDir 'C:\repo' `
+            -GitWorktreeDir 'C:\repo' `
+            -Model 'gpt-5.4'
+
+        $plan['Mode'] | Should -Be 'codex_exec_file'
+        $plan['PromptTransport'] | Should -Be 'stdin'
+        $plan['IsFileBacked'] | Should -Be $true
+        $plan['FallbackMode'] | Should -Be 'exec_file'
+        $plan['PromptPath'] | Should -Not -BeNullOrEmpty
+        (Get-Content -LiteralPath $plan['PromptPath'] -Raw -Encoding UTF8).TrimEnd("`r", "`n") | Should -BeExactly ('a' * 5000)
+        $plan['ExecInstruction'] | Should -Match 'codex exec'
+    }
+
     It 'normalizes task prompt slugs and writes a stable task prompt file when task_slug is supplied' {
         (ConvertTo-TaskPromptSlug -TaskSlug ' Cache Drift / Build ') | Should -Be 'cache-drift-build'
 
@@ -7408,7 +7449,7 @@ Describe 'winsmux send dispatch payload' {
     }
 
     It 'rejects unsupported prompt transport values with the stable-core contract in the error' {
-        { Resolve-SendDispatchPayload -Text 'Write-Host short' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -PromptTransport 'stdin' } | Should -Throw '*Supported values: argv, file*'
+        { Resolve-SendDispatchPayload -Text 'Write-Host short' -ProjectDir $script:sendTempRoot -LengthLimit 4000 -PromptTransport 'socket' } | Should -Throw '*Supported values: argv, file, stdin*'
     }
 
     It 'blocks send text when a blocklist security policy pattern matches' {
@@ -9512,6 +9553,72 @@ Describe 'winsmux send fallback' {
         $result | Should -Be 'sent to %7 via default:0.3'
         (@($script:sendAttempts | Where-Object { $_ -like '* literal*' })).Count | Should -Be 4
         $script:sendAttempts[-1] | Should -Be 'default:0.3 Enter'
+    }
+
+    It 'uses send-paste when prompt_transport is stdin' {
+        $script:sendAttempts = [System.Collections.Generic.List[string]]::new()
+        $script:sendBuffer = '> '
+        $script:sendCommandText = "line 1`nline 2"
+
+        Mock Invoke-WinsmuxRaw {
+            param([string[]]$Arguments)
+
+            switch ($Arguments[0]) {
+                'list-panes' {
+                    $format = $Arguments[-1]
+                    if ($format -eq '#{pane_id}') {
+                        return '%7'
+                    }
+
+                    if ($format -eq "#{pane_id}`t#{session_name}:#{window_index}.#{pane_index}") {
+                        return '%7' + "`t" + 'default:0.3'
+                    }
+
+                    return @()
+                }
+                'capture-pane' {
+                    return $script:sendBuffer
+                }
+                'send-paste' {
+                    $targetIndex = [Array]::IndexOf($Arguments, '-t')
+                    $target = if ($targetIndex -ge 0 -and $targetIndex + 1 -lt $Arguments.Count) {
+                        $Arguments[$targetIndex + 1]
+                    } else {
+                        ''
+                    }
+
+                    $decoded = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Arguments[-1]))
+                    $script:sendAttempts.Add("$target paste") | Out-Null
+                    if ($target -eq 'default:0.3') {
+                        $script:sendBuffer = "> $decoded"
+                    }
+                    return
+                }
+                'send-keys' {
+                    $targetIndex = [Array]::IndexOf($Arguments, '-t')
+                    $target = if ($targetIndex -ge 0 -and $targetIndex + 1 -lt $Arguments.Count) {
+                        $Arguments[$targetIndex + 1]
+                    } else {
+                        ''
+                    }
+
+                    $script:sendAttempts.Add("$target Enter") | Out-Null
+                    if ($target -eq 'default:0.3') {
+                        $script:sendBuffer += "`nresult"
+                    }
+                    return
+                }
+                default {
+                    throw "Unexpected winsmux command: $($Arguments -join ' ')"
+                }
+            }
+        }
+
+        $result = Send-TextToPane -PaneId '%7' -CommandText $script:sendCommandText -PromptTransport 'stdin'
+
+        $result | Should -Be 'sent to %7 via default:0.3'
+        $script:sendBuffer | Should -Be "> $script:sendCommandText`nresult"
+        $script:sendAttempts | Should -Be @('%7 paste', 'default:0.3 paste', 'default:0.3 Enter')
     }
 
 }
