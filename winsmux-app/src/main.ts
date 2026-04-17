@@ -1348,6 +1348,9 @@ async function openExplainForSelectedRun() {
       { label: "run", value: payload.run.run_id },
       { label: "next", value: payload.explanation.next_action || payload.evidence_digest.next_action || "no next action" },
     ];
+    if (payload.run.priority) {
+      detailItems.push({ label: "priority", value: payload.run.priority });
+    }
     if (payload.run.primary_label) {
       detailItems.push({ label: "pane", value: payload.run.primary_label });
     }
@@ -1365,6 +1368,9 @@ async function openExplainForSelectedRun() {
     }
 
     const bodyParts = [payload.explanation.summary];
+    if (payload.run.goal) {
+      bodyParts.push(`Goal: ${payload.run.goal}`);
+    }
     if (payload.explanation.reasons.length > 0) {
       bodyParts.push(`Reasons: ${payload.explanation.reasons.join(" | ")}`);
     }
@@ -1809,6 +1815,11 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
   return JSON.stringify([
     payload.run.run_id,
     payload.run.task_id,
+    payload.run.parent_run_id,
+    payload.run.goal,
+    payload.run.task_type,
+    payload.run.priority,
+    payload.run.blocking,
     payload.run.state,
     payload.run.task_state,
     payload.run.review_state,
@@ -1823,6 +1834,14 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.run.last_event,
     payload.run.last_event_at,
     payload.run.changed_file_count,
+    payload.run.write_scope.join("|"),
+    payload.run.read_scope.join("|"),
+    payload.run.constraints.join("|"),
+    payload.run.expected_output,
+    payload.run.verification_plan.join("|"),
+    payload.run.review_required,
+    payload.run.timeout_policy,
+    payload.run.handoff_refs.join("|"),
     payload.run.changed_files.join("|"),
     payload.run.action_items.map((item) => `${item.kind}:${item.event}:${item.source}`).join("|"),
     payload.explanation.summary,

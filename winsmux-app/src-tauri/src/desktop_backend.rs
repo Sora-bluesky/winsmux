@@ -199,7 +199,12 @@ pub struct DesktopExplainPayload {
 pub struct DesktopExplainRun {
     pub run_id: String,
     pub task_id: String,
+    pub parent_run_id: String,
+    pub goal: String,
     pub task: String,
+    pub task_type: String,
+    pub priority: String,
+    pub blocking: bool,
     pub state: String,
     pub task_state: String,
     pub review_state: String,
@@ -214,6 +219,14 @@ pub struct DesktopExplainRun {
     pub changed_file_count: usize,
     pub provider_target: String,
     pub agent_role: String,
+    pub write_scope: Vec<String>,
+    pub read_scope: Vec<String>,
+    pub constraints: Vec<String>,
+    pub expected_output: String,
+    pub verification_plan: Vec<String>,
+    pub review_required: bool,
+    pub timeout_policy: String,
+    pub handoff_refs: Vec<String>,
     #[serde(default)]
     pub changed_files: Vec<String>,
     #[serde(default)]
@@ -1528,7 +1541,12 @@ mod tests {
 
         assert_eq!(payload.run.run_id, "task:task-256");
         assert_eq!(payload.run.task_id, "task-256");
+        assert_eq!(payload.run.parent_run_id, "operator:session-1");
+        assert_eq!(payload.run.goal, "Ship run contract primitives");
         assert_eq!(payload.run.task, "Implement run ledger");
+        assert_eq!(payload.run.task_type, "implementation");
+        assert_eq!(payload.run.priority, "P0");
+        assert!(payload.run.blocking);
         assert_eq!(payload.generated_at, "__GENERATED_AT__");
         assert_eq!(payload.project_dir, "__PROJECT_DIR__");
         assert_eq!(payload.run.primary_label, "builder-1");
@@ -1539,6 +1557,35 @@ mod tests {
         assert_eq!(payload.run.changed_file_count, 1);
         assert_eq!(payload.run.provider_target, "codex:gpt-5.4");
         assert_eq!(payload.run.agent_role, "worker");
+        assert_eq!(
+            payload.run.write_scope,
+            vec![
+                "scripts/winsmux-core.ps1".to_string(),
+                "tests/winsmux-bridge.Tests.ps1".to_string()
+            ]
+        );
+        assert_eq!(
+            payload.run.read_scope,
+            vec!["winsmux-core/scripts/pane-status.ps1".to_string()]
+        );
+        assert_eq!(
+            payload.run.constraints,
+            vec!["preserve existing board schema".to_string()]
+        );
+        assert_eq!(payload.run.expected_output, "Stable run_packet JSON");
+        assert_eq!(
+            payload.run.verification_plan,
+            vec![
+                "Invoke-Pester tests/winsmux-bridge.Tests.ps1".to_string(),
+                "verify explain --json contract".to_string()
+            ]
+        );
+        assert!(payload.run.review_required);
+        assert_eq!(payload.run.timeout_policy, "standard");
+        assert_eq!(
+            payload.run.handoff_refs,
+            vec!["docs/handoff.md".to_string()]
+        );
         assert_eq!(payload.run.worktree, ".worktrees/builder-1");
         assert_eq!(payload.run.action_items.len(), 2);
         assert_eq!(payload.run.action_items[0].kind, "review_pending");
@@ -1607,6 +1654,9 @@ mod tests {
                 assert_eq!(id, serde_json::json!("req-explain"));
                 assert_eq!(result["run"]["run_id"], "task:task-256");
                 assert_eq!(result["run"]["task_id"], "task-256");
+                assert_eq!(result["run"]["parent_run_id"], "operator:session-1");
+                assert_eq!(result["run"]["goal"], "Ship run contract primitives");
+                assert_eq!(result["run"]["priority"], "P0");
                 assert_eq!(result["run"]["primary_label"], "builder-1");
                 assert_eq!(result["run"]["primary_pane_id"], "%2");
                 assert_eq!(result["run"]["last_event"], "commander.review_requested");
@@ -1762,6 +1812,136 @@ mod tests {
 
         assert!(
             err.contains("changed_file_count"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_parent_run_id() {
+        let err = expect_missing_explain_run_field("parent_run_id");
+
+        assert!(
+            err.contains("parent_run_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_goal() {
+        let err = expect_missing_explain_run_field("goal");
+
+        assert!(
+            err.contains("goal"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_task_type() {
+        let err = expect_missing_explain_run_field("task_type");
+
+        assert!(
+            err.contains("task_type"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_priority() {
+        let err = expect_missing_explain_run_field("priority");
+
+        assert!(
+            err.contains("priority"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_blocking() {
+        let err = expect_missing_explain_run_field("blocking");
+
+        assert!(
+            err.contains("blocking"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_write_scope() {
+        let err = expect_missing_explain_run_field("write_scope");
+
+        assert!(
+            err.contains("write_scope"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_read_scope() {
+        let err = expect_missing_explain_run_field("read_scope");
+
+        assert!(
+            err.contains("read_scope"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_constraints() {
+        let err = expect_missing_explain_run_field("constraints");
+
+        assert!(
+            err.contains("constraints"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_expected_output() {
+        let err = expect_missing_explain_run_field("expected_output");
+
+        assert!(
+            err.contains("expected_output"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_verification_plan() {
+        let err = expect_missing_explain_run_field("verification_plan");
+
+        assert!(
+            err.contains("verification_plan"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_review_required() {
+        let err = expect_missing_explain_run_field("review_required");
+
+        assert!(
+            err.contains("review_required"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_timeout_policy() {
+        let err = expect_missing_explain_run_field("timeout_policy");
+
+        assert!(
+            err.contains("timeout_policy"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_handoff_refs() {
+        let err = expect_missing_explain_run_field("handoff_refs");
+
+        assert!(
+            err.contains("handoff_refs"),
             "unexpected explain parse error: {err}"
         );
     }

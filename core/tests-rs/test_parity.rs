@@ -133,7 +133,12 @@ struct RustParityExplainFixture {
 struct RustParityExplainRun {
     run_id: String,
     task_id: String,
+    parent_run_id: String,
+    goal: String,
     task: String,
+    task_type: String,
+    priority: String,
+    blocking: bool,
     state: String,
     task_state: String,
     review_state: String,
@@ -147,6 +152,14 @@ struct RustParityExplainRun {
     changed_file_count: usize,
     provider_target: String,
     agent_role: String,
+    write_scope: Vec<String>,
+    read_scope: Vec<String>,
+    constraints: Vec<String>,
+    expected_output: String,
+    verification_plan: Vec<String>,
+    review_required: bool,
+    timeout_policy: String,
+    handoff_refs: Vec<String>,
     changed_files: Vec<String>,
     last_event_at: String,
     action_items: Vec<RustParityExplainActionItem>,
@@ -267,7 +280,12 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.project_dir, "__PROJECT_DIR__");
     assert_eq!(fixture.run.run_id, "task:task-256");
     assert_eq!(fixture.run.task_id, "task-256");
+    assert_eq!(fixture.run.parent_run_id, "operator:session-1");
+    assert_eq!(fixture.run.goal, "Ship run contract primitives");
     assert_eq!(fixture.run.task, "Implement run ledger");
+    assert_eq!(fixture.run.task_type, "implementation");
+    assert_eq!(fixture.run.priority, "P0");
+    assert!(fixture.run.blocking);
     assert_eq!(fixture.run.state, "idle");
     assert_eq!(fixture.run.task_state, "in_progress");
     assert_eq!(fixture.run.review_state, "PENDING");
@@ -281,6 +299,32 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.run.changed_file_count, 1);
     assert_eq!(fixture.run.provider_target, "codex:gpt-5.4");
     assert_eq!(fixture.run.agent_role, "worker");
+    assert_eq!(
+        fixture.run.write_scope,
+        vec![
+            "scripts/winsmux-core.ps1".to_string(),
+            "tests/winsmux-bridge.Tests.ps1".to_string()
+        ]
+    );
+    assert_eq!(
+        fixture.run.read_scope,
+        vec!["winsmux-core/scripts/pane-status.ps1".to_string()]
+    );
+    assert_eq!(
+        fixture.run.constraints,
+        vec!["preserve existing board schema".to_string()]
+    );
+    assert_eq!(fixture.run.expected_output, "Stable run_packet JSON");
+    assert_eq!(
+        fixture.run.verification_plan,
+        vec![
+            "Invoke-Pester tests/winsmux-bridge.Tests.ps1".to_string(),
+            "verify explain --json contract".to_string()
+        ]
+    );
+    assert!(fixture.run.review_required);
+    assert_eq!(fixture.run.timeout_policy, "standard");
+    assert_eq!(fixture.run.handoff_refs, vec!["docs/handoff.md".to_string()]);
     assert_eq!(fixture.run.changed_files, vec!["scripts/winsmux-core.ps1"]);
     assert_eq!(fixture.run.last_event_at, "__LAST_EVENT_AT__");
     assert!(

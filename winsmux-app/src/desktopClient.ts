@@ -177,7 +177,12 @@ export interface DesktopExplainPayload {
   run: {
     run_id: string;
     task_id: string;
+    parent_run_id: string;
+    goal: string;
     task: string;
+    task_type: string;
+    priority: string;
+    blocking: boolean;
     state: string;
     task_state: string;
     review_state: string;
@@ -192,6 +197,14 @@ export interface DesktopExplainPayload {
     changed_file_count: number;
     provider_target: string;
     agent_role: string;
+    write_scope: string[];
+    read_scope: string[];
+    constraints: string[];
+    expected_output: string;
+    verification_plan: string[];
+    review_required: boolean;
+    timeout_policy: string;
+    handoff_refs: string[];
     changed_files: string[];
     action_items: Array<{
       kind: string;

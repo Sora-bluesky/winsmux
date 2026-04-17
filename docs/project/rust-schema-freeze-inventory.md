@@ -52,6 +52,7 @@ Why this is close to freeze:
 - `inbox.items[*]` の補助項目も、Rust 側で `priority`、`role`、`task_id`、`task`、`head_sha`、`event`、`timestamp`、`source` を受ける形へ狭め始めている。
 - `explain.run` でも、`task_id`、主要 pane 情報、最新イベント、変更件数を Rust 側で受ける形へ狭め始めている。
 - `explain.run.action_items[*]` でも、`message` と `source` を含む形で Rust 側へ通し始めている。
+- `explain.run` の計画系でも、`parent_run_id`、`goal`、`task_type`、`priority`、`blocking`、scope 群、`expected_output`、`verification_plan`、`review_required`、`timeout_policy`、`handoff_refs` を Rust 側へ通し始めている。
 - Recent `TASK-278` slices have been narrowing this surface with fail-close regressions instead of widening it loosely.
 
 ### 2. `run/explain`
