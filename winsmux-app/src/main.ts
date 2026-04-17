@@ -1342,6 +1342,7 @@ async function openExplainForSelectedRun() {
   try {
     const previousPayload = desktopExplainCache.get(selectedRunId) ?? null;
     const payload = await getDesktopRunExplain(selectedRunId);
+    const consultationSummary = getConsultationSummary(payload);
     desktopExplainCache.set(selectedRunId, payload);
 
     const detailItems: ConversationDetail[] = [
@@ -1359,6 +1360,9 @@ async function openExplainForSelectedRun() {
     }
     if (payload.run.experiment_packet.next_action) {
       detailItems.push({ label: "experiment", value: payload.run.experiment_packet.next_action });
+    }
+    if (consultationSummary.next_test) {
+      detailItems.push({ label: "consult", value: consultationSummary.next_test });
     }
     if (payload.run.primary_label) {
       detailItems.push({ label: "pane", value: payload.run.primary_label });
@@ -1821,6 +1825,8 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     return "";
   }
 
+  const consultationSummary = getConsultationSummary(payload);
+
   return JSON.stringify([
     payload.run.run_id,
     payload.run.task_id,
@@ -1878,12 +1884,36 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.explanation.summary,
     payload.explanation.next_action,
     payload.explanation.reasons.join("|"),
+    consultationSummary.kind,
+    consultationSummary.mode,
+    consultationSummary.target_slot,
+    consultationSummary.confidence,
+    consultationSummary.next_test,
+    consultationSummary.risks.join("|"),
     payload.evidence_digest.next_action,
     payload.evidence_digest.verification_outcome,
     payload.evidence_digest.security_blocked,
     payload.evidence_digest.changed_files.join("|"),
     payload.recent_events.map((item) => `${item.event}:${item.message}`).join("|"),
   ]);
+}
+
+function getConsultationSummary(payload: DesktopExplainPayload): DesktopExplainPayload["consultation_summary"] {
+  const summary = (
+    payload as DesktopExplainPayload & {
+      consultation_summary?: DesktopExplainPayload["consultation_summary"];
+    }
+  ).consultation_summary;
+  return (
+    summary ?? {
+      kind: "",
+      mode: "",
+      target_slot: "",
+      confidence: 0,
+      next_test: "",
+      risks: [],
+    }
+  );
 }
 
 function getRunProjectionFingerprint(projection: DesktopRunProjection | null | undefined) {

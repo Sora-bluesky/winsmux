@@ -127,6 +127,7 @@ struct RustParityExplainFixture {
     generated_at: String,
     project_dir: String,
     run: RustParityExplainRun,
+    consultation_summary: RustParityExplainConsultationSummary,
     evidence_digest: RustParityExplainEvidenceDigest,
 }
 
@@ -200,6 +201,16 @@ struct RustParityExplainActionItem {
     event: String,
     timestamp: String,
     source: String,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainConsultationSummary {
+    kind: String,
+    mode: String,
+    target_slot: String,
+    confidence: f64,
+    next_test: String,
+    risks: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -403,6 +414,15 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(review_pending.event, "commander.review_requested");
     assert_eq!(review_pending.timestamp, "__TIMESTAMP__");
     assert_eq!(review_pending.source, "manifest");
+    assert_eq!(fixture.consultation_summary.kind, "consult_result");
+    assert_eq!(fixture.consultation_summary.mode, "early");
+    assert_eq!(fixture.consultation_summary.target_slot, "slot-review-1");
+    assert_eq!(fixture.consultation_summary.confidence, 0.66);
+    assert_eq!(fixture.consultation_summary.next_test, "approval_waiting");
+    assert_eq!(
+        fixture.consultation_summary.risks,
+        vec!["needs reviewer confirmation".to_string()]
+    );
     assert_eq!(fixture.evidence_digest.next_action, "review_pending");
     assert_eq!(fixture.evidence_digest.changed_file_count, 1);
     assert!(fixture.evidence_digest.consultation_ref.contains("__ID__"));
