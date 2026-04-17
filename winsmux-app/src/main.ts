@@ -2095,6 +2095,23 @@ function summarizeReviewVerdict(payload: DesktopExplainPayload) {
   return parts.join(" ");
 }
 
+function summarizeProjectionExperiment(projection: DesktopRunProjection) {
+  if (!projection.hypothesis) {
+    return "";
+  }
+
+  const parts = [`Hypothesis ${projection.hypothesis}`];
+  if (projection.confidence !== null) {
+    parts.push(`confidence ${formatConfidencePercent(projection.confidence)}`);
+  }
+
+  return parts.join(" · ");
+}
+
+function formatConfidencePercent(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
 function getRunProjectionFingerprint(projection: DesktopRunProjection | null | undefined) {
   if (!projection) {
     return "";
@@ -2111,6 +2128,8 @@ function getRunProjectionFingerprint(projection: DesktopRunProjection | null | u
     projection.branch,
     projection.provider_target,
     projection.changed_files.join("|"),
+    projection.hypothesis,
+    projection.confidence,
   ]);
 }
 
@@ -2207,6 +2226,10 @@ function buildDesktopFollowConversation(
     if (!projection) {
       continue;
     }
+    const experimentSummary = summarizeProjectionExperiment(projection);
+    const title = experimentSummary
+      ? (diff.addedRunIds.includes(runId) ? "Hypothesis surfaced" : "Hypothesis updated")
+      : (diff.addedRunIds.includes(runId) ? "Run surfaced" : "Run updated");
 
     items.push({
       type: "system",
@@ -2218,16 +2241,18 @@ function buildDesktopFollowConversation(
           : "activity",
       timestamp,
       actor: projection.label || projection.pane_id || "System",
-      title: diff.addedRunIds.includes(runId) ? "Run surfaced" : "Run updated",
-      body:
-        `Next ${projection.next_action || "idle"} · ` +
-        `${projection.changed_files.length} changed files · ` +
-        `review ${projection.review_state || "n/a"}.`,
+      title,
+      body: experimentSummary
+        ? `${experimentSummary} · Next ${projection.next_action || "idle"} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`
+        : `Next ${projection.next_action || "idle"} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`,
       details: [
         { label: "run", value: runId },
         { label: "branch", value: projection.branch || "no branch" },
         { label: "head", value: projection.head_short || "n/a" },
         { label: "verify", value: projection.verification_outcome || "n/a" },
+        ...(projection.confidence !== null
+          ? [{ label: "confidence", value: formatConfidencePercent(projection.confidence) }]
+          : []),
       ],
       tone:
         projection.review_state === "PASS"
