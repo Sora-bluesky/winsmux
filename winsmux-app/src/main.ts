@@ -183,6 +183,10 @@ let desktopSummaryRefreshTimeout: number | null = null;
 let desktopSummaryQueuedRunId: string | null = null;
 let desktopSummaryRefreshRequestedVersion = 0;
 let desktopSummaryRefreshRunningVersion = 0;
+let desktopSummaryFallbackRefreshRegistered = false;
+let desktopSummaryLiveRefreshAvailable = false;
+let desktopSummaryLastSuccessfulRefreshAt = 0;
+let desktopSummaryLastStreamSignalAt = 0;
 const desktopExplainCache = new Map<string, DesktopExplainPayload>();
 const desktopEditorFileCache = new Map<string, EditorFile>();
 const desktopEditorLoadingPaths = new Set<string>();
@@ -190,7 +194,8 @@ const desktopEditorLoadErrors = new Map<string, string>();
 const desktopStandaloneEditorTargets = new Map<string, EditorTarget>();
 const backendConversation: ConversationItem[] = [];
 const runtimeConversation: ConversationItem[] = [];
-const DESKTOP_SUMMARY_REFRESH_INTERVAL_MS = 15_000;
+const DESKTOP_SUMMARY_REFRESH_FALLBACK_INTERVAL_MS = 15_000;
+const DESKTOP_SUMMARY_STREAM_STALE_MS = 60_000;
 const MAX_RUNTIME_CONVERSATION_ITEMS = 80;
 const themeState: ThemeState = {
   theme: "codex-dark",
@@ -2416,6 +2421,7 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
     const snapshot = await getDesktopSummarySnapshot();
     const diff = diffDesktopSummarySnapshots(previousSnapshot, snapshot);
     desktopSummarySnapshot = snapshot;
+    desktopSummaryLastSuccessfulRefreshAt = Date.now();
     selectedRunId = resolveSelectedRunId(snapshot, forceExplainRunId);
     pruneExplainCache(snapshot, forceExplainRunId);
     const selectedRunHasMaterialChange = Boolean(
@@ -2495,28 +2501,66 @@ function requestDesktopSummaryRefresh(forceExplainRunId?: string | null, delayMs
   }, delayMs);
 }
 
-function registerDesktopSummaryLiveRefresh() {
-  void subscribeToDesktopSummaryRefresh(() => {
-    requestDesktopSummaryRefresh(undefined, 0);
-  }).catch((error) => {
-    console.warn("Failed to subscribe to desktop summary refresh events", error);
-  });
+function shouldRunDesktopSummaryFallbackRefresh(now = Date.now()) {
+  if (!desktopSummaryLiveRefreshAvailable) {
+    return true;
+  }
+
+  const lastLiveActivityAt = Math.max(
+    desktopSummaryLastSuccessfulRefreshAt,
+    desktopSummaryLastStreamSignalAt,
+  );
+  return now - lastLiveActivityAt >= DESKTOP_SUMMARY_STREAM_STALE_MS;
+}
+
+function registerDesktopSummaryFallbackRefresh() {
+  if (desktopSummaryFallbackRefreshRegistered) {
+    return;
+  }
+
+  desktopSummaryFallbackRefreshRegistered = true;
 
   window.setInterval(() => {
     if (document.visibilityState !== "visible") {
       return;
     }
+    if (!shouldRunDesktopSummaryFallbackRefresh()) {
+      return;
+    }
     requestDesktopSummaryRefresh(undefined, 0);
-  }, DESKTOP_SUMMARY_REFRESH_INTERVAL_MS);
+  }, DESKTOP_SUMMARY_REFRESH_FALLBACK_INTERVAL_MS);
 
   window.addEventListener("focus", () => {
+    if (!shouldRunDesktopSummaryFallbackRefresh()) {
+      return;
+    }
     requestDesktopSummaryRefresh(undefined, 0);
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") {
-      requestDesktopSummaryRefresh(undefined, 0);
+    if (document.visibilityState !== "visible") {
+      return;
     }
+    if (!shouldRunDesktopSummaryFallbackRefresh()) {
+      return;
+    }
+    requestDesktopSummaryRefresh(undefined, 0);
+  });
+}
+
+function registerDesktopSummaryLiveRefresh() {
+  registerDesktopSummaryFallbackRefresh();
+
+  void subscribeToDesktopSummaryRefresh((event) => {
+    if (event.source !== "pty") {
+      desktopSummaryLastStreamSignalAt = Date.now();
+    }
+    requestDesktopSummaryRefresh(event.run_id, 0);
+  }).then(() => {
+    desktopSummaryLiveRefreshAvailable = true;
+  }).catch((error) => {
+    console.warn("Failed to subscribe to desktop summary refresh events", error);
+    desktopSummaryLiveRefreshAvailable = false;
   });
 }
 
