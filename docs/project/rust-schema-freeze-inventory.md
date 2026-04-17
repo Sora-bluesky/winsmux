@@ -55,6 +55,7 @@ Why this is close to freeze:
 - `explain.run` の計画系でも、`parent_run_id`、`goal`、`task_type`、`priority`、`blocking`、scope 群、`expected_output`、`verification_plan`、`review_required`、`timeout_policy`、`handoff_refs` を Rust 側へ通し始めている。
 - `explain.run` の identity 配列でも、`pane_count`、`labels`、`pane_ids`、`roles` を Rust 側へ通し始めている。
 - `explain.run` の token/context 系でも、`tokens_remaining` を Rust 側へ通し始めている。
+- `explain.run` の検証系とセキュリティ系でも、`security_policy`、`security_verdict`、`verification_contract`、`verification_result` を Rust 側へ通し始めている。
 - Recent `TASK-278` slices have been narrowing this surface with fail-close regressions instead of widening it loosely.
 
 ### 2. `run/explain`

@@ -232,6 +232,10 @@ pub struct DesktopExplainRun {
     pub review_required: bool,
     pub timeout_policy: String,
     pub handoff_refs: Vec<String>,
+    pub security_policy: Value,
+    pub security_verdict: Value,
+    pub verification_contract: Value,
+    pub verification_result: Value,
     #[serde(default)]
     pub changed_files: Vec<String>,
     #[serde(default)]
@@ -1596,6 +1600,10 @@ mod tests {
             payload.run.handoff_refs,
             vec!["docs/handoff.md".to_string()]
         );
+        assert!(payload.run.security_policy.is_null());
+        assert!(payload.run.security_verdict.is_null());
+        assert!(payload.run.verification_contract.is_null());
+        assert!(payload.run.verification_result.is_null());
         assert_eq!(payload.run.worktree, ".worktrees/builder-1");
         assert_eq!(payload.run.action_items.len(), 2);
         assert_eq!(payload.run.action_items[0].kind, "review_pending");
@@ -1678,6 +1686,10 @@ mod tests {
                 assert_eq!(result["run"]["action_items"][0]["kind"], "review_pending");
                 assert_eq!(result["run"]["action_items"][0]["source"], "manifest");
                 assert_eq!(result["run"]["provider_target"], "codex:gpt-5.4");
+                assert!(result["run"]["security_policy"].is_null());
+                assert!(result["run"]["security_verdict"].is_null());
+                assert!(result["run"]["verification_contract"].is_null());
+                assert!(result["run"]["verification_result"].is_null());
                 assert_eq!(result["evidence_digest"]["next_action"], "review_pending");
                 assert_eq!(result["review_state"]["status"], "PENDING");
                 assert!(result.get("run_packet").is_none());
@@ -2007,6 +2019,46 @@ mod tests {
 
         assert!(
             err.contains("handoff_refs"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_security_policy() {
+        let err = expect_missing_explain_run_field("security_policy");
+
+        assert!(
+            err.contains("security_policy"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_security_verdict() {
+        let err = expect_missing_explain_run_field("security_verdict");
+
+        assert!(
+            err.contains("security_verdict"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_verification_contract() {
+        let err = expect_missing_explain_run_field("verification_contract");
+
+        assert!(
+            err.contains("verification_contract"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_verification_result() {
+        let err = expect_missing_explain_run_field("verification_result");
+
+        assert!(
+            err.contains("verification_result"),
             "unexpected explain parse error: {err}"
         );
     }

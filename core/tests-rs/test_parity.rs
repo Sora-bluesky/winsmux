@@ -1,5 +1,6 @@
 use crate::types::{AppState, ClientInfo};
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -165,6 +166,10 @@ struct RustParityExplainRun {
     review_required: bool,
     timeout_policy: String,
     handoff_refs: Vec<String>,
+    security_policy: Value,
+    security_verdict: Value,
+    verification_contract: Value,
+    verification_result: Value,
     changed_files: Vec<String>,
     last_event_at: String,
     action_items: Vec<RustParityExplainActionItem>,
@@ -334,7 +339,14 @@ fn rust_parity_explain_fixture_deserializes() {
     );
     assert!(fixture.run.review_required);
     assert_eq!(fixture.run.timeout_policy, "standard");
-    assert_eq!(fixture.run.handoff_refs, vec!["docs/handoff.md".to_string()]);
+    assert_eq!(
+        fixture.run.handoff_refs,
+        vec!["docs/handoff.md".to_string()]
+    );
+    assert!(fixture.run.security_policy.is_null());
+    assert!(fixture.run.security_verdict.is_null());
+    assert!(fixture.run.verification_contract.is_null());
+    assert!(fixture.run.verification_result.is_null());
     assert_eq!(fixture.run.changed_files, vec!["scripts/winsmux-core.ps1"]);
     assert_eq!(fixture.run.last_event_at, "__LAST_EVENT_AT__");
     assert!(

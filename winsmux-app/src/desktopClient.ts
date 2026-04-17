@@ -210,6 +210,10 @@ export interface DesktopExplainPayload {
     review_required: boolean;
     timeout_policy: string;
     handoff_refs: string[];
+    security_policy: Record<string, unknown> | null;
+    security_verdict: Record<string, unknown> | null;
+    verification_contract: Record<string, unknown> | null;
+    verification_result: Record<string, unknown> | null;
     changed_files: string[];
     action_items: Array<{
       kind: string;
