@@ -2108,8 +2108,32 @@ function summarizeProjectionExperiment(projection: DesktopRunProjection) {
   return parts.join(" · ");
 }
 
+function summarizeProjectionConsultation(projection: DesktopRunProjection) {
+  if (!projection.consultation_ref) {
+    return "";
+  }
+
+  const parts = [summarizeProjectionExperiment(projection) || "Consultation linked"];
+  parts.push(`Next ${projection.next_action || "idle"}`);
+  const reasons = projection.reasons.filter((value) => Boolean(value)).slice(0, 2);
+  if (reasons.length > 0) {
+    parts.push(`Reasons ${reasons.join(" | ")}`);
+  }
+
+  return parts.join(" · ");
+}
+
 function formatConfidencePercent(value: number) {
   return `${Math.round(value * 100)}%`;
+}
+
+function summarizeArtifactRef(path: string) {
+  if (!path) {
+    return "";
+  }
+
+  const parts = path.split(/[\\/]/).filter((value) => Boolean(value));
+  return parts[parts.length - 1] || path;
 }
 
 function getRunProjectionFingerprint(projection: DesktopRunProjection | null | undefined) {
@@ -2227,7 +2251,10 @@ function buildDesktopFollowConversation(
       continue;
     }
     const experimentSummary = summarizeProjectionExperiment(projection);
-    const title = experimentSummary
+    const consultationSummary = summarizeProjectionConsultation(projection);
+    const title = consultationSummary
+      ? (diff.addedRunIds.includes(runId) ? "Consultation surfaced" : "Consultation updated")
+      : experimentSummary
       ? (diff.addedRunIds.includes(runId) ? "Hypothesis surfaced" : "Hypothesis updated")
       : (diff.addedRunIds.includes(runId) ? "Run surfaced" : "Run updated");
 
@@ -2242,7 +2269,9 @@ function buildDesktopFollowConversation(
       timestamp,
       actor: projection.label || projection.pane_id || "System",
       title,
-      body: experimentSummary
+      body: consultationSummary
+        ? `${consultationSummary} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`
+        : experimentSummary
         ? `${experimentSummary} · Next ${projection.next_action || "idle"} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`
         : `Next ${projection.next_action || "idle"} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`,
       details: [
@@ -2252,6 +2281,9 @@ function buildDesktopFollowConversation(
         { label: "verify", value: projection.verification_outcome || "n/a" },
         ...(projection.confidence !== null
           ? [{ label: "confidence", value: formatConfidencePercent(projection.confidence) }]
+          : []),
+        ...(projection.consultation_ref
+          ? [{ label: "source", value: summarizeArtifactRef(projection.consultation_ref) }]
           : []),
       ],
       tone:
