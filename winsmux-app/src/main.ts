@@ -2252,6 +2252,20 @@ function buildDesktopFollowConversation(
     }
     const experimentSummary = summarizeProjectionExperiment(projection);
     const consultationSummary = summarizeProjectionConsultation(projection);
+    const tone: SurfaceTone = consultationSummary
+      ? "focus"
+      : experimentSummary
+        ? "accent"
+        : projection.review_state === "PASS"
+          ? "success"
+          : projection.review_state === "PENDING"
+            ? "warning"
+            : "info";
+    const statusLabel = consultationSummary
+      ? "consultation"
+      : experimentSummary
+        ? "hypothesis"
+        : projection.next_action || projection.review_state || undefined;
     const title = consultationSummary
       ? (diff.addedRunIds.includes(runId) ? "Consultation surfaced" : "Consultation updated")
       : experimentSummary
@@ -2286,14 +2300,9 @@ function buildDesktopFollowConversation(
           ? [{ label: "source", value: summarizeArtifactRef(projection.consultation_ref) }]
           : []),
       ],
-      tone:
-        projection.review_state === "PASS"
-          ? "success"
-          : projection.review_state === "PENDING"
-            ? "warning"
-            : "info",
+      tone,
       runId,
-      statusLabel: projection.next_action || projection.review_state || undefined,
+      statusLabel,
     });
   }
 
