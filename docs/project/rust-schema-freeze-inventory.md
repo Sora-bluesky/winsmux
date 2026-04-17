@@ -48,6 +48,8 @@ Why this is close to freeze:
 
 - The Rust DTOs already reject missing required fields.
 - The fixtures already exercise the main board/inbox/digest snapshot shape.
+- `board.summary.by_state` / `by_review` / `by_task_state` と `inbox.summary.by_kind` も Rust 側で必須化済み。
+- `inbox.items[*]` の補助項目も、Rust 側で `priority`、`role`、`task_id`、`task`、`head_sha`、`event`、`timestamp`、`source` を受ける形へ狭め始めている。
 - Recent `TASK-278` slices have been narrowing this surface with fail-close regressions instead of widening it loosely.
 
 ### 2. `run/explain`
@@ -77,8 +79,13 @@ Parity fixtures:
 Why this is close to freeze:
 
 - `explain.json` already anchors the nested run payload in one place.
-- Recent parity work already tightened `run.worktree` and `evidence_digest.verification_outcome`.
-- The remaining work is more about extracting the contract explicitly than inventing new fields.
+- `explain.run` は、`task_id`、主要 pane 情報、最新イベント、変更件数、identity 配列、`tokens_remaining`、計画系、`action_items[*]`、`experiment_packet`、検証系、セキュリティ系まで Rust 側で必須化済み。
+- `explanation.current_state` も Rust 側で型付きになり、欠落を拒否する回帰テストがある。
+- `explain.observation_pack` は、`run_id`、`task_id`、`pane_id`、`slot`、`hypothesis`、`test_plan`、`changed_files`、`working_tree_summary`、`failing_command`、`env_fingerprint`、`command_hash`、`generated_at` を Rust 側で必須化済み。
+- `explain.consultation_packet` は、`run_id`、`task_id`、`pane_id`、`slot`、`kind`、`mode`、`target_slot`、`confidence`、`recommendation`、`next_test`、`risks`、`generated_at` を Rust 側で必須化済み。
+- 古い別名だった最上位 `experiment_packet`、`consultation_summary`、`run_packet`、`result_packet` は explain から削除済み。
+- 最上位 `observation_pack` と `consultation_packet` の `packet_type` も削除済み。`packet_type` は artifact 本体と `recent_events` の生イベント側だけに残る。
+- Rust parity fixture と PowerShell 契約テストは、今の explain shape に揃っている。
 
 ## Still-loose surfaces
 

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -25,6 +26,9 @@ pub struct DesktopBoardSummary {
     pub review_passed: usize,
     pub tasks_in_progress: usize,
     pub tasks_blocked: usize,
+    pub by_state: HashMap<String, usize>,
+    pub by_review: HashMap<String, usize>,
+    pub by_task_state: HashMap<String, usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -36,18 +40,27 @@ pub struct DesktopBoardSnapshot {
 #[derive(Serialize, Deserialize)]
 pub struct DesktopInboxSummary {
     pub item_count: usize,
+    pub by_kind: HashMap<String, usize>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct DesktopInboxItem {
     pub kind: String,
+    pub priority: usize,
     pub message: String,
     pub label: String,
     pub pane_id: String,
+    pub role: String,
+    pub task_id: String,
+    pub task: String,
     pub task_state: String,
     pub review_state: String,
     pub branch: String,
+    pub head_sha: String,
     pub changed_file_count: usize,
+    pub event: String,
+    pub timestamp: String,
+    pub source: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -175,6 +188,8 @@ pub struct DesktopExplainPayload {
     pub project_dir: String,
     pub run: DesktopExplainRun,
     pub explanation: DesktopExplainExplanation,
+    pub observation_pack: DesktopExplainObservationPack,
+    pub consultation_packet: DesktopExplainConsultationPacket,
     pub evidence_digest: DesktopExplainEvidenceDigest,
     #[serde(default)]
     pub review_state: Option<DesktopReviewStateRecord>,
@@ -185,17 +200,66 @@ pub struct DesktopExplainPayload {
 #[derive(Serialize, Deserialize)]
 pub struct DesktopExplainRun {
     pub run_id: String,
+    pub task_id: String,
+    pub parent_run_id: String,
+    pub goal: String,
     pub task: String,
+    pub task_type: String,
+    pub priority: String,
+    pub blocking: bool,
     pub state: String,
     pub task_state: String,
     pub review_state: String,
+    pub branch: String,
+    pub worktree: String,
+    pub head_sha: String,
+    pub primary_label: String,
+    pub primary_pane_id: String,
+    pub primary_role: String,
+    pub last_event: String,
+    pub last_event_at: String,
+    pub tokens_remaining: String,
+    pub pane_count: usize,
+    pub changed_file_count: usize,
+    pub labels: Vec<String>,
+    pub pane_ids: Vec<String>,
+    pub roles: Vec<String>,
     pub provider_target: String,
     pub agent_role: String,
-    pub branch: String,
-    pub head_sha: String,
-    pub worktree: String,
+    pub write_scope: Vec<String>,
+    pub read_scope: Vec<String>,
+    pub constraints: Vec<String>,
+    pub expected_output: String,
+    pub verification_plan: Vec<String>,
+    pub review_required: bool,
+    pub timeout_policy: String,
+    pub handoff_refs: Vec<String>,
+    pub experiment_packet: DesktopExplainExperimentPacket,
+    pub security_policy: Value,
+    pub security_verdict: Value,
+    pub verification_contract: Value,
+    pub verification_result: Value,
     #[serde(default)]
     pub changed_files: Vec<String>,
+    #[serde(default)]
+    pub action_items: Vec<DesktopExplainActionItem>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainExperimentPacket {
+    pub hypothesis: String,
+    pub test_plan: Vec<String>,
+    pub result: String,
+    pub confidence: f64,
+    pub next_action: String,
+    pub observation_pack_ref: String,
+    pub consultation_ref: String,
+    pub run_id: String,
+    pub slot: String,
+    pub branch: String,
+    pub worktree: String,
+    pub env_fingerprint: String,
+    pub command_hash: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -204,6 +268,47 @@ pub struct DesktopExplainExplanation {
     #[serde(default)]
     pub reasons: Vec<String>,
     pub next_action: String,
+    pub current_state: DesktopExplainCurrentState,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainCurrentState {
+    pub state: String,
+    pub task_state: String,
+    pub review_state: String,
+    pub last_event: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainConsultationPacket {
+    pub run_id: String,
+    pub task_id: String,
+    pub pane_id: String,
+    pub slot: String,
+    pub kind: String,
+    pub mode: String,
+    pub target_slot: String,
+    pub confidence: f64,
+    pub recommendation: String,
+    pub next_test: String,
+    pub risks: Vec<String>,
+    pub generated_at: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainObservationPack {
+    pub run_id: String,
+    pub task_id: String,
+    pub pane_id: String,
+    pub slot: String,
+    pub hypothesis: String,
+    pub test_plan: Vec<String>,
+    pub changed_files: Vec<String>,
+    pub working_tree_summary: String,
+    pub failing_command: String,
+    pub env_fingerprint: String,
+    pub command_hash: String,
+    pub generated_at: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -214,6 +319,15 @@ pub struct DesktopExplainEvidenceDigest {
     pub changed_files: Vec<String>,
     pub verification_outcome: String,
     pub security_blocked: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainActionItem {
+    pub kind: String,
+    pub message: String,
+    pub event: String,
+    pub timestamp: String,
+    pub source: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -904,6 +1018,48 @@ mod tests {
         payload
     }
 
+    fn expect_missing_explain_run_field(field_name: &str) -> String {
+        let mut response = rust_parity_explain_payload();
+        response["run"]
+            .as_object_mut()
+            .expect("run must be an object")
+            .remove(field_name);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!(
+                "expected explain payload parse failure for missing run field {}",
+                field_name
+            ),
+            Err(err) => err,
+        }
+    }
+
+    fn expect_missing_explain_action_item_field(field_name: &str) -> String {
+        let mut response = rust_parity_explain_payload();
+        response["run"]["action_items"][0]
+            .as_object_mut()
+            .expect("run.action_items[0] must be an object")
+            .remove(field_name);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!(
+                "expected explain payload parse failure for missing action item field {}",
+                field_name
+            ),
+            Err(err) => err,
+        }
+    }
+
     fn rust_parity_run_projection_payload() -> Value {
         let digest = read_rust_parity_fixture("digest.json");
         let item = &digest["items"][0];
@@ -943,6 +1099,27 @@ mod tests {
         })
     }
 
+    fn expect_missing_inbox_item_field(field_name: &str) -> String {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["inbox"]["items"][0]
+            .as_object_mut()
+            .expect("inbox.items[0] must be an object")
+            .remove(field_name);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!(
+                "expected summary snapshot parse failure for missing inbox field {}",
+                field_name
+            ),
+            Err(err) => err,
+        }
+    }
+
     #[test]
     fn load_desktop_summary_snapshot_deserializes_transport_payload() {
         let transport = FakeTransport {
@@ -955,11 +1132,24 @@ mod tests {
         assert_eq!(snapshot.project_dir, "__PROJECT_DIR__");
         assert_eq!(snapshot.board.summary.pane_count, 2);
         assert_eq!(snapshot.board.summary.tasks_blocked, 0);
+        assert_eq!(snapshot.board.summary.by_state["idle"], 1);
+        assert_eq!(snapshot.board.summary.by_review["PENDING"], 1);
+        assert_eq!(snapshot.board.summary.by_task_state["backlog"], 1);
         assert_eq!(snapshot.board.panes[0].pane_id, "%2");
         assert_eq!(snapshot.board.panes[0].worktree, ".worktrees/builder-1");
         assert_eq!(snapshot.board.panes[0].last_event_at, "__LAST_EVENT_AT__");
         assert_eq!(snapshot.inbox.summary.item_count, 4);
+        assert_eq!(snapshot.inbox.summary.by_kind["review_pending"], 1);
+        assert_eq!(snapshot.inbox.summary.by_kind["commit_ready"], 1);
+        assert_eq!(snapshot.inbox.items[0].priority, 0);
         assert_eq!(snapshot.inbox.items[0].pane_id, "%6");
+        assert_eq!(snapshot.inbox.items[0].role, "Worker");
+        assert_eq!(snapshot.inbox.items[0].task_id, "task-999");
+        assert_eq!(snapshot.inbox.items[0].task, "Fix blocker");
+        assert_eq!(snapshot.inbox.items[0].head_sha, "def5678abc1234");
+        assert_eq!(snapshot.inbox.items[0].event, "commander.state_transition");
+        assert_eq!(snapshot.inbox.items[0].timestamp, "__TIMESTAMP__");
+        assert_eq!(snapshot.inbox.items[0].source, "manifest");
         assert_eq!(snapshot.digest.summary.actionable_items, 1);
         assert_eq!(snapshot.digest.summary.dirty_items, 1);
         assert_eq!(snapshot.digest.items[0].run_id, "task:task-246");
@@ -1082,6 +1272,182 @@ mod tests {
         assert!(
             err.contains("worktree"),
             "expected missing board pane worktree error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_board_summary_by_state() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["board"]["summary"]
+            .as_object_mut()
+            .expect("board.summary must be an object")
+            .remove("by_state");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing by_state"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("by_state"),
+            "expected missing by_state error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_board_summary_by_review() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["board"]["summary"]
+            .as_object_mut()
+            .expect("board.summary must be an object")
+            .remove("by_review");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing by_review"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("by_review"),
+            "expected missing by_review error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_board_summary_by_task_state() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["board"]["summary"]
+            .as_object_mut()
+            .expect("board.summary must be an object")
+            .remove("by_task_state");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing by_task_state"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("by_task_state"),
+            "expected missing by_task_state error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_summary_by_kind() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["inbox"]["summary"]
+            .as_object_mut()
+            .expect("inbox.summary must be an object")
+            .remove("by_kind");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing by_kind"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("by_kind"),
+            "expected missing by_kind error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_priority() {
+        let err = expect_missing_inbox_item_field("priority");
+
+        assert!(
+            err.contains("priority"),
+            "expected missing priority error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_role() {
+        let err = expect_missing_inbox_item_field("role");
+
+        assert!(
+            err.contains("role"),
+            "expected missing role error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_task_id() {
+        let err = expect_missing_inbox_item_field("task_id");
+
+        assert!(
+            err.contains("task_id"),
+            "expected missing task_id error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_task() {
+        let err = expect_missing_inbox_item_field("task");
+
+        assert!(
+            err.contains("task"),
+            "expected missing task error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_head_sha() {
+        let err = expect_missing_inbox_item_field("head_sha");
+
+        assert!(
+            err.contains("head_sha"),
+            "expected missing head_sha error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_event() {
+        let err = expect_missing_inbox_item_field("event");
+
+        assert!(
+            err.contains("event"),
+            "expected missing event error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_timestamp() {
+        let err = expect_missing_inbox_item_field("timestamp");
+
+        assert!(
+            err.contains("timestamp"),
+            "expected missing timestamp error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_source() {
+        let err = expect_missing_inbox_item_field("source");
+
+        assert!(
+            err.contains("source"),
+            "expected missing source error, got {err}"
         );
     }
 
@@ -1244,15 +1610,154 @@ mod tests {
             load_desktop_run_explain(&transport, "task:task-256".to_string(), None).unwrap();
 
         assert_eq!(payload.run.run_id, "task:task-256");
+        assert_eq!(payload.run.task_id, "task-256");
+        assert_eq!(payload.run.parent_run_id, "operator:session-1");
+        assert_eq!(payload.run.goal, "Ship run contract primitives");
         assert_eq!(payload.run.task, "Implement run ledger");
+        assert_eq!(payload.run.task_type, "implementation");
+        assert_eq!(payload.run.priority, "P0");
+        assert!(payload.run.blocking);
         assert_eq!(payload.generated_at, "__GENERATED_AT__");
         assert_eq!(payload.project_dir, "__PROJECT_DIR__");
+        assert_eq!(payload.run.primary_label, "builder-1");
+        assert_eq!(payload.run.primary_pane_id, "%2");
+        assert_eq!(payload.run.primary_role, "Builder");
+        assert_eq!(payload.run.last_event, "commander.review_requested");
+        assert_eq!(payload.run.last_event_at, "__LAST_EVENT_AT__");
+        assert_eq!(payload.run.tokens_remaining, "64% context left");
+        assert_eq!(payload.run.pane_count, 1);
+        assert_eq!(payload.run.changed_file_count, 1);
+        assert_eq!(payload.run.labels, vec!["builder-1".to_string()]);
+        assert_eq!(payload.run.pane_ids, vec!["%2".to_string()]);
+        assert_eq!(payload.run.roles, vec!["Builder".to_string()]);
         assert_eq!(payload.run.provider_target, "codex:gpt-5.4");
         assert_eq!(payload.run.agent_role, "worker");
+        assert_eq!(
+            payload.run.write_scope,
+            vec![
+                "scripts/winsmux-core.ps1".to_string(),
+                "tests/winsmux-bridge.Tests.ps1".to_string()
+            ]
+        );
+        assert_eq!(
+            payload.run.read_scope,
+            vec!["winsmux-core/scripts/pane-status.ps1".to_string()]
+        );
+        assert_eq!(
+            payload.run.constraints,
+            vec!["preserve existing board schema".to_string()]
+        );
+        assert_eq!(payload.run.expected_output, "Stable explain JSON");
+        assert_eq!(
+            payload.run.verification_plan,
+            vec![
+                "Invoke-Pester tests/winsmux-bridge.Tests.ps1".to_string(),
+                "verify explain --json contract".to_string()
+            ]
+        );
+        assert!(payload.run.review_required);
+        assert_eq!(payload.run.timeout_policy, "standard");
+        assert_eq!(
+            payload.run.handoff_refs,
+            vec!["docs/handoff.md".to_string()]
+        );
+        assert_eq!(payload.run.experiment_packet.hypothesis, "");
+        assert!(payload.run.experiment_packet.test_plan.is_empty());
+        assert_eq!(payload.run.experiment_packet.result, "consult before work");
+        assert_eq!(payload.run.experiment_packet.confidence, 0.66);
+        assert_eq!(
+            payload.run.experiment_packet.next_action,
+            "approval_waiting"
+        );
+        assert_eq!(
+            payload.run.experiment_packet.observation_pack_ref,
+            ".winsmux/observation-packs/observation-pack-__ID__.json"
+        );
+        assert_eq!(
+            payload.run.experiment_packet.consultation_ref,
+            ".winsmux/consultations/consult-result-__ID__.json"
+        );
+        assert_eq!(payload.run.experiment_packet.run_id, "");
+        assert_eq!(payload.run.experiment_packet.slot, "slot-builder-1");
+        assert_eq!(payload.run.experiment_packet.branch, "worktree-builder-1");
+        assert_eq!(payload.run.experiment_packet.worktree, "");
+        assert_eq!(payload.run.experiment_packet.env_fingerprint, "");
+        assert_eq!(payload.run.experiment_packet.command_hash, "");
+        assert_eq!(payload.explanation.current_state.state, "idle");
+        assert_eq!(payload.explanation.current_state.task_state, "in_progress");
+        assert_eq!(payload.explanation.current_state.review_state, "PENDING");
+        assert_eq!(
+            payload.explanation.current_state.last_event,
+            "commander.review_requested"
+        );
+        assert!(payload.run.security_policy.is_null());
+        assert!(payload.run.security_verdict.is_null());
+        assert!(payload.run.verification_contract.is_null());
+        assert!(payload.run.verification_result.is_null());
         assert_eq!(payload.run.worktree, ".worktrees/builder-1");
+        assert_eq!(payload.run.action_items.len(), 2);
+        assert_eq!(payload.run.action_items[0].kind, "review_pending");
+        assert_eq!(
+            payload.run.action_items[0].message,
+            "builder-1 が review 待機中。"
+        );
+        assert_eq!(
+            payload.run.action_items[0].event,
+            "commander.review_requested"
+        );
+        assert_eq!(payload.run.action_items[0].timestamp, "__TIMESTAMP__");
+        assert_eq!(payload.run.action_items[0].source, "manifest");
         assert_eq!(payload.evidence_digest.next_action, "review_pending");
         assert_eq!(payload.evidence_digest.verification_outcome, "");
         assert_eq!(payload.evidence_digest.security_blocked, "");
+        assert_eq!(payload.consultation_packet.run_id, "task:task-256");
+        assert_eq!(payload.consultation_packet.task_id, "task-256");
+        assert_eq!(payload.consultation_packet.pane_id, "%2");
+        assert_eq!(payload.consultation_packet.slot, "slot-builder-1");
+        assert_eq!(payload.consultation_packet.kind, "consult_result");
+        assert_eq!(payload.consultation_packet.mode, "early");
+        assert_eq!(payload.consultation_packet.target_slot, "slot-review-1");
+        assert_eq!(payload.consultation_packet.confidence, 0.66);
+        assert_eq!(
+            payload.consultation_packet.recommendation,
+            "consult before work"
+        );
+        assert_eq!(payload.consultation_packet.next_test, "approval_waiting");
+        assert_eq!(
+            payload.consultation_packet.risks,
+            vec!["needs reviewer confirmation".to_string()]
+        );
+        assert_eq!(payload.consultation_packet.generated_at, "__GENERATED_AT__");
+        assert_eq!(payload.observation_pack.run_id, "task:task-256");
+        assert_eq!(payload.observation_pack.task_id, "task-256");
+        assert_eq!(payload.observation_pack.pane_id, "%2");
+        assert_eq!(payload.observation_pack.slot, "slot-builder-1");
+        assert_eq!(
+            payload.observation_pack.hypothesis,
+            "experiment packet should flow into explain"
+        );
+        assert_eq!(
+            payload.observation_pack.test_plan,
+            vec![
+                "collect matching events".to_string(),
+                "normalize packet".to_string()
+            ]
+        );
+        assert_eq!(
+            payload.observation_pack.changed_files,
+            vec!["scripts/winsmux-core.ps1".to_string()]
+        );
+        assert_eq!(
+            payload.observation_pack.working_tree_summary,
+            "1 file modified"
+        );
+        assert_eq!(
+            payload.observation_pack.failing_command,
+            "Invoke-Pester tests/winsmux-bridge.Tests.ps1"
+        );
+        assert_eq!(payload.observation_pack.env_fingerprint, "env:abc123");
+        assert_eq!(payload.observation_pack.command_hash, "cmd:def456");
+        assert_eq!(payload.observation_pack.generated_at, "__GENERATED_AT__");
         assert_eq!(
             payload
                 .review_state
@@ -1304,12 +1809,64 @@ mod tests {
             DesktopJsonRpcResponse::Success { id, result, .. } => {
                 assert_eq!(id, serde_json::json!("req-explain"));
                 assert_eq!(result["run"]["run_id"], "task:task-256");
+                assert_eq!(result["run"]["task_id"], "task-256");
+                assert_eq!(result["run"]["parent_run_id"], "operator:session-1");
+                assert_eq!(result["run"]["goal"], "Ship run contract primitives");
+                assert_eq!(result["run"]["priority"], "P0");
+                assert_eq!(result["run"]["primary_label"], "builder-1");
+                assert_eq!(result["run"]["primary_pane_id"], "%2");
+                assert_eq!(result["run"]["last_event"], "commander.review_requested");
+                assert_eq!(result["run"]["tokens_remaining"], "64% context left");
+                assert_eq!(result["run"]["pane_count"], 1);
+                assert_eq!(result["run"]["labels"][0], "builder-1");
+                assert_eq!(result["run"]["pane_ids"][0], "%2");
+                assert_eq!(result["run"]["roles"][0], "Builder");
+                assert_eq!(result["run"]["action_items"][0]["kind"], "review_pending");
+                assert_eq!(result["run"]["action_items"][0]["source"], "manifest");
                 assert_eq!(result["run"]["provider_target"], "codex:gpt-5.4");
+                assert_eq!(
+                    result["run"]["experiment_packet"]["result"],
+                    "consult before work"
+                );
+                assert_eq!(result["run"]["experiment_packet"]["confidence"], 0.66);
+                assert_eq!(
+                    result["run"]["experiment_packet"]["next_action"],
+                    "approval_waiting"
+                );
+                assert_eq!(result["run"]["experiment_packet"]["slot"], "slot-builder-1");
+                assert!(result["run"]["security_policy"].is_null());
+                assert!(result["run"]["security_verdict"].is_null());
+                assert!(result["run"]["verification_contract"].is_null());
+                assert!(result["run"]["verification_result"].is_null());
+                assert_eq!(result["explanation"]["current_state"]["state"], "idle");
+                assert_eq!(
+                    result["explanation"]["current_state"]["task_state"],
+                    "in_progress"
+                );
+                assert_eq!(
+                    result["explanation"]["current_state"]["review_state"],
+                    "PENDING"
+                );
+                assert_eq!(
+                    result["explanation"]["current_state"]["last_event"],
+                    "commander.review_requested"
+                );
+                assert_eq!(
+                    result["consultation_packet"]["recommendation"],
+                    "consult before work"
+                );
+                assert_eq!(
+                    result["observation_pack"]["working_tree_summary"],
+                    "1 file modified"
+                );
+                assert!(result["observation_pack"].get("packet_type").is_none());
+                assert!(result["consultation_packet"].get("packet_type").is_none());
                 assert_eq!(result["evidence_digest"]["next_action"], "review_pending");
                 assert_eq!(result["review_state"]["status"], "PENDING");
+                assert!(result.get("consultation_summary").is_none());
+                assert!(result["run"].get("run_packet").is_none());
                 assert!(result.get("run_packet").is_none());
                 assert!(result.get("result_packet").is_none());
-                assert!(result.get("consultation_packet").is_none());
             }
             DesktopJsonRpcResponse::Error { error, .. } => {
                 panic!("expected success, got {:?}", error);
@@ -1323,21 +1880,7 @@ mod tests {
 
     #[test]
     fn load_desktop_run_explain_rejects_missing_run_head_sha() {
-        let mut response = rust_parity_explain_payload();
-        response["run"]
-            .as_object_mut()
-            .expect("run must be an object")
-            .remove("head_sha");
-
-        let transport = FakeTransport {
-            requests: RefCell::new(Vec::new()),
-            response,
-        };
-
-        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
-            Ok(_) => panic!("expected explain payload parse failure"),
-            Err(err) => err,
-        };
+        let err = expect_missing_explain_run_field("head_sha");
 
         assert!(
             err.contains("head_sha"),
@@ -1382,23 +1925,352 @@ mod tests {
         );
     }
 
-    #[test]
-    fn load_desktop_run_explain_rejects_missing_run_provider_target() {
+    fn expect_missing_explanation_current_state_field(field_name: &str) -> String {
         let mut response = rust_parity_explain_payload();
-        response["run"]
+        response["explanation"]["current_state"]
             .as_object_mut()
-            .expect("run must be an object")
-            .remove("provider_target");
+            .expect("explanation.current_state must be an object")
+            .remove(field_name);
 
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
             response,
         };
 
-        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
-            Ok(_) => panic!("expected explain payload parse failure"),
+        match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!(
+                "expected explain payload parse failure for missing explanation.current_state field {}",
+                field_name
+            ),
             Err(err) => err,
+        }
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_explanation_current_state_state() {
+        let err = expect_missing_explanation_current_state_field("state");
+
+        assert!(
+            err.contains("state"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_explanation_current_state_task_state() {
+        let err = expect_missing_explanation_current_state_field("task_state");
+
+        assert!(
+            err.contains("task_state"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_explanation_current_state_review_state() {
+        let err = expect_missing_explanation_current_state_field("review_state");
+
+        assert!(
+            err.contains("review_state"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_explanation_current_state_last_event() {
+        let err = expect_missing_explanation_current_state_field("last_event");
+
+        assert!(
+            err.contains("last_event"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    fn expect_missing_consultation_packet_field(field_name: &str) -> String {
+        let mut response = rust_parity_explain_payload();
+        response["consultation_packet"]
+            .as_object_mut()
+            .expect("consultation_packet must be an object")
+            .remove(field_name);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
         };
+
+        match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!(
+                "expected explain payload parse failure for missing consultation_packet field {}",
+                field_name
+            ),
+            Err(err) => err,
+        }
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_run_id() {
+        let err = expect_missing_consultation_packet_field("run_id");
+
+        assert!(
+            err.contains("run_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_task_id() {
+        let err = expect_missing_consultation_packet_field("task_id");
+
+        assert!(
+            err.contains("task_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_pane_id() {
+        let err = expect_missing_consultation_packet_field("pane_id");
+
+        assert!(
+            err.contains("pane_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_slot() {
+        let err = expect_missing_consultation_packet_field("slot");
+
+        assert!(
+            err.contains("slot"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_kind() {
+        let err = expect_missing_consultation_packet_field("kind");
+
+        assert!(
+            err.contains("kind"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_mode() {
+        let err = expect_missing_consultation_packet_field("mode");
+
+        assert!(
+            err.contains("mode"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_target_slot() {
+        let err = expect_missing_consultation_packet_field("target_slot");
+
+        assert!(
+            err.contains("target_slot"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_confidence() {
+        let err = expect_missing_consultation_packet_field("confidence");
+
+        assert!(
+            err.contains("confidence"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_recommendation() {
+        let err = expect_missing_consultation_packet_field("recommendation");
+
+        assert!(
+            err.contains("recommendation"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_next_test() {
+        let err = expect_missing_consultation_packet_field("next_test");
+
+        assert!(
+            err.contains("next_test"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_risks() {
+        let err = expect_missing_consultation_packet_field("risks");
+
+        assert!(
+            err.contains("risks"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_generated_at() {
+        let err = expect_missing_consultation_packet_field("generated_at");
+
+        assert!(
+            err.contains("generated_at"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    fn expect_missing_observation_pack_field(field_name: &str) -> String {
+        let mut response = rust_parity_explain_payload();
+        response["observation_pack"]
+            .as_object_mut()
+            .expect("observation_pack must be an object")
+            .remove(field_name);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!(
+                "expected explain payload parse failure for missing observation_pack field {}",
+                field_name
+            ),
+            Err(err) => err,
+        }
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_run_id() {
+        let err = expect_missing_observation_pack_field("run_id");
+
+        assert!(
+            err.contains("run_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_task_id() {
+        let err = expect_missing_observation_pack_field("task_id");
+
+        assert!(
+            err.contains("task_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_pane_id() {
+        let err = expect_missing_observation_pack_field("pane_id");
+
+        assert!(
+            err.contains("pane_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_slot() {
+        let err = expect_missing_observation_pack_field("slot");
+
+        assert!(
+            err.contains("slot"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_hypothesis() {
+        let err = expect_missing_observation_pack_field("hypothesis");
+
+        assert!(
+            err.contains("hypothesis"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_test_plan() {
+        let err = expect_missing_observation_pack_field("test_plan");
+
+        assert!(
+            err.contains("test_plan"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_changed_files() {
+        let err = expect_missing_observation_pack_field("changed_files");
+
+        assert!(
+            err.contains("changed_files"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_working_tree_summary() {
+        let err = expect_missing_observation_pack_field("working_tree_summary");
+
+        assert!(
+            err.contains("working_tree_summary"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_failing_command() {
+        let err = expect_missing_observation_pack_field("failing_command");
+
+        assert!(
+            err.contains("failing_command"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_env_fingerprint() {
+        let err = expect_missing_observation_pack_field("env_fingerprint");
+
+        assert!(
+            err.contains("env_fingerprint"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_command_hash() {
+        let err = expect_missing_observation_pack_field("command_hash");
+
+        assert!(
+            err.contains("command_hash"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_generated_at() {
+        let err = expect_missing_observation_pack_field("generated_at");
+
+        assert!(
+            err.contains("generated_at"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_provider_target() {
+        let err = expect_missing_explain_run_field("provider_target");
 
         assert!(
             err.contains("provider_target"),
@@ -1408,24 +2280,471 @@ mod tests {
 
     #[test]
     fn load_desktop_run_explain_rejects_missing_run_worktree() {
+        let err = expect_missing_explain_run_field("worktree");
+
+        assert!(
+            err.contains("worktree"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_task_id() {
+        let err = expect_missing_explain_run_field("task_id");
+
+        assert!(
+            err.contains("task_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_primary_label() {
+        let err = expect_missing_explain_run_field("primary_label");
+
+        assert!(
+            err.contains("primary_label"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_primary_pane_id() {
+        let err = expect_missing_explain_run_field("primary_pane_id");
+
+        assert!(
+            err.contains("primary_pane_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_primary_role() {
+        let err = expect_missing_explain_run_field("primary_role");
+
+        assert!(
+            err.contains("primary_role"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_last_event() {
+        let err = expect_missing_explain_run_field("last_event");
+
+        assert!(
+            err.contains("last_event"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_last_event_at() {
+        let err = expect_missing_explain_run_field("last_event_at");
+
+        assert!(
+            err.contains("last_event_at"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_changed_file_count() {
+        let err = expect_missing_explain_run_field("changed_file_count");
+
+        assert!(
+            err.contains("changed_file_count"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_pane_count() {
+        let err = expect_missing_explain_run_field("pane_count");
+
+        assert!(
+            err.contains("pane_count"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_tokens_remaining() {
+        let err = expect_missing_explain_run_field("tokens_remaining");
+
+        assert!(
+            err.contains("tokens_remaining"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_labels() {
+        let err = expect_missing_explain_run_field("labels");
+
+        assert!(
+            err.contains("labels"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_pane_ids() {
+        let err = expect_missing_explain_run_field("pane_ids");
+
+        assert!(
+            err.contains("pane_ids"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_roles() {
+        let err = expect_missing_explain_run_field("roles");
+
+        assert!(
+            err.contains("roles"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_parent_run_id() {
+        let err = expect_missing_explain_run_field("parent_run_id");
+
+        assert!(
+            err.contains("parent_run_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_goal() {
+        let err = expect_missing_explain_run_field("goal");
+
+        assert!(
+            err.contains("goal"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_task_type() {
+        let err = expect_missing_explain_run_field("task_type");
+
+        assert!(
+            err.contains("task_type"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_priority() {
+        let err = expect_missing_explain_run_field("priority");
+
+        assert!(
+            err.contains("priority"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_blocking() {
+        let err = expect_missing_explain_run_field("blocking");
+
+        assert!(
+            err.contains("blocking"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_write_scope() {
+        let err = expect_missing_explain_run_field("write_scope");
+
+        assert!(
+            err.contains("write_scope"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_read_scope() {
+        let err = expect_missing_explain_run_field("read_scope");
+
+        assert!(
+            err.contains("read_scope"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_constraints() {
+        let err = expect_missing_explain_run_field("constraints");
+
+        assert!(
+            err.contains("constraints"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_expected_output() {
+        let err = expect_missing_explain_run_field("expected_output");
+
+        assert!(
+            err.contains("expected_output"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_verification_plan() {
+        let err = expect_missing_explain_run_field("verification_plan");
+
+        assert!(
+            err.contains("verification_plan"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_review_required() {
+        let err = expect_missing_explain_run_field("review_required");
+
+        assert!(
+            err.contains("review_required"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_timeout_policy() {
+        let err = expect_missing_explain_run_field("timeout_policy");
+
+        assert!(
+            err.contains("timeout_policy"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_handoff_refs() {
+        let err = expect_missing_explain_run_field("handoff_refs");
+
+        assert!(
+            err.contains("handoff_refs"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    fn expect_missing_explain_experiment_packet_field(field_name: &str) -> String {
         let mut response = rust_parity_explain_payload();
-        response["run"]
+        response["run"]["experiment_packet"]
             .as_object_mut()
-            .expect("run must be an object")
-            .remove("worktree");
+            .expect("run.experiment_packet must be an object")
+            .remove(field_name);
 
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
             response,
         };
 
-        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
-            Ok(_) => panic!("expected explain payload parse failure"),
+        match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!(
+                "expected explain payload parse failure for missing experiment packet field {}",
+                field_name
+            ),
             Err(err) => err,
-        };
+        }
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_hypothesis() {
+        let err = expect_missing_explain_experiment_packet_field("hypothesis");
+
+        assert!(
+            err.contains("hypothesis"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_test_plan() {
+        let err = expect_missing_explain_experiment_packet_field("test_plan");
+
+        assert!(
+            err.contains("test_plan"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_result() {
+        let err = expect_missing_explain_experiment_packet_field("result");
+
+        assert!(
+            err.contains("result"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_confidence() {
+        let err = expect_missing_explain_experiment_packet_field("confidence");
+
+        assert!(
+            err.contains("confidence"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_next_action() {
+        let err = expect_missing_explain_experiment_packet_field("next_action");
+
+        assert!(
+            err.contains("next_action"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_observation_pack_ref() {
+        let err = expect_missing_explain_experiment_packet_field("observation_pack_ref");
+
+        assert!(
+            err.contains("observation_pack_ref"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_consultation_ref() {
+        let err = expect_missing_explain_experiment_packet_field("consultation_ref");
+
+        assert!(
+            err.contains("consultation_ref"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_run_id() {
+        let err = expect_missing_explain_experiment_packet_field("run_id");
+
+        assert!(
+            err.contains("run_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_slot() {
+        let err = expect_missing_explain_experiment_packet_field("slot");
+
+        assert!(
+            err.contains("slot"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_branch() {
+        let err = expect_missing_explain_experiment_packet_field("branch");
+
+        assert!(
+            err.contains("branch"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_worktree() {
+        let err = expect_missing_explain_experiment_packet_field("worktree");
 
         assert!(
             err.contains("worktree"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_env_fingerprint() {
+        let err = expect_missing_explain_experiment_packet_field("env_fingerprint");
+
+        assert!(
+            err.contains("env_fingerprint"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_command_hash() {
+        let err = expect_missing_explain_experiment_packet_field("command_hash");
+
+        assert!(
+            err.contains("command_hash"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_security_policy() {
+        let err = expect_missing_explain_run_field("security_policy");
+
+        assert!(
+            err.contains("security_policy"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_security_verdict() {
+        let err = expect_missing_explain_run_field("security_verdict");
+
+        assert!(
+            err.contains("security_verdict"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_verification_contract() {
+        let err = expect_missing_explain_run_field("verification_contract");
+
+        assert!(
+            err.contains("verification_contract"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_verification_result() {
+        let err = expect_missing_explain_run_field("verification_result");
+
+        assert!(
+            err.contains("verification_result"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_action_item_message() {
+        let err = expect_missing_explain_action_item_field("message");
+
+        assert!(
+            err.contains("message"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_action_item_source() {
+        let err = expect_missing_explain_action_item_field("source");
+
+        assert!(
+            err.contains("source"),
             "unexpected explain parse error: {err}"
         );
     }
@@ -1644,9 +2963,17 @@ mod tests {
                 assert_eq!(id, serde_json::json!("req-1"));
                 assert_eq!(result["project_dir"], "__PROJECT_DIR__");
                 assert_eq!(result["board"]["summary"]["tasks_blocked"], 0);
+                assert_eq!(result["board"]["summary"]["by_state"]["busy"], 1);
+                assert_eq!(result["board"]["summary"]["by_review"]["unknown"], 1);
                 assert_eq!(result["digest"]["summary"]["actionable_items"], 1);
                 assert_eq!(result["digest"]["summary"]["dirty_items"], 1);
+                assert_eq!(result["inbox"]["summary"]["by_kind"]["approval_waiting"], 1);
                 assert_eq!(result["inbox"]["items"][0]["pane_id"], "%6");
+                assert_eq!(result["inbox"]["items"][0]["priority"], 0);
+                assert_eq!(result["inbox"]["items"][0]["role"], "Worker");
+                assert_eq!(result["inbox"]["items"][0]["task_id"], "task-999");
+                assert_eq!(result["inbox"]["items"][0]["head_sha"], "def5678abc1234");
+                assert_eq!(result["inbox"]["items"][0]["timestamp"], "__TIMESTAMP__");
                 assert_eq!(result["board"]["panes"][0]["pane_id"], "%2");
                 assert_eq!(result["digest"]["items"][0]["run_id"], "task:task-246");
             }

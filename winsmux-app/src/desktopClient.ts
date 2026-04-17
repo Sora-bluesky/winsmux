@@ -49,6 +49,9 @@ export interface DesktopBoardSummary {
   review_passed: number;
   tasks_in_progress: number;
   tasks_blocked: number;
+  by_state: Record<string, number>;
+  by_review: Record<string, number>;
+  by_task_state: Record<string, number>;
 }
 
 export interface DesktopBoardPane {
@@ -68,17 +71,26 @@ export interface DesktopBoardPane {
 
 export interface DesktopInboxSummary {
   item_count: number;
+  by_kind: Record<string, number>;
 }
 
 export interface DesktopInboxItem {
   kind: string;
+  priority: number;
   message: string;
   label: string;
   pane_id: string;
+  role: string;
+  task_id: string;
+  task: string;
   task_state: string;
   review_state: string;
   branch: string;
+  head_sha: string;
   changed_file_count: number;
+  event: string;
+  timestamp: string;
+  source: string;
 }
 
 export interface DesktopDigestSummary {
@@ -164,21 +176,106 @@ export interface DesktopExplainPayload {
   project_dir: string;
   run: {
     run_id: string;
+    task_id: string;
+    parent_run_id: string;
+    goal: string;
     task: string;
+    task_type: string;
+    priority: string;
+    blocking: boolean;
     state: string;
     task_state: string;
     review_state: string;
+    branch: string;
+    worktree: string;
+    head_sha: string;
+    primary_label: string;
+    primary_pane_id: string;
+    primary_role: string;
+    last_event: string;
+    last_event_at: string;
+    tokens_remaining: string;
+    pane_count: number;
+    changed_file_count: number;
+    labels: string[];
+    pane_ids: string[];
+    roles: string[];
     provider_target: string;
     agent_role: string;
-    branch: string;
-    head_sha: string;
-    worktree: string;
+    write_scope: string[];
+    read_scope: string[];
+    constraints: string[];
+    expected_output: string;
+    verification_plan: string[];
+    review_required: boolean;
+    timeout_policy: string;
+    handoff_refs: string[];
+    experiment_packet: {
+      hypothesis: string;
+      test_plan: string[];
+      result: string;
+      confidence: number;
+      next_action: string;
+      observation_pack_ref: string;
+      consultation_ref: string;
+      run_id: string;
+      slot: string;
+      branch: string;
+      worktree: string;
+      env_fingerprint: string;
+      command_hash: string;
+    };
+    security_policy: Record<string, unknown> | null;
+    security_verdict: Record<string, unknown> | null;
+    verification_contract: Record<string, unknown> | null;
+    verification_result: Record<string, unknown> | null;
     changed_files: string[];
+    action_items: Array<{
+      kind: string;
+      message: string;
+      event: string;
+      timestamp: string;
+      source: string;
+    }>;
   };
   explanation: {
     summary: string;
     reasons: string[];
     next_action: string;
+    current_state: {
+      state: string;
+      task_state: string;
+      review_state: string;
+      last_event: string;
+    };
+  };
+  observation_pack: {
+    run_id: string;
+    task_id: string;
+    pane_id: string;
+    slot: string;
+    hypothesis: string;
+    test_plan: string[];
+    changed_files: string[];
+    working_tree_summary: string;
+    failing_command: string;
+    env_fingerprint: string;
+    command_hash: string;
+    generated_at: string;
+  };
+  consultation_packet: {
+    run_id: string;
+    task_id: string;
+    pane_id: string;
+    slot: string;
+    kind: string;
+    mode: string;
+    target_slot: string;
+    confidence: number;
+    recommendation: string;
+    next_test: string;
+    risks: string[];
+    generated_at: string;
   };
   evidence_digest: {
     next_action: string;

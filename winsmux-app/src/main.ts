@@ -1342,14 +1342,52 @@ async function openExplainForSelectedRun() {
   try {
     const previousPayload = desktopExplainCache.get(selectedRunId) ?? null;
     const payload = await getDesktopRunExplain(selectedRunId);
+    const observationPack = getObservationPack(payload);
+    const consultationSummary = getConsultationSummary(payload);
     desktopExplainCache.set(selectedRunId, payload);
 
     const detailItems: ConversationDetail[] = [
       { label: "run", value: payload.run.run_id },
       { label: "next", value: payload.explanation.next_action || payload.evidence_digest.next_action || "no next action" },
     ];
+    if (payload.run.priority) {
+      detailItems.push({ label: "priority", value: payload.run.priority });
+    }
+    if (payload.run.pane_count > 0) {
+      detailItems.push({ label: "panes", value: `${payload.run.pane_count}` });
+    }
+    if (payload.run.tokens_remaining) {
+      detailItems.push({ label: "context", value: payload.run.tokens_remaining });
+    }
+    if (payload.run.experiment_packet.next_action) {
+      detailItems.push({ label: "experiment", value: payload.run.experiment_packet.next_action });
+    }
+    if (observationPack.hypothesis) {
+      detailItems.push({ label: "observe", value: observationPack.hypothesis });
+    }
+    if (consultationSummary.next_test) {
+      detailItems.push({ label: "consult", value: consultationSummary.next_test });
+    }
+    if (payload.run.primary_label) {
+      detailItems.push({ label: "pane", value: payload.run.primary_label });
+    }
     if (payload.run.branch) {
       detailItems.push({ label: "branch", value: payload.run.branch });
+    }
+    if (payload.run.last_event) {
+      detailItems.push({ label: "event", value: payload.run.last_event });
+    }
+    if (
+      payload.explanation.current_state.state ||
+      payload.explanation.current_state.task_state ||
+      payload.explanation.current_state.review_state
+    ) {
+      const currentStateParts = [
+        payload.explanation.current_state.state,
+        payload.explanation.current_state.task_state,
+        payload.explanation.current_state.review_state,
+      ].filter((value) => Boolean(value));
+      detailItems.push({ label: "state", value: currentStateParts.join(" / ") });
     }
     if (payload.evidence_digest.verification_outcome) {
       detailItems.push({ label: "verify", value: payload.evidence_digest.verification_outcome });
@@ -1359,8 +1397,28 @@ async function openExplainForSelectedRun() {
     }
 
     const bodyParts = [payload.explanation.summary];
+    if (payload.run.goal) {
+      bodyParts.push(`Goal: ${payload.run.goal}`);
+    }
     if (payload.explanation.reasons.length > 0) {
       bodyParts.push(`Reasons: ${payload.explanation.reasons.join(" | ")}`);
+    }
+    if (payload.explanation.current_state.last_event) {
+      bodyParts.push(`State: ${payload.explanation.current_state.last_event}`);
+    }
+    if (payload.run.action_items.length > 0) {
+      const actions = payload.run.action_items
+        .slice(0, 2)
+        .map((item) => `${item.kind}: ${item.message}`)
+        .join(" | ");
+      bodyParts.push(`Actions: ${actions}`);
+    }
+    if (observationPack.working_tree_summary || observationPack.failing_command) {
+      const observationParts = [
+        observationPack.working_tree_summary,
+        observationPack.failing_command,
+      ].filter((value) => Boolean(value));
+      bodyParts.push(`Observe: ${observationParts.join(" | ")}`);
     }
     if (payload.recent_events.length > 0) {
       const recent = payload.recent_events
@@ -1793,8 +1851,18 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     return "";
   }
 
+  const observationPack = getObservationPack(payload);
+  const consultationPacket = getConsultationPacket(payload);
+  const consultationSummary = getConsultationSummary(payload);
+
   return JSON.stringify([
     payload.run.run_id,
+    payload.run.task_id,
+    payload.run.parent_run_id,
+    payload.run.goal,
+    payload.run.task_type,
+    payload.run.priority,
+    payload.run.blocking,
     payload.run.state,
     payload.run.task_state,
     payload.run.review_state,
@@ -1803,16 +1871,154 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.run.branch,
     payload.run.head_sha,
     payload.run.worktree,
+    payload.run.primary_label,
+    payload.run.primary_pane_id,
+    payload.run.primary_role,
+    payload.run.last_event,
+    payload.run.last_event_at,
+    payload.run.tokens_remaining,
+    payload.run.pane_count,
+    payload.run.changed_file_count,
+    payload.run.labels.join("|"),
+    payload.run.pane_ids.join("|"),
+    payload.run.roles.join("|"),
+    payload.run.write_scope.join("|"),
+    payload.run.read_scope.join("|"),
+    payload.run.constraints.join("|"),
+    payload.run.expected_output,
+    payload.run.verification_plan.join("|"),
+    payload.run.review_required,
+    payload.run.timeout_policy,
+    payload.run.handoff_refs.join("|"),
+    payload.run.experiment_packet.hypothesis,
+    payload.run.experiment_packet.test_plan.join("|"),
+    payload.run.experiment_packet.result,
+    payload.run.experiment_packet.confidence,
+    payload.run.experiment_packet.next_action,
+    payload.run.experiment_packet.observation_pack_ref,
+    payload.run.experiment_packet.consultation_ref,
+    payload.run.experiment_packet.run_id,
+    payload.run.experiment_packet.slot,
+    payload.run.experiment_packet.branch,
+    payload.run.experiment_packet.worktree,
+    payload.run.experiment_packet.env_fingerprint,
+    payload.run.experiment_packet.command_hash,
+    JSON.stringify(payload.run.security_policy),
+    JSON.stringify(payload.run.security_verdict),
+    JSON.stringify(payload.run.verification_contract),
+    JSON.stringify(payload.run.verification_result),
     payload.run.changed_files.join("|"),
+    payload.run.action_items.map((item) => `${item.kind}:${item.event}:${item.source}`).join("|"),
     payload.explanation.summary,
     payload.explanation.next_action,
     payload.explanation.reasons.join("|"),
+    payload.explanation.current_state.state,
+    payload.explanation.current_state.task_state,
+    payload.explanation.current_state.review_state,
+    payload.explanation.current_state.last_event,
+    observationPack.run_id,
+    observationPack.task_id,
+    observationPack.pane_id,
+    observationPack.slot,
+    observationPack.hypothesis,
+    observationPack.test_plan.join("|"),
+    observationPack.changed_files.join("|"),
+    observationPack.working_tree_summary,
+    observationPack.failing_command,
+    observationPack.env_fingerprint,
+    observationPack.command_hash,
+    observationPack.generated_at,
+    consultationPacket.run_id,
+    consultationPacket.task_id,
+    consultationPacket.pane_id,
+    consultationPacket.slot,
+    consultationPacket.kind,
+    consultationPacket.mode,
+    consultationPacket.target_slot,
+    consultationPacket.confidence,
+    consultationPacket.recommendation,
+    consultationPacket.next_test,
+    consultationPacket.risks.join("|"),
+    consultationPacket.generated_at,
+    consultationSummary.kind,
+    consultationSummary.mode,
+    consultationSummary.target_slot,
+    consultationSummary.confidence,
+    consultationSummary.next_test,
+    consultationSummary.risks.join("|"),
     payload.evidence_digest.next_action,
     payload.evidence_digest.verification_outcome,
     payload.evidence_digest.security_blocked,
     payload.evidence_digest.changed_files.join("|"),
     payload.recent_events.map((item) => `${item.event}:${item.message}`).join("|"),
   ]);
+}
+
+function getObservationPack(payload: DesktopExplainPayload): DesktopExplainPayload["observation_pack"] {
+  const pack = (
+    payload as DesktopExplainPayload & {
+      observation_pack?: DesktopExplainPayload["observation_pack"];
+    }
+  ).observation_pack;
+  return (
+    pack ?? {
+      run_id: "",
+      task_id: "",
+      pane_id: "",
+      slot: "",
+      hypothesis: "",
+      test_plan: [],
+      changed_files: [],
+      working_tree_summary: "",
+      failing_command: "",
+      env_fingerprint: "",
+      command_hash: "",
+      generated_at: "",
+    }
+  );
+}
+
+function getConsultationPacket(payload: DesktopExplainPayload): DesktopExplainPayload["consultation_packet"] {
+  const packet = (
+    payload as DesktopExplainPayload & {
+      consultation_packet?: DesktopExplainPayload["consultation_packet"];
+    }
+  ).consultation_packet;
+  return (
+    packet ?? {
+      run_id: "",
+      task_id: "",
+      pane_id: "",
+      slot: "",
+      kind: "",
+      mode: "",
+      target_slot: "",
+      confidence: 0,
+      recommendation: "",
+      next_test: "",
+      risks: [],
+      generated_at: "",
+    }
+  );
+}
+
+function getConsultationSummary(payload: DesktopExplainPayload): {
+  kind: string;
+  mode: string;
+  target_slot: string;
+  confidence: number;
+  next_test: string;
+  risks: string[];
+} {
+  const packet = getConsultationPacket(payload);
+  return {
+    kind: packet.kind,
+    mode: packet.mode,
+    target_slot: packet.target_slot,
+    confidence: packet.confidence,
+    next_test: packet.next_test,
+    risks: packet.risks,
+  };
 }
 
 function getRunProjectionFingerprint(projection: DesktopRunProjection | null | undefined) {

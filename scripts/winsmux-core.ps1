@@ -3847,37 +3847,6 @@ function Get-HydratedConsultationPacket {
         -ExpectedRunId $ExpectedRunId
 }
 
-function Get-ConsultationSummaryFromPacket {
-    param([AllowNull()]$ConsultationPacket)
-
-    if ($null -eq $ConsultationPacket) {
-        return $null
-    }
-
-    $risks = @()
-    if ($ConsultationPacket.Contains('risks') -and $ConsultationPacket['risks'] -is [System.Collections.IEnumerable] -and $ConsultationPacket['risks'] -isnot [string]) {
-        $risks = @($ConsultationPacket['risks'])
-    } elseif ($ConsultationPacket.Contains('risks') -and -not [string]::IsNullOrWhiteSpace([string]$ConsultationPacket['risks'])) {
-        $risks = @([string]$ConsultationPacket['risks'])
-    }
-
-    $nextTest = ''
-    if ($ConsultationPacket.Contains('next_test')) {
-        $nextTest = [string]$ConsultationPacket['next_test']
-    } elseif ($ConsultationPacket.Contains('next_action')) {
-        $nextTest = [string]$ConsultationPacket['next_action']
-    }
-
-    return [ordered]@{
-        kind        = if ($ConsultationPacket.Contains('kind')) { [string]$ConsultationPacket['kind'] } else { '' }
-        mode        = if ($ConsultationPacket.Contains('mode')) { [string]$ConsultationPacket['mode'] } else { '' }
-        target_slot = if ($ConsultationPacket.Contains('target_slot')) { [string]$ConsultationPacket['target_slot'] } else { '' }
-        confidence  = if ($ConsultationPacket.Contains('confidence')) { $ConsultationPacket['confidence'] } else { $null }
-        next_test   = $nextTest
-        risks       = @($risks)
-    }
-}
-
 function Get-LatestRunEventDataSnapshot {
     param(
         [object[]]$EventRecords = @(),
@@ -4004,8 +3973,7 @@ function New-RunResultPacket {
         [AllowNull()]$ReviewState = $null,
         [Parameter(Mandatory = $true)][object[]]$RecentEvents,
         [AllowNull()]$ObservationPack = $null,
-        [AllowNull()]$ConsultationPacket = $null,
-        [AllowNull()]$ConsultationSummary = $null
+        [AllowNull()]$ConsultationPacket = $null
     )
 
     $status = ''
@@ -4058,7 +4026,6 @@ function New-RunResultPacket {
         experiment_packet     = $Run.experiment_packet
         observation_pack      = $ObservationPack
         consultation_packet   = $ConsultationPacket
-        consultation_summary  = $ConsultationSummary
         action_items          = @($Run.action_items)
         review_state          = $ReviewState
         review_contract       = $reviewContract
@@ -4579,8 +4546,8 @@ function ConvertTo-CompareRunsPayload {
 
     $leftRun = $LeftPayload.run
     $rightRun = $RightPayload.run
-    $leftExperiment = $LeftPayload.experiment_packet
-    $rightExperiment = $RightPayload.experiment_packet
+    $leftExperiment = $leftRun.experiment_packet
+    $rightExperiment = $rightRun.experiment_packet
     $leftEvidence = $LeftPayload.evidence_digest
     $rightEvidence = $RightPayload.evidence_digest
     $leftChangedFiles = @($leftEvidence.changed_files)
@@ -4716,7 +4683,7 @@ function Get-PromoteTacticPayload {
     )
 
     $run = $ExplainPayload.run
-    $experimentPacket = $ExplainPayload.experiment_packet
+    $experimentPacket = $run.experiment_packet
     $observationPack = $ExplainPayload.observation_pack
     $consultationPacket = $ExplainPayload.consultation_packet
     $evidenceDigest = $ExplainPayload.evidence_digest
@@ -5112,6 +5079,9 @@ function Get-ExplainPayload {
     if ($null -eq $run) {
         Stop-WithError "run not found: $RunId"
     }
+    if ($run -is [System.Collections.IDictionary] -and $run.Contains('run_packet')) {
+        $run.Remove('run_packet')
+    }
 
     $events = @(
         Get-BridgeEventRecords -ProjectDir $ProjectDir |
@@ -5163,29 +5133,20 @@ function Get-ExplainPayload {
     $recentEvents = @($events | Select-Object -First 20)
     $observationPack = Get-HydratedObservationPack -ExperimentPacket $run.experiment_packet -ProjectDir $ProjectDir -ExpectedRunId ([string]$run.run_id)
     $consultationPacket = Get-HydratedConsultationPacket -ExperimentPacket $run.experiment_packet -ProjectDir $ProjectDir -ExpectedRunId ([string]$run.run_id)
-    $consultationSummary = Get-ConsultationSummaryFromPacket -ConsultationPacket $consultationPacket
-    $experimentPacket = $run.experiment_packet
-    if ($null -ne $experimentPacket) {
-        $hydratedExperimentPacket = [ordered]@{}
-        foreach ($entry in $experimentPacket.GetEnumerator()) {
-            $hydratedExperimentPacket[[string]$entry.Key] = $entry.Value
-        }
-        $hydratedExperimentPacket['observation_pack'] = $observationPack
-        $hydratedExperimentPacket['consultation_packet'] = $consultationPacket
-        $experimentPacket = $hydratedExperimentPacket
+    if ($observationPack -is [System.Collections.IDictionary] -and $observationPack.Contains('packet_type')) {
+        $observationPack.Remove('packet_type')
     }
-
+    if ($consultationPacket -is [System.Collections.IDictionary] -and $consultationPacket.Contains('packet_type')) {
+        $consultationPacket.Remove('packet_type')
+    }
     return [ordered]@{
-        generated_at    = (Get-Date).ToString('o')
-        project_dir     = $ProjectDir
-        run             = $run
-        run_packet      = New-RunPacketFromRun -Run $run
-        experiment_packet = $experimentPacket
-        observation_pack = $observationPack
+        generated_at       = (Get-Date).ToString('o')
+        project_dir        = $ProjectDir
+        run                = $run
+        observation_pack   = $observationPack
         consultation_packet = $consultationPacket
-        consultation_summary = $consultationSummary
-        evidence_digest = $evidenceDigest
-        explanation   = [ordered]@{
+        evidence_digest    = $evidenceDigest
+        explanation        = [ordered]@{
             summary       = if (-not [string]::IsNullOrWhiteSpace([string]$run.task)) { [string]$run.task } else { [string]$run.primary_label }
             reasons       = @($reasons)
             next_action   = if (@($run.action_items).Count -gt 0) { [string]$run.action_items[0].kind } else { [string]$run.task_state }
@@ -5196,9 +5157,8 @@ function Get-ExplainPayload {
                 last_event   = [string]$run.last_event
             }
         }
-        review_state    = $reviewState
-        recent_events   = $recentEvents
-        result_packet   = New-RunResultPacket -Run $run -EvidenceDigest $evidenceDigest -ReviewState $reviewState -RecentEvents $recentEvents -ObservationPack $observationPack -ConsultationPacket $consultationPacket -ConsultationSummary $consultationSummary
+        review_state       = $reviewState
+        recent_events      = $recentEvents
     }
 }
 

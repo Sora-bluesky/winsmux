@@ -1,5 +1,6 @@
 use crate::types::{AppState, ClientInfo};
 use serde::Deserialize;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -67,19 +68,27 @@ struct RustParityInboxFixture {
 #[derive(Deserialize)]
 struct RustParityInboxSummary {
     item_count: usize,
+    by_kind: HashMap<String, usize>,
 }
 
 #[derive(Deserialize)]
 struct RustParityInboxItem {
     kind: String,
+    priority: usize,
     message: String,
     label: String,
     pane_id: String,
+    role: String,
+    task_id: String,
+    task: String,
     task_state: String,
     review_state: String,
     branch: String,
+    head_sha: String,
     changed_file_count: usize,
+    event: String,
     timestamp: String,
+    source: String,
 }
 
 #[derive(Deserialize)]
@@ -118,13 +127,22 @@ struct RustParityExplainFixture {
     generated_at: String,
     project_dir: String,
     run: RustParityExplainRun,
+    explanation: RustParityExplainExplanation,
+    observation_pack: RustParityExplainObservationPack,
+    consultation_packet: RustParityExplainConsultationPacket,
     evidence_digest: RustParityExplainEvidenceDigest,
 }
 
 #[derive(Deserialize)]
 struct RustParityExplainRun {
     run_id: String,
+    task_id: String,
+    parent_run_id: String,
+    goal: String,
     task: String,
+    task_type: String,
+    priority: String,
+    blocking: bool,
     state: String,
     task_state: String,
     review_state: String,
@@ -133,18 +151,106 @@ struct RustParityExplainRun {
     worktree: String,
     primary_label: String,
     primary_pane_id: String,
+    primary_role: String,
+    last_event: String,
+    tokens_remaining: String,
+    pane_count: usize,
+    changed_file_count: usize,
+    labels: Vec<String>,
+    pane_ids: Vec<String>,
+    roles: Vec<String>,
     provider_target: String,
     agent_role: String,
+    write_scope: Vec<String>,
+    read_scope: Vec<String>,
+    constraints: Vec<String>,
+    expected_output: String,
+    verification_plan: Vec<String>,
+    review_required: bool,
+    timeout_policy: String,
+    handoff_refs: Vec<String>,
+    experiment_packet: RustParityExplainExperimentPacket,
+    security_policy: Value,
+    security_verdict: Value,
+    verification_contract: Value,
+    verification_result: Value,
     changed_files: Vec<String>,
     last_event_at: String,
     action_items: Vec<RustParityExplainActionItem>,
 }
 
 #[derive(Deserialize)]
+struct RustParityExplainExperimentPacket {
+    hypothesis: String,
+    test_plan: Vec<String>,
+    result: String,
+    confidence: f64,
+    next_action: String,
+    observation_pack_ref: String,
+    consultation_ref: String,
+    run_id: String,
+    slot: String,
+    branch: String,
+    worktree: String,
+    env_fingerprint: String,
+    command_hash: String,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainExplanation {
+    summary: String,
+    reasons: Vec<String>,
+    next_action: String,
+    current_state: RustParityExplainCurrentState,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainCurrentState {
+    state: String,
+    task_state: String,
+    review_state: String,
+    last_event: String,
+}
+
+#[derive(Deserialize)]
 struct RustParityExplainActionItem {
     kind: String,
+    message: String,
     event: String,
     timestamp: String,
+    source: String,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainConsultationPacket {
+    run_id: String,
+    task_id: String,
+    pane_id: String,
+    slot: String,
+    kind: String,
+    mode: String,
+    target_slot: String,
+    confidence: f64,
+    recommendation: String,
+    next_test: String,
+    risks: Vec<String>,
+    generated_at: String,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainObservationPack {
+    run_id: String,
+    task_id: String,
+    pane_id: String,
+    slot: String,
+    hypothesis: String,
+    test_plan: Vec<String>,
+    changed_files: Vec<String>,
+    working_tree_summary: String,
+    failing_command: String,
+    env_fingerprint: String,
+    command_hash: String,
+    generated_at: String,
 }
 
 #[derive(Deserialize)]
@@ -191,6 +297,8 @@ fn rust_parity_inbox_fixture_deserializes() {
     assert_eq!(fixture.generated_at, "__GENERATED_AT__");
     assert_eq!(fixture.project_dir, "__PROJECT_DIR__");
     assert_eq!(fixture.summary.item_count, 4);
+    assert_eq!(fixture.summary.by_kind["task_blocked"], 1);
+    assert_eq!(fixture.summary.by_kind["commit_ready"], 1);
     assert!(
         !fixture.items.is_empty(),
         "inbox fixture should contain at least one item"
@@ -200,14 +308,21 @@ fn rust_parity_inbox_fixture_deserializes() {
         .iter()
         .find(|item| item.kind == "task_blocked")
         .expect("inbox fixture should contain task_blocked");
+    assert_eq!(blocked_item.priority, 0);
     assert_eq!(blocked_item.message, "worker-1 が blocked。");
     assert_eq!(blocked_item.label, "worker-1");
     assert_eq!(blocked_item.pane_id, "%6");
+    assert_eq!(blocked_item.role, "Worker");
+    assert_eq!(blocked_item.task_id, "task-999");
+    assert_eq!(blocked_item.task, "Fix blocker");
     assert_eq!(blocked_item.task_state, "blocked");
     assert_eq!(blocked_item.review_state, "");
     assert_eq!(blocked_item.branch, "worktree-worker-1");
+    assert_eq!(blocked_item.head_sha, "def5678abc1234");
     assert_eq!(blocked_item.changed_file_count, 0);
+    assert_eq!(blocked_item.event, "commander.state_transition");
     assert_eq!(blocked_item.timestamp, "__TIMESTAMP__");
+    assert_eq!(blocked_item.source, "manifest");
 }
 
 #[test]
@@ -243,7 +358,13 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.generated_at, "__GENERATED_AT__");
     assert_eq!(fixture.project_dir, "__PROJECT_DIR__");
     assert_eq!(fixture.run.run_id, "task:task-256");
+    assert_eq!(fixture.run.task_id, "task-256");
+    assert_eq!(fixture.run.parent_run_id, "operator:session-1");
+    assert_eq!(fixture.run.goal, "Ship run contract primitives");
     assert_eq!(fixture.run.task, "Implement run ledger");
+    assert_eq!(fixture.run.task_type, "implementation");
+    assert_eq!(fixture.run.priority, "P0");
+    assert!(fixture.run.blocking);
     assert_eq!(fixture.run.state, "idle");
     assert_eq!(fixture.run.task_state, "in_progress");
     assert_eq!(fixture.run.review_state, "PENDING");
@@ -252,8 +373,86 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.run.worktree, ".worktrees/builder-1");
     assert_eq!(fixture.run.primary_label, "builder-1");
     assert_eq!(fixture.run.primary_pane_id, "%2");
+    assert_eq!(fixture.run.primary_role, "Builder");
+    assert_eq!(fixture.run.last_event, "commander.review_requested");
+    assert_eq!(fixture.run.tokens_remaining, "64% context left");
+    assert_eq!(fixture.run.pane_count, 1);
+    assert_eq!(fixture.run.changed_file_count, 1);
+    assert_eq!(fixture.run.labels, vec!["builder-1".to_string()]);
+    assert_eq!(fixture.run.pane_ids, vec!["%2".to_string()]);
+    assert_eq!(fixture.run.roles, vec!["Builder".to_string()]);
     assert_eq!(fixture.run.provider_target, "codex:gpt-5.4");
     assert_eq!(fixture.run.agent_role, "worker");
+    assert_eq!(
+        fixture.run.write_scope,
+        vec![
+            "scripts/winsmux-core.ps1".to_string(),
+            "tests/winsmux-bridge.Tests.ps1".to_string()
+        ]
+    );
+    assert_eq!(
+        fixture.run.read_scope,
+        vec!["winsmux-core/scripts/pane-status.ps1".to_string()]
+    );
+    assert_eq!(
+        fixture.run.constraints,
+        vec!["preserve existing board schema".to_string()]
+    );
+    assert_eq!(fixture.run.expected_output, "Stable explain JSON");
+    assert_eq!(
+        fixture.run.verification_plan,
+        vec![
+            "Invoke-Pester tests/winsmux-bridge.Tests.ps1".to_string(),
+            "verify explain --json contract".to_string()
+        ]
+    );
+    assert!(fixture.run.review_required);
+    assert_eq!(fixture.run.timeout_policy, "standard");
+    assert_eq!(
+        fixture.run.handoff_refs,
+        vec!["docs/handoff.md".to_string()]
+    );
+    assert_eq!(fixture.run.experiment_packet.hypothesis, "");
+    assert!(fixture.run.experiment_packet.test_plan.is_empty());
+    assert_eq!(fixture.run.experiment_packet.result, "consult before work");
+    assert_eq!(fixture.run.experiment_packet.confidence, 0.66);
+    assert_eq!(
+        fixture.run.experiment_packet.next_action,
+        "approval_waiting"
+    );
+    assert_eq!(
+        fixture.run.experiment_packet.observation_pack_ref,
+        ".winsmux/observation-packs/observation-pack-__ID__.json"
+    );
+    assert_eq!(
+        fixture.run.experiment_packet.consultation_ref,
+        ".winsmux/consultations/consult-result-__ID__.json"
+    );
+    assert_eq!(fixture.run.experiment_packet.run_id, "");
+    assert_eq!(fixture.run.experiment_packet.slot, "slot-builder-1");
+    assert_eq!(fixture.run.experiment_packet.branch, "worktree-builder-1");
+    assert_eq!(fixture.run.experiment_packet.worktree, "");
+    assert_eq!(fixture.run.experiment_packet.env_fingerprint, "");
+    assert_eq!(fixture.run.experiment_packet.command_hash, "");
+    assert_eq!(fixture.explanation.summary, "Implement run ledger");
+    assert_eq!(fixture.explanation.next_action, "review_pending");
+    assert!(
+        fixture
+            .explanation
+            .reasons
+            .contains(&"review_state=PENDING".to_string())
+    );
+    assert_eq!(fixture.explanation.current_state.state, "idle");
+    assert_eq!(fixture.explanation.current_state.task_state, "in_progress");
+    assert_eq!(fixture.explanation.current_state.review_state, "PENDING");
+    assert_eq!(
+        fixture.explanation.current_state.last_event,
+        "commander.review_requested"
+    );
+    assert!(fixture.run.security_policy.is_null());
+    assert!(fixture.run.security_verdict.is_null());
+    assert!(fixture.run.verification_contract.is_null());
+    assert!(fixture.run.verification_result.is_null());
     assert_eq!(fixture.run.changed_files, vec!["scripts/winsmux-core.ps1"]);
     assert_eq!(fixture.run.last_event_at, "__LAST_EVENT_AT__");
     assert!(
@@ -266,8 +465,58 @@ fn rust_parity_explain_fixture_deserializes() {
         .iter()
         .find(|item| item.kind == "review_pending")
         .expect("explain fixture should contain review_pending action item");
+    assert_eq!(review_pending.message, "builder-1 が review 待機中。");
     assert_eq!(review_pending.event, "commander.review_requested");
     assert_eq!(review_pending.timestamp, "__TIMESTAMP__");
+    assert_eq!(review_pending.source, "manifest");
+    assert_eq!(fixture.consultation_packet.run_id, "task:task-256");
+    assert_eq!(fixture.consultation_packet.task_id, "task-256");
+    assert_eq!(fixture.consultation_packet.pane_id, "%2");
+    assert_eq!(fixture.consultation_packet.slot, "slot-builder-1");
+    assert_eq!(fixture.consultation_packet.kind, "consult_result");
+    assert_eq!(fixture.consultation_packet.mode, "early");
+    assert_eq!(fixture.consultation_packet.target_slot, "slot-review-1");
+    assert_eq!(fixture.consultation_packet.confidence, 0.66);
+    assert_eq!(
+        fixture.consultation_packet.recommendation,
+        "consult before work"
+    );
+    assert_eq!(fixture.consultation_packet.next_test, "approval_waiting");
+    assert_eq!(
+        fixture.consultation_packet.risks,
+        vec!["needs reviewer confirmation".to_string()]
+    );
+    assert_eq!(fixture.consultation_packet.generated_at, "__GENERATED_AT__");
+    assert_eq!(fixture.observation_pack.run_id, "task:task-256");
+    assert_eq!(fixture.observation_pack.task_id, "task-256");
+    assert_eq!(fixture.observation_pack.pane_id, "%2");
+    assert_eq!(fixture.observation_pack.slot, "slot-builder-1");
+    assert_eq!(
+        fixture.observation_pack.hypothesis,
+        "experiment packet should flow into explain"
+    );
+    assert_eq!(
+        fixture.observation_pack.test_plan,
+        vec![
+            "collect matching events".to_string(),
+            "normalize packet".to_string()
+        ]
+    );
+    assert_eq!(
+        fixture.observation_pack.changed_files,
+        vec!["scripts/winsmux-core.ps1".to_string()]
+    );
+    assert_eq!(
+        fixture.observation_pack.working_tree_summary,
+        "1 file modified"
+    );
+    assert_eq!(
+        fixture.observation_pack.failing_command,
+        "Invoke-Pester tests/winsmux-bridge.Tests.ps1"
+    );
+    assert_eq!(fixture.observation_pack.env_fingerprint, "env:abc123");
+    assert_eq!(fixture.observation_pack.command_hash, "cmd:def456");
+    assert_eq!(fixture.observation_pack.generated_at, "__GENERATED_AT__");
     assert_eq!(fixture.evidence_digest.next_action, "review_pending");
     assert_eq!(fixture.evidence_digest.changed_file_count, 1);
     assert!(fixture.evidence_digest.consultation_ref.contains("__ID__"));

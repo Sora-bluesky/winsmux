@@ -6547,7 +6547,7 @@ panes:
     write_scope: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
     read_scope: '["winsmux-core/scripts/pane-status.ps1"]'
     constraints: '["preserve existing board schema"]'
-    expected_output: Stable run_packet JSON
+    expected_output: Stable explain JSON
     verification_plan: '["Invoke-Pester tests/winsmux-bridge.Tests.ps1","verify explain --json contract"]'
     review_required: true
     provider_target: codex:gpt-5.4
@@ -6709,43 +6709,42 @@ panes:
 
         $result.run.run_id | Should -Be 'task:task-256'
         $result.run.task | Should -Be 'Implement run ledger'
-        $result.run_packet.parent_run_id | Should -Be 'operator:session-1'
-        $result.run_packet.goal | Should -Be 'Ship run contract primitives'
-        $result.run_packet.task_type | Should -Be 'implementation'
-        $result.run_packet.priority | Should -Be 'P0'
-        $result.run_packet.blocking | Should -Be $true
-        $result.run_packet.write_scope | Should -Be @('scripts/winsmux-core.ps1', 'tests/winsmux-bridge.Tests.ps1')
-        $result.run_packet.read_scope | Should -Be @('winsmux-core/scripts/pane-status.ps1')
-        $result.run_packet.constraints | Should -Be @('preserve existing board schema')
-        $result.run_packet.expected_output | Should -Be 'Stable run_packet JSON'
-        $result.run_packet.verification_plan | Should -Be @('Invoke-Pester tests/winsmux-bridge.Tests.ps1', 'verify explain --json contract')
-        $result.run_packet.review_required | Should -Be $true
-        $result.run_packet.provider_target | Should -Be 'codex:gpt-5.4'
-        $result.run_packet.agent_role | Should -Be 'worker'
-        $result.run_packet.timeout_policy | Should -Be 'standard'
-        $result.run_packet.handoff_refs | Should -Be @('docs/handoff.md')
-        $result.experiment_packet.hypothesis | Should -Be 'experiment packet should flow into explain'
-        $result.experiment_packet.test_plan | Should -Be @('collect matching events', 'normalize packet')
-        $result.experiment_packet.result | Should -Be 'consult before work'
-        $result.experiment_packet.confidence | Should -Be 0.66
-        $result.experiment_packet.next_action | Should -Be 'approval_waiting'
-        $result.experiment_packet.observation_pack_ref | Should -Be $explainObservationPack.reference
-        $result.experiment_packet.consultation_ref | Should -Be $explainConsultationPacket.reference
-        $result.experiment_packet.run_id | Should -Be 'task:task-256'
-        $result.experiment_packet.slot | Should -Be 'slot-builder-1'
-        $result.experiment_packet.worktree | Should -Be '.worktrees/builder-1'
-        $result.experiment_packet.env_fingerprint | Should -Be 'env:abc123'
-        $result.experiment_packet.command_hash | Should -Be 'cmd:def456'
-        $result.run_packet.verification_contract.mode | Should -Be 'adversarial_verify'
-        $result.run_packet.verification_result.outcome | Should -Be 'PARTIAL'
-        $result.observation_pack.packet_type | Should -Be 'observation_pack'
+        $result.run.parent_run_id | Should -Be 'operator:session-1'
+        $result.run.goal | Should -Be 'Ship run contract primitives'
+        $result.run.task_type | Should -Be 'implementation'
+        $result.run.priority | Should -Be 'P0'
+        $result.run.blocking | Should -Be $true
+        $result.run.write_scope | Should -Be @('scripts/winsmux-core.ps1', 'tests/winsmux-bridge.Tests.ps1')
+        $result.run.read_scope | Should -Be @('winsmux-core/scripts/pane-status.ps1')
+        $result.run.constraints | Should -Be @('preserve existing board schema')
+        $result.run.expected_output | Should -Be 'Stable explain JSON'
+        $result.run.verification_plan | Should -Be @('Invoke-Pester tests/winsmux-bridge.Tests.ps1', 'verify explain --json contract')
+        $result.run.review_required | Should -Be $true
+        $result.run.provider_target | Should -Be 'codex:gpt-5.4'
+        $result.run.agent_role | Should -Be 'worker'
+        $result.run.timeout_policy | Should -Be 'standard'
+        $result.run.handoff_refs | Should -Be @('docs/handoff.md')
+        $result.run.experiment_packet.hypothesis | Should -Be 'experiment packet should flow into explain'
+        $result.run.experiment_packet.test_plan | Should -Be @('collect matching events', 'normalize packet')
+        $result.run.experiment_packet.result | Should -Be 'consult before work'
+        $result.run.experiment_packet.confidence | Should -Be 0.66
+        $result.run.experiment_packet.next_action | Should -Be 'approval_waiting'
+        $result.run.experiment_packet.observation_pack_ref | Should -Be $explainObservationPack.reference
+        $result.run.experiment_packet.consultation_ref | Should -Be $explainConsultationPacket.reference
+        $result.run.experiment_packet.run_id | Should -Be 'task:task-256'
+        $result.run.experiment_packet.slot | Should -Be 'slot-builder-1'
+        $result.run.experiment_packet.worktree | Should -Be '.worktrees/builder-1'
+        $result.run.experiment_packet.env_fingerprint | Should -Be 'env:abc123'
+        $result.run.experiment_packet.command_hash | Should -Be 'cmd:def456'
+        $result.run.verification_contract.mode | Should -Be 'adversarial_verify'
+        $result.run.verification_result.outcome | Should -Be 'PARTIAL'
         $result.observation_pack.failing_command | Should -Be 'Invoke-Pester tests/winsmux-bridge.Tests.ps1'
         $result.consultation_packet.kind | Should -Be 'consult_result'
         $result.consultation_packet.mode | Should -Be 'early'
-        $result.consultation_summary.kind | Should -Be 'consult_result'
-        $result.consultation_summary.next_test | Should -Be 'approval_waiting'
-        $result.experiment_packet.observation_pack.packet_type | Should -Be 'observation_pack'
-        $result.experiment_packet.consultation_packet.kind | Should -Be 'consult_result'
+        $result.observation_pack.Contains('packet_type') | Should -BeFalse
+        $result.consultation_packet.Contains('packet_type') | Should -BeFalse
+        $result.Contains('experiment_packet') | Should -BeFalse
+        $result.Contains('consultation_summary') | Should -BeFalse
         $result.evidence_digest.run_id | Should -Be 'task:task-256'
         $result.evidence_digest.next_action | Should -Be 'approval_waiting'
         $result.evidence_digest.changed_files | Should -Be @('scripts/winsmux-core.ps1')
@@ -6758,20 +6757,9 @@ panes:
         $result.review_state.request.review_contract.style | Should -Be 'utility_first'
         $result.review_state.request.review_contract.source_task | Should -Be 'TASK-210'
         $result.review_state.request.review_contract.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
-        $result.result_packet.status | Should -Be 'in_progress'
-        $result.result_packet.summary | Should -Be 'commander.review_requested'
-        $result.result_packet.changed_files | Should -Be @('scripts/winsmux-core.ps1')
-        $result.result_packet.branch | Should -Be 'worktree-builder-1'
-        $result.result_packet.head_sha | Should -Be 'abc1234def5678'
-        $result.result_packet.next_action_hint | Should -Be 'approval_waiting'
-        $result.result_packet.review_recommendation | Should -Be 'PENDING'
-        $result.result_packet.review_contract.style | Should -Be 'utility_first'
-        $result.result_packet.review_contract.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
-        $result.result_packet.verification_result.outcome | Should -Be 'PARTIAL'
-        $result.result_packet.evidence_refs | Should -Be @('scripts/winsmux-core.ps1')
-        $result.result_packet.observation_pack.packet_type | Should -Be 'observation_pack'
-        $result.result_packet.consultation_packet.kind | Should -Be 'consult_result'
-        $result.result_packet.consultation_summary.kind | Should -Be 'consult_result'
+        $result.run.Contains('run_packet') | Should -BeFalse
+        $result.Contains('run_packet') | Should -Be $false
+        $result.Contains('result_packet') | Should -Be $false
         $result.recent_events.Count | Should -Be 3
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'commander.review_requested'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.verify.partial'
@@ -7261,11 +7249,12 @@ panes:
 
         $result = (Invoke-Explain -ExplainTarget 'task:task-777' -ExplainRest @('--json') | Out-String | ConvertFrom-Json -AsHashtable)
 
-        $result.experiment_packet.observation_pack_ref | Should -Be '.winsmux/observation-packs/missing.json'
-        $result.experiment_packet.consultation_ref | Should -Be '.winsmux/consultations/consult-result-bad.json'
+        $result.run.experiment_packet.observation_pack_ref | Should -Be '.winsmux/observation-packs/missing.json'
+        $result.run.experiment_packet.consultation_ref | Should -Be '.winsmux/consultations/consult-result-bad.json'
         $result.observation_pack | Should -Be $null
         $result.consultation_packet | Should -Be $null
-        $result.consultation_summary | Should -Be $null
+        $result.Contains('consultation_summary') | Should -BeFalse
+        $result.Contains('experiment_packet') | Should -BeFalse
     }
 
     It 'filters explain follow events from the current cursor forward' {
@@ -8231,7 +8220,7 @@ panes:
     write_scope: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
     read_scope: '["winsmux-core/scripts/pane-status.ps1"]'
     constraints: '["preserve existing board schema"]'
-    expected_output: Stable run_packet JSON
+    expected_output: Stable explain JSON
     verification_plan: '["Invoke-Pester tests/winsmux-bridge.Tests.ps1","verify explain --json contract"]'
     review_required: true
     provider_target: codex:gpt-5.4
