@@ -176,15 +176,22 @@ export interface DesktopExplainPayload {
   project_dir: string;
   run: {
     run_id: string;
+    task_id: string;
     task: string;
     state: string;
     task_state: string;
     review_state: string;
+    branch: string;
+    worktree: string;
+    head_sha: string;
+    primary_label: string;
+    primary_pane_id: string;
+    primary_role: string;
+    last_event: string;
+    last_event_at: string;
+    changed_file_count: number;
     provider_target: string;
     agent_role: string;
-    branch: string;
-    head_sha: string;
-    worktree: string;
     changed_files: string[];
   };
   explanation: {

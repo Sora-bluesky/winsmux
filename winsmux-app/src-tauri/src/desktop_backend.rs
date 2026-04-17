@@ -198,15 +198,22 @@ pub struct DesktopExplainPayload {
 #[derive(Serialize, Deserialize)]
 pub struct DesktopExplainRun {
     pub run_id: String,
+    pub task_id: String,
     pub task: String,
     pub state: String,
     pub task_state: String,
     pub review_state: String,
+    pub branch: String,
+    pub worktree: String,
+    pub head_sha: String,
+    pub primary_label: String,
+    pub primary_pane_id: String,
+    pub primary_role: String,
+    pub last_event: String,
+    pub last_event_at: String,
+    pub changed_file_count: usize,
     pub provider_target: String,
     pub agent_role: String,
-    pub branch: String,
-    pub head_sha: String,
-    pub worktree: String,
     #[serde(default)]
     pub changed_files: Vec<String>,
 }
@@ -917,6 +924,27 @@ mod tests {
         payload
     }
 
+    fn expect_missing_explain_run_field(field_name: &str) -> String {
+        let mut response = rust_parity_explain_payload();
+        response["run"]
+            .as_object_mut()
+            .expect("run must be an object")
+            .remove(field_name);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!(
+                "expected explain payload parse failure for missing run field {}",
+                field_name
+            ),
+            Err(err) => err,
+        }
+    }
+
     fn rust_parity_run_projection_payload() -> Value {
         let digest = read_rust_parity_fixture("digest.json");
         let item = &digest["items"][0];
@@ -1467,9 +1495,16 @@ mod tests {
             load_desktop_run_explain(&transport, "task:task-256".to_string(), None).unwrap();
 
         assert_eq!(payload.run.run_id, "task:task-256");
+        assert_eq!(payload.run.task_id, "task-256");
         assert_eq!(payload.run.task, "Implement run ledger");
         assert_eq!(payload.generated_at, "__GENERATED_AT__");
         assert_eq!(payload.project_dir, "__PROJECT_DIR__");
+        assert_eq!(payload.run.primary_label, "builder-1");
+        assert_eq!(payload.run.primary_pane_id, "%2");
+        assert_eq!(payload.run.primary_role, "Builder");
+        assert_eq!(payload.run.last_event, "commander.review_requested");
+        assert_eq!(payload.run.last_event_at, "__LAST_EVENT_AT__");
+        assert_eq!(payload.run.changed_file_count, 1);
         assert_eq!(payload.run.provider_target, "codex:gpt-5.4");
         assert_eq!(payload.run.agent_role, "worker");
         assert_eq!(payload.run.worktree, ".worktrees/builder-1");
@@ -1527,6 +1562,10 @@ mod tests {
             DesktopJsonRpcResponse::Success { id, result, .. } => {
                 assert_eq!(id, serde_json::json!("req-explain"));
                 assert_eq!(result["run"]["run_id"], "task:task-256");
+                assert_eq!(result["run"]["task_id"], "task-256");
+                assert_eq!(result["run"]["primary_label"], "builder-1");
+                assert_eq!(result["run"]["primary_pane_id"], "%2");
+                assert_eq!(result["run"]["last_event"], "commander.review_requested");
                 assert_eq!(result["run"]["provider_target"], "codex:gpt-5.4");
                 assert_eq!(result["evidence_digest"]["next_action"], "review_pending");
                 assert_eq!(result["review_state"]["status"], "PENDING");
@@ -1546,21 +1585,7 @@ mod tests {
 
     #[test]
     fn load_desktop_run_explain_rejects_missing_run_head_sha() {
-        let mut response = rust_parity_explain_payload();
-        response["run"]
-            .as_object_mut()
-            .expect("run must be an object")
-            .remove("head_sha");
-
-        let transport = FakeTransport {
-            requests: RefCell::new(Vec::new()),
-            response,
-        };
-
-        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
-            Ok(_) => panic!("expected explain payload parse failure"),
-            Err(err) => err,
-        };
+        let err = expect_missing_explain_run_field("head_sha");
 
         assert!(
             err.contains("head_sha"),
@@ -1607,21 +1632,7 @@ mod tests {
 
     #[test]
     fn load_desktop_run_explain_rejects_missing_run_provider_target() {
-        let mut response = rust_parity_explain_payload();
-        response["run"]
-            .as_object_mut()
-            .expect("run must be an object")
-            .remove("provider_target");
-
-        let transport = FakeTransport {
-            requests: RefCell::new(Vec::new()),
-            response,
-        };
-
-        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
-            Ok(_) => panic!("expected explain payload parse failure"),
-            Err(err) => err,
-        };
+        let err = expect_missing_explain_run_field("provider_target");
 
         assert!(
             err.contains("provider_target"),
@@ -1631,24 +1642,80 @@ mod tests {
 
     #[test]
     fn load_desktop_run_explain_rejects_missing_run_worktree() {
-        let mut response = rust_parity_explain_payload();
-        response["run"]
-            .as_object_mut()
-            .expect("run must be an object")
-            .remove("worktree");
-
-        let transport = FakeTransport {
-            requests: RefCell::new(Vec::new()),
-            response,
-        };
-
-        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
-            Ok(_) => panic!("expected explain payload parse failure"),
-            Err(err) => err,
-        };
+        let err = expect_missing_explain_run_field("worktree");
 
         assert!(
             err.contains("worktree"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_task_id() {
+        let err = expect_missing_explain_run_field("task_id");
+
+        assert!(
+            err.contains("task_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_primary_label() {
+        let err = expect_missing_explain_run_field("primary_label");
+
+        assert!(
+            err.contains("primary_label"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_primary_pane_id() {
+        let err = expect_missing_explain_run_field("primary_pane_id");
+
+        assert!(
+            err.contains("primary_pane_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_primary_role() {
+        let err = expect_missing_explain_run_field("primary_role");
+
+        assert!(
+            err.contains("primary_role"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_last_event() {
+        let err = expect_missing_explain_run_field("last_event");
+
+        assert!(
+            err.contains("last_event"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_last_event_at() {
+        let err = expect_missing_explain_run_field("last_event_at");
+
+        assert!(
+            err.contains("last_event_at"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_changed_file_count() {
+        let err = expect_missing_explain_run_field("changed_file_count");
+
+        assert!(
+            err.contains("changed_file_count"),
             "unexpected explain parse error: {err}"
         );
     }

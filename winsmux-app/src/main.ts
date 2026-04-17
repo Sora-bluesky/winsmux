@@ -1348,8 +1348,14 @@ async function openExplainForSelectedRun() {
       { label: "run", value: payload.run.run_id },
       { label: "next", value: payload.explanation.next_action || payload.evidence_digest.next_action || "no next action" },
     ];
+    if (payload.run.primary_label) {
+      detailItems.push({ label: "pane", value: payload.run.primary_label });
+    }
     if (payload.run.branch) {
       detailItems.push({ label: "branch", value: payload.run.branch });
+    }
+    if (payload.run.last_event) {
+      detailItems.push({ label: "event", value: payload.run.last_event });
     }
     if (payload.evidence_digest.verification_outcome) {
       detailItems.push({ label: "verify", value: payload.evidence_digest.verification_outcome });
@@ -1795,6 +1801,7 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
 
   return JSON.stringify([
     payload.run.run_id,
+    payload.run.task_id,
     payload.run.state,
     payload.run.task_state,
     payload.run.review_state,
@@ -1803,6 +1810,12 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.run.branch,
     payload.run.head_sha,
     payload.run.worktree,
+    payload.run.primary_label,
+    payload.run.primary_pane_id,
+    payload.run.primary_role,
+    payload.run.last_event,
+    payload.run.last_event_at,
+    payload.run.changed_file_count,
     payload.run.changed_files.join("|"),
     payload.explanation.summary,
     payload.explanation.next_action,
