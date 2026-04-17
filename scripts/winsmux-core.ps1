@@ -4716,7 +4716,7 @@ function Get-PromoteTacticPayload {
     )
 
     $run = $ExplainPayload.run
-    $experimentPacket = $ExplainPayload.experiment_packet
+    $experimentPacket = $run.experiment_packet
     $observationPack = $ExplainPayload.observation_pack
     $consultationPacket = $ExplainPayload.consultation_packet
     $evidenceDigest = $ExplainPayload.evidence_digest
