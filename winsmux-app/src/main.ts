@@ -1368,6 +1368,13 @@ async function openExplainForSelectedRun() {
     if (payload.explanation.reasons.length > 0) {
       bodyParts.push(`Reasons: ${payload.explanation.reasons.join(" | ")}`);
     }
+    if (payload.run.action_items.length > 0) {
+      const actions = payload.run.action_items
+        .slice(0, 2)
+        .map((item) => `${item.kind}: ${item.message}`)
+        .join(" | ");
+      bodyParts.push(`Actions: ${actions}`);
+    }
     if (payload.recent_events.length > 0) {
       const recent = payload.recent_events
         .slice(0, 2)
@@ -1817,6 +1824,7 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.run.last_event_at,
     payload.run.changed_file_count,
     payload.run.changed_files.join("|"),
+    payload.run.action_items.map((item) => `${item.kind}:${item.event}:${item.source}`).join("|"),
     payload.explanation.summary,
     payload.explanation.next_action,
     payload.explanation.reasons.join("|"),

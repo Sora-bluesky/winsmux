@@ -216,6 +216,8 @@ pub struct DesktopExplainRun {
     pub agent_role: String,
     #[serde(default)]
     pub changed_files: Vec<String>,
+    #[serde(default)]
+    pub action_items: Vec<DesktopExplainActionItem>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -234,6 +236,15 @@ pub struct DesktopExplainEvidenceDigest {
     pub changed_files: Vec<String>,
     pub verification_outcome: String,
     pub security_blocked: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainActionItem {
+    pub kind: String,
+    pub message: String,
+    pub event: String,
+    pub timestamp: String,
+    pub source: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -945,6 +956,27 @@ mod tests {
         }
     }
 
+    fn expect_missing_explain_action_item_field(field_name: &str) -> String {
+        let mut response = rust_parity_explain_payload();
+        response["run"]["action_items"][0]
+            .as_object_mut()
+            .expect("run.action_items[0] must be an object")
+            .remove(field_name);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!(
+                "expected explain payload parse failure for missing action item field {}",
+                field_name
+            ),
+            Err(err) => err,
+        }
+    }
+
     fn rust_parity_run_projection_payload() -> Value {
         let digest = read_rust_parity_fixture("digest.json");
         let item = &digest["items"][0];
@@ -1508,6 +1540,18 @@ mod tests {
         assert_eq!(payload.run.provider_target, "codex:gpt-5.4");
         assert_eq!(payload.run.agent_role, "worker");
         assert_eq!(payload.run.worktree, ".worktrees/builder-1");
+        assert_eq!(payload.run.action_items.len(), 2);
+        assert_eq!(payload.run.action_items[0].kind, "review_pending");
+        assert_eq!(
+            payload.run.action_items[0].message,
+            "builder-1 が review 待機中。"
+        );
+        assert_eq!(
+            payload.run.action_items[0].event,
+            "commander.review_requested"
+        );
+        assert_eq!(payload.run.action_items[0].timestamp, "__TIMESTAMP__");
+        assert_eq!(payload.run.action_items[0].source, "manifest");
         assert_eq!(payload.evidence_digest.next_action, "review_pending");
         assert_eq!(payload.evidence_digest.verification_outcome, "");
         assert_eq!(payload.evidence_digest.security_blocked, "");
@@ -1566,6 +1610,8 @@ mod tests {
                 assert_eq!(result["run"]["primary_label"], "builder-1");
                 assert_eq!(result["run"]["primary_pane_id"], "%2");
                 assert_eq!(result["run"]["last_event"], "commander.review_requested");
+                assert_eq!(result["run"]["action_items"][0]["kind"], "review_pending");
+                assert_eq!(result["run"]["action_items"][0]["source"], "manifest");
                 assert_eq!(result["run"]["provider_target"], "codex:gpt-5.4");
                 assert_eq!(result["evidence_digest"]["next_action"], "review_pending");
                 assert_eq!(result["review_state"]["status"], "PENDING");
@@ -1716,6 +1762,26 @@ mod tests {
 
         assert!(
             err.contains("changed_file_count"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_action_item_message() {
+        let err = expect_missing_explain_action_item_field("message");
+
+        assert!(
+            err.contains("message"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_action_item_source() {
+        let err = expect_missing_explain_action_item_field("source");
+
+        assert!(
+            err.contains("source"),
             "unexpected explain parse error: {err}"
         );
     }

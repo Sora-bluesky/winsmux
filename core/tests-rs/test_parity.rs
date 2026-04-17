@@ -155,8 +155,10 @@ struct RustParityExplainRun {
 #[derive(Deserialize)]
 struct RustParityExplainActionItem {
     kind: String,
+    message: String,
     event: String,
     timestamp: String,
+    source: String,
 }
 
 #[derive(Deserialize)]
@@ -291,8 +293,10 @@ fn rust_parity_explain_fixture_deserializes() {
         .iter()
         .find(|item| item.kind == "review_pending")
         .expect("explain fixture should contain review_pending action item");
+    assert_eq!(review_pending.message, "builder-1 が review 待機中。");
     assert_eq!(review_pending.event, "commander.review_requested");
     assert_eq!(review_pending.timestamp, "__TIMESTAMP__");
+    assert_eq!(review_pending.source, "manifest");
     assert_eq!(fixture.evidence_digest.next_action, "review_pending");
     assert_eq!(fixture.evidence_digest.changed_file_count, 1);
     assert!(fixture.evidence_digest.consultation_ref.contains("__ID__"));

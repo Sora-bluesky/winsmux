@@ -193,6 +193,13 @@ export interface DesktopExplainPayload {
     provider_target: string;
     agent_role: string;
     changed_files: string[];
+    action_items: Array<{
+      kind: string;
+      message: string;
+      event: string;
+      timestamp: string;
+      source: string;
+    }>;
   };
   explanation: {
     summary: string;
