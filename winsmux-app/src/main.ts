@@ -1350,6 +1350,9 @@ async function openExplainForSelectedRun() {
       { label: "run", value: payload.run.run_id },
       { label: "next", value: payload.explanation.next_action || payload.evidence_digest.next_action || "no next action" },
     ];
+    if (payload.run.provider_target) {
+      detailItems.push({ label: "model", value: payload.run.provider_target });
+    }
     if (payload.run.priority) {
       detailItems.push({ label: "priority", value: payload.run.priority });
     }
@@ -1374,6 +1377,9 @@ async function openExplainForSelectedRun() {
     if (payload.run.branch) {
       detailItems.push({ label: "branch", value: payload.run.branch });
     }
+    if (payload.run.head_sha) {
+      detailItems.push({ label: "head", value: payload.run.head_sha.slice(0, 8) });
+    }
     if (payload.run.last_event) {
       detailItems.push({ label: "event", value: payload.run.last_event });
     }
@@ -1389,11 +1395,20 @@ async function openExplainForSelectedRun() {
       ].filter((value) => Boolean(value));
       detailItems.push({ label: "state", value: currentStateParts.join(" / ") });
     }
+    if (payload.run.review_state) {
+      detailItems.push({ label: "review", value: payload.run.review_state });
+    }
     if (payload.evidence_digest.verification_outcome) {
       detailItems.push({ label: "verify", value: payload.evidence_digest.verification_outcome });
     }
     if (payload.evidence_digest.security_blocked) {
       detailItems.push({ label: "security", value: payload.evidence_digest.security_blocked });
+    }
+    const changedFiles = payload.run.changed_files.length > 0
+      ? payload.run.changed_files
+      : payload.evidence_digest.changed_files;
+    if (changedFiles.length > 0) {
+      detailItems.push({ label: "changed", value: `${changedFiles.length}` });
     }
 
     const bodyParts = [payload.explanation.summary];
@@ -1419,6 +1434,9 @@ async function openExplainForSelectedRun() {
         observationPack.failing_command,
       ].filter((value) => Boolean(value));
       bodyParts.push(`Observe: ${observationParts.join(" | ")}`);
+    }
+    if (changedFiles.length > 0) {
+      bodyParts.push(`Files: ${summarizeChangedFiles(changedFiles)}`);
     }
     if (payload.recent_events.length > 0) {
       const recent = payload.recent_events
@@ -2019,6 +2037,16 @@ function getConsultationSummary(payload: DesktopExplainPayload): {
     next_test: packet.next_test,
     risks: packet.risks,
   };
+}
+
+function summarizeChangedFiles(paths: string[], limit = 3) {
+  const visible = paths.filter((value) => Boolean(value)).slice(0, limit);
+  if (visible.length === 0) {
+    return "";
+  }
+
+  const remaining = paths.length - visible.length;
+  return remaining > 0 ? `${visible.join(", ")} +${remaining} more` : visible.join(", ");
 }
 
 function getRunProjectionFingerprint(projection: DesktopRunProjection | null | undefined) {
