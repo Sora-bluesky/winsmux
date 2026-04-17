@@ -49,6 +49,7 @@ Why this is close to freeze:
 - The Rust DTOs already reject missing required fields.
 - The fixtures already exercise the main board/inbox/digest snapshot shape.
 - `board.summary.by_state` / `by_review` / `by_task_state` と `inbox.summary.by_kind` も Rust 側で必須化済み。
+- `inbox.items[*]` の補助項目も、Rust 側で `priority`、`role`、`task_id`、`task`、`head_sha`、`event`、`timestamp`、`source` を受ける形へ狭め始めている。
 - Recent `TASK-278` slices have been narrowing this surface with fail-close regressions instead of widening it loosely.
 
 ### 2. `run/explain`

@@ -46,13 +46,21 @@ pub struct DesktopInboxSummary {
 #[derive(Serialize, Deserialize)]
 pub struct DesktopInboxItem {
     pub kind: String,
+    pub priority: usize,
     pub message: String,
     pub label: String,
     pub pane_id: String,
+    pub role: String,
+    pub task_id: String,
+    pub task: String,
     pub task_state: String,
     pub review_state: String,
     pub branch: String,
+    pub head_sha: String,
     pub changed_file_count: usize,
+    pub event: String,
+    pub timestamp: String,
+    pub source: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -948,6 +956,27 @@ mod tests {
         })
     }
 
+    fn expect_missing_inbox_item_field(field_name: &str) -> String {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["inbox"]["items"][0]
+            .as_object_mut()
+            .expect("inbox.items[0] must be an object")
+            .remove(field_name);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!(
+                "expected summary snapshot parse failure for missing inbox field {}",
+                field_name
+            ),
+            Err(err) => err,
+        }
+    }
+
     #[test]
     fn load_desktop_summary_snapshot_deserializes_transport_payload() {
         let transport = FakeTransport {
@@ -969,7 +998,15 @@ mod tests {
         assert_eq!(snapshot.inbox.summary.item_count, 4);
         assert_eq!(snapshot.inbox.summary.by_kind["review_pending"], 1);
         assert_eq!(snapshot.inbox.summary.by_kind["commit_ready"], 1);
+        assert_eq!(snapshot.inbox.items[0].priority, 0);
         assert_eq!(snapshot.inbox.items[0].pane_id, "%6");
+        assert_eq!(snapshot.inbox.items[0].role, "Worker");
+        assert_eq!(snapshot.inbox.items[0].task_id, "task-999");
+        assert_eq!(snapshot.inbox.items[0].task, "Fix blocker");
+        assert_eq!(snapshot.inbox.items[0].head_sha, "def5678abc1234");
+        assert_eq!(snapshot.inbox.items[0].event, "commander.state_transition");
+        assert_eq!(snapshot.inbox.items[0].timestamp, "__TIMESTAMP__");
+        assert_eq!(snapshot.inbox.items[0].source, "manifest");
         assert_eq!(snapshot.digest.summary.actionable_items, 1);
         assert_eq!(snapshot.digest.summary.dirty_items, 1);
         assert_eq!(snapshot.digest.items[0].run_id, "task:task-246");
@@ -1188,6 +1225,86 @@ mod tests {
         assert!(
             err.contains("by_kind"),
             "expected missing by_kind error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_priority() {
+        let err = expect_missing_inbox_item_field("priority");
+
+        assert!(
+            err.contains("priority"),
+            "expected missing priority error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_role() {
+        let err = expect_missing_inbox_item_field("role");
+
+        assert!(
+            err.contains("role"),
+            "expected missing role error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_task_id() {
+        let err = expect_missing_inbox_item_field("task_id");
+
+        assert!(
+            err.contains("task_id"),
+            "expected missing task_id error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_task() {
+        let err = expect_missing_inbox_item_field("task");
+
+        assert!(
+            err.contains("task"),
+            "expected missing task error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_head_sha() {
+        let err = expect_missing_inbox_item_field("head_sha");
+
+        assert!(
+            err.contains("head_sha"),
+            "expected missing head_sha error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_event() {
+        let err = expect_missing_inbox_item_field("event");
+
+        assert!(
+            err.contains("event"),
+            "expected missing event error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_timestamp() {
+        let err = expect_missing_inbox_item_field("timestamp");
+
+        assert!(
+            err.contains("timestamp"),
+            "expected missing timestamp error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_item_source() {
+        let err = expect_missing_inbox_item_field("source");
+
+        assert!(
+            err.contains("source"),
+            "expected missing source error, got {err}"
         );
     }
 
@@ -1756,6 +1873,11 @@ mod tests {
                 assert_eq!(result["digest"]["summary"]["dirty_items"], 1);
                 assert_eq!(result["inbox"]["summary"]["by_kind"]["approval_waiting"], 1);
                 assert_eq!(result["inbox"]["items"][0]["pane_id"], "%6");
+                assert_eq!(result["inbox"]["items"][0]["priority"], 0);
+                assert_eq!(result["inbox"]["items"][0]["role"], "Worker");
+                assert_eq!(result["inbox"]["items"][0]["task_id"], "task-999");
+                assert_eq!(result["inbox"]["items"][0]["head_sha"], "def5678abc1234");
+                assert_eq!(result["inbox"]["items"][0]["timestamp"], "__TIMESTAMP__");
                 assert_eq!(result["board"]["panes"][0]["pane_id"], "%2");
                 assert_eq!(result["digest"]["items"][0]["run_id"], "task:task-246");
             }

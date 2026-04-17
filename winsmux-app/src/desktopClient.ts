@@ -76,13 +76,21 @@ export interface DesktopInboxSummary {
 
 export interface DesktopInboxItem {
   kind: string;
+  priority: number;
   message: string;
   label: string;
   pane_id: string;
+  role: string;
+  task_id: string;
+  task: string;
   task_state: string;
   review_state: string;
   branch: string;
+  head_sha: string;
   changed_file_count: number;
+  event: string;
+  timestamp: string;
+  source: string;
 }
 
 export interface DesktopDigestSummary {

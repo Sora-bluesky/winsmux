@@ -67,19 +67,27 @@ struct RustParityInboxFixture {
 #[derive(Deserialize)]
 struct RustParityInboxSummary {
     item_count: usize,
+    by_kind: HashMap<String, usize>,
 }
 
 #[derive(Deserialize)]
 struct RustParityInboxItem {
     kind: String,
+    priority: usize,
     message: String,
     label: String,
     pane_id: String,
+    role: String,
+    task_id: String,
+    task: String,
     task_state: String,
     review_state: String,
     branch: String,
+    head_sha: String,
     changed_file_count: usize,
+    event: String,
     timestamp: String,
+    source: String,
 }
 
 #[derive(Deserialize)]
@@ -191,6 +199,8 @@ fn rust_parity_inbox_fixture_deserializes() {
     assert_eq!(fixture.generated_at, "__GENERATED_AT__");
     assert_eq!(fixture.project_dir, "__PROJECT_DIR__");
     assert_eq!(fixture.summary.item_count, 4);
+    assert_eq!(fixture.summary.by_kind["task_blocked"], 1);
+    assert_eq!(fixture.summary.by_kind["commit_ready"], 1);
     assert!(
         !fixture.items.is_empty(),
         "inbox fixture should contain at least one item"
@@ -200,14 +210,21 @@ fn rust_parity_inbox_fixture_deserializes() {
         .iter()
         .find(|item| item.kind == "task_blocked")
         .expect("inbox fixture should contain task_blocked");
+    assert_eq!(blocked_item.priority, 0);
     assert_eq!(blocked_item.message, "worker-1 が blocked。");
     assert_eq!(blocked_item.label, "worker-1");
     assert_eq!(blocked_item.pane_id, "%6");
+    assert_eq!(blocked_item.role, "Worker");
+    assert_eq!(blocked_item.task_id, "task-999");
+    assert_eq!(blocked_item.task, "Fix blocker");
     assert_eq!(blocked_item.task_state, "blocked");
     assert_eq!(blocked_item.review_state, "");
     assert_eq!(blocked_item.branch, "worktree-worker-1");
+    assert_eq!(blocked_item.head_sha, "def5678abc1234");
     assert_eq!(blocked_item.changed_file_count, 0);
+    assert_eq!(blocked_item.event, "commander.state_transition");
     assert_eq!(blocked_item.timestamp, "__TIMESTAMP__");
+    assert_eq!(blocked_item.source, "manifest");
 }
 
 #[test]
