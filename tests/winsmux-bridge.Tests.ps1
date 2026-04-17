@@ -6739,6 +6739,7 @@ panes:
         $result.run.verification_contract.mode | Should -Be 'adversarial_verify'
         $result.run.verification_result.outcome | Should -Be 'PARTIAL'
         $result.observation_pack.failing_command | Should -Be 'Invoke-Pester tests/winsmux-bridge.Tests.ps1'
+        $result.observation_pack.changed_files | Should -Contain 'scripts/winsmux-core.ps1'
         $result.consultation_packet.kind | Should -Be 'consult_result'
         $result.consultation_packet.mode | Should -Be 'early'
         $result.observation_pack.Contains('packet_type') | Should -BeFalse
@@ -6765,6 +6766,7 @@ panes:
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.verify.partial'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pane.approval_waiting'
         ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).hypothesis | Should -Be 'experiment packet should flow into explain'
+        ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).observation_pack.changed_files | Should -Contain 'scripts/winsmux-core.ps1'
         ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).observation_pack.packet_type | Should -Be 'observation_pack'
         ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).consultation_packet.kind | Should -Be 'consult_result'
     }

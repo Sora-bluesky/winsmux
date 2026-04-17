@@ -1350,6 +1350,9 @@ async function openExplainForSelectedRun() {
       { label: "run", value: payload.run.run_id },
       { label: "next", value: payload.explanation.next_action || payload.evidence_digest.next_action || "no next action" },
     ];
+    if (payload.run.provider_target) {
+      detailItems.push({ label: "model", value: payload.run.provider_target });
+    }
     if (payload.run.priority) {
       detailItems.push({ label: "priority", value: payload.run.priority });
     }
@@ -1374,6 +1377,12 @@ async function openExplainForSelectedRun() {
     if (payload.run.branch) {
       detailItems.push({ label: "branch", value: payload.run.branch });
     }
+    if (payload.run.worktree) {
+      detailItems.push({ label: "worktree", value: payload.run.worktree });
+    }
+    if (payload.run.head_sha) {
+      detailItems.push({ label: "head", value: payload.run.head_sha.slice(0, 8) });
+    }
     if (payload.run.last_event) {
       detailItems.push({ label: "event", value: payload.run.last_event });
     }
@@ -1389,16 +1398,36 @@ async function openExplainForSelectedRun() {
       ].filter((value) => Boolean(value));
       detailItems.push({ label: "state", value: currentStateParts.join(" / ") });
     }
+    if (payload.run.review_state) {
+      detailItems.push({ label: "review", value: payload.run.review_state });
+    }
+    if (payload.review_state?.reviewer?.label) {
+      detailItems.push({ label: "reviewer", value: payload.review_state.reviewer.label });
+    }
     if (payload.evidence_digest.verification_outcome) {
       detailItems.push({ label: "verify", value: payload.evidence_digest.verification_outcome });
     }
     if (payload.evidence_digest.security_blocked) {
       detailItems.push({ label: "security", value: payload.evidence_digest.security_blocked });
     }
+    const changedFiles = payload.run.changed_files.length > 0
+      ? payload.run.changed_files
+      : payload.evidence_digest.changed_files;
+    if (changedFiles.length > 0) {
+      detailItems.push({ label: "changed", value: `${changedFiles.length}` });
+    }
 
     const bodyParts = [payload.explanation.summary];
     if (payload.run.goal) {
       bodyParts.push(`Goal: ${payload.run.goal}`);
+    }
+    const workspaceContext = summarizeWorkspaceContext(payload.run.branch, payload.run.worktree);
+    if (workspaceContext) {
+      bodyParts.push(`Workspace: ${workspaceContext}`);
+    }
+    const reviewVerdict = summarizeReviewVerdict(payload);
+    if (reviewVerdict) {
+      bodyParts.push(`Review: ${reviewVerdict}`);
     }
     if (payload.explanation.reasons.length > 0) {
       bodyParts.push(`Reasons: ${payload.explanation.reasons.join(" | ")}`);
@@ -1419,6 +1448,9 @@ async function openExplainForSelectedRun() {
         observationPack.failing_command,
       ].filter((value) => Boolean(value));
       bodyParts.push(`Observe: ${observationParts.join(" | ")}`);
+    }
+    if (changedFiles.length > 0) {
+      bodyParts.push(`Files: ${summarizeChangedFiles(changedFiles)}`);
     }
     if (payload.recent_events.length > 0) {
       const recent = payload.recent_events
@@ -1459,6 +1491,7 @@ function appendFallbackExplain() {
   if (!selectedRunId || projection?.run_id !== selectedRunId) {
     return;
   }
+  const workspaceContext = summarizeWorkspaceContext(projection.branch, projection.worktree);
 
   appendRuntimeConversation({
     type: "operator",
@@ -1466,10 +1499,14 @@ function appendFallbackExplain() {
     timestamp,
     actor: "Operator",
     title: "Explain unavailable",
-    body: `Explain unavailable for ${selectedRunId}.`,
+    body: workspaceContext
+      ? `Explain unavailable for ${selectedRunId}. Workspace: ${workspaceContext}.`
+      : `Explain unavailable for ${selectedRunId}.`,
     details: [
       { label: "run", value: selectedRunId },
       { label: "next", value: projection.next_action || "idle" },
+      { label: "branch", value: projection.branch || "no branch" },
+      { label: "worktree", value: projection.worktree || "project root" },
       { label: "changed", value: `${projection.changed_files.length}` },
     ],
     tone: "info",
@@ -2019,6 +2056,43 @@ function getConsultationSummary(payload: DesktopExplainPayload): {
     next_test: packet.next_test,
     risks: packet.risks,
   };
+}
+
+function summarizeChangedFiles(paths: string[], limit = 3) {
+  const visible = paths.filter((value) => Boolean(value)).slice(0, limit);
+  if (visible.length === 0) {
+    return "";
+  }
+
+  const remaining = paths.length - visible.length;
+  return remaining > 0 ? `${visible.join(", ")} +${remaining} more` : visible.join(", ");
+}
+
+function summarizeWorkspaceContext(branch: string, worktree: string) {
+  const parts = [branch, worktree].filter((value) => Boolean(value));
+  return parts.join(" @ ");
+}
+
+function summarizeReviewVerdict(payload: DesktopExplainPayload) {
+  const status = payload.review_state?.status || payload.run.review_state;
+  if (!status) {
+    return "";
+  }
+
+  const parts = [status];
+  if (payload.review_state?.reviewer?.label) {
+    parts.push(`by ${payload.review_state.reviewer.label}`);
+  }
+
+  const evidence = payload.review_state?.evidence;
+  const evidenceSource =
+    (status === "PASS" ? evidence?.approved_via : undefined) ||
+    ((status === "FAIL" || status === "FAILED") ? evidence?.failed_via : undefined);
+  if (evidenceSource) {
+    parts.push(`via ${evidenceSource}`);
+  }
+
+  return parts.join(" ");
 }
 
 function getRunProjectionFingerprint(projection: DesktopRunProjection | null | undefined) {

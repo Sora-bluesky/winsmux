@@ -1859,6 +1859,12 @@ mod tests {
                     result["observation_pack"]["working_tree_summary"],
                     "1 file modified"
                 );
+                let changed_files = result["observation_pack"]["changed_files"]
+                    .as_array()
+                    .expect("observation_pack.changed_files should be an array");
+                assert!(changed_files
+                    .iter()
+                    .any(|value| { value.as_str() == Some("scripts/winsmux-core.ps1") }));
                 assert!(result["observation_pack"].get("packet_type").is_none());
                 assert!(result["consultation_packet"].get("packet_type").is_none());
                 assert_eq!(result["evidence_digest"]["next_action"], "review_pending");
