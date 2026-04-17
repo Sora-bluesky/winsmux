@@ -1422,6 +1422,10 @@ async function openExplainForSelectedRun() {
     if (workspaceContext) {
       bodyParts.push(`Workspace: ${workspaceContext}`);
     }
+    const reviewVerdict = summarizeReviewVerdict(payload);
+    if (reviewVerdict) {
+      bodyParts.push(`Review: ${reviewVerdict}`);
+    }
     if (payload.explanation.reasons.length > 0) {
       bodyParts.push(`Reasons: ${payload.explanation.reasons.join(" | ")}`);
     }
@@ -2064,6 +2068,28 @@ function summarizeChangedFiles(paths: string[], limit = 3) {
 function summarizeWorkspaceContext(branch: string, worktree: string) {
   const parts = [branch, worktree].filter((value) => Boolean(value));
   return parts.join(" @ ");
+}
+
+function summarizeReviewVerdict(payload: DesktopExplainPayload) {
+  const status = payload.review_state?.status || payload.run.review_state;
+  if (!status) {
+    return "";
+  }
+
+  const parts = [status];
+  if (payload.review_state?.reviewer?.label) {
+    parts.push(`by ${payload.review_state.reviewer.label}`);
+  }
+
+  const evidence = payload.review_state?.evidence;
+  const evidenceSource =
+    (status === "PASS" ? evidence?.approved_via : undefined) ||
+    ((status === "FAIL" || status === "FAILED") ? evidence?.failed_via : undefined);
+  if (evidenceSource) {
+    parts.push(`via ${evidenceSource}`);
+  }
+
+  return parts.join(" ");
 }
 
 function getRunProjectionFingerprint(projection: DesktopRunProjection | null | undefined) {
