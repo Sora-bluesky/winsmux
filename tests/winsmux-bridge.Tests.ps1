@@ -6547,7 +6547,7 @@ panes:
     write_scope: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
     read_scope: '["winsmux-core/scripts/pane-status.ps1"]'
     constraints: '["preserve existing board schema"]'
-    expected_output: Stable run_packet JSON
+    expected_output: Stable explain JSON
     verification_plan: '["Invoke-Pester tests/winsmux-bridge.Tests.ps1","verify explain --json contract"]'
     review_required: true
     provider_target: codex:gpt-5.4
@@ -6717,7 +6717,7 @@ panes:
         $result.run.write_scope | Should -Be @('scripts/winsmux-core.ps1', 'tests/winsmux-bridge.Tests.ps1')
         $result.run.read_scope | Should -Be @('winsmux-core/scripts/pane-status.ps1')
         $result.run.constraints | Should -Be @('preserve existing board schema')
-        $result.run.expected_output | Should -Be 'Stable run_packet JSON'
+        $result.run.expected_output | Should -Be 'Stable explain JSON'
         $result.run.verification_plan | Should -Be @('Invoke-Pester tests/winsmux-bridge.Tests.ps1', 'verify explain --json contract')
         $result.run.review_required | Should -Be $true
         $result.run.provider_target | Should -Be 'codex:gpt-5.4'
@@ -6757,6 +6757,7 @@ panes:
         $result.review_state.request.review_contract.style | Should -Be 'utility_first'
         $result.review_state.request.review_contract.source_task | Should -Be 'TASK-210'
         $result.review_state.request.review_contract.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
+        $result.run.Contains('run_packet') | Should -BeFalse
         $result.Contains('run_packet') | Should -Be $false
         $result.Contains('result_packet') | Should -Be $false
         $result.recent_events.Count | Should -Be 3
@@ -8219,7 +8220,7 @@ panes:
     write_scope: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
     read_scope: '["winsmux-core/scripts/pane-status.ps1"]'
     constraints: '["preserve existing board schema"]'
-    expected_output: Stable run_packet JSON
+    expected_output: Stable explain JSON
     verification_plan: '["Invoke-Pester tests/winsmux-bridge.Tests.ps1","verify explain --json contract"]'
     review_required: true
     provider_target: codex:gpt-5.4

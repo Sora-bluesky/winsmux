@@ -1660,7 +1660,7 @@ mod tests {
             payload.run.constraints,
             vec!["preserve existing board schema".to_string()]
         );
-        assert_eq!(payload.run.expected_output, "Stable run_packet JSON");
+        assert_eq!(payload.run.expected_output, "Stable explain JSON");
         assert_eq!(
             payload.run.verification_plan,
             vec![
@@ -1907,6 +1907,7 @@ mod tests {
                 );
                 assert_eq!(result["evidence_digest"]["next_action"], "review_pending");
                 assert_eq!(result["review_state"]["status"], "PENDING");
+                assert!(result["run"].get("run_packet").is_none());
                 assert!(result.get("run_packet").is_none());
                 assert!(result.get("result_packet").is_none());
             }

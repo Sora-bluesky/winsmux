@@ -62,7 +62,7 @@
     "constraints": [
       "preserve existing board schema"
     ],
-    "expected_output": "Stable run_packet JSON",
+    "expected_output": "Stable explain JSON",
     "verification_plan": [
       "Invoke-Pester tests/winsmux-bridge.Tests.ps1",
       "verify explain --json contract"
@@ -92,62 +92,7 @@
     "security_policy": null,
     "security_verdict": null,
     "verification_contract": null,
-    "verification_result": null,
-    "run_packet": {
-      "run_id": "task:task-256",
-      "task_id": "task-256",
-      "parent_run_id": "operator:session-1",
-      "goal": "Ship run contract primitives",
-      "task": "Implement run ledger",
-      "task_type": "implementation",
-      "priority": "P0",
-      "blocking": true,
-      "write_scope": [
-        "scripts/winsmux-core.ps1",
-        "tests/winsmux-bridge.Tests.ps1"
-      ],
-      "read_scope": [
-        "winsmux-core/scripts/pane-status.ps1"
-      ],
-      "constraints": [
-        "preserve existing board schema"
-      ],
-      "expected_output": "Stable run_packet JSON",
-      "verification_plan": [
-        "Invoke-Pester tests/winsmux-bridge.Tests.ps1",
-        "verify explain --json contract"
-      ],
-      "review_required": true,
-      "provider_target": "codex:gpt-5.4",
-      "agent_role": "worker",
-      "timeout_policy": "standard",
-      "handoff_refs": [
-        "docs/handoff.md"
-      ],
-      "branch": "worktree-builder-1",
-      "head_sha": "abc1234def5678",
-      "primary_label": "builder-1",
-      "primary_pane_id": "%2",
-      "primary_role": "Builder",
-      "labels": [
-        "builder-1"
-      ],
-      "pane_ids": [
-        "%2"
-      ],
-      "roles": [
-        "Builder"
-      ],
-      "changed_files": [
-        "scripts/winsmux-core.ps1"
-      ],
-      "security_policy": null,
-      "security_verdict": null,
-      "verification_contract": null,
-      "verification_result": null,
-      "last_event": "commander.review_requested",
-      "last_event_at": "__LAST_EVENT_AT__"
-    }
+    "verification_result": null
   },
   "observation_pack": {
     "run_id": "task:task-256",

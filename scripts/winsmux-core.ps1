@@ -5112,6 +5112,9 @@ function Get-ExplainPayload {
     if ($null -eq $run) {
         Stop-WithError "run not found: $RunId"
     }
+    if ($run -is [System.Collections.IDictionary] -and $run.Contains('run_packet')) {
+        $run.Remove('run_packet')
+    }
 
     $events = @(
         Get-BridgeEventRecords -ProjectDir $ProjectDir |

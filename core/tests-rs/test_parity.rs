@@ -411,7 +411,7 @@ fn rust_parity_explain_fixture_deserializes() {
         fixture.run.constraints,
         vec!["preserve existing board schema".to_string()]
     );
-    assert_eq!(fixture.run.expected_output, "Stable run_packet JSON");
+    assert_eq!(fixture.run.expected_output, "Stable explain JSON");
     assert_eq!(
         fixture.run.verification_plan,
         vec![
