@@ -359,7 +359,7 @@ function renderSessions() {
 
 function getSessionItems() {
   if (!desktopSummarySnapshot) {
-    return [{ name: "winsmux", meta: "Waiting for backend summary", active: true }] satisfies SessionItem[];
+    return [{ name: "winsmux", meta: "Connecting to desktop summary", active: true }] satisfies SessionItem[];
   }
 
   const board = desktopSummarySnapshot.board.summary;
@@ -1213,49 +1213,20 @@ function renderRunSummary() {
     return;
   }
 
-  const visibleChanges = getVisibleSourceChanges();
-  const primaryChange = getPrimarySourceChange(visibleChanges);
-  if (!primaryChange) {
-    root.innerHTML = "";
-    return;
-  }
-
-  const attentionCount = visibleChanges.filter((item) => item.needsAttention).length;
-  const candidateCount = visibleChanges.filter((item) => item.commitCandidate).length;
   root.innerHTML = `
     <div class="run-summary-card">
       <div class="run-summary-header">
         <div>
           <div class="timeline-eyebrow">Selected run</div>
-          <div class="run-summary-title">${primaryChange.run}</div>
+          <div class="run-summary-title">No projected run</div>
         </div>
-        <div class="run-summary-status" data-tone="${primaryChange.needsAttention ? "warning" : "success"}">
-          ${primaryChange.review}
+        <div class="run-summary-status" data-tone="info">
+          awaiting summary
         </div>
       </div>
-      <div class="run-summary-meta-row">
-        <span class="run-summary-pill">${primaryChange.paneLabel}</span>
-        <span class="run-summary-pill">${primaryChange.branch}</span>
-        <span class="run-summary-pill">${primaryChange.branch}</span>
-        <span class="run-summary-pill">${candidateCount} candidate${candidateCount === 1 ? "" : "s"}</span>
-        <span class="run-summary-pill">${attentionCount} blocker${attentionCount === 1 ? "" : "s"}</span>
-      </div>
-      <div class="run-summary-body">${primaryChange.summary}</div>
-      <div class="timeline-chip-row">
-        <button type="button" class="timeline-chip" data-action="open-explain">Open Explain</button>
-        <button type="button" class="timeline-chip" data-action="open-editor">Open in Editor</button>
-        <button type="button" class="timeline-chip" data-action="open-source-context">Source Context</button>
-      </div>
+      <div class="run-summary-body">The desktop summary has not surfaced a run for the current view yet.</div>
     </div>
   `;
-
-  for (const button of root.querySelectorAll<HTMLButtonElement>(".timeline-chip")) {
-    const action = button.dataset.action as ChipAction | undefined;
-    if (!action) {
-      continue;
-    }
-    button.addEventListener("click", () => handleChipAction(action));
-  }
 }
 
 function renderConversation(items: ConversationItem[]) {
@@ -1354,7 +1325,17 @@ function renderConversation(items: ConversationItem[]) {
 async function openExplainForSelectedRun() {
   const selectedRunId = getSelectedRunId();
   if (!selectedRunId) {
-    appendFallbackExplain();
+    appendRuntimeConversation({
+      type: "operator",
+      category: "activity",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Select a run first",
+      body: "Explain requires a selected run from the desktop summary.",
+      details: [{ label: "runs", value: `${getRunProjections().length}` }],
+      tone: "info",
+    });
+    renderConversation(getConversationItems());
     return;
   }
 
@@ -1417,38 +1398,24 @@ function appendFallbackExplain() {
   const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
   const selectedRunId = getSelectedRunId();
   const projection = getPrimaryRunProjection();
-  const hasSelectedProjection = Boolean(selectedRunId && projection?.run_id === selectedRunId);
-  const runCount = getRunProjections().length;
-  const inboxCount = desktopSummarySnapshot?.inbox.summary.item_count ?? 0;
-  const body = hasSelectedProjection
-    ? `Explain unavailable for ${selectedRunId}.`
-    : desktopSummarySnapshot && runCount > 0
-      ? "Explain unavailable without a selected run."
-      : desktopSummarySnapshot
-        ? "Explain unavailable without projected runs."
-        : "Backend summary unavailable.";
-  const details = hasSelectedProjection
-    ? [
-        { label: "run", value: selectedRunId as string },
-        { label: "next", value: projection?.next_action || "idle" },
-        { label: "changed", value: `${projection?.changed_files.length ?? 0}` },
-      ]
-    : desktopSummarySnapshot
-      ? [
-          { label: "runs", value: `${runCount}` },
-          { label: "inbox", value: `${inboxCount}` },
-        ]
-      : [{ label: "state", value: "backend unavailable" }];
+  if (!selectedRunId || projection?.run_id !== selectedRunId) {
+    return;
+  }
+
   appendRuntimeConversation({
     type: "operator",
     category: "activity",
     timestamp,
     actor: "Operator",
     title: "Explain unavailable",
-    body,
-    details,
+    body: `Explain unavailable for ${selectedRunId}.`,
+    details: [
+      { label: "run", value: selectedRunId },
+      { label: "next", value: projection.next_action || "idle" },
+      { label: "changed", value: `${projection.changed_files.length}` },
+    ],
     tone: "info",
-    runId: selectedRunId ?? undefined,
+    runId: selectedRunId,
   });
   renderRunSummary();
   renderConversation(getConversationItems());
