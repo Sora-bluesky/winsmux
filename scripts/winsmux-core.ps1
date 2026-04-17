@@ -497,7 +497,7 @@ function New-SendDispatchPointerText {
 }
 
 function Get-SupportedPromptTransportValues {
-    return @('argv', 'file')
+    return @('argv', 'file', 'stdin')
 }
 
 function Resolve-SupportedPromptTransport {
@@ -512,7 +512,7 @@ function Resolve-SupportedPromptTransport {
     $supportedValues = @(Get-SupportedPromptTransportValues)
     if ($resolved -notin $supportedValues) {
         $supportedText = $supportedValues -join ', '
-        throw "Unsupported prompt_transport setting: $PromptTransport. Supported values: $supportedText. stdin is not implemented for pane dispatch."
+        throw "Unsupported prompt_transport setting: $PromptTransport. Supported values: $supportedText."
     }
 
     return $resolved
@@ -632,6 +632,10 @@ function Resolve-SendDispatchPayload {
         return $payload
     }
 
+    if ($resolvedPromptTransport -eq 'stdin') {
+        return $payload
+    }
+
     if ($resolvedPromptTransport -eq 'argv' -and $Text.Length -le $LengthLimit) {
         return $payload
     }
@@ -692,6 +696,9 @@ function Resolve-SendTransportPlan {
         }
     }
 
+    # Exec-mode dispatch stays file-backed even when prompt_transport is stdin.
+    # The pane receives a single codex exec command, and that command reads the
+    # prompt from a stable file path so long prompts and task-slug reuse stay deterministic.
     $normalizedTaskSlug = ''
     $promptPath = $null
     if (-not [string]::IsNullOrWhiteSpace($TaskSlug)) {
@@ -1691,6 +1698,23 @@ function Invoke-WinsmuxSendKeys {
     }
 }
 
+function Invoke-WinsmuxSendPaste {
+    param(
+        [Parameter(Mandatory = $true)][string]$Target,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text
+    )
+
+    $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Text))
+    $arguments = @('send-paste', '-t', $Target, $encoded)
+    $output = Invoke-WinsmuxRaw -Arguments $arguments 2>&1
+
+    return [ordered]@{
+        ExitCode = $LASTEXITCODE
+        Output   = ($output | Out-String).Trim()
+        Target   = $Target
+    }
+}
+
 function Split-SendKeysLiteralChunks {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
@@ -1736,23 +1760,34 @@ function Test-PaneContainsCommandFragment {
 function Send-TextToPane {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
-        [Parameter(Mandatory = $true)][string]$CommandText
+        [Parameter(Mandatory = $true)][string]$CommandText,
+        [AllowEmptyString()][string]$PromptTransport = 'argv'
     )
 
+    $resolvedPromptTransport = Resolve-SupportedPromptTransport -PromptTransport $PromptTransport
     $targetCandidates = @(Get-PaneTargetCandidates -PaneId $PaneId)
     $attemptFailures = [System.Collections.Generic.List[string]]::new()
 
     foreach ($sendTarget in $targetCandidates) {
         $preSendText = Get-PaneSnapshotText -PaneId $PaneId -Lines 200
-        $literalChunks = @(Split-SendKeysLiteralChunks -Text $CommandText)
+        if ($resolvedPromptTransport -eq 'stdin') {
+            $pasteResult = Invoke-WinsmuxSendPaste -Target $sendTarget -Text $CommandText
+            if ($pasteResult.ExitCode -ne 0) {
+                $detail = if ([string]::IsNullOrWhiteSpace($pasteResult.Output)) { 'send-paste failed' } else { $pasteResult.Output }
+                $attemptFailures.Add("target ${sendTarget}: $detail") | Out-Null
+                continue
+            }
+        } else {
+            $literalChunks = @(Split-SendKeysLiteralChunks -Text $CommandText)
 
-        # Type text directly (no header; headers break TUI agents like Claude Code)
-        for ($chunkIndex = 0; $chunkIndex -lt $literalChunks.Count; $chunkIndex++) {
-            $literalResult = Invoke-WinsmuxSendKeys -Target $sendTarget -Keys @($literalChunks[$chunkIndex]) -Literal
-            if ($literalResult.ExitCode -ne 0) {
-                $detail = if ([string]::IsNullOrWhiteSpace($literalResult.Output)) { 'send-keys literal failed' } else { $literalResult.Output }
-                $attemptFailures.Add("target ${sendTarget}: chunk $($chunkIndex + 1)/$($literalChunks.Count) $detail") | Out-Null
-                continue 2
+            # Type text directly (no header; headers break TUI agents like Claude Code)
+            for ($chunkIndex = 0; $chunkIndex -lt $literalChunks.Count; $chunkIndex++) {
+                $literalResult = Invoke-WinsmuxSendKeys -Target $sendTarget -Keys @($literalChunks[$chunkIndex]) -Literal
+                if ($literalResult.ExitCode -ne 0) {
+                    $detail = if ([string]::IsNullOrWhiteSpace($literalResult.Output)) { 'send-keys literal failed' } else { $literalResult.Output }
+                    $attemptFailures.Add("target ${sendTarget}: chunk $($chunkIndex + 1)/$($literalChunks.Count) $detail") | Out-Null
+                    continue 2
+                }
             }
         }
 
@@ -2566,7 +2601,7 @@ function Invoke-Send {
         Write-Warning ("send target '{0}' used prompt_transport={1}; wrote full text to {2} and sent a prompt-file pointer instead." -f $Target, $transportPlan['PromptTransport'], $transportPlan['PromptPath'])
     }
 
-    Send-TextToPane -PaneId $paneId -CommandText ([string]$transportPlan['TextToSend'])
+    Send-TextToPane -PaneId $paneId -CommandText ([string]$transportPlan['TextToSend']) -PromptTransport ([string]$transportPlan['PromptTransport'])
 }
 
 function Invoke-Name {
