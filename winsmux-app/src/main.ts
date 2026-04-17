@@ -1357,6 +1357,9 @@ async function openExplainForSelectedRun() {
     if (payload.run.tokens_remaining) {
       detailItems.push({ label: "context", value: payload.run.tokens_remaining });
     }
+    if (payload.run.experiment_packet.next_action) {
+      detailItems.push({ label: "experiment", value: payload.run.experiment_packet.next_action });
+    }
     if (payload.run.primary_label) {
       detailItems.push({ label: "pane", value: payload.run.primary_label });
     }
@@ -1853,6 +1856,19 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.run.review_required,
     payload.run.timeout_policy,
     payload.run.handoff_refs.join("|"),
+    payload.run.experiment_packet.hypothesis,
+    payload.run.experiment_packet.test_plan.join("|"),
+    payload.run.experiment_packet.result,
+    payload.run.experiment_packet.confidence,
+    payload.run.experiment_packet.next_action,
+    payload.run.experiment_packet.observation_pack_ref,
+    payload.run.experiment_packet.consultation_ref,
+    payload.run.experiment_packet.run_id,
+    payload.run.experiment_packet.slot,
+    payload.run.experiment_packet.branch,
+    payload.run.experiment_packet.worktree,
+    payload.run.experiment_packet.env_fingerprint,
+    payload.run.experiment_packet.command_hash,
     JSON.stringify(payload.run.security_policy),
     JSON.stringify(payload.run.security_verdict),
     JSON.stringify(payload.run.verification_contract),

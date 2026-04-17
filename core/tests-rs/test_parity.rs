@@ -166,6 +166,7 @@ struct RustParityExplainRun {
     review_required: bool,
     timeout_policy: String,
     handoff_refs: Vec<String>,
+    experiment_packet: RustParityExplainExperimentPacket,
     security_policy: Value,
     security_verdict: Value,
     verification_contract: Value,
@@ -173,6 +174,23 @@ struct RustParityExplainRun {
     changed_files: Vec<String>,
     last_event_at: String,
     action_items: Vec<RustParityExplainActionItem>,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainExperimentPacket {
+    hypothesis: String,
+    test_plan: Vec<String>,
+    result: String,
+    confidence: f64,
+    next_action: String,
+    observation_pack_ref: String,
+    consultation_ref: String,
+    run_id: String,
+    slot: String,
+    branch: String,
+    worktree: String,
+    env_fingerprint: String,
+    command_hash: String,
 }
 
 #[derive(Deserialize)]
@@ -343,6 +361,28 @@ fn rust_parity_explain_fixture_deserializes() {
         fixture.run.handoff_refs,
         vec!["docs/handoff.md".to_string()]
     );
+    assert_eq!(fixture.run.experiment_packet.hypothesis, "");
+    assert!(fixture.run.experiment_packet.test_plan.is_empty());
+    assert_eq!(fixture.run.experiment_packet.result, "consult before work");
+    assert_eq!(fixture.run.experiment_packet.confidence, 0.66);
+    assert_eq!(
+        fixture.run.experiment_packet.next_action,
+        "approval_waiting"
+    );
+    assert_eq!(
+        fixture.run.experiment_packet.observation_pack_ref,
+        ".winsmux/observation-packs/observation-pack-__ID__.json"
+    );
+    assert_eq!(
+        fixture.run.experiment_packet.consultation_ref,
+        ".winsmux/consultations/consult-result-__ID__.json"
+    );
+    assert_eq!(fixture.run.experiment_packet.run_id, "");
+    assert_eq!(fixture.run.experiment_packet.slot, "slot-builder-1");
+    assert_eq!(fixture.run.experiment_packet.branch, "worktree-builder-1");
+    assert_eq!(fixture.run.experiment_packet.worktree, "");
+    assert_eq!(fixture.run.experiment_packet.env_fingerprint, "");
+    assert_eq!(fixture.run.experiment_packet.command_hash, "");
     assert!(fixture.run.security_policy.is_null());
     assert!(fixture.run.security_verdict.is_null());
     assert!(fixture.run.verification_contract.is_null());

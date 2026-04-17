@@ -232,6 +232,7 @@ pub struct DesktopExplainRun {
     pub review_required: bool,
     pub timeout_policy: String,
     pub handoff_refs: Vec<String>,
+    pub experiment_packet: DesktopExplainExperimentPacket,
     pub security_policy: Value,
     pub security_verdict: Value,
     pub verification_contract: Value,
@@ -240,6 +241,23 @@ pub struct DesktopExplainRun {
     pub changed_files: Vec<String>,
     #[serde(default)]
     pub action_items: Vec<DesktopExplainActionItem>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainExperimentPacket {
+    pub hypothesis: String,
+    pub test_plan: Vec<String>,
+    pub result: String,
+    pub confidence: f64,
+    pub next_action: String,
+    pub observation_pack_ref: String,
+    pub consultation_ref: String,
+    pub run_id: String,
+    pub slot: String,
+    pub branch: String,
+    pub worktree: String,
+    pub env_fingerprint: String,
+    pub command_hash: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1600,6 +1618,28 @@ mod tests {
             payload.run.handoff_refs,
             vec!["docs/handoff.md".to_string()]
         );
+        assert_eq!(payload.run.experiment_packet.hypothesis, "");
+        assert!(payload.run.experiment_packet.test_plan.is_empty());
+        assert_eq!(payload.run.experiment_packet.result, "consult before work");
+        assert_eq!(payload.run.experiment_packet.confidence, 0.66);
+        assert_eq!(
+            payload.run.experiment_packet.next_action,
+            "approval_waiting"
+        );
+        assert_eq!(
+            payload.run.experiment_packet.observation_pack_ref,
+            ".winsmux/observation-packs/observation-pack-__ID__.json"
+        );
+        assert_eq!(
+            payload.run.experiment_packet.consultation_ref,
+            ".winsmux/consultations/consult-result-__ID__.json"
+        );
+        assert_eq!(payload.run.experiment_packet.run_id, "");
+        assert_eq!(payload.run.experiment_packet.slot, "slot-builder-1");
+        assert_eq!(payload.run.experiment_packet.branch, "worktree-builder-1");
+        assert_eq!(payload.run.experiment_packet.worktree, "");
+        assert_eq!(payload.run.experiment_packet.env_fingerprint, "");
+        assert_eq!(payload.run.experiment_packet.command_hash, "");
         assert!(payload.run.security_policy.is_null());
         assert!(payload.run.security_verdict.is_null());
         assert!(payload.run.verification_contract.is_null());
@@ -1686,6 +1726,16 @@ mod tests {
                 assert_eq!(result["run"]["action_items"][0]["kind"], "review_pending");
                 assert_eq!(result["run"]["action_items"][0]["source"], "manifest");
                 assert_eq!(result["run"]["provider_target"], "codex:gpt-5.4");
+                assert_eq!(
+                    result["run"]["experiment_packet"]["result"],
+                    "consult before work"
+                );
+                assert_eq!(result["run"]["experiment_packet"]["confidence"], 0.66);
+                assert_eq!(
+                    result["run"]["experiment_packet"]["next_action"],
+                    "approval_waiting"
+                );
+                assert_eq!(result["run"]["experiment_packet"]["slot"], "slot-builder-1");
                 assert!(result["run"]["security_policy"].is_null());
                 assert!(result["run"]["security_verdict"].is_null());
                 assert!(result["run"]["verification_contract"].is_null());
@@ -2019,6 +2069,157 @@ mod tests {
 
         assert!(
             err.contains("handoff_refs"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    fn expect_missing_explain_experiment_packet_field(field_name: &str) -> String {
+        let mut response = rust_parity_explain_payload();
+        response["run"]["experiment_packet"]
+            .as_object_mut()
+            .expect("run.experiment_packet must be an object")
+            .remove(field_name);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!(
+                "expected explain payload parse failure for missing experiment packet field {}",
+                field_name
+            ),
+            Err(err) => err,
+        }
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_hypothesis() {
+        let err = expect_missing_explain_experiment_packet_field("hypothesis");
+
+        assert!(
+            err.contains("hypothesis"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_test_plan() {
+        let err = expect_missing_explain_experiment_packet_field("test_plan");
+
+        assert!(
+            err.contains("test_plan"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_result() {
+        let err = expect_missing_explain_experiment_packet_field("result");
+
+        assert!(
+            err.contains("result"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_confidence() {
+        let err = expect_missing_explain_experiment_packet_field("confidence");
+
+        assert!(
+            err.contains("confidence"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_next_action() {
+        let err = expect_missing_explain_experiment_packet_field("next_action");
+
+        assert!(
+            err.contains("next_action"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_observation_pack_ref() {
+        let err = expect_missing_explain_experiment_packet_field("observation_pack_ref");
+
+        assert!(
+            err.contains("observation_pack_ref"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_consultation_ref() {
+        let err = expect_missing_explain_experiment_packet_field("consultation_ref");
+
+        assert!(
+            err.contains("consultation_ref"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_run_id() {
+        let err = expect_missing_explain_experiment_packet_field("run_id");
+
+        assert!(
+            err.contains("run_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_slot() {
+        let err = expect_missing_explain_experiment_packet_field("slot");
+
+        assert!(
+            err.contains("slot"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_branch() {
+        let err = expect_missing_explain_experiment_packet_field("branch");
+
+        assert!(
+            err.contains("branch"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_worktree() {
+        let err = expect_missing_explain_experiment_packet_field("worktree");
+
+        assert!(
+            err.contains("worktree"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_env_fingerprint() {
+        let err = expect_missing_explain_experiment_packet_field("env_fingerprint");
+
+        assert!(
+            err.contains("env_fingerprint"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_experiment_packet_command_hash() {
+        let err = expect_missing_explain_experiment_packet_field("command_hash");
+
+        assert!(
+            err.contains("command_hash"),
             "unexpected explain parse error: {err}"
         );
     }

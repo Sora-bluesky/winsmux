@@ -210,6 +210,21 @@ export interface DesktopExplainPayload {
     review_required: boolean;
     timeout_policy: string;
     handoff_refs: string[];
+    experiment_packet: {
+      hypothesis: string;
+      test_plan: string[];
+      result: string;
+      confidence: number;
+      next_action: string;
+      observation_pack_ref: string;
+      consultation_ref: string;
+      run_id: string;
+      slot: string;
+      branch: string;
+      worktree: string;
+      env_fingerprint: string;
+      command_hash: string;
+    };
     security_policy: Record<string, unknown> | null;
     security_verdict: Record<string, unknown> | null;
     verification_contract: Record<string, unknown> | null;
