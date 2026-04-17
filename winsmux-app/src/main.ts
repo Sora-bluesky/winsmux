@@ -1401,6 +1401,9 @@ async function openExplainForSelectedRun() {
     if (payload.run.review_state) {
       detailItems.push({ label: "review", value: payload.run.review_state });
     }
+    if (payload.review_state?.reviewer?.label) {
+      detailItems.push({ label: "reviewer", value: payload.review_state.reviewer.label });
+    }
     if (payload.evidence_digest.verification_outcome) {
       detailItems.push({ label: "verify", value: payload.evidence_digest.verification_outcome });
     }
