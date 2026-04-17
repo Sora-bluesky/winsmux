@@ -1377,6 +1377,18 @@ async function openExplainForSelectedRun() {
     if (payload.run.last_event) {
       detailItems.push({ label: "event", value: payload.run.last_event });
     }
+    if (
+      payload.explanation.current_state.state ||
+      payload.explanation.current_state.task_state ||
+      payload.explanation.current_state.review_state
+    ) {
+      const currentStateParts = [
+        payload.explanation.current_state.state,
+        payload.explanation.current_state.task_state,
+        payload.explanation.current_state.review_state,
+      ].filter((value) => Boolean(value));
+      detailItems.push({ label: "state", value: currentStateParts.join(" / ") });
+    }
     if (payload.evidence_digest.verification_outcome) {
       detailItems.push({ label: "verify", value: payload.evidence_digest.verification_outcome });
     }
@@ -1390,6 +1402,9 @@ async function openExplainForSelectedRun() {
     }
     if (payload.explanation.reasons.length > 0) {
       bodyParts.push(`Reasons: ${payload.explanation.reasons.join(" | ")}`);
+    }
+    if (payload.explanation.current_state.last_event) {
+      bodyParts.push(`State: ${payload.explanation.current_state.last_event}`);
     }
     if (payload.run.action_items.length > 0) {
       const actions = payload.run.action_items
@@ -1897,6 +1912,10 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.explanation.summary,
     payload.explanation.next_action,
     payload.explanation.reasons.join("|"),
+    payload.explanation.current_state.state,
+    payload.explanation.current_state.task_state,
+    payload.explanation.current_state.review_state,
+    payload.explanation.current_state.last_event,
     observationPack.run_id,
     observationPack.task_id,
     observationPack.pane_id,

@@ -242,6 +242,12 @@ export interface DesktopExplainPayload {
     summary: string;
     reasons: string[];
     next_action: string;
+    current_state: {
+      state: string;
+      task_state: string;
+      review_state: string;
+      last_event: string;
+    };
   };
   observation_pack: {
     run_id: string;

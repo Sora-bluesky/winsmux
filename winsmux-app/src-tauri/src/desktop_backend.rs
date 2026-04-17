@@ -269,6 +269,15 @@ pub struct DesktopExplainExplanation {
     #[serde(default)]
     pub reasons: Vec<String>,
     pub next_action: String,
+    pub current_state: DesktopExplainCurrentState,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainCurrentState {
+    pub state: String,
+    pub task_state: String,
+    pub review_state: String,
+    pub last_event: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1687,6 +1696,13 @@ mod tests {
         assert_eq!(payload.run.experiment_packet.worktree, "");
         assert_eq!(payload.run.experiment_packet.env_fingerprint, "");
         assert_eq!(payload.run.experiment_packet.command_hash, "");
+        assert_eq!(payload.explanation.current_state.state, "idle");
+        assert_eq!(payload.explanation.current_state.task_state, "in_progress");
+        assert_eq!(payload.explanation.current_state.review_state, "PENDING");
+        assert_eq!(
+            payload.explanation.current_state.last_event,
+            "commander.review_requested"
+        );
         assert!(payload.run.security_policy.is_null());
         assert!(payload.run.security_verdict.is_null());
         assert!(payload.run.verification_contract.is_null());
@@ -1849,6 +1865,19 @@ mod tests {
                 assert!(result["run"]["security_verdict"].is_null());
                 assert!(result["run"]["verification_contract"].is_null());
                 assert!(result["run"]["verification_result"].is_null());
+                assert_eq!(result["explanation"]["current_state"]["state"], "idle");
+                assert_eq!(
+                    result["explanation"]["current_state"]["task_state"],
+                    "in_progress"
+                );
+                assert_eq!(
+                    result["explanation"]["current_state"]["review_state"],
+                    "PENDING"
+                );
+                assert_eq!(
+                    result["explanation"]["current_state"]["last_event"],
+                    "commander.review_requested"
+                );
                 assert_eq!(result["consultation_summary"]["kind"], "consult_result");
                 assert_eq!(result["consultation_summary"]["mode"], "early");
                 assert_eq!(
@@ -1934,6 +1963,67 @@ mod tests {
 
         assert!(
             err.contains("next_action"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    fn expect_missing_explanation_current_state_field(field_name: &str) -> String {
+        let mut response = rust_parity_explain_payload();
+        response["explanation"]["current_state"]
+            .as_object_mut()
+            .expect("explanation.current_state must be an object")
+            .remove(field_name);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!(
+                "expected explain payload parse failure for missing explanation.current_state field {}",
+                field_name
+            ),
+            Err(err) => err,
+        }
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_explanation_current_state_state() {
+        let err = expect_missing_explanation_current_state_field("state");
+
+        assert!(
+            err.contains("state"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_explanation_current_state_task_state() {
+        let err = expect_missing_explanation_current_state_field("task_state");
+
+        assert!(
+            err.contains("task_state"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_explanation_current_state_review_state() {
+        let err = expect_missing_explanation_current_state_field("review_state");
+
+        assert!(
+            err.contains("review_state"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_explanation_current_state_last_event() {
+        let err = expect_missing_explanation_current_state_field("last_event");
+
+        assert!(
+            err.contains("last_event"),
             "unexpected explain parse error: {err}"
         );
     }

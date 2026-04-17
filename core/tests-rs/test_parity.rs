@@ -127,6 +127,7 @@ struct RustParityExplainFixture {
     generated_at: String,
     project_dir: String,
     run: RustParityExplainRun,
+    explanation: RustParityExplainExplanation,
     observation_pack: RustParityExplainObservationPack,
     consultation_packet: RustParityExplainConsultationPacket,
     consultation_summary: RustParityExplainConsultationSummary,
@@ -194,6 +195,22 @@ struct RustParityExplainExperimentPacket {
     worktree: String,
     env_fingerprint: String,
     command_hash: String,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainExplanation {
+    summary: String,
+    reasons: Vec<String>,
+    next_action: String,
+    current_state: RustParityExplainCurrentState,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainCurrentState {
+    state: String,
+    task_state: String,
+    review_state: String,
+    last_event: String,
 }
 
 #[derive(Deserialize)]
@@ -430,6 +447,21 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.run.experiment_packet.worktree, "");
     assert_eq!(fixture.run.experiment_packet.env_fingerprint, "");
     assert_eq!(fixture.run.experiment_packet.command_hash, "");
+    assert_eq!(fixture.explanation.summary, "Implement run ledger");
+    assert_eq!(fixture.explanation.next_action, "review_pending");
+    assert!(
+        fixture
+            .explanation
+            .reasons
+            .contains(&"review_state=PENDING".to_string())
+    );
+    assert_eq!(fixture.explanation.current_state.state, "idle");
+    assert_eq!(fixture.explanation.current_state.task_state, "in_progress");
+    assert_eq!(fixture.explanation.current_state.review_state, "PENDING");
+    assert_eq!(
+        fixture.explanation.current_state.last_event,
+        "commander.review_requested"
+    );
     assert!(fixture.run.security_policy.is_null());
     assert!(fixture.run.security_verdict.is_null());
     assert!(fixture.run.verification_contract.is_null());
