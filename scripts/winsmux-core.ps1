@@ -4579,8 +4579,8 @@ function ConvertTo-CompareRunsPayload {
 
     $leftRun = $LeftPayload.run
     $rightRun = $RightPayload.run
-    $leftExperiment = $LeftPayload.experiment_packet
-    $rightExperiment = $RightPayload.experiment_packet
+    $leftExperiment = $leftRun.experiment_packet
+    $rightExperiment = $rightRun.experiment_packet
     $leftEvidence = $LeftPayload.evidence_digest
     $rightEvidence = $RightPayload.evidence_digest
     $leftChangedFiles = @($leftEvidence.changed_files)
@@ -5164,22 +5164,11 @@ function Get-ExplainPayload {
     $observationPack = Get-HydratedObservationPack -ExperimentPacket $run.experiment_packet -ProjectDir $ProjectDir -ExpectedRunId ([string]$run.run_id)
     $consultationPacket = Get-HydratedConsultationPacket -ExperimentPacket $run.experiment_packet -ProjectDir $ProjectDir -ExpectedRunId ([string]$run.run_id)
     $consultationSummary = Get-ConsultationSummaryFromPacket -ConsultationPacket $consultationPacket
-    $experimentPacket = $run.experiment_packet
-    if ($null -ne $experimentPacket) {
-        $hydratedExperimentPacket = [ordered]@{}
-        foreach ($entry in $experimentPacket.GetEnumerator()) {
-            $hydratedExperimentPacket[[string]$entry.Key] = $entry.Value
-        }
-        $hydratedExperimentPacket['observation_pack'] = $observationPack
-        $hydratedExperimentPacket['consultation_packet'] = $consultationPacket
-        $experimentPacket = $hydratedExperimentPacket
-    }
 
     return [ordered]@{
         generated_at       = (Get-Date).ToString('o')
         project_dir        = $ProjectDir
         run                = $run
-        experiment_packet  = $experimentPacket
         observation_pack   = $observationPack
         consultation_packet = $consultationPacket
         consultation_summary = $consultationSummary

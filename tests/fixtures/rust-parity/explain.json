@@ -149,58 +149,6 @@
       "last_event_at": "__LAST_EVENT_AT__"
     }
   },
-  "experiment_packet": {
-    "hypothesis": "",
-    "test_plan": [],
-    "result": "consult before work",
-    "confidence": 0.66,
-    "next_action": "approval_waiting",
-    "observation_pack_ref": ".winsmux/observation-packs/observation-pack-__ID__.json",
-    "consultation_ref": ".winsmux/consultations/consult-result-__ID__.json",
-    "run_id": "",
-    "slot": "slot-builder-1",
-    "branch": "worktree-builder-1",
-    "worktree": "",
-    "env_fingerprint": "",
-    "command_hash": "",
-    "observation_pack": {
-      "run_id": "task:task-256",
-      "task_id": "task-256",
-      "pane_id": "%2",
-      "slot": "slot-builder-1",
-      "hypothesis": "experiment packet should flow into explain",
-      "test_plan": [
-        "collect matching events",
-        "normalize packet"
-      ],
-      "changed_files": [
-        "scripts/winsmux-core.ps1"
-      ],
-      "working_tree_summary": "1 file modified",
-      "failing_command": "Invoke-Pester tests/winsmux-bridge.Tests.ps1",
-      "env_fingerprint": "env:abc123",
-      "command_hash": "cmd:def456",
-      "packet_type": "observation_pack",
-      "generated_at": "__GENERATED_AT__"
-    },
-    "consultation_packet": {
-      "run_id": "task:task-256",
-      "task_id": "task-256",
-      "pane_id": "%2",
-      "slot": "slot-builder-1",
-      "kind": "consult_result",
-      "mode": "early",
-      "target_slot": "slot-review-1",
-      "confidence": 0.66,
-      "recommendation": "consult before work",
-      "next_test": "approval_waiting",
-      "risks": [
-        "needs reviewer confirmation"
-      ],
-      "packet_type": "consultation_packet",
-      "generated_at": "__GENERATED_AT__"
-    }
-  },
   "observation_pack": {
     "run_id": "task:task-256",
     "task_id": "task-256",
