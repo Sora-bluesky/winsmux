@@ -5026,6 +5026,81 @@ function Get-DesktopSummaryPayload {
     }
 }
 
+function Get-DesktopSummaryRefreshRunId {
+    param([Parameter(Mandatory = $true)]$EventRecord)
+
+    $data = $null
+    if ($EventRecord.Contains('data')) {
+        $data = $EventRecord['data']
+    }
+
+    $runId = ''
+    if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('run_id')) {
+        $runId = [string]$data['run_id']
+    }
+    if ([string]::IsNullOrWhiteSpace($runId) -and $EventRecord.Contains('run_id')) {
+        $runId = [string]$EventRecord['run_id']
+    }
+    if (-not [string]::IsNullOrWhiteSpace($runId)) {
+        return $runId
+    }
+
+    $taskId = ''
+    if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('task_id')) {
+        $taskId = [string]$data['task_id']
+    }
+    if ([string]::IsNullOrWhiteSpace($taskId) -and $EventRecord.Contains('task_id')) {
+        $taskId = [string]$EventRecord['task_id']
+    }
+    if (-not [string]::IsNullOrWhiteSpace($taskId)) {
+        return "task:$taskId"
+    }
+
+    $branch = [string]$EventRecord['branch']
+    if ([string]::IsNullOrWhiteSpace($branch) -and $null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('branch')) {
+        $branch = [string]$data['branch']
+    }
+    if (-not [string]::IsNullOrWhiteSpace($branch)) {
+        return "branch:$branch"
+    }
+
+    return ''
+}
+
+function ConvertTo-DesktopSummaryRefreshItem {
+    param([Parameter(Mandatory = $true)]$EventRecord)
+
+    $reason = [string]$EventRecord['event']
+    if ([string]::IsNullOrWhiteSpace($reason) -and $EventRecord.Contains('status')) {
+        $reason = [string]$EventRecord['status']
+    }
+    if ([string]::IsNullOrWhiteSpace($reason)) {
+        return $null
+    }
+
+    $item = [ordered]@{
+        source = 'summary'
+        reason = $reason
+    }
+
+    $timestamp = [string]$EventRecord['timestamp']
+    if (-not [string]::IsNullOrWhiteSpace($timestamp)) {
+        $item['timestamp'] = $timestamp
+    }
+
+    $paneId = [string]$EventRecord['pane_id']
+    if (-not [string]::IsNullOrWhiteSpace($paneId)) {
+        $item['pane_id'] = $paneId
+    }
+
+    $runId = Get-DesktopSummaryRefreshRunId -EventRecord $EventRecord
+    if (-not [string]::IsNullOrWhiteSpace($runId)) {
+        $item['run_id'] = $runId
+    }
+
+    return $item
+}
+
 function Get-ExplainPayload {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -5133,19 +5208,66 @@ function Invoke-DesktopSummary {
         [AllowNull()][string[]]$DesktopSummaryRest = $Rest
     )
 
-    $jsonOutput = $false
+    $tokens = @()
+    if (-not [string]::IsNullOrWhiteSpace($DesktopSummaryTarget)) {
+        $tokens += $DesktopSummaryTarget
+    }
+    if ($DesktopSummaryRest) {
+        $tokens += @($DesktopSummaryRest)
+    }
 
-    if ($DesktopSummaryTarget) {
-        if ($DesktopSummaryTarget -eq '--json' -and (-not $DesktopSummaryRest -or $DesktopSummaryRest.Count -eq 0)) {
-            $jsonOutput = $true
-        } else {
-            Stop-WithError "usage: winsmux desktop-summary [--json]"
+    $jsonOutput = $false
+    $streamOutput = $false
+
+    foreach ($token in $tokens) {
+        switch ($token) {
+            '--json'   { $jsonOutput = $true }
+            '--stream' { $streamOutput = $true }
+            default    { Stop-WithError "usage: winsmux desktop-summary [--json] [--stream]" }
         }
-    } elseif ($DesktopSummaryRest -and $DesktopSummaryRest.Count -gt 0) {
-        Stop-WithError "usage: winsmux desktop-summary [--json]"
     }
 
     $projectDir = (Get-Location).Path
+    if ($streamOutput) {
+        $cursor = @(Get-BridgeEventRecords -ProjectDir $projectDir).Count
+        while ($true) {
+            $delta = Get-BridgeEventDelta -ProjectDir $projectDir -Cursor $cursor
+            $cursor = [int]$delta.cursor
+            foreach ($eventRecord in @($delta.events)) {
+                $item = ConvertTo-DesktopSummaryRefreshItem -EventRecord $eventRecord
+                if ($null -eq $item) {
+                    continue
+                }
+
+                if ($jsonOutput) {
+                    $item | ConvertTo-Json -Compress -Depth 8 | Write-Output
+                    continue
+                }
+
+                $timestamp = if ($item.Contains('timestamp')) { [string]$item.timestamp } else { '' }
+                if ([string]::IsNullOrWhiteSpace($timestamp)) {
+                    $timestamp = (Get-Date).ToString('o')
+                }
+
+                $details = @()
+                if ($item.Contains('pane_id')) {
+                    $details += "pane=$([string]$item.pane_id)"
+                }
+                if ($item.Contains('run_id')) {
+                    $details += "run=$([string]$item.run_id)"
+                }
+
+                if ($details.Count -gt 0) {
+                    Write-Output ("[{0}] summary {1} {2}" -f $timestamp, [string]$item.reason, ($details -join ' '))
+                } else {
+                    Write-Output ("[{0}] summary {1}" -f $timestamp, [string]$item.reason)
+                }
+            }
+
+            Start-Sleep -Seconds 2
+        }
+    }
+
     $payload = Get-DesktopSummaryPayload -ProjectDir $projectDir
 
     if ($jsonOutput) {
@@ -6616,7 +6738,7 @@ Commands:
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
   status                    Report manifest pane states via capture-pane
   board [--json]            Report pane/task/review/git session board
-desktop-summary [--json]  Report the aggregated desktop read-model snapshot
+desktop-summary [--json] [--stream]  Report the aggregated desktop read-model snapshot or follow refresh signals
 inbox [--json] [--stream] Report actionable approvals/review/blockers
 runs [--json]             Report run-oriented session view
 digest [--json] [--stream] [--events] Report high-signal evidence digest per run or actionable event summaries
