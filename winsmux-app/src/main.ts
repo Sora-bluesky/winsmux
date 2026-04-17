@@ -1377,6 +1377,9 @@ async function openExplainForSelectedRun() {
     if (payload.run.branch) {
       detailItems.push({ label: "branch", value: payload.run.branch });
     }
+    if (payload.run.worktree) {
+      detailItems.push({ label: "worktree", value: payload.run.worktree });
+    }
     if (payload.run.head_sha) {
       detailItems.push({ label: "head", value: payload.run.head_sha.slice(0, 8) });
     }
@@ -1414,6 +1417,10 @@ async function openExplainForSelectedRun() {
     const bodyParts = [payload.explanation.summary];
     if (payload.run.goal) {
       bodyParts.push(`Goal: ${payload.run.goal}`);
+    }
+    const workspaceContext = summarizeWorkspaceContext(payload.run.branch, payload.run.worktree);
+    if (workspaceContext) {
+      bodyParts.push(`Workspace: ${workspaceContext}`);
     }
     if (payload.explanation.reasons.length > 0) {
       bodyParts.push(`Reasons: ${payload.explanation.reasons.join(" | ")}`);
@@ -1477,6 +1484,7 @@ function appendFallbackExplain() {
   if (!selectedRunId || projection?.run_id !== selectedRunId) {
     return;
   }
+  const workspaceContext = summarizeWorkspaceContext(projection.branch, projection.worktree);
 
   appendRuntimeConversation({
     type: "operator",
@@ -1484,10 +1492,14 @@ function appendFallbackExplain() {
     timestamp,
     actor: "Operator",
     title: "Explain unavailable",
-    body: `Explain unavailable for ${selectedRunId}.`,
+    body: workspaceContext
+      ? `Explain unavailable for ${selectedRunId}. Workspace: ${workspaceContext}.`
+      : `Explain unavailable for ${selectedRunId}.`,
     details: [
       { label: "run", value: selectedRunId },
       { label: "next", value: projection.next_action || "idle" },
+      { label: "branch", value: projection.branch || "no branch" },
+      { label: "worktree", value: projection.worktree || "project root" },
       { label: "changed", value: `${projection.changed_files.length}` },
     ],
     tone: "info",
@@ -2047,6 +2059,11 @@ function summarizeChangedFiles(paths: string[], limit = 3) {
 
   const remaining = paths.length - visible.length;
   return remaining > 0 ? `${visible.join(", ")} +${remaining} more` : visible.join(", ");
+}
+
+function summarizeWorkspaceContext(branch: string, worktree: string) {
+  const parts = [branch, worktree].filter((value) => Boolean(value));
+  return parts.join(" @ ");
 }
 
 function getRunProjectionFingerprint(projection: DesktopRunProjection | null | undefined) {
