@@ -127,6 +127,7 @@ struct RustParityExplainFixture {
     generated_at: String,
     project_dir: String,
     run: RustParityExplainRun,
+    observation_pack: RustParityExplainObservationPack,
     consultation_packet: RustParityExplainConsultationPacket,
     consultation_summary: RustParityExplainConsultationSummary,
     evidence_digest: RustParityExplainEvidenceDigest,
@@ -227,6 +228,23 @@ struct RustParityExplainConsultationPacket {
     recommendation: String,
     next_test: String,
     risks: Vec<String>,
+    packet_type: String,
+    generated_at: String,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainObservationPack {
+    run_id: String,
+    task_id: String,
+    pane_id: String,
+    slot: String,
+    hypothesis: String,
+    test_plan: Vec<String>,
+    changed_files: Vec<String>,
+    working_tree_summary: String,
+    failing_command: String,
+    env_fingerprint: String,
+    command_hash: String,
     packet_type: String,
     generated_at: String,
 }
@@ -463,6 +481,37 @@ fn rust_parity_explain_fixture_deserializes() {
         "consultation_packet"
     );
     assert_eq!(fixture.consultation_packet.generated_at, "__GENERATED_AT__");
+    assert_eq!(fixture.observation_pack.run_id, "task:task-256");
+    assert_eq!(fixture.observation_pack.task_id, "task-256");
+    assert_eq!(fixture.observation_pack.pane_id, "%2");
+    assert_eq!(fixture.observation_pack.slot, "slot-builder-1");
+    assert_eq!(
+        fixture.observation_pack.hypothesis,
+        "experiment packet should flow into explain"
+    );
+    assert_eq!(
+        fixture.observation_pack.test_plan,
+        vec![
+            "collect matching events".to_string(),
+            "normalize packet".to_string()
+        ]
+    );
+    assert_eq!(
+        fixture.observation_pack.changed_files,
+        vec!["scripts/winsmux-core.ps1".to_string()]
+    );
+    assert_eq!(
+        fixture.observation_pack.working_tree_summary,
+        "1 file modified"
+    );
+    assert_eq!(
+        fixture.observation_pack.failing_command,
+        "Invoke-Pester tests/winsmux-bridge.Tests.ps1"
+    );
+    assert_eq!(fixture.observation_pack.env_fingerprint, "env:abc123");
+    assert_eq!(fixture.observation_pack.command_hash, "cmd:def456");
+    assert_eq!(fixture.observation_pack.packet_type, "observation_pack");
+    assert_eq!(fixture.observation_pack.generated_at, "__GENERATED_AT__");
     assert_eq!(fixture.evidence_digest.next_action, "review_pending");
     assert_eq!(fixture.evidence_digest.changed_file_count, 1);
     assert!(fixture.evidence_digest.consultation_ref.contains("__ID__"));

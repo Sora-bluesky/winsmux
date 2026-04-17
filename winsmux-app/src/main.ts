@@ -1342,6 +1342,7 @@ async function openExplainForSelectedRun() {
   try {
     const previousPayload = desktopExplainCache.get(selectedRunId) ?? null;
     const payload = await getDesktopRunExplain(selectedRunId);
+    const observationPack = getObservationPack(payload);
     const consultationSummary = getConsultationSummary(payload);
     desktopExplainCache.set(selectedRunId, payload);
 
@@ -1360,6 +1361,9 @@ async function openExplainForSelectedRun() {
     }
     if (payload.run.experiment_packet.next_action) {
       detailItems.push({ label: "experiment", value: payload.run.experiment_packet.next_action });
+    }
+    if (observationPack.hypothesis) {
+      detailItems.push({ label: "observe", value: observationPack.hypothesis });
     }
     if (consultationSummary.next_test) {
       detailItems.push({ label: "consult", value: consultationSummary.next_test });
@@ -1393,6 +1397,13 @@ async function openExplainForSelectedRun() {
         .map((item) => `${item.kind}: ${item.message}`)
         .join(" | ");
       bodyParts.push(`Actions: ${actions}`);
+    }
+    if (observationPack.working_tree_summary || observationPack.failing_command) {
+      const observationParts = [
+        observationPack.working_tree_summary,
+        observationPack.failing_command,
+      ].filter((value) => Boolean(value));
+      bodyParts.push(`Observe: ${observationParts.join(" | ")}`);
     }
     if (payload.recent_events.length > 0) {
       const recent = payload.recent_events
@@ -1825,6 +1836,7 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     return "";
   }
 
+  const observationPack = getObservationPack(payload);
   const consultationPacket = getConsultationPacket(payload);
   const consultationSummary = getConsultationSummary(payload);
 
@@ -1885,6 +1897,19 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.explanation.summary,
     payload.explanation.next_action,
     payload.explanation.reasons.join("|"),
+    observationPack.run_id,
+    observationPack.task_id,
+    observationPack.pane_id,
+    observationPack.slot,
+    observationPack.hypothesis,
+    observationPack.test_plan.join("|"),
+    observationPack.changed_files.join("|"),
+    observationPack.working_tree_summary,
+    observationPack.failing_command,
+    observationPack.env_fingerprint,
+    observationPack.command_hash,
+    observationPack.packet_type,
+    observationPack.generated_at,
     consultationPacket.run_id,
     consultationPacket.task_id,
     consultationPacket.pane_id,
@@ -1910,6 +1935,31 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.evidence_digest.changed_files.join("|"),
     payload.recent_events.map((item) => `${item.event}:${item.message}`).join("|"),
   ]);
+}
+
+function getObservationPack(payload: DesktopExplainPayload): DesktopExplainPayload["observation_pack"] {
+  const pack = (
+    payload as DesktopExplainPayload & {
+      observation_pack?: DesktopExplainPayload["observation_pack"];
+    }
+  ).observation_pack;
+  return (
+    pack ?? {
+      run_id: "",
+      task_id: "",
+      pane_id: "",
+      slot: "",
+      hypothesis: "",
+      test_plan: [],
+      changed_files: [],
+      working_tree_summary: "",
+      failing_command: "",
+      env_fingerprint: "",
+      command_hash: "",
+      packet_type: "",
+      generated_at: "",
+    }
+  );
 }
 
 function getConsultationPacket(payload: DesktopExplainPayload): DesktopExplainPayload["consultation_packet"] {

@@ -243,6 +243,21 @@ export interface DesktopExplainPayload {
     reasons: string[];
     next_action: string;
   };
+  observation_pack: {
+    run_id: string;
+    task_id: string;
+    pane_id: string;
+    slot: string;
+    hypothesis: string;
+    test_plan: string[];
+    changed_files: string[];
+    working_tree_summary: string;
+    failing_command: string;
+    env_fingerprint: string;
+    command_hash: string;
+    packet_type: string;
+    generated_at: string;
+  };
   consultation_packet: {
     run_id: string;
     task_id: string;

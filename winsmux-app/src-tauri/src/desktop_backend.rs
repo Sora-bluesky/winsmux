@@ -188,6 +188,7 @@ pub struct DesktopExplainPayload {
     pub project_dir: String,
     pub run: DesktopExplainRun,
     pub explanation: DesktopExplainExplanation,
+    pub observation_pack: DesktopExplainObservationPack,
     pub consultation_packet: DesktopExplainConsultationPacket,
     pub consultation_summary: DesktopExplainConsultationSummary,
     pub evidence_digest: DesktopExplainEvidenceDigest,
@@ -293,6 +294,23 @@ pub struct DesktopExplainConsultationPacket {
     pub recommendation: String,
     pub next_test: String,
     pub risks: Vec<String>,
+    pub packet_type: String,
+    pub generated_at: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainObservationPack {
+    pub run_id: String,
+    pub task_id: String,
+    pub pane_id: String,
+    pub slot: String,
+    pub hypothesis: String,
+    pub test_plan: Vec<String>,
+    pub changed_files: Vec<String>,
+    pub working_tree_summary: String,
+    pub failing_command: String,
+    pub env_fingerprint: String,
+    pub command_hash: String,
     pub packet_type: String,
     pub generated_at: String,
 }
@@ -1720,6 +1738,37 @@ mod tests {
             "consultation_packet"
         );
         assert_eq!(payload.consultation_packet.generated_at, "__GENERATED_AT__");
+        assert_eq!(payload.observation_pack.run_id, "task:task-256");
+        assert_eq!(payload.observation_pack.task_id, "task-256");
+        assert_eq!(payload.observation_pack.pane_id, "%2");
+        assert_eq!(payload.observation_pack.slot, "slot-builder-1");
+        assert_eq!(
+            payload.observation_pack.hypothesis,
+            "experiment packet should flow into explain"
+        );
+        assert_eq!(
+            payload.observation_pack.test_plan,
+            vec![
+                "collect matching events".to_string(),
+                "normalize packet".to_string()
+            ]
+        );
+        assert_eq!(
+            payload.observation_pack.changed_files,
+            vec!["scripts/winsmux-core.ps1".to_string()]
+        );
+        assert_eq!(
+            payload.observation_pack.working_tree_summary,
+            "1 file modified"
+        );
+        assert_eq!(
+            payload.observation_pack.failing_command,
+            "Invoke-Pester tests/winsmux-bridge.Tests.ps1"
+        );
+        assert_eq!(payload.observation_pack.env_fingerprint, "env:abc123");
+        assert_eq!(payload.observation_pack.command_hash, "cmd:def456");
+        assert_eq!(payload.observation_pack.packet_type, "observation_pack");
+        assert_eq!(payload.observation_pack.generated_at, "__GENERATED_AT__");
         assert_eq!(
             payload
                 .review_state
@@ -1818,6 +1867,14 @@ mod tests {
                 assert_eq!(
                     result["consultation_packet"]["packet_type"],
                     "consultation_packet"
+                );
+                assert_eq!(
+                    result["observation_pack"]["packet_type"],
+                    "observation_pack"
+                );
+                assert_eq!(
+                    result["observation_pack"]["working_tree_summary"],
+                    "1 file modified"
                 );
                 assert_eq!(result["evidence_digest"]["next_action"], "review_pending");
                 assert_eq!(result["review_state"]["status"], "PENDING");
@@ -2106,6 +2163,157 @@ mod tests {
     #[test]
     fn load_desktop_run_explain_rejects_missing_consultation_packet_generated_at() {
         let err = expect_missing_consultation_packet_field("generated_at");
+
+        assert!(
+            err.contains("generated_at"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    fn expect_missing_observation_pack_field(field_name: &str) -> String {
+        let mut response = rust_parity_explain_payload();
+        response["observation_pack"]
+            .as_object_mut()
+            .expect("observation_pack must be an object")
+            .remove(field_name);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!(
+                "expected explain payload parse failure for missing observation_pack field {}",
+                field_name
+            ),
+            Err(err) => err,
+        }
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_run_id() {
+        let err = expect_missing_observation_pack_field("run_id");
+
+        assert!(
+            err.contains("run_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_task_id() {
+        let err = expect_missing_observation_pack_field("task_id");
+
+        assert!(
+            err.contains("task_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_pane_id() {
+        let err = expect_missing_observation_pack_field("pane_id");
+
+        assert!(
+            err.contains("pane_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_slot() {
+        let err = expect_missing_observation_pack_field("slot");
+
+        assert!(
+            err.contains("slot"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_hypothesis() {
+        let err = expect_missing_observation_pack_field("hypothesis");
+
+        assert!(
+            err.contains("hypothesis"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_test_plan() {
+        let err = expect_missing_observation_pack_field("test_plan");
+
+        assert!(
+            err.contains("test_plan"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_changed_files() {
+        let err = expect_missing_observation_pack_field("changed_files");
+
+        assert!(
+            err.contains("changed_files"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_working_tree_summary() {
+        let err = expect_missing_observation_pack_field("working_tree_summary");
+
+        assert!(
+            err.contains("working_tree_summary"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_failing_command() {
+        let err = expect_missing_observation_pack_field("failing_command");
+
+        assert!(
+            err.contains("failing_command"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_env_fingerprint() {
+        let err = expect_missing_observation_pack_field("env_fingerprint");
+
+        assert!(
+            err.contains("env_fingerprint"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_command_hash() {
+        let err = expect_missing_observation_pack_field("command_hash");
+
+        assert!(
+            err.contains("command_hash"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_type() {
+        let err = expect_missing_observation_pack_field("packet_type");
+
+        assert!(
+            err.contains("packet_type"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_observation_pack_generated_at() {
+        let err = expect_missing_observation_pack_field("generated_at");
 
         assert!(
             err.contains("generated_at"),
