@@ -188,6 +188,7 @@ pub struct DesktopExplainPayload {
     pub project_dir: String,
     pub run: DesktopExplainRun,
     pub explanation: DesktopExplainExplanation,
+    pub consultation_packet: DesktopExplainConsultationPacket,
     pub consultation_summary: DesktopExplainConsultationSummary,
     pub evidence_digest: DesktopExplainEvidenceDigest,
     #[serde(default)]
@@ -277,6 +278,23 @@ pub struct DesktopExplainConsultationSummary {
     pub confidence: f64,
     pub next_test: String,
     pub risks: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplainConsultationPacket {
+    pub run_id: String,
+    pub task_id: String,
+    pub pane_id: String,
+    pub slot: String,
+    pub kind: String,
+    pub mode: String,
+    pub target_slot: String,
+    pub confidence: f64,
+    pub recommendation: String,
+    pub next_test: String,
+    pub risks: Vec<String>,
+    pub packet_type: String,
+    pub generated_at: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1680,6 +1698,28 @@ mod tests {
             payload.consultation_summary.risks,
             vec!["needs reviewer confirmation".to_string()]
         );
+        assert_eq!(payload.consultation_packet.run_id, "task:task-256");
+        assert_eq!(payload.consultation_packet.task_id, "task-256");
+        assert_eq!(payload.consultation_packet.pane_id, "%2");
+        assert_eq!(payload.consultation_packet.slot, "slot-builder-1");
+        assert_eq!(payload.consultation_packet.kind, "consult_result");
+        assert_eq!(payload.consultation_packet.mode, "early");
+        assert_eq!(payload.consultation_packet.target_slot, "slot-review-1");
+        assert_eq!(payload.consultation_packet.confidence, 0.66);
+        assert_eq!(
+            payload.consultation_packet.recommendation,
+            "consult before work"
+        );
+        assert_eq!(payload.consultation_packet.next_test, "approval_waiting");
+        assert_eq!(
+            payload.consultation_packet.risks,
+            vec!["needs reviewer confirmation".to_string()]
+        );
+        assert_eq!(
+            payload.consultation_packet.packet_type,
+            "consultation_packet"
+        );
+        assert_eq!(payload.consultation_packet.generated_at, "__GENERATED_AT__");
         assert_eq!(
             payload
                 .review_state
@@ -1771,11 +1811,18 @@ mod tests {
                     result["consultation_summary"]["next_test"],
                     "approval_waiting"
                 );
+                assert_eq!(
+                    result["consultation_packet"]["recommendation"],
+                    "consult before work"
+                );
+                assert_eq!(
+                    result["consultation_packet"]["packet_type"],
+                    "consultation_packet"
+                );
                 assert_eq!(result["evidence_digest"]["next_action"], "review_pending");
                 assert_eq!(result["review_state"]["status"], "PENDING");
                 assert!(result.get("run_packet").is_none());
                 assert!(result.get("result_packet").is_none());
-                assert!(result.get("consultation_packet").is_none());
             }
             DesktopJsonRpcResponse::Error { error, .. } => {
                 panic!("expected success, got {:?}", error);
@@ -1911,6 +1958,157 @@ mod tests {
 
         assert!(
             err.contains("risks"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    fn expect_missing_consultation_packet_field(field_name: &str) -> String {
+        let mut response = rust_parity_explain_payload();
+        response["consultation_packet"]
+            .as_object_mut()
+            .expect("consultation_packet must be an object")
+            .remove(field_name);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!(
+                "expected explain payload parse failure for missing consultation_packet field {}",
+                field_name
+            ),
+            Err(err) => err,
+        }
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_run_id() {
+        let err = expect_missing_consultation_packet_field("run_id");
+
+        assert!(
+            err.contains("run_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_task_id() {
+        let err = expect_missing_consultation_packet_field("task_id");
+
+        assert!(
+            err.contains("task_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_pane_id() {
+        let err = expect_missing_consultation_packet_field("pane_id");
+
+        assert!(
+            err.contains("pane_id"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_slot() {
+        let err = expect_missing_consultation_packet_field("slot");
+
+        assert!(
+            err.contains("slot"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_kind() {
+        let err = expect_missing_consultation_packet_field("kind");
+
+        assert!(
+            err.contains("kind"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_mode() {
+        let err = expect_missing_consultation_packet_field("mode");
+
+        assert!(
+            err.contains("mode"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_target_slot() {
+        let err = expect_missing_consultation_packet_field("target_slot");
+
+        assert!(
+            err.contains("target_slot"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_confidence() {
+        let err = expect_missing_consultation_packet_field("confidence");
+
+        assert!(
+            err.contains("confidence"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_recommendation() {
+        let err = expect_missing_consultation_packet_field("recommendation");
+
+        assert!(
+            err.contains("recommendation"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_next_test() {
+        let err = expect_missing_consultation_packet_field("next_test");
+
+        assert!(
+            err.contains("next_test"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_risks() {
+        let err = expect_missing_consultation_packet_field("risks");
+
+        assert!(
+            err.contains("risks"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_type() {
+        let err = expect_missing_consultation_packet_field("packet_type");
+
+        assert!(
+            err.contains("packet_type"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_consultation_packet_generated_at() {
+        let err = expect_missing_consultation_packet_field("generated_at");
+
+        assert!(
+            err.contains("generated_at"),
             "unexpected explain parse error: {err}"
         );
     }

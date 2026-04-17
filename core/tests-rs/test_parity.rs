@@ -127,6 +127,7 @@ struct RustParityExplainFixture {
     generated_at: String,
     project_dir: String,
     run: RustParityExplainRun,
+    consultation_packet: RustParityExplainConsultationPacket,
     consultation_summary: RustParityExplainConsultationSummary,
     evidence_digest: RustParityExplainEvidenceDigest,
 }
@@ -211,6 +212,23 @@ struct RustParityExplainConsultationSummary {
     confidence: f64,
     next_test: String,
     risks: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct RustParityExplainConsultationPacket {
+    run_id: String,
+    task_id: String,
+    pane_id: String,
+    slot: String,
+    kind: String,
+    mode: String,
+    target_slot: String,
+    confidence: f64,
+    recommendation: String,
+    next_test: String,
+    risks: Vec<String>,
+    packet_type: String,
+    generated_at: String,
 }
 
 #[derive(Deserialize)]
@@ -423,6 +441,28 @@ fn rust_parity_explain_fixture_deserializes() {
         fixture.consultation_summary.risks,
         vec!["needs reviewer confirmation".to_string()]
     );
+    assert_eq!(fixture.consultation_packet.run_id, "task:task-256");
+    assert_eq!(fixture.consultation_packet.task_id, "task-256");
+    assert_eq!(fixture.consultation_packet.pane_id, "%2");
+    assert_eq!(fixture.consultation_packet.slot, "slot-builder-1");
+    assert_eq!(fixture.consultation_packet.kind, "consult_result");
+    assert_eq!(fixture.consultation_packet.mode, "early");
+    assert_eq!(fixture.consultation_packet.target_slot, "slot-review-1");
+    assert_eq!(fixture.consultation_packet.confidence, 0.66);
+    assert_eq!(
+        fixture.consultation_packet.recommendation,
+        "consult before work"
+    );
+    assert_eq!(fixture.consultation_packet.next_test, "approval_waiting");
+    assert_eq!(
+        fixture.consultation_packet.risks,
+        vec!["needs reviewer confirmation".to_string()]
+    );
+    assert_eq!(
+        fixture.consultation_packet.packet_type,
+        "consultation_packet"
+    );
+    assert_eq!(fixture.consultation_packet.generated_at, "__GENERATED_AT__");
     assert_eq!(fixture.evidence_digest.next_action, "review_pending");
     assert_eq!(fixture.evidence_digest.changed_file_count, 1);
     assert!(fixture.evidence_digest.consultation_ref.contains("__ID__"));

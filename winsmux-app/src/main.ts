@@ -1825,6 +1825,7 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     return "";
   }
 
+  const consultationPacket = getConsultationPacket(payload);
   const consultationSummary = getConsultationSummary(payload);
 
   return JSON.stringify([
@@ -1884,6 +1885,19 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.explanation.summary,
     payload.explanation.next_action,
     payload.explanation.reasons.join("|"),
+    consultationPacket.run_id,
+    consultationPacket.task_id,
+    consultationPacket.pane_id,
+    consultationPacket.slot,
+    consultationPacket.kind,
+    consultationPacket.mode,
+    consultationPacket.target_slot,
+    consultationPacket.confidence,
+    consultationPacket.recommendation,
+    consultationPacket.next_test,
+    consultationPacket.risks.join("|"),
+    consultationPacket.packet_type,
+    consultationPacket.generated_at,
     consultationSummary.kind,
     consultationSummary.mode,
     consultationSummary.target_slot,
@@ -1896,6 +1910,31 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.evidence_digest.changed_files.join("|"),
     payload.recent_events.map((item) => `${item.event}:${item.message}`).join("|"),
   ]);
+}
+
+function getConsultationPacket(payload: DesktopExplainPayload): DesktopExplainPayload["consultation_packet"] {
+  const packet = (
+    payload as DesktopExplainPayload & {
+      consultation_packet?: DesktopExplainPayload["consultation_packet"];
+    }
+  ).consultation_packet;
+  return (
+    packet ?? {
+      run_id: "",
+      task_id: "",
+      pane_id: "",
+      slot: "",
+      kind: "",
+      mode: "",
+      target_slot: "",
+      confidence: 0,
+      recommendation: "",
+      next_test: "",
+      risks: [],
+      packet_type: "",
+      generated_at: "",
+    }
+  );
 }
 
 function getConsultationSummary(payload: DesktopExplainPayload): DesktopExplainPayload["consultation_summary"] {

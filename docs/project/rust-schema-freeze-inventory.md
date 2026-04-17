@@ -57,6 +57,7 @@ Why this is close to freeze:
 - `explain.run` の token/context 系でも、`tokens_remaining` を Rust 側へ通し始めている。
 - `explain.run.experiment_packet` でも、`hypothesis`、`test_plan`、`result`、`confidence`、参照先と環境指紋の各項目を Rust 側へ通し始めている。
 - `explain.run` の検証系とセキュリティ系でも、`security_policy`、`security_verdict`、`verification_contract`、`verification_result` を Rust 側へ通し始めている。
+- `explain.consultation_packet` でも、`run_id`、`task_id`、`pane_id`、`slot`、`kind`、`mode`、`target_slot`、`confidence`、`recommendation`、`next_test`、`risks`、`packet_type`、`generated_at` を Rust 側へ通し始めている。
 - `explain.consultation_summary` でも、`kind`、`mode`、`target_slot`、`confidence`、`next_test`、`risks` を Rust 側へ通し始めている。
 - Recent `TASK-278` slices have been narrowing this surface with fail-close regressions instead of widening it loosely.
 
