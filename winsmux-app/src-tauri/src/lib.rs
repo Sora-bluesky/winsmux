@@ -48,26 +48,15 @@ fn start_desktop_summary_refresh_streams(app: &AppHandle) {
         return;
     }
 
-    let inbox_app = app.clone();
+    let summary_app = app.clone();
     if let Err(err) = spawn_desktop_summary_refresh_stream(
-        DesktopStreamCommand::Inbox { project_dir: None },
+        DesktopStreamCommand::Summary { project_dir: None },
         manager.stop_requested.clone(),
         move |signal| {
-            emit_desktop_summary_refresh(&inbox_app, signal);
+            emit_desktop_summary_refresh(&summary_app, signal);
         },
     ) {
-        eprintln!("Failed to start inbox summary stream adapter: {}", err);
-    }
-
-    let digest_app = app.clone();
-    if let Err(err) = spawn_desktop_summary_refresh_stream(
-        DesktopStreamCommand::Digest { project_dir: None },
-        manager.stop_requested.clone(),
-        move |signal| {
-            emit_desktop_summary_refresh(&digest_app, signal);
-        },
-    ) {
-        eprintln!("Failed to start digest summary stream adapter: {}", err);
+        eprintln!("Failed to start desktop summary stream adapter: {}", err);
     }
 }
 

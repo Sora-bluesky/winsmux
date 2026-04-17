@@ -6416,6 +6416,33 @@ Set-Location '__DIGEST_TEMP_ROOT__'
         $result.run_projections[0].worktree | Should -Be '.worktrees/builder-1'
     }
 
+    It 'converts event records into desktop summary refresh items' {
+        $item = ConvertTo-DesktopSummaryRefreshItem -EventRecord ([ordered]@{
+                timestamp = '2026-04-10T14:02:00+09:00'
+                event     = 'pane.completed'
+                pane_id   = '%2'
+                branch    = 'worktree-builder-1'
+                data      = [ordered]@{
+                    task_id = 'task-246'
+                }
+            })
+
+        $item.source | Should -Be 'summary'
+        $item.reason | Should -Be 'pane.completed'
+        $item.pane_id | Should -Be '%2'
+        $item.run_id | Should -Be 'task:task-246'
+    }
+
+    It 'derives desktop summary refresh run ids from branch context when task metadata is absent' {
+        $runId = Get-DesktopSummaryRefreshRunId -EventRecord ([ordered]@{
+                event   = 'pane.idle'
+                pane_id = '%6'
+                branch  = 'worktree-builder-1'
+            })
+
+        $runId | Should -Be 'branch:worktree-builder-1'
+    }
+
     It 'prefers launch_dir in desktop-summary projections when the builder path lags behind' {
 @"
 version: 1

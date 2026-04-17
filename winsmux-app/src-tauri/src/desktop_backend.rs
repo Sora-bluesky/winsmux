@@ -331,8 +331,7 @@ pub enum DesktopCommand {
 }
 
 pub enum DesktopStreamCommand {
-    Inbox { project_dir: Option<String> },
-    Digest { project_dir: Option<String> },
+    Summary { project_dir: Option<String> },
 }
 
 impl DesktopCommand {
@@ -358,23 +357,15 @@ impl DesktopCommand {
 impl DesktopStreamCommand {
     fn project_dir(&self) -> Option<&str> {
         match self {
-            DesktopStreamCommand::Inbox { project_dir } => project_dir.as_deref(),
-            DesktopStreamCommand::Digest { project_dir } => project_dir.as_deref(),
+            DesktopStreamCommand::Summary { project_dir } => project_dir.as_deref(),
         }
     }
 
     fn winsmux_args(&self) -> Vec<String> {
         match self {
-            DesktopStreamCommand::Inbox { .. } => {
+            DesktopStreamCommand::Summary { .. } => {
                 vec![
-                    "inbox".to_string(),
-                    "--stream".to_string(),
-                    "--json".to_string(),
-                ]
-            }
-            DesktopStreamCommand::Digest { .. } => {
-                vec![
-                    "digest".to_string(),
+                    "desktop-summary".to_string(),
                     "--stream".to_string(),
                     "--json".to_string(),
                 ]
@@ -384,8 +375,7 @@ impl DesktopStreamCommand {
 
     fn source_name(&self) -> &'static str {
         match self {
-            DesktopStreamCommand::Inbox { .. } => "inbox",
-            DesktopStreamCommand::Digest { .. } => "digest",
+            DesktopStreamCommand::Summary { .. } => "summary",
         }
     }
 }
@@ -620,11 +610,20 @@ pub fn parse_desktop_summary_stream_signal(
     let payload: Value = serde_json::from_str(trimmed).ok()?;
     let object = payload.as_object()?;
 
-    let is_valid = match source {
+    let optional_string = |key: &str| {
+        object
+            .get(key)
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.to_string())
+    };
+
+    let reason = match source {
         "digest" => object
             .get("run_id")
             .and_then(|value| value.as_str())
-            .is_some(),
+            .is_some()
+            .then(|| "digest.stream".to_string()),
         "inbox" => {
             object
                 .get("kind")
@@ -635,23 +634,17 @@ pub fn parse_desktop_summary_stream_signal(
                     .and_then(|value| value.as_str())
                     .is_some()
         }
-        _ => false,
+        .then(|| "inbox.stream".to_string()),
+        "summary" => optional_string("reason"),
+        _ => None,
     };
-    if !is_valid {
-        return None;
-    }
+    let reason = reason?;
 
     Some(DesktopSummaryRefreshSignal {
         source: source.to_string(),
-        reason: format!("{}.stream", source),
-        pane_id: object
-            .get("pane_id")
-            .and_then(|value| value.as_str())
-            .map(|value| value.to_string()),
-        run_id: object
-            .get("run_id")
-            .and_then(|value| value.as_str())
-            .map(|value| value.to_string()),
+        reason,
+        pane_id: optional_string("pane_id"),
+        run_id: optional_string("run_id"),
     })
 }
 
@@ -1754,10 +1747,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_desktop_summary_stream_signal_accepts_summary_reason_and_run() {
+        let signal = parse_desktop_summary_stream_signal(
+            "summary",
+            r#"{"reason":"pane.completed","pane_id":"%4","run_id":"task:task-289"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            signal,
+            DesktopSummaryRefreshSignal {
+                source: "summary".to_string(),
+                reason: "pane.completed".to_string(),
+                pane_id: Some("%4".to_string()),
+                run_id: Some("task:task-289".to_string()),
+            }
+        );
+    }
+
+    #[test]
     fn parse_desktop_summary_stream_signal_rejects_untyped_json_lines() {
         assert!(parse_desktop_summary_stream_signal("digest", r#"{"pane_id":"%2"}"#).is_none());
         assert!(
             parse_desktop_summary_stream_signal("inbox", r#"{"message":"missing kind"}"#).is_none()
         );
+        assert!(parse_desktop_summary_stream_signal("summary", r#"{"pane_id":"%2"}"#).is_none());
     }
 }
