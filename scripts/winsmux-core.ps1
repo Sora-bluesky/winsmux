@@ -5176,16 +5176,15 @@ function Get-ExplainPayload {
     }
 
     return [ordered]@{
-        generated_at    = (Get-Date).ToString('o')
-        project_dir     = $ProjectDir
-        run             = $run
-        run_packet      = New-RunPacketFromRun -Run $run
-        experiment_packet = $experimentPacket
-        observation_pack = $observationPack
+        generated_at       = (Get-Date).ToString('o')
+        project_dir        = $ProjectDir
+        run                = $run
+        experiment_packet  = $experimentPacket
+        observation_pack   = $observationPack
         consultation_packet = $consultationPacket
         consultation_summary = $consultationSummary
-        evidence_digest = $evidenceDigest
-        explanation   = [ordered]@{
+        evidence_digest    = $evidenceDigest
+        explanation        = [ordered]@{
             summary       = if (-not [string]::IsNullOrWhiteSpace([string]$run.task)) { [string]$run.task } else { [string]$run.primary_label }
             reasons       = @($reasons)
             next_action   = if (@($run.action_items).Count -gt 0) { [string]$run.action_items[0].kind } else { [string]$run.task_state }
@@ -5196,9 +5195,8 @@ function Get-ExplainPayload {
                 last_event   = [string]$run.last_event
             }
         }
-        review_state    = $reviewState
-        recent_events   = $recentEvents
-        result_packet   = New-RunResultPacket -Run $run -EvidenceDigest $evidenceDigest -ReviewState $reviewState -RecentEvents $recentEvents -ObservationPack $observationPack -ConsultationPacket $consultationPacket -ConsultationSummary $consultationSummary
+        review_state       = $reviewState
+        recent_events      = $recentEvents
     }
 }
 
