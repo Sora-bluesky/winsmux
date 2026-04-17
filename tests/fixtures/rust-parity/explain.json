@@ -111,7 +111,6 @@
     "failing_command": "Invoke-Pester tests/winsmux-bridge.Tests.ps1",
     "env_fingerprint": "env:abc123",
     "command_hash": "cmd:def456",
-    "packet_type": "observation_pack",
     "generated_at": "__GENERATED_AT__"
   },
   "consultation_packet": {
@@ -128,7 +127,6 @@
     "risks": [
       "needs reviewer confirmation"
     ],
-    "packet_type": "consultation_packet",
     "generated_at": "__GENERATED_AT__"
   },
   "evidence_digest": {

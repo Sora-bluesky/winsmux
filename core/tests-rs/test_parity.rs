@@ -234,7 +234,6 @@ struct RustParityExplainConsultationPacket {
     recommendation: String,
     next_test: String,
     risks: Vec<String>,
-    packet_type: String,
     generated_at: String,
 }
 
@@ -251,7 +250,6 @@ struct RustParityExplainObservationPack {
     failing_command: String,
     env_fingerprint: String,
     command_hash: String,
-    packet_type: String,
     generated_at: String,
 }
 
@@ -488,10 +486,6 @@ fn rust_parity_explain_fixture_deserializes() {
         fixture.consultation_packet.risks,
         vec!["needs reviewer confirmation".to_string()]
     );
-    assert_eq!(
-        fixture.consultation_packet.packet_type,
-        "consultation_packet"
-    );
     assert_eq!(fixture.consultation_packet.generated_at, "__GENERATED_AT__");
     assert_eq!(fixture.observation_pack.run_id, "task:task-256");
     assert_eq!(fixture.observation_pack.task_id, "task-256");
@@ -522,7 +516,6 @@ fn rust_parity_explain_fixture_deserializes() {
     );
     assert_eq!(fixture.observation_pack.env_fingerprint, "env:abc123");
     assert_eq!(fixture.observation_pack.command_hash, "cmd:def456");
-    assert_eq!(fixture.observation_pack.packet_type, "observation_pack");
     assert_eq!(fixture.observation_pack.generated_at, "__GENERATED_AT__");
     assert_eq!(fixture.evidence_digest.next_action, "review_pending");
     assert_eq!(fixture.evidence_digest.changed_file_count, 1);

@@ -292,7 +292,6 @@ pub struct DesktopExplainConsultationPacket {
     pub recommendation: String,
     pub next_test: String,
     pub risks: Vec<String>,
-    pub packet_type: String,
     pub generated_at: String,
 }
 
@@ -309,7 +308,6 @@ pub struct DesktopExplainObservationPack {
     pub failing_command: String,
     pub env_fingerprint: String,
     pub command_hash: String,
-    pub packet_type: String,
     pub generated_at: String,
 }
 
@@ -1729,10 +1727,6 @@ mod tests {
             payload.consultation_packet.risks,
             vec!["needs reviewer confirmation".to_string()]
         );
-        assert_eq!(
-            payload.consultation_packet.packet_type,
-            "consultation_packet"
-        );
         assert_eq!(payload.consultation_packet.generated_at, "__GENERATED_AT__");
         assert_eq!(payload.observation_pack.run_id, "task:task-256");
         assert_eq!(payload.observation_pack.task_id, "task-256");
@@ -1763,7 +1757,6 @@ mod tests {
         );
         assert_eq!(payload.observation_pack.env_fingerprint, "env:abc123");
         assert_eq!(payload.observation_pack.command_hash, "cmd:def456");
-        assert_eq!(payload.observation_pack.packet_type, "observation_pack");
         assert_eq!(payload.observation_pack.generated_at, "__GENERATED_AT__");
         assert_eq!(
             payload
@@ -1863,17 +1856,11 @@ mod tests {
                     "consult before work"
                 );
                 assert_eq!(
-                    result["consultation_packet"]["packet_type"],
-                    "consultation_packet"
-                );
-                assert_eq!(
-                    result["observation_pack"]["packet_type"],
-                    "observation_pack"
-                );
-                assert_eq!(
                     result["observation_pack"]["working_tree_summary"],
                     "1 file modified"
                 );
+                assert!(result["observation_pack"].get("packet_type").is_none());
+                assert!(result["consultation_packet"].get("packet_type").is_none());
                 assert_eq!(result["evidence_digest"]["next_action"], "review_pending");
                 assert_eq!(result["review_state"]["status"], "PENDING");
                 assert!(result.get("consultation_summary").is_none());
@@ -2131,16 +2118,6 @@ mod tests {
     }
 
     #[test]
-    fn load_desktop_run_explain_rejects_missing_consultation_packet_type() {
-        let err = expect_missing_consultation_packet_field("packet_type");
-
-        assert!(
-            err.contains("packet_type"),
-            "unexpected explain parse error: {err}"
-        );
-    }
-
-    #[test]
     fn load_desktop_run_explain_rejects_missing_consultation_packet_generated_at() {
         let err = expect_missing_consultation_packet_field("generated_at");
 
@@ -2277,16 +2254,6 @@ mod tests {
 
         assert!(
             err.contains("command_hash"),
-            "unexpected explain parse error: {err}"
-        );
-    }
-
-    #[test]
-    fn load_desktop_run_explain_rejects_missing_observation_pack_type() {
-        let err = expect_missing_observation_pack_field("packet_type");
-
-        assert!(
-            err.contains("packet_type"),
             "unexpected explain parse error: {err}"
         );
     }

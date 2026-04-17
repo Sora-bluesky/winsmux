@@ -261,7 +261,6 @@ export interface DesktopExplainPayload {
     failing_command: string;
     env_fingerprint: string;
     command_hash: string;
-    packet_type: string;
     generated_at: string;
   };
   consultation_packet: {
@@ -276,7 +275,6 @@ export interface DesktopExplainPayload {
     recommendation: string;
     next_test: string;
     risks: string[];
-    packet_type: string;
     generated_at: string;
   };
   evidence_digest: {

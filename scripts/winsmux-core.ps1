@@ -5133,6 +5133,12 @@ function Get-ExplainPayload {
     $recentEvents = @($events | Select-Object -First 20)
     $observationPack = Get-HydratedObservationPack -ExperimentPacket $run.experiment_packet -ProjectDir $ProjectDir -ExpectedRunId ([string]$run.run_id)
     $consultationPacket = Get-HydratedConsultationPacket -ExperimentPacket $run.experiment_packet -ProjectDir $ProjectDir -ExpectedRunId ([string]$run.run_id)
+    if ($observationPack -is [System.Collections.IDictionary] -and $observationPack.Contains('packet_type')) {
+        $observationPack.Remove('packet_type')
+    }
+    if ($consultationPacket -is [System.Collections.IDictionary] -and $consultationPacket.Contains('packet_type')) {
+        $consultationPacket.Remove('packet_type')
+    }
     return [ordered]@{
         generated_at       = (Get-Date).ToString('o')
         project_dir        = $ProjectDir

@@ -6738,10 +6738,11 @@ panes:
         $result.run.experiment_packet.command_hash | Should -Be 'cmd:def456'
         $result.run.verification_contract.mode | Should -Be 'adversarial_verify'
         $result.run.verification_result.outcome | Should -Be 'PARTIAL'
-        $result.observation_pack.packet_type | Should -Be 'observation_pack'
         $result.observation_pack.failing_command | Should -Be 'Invoke-Pester tests/winsmux-bridge.Tests.ps1'
         $result.consultation_packet.kind | Should -Be 'consult_result'
         $result.consultation_packet.mode | Should -Be 'early'
+        $result.observation_pack.Contains('packet_type') | Should -BeFalse
+        $result.consultation_packet.Contains('packet_type') | Should -BeFalse
         $result.Contains('experiment_packet') | Should -BeFalse
         $result.Contains('consultation_summary') | Should -BeFalse
         $result.evidence_digest.run_id | Should -Be 'task:task-256'

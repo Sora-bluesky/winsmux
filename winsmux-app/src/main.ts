@@ -1927,7 +1927,6 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     observationPack.failing_command,
     observationPack.env_fingerprint,
     observationPack.command_hash,
-    observationPack.packet_type,
     observationPack.generated_at,
     consultationPacket.run_id,
     consultationPacket.task_id,
@@ -1940,7 +1939,6 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     consultationPacket.recommendation,
     consultationPacket.next_test,
     consultationPacket.risks.join("|"),
-    consultationPacket.packet_type,
     consultationPacket.generated_at,
     consultationSummary.kind,
     consultationSummary.mode,
@@ -1975,7 +1973,6 @@ function getObservationPack(payload: DesktopExplainPayload): DesktopExplainPaylo
       failing_command: "",
       env_fingerprint: "",
       command_hash: "",
-      packet_type: "",
       generated_at: "",
     }
   );
@@ -2000,7 +1997,6 @@ function getConsultationPacket(payload: DesktopExplainPayload): DesktopExplainPa
       recommendation: "",
       next_test: "",
       risks: [],
-      packet_type: "",
       generated_at: "",
     }
   );
