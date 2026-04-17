@@ -6742,9 +6742,8 @@ panes:
         $result.observation_pack.failing_command | Should -Be 'Invoke-Pester tests/winsmux-bridge.Tests.ps1'
         $result.consultation_packet.kind | Should -Be 'consult_result'
         $result.consultation_packet.mode | Should -Be 'early'
-        $result.consultation_summary.kind | Should -Be 'consult_result'
-        $result.consultation_summary.next_test | Should -Be 'approval_waiting'
         $result.Contains('experiment_packet') | Should -BeFalse
+        $result.Contains('consultation_summary') | Should -BeFalse
         $result.evidence_digest.run_id | Should -Be 'task:task-256'
         $result.evidence_digest.next_action | Should -Be 'approval_waiting'
         $result.evidence_digest.changed_files | Should -Be @('scripts/winsmux-core.ps1')
@@ -7253,7 +7252,7 @@ panes:
         $result.run.experiment_packet.consultation_ref | Should -Be '.winsmux/consultations/consult-result-bad.json'
         $result.observation_pack | Should -Be $null
         $result.consultation_packet | Should -Be $null
-        $result.consultation_summary | Should -Be $null
+        $result.Contains('consultation_summary') | Should -BeFalse
         $result.Contains('experiment_packet') | Should -BeFalse
     }
 

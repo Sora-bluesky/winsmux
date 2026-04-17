@@ -190,7 +190,6 @@ pub struct DesktopExplainPayload {
     pub explanation: DesktopExplainExplanation,
     pub observation_pack: DesktopExplainObservationPack,
     pub consultation_packet: DesktopExplainConsultationPacket,
-    pub consultation_summary: DesktopExplainConsultationSummary,
     pub evidence_digest: DesktopExplainEvidenceDigest,
     #[serde(default)]
     pub review_state: Option<DesktopReviewStateRecord>,
@@ -278,16 +277,6 @@ pub struct DesktopExplainCurrentState {
     pub task_state: String,
     pub review_state: String,
     pub last_event: String,
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct DesktopExplainConsultationSummary {
-    pub kind: String,
-    pub mode: String,
-    pub target_slot: String,
-    pub confidence: f64,
-    pub next_test: String,
-    pub risks: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1723,15 +1712,6 @@ mod tests {
         assert_eq!(payload.evidence_digest.next_action, "review_pending");
         assert_eq!(payload.evidence_digest.verification_outcome, "");
         assert_eq!(payload.evidence_digest.security_blocked, "");
-        assert_eq!(payload.consultation_summary.kind, "consult_result");
-        assert_eq!(payload.consultation_summary.mode, "early");
-        assert_eq!(payload.consultation_summary.target_slot, "slot-review-1");
-        assert_eq!(payload.consultation_summary.confidence, 0.66);
-        assert_eq!(payload.consultation_summary.next_test, "approval_waiting");
-        assert_eq!(
-            payload.consultation_summary.risks,
-            vec!["needs reviewer confirmation".to_string()]
-        );
         assert_eq!(payload.consultation_packet.run_id, "task:task-256");
         assert_eq!(payload.consultation_packet.task_id, "task-256");
         assert_eq!(payload.consultation_packet.pane_id, "%2");
@@ -1878,17 +1858,6 @@ mod tests {
                     result["explanation"]["current_state"]["last_event"],
                     "commander.review_requested"
                 );
-                assert_eq!(result["consultation_summary"]["kind"], "consult_result");
-                assert_eq!(result["consultation_summary"]["mode"], "early");
-                assert_eq!(
-                    result["consultation_summary"]["target_slot"],
-                    "slot-review-1"
-                );
-                assert_eq!(result["consultation_summary"]["confidence"], 0.66);
-                assert_eq!(
-                    result["consultation_summary"]["next_test"],
-                    "approval_waiting"
-                );
                 assert_eq!(
                     result["consultation_packet"]["recommendation"],
                     "consult before work"
@@ -1907,6 +1876,7 @@ mod tests {
                 );
                 assert_eq!(result["evidence_digest"]["next_action"], "review_pending");
                 assert_eq!(result["review_state"]["status"], "PENDING");
+                assert!(result.get("consultation_summary").is_none());
                 assert!(result["run"].get("run_packet").is_none());
                 assert!(result.get("run_packet").is_none());
                 assert!(result.get("result_packet").is_none());
@@ -2025,87 +1995,6 @@ mod tests {
 
         assert!(
             err.contains("last_event"),
-            "unexpected explain parse error: {err}"
-        );
-    }
-
-    fn expect_missing_consultation_summary_field(field_name: &str) -> String {
-        let mut response = rust_parity_explain_payload();
-        response["consultation_summary"]
-            .as_object_mut()
-            .expect("consultation_summary must be an object")
-            .remove(field_name);
-
-        let transport = FakeTransport {
-            requests: RefCell::new(Vec::new()),
-            response,
-        };
-
-        match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
-            Ok(_) => panic!(
-                "expected explain payload parse failure for missing consultation_summary field {}",
-                field_name
-            ),
-            Err(err) => err,
-        }
-    }
-
-    #[test]
-    fn load_desktop_run_explain_rejects_missing_consultation_summary_kind() {
-        let err = expect_missing_consultation_summary_field("kind");
-
-        assert!(
-            err.contains("kind"),
-            "unexpected explain parse error: {err}"
-        );
-    }
-
-    #[test]
-    fn load_desktop_run_explain_rejects_missing_consultation_summary_mode() {
-        let err = expect_missing_consultation_summary_field("mode");
-
-        assert!(
-            err.contains("mode"),
-            "unexpected explain parse error: {err}"
-        );
-    }
-
-    #[test]
-    fn load_desktop_run_explain_rejects_missing_consultation_summary_target_slot() {
-        let err = expect_missing_consultation_summary_field("target_slot");
-
-        assert!(
-            err.contains("target_slot"),
-            "unexpected explain parse error: {err}"
-        );
-    }
-
-    #[test]
-    fn load_desktop_run_explain_rejects_missing_consultation_summary_confidence() {
-        let err = expect_missing_consultation_summary_field("confidence");
-
-        assert!(
-            err.contains("confidence"),
-            "unexpected explain parse error: {err}"
-        );
-    }
-
-    #[test]
-    fn load_desktop_run_explain_rejects_missing_consultation_summary_next_test() {
-        let err = expect_missing_consultation_summary_field("next_test");
-
-        assert!(
-            err.contains("next_test"),
-            "unexpected explain parse error: {err}"
-        );
-    }
-
-    #[test]
-    fn load_desktop_run_explain_rejects_missing_consultation_summary_risks() {
-        let err = expect_missing_consultation_summary_field("risks");
-
-        assert!(
-            err.contains("risks"),
             "unexpected explain parse error: {err}"
         );
     }

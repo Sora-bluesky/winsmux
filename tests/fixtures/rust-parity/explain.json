@@ -131,16 +131,6 @@
     "packet_type": "consultation_packet",
     "generated_at": "__GENERATED_AT__"
   },
-  "consultation_summary": {
-    "kind": "consult_result",
-    "mode": "early",
-    "target_slot": "slot-review-1",
-    "confidence": 0.66,
-    "next_test": "approval_waiting",
-    "risks": [
-      "needs reviewer confirmation"
-    ]
-  },
   "evidence_digest": {
     "run_id": "task:task-256",
     "task_id": "task-256",
@@ -288,4 +278,3 @@
     }
   ]
 }
-

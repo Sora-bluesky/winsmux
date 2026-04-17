@@ -279,14 +279,6 @@ export interface DesktopExplainPayload {
     packet_type: string;
     generated_at: string;
   };
-  consultation_summary: {
-    kind: string;
-    mode: string;
-    target_slot: string;
-    confidence: number;
-    next_test: string;
-    risks: string[];
-  };
   evidence_digest: {
     next_action: string;
     changed_file_count: number;

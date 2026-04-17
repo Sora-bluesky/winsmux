@@ -130,7 +130,6 @@ struct RustParityExplainFixture {
     explanation: RustParityExplainExplanation,
     observation_pack: RustParityExplainObservationPack,
     consultation_packet: RustParityExplainConsultationPacket,
-    consultation_summary: RustParityExplainConsultationSummary,
     evidence_digest: RustParityExplainEvidenceDigest,
 }
 
@@ -220,16 +219,6 @@ struct RustParityExplainActionItem {
     event: String,
     timestamp: String,
     source: String,
-}
-
-#[derive(Deserialize)]
-struct RustParityExplainConsultationSummary {
-    kind: String,
-    mode: String,
-    target_slot: String,
-    confidence: f64,
-    next_test: String,
-    risks: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -482,15 +471,6 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(review_pending.event, "commander.review_requested");
     assert_eq!(review_pending.timestamp, "__TIMESTAMP__");
     assert_eq!(review_pending.source, "manifest");
-    assert_eq!(fixture.consultation_summary.kind, "consult_result");
-    assert_eq!(fixture.consultation_summary.mode, "early");
-    assert_eq!(fixture.consultation_summary.target_slot, "slot-review-1");
-    assert_eq!(fixture.consultation_summary.confidence, 0.66);
-    assert_eq!(fixture.consultation_summary.next_test, "approval_waiting");
-    assert_eq!(
-        fixture.consultation_summary.risks,
-        vec!["needs reviewer confirmation".to_string()]
-    );
     assert_eq!(fixture.consultation_packet.run_id, "task:task-256");
     assert_eq!(fixture.consultation_packet.task_id, "task-256");
     assert_eq!(fixture.consultation_packet.pane_id, "%2");

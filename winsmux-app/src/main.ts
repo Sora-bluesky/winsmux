@@ -2006,22 +2006,23 @@ function getConsultationPacket(payload: DesktopExplainPayload): DesktopExplainPa
   );
 }
 
-function getConsultationSummary(payload: DesktopExplainPayload): DesktopExplainPayload["consultation_summary"] {
-  const summary = (
-    payload as DesktopExplainPayload & {
-      consultation_summary?: DesktopExplainPayload["consultation_summary"];
-    }
-  ).consultation_summary;
-  return (
-    summary ?? {
-      kind: "",
-      mode: "",
-      target_slot: "",
-      confidence: 0,
-      next_test: "",
-      risks: [],
-    }
-  );
+function getConsultationSummary(payload: DesktopExplainPayload): {
+  kind: string;
+  mode: string;
+  target_slot: string;
+  confidence: number;
+  next_test: string;
+  risks: string[];
+} {
+  const packet = getConsultationPacket(payload);
+  return {
+    kind: packet.kind,
+    mode: packet.mode,
+    target_slot: packet.target_slot,
+    confidence: packet.confidence,
+    next_test: packet.next_test,
+    risks: packet.risks,
+  };
 }
 
 function getRunProjectionFingerprint(projection: DesktopRunProjection | null | undefined) {
