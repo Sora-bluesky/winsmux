@@ -1351,6 +1351,9 @@ async function openExplainForSelectedRun() {
     if (payload.run.priority) {
       detailItems.push({ label: "priority", value: payload.run.priority });
     }
+    if (payload.run.pane_count > 0) {
+      detailItems.push({ label: "panes", value: `${payload.run.pane_count}` });
+    }
     if (payload.run.primary_label) {
       detailItems.push({ label: "pane", value: payload.run.primary_label });
     }
@@ -1833,7 +1836,11 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.run.primary_role,
     payload.run.last_event,
     payload.run.last_event_at,
+    payload.run.pane_count,
     payload.run.changed_file_count,
+    payload.run.labels.join("|"),
+    payload.run.pane_ids.join("|"),
+    payload.run.roles.join("|"),
     payload.run.write_scope.join("|"),
     payload.run.read_scope.join("|"),
     payload.run.constraints.join("|"),

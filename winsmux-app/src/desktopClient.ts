@@ -194,7 +194,11 @@ export interface DesktopExplainPayload {
     primary_role: string;
     last_event: string;
     last_event_at: string;
+    pane_count: number;
     changed_file_count: number;
+    labels: string[];
+    pane_ids: string[];
+    roles: string[];
     provider_target: string;
     agent_role: string;
     write_scope: string[];

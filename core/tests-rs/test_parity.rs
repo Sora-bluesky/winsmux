@@ -149,7 +149,11 @@ struct RustParityExplainRun {
     primary_pane_id: String,
     primary_role: String,
     last_event: String,
+    pane_count: usize,
     changed_file_count: usize,
+    labels: Vec<String>,
+    pane_ids: Vec<String>,
+    roles: Vec<String>,
     provider_target: String,
     agent_role: String,
     write_scope: Vec<String>,
@@ -296,7 +300,11 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.run.primary_pane_id, "%2");
     assert_eq!(fixture.run.primary_role, "Builder");
     assert_eq!(fixture.run.last_event, "commander.review_requested");
+    assert_eq!(fixture.run.pane_count, 1);
     assert_eq!(fixture.run.changed_file_count, 1);
+    assert_eq!(fixture.run.labels, vec!["builder-1".to_string()]);
+    assert_eq!(fixture.run.pane_ids, vec!["%2".to_string()]);
+    assert_eq!(fixture.run.roles, vec!["Builder".to_string()]);
     assert_eq!(fixture.run.provider_target, "codex:gpt-5.4");
     assert_eq!(fixture.run.agent_role, "worker");
     assert_eq!(

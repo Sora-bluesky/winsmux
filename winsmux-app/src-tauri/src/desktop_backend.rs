@@ -216,7 +216,11 @@ pub struct DesktopExplainRun {
     pub primary_role: String,
     pub last_event: String,
     pub last_event_at: String,
+    pub pane_count: usize,
     pub changed_file_count: usize,
+    pub labels: Vec<String>,
+    pub pane_ids: Vec<String>,
+    pub roles: Vec<String>,
     pub provider_target: String,
     pub agent_role: String,
     pub write_scope: Vec<String>,
@@ -1554,7 +1558,11 @@ mod tests {
         assert_eq!(payload.run.primary_role, "Builder");
         assert_eq!(payload.run.last_event, "commander.review_requested");
         assert_eq!(payload.run.last_event_at, "__LAST_EVENT_AT__");
+        assert_eq!(payload.run.pane_count, 1);
         assert_eq!(payload.run.changed_file_count, 1);
+        assert_eq!(payload.run.labels, vec!["builder-1".to_string()]);
+        assert_eq!(payload.run.pane_ids, vec!["%2".to_string()]);
+        assert_eq!(payload.run.roles, vec!["Builder".to_string()]);
         assert_eq!(payload.run.provider_target, "codex:gpt-5.4");
         assert_eq!(payload.run.agent_role, "worker");
         assert_eq!(
@@ -1660,6 +1668,10 @@ mod tests {
                 assert_eq!(result["run"]["primary_label"], "builder-1");
                 assert_eq!(result["run"]["primary_pane_id"], "%2");
                 assert_eq!(result["run"]["last_event"], "commander.review_requested");
+                assert_eq!(result["run"]["pane_count"], 1);
+                assert_eq!(result["run"]["labels"][0], "builder-1");
+                assert_eq!(result["run"]["pane_ids"][0], "%2");
+                assert_eq!(result["run"]["roles"][0], "Builder");
                 assert_eq!(result["run"]["action_items"][0]["kind"], "review_pending");
                 assert_eq!(result["run"]["action_items"][0]["source"], "manifest");
                 assert_eq!(result["run"]["provider_target"], "codex:gpt-5.4");
@@ -1812,6 +1824,46 @@ mod tests {
 
         assert!(
             err.contains("changed_file_count"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_pane_count() {
+        let err = expect_missing_explain_run_field("pane_count");
+
+        assert!(
+            err.contains("pane_count"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_labels() {
+        let err = expect_missing_explain_run_field("labels");
+
+        assert!(
+            err.contains("labels"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_pane_ids() {
+        let err = expect_missing_explain_run_field("pane_ids");
+
+        assert!(
+            err.contains("pane_ids"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_roles() {
+        let err = expect_missing_explain_run_field("roles");
+
+        assert!(
+            err.contains("roles"),
             "unexpected explain parse error: {err}"
         );
     }
