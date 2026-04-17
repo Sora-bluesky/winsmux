@@ -194,6 +194,7 @@ export interface DesktopExplainPayload {
     primary_role: string;
     last_event: string;
     last_event_at: string;
+    tokens_remaining: string;
     pane_count: number;
     changed_file_count: number;
     labels: string[];

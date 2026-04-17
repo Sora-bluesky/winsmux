@@ -1354,6 +1354,9 @@ async function openExplainForSelectedRun() {
     if (payload.run.pane_count > 0) {
       detailItems.push({ label: "panes", value: `${payload.run.pane_count}` });
     }
+    if (payload.run.tokens_remaining) {
+      detailItems.push({ label: "context", value: payload.run.tokens_remaining });
+    }
     if (payload.run.primary_label) {
       detailItems.push({ label: "pane", value: payload.run.primary_label });
     }
@@ -1836,6 +1839,7 @@ function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | un
     payload.run.primary_role,
     payload.run.last_event,
     payload.run.last_event_at,
+    payload.run.tokens_remaining,
     payload.run.pane_count,
     payload.run.changed_file_count,
     payload.run.labels.join("|"),

@@ -216,6 +216,7 @@ pub struct DesktopExplainRun {
     pub primary_role: String,
     pub last_event: String,
     pub last_event_at: String,
+    pub tokens_remaining: String,
     pub pane_count: usize,
     pub changed_file_count: usize,
     pub labels: Vec<String>,
@@ -1558,6 +1559,7 @@ mod tests {
         assert_eq!(payload.run.primary_role, "Builder");
         assert_eq!(payload.run.last_event, "commander.review_requested");
         assert_eq!(payload.run.last_event_at, "__LAST_EVENT_AT__");
+        assert_eq!(payload.run.tokens_remaining, "64% context left");
         assert_eq!(payload.run.pane_count, 1);
         assert_eq!(payload.run.changed_file_count, 1);
         assert_eq!(payload.run.labels, vec!["builder-1".to_string()]);
@@ -1668,6 +1670,7 @@ mod tests {
                 assert_eq!(result["run"]["primary_label"], "builder-1");
                 assert_eq!(result["run"]["primary_pane_id"], "%2");
                 assert_eq!(result["run"]["last_event"], "commander.review_requested");
+                assert_eq!(result["run"]["tokens_remaining"], "64% context left");
                 assert_eq!(result["run"]["pane_count"], 1);
                 assert_eq!(result["run"]["labels"][0], "builder-1");
                 assert_eq!(result["run"]["pane_ids"][0], "%2");
@@ -1834,6 +1837,16 @@ mod tests {
 
         assert!(
             err.contains("pane_count"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_missing_run_tokens_remaining() {
+        let err = expect_missing_explain_run_field("tokens_remaining");
+
+        assert!(
+            err.contains("tokens_remaining"),
             "unexpected explain parse error: {err}"
         );
     }

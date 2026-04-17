@@ -149,6 +149,7 @@ struct RustParityExplainRun {
     primary_pane_id: String,
     primary_role: String,
     last_event: String,
+    tokens_remaining: String,
     pane_count: usize,
     changed_file_count: usize,
     labels: Vec<String>,
@@ -300,6 +301,7 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.run.primary_pane_id, "%2");
     assert_eq!(fixture.run.primary_role, "Builder");
     assert_eq!(fixture.run.last_event, "commander.review_requested");
+    assert_eq!(fixture.run.tokens_remaining, "64% context left");
     assert_eq!(fixture.run.pane_count, 1);
     assert_eq!(fixture.run.changed_file_count, 1);
     assert_eq!(fixture.run.labels, vec!["builder-1".to_string()]);
