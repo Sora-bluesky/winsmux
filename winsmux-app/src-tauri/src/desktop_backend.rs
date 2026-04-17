@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -25,6 +26,9 @@ pub struct DesktopBoardSummary {
     pub review_passed: usize,
     pub tasks_in_progress: usize,
     pub tasks_blocked: usize,
+    pub by_state: HashMap<String, usize>,
+    pub by_review: HashMap<String, usize>,
+    pub by_task_state: HashMap<String, usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -36,6 +40,7 @@ pub struct DesktopBoardSnapshot {
 #[derive(Serialize, Deserialize)]
 pub struct DesktopInboxSummary {
     pub item_count: usize,
+    pub by_kind: HashMap<String, usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -955,10 +960,15 @@ mod tests {
         assert_eq!(snapshot.project_dir, "__PROJECT_DIR__");
         assert_eq!(snapshot.board.summary.pane_count, 2);
         assert_eq!(snapshot.board.summary.tasks_blocked, 0);
+        assert_eq!(snapshot.board.summary.by_state["idle"], 1);
+        assert_eq!(snapshot.board.summary.by_review["PENDING"], 1);
+        assert_eq!(snapshot.board.summary.by_task_state["backlog"], 1);
         assert_eq!(snapshot.board.panes[0].pane_id, "%2");
         assert_eq!(snapshot.board.panes[0].worktree, ".worktrees/builder-1");
         assert_eq!(snapshot.board.panes[0].last_event_at, "__LAST_EVENT_AT__");
         assert_eq!(snapshot.inbox.summary.item_count, 4);
+        assert_eq!(snapshot.inbox.summary.by_kind["review_pending"], 1);
+        assert_eq!(snapshot.inbox.summary.by_kind["commit_ready"], 1);
         assert_eq!(snapshot.inbox.items[0].pane_id, "%6");
         assert_eq!(snapshot.digest.summary.actionable_items, 1);
         assert_eq!(snapshot.digest.summary.dirty_items, 1);
@@ -1082,6 +1092,102 @@ mod tests {
         assert!(
             err.contains("worktree"),
             "expected missing board pane worktree error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_board_summary_by_state() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["board"]["summary"]
+            .as_object_mut()
+            .expect("board.summary must be an object")
+            .remove("by_state");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing by_state"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("by_state"),
+            "expected missing by_state error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_board_summary_by_review() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["board"]["summary"]
+            .as_object_mut()
+            .expect("board.summary must be an object")
+            .remove("by_review");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing by_review"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("by_review"),
+            "expected missing by_review error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_board_summary_by_task_state() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["board"]["summary"]
+            .as_object_mut()
+            .expect("board.summary must be an object")
+            .remove("by_task_state");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing by_task_state"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("by_task_state"),
+            "expected missing by_task_state error, got {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_summary_snapshot_rejects_missing_inbox_summary_by_kind() {
+        let mut response = rust_parity_summary_snapshot_payload();
+        response["inbox"]["summary"]
+            .as_object_mut()
+            .expect("inbox.summary must be an object")
+            .remove("by_kind");
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_summary_snapshot(&transport, None) {
+            Ok(_) => panic!("expected summary snapshot parse failure for missing by_kind"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("by_kind"),
+            "expected missing by_kind error, got {err}"
         );
     }
 
@@ -1644,8 +1750,11 @@ mod tests {
                 assert_eq!(id, serde_json::json!("req-1"));
                 assert_eq!(result["project_dir"], "__PROJECT_DIR__");
                 assert_eq!(result["board"]["summary"]["tasks_blocked"], 0);
+                assert_eq!(result["board"]["summary"]["by_state"]["busy"], 1);
+                assert_eq!(result["board"]["summary"]["by_review"]["unknown"], 1);
                 assert_eq!(result["digest"]["summary"]["actionable_items"], 1);
                 assert_eq!(result["digest"]["summary"]["dirty_items"], 1);
+                assert_eq!(result["inbox"]["summary"]["by_kind"]["approval_waiting"], 1);
                 assert_eq!(result["inbox"]["items"][0]["pane_id"], "%6");
                 assert_eq!(result["board"]["panes"][0]["pane_id"], "%2");
                 assert_eq!(result["digest"]["items"][0]["run_id"], "task:task-246");

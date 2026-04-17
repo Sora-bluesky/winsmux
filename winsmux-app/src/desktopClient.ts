@@ -49,6 +49,9 @@ export interface DesktopBoardSummary {
   review_passed: number;
   tasks_in_progress: number;
   tasks_blocked: number;
+  by_state: Record<string, number>;
+  by_review: Record<string, number>;
+  by_task_state: Record<string, number>;
 }
 
 export interface DesktopBoardPane {
@@ -68,6 +71,7 @@ export interface DesktopBoardPane {
 
 export interface DesktopInboxSummary {
   item_count: number;
+  by_kind: Record<string, number>;
 }
 
 export interface DesktopInboxItem {
