@@ -2289,20 +2289,20 @@ function buildDesktopFollowConversation(
         ? `Hypothesis: ${experimentSummary} · Next ${projection.next_action || "idle"} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`
         : `Run: Next ${projection.next_action || "idle"} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`,
       details: [
-        { label: "run", value: runId },
-        { label: "next", value: projection.next_action || "idle" },
-        { label: "branch", value: projection.branch || "no branch" },
-        { label: "head", value: projection.head_short || "n/a" },
-        { label: "verify", value: projection.verification_outcome || "n/a" },
+        ...(projection.consultation_ref
+          ? [{ label: "consultation", value: summarizeArtifactRef(projection.consultation_ref) }]
+          : []),
         ...(projection.hypothesis
           ? [{ label: "hypothesis", value: projection.hypothesis }]
           : []),
         ...(projection.confidence !== null
           ? [{ label: "confidence", value: formatConfidencePercent(projection.confidence) }]
           : []),
-        ...(projection.consultation_ref
-          ? [{ label: "consultation", value: summarizeArtifactRef(projection.consultation_ref) }]
-          : []),
+        { label: "run", value: runId },
+        { label: "next", value: projection.next_action || "idle" },
+        { label: "branch", value: projection.branch || "no branch" },
+        { label: "head", value: projection.head_short || "n/a" },
+        { label: "verify", value: projection.verification_outcome || "n/a" },
       ],
       tone,
       runId,
