@@ -2312,7 +2312,9 @@ function buildDesktopFollowConversation(
       details: [
         { label: "branch", value: projection.branch || "no branch" },
         { label: "review", value: projection.review_state || "n/a" },
-        { label: "next", value: projection.next_action || "idle" },
+        ...((consultationSummary || experimentSummary)
+          ? [{ label: "next", value: projection.next_action || "idle" }]
+          : []),
         ...(!(consultationSummary || experimentSummary) || projection.changed_files.length === 0
           ? [{ label: "changed", value: `${projection.changed_files.length}` }]
           : []),
