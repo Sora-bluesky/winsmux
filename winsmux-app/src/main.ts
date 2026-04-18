@@ -2319,9 +2319,16 @@ function buildDesktopFollowConversation(
         ...(projection.confidence !== null
           ? [{ label: "confidence", value: formatConfidencePercent(projection.confidence) }]
           : []),
-        { label: "changed", value: `${projection.changed_files.length}` },
+        ...(!(consultationSummary || experimentSummary) || projection.changed_files.length === 0
+          ? [{ label: "changed", value: `${projection.changed_files.length}` }]
+          : []),
         ...((consultationSummary || experimentSummary) && projection.changed_files.length > 0
-          ? [{ label: "files", value: summarizeChangedFiles(projection.changed_files) }]
+          ? [
+              {
+                label: "files",
+                value: `${projection.changed_files.length}: ${summarizeChangedFiles(projection.changed_files)}`,
+              },
+            ]
           : []),
         { label: "head", value: projection.head_short || "n/a" },
         { label: "verify", value: projection.verification_outcome || "n/a" },
