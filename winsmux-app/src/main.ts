@@ -2317,7 +2317,7 @@ function buildDesktopFollowConversation(
         ...((consultationSummary || experimentSummary)
           ? [{ label: "next", value: projection.next_action || "idle" }]
           : []),
-        ...(!(consultationSummary || experimentSummary) || projection.changed_files.length === 0
+        ...(!(consultationSummary || experimentSummary) && projection.changed_files.length > 0
           ? [{ label: "changed", value: `${projection.changed_files.length}` }]
           : []),
         ...((consultationSummary || experimentSummary) && projection.changed_files.length > 0
