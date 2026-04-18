@@ -2245,16 +2245,20 @@ function buildDesktopFollowConversation(
   ]
     .map((runId, index) => {
       const projection = nextProjectionMap.get(runId);
+      const selectedRank = runId === selected ? 0 : 1;
       const signalRank = projection?.consultation_ref ? 0 : projection?.hypothesis ? 1 : 2;
-      const sourceRank = runId === selected ? 0 : diff.changedRunIds.includes(runId) ? 1 : 2;
-      return { runId, index, signalRank, sourceRank };
+      const sourceRank = diff.changedRunIds.includes(runId) ? 0 : 1;
+      return { runId, index, selectedRank, signalRank, sourceRank };
     })
     .sort((left, right) => {
-      if (left.sourceRank !== right.sourceRank) {
-        return left.sourceRank - right.sourceRank;
+      if (left.selectedRank !== right.selectedRank) {
+        return left.selectedRank - right.selectedRank;
       }
       if (left.signalRank !== right.signalRank) {
         return left.signalRank - right.signalRank;
+      }
+      if (left.sourceRank !== right.sourceRank) {
+        return left.sourceRank - right.sourceRank;
       }
       return left.index - right.index;
     })
