@@ -2284,10 +2284,10 @@ function buildDesktopFollowConversation(
       actor: projection.label || projection.pane_id || "System",
       title,
       body: consultationSummary
-        ? `${consultationSummary} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`
+        ? `Consultation: ${consultationSummary} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`
         : experimentSummary
-        ? `${experimentSummary} · Next ${projection.next_action || "idle"} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`
-        : `Next ${projection.next_action || "idle"} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`,
+        ? `Hypothesis: ${experimentSummary} · Next ${projection.next_action || "idle"} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`
+        : `Run: Next ${projection.next_action || "idle"} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`,
       details: [
         { label: "run", value: runId },
         { label: "next", value: projection.next_action || "idle" },
