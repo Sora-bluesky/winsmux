@@ -2310,7 +2310,9 @@ function buildDesktopFollowConversation(
         ? `Hypothesis: ${experimentSummary}`
         : `Run: ${projection.next_action || "idle"}`,
       details: [
-        { label: "branch", value: projection.branch || "no branch" },
+        ...((consultationSummary || experimentSummary)
+          ? [{ label: "branch", value: projection.branch || "no branch" }]
+          : []),
         ...((consultationSummary || experimentSummary) || projection.review_state
           ? [{ label: "review", value: projection.review_state || "n/a" }]
           : []),
@@ -2331,6 +2333,9 @@ function buildDesktopFollowConversation(
         ...(projection.head_short ? [{ label: "head", value: projection.head_short }] : []),
         ...(projection.verification_outcome
           ? [{ label: "verify", value: projection.verification_outcome }]
+          : []),
+        ...(!(consultationSummary || experimentSummary)
+          ? [{ label: "branch", value: projection.branch || "no branch" }]
           : []),
         ...(projection.consultation_ref
           ? [{ label: "consultation", value: summarizeArtifactRef(projection.consultation_ref) }]
