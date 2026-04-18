@@ -2306,6 +2306,10 @@ function buildDesktopFollowConversation(
         ? `Hypothesis: ${experimentSummary}`
         : `Run: ${projection.next_action || "idle"}`,
       details: [
+        { label: "run", value: runId },
+        { label: "branch", value: projection.branch || "no branch" },
+        { label: "review", value: projection.review_state || "n/a" },
+        { label: "next", value: projection.next_action || "idle" },
         ...(projection.consultation_ref
           ? [{ label: "consultation", value: summarizeArtifactRef(projection.consultation_ref) }]
           : []),
@@ -2315,14 +2319,10 @@ function buildDesktopFollowConversation(
         ...(projection.confidence !== null
           ? [{ label: "confidence", value: formatConfidencePercent(projection.confidence) }]
           : []),
-        { label: "run", value: runId },
-        { label: "next", value: projection.next_action || "idle" },
         { label: "changed", value: `${projection.changed_files.length}` },
         ...((consultationSummary || experimentSummary) && projection.changed_files.length > 0
           ? [{ label: "files", value: summarizeChangedFiles(projection.changed_files) }]
           : []),
-        { label: "review", value: projection.review_state || "n/a" },
-        { label: "branch", value: projection.branch || "no branch" },
         { label: "head", value: projection.head_short || "n/a" },
         { label: "verify", value: projection.verification_outcome || "n/a" },
       ],
