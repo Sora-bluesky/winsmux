@@ -2306,7 +2306,6 @@ function buildDesktopFollowConversation(
         ? `Hypothesis: ${experimentSummary}`
         : `Run: ${projection.next_action || "idle"}`,
       details: [
-        { label: "run", value: runId },
         { label: "branch", value: projection.branch || "no branch" },
         { label: "review", value: projection.review_state || "n/a" },
         { label: "next", value: projection.next_action || "idle" },
