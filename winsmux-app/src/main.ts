@@ -2330,8 +2330,10 @@ function buildDesktopFollowConversation(
               },
             ]
           : []),
-        { label: "head", value: projection.head_short || "n/a" },
-        { label: "verify", value: projection.verification_outcome || "n/a" },
+        ...(projection.head_short ? [{ label: "head", value: projection.head_short }] : []),
+        ...(projection.verification_outcome
+          ? [{ label: "verify", value: projection.verification_outcome }]
+          : []),
       ],
       tone,
       runId,
@@ -2354,7 +2356,7 @@ function buildDesktopFollowConversation(
       body: `Run ${runId} dropped out of the desktop summary snapshot.`,
       details: [
         { label: "branch", value: previousProjection.branch || "no branch" },
-        { label: "head", value: previousProjection.head_short || "n/a" },
+        ...(previousProjection.head_short ? [{ label: "head", value: previousProjection.head_short }] : []),
       ],
       tone: "warning",
       runId,
