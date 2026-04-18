@@ -2311,7 +2311,9 @@ function buildDesktopFollowConversation(
         : `Run: ${projection.next_action || "idle"}`,
       details: [
         { label: "branch", value: projection.branch || "no branch" },
-        { label: "review", value: projection.review_state || "n/a" },
+        ...((consultationSummary || experimentSummary) || projection.review_state
+          ? [{ label: "review", value: projection.review_state || "n/a" }]
+          : []),
         ...((consultationSummary || experimentSummary)
           ? [{ label: "next", value: projection.next_action || "idle" }]
           : []),
