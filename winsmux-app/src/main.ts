@@ -2334,9 +2334,6 @@ function buildDesktopFollowConversation(
         ...(projection.hypothesis
           ? [{ label: "hypothesis", value: projection.hypothesis }]
           : []),
-        ...(projection.confidence !== null
-          ? [{ label: "confidence", value: formatConfidencePercent(projection.confidence) }]
-          : []),
       ],
       tone,
       runId,
