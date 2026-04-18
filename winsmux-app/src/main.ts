@@ -2309,15 +2309,6 @@ function buildDesktopFollowConversation(
         { label: "branch", value: projection.branch || "no branch" },
         { label: "review", value: projection.review_state || "n/a" },
         { label: "next", value: projection.next_action || "idle" },
-        ...(projection.consultation_ref
-          ? [{ label: "consultation", value: summarizeArtifactRef(projection.consultation_ref) }]
-          : []),
-        ...(projection.hypothesis
-          ? [{ label: "hypothesis", value: projection.hypothesis }]
-          : []),
-        ...(projection.confidence !== null
-          ? [{ label: "confidence", value: formatConfidencePercent(projection.confidence) }]
-          : []),
         ...(!(consultationSummary || experimentSummary) || projection.changed_files.length === 0
           ? [{ label: "changed", value: `${projection.changed_files.length}` }]
           : []),
@@ -2332,6 +2323,15 @@ function buildDesktopFollowConversation(
         ...(projection.head_short ? [{ label: "head", value: projection.head_short }] : []),
         ...(projection.verification_outcome
           ? [{ label: "verify", value: projection.verification_outcome }]
+          : []),
+        ...(projection.consultation_ref
+          ? [{ label: "consultation", value: summarizeArtifactRef(projection.consultation_ref) }]
+          : []),
+        ...(projection.hypothesis
+          ? [{ label: "hypothesis", value: projection.hypothesis }]
+          : []),
+        ...(projection.confidence !== null
+          ? [{ label: "confidence", value: formatConfidencePercent(projection.confidence) }]
           : []),
       ],
       tone,
