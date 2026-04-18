@@ -2284,10 +2284,10 @@ function buildDesktopFollowConversation(
       actor: projection.label || projection.pane_id || "System",
       title,
       body: consultationSummary
-        ? `Consultation: ${consultationSummary} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`
+        ? `Consultation: ${consultationSummary}`
         : experimentSummary
-        ? `Hypothesis: ${experimentSummary} · Next ${projection.next_action || "idle"} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`
-        : `Run: Next ${projection.next_action || "idle"} · ${projection.changed_files.length} changed files · review ${projection.review_state || "n/a"}.`,
+        ? `Hypothesis: ${experimentSummary}`
+        : `Run: ${projection.next_action || "idle"}`,
       details: [
         ...(projection.consultation_ref
           ? [{ label: "consultation", value: summarizeArtifactRef(projection.consultation_ref) }]
@@ -2300,6 +2300,8 @@ function buildDesktopFollowConversation(
           : []),
         { label: "run", value: runId },
         { label: "next", value: projection.next_action || "idle" },
+        { label: "changed", value: `${projection.changed_files.length}` },
+        { label: "review", value: projection.review_state || "n/a" },
         { label: "branch", value: projection.branch || "no branch" },
         { label: "head", value: projection.head_short || "n/a" },
         { label: "verify", value: projection.verification_outcome || "n/a" },
