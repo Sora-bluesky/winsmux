@@ -2095,6 +2095,47 @@ function summarizeReviewVerdict(payload: DesktopExplainPayload) {
   return parts.join(" ");
 }
 
+function summarizeProjectionExperiment(projection: DesktopRunProjection) {
+  if (!projection.hypothesis) {
+    return "";
+  }
+
+  const parts = [`Hypothesis ${projection.hypothesis}`];
+  if (projection.confidence !== null) {
+    parts.push(`confidence ${formatConfidencePercent(projection.confidence)}`);
+  }
+
+  return parts.join(" · ");
+}
+
+function summarizeProjectionConsultation(projection: DesktopRunProjection) {
+  if (!projection.consultation_ref) {
+    return "";
+  }
+
+  const parts = [summarizeProjectionExperiment(projection) || "Consultation linked"];
+  parts.push(`Next ${projection.next_action || "idle"}`);
+  const reasons = projection.reasons.filter((value) => Boolean(value)).slice(0, 2);
+  if (reasons.length > 0) {
+    parts.push(`Reasons ${reasons.join(" | ")}`);
+  }
+
+  return parts.join(" · ");
+}
+
+function formatConfidencePercent(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function summarizeArtifactRef(path: string) {
+  if (!path) {
+    return "";
+  }
+
+  const parts = path.split(/[\\/]/).filter((value) => Boolean(value));
+  return parts[parts.length - 1] || path;
+}
+
 function getRunProjectionFingerprint(projection: DesktopRunProjection | null | undefined) {
   if (!projection) {
     return "";
@@ -2111,6 +2152,8 @@ function getRunProjectionFingerprint(projection: DesktopRunProjection | null | u
     projection.branch,
     projection.provider_target,
     projection.changed_files.join("|"),
+    projection.hypothesis,
+    projection.confidence,
   ]);
 }
 
@@ -2199,7 +2242,28 @@ function buildDesktopFollowConversation(
     ...diff.addedRunIds.filter((runId) => runId === selected),
     ...diff.changedRunIds.filter((runId) => runId !== selected),
     ...diff.addedRunIds.filter((runId) => runId !== selected),
-  ].slice(0, 3);
+  ]
+    .map((runId, index) => {
+      const projection = nextProjectionMap.get(runId);
+      const selectedRank = runId === selected ? 0 : 1;
+      const signalRank = projection?.consultation_ref ? 0 : projection?.hypothesis ? 1 : 2;
+      const sourceRank = diff.changedRunIds.includes(runId) ? 0 : 1;
+      return { runId, index, selectedRank, signalRank, sourceRank };
+    })
+    .sort((left, right) => {
+      if (left.selectedRank !== right.selectedRank) {
+        return left.selectedRank - right.selectedRank;
+      }
+      if (left.signalRank !== right.signalRank) {
+        return left.signalRank - right.signalRank;
+      }
+      if (left.sourceRank !== right.sourceRank) {
+        return left.sourceRank - right.sourceRank;
+      }
+      return left.index - right.index;
+    })
+    .map((item) => item.runId)
+    .slice(0, 3);
 
   const items: ConversationItem[] = [];
   for (const runId of prioritizedChangedRunIds) {
@@ -2207,6 +2271,27 @@ function buildDesktopFollowConversation(
     if (!projection) {
       continue;
     }
+    const experimentSummary = summarizeProjectionExperiment(projection);
+    const consultationSummary = summarizeProjectionConsultation(projection);
+    const tone: SurfaceTone = consultationSummary
+      ? "focus"
+      : experimentSummary
+        ? "accent"
+        : projection.review_state === "PASS"
+          ? "success"
+          : projection.review_state === "PENDING"
+            ? "warning"
+            : "info";
+    const statusLabel = consultationSummary
+      ? "consultation"
+      : experimentSummary
+        ? "hypothesis"
+        : projection.next_action || undefined;
+    const title = consultationSummary
+      ? (diff.addedRunIds.includes(runId) ? "Consultation surfaced" : "Consultation updated")
+      : experimentSummary
+      ? (diff.addedRunIds.includes(runId) ? "Hypothesis surfaced" : "Hypothesis updated")
+      : (diff.addedRunIds.includes(runId) ? "Run surfaced" : "Run updated");
 
     items.push({
       type: "system",
@@ -2218,25 +2303,50 @@ function buildDesktopFollowConversation(
           : "activity",
       timestamp,
       actor: projection.label || projection.pane_id || "System",
-      title: diff.addedRunIds.includes(runId) ? "Run surfaced" : "Run updated",
-      body:
-        `Next ${projection.next_action || "idle"} · ` +
-        `${projection.changed_files.length} changed files · ` +
-        `review ${projection.review_state || "n/a"}.`,
+      title,
+      body: consultationSummary
+        ? `Consultation: ${consultationSummary}`
+        : experimentSummary
+        ? `Hypothesis: ${experimentSummary}`
+        : `Run: ${projection.next_action || "idle"}`,
       details: [
-        { label: "run", value: runId },
-        { label: "branch", value: projection.branch || "no branch" },
-        { label: "head", value: projection.head_short || "n/a" },
-        { label: "verify", value: projection.verification_outcome || "n/a" },
+        ...((consultationSummary || experimentSummary)
+          ? [{ label: "branch", value: projection.branch || "no branch" }]
+          : []),
+        ...((consultationSummary || experimentSummary) || projection.review_state
+          ? [{ label: "review", value: projection.review_state || "n/a" }]
+          : []),
+        ...((consultationSummary || experimentSummary)
+          ? [{ label: "next", value: projection.next_action || "idle" }]
+          : []),
+        ...(!(consultationSummary || experimentSummary) && projection.changed_files.length > 0
+          ? [{ label: "changed", value: `${projection.changed_files.length}` }]
+          : []),
+        ...((consultationSummary || experimentSummary) && projection.changed_files.length > 0
+          ? [
+              {
+                label: "files",
+                value: `${projection.changed_files.length}: ${summarizeChangedFiles(projection.changed_files)}`,
+              },
+            ]
+          : []),
+        ...(projection.head_short ? [{ label: "head", value: projection.head_short }] : []),
+        ...(projection.verification_outcome
+          ? [{ label: "verify", value: projection.verification_outcome }]
+          : []),
+        ...(!(consultationSummary || experimentSummary)
+          ? [{ label: "branch", value: projection.branch || "no branch" }]
+          : []),
+        ...(projection.consultation_ref
+          ? [{ label: "consultation", value: summarizeArtifactRef(projection.consultation_ref) }]
+          : []),
+        ...(projection.hypothesis
+          ? [{ label: "hypothesis", value: projection.hypothesis }]
+          : []),
       ],
-      tone:
-        projection.review_state === "PASS"
-          ? "success"
-          : projection.review_state === "PENDING"
-            ? "warning"
-            : "info",
+      tone,
       runId,
-      statusLabel: projection.next_action || projection.review_state || undefined,
+      statusLabel,
     });
   }
 
@@ -2255,7 +2365,7 @@ function buildDesktopFollowConversation(
       body: `Run ${runId} dropped out of the desktop summary snapshot.`,
       details: [
         { label: "branch", value: previousProjection.branch || "no branch" },
-        { label: "head", value: previousProjection.head_short || "n/a" },
+        ...(previousProjection.head_short ? [{ label: "head", value: previousProjection.head_short }] : []),
       ],
       tone: "warning",
       runId,
