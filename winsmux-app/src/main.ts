@@ -2242,7 +2242,24 @@ function buildDesktopFollowConversation(
     ...diff.addedRunIds.filter((runId) => runId === selected),
     ...diff.changedRunIds.filter((runId) => runId !== selected),
     ...diff.addedRunIds.filter((runId) => runId !== selected),
-  ].slice(0, 3);
+  ]
+    .map((runId, index) => {
+      const projection = nextProjectionMap.get(runId);
+      const signalRank = projection?.consultation_ref ? 0 : projection?.hypothesis ? 1 : 2;
+      const sourceRank = runId === selected ? 0 : diff.changedRunIds.includes(runId) ? 1 : 2;
+      return { runId, index, signalRank, sourceRank };
+    })
+    .sort((left, right) => {
+      if (left.sourceRank !== right.sourceRank) {
+        return left.sourceRank - right.sourceRank;
+      }
+      if (left.signalRank !== right.signalRank) {
+        return left.signalRank - right.signalRank;
+      }
+      return left.index - right.index;
+    })
+    .map((item) => item.runId)
+    .slice(0, 3);
 
   const items: ConversationItem[] = [];
   for (const runId of prioritizedChangedRunIds) {
