@@ -2286,7 +2286,7 @@ function buildDesktopFollowConversation(
       ? "consultation"
       : experimentSummary
         ? "hypothesis"
-        : projection.next_action || projection.review_state || undefined;
+        : projection.next_action || undefined;
     const title = consultationSummary
       ? (diff.addedRunIds.includes(runId) ? "Consultation surfaced" : "Consultation updated")
       : experimentSummary
