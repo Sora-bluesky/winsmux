@@ -2640,6 +2640,7 @@ function getRunProjectionFingerprint(projection: DesktopRunProjection | null | u
   }
 
   return JSON.stringify([
+    projection.label,
     projection.head_sha,
     projection.head_short,
     projection.worktree,
