@@ -1544,7 +1544,8 @@ textarea {
     align-items: flex-start;
   }
 
-  #source-overview-cards {
+  #source-overview-cards,
+  #experiment-overview-cards {
     grid-template-columns: minmax(0, 1fr);
   }
 
