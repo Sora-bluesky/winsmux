@@ -766,6 +766,141 @@ function getSelectedRunId() {
   return resolveSelectedRunId();
 }
 
+function renderExperimentContext() {
+  const overviewRoot = document.getElementById("experiment-overview-cards");
+  const detailRoot = document.getElementById("experiment-detail-list");
+  if (!overviewRoot || !detailRoot) {
+    return;
+  }
+
+  overviewRoot.innerHTML = "";
+  detailRoot.innerHTML = "";
+
+  const selectedProjection = getPrimaryRunProjection();
+  if (!selectedProjection) {
+    const empty = document.createElement("div");
+    empty.className = "experiment-detail-card";
+    empty.dataset.tone = "info";
+    empty.innerHTML =
+      `<div class="experiment-detail-title">No experiment run</div>` +
+      `<div class="experiment-detail-body">Select a run to inspect observation, compare, and playbook context.</div>`;
+    detailRoot.appendChild(empty);
+    return;
+  }
+
+  const payload = desktopExplainCache.get(selectedProjection.run_id) ?? null;
+  if (!payload) {
+    const empty = document.createElement("div");
+    empty.className = "experiment-detail-card";
+    empty.dataset.tone = "info";
+    empty.innerHTML =
+      `<div class="experiment-detail-title">Explain not loaded</div>` +
+      `<div class="experiment-detail-body">Open Explain to load experiment context for the selected run.</div>`;
+    detailRoot.appendChild(empty);
+    return;
+  }
+
+  const observationPack = getObservationPack(payload);
+  const consultationPacket = getConsultationPacket(payload);
+  const consultationSummary = getConsultationSummary(payload);
+  const experimentPacket = payload.run.experiment_packet;
+  const compareBody = [
+    payload.run.run_id,
+    payload.run.branch || "no branch",
+    payload.evidence_digest.verification_outcome || payload.run.review_state || "pending",
+  ]
+    .filter((value) => Boolean(value))
+    .join(" · ");
+
+  const overviewCards = [
+    {
+      label: "Hypothesis",
+      value: experimentPacket.hypothesis || selectedProjection.hypothesis || "No hypothesis",
+    },
+    {
+      label: "Observe",
+      value: observationPack.changed_files.length > 0
+        ? `${observationPack.changed_files.length} files`
+        : (observationPack.working_tree_summary || "No observation pack"),
+    },
+    {
+      label: "Consult",
+      value: consultationSummary.next_test || consultationPacket.recommendation || "No consult",
+    },
+    {
+      label: "Candidate",
+      value: experimentPacket.next_action || payload.explanation.next_action || "No candidate",
+    },
+  ];
+
+  for (const item of overviewCards) {
+    const card = document.createElement("div");
+    card.className = "source-overview-card";
+    card.innerHTML = `<div class="context-label">${item.label}</div><div class="source-overview-value">${item.value}</div>`;
+    overviewRoot.appendChild(card);
+  }
+
+  const experimentCards = [
+    {
+      title: "Observation Pack",
+      body:
+        observationPack.working_tree_summary ||
+        observationPack.failing_command ||
+        "Observation details will appear after the selected run emits an observation pack.",
+      tone: "focus" as SurfaceTone,
+      details: [
+        { label: "files", value: `${observationPack.changed_files.length}` },
+        { label: "test", value: observationPack.test_plan[0] || "n/a" },
+        { label: "slot", value: observationPack.slot || "n/a" },
+      ],
+    },
+    {
+      title: "Compare",
+      body: compareBody || "Compare input will appear after the selected run resolves branch and verification state.",
+      tone: "info" as SurfaceTone,
+      details: [
+        { label: "changed", value: `${payload.evidence_digest.changed_file_count}` },
+        { label: "verify", value: payload.evidence_digest.verification_outcome || "n/a" },
+        { label: "review", value: payload.run.review_state || "n/a" },
+      ],
+    },
+    {
+      title: "Playbook Candidate",
+      body:
+        consultationPacket.recommendation ||
+        experimentPacket.result ||
+        experimentPacket.next_action ||
+        "No playbook candidate is ready yet.",
+      tone: "success" as SurfaceTone,
+      details: [
+        { label: "next", value: experimentPacket.next_action || "n/a" },
+        { label: "consult", value: consultationSummary.next_test || "n/a" },
+        { label: "confidence", value: formatConfidencePercent(experimentPacket.confidence || 0) },
+      ],
+    },
+  ];
+
+  for (const item of experimentCards) {
+    const card = document.createElement("div");
+    card.className = "experiment-detail-card";
+    card.dataset.tone = item.tone;
+    card.innerHTML =
+      `<div class="experiment-detail-title">${item.title}</div>` +
+      `<div class="experiment-detail-body">${item.body}</div>`;
+
+    const meta = document.createElement("div");
+    meta.className = "experiment-detail-meta";
+    for (const detail of item.details) {
+      const pill = document.createElement("span");
+      pill.className = "experiment-detail-pill";
+      pill.innerHTML = `<span class="experiment-detail-pill-label">${detail.label}</span><span>${detail.value}</span>`;
+      meta.appendChild(pill);
+    }
+    card.appendChild(meta);
+    detailRoot.appendChild(card);
+  }
+}
+
 function renderContextPanel() {
   const sectionRoot = document.getElementById("context-sections");
   const overviewRoot = document.getElementById("source-overview-cards");
@@ -793,6 +928,8 @@ function renderContextPanel() {
     row.innerHTML = `<div class="context-label">${item.label}</div><div class="context-value">${item.value}</div>`;
     sectionRoot.appendChild(row);
   }
+
+  renderExperimentContext();
 
   overviewRoot.innerHTML = "";
   const overviewCards = [
@@ -1476,6 +1613,7 @@ async function openExplainForSelectedRun() {
       });
     }
     renderRunSummary();
+    renderContextPanel();
     renderConversation(getConversationItems());
   } catch (error) {
     console.warn("Failed to load desktop explain payload", error);
@@ -1513,6 +1651,7 @@ function appendFallbackExplain() {
     runId: selectedRunId,
   });
   renderRunSummary();
+  renderContextPanel();
   renderConversation(getConversationItems());
 }
 
