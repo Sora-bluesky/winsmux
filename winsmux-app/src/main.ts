@@ -2324,14 +2324,14 @@ function buildDesktopFollowConversation(
         ...(projection.review_state
           ? [{ label: "review", value: projection.review_state }]
           : []),
-        ...((consultationSummary || experimentSummary)
-          ? [{ label: "next", value: projection.next_action || "idle" }]
-          : []),
         ...(!(consultationSummary || experimentSummary) && projection.changed_files.length > 0
           ? [{ label: "changed", value: `${projection.changed_files.length}` }]
           : []),
         ...(projection.verification_outcome
           ? [{ label: "verify", value: projection.verification_outcome }]
+          : []),
+        ...((consultationSummary || experimentSummary)
+          ? [{ label: "next", value: projection.next_action || "idle" }]
           : []),
         ...(projection.head_short ? [{ label: "head", value: projection.head_short }] : []),
         ...(!(consultationSummary || experimentSummary)
