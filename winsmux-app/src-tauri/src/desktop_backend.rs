@@ -183,6 +183,31 @@ pub struct DesktopEditorFilePayload {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct DesktopPromoteTacticResult {
+    pub generated_at: String,
+    pub run_id: String,
+    pub candidate_ref: String,
+    pub candidate_path: String,
+    pub candidate: DesktopPromoteTacticCandidate,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopPromoteTacticCandidate {
+    pub packet_type: String,
+    pub kind: String,
+    pub title: String,
+    pub summary: String,
+    pub hypothesis: String,
+    pub next_action: String,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub changed_files: Vec<String>,
+    pub observation_pack_ref: String,
+    pub consultation_ref: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct DesktopExplainPayload {
     pub generated_at: String,
     pub project_dir: String,
@@ -442,6 +467,10 @@ pub enum DesktopCommand {
         run_id: String,
         project_dir: Option<String>,
     },
+    RunPromote {
+        run_id: String,
+        project_dir: Option<String>,
+    },
 }
 
 pub enum DesktopStreamCommand {
@@ -453,6 +482,7 @@ impl DesktopCommand {
         match self {
             DesktopCommand::SummarySnapshot { project_dir } => project_dir.as_deref(),
             DesktopCommand::RunExplain { project_dir, .. } => project_dir.as_deref(),
+            DesktopCommand::RunPromote { project_dir, .. } => project_dir.as_deref(),
         }
     }
 
@@ -463,6 +493,13 @@ impl DesktopCommand {
             }
             DesktopCommand::RunExplain { run_id, .. } => {
                 vec!["explain".to_string(), run_id.clone(), "--json".to_string()]
+            }
+            DesktopCommand::RunPromote { run_id, .. } => {
+                vec![
+                    "promote-tactic".to_string(),
+                    run_id.clone(),
+                    "--json".to_string(),
+                ]
             }
         }
     }
@@ -531,6 +568,19 @@ pub fn load_desktop_run_explain(
         .map_err(|err| format!("Failed to parse desktop explain payload: {err}"))
 }
 
+pub fn load_desktop_run_promote(
+    transport: &dyn DesktopCommandTransport,
+    run_id: String,
+    project_dir: Option<String>,
+) -> Result<DesktopPromoteTacticResult, String> {
+    let payload = transport.request_json(&DesktopCommand::RunPromote {
+        run_id,
+        project_dir,
+    })?;
+    serde_json::from_value(payload)
+        .map_err(|err| format!("Failed to parse desktop promote payload: {err}"))
+}
+
 pub fn load_desktop_editor_file(
     path: String,
     worktree: Option<String>,
@@ -585,6 +635,26 @@ pub fn handle_desktop_json_rpc(
                         request_id,
                         JSON_RPC_INTERNAL_ERROR,
                         format!("Failed to serialize desktop explain payload: {err}"),
+                    ),
+                },
+                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
+            }
+        }
+        "desktop.run.promote" => {
+            let run_id = match get_required_string_param(params.as_ref(), &["runId", "run_id"]) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+
+            match load_desktop_run_promote(transport, run_id, resolved_project_dir) {
+                Ok(result) => match serde_json::to_value(result) {
+                    Ok(value) => json_rpc_result(request_id, value),
+                    Err(err) => json_rpc_error(
+                        request_id,
+                        JSON_RPC_INTERNAL_ERROR,
+                        format!("Failed to serialize desktop promote payload: {err}"),
                     ),
                 },
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
@@ -1016,6 +1086,30 @@ mod tests {
         let mut payload = rust_parity_explain_payload();
         payload["review_state"] = rust_parity_review_state_payload();
         payload
+    }
+
+    fn desktop_promote_tactic_payload() -> Value {
+        serde_json::json!({
+            "generated_at": "__GENERATED_AT__",
+            "run_id": "task:task-256",
+            "candidate_ref": ".winsmux/playbook-candidates/playbook-candidate-__ID__.json",
+            "candidate_path": "__PROJECT_DIR__/.winsmux/playbook-candidates/playbook-candidate-__ID__.json",
+            "candidate": {
+                "packet_type": "playbook_candidate",
+                "kind": "playbook",
+                "title": "Stabilize explain contract",
+                "summary": "Promote explain contract handling into the playbook.",
+                "hypothesis": "The explain path is stable enough to reuse.",
+                "next_action": "promote_to_playbook",
+                "confidence": 0.82,
+                "changed_files": [
+                    "winsmux-app/src-tauri/src/desktop_backend.rs",
+                    "winsmux-app/src/main.ts"
+                ],
+                "observation_pack_ref": ".winsmux/observation-packs/observation-pack-__ID__.json",
+                "consultation_ref": ".winsmux/consultations/consult-result-__ID__.json"
+            }
+        })
     }
 
     fn expect_missing_explain_run_field(field_name: &str) -> String {
@@ -1787,6 +1881,56 @@ mod tests {
     }
 
     #[test]
+    fn load_desktop_run_promote_uses_promote_command() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: desktop_promote_tactic_payload(),
+        };
+
+        let payload =
+            load_desktop_run_promote(&transport, "task:task-256".to_string(), None).unwrap();
+
+        assert_eq!(payload.run_id, "task:task-256");
+        assert_eq!(payload.generated_at, "__GENERATED_AT__");
+        assert_eq!(
+            payload.candidate_ref,
+            ".winsmux/playbook-candidates/playbook-candidate-__ID__.json"
+        );
+        assert_eq!(payload.candidate.packet_type, "playbook_candidate");
+        assert_eq!(payload.candidate.kind, "playbook");
+        assert_eq!(payload.candidate.title, "Stabilize explain contract");
+        assert_eq!(
+            payload.candidate.summary,
+            "Promote explain contract handling into the playbook."
+        );
+        assert_eq!(
+            payload.candidate.hypothesis,
+            "The explain path is stable enough to reuse."
+        );
+        assert_eq!(payload.candidate.next_action, "promote_to_playbook");
+        assert_eq!(payload.candidate.confidence, Some(0.82));
+        assert_eq!(
+            payload.candidate.changed_files,
+            vec![
+                "winsmux-app/src-tauri/src/desktop_backend.rs".to_string(),
+                "winsmux-app/src/main.ts".to_string()
+            ]
+        );
+        assert_eq!(
+            payload.candidate.observation_pack_ref,
+            ".winsmux/observation-packs/observation-pack-__ID__.json"
+        );
+        assert_eq!(
+            payload.candidate.consultation_ref,
+            ".winsmux/consultations/consult-result-__ID__.json"
+        );
+        assert_eq!(
+            transport.requests.borrow().as_slice(),
+            ["promote-tactic task:task-256 --json"]
+        );
+    }
+
+    #[test]
     fn handle_desktop_json_rpc_routes_run_explain_and_prunes_extra_packets() {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
@@ -1881,6 +2025,63 @@ mod tests {
         assert_eq!(
             transport.requests.borrow().as_slice(),
             ["explain task:task-256 --json"]
+        );
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_routes_run_promote() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: desktop_promote_tactic_payload(),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-promote"),
+                method: "desktop.run.promote".to_string(),
+                params: Some(serde_json::json!({
+                    "runId": "task:task-256"
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Success { id, result, .. } => {
+                assert_eq!(id, serde_json::json!("req-promote"));
+                assert_eq!(result["run_id"], "task:task-256");
+                assert_eq!(
+                    result["candidate_ref"],
+                    ".winsmux/playbook-candidates/playbook-candidate-__ID__.json"
+                );
+                assert_eq!(result["candidate"]["packet_type"], "playbook_candidate");
+                assert_eq!(result["candidate"]["kind"], "playbook");
+                assert_eq!(
+                    result["candidate"]["title"],
+                    "Stabilize explain contract"
+                );
+                assert_eq!(
+                    result["candidate"]["next_action"],
+                    "promote_to_playbook"
+                );
+                assert_eq!(result["candidate"]["confidence"], 0.82);
+                assert_eq!(
+                    result["candidate"]["changed_files"][0],
+                    "winsmux-app/src-tauri/src/desktop_backend.rs"
+                );
+                assert_eq!(
+                    result["candidate"]["consultation_ref"],
+                    ".winsmux/consultations/consult-result-__ID__.json"
+                );
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+        assert_eq!(
+            transport.requests.borrow().as_slice(),
+            ["promote-tactic task:task-256 --json"]
         );
     }
 

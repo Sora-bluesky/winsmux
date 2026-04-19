@@ -5,6 +5,7 @@ import {
   getDesktopEditorFile,
   getDesktopRunExplain,
   getDesktopSummarySnapshot,
+  promoteDesktopRunTactic,
   subscribeToDesktopSummaryRefresh,
   type DesktopEditorFilePayload,
   type DesktopExplainPayload,
@@ -192,6 +193,8 @@ const desktopEditorFileCache = new Map<string, EditorFile>();
 const desktopEditorLoadingPaths = new Set<string>();
 const desktopEditorLoadErrors = new Map<string, string>();
 const desktopStandaloneEditorTargets = new Map<string, EditorTarget>();
+const promotingRunIds = new Set<string>();
+const pendingPromotedRunRefreshIds = new Set<string>();
 const backendConversation: ConversationItem[] = [];
 const runtimeConversation: ConversationItem[] = [];
 const DESKTOP_SUMMARY_REFRESH_FALLBACK_INTERVAL_MS = 15_000;
@@ -811,6 +814,10 @@ function renderExperimentContext() {
   ]
     .filter((value) => Boolean(value))
     .join(" · ");
+  const canPromoteCandidate =
+    isDesktopRunPromotable(payload.run) &&
+    !promotingRunIds.has(selectedProjection.run_id) &&
+    !pendingPromotedRunRefreshIds.has(selectedProjection.run_id);
 
   const overviewCards = [
     {
@@ -872,6 +879,7 @@ function renderExperimentContext() {
         experimentPacket.next_action ||
         "No playbook candidate is ready yet.",
       tone: "success" as SurfaceTone,
+      actionLabel: canPromoteCandidate ? "Promote" : undefined,
       details: [
         { label: "next", value: experimentPacket.next_action || "n/a" },
         { label: "consult", value: consultationSummary.next_test || "n/a" },
@@ -897,6 +905,23 @@ function renderExperimentContext() {
       meta.appendChild(pill);
     }
     card.appendChild(meta);
+
+    if (item.actionLabel && selectedProjection.run_id) {
+      const chipRow = document.createElement("div");
+      chipRow.className = "timeline-chip-row";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "timeline-chip";
+      button.textContent = promotingRunIds.has(selectedProjection.run_id) ? "Promoting..." : item.actionLabel;
+      button.disabled =
+        promotingRunIds.has(selectedProjection.run_id) ||
+        pendingPromotedRunRefreshIds.has(selectedProjection.run_id);
+      button.addEventListener("click", async () => {
+        await promoteSelectedRunTactic(selectedProjection.run_id);
+      });
+      chipRow.appendChild(button);
+      card.appendChild(chipRow);
+    }
     detailRoot.appendChild(card);
   }
 }
@@ -1619,6 +1644,63 @@ async function openExplainForSelectedRun() {
     console.warn("Failed to load desktop explain payload", error);
     appendFallbackExplain();
     return;
+  }
+}
+
+async function promoteSelectedRunTactic(runId: string) {
+  if (promotingRunIds.has(runId) || pendingPromotedRunRefreshIds.has(runId)) {
+    return;
+  }
+
+  promotingRunIds.add(runId);
+  renderContextPanel();
+
+  try {
+    const result = await promoteDesktopRunTactic(runId);
+    pendingPromotedRunRefreshIds.add(runId);
+    renderContextPanel();
+    appendRuntimeConversation({
+      type: "operator",
+      category: "activity",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Playbook candidate exported",
+      body: result.candidate.summary || result.candidate.title,
+      details: [
+        { label: "run", value: result.run_id },
+        { label: "kind", value: result.candidate.kind },
+        { label: "candidate", value: result.candidate_ref },
+      ],
+      tone: "success",
+      runId,
+    });
+    renderConversation(getConversationItems());
+    requestDesktopSummaryRefresh(undefined, 0);
+    try {
+      const explainPayload = await getDesktopRunExplain(runId);
+      desktopExplainCache.set(runId, explainPayload);
+    } catch (refreshError) {
+      console.warn("Failed to refresh promoted run explain payload", refreshError);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendRuntimeConversation({
+      type: "operator",
+      category: "attention",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Promote failed",
+      body: message,
+      details: [{ label: "run", value: runId }],
+      tone: "warning",
+      runId,
+    });
+    renderConversation(getConversationItems());
+  } finally {
+    promotingRunIds.delete(runId);
+    pendingPromotedRunRefreshIds.delete(runId);
+    renderContextPanel();
+    renderRunSummary();
   }
 }
 
@@ -2692,6 +2774,33 @@ function findEditorFile(target: EditorTarget | null) {
 
 function countEditorLines(content: string) {
   return content.split(/\r?\n/).length;
+}
+
+function getUpperRecordField(record: Record<string, unknown> | null | undefined, key: string) {
+  const value = record?.[key];
+  return typeof value === "string" ? value.toUpperCase() : "";
+}
+
+function isDesktopRunPromotable(run: DesktopExplainPayload["run"]) {
+  const taskState = (run.task_state || "").toLowerCase();
+  const reviewState = (run.review_state || "").toUpperCase();
+  const verificationOutcome = getUpperRecordField(run.verification_result, "outcome");
+  const securityVerdict = getUpperRecordField(run.security_verdict, "verdict");
+
+  if (!["completed", "task_completed", "commit_ready", "done"].includes(taskState)) {
+    return false;
+  }
+  if (reviewState && reviewState !== "PASS") {
+    return false;
+  }
+  if (verificationOutcome !== "PASS") {
+    return false;
+  }
+  if (!["ALLOW", "PASS"].includes(securityVerdict)) {
+    return false;
+  }
+
+  return true;
 }
 
 function buildCachedEditorFile(
