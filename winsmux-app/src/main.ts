@@ -2321,11 +2321,11 @@ function buildDesktopFollowConversation(
         ...((consultationSummary || experimentSummary) && projection.head_short
           ? [{ label: "head", value: projection.head_short }]
           : []),
-        ...((consultationSummary || experimentSummary)
-          ? [{ label: "branch", value: projection.branch || "no branch" }]
-          : []),
         ...(projection.review_state
           ? [{ label: "review", value: projection.review_state }]
+          : []),
+        ...((consultationSummary || experimentSummary)
+          ? [{ label: "branch", value: projection.branch || "no branch" }]
           : []),
         ...(!(consultationSummary || experimentSummary) && projection.changed_files.length > 0
           ? [{ label: "changed", value: `${projection.changed_files.length}` }]
