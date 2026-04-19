@@ -470,6 +470,39 @@ function getComparePeerProjection(
   return sameBranchPeer ?? null;
 }
 
+function getCompareWinnerLabel(result: DesktopCompareRunsResult) {
+  if (!result.recommend.winning_run_id) {
+    return "";
+  }
+  if (result.recommend.winning_run_id === result.left.run_id) {
+    return result.left.label || result.left.run_id;
+  }
+  if (result.recommend.winning_run_id === result.right.run_id) {
+    return result.right.label || result.right.run_id;
+  }
+  return result.recommend.winning_run_id;
+}
+
+function summarizeCompareDifferenceFields(
+  result: DesktopCompareRunsResult,
+  limit = 3,
+) {
+  const fields = Array.from(
+    new Set(
+      result.differences
+        .map((difference) => difference.field)
+        .filter((field) => Boolean(field)),
+    ),
+  );
+  if (fields.length === 0) {
+    return "";
+  }
+  if (fields.length <= limit) {
+    return fields.join(", ");
+  }
+  return `${fields.slice(0, limit).join(", ")} +${fields.length - limit}`;
+}
+
 function setSelectedRun(runId: string | null) {
   selectedRunId = resolveSelectedRunId(desktopSummarySnapshot, runId);
 }
@@ -875,11 +908,41 @@ function renderExperimentContext() {
   const compareInFlight = comparePairKey
     ? comparingRunPairKeys.has(comparePairKey)
     : false;
+  const compareWinnerLabel = compareResult
+    ? getCompareWinnerLabel(compareResult)
+    : "";
+  const compareDifferenceSummary = compareResult
+    ? summarizeCompareDifferenceFields(compareResult)
+    : "";
+  const compareFileSummary = compareResult
+    ? [
+        compareResult.shared_changed_files.length > 0
+          ? `shared ${summarizeChangedFiles(compareResult.shared_changed_files, 2)}`
+          : "",
+        compareResult.left_only_changed_files.length > 0
+          ? `${compareResult.left.label || "left"} ${summarizeChangedFiles(compareResult.left_only_changed_files, 2)}`
+          : "",
+        compareResult.right_only_changed_files.length > 0
+          ? `${compareResult.right.label || "right"} ${summarizeChangedFiles(compareResult.right_only_changed_files, 2)}`
+          : "",
+      ]
+        .filter((value) => Boolean(value))
+        .join(" · ")
+    : "";
+  const compareTone: SurfaceTone = compareResult
+    ? (
+      compareResult.recommend.reconcile_consult
+        ? "warning"
+        : (compareWinnerLabel ? "success" : "info")
+    )
+    : "info";
   const compareBody = compareResult
     ? [
-        `vs ${comparePeer?.label || compareResult.right.run_id}`,
+        compareResult.recommend.reconcile_consult
+          ? "Reconcile consult"
+          : `Winner ${compareWinnerLabel || "not decided"}`,
         compareResult.recommend.next_action || "reconcile_consult",
-        compareResult.recommend.winning_run_id || "no winner",
+        compareDifferenceSummary || compareFileSummary || "No material diff",
       ]
         .filter((value) => Boolean(value))
         .join(" · ")
@@ -945,7 +1008,7 @@ function renderExperimentContext() {
     {
       title: "Compare",
       body: compareBody,
-      tone: "info" as SurfaceTone,
+      tone: compareTone,
       actionLabel: comparePeer ? "Compare" : undefined,
       actionPendingLabel: "Comparing...",
       actionDisabled: compareInFlight,
@@ -954,7 +1017,11 @@ function renderExperimentContext() {
       actionPeerRunId: comparePeer?.run_id,
       details: compareResult
         ? [
-            { label: "peer", value: comparePeer?.label || compareResult.right.run_id },
+            {
+              label: "peer",
+              value: comparePeer?.label || compareResult.right.label || compareResult.right.run_id,
+            },
+            { label: "winner", value: compareWinnerLabel || "none" },
             { label: "diffs", value: `${compareResult.differences.length}` },
             {
               label: "delta",
@@ -962,6 +1029,7 @@ function renderExperimentContext() {
                 ? formatConfidencePercent(Math.abs(compareResult.confidence_delta))
                 : "n/a",
             },
+            { label: "shared", value: `${compareResult.shared_changed_files.length}` },
           ]
         : [
             { label: "peer", value: comparePeer?.label || "n/a" },
@@ -1847,6 +1915,21 @@ async function compareSelectedRunWithPeer(leftRunId: string, rightRunId: string)
       leftFingerprint !== latestLeftFingerprint ||
       rightFingerprint !== latestRightFingerprint
     ) {
+      appendRuntimeConversation({
+        type: "operator",
+        category: "activity",
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+        actor: "Operator",
+        title: "Compare needs rerun",
+        body: "The selected runs changed while compare was running.",
+        details: [
+          { label: "left", value: leftRunId },
+          { label: "right", value: rightRunId },
+        ],
+        tone: "warning",
+        runId: leftRunId,
+      });
+      renderConversation(getConversationItems());
       return;
     }
 
