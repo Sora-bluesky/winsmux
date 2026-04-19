@@ -2330,10 +2330,10 @@ function buildDesktopFollowConversation(
               },
             ]
           : []),
-        ...(projection.head_short ? [{ label: "head", value: projection.head_short }] : []),
         ...(projection.verification_outcome
           ? [{ label: "verify", value: projection.verification_outcome }]
           : []),
+        ...(projection.head_short ? [{ label: "head", value: projection.head_short }] : []),
         ...(!(consultationSummary || experimentSummary)
           ? [{ label: "branch", value: projection.branch || "no branch" }]
           : []),
