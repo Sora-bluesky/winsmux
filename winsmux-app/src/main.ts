@@ -942,7 +942,12 @@ function renderExperimentContext() {
           ? "Reconcile consult"
           : `Winner ${compareWinnerLabel || "not decided"}`,
         compareResult.recommend.next_action || "reconcile_consult",
-        compareDifferenceSummary || compareFileSummary || "No material diff",
+        [
+          compareDifferenceSummary,
+          compareFileSummary,
+        ]
+          .filter((value) => Boolean(value))
+          .join(" · ") || "No material diff",
       ]
         .filter((value) => Boolean(value))
         .join(" · ")
@@ -1030,6 +1035,8 @@ function renderExperimentContext() {
                 : "n/a",
             },
             { label: "shared", value: `${compareResult.shared_changed_files.length}` },
+            { label: "left", value: `${compareResult.left_only_changed_files.length}` },
+            { label: "right", value: `${compareResult.right_only_changed_files.length}` },
           ]
         : [
             { label: "peer", value: comparePeer?.label || "n/a" },
