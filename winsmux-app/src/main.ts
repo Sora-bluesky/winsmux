@@ -2310,6 +2310,14 @@ function buildDesktopFollowConversation(
         ? `Hypothesis: ${experimentSummary}`
         : `Run: ${projection.next_action || "idle"}`,
       details: [
+        ...((consultationSummary || experimentSummary) && projection.changed_files.length > 0
+          ? [
+              {
+                label: "files",
+                value: `${projection.changed_files.length}: ${summarizeChangedFiles(projection.changed_files)}`,
+              },
+            ]
+          : []),
         ...((consultationSummary || experimentSummary)
           ? [{ label: "branch", value: projection.branch || "no branch" }]
           : []),
@@ -2321,14 +2329,6 @@ function buildDesktopFollowConversation(
           : []),
         ...(!(consultationSummary || experimentSummary) && projection.changed_files.length > 0
           ? [{ label: "changed", value: `${projection.changed_files.length}` }]
-          : []),
-        ...((consultationSummary || experimentSummary) && projection.changed_files.length > 0
-          ? [
-              {
-                label: "files",
-                value: `${projection.changed_files.length}: ${summarizeChangedFiles(projection.changed_files)}`,
-              },
-            ]
           : []),
         ...(projection.verification_outcome
           ? [{ label: "verify", value: projection.verification_outcome }]
