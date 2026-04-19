@@ -192,6 +192,7 @@ let desktopSummaryLastSuccessfulRefreshAt = 0;
 let desktopSummaryLastStreamSignalAt = 0;
 const desktopExplainCache = new Map<string, DesktopExplainPayload>();
 const desktopRunCompareCache = new Map<string, DesktopCompareRunsResult>();
+const promotedRunCandidates = new Map<string, { fingerprint: string; candidateRef: string }>();
 const desktopEditorFileCache = new Map<string, EditorFile>();
 const desktopEditorLoadingPaths = new Set<string>();
 const desktopEditorLoadErrors = new Map<string, string>();
@@ -853,6 +854,14 @@ function renderExperimentContext() {
   const consultationPacket = getConsultationPacket(payload);
   const consultationSummary = getConsultationSummary(payload);
   const experimentPacket = payload.run.experiment_packet;
+  const explainFingerprint = getExplainPayloadFingerprint(payload);
+  const promotedCandidate = promotedRunCandidates.get(selectedProjection.run_id) ?? null;
+  const isPromotedCandidate =
+    promotedCandidate !== null &&
+    promotedCandidate.fingerprint === explainFingerprint;
+  const promotedCandidateRef = isPromotedCandidate && promotedCandidate
+    ? summarizeArtifactRef(promotedCandidate.candidateRef)
+    : "";
   const comparePeer = getComparePeerProjection(
     selectedProjection,
     payload.run.parent_run_id || null,
@@ -886,7 +895,8 @@ function renderExperimentContext() {
   const canPromoteCandidate =
     isDesktopRunPromotable(payload.run) &&
     !promotingRunIds.has(selectedProjection.run_id) &&
-    !pendingPromotedRunRefreshIds.has(selectedProjection.run_id);
+    !pendingPromotedRunRefreshIds.has(selectedProjection.run_id) &&
+    !isPromotedCandidate;
 
   const overviewCards = [
     {
@@ -905,7 +915,9 @@ function renderExperimentContext() {
     },
     {
       label: "Candidate",
-      value: experimentPacket.next_action || payload.explanation.next_action || "No candidate",
+      value: isPromotedCandidate
+        ? "Exported"
+        : (experimentPacket.next_action || payload.explanation.next_action || "No candidate"),
     },
   ];
 
@@ -959,11 +971,14 @@ function renderExperimentContext() {
     },
     {
       title: "Playbook Candidate",
-      body:
-        consultationPacket.recommendation ||
-        experimentPacket.result ||
-        experimentPacket.next_action ||
-        "No playbook candidate is ready yet.",
+      body: isPromotedCandidate
+        ? `Exported as ${promotedCandidateRef}.`
+        : (
+          consultationPacket.recommendation ||
+          experimentPacket.result ||
+          experimentPacket.next_action ||
+          "No playbook candidate is ready yet."
+        ),
       tone: "success" as SurfaceTone,
       actionLabel: canPromoteCandidate ? "Promote" : undefined,
       actionPendingLabel: "Promoting...",
@@ -973,6 +988,9 @@ function renderExperimentContext() {
       actionType: "promote" as const,
       actionRunId: selectedProjection.run_id,
       details: [
+        ...(isPromotedCandidate
+          ? [{ label: "exported", value: promotedCandidateRef }]
+          : []),
         { label: "next", value: experimentPacket.next_action || "n/a" },
         { label: "consult", value: consultationSummary.next_test || "n/a" },
         { label: "confidence", value: formatConfidencePercent(experimentPacket.confidence || 0) },
@@ -1780,8 +1798,13 @@ async function promoteSelectedRunTactic(runId: string) {
     try {
       const explainPayload = await getDesktopRunExplain(runId);
       desktopExplainCache.set(runId, explainPayload);
+      promotedRunCandidates.set(runId, {
+        fingerprint: getExplainPayloadFingerprint(explainPayload),
+        candidateRef: result.candidate_ref,
+      });
     } catch (refreshError) {
       console.warn("Failed to refresh promoted run explain payload", refreshError);
+      promotedRunCandidates.delete(runId);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -3183,6 +3206,12 @@ function pruneExplainCache(snapshot: DesktopSummarySnapshot, preservedRunId?: st
       desktopRunCompareCache.delete(pairKey);
     }
   }
+
+  for (const runId of Array.from(promotedRunCandidates.keys())) {
+    if (!activeRunIds.has(runId)) {
+      promotedRunCandidates.delete(runId);
+    }
+  }
 }
 
 function renderDesktopSurfaces() {
@@ -3221,6 +3250,9 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
       ) {
         desktopRunCompareCache.delete(pairKey);
       }
+    }
+    for (const runId of invalidatedRunIds) {
+      promotedRunCandidates.delete(runId);
     }
     desktopSummarySnapshot = snapshot;
     desktopSummaryLastSuccessfulRefreshAt = Date.now();
