@@ -2313,8 +2313,8 @@ function buildDesktopFollowConversation(
         ...((consultationSummary || experimentSummary)
           ? [{ label: "branch", value: projection.branch || "no branch" }]
           : []),
-        ...((consultationSummary || experimentSummary) || projection.review_state
-          ? [{ label: "review", value: projection.review_state || "n/a" }]
+        ...(projection.review_state
+          ? [{ label: "review", value: projection.review_state }]
           : []),
         ...((consultationSummary || experimentSummary)
           ? [{ label: "next", value: projection.next_action || "idle" }]
