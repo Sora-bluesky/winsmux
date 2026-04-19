@@ -2,11 +2,13 @@ import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "xterm/css/xterm.css";
 import {
+  compareDesktopRuns,
   getDesktopEditorFile,
   getDesktopRunExplain,
   getDesktopSummarySnapshot,
   promoteDesktopRunTactic,
   subscribeToDesktopSummaryRefresh,
+  type DesktopCompareRunsResult,
   type DesktopEditorFilePayload,
   type DesktopExplainPayload,
   type DesktopRunProjection,
@@ -189,12 +191,14 @@ let desktopSummaryLiveRefreshAvailable = false;
 let desktopSummaryLastSuccessfulRefreshAt = 0;
 let desktopSummaryLastStreamSignalAt = 0;
 const desktopExplainCache = new Map<string, DesktopExplainPayload>();
+const desktopRunCompareCache = new Map<string, DesktopCompareRunsResult>();
 const desktopEditorFileCache = new Map<string, EditorFile>();
 const desktopEditorLoadingPaths = new Set<string>();
 const desktopEditorLoadErrors = new Map<string, string>();
 const desktopStandaloneEditorTargets = new Map<string, EditorTarget>();
 const promotingRunIds = new Set<string>();
 const pendingPromotedRunRefreshIds = new Set<string>();
+const comparingRunPairKeys = new Set<string>();
 const backendConversation: ConversationItem[] = [];
 const runtimeConversation: ConversationItem[] = [];
 const DESKTOP_SUMMARY_REFRESH_FALLBACK_INTERVAL_MS = 15_000;
@@ -421,6 +425,48 @@ function getRunProjectionByRunId(runId: string | null) {
 function getPrimaryRunProjection() {
   const resolvedRunId = resolveSelectedRunId();
   return getRunProjectionByRunId(resolvedRunId) ?? getRunProjections()[0] ?? null;
+}
+
+function getComparePairKey(leftRunId: string, rightRunId: string) {
+  return `${leftRunId}::${rightRunId}`;
+}
+
+function getComparePeerProjection(
+  selectedProjection: DesktopRunProjection,
+  preferredRunId?: string | null,
+) {
+  const otherRuns = getRunProjections().filter(
+    (projection) => projection.run_id !== selectedProjection.run_id,
+  );
+  if (otherRuns.length === 0) {
+    return null;
+  }
+
+  if (preferredRunId) {
+    const preferredPeer = otherRuns.find(
+      (projection) => projection.run_id === preferredRunId,
+    );
+    if (preferredPeer) {
+      return preferredPeer;
+    }
+  }
+
+  const sameTaskPeer = otherRuns.find(
+    (projection) =>
+      Boolean(selectedProjection.task) &&
+      projection.task === selectedProjection.task,
+  );
+  if (sameTaskPeer) {
+    return sameTaskPeer;
+  }
+
+  const sameBranchPeer = otherRuns.find(
+    (projection) =>
+      Boolean(selectedProjection.branch) &&
+      projection.branch === selectedProjection.branch,
+  );
+
+  return sameBranchPeer ?? null;
 }
 
 function setSelectedRun(runId: string | null) {
@@ -807,13 +853,36 @@ function renderExperimentContext() {
   const consultationPacket = getConsultationPacket(payload);
   const consultationSummary = getConsultationSummary(payload);
   const experimentPacket = payload.run.experiment_packet;
-  const compareBody = [
-    payload.run.run_id,
-    payload.run.branch || "no branch",
-    payload.evidence_digest.verification_outcome || payload.run.review_state || "pending",
-  ]
-    .filter((value) => Boolean(value))
-    .join(" · ");
+  const comparePeer = getComparePeerProjection(
+    selectedProjection,
+    payload.run.parent_run_id || null,
+  );
+  const comparePairKey = comparePeer
+    ? getComparePairKey(selectedProjection.run_id, comparePeer.run_id)
+    : "";
+  const compareResult = comparePairKey
+    ? desktopRunCompareCache.get(comparePairKey) ?? null
+    : null;
+  const compareInFlight = comparePairKey
+    ? comparingRunPairKeys.has(comparePairKey)
+    : false;
+  const compareBody = compareResult
+    ? [
+        `vs ${comparePeer?.label || compareResult.right.run_id}`,
+        compareResult.recommend.next_action || "reconcile_consult",
+        compareResult.recommend.winning_run_id || "no winner",
+      ]
+        .filter((value) => Boolean(value))
+        .join(" · ")
+    : comparePeer
+      ? [
+          `vs ${comparePeer.label || comparePeer.run_id}`,
+          comparePeer.branch || "no branch",
+          comparePeer.review_state || "pending",
+        ]
+          .filter((value) => Boolean(value))
+          .join(" · ")
+      : "Compare needs another surfaced run.";
   const canPromoteCandidate =
     isDesktopRunPromotable(payload.run) &&
     !promotingRunIds.has(selectedProjection.run_id) &&
@@ -863,13 +932,30 @@ function renderExperimentContext() {
     },
     {
       title: "Compare",
-      body: compareBody || "Compare input will appear after the selected run resolves branch and verification state.",
+      body: compareBody,
       tone: "info" as SurfaceTone,
-      details: [
-        { label: "changed", value: `${payload.evidence_digest.changed_file_count}` },
-        { label: "verify", value: payload.evidence_digest.verification_outcome || "n/a" },
-        { label: "review", value: payload.run.review_state || "n/a" },
-      ],
+      actionLabel: comparePeer ? "Compare" : undefined,
+      actionPendingLabel: "Comparing...",
+      actionDisabled: compareInFlight,
+      actionType: "compare" as const,
+      actionRunId: selectedProjection.run_id,
+      actionPeerRunId: comparePeer?.run_id,
+      details: compareResult
+        ? [
+            { label: "peer", value: comparePeer?.label || compareResult.right.run_id },
+            { label: "diffs", value: `${compareResult.differences.length}` },
+            {
+              label: "delta",
+              value: compareResult.confidence_delta !== null
+                ? formatConfidencePercent(Math.abs(compareResult.confidence_delta))
+                : "n/a",
+            },
+          ]
+        : [
+            { label: "peer", value: comparePeer?.label || "n/a" },
+            { label: "changed", value: `${payload.evidence_digest.changed_file_count}` },
+            { label: "verify", value: payload.evidence_digest.verification_outcome || "n/a" },
+          ],
     },
     {
       title: "Playbook Candidate",
@@ -880,6 +966,12 @@ function renderExperimentContext() {
         "No playbook candidate is ready yet.",
       tone: "success" as SurfaceTone,
       actionLabel: canPromoteCandidate ? "Promote" : undefined,
+      actionPendingLabel: "Promoting...",
+      actionDisabled:
+        promotingRunIds.has(selectedProjection.run_id) ||
+        pendingPromotedRunRefreshIds.has(selectedProjection.run_id),
+      actionType: "promote" as const,
+      actionRunId: selectedProjection.run_id,
       details: [
         { label: "next", value: experimentPacket.next_action || "n/a" },
         { label: "consult", value: consultationSummary.next_test || "n/a" },
@@ -912,12 +1004,21 @@ function renderExperimentContext() {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "timeline-chip";
-      button.textContent = promotingRunIds.has(selectedProjection.run_id) ? "Promoting..." : item.actionLabel;
-      button.disabled =
-        promotingRunIds.has(selectedProjection.run_id) ||
-        pendingPromotedRunRefreshIds.has(selectedProjection.run_id);
+      button.textContent = item.actionDisabled && item.actionPendingLabel
+        ? item.actionPendingLabel
+        : item.actionLabel;
+      button.disabled = item.actionDisabled ?? false;
       button.addEventListener("click", async () => {
-        await promoteSelectedRunTactic(selectedProjection.run_id);
+        if (item.actionType === "compare" && item.actionPeerRunId) {
+          await compareSelectedRunWithPeer(
+            item.actionRunId ?? selectedProjection.run_id,
+            item.actionPeerRunId,
+          );
+          return;
+        }
+        await promoteSelectedRunTactic(
+          item.actionRunId ?? selectedProjection.run_id,
+        );
       });
       chipRow.appendChild(button);
       card.appendChild(chipRow);
@@ -1701,6 +1802,76 @@ async function promoteSelectedRunTactic(runId: string) {
     pendingPromotedRunRefreshIds.delete(runId);
     renderContextPanel();
     renderRunSummary();
+  }
+}
+
+async function compareSelectedRunWithPeer(leftRunId: string, rightRunId: string) {
+  const pairKey = getComparePairKey(leftRunId, rightRunId);
+  if (comparingRunPairKeys.has(pairKey)) {
+    return;
+  }
+
+  const leftFingerprint = getRunProjectionFingerprint(getRunProjectionByRunId(leftRunId));
+  const rightFingerprint = getRunProjectionFingerprint(getRunProjectionByRunId(rightRunId));
+  comparingRunPairKeys.add(pairKey);
+  renderContextPanel();
+
+  try {
+    const result = await compareDesktopRuns(leftRunId, rightRunId);
+    const latestLeftFingerprint = getRunProjectionFingerprint(getRunProjectionByRunId(leftRunId));
+    const latestRightFingerprint = getRunProjectionFingerprint(getRunProjectionByRunId(rightRunId));
+    if (
+      leftFingerprint !== latestLeftFingerprint ||
+      rightFingerprint !== latestRightFingerprint
+    ) {
+      return;
+    }
+
+    desktopRunCompareCache.set(pairKey, result);
+    appendRuntimeConversation({
+      type: "operator",
+      category: "activity",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Compare completed",
+      body: [
+        `${result.left.label || result.left.run_id} vs ${result.right.label || result.right.run_id}`,
+        result.recommend.next_action || "reconcile_consult",
+      ].join(" · "),
+      details: [
+        { label: "winner", value: result.recommend.winning_run_id || "none" },
+        { label: "diffs", value: `${result.differences.length}` },
+        {
+          label: "delta",
+          value: result.confidence_delta !== null
+            ? formatConfidencePercent(Math.abs(result.confidence_delta))
+            : "n/a",
+        },
+      ],
+      tone: result.recommend.reconcile_consult ? "warning" : "info",
+      runId: leftRunId,
+    });
+    renderConversation(getConversationItems());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendRuntimeConversation({
+      type: "operator",
+      category: "attention",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Compare failed",
+      body: message,
+      details: [
+        { label: "left", value: leftRunId },
+        { label: "right", value: rightRunId },
+      ],
+      tone: "warning",
+      runId: leftRunId,
+    });
+    renderConversation(getConversationItems());
+  } finally {
+    comparingRunPairKeys.delete(pairKey);
+    renderContextPanel();
   }
 }
 
@@ -3005,6 +3176,13 @@ function pruneExplainCache(snapshot: DesktopSummarySnapshot, preservedRunId?: st
       desktopExplainCache.delete(runId);
     }
   }
+
+  for (const pairKey of Array.from(desktopRunCompareCache.keys())) {
+    const [leftRunId, rightRunId] = pairKey.split("::");
+    if (!activeRunIds.has(leftRunId) || !activeRunIds.has(rightRunId)) {
+      desktopRunCompareCache.delete(pairKey);
+    }
+  }
 }
 
 function renderDesktopSurfaces() {
@@ -3030,6 +3208,20 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
     const previousSelectedRunId = selectedRunId;
     const snapshot = await getDesktopSummarySnapshot();
     const diff = diffDesktopSummarySnapshots(previousSnapshot, snapshot);
+    const invalidatedRunIds = new Set([
+      ...diff.changedRunIds,
+      ...diff.addedRunIds,
+      ...diff.removedRunIds,
+    ]);
+    for (const pairKey of Array.from(desktopRunCompareCache.keys())) {
+      const [leftRunId, rightRunId] = pairKey.split("::");
+      if (
+        invalidatedRunIds.has(leftRunId) ||
+        invalidatedRunIds.has(rightRunId)
+      ) {
+        desktopRunCompareCache.delete(pairKey);
+      }
+    }
     desktopSummarySnapshot = snapshot;
     desktopSummaryLastSuccessfulRefreshAt = Date.now();
     selectedRunId = resolveSelectedRunId(snapshot, forceExplainRunId);
