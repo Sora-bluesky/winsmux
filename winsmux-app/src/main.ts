@@ -2318,11 +2318,11 @@ function buildDesktopFollowConversation(
               },
             ]
           : []),
-        ...((consultationSummary || experimentSummary) && projection.head_short
-          ? [{ label: "head", value: projection.head_short }]
-          : []),
         ...(projection.review_state
           ? [{ label: "review", value: projection.review_state }]
+          : []),
+        ...((consultationSummary || experimentSummary) && projection.head_short
+          ? [{ label: "head", value: projection.head_short }]
           : []),
         ...((consultationSummary || experimentSummary)
           ? [{ label: "branch", value: projection.branch || "no branch" }]
