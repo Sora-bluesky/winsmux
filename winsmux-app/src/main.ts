@@ -2318,6 +2318,9 @@ function buildDesktopFollowConversation(
               },
             ]
           : []),
+        ...((consultationSummary || experimentSummary) && projection.head_short
+          ? [{ label: "head", value: projection.head_short }]
+          : []),
         ...((consultationSummary || experimentSummary)
           ? [{ label: "branch", value: projection.branch || "no branch" }]
           : []),
@@ -2333,7 +2336,9 @@ function buildDesktopFollowConversation(
         ...((consultationSummary || experimentSummary)
           ? [{ label: "next", value: projection.next_action || "idle" }]
           : []),
-        ...(projection.head_short ? [{ label: "head", value: projection.head_short }] : []),
+        ...(!(consultationSummary || experimentSummary) && projection.head_short
+          ? [{ label: "head", value: projection.head_short }]
+          : []),
         ...(!(consultationSummary || experimentSummary)
           ? [{ label: "branch", value: projection.branch || "no branch" }]
           : []),
