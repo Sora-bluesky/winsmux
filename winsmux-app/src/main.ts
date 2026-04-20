@@ -999,6 +999,16 @@ function renderExperimentContext() {
       value: consultationSummary.next_test || consultationPacket.recommendation || "No consult",
     },
     {
+      label: "Compare",
+      value: compareResult
+        ? (
+          compareResult.recommend.reconcile_consult
+            ? "Consult before pick"
+            : `Winner ${compareWinnerLabel || "not decided"}`
+        )
+        : (comparePeer ? `vs ${comparePeer.label || comparePeer.run_id}` : "Need peer"),
+    },
+    {
       label: "Candidate",
       value: isPromotedCandidate
         ? "Exported"
