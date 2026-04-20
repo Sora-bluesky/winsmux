@@ -73,6 +73,11 @@ interface SessionItem {
   active?: boolean;
 }
 
+interface DetachedSurfaceSessionState {
+  name: string;
+  meta: string;
+}
+
 interface ExplorerItem {
   label: string;
   meta?: string;
@@ -255,6 +260,8 @@ let lastPreviewExternalState: { url: string; at: number; ok: boolean } | null = 
 let lastPreviewClipboardState: { url: string; at: number; ok: boolean } | null = null;
 let selectedRunId: string | null = null;
 let detachedSurfaceRunLabel = "";
+let detachedSurfaceSession: DetachedSurfaceSessionState | null = null;
+let detachedSurfacePollTimer: number | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
 let composerSlashOpen = false;
 let composerSlashQuery = "";
@@ -490,7 +497,7 @@ function getSessionItems() {
   const inbox = desktopSummarySnapshot.inbox.summary;
   const digest = desktopSummarySnapshot.digest.summary;
 
-  return [
+  const items = [
     {
       name: "winsmux",
       meta: `${board.pane_count} panes · ${inbox.item_count} inbox · ${board.tasks_blocked} blocked`,
@@ -501,6 +508,15 @@ function getSessionItems() {
       meta: `${digest.item_count} runs · ${digest.actionable_items} actionable · ${board.review_pending} review pending`,
     },
   ] satisfies SessionItem[];
+
+  if (detachedSurfaceSession) {
+    items.push({
+      name: detachedSurfaceSession.name,
+      meta: detachedSurfaceSession.meta,
+    });
+  }
+
+  return items;
 }
 
 function getRunProjections() {
@@ -1179,6 +1195,36 @@ function readPopoutSurfaceState() {
   }
 }
 
+function describeDetachedSurfaceSession(state: PopoutSurfaceState): DetachedSurfaceSessionState {
+  if (state.mode === "preview") {
+    return {
+      name: "detached-preview",
+      meta: `${state.portLabel} · ${state.sourceLabel}${state.runLabel ? ` · ${state.runLabel}` : ""}`,
+    };
+  }
+
+  const fileLabel = state.path.split("/").pop() ?? state.path;
+  const worktreeLabel = state.worktree ? getWorktreeLabel(state.worktree) : "Project root";
+  return {
+    name: "detached-editor",
+    meta: `${fileLabel} · ${worktreeLabel}${state.runLabel ? ` · ${state.runLabel}` : ""}`,
+  };
+}
+
+function clearDetachedSurfaceSession() {
+  detachedSurfaceSession = null;
+  if (detachedSurfacePollTimer !== null) {
+    window.clearInterval(detachedSurfacePollTimer);
+    detachedSurfacePollTimer = null;
+  }
+  renderSessions();
+}
+
+function setDetachedSurfaceSession(state: PopoutSurfaceState) {
+  detachedSurfaceSession = describeDetachedSurfaceSession(state);
+  renderSessions();
+}
+
 function applyPopoutSurfaceState(state: PopoutSurfaceState | null) {
   if (!state) {
     return;
@@ -1338,7 +1384,7 @@ async function openEditorSurfacePopout() {
   const popoutUrl = `/?popout=1&popout-key=${encodeURIComponent(key)}`;
   if (isTauri()) {
     const label = `secondary-surface-${Date.now()}`;
-    new WebviewWindow(label, {
+    const detachedWindow = new WebviewWindow(label, {
       url: popoutUrl,
       title: state.mode === "preview" ? "winsmux Preview" : "winsmux Editor",
       width: state.mode === "preview" ? 1180 : 1040,
@@ -1347,10 +1393,26 @@ async function openEditorSurfacePopout() {
       minHeight: 480,
       focus: true,
     });
+    setDetachedSurfaceSession(state);
+    void detachedWindow.once("tauri://destroyed", () => {
+      clearDetachedSurfaceSession();
+    });
     return;
   }
 
-  window.open(popoutUrl, "_blank", "noopener");
+  const popup = window.open(popoutUrl, "_blank", "noopener");
+  if (!popup) {
+    return;
+  }
+  setDetachedSurfaceSession(state);
+  if (detachedSurfacePollTimer !== null) {
+    window.clearInterval(detachedSurfacePollTimer);
+  }
+  detachedSurfacePollTimer = window.setInterval(() => {
+    if (popup.closed) {
+      clearDetachedSurfaceSession();
+    }
+  }, 500);
 }
 
 function getSourceFilterLabel(filter: SourceFilter) {
