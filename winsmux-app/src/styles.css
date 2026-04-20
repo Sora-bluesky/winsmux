@@ -692,6 +692,20 @@ textarea {
   gap: 8px;
 }
 
+#composer-slash-row {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#composer-remote-row {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .mode-chip {
   border: 1px solid var(--border-strong);
   border-radius: 999px;
@@ -706,6 +720,66 @@ textarea {
   background: var(--bg-panel);
   border-color: var(--status-focus-border);
   color: var(--text-primary);
+}
+
+.slash-chip {
+  border: 1px solid var(--border-muted);
+  border-radius: 14px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  padding: 8px 10px;
+  cursor: pointer;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 132px;
+}
+
+.slash-chip.is-active,
+.slash-chip:hover {
+  border-color: var(--status-focus-border);
+  color: var(--text-primary);
+}
+
+.slash-chip-command {
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.slash-chip-description {
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+}
+
+.remote-chip {
+  border: 1px solid var(--border-muted);
+  border-radius: 14px;
+  background: var(--bg-surface-raised);
+  color: var(--text-secondary);
+  padding: 8px 10px;
+  cursor: pointer;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 132px;
+}
+
+.remote-chip.is-active,
+.remote-chip:hover {
+  border-color: var(--status-info-border);
+  color: var(--text-primary);
+}
+
+.remote-chip-label {
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.remote-chip-meta {
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
 }
 
 #composer-footer {
@@ -1771,6 +1845,8 @@ textarea {
   }
 
   #composer-mode-row,
+  #composer-slash-row,
+  #composer-remote-row,
   #composer-footer {
     margin-top: 8px;
   }

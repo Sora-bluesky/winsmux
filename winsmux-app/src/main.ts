@@ -177,6 +177,25 @@ interface ComposerAttachment {
   previewUrl?: string;
 }
 
+interface ComposerRemoteReference {
+  id: string;
+  label: string;
+  meta: string;
+}
+
+interface ComposerAttachmentSnapshot {
+  name: string;
+  kind: "image" | "file";
+  sizeLabel: string;
+  file: File;
+}
+
+interface ComposerHistoryEntry {
+  value: string;
+  remoteReferenceIds: string[];
+  attachments: ComposerAttachmentSnapshot[];
+}
+
 type ComposerMode = "ask" | "dispatch" | "review" | "explain";
 
 interface CommandAction {
@@ -205,6 +224,13 @@ let lastPreviewExternalState: { url: string; at: number; ok: boolean } | null = 
 let lastPreviewClipboardState: { url: string; at: number; ok: boolean } | null = null;
 let selectedRunId: string | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
+let composerSlashOpen = false;
+let composerSlashQuery = "";
+let selectedComposerSlashIndex = 0;
+let composerHistory: ComposerHistoryEntry[] = [];
+let composerHistoryIndex = -1;
+let composerDraftState: ComposerHistoryEntry = { value: "", remoteReferenceIds: [], attachments: [] };
+let selectedComposerRemoteReferenceIds = new Set<string>();
 let activeSourceFilter: SourceFilter = "all";
 let activeTimelineFilter: TimelineFilter = "all";
 let commandBarOpen = false;
@@ -258,6 +284,18 @@ const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: str
   { mode: "review", label: "Review", placeholder: "Request review, approval, or audit from the Operator" },
   { mode: "explain", label: "Explain", placeholder: "Ask the Operator to explain the current run state" },
 ];
+
+const composerSlashCommands: Array<{
+  command: string;
+  label: string;
+  description: string;
+  mode: ComposerMode;
+}> = composerModes.map((item) => ({
+  command: item.mode,
+  label: item.label,
+  description: item.placeholder,
+  mode: item.mode,
+}));
 
 const timelineFilters: Array<{ filter: TimelineFilter; label: string }> = [
   { filter: "all", label: "All" },
@@ -1764,6 +1802,8 @@ function renderContextPanel() {
     });
     fileRoot.appendChild(button);
   }
+
+  renderComposerRemoteReferences();
 }
 
 function getSourceEntryTone(entry: SourceChange): SurfaceTone {
@@ -1919,6 +1959,266 @@ function focusComposer() {
   composerInput.setSelectionRange(length, length);
 }
 
+function getComposerSlashMatch(value: string) {
+  const match = value.match(/^\/([a-z-]+)(?=\s|$)/i);
+  if (!match) {
+    return null;
+  }
+
+  const token = match[1].toLowerCase();
+  return composerSlashCommands.find((item) => item.command === token) ?? null;
+}
+
+function getFilteredComposerSlashCommands() {
+  if (!composerSlashOpen) {
+    return [];
+  }
+
+  if (!composerSlashQuery) {
+    return composerSlashCommands;
+  }
+
+  return composerSlashCommands.filter((item) => item.command.startsWith(composerSlashQuery));
+}
+
+function renderComposerSlashCommands() {
+  const root = document.getElementById("composer-slash-row");
+  if (!root) {
+    return;
+  }
+
+  const commands = getFilteredComposerSlashCommands();
+  root.innerHTML = "";
+  root.hidden = commands.length === 0;
+  if (commands.length === 0) {
+    return;
+  }
+
+  commands.forEach((item, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `slash-chip ${index === selectedComposerSlashIndex ? "is-active" : ""}`;
+    button.innerHTML = `<span class="slash-chip-command">/${item.command}</span><span class="slash-chip-description">${item.label}</span>`;
+    button.addEventListener("click", () => {
+      applyComposerSlashCommand(item);
+    });
+    root.appendChild(button);
+  });
+}
+
+function syncComposerSlashState(value: string) {
+  const match = value.match(/^\/([a-z-]*)$/i);
+  composerSlashOpen = Boolean(match);
+  composerSlashQuery = match ? match[1].toLowerCase() : "";
+  const commands = getFilteredComposerSlashCommands();
+  if (commands.length === 0) {
+    selectedComposerSlashIndex = 0;
+  } else {
+    selectedComposerSlashIndex = Math.min(selectedComposerSlashIndex, commands.length - 1);
+  }
+  renderComposerSlashCommands();
+}
+
+function applyComposerSlashCommand(command: (typeof composerSlashCommands)[number]) {
+  const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (!composerInput) {
+    return;
+  }
+
+  setComposerMode(command.mode);
+  composerInput.value = composerInput.value.replace(/^\/[^\s]+/, "").replace(/^\s+/, "");
+  syncComposerSlashState(composerInput.value);
+  exitComposerHistoryToDraft(composerInput.value);
+  composerInput.focus();
+  const length = composerInput.value.length;
+  composerInput.setSelectionRange(length, length);
+}
+
+function insertComposerTab(composerInput: HTMLTextAreaElement) {
+  const start = composerInput.selectionStart;
+  const end = composerInput.selectionEnd;
+  composerInput.setRangeText("\t", start, end, "end");
+}
+
+function isComposerSelectionCollapsed(composerInput: HTMLTextAreaElement) {
+  return composerInput.selectionStart === composerInput.selectionEnd;
+}
+
+function isCaretOnFirstLine(composerInput: HTMLTextAreaElement) {
+  return !composerInput.value.slice(0, composerInput.selectionStart).includes("\n");
+}
+
+function isCaretOnLastLine(composerInput: HTMLTextAreaElement) {
+  return !composerInput.value.slice(composerInput.selectionEnd).includes("\n");
+}
+
+function setComposerValue(value: string) {
+  const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (!composerInput) {
+    return;
+  }
+
+  composerInput.value = value;
+  syncComposerSlashState(value);
+  const length = value.length;
+  composerInput.setSelectionRange(length, length);
+}
+
+function syncComposerDraftState(value?: string) {
+  const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  composerDraftState = captureComposerHistoryEntry(value ?? composerInput?.value ?? "");
+}
+
+function exitComposerHistoryToDraft(value?: string) {
+  composerHistoryIndex = -1;
+  syncComposerDraftState(value);
+}
+
+function snapshotComposerAttachments(attachments: ComposerAttachment[]): ComposerAttachmentSnapshot[] {
+  return attachments.map((item) => ({
+    name: item.name,
+    kind: item.kind,
+    sizeLabel: item.sizeLabel,
+    file: item.file,
+  }));
+}
+
+function restoreComposerAttachments(snapshots: ComposerAttachmentSnapshot[]) {
+  return snapshots.map((item) => ({
+    id: `${item.name}-${item.file.size}-${item.file.lastModified}-${Math.random().toString(36).slice(2, 8)}`,
+    name: item.name,
+    kind: item.kind,
+    sizeLabel: item.sizeLabel,
+    file: item.file,
+    previewUrl: item.kind === "image" ? URL.createObjectURL(item.file) : undefined,
+  }));
+}
+
+function captureComposerHistoryEntry(value: string): ComposerHistoryEntry {
+  return {
+    value,
+    remoteReferenceIds: Array.from(selectedComposerRemoteReferenceIds),
+    attachments: snapshotComposerAttachments(pendingAttachments),
+  };
+}
+
+function applyComposerHistoryEntry(entry: ComposerHistoryEntry) {
+  setComposerValue(entry.value);
+  clearPendingAttachments();
+  pendingAttachments = restoreComposerAttachments(entry.attachments);
+  selectedComposerRemoteReferenceIds = new Set(entry.remoteReferenceIds);
+  renderAttachmentTray();
+  renderComposerRemoteReferences();
+}
+
+function stepComposerHistory(direction: -1 | 1) {
+  if (composerHistory.length === 0) {
+    return;
+  }
+
+  if (direction === -1) {
+    if (composerHistoryIndex === -1) {
+      const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+      composerDraftState = captureComposerHistoryEntry(composerInput?.value ?? "");
+      composerHistoryIndex = composerHistory.length - 1;
+    } else if (composerHistoryIndex > 0) {
+      composerHistoryIndex -= 1;
+    }
+    applyComposerHistoryEntry(composerHistory[composerHistoryIndex] ?? composerDraftState);
+    return;
+  }
+
+  if (composerHistoryIndex === -1) {
+    return;
+  }
+
+  if (composerHistoryIndex < composerHistory.length - 1) {
+    composerHistoryIndex += 1;
+    applyComposerHistoryEntry(composerHistory[composerHistoryIndex] ?? composerDraftState);
+    return;
+  }
+
+  composerHistoryIndex = -1;
+  applyComposerHistoryEntry(composerDraftState);
+}
+
+function pushComposerHistoryEntry(entry: ComposerHistoryEntry) {
+  if (!entry.value && entry.remoteReferenceIds.length === 0 && entry.attachments.length === 0) {
+    return;
+  }
+
+  composerHistory = [entry, ...composerHistory].slice(0, 20);
+  composerHistoryIndex = -1;
+  composerDraftState = { value: "", remoteReferenceIds: [], attachments: [] };
+}
+
+function getComposerRemoteReferences() {
+  const selectedProjection = getPrimaryRunProjection();
+  const references: ComposerRemoteReference[] = [];
+
+  if (selectedProjection) {
+    references.push({
+      id: `run:${selectedProjection.run_id}`,
+      label: selectedProjection.run_id,
+      meta: `${selectedProjection.next_action || "idle"} · ${selectedProjection.branch || "no branch"}`,
+    });
+  }
+
+  for (const change of getVisibleSourceChanges().slice(0, 3)) {
+    references.push({
+      id: `change:${getSourceChangeKey(change)}`,
+      label: change.path.split("/").pop() ?? change.path,
+      meta: `${change.status} · ${change.branch}`,
+    });
+  }
+
+  return references;
+}
+
+function renderComposerRemoteReferences() {
+  const root = document.getElementById("composer-remote-row");
+  if (!root) {
+    return;
+  }
+
+  const references = getComposerRemoteReferences();
+  root.innerHTML = "";
+  root.hidden = references.length === 0;
+  if (references.length === 0) {
+    selectedComposerRemoteReferenceIds.clear();
+    return;
+  }
+
+  const validIds = new Set(references.map((item) => item.id));
+  selectedComposerRemoteReferenceIds = new Set(
+    Array.from(selectedComposerRemoteReferenceIds).filter((id) => validIds.has(id)),
+  );
+
+  references.forEach((item) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `remote-chip ${selectedComposerRemoteReferenceIds.has(item.id) ? "is-active" : ""}`;
+    const label = document.createElement("span");
+    label.className = "remote-chip-label";
+    label.textContent = item.label;
+    const meta = document.createElement("span");
+    meta.className = "remote-chip-meta";
+    meta.textContent = item.meta;
+    button.appendChild(label);
+    button.appendChild(meta);
+    button.addEventListener("click", () => {
+      if (selectedComposerRemoteReferenceIds.has(item.id)) {
+        selectedComposerRemoteReferenceIds.delete(item.id);
+      } else {
+        selectedComposerRemoteReferenceIds.add(item.id);
+      }
+      exitComposerHistoryToDraft();
+      renderComposerRemoteReferences();
+    });
+    root.appendChild(button);
+  });
+}
+
 function renderComposerModes() {
   const root = document.getElementById("composer-mode-row");
   const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
@@ -1943,6 +2243,9 @@ function renderComposerModes() {
   if (selected) {
     composerInput.placeholder = selected.placeholder;
   }
+
+  renderComposerSlashCommands();
+  renderComposerRemoteReferences();
 }
 
 function formatAttachmentSize(size: number) {
@@ -2035,6 +2338,7 @@ function renderAttachmentTray() {
     removeButton.addEventListener("click", () => {
       releaseAttachmentPreview(attachment);
       pendingAttachments = pendingAttachments.filter((item) => item.id !== attachment.id);
+      exitComposerHistoryToDraft();
       renderAttachmentTray();
     });
     item.appendChild(removeButton);
@@ -2055,6 +2359,7 @@ function appendAttachments(files: File[]) {
 
   const next = files.slice(0, remaining).map((file) => createComposerAttachment(file));
   pendingAttachments = [...pendingAttachments, ...next];
+  exitComposerHistoryToDraft();
   renderAttachmentTray();
 }
 
@@ -4404,6 +4709,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderRunSummary();
   renderConversation(getConversationItems());
   renderComposerModes();
+  renderComposerSlashCommands();
+  renderComposerRemoteReferences();
   renderAttachmentTray();
   renderCommandBar();
   renderEditorSurface();
@@ -4548,6 +4855,46 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
 
     composerInput.addEventListener("keydown", (event) => {
+      const slashCommands = getFilteredComposerSlashCommands();
+      const composerImeBlocking = composerImeActive || event.isComposing;
+      if (event.key === "ArrowUp" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSlashOpen && composerHistory.length > 0 && isComposerSelectionCollapsed(composerInput) && isCaretOnFirstLine(composerInput)) {
+        event.preventDefault();
+        stepComposerHistory(-1);
+        return;
+      }
+
+      if (event.key === "ArrowDown" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSlashOpen && composerHistoryIndex !== -1 && isComposerSelectionCollapsed(composerInput) && isCaretOnLastLine(composerInput)) {
+        event.preventDefault();
+        stepComposerHistory(1);
+        return;
+      }
+
+      if (event.key === "ArrowDown" && !composerImeBlocking && slashCommands.length > 0) {
+        event.preventDefault();
+        selectedComposerSlashIndex = (selectedComposerSlashIndex + 1) % slashCommands.length;
+        renderComposerSlashCommands();
+        return;
+      }
+
+      if (event.key === "ArrowUp" && !composerImeBlocking && slashCommands.length > 0) {
+        event.preventDefault();
+        selectedComposerSlashIndex = (selectedComposerSlashIndex - 1 + slashCommands.length) % slashCommands.length;
+        renderComposerSlashCommands();
+        return;
+      }
+
+      if (event.key === "Tab" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        if (slashCommands.length > 0) {
+          applyComposerSlashCommand(slashCommands[selectedComposerSlashIndex] ?? slashCommands[0]);
+          return;
+        }
+        insertComposerTab(composerInput);
+        syncComposerSlashState(composerInput.value);
+        exitComposerHistoryToDraft(composerInput.value);
+        return;
+      }
+
       if (event.key !== "Enter") {
         return;
       }
@@ -4558,6 +4905,14 @@ window.addEventListener("DOMContentLoaded", async () => {
 
       event.preventDefault();
       composer.requestSubmit();
+    });
+
+    composerInput.addEventListener("input", () => {
+      if (composerHistoryIndex !== -1) {
+        composerHistoryIndex = -1;
+      }
+      syncComposerDraftState(composerInput.value);
+      syncComposerSlashState(composerInput.value);
     });
 
     composerInput.addEventListener("paste", (event) => {
@@ -4593,14 +4948,34 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     composer.addEventListener("submit", (event) => {
       event.preventDefault();
-      const value = composerInput.value.trim();
-      if (!value && pendingAttachments.length === 0) {
+      const slashMatch = getComposerSlashMatch(composerInput.value);
+      if (slashMatch) {
+        applyComposerSlashCommand(slashMatch);
+      }
+      const rawValue = composerInput.value;
+      const value = rawValue.trim();
+      const selectedRemoteReferences = getComposerRemoteReferences().filter((item) => selectedComposerRemoteReferenceIds.has(item.id));
+      if (!value && pendingAttachments.length === 0 && selectedRemoteReferences.length === 0) {
         return;
       }
-      const submittedAttachments = [...pendingAttachments];
-      appendUserMessage(value, submittedAttachments);
+      const historyEntry = captureComposerHistoryEntry(rawValue);
+      const submittedAttachments = [
+        ...pendingAttachments,
+        ...selectedRemoteReferences.map((item) => ({
+          id: item.id,
+          name: item.label,
+          kind: "file" as const,
+          sizeLabel: item.meta,
+          file: new File([], item.label),
+        })),
+      ];
+      appendUserMessage(rawValue, submittedAttachments);
+      pushComposerHistoryEntry(historyEntry);
       composerInput.value = "";
+      syncComposerSlashState(composerInput.value);
       clearPendingAttachments();
+      selectedComposerRemoteReferenceIds.clear();
+      renderComposerRemoteReferences();
       renderAttachmentTray();
       requestDesktopSummaryRefresh(undefined, 750);
     });
