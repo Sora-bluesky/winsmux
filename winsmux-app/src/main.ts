@@ -189,7 +189,7 @@ let composerImeActive = false;
 let sidebarWidth = 292;
 let selectedEditorKey = "";
 let selectedPreviewUrl = "";
-let lastExternalPreviewOpen: { url: string; openedAt: number } | null = null;
+let lastPreviewExternalState: { url: string; at: number; ok: boolean } | null = null;
 let lastPreviewClipboardState: { url: string; at: number; ok: boolean } | null = null;
 let selectedRunId: string | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
@@ -992,8 +992,8 @@ function getPreviewTargets(activeUrl = selectedPreviewUrl) {
 function openPreviewTarget(url: string) {
   selectedPreviewUrl = url;
   editorSurfaceMode = "preview";
-  if (lastExternalPreviewOpen?.url !== url) {
-    lastExternalPreviewOpen = null;
+  if (lastPreviewExternalState?.url !== url) {
+    lastPreviewExternalState = null;
   }
   if (lastPreviewClipboardState?.url !== url) {
     lastPreviewClipboardState = null;
@@ -1004,7 +1004,7 @@ function openPreviewTarget(url: string) {
 function closePreviewTarget() {
   editorSurfaceMode = "code";
   selectedPreviewUrl = "";
-  lastExternalPreviewOpen = null;
+  lastPreviewExternalState = null;
   lastPreviewClipboardState = null;
   if (!selectedEditorKey) {
     setEditorSurface(false);
@@ -1030,14 +1030,15 @@ function openPreviewTargetExternally() {
   }
   const previewUrl = selectedPreviewUrl;
   const opened = window.open(previewUrl, "_blank", "noopener");
+  lastPreviewExternalState = {
+    url: previewUrl,
+    at: Date.now(),
+    ok: Boolean(opened),
+  };
+  renderEditorSurface();
   if (!opened) {
     return;
   }
-  lastExternalPreviewOpen = {
-    url: previewUrl,
-    openedAt: Date.now(),
-  };
-  renderEditorSurface();
 }
 
 async function copyPreviewTargetUrl() {
@@ -3017,8 +3018,8 @@ function renderEditorSurface() {
     browserBody.textContent = previewTarget.url;
     browserMeta.appendChild(browserTitle);
     browserMeta.appendChild(browserBody);
-    if (lastExternalPreviewOpen?.url === previewTarget.url) {
-      const openedAt = new Date(lastExternalPreviewOpen.openedAt).toLocaleTimeString([], {
+    if (lastPreviewExternalState?.url === previewTarget.url) {
+      const openedAt = new Date(lastPreviewExternalState.at).toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
       });
@@ -3027,7 +3028,7 @@ function renderEditorSurface() {
       handoffTitle.textContent = "External browser";
       const handoffBody = document.createElement("div");
       handoffBody.className = "editor-diff-preview-body";
-      handoffBody.textContent = `Opened at ${openedAt}`;
+      handoffBody.textContent = lastPreviewExternalState.ok ? `Opened at ${openedAt}` : `Blocked at ${openedAt}`;
       browserMeta.appendChild(handoffTitle);
       browserMeta.appendChild(handoffBody);
     }
@@ -3049,7 +3050,7 @@ function renderEditorSurface() {
       `${previewTargets.length} targets · active ${previewTarget.portLabel}` +
       ` · from ${previewTarget.sourceLabel}` +
       ` · seen ${formatPreviewSeenAt(previewTarget.lastSeenAt)}` +
-      `${lastExternalPreviewOpen?.url === previewTarget.url ? " · external open" : ""}`;
+      `${lastPreviewExternalState?.url === previewTarget.url ? (lastPreviewExternalState.ok ? " · external open" : " · external blocked") : ""}`;
     if (lastPreviewClipboardState?.url === previewTarget.url) {
       browserToolbarSummary.textContent += lastPreviewClipboardState.ok ? " · copied" : " · copy failed";
     }
@@ -3061,7 +3062,9 @@ function renderEditorSurface() {
     browserOpenButton.disabled = false;
     code.textContent = "";
     code.hidden = true;
-    statusbar.textContent = `Secondary work surface: preview -> ${previewTarget.url}${lastExternalPreviewOpen?.url === previewTarget.url ? " (opened externally)" : ""}`;
+    statusbar.textContent =
+      `Secondary work surface: preview -> ${previewTarget.url}` +
+      `${lastPreviewExternalState?.url === previewTarget.url ? (lastPreviewExternalState.ok ? " (opened externally)" : " (external blocked)") : ""}`;
   } else if (selected) {
     path.textContent = selected.path;
     for (const item of [
@@ -3938,7 +3941,7 @@ async function openEditorTarget(target: EditorTarget | null) {
 
   editorSurfaceMode = "code";
   selectedPreviewUrl = "";
-  lastExternalPreviewOpen = null;
+  lastPreviewExternalState = null;
   selectedEditorKey = target.key;
   setSelectedRun(target.sourceChange?.run ?? selectedRunId);
   setEditorSurface(true);
@@ -3968,7 +3971,7 @@ async function openEditorPath(path: string | undefined, worktree = "") {
   desktopStandaloneEditorTargets.set(target.key, target);
   editorSurfaceMode = "code";
   selectedPreviewUrl = "";
-  lastExternalPreviewOpen = null;
+  lastPreviewExternalState = null;
   selectedEditorKey = target.key;
   setEditorSurface(true);
   renderOpenEditors();
