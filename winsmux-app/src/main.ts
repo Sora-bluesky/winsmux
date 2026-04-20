@@ -108,6 +108,7 @@ interface PreviewTarget {
   url: string;
   portLabel: string;
   sourceLabel: string;
+  lastSeenAt: number;
 }
 
 type SourceFilter = "all" | "candidates" | "attention" | `pane:${string}`;
@@ -200,6 +201,7 @@ let commandBarImeActive = false;
 let lastCommandBarFocus: HTMLElement | null = null;
 let pendingAttachments: ComposerAttachment[] = [];
 const detectedPreviewTargets = new Map<string, PreviewTarget>();
+const PREVIEW_FRESHNESS_WINDOW_MS = 30_000;
 let desktopSummarySnapshot: DesktopSummarySnapshot | null = null;
 let desktopSummaryRefreshInFlight: Promise<void> | null = null;
 let desktopSummaryRefreshTimeout: number | null = null;
@@ -931,16 +933,34 @@ function getPreviewPortLabel(url: string) {
   }
 }
 
+function formatPreviewSeenAt(timestamp: number) {
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function registerPreviewTargets(paneId: string, data: string) {
   let changed = false;
+  const now = Date.now();
   for (const url of extractPreviewUrls(data)) {
-    if (detectedPreviewTargets.has(url)) {
+    const existing = detectedPreviewTargets.get(url);
+    if (existing) {
+      if (existing.sourceLabel !== (paneId || "terminal") || now - existing.lastSeenAt >= PREVIEW_FRESHNESS_WINDOW_MS) {
+        detectedPreviewTargets.set(url, {
+          ...existing,
+          sourceLabel: paneId || "terminal",
+          lastSeenAt: now,
+        });
+        changed = true;
+      }
       continue;
     }
     detectedPreviewTargets.set(url, {
       url,
       portLabel: getPreviewPortLabel(url),
       sourceLabel: paneId || "terminal",
+      lastSeenAt: now,
     });
     changed = true;
   }
@@ -1593,7 +1613,7 @@ function renderContextPanel() {
       name.textContent = target.url;
       const metaLine = document.createElement("span");
       metaLine.className = "context-file-meta";
-      metaLine.textContent = `Preview target · ${target.portLabel}`;
+      metaLine.textContent = `Preview target · ${target.portLabel} · Seen ${formatPreviewSeenAt(target.lastSeenAt)}`;
       const trace = document.createElement("span");
       trace.className = "context-file-trace";
       trace.textContent = `Detected from ${target.sourceLabel}`;
@@ -2921,6 +2941,7 @@ function renderEditorSurface() {
       "Preview browser",
       previewTarget.portLabel,
       `Detected from ${previewTarget.sourceLabel}`,
+      `Seen ${formatPreviewSeenAt(previewTarget.lastSeenAt)}`,
     ]) {
       const chip = document.createElement("span");
       chip.className = "editor-meta-chip";
@@ -2955,7 +2976,7 @@ function renderEditorSurface() {
         targetButton.type = "button";
         targetButton.className = `editor-tab ${target.url === previewTarget.url ? "is-active" : ""}`;
         targetButton.textContent = target.portLabel;
-        targetButton.title = `${target.url} (${target.sourceLabel})`;
+        targetButton.title = `${target.url} (${target.sourceLabel}, ${formatPreviewSeenAt(target.lastSeenAt)})`;
         targetButton.addEventListener("click", () => {
           openPreviewTarget(target.url);
         });
