@@ -15,15 +15,17 @@ permissions:
   contents: read
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
+  verify:
+    runs-on: windows-latest
+    outputs:
+      publish_ready: ${{ steps.stage.outputs.publish_ready }}
+      version: ${{ steps.stage.outputs.version }}
     steps:
       - uses: actions/checkout@v6
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: "https://registry.npmjs.org"
 
       - name: Stage npm package
         id: stage
@@ -46,19 +48,41 @@ jobs:
             "publish_ready=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           }
 
-      - name: Skip npm publish
+      - name: Skip Windows verify
         if: steps.stage.outputs.publish_ready != 'true'
-        run: echo "winsmux npm package is not publish-ready yet; skipping npm publish."
+        run: echo "winsmux npm package is not publish-ready yet; skipping Windows verify."
+
+      - name: Verify Windows entrypoint
+        if: steps.stage.outputs.publish_ready == 'true'
+        run: node output/npm-release/winsmux/index.mjs help
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    if: needs.verify.outputs.publish_ready == 'true'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Stage npm package
+        id: stage
+        shell: pwsh
+        run: |
+          $version = "${{ needs.verify.outputs.version }}"
+
+          node scripts/stage-npm-release.mjs --version $version --out output/npm-release/winsmux
 
       - name: Verify staged package
-        if: steps.stage.outputs.publish_ready == 'true'
         working-directory: output/npm-release/winsmux
         run: |
           node --version
           npm pack --dry-run
 
       - name: Publish to npm
-        if: steps.stage.outputs.publish_ready == 'true'
         working-directory: output/npm-release/winsmux
         run: npm publish --access public
         env:

@@ -14,6 +14,7 @@ const packageJson = JSON.parse(
 const args = process.argv.slice(2);
 const action = args[0] ?? "install";
 const supportedActions = new Set(["install", "update", "uninstall", "version", "help"]);
+const releaseTag = `v${packageJson.version}`;
 
 if (!supportedActions.has(action)) {
   console.error(`Unknown winsmux action: ${action}`);
@@ -51,6 +52,8 @@ const command = [
   "-File",
   installerPath,
   action,
+  "-ReleaseTag",
+  releaseTag,
 ];
 
 const result = spawnSync(shell, ["/d", "/s", "/c", command.map(quoteWindowsArg).join(" ")], {

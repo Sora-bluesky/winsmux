@@ -5,6 +5,9 @@
   "description": "Public npm install surface for winsmux. Publishing stays gated until the installer contract is ready.",
   "license": "MIT",
   "type": "module",
+  "os": [
+    "win32"
+  ],
   "files": [
     "README.md",
     "index.mjs",
@@ -26,4 +29,5 @@
     "node": ">=18"
   }
 }
+
 

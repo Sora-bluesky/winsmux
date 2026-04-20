@@ -1,10 +1,11 @@
 # install.ps1 — winsmux one-command installer
 # Usage: irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | iex
-# Or: pwsh install.ps1 [install|update|uninstall|version|help]
+# Or: pwsh install.ps1 [install|update|uninstall|version|help] [-ReleaseTag vX.Y.Z]
 
 [CmdletBinding()]
 param(
-    [Parameter(Position=0)][string]$Action = "install"
+    [Parameter(Position=0)][string]$Action = "install",
+    [string]$ReleaseTag = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,7 +19,17 @@ $SCRIPT_DIR   = Join-Path $WINSMUX_DIR "scripts"
 $BRIDGE_DIR   = Join-Path $WINSMUX_DIR "winsmux-core"
 $BRIDGE_SCRIPTS_DIR = Join-Path $BRIDGE_DIR "scripts"
 $VERSION_FILE = Join-Path $WINSMUX_DIR "version"
-$BASE_URL     = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/main"
+$EffectiveReleaseTag = if ([string]::IsNullOrWhiteSpace($ReleaseTag)) { $env:WINSMUX_RELEASE_TAG } else { $ReleaseTag }
+if ([string]::IsNullOrWhiteSpace($EffectiveReleaseTag)) {
+    $BASE_URL = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/main"
+    $RELEASE_API_URL = "https://api.github.com/repos/Sora-bluesky/winsmux/releases/latest"
+    $RELEASE_LABEL = "latest"
+} else {
+    $BASE_URL = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$EffectiveReleaseTag"
+    $escapedTag = [Uri]::EscapeDataString($EffectiveReleaseTag)
+    $RELEASE_API_URL = "https://api.github.com/repos/Sora-bluesky/winsmux/releases/tags/$escapedTag"
+    $RELEASE_LABEL = $EffectiveReleaseTag
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,6 +43,19 @@ function Test-Administrator {
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+function Get-PreferredReleaseAssetName {
+    $arch = $env:PROCESSOR_ARCHITECTURE
+    if ($arch -eq "x86" -and $env:PROCESSOR_ARCHITEW6432) {
+        $arch = $env:PROCESSOR_ARCHITEW6432
+    }
+
+    switch ($arch) {
+        "AMD64" { return "winsmux-x64.exe" }
+        "ARM64" { return "winsmux-arm64.exe" }
+        default { throw "Unsupported architecture: $arch" }
+    }
+}
+
 function Install-WinsmuxBinary {
     if (Get-Command winsmux -ErrorAction SilentlyContinue) {
         $ver = (winsmux -V 2>&1 | Out-String).Trim()
@@ -42,19 +66,23 @@ function Install-WinsmuxBinary {
 
     $localBin = Join-Path $HOME ".local/bin"
     $winsmuxExe = Join-Path $localBin "winsmux.exe"
-    $releaseUrl = "https://api.github.com/repos/Sora-bluesky/winsmux/releases/latest"
     $headers = @{ "User-Agent" = "winsmux-installer/$VERSION" }
+    $assetName = Get-PreferredReleaseAssetName
 
     try {
         if (-not (Test-Path $localBin)) {
             New-Item -ItemType Directory -Path $localBin -Force | Out-Null
         }
 
-        Write-Status "Fetching latest winsmux-core release..."
-        $release = Invoke-RestMethod -Uri $releaseUrl -Headers $headers -ErrorAction Stop
-        $asset = $release.assets | Where-Object { $_.name -eq "winsmux.exe" } | Select-Object -First 1
+        Write-Status "Fetching winsmux-core release ($RELEASE_LABEL)..."
+        $release = Invoke-RestMethod -Uri $RELEASE_API_URL -Headers $headers -ErrorAction Stop
+        $asset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
+        if (-not $asset -and $assetName -eq "winsmux-arm64.exe") {
+            Write-Warning "[winsmux] ARM64 asset not found in release $($release.tag_name). Falling back to winsmux-x64.exe."
+            $asset = $release.assets | Where-Object { $_.name -eq "winsmux-x64.exe" } | Select-Object -First 1
+        }
         if (-not $asset) {
-            throw "winsmux.exe asset not found in release $($release.tag_name)"
+            throw "$assetName asset not found in release $($release.tag_name)"
         }
 
         Write-Status "Downloading $($asset.name) from $($release.tag_name)..."
