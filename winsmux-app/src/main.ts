@@ -1094,6 +1094,15 @@ function renderExperimentContext() {
                   .join(" · "),
             },
             {
+              label: "Decision basis",
+              value: [
+                compareDifferenceSummary,
+                compareFileSummary,
+              ]
+                .filter((value) => Boolean(value))
+                .join(" · ") || "none",
+            },
+            {
               label: "Recommendation",
               value: compareResult.recommend.next_action || "reconcile_consult",
             },
