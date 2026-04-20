@@ -220,6 +220,15 @@ async function openFirstSourceContextEntry(page) {
   await assertHorizontallyVisible(page, "#editor-statusbar");
 }
 
+async function assertBackToCode(page) {
+  await page.click("#browser-back-btn");
+  await page.locator("#browser-surface").waitFor({ state: "hidden" });
+  await page.locator("#editor-code").waitFor({ state: "visible" });
+  await page.locator("#editor-tabs .editor-tab").first().waitFor({ state: "visible" });
+  await assertHorizontallyVisible(page, "#editor-surface");
+  await assertHorizontallyVisible(page, "#editor-code");
+}
+
 async function verifyDesktopViewport(page, previewUrl) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
@@ -263,6 +272,8 @@ async function verifyDesktopViewport(page, previewUrl) {
   await assertButtonVisible(page, "#add-pane-btn");
   await assertFullyVisible(page, "#terminal-drawer");
   await assertHorizontallyVisible(page, "#browser-toolbar");
+  await assertBackToCode(page);
+  await assertHorizontallyVisible(page, "#editor-statusbar");
 }
 
 async function verifyNarrowViewport(page, previewUrl) {
@@ -322,6 +333,7 @@ async function verifyNarrowViewport(page, previewUrl) {
   await assertReachableFrame(page, "#browser-frame");
   await page.locator("#browser-target-list .editor-tab").first().waitFor({ state: "visible" });
   await assertReachableFrame(page, "#browser-frame");
+  await assertBackToCode(page);
 }
 
 async function verifyShortNarrowViewport(page, previewUrl) {
@@ -392,6 +404,7 @@ async function run() {
             "desktop-settings-sheet",
             "desktop-source-context",
             "desktop-preview-browser",
+            "desktop-preview-back-to-code",
             "desktop-terminal-drawer",
             "narrow-393x852",
             "narrow-command-bar",
@@ -400,6 +413,7 @@ async function run() {
             "narrow-source-context",
             "narrow-terminal-drawer",
             "narrow-preview-browser",
+            "narrow-preview-back-to-code",
             "short-narrow-command-bar",
             "short-narrow-settings-sheet",
             "short-narrow-terminal-drawer",
