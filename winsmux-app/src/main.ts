@@ -1063,6 +1063,14 @@ function renderExperimentContext() {
       lines: compareResult
         ? [
             {
+              label: "Recommendation",
+              value: compareResult.recommend.next_action || "reconcile_consult",
+            },
+            {
+              label: "Difference fields",
+              value: compareDifferenceSummary || "none",
+            },
+            {
               label: "Shared files",
               value: compareResult.shared_changed_files.length > 0
                 ? summarizeChangedFiles(compareResult.shared_changed_files, 4)
