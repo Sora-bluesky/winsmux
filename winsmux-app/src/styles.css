@@ -974,6 +974,12 @@ textarea {
   gap: 10px;
 }
 
+.settings-sheet-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .panel-title {
   font-size: var(--text-sm);
   font-weight: 700;

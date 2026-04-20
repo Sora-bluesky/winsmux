@@ -277,6 +277,8 @@ const themeState: ThemeState = {
   density: "comfortable",
   wrapMode: "balanced",
 };
+let settingsDraftState: ThemeState | null = null;
+const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
 
 const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: string }> = [
   { mode: "ask", label: "Ask", placeholder: "Ask the Operator for clarification, status, or guidance" },
@@ -1820,32 +1822,77 @@ function getSourceEntryTone(entry: SourceChange): SurfaceTone {
 }
 
 function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[] } {
-  const themeLabel = themeOptions.find((item) => item.value === themeState.theme)?.label ?? themeState.theme;
-  const densityLabel = densityOptions.find((item) => item.value === themeState.density)?.label ?? themeState.density;
-  const wrapLabel = wrapOptions.find((item) => item.value === themeState.wrapMode)?.label ?? themeState.wrapMode;
+  const selectedProjection = getPrimaryRunProjection();
+  const modeLabel = composerModes.find((item) => item.mode === activeComposerMode)?.label ?? activeComposerMode;
   const summaryStatus = desktopSummarySnapshot
     ? `${desktopSummarySnapshot.digest.summary.item_count} runs`
     : "Operator ready";
   const inboxStatus = desktopSummarySnapshot
     ? `${desktopSummarySnapshot.inbox.summary.item_count} inbox`
-    : "config.toml";
-  const branchStatus = getPrimaryRunProjection()?.branch || "main";
+    : "Inbox idle";
+  const branchStatus = selectedProjection?.branch || "main";
+  const runStatus = selectedProjection?.label || selectedProjection?.run_id || "No run selected";
+  const surfaceStatus = selectedPreviewUrl
+    ? "Preview"
+    : editorSurfaceOpen
+      ? "Code"
+      : terminalDrawerOpen
+        ? "Terminal"
+        : "Shell";
 
   return {
     left: [
-      { label: "Local environment" },
-      { label: themeLabel, tone: "focus" },
-      { label: densityLabel },
-      { label: `Wrap ${wrapLabel}` },
+      { label: "Mode", value: modeLabel, tone: "focus" },
+      { label: "Surface", value: surfaceStatus },
       { label: "Command", value: "Ctrl/Cmd+K", tone: "accent" },
-      { label: "Settings", tone: "accent" },
+      { label: "Settings", value: settingsSheetOpen ? "Editing" : "Preferences", tone: "accent" },
     ],
     right: [
-      { label: inboxStatus },
-      { label: branchStatus },
-      { label: summaryStatus, tone: desktopSummarySnapshot ? "info" : "success" },
+      { label: "Run", value: runStatus },
+      { label: "Branch", value: branchStatus },
+      { label: "Inbox", value: inboxStatus },
+      { label: "Board", value: summaryStatus, tone: desktopSummarySnapshot ? "info" : "success" },
     ],
   };
+}
+
+function cloneThemeState(state: ThemeState): ThemeState {
+  return {
+    theme: state.theme,
+    density: state.density,
+    wrapMode: state.wrapMode,
+  };
+}
+
+function readStoredThemeState(): ThemeState | null {
+  try {
+    const rawValue = window.localStorage.getItem(SHELL_PREFERENCES_STORAGE_KEY);
+    if (!rawValue) {
+      return null;
+    }
+
+    const parsed = JSON.parse(rawValue) as Partial<ThemeState>;
+    const theme = themeOptions.find((item) => item.value === parsed.theme)?.value;
+    const density = densityOptions.find((item) => item.value === parsed.density)?.value;
+    const wrapMode = wrapOptions.find((item) => item.value === parsed.wrapMode)?.value;
+    if (!theme || !density || !wrapMode) {
+      return null;
+    }
+
+    return { theme, density, wrapMode };
+  } catch {
+    return null;
+  }
+}
+
+function persistThemeState() {
+  try {
+    window.localStorage.setItem(SHELL_PREFERENCES_STORAGE_KEY, JSON.stringify(themeState));
+    return true;
+  } catch (error) {
+    console.warn("Failed to persist shell preferences", error);
+    return false;
+  }
 }
 
 function applyShellPreferences() {
@@ -1857,6 +1904,14 @@ function applyShellPreferences() {
   shell.dataset.theme = themeState.theme;
   shell.dataset.density = themeState.density;
   shell.dataset.wrapMode = themeState.wrapMode;
+}
+
+function applyThemeState(nextState: ThemeState) {
+  themeState.theme = nextState.theme;
+  themeState.density = nextState.density;
+  themeState.wrapMode = nextState.wrapMode;
+  applyShellPreferences();
+  renderFooterLane();
 }
 
 function renderPreferenceOptions<T extends string>(
@@ -1883,24 +1938,29 @@ function renderPreferenceOptions<T extends string>(
 }
 
 function renderSettingsControls() {
-  renderPreferenceOptions("theme-options", themeOptions, themeState.theme, (value) => {
-    themeState.theme = value;
-    applyShellPreferences();
-    renderFooterLane();
+  const activeState = settingsDraftState ?? themeState;
+
+  renderPreferenceOptions("theme-options", themeOptions, activeState.theme, (value) => {
+    if (!settingsDraftState) {
+      settingsDraftState = cloneThemeState(themeState);
+    }
+    settingsDraftState.theme = value;
     renderSettingsControls();
   });
 
-  renderPreferenceOptions("density-options", densityOptions, themeState.density, (value) => {
-    themeState.density = value;
-    applyShellPreferences();
-    renderFooterLane();
+  renderPreferenceOptions("density-options", densityOptions, activeState.density, (value) => {
+    if (!settingsDraftState) {
+      settingsDraftState = cloneThemeState(themeState);
+    }
+    settingsDraftState.density = value;
     renderSettingsControls();
   });
 
-  renderPreferenceOptions("wrap-options", wrapOptions, themeState.wrapMode, (value) => {
-    themeState.wrapMode = value;
-    applyShellPreferences();
-    renderFooterLane();
+  renderPreferenceOptions("wrap-options", wrapOptions, activeState.wrapMode, (value) => {
+    if (!settingsDraftState) {
+      settingsDraftState = cloneThemeState(themeState);
+    }
+    settingsDraftState.wrapMode = value;
     renderSettingsControls();
   });
 }
@@ -4105,7 +4165,6 @@ function setSidebarOpen(open: boolean) {
 }
 
 function setSettingsSheet(open: boolean) {
-  settingsSheetOpen = open;
   const sheet = document.getElementById("settings-sheet");
   if (!sheet) {
     return;
@@ -4115,7 +4174,28 @@ function setSettingsSheet(open: boolean) {
     closeCommandBar();
   }
 
+  settingsSheetOpen = open;
+  if (open) {
+    settingsDraftState = cloneThemeState(themeState);
+    renderSettingsControls();
+  } else {
+    settingsDraftState = null;
+  }
   sheet.hidden = !open;
+  renderFooterLane();
+}
+
+function applySettingsDraft() {
+  if (settingsDraftState) {
+    applyThemeState(settingsDraftState);
+    persistThemeState();
+  }
+  setSettingsSheet(false);
+}
+
+function cancelSettingsDraft() {
+  settingsDraftState = null;
+  setSettingsSheet(false);
 }
 
 function syncResponsiveShell() {
@@ -4682,6 +4762,11 @@ function initializeSidebarResize() {
 window.addEventListener("DOMContentLoaded", async () => {
   installViewportHarnessHooks();
 
+  const storedThemeState = readStoredThemeState();
+  if (storedThemeState) {
+    applyThemeState(storedThemeState);
+  }
+
   await subscribeToPtyOutput((payload) => {
     registerPreviewTargets(payload.pane_id, payload.data);
     const entry = payload.pane_id ? panes.get(payload.pane_id) : undefined;
@@ -4765,8 +4850,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     setSettingsSheet(true);
   });
 
+  document.getElementById("apply-settings-btn")?.addEventListener("click", () => {
+    applySettingsDraft();
+  });
+
   document.getElementById("close-settings-btn")?.addEventListener("click", () => {
-    setSettingsSheet(false);
+    cancelSettingsDraft();
   });
 
   document.getElementById("sidebar-overlay")?.addEventListener("click", () => {
@@ -5010,7 +5099,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     if (event.key === "Escape" && settingsSheetOpen) {
       event.preventDefault();
-      setSettingsSheet(false);
+      cancelSettingsDraft();
       return;
     }
 
