@@ -392,6 +392,10 @@ body[data-popout-surface="1"] #header-actions {
   display: none;
 }
 
+body[data-popout-surface="1"] #popout-editor-btn {
+  display: none;
+}
+
 body[data-popout-surface="1"] #editor-surface {
   min-height: 0;
 }
