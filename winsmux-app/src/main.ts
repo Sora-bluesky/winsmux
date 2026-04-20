@@ -2853,18 +2853,20 @@ function renderEditorSurface() {
   const browserSurface = document.getElementById("browser-surface");
   const browserFrame = document.getElementById("browser-frame") as HTMLIFrameElement | null;
   const browserMeta = document.getElementById("browser-meta-row");
+  const browserTargetList = document.getElementById("browser-target-list");
   const browserReloadButton = document.getElementById("browser-reload-btn") as HTMLButtonElement | null;
   const browserOpenButton = document.getElementById("browser-open-btn") as HTMLButtonElement | null;
   const tabs = document.getElementById("editor-tabs");
   const code = document.getElementById("editor-code");
   const statusbar = document.getElementById("editor-statusbar");
-  if (!path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
+  if (!path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
     return;
   }
 
   const editors = getEditorFiles();
   const selected = editors.find((editor) => editor.key === selectedEditorKey) || editors[0];
   const previewTarget = selectedPreviewUrl ? detectedPreviewTargets.get(selectedPreviewUrl) ?? null : null;
+  const previewTargets = getPreviewTargets();
   const previewModeActive = editorSurfaceMode === "preview" && Boolean(previewTarget);
   if (!selected && !previewModeActive) {
     path.textContent = "Editor idle";
@@ -2872,6 +2874,8 @@ function renderEditorSurface() {
     diffPreview.innerHTML = "";
     diffPreview.hidden = true;
     browserMeta.innerHTML = "";
+    browserTargetList.innerHTML = "";
+    browserTargetList.hidden = true;
     browserFrame.src = "about:blank";
     browserSurface.hidden = true;
     tabs.innerHTML = "";
@@ -2895,6 +2899,8 @@ function renderEditorSurface() {
   diffPreview.innerHTML = "";
   diffPreview.hidden = true;
   browserMeta.innerHTML = "";
+  browserTargetList.innerHTML = "";
+  browserTargetList.hidden = true;
   browserSurface.hidden = true;
   browserReloadButton.disabled = true;
   browserOpenButton.disabled = true;
@@ -2920,6 +2926,20 @@ function renderEditorSurface() {
     browserBody.textContent = previewTarget.url;
     browserMeta.appendChild(browserTitle);
     browserMeta.appendChild(browserBody);
+    if (previewTargets.length > 0) {
+      for (const target of previewTargets) {
+        const targetButton = document.createElement("button");
+        targetButton.type = "button";
+        targetButton.className = `editor-tab ${target.url === previewTarget.url ? "is-active" : ""}`;
+        targetButton.textContent = target.portLabel;
+        targetButton.title = `${target.url} (${target.sourceLabel})`;
+        targetButton.addEventListener("click", () => {
+          openPreviewTarget(target.url);
+        });
+        browserTargetList.appendChild(targetButton);
+      }
+      browserTargetList.hidden = false;
+    }
     browserFrame.src = previewTarget.url;
     browserSurface.hidden = false;
     browserReloadButton.disabled = false;

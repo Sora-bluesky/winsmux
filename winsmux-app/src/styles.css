@@ -959,6 +959,20 @@ textarea {
   background: var(--bg-surface);
 }
 
+#browser-target-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#browser-target-list[hidden] {
+  display: none;
+}
+
+#browser-target-list .editor-tab {
+  background: var(--bg-surface);
+}
+
 #browser-toolbar {
   display: flex;
   flex-wrap: wrap;
