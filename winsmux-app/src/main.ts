@@ -168,6 +168,12 @@ interface ThemeState {
   wrapMode: WrapMode;
 }
 
+interface ShellPreferenceState extends ThemeState {
+  sidebarWidth: number;
+  wideSidebarOpen: boolean;
+  wideContextOpen: boolean;
+}
+
 interface ComposerAttachment {
   id: string;
   name: string;
@@ -278,6 +284,8 @@ const themeState: ThemeState = {
   wrapMode: "balanced",
 };
 let settingsDraftState: ThemeState | null = null;
+let preferredWideSidebarOpen = true;
+let preferredWideContextOpen = true;
 const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
 
 const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: string }> = [
@@ -1864,14 +1872,14 @@ function cloneThemeState(state: ThemeState): ThemeState {
   };
 }
 
-function readStoredThemeState(): ThemeState | null {
+function readStoredShellPreferences(): ShellPreferenceState | null {
   try {
     const rawValue = window.localStorage.getItem(SHELL_PREFERENCES_STORAGE_KEY);
     if (!rawValue) {
       return null;
     }
 
-    const parsed = JSON.parse(rawValue) as Partial<ThemeState>;
+    const parsed = JSON.parse(rawValue) as Partial<ShellPreferenceState>;
     const theme = themeOptions.find((item) => item.value === parsed.theme)?.value;
     const density = densityOptions.find((item) => item.value === parsed.density)?.value;
     const wrapMode = wrapOptions.find((item) => item.value === parsed.wrapMode)?.value;
@@ -1879,7 +1887,18 @@ function readStoredThemeState(): ThemeState | null {
       return null;
     }
 
-    return { theme, density, wrapMode };
+    const sidebarWidthValue = typeof parsed.sidebarWidth === "number" ? parsed.sidebarWidth : 292;
+    const wideSidebarOpen = typeof parsed.wideSidebarOpen === "boolean" ? parsed.wideSidebarOpen : true;
+    const wideContextOpen = typeof parsed.wideContextOpen === "boolean" ? parsed.wideContextOpen : true;
+
+    return {
+      theme,
+      density,
+      wrapMode,
+      sidebarWidth: Math.max(240, Math.min(380, Math.round(sidebarWidthValue))),
+      wideSidebarOpen,
+      wideContextOpen,
+    };
   } catch {
     return null;
   }
@@ -1887,7 +1906,15 @@ function readStoredThemeState(): ThemeState | null {
 
 function persistThemeState() {
   try {
-    window.localStorage.setItem(SHELL_PREFERENCES_STORAGE_KEY, JSON.stringify(themeState));
+    const nextState: ShellPreferenceState = {
+      theme: themeState.theme,
+      density: themeState.density,
+      wrapMode: themeState.wrapMode,
+      sidebarWidth,
+      wideSidebarOpen: preferredWideSidebarOpen,
+      wideContextOpen: preferredWideContextOpen,
+    };
+    window.localStorage.setItem(SHELL_PREFERENCES_STORAGE_KEY, JSON.stringify(nextState));
     return true;
   } catch (error) {
     console.warn("Failed to persist shell preferences", error);
@@ -4116,13 +4143,17 @@ function setTerminalDrawer(open: boolean) {
   });
 }
 
-function setContextPanel(open: boolean) {
+function setContextPanel(open: boolean, options?: { preserveWidePreference?: boolean }) {
   contextPanelOpen = open;
   const panel = document.getElementById("context-panel");
   const button = document.getElementById("toggle-context-btn");
   const body = document.getElementById("workspace-body");
   if (!panel || !button || !body) {
     return;
+  }
+
+  if ((options?.preserveWidePreference ?? true) && !isNarrowLayout()) {
+    preferredWideContextOpen = open;
   }
 
   panel.toggleAttribute("hidden", !open);
@@ -4150,13 +4181,17 @@ function isNarrowLayout() {
   return window.matchMedia("(max-width: 1180px)").matches;
 }
 
-function setSidebarOpen(open: boolean) {
+function setSidebarOpen(open: boolean, options?: { preserveWidePreference?: boolean }) {
   sidebarOpen = open;
   const shell = document.getElementById("app-shell");
   const overlay = document.getElementById("sidebar-overlay");
   const button = document.getElementById("toggle-sidebar-btn");
   if (!shell || !overlay || !button) {
     return;
+  }
+
+  if ((options?.preserveWidePreference ?? true) && !isNarrowLayout()) {
+    preferredWideSidebarOpen = open;
   }
 
   shell.classList.toggle("sidebar-open", open);
@@ -4200,13 +4235,11 @@ function cancelSettingsDraft() {
 
 function syncResponsiveShell() {
   if (isNarrowLayout()) {
-    setSidebarOpen(false);
-    setContextPanel(false);
+    setSidebarOpen(false, { preserveWidePreference: false });
+    setContextPanel(false, { preserveWidePreference: false });
   } else {
-    setSidebarOpen(true);
-    if (!contextPanelOpen) {
-      setContextPanel(true);
-    }
+    setSidebarOpen(preferredWideSidebarOpen, { preserveWidePreference: false });
+    setContextPanel(preferredWideContextOpen, { preserveWidePreference: false });
   }
 }
 
@@ -4743,6 +4776,8 @@ function initializeSidebarResize() {
     return;
   }
 
+  appShell.style.setProperty("--sidebar-width", `${sidebarWidth}px`);
+
   handle.addEventListener("pointerdown", (event) => {
     const startX = event.clientX;
     const startWidth = sidebarWidth;
@@ -4753,6 +4788,7 @@ function initializeSidebarResize() {
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      void persistThemeState();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -4762,9 +4798,12 @@ function initializeSidebarResize() {
 window.addEventListener("DOMContentLoaded", async () => {
   installViewportHarnessHooks();
 
-  const storedThemeState = readStoredThemeState();
-  if (storedThemeState) {
-    applyThemeState(storedThemeState);
+  const storedShellPreferences = readStoredShellPreferences();
+  if (storedShellPreferences) {
+    applyThemeState(storedShellPreferences);
+    sidebarWidth = storedShellPreferences.sidebarWidth;
+    preferredWideSidebarOpen = storedShellPreferences.wideSidebarOpen;
+    preferredWideContextOpen = storedShellPreferences.wideContextOpen;
   }
 
   await subscribeToPtyOutput((payload) => {
