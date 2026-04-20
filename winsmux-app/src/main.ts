@@ -12,6 +12,7 @@ import {
   promoteDesktopRunTactic,
   subscribeToDesktopSummaryRefresh,
   type DesktopCompareRunsResult,
+  type DesktopBoardPane,
   type DesktopEditorFilePayload,
   type DesktopExplainPayload,
   type DesktopRunProjection,
@@ -4421,6 +4422,21 @@ function getRunProjectionFingerprint(projection: DesktopRunProjection | null | u
   ]);
 }
 
+function getBoardPaneFingerprint(pane: DesktopBoardPane) {
+  return JSON.stringify([
+    pane.label,
+    pane.role,
+    pane.state,
+    pane.task_state,
+    pane.review_state,
+    pane.branch,
+    pane.worktree,
+    pane.head_sha,
+    pane.changed_file_count,
+    pane.last_event_at,
+  ]);
+}
+
 function diffDesktopSummarySnapshots(
   previousSnapshot: DesktopSummarySnapshot | null,
   nextSnapshot: DesktopSummarySnapshot,
@@ -4441,10 +4457,17 @@ function diffDesktopSummarySnapshots(
   const nextProjectionMap = new Map(
     nextSnapshot.run_projections.map((projection) => [projection.run_id, projection]),
   );
+  const previousBoardPaneMap = new Map(
+    previousSnapshot.board.panes.map((pane) => [pane.pane_id, pane]),
+  );
+  const nextBoardPaneMap = new Map(
+    nextSnapshot.board.panes.map((pane) => [pane.pane_id, pane]),
+  );
 
   const changedRunIds: string[] = [];
   const addedRunIds: string[] = [];
   const removedRunIds: string[] = [];
+  let boardPaneChanged = previousSnapshot.board.panes.length !== nextSnapshot.board.panes.length;
 
   for (const [runId, nextProjection] of nextProjectionMap) {
     const previousProjection = previousProjectionMap.get(runId);
@@ -4464,15 +4487,32 @@ function diffDesktopSummarySnapshots(
     }
   }
 
+  if (!boardPaneChanged) {
+    for (const [paneId, nextPane] of nextBoardPaneMap) {
+      const previousPane = previousBoardPaneMap.get(paneId);
+      if (!previousPane) {
+        boardPaneChanged = true;
+        break;
+      }
+
+      if (getBoardPaneFingerprint(previousPane) !== getBoardPaneFingerprint(nextPane)) {
+        boardPaneChanged = true;
+        break;
+      }
+    }
+  }
+
   const inboxCountChanged =
     previousSnapshot.inbox.summary.item_count !== nextSnapshot.inbox.summary.item_count;
 
   return {
     hasMeaningfulChange:
+      boardPaneChanged ||
       inboxCountChanged ||
       addedRunIds.length > 0 ||
       removedRunIds.length > 0 ||
       changedRunIds.length > 0,
+    boardPaneChanged,
     changedRunIds,
     inboxCountChanged,
     addedRunIds,
@@ -5172,6 +5212,40 @@ function formatPaneWaitDuration(timestamp: string, now = Date.now()) {
   return `${hours}h ${minutes}m wait`;
 }
 
+function summarizeBoardPaneStatus(pane: DesktopBoardPane | null) {
+  if (!pane) {
+    return "";
+  }
+
+  const role = pane.role || "pane";
+  const taskState = (pane.task_state || "").toLowerCase();
+  const reviewState = (pane.review_state || "").toUpperCase();
+
+  if (taskState === "blocked") {
+    return `${role} · blocked`;
+  }
+  if (reviewState === "FAIL" || reviewState === "FAILED") {
+    return `${role} · review failed`;
+  }
+  if (reviewState === "PENDING") {
+    return `${role} · review pending`;
+  }
+  if (reviewState === "PASS") {
+    return `${role} · review pass`;
+  }
+  if (taskState === "commit_ready") {
+    return `${role} · commit ready`;
+  }
+  if (taskState === "completed" || taskState === "task_completed" || taskState === "done") {
+    return `${role} · completed`;
+  }
+  if (pane.task_state) {
+    return `${role} · ${pane.task_state}`;
+  }
+
+  return role;
+}
+
 function renderPaneMetadata() {
   const boardPanes = desktopSummarySnapshot?.board.panes ?? [];
   const now = Date.now();
@@ -5181,6 +5255,7 @@ function renderPaneMetadata() {
     const paneLabel = paneRecord?.label || paneId;
     pane.labelElement.textContent = paneLabel;
 
+    const status = summarizeBoardPaneStatus(paneRecord);
     const branch = paneRecord?.branch || "No branch";
     const eventTime = paneRecord?.last_event_at ? formatPaneMetaTime(paneRecord.last_event_at) : "";
     const waitDuration = paneRecord?.last_event_at
@@ -5189,7 +5264,7 @@ function renderPaneMetadata() {
         ? `${formatPreviewSeenAt(pane.lastOutputAt)} · live output`
         : "waiting for summary";
 
-    const parts = [branch];
+    const parts = [status, branch];
     if (eventTime) {
       parts.push(eventTime);
     }
