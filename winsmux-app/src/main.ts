@@ -190,7 +190,7 @@ let sidebarWidth = 292;
 let selectedEditorKey = "";
 let selectedPreviewUrl = "";
 let lastExternalPreviewOpen: { url: string; openedAt: number } | null = null;
-let lastCopiedPreviewUrl: { url: string; copiedAt: number } | null = null;
+let lastPreviewClipboardState: { url: string; at: number; ok: boolean } | null = null;
 let selectedRunId: string | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
 let activeSourceFilter: SourceFilter = "all";
@@ -982,8 +982,8 @@ function openPreviewTarget(url: string) {
   if (lastExternalPreviewOpen?.url !== url) {
     lastExternalPreviewOpen = null;
   }
-  if (lastCopiedPreviewUrl?.url !== url) {
-    lastCopiedPreviewUrl = null;
+  if (lastPreviewClipboardState?.url !== url) {
+    lastPreviewClipboardState = null;
   }
   setEditorSurface(true);
 }
@@ -992,7 +992,7 @@ function closePreviewTarget() {
   editorSurfaceMode = "code";
   selectedPreviewUrl = "";
   lastExternalPreviewOpen = null;
-  lastCopiedPreviewUrl = null;
+  lastPreviewClipboardState = null;
   if (!selectedEditorKey) {
     setEditorSurface(false);
     return;
@@ -1027,11 +1027,21 @@ async function copyPreviewTargetUrl() {
   if (!selectedPreviewUrl || !navigator.clipboard) {
     return;
   }
-  await navigator.clipboard.writeText(selectedPreviewUrl);
-  lastCopiedPreviewUrl = {
-    url: selectedPreviewUrl,
-    copiedAt: Date.now(),
-  };
+  const previewUrl = selectedPreviewUrl;
+  try {
+    await navigator.clipboard.writeText(previewUrl);
+    lastPreviewClipboardState = {
+      url: previewUrl,
+      at: Date.now(),
+      ok: true,
+    };
+  } catch {
+    lastPreviewClipboardState = {
+      url: previewUrl,
+      at: Date.now(),
+      ok: false,
+    };
+  }
   renderEditorSurface();
 }
 
@@ -3019,13 +3029,13 @@ function renderEditorSurface() {
       browserTargetList.hidden = false;
     }
     browserToolbarSummary.textContent = `${previewTargets.length} targets · active ${previewTarget.portLabel}${lastExternalPreviewOpen?.url === previewTarget.url ? " · external open" : ""}`;
-    if (lastCopiedPreviewUrl?.url === previewTarget.url) {
-      browserToolbarSummary.textContent += " · copied";
+    if (lastPreviewClipboardState?.url === previewTarget.url) {
+      browserToolbarSummary.textContent += lastPreviewClipboardState.ok ? " · copied" : " · copy failed";
     }
     browserFrame.src = previewTarget.url;
     browserSurface.hidden = false;
     browserBackButton.disabled = false;
-    browserCopyButton.disabled = false;
+    browserCopyButton.disabled = !Boolean(navigator.clipboard);
     browserReloadButton.disabled = false;
     browserOpenButton.disabled = false;
     code.textContent = "";
