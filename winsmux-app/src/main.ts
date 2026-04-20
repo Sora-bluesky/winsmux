@@ -969,6 +969,20 @@ function renderExperimentContext() {
           .filter((value) => Boolean(value))
           .join(" · ")
       : "Compare needs another surfaced run.";
+  const compareOverviewValue = compareInFlight
+    ? "Refreshing compare"
+    : (
+      compareResult
+        ? (
+          compareResult.recommend.reconcile_consult
+            ? "Consult before pick"
+            : `Winner ${compareWinnerLabel || "not decided"}`
+        )
+        : (comparePeer ? `vs ${comparePeer.label || comparePeer.run_id}` : "Need peer")
+    );
+  const compareDisplayBody = compareInFlight
+    ? `Refreshing compare result${compareResult ? "..." : " from current runs..." }`
+    : compareBody;
   const compareCandidateSummary = compareResult
     ? [
         compareWinnerLabel ? `winner ${compareWinnerLabel}` : "",
@@ -1000,13 +1014,7 @@ function renderExperimentContext() {
     },
     {
       label: "Compare",
-      value: compareResult
-        ? (
-          compareResult.recommend.reconcile_consult
-            ? "Consult before pick"
-            : `Winner ${compareWinnerLabel || "not decided"}`
-        )
-        : (comparePeer ? `vs ${comparePeer.label || comparePeer.run_id}` : "Need peer"),
+      value: compareOverviewValue,
     },
     {
       label: "Candidate",
@@ -1039,7 +1047,7 @@ function renderExperimentContext() {
     },
     {
       title: "Compare",
-      body: compareBody,
+      body: compareDisplayBody,
       tone: compareTone,
       actionLabel: comparePeer ? "Compare" : undefined,
       actionPendingLabel: "Comparing...",
