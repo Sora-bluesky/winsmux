@@ -120,6 +120,8 @@ type PopoutSurfaceState =
       portLabel: string;
       sourceLabel: string;
       lastSeenAt: number;
+      runId?: string;
+      runLabel?: string;
     }
   | {
       mode: "editor";
@@ -130,6 +132,8 @@ type PopoutSurfaceState =
       modified: boolean;
       sourceChange?: SourceChange | null;
       content?: string;
+      runId?: string;
+      runLabel?: string;
     };
 
 declare global {
@@ -250,6 +254,7 @@ let selectedPreviewUrl = "";
 let lastPreviewExternalState: { url: string; at: number; ok: boolean } | null = null;
 let lastPreviewClipboardState: { url: string; at: number; ok: boolean } | null = null;
 let selectedRunId: string | null = null;
+let detachedSurfaceRunLabel = "";
 let activeComposerMode: ComposerMode = "dispatch";
 let composerSlashOpen = false;
 let composerSlashQuery = "";
@@ -1114,6 +1119,9 @@ function restoreStandaloneEditorFromSnapshot(state: Extract<PopoutSurfaceState, 
 }
 
 function getCurrentEditorSurfaceState(): PopoutSurfaceState | null {
+  const selectedProjection = getPrimaryRunProjection();
+  const runId = selectedProjection?.run_id || undefined;
+  const runLabel = selectedProjection?.label || selectedProjection?.run_id || undefined;
   const previewTarget = selectedPreviewUrl ? detectedPreviewTargets.get(selectedPreviewUrl) ?? null : null;
   if (editorSurfaceMode === "preview" && previewTarget) {
     return {
@@ -1122,6 +1130,8 @@ function getCurrentEditorSurfaceState(): PopoutSurfaceState | null {
       portLabel: previewTarget.portLabel,
       sourceLabel: previewTarget.sourceLabel,
       lastSeenAt: previewTarget.lastSeenAt,
+      runId,
+      runLabel,
     };
   }
 
@@ -1141,6 +1151,8 @@ function getCurrentEditorSurfaceState(): PopoutSurfaceState | null {
     modified: Boolean(selected.modified),
     sourceChange: selectedTarget?.sourceChange ?? null,
     content: isTauri() ? undefined : selected.content,
+    runId,
+    runLabel,
   };
 }
 
@@ -1173,6 +1185,7 @@ function applyPopoutSurfaceState(state: PopoutSurfaceState | null) {
   }
 
   document.body.dataset.popoutSurface = "1";
+  detachedSurfaceRunLabel = state.runLabel ?? state.runId ?? "";
   const title = document.getElementById("workspace-title");
   const subtitle = document.getElementById("workspace-subtitle");
   const editorLabel = state.mode === "editor" ? state.path.split("/").pop() ?? state.path : "";
@@ -1186,8 +1199,8 @@ function applyPopoutSurfaceState(state: PopoutSurfaceState | null) {
   if (subtitle) {
     subtitle.textContent =
       state.mode === "preview"
-        ? `Detached secondary surface from ${state.sourceLabel}.`
-        : `Detached secondary surface for ${editorWorktreeLabel}.`;
+        ? `Detached secondary surface from ${state.sourceLabel}${detachedSurfaceRunLabel ? ` · ${detachedSurfaceRunLabel}` : ""}.`
+        : `Detached secondary surface for ${editorWorktreeLabel}${detachedSurfaceRunLabel ? ` · ${detachedSurfaceRunLabel}` : ""}.`;
   }
 
   setSidebarOpen(false, { preserveWidePreference: false });
@@ -1197,6 +1210,7 @@ function applyPopoutSurfaceState(state: PopoutSurfaceState | null) {
   closeCommandBar();
 
   if (state.mode === "preview") {
+    setSelectedRun(state.runId ?? null);
     registerPreviewTargetForHarness(state.sourceLabel, state.url);
     const target = detectedPreviewTargets.get(state.url);
     if (target) {
@@ -1208,10 +1222,12 @@ function applyPopoutSurfaceState(state: PopoutSurfaceState | null) {
   }
 
   if (typeof state.content === "string") {
+    setSelectedRun(state.runId ?? null);
     restoreStandaloneEditorFromSnapshot({ ...state, content: state.content });
     return;
   }
 
+  setSelectedRun(state.runId ?? null);
   void openEditorPath(state.path, state.worktree);
 }
 
@@ -3873,6 +3889,7 @@ function renderEditorSurface() {
     renderEditorStatusbar(statusbar, [
       { label: "Surface", value: "Preview" },
       ...(detachedSurface ? [{ label: "Window", value: "Detached" }] : []),
+      ...(detachedSurface && detachedSurfaceRunLabel ? [{ label: "Run", value: detachedSurfaceRunLabel }] : []),
       { label: "Target", value: previewTarget.portLabel },
       { label: "Source", value: previewTarget.sourceLabel },
       { label: "Seen", value: formatPreviewSeenAt(previewTarget.lastSeenAt) },
@@ -3955,6 +3972,7 @@ function renderEditorSurface() {
     renderEditorStatusbar(statusbar, [
       { label: "Surface", value: selectedTarget?.sourceChange ? "Diff review" : "Editor" },
       ...(detachedSurface ? [{ label: "Window", value: "Detached" }] : []),
+      ...(detachedSurface && detachedSurfaceRunLabel ? [{ label: "Run", value: detachedSurfaceRunLabel }] : []),
       { label: "Source", value: selected.origin === "context" ? "Run context" : "Explorer" },
       ...(selectedWorktreeLabel ? [{ label: "Worktree", value: selectedWorktreeLabel }] : []),
     ]);

@@ -266,6 +266,16 @@ async function assertPopoutShell(popup, visibleSelector) {
     throw new Error("Pop-out window did not enter detached surface mode");
   }
   await popup.locator("#workspace-header").waitFor({ state: "visible" });
+  await popup.waitForFunction(() => {
+    const title = document.querySelector("#workspace-title");
+    const subtitle = document.querySelector("#workspace-subtitle");
+    return (
+      title instanceof HTMLElement &&
+      subtitle instanceof HTMLElement &&
+      Boolean(title.textContent?.trim()) &&
+      subtitle.textContent?.includes("Detached secondary surface")
+    );
+  });
   await popup.locator("#conversation-panel").waitFor({ state: "hidden" });
   await popup.locator("#context-panel").waitFor({ state: "hidden" });
   await popup.locator("#workspace-footer").waitFor({ state: "hidden" });
