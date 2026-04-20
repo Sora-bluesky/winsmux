@@ -2739,10 +2739,11 @@ function trapCommandBarTab(event: KeyboardEvent) {
 function renderEditorSurface() {
   const path = document.getElementById("editor-file-path");
   const meta = document.getElementById("editor-meta-row");
+  const diffPreview = document.getElementById("editor-diff-preview");
   const tabs = document.getElementById("editor-tabs");
   const code = document.getElementById("editor-code");
   const statusbar = document.getElementById("editor-statusbar");
-  if (!path || !meta || !tabs || !code || !statusbar) {
+  if (!path || !meta || !diffPreview || !tabs || !code || !statusbar) {
     return;
   }
 
@@ -2751,6 +2752,8 @@ function renderEditorSurface() {
   if (!selected) {
     path.textContent = "Editor idle";
     meta.innerHTML = "";
+    diffPreview.innerHTML = "";
+    diffPreview.hidden = true;
     tabs.innerHTML = "";
     code.textContent = "No backend preview cached.";
     statusbar.textContent = "Secondary work surface: 0 projected files";
@@ -2782,6 +2785,37 @@ function renderEditorSurface() {
     chip.dataset.tone = item === "Modified" ? "focus" : "default";
     chip.textContent = item;
     meta.appendChild(chip);
+  }
+  diffPreview.innerHTML = "";
+  diffPreview.hidden = true;
+  if (selectedTarget?.sourceChange) {
+    const previewTitle = document.createElement("div");
+    previewTitle.className = "editor-diff-preview-title";
+    previewTitle.textContent = "Diff preview";
+    const previewBody = document.createElement("div");
+    previewBody.className = "editor-diff-preview-body";
+    previewBody.textContent = selectedTarget.sourceChange.summary;
+    const previewMeta = document.createElement("div");
+    previewMeta.className = "editor-diff-preview-meta";
+    for (const item of [
+      selectedTarget.sourceChange.status,
+      selectedTarget.sourceChange.lines,
+      selectedTarget.sourceChange.branch,
+      selectedTarget.sourceChange.review,
+      selectedTarget.sourceChange.paneLabel,
+    ]) {
+      if (!item) {
+        continue;
+      }
+      const chip = document.createElement("span");
+      chip.className = "editor-meta-chip";
+      chip.textContent = item;
+      previewMeta.appendChild(chip);
+    }
+    diffPreview.appendChild(previewTitle);
+    diffPreview.appendChild(previewBody);
+    diffPreview.appendChild(previewMeta);
+    diffPreview.hidden = false;
   }
   code.textContent = selected.content;
   statusbar.textContent = `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selectedWorktreeLabel ? `${selectedWorktreeLabel} / ` : ""}${selected.path}`;
