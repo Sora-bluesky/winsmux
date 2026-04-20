@@ -190,9 +190,14 @@ let desktopSummaryFallbackRefreshRegistered = false;
 let desktopSummaryLiveRefreshAvailable = false;
 let desktopSummaryLastSuccessfulRefreshAt = 0;
 let desktopSummaryLastStreamSignalAt = 0;
+let desktopSummaryRefreshSerial = 0;
 const desktopExplainCache = new Map<string, DesktopExplainPayload>();
 const desktopRunCompareCache = new Map<string, DesktopCompareRunsResult>();
-const promotedRunCandidates = new Map<string, { fingerprint: string; candidateRef: string }>();
+const promotedRunCandidates = new Map<string, {
+  fingerprint: string;
+  candidateRef: string;
+  collapseAfterRefreshSerial: number;
+}>();
 const desktopEditorFileCache = new Map<string, EditorFile>();
 const desktopEditorLoadingPaths = new Set<string>();
 const desktopEditorLoadErrors = new Map<string, string>();
@@ -889,10 +894,14 @@ function renderExperimentContext() {
   const experimentPacket = payload.run.experiment_packet;
   const explainFingerprint = getExplainPayloadFingerprint(payload);
   const promotedCandidate = promotedRunCandidates.get(selectedProjection.run_id) ?? null;
-  const isPromotedCandidate =
+  const hasPromotedCandidate =
     promotedCandidate !== null &&
     promotedCandidate.fingerprint === explainFingerprint;
-  const promotedCandidateRef = isPromotedCandidate && promotedCandidate
+  const isPromotedCandidate = hasPromotedCandidate &&
+    promotedCandidate !== null &&
+    desktopSummaryRefreshSerial <= promotedCandidate.collapseAfterRefreshSerial;
+  const showLastExport = hasPromotedCandidate && !isPromotedCandidate;
+  const promotedCandidateRef = hasPromotedCandidate && promotedCandidate
     ? summarizeArtifactRef(promotedCandidate.candidateRef)
     : "";
   const comparePeer = getComparePeerProjection(
@@ -1065,7 +1074,9 @@ function renderExperimentContext() {
       details: [
         ...(isPromotedCandidate
           ? [{ label: "exported", value: promotedCandidateRef }]
-          : []),
+          : (showLastExport
+            ? [{ label: "last export", value: promotedCandidateRef }]
+            : [])),
         { label: "next", value: experimentPacket.next_action || "n/a" },
         { label: "consult", value: consultationSummary.next_test || "n/a" },
         { label: "confidence", value: formatConfidencePercent(experimentPacket.confidence || 0) },
@@ -1876,6 +1887,7 @@ async function promoteSelectedRunTactic(runId: string) {
       promotedRunCandidates.set(runId, {
         fingerprint: getExplainPayloadFingerprint(explainPayload),
         candidateRef: result.candidate_ref,
+        collapseAfterRefreshSerial: desktopSummaryRefreshSerial + 1,
       });
     } catch (refreshError) {
       console.warn("Failed to refresh promoted run explain payload", refreshError);
@@ -3345,6 +3357,7 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
     for (const runId of invalidatedRunIds) {
       promotedRunCandidates.delete(runId);
     }
+    desktopSummaryRefreshSerial += 1;
     desktopSummarySnapshot = snapshot;
     desktopSummaryLastSuccessfulRefreshAt = Date.now();
     selectedRunId = resolveSelectedRunId(snapshot, forceExplainRunId);
