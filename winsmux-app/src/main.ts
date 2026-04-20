@@ -1028,12 +1028,16 @@ function openPreviewTargetExternally() {
   if (!selectedPreviewUrl) {
     return;
   }
+  const previewUrl = selectedPreviewUrl;
+  const opened = window.open(previewUrl, "_blank", "noopener");
+  if (!opened) {
+    return;
+  }
   lastExternalPreviewOpen = {
-    url: selectedPreviewUrl,
+    url: previewUrl,
     openedAt: Date.now(),
   };
   renderEditorSurface();
-  window.open(selectedPreviewUrl, "_blank", "noopener");
 }
 
 async function copyPreviewTargetUrl() {
