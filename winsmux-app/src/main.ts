@@ -937,6 +937,12 @@ function renderExperimentContext() {
   const compareWinnerProjection = compareWinnerRunId
     ? getRunProjectionByRunId(compareWinnerRunId)
     : null;
+  const compareLeftProjection = compareResult
+    ? (getRunProjectionByRunId(compareResult.left.run_id) ?? selectedProjection)
+    : selectedProjection;
+  const compareRightProjection = compareResult
+    ? (getRunProjectionByRunId(compareResult.right.run_id) ?? comparePeer)
+    : comparePeer;
   const canFocusCompareWinner = Boolean(
     compareResult &&
     !compareResult.recommend.reconcile_consult &&
@@ -1112,7 +1118,8 @@ function renderExperimentContext() {
             {
               label: "Selected run",
               value: [
-                compareResult.left.branch || "no branch",
+                compareResult.left.branch || compareLeftProjection?.branch || "no branch",
+                compareLeftProjection?.head_short || "",
                 compareResult.left.review_state || compareResult.left.state,
                 compareResult.left.next_action || "idle",
               ]
@@ -1122,7 +1129,8 @@ function renderExperimentContext() {
             {
               label: "Peer run",
               value: [
-                compareResult.right.branch || "no branch",
+                compareResult.right.branch || compareRightProjection?.branch || "no branch",
+                compareRightProjection?.head_short || "",
                 compareResult.right.review_state || compareResult.right.state,
                 compareResult.right.next_action || "idle",
               ]
