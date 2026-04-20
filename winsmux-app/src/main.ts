@@ -3547,6 +3547,7 @@ function trapCommandBarTab(event: KeyboardEvent) {
 }
 
 function renderEditorSurface() {
+  const summary = document.getElementById("editor-surface-summary");
   const path = document.getElementById("editor-file-path");
   const meta = document.getElementById("editor-meta-row");
   const diffPreview = document.getElementById("editor-diff-preview");
@@ -3562,7 +3563,7 @@ function renderEditorSurface() {
   const tabs = document.getElementById("editor-tabs");
   const code = document.getElementById("editor-code");
   const statusbar = document.getElementById("editor-statusbar");
-  if (!path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserToolbarSummary || !browserBackButton || !browserCopyButton || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
+  if (!summary || !path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserToolbarSummary || !browserBackButton || !browserCopyButton || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
     return;
   }
 
@@ -3573,6 +3574,7 @@ function renderEditorSurface() {
   const previewModeActive = editorSurfaceMode === "preview" && Boolean(previewTarget);
   if (!selected && !previewModeActive) {
     path.textContent = "Editor idle";
+    summary.innerHTML = "";
     meta.innerHTML = "";
     diffPreview.innerHTML = "";
     diffPreview.hidden = true;
@@ -3599,6 +3601,7 @@ function renderEditorSurface() {
     : "";
 
   meta.innerHTML = "";
+  summary.innerHTML = "";
   diffPreview.innerHTML = "";
   diffPreview.hidden = true;
   browserMeta.innerHTML = "";
@@ -3614,6 +3617,17 @@ function renderEditorSurface() {
 
   if (previewModeActive && previewTarget) {
     path.textContent = previewTarget.url;
+    for (const item of [
+      "Preview",
+      previewTarget.portLabel,
+      previewTarget.sourceLabel,
+    ]) {
+      const chip = document.createElement("span");
+      chip.className = "editor-meta-chip";
+      chip.dataset.tone = item === "Preview" ? "focus" : "default";
+      chip.textContent = item;
+      summary.appendChild(chip);
+    }
     for (const item of [
       "Preview browser",
       previewTarget.portLabel,
@@ -3685,6 +3699,27 @@ function renderEditorSurface() {
       `${lastPreviewExternalState?.url === previewTarget.url ? (lastPreviewExternalState.ok ? " (opened externally)" : " (external blocked)") : ""}`;
   } else if (selected) {
     path.textContent = selected.path;
+    for (const item of [
+      "Code",
+      selected.origin === "context" ? "Run context" : "Explorer",
+      selectedWorktreeLabel,
+    ]) {
+      if (!item) {
+        continue;
+      }
+      const chip = document.createElement("span");
+      chip.className = "editor-meta-chip";
+      chip.dataset.tone = item === "Code" ? "focus" : "default";
+      chip.textContent = item;
+      summary.appendChild(chip);
+    }
+    if (selectedTarget?.sourceChange) {
+      const diffChip = document.createElement("span");
+      diffChip.className = "editor-meta-chip";
+      diffChip.dataset.tone = "focus";
+      diffChip.textContent = "Diff review";
+      summary.appendChild(diffChip);
+    }
     for (const item of [
       selected.language,
       `${selected.lineCount} lines`,

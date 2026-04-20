@@ -996,6 +996,12 @@ textarea {
   font-family: var(--font-code);
 }
 
+#editor-surface-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 #editor-meta-row {
   display: flex;
   flex-wrap: wrap;
