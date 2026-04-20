@@ -1,0 +1,286 @@
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import fs from "node:fs/promises";
+import net from "node:net";
+import path from "node:path";
+import process from "node:process";
+import { chromium } from "playwright";
+
+const OUTPUT_DIR = path.join(process.cwd(), "output", "playwright", "viewport-harness");
+
+async function ensureOutputDir() {
+  await fs.mkdir(OUTPUT_DIR, { recursive: true });
+}
+
+async function waitForPreviewServer(url, timeoutMs = 30_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) {
+        return;
+      }
+    } catch {
+      // Ignore connection errors until the timeout expires.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  throw new Error(`Preview server did not start within ${timeoutMs}ms`);
+}
+
+async function getAvailablePort() {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close();
+        reject(new Error("Failed to resolve a preview port"));
+        return;
+      }
+      const { port } = address;
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(port);
+      });
+    });
+    server.on("error", reject);
+  });
+}
+
+function startPreviewServer(previewPort) {
+  const child = spawn(
+    process.platform === "win32" ? "cmd.exe" : "npm",
+    process.platform === "win32"
+      ? ["/c", "npm", "run", "preview", "--", "--host", "127.0.0.1", "--port", `${previewPort}`, "--strictPort"]
+      : ["run", "preview", "--", "--host", "127.0.0.1", "--port", `${previewPort}`, "--strictPort"],
+    {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+
+  child.stdout.on("data", (chunk) => {
+    process.stdout.write(chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    process.stderr.write(chunk);
+  });
+
+  return child;
+}
+
+async function stopPreviewServer(child) {
+  if (child.exitCode !== null || child.killed) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    const killer = spawn("taskkill", ["/pid", `${child.pid}`, "/t", "/f"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    await once(killer, "exit").catch(() => {});
+    return;
+  }
+
+  child.kill("SIGTERM");
+  await once(child, "exit").catch(() => {});
+}
+
+async function getBox(page, selector) {
+  const locator = page.locator(selector);
+  await locator.waitFor({ state: "visible" });
+  const box = await locator.boundingBox();
+  if (!box) {
+    throw new Error(`${selector} does not have a visible bounding box`);
+  }
+  return box;
+}
+
+function boxesOverlap(a, b) {
+  return !(
+    a.x + a.width <= b.x ||
+    b.x + b.width <= a.x ||
+    a.y + a.height <= b.y ||
+    b.y + b.height <= a.y
+  );
+}
+
+async function assertFullyVisible(page, selector) {
+  const box = await getBox(page, selector);
+  const viewport = page.viewportSize();
+  if (!viewport) {
+    throw new Error("Viewport size is unavailable");
+  }
+  if (
+    box.x < 0 ||
+    box.y < 0 ||
+    box.x + box.width > viewport.width ||
+    box.y + box.height > viewport.height
+  ) {
+    throw new Error(`${selector} is clipped by the viewport`);
+  }
+}
+
+async function assertHorizontallyVisible(page, selector) {
+  const box = await getBox(page, selector);
+  const viewport = page.viewportSize();
+  if (!viewport) {
+    throw new Error("Viewport size is unavailable");
+  }
+  if (box.x < 0 || box.x + box.width > viewport.width) {
+    throw new Error(`${selector} is clipped horizontally`);
+  }
+}
+
+async function assertNoOverlap(page, firstSelector, secondSelector) {
+  const first = await getBox(page, firstSelector);
+  const second = await getBox(page, secondSelector);
+  if (boxesOverlap(first, second)) {
+    throw new Error(`${firstSelector} overlaps ${secondSelector}`);
+  }
+}
+
+async function assertButtonVisible(page, selector) {
+  await assertFullyVisible(page, selector);
+  const disabled = await page.locator(selector).isDisabled();
+  if (disabled) {
+    throw new Error(`${selector} is disabled`);
+  }
+}
+
+async function waitForHorizontalVisibility(page, selector) {
+  await page.waitForFunction((targetSelector) => {
+    const target = document.querySelector(targetSelector);
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+    const rect = target.getBoundingClientRect();
+    return rect.x >= 0 && rect.right <= window.innerWidth;
+  }, selector);
+}
+
+async function verifyDesktopViewport(page, previewUrl) {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(previewUrl, { waitUntil: "networkidle" });
+
+  await assertHorizontallyVisible(page, "#left-rail");
+  await assertFullyVisible(page, "#conversation-panel");
+  await assertHorizontallyVisible(page, "#context-panel");
+  await assertButtonVisible(page, "#send-btn");
+  await assertFullyVisible(page, "#workspace-footer");
+  await assertNoOverlap(page, "#workspace-header", "#workspace-body");
+  await assertNoOverlap(page, "#workspace-body", "#workspace-footer");
+
+  await page.click("#toggle-terminal-btn");
+  await page.locator("#terminal-drawer").waitFor({ state: "visible" });
+  await assertButtonVisible(page, "#add-pane-btn");
+  await assertFullyVisible(page, "#terminal-drawer");
+}
+
+async function verifyNarrowViewport(page, previewUrl) {
+  await page.setViewportSize({ width: 393, height: 852 });
+  await page.goto(previewUrl, { waitUntil: "networkidle" });
+
+  await assertButtonVisible(page, "#send-btn");
+  await assertFullyVisible(page, "#workspace-footer");
+  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+
+  await page.click("#toggle-sidebar-btn");
+  await page.locator("#toggle-sidebar-btn[aria-expanded='true']").waitFor();
+  await waitForHorizontalVisibility(page, "#left-rail");
+  await assertHorizontallyVisible(page, "#left-rail");
+  await assertFullyVisible(page, "#sidebar-overlay");
+  const narrowViewport = page.viewportSize();
+  if (!narrowViewport) {
+    throw new Error("Viewport size is unavailable");
+  }
+  await page.mouse.click(narrowViewport.width - 10, 24);
+  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+
+  await page.click("#toggle-context-btn");
+  await page.locator("#toggle-context-btn[aria-expanded='true']").waitFor();
+  await waitForHorizontalVisibility(page, "#context-panel");
+  await assertHorizontallyVisible(page, "#context-panel");
+
+  await page.click("#toggle-terminal-btn");
+  await page.locator("#terminal-drawer").waitFor({ state: "visible" });
+  await assertButtonVisible(page, "#add-pane-btn");
+  await assertFullyVisible(page, "#terminal-drawer");
+}
+
+async function run() {
+  await ensureOutputDir();
+
+  const previewPort = await getAvailablePort();
+  const previewUrl = `http://127.0.0.1:${previewPort}`;
+  const previewServer = startPreviewServer(previewPort);
+  let browser;
+
+  try {
+    await waitForPreviewServer(previewUrl);
+    browser = await chromium.launch({ headless: true });
+    const page = await browser.newPage();
+
+    await verifyDesktopViewport(page, previewUrl);
+    await verifyNarrowViewport(page, previewUrl);
+
+    await fs.writeFile(
+      path.join(OUTPUT_DIR, "viewport-harness.json"),
+      JSON.stringify(
+        {
+          ok: true,
+          generatedAt: new Date().toISOString(),
+          previewUrl,
+          checks: [
+            "desktop-1440x900",
+            "narrow-393x852",
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+  } catch (error) {
+    if (browser) {
+      const page = browser.contexts()[0]?.pages()[0];
+      if (page) {
+        await page.screenshot({
+          path: path.join(OUTPUT_DIR, "viewport-harness-failure.png"),
+          fullPage: true,
+        }).catch(() => {});
+      }
+    }
+
+    await fs.writeFile(
+      path.join(OUTPUT_DIR, "viewport-harness.json"),
+      JSON.stringify(
+        {
+          ok: false,
+          generatedAt: new Date().toISOString(),
+          previewUrl,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    throw error;
+  } finally {
+    if (browser) {
+      await browser.close().catch(() => {});
+    }
+    await stopPreviewServer(previewServer);
+  }
+}
+
+run().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});

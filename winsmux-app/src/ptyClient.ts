@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 const PTY_JSON_RPC_VERSION = "2.0";
@@ -52,6 +52,10 @@ export function createTauriPtyCommandTransport(
 ): PtyCommandTransport {
   return {
     async request(command: PtyCommandName, payload: Record<string, unknown>) {
+      if (!isTauri()) {
+        return;
+      }
+
       const request: PtyJsonRpcRequest = {
         jsonrpc: PTY_JSON_RPC_VERSION,
         id: `pty-${++ptyRequestSequence}`,
@@ -118,6 +122,10 @@ export async function closePtyPane(paneId: string) {
 export async function subscribeToPtyOutput(
   onOutput: (event: PtyOutputEvent) => void,
 ): Promise<UnlistenFn> {
+  if (!isTauri()) {
+    return async () => {};
+  }
+
   return listen<string>("pty-output", (event) => {
     try {
       onOutput(JSON.parse(event.payload) as PtyOutputEvent);

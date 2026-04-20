@@ -61,6 +61,10 @@ body {
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 button,
 textarea {
   font: inherit;
@@ -148,6 +152,8 @@ textarea {
   flex-direction: column;
   gap: 14px;
   min-width: 240px;
+  min-height: 0;
+  overflow: auto;
 }
 
 .brand-block {
@@ -272,10 +278,13 @@ textarea {
 
 #workspace {
   min-width: 0;
+  min-height: 0;
+  height: 100%;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto auto;
   padding: var(--shell-padding);
   gap: var(--shell-gap);
+  overflow: hidden;
 }
 
 #workspace-header {
@@ -1609,6 +1618,15 @@ textarea {
 @media (max-width: 1180px) {
   #app-shell {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  #workspace-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  #header-actions {
+    flex-wrap: wrap;
   }
 
   #sidebar-overlay {
