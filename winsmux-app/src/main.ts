@@ -190,6 +190,7 @@ let sidebarWidth = 292;
 let selectedEditorKey = "";
 let selectedPreviewUrl = "";
 let lastExternalPreviewOpen: { url: string; openedAt: number } | null = null;
+let lastCopiedPreviewUrl: { url: string; copiedAt: number } | null = null;
 let selectedRunId: string | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
 let activeSourceFilter: SourceFilter = "all";
@@ -981,6 +982,9 @@ function openPreviewTarget(url: string) {
   if (lastExternalPreviewOpen?.url !== url) {
     lastExternalPreviewOpen = null;
   }
+  if (lastCopiedPreviewUrl?.url !== url) {
+    lastCopiedPreviewUrl = null;
+  }
   setEditorSurface(true);
 }
 
@@ -988,6 +992,7 @@ function closePreviewTarget() {
   editorSurfaceMode = "code";
   selectedPreviewUrl = "";
   lastExternalPreviewOpen = null;
+  lastCopiedPreviewUrl = null;
   if (!selectedEditorKey) {
     setEditorSurface(false);
     return;
@@ -1016,6 +1021,18 @@ function openPreviewTargetExternally() {
   };
   renderEditorSurface();
   window.open(selectedPreviewUrl, "_blank", "noopener");
+}
+
+async function copyPreviewTargetUrl() {
+  if (!selectedPreviewUrl || !navigator.clipboard) {
+    return;
+  }
+  await navigator.clipboard.writeText(selectedPreviewUrl);
+  lastCopiedPreviewUrl = {
+    url: selectedPreviewUrl,
+    copiedAt: Date.now(),
+  };
+  renderEditorSurface();
 }
 
 function getSourceFilterLabel(filter: SourceFilter) {
@@ -2896,12 +2913,13 @@ function renderEditorSurface() {
   const browserTargetList = document.getElementById("browser-target-list");
   const browserToolbarSummary = document.getElementById("browser-toolbar-summary");
   const browserBackButton = document.getElementById("browser-back-btn") as HTMLButtonElement | null;
+  const browserCopyButton = document.getElementById("browser-copy-btn") as HTMLButtonElement | null;
   const browserReloadButton = document.getElementById("browser-reload-btn") as HTMLButtonElement | null;
   const browserOpenButton = document.getElementById("browser-open-btn") as HTMLButtonElement | null;
   const tabs = document.getElementById("editor-tabs");
   const code = document.getElementById("editor-code");
   const statusbar = document.getElementById("editor-statusbar");
-  if (!path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserToolbarSummary || !browserBackButton || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
+  if (!path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserToolbarSummary || !browserBackButton || !browserCopyButton || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
     return;
   }
 
@@ -2946,6 +2964,7 @@ function renderEditorSurface() {
   browserTargetList.hidden = true;
   browserSurface.hidden = true;
   browserBackButton.disabled = true;
+  browserCopyButton.disabled = true;
   browserReloadButton.disabled = true;
   browserOpenButton.disabled = true;
   code.hidden = false;
@@ -3000,9 +3019,13 @@ function renderEditorSurface() {
       browserTargetList.hidden = false;
     }
     browserToolbarSummary.textContent = `${previewTargets.length} targets · active ${previewTarget.portLabel}${lastExternalPreviewOpen?.url === previewTarget.url ? " · external open" : ""}`;
+    if (lastCopiedPreviewUrl?.url === previewTarget.url) {
+      browserToolbarSummary.textContent += " · copied";
+    }
     browserFrame.src = previewTarget.url;
     browserSurface.hidden = false;
     browserBackButton.disabled = false;
+    browserCopyButton.disabled = false;
     browserReloadButton.disabled = false;
     browserOpenButton.disabled = false;
     code.textContent = "";
@@ -4300,6 +4323,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("browser-back-btn")?.addEventListener("click", () => {
     closePreviewTarget();
+  });
+
+  document.getElementById("browser-copy-btn")?.addEventListener("click", async () => {
+    await copyPreviewTargetUrl();
   });
 
   document.getElementById("browser-open-btn")?.addEventListener("click", () => {
