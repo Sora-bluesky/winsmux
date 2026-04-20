@@ -188,6 +188,7 @@ let composerImeActive = false;
 let sidebarWidth = 292;
 let selectedEditorKey = "";
 let selectedPreviewUrl = "";
+let lastExternalPreviewOpen: { url: string; openedAt: number } | null = null;
 let selectedRunId: string | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
 let activeSourceFilter: SourceFilter = "all";
@@ -957,6 +958,9 @@ function getPreviewTargets() {
 function openPreviewTarget(url: string) {
   selectedPreviewUrl = url;
   editorSurfaceMode = "preview";
+  if (lastExternalPreviewOpen?.url !== url) {
+    lastExternalPreviewOpen = null;
+  }
   setEditorSurface(true);
 }
 
@@ -975,6 +979,11 @@ function openPreviewTargetExternally() {
   if (!selectedPreviewUrl) {
     return;
   }
+  lastExternalPreviewOpen = {
+    url: selectedPreviewUrl,
+    openedAt: Date.now(),
+  };
+  renderEditorSurface();
   window.open(selectedPreviewUrl, "_blank", "noopener");
 }
 
@@ -2926,6 +2935,20 @@ function renderEditorSurface() {
     browserBody.textContent = previewTarget.url;
     browserMeta.appendChild(browserTitle);
     browserMeta.appendChild(browserBody);
+    if (lastExternalPreviewOpen?.url === previewTarget.url) {
+      const openedAt = new Date(lastExternalPreviewOpen.openedAt).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      const handoffTitle = document.createElement("div");
+      handoffTitle.className = "editor-diff-preview-title";
+      handoffTitle.textContent = "External browser";
+      const handoffBody = document.createElement("div");
+      handoffBody.className = "editor-diff-preview-body";
+      handoffBody.textContent = `Opened at ${openedAt}`;
+      browserMeta.appendChild(handoffTitle);
+      browserMeta.appendChild(handoffBody);
+    }
     if (previewTargets.length > 0) {
       for (const target of previewTargets) {
         const targetButton = document.createElement("button");
@@ -2946,7 +2969,7 @@ function renderEditorSurface() {
     browserOpenButton.disabled = false;
     code.textContent = "";
     code.hidden = true;
-    statusbar.textContent = `Secondary work surface: preview -> ${previewTarget.url}`;
+    statusbar.textContent = `Secondary work surface: preview -> ${previewTarget.url}${lastExternalPreviewOpen?.url === previewTarget.url ? " (opened externally)" : ""}`;
   } else if (selected) {
     path.textContent = selected.path;
     for (const item of [
@@ -3823,6 +3846,7 @@ async function openEditorTarget(target: EditorTarget | null) {
 
   editorSurfaceMode = "code";
   selectedPreviewUrl = "";
+  lastExternalPreviewOpen = null;
   selectedEditorKey = target.key;
   setSelectedRun(target.sourceChange?.run ?? selectedRunId);
   setEditorSurface(true);
@@ -3852,6 +3876,7 @@ async function openEditorPath(path: string | undefined, worktree = "") {
   desktopStandaloneEditorTargets.set(target.key, target);
   editorSurfaceMode = "code";
   selectedPreviewUrl = "";
+  lastExternalPreviewOpen = null;
   selectedEditorKey = target.key;
   setEditorSurface(true);
   renderOpenEditors();
