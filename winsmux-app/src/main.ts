@@ -972,8 +972,21 @@ function registerPreviewTargets(paneId: string, data: string) {
   }
 }
 
-function getPreviewTargets() {
-  return Array.from(detectedPreviewTargets.values()).sort((left, right) => left.url.localeCompare(right.url));
+function getPreviewTargets(activeUrl = selectedPreviewUrl) {
+  return Array.from(detectedPreviewTargets.values()).sort((left, right) => {
+    if (activeUrl) {
+      if (left.url === activeUrl && right.url !== activeUrl) {
+        return -1;
+      }
+      if (right.url === activeUrl && left.url !== activeUrl) {
+        return 1;
+      }
+    }
+    if (left.lastSeenAt !== right.lastSeenAt) {
+      return right.lastSeenAt - left.lastSeenAt;
+    }
+    return left.url.localeCompare(right.url);
+  });
 }
 
 function openPreviewTarget(url: string) {
