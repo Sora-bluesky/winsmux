@@ -329,6 +329,32 @@ async function verifyShortNarrowViewport(page, previewUrl) {
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
 
   await assertButtonVisible(page, "#send-btn");
+  await page.click("#open-command-bar-btn");
+  await page.locator("#command-bar-shell").waitFor({ state: "visible" });
+  await assertFullyVisible(page, "#command-bar");
+  await assertButtonVisible(page, "#command-bar-input");
+  await page.keyboard.press("Escape");
+  await page.locator("#command-bar-shell").waitFor({ state: "hidden" });
+
+  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+  await page.click("#toggle-sidebar-btn");
+  await page.locator("#toggle-sidebar-btn[aria-expanded='true']").waitFor();
+  await waitForHorizontalVisibility(page, "#left-rail");
+  await assertHorizontallyVisible(page, "#left-rail");
+
+  await page.click("#settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "visible" });
+  await assertFullyVisible(page, "#settings-sheet");
+  await assertButtonVisible(page, "#close-settings-btn");
+  await page.click("#close-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "hidden" });
+  const shortNarrowViewport = page.viewportSize();
+  if (!shortNarrowViewport) {
+    throw new Error("Viewport size is unavailable");
+  }
+  await page.mouse.click(shortNarrowViewport.width - 10, 24);
+  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+
   await page.click("#toggle-terminal-btn");
   await page.locator("#terminal-drawer").waitFor({ state: "visible" });
   await assertButtonVisible(page, "#add-pane-btn");
@@ -374,6 +400,8 @@ async function run() {
             "narrow-source-context",
             "narrow-terminal-drawer",
             "narrow-preview-browser",
+            "short-narrow-command-bar",
+            "short-narrow-settings-sheet",
             "short-narrow-terminal-drawer",
           ],
         },

@@ -1806,4 +1806,22 @@ textarea {
     right: 20px;
     max-height: 46vh;
   }
+
+  #workspace-footer {
+    gap: 8px;
+  }
+
+  #footer-left,
+  #footer-right {
+    gap: 6px;
+  }
+
+  .footer-pill {
+    gap: 6px;
+    padding: 6px 10px;
+  }
+
+  .footer-pill-label {
+    display: none;
+  }
 }
