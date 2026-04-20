@@ -437,6 +437,22 @@ function getComparePairKey(leftRunId: string, rightRunId: string) {
   return `${leftRunId}::${rightRunId}`;
 }
 
+function mirrorCompareRunsResult(result: DesktopCompareRunsResult): DesktopCompareRunsResult {
+  return {
+    ...result,
+    left: result.right,
+    right: result.left,
+    left_only_changed_files: [...result.right_only_changed_files],
+    right_only_changed_files: [...result.left_only_changed_files],
+    confidence_delta: result.confidence_delta !== null ? -result.confidence_delta : null,
+    differences: result.differences.map((difference) => ({
+      ...difference,
+      left: difference.right,
+      right: difference.left,
+    })),
+  };
+}
+
 function getComparePeerProjection(
   selectedProjection: DesktopRunProjection,
   preferredRunId?: string | null,
@@ -917,6 +933,16 @@ function renderExperimentContext() {
   const compareInFlight = comparePairKey
     ? comparingRunPairKeys.has(comparePairKey)
     : false;
+  const compareWinnerRunId = compareResult?.recommend.winning_run_id || null;
+  const compareWinnerProjection = compareWinnerRunId
+    ? getRunProjectionByRunId(compareWinnerRunId)
+    : null;
+  const canFocusCompareWinner = Boolean(
+    compareResult &&
+    !compareResult.recommend.reconcile_consult &&
+    compareWinnerProjection &&
+    compareWinnerProjection.run_id !== selectedProjection.run_id,
+  );
   const compareWinnerLabel = compareResult
     ? getCompareWinnerLabel(compareResult)
     : "";
@@ -1055,6 +1081,9 @@ function renderExperimentContext() {
       actionType: "compare" as const,
       actionRunId: selectedProjection.run_id,
       actionPeerRunId: comparePeer?.run_id,
+      secondaryActionLabel: canFocusCompareWinner ? "Pick winner" : undefined,
+      secondaryActionType: "focus" as const,
+      secondaryActionRunId: compareWinnerProjection?.run_id,
       details: compareResult
         ? [
             {
@@ -1217,29 +1246,53 @@ function renderExperimentContext() {
       card.appendChild(lineList);
     }
 
-    if (item.actionLabel && selectedProjection.run_id) {
+    if ((item.actionLabel || item.secondaryActionLabel) && selectedProjection.run_id) {
       const chipRow = document.createElement("div");
       chipRow.className = "timeline-chip-row";
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "timeline-chip";
-      button.textContent = item.actionDisabled && item.actionPendingLabel
-        ? item.actionPendingLabel
-        : item.actionLabel;
-      button.disabled = item.actionDisabled ?? false;
-      button.addEventListener("click", async () => {
-        if (item.actionType === "compare" && item.actionPeerRunId) {
-          await compareSelectedRunWithPeer(
-            item.actionRunId ?? selectedProjection.run_id,
-            item.actionPeerRunId,
-          );
-          return;
-        }
-        await promoteSelectedRunTactic(
+      const appendActionButton = (
+        label: string,
+        type: "compare" | "promote" | "focus",
+        runId: string,
+        disabled?: boolean,
+        pendingLabel?: string,
+        peerRunId?: string,
+      ) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "timeline-chip";
+        button.textContent = disabled && pendingLabel ? pendingLabel : label;
+        button.disabled = disabled ?? false;
+        button.addEventListener("click", async () => {
+          if (type === "compare" && peerRunId) {
+            await compareSelectedRunWithPeer(runId, peerRunId);
+            return;
+          }
+          if (type === "focus") {
+            await focusRunInContext(runId);
+            return;
+          }
+          await promoteSelectedRunTactic(runId);
+        });
+        chipRow.appendChild(button);
+      };
+
+      if (item.actionLabel) {
+        appendActionButton(
+          item.actionLabel,
+          item.actionType,
           item.actionRunId ?? selectedProjection.run_id,
+          item.actionDisabled,
+          item.actionPendingLabel,
+          item.actionPeerRunId,
         );
-      });
-      chipRow.appendChild(button);
+      }
+      if (item.secondaryActionLabel && item.secondaryActionType && item.secondaryActionRunId) {
+        appendActionButton(
+          item.secondaryActionLabel,
+          item.secondaryActionType,
+          item.secondaryActionRunId,
+        );
+      }
       card.appendChild(chipRow);
     }
     detailRoot.appendChild(card);
@@ -2030,6 +2083,24 @@ async function promoteSelectedRunTactic(runId: string) {
   }
 }
 
+async function focusRunInContext(runId: string) {
+  setSelectedRun(runId);
+  const focusedSourceChange = getProjectionSourceEntries().find((change) => change.run === runId);
+  if (focusedSourceChange) {
+    selectedEditorKey = getSourceChangeKey(focusedSourceChange);
+  }
+  renderDesktopSurfaces();
+
+  try {
+    const explainPayload = await getDesktopRunExplain(runId);
+    desktopExplainCache.set(runId, explainPayload);
+  } catch (error) {
+    console.warn("Failed to preload explain payload for focused run", error);
+  } finally {
+    renderDesktopSurfaces();
+  }
+}
+
 async function compareSelectedRunWithPeer(leftRunId: string, rightRunId: string) {
   const pairKey = getComparePairKey(leftRunId, rightRunId);
   if (comparingRunPairKeys.has(pairKey)) {
@@ -2068,6 +2139,10 @@ async function compareSelectedRunWithPeer(leftRunId: string, rightRunId: string)
     }
 
     desktopRunCompareCache.set(pairKey, result);
+    desktopRunCompareCache.set(
+      getComparePairKey(rightRunId, leftRunId),
+      mirrorCompareRunsResult(result),
+    );
     appendRuntimeConversation({
       type: "operator",
       category: "activity",
