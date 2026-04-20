@@ -1829,6 +1829,33 @@ function getSourceEntryTone(entry: SourceChange): SurfaceTone {
   return "info";
 }
 
+function getFooterReviewTone(reviewState: string | undefined): SurfaceTone {
+  switch ((reviewState || "").toUpperCase()) {
+    case "PASS":
+      return "success";
+    case "PENDING":
+      return "warning";
+    case "FAIL":
+    case "FAILED":
+      return "danger";
+    default:
+      return "info";
+  }
+}
+
+function getFooterNextTone(nextAction: string | undefined): SurfaceTone {
+  switch ((nextAction || "").toLowerCase()) {
+    case "blocked":
+    case "reconcile_consult":
+      return "warning";
+    case "review":
+    case "dispatch":
+      return "focus";
+    default:
+      return "info";
+  }
+}
+
 function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[] } {
   const selectedProjection = getPrimaryRunProjection();
   const modeLabel = composerModes.find((item) => item.mode === activeComposerMode)?.label ?? activeComposerMode;
@@ -1838,8 +1865,12 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
   const inboxStatus = desktopSummarySnapshot
     ? `${desktopSummarySnapshot.inbox.summary.item_count} inbox`
     : "Inbox idle";
-  const branchStatus = selectedProjection?.branch || "main";
   const runStatus = selectedProjection?.label || selectedProjection?.run_id || "No run selected";
+  const reviewStatus = selectedProjection?.review_state || "No review";
+  const nextStatus = selectedProjection?.next_action || "idle";
+  const settingsStatus = settingsSheetOpen
+    ? (settingsDraftState && !themeStatesEqual(settingsDraftState, themeState) ? "Draft" : "Editing")
+    : "Saved";
   const surfaceStatus = selectedPreviewUrl
     ? "Preview"
     : editorSurfaceOpen
@@ -1853,11 +1884,12 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
       { label: "Mode", value: modeLabel, tone: "focus" },
       { label: "Surface", value: surfaceStatus },
       { label: "Command", value: "Ctrl/Cmd+K", tone: "accent" },
-      { label: "Settings", value: settingsSheetOpen ? "Editing" : "Preferences", tone: "accent" },
+      { label: "Settings", value: settingsStatus, tone: "accent" },
     ],
     right: [
       { label: "Run", value: runStatus },
-      { label: "Branch", value: branchStatus },
+      { label: "Review", value: reviewStatus, tone: getFooterReviewTone(selectedProjection?.review_state) },
+      { label: "Next", value: nextStatus, tone: getFooterNextTone(selectedProjection?.next_action) },
       { label: "Inbox", value: inboxStatus },
       { label: "Board", value: summaryStatus, tone: desktopSummarySnapshot ? "info" : "success" },
     ],
@@ -1870,6 +1902,12 @@ function cloneThemeState(state: ThemeState): ThemeState {
     density: state.density,
     wrapMode: state.wrapMode,
   };
+}
+
+function themeStatesEqual(left: ThemeState, right: ThemeState) {
+  return left.theme === right.theme
+    && left.density === right.density
+    && left.wrapMode === right.wrapMode;
 }
 
 function readStoredShellPreferences(): ShellPreferenceState | null {
@@ -1966,6 +2004,7 @@ function renderPreferenceOptions<T extends string>(
 
 function renderSettingsControls() {
   const activeState = settingsDraftState ?? themeState;
+  const applyButton = document.getElementById("apply-settings-btn") as HTMLButtonElement | null;
 
   renderPreferenceOptions("theme-options", themeOptions, activeState.theme, (value) => {
     if (!settingsDraftState) {
@@ -1990,6 +2029,14 @@ function renderSettingsControls() {
     settingsDraftState.wrapMode = value;
     renderSettingsControls();
   });
+
+  if (applyButton) {
+    const hasChanges = Boolean(settingsDraftState && !themeStatesEqual(settingsDraftState, themeState));
+    applyButton.disabled = !hasChanges;
+    applyButton.setAttribute("aria-disabled", hasChanges ? "false" : "true");
+  }
+
+  renderFooterLane();
 }
 
 function renderFooterLane() {
