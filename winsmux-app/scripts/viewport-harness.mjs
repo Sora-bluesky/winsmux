@@ -7,6 +7,7 @@ import process from "node:process";
 import { chromium } from "playwright";
 
 const OUTPUT_DIR = path.join(process.cwd(), "output", "playwright", "viewport-harness");
+const HARNESS_QUERY = "?viewport-harness=1";
 
 async function ensureOutputDir() {
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
@@ -153,6 +154,16 @@ async function assertButtonVisible(page, selector) {
   }
 }
 
+async function assertReachableFrame(page, selector) {
+  const locator = page.locator(selector);
+  await locator.scrollIntoViewIfNeeded();
+  await assertHorizontallyVisible(page, selector);
+  const box = await getBox(page, selector);
+  if (box.height < 120) {
+    throw new Error(`${selector} is too small to use`);
+  }
+}
+
 async function waitForHorizontalVisibility(page, selector) {
   await page.waitForFunction((targetSelector) => {
     const target = document.querySelector(targetSelector);
@@ -164,9 +175,23 @@ async function waitForHorizontalVisibility(page, selector) {
   }, selector);
 }
 
+async function registerHarnessPreviewTarget(page, previewUrl) {
+  await page.waitForFunction(() => Boolean(window.__winsmuxViewportHarness));
+  await page.evaluate((url) => {
+    window.__winsmuxViewportHarness?.registerPreviewTarget("viewport-harness", url);
+  }, previewUrl);
+}
+
+async function openHarnessPreviewTarget(page, previewUrl) {
+  await page.waitForFunction(() => Boolean(window.__winsmuxViewportHarness));
+  await page.evaluate((url) => {
+    window.__winsmuxViewportHarness?.openPreviewTarget(url);
+  }, previewUrl);
+}
+
 async function verifyDesktopViewport(page, previewUrl) {
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto(previewUrl, { waitUntil: "networkidle" });
+  await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
 
   await assertHorizontallyVisible(page, "#left-rail");
   await assertFullyVisible(page, "#conversation-panel");
@@ -176,15 +201,26 @@ async function verifyDesktopViewport(page, previewUrl) {
   await assertNoOverlap(page, "#workspace-header", "#workspace-body");
   await assertNoOverlap(page, "#workspace-body", "#workspace-footer");
 
+  await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
+  await page.locator("#preview-target-list .context-file-row").first().waitFor({ state: "visible" });
+  await openHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
+  await page.locator("#browser-reload-btn").waitFor({ state: "visible" });
+  await assertButtonVisible(page, "#browser-back-btn");
+  await assertButtonVisible(page, "#browser-reload-btn");
+  await assertButtonVisible(page, "#browser-open-btn");
+  await assertHorizontallyVisible(page, "#browser-toolbar");
+  await assertFullyVisible(page, "#browser-frame");
+
   await page.click("#toggle-terminal-btn");
   await page.locator("#terminal-drawer").waitFor({ state: "visible" });
   await assertButtonVisible(page, "#add-pane-btn");
   await assertFullyVisible(page, "#terminal-drawer");
+  await assertHorizontallyVisible(page, "#browser-toolbar");
 }
 
 async function verifyNarrowViewport(page, previewUrl) {
   await page.setViewportSize({ width: 393, height: 852 });
-  await page.goto(previewUrl, { waitUntil: "networkidle" });
+  await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
 
   await assertButtonVisible(page, "#send-btn");
   await assertFullyVisible(page, "#workspace-footer");
@@ -211,6 +247,20 @@ async function verifyNarrowViewport(page, previewUrl) {
   await page.locator("#terminal-drawer").waitFor({ state: "visible" });
   await assertButtonVisible(page, "#add-pane-btn");
   await assertFullyVisible(page, "#terminal-drawer");
+  await page.click("#toggle-terminal-btn");
+  await page.locator("#terminal-drawer").waitFor({ state: "hidden" });
+
+  await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
+  await page.locator("#preview-target-list .context-file-row").first().waitFor({ state: "visible" });
+  await openHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
+  await page.locator("#browser-reload-btn").waitFor({ state: "visible" });
+  await assertButtonVisible(page, "#browser-back-btn");
+  await assertButtonVisible(page, "#browser-reload-btn");
+  await assertButtonVisible(page, "#browser-open-btn");
+  await assertHorizontallyVisible(page, "#browser-toolbar");
+  await assertReachableFrame(page, "#browser-frame");
+  await page.locator("#browser-target-list .editor-tab").first().waitFor({ state: "visible" });
+  await assertReachableFrame(page, "#browser-frame");
 }
 
 async function run() {
@@ -238,7 +288,12 @@ async function run() {
           previewUrl,
           checks: [
             "desktop-1440x900",
+            "desktop-preview-browser",
+            "desktop-terminal-drawer",
             "narrow-393x852",
+            "narrow-context-panel",
+            "narrow-terminal-drawer",
+            "narrow-preview-browser",
           ],
         },
         null,

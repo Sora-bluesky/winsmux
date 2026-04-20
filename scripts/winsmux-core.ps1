@@ -3007,6 +3007,44 @@ function Invoke-Doctor {
         Write-Output "Codex config: not found"
     }
 
+    $languageMode = [string]$ExecutionContext.SessionState.LanguageMode
+    if ($languageMode -eq 'ConstrainedLanguage') {
+        Write-Output "PowerShell language mode: $languageMode [WARNING: avoid Set-Content/Out-File and prefer apply_patch or cmd /c]"
+    } else {
+        Write-Output "PowerShell language mode: $languageMode [OK]"
+    }
+
+    try {
+        $gitLockPath = (& git rev-parse --git-path index.lock 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($gitLockPath)) {
+            $resolvedGitLockPath = if ([System.IO.Path]::IsPathRooted($gitLockPath)) {
+                $gitLockPath
+            } else {
+                Join-Path (Get-Location).Path $gitLockPath
+            }
+
+            $gitLockDir = Split-Path -Parent $resolvedGitLockPath
+            if ($gitLockDir -match '[\\/]\.git[\\/]worktrees[\\/]') {
+                $probeName = 'winsmux-doctor-write-probe-' + [guid]::NewGuid().ToString('N') + '.tmp'
+                $probePath = Join-Path $gitLockDir $probeName
+                $quotedProbePath = '"' + $probePath.Replace('"', '""') + '"'
+                & cmd /d /c "type nul > $quotedProbePath" | Out-Null
+                if ($LASTEXITCODE -eq 0 -and (Test-Path $probePath)) {
+                    Remove-Item -Path $probePath -Force -ErrorAction SilentlyContinue
+                    Write-Output "Worktree git writes: writable [OK]"
+                } else {
+                    Write-Output "Worktree git writes: blocked [WARNING: keep editing/testing in the pane, but run git add/git commit/git push from a regular shell]"
+                }
+            } else {
+                Write-Output "Worktree git writes: not applicable [OK: not running from a linked worktree]"
+            }
+        } else {
+            Write-Output "Worktree git writes: unavailable [WARNING: git rev-parse --git-path index.lock failed]"
+        }
+    } catch {
+        Write-Output "Worktree git writes: unavailable [WARNING: $($_.Exception.Message)]"
+    }
+
     # Manifest
     $manifestPath = Join-Path (Get-Location).Path '.winsmux' 'manifest.yaml'
     Write-Output "Manifest: $(if (Test-Path $manifestPath) { 'exists' } else { 'not found' })"

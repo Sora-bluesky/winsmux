@@ -986,18 +986,20 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  align-items: center;
+  align-items: flex-start;
 }
 
 #browser-toolbar-summary {
-  margin-right: auto;
+  flex: 1 1 220px;
+  min-width: 0;
   font-size: var(--text-2xs);
   color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
 #browser-frame {
   flex: 1;
-  min-height: 360px;
+  min-height: clamp(200px, 28vh, 360px);
   width: 100%;
   border: 1px solid var(--border-muted);
   border-radius: 16px;
