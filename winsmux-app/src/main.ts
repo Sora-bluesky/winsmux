@@ -984,6 +984,17 @@ function openPreviewTarget(url: string) {
   setEditorSurface(true);
 }
 
+function closePreviewTarget() {
+  editorSurfaceMode = "code";
+  selectedPreviewUrl = "";
+  lastExternalPreviewOpen = null;
+  if (!selectedEditorKey) {
+    setEditorSurface(false);
+    return;
+  }
+  setEditorSurface(true);
+}
+
 function reloadPreviewTarget() {
   if (!selectedPreviewUrl) {
     return;
@@ -2883,12 +2894,13 @@ function renderEditorSurface() {
   const browserFrame = document.getElementById("browser-frame") as HTMLIFrameElement | null;
   const browserMeta = document.getElementById("browser-meta-row");
   const browserTargetList = document.getElementById("browser-target-list");
+  const browserBackButton = document.getElementById("browser-back-btn") as HTMLButtonElement | null;
   const browserReloadButton = document.getElementById("browser-reload-btn") as HTMLButtonElement | null;
   const browserOpenButton = document.getElementById("browser-open-btn") as HTMLButtonElement | null;
   const tabs = document.getElementById("editor-tabs");
   const code = document.getElementById("editor-code");
   const statusbar = document.getElementById("editor-statusbar");
-  if (!path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
+  if (!path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserBackButton || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
     return;
   }
 
@@ -2931,6 +2943,7 @@ function renderEditorSurface() {
   browserTargetList.innerHTML = "";
   browserTargetList.hidden = true;
   browserSurface.hidden = true;
+  browserBackButton.disabled = true;
   browserReloadButton.disabled = true;
   browserOpenButton.disabled = true;
   code.hidden = false;
@@ -2986,6 +2999,7 @@ function renderEditorSurface() {
     }
     browserFrame.src = previewTarget.url;
     browserSurface.hidden = false;
+    browserBackButton.disabled = false;
     browserReloadButton.disabled = false;
     browserOpenButton.disabled = false;
     code.textContent = "";
@@ -4279,6 +4293,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("browser-reload-btn")?.addEventListener("click", () => {
     reloadPreviewTarget();
+  });
+
+  document.getElementById("browser-back-btn")?.addEventListener("click", () => {
+    closePreviewTarget();
   });
 
   document.getElementById("browser-open-btn")?.addEventListener("click", () => {
