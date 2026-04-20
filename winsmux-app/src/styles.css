@@ -61,6 +61,10 @@ body {
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 button,
 textarea {
   font: inherit;
@@ -88,7 +92,7 @@ textarea {
   --composer-padding: 18px;
   --composer-min-height: 72px;
   --timeline-max-width: min(78ch, 82%);
-  --body-wrap: anywhere;
+  --body-wrap: break-word;
   --editor-white-space: pre-wrap;
   --panel-radius: 20px;
   display: grid;
@@ -148,6 +152,8 @@ textarea {
   flex-direction: column;
   gap: 14px;
   min-width: 240px;
+  min-height: 0;
+  overflow: auto;
 }
 
 .brand-block {
@@ -272,10 +278,13 @@ textarea {
 
 #workspace {
   min-width: 0;
+  min-height: 0;
+  height: 100%;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto auto;
   padding: var(--shell-padding);
   gap: var(--shell-gap);
+  overflow: hidden;
 }
 
 #workspace-header {
@@ -977,18 +986,20 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  align-items: center;
+  align-items: flex-start;
 }
 
 #browser-toolbar-summary {
-  margin-right: auto;
+  flex: 1 1 220px;
+  min-width: 0;
   font-size: var(--text-2xs);
   color: var(--text-muted);
+  overflow-wrap: break-word;
 }
 
 #browser-frame {
   flex: 1;
-  min-height: 360px;
+  min-height: clamp(200px, 28vh, 360px);
   width: 100%;
   border: 1px solid var(--border-muted);
   border-radius: 16px;
@@ -1293,10 +1304,12 @@ textarea {
   top: 76px;
   right: 24px;
   width: min(360px, calc(100vw - 48px));
+  max-height: calc(100vh - 100px);
   padding: var(--panel-padding);
   display: flex;
   flex-direction: column;
   gap: 14px;
+  overflow: auto;
   border: 1px solid var(--border-muted);
   border-radius: var(--panel-radius);
   background: rgba(18, 21, 33, 0.98);
@@ -1320,11 +1333,13 @@ textarea {
 #command-bar {
   position: relative;
   width: min(760px, calc(100vw - 40px));
+  max-height: calc(100vh - 96px);
   margin: 72px auto 0;
   padding: 18px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+  overflow: auto;
   border: 1px solid var(--border-strong);
   border-radius: calc(var(--panel-radius) + 2px);
   background: rgba(18, 21, 33, 0.98);
@@ -1611,6 +1626,15 @@ textarea {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  #workspace-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  #header-actions {
+    flex-wrap: wrap;
+  }
+
   #sidebar-overlay {
     position: fixed;
     inset: 0;
@@ -1712,8 +1736,47 @@ textarea {
 }
 
 @media (max-height: 760px) {
+  #app-shell {
+    --shell-padding: 16px;
+    --shell-gap: 12px;
+    --composer-padding: 12px;
+    --composer-min-height: 52px;
+  }
+
   #workspace {
     grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  #workspace-subtitle {
+    display: none;
+  }
+
+  #thread-meta {
+    padding: 12px 16px 6px;
+  }
+
+  #timeline-toolbar,
+  #selected-run-summary {
+    padding: 0 16px 8px;
+  }
+
+  #conversation-timeline {
+    padding: 4px 16px 12px;
+    gap: 10px;
+  }
+
+  .run-summary-card {
+    padding: 12px 14px;
+    gap: 8px;
+  }
+
+  #composer-mode-row,
+  #composer-footer {
+    margin-top: 8px;
+  }
+
+  #attachment-tray {
+    min-height: 0;
   }
 
   #terminal-drawer {
@@ -1734,5 +1797,31 @@ textarea {
   #command-bar {
     margin-top: 24px;
     max-height: calc(100vh - 48px);
+  }
+}
+
+@media (max-width: 1180px) and (max-height: 760px) {
+  #terminal-drawer {
+    left: 20px;
+    right: 20px;
+    max-height: 46vh;
+  }
+
+  #workspace-footer {
+    gap: 8px;
+  }
+
+  #footer-left,
+  #footer-right {
+    gap: 6px;
+  }
+
+  .footer-pill {
+    gap: 6px;
+    padding: 6px 10px;
+  }
+
+  .footer-pill-label {
+    display: none;
   }
 }

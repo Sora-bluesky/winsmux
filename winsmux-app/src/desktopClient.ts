@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 type DesktopCommandName =
@@ -480,6 +480,9 @@ export function createJsonRpcDesktopCommandTransport(
       command: DesktopCommandName,
       payload?: Record<string, unknown>,
     ) {
+      if (!isTauri()) {
+        throw new Error(`desktop command transport is unavailable outside the Tauri runtime (${command})`);
+      }
       const method = getDesktopJsonRpcMethod(command);
       const request: DesktopJsonRpcRequest = {
         jsonrpc: "2.0",
@@ -604,6 +607,10 @@ export async function getDesktopEditorFile(path: string, worktree?: string) {
 export async function subscribeToDesktopSummaryRefresh(
   onRefresh: (event: DesktopSummaryRefreshEvent) => void,
 ): Promise<UnlistenFn> {
+  if (!isTauri()) {
+    return async () => {};
+  }
+
   return listen<DesktopSummaryRefreshEvent | string>(
     "desktop-summary-refresh",
     (event) => {

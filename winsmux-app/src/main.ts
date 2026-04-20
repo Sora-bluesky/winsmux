@@ -111,6 +111,18 @@ interface PreviewTarget {
   lastSeenAt: number;
 }
 
+declare global {
+  interface Window {
+    __winsmuxViewportHarness?: {
+      registerPreviewTarget: (sourceLabel: string, url: string) => void;
+      openPreviewTarget: (url: string) => void;
+      openEditorPreview: (path: string, content: string, worktree?: string) => void;
+      setContextPanel: (open: boolean) => void;
+      setTerminalDrawer: (open: boolean) => void;
+    };
+  }
+}
+
 type SourceFilter = "all" | "candidates" | "attention" | `pane:${string}`;
 
 type ChangeStatus = "modified" | "added" | "deleted" | "renamed";
@@ -970,6 +982,43 @@ function registerPreviewTargets(paneId: string, data: string) {
     renderContextPanel();
     renderEditorSurface();
   }
+}
+
+function registerPreviewTargetForHarness(sourceLabel: string, url: string) {
+  detectedPreviewTargets.set(url, {
+    url,
+    portLabel: getPreviewPortLabel(url),
+    sourceLabel: sourceLabel || "viewport-harness",
+    lastSeenAt: Date.now(),
+  });
+  renderContextPanel();
+  renderEditorSurface();
+}
+
+function openEditorPreviewForHarness(path: string, content: string, worktree = "") {
+  const target = createStandaloneEditorTarget(path, worktree);
+  desktopStandaloneEditorTargets.set(target.key, target);
+  desktopEditorFileCache.set(target.key, {
+    key: target.key,
+    path,
+    summary: target.summary,
+    content,
+    language: inferLanguageFromPath(path),
+    lineCount: countEditorLines(content),
+    modified: false,
+    origin: "explorer",
+  });
+  desktopEditorLoadErrors.delete(target.key);
+  desktopEditorLoadingPaths.delete(target.key);
+  editorSurfaceMode = "code";
+  selectedPreviewUrl = "";
+  lastPreviewExternalState = null;
+  lastPreviewClipboardState = null;
+  selectedEditorKey = target.key;
+  setEditorSurface(true);
+  renderOpenEditors();
+  renderSourceSummary();
+  renderRunSummary();
 }
 
 function getPreviewTargets(activeUrl = selectedPreviewUrl) {
@@ -3776,6 +3825,31 @@ function syncResponsiveShell() {
   }
 }
 
+function installViewportHarnessHooks() {
+  const searchParams = new URLSearchParams(window.location.search);
+  if (searchParams.get("viewport-harness") !== "1") {
+    return;
+  }
+
+  window.__winsmuxViewportHarness = {
+    registerPreviewTarget: (sourceLabel: string, url: string) => {
+      registerPreviewTargetForHarness(sourceLabel, url);
+    },
+    openPreviewTarget: (url: string) => {
+      openPreviewTarget(url);
+    },
+    openEditorPreview: (path: string, content: string, worktree?: string) => {
+      openEditorPreviewForHarness(path, content, worktree);
+    },
+    setContextPanel: (open: boolean) => {
+      setContextPanel(open);
+    },
+    setTerminalDrawer: (open: boolean) => {
+      setTerminalDrawer(open);
+    },
+  };
+}
+
 function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
   const now = new Date();
   const timestamp = `${`${now.getHours()}`.padStart(2, "0")}:${`${now.getMinutes()}`.padStart(2, "0")}`;
@@ -4301,6 +4375,8 @@ function initializeSidebarResize() {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
+  installViewportHarnessHooks();
+
   await subscribeToPtyOutput((payload) => {
     registerPreviewTargets(payload.pane_id, payload.data);
     const entry = payload.pane_id ? panes.get(payload.pane_id) : undefined;
