@@ -1933,6 +1933,64 @@ function getFooterInboxTone(count: number): SurfaceTone {
   return "success";
 }
 
+function getFooterContextItem(settingsStatus: string): FooterStatusItem {
+  if (commandBarOpen) {
+    const actions = getFilteredCommandActions();
+    const activeAction = actions[Math.min(selectedCommandIndex, Math.max(0, actions.length - 1))];
+    const query = commandBarQuery.trim();
+    return {
+      label: "Context",
+      value: query ? `Search ${query}` : (activeAction?.label || "Search actions"),
+      tone: "focus",
+    };
+  }
+
+  if (settingsSheetOpen) {
+    return {
+      label: "Context",
+      value: `Settings ${settingsStatus}`,
+      tone: getFooterSettingsTone(settingsStatus),
+    };
+  }
+
+  if (selectedPreviewUrl) {
+    const previewTarget = detectedPreviewTargets.get(selectedPreviewUrl);
+    if (previewTarget) {
+      return {
+        label: "Context",
+        value: `${previewTarget.portLabel} · ${previewTarget.sourceLabel}`,
+        tone: "accent",
+      };
+    }
+  }
+
+  if (editorSurfaceOpen) {
+    const editors = getEditorFiles();
+    const selected = editors.find((editor) => editor.key === selectedEditorKey) || editors[0];
+    if (selected) {
+      return {
+        label: "Context",
+        value: selected.path.split("/").pop() ?? selected.path,
+        tone: selected.origin === "context" ? "focus" : "info",
+      };
+    }
+  }
+
+  if (terminalDrawerOpen) {
+    return {
+      label: "Context",
+      value: "Utility drawer",
+      tone: "info",
+    };
+  }
+
+  return {
+    label: "Context",
+    value: "Ctrl/Cmd+K",
+    tone: "accent",
+  };
+}
+
 function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[] } {
   const selectedProjection = getPrimaryRunProjection();
   const modeLabel = composerModes.find((item) => item.mode === activeComposerMode)?.label ?? activeComposerMode;
@@ -1946,12 +2004,13 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
     ? (themeStatesEqual(settingsDraftState, themeState) ? (settingsSheetOpen ? "Editing" : "Ready") : "Draft")
     : "Saved";
   const surfaceStatus = getFooterSurfaceStatus();
+  const contextItem = getFooterContextItem(settingsStatus);
 
   return {
     left: [
       { label: "Mode", value: modeLabel, tone: "focus" },
       { label: "Surface", value: surfaceStatus },
-      { label: "Command", value: "Ctrl/Cmd+K", tone: "accent" },
+      contextItem,
       { label: "Settings", value: settingsStatus, tone: getFooterSettingsTone(settingsStatus) },
     ],
     right: [
