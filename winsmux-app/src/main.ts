@@ -3639,8 +3639,6 @@ function renderEditorSurface() {
     summary.hidden = summary.childElementCount === 0;
     for (const item of [
       "Preview browser",
-      previewTarget.portLabel,
-      `Detected from ${previewTarget.sourceLabel}`,
       `Seen ${formatPreviewSeenAt(previewTarget.lastSeenAt)}`,
     ]) {
       const chip = document.createElement("span");
@@ -3740,8 +3738,6 @@ function renderEditorSurface() {
       selected.language,
       `${selected.lineCount} lines`,
       selected.modified ? "Modified" : "Saved",
-      selected.origin === "context" ? "Opened from context" : "Opened from explorer",
-      selectedWorktreeLabel,
     ]) {
       if (!item) {
         continue;
