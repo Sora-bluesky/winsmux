@@ -167,9 +167,16 @@ Describe 'winsmux npm release package contract' {
             $stagedPackage.version | Should -Be '0.22.1'
             $stagedPackage.PSObject.Properties.Name | Should -Not -Contain 'private'
             @($stagedPackage.files) | Should -Be @('README.md', 'index.mjs', 'install.ps1', 'LICENSE')
+            @($stagedPackage.os) | Should -Be @('win32')
+
+            $stagedEntrypoint = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'index.mjs') -Raw -Encoding UTF8
+            $stagedEntrypoint | Should -Match 'const releaseTag = `v\$\{packageJson\.version\}`;'
+            $stagedEntrypoint | Should -Match '"-ReleaseTag",\s*releaseTag'
 
             $stagedInstallScript = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'install.ps1') -Raw -Encoding UTF8
             $stagedInstallScript | Should -Match '\$VERSION\s*=\s*"0\.22\.1"'
+            $stagedInstallScript | Should -Match 'releases/tags/\$escapedTag'
+            $stagedInstallScript | Should -Match 'raw\.githubusercontent\.com/Sora-bluesky/winsmux/\$EffectiveReleaseTag'
 
             $helpResult = Invoke-NodeProcess -Arguments @((Join-Path $script:OutputRoot 'index.mjs'), 'help') -WorkingDirectory $script:OutputRoot
             $helpResult.ExitCode | Should -Be 0
