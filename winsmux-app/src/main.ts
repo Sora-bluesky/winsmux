@@ -3828,9 +3828,13 @@ function renderEditorSurface() {
     for (const item of [
       "Preview",
       detachedSurface ? "Detached" : "",
+      detachedSurfaceRunLabel,
       previewTarget.portLabel,
       previewTarget.sourceLabel,
     ]) {
+      if (!item) {
+        continue;
+      }
       const chip = document.createElement("span");
       chip.className = "editor-meta-chip";
       chip.dataset.tone = item === "Preview" ? "focus" : "default";
@@ -3904,6 +3908,7 @@ function renderEditorSurface() {
     for (const item of [
       "Code",
       detachedSurface ? "Detached" : "",
+      detachedSurfaceRunLabel,
       selected.origin === "context" ? "Run context" : "Explorer",
       selectedWorktreeLabel,
     ]) {
