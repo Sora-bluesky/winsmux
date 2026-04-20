@@ -239,6 +239,32 @@ async function assertCommandBarRoundtrip(page, returnSelector) {
   await page.locator(returnSelector).waitFor({ state: "visible" });
 }
 
+async function assertSettingsRoundtrip(page, returnSelector) {
+  await page.click("#settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "visible" });
+  await assertFullyVisible(page, "#settings-sheet");
+  await assertButtonVisible(page, "#close-settings-btn");
+  await page.click("#close-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "hidden" });
+  await page.locator(returnSelector).waitFor({ state: "visible" });
+}
+
+async function assertNarrowSettingsRoundtrip(page, returnSelector) {
+  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+  await page.click("#toggle-sidebar-btn");
+  await page.locator("#toggle-sidebar-btn[aria-expanded='true']").waitFor();
+  await waitForHorizontalVisibility(page, "#left-rail");
+  await assertHorizontallyVisible(page, "#left-rail");
+  await assertFullyVisible(page, "#sidebar-overlay");
+  await assertSettingsRoundtrip(page, returnSelector);
+  const viewport = page.viewportSize();
+  if (!viewport) {
+    throw new Error("Viewport size is unavailable");
+  }
+  await page.mouse.click(viewport.width - 10, 24);
+  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+}
+
 async function verifyDesktopViewport(page, previewUrl) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
@@ -267,6 +293,7 @@ async function verifyDesktopViewport(page, previewUrl) {
 
   await openFirstSourceContextEntry(page);
   await assertCommandBarRoundtrip(page, "#editor-surface");
+  await assertSettingsRoundtrip(page, "#editor-surface");
 
   await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
   await waitForPreviewTargetEntry(page);
@@ -278,6 +305,7 @@ async function verifyDesktopViewport(page, previewUrl) {
   await assertHorizontallyVisible(page, "#browser-toolbar");
   await assertFullyVisible(page, "#browser-frame");
   await assertCommandBarRoundtrip(page, "#browser-toolbar");
+  await assertSettingsRoundtrip(page, "#browser-toolbar");
 
   await page.click("#toggle-terminal-btn");
   await page.locator("#terminal-drawer").waitFor({ state: "visible" });
@@ -308,12 +336,7 @@ async function verifyNarrowViewport(page, previewUrl) {
   await waitForHorizontalVisibility(page, "#left-rail");
   await assertHorizontallyVisible(page, "#left-rail");
   await assertFullyVisible(page, "#sidebar-overlay");
-  await page.click("#settings-btn");
-  await page.locator("#settings-sheet").waitFor({ state: "visible" });
-  await assertFullyVisible(page, "#settings-sheet");
-  await assertButtonVisible(page, "#close-settings-btn");
-  await page.click("#close-settings-btn");
-  await page.locator("#settings-sheet").waitFor({ state: "hidden" });
+  await assertSettingsRoundtrip(page, "#left-rail");
   const narrowViewport = page.viewportSize();
   if (!narrowViewport) {
     throw new Error("Viewport size is unavailable");
@@ -327,6 +350,7 @@ async function verifyNarrowViewport(page, previewUrl) {
   await assertHorizontallyVisible(page, "#context-panel");
   await openFirstSourceContextEntry(page);
   await assertCommandBarRoundtrip(page, "#editor-surface");
+  await assertNarrowSettingsRoundtrip(page, "#editor-surface");
 
   await page.click("#toggle-terminal-btn");
   await page.locator("#terminal-drawer").waitFor({ state: "visible" });
@@ -347,6 +371,7 @@ async function verifyNarrowViewport(page, previewUrl) {
   await page.locator("#browser-target-list .editor-tab").first().waitFor({ state: "visible" });
   await assertReachableFrame(page, "#browser-frame");
   await assertCommandBarRoundtrip(page, "#browser-toolbar");
+  await assertNarrowSettingsRoundtrip(page, "#browser-toolbar");
   await assertBackToCode(page);
 }
 
@@ -418,8 +443,10 @@ async function run() {
             "desktop-settings-sheet",
             "desktop-source-context",
             "desktop-command-bar-with-editor",
+            "desktop-settings-with-editor",
             "desktop-preview-browser",
             "desktop-command-bar-with-preview",
+            "desktop-settings-with-preview",
             "desktop-preview-back-to-code",
             "desktop-terminal-drawer",
             "narrow-393x852",
@@ -428,9 +455,11 @@ async function run() {
             "narrow-context-panel",
             "narrow-source-context",
             "narrow-command-bar-with-editor",
+            "narrow-settings-with-editor",
             "narrow-terminal-drawer",
             "narrow-preview-browser",
             "narrow-command-bar-with-preview",
+            "narrow-settings-with-preview",
             "narrow-preview-back-to-code",
             "short-narrow-command-bar",
             "short-narrow-settings-sheet",
