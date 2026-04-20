@@ -1856,28 +1856,72 @@ function getFooterNextTone(nextAction: string | undefined): SurfaceTone {
   }
 }
 
+function getFooterSurfaceStatus() {
+  if (commandBarOpen) {
+    return "Command";
+  }
+  if (settingsSheetOpen) {
+    return "Settings";
+  }
+  if (selectedPreviewUrl) {
+    return "Preview";
+  }
+  if (editorSurfaceOpen) {
+    return "Code";
+  }
+  if (terminalDrawerOpen) {
+    return "Terminal";
+  }
+  return "Shell";
+}
+
+function getFooterOperatorStatus(projection: DesktopRunProjection | undefined) {
+  if (!projection) {
+    return {
+      label: desktopSummarySnapshot ? "Monitoring" : "Ready",
+      tone: desktopSummarySnapshot ? "info" as SurfaceTone : "success" as SurfaceTone,
+    };
+  }
+
+  const taskState = (projection.task_state || "").toLowerCase();
+  if (taskState === "blocked") {
+    return { label: "Blocked", tone: "danger" as SurfaceTone };
+  }
+  if (projection.verification_outcome) {
+    return {
+      label: `Verify ${projection.verification_outcome}`,
+      tone: projection.verification_outcome.toUpperCase() === "PASS" ? "success" as SurfaceTone : "warning" as SurfaceTone,
+    };
+  }
+  if (taskState === "completed" || taskState === "task_completed" || taskState === "done") {
+    return { label: "Completed", tone: "success" as SurfaceTone };
+  }
+  if (projection.next_action) {
+    return {
+      label: projection.next_action,
+      tone: getFooterNextTone(projection.next_action),
+    };
+  }
+  return {
+    label: projection.task_state || "Tracking",
+    tone: "info" as SurfaceTone,
+  };
+}
+
 function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[] } {
   const selectedProjection = getPrimaryRunProjection();
   const modeLabel = composerModes.find((item) => item.mode === activeComposerMode)?.label ?? activeComposerMode;
-  const summaryStatus = desktopSummarySnapshot
-    ? `${desktopSummarySnapshot.digest.summary.item_count} runs`
-    : "Operator ready";
   const inboxStatus = desktopSummarySnapshot
     ? `${desktopSummarySnapshot.inbox.summary.item_count} inbox`
     : "Inbox idle";
   const runStatus = selectedProjection?.label || selectedProjection?.run_id || "No run selected";
   const reviewStatus = selectedProjection?.review_state || "No review";
   const nextStatus = selectedProjection?.next_action || "idle";
-  const settingsStatus = settingsSheetOpen
-    ? (settingsDraftState && !themeStatesEqual(settingsDraftState, themeState) ? "Draft" : "Editing")
+  const operatorStatus = getFooterOperatorStatus(selectedProjection ?? undefined);
+  const settingsStatus = settingsDraftState
+    ? (themeStatesEqual(settingsDraftState, themeState) ? (settingsSheetOpen ? "Editing" : "Ready") : "Draft")
     : "Saved";
-  const surfaceStatus = selectedPreviewUrl
-    ? "Preview"
-    : editorSurfaceOpen
-      ? "Code"
-      : terminalDrawerOpen
-        ? "Terminal"
-        : "Shell";
+  const surfaceStatus = getFooterSurfaceStatus();
 
   return {
     left: [
@@ -1888,10 +1932,10 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
     ],
     right: [
       { label: "Run", value: runStatus },
+      { label: "Operator", value: operatorStatus.label, tone: operatorStatus.tone },
       { label: "Review", value: reviewStatus, tone: getFooterReviewTone(selectedProjection?.review_state) },
       { label: "Next", value: nextStatus, tone: getFooterNextTone(selectedProjection?.next_action) },
       { label: "Inbox", value: inboxStatus },
-      { label: "Board", value: summaryStatus, tone: desktopSummarySnapshot ? "info" : "success" },
     ],
   };
 }
@@ -4258,10 +4302,10 @@ function setSettingsSheet(open: boolean) {
 
   settingsSheetOpen = open;
   if (open) {
-    settingsDraftState = cloneThemeState(themeState);
+    if (!settingsDraftState) {
+      settingsDraftState = cloneThemeState(themeState);
+    }
     renderSettingsControls();
-  } else {
-    settingsDraftState = null;
   }
   sheet.hidden = !open;
   renderFooterLane();
