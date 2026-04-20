@@ -3579,6 +3579,7 @@ function renderEditorSurface() {
     summary.innerHTML = "";
     summary.hidden = true;
     meta.innerHTML = "";
+    meta.hidden = true;
     diffPreview.innerHTML = "";
     diffPreview.hidden = true;
     browserMeta.innerHTML = "";
@@ -3608,6 +3609,7 @@ function renderEditorSurface() {
     : "";
 
   meta.innerHTML = "";
+  meta.hidden = true;
   summary.innerHTML = "";
   summary.hidden = true;
   diffPreview.innerHTML = "";
@@ -3639,15 +3641,6 @@ function renderEditorSurface() {
       summary.appendChild(chip);
     }
     summary.hidden = summary.childElementCount === 0;
-    for (const item of [
-      "Preview browser",
-      `Seen ${formatPreviewSeenAt(previewTarget.lastSeenAt)}`,
-    ]) {
-      const chip = document.createElement("span");
-      chip.className = "editor-meta-chip";
-      chip.textContent = item;
-      meta.appendChild(chip);
-    }
     if (lastPreviewExternalState?.url === previewTarget.url) {
       const openedAt = new Date(lastPreviewExternalState.at).toLocaleTimeString([], {
         hour: "2-digit",
@@ -3700,6 +3693,7 @@ function renderEditorSurface() {
       { label: "Surface", value: "Preview" },
       { label: "Target", value: previewTarget.portLabel },
       { label: "Source", value: previewTarget.sourceLabel },
+      { label: "Seen", value: formatPreviewSeenAt(previewTarget.lastSeenAt) },
       ...(lastPreviewExternalState?.url === previewTarget.url
         ? [{ label: "External", value: lastPreviewExternalState.ok ? "Opened" : "Blocked" }]
         : []),
@@ -3743,6 +3737,7 @@ function renderEditorSurface() {
       chip.textContent = item;
       meta.appendChild(chip);
     }
+    meta.hidden = meta.childElementCount === 0;
     if (selectedTarget?.sourceChange) {
       const previewTitle = document.createElement("div");
       previewTitle.className = "editor-diff-preview-title";
