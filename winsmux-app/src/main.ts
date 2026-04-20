@@ -205,6 +205,7 @@ let lastPreviewExternalState: { url: string; at: number; ok: boolean } | null = 
 let lastPreviewClipboardState: { url: string; at: number; ok: boolean } | null = null;
 let selectedRunId: string | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
+let composerSlashOpen = false;
 let composerSlashQuery = "";
 let selectedComposerSlashIndex = 0;
 let activeSourceFilter: SourceFilter = "all";
@@ -1944,8 +1945,12 @@ function getComposerSlashMatch(value: string) {
 }
 
 function getFilteredComposerSlashCommands() {
-  if (!composerSlashQuery) {
+  if (!composerSlashOpen) {
     return [];
+  }
+
+  if (!composerSlashQuery) {
+    return composerSlashCommands;
   }
 
   return composerSlashCommands.filter((item) => item.command.startsWith(composerSlashQuery));
@@ -1978,6 +1983,7 @@ function renderComposerSlashCommands() {
 
 function syncComposerSlashState(value: string) {
   const match = value.match(/^\/([a-z-]*)$/i);
+  composerSlashOpen = Boolean(match);
   composerSlashQuery = match ? match[1].toLowerCase() : "";
   const commands = getFilteredComposerSlashCommands();
   if (commands.length === 0) {
