@@ -1175,14 +1175,19 @@ function applyPopoutSurfaceState(state: PopoutSurfaceState | null) {
   document.body.dataset.popoutSurface = "1";
   const title = document.getElementById("workspace-title");
   const subtitle = document.getElementById("workspace-subtitle");
+  const editorLabel = state.mode === "editor" ? state.path.split("/").pop() ?? state.path : "";
+  const editorWorktreeLabel = state.mode === "editor" && state.worktree ? getWorktreeLabel(state.worktree) : "Project root";
   if (title) {
-    title.textContent = state.mode === "preview" ? "Preview pop-out" : "Editor pop-out";
+    title.textContent =
+      state.mode === "preview"
+        ? `${state.portLabel} preview`
+        : `${editorLabel} editor`;
   }
   if (subtitle) {
     subtitle.textContent =
       state.mode === "preview"
-        ? "Detached secondary surface for localhost preview review."
-        : "Detached secondary surface for code and diff review.";
+        ? `Detached secondary surface from ${state.sourceLabel}.`
+        : `Detached secondary surface for ${editorWorktreeLabel}.`;
   }
 
   setSidebarOpen(false, { preserveWidePreference: false });
