@@ -229,6 +229,16 @@ async function assertBackToCode(page) {
   await assertHorizontallyVisible(page, "#editor-code");
 }
 
+async function assertCommandBarRoundtrip(page, returnSelector) {
+  await page.click("#open-command-bar-btn");
+  await page.locator("#command-bar-shell").waitFor({ state: "visible" });
+  await assertFullyVisible(page, "#command-bar");
+  await assertButtonVisible(page, "#command-bar-input");
+  await page.keyboard.press("Escape");
+  await page.locator("#command-bar-shell").waitFor({ state: "hidden" });
+  await page.locator(returnSelector).waitFor({ state: "visible" });
+}
+
 async function verifyDesktopViewport(page, previewUrl) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
@@ -256,6 +266,7 @@ async function verifyDesktopViewport(page, previewUrl) {
   await page.locator("#settings-sheet").waitFor({ state: "hidden" });
 
   await openFirstSourceContextEntry(page);
+  await assertCommandBarRoundtrip(page, "#editor-surface");
 
   await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
   await waitForPreviewTargetEntry(page);
@@ -266,6 +277,7 @@ async function verifyDesktopViewport(page, previewUrl) {
   await assertButtonVisible(page, "#browser-open-btn");
   await assertHorizontallyVisible(page, "#browser-toolbar");
   await assertFullyVisible(page, "#browser-frame");
+  await assertCommandBarRoundtrip(page, "#browser-toolbar");
 
   await page.click("#toggle-terminal-btn");
   await page.locator("#terminal-drawer").waitFor({ state: "visible" });
@@ -314,6 +326,7 @@ async function verifyNarrowViewport(page, previewUrl) {
   await waitForHorizontalVisibility(page, "#context-panel");
   await assertHorizontallyVisible(page, "#context-panel");
   await openFirstSourceContextEntry(page);
+  await assertCommandBarRoundtrip(page, "#editor-surface");
 
   await page.click("#toggle-terminal-btn");
   await page.locator("#terminal-drawer").waitFor({ state: "visible" });
@@ -333,6 +346,7 @@ async function verifyNarrowViewport(page, previewUrl) {
   await assertReachableFrame(page, "#browser-frame");
   await page.locator("#browser-target-list .editor-tab").first().waitFor({ state: "visible" });
   await assertReachableFrame(page, "#browser-frame");
+  await assertCommandBarRoundtrip(page, "#browser-toolbar");
   await assertBackToCode(page);
 }
 
@@ -403,7 +417,9 @@ async function run() {
             "desktop-command-bar",
             "desktop-settings-sheet",
             "desktop-source-context",
+            "desktop-command-bar-with-editor",
             "desktop-preview-browser",
+            "desktop-command-bar-with-preview",
             "desktop-preview-back-to-code",
             "desktop-terminal-drawer",
             "narrow-393x852",
@@ -411,8 +427,10 @@ async function run() {
             "narrow-settings-sheet",
             "narrow-context-panel",
             "narrow-source-context",
+            "narrow-command-bar-with-editor",
             "narrow-terminal-drawer",
             "narrow-preview-browser",
+            "narrow-command-bar-with-preview",
             "narrow-preview-back-to-code",
             "short-narrow-command-bar",
             "short-narrow-settings-sheet",
