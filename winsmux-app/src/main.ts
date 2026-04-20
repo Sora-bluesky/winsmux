@@ -2972,7 +2972,7 @@ function renderEditorSurface() {
     statusbar.textContent = "Secondary work surface: 0 projected files";
     return;
   }
-  if (selected) {
+  if (selected && !previewModeActive) {
     selectedEditorKey = selected.key;
   }
   const selectedTarget = selected ? getEditorTargetByKey(selected.key) : null;
@@ -3054,7 +3054,10 @@ function renderEditorSurface() {
     if (lastPreviewClipboardState?.url === previewTarget.url) {
       browserToolbarSummary.textContent += lastPreviewClipboardState.ok ? " · copied" : " · copy failed";
     }
-    browserFrame.src = previewTarget.url;
+    if (browserFrame.dataset.previewUrl !== previewTarget.url) {
+      browserFrame.src = previewTarget.url;
+      browserFrame.dataset.previewUrl = previewTarget.url;
+    }
     browserSurface.hidden = false;
     browserBackButton.disabled = false;
     browserCopyButton.disabled = !Boolean(navigator.clipboard);
