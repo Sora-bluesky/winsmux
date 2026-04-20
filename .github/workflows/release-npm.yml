@@ -1,0 +1,65 @@
+name: Release npm Package
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Override semver version for the staged npm package"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Stage npm package
+        id: stage
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            $version = "${{ github.ref_name }}"
+          }
+          if ($version.StartsWith("v")) {
+            $version = $version.Substring(1)
+          }
+
+          node scripts/stage-npm-release.mjs --version $version --out output/npm-release/winsmux
+
+          if (Test-Path "output/npm-release/winsmux/package.json") {
+            "publish_ready=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          } else {
+            "publish_ready=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          }
+
+      - name: Skip npm publish
+        if: steps.stage.outputs.publish_ready != 'true'
+        run: echo "winsmux npm package is not publish-ready yet; skipping npm publish."
+
+      - name: Verify staged package
+        if: steps.stage.outputs.publish_ready == 'true'
+        working-directory: output/npm-release/winsmux
+        run: |
+          node --version
+          npm pack --dry-run
+
+      - name: Publish to npm
+        if: steps.stage.outputs.publish_ready == 'true'
+        working-directory: output/npm-release/winsmux
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

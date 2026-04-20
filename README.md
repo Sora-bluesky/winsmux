@@ -134,6 +134,7 @@ You can also download a release `.zip` from GitHub Releases or build from source
 - npm-based installation is planned
 - the public npm install surface will be a **single `winsmux` package**
 - current internal packages such as `winsmux-mcp` and the private `winsmux-app` build are **not** the public npm install contract
+- the npm package name `winsmux` is already reserved, but repository-driven npm release remains gated until the public installer contract is ready
 
 ## Quick start
 
