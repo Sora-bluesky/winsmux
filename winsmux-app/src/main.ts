@@ -125,6 +125,7 @@ type PopoutSurfaceState =
       mode: "editor";
       path: string;
       worktree: string;
+      content?: string;
     };
 
 declare global {
@@ -1109,6 +1110,7 @@ function getCurrentEditorSurfaceState(): PopoutSurfaceState | null {
     mode: "editor",
     path: selected.path,
     worktree: selectedTarget?.worktree ?? "",
+    content: isTauri() ? undefined : selected.content,
   };
 }
 
@@ -1167,6 +1169,11 @@ function applyPopoutSurfaceState(state: PopoutSurfaceState | null) {
       target.lastSeenAt = state.lastSeenAt || target.lastSeenAt;
     }
     openPreviewTarget(state.url);
+    return;
+  }
+
+  if (state.content) {
+    openEditorPreviewForHarness(state.path, state.content, state.worktree);
     return;
   }
 

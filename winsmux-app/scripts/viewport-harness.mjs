@@ -285,6 +285,18 @@ async function assertPreviewPopout(page) {
   await closePromise;
 }
 
+async function assertEditorPopout(page) {
+  const popupPromise = page.waitForEvent("popup");
+  await page.click("#popout-editor-btn");
+  const popup = await popupPromise;
+  await assertPopoutShell(popup, "#editor-code");
+  await popup.locator("#editor-file-path").waitFor({ state: "visible" });
+  await popup.locator("#editor-statusbar").waitFor({ state: "visible" });
+  const closePromise = popup.waitForEvent("close");
+  await popup.click("#close-editor-btn");
+  await closePromise;
+}
+
 async function assertPreviewClosed(page) {
   await page.click("#browser-back-btn");
   await page.locator("#browser-surface").waitFor({ state: "hidden" });
@@ -372,6 +384,7 @@ async function verifyDesktopViewport(page, previewUrl) {
   await page.locator("#settings-sheet").waitFor({ state: "hidden" });
 
   await openFirstSourceContextEntry(page);
+  await assertEditorPopout(page);
   await assertCommandBarRoundtrip(page, "#editor-surface");
   await assertSettingsRoundtrip(page, "#editor-surface");
   await assertTerminalDrawerWithSourceContext(page, "#editor-surface", "#context-panel");
@@ -541,6 +554,7 @@ async function run() {
             "desktop-command-bar",
             "desktop-settings-sheet",
             "desktop-source-context",
+            "desktop-editor-popout",
             "desktop-command-bar-with-editor",
             "desktop-settings-with-editor",
             "desktop-source-context-with-terminal-drawer",
