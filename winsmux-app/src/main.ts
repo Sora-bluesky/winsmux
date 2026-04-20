@@ -3577,6 +3577,7 @@ function renderEditorSurface() {
     title.textContent = "Editor";
     path.textContent = "Editor idle";
     summary.innerHTML = "";
+    summary.hidden = true;
     meta.innerHTML = "";
     diffPreview.innerHTML = "";
     diffPreview.hidden = true;
@@ -3604,6 +3605,7 @@ function renderEditorSurface() {
 
   meta.innerHTML = "";
   summary.innerHTML = "";
+  summary.hidden = true;
   diffPreview.innerHTML = "";
   diffPreview.hidden = true;
   browserMeta.innerHTML = "";
@@ -3631,6 +3633,7 @@ function renderEditorSurface() {
       chip.textContent = item;
       summary.appendChild(chip);
     }
+    summary.hidden = summary.childElementCount === 0;
     for (const item of [
       "Preview browser",
       previewTarget.portLabel,
@@ -3724,6 +3727,7 @@ function renderEditorSurface() {
       diffChip.textContent = "Diff review";
       summary.appendChild(diffChip);
     }
+    summary.hidden = summary.childElementCount === 0;
     for (const item of [
       selected.language,
       `${selected.lineCount} lines`,
