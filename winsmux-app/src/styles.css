@@ -1864,15 +1864,33 @@ textarea {
 
   #editor-surface-summary,
   #editor-meta-row {
+    flex-wrap: nowrap;
     gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 4px;
   }
 
   #editor-statusbar {
+    flex-wrap: nowrap;
     gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 4px;
   }
 
   #editor-tabs {
     gap: 6px;
+  }
+
+  #editor-surface-summary::-webkit-scrollbar,
+  #editor-meta-row::-webkit-scrollbar,
+  #editor-statusbar::-webkit-scrollbar {
+    height: 8px;
+  }
+
+  #editor-surface-summary .editor-meta-chip,
+  #editor-meta-row .editor-meta-chip,
+  .editor-status-item {
+    flex: 0 0 auto;
   }
 
   #browser-toolbar {
