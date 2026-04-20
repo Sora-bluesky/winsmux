@@ -3547,6 +3547,8 @@ function trapCommandBarTab(event: KeyboardEvent) {
 }
 
 function renderEditorSurface() {
+  const title = document.getElementById("editor-surface-title");
+  const summary = document.getElementById("editor-surface-summary");
   const path = document.getElementById("editor-file-path");
   const meta = document.getElementById("editor-meta-row");
   const diffPreview = document.getElementById("editor-diff-preview");
@@ -3562,7 +3564,7 @@ function renderEditorSurface() {
   const tabs = document.getElementById("editor-tabs");
   const code = document.getElementById("editor-code");
   const statusbar = document.getElementById("editor-statusbar");
-  if (!path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserToolbarSummary || !browserBackButton || !browserCopyButton || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
+  if (!title || !summary || !path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserToolbarSummary || !browserBackButton || !browserCopyButton || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
     return;
   }
 
@@ -3572,7 +3574,10 @@ function renderEditorSurface() {
   const previewTargets = getPreviewTargets();
   const previewModeActive = editorSurfaceMode === "preview" && Boolean(previewTarget);
   if (!selected && !previewModeActive) {
+    title.textContent = "Editor";
     path.textContent = "Editor idle";
+    summary.innerHTML = "";
+    summary.hidden = true;
     meta.innerHTML = "";
     diffPreview.innerHTML = "";
     diffPreview.hidden = true;
@@ -3584,7 +3589,10 @@ function renderEditorSurface() {
     tabs.innerHTML = "";
     code.textContent = "No backend preview cached.";
     code.hidden = false;
-    statusbar.textContent = "Secondary work surface: 0 projected files";
+    renderEditorStatusbar(statusbar, [
+      { label: "Surface", value: "Idle" },
+      { label: "Files", value: "0 projected" },
+    ]);
     return;
   }
   if (selected && !previewModeActive) {
@@ -3599,6 +3607,8 @@ function renderEditorSurface() {
     : "";
 
   meta.innerHTML = "";
+  summary.innerHTML = "";
+  summary.hidden = true;
   diffPreview.innerHTML = "";
   diffPreview.hidden = true;
   browserMeta.innerHTML = "";
@@ -3613,7 +3623,20 @@ function renderEditorSurface() {
   code.hidden = false;
 
   if (previewModeActive && previewTarget) {
+    title.textContent = "Preview";
     path.textContent = previewTarget.url;
+    for (const item of [
+      "Preview",
+      previewTarget.portLabel,
+      previewTarget.sourceLabel,
+    ]) {
+      const chip = document.createElement("span");
+      chip.className = "editor-meta-chip";
+      chip.dataset.tone = item === "Preview" ? "focus" : "default";
+      chip.textContent = item;
+      summary.appendChild(chip);
+    }
+    summary.hidden = summary.childElementCount === 0;
     for (const item of [
       "Preview browser",
       previewTarget.portLabel,
@@ -3680,11 +3703,39 @@ function renderEditorSurface() {
     browserOpenButton.disabled = false;
     code.textContent = "";
     code.hidden = true;
-    statusbar.textContent =
-      `Secondary work surface: preview -> ${previewTarget.url}` +
-      `${lastPreviewExternalState?.url === previewTarget.url ? (lastPreviewExternalState.ok ? " (opened externally)" : " (external blocked)") : ""}`;
+    renderEditorStatusbar(statusbar, [
+      { label: "Surface", value: "Preview" },
+      { label: "Target", value: previewTarget.portLabel },
+      { label: "Source", value: previewTarget.sourceLabel },
+      ...(lastPreviewExternalState?.url === previewTarget.url
+        ? [{ label: "External", value: lastPreviewExternalState.ok ? "Opened" : "Blocked" }]
+        : []),
+    ]);
   } else if (selected) {
+    title.textContent = selectedTarget?.sourceChange ? "Diff review" : "Editor";
     path.textContent = selected.path;
+    for (const item of [
+      "Code",
+      selected.origin === "context" ? "Run context" : "Explorer",
+      selectedWorktreeLabel,
+    ]) {
+      if (!item) {
+        continue;
+      }
+      const chip = document.createElement("span");
+      chip.className = "editor-meta-chip";
+      chip.dataset.tone = item === "Code" ? "focus" : "default";
+      chip.textContent = item;
+      summary.appendChild(chip);
+    }
+    if (selectedTarget?.sourceChange) {
+      const diffChip = document.createElement("span");
+      diffChip.className = "editor-meta-chip";
+      diffChip.dataset.tone = "focus";
+      diffChip.textContent = "Diff review";
+      summary.appendChild(diffChip);
+    }
+    summary.hidden = summary.childElementCount === 0;
     for (const item of [
       selected.language,
       `${selected.lineCount} lines`,
@@ -3731,7 +3782,11 @@ function renderEditorSurface() {
       diffPreview.hidden = false;
     }
     code.textContent = selected.content;
-    statusbar.textContent = `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selectedWorktreeLabel ? `${selectedWorktreeLabel} / ` : ""}${selected.path}`;
+    renderEditorStatusbar(statusbar, [
+      { label: "Surface", value: selectedTarget?.sourceChange ? "Diff review" : "Editor" },
+      { label: "Source", value: selected.origin === "context" ? "Run context" : "Explorer" },
+      ...(selectedWorktreeLabel ? [{ label: "Worktree", value: selectedWorktreeLabel }] : []),
+    ]);
   }
   tabs.innerHTML = "";
 
@@ -3744,6 +3799,29 @@ function renderEditorSurface() {
       void openEditorTarget(getEditorTargetByKey(editor.key));
     });
     tabs.appendChild(tab);
+  }
+}
+
+function renderEditorStatusbar(
+  root: HTMLElement,
+  items: Array<{ label: string; value: string }>,
+) {
+  root.innerHTML = "";
+  for (const item of items) {
+    const entry = document.createElement("span");
+    entry.className = "editor-status-item";
+
+    const label = document.createElement("span");
+    label.className = "editor-status-label";
+    label.textContent = item.label;
+
+    const value = document.createElement("span");
+    value.className = "editor-status-value";
+    value.textContent = item.value;
+
+    entry.appendChild(label);
+    entry.appendChild(value);
+    root.appendChild(entry);
   }
 }
 
