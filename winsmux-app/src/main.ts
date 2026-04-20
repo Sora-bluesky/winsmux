@@ -1926,12 +1926,18 @@ function getFooterSettingsTone(status: string): SurfaceTone {
   }
 }
 
+function getFooterInboxTone(count: number): SurfaceTone {
+  if (count > 0) {
+    return "warning";
+  }
+  return "success";
+}
+
 function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[] } {
   const selectedProjection = getPrimaryRunProjection();
   const modeLabel = composerModes.find((item) => item.mode === activeComposerMode)?.label ?? activeComposerMode;
-  const inboxStatus = desktopSummarySnapshot
-    ? `${desktopSummarySnapshot.inbox.summary.item_count} inbox`
-    : "Inbox idle";
+  const inboxCount = desktopSummarySnapshot?.inbox.summary.item_count ?? 0;
+  const inboxStatus = desktopSummarySnapshot ? `${inboxCount} inbox` : "Inbox idle";
   const runStatus = selectedProjection?.label || selectedProjection?.run_id || "No run selected";
   const reviewStatus = selectedProjection?.review_state || "No review";
   const nextStatus = selectedProjection?.next_action || "idle";
@@ -1953,7 +1959,7 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
       { label: "Operator", value: operatorStatus.label, tone: operatorStatus.tone },
       { label: "Review", value: reviewStatus, tone: getFooterReviewTone(selectedProjection?.review_state) },
       { label: "Next", value: nextStatus, tone: getFooterNextTone(selectedProjection?.next_action) },
-      { label: "Inbox", value: inboxStatus },
+      { label: "Inbox", value: inboxStatus, tone: getFooterInboxTone(inboxCount) },
     ],
   };
 }
