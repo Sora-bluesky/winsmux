@@ -105,7 +105,7 @@
             Title = '公開後に向けた設計書と、より細かな承認制御を整える'
             UserValue = '要件、脅威、設計書の整備に加えて、命令単位の承認やネットワーク遅延承認のような後続機能を準備します。'
             UseCase = '公開後に運用や説明責任をさらに強くしたいときに使います。'
-            ImplementationVersion = 'post-v1.0.0-governance'
+            ImplementationVersion = 'v1.6.0'
             TaskIds = @('TASK-045', 'TASK-046', 'TASK-047', 'TASK-048', 'TASK-050', 'TASK-073', 'TASK-076')
             AppendixName = '公開後の設計書と細かな承認制御'
             TestFocus = '説明資料、承認の細分化'
@@ -149,7 +149,7 @@
             Title = 'Windows 以外でも使える下地を、v1.0.0 の後で整える'
             UserValue = '将来、Windows 以外でも同じ操作感で使えるように、確認の組み合わせ、保管庫、PowerShell 依存を整理します。'
             UseCase = '将来、Windows 以外の環境でも同じ運用をしたいときに使います。'
-            ImplementationVersion = 'post-v1.0.0-platform'
+            ImplementationVersion = 'pending'
             TaskIds = @('TASK-249', 'TASK-250', 'TASK-251', 'TASK-252', 'TASK-267', 'TASK-268', 'TASK-271')
             AppendixName = 'Windows 以外への展開'
             TestFocus = 'Windows 以外への拡張を始められるか'
@@ -166,7 +166,7 @@
         }
         @{
             Order = 20
-            Version = 'v0.22.0'
+            Version = 'v1.6.1'
             TaskIds = @('TASK-315')
             Focus = '自己進化'
             Example = '外部変化の収集、影響判断、見直し候補の出力'
@@ -254,7 +254,7 @@
         }
         @{
             Order = 130
-            Version = 'post-v1.0.0-platform'
+            Version = 'pending'
             TaskIds = @('TASK-249', 'TASK-250', 'TASK-251', 'TASK-252', 'TASK-267', 'TASK-268', 'TASK-271')
             Focus = 'Windows 以外への展開'
             Example = 'Windows 以外で起動、保管庫、PowerShell 依存が崩れない'
@@ -262,7 +262,7 @@
         }
         @{
             Order = 140
-            Version = 'post-v1.0.0-governance'
+            Version = 'v1.6.0'
             TaskIds = @('TASK-045', 'TASK-046', 'TASK-047', 'TASK-048', 'TASK-050', 'TASK-073', 'TASK-076')
             Focus = '公開後の設計書と細かな承認制御'
             Example = '要件、脅威、設計、承認制御の説明責任を後追いせず整理できる'
