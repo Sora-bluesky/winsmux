@@ -5256,7 +5256,7 @@ function renderPaneMetadata() {
     pane.labelElement.textContent = paneLabel;
 
     const status = summarizeBoardPaneStatus(paneRecord);
-    const branch = paneRecord?.branch || "No branch";
+    const branch = paneRecord?.branch || "";
     const eventTime = paneRecord?.last_event_at ? formatPaneMetaTime(paneRecord.last_event_at) : "";
     const waitDuration = paneRecord?.last_event_at
       ? formatPaneWaitDuration(paneRecord.last_event_at, now)
@@ -5264,7 +5264,10 @@ function renderPaneMetadata() {
         ? `${formatPreviewSeenAt(pane.lastOutputAt)} · live output`
         : "waiting for summary";
 
-    const parts = [status, branch];
+    const parts = [status];
+    if (branch) {
+      parts.push(branch);
+    }
     if (eventTime) {
       parts.push(eventTime);
     }
