@@ -293,6 +293,9 @@ async function assertPreviewPopout(page) {
   const closePromise = popup.waitForEvent("close");
   await popup.click("#close-editor-btn");
   await closePromise;
+  await page.locator("#browser-surface").waitFor({ state: "visible" });
+  await page.locator("#browser-toolbar").waitFor({ state: "visible" });
+  await assertHorizontallyVisible(page, "#editor-surface");
 }
 
 async function assertEditorPopout(page) {
@@ -309,6 +312,12 @@ async function assertEditorPopout(page) {
   const closePromise = popup.waitForEvent("close");
   await popup.click("#close-editor-btn");
   await closePromise;
+  await page.locator("#editor-code").waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const target = document.querySelector("#editor-code");
+    return target instanceof HTMLElement && target.textContent?.includes("context + editor");
+  });
+  await assertHorizontallyVisible(page, "#editor-surface");
 }
 
 async function assertPreviewClosed(page) {
