@@ -5269,7 +5269,10 @@ function renderPaneMetadata() {
       parts.push(eventTime);
     }
     parts.push(waitDuration);
-    pane.metaElement.textContent = parts.filter((value) => Boolean(value)).join(" · ");
+    const metaText = parts.filter((value) => Boolean(value)).join(" · ");
+    pane.metaElement.textContent = metaText;
+    pane.metaElement.title = metaText;
+    pane.labelElement.title = paneLabel;
   });
 }
 

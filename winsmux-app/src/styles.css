@@ -2100,4 +2100,23 @@ body[data-popout-surface="1"] #editor-surface {
   .footer-pill-label {
     display: none;
   }
+
+  .pane-header {
+    min-height: 46px;
+    padding: 4px 8px;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .pane-heading {
+    gap: 1px;
+  }
+
+  .pane-meta {
+    white-space: normal;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
 }
