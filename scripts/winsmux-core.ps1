@@ -1091,6 +1091,8 @@ function Parse-ConsultCommandArgs {
     $targetSlot = ''
     $nextTest = ''
     $confidence = $null
+    $runId = ''
+    $jsonOutput = $false
     $risks = [System.Collections.Generic.List[string]]::new()
     $messageParts = [System.Collections.Generic.List[string]]::new()
 
@@ -1122,6 +1124,16 @@ function Parse-ConsultCommandArgs {
                 }
                 $confidence = $parsedConfidence
                 $i++
+            }
+            '--run-id' {
+                if ($i + 1 -ge $Args.Count) {
+                    Stop-WithError '--run-id requires a value'
+                }
+                $runId = [string]$Args[$i + 1]
+                $i++
+            }
+            '--json' {
+                $jsonOutput = $true
             }
             '--next-test' {
                 if ($i + 1 -ge $Args.Count) {
@@ -1161,6 +1173,8 @@ function Parse-ConsultCommandArgs {
         message     = [string]$message
         target_slot = [string]$targetSlot
         confidence  = $confidence
+        run_id      = [string]$runId
+        json        = [bool]$jsonOutput
         next_test   = [string]$nextTest
         risks       = @($risks)
     }
@@ -1190,7 +1204,32 @@ function Resolve-CurrentCommandArgs {
 }
 
 function Get-ConsultationCommandContext {
-    param([string]$ProjectDir = (Get-Location).Path)
+    param(
+        [string]$ProjectDir = (Get-Location).Path,
+        [string]$RunId = ''
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($RunId)) {
+        $payload = Get-ExplainPayload -ProjectDir $ProjectDir -RunId $RunId
+        $manifest = Get-WinsmuxManifest -ProjectDir $ProjectDir
+        $sessionName = ''
+        if ($null -ne $manifest -and $null -ne $manifest.session) {
+            $sessionName = [string]$manifest.session.name
+        }
+
+        return [ordered]@{
+            SessionName = [string]$sessionName
+            Label       = [string]$payload.run.primary_label
+            PaneId      = [string]$payload.run.primary_pane_id
+            Role        = [string]$payload.run.primary_role
+            TaskId      = [string]$payload.run.task_id
+            Branch      = [string]$payload.run.branch
+            HeadSha     = [string]$payload.run.head_sha
+            RunId       = [string]$payload.run.run_id
+            Slot        = [string]$payload.run.primary_label
+            Worktree    = [string]$payload.run.worktree
+        }
+    }
 
     $context = Get-CurrentPaneManifestContext -ProjectDir $ProjectDir
     $branch = [string]$context.Branch
@@ -1247,10 +1286,12 @@ function Write-ConsultationCommandRecord {
         [AllowNull()]$Confidence = $null,
         [string]$NextTest = '',
         [string[]]$Risks = @(),
+        [string]$RunId = '',
+        [bool]$JsonOutput = $false,
         [string]$ProjectDir = (Get-Location).Path
     )
 
-    $context = Get-ConsultationCommandContext -ProjectDir $ProjectDir
+    $context = Get-ConsultationCommandContext -ProjectDir $ProjectDir -RunId $RunId
     $timestamp = (Get-Date).ToString('o')
     $packet = [ordered]@{
         run_id      = [string]$context.RunId
@@ -1323,6 +1364,25 @@ function Write-ConsultationCommandRecord {
         last_event    = ($Kind -replace '_', '.')
         last_event_at = $timestamp
     })
+
+    if ($JsonOutput) {
+        [ordered]@{
+            run_id           = [string]$context.RunId
+            task_id          = [string]$context.TaskId
+            pane_id          = [string]$context.PaneId
+            slot             = [string]$context.Slot
+            kind             = [string]$Kind
+            mode             = [string]$Mode
+            target_slot      = [string]$TargetSlot
+            recommendation   = if ($Kind -eq 'consult_result') { [string]$Message } else { '' }
+            confidence       = $Confidence
+            next_test        = [string]$NextTest
+            risks            = @($Risks)
+            consultation_ref = [string]$artifact.reference
+            generated_at     = $timestamp
+        } | ConvertTo-Json -Compress -Depth 8 | Write-Output
+        return
+    }
 
     $kindLabel = ($Kind -replace '^consult_', 'consult ' -replace '_', ' ')
     Write-Output "$kindLabel recorded for $([string]$context.RunId)"
@@ -6650,7 +6710,7 @@ function Invoke-ConsultResult {
     Assert-WinsmuxRolePermission -CommandName 'consult-result'
     $commandArgs = Resolve-CurrentCommandArgs
     $args = Parse-ConsultCommandArgs -Mode ([string]$commandArgs.target) -Args @($commandArgs.rest)
-    Write-ConsultationCommandRecord -Kind 'consult_result' -Mode ([string]$args.mode) -Message ([string]$args.message) -TargetSlot ([string]$args.target_slot) -Confidence $args.confidence -NextTest ([string]$args.next_test) -Risks @($args.risks)
+    Write-ConsultationCommandRecord -Kind 'consult_result' -Mode ([string]$args.mode) -Message ([string]$args.message) -TargetSlot ([string]$args.target_slot) -Confidence $args.confidence -NextTest ([string]$args.next_test) -Risks @($args.risks) -RunId ([string]$args.run_id) -JsonOutput ([bool]$args.json)
 }
 
 function Invoke-ConsultError {
@@ -6689,7 +6749,7 @@ Commands:
   dispatch-review           Dispatch review-request to a review-capable pane (Reviewer/Worker)
   dispatch-task <text>      Route and send task text to a managed pane using manifest-aware role selection
   consult-request <mode> [--message <text>] [--target-slot <slot>]  Record a consultation request packet/event
-  consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>]  Record a consultation result packet/event
+  consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json]  Record a consultation result packet/event
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS

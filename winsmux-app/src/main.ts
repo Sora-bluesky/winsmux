@@ -6,6 +6,7 @@ import {
   getDesktopEditorFile,
   getDesktopRunExplain,
   getDesktopSummarySnapshot,
+  pickDesktopRunWinner,
   promoteDesktopRunTactic,
   subscribeToDesktopSummaryRefresh,
   type DesktopCompareRunsResult,
@@ -203,6 +204,7 @@ const desktopEditorLoadingPaths = new Set<string>();
 const desktopEditorLoadErrors = new Map<string, string>();
 const desktopStandaloneEditorTargets = new Map<string, EditorTarget>();
 const promotingRunIds = new Set<string>();
+const pickingWinnerRunIds = new Set<string>();
 const pendingPromotedRunRefreshIds = new Set<string>();
 const comparingRunPairKeys = new Set<string>();
 const backendConversation: ConversationItem[] = [];
@@ -943,12 +945,39 @@ function renderExperimentContext() {
   const compareRightProjection = compareResult
     ? (getRunProjectionByRunId(compareResult.right.run_id) ?? comparePeer)
     : comparePeer;
-  const canFocusCompareWinner = Boolean(
+  const compareWinnerConfidence = compareResult
+    ? (
+      compareResult.left.run_id === compareWinnerRunId
+        ? (compareResult.left.confidence ?? null)
+        : (
+          compareResult.right.run_id === compareWinnerRunId
+            ? (compareResult.right.confidence ?? null)
+            : null
+        )
+    )
+    : null;
+  const compareLoserSlot = compareResult
+    ? (
+      compareResult.left.run_id === compareWinnerRunId
+        ? (compareRightProjection?.label || compareResult.right.label || compareResult.right.run_id)
+        : (compareLeftProjection?.label || compareResult.left.label || compareResult.left.run_id)
+    )
+    : "";
+  const canPickCompareWinner = Boolean(
     compareResult &&
     !compareResult.recommend.reconcile_consult &&
-    compareWinnerProjection &&
-    compareWinnerProjection.run_id !== selectedProjection.run_id,
+    compareWinnerProjection,
   );
+  const persistedCompareTargetMatchesPeer = Boolean(
+    comparePeer &&
+    consultationPacket.target_slot &&
+    consultationPacket.target_slot === (comparePeer.label || comparePeer.run_id),
+  );
+  const hasPersistedCompareWinner =
+    !compareResult &&
+    consultationPacket.kind === "consult_result" &&
+    consultationPacket.mode === "final" &&
+    persistedCompareTargetMatchesPeer;
   const compareWinnerLabel = compareResult
     ? getCompareWinnerLabel(compareResult)
     : "";
@@ -976,6 +1005,8 @@ function renderExperimentContext() {
         ? "warning"
         : (compareWinnerLabel ? "success" : "info")
     )
+    : hasPersistedCompareWinner
+      ? "success"
     : "info";
   const compareBody = compareResult
     ? [
@@ -992,14 +1023,25 @@ function renderExperimentContext() {
       ]
         .filter((value) => Boolean(value))
         .join(" · ")
-    : comparePeer
-      ? [
+      : comparePeer
+      ? (
+        hasPersistedCompareWinner
+          ? [
+              "Winner selected",
+              consultationPacket.recommendation || selectedProjection.label || selectedProjection.run_id,
+              consultationPacket.target_slot ? `vs ${consultationPacket.target_slot}` : "",
+              consultationPacket.next_test || "winner persisted",
+            ]
+              .filter((value) => Boolean(value))
+              .join(" · ")
+          : [
           `vs ${comparePeer.label || comparePeer.run_id}`,
           comparePeer.branch || "no branch",
           comparePeer.review_state || "pending",
         ]
-          .filter((value) => Boolean(value))
-          .join(" · ")
+              .filter((value) => Boolean(value))
+              .join(" · ")
+      )
       : "Compare needs another surfaced run.";
   const compareOverviewValue = compareInFlight
     ? "Refreshing compare"
@@ -1010,7 +1052,11 @@ function renderExperimentContext() {
             ? "Consult before pick"
             : `Winner ${compareWinnerLabel || "not decided"}`
         )
+        : (
+          hasPersistedCompareWinner
+            ? "Winner selected"
         : (comparePeer ? `vs ${comparePeer.label || comparePeer.run_id}` : "Need peer")
+        )
     );
   const compareDisplayBody = compareInFlight
     ? `Refreshing compare result${compareResult ? "..." : " from current runs..." }`
@@ -1087,9 +1133,24 @@ function renderExperimentContext() {
       actionType: "compare" as const,
       actionRunId: selectedProjection.run_id,
       actionPeerRunId: comparePeer?.run_id,
-      secondaryActionLabel: canFocusCompareWinner ? "Pick winner" : undefined,
-      secondaryActionType: "focus" as const,
+      secondaryActionLabel: canPickCompareWinner ? "Pick winner" : undefined,
+      secondaryActionType: "pick_winner" as const,
       secondaryActionRunId: compareWinnerProjection?.run_id,
+      secondaryActionPeerSlot: compareLoserSlot || undefined,
+      secondaryActionPeerRunId: compareResult
+        ? (
+          compareResult.left.run_id === compareWinnerRunId
+            ? compareResult.right.run_id
+            : compareResult.left.run_id
+        )
+        : undefined,
+      secondaryActionRecommendation: compareResult
+        ? `Pick ${compareWinnerLabel || compareWinnerProjection?.label || compareWinnerProjection?.run_id || "winner"}`
+        : undefined,
+      secondaryActionConfidence: compareWinnerConfidence,
+      secondaryActionNextTest: compareResult?.recommend.next_action || undefined,
+      secondaryActionDisabled: compareWinnerRunId ? pickingWinnerRunIds.has(compareWinnerRunId) : false,
+      secondaryActionPendingLabel: "Picking...",
       details: compareResult
         ? [
             {
@@ -1108,6 +1169,12 @@ function renderExperimentContext() {
             { label: "left", value: `${compareResult.left_only_changed_files.length}` },
             { label: "right", value: `${compareResult.right_only_changed_files.length}` },
           ]
+        : hasPersistedCompareWinner
+          ? [
+              { label: "winner", value: selectedProjection.label || selectedProjection.run_id },
+              { label: "target", value: consultationPacket.target_slot || "n/a" },
+              { label: "next", value: consultationPacket.next_test || "n/a" },
+            ]
         : [
             { label: "peer", value: comparePeer?.label || "n/a" },
             { label: "changed", value: `${payload.evidence_digest.changed_file_count}` },
@@ -1259,11 +1326,15 @@ function renderExperimentContext() {
       chipRow.className = "timeline-chip-row";
       const appendActionButton = (
         label: string,
-        type: "compare" | "promote" | "focus",
+        type: "compare" | "promote" | "focus" | "pick_winner",
         runId: string,
         disabled?: boolean,
         pendingLabel?: string,
         peerRunId?: string,
+        peerSlot?: string,
+        recommendation?: string,
+        confidence?: number | null,
+        nextTest?: string,
       ) => {
         const button = document.createElement("button");
         button.type = "button";
@@ -1277,6 +1348,17 @@ function renderExperimentContext() {
           }
           if (type === "focus") {
             await focusRunInContext(runId);
+            return;
+          }
+          if (type === "pick_winner") {
+            await pickCompareWinner(
+              runId,
+              peerRunId || "",
+              peerSlot || "",
+              recommendation || "",
+              confidence ?? null,
+              nextTest || "",
+            );
             return;
           }
           await promoteSelectedRunTactic(runId);
@@ -1299,6 +1381,13 @@ function renderExperimentContext() {
           item.secondaryActionLabel,
           item.secondaryActionType,
           item.secondaryActionRunId,
+          item.secondaryActionDisabled,
+          item.secondaryActionPendingLabel,
+          item.secondaryActionPeerRunId,
+          item.secondaryActionPeerSlot,
+          item.secondaryActionRecommendation,
+          item.secondaryActionConfidence,
+          item.secondaryActionNextTest,
         );
       }
       card.appendChild(chipRow);
@@ -2106,6 +2195,71 @@ async function focusRunInContext(runId: string) {
     console.warn("Failed to preload explain payload for focused run", error);
   } finally {
     renderDesktopSurfaces();
+  }
+}
+
+async function pickCompareWinner(
+  runId: string,
+  peerRunId: string,
+  peerSlot: string,
+  recommendation: string,
+  confidence: number | null,
+  nextTest: string,
+) {
+  if (pickingWinnerRunIds.has(runId)) {
+    return;
+  }
+
+  pickingWinnerRunIds.add(runId);
+  renderContextPanel();
+
+  try {
+    const result = await pickDesktopRunWinner(
+      runId,
+      peerSlot,
+      recommendation,
+      confidence,
+      nextTest,
+    );
+    appendRuntimeConversation({
+      type: "operator",
+      category: "activity",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Winner picked",
+      body: result.recommendation || runId,
+      details: [
+        { label: "run", value: result.run_id },
+        { label: "target", value: result.target_slot || "n/a" },
+        { label: "next", value: result.next_test || "n/a" },
+      ],
+      tone: "success",
+      runId,
+    });
+    renderConversation(getConversationItems());
+    if (peerRunId) {
+      desktopRunCompareCache.delete(getComparePairKey(runId, peerRunId));
+      desktopRunCompareCache.delete(getComparePairKey(peerRunId, runId));
+    }
+    requestDesktopSummaryRefresh(runId, 0);
+    await focusRunInContext(runId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendRuntimeConversation({
+      type: "operator",
+      category: "attention",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Pick winner failed",
+      body: message,
+      details: [{ label: "run", value: runId }],
+      tone: "warning",
+      runId,
+    });
+    renderConversation(getConversationItems());
+  } finally {
+    pickingWinnerRunIds.delete(runId);
+    renderContextPanel();
   }
 }
 
