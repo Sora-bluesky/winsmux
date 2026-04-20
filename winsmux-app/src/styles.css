@@ -994,6 +994,14 @@ textarea {
   font-size: var(--text-xs);
   color: #8c96b4;
   font-family: var(--font-code);
+  display: block;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 10px 12px;
+  border: 1px solid var(--border-muted);
+  border-radius: 14px;
+  background: var(--bg-surface);
 }
 
 #editor-surface-summary {
@@ -1006,6 +1014,10 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+#editor-file-path::-webkit-scrollbar {
+  height: 8px;
 }
 
 #editor-diff-preview {
