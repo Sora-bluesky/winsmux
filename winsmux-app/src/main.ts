@@ -73,6 +73,7 @@ interface SessionItem {
 
 interface ExplorerItem {
   label: string;
+  meta?: string;
   depth: number;
   kind: "folder" | "file";
   path?: string;
@@ -616,38 +617,62 @@ function getExplorerItems() {
   const items: ExplorerItem[] = [];
   const seenFolders = new Set<string>();
 
+  const worktreeGroups = new Map<string, EditorTarget[]>();
   for (const target of Array.from(targets.values()).sort((left, right) => left.path.localeCompare(right.path))) {
-    const normalizedPath = target.path.replace(/\\/g, "/");
-    const segments = normalizedPath.split("/").filter(Boolean);
-    let currentPath = "";
-    segments.forEach((segment, index) => {
-      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
-      const depth = index;
-      const isFile = index === segments.length - 1;
-      if (isFile) {
+    const worktreeKey = target.worktree || ".";
+    const group = worktreeGroups.get(worktreeKey) ?? [];
+    group.push(target);
+    worktreeGroups.set(worktreeKey, group);
+  }
+
+  for (const [worktreeKey, group] of Array.from(worktreeGroups.entries()).sort((left, right) =>
+    getWorktreeLabel(left[0]).localeCompare(getWorktreeLabel(right[0])),
+  )) {
+    items.push({
+      label: getWorktreeLabel(worktreeKey),
+      meta: `${group.length} file${group.length === 1 ? "" : "s"}`,
+      depth: 0,
+      kind: "folder",
+      open: true,
+      worktree: worktreeKey,
+    });
+
+    for (const target of group) {
+      const normalizedPath = target.path.replace(/\\/g, "/");
+      const segments = normalizedPath.split("/").filter(Boolean);
+      let currentPath = "";
+      segments.forEach((segment, index) => {
+        currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+        const folderKey = `${worktreeKey}::${currentPath}`;
+        const depth = index + 1;
+        const isFile = index === segments.length - 1;
+        if (isFile) {
+          items.push({
+            label: segment,
+            meta: target.summary,
+            depth,
+            kind: "file",
+            path: target.path,
+            worktree: target.worktree,
+            active: target.key === selectedEditorKey,
+          });
+          return;
+        }
+
+        if (seenFolders.has(folderKey)) {
+          return;
+        }
+
+        seenFolders.add(folderKey);
         items.push({
           label: segment,
           depth,
-          kind: "file",
-          path: target.path,
+          kind: "folder",
+          open: true,
           worktree: target.worktree,
-          active: target.key === selectedEditorKey,
         });
-        return;
-      }
-
-      if (seenFolders.has(currentPath)) {
-        return;
-      }
-
-      seenFolders.add(currentPath);
-      items.push({
-        label: segment,
-        depth,
-        kind: "folder",
-        open: true,
       });
-    });
+    }
   }
 
   return items;
@@ -690,6 +715,16 @@ function getPaneLabelFromSourceFilter(filter: SourceFilter) {
   return filter.slice("pane:".length);
 }
 
+function getWorktreeLabel(worktree: string | undefined) {
+  if (!worktree || worktree === "." || worktree === "./") {
+    return "Project root";
+  }
+
+  const normalized = worktree.replace(/\\/g, "/").replace(/\/+$/, "");
+  const segments = normalized.split("/").filter(Boolean);
+  return segments[segments.length - 1] || normalized;
+}
+
 function renderExplorer() {
   const root = document.getElementById("explorer-list");
   if (!root) {
@@ -714,7 +749,8 @@ function renderExplorer() {
     button.className = `sidebar-row sidebar-tree-row ${item.active ? "is-active" : ""}`;
     button.style.paddingLeft = `${12 + item.depth * 16}px`;
     button.innerHTML =
-      `<span class="sidebar-row-title">${item.kind === "folder" ? (item.open ? "▾ " : "▸ ") : "• "}${item.label}</span>`;
+      `<span class="sidebar-row-title">${item.kind === "folder" ? (item.open ? "▾ " : "▸ ") : "• "}${item.label}</span>` +
+      (item.meta ? `<span class="sidebar-row-meta">${item.meta}</span>` : "");
     if (item.kind === "file" && item.path) {
       const itemPath = item.path;
       const itemWorktree = item.worktree ?? "";
@@ -746,7 +782,11 @@ function renderOpenEditors() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `sidebar-row ${editor.key === selectedEditorKey && editorSurfaceOpen ? "is-active" : ""}`;
-    button.innerHTML = `<span class="sidebar-row-title">${editor.path.split("/").pop() ?? editor.path}</span><span class="sidebar-row-meta">${editor.summary}</span>`;
+    const target = getEditorTargetByKey(editor.key);
+    const worktreeLabel = getWorktreeLabel(target?.worktree);
+    button.innerHTML =
+      `<span class="sidebar-row-title">${editor.path.split("/").pop() ?? editor.path}</span>` +
+      `<span class="sidebar-row-meta">${worktreeLabel} · ${editor.summary}</span>`;
     button.addEventListener("click", () => {
       void openEditorTarget(getEditorTargetByKey(editor.key));
     });
