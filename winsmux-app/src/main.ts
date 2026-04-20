@@ -1081,6 +1081,19 @@ function renderExperimentContext() {
                 .join(" · "),
             },
             {
+              label: "Decision",
+              value: compareResult.recommend.reconcile_consult
+                ? "consult before pick"
+                : [
+                  compareWinnerLabel || "no winner",
+                  compareResult.confidence_delta !== null
+                    ? formatConfidencePercent(Math.abs(compareResult.confidence_delta))
+                    : "",
+                ]
+                  .filter((value) => Boolean(value))
+                  .join(" · "),
+            },
+            {
               label: "Recommendation",
               value: compareResult.recommend.next_action || "reconcile_consult",
             },
