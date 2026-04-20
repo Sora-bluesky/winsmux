@@ -205,6 +205,8 @@ let lastPreviewExternalState: { url: string; at: number; ok: boolean } | null = 
 let lastPreviewClipboardState: { url: string; at: number; ok: boolean } | null = null;
 let selectedRunId: string | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
+let composerSlashQuery = "";
+let selectedComposerSlashIndex = 0;
 let activeSourceFilter: SourceFilter = "all";
 let activeTimelineFilter: TimelineFilter = "all";
 let commandBarOpen = false;
@@ -258,6 +260,18 @@ const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: str
   { mode: "review", label: "Review", placeholder: "Request review, approval, or audit from the Operator" },
   { mode: "explain", label: "Explain", placeholder: "Ask the Operator to explain the current run state" },
 ];
+
+const composerSlashCommands: Array<{
+  command: string;
+  label: string;
+  description: string;
+  mode: ComposerMode;
+}> = composerModes.map((item) => ({
+  command: item.mode,
+  label: item.label,
+  description: item.placeholder,
+  mode: item.mode,
+}));
 
 const timelineFilters: Array<{ filter: TimelineFilter; label: string }> = [
   { filter: "all", label: "All" },
@@ -1919,6 +1933,81 @@ function focusComposer() {
   composerInput.setSelectionRange(length, length);
 }
 
+function getComposerSlashMatch(value: string) {
+  const match = value.match(/^\/([a-z-]+)(?=\s|$)/i);
+  if (!match) {
+    return null;
+  }
+
+  const token = match[1].toLowerCase();
+  return composerSlashCommands.find((item) => item.command === token) ?? null;
+}
+
+function getFilteredComposerSlashCommands() {
+  if (!composerSlashQuery) {
+    return [];
+  }
+
+  return composerSlashCommands.filter((item) => item.command.startsWith(composerSlashQuery));
+}
+
+function renderComposerSlashCommands() {
+  const root = document.getElementById("composer-slash-row");
+  if (!root) {
+    return;
+  }
+
+  const commands = getFilteredComposerSlashCommands();
+  root.innerHTML = "";
+  root.hidden = commands.length === 0;
+  if (commands.length === 0) {
+    return;
+  }
+
+  commands.forEach((item, index) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `slash-chip ${index === selectedComposerSlashIndex ? "is-active" : ""}`;
+    button.innerHTML = `<span class="slash-chip-command">/${item.command}</span><span class="slash-chip-description">${item.label}</span>`;
+    button.addEventListener("click", () => {
+      applyComposerSlashCommand(item);
+    });
+    root.appendChild(button);
+  });
+}
+
+function syncComposerSlashState(value: string) {
+  const match = value.match(/^\/([a-z-]*)$/i);
+  composerSlashQuery = match ? match[1].toLowerCase() : "";
+  const commands = getFilteredComposerSlashCommands();
+  if (commands.length === 0) {
+    selectedComposerSlashIndex = 0;
+  } else {
+    selectedComposerSlashIndex = Math.min(selectedComposerSlashIndex, commands.length - 1);
+  }
+  renderComposerSlashCommands();
+}
+
+function applyComposerSlashCommand(command: (typeof composerSlashCommands)[number]) {
+  const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (!composerInput) {
+    return;
+  }
+
+  setComposerMode(command.mode);
+  composerInput.value = composerInput.value.replace(/^\/[^\s]+/, "").replace(/^\s+/, "");
+  syncComposerSlashState(composerInput.value);
+  composerInput.focus();
+  const length = composerInput.value.length;
+  composerInput.setSelectionRange(length, length);
+}
+
+function insertComposerTab(composerInput: HTMLTextAreaElement) {
+  const start = composerInput.selectionStart;
+  const end = composerInput.selectionEnd;
+  composerInput.setRangeText("\t", start, end, "end");
+}
+
 function renderComposerModes() {
   const root = document.getElementById("composer-mode-row");
   const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
@@ -1943,6 +2032,8 @@ function renderComposerModes() {
   if (selected) {
     composerInput.placeholder = selected.placeholder;
   }
+
+  renderComposerSlashCommands();
 }
 
 function formatAttachmentSize(size: number) {
@@ -4404,6 +4495,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderRunSummary();
   renderConversation(getConversationItems());
   renderComposerModes();
+  renderComposerSlashCommands();
   renderAttachmentTray();
   renderCommandBar();
   renderEditorSurface();
@@ -4548,6 +4640,32 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
 
     composerInput.addEventListener("keydown", (event) => {
+      const slashCommands = getFilteredComposerSlashCommands();
+      if (event.key === "ArrowDown" && slashCommands.length > 0) {
+        event.preventDefault();
+        selectedComposerSlashIndex = (selectedComposerSlashIndex + 1) % slashCommands.length;
+        renderComposerSlashCommands();
+        return;
+      }
+
+      if (event.key === "ArrowUp" && slashCommands.length > 0) {
+        event.preventDefault();
+        selectedComposerSlashIndex = (selectedComposerSlashIndex - 1 + slashCommands.length) % slashCommands.length;
+        renderComposerSlashCommands();
+        return;
+      }
+
+      if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        if (slashCommands.length > 0) {
+          applyComposerSlashCommand(slashCommands[selectedComposerSlashIndex] ?? slashCommands[0]);
+          return;
+        }
+        insertComposerTab(composerInput);
+        syncComposerSlashState(composerInput.value);
+        return;
+      }
+
       if (event.key !== "Enter") {
         return;
       }
@@ -4558,6 +4676,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
       event.preventDefault();
       composer.requestSubmit();
+    });
+
+    composerInput.addEventListener("input", () => {
+      syncComposerSlashState(composerInput.value);
     });
 
     composerInput.addEventListener("paste", (event) => {
@@ -4593,6 +4715,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     composer.addEventListener("submit", (event) => {
       event.preventDefault();
+      const slashMatch = getComposerSlashMatch(composerInput.value);
+      if (slashMatch) {
+        applyComposerSlashCommand(slashMatch);
+      }
       const value = composerInput.value.trim();
       if (!value && pendingAttachments.length === 0) {
         return;
@@ -4600,6 +4726,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       const submittedAttachments = [...pendingAttachments];
       appendUserMessage(value, submittedAttachments);
       composerInput.value = "";
+      syncComposerSlashState(composerInput.value);
       clearPendingAttachments();
       renderAttachmentTray();
       requestDesktopSummaryRefresh(undefined, 750);
