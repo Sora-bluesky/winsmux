@@ -4328,6 +4328,7 @@ function setContextPanel(open: boolean, options?: { preserveWidePreference?: boo
 
   if ((options?.preserveWidePreference ?? true) && !isNarrowLayout()) {
     preferredWideContextOpen = open;
+    void persistThemeState();
   }
 
   panel.toggleAttribute("hidden", !open);
@@ -4366,6 +4367,7 @@ function setSidebarOpen(open: boolean, options?: { preserveWidePreference?: bool
 
   if ((options?.preserveWidePreference ?? true) && !isNarrowLayout()) {
     preferredWideSidebarOpen = open;
+    void persistThemeState();
   }
 
   shell.classList.toggle("sidebar-open", open);
@@ -4399,6 +4401,7 @@ function applySettingsDraft() {
     applyThemeState(settingsDraftState);
     persistThemeState();
   }
+  settingsDraftState = null;
   setSettingsSheet(false);
 }
 
