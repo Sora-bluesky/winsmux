@@ -125,6 +125,10 @@ type PopoutSurfaceState =
       mode: "editor";
       path: string;
       worktree: string;
+      summary: string;
+      origin: "explorer" | "context";
+      modified: boolean;
+      sourceChange?: SourceChange | null;
       content?: string;
     };
 
@@ -1062,17 +1066,38 @@ function registerPreviewTargetForHarness(sourceLabel: string, url: string) {
 }
 
 function openEditorPreviewForHarness(path: string, content: string, worktree = "") {
-  const target = createStandaloneEditorTarget(path, worktree);
+  restoreStandaloneEditorFromSnapshot({
+    mode: "editor",
+    path,
+    worktree,
+    summary: `Project file preview · ${path.split("/").pop() ?? path}`,
+    origin: "explorer",
+    modified: false,
+    sourceChange: null,
+    content,
+  });
+}
+
+function restoreStandaloneEditorFromSnapshot(state: Extract<PopoutSurfaceState, { mode: "editor" }> & { content: string }) {
+  const target: EditorTarget = {
+    key: getEditorFileKey(state.path, state.worktree),
+    path: state.path,
+    summary: state.summary,
+    worktree: state.worktree,
+    origin: state.origin,
+    modified: state.modified,
+    sourceChange: state.sourceChange ?? undefined,
+  };
   desktopStandaloneEditorTargets.set(target.key, target);
   desktopEditorFileCache.set(target.key, {
     key: target.key,
-    path,
-    summary: target.summary,
-    content,
-    language: inferLanguageFromPath(path),
-    lineCount: countEditorLines(content),
-    modified: false,
-    origin: "explorer",
+    path: state.path,
+    summary: state.summary,
+    content: state.content,
+    language: inferLanguageFromPath(state.path),
+    lineCount: countEditorLines(state.content),
+    modified: state.modified,
+    origin: state.origin,
   });
   desktopEditorLoadErrors.delete(target.key);
   desktopEditorLoadingPaths.delete(target.key);
@@ -1081,6 +1106,7 @@ function openEditorPreviewForHarness(path: string, content: string, worktree = "
   lastPreviewExternalState = null;
   lastPreviewClipboardState = null;
   selectedEditorKey = target.key;
+  setSelectedRun(target.sourceChange?.run ?? selectedRunId);
   setEditorSurface(true);
   renderOpenEditors();
   renderSourceSummary();
@@ -1110,6 +1136,10 @@ function getCurrentEditorSurfaceState(): PopoutSurfaceState | null {
     mode: "editor",
     path: selected.path,
     worktree: selectedTarget?.worktree ?? "",
+    summary: selected.summary,
+    origin: selected.origin,
+    modified: Boolean(selected.modified),
+    sourceChange: selectedTarget?.sourceChange ?? null,
     content: isTauri() ? undefined : selected.content,
   };
 }
@@ -1172,8 +1202,8 @@ function applyPopoutSurfaceState(state: PopoutSurfaceState | null) {
     return;
   }
 
-  if (state.content) {
-    openEditorPreviewForHarness(state.path, state.content, state.worktree);
+  if (typeof state.content === "string") {
+    restoreStandaloneEditorFromSnapshot({ ...state, content: state.content });
     return;
   }
 
@@ -3716,6 +3746,7 @@ function renderEditorSurface() {
   const previewTarget = selectedPreviewUrl ? detectedPreviewTargets.get(selectedPreviewUrl) ?? null : null;
   const previewTargets = getPreviewTargets();
   const previewModeActive = editorSurfaceMode === "preview" && Boolean(previewTarget);
+  const detachedSurface = document.body.dataset.popoutSurface === "1";
   if (!selected && !previewModeActive) {
     title.textContent = "Editor";
     path.textContent = "Editor idle";
@@ -3775,6 +3806,7 @@ function renderEditorSurface() {
     path.textContent = previewTarget.url;
     for (const item of [
       "Preview",
+      detachedSurface ? "Detached" : "",
       previewTarget.portLabel,
       previewTarget.sourceLabel,
     ]) {
@@ -3835,6 +3867,7 @@ function renderEditorSurface() {
     code.hidden = true;
     renderEditorStatusbar(statusbar, [
       { label: "Surface", value: "Preview" },
+      ...(detachedSurface ? [{ label: "Window", value: "Detached" }] : []),
       { label: "Target", value: previewTarget.portLabel },
       { label: "Source", value: previewTarget.sourceLabel },
       { label: "Seen", value: formatPreviewSeenAt(previewTarget.lastSeenAt) },
@@ -3848,6 +3881,7 @@ function renderEditorSurface() {
     path.textContent = selected.path;
     for (const item of [
       "Code",
+      detachedSurface ? "Detached" : "",
       selected.origin === "context" ? "Run context" : "Explorer",
       selectedWorktreeLabel,
     ]) {
@@ -3915,6 +3949,7 @@ function renderEditorSurface() {
     code.textContent = selected.content;
     renderEditorStatusbar(statusbar, [
       { label: "Surface", value: selectedTarget?.sourceChange ? "Diff review" : "Editor" },
+      ...(detachedSurface ? [{ label: "Window", value: "Detached" }] : []),
       { label: "Source", value: selected.origin === "context" ? "Run context" : "Explorer" },
       ...(selectedWorktreeLabel ? [{ label: "Worktree", value: selectedWorktreeLabel }] : []),
     ]);

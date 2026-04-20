@@ -292,6 +292,10 @@ async function assertEditorPopout(page) {
   await assertPopoutShell(popup, "#editor-code");
   await popup.locator("#editor-file-path").waitFor({ state: "visible" });
   await popup.locator("#editor-statusbar").waitFor({ state: "visible" });
+  await popup.waitForFunction(() => {
+    const target = document.querySelector("#editor-code");
+    return target instanceof HTMLElement && target.textContent?.includes("context + editor");
+  });
   const closePromise = popup.waitForEvent("close");
   await popup.click("#close-editor-btn");
   await closePromise;
