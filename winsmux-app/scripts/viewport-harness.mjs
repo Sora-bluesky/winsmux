@@ -259,6 +259,15 @@ async function assertBackToCode(page) {
   await assertHorizontallyVisible(page, "#editor-code");
 }
 
+async function assertPreviewClosed(page) {
+  await page.click("#browser-back-btn");
+  await page.locator("#browser-surface").waitFor({ state: "hidden" });
+  const editorSurface = page.locator("#editor-surface");
+  if (await editorSurface.isVisible().catch(() => false)) {
+    throw new Error("Editor surface stayed visible after closing the preview");
+  }
+}
+
 async function assertCommandBarRoundtrip(page, returnSelector) {
   await page.click("#open-command-bar-btn");
   await page.locator("#command-bar-shell").waitFor({ state: "visible" });
@@ -460,6 +469,20 @@ async function verifyShortNarrowViewport(page, previewUrl) {
   await assertButtonVisible(page, "#add-pane-btn");
   await assertHorizontallyVisible(page, "#terminal-drawer");
   await assertHorizontallyVisible(page, "#terminal-toolbar");
+  await page.click("#toggle-terminal-btn");
+  await page.locator("#terminal-drawer").waitFor({ state: "hidden" });
+
+  await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
+  await waitForPreviewTargetEntry(page);
+  await openHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
+  await page.locator("#browser-reload-btn").waitFor({ state: "visible" });
+  await assertButtonVisible(page, "#browser-back-btn");
+  await assertButtonVisible(page, "#browser-reload-btn");
+  await assertButtonVisible(page, "#browser-open-btn");
+  await assertHorizontallyVisible(page, "#browser-toolbar");
+  await assertReachableFrame(page, "#browser-frame");
+  await assertToolbarActionStates(page);
+  await assertPreviewClosed(page);
 }
 
 async function run() {
@@ -517,6 +540,8 @@ async function run() {
             "short-narrow-command-bar",
             "short-narrow-settings-sheet",
             "short-narrow-terminal-drawer",
+            "short-narrow-preview-browser",
+            "short-narrow-preview-toolbar-actions",
           ],
         },
         null,
