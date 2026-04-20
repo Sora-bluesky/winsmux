@@ -3547,6 +3547,7 @@ function trapCommandBarTab(event: KeyboardEvent) {
 }
 
 function renderEditorSurface() {
+  const title = document.getElementById("editor-surface-title");
   const summary = document.getElementById("editor-surface-summary");
   const path = document.getElementById("editor-file-path");
   const meta = document.getElementById("editor-meta-row");
@@ -3563,7 +3564,7 @@ function renderEditorSurface() {
   const tabs = document.getElementById("editor-tabs");
   const code = document.getElementById("editor-code");
   const statusbar = document.getElementById("editor-statusbar");
-  if (!summary || !path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserToolbarSummary || !browserBackButton || !browserCopyButton || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
+  if (!title || !summary || !path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserToolbarSummary || !browserBackButton || !browserCopyButton || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
     return;
   }
 
@@ -3573,6 +3574,7 @@ function renderEditorSurface() {
   const previewTargets = getPreviewTargets();
   const previewModeActive = editorSurfaceMode === "preview" && Boolean(previewTarget);
   if (!selected && !previewModeActive) {
+    title.textContent = "Editor";
     path.textContent = "Editor idle";
     summary.innerHTML = "";
     meta.innerHTML = "";
@@ -3616,6 +3618,7 @@ function renderEditorSurface() {
   code.hidden = false;
 
   if (previewModeActive && previewTarget) {
+    title.textContent = "Preview";
     path.textContent = previewTarget.url;
     for (const item of [
       "Preview",
@@ -3698,6 +3701,7 @@ function renderEditorSurface() {
       `Secondary work surface: preview -> ${previewTarget.url}` +
       `${lastPreviewExternalState?.url === previewTarget.url ? (lastPreviewExternalState.ok ? " (opened externally)" : " (external blocked)") : ""}`;
   } else if (selected) {
+    title.textContent = selectedTarget?.sourceChange ? "Diff review" : "Editor";
     path.textContent = selected.path;
     for (const item of [
       "Code",
