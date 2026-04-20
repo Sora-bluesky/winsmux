@@ -1083,6 +1083,7 @@ function renderExperimentContext() {
             {
               label: "Selected run",
               value: [
+                compareResult.left.branch || "no branch",
                 compareResult.left.review_state || compareResult.left.state,
                 compareResult.left.next_action || "idle",
               ]
@@ -1092,6 +1093,7 @@ function renderExperimentContext() {
             {
               label: "Peer run",
               value: [
+                compareResult.right.branch || "no branch",
                 compareResult.right.review_state || compareResult.right.state,
                 compareResult.right.next_action || "idle",
               ]
