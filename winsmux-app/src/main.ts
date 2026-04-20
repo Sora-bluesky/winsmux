@@ -1063,6 +1063,24 @@ function renderExperimentContext() {
       lines: compareResult
         ? [
             {
+              label: "Selected run",
+              value: [
+                compareResult.left.review_state || compareResult.left.state,
+                compareResult.left.next_action || "idle",
+              ]
+                .filter((value) => Boolean(value))
+                .join(" · "),
+            },
+            {
+              label: "Peer run",
+              value: [
+                compareResult.right.review_state || compareResult.right.state,
+                compareResult.right.next_action || "idle",
+              ]
+                .filter((value) => Boolean(value))
+                .join(" · "),
+            },
+            {
               label: "Recommendation",
               value: compareResult.recommend.next_action || "reconcile_consult",
             },
