@@ -3028,7 +3028,11 @@ function renderEditorSurface() {
       }
       browserTargetList.hidden = false;
     }
-    browserToolbarSummary.textContent = `${previewTargets.length} targets · active ${previewTarget.portLabel}${lastExternalPreviewOpen?.url === previewTarget.url ? " · external open" : ""}`;
+    browserToolbarSummary.textContent =
+      `${previewTargets.length} targets · active ${previewTarget.portLabel}` +
+      ` · from ${previewTarget.sourceLabel}` +
+      ` · seen ${formatPreviewSeenAt(previewTarget.lastSeenAt)}` +
+      `${lastExternalPreviewOpen?.url === previewTarget.url ? " · external open" : ""}`;
     if (lastPreviewClipboardState?.url === previewTarget.url) {
       browserToolbarSummary.textContent += lastPreviewClipboardState.ok ? " · copied" : " · copy failed";
     }
