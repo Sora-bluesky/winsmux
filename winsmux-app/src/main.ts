@@ -2028,6 +2028,7 @@ function applyComposerSlashCommand(command: (typeof composerSlashCommands)[numbe
   setComposerMode(command.mode);
   composerInput.value = composerInput.value.replace(/^\/[^\s]+/, "").replace(/^\s+/, "");
   syncComposerSlashState(composerInput.value);
+  exitComposerHistoryToDraft(composerInput.value);
   composerInput.focus();
   const length = composerInput.value.length;
   composerInput.setSelectionRange(length, length);
@@ -2061,6 +2062,16 @@ function setComposerValue(value: string) {
   syncComposerSlashState(value);
   const length = value.length;
   composerInput.setSelectionRange(length, length);
+}
+
+function syncComposerDraftState(value?: string) {
+  const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  composerDraftState = captureComposerHistoryEntry(value ?? composerInput?.value ?? "");
+}
+
+function exitComposerHistoryToDraft(value?: string) {
+  composerHistoryIndex = -1;
+  syncComposerDraftState(value);
 }
 
 function snapshotComposerAttachments(attachments: ComposerAttachment[]): ComposerAttachmentSnapshot[] {
@@ -2201,6 +2212,7 @@ function renderComposerRemoteReferences() {
       } else {
         selectedComposerRemoteReferenceIds.add(item.id);
       }
+      exitComposerHistoryToDraft();
       renderComposerRemoteReferences();
     });
     root.appendChild(button);
@@ -2326,6 +2338,7 @@ function renderAttachmentTray() {
     removeButton.addEventListener("click", () => {
       releaseAttachmentPreview(attachment);
       pendingAttachments = pendingAttachments.filter((item) => item.id !== attachment.id);
+      exitComposerHistoryToDraft();
       renderAttachmentTray();
     });
     item.appendChild(removeButton);
@@ -2346,6 +2359,7 @@ function appendAttachments(files: File[]) {
 
   const next = files.slice(0, remaining).map((file) => createComposerAttachment(file));
   pendingAttachments = [...pendingAttachments, ...next];
+  exitComposerHistoryToDraft();
   renderAttachmentTray();
 }
 
@@ -4842,33 +4856,34 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     composerInput.addEventListener("keydown", (event) => {
       const slashCommands = getFilteredComposerSlashCommands();
-      if (event.key === "ArrowUp" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSlashOpen && composerHistory.length > 0 && isComposerSelectionCollapsed(composerInput) && isCaretOnFirstLine(composerInput)) {
+      const composerImeBlocking = composerImeActive || event.isComposing;
+      if (event.key === "ArrowUp" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSlashOpen && composerHistory.length > 0 && isComposerSelectionCollapsed(composerInput) && isCaretOnFirstLine(composerInput)) {
         event.preventDefault();
         stepComposerHistory(-1);
         return;
       }
 
-      if (event.key === "ArrowDown" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSlashOpen && composerHistoryIndex !== -1 && isComposerSelectionCollapsed(composerInput) && isCaretOnLastLine(composerInput)) {
+      if (event.key === "ArrowDown" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSlashOpen && composerHistoryIndex !== -1 && isComposerSelectionCollapsed(composerInput) && isCaretOnLastLine(composerInput)) {
         event.preventDefault();
         stepComposerHistory(1);
         return;
       }
 
-      if (event.key === "ArrowDown" && slashCommands.length > 0) {
+      if (event.key === "ArrowDown" && !composerImeBlocking && slashCommands.length > 0) {
         event.preventDefault();
         selectedComposerSlashIndex = (selectedComposerSlashIndex + 1) % slashCommands.length;
         renderComposerSlashCommands();
         return;
       }
 
-      if (event.key === "ArrowUp" && slashCommands.length > 0) {
+      if (event.key === "ArrowUp" && !composerImeBlocking && slashCommands.length > 0) {
         event.preventDefault();
         selectedComposerSlashIndex = (selectedComposerSlashIndex - 1 + slashCommands.length) % slashCommands.length;
         renderComposerSlashCommands();
         return;
       }
 
-      if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (event.key === "Tab" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
         event.preventDefault();
         if (slashCommands.length > 0) {
           applyComposerSlashCommand(slashCommands[selectedComposerSlashIndex] ?? slashCommands[0]);
@@ -4876,6 +4891,7 @@ window.addEventListener("DOMContentLoaded", async () => {
         }
         insertComposerTab(composerInput);
         syncComposerSlashState(composerInput.value);
+        exitComposerHistoryToDraft(composerInput.value);
         return;
       }
 
@@ -4892,9 +4908,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
 
     composerInput.addEventListener("input", () => {
-      if (composerHistoryIndex === -1) {
-        composerDraftState = captureComposerHistoryEntry(composerInput.value);
+      if (composerHistoryIndex !== -1) {
+        composerHistoryIndex = -1;
       }
+      syncComposerDraftState(composerInput.value);
       syncComposerSlashState(composerInput.value);
     });
 
@@ -4935,12 +4952,13 @@ window.addEventListener("DOMContentLoaded", async () => {
       if (slashMatch) {
         applyComposerSlashCommand(slashMatch);
       }
-      const value = composerInput.value.trim();
+      const rawValue = composerInput.value;
+      const value = rawValue.trim();
       const selectedRemoteReferences = getComposerRemoteReferences().filter((item) => selectedComposerRemoteReferenceIds.has(item.id));
       if (!value && pendingAttachments.length === 0 && selectedRemoteReferences.length === 0) {
         return;
       }
-      const historyEntry = captureComposerHistoryEntry(value);
+      const historyEntry = captureComposerHistoryEntry(rawValue);
       const submittedAttachments = [
         ...pendingAttachments,
         ...selectedRemoteReferences.map((item) => ({
@@ -4951,7 +4969,7 @@ window.addEventListener("DOMContentLoaded", async () => {
           file: new File([], item.label),
         })),
       ];
-      appendUserMessage(value, submittedAttachments);
+      appendUserMessage(rawValue, submittedAttachments);
       pushComposerHistoryEntry(historyEntry);
       composerInput.value = "";
       syncComposerSlashState(composerInput.value);
