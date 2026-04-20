@@ -73,6 +73,7 @@ interface SessionItem {
 
 interface ExplorerItem {
   label: string;
+  meta?: string;
   depth: number;
   kind: "folder" | "file";
   path?: string;
@@ -127,6 +128,14 @@ interface FooterStatusItem {
   label: string;
   value?: string;
   tone?: SurfaceTone;
+}
+
+interface ExperimentDetailLine {
+  label: string;
+  value: string;
+  path?: string;
+  worktree?: string;
+  title?: string;
 }
 
 type SurfaceTone = "default" | "accent" | "success" | "warning" | "danger" | "info" | "focus";
@@ -616,38 +625,62 @@ function getExplorerItems() {
   const items: ExplorerItem[] = [];
   const seenFolders = new Set<string>();
 
+  const worktreeGroups = new Map<string, EditorTarget[]>();
   for (const target of Array.from(targets.values()).sort((left, right) => left.path.localeCompare(right.path))) {
-    const normalizedPath = target.path.replace(/\\/g, "/");
-    const segments = normalizedPath.split("/").filter(Boolean);
-    let currentPath = "";
-    segments.forEach((segment, index) => {
-      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
-      const depth = index;
-      const isFile = index === segments.length - 1;
-      if (isFile) {
+    const worktreeKey = target.worktree || ".";
+    const group = worktreeGroups.get(worktreeKey) ?? [];
+    group.push(target);
+    worktreeGroups.set(worktreeKey, group);
+  }
+
+  for (const [worktreeKey, group] of Array.from(worktreeGroups.entries()).sort((left, right) =>
+    getWorktreeLabel(left[0]).localeCompare(getWorktreeLabel(right[0])),
+  )) {
+    items.push({
+      label: getWorktreeLabel(worktreeKey),
+      meta: `${group.length} file${group.length === 1 ? "" : "s"}`,
+      depth: 0,
+      kind: "folder",
+      open: true,
+      worktree: worktreeKey,
+    });
+
+    for (const target of group) {
+      const normalizedPath = target.path.replace(/\\/g, "/");
+      const segments = normalizedPath.split("/").filter(Boolean);
+      let currentPath = "";
+      segments.forEach((segment, index) => {
+        currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+        const folderKey = `${worktreeKey}::${currentPath}`;
+        const depth = index + 1;
+        const isFile = index === segments.length - 1;
+        if (isFile) {
+          items.push({
+            label: segment,
+            meta: target.summary,
+            depth,
+            kind: "file",
+            path: target.path,
+            worktree: target.worktree,
+            active: target.key === selectedEditorKey,
+          });
+          return;
+        }
+
+        if (seenFolders.has(folderKey)) {
+          return;
+        }
+
+        seenFolders.add(folderKey);
         items.push({
           label: segment,
           depth,
-          kind: "file",
-          path: target.path,
+          kind: "folder",
+          open: true,
           worktree: target.worktree,
-          active: target.key === selectedEditorKey,
         });
-        return;
-      }
-
-      if (seenFolders.has(currentPath)) {
-        return;
-      }
-
-      seenFolders.add(currentPath);
-      items.push({
-        label: segment,
-        depth,
-        kind: "folder",
-        open: true,
       });
-    });
+    }
   }
 
   return items;
@@ -690,6 +723,16 @@ function getPaneLabelFromSourceFilter(filter: SourceFilter) {
   return filter.slice("pane:".length);
 }
 
+function getWorktreeLabel(worktree: string | undefined) {
+  if (!worktree || worktree === "." || worktree === "./") {
+    return "Project root";
+  }
+
+  const normalized = worktree.replace(/\\/g, "/").replace(/\/+$/, "");
+  const segments = normalized.split("/").filter(Boolean);
+  return segments[segments.length - 1] || normalized;
+}
+
 function renderExplorer() {
   const root = document.getElementById("explorer-list");
   if (!root) {
@@ -714,7 +757,8 @@ function renderExplorer() {
     button.className = `sidebar-row sidebar-tree-row ${item.active ? "is-active" : ""}`;
     button.style.paddingLeft = `${12 + item.depth * 16}px`;
     button.innerHTML =
-      `<span class="sidebar-row-title">${item.kind === "folder" ? (item.open ? "▾ " : "▸ ") : "• "}${item.label}</span>`;
+      `<span class="sidebar-row-title">${item.kind === "folder" ? (item.open ? "▾ " : "▸ ") : "• "}${item.label}</span>` +
+      (item.meta ? `<span class="sidebar-row-meta">${item.meta}</span>` : "");
     if (item.kind === "file" && item.path) {
       const itemPath = item.path;
       const itemWorktree = item.worktree ?? "";
@@ -746,7 +790,11 @@ function renderOpenEditors() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `sidebar-row ${editor.key === selectedEditorKey && editorSurfaceOpen ? "is-active" : ""}`;
-    button.innerHTML = `<span class="sidebar-row-title">${editor.path.split("/").pop() ?? editor.path}</span><span class="sidebar-row-meta">${editor.summary}</span>`;
+    const target = getEditorTargetByKey(editor.key);
+    const worktreeLabel = getWorktreeLabel(target?.worktree);
+    button.innerHTML =
+      `<span class="sidebar-row-title">${editor.path.split("/").pop() ?? editor.path}</span>` +
+      `<span class="sidebar-row-meta">${worktreeLabel} · ${editor.summary}</span>`;
     button.addEventListener("click", () => {
       void openEditorTarget(getEditorTargetByKey(editor.key));
     });
@@ -1234,24 +1282,21 @@ function renderExperimentContext() {
               label: "Difference fields",
               value: compareDifferenceSummary || "none",
             },
-            {
-              label: "Shared files",
-              value: compareResult.shared_changed_files.length > 0
-                ? summarizeChangedFiles(compareResult.shared_changed_files, 4)
-                : "none",
-            },
-            {
-              label: `${selectedProjection.label || "Selected"} only`,
-              value: compareResult.left_only_changed_files.length > 0
-                ? summarizeChangedFiles(compareResult.left_only_changed_files, 4)
-                : "none",
-            },
-            {
-              label: `${comparePeer?.label || compareResult.right.label || "Peer"} only`,
-              value: compareResult.right_only_changed_files.length > 0
-                ? summarizeChangedFiles(compareResult.right_only_changed_files, 4)
-                : "none",
-            },
+            buildExperimentFileLine(
+              "Shared files",
+              compareResult.shared_changed_files,
+              compareLeftProjection?.worktree || selectedProjection.worktree || "",
+            ),
+            buildExperimentFileLine(
+              `${selectedProjection.label || "Selected"} only`,
+              compareResult.left_only_changed_files,
+              compareLeftProjection?.worktree || selectedProjection.worktree || "",
+            ),
+            buildExperimentFileLine(
+              `${comparePeer?.label || compareResult.right.label || "Peer"} only`,
+              compareResult.right_only_changed_files,
+              compareRightProjection?.worktree || comparePeer?.worktree || "",
+            ),
           ]
         : [],
     },
@@ -1310,12 +1355,29 @@ function renderExperimentContext() {
     if (item.lines && item.lines.length > 0) {
       const lineList = document.createElement("div");
       lineList.className = "experiment-detail-lines";
-      for (const line of item.lines) {
+      for (const line of item.lines as ExperimentDetailLine[]) {
         const row = document.createElement("div");
         row.className = "experiment-detail-line";
         row.innerHTML =
           `<span class="experiment-detail-line-label">${line.label}</span>` +
           `<span class="experiment-detail-line-value">${line.value}</span>`;
+        if (line.path) {
+          row.classList.add("is-actionable");
+          row.tabIndex = 0;
+          row.setAttribute("role", "button");
+          if (line.title) {
+            row.title = line.title;
+          }
+          row.addEventListener("click", () => {
+            void openEditorPath(line.path, line.worktree || "");
+          });
+          row.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              void openEditorPath(line.path, line.worktree || "");
+            }
+          });
+        }
         lineList.appendChild(row);
       }
       card.appendChild(lineList);
@@ -2677,10 +2739,11 @@ function trapCommandBarTab(event: KeyboardEvent) {
 function renderEditorSurface() {
   const path = document.getElementById("editor-file-path");
   const meta = document.getElementById("editor-meta-row");
+  const diffPreview = document.getElementById("editor-diff-preview");
   const tabs = document.getElementById("editor-tabs");
   const code = document.getElementById("editor-code");
   const statusbar = document.getElementById("editor-statusbar");
-  if (!path || !meta || !tabs || !code || !statusbar) {
+  if (!path || !meta || !diffPreview || !tabs || !code || !statusbar) {
     return;
   }
 
@@ -2689,6 +2752,8 @@ function renderEditorSurface() {
   if (!selected) {
     path.textContent = "Editor idle";
     meta.innerHTML = "";
+    diffPreview.innerHTML = "";
+    diffPreview.hidden = true;
     tabs.innerHTML = "";
     code.textContent = "No backend preview cached.";
     statusbar.textContent = "Secondary work surface: 0 projected files";
@@ -2699,6 +2764,9 @@ function renderEditorSurface() {
   if (selectedTarget && !desktopEditorFileCache.has(selected.key) && !desktopEditorLoadingPaths.has(selected.key)) {
     void ensureEditorFileLoaded(selectedTarget);
   }
+  const selectedWorktreeLabel = selectedTarget?.worktree
+    ? getWorktreeLabel(selectedTarget.worktree)
+    : "";
 
   path.textContent = selected.path;
   meta.innerHTML = "";
@@ -2707,15 +2775,50 @@ function renderEditorSurface() {
     `${selected.lineCount} lines`,
     selected.modified ? "Modified" : "Saved",
     selected.origin === "context" ? "Opened from context" : "Opened from explorer",
+    selectedWorktreeLabel,
   ]) {
+    if (!item) {
+      continue;
+    }
     const chip = document.createElement("span");
     chip.className = `editor-meta-chip ${item === "Modified" ? "is-modified" : ""}`;
     chip.dataset.tone = item === "Modified" ? "focus" : "default";
     chip.textContent = item;
     meta.appendChild(chip);
   }
+  diffPreview.innerHTML = "";
+  diffPreview.hidden = true;
+  if (selectedTarget?.sourceChange) {
+    const previewTitle = document.createElement("div");
+    previewTitle.className = "editor-diff-preview-title";
+    previewTitle.textContent = "Diff preview";
+    const previewBody = document.createElement("div");
+    previewBody.className = "editor-diff-preview-body";
+    previewBody.textContent = selectedTarget.sourceChange.summary;
+    const previewMeta = document.createElement("div");
+    previewMeta.className = "editor-diff-preview-meta";
+    for (const item of [
+      selectedTarget.sourceChange.status,
+      selectedTarget.sourceChange.lines,
+      selectedTarget.sourceChange.branch,
+      selectedTarget.sourceChange.review,
+      selectedTarget.sourceChange.paneLabel,
+    ]) {
+      if (!item) {
+        continue;
+      }
+      const chip = document.createElement("span");
+      chip.className = "editor-meta-chip";
+      chip.textContent = item;
+      previewMeta.appendChild(chip);
+    }
+    diffPreview.appendChild(previewTitle);
+    diffPreview.appendChild(previewBody);
+    diffPreview.appendChild(previewMeta);
+    diffPreview.hidden = false;
+  }
   code.textContent = selected.content;
-  statusbar.textContent = `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selected.path}`;
+  statusbar.textContent = `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selectedWorktreeLabel ? `${selectedWorktreeLabel} / ` : ""}${selected.path}`;
   tabs.innerHTML = "";
 
   for (const editor of editors) {
@@ -2935,6 +3038,21 @@ function summarizeChangedFiles(paths: string[], limit = 3) {
 
   const remaining = paths.length - visible.length;
   return remaining > 0 ? `${visible.join(", ")} +${remaining} more` : visible.join(", ");
+}
+
+function buildExperimentFileLine(
+  label: string,
+  paths: string[],
+  worktree: string,
+): ExperimentDetailLine {
+  const path = paths.find((value) => Boolean(value));
+  return {
+    label,
+    value: paths.length > 0 ? summarizeChangedFiles(paths, 4) : "none",
+    path: path || undefined,
+    worktree: path ? worktree : undefined,
+    title: path ? `Open ${path} in the read-only editor.` : undefined,
+  };
 }
 
 function summarizeWorkspaceContext(branch: string, worktree: string) {

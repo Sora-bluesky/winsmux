@@ -913,6 +913,34 @@ textarea {
   gap: 8px;
 }
 
+#editor-diff-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-muted);
+  border-radius: 16px;
+  background: var(--bg-surface);
+}
+
+.editor-diff-preview-title {
+  font-size: var(--text-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.editor-diff-preview-body {
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+
+.editor-diff-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .editor-meta-chip {
   display: inline-flex;
   align-items: center;
@@ -1078,6 +1106,20 @@ textarea {
   gap: 12px;
   font-size: var(--text-2xs);
   color: var(--text-secondary);
+}
+
+.experiment-detail-line.is-actionable {
+  cursor: pointer;
+  border-radius: 10px;
+  padding: 4px 6px;
+  margin: 0 -6px;
+}
+
+.experiment-detail-line.is-actionable:hover,
+.experiment-detail-line.is-actionable:focus-visible {
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  outline: none;
 }
 
 .experiment-detail-line-label {
