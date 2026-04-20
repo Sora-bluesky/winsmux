@@ -356,19 +356,24 @@ Repeated `no result yet` responses are treated as a latency problem first, not a
 Codex must follow these rules when review or audit agents are slow:
 
 1. For Rust/Tauri slices, or any review touching more than 2 files, wait at least 60 seconds before the first timeout decision.
-2. For small TypeScript / docs-only slices, 30 seconds remains the default first wait.
+2. For small TypeScript / docs-only slices, wait at least 60 seconds before the first timeout decision.
+   - Desktop UI, composer, CSS, viewport harness, and other interaction slices are included in this bucket.
 3. Keep review concurrency to 1 agent at a time for Rust/Tauri work. If a separate explorer is needed, do not run more than 2 total subagents on the same slice.
 4. Prefer narrow prompts and explicit file paths over `fork_context=true` for routine reviews. Only fork full context when the review truly depends on prior thread state.
 5. If two consecutive review agents on the same slice return `no result yet`, stop spawning more review agents for that slice until either:
    - the diff is reduced,
    - the wait time is increased,
    - or the blocker is documented and manual diff fallback is used.
-6. When a delayed review result arrives after a timeout, record the latency pattern in `.claude/local/operator-handoff.md` and use that result in the final decision.
-7. If the same PR accumulates multiple tiny desktop UI slices and `no result yet` repeats across those slices, stop per-slice review for that PR.
+6. If the same review agent returns `no result yet` twice, keep that agent alive in the background.
+   - Do not report review as complete.
+   - Do not merge before the delayed result is incorporated.
+   - Continue only with non-overlapping local work, local validation, and manual diff review while waiting.
+7. When a delayed review result arrives after a timeout, record the latency pattern in `.claude/local/operator-handoff.md` and use that result in the final decision.
+8. If the same PR accumulates multiple tiny desktop UI slices and `no result yet` repeats across those slices, stop per-slice review for that PR.
    - Switch to milestone-based review instead.
    - A milestone is a semantically meaningful bundle such as:
      - one new surface,
      - one completed interaction flow,
      - or a ready-for-review PR state.
-8. While milestone-based review is active, every interim slice must still pass local validation and manual diff review before commit/push.
-9. Record the switch to milestone-based review in `.claude/local/operator-handoff.md` and link the tracking issue when one exists.
+9. While milestone-based review is active, every interim slice must still pass local validation and manual diff review before commit/push.
+10. Record the switch to milestone-based review in `.claude/local/operator-handoff.md` and link the tracking issue when one exists.
