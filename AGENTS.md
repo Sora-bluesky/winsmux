@@ -364,3 +364,11 @@ Codex must follow these rules when review or audit agents are slow:
    - the wait time is increased,
    - or the blocker is documented and manual diff fallback is used.
 6. When a delayed review result arrives after a timeout, record the latency pattern in `.claude/local/operator-handoff.md` and use that result in the final decision.
+7. If the same PR accumulates multiple tiny desktop UI slices and `no result yet` repeats across those slices, stop per-slice review for that PR.
+   - Switch to milestone-based review instead.
+   - A milestone is a semantically meaningful bundle such as:
+     - one new surface,
+     - one completed interaction flow,
+     - or a ready-for-review PR state.
+8. While milestone-based review is active, every interim slice must still pass local validation and manual diff review before commit/push.
+9. Record the switch to milestone-based review in `.claude/local/operator-handoff.md` and link the tracking issue when one exists.

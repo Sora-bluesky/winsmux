@@ -104,6 +104,13 @@ interface EditorTarget {
   sourceChange?: SourceChange;
 }
 
+interface PreviewTarget {
+  url: string;
+  portLabel: string;
+  sourceLabel: string;
+  lastSeenAt: number;
+}
+
 type SourceFilter = "all" | "candidates" | "attention" | `pane:${string}`;
 
 type ChangeStatus = "modified" | "added" | "deleted" | "renamed";
@@ -175,11 +182,15 @@ let paneCounter = 0;
 let terminalDrawerOpen = false;
 let contextPanelOpen = true;
 let editorSurfaceOpen = false;
+let editorSurfaceMode: "code" | "preview" = "code";
 let settingsSheetOpen = false;
 let sidebarOpen = true;
 let composerImeActive = false;
 let sidebarWidth = 292;
 let selectedEditorKey = "";
+let selectedPreviewUrl = "";
+let lastPreviewExternalState: { url: string; at: number; ok: boolean } | null = null;
+let lastPreviewClipboardState: { url: string; at: number; ok: boolean } | null = null;
 let selectedRunId: string | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
 let activeSourceFilter: SourceFilter = "all";
@@ -190,6 +201,8 @@ let selectedCommandIndex = 0;
 let commandBarImeActive = false;
 let lastCommandBarFocus: HTMLElement | null = null;
 let pendingAttachments: ComposerAttachment[] = [];
+const detectedPreviewTargets = new Map<string, PreviewTarget>();
+const PREVIEW_FRESHNESS_WINDOW_MS = 30_000;
 let desktopSummarySnapshot: DesktopSummarySnapshot | null = null;
 let desktopSummaryRefreshInFlight: Promise<void> | null = null;
 let desktopSummaryRefreshTimeout: number | null = null;
@@ -903,6 +916,153 @@ function getPrimarySourceChange(changes: SourceChange[]) {
   );
 }
 
+function stripAnsi(input: string) {
+  return input.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
+}
+
+function extractPreviewUrls(data: string) {
+  const matches = stripAnsi(data).match(/https?:\/\/(?:localhost|127\.0\.0\.1):\d+(?:\/[^\s"'<>)]*)?/gi);
+  return matches ?? [];
+}
+
+function getPreviewPortLabel(url: string) {
+  try {
+    const parsed = new URL(url);
+    return parsed.port ? `:${parsed.port}` : parsed.host;
+  } catch {
+    return url;
+  }
+}
+
+function formatPreviewSeenAt(timestamp: number) {
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function registerPreviewTargets(paneId: string, data: string) {
+  let changed = false;
+  const now = Date.now();
+  for (const url of extractPreviewUrls(data)) {
+    const existing = detectedPreviewTargets.get(url);
+    if (existing) {
+      if (existing.sourceLabel !== (paneId || "terminal") || now - existing.lastSeenAt >= PREVIEW_FRESHNESS_WINDOW_MS) {
+        detectedPreviewTargets.set(url, {
+          ...existing,
+          sourceLabel: paneId || "terminal",
+          lastSeenAt: now,
+        });
+        changed = true;
+      }
+      continue;
+    }
+    detectedPreviewTargets.set(url, {
+      url,
+      portLabel: getPreviewPortLabel(url),
+      sourceLabel: paneId || "terminal",
+      lastSeenAt: now,
+    });
+    changed = true;
+  }
+
+  if (changed) {
+    renderContextPanel();
+    renderEditorSurface();
+  }
+}
+
+function getPreviewTargets(activeUrl = selectedPreviewUrl) {
+  return Array.from(detectedPreviewTargets.values()).sort((left, right) => {
+    if (activeUrl) {
+      if (left.url === activeUrl && right.url !== activeUrl) {
+        return -1;
+      }
+      if (right.url === activeUrl && left.url !== activeUrl) {
+        return 1;
+      }
+    }
+    if (left.lastSeenAt !== right.lastSeenAt) {
+      return right.lastSeenAt - left.lastSeenAt;
+    }
+    return left.url.localeCompare(right.url);
+  });
+}
+
+function openPreviewTarget(url: string) {
+  selectedPreviewUrl = url;
+  editorSurfaceMode = "preview";
+  if (lastPreviewExternalState?.url !== url) {
+    lastPreviewExternalState = null;
+  }
+  if (lastPreviewClipboardState?.url !== url) {
+    lastPreviewClipboardState = null;
+  }
+  setEditorSurface(true);
+}
+
+function closePreviewTarget() {
+  editorSurfaceMode = "code";
+  selectedPreviewUrl = "";
+  lastPreviewExternalState = null;
+  lastPreviewClipboardState = null;
+  if (!selectedEditorKey) {
+    setEditorSurface(false);
+    return;
+  }
+  setEditorSurface(true);
+}
+
+function reloadPreviewTarget() {
+  if (!selectedPreviewUrl) {
+    return;
+  }
+  const browserFrame = document.getElementById("browser-frame") as HTMLIFrameElement | null;
+  if (!browserFrame) {
+    return;
+  }
+  browserFrame.src = selectedPreviewUrl;
+}
+
+function openPreviewTargetExternally() {
+  if (!selectedPreviewUrl) {
+    return;
+  }
+  const previewUrl = selectedPreviewUrl;
+  const opened = window.open(previewUrl, "_blank", "noopener");
+  lastPreviewExternalState = {
+    url: previewUrl,
+    at: Date.now(),
+    ok: Boolean(opened),
+  };
+  renderEditorSurface();
+  if (!opened) {
+    return;
+  }
+}
+
+async function copyPreviewTargetUrl() {
+  if (!selectedPreviewUrl || !navigator.clipboard) {
+    return;
+  }
+  const previewUrl = selectedPreviewUrl;
+  try {
+    await navigator.clipboard.writeText(previewUrl);
+    lastPreviewClipboardState = {
+      url: previewUrl,
+      at: Date.now(),
+      ok: true,
+    };
+  } catch {
+    lastPreviewClipboardState = {
+      url: previewUrl,
+      at: Date.now(),
+      ok: false,
+    };
+  }
+  renderEditorSurface();
+}
+
 function getSourceFilterLabel(filter: SourceFilter) {
   switch (filter) {
     case "all":
@@ -1460,9 +1620,10 @@ function renderExperimentContext() {
 
 function renderContextPanel() {
   const sectionRoot = document.getElementById("context-sections");
+  const previewRoot = document.getElementById("preview-target-list");
   const overviewRoot = document.getElementById("source-overview-cards");
   const fileRoot = document.getElementById("context-file-list");
-  if (!sectionRoot || !overviewRoot || !fileRoot) {
+  if (!sectionRoot || !previewRoot || !overviewRoot || !fileRoot) {
     return;
   }
 
@@ -1487,6 +1648,40 @@ function renderContextPanel() {
   }
 
   renderExperimentContext();
+
+  previewRoot.innerHTML = "";
+  const previewTargets = getPreviewTargets();
+  if (previewTargets.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "context-empty-state";
+    empty.innerHTML =
+      `<div class="context-label">No detected ports</div>` +
+      `<div class="context-value">Run a localhost dev server in the utility terminal to surface a preview target.</div>`;
+    previewRoot.appendChild(empty);
+  } else {
+    for (const target of previewTargets) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `context-file-row ${editorSurfaceOpen && editorSurfaceMode === "preview" && selectedPreviewUrl === target.url ? "is-active" : ""}`;
+      button.dataset.tone = "info";
+      const name = document.createElement("span");
+      name.className = "context-file-name";
+      name.textContent = target.url;
+      const metaLine = document.createElement("span");
+      metaLine.className = "context-file-meta";
+      metaLine.textContent = `Preview target · ${target.portLabel} · Seen ${formatPreviewSeenAt(target.lastSeenAt)}`;
+      const trace = document.createElement("span");
+      trace.className = "context-file-trace";
+      trace.textContent = `Detected from ${target.sourceLabel}`;
+      button.appendChild(name);
+      button.appendChild(metaLine);
+      button.appendChild(trace);
+      button.addEventListener("click", () => {
+        openPreviewTarget(target.url);
+      });
+      previewRoot.appendChild(button);
+    }
+  }
 
   overviewRoot.innerHTML = "";
   const overviewCards = [
@@ -2740,58 +2935,161 @@ function renderEditorSurface() {
   const path = document.getElementById("editor-file-path");
   const meta = document.getElementById("editor-meta-row");
   const diffPreview = document.getElementById("editor-diff-preview");
+  const browserSurface = document.getElementById("browser-surface");
+  const browserFrame = document.getElementById("browser-frame") as HTMLIFrameElement | null;
+  const browserMeta = document.getElementById("browser-meta-row");
+  const browserTargetList = document.getElementById("browser-target-list");
+  const browserToolbarSummary = document.getElementById("browser-toolbar-summary");
+  const browserBackButton = document.getElementById("browser-back-btn") as HTMLButtonElement | null;
+  const browserCopyButton = document.getElementById("browser-copy-btn") as HTMLButtonElement | null;
+  const browserReloadButton = document.getElementById("browser-reload-btn") as HTMLButtonElement | null;
+  const browserOpenButton = document.getElementById("browser-open-btn") as HTMLButtonElement | null;
   const tabs = document.getElementById("editor-tabs");
   const code = document.getElementById("editor-code");
   const statusbar = document.getElementById("editor-statusbar");
-  if (!path || !meta || !diffPreview || !tabs || !code || !statusbar) {
+  if (!path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserToolbarSummary || !browserBackButton || !browserCopyButton || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
     return;
   }
 
   const editors = getEditorFiles();
   const selected = editors.find((editor) => editor.key === selectedEditorKey) || editors[0];
-  if (!selected) {
+  const previewTarget = selectedPreviewUrl ? detectedPreviewTargets.get(selectedPreviewUrl) ?? null : null;
+  const previewTargets = getPreviewTargets();
+  const previewModeActive = editorSurfaceMode === "preview" && Boolean(previewTarget);
+  if (!selected && !previewModeActive) {
     path.textContent = "Editor idle";
     meta.innerHTML = "";
     diffPreview.innerHTML = "";
     diffPreview.hidden = true;
+    browserMeta.innerHTML = "";
+    browserTargetList.innerHTML = "";
+    browserTargetList.hidden = true;
+    browserFrame.src = "about:blank";
+    browserSurface.hidden = true;
     tabs.innerHTML = "";
     code.textContent = "No backend preview cached.";
+    code.hidden = false;
     statusbar.textContent = "Secondary work surface: 0 projected files";
     return;
   }
-  selectedEditorKey = selected.key;
-  const selectedTarget = getEditorTargetByKey(selected.key);
-  if (selectedTarget && !desktopEditorFileCache.has(selected.key) && !desktopEditorLoadingPaths.has(selected.key)) {
+  if (selected && !previewModeActive) {
+    selectedEditorKey = selected.key;
+  }
+  const selectedTarget = selected ? getEditorTargetByKey(selected.key) : null;
+  if (selected && selectedTarget && !desktopEditorFileCache.has(selected.key) && !desktopEditorLoadingPaths.has(selected.key)) {
     void ensureEditorFileLoaded(selectedTarget);
   }
   const selectedWorktreeLabel = selectedTarget?.worktree
     ? getWorktreeLabel(selectedTarget.worktree)
     : "";
 
-  path.textContent = selected.path;
   meta.innerHTML = "";
-  for (const item of [
-    selected.language,
-    `${selected.lineCount} lines`,
-    selected.modified ? "Modified" : "Saved",
-    selected.origin === "context" ? "Opened from context" : "Opened from explorer",
-    selectedWorktreeLabel,
-  ]) {
-    if (!item) {
-      continue;
-    }
-    const chip = document.createElement("span");
-    chip.className = `editor-meta-chip ${item === "Modified" ? "is-modified" : ""}`;
-    chip.dataset.tone = item === "Modified" ? "focus" : "default";
-    chip.textContent = item;
-    meta.appendChild(chip);
-  }
   diffPreview.innerHTML = "";
   diffPreview.hidden = true;
-  if (selectedTarget?.sourceChange) {
-    const previewTitle = document.createElement("div");
-    previewTitle.className = "editor-diff-preview-title";
-    previewTitle.textContent = "Diff preview";
+  browserMeta.innerHTML = "";
+  browserTargetList.innerHTML = "";
+  browserToolbarSummary.textContent = "";
+  browserTargetList.hidden = true;
+  browserSurface.hidden = true;
+  browserBackButton.disabled = true;
+  browserCopyButton.disabled = true;
+  browserReloadButton.disabled = true;
+  browserOpenButton.disabled = true;
+  code.hidden = false;
+
+  if (previewModeActive && previewTarget) {
+    path.textContent = previewTarget.url;
+    for (const item of [
+      "Preview browser",
+      previewTarget.portLabel,
+      `Detected from ${previewTarget.sourceLabel}`,
+      `Seen ${formatPreviewSeenAt(previewTarget.lastSeenAt)}`,
+    ]) {
+      const chip = document.createElement("span");
+      chip.className = "editor-meta-chip";
+      chip.textContent = item;
+      meta.appendChild(chip);
+    }
+    const browserTitle = document.createElement("div");
+    browserTitle.className = "editor-diff-preview-title";
+    browserTitle.textContent = "Preview target";
+    const browserBody = document.createElement("div");
+    browserBody.className = "editor-diff-preview-body";
+    browserBody.textContent = previewTarget.url;
+    browserMeta.appendChild(browserTitle);
+    browserMeta.appendChild(browserBody);
+    if (lastPreviewExternalState?.url === previewTarget.url) {
+      const openedAt = new Date(lastPreviewExternalState.at).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      const handoffTitle = document.createElement("div");
+      handoffTitle.className = "editor-diff-preview-title";
+      handoffTitle.textContent = "External browser";
+      const handoffBody = document.createElement("div");
+      handoffBody.className = "editor-diff-preview-body";
+      handoffBody.textContent = lastPreviewExternalState.ok ? `Opened at ${openedAt}` : `Blocked at ${openedAt}`;
+      browserMeta.appendChild(handoffTitle);
+      browserMeta.appendChild(handoffBody);
+    }
+    if (previewTargets.length > 0) {
+      for (const target of previewTargets) {
+        const targetButton = document.createElement("button");
+        targetButton.type = "button";
+        targetButton.className = `editor-tab ${target.url === previewTarget.url ? "is-active" : ""}`;
+        targetButton.textContent = target.portLabel;
+        targetButton.title = `${target.url} (${target.sourceLabel}, ${formatPreviewSeenAt(target.lastSeenAt)})`;
+        targetButton.addEventListener("click", () => {
+          openPreviewTarget(target.url);
+        });
+        browserTargetList.appendChild(targetButton);
+      }
+      browserTargetList.hidden = false;
+    }
+    browserToolbarSummary.textContent =
+      `${previewTargets.length} targets · active ${previewTarget.portLabel}` +
+      ` · from ${previewTarget.sourceLabel}` +
+      ` · seen ${formatPreviewSeenAt(previewTarget.lastSeenAt)}` +
+      `${lastPreviewExternalState?.url === previewTarget.url ? (lastPreviewExternalState.ok ? " · external open" : " · external blocked") : ""}`;
+    if (lastPreviewClipboardState?.url === previewTarget.url) {
+      browserToolbarSummary.textContent += lastPreviewClipboardState.ok ? " · copied" : " · copy failed";
+    }
+    if (browserFrame.dataset.previewUrl !== previewTarget.url) {
+      browserFrame.src = previewTarget.url;
+      browserFrame.dataset.previewUrl = previewTarget.url;
+    }
+    browserSurface.hidden = false;
+    browserBackButton.disabled = false;
+    browserCopyButton.disabled = !Boolean(navigator.clipboard);
+    browserReloadButton.disabled = false;
+    browserOpenButton.disabled = false;
+    code.textContent = "";
+    code.hidden = true;
+    statusbar.textContent =
+      `Secondary work surface: preview -> ${previewTarget.url}` +
+      `${lastPreviewExternalState?.url === previewTarget.url ? (lastPreviewExternalState.ok ? " (opened externally)" : " (external blocked)") : ""}`;
+  } else if (selected) {
+    path.textContent = selected.path;
+    for (const item of [
+      selected.language,
+      `${selected.lineCount} lines`,
+      selected.modified ? "Modified" : "Saved",
+      selected.origin === "context" ? "Opened from context" : "Opened from explorer",
+      selectedWorktreeLabel,
+    ]) {
+      if (!item) {
+        continue;
+      }
+      const chip = document.createElement("span");
+      chip.className = `editor-meta-chip ${item === "Modified" ? "is-modified" : ""}`;
+      chip.dataset.tone = item === "Modified" ? "focus" : "default";
+      chip.textContent = item;
+      meta.appendChild(chip);
+    }
+    if (selectedTarget?.sourceChange) {
+      const previewTitle = document.createElement("div");
+      previewTitle.className = "editor-diff-preview-title";
+      previewTitle.textContent = "Diff preview";
     const previewBody = document.createElement("div");
     previewBody.className = "editor-diff-preview-body";
     previewBody.textContent = selectedTarget.sourceChange.summary;
@@ -2812,13 +3110,14 @@ function renderEditorSurface() {
       chip.textContent = item;
       previewMeta.appendChild(chip);
     }
-    diffPreview.appendChild(previewTitle);
-    diffPreview.appendChild(previewBody);
-    diffPreview.appendChild(previewMeta);
-    diffPreview.hidden = false;
+      diffPreview.appendChild(previewTitle);
+      diffPreview.appendChild(previewBody);
+      diffPreview.appendChild(previewMeta);
+      diffPreview.hidden = false;
+    }
+    code.textContent = selected.content;
+    statusbar.textContent = `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selectedWorktreeLabel ? `${selectedWorktreeLabel} / ` : ""}${selected.path}`;
   }
-  code.textContent = selected.content;
-  statusbar.textContent = `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selectedWorktreeLabel ? `${selectedWorktreeLabel} / ` : ""}${selected.path}`;
   tabs.innerHTML = "";
 
   for (const editor of editors) {
@@ -3643,6 +3942,9 @@ async function openEditorTarget(target: EditorTarget | null) {
     return;
   }
 
+  editorSurfaceMode = "code";
+  selectedPreviewUrl = "";
+  lastPreviewExternalState = null;
   selectedEditorKey = target.key;
   setSelectedRun(target.sourceChange?.run ?? selectedRunId);
   setEditorSurface(true);
@@ -3670,6 +3972,9 @@ async function openEditorPath(path: string | undefined, worktree = "") {
 
   const target = createStandaloneEditorTarget(path, worktree);
   desktopStandaloneEditorTargets.set(target.key, target);
+  editorSurfaceMode = "code";
+  selectedPreviewUrl = "";
+  lastPreviewExternalState = null;
   selectedEditorKey = target.key;
   setEditorSurface(true);
   renderOpenEditors();
@@ -3997,6 +4302,7 @@ function initializeSidebarResize() {
 
 window.addEventListener("DOMContentLoaded", async () => {
   await subscribeToPtyOutput((payload) => {
+    registerPreviewTargets(payload.pane_id, payload.data);
     const entry = payload.pane_id ? panes.get(payload.pane_id) : undefined;
     if (entry) {
       entry.terminal.write(payload.data);
@@ -4046,6 +4352,22 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("toggle-terminal-btn")?.addEventListener("click", () => {
     setTerminalDrawer(!terminalDrawerOpen);
+  });
+
+  document.getElementById("browser-reload-btn")?.addEventListener("click", () => {
+    reloadPreviewTarget();
+  });
+
+  document.getElementById("browser-back-btn")?.addEventListener("click", () => {
+    closePreviewTarget();
+  });
+
+  document.getElementById("browser-copy-btn")?.addEventListener("click", async () => {
+    await copyPreviewTargetUrl();
+  });
+
+  document.getElementById("browser-open-btn")?.addEventListener("click", () => {
+    openPreviewTargetExternally();
   });
 
   document.getElementById("toggle-context-btn")?.addEventListener("click", () => {

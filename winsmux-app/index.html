@@ -120,6 +120,18 @@
             <div id="editor-meta-row"></div>
             <div id="editor-diff-preview" hidden></div>
             <div id="editor-tabs"></div>
+            <div id="browser-surface" hidden>
+              <div id="browser-meta-row"></div>
+              <div id="browser-target-list" hidden></div>
+              <div id="browser-toolbar">
+                <div id="browser-toolbar-summary"></div>
+                <button class="ghost-btn ghost-btn-small" id="browser-back-btn" type="button">Back to Code</button>
+                <button class="ghost-btn ghost-btn-small" id="browser-copy-btn" type="button">Copy URL</button>
+                <button class="ghost-btn ghost-btn-small" id="browser-reload-btn" type="button">Reload</button>
+                <button class="ghost-btn ghost-btn-small" id="browser-open-btn" type="button">Open External</button>
+              </div>
+              <iframe id="browser-frame" title="Localhost preview browser"></iframe>
+            </div>
             <pre id="editor-code"></pre>
             <div id="editor-statusbar">Secondary work surface: opened from conversation, changed files, or explorer.</div>
           </aside>
@@ -130,6 +142,8 @@
             <div class="panel-title secondary-title">Experiments</div>
             <div id="experiment-overview-cards"></div>
             <div id="experiment-detail-list"></div>
+            <div class="panel-title secondary-title">Ports</div>
+            <div id="preview-target-list"></div>
             <div class="panel-title secondary-title">Source control</div>
             <div id="source-overview-cards"></div>
             <div class="panel-title secondary-title">Changed files</div>
