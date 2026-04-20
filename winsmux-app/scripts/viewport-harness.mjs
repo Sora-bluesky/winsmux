@@ -154,6 +154,36 @@ async function assertButtonVisible(page, selector) {
   }
 }
 
+async function assertToolbarActionStates(page) {
+  const summary = page.locator("#browser-toolbar-summary");
+  await summary.waitFor({ state: "visible" });
+
+  await assertButtonVisible(page, "#browser-copy-btn");
+  await page.click("#browser-copy-btn");
+  await page.waitForFunction(() => {
+    const target = document.querySelector("#browser-toolbar-summary");
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+    return target.textContent?.includes("copied") || target.textContent?.includes("copy failed");
+  });
+
+  await assertButtonVisible(page, "#browser-open-btn");
+  const popupPromise = page.context().waitForEvent("page", { timeout: 2_000 }).catch(() => null);
+  await page.click("#browser-open-btn");
+  await page.waitForFunction(() => {
+    const target = document.querySelector("#browser-toolbar-summary");
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+    return target.textContent?.includes("external open") || target.textContent?.includes("external blocked");
+  });
+  const popup = await popupPromise;
+  if (popup) {
+    await popup.close().catch(() => {});
+  }
+}
+
 async function assertReachableFrame(page, selector) {
   const locator = page.locator(selector);
   await locator.scrollIntoViewIfNeeded();
@@ -320,6 +350,7 @@ async function verifyDesktopViewport(page, previewUrl) {
   await assertButtonVisible(page, "#browser-open-btn");
   await assertHorizontallyVisible(page, "#browser-toolbar");
   await assertFullyVisible(page, "#browser-frame");
+  await assertToolbarActionStates(page);
   await assertCommandBarRoundtrip(page, "#browser-toolbar");
   await assertSettingsRoundtrip(page, "#browser-toolbar");
 
@@ -387,6 +418,7 @@ async function verifyNarrowViewport(page, previewUrl) {
   await assertReachableFrame(page, "#browser-frame");
   await page.locator("#browser-target-list .editor-tab").first().waitFor({ state: "visible" });
   await assertReachableFrame(page, "#browser-frame");
+  await assertToolbarActionStates(page);
   await assertCommandBarRoundtrip(page, "#browser-toolbar");
   await assertNarrowSettingsRoundtrip(page, "#browser-toolbar");
   await assertBackToCode(page);
@@ -463,6 +495,7 @@ async function run() {
             "desktop-settings-with-editor",
             "desktop-source-context-with-terminal-drawer",
             "desktop-preview-browser",
+            "desktop-preview-toolbar-actions",
             "desktop-command-bar-with-preview",
             "desktop-settings-with-preview",
             "desktop-preview-back-to-code",
@@ -477,6 +510,7 @@ async function run() {
             "narrow-source-context-with-terminal-drawer",
             "narrow-terminal-drawer",
             "narrow-preview-browser",
+            "narrow-preview-toolbar-actions",
             "narrow-command-bar-with-preview",
             "narrow-settings-with-preview",
             "narrow-preview-back-to-code",
