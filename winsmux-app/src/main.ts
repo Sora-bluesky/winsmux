@@ -130,6 +130,14 @@ interface FooterStatusItem {
   tone?: SurfaceTone;
 }
 
+interface ExperimentDetailLine {
+  label: string;
+  value: string;
+  path?: string;
+  worktree?: string;
+  title?: string;
+}
+
 type SurfaceTone = "default" | "accent" | "success" | "warning" | "danger" | "info" | "focus";
 type ThemeMode = "codex-dark" | "graphite-dark";
 type DensityMode = "comfortable" | "compact";
@@ -1274,24 +1282,21 @@ function renderExperimentContext() {
               label: "Difference fields",
               value: compareDifferenceSummary || "none",
             },
-            {
-              label: "Shared files",
-              value: compareResult.shared_changed_files.length > 0
-                ? summarizeChangedFiles(compareResult.shared_changed_files, 4)
-                : "none",
-            },
-            {
-              label: `${selectedProjection.label || "Selected"} only`,
-              value: compareResult.left_only_changed_files.length > 0
-                ? summarizeChangedFiles(compareResult.left_only_changed_files, 4)
-                : "none",
-            },
-            {
-              label: `${comparePeer?.label || compareResult.right.label || "Peer"} only`,
-              value: compareResult.right_only_changed_files.length > 0
-                ? summarizeChangedFiles(compareResult.right_only_changed_files, 4)
-                : "none",
-            },
+            buildExperimentFileLine(
+              "Shared files",
+              compareResult.shared_changed_files,
+              compareLeftProjection?.worktree || selectedProjection.worktree || "",
+            ),
+            buildExperimentFileLine(
+              `${selectedProjection.label || "Selected"} only`,
+              compareResult.left_only_changed_files,
+              compareLeftProjection?.worktree || selectedProjection.worktree || "",
+            ),
+            buildExperimentFileLine(
+              `${comparePeer?.label || compareResult.right.label || "Peer"} only`,
+              compareResult.right_only_changed_files,
+              compareRightProjection?.worktree || comparePeer?.worktree || "",
+            ),
           ]
         : [],
     },
@@ -1350,12 +1355,29 @@ function renderExperimentContext() {
     if (item.lines && item.lines.length > 0) {
       const lineList = document.createElement("div");
       lineList.className = "experiment-detail-lines";
-      for (const line of item.lines) {
+      for (const line of item.lines as ExperimentDetailLine[]) {
         const row = document.createElement("div");
         row.className = "experiment-detail-line";
         row.innerHTML =
           `<span class="experiment-detail-line-label">${line.label}</span>` +
           `<span class="experiment-detail-line-value">${line.value}</span>`;
+        if (line.path) {
+          row.classList.add("is-actionable");
+          row.tabIndex = 0;
+          row.setAttribute("role", "button");
+          if (line.title) {
+            row.title = line.title;
+          }
+          row.addEventListener("click", () => {
+            void openEditorPath(line.path, line.worktree || "");
+          });
+          row.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              void openEditorPath(line.path, line.worktree || "");
+            }
+          });
+        }
         lineList.appendChild(row);
       }
       card.appendChild(lineList);
@@ -2739,6 +2761,9 @@ function renderEditorSurface() {
   if (selectedTarget && !desktopEditorFileCache.has(selected.key) && !desktopEditorLoadingPaths.has(selected.key)) {
     void ensureEditorFileLoaded(selectedTarget);
   }
+  const selectedWorktreeLabel = selectedTarget?.worktree
+    ? getWorktreeLabel(selectedTarget.worktree)
+    : "";
 
   path.textContent = selected.path;
   meta.innerHTML = "";
@@ -2747,7 +2772,11 @@ function renderEditorSurface() {
     `${selected.lineCount} lines`,
     selected.modified ? "Modified" : "Saved",
     selected.origin === "context" ? "Opened from context" : "Opened from explorer",
+    selectedWorktreeLabel,
   ]) {
+    if (!item) {
+      continue;
+    }
     const chip = document.createElement("span");
     chip.className = `editor-meta-chip ${item === "Modified" ? "is-modified" : ""}`;
     chip.dataset.tone = item === "Modified" ? "focus" : "default";
@@ -2755,7 +2784,7 @@ function renderEditorSurface() {
     meta.appendChild(chip);
   }
   code.textContent = selected.content;
-  statusbar.textContent = `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selected.path}`;
+  statusbar.textContent = `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selectedWorktreeLabel ? `${selectedWorktreeLabel} / ` : ""}${selected.path}`;
   tabs.innerHTML = "";
 
   for (const editor of editors) {
@@ -2975,6 +3004,21 @@ function summarizeChangedFiles(paths: string[], limit = 3) {
 
   const remaining = paths.length - visible.length;
   return remaining > 0 ? `${visible.join(", ")} +${remaining} more` : visible.join(", ");
+}
+
+function buildExperimentFileLine(
+  label: string,
+  paths: string[],
+  worktree: string,
+): ExperimentDetailLine {
+  const path = paths.find((value) => Boolean(value));
+  return {
+    label,
+    value: paths.length > 0 ? summarizeChangedFiles(paths, 4) : "none",
+    path: path || undefined,
+    worktree: path ? worktree : undefined,
+    title: path ? `Open ${path} in the read-only editor.` : undefined,
+  };
 }
 
 function summarizeWorkspaceContext(branch: string, worktree: string) {
