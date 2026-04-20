@@ -255,6 +255,24 @@ pub struct DesktopCompareRecommendation {
 }
 
 #[derive(Serialize, Deserialize)]
+pub struct DesktopPickWinnerResult {
+    pub run_id: String,
+    pub task_id: String,
+    pub pane_id: String,
+    pub slot: String,
+    pub kind: String,
+    pub mode: String,
+    pub target_slot: String,
+    pub recommendation: String,
+    pub confidence: Option<f64>,
+    pub next_test: String,
+    #[serde(default)]
+    pub risks: Vec<String>,
+    pub consultation_ref: String,
+    pub generated_at: String,
+}
+
+#[derive(Serialize, Deserialize)]
 pub struct DesktopExplainPayload {
     pub generated_at: String,
     pub project_dir: String,
@@ -523,6 +541,14 @@ pub enum DesktopCommand {
         run_id: String,
         project_dir: Option<String>,
     },
+    RunPickWinner {
+        run_id: String,
+        peer_slot: String,
+        recommendation: String,
+        confidence: Option<f64>,
+        next_test: String,
+        project_dir: Option<String>,
+    },
 }
 
 pub enum DesktopStreamCommand {
@@ -536,6 +562,7 @@ impl DesktopCommand {
             DesktopCommand::RunExplain { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::RunCompare { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::RunPromote { project_dir, .. } => project_dir.as_deref(),
+            DesktopCommand::RunPickWinner { project_dir, .. } => project_dir.as_deref(),
         }
     }
 
@@ -565,6 +592,33 @@ impl DesktopCommand {
                     run_id.clone(),
                     "--json".to_string(),
                 ]
+            }
+            DesktopCommand::RunPickWinner {
+                run_id,
+                peer_slot,
+                recommendation,
+                confidence,
+                next_test,
+                ..
+            } => {
+                let mut args = vec![
+                    "consult-result".to_string(),
+                    "final".to_string(),
+                    "--run-id".to_string(),
+                    run_id.clone(),
+                    "--message".to_string(),
+                    recommendation.clone(),
+                    "--target-slot".to_string(),
+                    peer_slot.clone(),
+                    "--next-test".to_string(),
+                    next_test.clone(),
+                    "--json".to_string(),
+                ];
+                if let Some(value) = confidence {
+                    args.push("--confidence".to_string());
+                    args.push(value.to_string());
+                }
+                args
             }
         }
     }
@@ -659,6 +713,27 @@ pub fn load_desktop_run_promote(
     })?;
     serde_json::from_value(payload)
         .map_err(|err| format!("Failed to parse desktop promote payload: {err}"))
+}
+
+pub fn load_desktop_run_pick_winner(
+    transport: &dyn DesktopCommandTransport,
+    run_id: String,
+    peer_slot: String,
+    recommendation: String,
+    confidence: Option<f64>,
+    next_test: String,
+    project_dir: Option<String>,
+) -> Result<DesktopPickWinnerResult, String> {
+    let payload = transport.request_json(&DesktopCommand::RunPickWinner {
+        run_id,
+        peer_slot,
+        recommendation,
+        confidence,
+        next_test,
+        project_dir,
+    })?;
+    serde_json::from_value(payload)
+        .map_err(|err| format!("Failed to parse desktop pick-winner payload: {err}"))
 }
 
 pub fn load_desktop_editor_file(
@@ -773,6 +848,56 @@ pub fn handle_desktop_json_rpc(
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
             }
         }
+        "desktop.run.pick_winner" => {
+            let run_id = match get_required_string_param(params.as_ref(), &["runId", "run_id"]) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                }
+            };
+            let peer_slot =
+                match get_required_string_param(params.as_ref(), &["peerSlot", "peer_slot"]) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                    }
+                };
+            let recommendation =
+                match get_required_string_param(params.as_ref(), &["recommendation", "message"]) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                    }
+                };
+            let next_test =
+                match get_required_string_param(params.as_ref(), &["nextTest", "next_test"]) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        return json_rpc_error(request_id, JSON_RPC_INVALID_PARAMS, err);
+                    }
+                };
+            let confidence = get_optional_f64_param(params.as_ref(), &["confidence"]);
+
+            match load_desktop_run_pick_winner(
+                transport,
+                run_id,
+                peer_slot,
+                recommendation,
+                confidence,
+                next_test,
+                resolved_project_dir,
+            ) {
+                Ok(result) => match serde_json::to_value(result) {
+                    Ok(value) => json_rpc_result(request_id, value),
+                    Err(err) => json_rpc_error(
+                        request_id,
+                        JSON_RPC_INTERNAL_ERROR,
+                        format!("Failed to serialize desktop pick-winner payload: {err}"),
+                    ),
+                },
+                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
+            }
+        }
         "desktop.editor.read" => {
             let path = match get_required_string_param(params.as_ref(), &["path"]) {
                 Ok(value) => value,
@@ -823,6 +948,17 @@ fn get_optional_string_param(params: Option<&Value>, keys: &[&str]) -> Option<St
             if !trimmed.is_empty() {
                 return Some(trimmed.to_string());
             }
+        }
+    }
+
+    None
+}
+
+fn get_optional_f64_param(params: Option<&Value>, keys: &[&str]) -> Option<f64> {
+    let object = params?.as_object()?;
+    for key in keys {
+        if let Some(value) = object.get(*key).and_then(Value::as_f64) {
+            return Some(value);
         }
     }
 
@@ -1283,6 +1419,24 @@ mod tests {
                 "reconcile_consult": true,
                 "next_action": "reconcile_consult"
             }
+        })
+    }
+
+    fn desktop_pick_winner_payload() -> Value {
+        serde_json::json!({
+            "run_id": "task:task-256",
+            "task_id": "task-256",
+            "pane_id": "%2",
+            "slot": "builder-1",
+            "kind": "consult_result",
+            "mode": "final",
+            "target_slot": "builder-2",
+            "recommendation": "Pick builder-1",
+            "confidence": 0.85,
+            "next_test": "promote tactic",
+            "risks": [],
+            "consultation_ref": ".winsmux/consultations/consult-result-__ID__.json",
+            "generated_at": "__GENERATED_AT__"
         })
     }
 
@@ -2135,6 +2289,40 @@ mod tests {
     }
 
     #[test]
+    fn load_desktop_run_pick_winner_uses_consult_result_command() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: desktop_pick_winner_payload(),
+        };
+
+        let payload = load_desktop_run_pick_winner(
+            &transport,
+            "task:task-256".to_string(),
+            "builder-2".to_string(),
+            "Pick builder-1".to_string(),
+            Some(0.85),
+            "promote tactic".to_string(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(payload.run_id, "task:task-256");
+        assert_eq!(payload.mode, "final");
+        assert_eq!(payload.target_slot, "builder-2");
+        assert_eq!(payload.recommendation, "Pick builder-1");
+        assert_eq!(payload.confidence, Some(0.85));
+        assert_eq!(payload.next_test, "promote tactic");
+        assert_eq!(
+            payload.consultation_ref,
+            ".winsmux/consultations/consult-result-__ID__.json"
+        );
+        assert_eq!(
+            transport.requests.borrow().as_slice(),
+            ["consult-result final --run-id task:task-256 --message Pick builder-1 --target-slot builder-2 --next-test promote tactic --json --confidence 0.85"]
+        );
+    }
+
+    #[test]
     fn handle_desktop_json_rpc_routes_run_explain_and_prunes_extra_packets() {
         let transport = FakeTransport {
             requests: RefCell::new(Vec::new()),
@@ -2261,14 +2449,8 @@ mod tests {
                 );
                 assert_eq!(result["candidate"]["packet_type"], "playbook_candidate");
                 assert_eq!(result["candidate"]["kind"], "playbook");
-                assert_eq!(
-                    result["candidate"]["title"],
-                    "Stabilize explain contract"
-                );
-                assert_eq!(
-                    result["candidate"]["next_action"],
-                    "promote_to_playbook"
-                );
+                assert_eq!(result["candidate"]["title"], "Stabilize explain contract");
+                assert_eq!(result["candidate"]["next_action"], "promote_to_playbook");
                 assert_eq!(result["candidate"]["confidence"], 0.82);
                 assert_eq!(
                     result["candidate"]["changed_files"][0],
@@ -2327,6 +2509,49 @@ mod tests {
         assert_eq!(
             transport.requests.borrow().as_slice(),
             ["compare-runs task:task-256 task:task-257 --json"]
+        );
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_routes_run_pick_winner() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: desktop_pick_winner_payload(),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-pick-winner"),
+                method: "desktop.run.pick_winner".to_string(),
+                params: Some(serde_json::json!({
+                    "runId": "task:task-256",
+                    "peerSlot": "builder-2",
+                    "recommendation": "Pick builder-1",
+                    "confidence": 0.85,
+                    "nextTest": "promote tactic"
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Success { id, result, .. } => {
+                assert_eq!(id, serde_json::json!("req-pick-winner"));
+                assert_eq!(result["run_id"], "task:task-256");
+                assert_eq!(result["mode"], "final");
+                assert_eq!(result["target_slot"], "builder-2");
+                assert_eq!(result["recommendation"], "Pick builder-1");
+                assert_eq!(result["next_test"], "promote tactic");
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+
+        assert_eq!(
+            transport.requests.borrow().as_slice(),
+            ["consult-result final --run-id task:task-256 --message Pick builder-1 --target-slot builder-2 --next-test promote tactic --json --confidence 0.85"]
         );
     }
 

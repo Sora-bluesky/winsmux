@@ -6,12 +6,14 @@ type DesktopCommandName =
   | "desktop_run_explain"
   | "desktop_run_compare"
   | "desktop_run_promote"
+  | "desktop_run_pick_winner"
   | "desktop_editor_read";
 type DesktopJsonRpcMethod =
   | "desktop.summary.snapshot"
   | "desktop.run.explain"
   | "desktop.run.compare"
   | "desktop.run.promote"
+  | "desktop.run.pick_winner"
   | "desktop.editor.read";
 
 interface DesktopJsonRpcRequest {
@@ -297,6 +299,22 @@ export interface DesktopExplainPayload {
   }>;
 }
 
+export interface DesktopPickWinnerResult {
+  run_id: string;
+  task_id: string;
+  pane_id: string;
+  slot: string;
+  kind: string;
+  mode: string;
+  target_slot: string;
+  recommendation: string;
+  confidence: number | null;
+  next_test: string;
+  risks: string[];
+  consultation_ref: string;
+  generated_at: string;
+}
+
 export interface DesktopReviewStateRecord {
   status: string;
   branch: string;
@@ -440,6 +458,8 @@ function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMet
       return "desktop.run.compare";
     case "desktop_run_promote":
       return "desktop.run.promote";
+    case "desktop_run_pick_winner":
+      return "desktop.run.pick_winner";
     case "desktop_editor_read":
       return "desktop.editor.read";
   }
@@ -547,6 +567,25 @@ export async function promoteDesktopRunTactic(runId: string) {
     );
   } catch (error) {
     throw normalizeDesktopError(`desktop_run_promote(${runId})`, error);
+  }
+}
+
+export async function pickDesktopRunWinner(
+  runId: string,
+  peerSlot: string,
+  recommendation: string,
+  confidence: number | null,
+  nextTest: string,
+) {
+  try {
+    return await desktopCommandTransport.request<DesktopPickWinnerResult>(
+      "desktop_run_pick_winner",
+      confidence === null
+        ? { runId, peerSlot, recommendation, nextTest }
+        : { runId, peerSlot, recommendation, confidence, nextTest },
+    );
+  } catch (error) {
+    throw normalizeDesktopError(`desktop_run_pick_winner(${runId})`, error);
   }
 }
 

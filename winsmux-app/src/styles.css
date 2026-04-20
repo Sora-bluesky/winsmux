@@ -1064,6 +1064,31 @@ textarea {
   gap: 6px;
 }
 
+.experiment-detail-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--border-muted);
+  padding-top: 8px;
+}
+
+.experiment-detail-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: var(--text-2xs);
+  color: var(--text-secondary);
+}
+
+.experiment-detail-line-label {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.experiment-detail-line-value {
+  text-align: right;
+}
+
 .experiment-detail-pill {
   display: inline-flex;
   align-items: center;

@@ -9003,6 +9003,23 @@ panes:
         $packet.risks | Should -Be @('cache mismatch')
     }
 
+    It 'accepts run override and json output for consult result' {
+        $args = Parse-ConsultCommandArgs -Mode 'final' -Args @('--run-id', 'task:task-301', '--json', '--message', 'pick builder-1', '--target-slot', 'builder-2', '--next-test', 'promote tactic')
+
+        $args.run_id | Should -Be 'task:task-301'
+        $args.json | Should -Be $true
+
+        $output = Write-ConsultationCommandRecord -Kind 'consult_result' -Mode ([string]$args.mode) -Message ([string]$args.message) -TargetSlot ([string]$args.target_slot) -RunId ([string]$args.run_id) -NextTest ([string]$args.next_test) -JsonOutput ([bool]$args.json) -ProjectDir $script:consultTempRoot
+        $result = ($output | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.run_id | Should -Be 'task:task-301'
+        $result.mode | Should -Be 'final'
+        $result.target_slot | Should -Be 'builder-2'
+        $result.recommendation | Should -Be 'pick builder-1'
+        $result.next_test | Should -Be 'promote tactic'
+        $result.consultation_ref | Should -BeLike '.winsmux/consultations/consult-result-*.json'
+    }
+
     It 'fails closed for unsupported consult mode' {
         { Parse-ConsultCommandArgs -Mode 'later' -Args @('--message', 'invalid mode test') } | Should -Throw '*Unsupported consult mode*'
     }

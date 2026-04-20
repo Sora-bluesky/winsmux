@@ -6,6 +6,7 @@ import {
   getDesktopEditorFile,
   getDesktopRunExplain,
   getDesktopSummarySnapshot,
+  pickDesktopRunWinner,
   promoteDesktopRunTactic,
   subscribeToDesktopSummaryRefresh,
   type DesktopCompareRunsResult,
@@ -203,6 +204,7 @@ const desktopEditorLoadingPaths = new Set<string>();
 const desktopEditorLoadErrors = new Map<string, string>();
 const desktopStandaloneEditorTargets = new Map<string, EditorTarget>();
 const promotingRunIds = new Set<string>();
+const pickingWinnerRunIds = new Set<string>();
 const pendingPromotedRunRefreshIds = new Set<string>();
 const comparingRunPairKeys = new Set<string>();
 const backendConversation: ConversationItem[] = [];
@@ -435,6 +437,22 @@ function getPrimaryRunProjection() {
 
 function getComparePairKey(leftRunId: string, rightRunId: string) {
   return `${leftRunId}::${rightRunId}`;
+}
+
+function mirrorCompareRunsResult(result: DesktopCompareRunsResult): DesktopCompareRunsResult {
+  return {
+    ...result,
+    left: result.right,
+    right: result.left,
+    left_only_changed_files: [...result.right_only_changed_files],
+    right_only_changed_files: [...result.left_only_changed_files],
+    confidence_delta: result.confidence_delta !== null ? -result.confidence_delta : null,
+    differences: result.differences.map((difference) => ({
+      ...difference,
+      left: difference.right,
+      right: difference.left,
+    })),
+  };
 }
 
 function getComparePeerProjection(
@@ -917,6 +935,49 @@ function renderExperimentContext() {
   const compareInFlight = comparePairKey
     ? comparingRunPairKeys.has(comparePairKey)
     : false;
+  const compareWinnerRunId = compareResult?.recommend.winning_run_id || null;
+  const compareWinnerProjection = compareWinnerRunId
+    ? getRunProjectionByRunId(compareWinnerRunId)
+    : null;
+  const compareLeftProjection = compareResult
+    ? (getRunProjectionByRunId(compareResult.left.run_id) ?? selectedProjection)
+    : selectedProjection;
+  const compareRightProjection = compareResult
+    ? (getRunProjectionByRunId(compareResult.right.run_id) ?? comparePeer)
+    : comparePeer;
+  const compareWinnerConfidence = compareResult
+    ? (
+      compareResult.left.run_id === compareWinnerRunId
+        ? (compareResult.left.confidence ?? null)
+        : (
+          compareResult.right.run_id === compareWinnerRunId
+            ? (compareResult.right.confidence ?? null)
+            : null
+        )
+    )
+    : null;
+  const compareLoserSlot = compareResult
+    ? (
+      compareResult.left.run_id === compareWinnerRunId
+        ? (compareRightProjection?.label || compareResult.right.label || compareResult.right.run_id)
+        : (compareLeftProjection?.label || compareResult.left.label || compareResult.left.run_id)
+    )
+    : "";
+  const canPickCompareWinner = Boolean(
+    compareResult &&
+    !compareResult.recommend.reconcile_consult &&
+    compareWinnerProjection,
+  );
+  const persistedCompareTargetMatchesPeer = Boolean(
+    comparePeer &&
+    consultationPacket.target_slot &&
+    consultationPacket.target_slot === (comparePeer.label || comparePeer.run_id),
+  );
+  const hasPersistedCompareWinner =
+    !compareResult &&
+    consultationPacket.kind === "consult_result" &&
+    consultationPacket.mode === "final" &&
+    persistedCompareTargetMatchesPeer;
   const compareWinnerLabel = compareResult
     ? getCompareWinnerLabel(compareResult)
     : "";
@@ -944,6 +1005,8 @@ function renderExperimentContext() {
         ? "warning"
         : (compareWinnerLabel ? "success" : "info")
     )
+    : hasPersistedCompareWinner
+      ? "success"
     : "info";
   const compareBody = compareResult
     ? [
@@ -960,15 +1023,44 @@ function renderExperimentContext() {
       ]
         .filter((value) => Boolean(value))
         .join(" · ")
-    : comparePeer
-      ? [
+      : comparePeer
+      ? (
+        hasPersistedCompareWinner
+          ? [
+              "Winner selected",
+              consultationPacket.recommendation || selectedProjection.label || selectedProjection.run_id,
+              consultationPacket.target_slot ? `vs ${consultationPacket.target_slot}` : "",
+              consultationPacket.next_test || "winner persisted",
+            ]
+              .filter((value) => Boolean(value))
+              .join(" · ")
+          : [
           `vs ${comparePeer.label || comparePeer.run_id}`,
           comparePeer.branch || "no branch",
           comparePeer.review_state || "pending",
         ]
-          .filter((value) => Boolean(value))
-          .join(" · ")
+              .filter((value) => Boolean(value))
+              .join(" · ")
+      )
       : "Compare needs another surfaced run.";
+  const compareOverviewValue = compareInFlight
+    ? "Refreshing compare"
+    : (
+      compareResult
+        ? (
+          compareResult.recommend.reconcile_consult
+            ? "Consult before pick"
+            : `Winner ${compareWinnerLabel || "not decided"}`
+        )
+        : (
+          hasPersistedCompareWinner
+            ? "Winner selected"
+        : (comparePeer ? `vs ${comparePeer.label || comparePeer.run_id}` : "Need peer")
+        )
+    );
+  const compareDisplayBody = compareInFlight
+    ? `Refreshing compare result${compareResult ? "..." : " from current runs..." }`
+    : compareBody;
   const compareCandidateSummary = compareResult
     ? [
         compareWinnerLabel ? `winner ${compareWinnerLabel}` : "",
@@ -997,6 +1089,10 @@ function renderExperimentContext() {
     {
       label: "Consult",
       value: consultationSummary.next_test || consultationPacket.recommendation || "No consult",
+    },
+    {
+      label: "Compare",
+      value: compareOverviewValue,
     },
     {
       label: "Candidate",
@@ -1029,7 +1125,7 @@ function renderExperimentContext() {
     },
     {
       title: "Compare",
-      body: compareBody,
+      body: compareDisplayBody,
       tone: compareTone,
       actionLabel: comparePeer ? "Compare" : undefined,
       actionPendingLabel: "Comparing...",
@@ -1037,6 +1133,24 @@ function renderExperimentContext() {
       actionType: "compare" as const,
       actionRunId: selectedProjection.run_id,
       actionPeerRunId: comparePeer?.run_id,
+      secondaryActionLabel: canPickCompareWinner ? "Pick winner" : undefined,
+      secondaryActionType: "pick_winner" as const,
+      secondaryActionRunId: compareWinnerProjection?.run_id,
+      secondaryActionPeerSlot: compareLoserSlot || undefined,
+      secondaryActionPeerRunId: compareResult
+        ? (
+          compareResult.left.run_id === compareWinnerRunId
+            ? compareResult.right.run_id
+            : compareResult.left.run_id
+        )
+        : undefined,
+      secondaryActionRecommendation: compareResult
+        ? `Pick ${compareWinnerLabel || compareWinnerProjection?.label || compareWinnerProjection?.run_id || "winner"}`
+        : undefined,
+      secondaryActionConfidence: compareWinnerConfidence,
+      secondaryActionNextTest: compareResult?.recommend.next_action || undefined,
+      secondaryActionDisabled: compareWinnerRunId ? pickingWinnerRunIds.has(compareWinnerRunId) : false,
+      secondaryActionPendingLabel: "Picking...",
       details: compareResult
         ? [
             {
@@ -1055,11 +1169,91 @@ function renderExperimentContext() {
             { label: "left", value: `${compareResult.left_only_changed_files.length}` },
             { label: "right", value: `${compareResult.right_only_changed_files.length}` },
           ]
+        : hasPersistedCompareWinner
+          ? [
+              { label: "winner", value: selectedProjection.label || selectedProjection.run_id },
+              { label: "target", value: consultationPacket.target_slot || "n/a" },
+              { label: "next", value: consultationPacket.next_test || "n/a" },
+            ]
         : [
             { label: "peer", value: comparePeer?.label || "n/a" },
             { label: "changed", value: `${payload.evidence_digest.changed_file_count}` },
             { label: "verify", value: payload.evidence_digest.verification_outcome || "n/a" },
           ],
+      lines: compareResult
+        ? [
+            {
+              label: "Selected run",
+              value: [
+                compareResult.left.branch || compareLeftProjection?.branch || "no branch",
+                compareLeftProjection?.head_short || "",
+                compareResult.left.review_state || compareResult.left.state,
+                compareResult.left.next_action || "idle",
+              ]
+                .filter((value) => Boolean(value))
+                .join(" · "),
+            },
+            {
+              label: "Peer run",
+              value: [
+                compareResult.right.branch || compareRightProjection?.branch || "no branch",
+                compareRightProjection?.head_short || "",
+                compareResult.right.review_state || compareResult.right.state,
+                compareResult.right.next_action || "idle",
+              ]
+                .filter((value) => Boolean(value))
+                .join(" · "),
+            },
+            {
+              label: "Decision",
+              value: compareResult.recommend.reconcile_consult
+                ? "consult before pick"
+                : [
+                  compareWinnerLabel || "no winner",
+                  compareResult.confidence_delta !== null
+                    ? formatConfidencePercent(Math.abs(compareResult.confidence_delta))
+                    : "",
+                ]
+                  .filter((value) => Boolean(value))
+                  .join(" · "),
+            },
+            {
+              label: "Decision basis",
+              value: [
+                compareDifferenceSummary,
+                compareFileSummary,
+              ]
+                .filter((value) => Boolean(value))
+                .join(" · ") || "none",
+            },
+            {
+              label: "Recommendation",
+              value: compareResult.recommend.next_action || "reconcile_consult",
+            },
+            {
+              label: "Difference fields",
+              value: compareDifferenceSummary || "none",
+            },
+            {
+              label: "Shared files",
+              value: compareResult.shared_changed_files.length > 0
+                ? summarizeChangedFiles(compareResult.shared_changed_files, 4)
+                : "none",
+            },
+            {
+              label: `${selectedProjection.label || "Selected"} only`,
+              value: compareResult.left_only_changed_files.length > 0
+                ? summarizeChangedFiles(compareResult.left_only_changed_files, 4)
+                : "none",
+            },
+            {
+              label: `${comparePeer?.label || compareResult.right.label || "Peer"} only`,
+              value: compareResult.right_only_changed_files.length > 0
+                ? summarizeChangedFiles(compareResult.right_only_changed_files, 4)
+                : "none",
+            },
+          ]
+        : [],
     },
     {
       title: "Playbook Candidate",
@@ -1113,29 +1307,89 @@ function renderExperimentContext() {
     }
     card.appendChild(meta);
 
-    if (item.actionLabel && selectedProjection.run_id) {
+    if (item.lines && item.lines.length > 0) {
+      const lineList = document.createElement("div");
+      lineList.className = "experiment-detail-lines";
+      for (const line of item.lines) {
+        const row = document.createElement("div");
+        row.className = "experiment-detail-line";
+        row.innerHTML =
+          `<span class="experiment-detail-line-label">${line.label}</span>` +
+          `<span class="experiment-detail-line-value">${line.value}</span>`;
+        lineList.appendChild(row);
+      }
+      card.appendChild(lineList);
+    }
+
+    if ((item.actionLabel || item.secondaryActionLabel) && selectedProjection.run_id) {
       const chipRow = document.createElement("div");
       chipRow.className = "timeline-chip-row";
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "timeline-chip";
-      button.textContent = item.actionDisabled && item.actionPendingLabel
-        ? item.actionPendingLabel
-        : item.actionLabel;
-      button.disabled = item.actionDisabled ?? false;
-      button.addEventListener("click", async () => {
-        if (item.actionType === "compare" && item.actionPeerRunId) {
-          await compareSelectedRunWithPeer(
-            item.actionRunId ?? selectedProjection.run_id,
-            item.actionPeerRunId,
-          );
-          return;
-        }
-        await promoteSelectedRunTactic(
+      const appendActionButton = (
+        label: string,
+        type: "compare" | "promote" | "focus" | "pick_winner",
+        runId: string,
+        disabled?: boolean,
+        pendingLabel?: string,
+        peerRunId?: string,
+        peerSlot?: string,
+        recommendation?: string,
+        confidence?: number | null,
+        nextTest?: string,
+      ) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "timeline-chip";
+        button.textContent = disabled && pendingLabel ? pendingLabel : label;
+        button.disabled = disabled ?? false;
+        button.addEventListener("click", async () => {
+          if (type === "compare" && peerRunId) {
+            await compareSelectedRunWithPeer(runId, peerRunId);
+            return;
+          }
+          if (type === "focus") {
+            await focusRunInContext(runId);
+            return;
+          }
+          if (type === "pick_winner") {
+            await pickCompareWinner(
+              runId,
+              peerRunId || "",
+              peerSlot || "",
+              recommendation || "",
+              confidence ?? null,
+              nextTest || "",
+            );
+            return;
+          }
+          await promoteSelectedRunTactic(runId);
+        });
+        chipRow.appendChild(button);
+      };
+
+      if (item.actionLabel) {
+        appendActionButton(
+          item.actionLabel,
+          item.actionType,
           item.actionRunId ?? selectedProjection.run_id,
+          item.actionDisabled,
+          item.actionPendingLabel,
+          item.actionPeerRunId,
         );
-      });
-      chipRow.appendChild(button);
+      }
+      if (item.secondaryActionLabel && item.secondaryActionType && item.secondaryActionRunId) {
+        appendActionButton(
+          item.secondaryActionLabel,
+          item.secondaryActionType,
+          item.secondaryActionRunId,
+          item.secondaryActionDisabled,
+          item.secondaryActionPendingLabel,
+          item.secondaryActionPeerRunId,
+          item.secondaryActionPeerSlot,
+          item.secondaryActionRecommendation,
+          item.secondaryActionConfidence,
+          item.secondaryActionNextTest,
+        );
+      }
       card.appendChild(chipRow);
     }
     detailRoot.appendChild(card);
@@ -1926,6 +2180,89 @@ async function promoteSelectedRunTactic(runId: string) {
   }
 }
 
+async function focusRunInContext(runId: string) {
+  setSelectedRun(runId);
+  const focusedSourceChange = getProjectionSourceEntries().find((change) => change.run === runId);
+  if (focusedSourceChange) {
+    selectedEditorKey = getSourceChangeKey(focusedSourceChange);
+  }
+  renderDesktopSurfaces();
+
+  try {
+    const explainPayload = await getDesktopRunExplain(runId);
+    desktopExplainCache.set(runId, explainPayload);
+  } catch (error) {
+    console.warn("Failed to preload explain payload for focused run", error);
+  } finally {
+    renderDesktopSurfaces();
+  }
+}
+
+async function pickCompareWinner(
+  runId: string,
+  peerRunId: string,
+  peerSlot: string,
+  recommendation: string,
+  confidence: number | null,
+  nextTest: string,
+) {
+  if (pickingWinnerRunIds.has(runId)) {
+    return;
+  }
+
+  pickingWinnerRunIds.add(runId);
+  renderContextPanel();
+
+  try {
+    const result = await pickDesktopRunWinner(
+      runId,
+      peerSlot,
+      recommendation,
+      confidence,
+      nextTest,
+    );
+    appendRuntimeConversation({
+      type: "operator",
+      category: "activity",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Winner picked",
+      body: result.recommendation || runId,
+      details: [
+        { label: "run", value: result.run_id },
+        { label: "target", value: result.target_slot || "n/a" },
+        { label: "next", value: result.next_test || "n/a" },
+      ],
+      tone: "success",
+      runId,
+    });
+    renderConversation(getConversationItems());
+    if (peerRunId) {
+      desktopRunCompareCache.delete(getComparePairKey(runId, peerRunId));
+      desktopRunCompareCache.delete(getComparePairKey(peerRunId, runId));
+    }
+    requestDesktopSummaryRefresh(runId, 0);
+    await focusRunInContext(runId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendRuntimeConversation({
+      type: "operator",
+      category: "attention",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Pick winner failed",
+      body: message,
+      details: [{ label: "run", value: runId }],
+      tone: "warning",
+      runId,
+    });
+    renderConversation(getConversationItems());
+  } finally {
+    pickingWinnerRunIds.delete(runId);
+    renderContextPanel();
+  }
+}
+
 async function compareSelectedRunWithPeer(leftRunId: string, rightRunId: string) {
   const pairKey = getComparePairKey(leftRunId, rightRunId);
   if (comparingRunPairKeys.has(pairKey)) {
@@ -1964,6 +2301,10 @@ async function compareSelectedRunWithPeer(leftRunId: string, rightRunId: string)
     }
 
     desktopRunCompareCache.set(pairKey, result);
+    desktopRunCompareCache.set(
+      getComparePairKey(rightRunId, leftRunId),
+      mirrorCompareRunsResult(result),
+    );
     appendRuntimeConversation({
       type: "operator",
       category: "activity",
