@@ -3579,9 +3579,11 @@ function renderEditorSurface() {
     summary.innerHTML = "";
     summary.hidden = true;
     meta.innerHTML = "";
+    meta.hidden = true;
     diffPreview.innerHTML = "";
     diffPreview.hidden = true;
     browserMeta.innerHTML = "";
+    browserMeta.hidden = true;
     browserTargetList.innerHTML = "";
     browserTargetList.hidden = true;
     browserFrame.src = "about:blank";
@@ -3607,11 +3609,13 @@ function renderEditorSurface() {
     : "";
 
   meta.innerHTML = "";
+  meta.hidden = true;
   summary.innerHTML = "";
   summary.hidden = true;
   diffPreview.innerHTML = "";
   diffPreview.hidden = true;
   browserMeta.innerHTML = "";
+  browserMeta.hidden = true;
   browserTargetList.innerHTML = "";
   browserToolbarSummary.textContent = "";
   browserTargetList.hidden = true;
@@ -3637,25 +3641,6 @@ function renderEditorSurface() {
       summary.appendChild(chip);
     }
     summary.hidden = summary.childElementCount === 0;
-    for (const item of [
-      "Preview browser",
-      previewTarget.portLabel,
-      `Detected from ${previewTarget.sourceLabel}`,
-      `Seen ${formatPreviewSeenAt(previewTarget.lastSeenAt)}`,
-    ]) {
-      const chip = document.createElement("span");
-      chip.className = "editor-meta-chip";
-      chip.textContent = item;
-      meta.appendChild(chip);
-    }
-    const browserTitle = document.createElement("div");
-    browserTitle.className = "editor-diff-preview-title";
-    browserTitle.textContent = "Preview target";
-    const browserBody = document.createElement("div");
-    browserBody.className = "editor-diff-preview-body";
-    browserBody.textContent = previewTarget.url;
-    browserMeta.appendChild(browserTitle);
-    browserMeta.appendChild(browserBody);
     if (lastPreviewExternalState?.url === previewTarget.url) {
       const openedAt = new Date(lastPreviewExternalState.at).toLocaleTimeString([], {
         hour: "2-digit",
@@ -3669,6 +3654,7 @@ function renderEditorSurface() {
       handoffBody.textContent = lastPreviewExternalState.ok ? `Opened at ${openedAt}` : `Blocked at ${openedAt}`;
       browserMeta.appendChild(handoffTitle);
       browserMeta.appendChild(handoffBody);
+      browserMeta.hidden = false;
     }
     if (previewTargets.length > 0) {
       for (const target of previewTargets) {
@@ -3707,6 +3693,7 @@ function renderEditorSurface() {
       { label: "Surface", value: "Preview" },
       { label: "Target", value: previewTarget.portLabel },
       { label: "Source", value: previewTarget.sourceLabel },
+      { label: "Seen", value: formatPreviewSeenAt(previewTarget.lastSeenAt) },
       ...(lastPreviewExternalState?.url === previewTarget.url
         ? [{ label: "External", value: lastPreviewExternalState.ok ? "Opened" : "Blocked" }]
         : []),
@@ -3740,8 +3727,6 @@ function renderEditorSurface() {
       selected.language,
       `${selected.lineCount} lines`,
       selected.modified ? "Modified" : "Saved",
-      selected.origin === "context" ? "Opened from context" : "Opened from explorer",
-      selectedWorktreeLabel,
     ]) {
       if (!item) {
         continue;
@@ -3752,6 +3737,7 @@ function renderEditorSurface() {
       chip.textContent = item;
       meta.appendChild(chip);
     }
+    meta.hidden = meta.childElementCount === 0;
     if (selectedTarget?.sourceChange) {
       const previewTitle = document.createElement("div");
       previewTitle.className = "editor-diff-preview-title";
