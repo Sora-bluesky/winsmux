@@ -1178,7 +1178,28 @@ textarea {
 }
 
 #editor-statusbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   font-size: var(--text-2xs);
+  color: #8c96b4;
+}
+
+.editor-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.editor-status-label {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.editor-status-value {
+  min-width: 0;
   color: #8c96b4;
 }
 
@@ -1843,6 +1864,10 @@ textarea {
 
   #editor-surface-summary,
   #editor-meta-row {
+    gap: 6px;
+  }
+
+  #editor-statusbar {
     gap: 6px;
   }
 

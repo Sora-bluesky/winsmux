@@ -3589,7 +3589,10 @@ function renderEditorSurface() {
     tabs.innerHTML = "";
     code.textContent = "No backend preview cached.";
     code.hidden = false;
-    statusbar.textContent = "Secondary work surface: 0 projected files";
+    renderEditorStatusbar(statusbar, [
+      { label: "Surface", value: "Idle" },
+      { label: "Files", value: "0 projected" },
+    ]);
     return;
   }
   if (selected && !previewModeActive) {
@@ -3700,9 +3703,14 @@ function renderEditorSurface() {
     browserOpenButton.disabled = false;
     code.textContent = "";
     code.hidden = true;
-    statusbar.textContent =
-      `Secondary work surface: preview -> ${previewTarget.url}` +
-      `${lastPreviewExternalState?.url === previewTarget.url ? (lastPreviewExternalState.ok ? " (opened externally)" : " (external blocked)") : ""}`;
+    renderEditorStatusbar(statusbar, [
+      { label: "Surface", value: "Preview" },
+      { label: "Target", value: previewTarget.portLabel },
+      { label: "Source", value: previewTarget.sourceLabel },
+      ...(lastPreviewExternalState?.url === previewTarget.url
+        ? [{ label: "External", value: lastPreviewExternalState.ok ? "Opened" : "Blocked" }]
+        : []),
+    ]);
   } else if (selected) {
     title.textContent = selectedTarget?.sourceChange ? "Diff review" : "Editor";
     path.textContent = selected.path;
@@ -3774,7 +3782,11 @@ function renderEditorSurface() {
       diffPreview.hidden = false;
     }
     code.textContent = selected.content;
-    statusbar.textContent = `Secondary work surface: ${selected.origin === "context" ? "run context" : "explorer"} -> ${selectedWorktreeLabel ? `${selectedWorktreeLabel} / ` : ""}${selected.path}`;
+    renderEditorStatusbar(statusbar, [
+      { label: "Surface", value: selectedTarget?.sourceChange ? "Diff review" : "Editor" },
+      { label: "Source", value: selected.origin === "context" ? "Run context" : "Explorer" },
+      ...(selectedWorktreeLabel ? [{ label: "Worktree", value: selectedWorktreeLabel }] : []),
+    ]);
   }
   tabs.innerHTML = "";
 
@@ -3787,6 +3799,29 @@ function renderEditorSurface() {
       void openEditorTarget(getEditorTargetByKey(editor.key));
     });
     tabs.appendChild(tab);
+  }
+}
+
+function renderEditorStatusbar(
+  root: HTMLElement,
+  items: Array<{ label: string; value: string }>,
+) {
+  root.innerHTML = "";
+  for (const item of items) {
+    const entry = document.createElement("span");
+    entry.className = "editor-status-item";
+
+    const label = document.createElement("span");
+    label.className = "editor-status-label";
+    label.textContent = item.label;
+
+    const value = document.createElement("span");
+    value.className = "editor-status-value";
+    value.textContent = item.value;
+
+    entry.appendChild(label);
+    entry.appendChild(value);
+    root.appendChild(entry);
   }
 }
 
