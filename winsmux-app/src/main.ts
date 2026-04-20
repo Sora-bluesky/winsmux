@@ -168,6 +168,12 @@ interface ThemeState {
   wrapMode: WrapMode;
 }
 
+interface ShellPreferenceState extends ThemeState {
+  sidebarWidth: number;
+  wideSidebarOpen: boolean;
+  wideContextOpen: boolean;
+}
+
 interface ComposerAttachment {
   id: string;
   name: string;
@@ -277,6 +283,10 @@ const themeState: ThemeState = {
   density: "comfortable",
   wrapMode: "balanced",
 };
+let settingsDraftState: ThemeState | null = null;
+let preferredWideSidebarOpen = true;
+let preferredWideContextOpen = true;
+const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
 
 const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: string }> = [
   { mode: "ask", label: "Ask", placeholder: "Ask the Operator for clarification, status, or guidance" },
@@ -1819,33 +1829,262 @@ function getSourceEntryTone(entry: SourceChange): SurfaceTone {
   return "info";
 }
 
+function getFooterReviewTone(reviewState: string | undefined): SurfaceTone {
+  switch ((reviewState || "").toUpperCase()) {
+    case "PASS":
+      return "success";
+    case "PENDING":
+      return "warning";
+    case "FAIL":
+    case "FAILED":
+      return "danger";
+    default:
+      return "info";
+  }
+}
+
+function getFooterNextTone(nextAction: string | undefined): SurfaceTone {
+  switch ((nextAction || "").toLowerCase()) {
+    case "blocked":
+    case "reconcile_consult":
+      return "warning";
+    case "review":
+    case "dispatch":
+      return "focus";
+    default:
+      return "info";
+  }
+}
+
+function getFooterSurfaceStatus() {
+  if (commandBarOpen) {
+    return "Command";
+  }
+  if (settingsSheetOpen) {
+    return "Settings";
+  }
+  if (selectedPreviewUrl) {
+    return "Preview";
+  }
+  if (editorSurfaceOpen) {
+    return "Code";
+  }
+  if (terminalDrawerOpen) {
+    return "Terminal";
+  }
+  return "Shell";
+}
+
+function getFooterOperatorStatus(projection: DesktopRunProjection | undefined) {
+  if (!projection) {
+    return {
+      label: desktopSummarySnapshot ? "Monitoring" : "Ready",
+      tone: desktopSummarySnapshot ? "info" as SurfaceTone : "success" as SurfaceTone,
+    };
+  }
+
+  const taskState = (projection.task_state || "").toLowerCase();
+  if (taskState === "blocked") {
+    return { label: "Blocked", tone: "danger" as SurfaceTone };
+  }
+  if (taskState === "commit_ready") {
+    return { label: "Commit ready", tone: "success" as SurfaceTone };
+  }
+  if (taskState === "completed" || taskState === "task_completed" || taskState === "done") {
+    return { label: "Completed", tone: "success" as SurfaceTone };
+  }
+  if (projection.verification_outcome) {
+    return {
+      label: `Verify ${projection.verification_outcome}`,
+      tone: projection.verification_outcome.toUpperCase() === "PASS" ? "success" as SurfaceTone : "warning" as SurfaceTone,
+    };
+  }
+  if (projection.next_action) {
+    return {
+      label: projection.next_action,
+      tone: getFooterNextTone(projection.next_action),
+    };
+  }
+  return {
+    label: projection.task_state || "Tracking",
+    tone: "info" as SurfaceTone,
+  };
+}
+
+function getFooterSettingsTone(status: string): SurfaceTone {
+  switch (status) {
+    case "Draft":
+      return "warning";
+    case "Editing":
+      return "info";
+    case "Ready":
+      return "focus";
+    case "Saved":
+      return "success";
+    default:
+      return "accent";
+  }
+}
+
+function getFooterInboxTone(count: number): SurfaceTone {
+  if (count > 0) {
+    return "warning";
+  }
+  return "success";
+}
+
+function getFooterContextItem(settingsStatus: string): FooterStatusItem {
+  if (commandBarOpen) {
+    const actions = getFilteredCommandActions();
+    const activeAction = actions[Math.min(selectedCommandIndex, Math.max(0, actions.length - 1))];
+    const query = commandBarQuery.trim();
+    return {
+      label: "Context",
+      value: query ? `Search ${query}` : (activeAction?.label || "Search actions"),
+      tone: "focus",
+    };
+  }
+
+  if (settingsSheetOpen) {
+    return {
+      label: "Context",
+      value: `Settings ${settingsStatus}`,
+      tone: getFooterSettingsTone(settingsStatus),
+    };
+  }
+
+  if (selectedPreviewUrl) {
+    const previewTarget = detectedPreviewTargets.get(selectedPreviewUrl);
+    if (previewTarget) {
+      return {
+        label: "Context",
+        value: `${previewTarget.portLabel} · ${previewTarget.sourceLabel}`,
+        tone: "accent",
+      };
+    }
+  }
+
+  if (editorSurfaceOpen) {
+    const editors = getEditorFiles();
+    const selected = editors.find((editor) => editor.key === selectedEditorKey) || editors[0];
+    if (selected) {
+      return {
+        label: "Context",
+        value: selected.path.split("/").pop() ?? selected.path,
+        tone: selected.origin === "context" ? "focus" : "info",
+      };
+    }
+  }
+
+  if (terminalDrawerOpen) {
+    return {
+      label: "Context",
+      value: "Utility drawer",
+      tone: "info",
+    };
+  }
+
+  return {
+    label: "Context",
+    value: "Ctrl/Cmd+K",
+    tone: "accent",
+  };
+}
+
 function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[] } {
-  const themeLabel = themeOptions.find((item) => item.value === themeState.theme)?.label ?? themeState.theme;
-  const densityLabel = densityOptions.find((item) => item.value === themeState.density)?.label ?? themeState.density;
-  const wrapLabel = wrapOptions.find((item) => item.value === themeState.wrapMode)?.label ?? themeState.wrapMode;
-  const summaryStatus = desktopSummarySnapshot
-    ? `${desktopSummarySnapshot.digest.summary.item_count} runs`
-    : "Operator ready";
-  const inboxStatus = desktopSummarySnapshot
-    ? `${desktopSummarySnapshot.inbox.summary.item_count} inbox`
-    : "config.toml";
-  const branchStatus = getPrimaryRunProjection()?.branch || "main";
+  const selectedProjection = getPrimaryRunProjection();
+  const modeLabel = composerModes.find((item) => item.mode === activeComposerMode)?.label ?? activeComposerMode;
+  const inboxCount = desktopSummarySnapshot?.inbox.summary.item_count ?? 0;
+  const inboxStatus = desktopSummarySnapshot ? `${inboxCount} inbox` : "Inbox idle";
+  const runStatus = selectedProjection?.label || selectedProjection?.run_id || "No run selected";
+  const reviewStatus = selectedProjection?.review_state || "No review";
+  const nextStatus = selectedProjection?.next_action || "idle";
+  const operatorStatus = getFooterOperatorStatus(selectedProjection ?? undefined);
+  const settingsStatus = settingsDraftState
+    ? (themeStatesEqual(settingsDraftState, themeState) ? (settingsSheetOpen ? "Editing" : "Ready") : "Draft")
+    : "Saved";
+  const surfaceStatus = getFooterSurfaceStatus();
+  const contextItem = getFooterContextItem(settingsStatus);
 
   return {
     left: [
-      { label: "Local environment" },
-      { label: themeLabel, tone: "focus" },
-      { label: densityLabel },
-      { label: `Wrap ${wrapLabel}` },
-      { label: "Command", value: "Ctrl/Cmd+K", tone: "accent" },
-      { label: "Settings", tone: "accent" },
+      { label: "Mode", value: modeLabel, tone: "focus" },
+      { label: "Surface", value: surfaceStatus },
+      contextItem,
+      { label: "Settings", value: settingsStatus, tone: getFooterSettingsTone(settingsStatus) },
     ],
     right: [
-      { label: inboxStatus },
-      { label: branchStatus },
-      { label: summaryStatus, tone: desktopSummarySnapshot ? "info" : "success" },
+      { label: "Run", value: runStatus },
+      { label: "Operator", value: operatorStatus.label, tone: operatorStatus.tone },
+      { label: "Review", value: reviewStatus, tone: getFooterReviewTone(selectedProjection?.review_state) },
+      { label: "Next", value: nextStatus, tone: getFooterNextTone(selectedProjection?.next_action) },
+      { label: "Inbox", value: inboxStatus, tone: getFooterInboxTone(inboxCount) },
     ],
   };
+}
+
+function cloneThemeState(state: ThemeState): ThemeState {
+  return {
+    theme: state.theme,
+    density: state.density,
+    wrapMode: state.wrapMode,
+  };
+}
+
+function themeStatesEqual(left: ThemeState, right: ThemeState) {
+  return left.theme === right.theme
+    && left.density === right.density
+    && left.wrapMode === right.wrapMode;
+}
+
+function readStoredShellPreferences(): ShellPreferenceState | null {
+  try {
+    const rawValue = window.localStorage.getItem(SHELL_PREFERENCES_STORAGE_KEY);
+    if (!rawValue) {
+      return null;
+    }
+
+    const parsed = JSON.parse(rawValue) as Partial<ShellPreferenceState>;
+    const theme = themeOptions.find((item) => item.value === parsed.theme)?.value;
+    const density = densityOptions.find((item) => item.value === parsed.density)?.value;
+    const wrapMode = wrapOptions.find((item) => item.value === parsed.wrapMode)?.value;
+    if (!theme || !density || !wrapMode) {
+      return null;
+    }
+
+    const sidebarWidthValue = typeof parsed.sidebarWidth === "number" ? parsed.sidebarWidth : 292;
+    const wideSidebarOpen = typeof parsed.wideSidebarOpen === "boolean" ? parsed.wideSidebarOpen : true;
+    const wideContextOpen = typeof parsed.wideContextOpen === "boolean" ? parsed.wideContextOpen : true;
+
+    return {
+      theme,
+      density,
+      wrapMode,
+      sidebarWidth: Math.max(240, Math.min(380, Math.round(sidebarWidthValue))),
+      wideSidebarOpen,
+      wideContextOpen,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistThemeState() {
+  try {
+    const nextState: ShellPreferenceState = {
+      theme: themeState.theme,
+      density: themeState.density,
+      wrapMode: themeState.wrapMode,
+      sidebarWidth,
+      wideSidebarOpen: preferredWideSidebarOpen,
+      wideContextOpen: preferredWideContextOpen,
+    };
+    window.localStorage.setItem(SHELL_PREFERENCES_STORAGE_KEY, JSON.stringify(nextState));
+    return true;
+  } catch (error) {
+    console.warn("Failed to persist shell preferences", error);
+    return false;
+  }
 }
 
 function applyShellPreferences() {
@@ -1857,6 +2096,14 @@ function applyShellPreferences() {
   shell.dataset.theme = themeState.theme;
   shell.dataset.density = themeState.density;
   shell.dataset.wrapMode = themeState.wrapMode;
+}
+
+function applyThemeState(nextState: ThemeState) {
+  themeState.theme = nextState.theme;
+  themeState.density = nextState.density;
+  themeState.wrapMode = nextState.wrapMode;
+  applyShellPreferences();
+  renderFooterLane();
 }
 
 function renderPreferenceOptions<T extends string>(
@@ -1883,26 +2130,40 @@ function renderPreferenceOptions<T extends string>(
 }
 
 function renderSettingsControls() {
-  renderPreferenceOptions("theme-options", themeOptions, themeState.theme, (value) => {
-    themeState.theme = value;
-    applyShellPreferences();
-    renderFooterLane();
+  const activeState = settingsDraftState ?? themeState;
+  const applyButton = document.getElementById("apply-settings-btn") as HTMLButtonElement | null;
+
+  renderPreferenceOptions("theme-options", themeOptions, activeState.theme, (value) => {
+    if (!settingsDraftState) {
+      settingsDraftState = cloneThemeState(themeState);
+    }
+    settingsDraftState.theme = value;
     renderSettingsControls();
   });
 
-  renderPreferenceOptions("density-options", densityOptions, themeState.density, (value) => {
-    themeState.density = value;
-    applyShellPreferences();
-    renderFooterLane();
+  renderPreferenceOptions("density-options", densityOptions, activeState.density, (value) => {
+    if (!settingsDraftState) {
+      settingsDraftState = cloneThemeState(themeState);
+    }
+    settingsDraftState.density = value;
     renderSettingsControls();
   });
 
-  renderPreferenceOptions("wrap-options", wrapOptions, themeState.wrapMode, (value) => {
-    themeState.wrapMode = value;
-    applyShellPreferences();
-    renderFooterLane();
+  renderPreferenceOptions("wrap-options", wrapOptions, activeState.wrapMode, (value) => {
+    if (!settingsDraftState) {
+      settingsDraftState = cloneThemeState(themeState);
+    }
+    settingsDraftState.wrapMode = value;
     renderSettingsControls();
   });
+
+  if (applyButton) {
+    const hasChanges = Boolean(settingsDraftState && !themeStatesEqual(settingsDraftState, themeState));
+    applyButton.disabled = !hasChanges;
+    applyButton.setAttribute("aria-disabled", hasChanges ? "false" : "true");
+  }
+
+  renderFooterLane();
 }
 
 function renderFooterLane() {
@@ -4056,13 +4317,18 @@ function setTerminalDrawer(open: boolean) {
   });
 }
 
-function setContextPanel(open: boolean) {
+function setContextPanel(open: boolean, options?: { preserveWidePreference?: boolean }) {
   contextPanelOpen = open;
   const panel = document.getElementById("context-panel");
   const button = document.getElementById("toggle-context-btn");
   const body = document.getElementById("workspace-body");
   if (!panel || !button || !body) {
     return;
+  }
+
+  if ((options?.preserveWidePreference ?? true) && !isNarrowLayout()) {
+    preferredWideContextOpen = open;
+    void persistThemeState();
   }
 
   panel.toggleAttribute("hidden", !open);
@@ -4090,7 +4356,7 @@ function isNarrowLayout() {
   return window.matchMedia("(max-width: 1180px)").matches;
 }
 
-function setSidebarOpen(open: boolean) {
+function setSidebarOpen(open: boolean, options?: { preserveWidePreference?: boolean }) {
   sidebarOpen = open;
   const shell = document.getElementById("app-shell");
   const overlay = document.getElementById("sidebar-overlay");
@@ -4099,13 +4365,17 @@ function setSidebarOpen(open: boolean) {
     return;
   }
 
+  if ((options?.preserveWidePreference ?? true) && !isNarrowLayout()) {
+    preferredWideSidebarOpen = open;
+    void persistThemeState();
+  }
+
   shell.classList.toggle("sidebar-open", open);
   overlay.hidden = !(open && isNarrowLayout());
   button.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
 function setSettingsSheet(open: boolean) {
-  settingsSheetOpen = open;
   const sheet = document.getElementById("settings-sheet");
   if (!sheet) {
     return;
@@ -4115,18 +4385,38 @@ function setSettingsSheet(open: boolean) {
     closeCommandBar();
   }
 
+  settingsSheetOpen = open;
+  if (open) {
+    if (!settingsDraftState) {
+      settingsDraftState = cloneThemeState(themeState);
+    }
+    renderSettingsControls();
+  }
   sheet.hidden = !open;
+  renderFooterLane();
+}
+
+function applySettingsDraft() {
+  if (settingsDraftState) {
+    applyThemeState(settingsDraftState);
+    persistThemeState();
+  }
+  settingsDraftState = null;
+  setSettingsSheet(false);
+}
+
+function cancelSettingsDraft() {
+  settingsDraftState = null;
+  setSettingsSheet(false);
 }
 
 function syncResponsiveShell() {
   if (isNarrowLayout()) {
-    setSidebarOpen(false);
-    setContextPanel(false);
+    setSidebarOpen(false, { preserveWidePreference: false });
+    setContextPanel(false, { preserveWidePreference: false });
   } else {
-    setSidebarOpen(true);
-    if (!contextPanelOpen) {
-      setContextPanel(true);
-    }
+    setSidebarOpen(preferredWideSidebarOpen, { preserveWidePreference: false });
+    setContextPanel(preferredWideContextOpen, { preserveWidePreference: false });
   }
 }
 
@@ -4663,6 +4953,8 @@ function initializeSidebarResize() {
     return;
   }
 
+  appShell.style.setProperty("--sidebar-width", `${sidebarWidth}px`);
+
   handle.addEventListener("pointerdown", (event) => {
     const startX = event.clientX;
     const startWidth = sidebarWidth;
@@ -4673,6 +4965,7 @@ function initializeSidebarResize() {
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      void persistThemeState();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
@@ -4681,6 +4974,14 @@ function initializeSidebarResize() {
 
 window.addEventListener("DOMContentLoaded", async () => {
   installViewportHarnessHooks();
+
+  const storedShellPreferences = readStoredShellPreferences();
+  if (storedShellPreferences) {
+    applyThemeState(storedShellPreferences);
+    sidebarWidth = storedShellPreferences.sidebarWidth;
+    preferredWideSidebarOpen = storedShellPreferences.wideSidebarOpen;
+    preferredWideContextOpen = storedShellPreferences.wideContextOpen;
+  }
 
   await subscribeToPtyOutput((payload) => {
     registerPreviewTargets(payload.pane_id, payload.data);
@@ -4765,8 +5066,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     setSettingsSheet(true);
   });
 
+  document.getElementById("apply-settings-btn")?.addEventListener("click", () => {
+    applySettingsDraft();
+  });
+
   document.getElementById("close-settings-btn")?.addEventListener("click", () => {
-    setSettingsSheet(false);
+    cancelSettingsDraft();
   });
 
   document.getElementById("sidebar-overlay")?.addEventListener("click", () => {
@@ -5010,7 +5315,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     if (event.key === "Escape" && settingsSheetOpen) {
       event.preventDefault();
-      setSettingsSheet(false);
+      cancelSettingsDraft();
       return;
     }
 
