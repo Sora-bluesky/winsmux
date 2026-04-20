@@ -259,6 +259,32 @@ async function assertBackToCode(page) {
   await assertHorizontallyVisible(page, "#editor-code");
 }
 
+async function assertPopoutShell(popup, visibleSelector) {
+  await popup.locator(visibleSelector).waitFor({ state: "visible" });
+  const isPopout = await popup.evaluate(() => document.body.dataset.popoutSurface === "1");
+  if (!isPopout) {
+    throw new Error("Pop-out window did not enter detached surface mode");
+  }
+  await popup.locator("#workspace-header").waitFor({ state: "visible" });
+  await popup.locator("#conversation-panel").waitFor({ state: "hidden" });
+  await popup.locator("#context-panel").waitFor({ state: "hidden" });
+  await popup.locator("#workspace-footer").waitFor({ state: "hidden" });
+  await popup.locator("#header-actions").waitFor({ state: "hidden" });
+  await assertHorizontallyVisible(popup, "#editor-surface");
+}
+
+async function assertPreviewPopout(page) {
+  const popupPromise = page.waitForEvent("popup");
+  await page.click("#popout-editor-btn");
+  const popup = await popupPromise;
+  await assertPopoutShell(popup, "#browser-surface");
+  await popup.locator("#browser-frame").waitFor({ state: "visible" });
+  await popup.locator("#browser-toolbar").waitFor({ state: "visible" });
+  const closePromise = popup.waitForEvent("close");
+  await popup.click("#close-editor-btn");
+  await closePromise;
+}
+
 async function assertPreviewClosed(page) {
   await page.click("#browser-back-btn");
   await page.locator("#browser-surface").waitFor({ state: "hidden" });
@@ -360,6 +386,7 @@ async function verifyDesktopViewport(page, previewUrl) {
   await assertHorizontallyVisible(page, "#browser-toolbar");
   await assertFullyVisible(page, "#browser-frame");
   await assertToolbarActionStates(page);
+  await assertPreviewPopout(page);
   await assertCommandBarRoundtrip(page, "#browser-toolbar");
   await assertSettingsRoundtrip(page, "#browser-toolbar");
 
@@ -519,6 +546,7 @@ async function run() {
             "desktop-source-context-with-terminal-drawer",
             "desktop-preview-browser",
             "desktop-preview-toolbar-actions",
+            "desktop-preview-popout",
             "desktop-command-bar-with-preview",
             "desktop-settings-with-preview",
             "desktop-preview-back-to-code",

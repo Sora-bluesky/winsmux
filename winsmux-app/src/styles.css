@@ -361,6 +361,41 @@ textarea {
   grid-template-columns: minmax(0, 1fr) var(--editor-width);
 }
 
+body[data-popout-surface="1"] #sidebar-overlay,
+body[data-popout-surface="1"] #left-rail,
+body[data-popout-surface="1"] #conversation-panel,
+body[data-popout-surface="1"] #context-panel,
+body[data-popout-surface="1"] #workspace-footer,
+body[data-popout-surface="1"] #terminal-drawer,
+body[data-popout-surface="1"] #settings-sheet,
+body[data-popout-surface="1"] #command-bar-backdrop,
+body[data-popout-surface="1"] #command-bar {
+  display: none !important;
+}
+
+body[data-popout-surface="1"] #app-shell {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body[data-popout-surface="1"] #workspace {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+body[data-popout-surface="1"] #workspace-body,
+body[data-popout-surface="1"] #workspace-body.editor-open,
+body[data-popout-surface="1"] #workspace-body.context-collapsed,
+body[data-popout-surface="1"] #workspace-body.editor-open.context-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body[data-popout-surface="1"] #header-actions {
+  display: none;
+}
+
+body[data-popout-surface="1"] #editor-surface {
+  min-height: 0;
+}
+
 #conversation-panel,
 #editor-surface,
 #context-panel,
@@ -972,6 +1007,12 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.panel-title-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .settings-sheet-actions {
