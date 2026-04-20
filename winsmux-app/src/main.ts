@@ -1887,14 +1887,17 @@ function getFooterOperatorStatus(projection: DesktopRunProjection | undefined) {
   if (taskState === "blocked") {
     return { label: "Blocked", tone: "danger" as SurfaceTone };
   }
+  if (taskState === "commit_ready") {
+    return { label: "Commit ready", tone: "success" as SurfaceTone };
+  }
+  if (taskState === "completed" || taskState === "task_completed" || taskState === "done") {
+    return { label: "Completed", tone: "success" as SurfaceTone };
+  }
   if (projection.verification_outcome) {
     return {
       label: `Verify ${projection.verification_outcome}`,
       tone: projection.verification_outcome.toUpperCase() === "PASS" ? "success" as SurfaceTone : "warning" as SurfaceTone,
     };
-  }
-  if (taskState === "completed" || taskState === "task_completed" || taskState === "done") {
-    return { label: "Completed", tone: "success" as SurfaceTone };
   }
   if (projection.next_action) {
     return {
@@ -1906,6 +1909,21 @@ function getFooterOperatorStatus(projection: DesktopRunProjection | undefined) {
     label: projection.task_state || "Tracking",
     tone: "info" as SurfaceTone,
   };
+}
+
+function getFooterSettingsTone(status: string): SurfaceTone {
+  switch (status) {
+    case "Draft":
+      return "warning";
+    case "Editing":
+      return "info";
+    case "Ready":
+      return "focus";
+    case "Saved":
+      return "success";
+    default:
+      return "accent";
+  }
 }
 
 function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[] } {
@@ -1928,7 +1946,7 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
       { label: "Mode", value: modeLabel, tone: "focus" },
       { label: "Surface", value: surfaceStatus },
       { label: "Command", value: "Ctrl/Cmd+K", tone: "accent" },
-      { label: "Settings", value: settingsStatus, tone: "accent" },
+      { label: "Settings", value: settingsStatus, tone: getFooterSettingsTone(settingsStatus) },
     ],
     right: [
       { label: "Run", value: runStatus },
