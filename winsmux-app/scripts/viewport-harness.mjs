@@ -265,6 +265,21 @@ async function assertNarrowSettingsRoundtrip(page, returnSelector) {
   await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
 }
 
+async function assertTerminalDrawerWithSourceContext(page, returnSelector, extraSelector) {
+  await page.click("#toggle-terminal-btn");
+  await page.locator("#terminal-drawer").waitFor({ state: "visible" });
+  await assertButtonVisible(page, "#add-pane-btn");
+  await assertHorizontallyVisible(page, "#terminal-drawer");
+  await page.locator(returnSelector).waitFor({ state: "visible" });
+  if (extraSelector) {
+    await page.locator(extraSelector).waitFor({ state: "visible" });
+    await assertHorizontallyVisible(page, extraSelector);
+  }
+  await page.click("#toggle-terminal-btn");
+  await page.locator("#terminal-drawer").waitFor({ state: "hidden" });
+  await page.locator(returnSelector).waitFor({ state: "visible" });
+}
+
 async function verifyDesktopViewport(page, previewUrl) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
@@ -294,6 +309,7 @@ async function verifyDesktopViewport(page, previewUrl) {
   await openFirstSourceContextEntry(page);
   await assertCommandBarRoundtrip(page, "#editor-surface");
   await assertSettingsRoundtrip(page, "#editor-surface");
+  await assertTerminalDrawerWithSourceContext(page, "#editor-surface", "#context-panel");
 
   await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
   await waitForPreviewTargetEntry(page);
@@ -351,6 +367,7 @@ async function verifyNarrowViewport(page, previewUrl) {
   await openFirstSourceContextEntry(page);
   await assertCommandBarRoundtrip(page, "#editor-surface");
   await assertNarrowSettingsRoundtrip(page, "#editor-surface");
+  await assertTerminalDrawerWithSourceContext(page, "#editor-surface");
 
   await page.click("#toggle-terminal-btn");
   await page.locator("#terminal-drawer").waitFor({ state: "visible" });
@@ -444,6 +461,7 @@ async function run() {
             "desktop-source-context",
             "desktop-command-bar-with-editor",
             "desktop-settings-with-editor",
+            "desktop-source-context-with-terminal-drawer",
             "desktop-preview-browser",
             "desktop-command-bar-with-preview",
             "desktop-settings-with-preview",
@@ -456,6 +474,7 @@ async function run() {
             "narrow-source-context",
             "narrow-command-bar-with-editor",
             "narrow-settings-with-editor",
+            "narrow-source-context-with-terminal-drawer",
             "narrow-terminal-drawer",
             "narrow-preview-browser",
             "narrow-command-bar-with-preview",
