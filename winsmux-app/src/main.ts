@@ -969,6 +969,14 @@ function renderExperimentContext() {
           .filter((value) => Boolean(value))
           .join(" · ")
       : "Compare needs another surfaced run.";
+  const compareCandidateSummary = compareResult
+    ? [
+        compareWinnerLabel ? `winner ${compareWinnerLabel}` : "",
+        `diffs ${compareResult.differences.length}`,
+      ]
+        .filter((value) => Boolean(value))
+        .join(" · ")
+    : "";
   const canPromoteCandidate =
     isDesktopRunPromotable(payload.run) &&
     !promotingRunIds.has(selectedProjection.run_id) &&
@@ -1057,12 +1065,15 @@ function renderExperimentContext() {
       title: "Playbook Candidate",
       body: isPromotedCandidate
         ? `Exported as ${promotedCandidateRef}.`
-        : (
+        : [
           consultationPacket.recommendation ||
-          experimentPacket.result ||
-          experimentPacket.next_action ||
-          "No playbook candidate is ready yet."
-        ),
+            experimentPacket.result ||
+            experimentPacket.next_action ||
+            "No playbook candidate is ready yet.",
+          compareCandidateSummary,
+        ]
+          .filter((value) => Boolean(value))
+          .join(" · "),
       tone: "success" as SurfaceTone,
       actionLabel: canPromoteCandidate ? "Promote" : undefined,
       actionPendingLabel: "Promoting...",
