@@ -173,12 +173,8 @@ function Get-VersionSortTuple {
         return @([int]$Matches['major'], [int]$Matches['minor'], [int]$Matches['patch'], $Version)
     }
 
-    if ($Version -eq 'post-v1.0.0-platform') {
+    if ($Version -eq 'pending') {
         return @(9998, 0, 0, $Version)
-    }
-
-    if ($Version -eq 'post-v1.0.0-governance') {
-        return @(9999, 0, 0, $Version)
     }
 
     return @(9997, 0, 0, ($Version ?? ''))
