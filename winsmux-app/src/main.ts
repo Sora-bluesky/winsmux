@@ -960,6 +960,24 @@ function openPreviewTarget(url: string) {
   setEditorSurface(true);
 }
 
+function reloadPreviewTarget() {
+  if (!selectedPreviewUrl) {
+    return;
+  }
+  const browserFrame = document.getElementById("browser-frame") as HTMLIFrameElement | null;
+  if (!browserFrame) {
+    return;
+  }
+  browserFrame.src = selectedPreviewUrl;
+}
+
+function openPreviewTargetExternally() {
+  if (!selectedPreviewUrl) {
+    return;
+  }
+  window.open(selectedPreviewUrl, "_blank", "noopener");
+}
+
 function getSourceFilterLabel(filter: SourceFilter) {
   switch (filter) {
     case "all":
@@ -2835,10 +2853,12 @@ function renderEditorSurface() {
   const browserSurface = document.getElementById("browser-surface");
   const browserFrame = document.getElementById("browser-frame") as HTMLIFrameElement | null;
   const browserMeta = document.getElementById("browser-meta-row");
+  const browserReloadButton = document.getElementById("browser-reload-btn") as HTMLButtonElement | null;
+  const browserOpenButton = document.getElementById("browser-open-btn") as HTMLButtonElement | null;
   const tabs = document.getElementById("editor-tabs");
   const code = document.getElementById("editor-code");
   const statusbar = document.getElementById("editor-statusbar");
-  if (!path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !tabs || !code || !statusbar) {
+  if (!path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
     return;
   }
 
@@ -2876,6 +2896,8 @@ function renderEditorSurface() {
   diffPreview.hidden = true;
   browserMeta.innerHTML = "";
   browserSurface.hidden = true;
+  browserReloadButton.disabled = true;
+  browserOpenButton.disabled = true;
   code.hidden = false;
 
   if (previewModeActive && previewTarget) {
@@ -2900,6 +2922,8 @@ function renderEditorSurface() {
     browserMeta.appendChild(browserBody);
     browserFrame.src = previewTarget.url;
     browserSurface.hidden = false;
+    browserReloadButton.disabled = false;
+    browserOpenButton.disabled = false;
     code.textContent = "";
     code.hidden = true;
     statusbar.textContent = `Secondary work surface: preview -> ${previewTarget.url}`;
@@ -4185,6 +4209,14 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("toggle-terminal-btn")?.addEventListener("click", () => {
     setTerminalDrawer(!terminalDrawerOpen);
+  });
+
+  document.getElementById("browser-reload-btn")?.addEventListener("click", () => {
+    reloadPreviewTarget();
+  });
+
+  document.getElementById("browser-open-btn")?.addEventListener("click", () => {
+    openPreviewTargetExternally();
   });
 
   document.getElementById("toggle-context-btn")?.addEventListener("click", () => {
