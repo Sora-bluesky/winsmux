@@ -1,0 +1,33 @@
+{
+  "name": "winsmux",
+  "version": "0.0.0-development",
+  "private": true,
+  "description": "Public npm install surface for winsmux. Publishing stays gated until the installer contract is ready.",
+  "license": "MIT",
+  "type": "module",
+  "os": [
+    "win32"
+  ],
+  "files": [
+    "README.md",
+    "index.mjs",
+    "install.ps1",
+    "LICENSE"
+  ],
+  "bin": {
+    "winsmux": "index.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sora-bluesky/winsmux.git"
+  },
+  "homepage": "https://github.com/Sora-bluesky/winsmux",
+  "bugs": {
+    "url": "https://github.com/Sora-bluesky/winsmux/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
+
+

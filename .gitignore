@@ -55,6 +55,7 @@ tests/*
 !tests/BuilderWorktree.Tests.ps1
 !tests/PublicSurfacePolicy.Tests.ps1
 !tests/HarnessContract.Tests.ps1
+!tests/NpmReleasePackage.Tests.ps1
 !tests/README.md
 !tests/fixtures/
 tests/fixtures/*
@@ -122,6 +123,7 @@ pnpm-debug.log*
 dist/
 build/
 out/
+output/
 *.tsbuildinfo
 
 # =========================

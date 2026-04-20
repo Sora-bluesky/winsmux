@@ -1,0 +1,189 @@
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+Describe 'winsmux npm release package contract' {
+    BeforeAll {
+        $script:RepoRoot = (& git rev-parse --show-toplevel 2>$null | Out-String).Trim()
+        if ([string]::IsNullOrWhiteSpace($script:RepoRoot)) {
+            throw 'Failed to resolve repository root.'
+        }
+
+        $script:PackageRoot = Join-Path $script:RepoRoot 'packages\winsmux'
+        $script:PackageJsonPath = Join-Path $script:PackageRoot 'package.json'
+        $script:EntrypointPath = Join-Path $script:PackageRoot 'index.mjs'
+        $script:StageScriptPath = Join-Path $script:RepoRoot 'scripts\stage-npm-release.mjs'
+        $script:OutputRoot = Join-Path $script:RepoRoot 'output\npm-release\winsmux'
+
+        $nodeCommand = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -eq $nodeCommand) {
+            throw 'node was not found in PATH.'
+        }
+        $script:NodePath = if ($nodeCommand.Path) { $nodeCommand.Path } else { $nodeCommand.Name }
+
+        function Write-TestFileUtf8 {
+            param(
+                [Parameter(Mandatory = $true)][string]$Path,
+                [Parameter(Mandatory = $true)][string]$Content
+            )
+
+            $parent = Split-Path -Parent $Path
+            if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
+                New-Item -ItemType Directory -Path $parent -Force | Out-Null
+            }
+
+            $utf8 = [System.Text.UTF8Encoding]::new($false)
+            [System.IO.File]::WriteAllText($Path, $Content, $utf8)
+        }
+
+        function Backup-TestFile {
+            param([Parameter(Mandatory = $true)][string]$Path)
+
+            if (Test-Path -LiteralPath $Path -PathType Leaf) {
+                return Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+            }
+
+            return $null
+        }
+
+        function Restore-TestFile {
+            param(
+                [Parameter(Mandatory = $true)][string]$Path,
+                [AllowNull()][string]$Content
+            )
+
+            if ($null -eq $Content) {
+                if (Test-Path -LiteralPath $Path -PathType Leaf) {
+                    Remove-Item -LiteralPath $Path -Force
+                }
+                return
+            }
+
+            Write-TestFileUtf8 -Path $Path -Content $Content
+        }
+
+        function Invoke-NodeProcess {
+            param(
+                [Parameter(Mandatory = $true)][string[]]$Arguments,
+                [string]$WorkingDirectory = $script:RepoRoot
+            )
+
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $script:NodePath
+            foreach ($argument in $Arguments) {
+                $startInfo.ArgumentList.Add($argument)
+            }
+            $startInfo.WorkingDirectory = $WorkingDirectory
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+
+            $process = [System.Diagnostics.Process]::Start($startInfo)
+            try {
+                $stdout = $process.StandardOutput.ReadToEnd()
+                $stderr = $process.StandardError.ReadToEnd()
+                $process.WaitForExit()
+
+                [PSCustomObject]@{
+                    ExitCode = $process.ExitCode
+                    StdOut   = $stdout.Trim()
+                    StdErr   = $stderr.Trim()
+                }
+            } finally {
+                $process.Dispose()
+            }
+        }
+
+        function Set-PackagePrivateFlag {
+            param([Parameter(Mandatory = $true)][bool]$Private)
+
+            $original = Get-Content -LiteralPath $script:PackageJsonPath -Raw -Encoding UTF8
+            $updated = $original -replace '"private":\s*(true|false),', ('"private": {0},' -f $Private.ToString().ToLowerInvariant())
+            Write-TestFileUtf8 -Path $script:PackageJsonPath -Content $updated
+        }
+
+        function Remove-StagedReleaseOutput {
+            if (Test-Path -LiteralPath $script:OutputRoot) {
+                Remove-Item -LiteralPath $script:OutputRoot -Recurse -Force
+            }
+        }
+    }
+
+    BeforeEach {
+        Remove-StagedReleaseOutput
+    }
+
+    AfterEach {
+        Remove-StagedReleaseOutput
+    }
+
+    It 'keeps the public entrypoint blocked while package publish stays gated' {
+        $result = Invoke-NodeProcess -Arguments @($script:EntrypointPath, 'help') -WorkingDirectory $script:PackageRoot
+
+        $result.ExitCode | Should -Be 1
+        $result.StdOut | Should -Be ''
+        $result.StdErr | Should -Match 'not enabled in this repository yet'
+        $result.StdErr | Should -Match 'install flows documented in the repository README'
+    }
+
+    It 'skips staging while package publish stays gated' {
+        $result = Invoke-NodeProcess -Arguments @(
+            $script:StageScriptPath,
+            '--version',
+            '0.22.1',
+            '--out',
+            'output/npm-release/winsmux'
+        )
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+        $result.StdOut | Should -Be 'winsmux npm package is still gated (private=true); skipping stage.'
+        Test-Path -LiteralPath $script:OutputRoot | Should -Be $false
+    }
+
+    It 'stages a release-ready package when the publish gate is opened' {
+        $originalPackageJson = Backup-TestFile -Path $script:PackageJsonPath
+        try {
+            Set-PackagePrivateFlag -Private $false
+
+            $stageResult = Invoke-NodeProcess -Arguments @(
+                $script:StageScriptPath,
+                '--version',
+                '0.22.1',
+                '--out',
+                'output/npm-release/winsmux'
+            )
+
+            $stageResult.ExitCode | Should -Be 0
+            $stageResult.StdErr | Should -Be ''
+            $stageResult.StdOut | Should -Match 'Staged winsmux npm package at'
+
+            foreach ($relativePath in @('package.json', 'README.md', 'index.mjs', 'install.ps1', 'LICENSE')) {
+                Test-Path -LiteralPath (Join-Path $script:OutputRoot $relativePath) | Should -Be $true
+            }
+
+            $stagedPackage = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $stagedPackage.name | Should -Be 'winsmux'
+            $stagedPackage.version | Should -Be '0.22.1'
+            $stagedPackage.PSObject.Properties.Name | Should -Not -Contain 'private'
+            @($stagedPackage.files) | Should -Be @('README.md', 'index.mjs', 'install.ps1', 'LICENSE')
+            @($stagedPackage.os) | Should -Be @('win32')
+
+            $stagedEntrypoint = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'index.mjs') -Raw -Encoding UTF8
+            $stagedEntrypoint | Should -Match 'const releaseTag = `v\$\{packageJson\.version\}`;'
+            $stagedEntrypoint | Should -Match '"-ReleaseTag",\s*releaseTag'
+
+            $stagedInstallScript = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'install.ps1') -Raw -Encoding UTF8
+            $stagedInstallScript | Should -Match '\$VERSION\s*=\s*"0\.22\.1"'
+            $stagedInstallScript | Should -Match 'releases/tags/\$escapedTag'
+            $stagedInstallScript | Should -Match 'raw\.githubusercontent\.com/Sora-bluesky/winsmux/\$EffectiveReleaseTag'
+
+            $helpResult = Invoke-NodeProcess -Arguments @((Join-Path $script:OutputRoot 'index.mjs'), 'help') -WorkingDirectory $script:OutputRoot
+            $helpResult.ExitCode | Should -Be 0
+            $helpResult.StdErr | Should -Be ''
+            $helpResult.StdOut | Should -Match 'Usage: install\.ps1 \[action\]'
+        } finally {
+            Restore-TestFile -Path $script:PackageJsonPath -Content $originalPackageJson
+        }
+    }
+}
