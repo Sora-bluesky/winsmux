@@ -78,4 +78,14 @@ if (fs.existsSync(licenseSource)) {
   fs.copyFileSync(licenseSource, path.join(targetDir, "LICENSE"));
 }
 
+const installScriptSource = path.join(repoRoot, "install.ps1");
+if (fs.existsSync(installScriptSource)) {
+  const installScript = fs.readFileSync(installScriptSource, "utf8");
+  const versionPatched = installScript.replace(
+    /\$VERSION\s*=\s*"[^"]*"/u,
+    `$VERSION      = "${version}"`,
+  );
+  fs.writeFileSync(path.join(targetDir, "install.ps1"), versionPatched);
+}
+
 console.log(`Staged winsmux npm package at ${targetDir}`);
