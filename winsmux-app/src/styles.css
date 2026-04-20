@@ -1747,13 +1747,22 @@ body[data-popout-surface="1"] #editor-surface {
 }
 
 .pane-header {
-  height: 28px;
+  min-height: 40px;
   background: #171c29;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 0 10px;
+  gap: 12px;
   flex-shrink: 0;
+}
+
+.pane-heading {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
 }
 
 .pane-label {
@@ -1762,12 +1771,22 @@ body[data-popout-surface="1"] #editor-surface {
   font-family: var(--font-code);
 }
 
+.pane-meta {
+  color: var(--text-muted);
+  font-size: var(--text-3xs);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .pane-close {
   background: none;
   border: none;
   color: #8b95b8;
   font-size: 14px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .pane-close:hover {

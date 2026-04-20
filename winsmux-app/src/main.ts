@@ -30,6 +30,9 @@ interface PaneEntry {
   terminal: Terminal;
   fitAddon: FitAddon;
   container: HTMLElement;
+  labelElement: HTMLElement;
+  metaElement: HTMLElement;
+  lastOutputAt: number | null;
 }
 
 type ChipAction =
@@ -280,6 +283,7 @@ let lastCommandBarFocus: HTMLElement | null = null;
 let pendingAttachments: ComposerAttachment[] = [];
 const detectedPreviewTargets = new Map<string, PreviewTarget>();
 const PREVIEW_FRESHNESS_WINDOW_MS = 30_000;
+const PANE_META_REFRESH_INTERVAL_MS = 30_000;
 let desktopSummarySnapshot: DesktopSummarySnapshot | null = null;
 let desktopSummaryRefreshInFlight: Promise<void> | null = null;
 let desktopSummaryRefreshTimeout: number | null = null;
@@ -377,16 +381,25 @@ function createPane(paneId?: string): string {
   const header = document.createElement("div");
   header.className = "pane-header";
 
+  const labelGroup = document.createElement("div");
+  labelGroup.className = "pane-heading";
+
   const label = document.createElement("span");
   label.className = "pane-label";
   label.textContent = id;
+
+  const meta = document.createElement("span");
+  meta.className = "pane-meta";
+  meta.textContent = "No branch · waiting for summary";
 
   const closeBtn = document.createElement("button");
   closeBtn.className = "pane-close";
   closeBtn.textContent = "×";
   closeBtn.onclick = () => closePane(id);
 
-  header.appendChild(label);
+  labelGroup.appendChild(label);
+  labelGroup.appendChild(meta);
+  header.appendChild(labelGroup);
   header.appendChild(closeBtn);
 
   const termDiv = document.createElement("div");
@@ -427,7 +440,14 @@ function createPane(paneId?: string): string {
     void resizePtyPane(id, cols, rows);
   });
 
-  panes.set(id, { terminal, fitAddon, container: paneDiv });
+  panes.set(id, {
+    terminal,
+    fitAddon,
+    container: paneDiv,
+    labelElement: label,
+    metaElement: meta,
+    lastOutputAt: null,
+  });
 
   const { cols, rows } = { cols: terminal.cols, rows: terminal.rows };
   void spawnPtyPane(id, cols, rows)
@@ -5104,6 +5124,7 @@ function pruneExplainCache(snapshot: DesktopSummarySnapshot, preservedRunId?: st
 }
 
 function renderDesktopSurfaces() {
+  renderPaneMetadata();
   renderSessions();
   renderFooterLane();
   renderRunSummary();
@@ -5113,6 +5134,68 @@ function renderDesktopSurfaces() {
   renderOpenEditors();
   renderEditorSurface();
   renderConversation(getConversationItems());
+}
+
+function formatPaneMetaTime(timestamp: string) {
+  const parsed = Date.parse(timestamp);
+  if (Number.isNaN(parsed)) {
+    return "";
+  }
+
+  return new Date(parsed).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatPaneWaitDuration(timestamp: string, now = Date.now()) {
+  const parsed = Date.parse(timestamp);
+  if (Number.isNaN(parsed)) {
+    return "";
+  }
+
+  const elapsedMs = Math.max(0, now - parsed);
+  const elapsedMinutes = Math.floor(elapsedMs / 60000);
+  if (elapsedMinutes < 1) {
+    return "<1m wait";
+  }
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m wait`;
+  }
+
+  const hours = Math.floor(elapsedMinutes / 60);
+  const minutes = elapsedMinutes % 60;
+  if (minutes === 0) {
+    return `${hours}h wait`;
+  }
+
+  return `${hours}h ${minutes}m wait`;
+}
+
+function renderPaneMetadata() {
+  const boardPanes = desktopSummarySnapshot?.board.panes ?? [];
+  const now = Date.now();
+
+  panes.forEach((pane, paneId) => {
+    const paneRecord = boardPanes.find((item) => item.pane_id === paneId) ?? null;
+    const paneLabel = paneRecord?.label || paneId;
+    pane.labelElement.textContent = paneLabel;
+
+    const branch = paneRecord?.branch || "No branch";
+    const eventTime = paneRecord?.last_event_at ? formatPaneMetaTime(paneRecord.last_event_at) : "";
+    const waitDuration = paneRecord?.last_event_at
+      ? formatPaneWaitDuration(paneRecord.last_event_at, now)
+      : pane.lastOutputAt
+        ? `${formatPreviewSeenAt(pane.lastOutputAt)} · live output`
+        : "waiting for summary";
+
+    const parts = [branch];
+    if (eventTime) {
+      parts.push(eventTime);
+    }
+    parts.push(waitDuration);
+    pane.metaElement.textContent = parts.filter((value) => Boolean(value)).join(" · ");
+  });
 }
 
 async function refreshDesktopSummary(forceExplainRunId?: string | null) {
@@ -5330,13 +5413,17 @@ window.addEventListener("DOMContentLoaded", async () => {
     registerPreviewTargets(payload.pane_id, payload.data);
     const entry = payload.pane_id ? panes.get(payload.pane_id) : undefined;
     if (entry) {
+      entry.lastOutputAt = Date.now();
       entry.terminal.write(payload.data);
+      renderPaneMetadata();
       return;
     }
 
     const first = panes.values().next().value as PaneEntry | undefined;
     if (first) {
+      first.lastOutputAt = Date.now();
       first.terminal.write(payload.data);
+      renderPaneMetadata();
     }
   });
 
@@ -5365,6 +5452,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   await refreshDesktopSummary();
   registerDesktopSummaryLiveRefresh();
   initializeSidebarResize();
+  window.setInterval(() => {
+    renderPaneMetadata();
+  }, PANE_META_REFRESH_INTERVAL_MS);
 
   document.getElementById("toggle-sidebar-btn")?.addEventListener("click", () => {
     setSidebarOpen(!sidebarOpen);
