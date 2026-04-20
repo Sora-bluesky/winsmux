@@ -1028,6 +1028,7 @@ textarea {
   border: 1px solid var(--border-muted);
   border-radius: 16px;
   background: var(--bg-surface);
+  overflow: hidden;
 }
 
 .editor-diff-preview-title {
@@ -1040,12 +1041,16 @@ textarea {
 .editor-diff-preview-body {
   font-size: var(--text-sm);
   color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
 .editor-diff-preview-meta {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-muted);
 }
 
 #browser-surface {
@@ -1117,17 +1122,25 @@ textarea {
 
 #editor-tabs {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+#editor-tabs::-webkit-scrollbar {
+  height: 8px;
 }
 
 .editor-tab {
+  flex: 0 0 auto;
   border: 1px solid var(--border-muted);
   border-radius: 999px;
   background: var(--bg-surface-raised);
   color: var(--text-secondary);
   padding: 6px 10px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .editor-tab.is-active,
