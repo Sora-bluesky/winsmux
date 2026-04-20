@@ -4,10 +4,14 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 type DesktopCommandName =
   | "desktop_summary_snapshot"
   | "desktop_run_explain"
+  | "desktop_run_compare"
+  | "desktop_run_promote"
   | "desktop_editor_read";
 type DesktopJsonRpcMethod =
   | "desktop.summary.snapshot"
   | "desktop.run.explain"
+  | "desktop.run.compare"
+  | "desktop.run.promote"
   | "desktop.editor.read";
 
 interface DesktopJsonRpcRequest {
@@ -356,6 +360,66 @@ export interface DesktopSummaryRefreshEvent {
   run_id?: string;
 }
 
+export interface DesktopPromoteTacticCandidate {
+  packet_type: string;
+  kind: string;
+  title: string;
+  summary: string;
+  hypothesis: string;
+  next_action: string;
+  confidence: number | null;
+  changed_files: string[];
+  observation_pack_ref: string;
+  consultation_ref: string;
+}
+
+export interface DesktopPromoteTacticResult {
+  generated_at: string;
+  run_id: string;
+  candidate_ref: string;
+  candidate_path: string;
+  candidate: DesktopPromoteTacticCandidate;
+}
+
+export interface DesktopCompareRunSide {
+  run_id: string;
+  label: string;
+  branch: string;
+  task_state: string;
+  review_state: string;
+  state: string;
+  next_action: string;
+  confidence: number | null;
+  changed_files: string[];
+  observation_pack_ref: string;
+  consultation_ref: string;
+  recommendable: boolean;
+}
+
+export interface DesktopCompareDifference {
+  field: string;
+  left: unknown;
+  right: unknown;
+}
+
+export interface DesktopCompareRecommendation {
+  winning_run_id: string;
+  reconcile_consult: boolean;
+  next_action: string;
+}
+
+export interface DesktopCompareRunsResult {
+  generated_at: string;
+  left: DesktopCompareRunSide;
+  right: DesktopCompareRunSide;
+  shared_changed_files: string[];
+  left_only_changed_files: string[];
+  right_only_changed_files: string[];
+  confidence_delta: number | null;
+  differences: DesktopCompareDifference[];
+  recommend: DesktopCompareRecommendation;
+}
+
 let nextDesktopJsonRpcId = 0;
 
 function normalizeDesktopError(action: string, error: unknown) {
@@ -372,6 +436,10 @@ function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMet
       return "desktop.summary.snapshot";
     case "desktop_run_explain":
       return "desktop.run.explain";
+    case "desktop_run_compare":
+      return "desktop.run.compare";
+    case "desktop_run_promote":
+      return "desktop.run.promote";
     case "desktop_editor_read":
       return "desktop.editor.read";
   }
@@ -454,6 +522,31 @@ export async function getDesktopRunExplain(runId: string) {
     );
   } catch (error) {
     throw normalizeDesktopError(`desktop_run_explain(${runId})`, error);
+  }
+}
+
+export async function compareDesktopRuns(leftRunId: string, rightRunId: string) {
+  try {
+    return await desktopCommandTransport.request<DesktopCompareRunsResult>(
+      "desktop_run_compare",
+      { leftRunId, rightRunId },
+    );
+  } catch (error) {
+    throw normalizeDesktopError(
+      `desktop_run_compare(${leftRunId}, ${rightRunId})`,
+      error,
+    );
+  }
+}
+
+export async function promoteDesktopRunTactic(runId: string) {
+  try {
+    return await desktopCommandTransport.request<DesktopPromoteTacticResult>(
+      "desktop_run_promote",
+      { runId },
+    );
+  } catch (error) {
+    throw normalizeDesktopError(`desktop_run_promote(${runId})`, error);
   }
 }
 

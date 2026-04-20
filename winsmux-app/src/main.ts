@@ -2,10 +2,13 @@ import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "xterm/css/xterm.css";
 import {
+  compareDesktopRuns,
   getDesktopEditorFile,
   getDesktopRunExplain,
   getDesktopSummarySnapshot,
+  promoteDesktopRunTactic,
   subscribeToDesktopSummaryRefresh,
+  type DesktopCompareRunsResult,
   type DesktopEditorFilePayload,
   type DesktopExplainPayload,
   type DesktopRunProjection,
@@ -187,11 +190,21 @@ let desktopSummaryFallbackRefreshRegistered = false;
 let desktopSummaryLiveRefreshAvailable = false;
 let desktopSummaryLastSuccessfulRefreshAt = 0;
 let desktopSummaryLastStreamSignalAt = 0;
+let desktopSummaryRefreshSerial = 0;
 const desktopExplainCache = new Map<string, DesktopExplainPayload>();
+const desktopRunCompareCache = new Map<string, DesktopCompareRunsResult>();
+const promotedRunCandidates = new Map<string, {
+  fingerprint: string;
+  candidateRef: string;
+  collapseAfterRefreshSerial: number;
+}>();
 const desktopEditorFileCache = new Map<string, EditorFile>();
 const desktopEditorLoadingPaths = new Set<string>();
 const desktopEditorLoadErrors = new Map<string, string>();
 const desktopStandaloneEditorTargets = new Map<string, EditorTarget>();
+const promotingRunIds = new Set<string>();
+const pendingPromotedRunRefreshIds = new Set<string>();
+const comparingRunPairKeys = new Set<string>();
 const backendConversation: ConversationItem[] = [];
 const runtimeConversation: ConversationItem[] = [];
 const DESKTOP_SUMMARY_REFRESH_FALLBACK_INTERVAL_MS = 15_000;
@@ -418,6 +431,81 @@ function getRunProjectionByRunId(runId: string | null) {
 function getPrimaryRunProjection() {
   const resolvedRunId = resolveSelectedRunId();
   return getRunProjectionByRunId(resolvedRunId) ?? getRunProjections()[0] ?? null;
+}
+
+function getComparePairKey(leftRunId: string, rightRunId: string) {
+  return `${leftRunId}::${rightRunId}`;
+}
+
+function getComparePeerProjection(
+  selectedProjection: DesktopRunProjection,
+  preferredRunId?: string | null,
+) {
+  const otherRuns = getRunProjections().filter(
+    (projection) => projection.run_id !== selectedProjection.run_id,
+  );
+  if (otherRuns.length === 0) {
+    return null;
+  }
+
+  if (preferredRunId) {
+    const preferredPeer = otherRuns.find(
+      (projection) => projection.run_id === preferredRunId,
+    );
+    if (preferredPeer) {
+      return preferredPeer;
+    }
+  }
+
+  const sameTaskPeer = otherRuns.find(
+    (projection) =>
+      Boolean(selectedProjection.task) &&
+      projection.task === selectedProjection.task,
+  );
+  if (sameTaskPeer) {
+    return sameTaskPeer;
+  }
+
+  const sameBranchPeer = otherRuns.find(
+    (projection) =>
+      Boolean(selectedProjection.branch) &&
+      projection.branch === selectedProjection.branch,
+  );
+
+  return sameBranchPeer ?? null;
+}
+
+function getCompareWinnerLabel(result: DesktopCompareRunsResult) {
+  if (!result.recommend.winning_run_id) {
+    return "";
+  }
+  if (result.recommend.winning_run_id === result.left.run_id) {
+    return result.left.label || result.left.run_id;
+  }
+  if (result.recommend.winning_run_id === result.right.run_id) {
+    return result.right.label || result.right.run_id;
+  }
+  return result.recommend.winning_run_id;
+}
+
+function summarizeCompareDifferenceFields(
+  result: DesktopCompareRunsResult,
+  limit = 3,
+) {
+  const fields = Array.from(
+    new Set(
+      result.differences
+        .map((difference) => difference.field)
+        .filter((field) => Boolean(field)),
+    ),
+  );
+  if (fields.length === 0) {
+    return "";
+  }
+  if (fields.length <= limit) {
+    return fields.join(", ");
+  }
+  return `${fields.slice(0, limit).join(", ")} +${fields.length - limit}`;
 }
 
 function setSelectedRun(runId: string | null) {
@@ -766,6 +854,294 @@ function getSelectedRunId() {
   return resolveSelectedRunId();
 }
 
+function renderExperimentContext() {
+  const overviewRoot = document.getElementById("experiment-overview-cards");
+  const detailRoot = document.getElementById("experiment-detail-list");
+  if (!overviewRoot || !detailRoot) {
+    return;
+  }
+
+  overviewRoot.innerHTML = "";
+  detailRoot.innerHTML = "";
+
+  const selectedProjection = getPrimaryRunProjection();
+  if (!selectedProjection) {
+    const empty = document.createElement("div");
+    empty.className = "experiment-detail-card";
+    empty.dataset.tone = "info";
+    empty.innerHTML =
+      `<div class="experiment-detail-title">No experiment run</div>` +
+      `<div class="experiment-detail-body">Select a run to inspect observation, compare, and playbook context.</div>`;
+    detailRoot.appendChild(empty);
+    return;
+  }
+
+  const payload = desktopExplainCache.get(selectedProjection.run_id) ?? null;
+  if (!payload) {
+    const empty = document.createElement("div");
+    empty.className = "experiment-detail-card";
+    empty.dataset.tone = "info";
+    empty.innerHTML =
+      `<div class="experiment-detail-title">Explain not loaded</div>` +
+      `<div class="experiment-detail-body">Open Explain to load experiment context for the selected run.</div>`;
+    detailRoot.appendChild(empty);
+    return;
+  }
+
+  const observationPack = getObservationPack(payload);
+  const consultationPacket = getConsultationPacket(payload);
+  const consultationSummary = getConsultationSummary(payload);
+  const experimentPacket = payload.run.experiment_packet;
+  const explainFingerprint = getExplainPayloadFingerprint(payload);
+  const promotedCandidate = promotedRunCandidates.get(selectedProjection.run_id) ?? null;
+  const hasPromotedCandidate =
+    promotedCandidate !== null &&
+    promotedCandidate.fingerprint === explainFingerprint;
+  const isPromotedCandidate = hasPromotedCandidate &&
+    promotedCandidate !== null &&
+    desktopSummaryRefreshSerial <= promotedCandidate.collapseAfterRefreshSerial;
+  const showLastExport = hasPromotedCandidate && !isPromotedCandidate;
+  const promotedCandidateRef = hasPromotedCandidate && promotedCandidate
+    ? summarizeArtifactRef(promotedCandidate.candidateRef)
+    : "";
+  const comparePeer = getComparePeerProjection(
+    selectedProjection,
+    payload.run.parent_run_id || null,
+  );
+  const comparePairKey = comparePeer
+    ? getComparePairKey(selectedProjection.run_id, comparePeer.run_id)
+    : "";
+  const compareResult = comparePairKey
+    ? desktopRunCompareCache.get(comparePairKey) ?? null
+    : null;
+  const compareInFlight = comparePairKey
+    ? comparingRunPairKeys.has(comparePairKey)
+    : false;
+  const compareWinnerLabel = compareResult
+    ? getCompareWinnerLabel(compareResult)
+    : "";
+  const compareDifferenceSummary = compareResult
+    ? summarizeCompareDifferenceFields(compareResult)
+    : "";
+  const compareFileSummary = compareResult
+    ? [
+        compareResult.shared_changed_files.length > 0
+          ? `shared ${summarizeChangedFiles(compareResult.shared_changed_files, 2)}`
+          : "",
+        compareResult.left_only_changed_files.length > 0
+          ? `${compareResult.left.label || "left"} ${summarizeChangedFiles(compareResult.left_only_changed_files, 2)}`
+          : "",
+        compareResult.right_only_changed_files.length > 0
+          ? `${compareResult.right.label || "right"} ${summarizeChangedFiles(compareResult.right_only_changed_files, 2)}`
+          : "",
+      ]
+        .filter((value) => Boolean(value))
+        .join(" · ")
+    : "";
+  const compareTone: SurfaceTone = compareResult
+    ? (
+      compareResult.recommend.reconcile_consult
+        ? "warning"
+        : (compareWinnerLabel ? "success" : "info")
+    )
+    : "info";
+  const compareBody = compareResult
+    ? [
+        compareResult.recommend.reconcile_consult
+          ? "Reconcile consult"
+          : `Winner ${compareWinnerLabel || "not decided"}`,
+        compareResult.recommend.next_action || "reconcile_consult",
+        [
+          compareDifferenceSummary,
+          compareFileSummary,
+        ]
+          .filter((value) => Boolean(value))
+          .join(" · ") || "No material diff",
+      ]
+        .filter((value) => Boolean(value))
+        .join(" · ")
+    : comparePeer
+      ? [
+          `vs ${comparePeer.label || comparePeer.run_id}`,
+          comparePeer.branch || "no branch",
+          comparePeer.review_state || "pending",
+        ]
+          .filter((value) => Boolean(value))
+          .join(" · ")
+      : "Compare needs another surfaced run.";
+  const compareCandidateSummary = compareResult
+    ? [
+        compareWinnerLabel ? `winner ${compareWinnerLabel}` : "",
+        `diffs ${compareResult.differences.length}`,
+      ]
+        .filter((value) => Boolean(value))
+        .join(" · ")
+    : "";
+  const canPromoteCandidate =
+    isDesktopRunPromotable(payload.run) &&
+    !promotingRunIds.has(selectedProjection.run_id) &&
+    !pendingPromotedRunRefreshIds.has(selectedProjection.run_id) &&
+    !isPromotedCandidate;
+
+  const overviewCards = [
+    {
+      label: "Hypothesis",
+      value: experimentPacket.hypothesis || selectedProjection.hypothesis || "No hypothesis",
+    },
+    {
+      label: "Observe",
+      value: observationPack.changed_files.length > 0
+        ? `${observationPack.changed_files.length} files`
+        : (observationPack.working_tree_summary || "No observation pack"),
+    },
+    {
+      label: "Consult",
+      value: consultationSummary.next_test || consultationPacket.recommendation || "No consult",
+    },
+    {
+      label: "Candidate",
+      value: isPromotedCandidate
+        ? "Exported"
+        : (experimentPacket.next_action || payload.explanation.next_action || "No candidate"),
+    },
+  ];
+
+  for (const item of overviewCards) {
+    const card = document.createElement("div");
+    card.className = "source-overview-card";
+    card.innerHTML = `<div class="context-label">${item.label}</div><div class="source-overview-value">${item.value}</div>`;
+    overviewRoot.appendChild(card);
+  }
+
+  const experimentCards = [
+    {
+      title: "Observation Pack",
+      body:
+        observationPack.working_tree_summary ||
+        observationPack.failing_command ||
+        "Observation details will appear after the selected run emits an observation pack.",
+      tone: "focus" as SurfaceTone,
+      details: [
+        { label: "files", value: `${observationPack.changed_files.length}` },
+        { label: "test", value: observationPack.test_plan[0] || "n/a" },
+        { label: "slot", value: observationPack.slot || "n/a" },
+      ],
+    },
+    {
+      title: "Compare",
+      body: compareBody,
+      tone: compareTone,
+      actionLabel: comparePeer ? "Compare" : undefined,
+      actionPendingLabel: "Comparing...",
+      actionDisabled: compareInFlight,
+      actionType: "compare" as const,
+      actionRunId: selectedProjection.run_id,
+      actionPeerRunId: comparePeer?.run_id,
+      details: compareResult
+        ? [
+            {
+              label: "peer",
+              value: comparePeer?.label || compareResult.right.label || compareResult.right.run_id,
+            },
+            { label: "winner", value: compareWinnerLabel || "none" },
+            { label: "diffs", value: `${compareResult.differences.length}` },
+            {
+              label: "delta",
+              value: compareResult.confidence_delta !== null
+                ? formatConfidencePercent(Math.abs(compareResult.confidence_delta))
+                : "n/a",
+            },
+            { label: "shared", value: `${compareResult.shared_changed_files.length}` },
+            { label: "left", value: `${compareResult.left_only_changed_files.length}` },
+            { label: "right", value: `${compareResult.right_only_changed_files.length}` },
+          ]
+        : [
+            { label: "peer", value: comparePeer?.label || "n/a" },
+            { label: "changed", value: `${payload.evidence_digest.changed_file_count}` },
+            { label: "verify", value: payload.evidence_digest.verification_outcome || "n/a" },
+          ],
+    },
+    {
+      title: "Playbook Candidate",
+      body: isPromotedCandidate
+        ? `Exported as ${promotedCandidateRef}.`
+        : [
+          consultationPacket.recommendation ||
+            experimentPacket.result ||
+            experimentPacket.next_action ||
+            "No playbook candidate is ready yet.",
+          compareCandidateSummary,
+        ]
+          .filter((value) => Boolean(value))
+          .join(" · "),
+      tone: "success" as SurfaceTone,
+      actionLabel: canPromoteCandidate ? "Promote" : undefined,
+      actionPendingLabel: "Promoting...",
+      actionDisabled:
+        promotingRunIds.has(selectedProjection.run_id) ||
+        pendingPromotedRunRefreshIds.has(selectedProjection.run_id),
+      actionType: "promote" as const,
+      actionRunId: selectedProjection.run_id,
+      details: [
+        ...(isPromotedCandidate
+          ? [{ label: "exported", value: promotedCandidateRef }]
+          : (showLastExport
+            ? [{ label: "last export", value: promotedCandidateRef }]
+            : [])),
+        { label: "next", value: experimentPacket.next_action || "n/a" },
+        { label: "consult", value: consultationSummary.next_test || "n/a" },
+        { label: "confidence", value: formatConfidencePercent(experimentPacket.confidence || 0) },
+      ],
+    },
+  ];
+
+  for (const item of experimentCards) {
+    const card = document.createElement("div");
+    card.className = "experiment-detail-card";
+    card.dataset.tone = item.tone;
+    card.innerHTML =
+      `<div class="experiment-detail-title">${item.title}</div>` +
+      `<div class="experiment-detail-body">${item.body}</div>`;
+
+    const meta = document.createElement("div");
+    meta.className = "experiment-detail-meta";
+    for (const detail of item.details) {
+      const pill = document.createElement("span");
+      pill.className = "experiment-detail-pill";
+      pill.innerHTML = `<span class="experiment-detail-pill-label">${detail.label}</span><span>${detail.value}</span>`;
+      meta.appendChild(pill);
+    }
+    card.appendChild(meta);
+
+    if (item.actionLabel && selectedProjection.run_id) {
+      const chipRow = document.createElement("div");
+      chipRow.className = "timeline-chip-row";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "timeline-chip";
+      button.textContent = item.actionDisabled && item.actionPendingLabel
+        ? item.actionPendingLabel
+        : item.actionLabel;
+      button.disabled = item.actionDisabled ?? false;
+      button.addEventListener("click", async () => {
+        if (item.actionType === "compare" && item.actionPeerRunId) {
+          await compareSelectedRunWithPeer(
+            item.actionRunId ?? selectedProjection.run_id,
+            item.actionPeerRunId,
+          );
+          return;
+        }
+        await promoteSelectedRunTactic(
+          item.actionRunId ?? selectedProjection.run_id,
+        );
+      });
+      chipRow.appendChild(button);
+      card.appendChild(chipRow);
+    }
+    detailRoot.appendChild(card);
+  }
+}
+
 function renderContextPanel() {
   const sectionRoot = document.getElementById("context-sections");
   const overviewRoot = document.getElementById("source-overview-cards");
@@ -793,6 +1169,8 @@ function renderContextPanel() {
     row.innerHTML = `<div class="context-label">${item.label}</div><div class="context-value">${item.value}</div>`;
     sectionRoot.appendChild(row);
   }
+
+  renderExperimentContext();
 
   overviewRoot.innerHTML = "";
   const overviewCards = [
@@ -1476,11 +1854,160 @@ async function openExplainForSelectedRun() {
       });
     }
     renderRunSummary();
+    renderContextPanel();
     renderConversation(getConversationItems());
   } catch (error) {
     console.warn("Failed to load desktop explain payload", error);
     appendFallbackExplain();
     return;
+  }
+}
+
+async function promoteSelectedRunTactic(runId: string) {
+  if (promotingRunIds.has(runId) || pendingPromotedRunRefreshIds.has(runId)) {
+    return;
+  }
+
+  promotingRunIds.add(runId);
+  renderContextPanel();
+
+  try {
+    const result = await promoteDesktopRunTactic(runId);
+    pendingPromotedRunRefreshIds.add(runId);
+    renderContextPanel();
+    appendRuntimeConversation({
+      type: "operator",
+      category: "activity",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Playbook candidate exported",
+      body: result.candidate.summary || result.candidate.title,
+      details: [
+        { label: "run", value: result.run_id },
+        { label: "kind", value: result.candidate.kind },
+        { label: "candidate", value: result.candidate_ref },
+      ],
+      tone: "success",
+      runId,
+    });
+    renderConversation(getConversationItems());
+    requestDesktopSummaryRefresh(undefined, 0);
+    try {
+      const explainPayload = await getDesktopRunExplain(runId);
+      desktopExplainCache.set(runId, explainPayload);
+      promotedRunCandidates.set(runId, {
+        fingerprint: getExplainPayloadFingerprint(explainPayload),
+        candidateRef: result.candidate_ref,
+        collapseAfterRefreshSerial: desktopSummaryRefreshSerial + 1,
+      });
+    } catch (refreshError) {
+      console.warn("Failed to refresh promoted run explain payload", refreshError);
+      promotedRunCandidates.delete(runId);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendRuntimeConversation({
+      type: "operator",
+      category: "attention",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Promote failed",
+      body: message,
+      details: [{ label: "run", value: runId }],
+      tone: "warning",
+      runId,
+    });
+    renderConversation(getConversationItems());
+  } finally {
+    promotingRunIds.delete(runId);
+    pendingPromotedRunRefreshIds.delete(runId);
+    renderContextPanel();
+    renderRunSummary();
+  }
+}
+
+async function compareSelectedRunWithPeer(leftRunId: string, rightRunId: string) {
+  const pairKey = getComparePairKey(leftRunId, rightRunId);
+  if (comparingRunPairKeys.has(pairKey)) {
+    return;
+  }
+
+  const leftFingerprint = getRunProjectionFingerprint(getRunProjectionByRunId(leftRunId));
+  const rightFingerprint = getRunProjectionFingerprint(getRunProjectionByRunId(rightRunId));
+  comparingRunPairKeys.add(pairKey);
+  renderContextPanel();
+
+  try {
+    const result = await compareDesktopRuns(leftRunId, rightRunId);
+    const latestLeftFingerprint = getRunProjectionFingerprint(getRunProjectionByRunId(leftRunId));
+    const latestRightFingerprint = getRunProjectionFingerprint(getRunProjectionByRunId(rightRunId));
+    if (
+      leftFingerprint !== latestLeftFingerprint ||
+      rightFingerprint !== latestRightFingerprint
+    ) {
+      appendRuntimeConversation({
+        type: "operator",
+        category: "activity",
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+        actor: "Operator",
+        title: "Compare needs rerun",
+        body: "The selected runs changed while compare was running.",
+        details: [
+          { label: "left", value: leftRunId },
+          { label: "right", value: rightRunId },
+        ],
+        tone: "warning",
+        runId: leftRunId,
+      });
+      renderConversation(getConversationItems());
+      return;
+    }
+
+    desktopRunCompareCache.set(pairKey, result);
+    appendRuntimeConversation({
+      type: "operator",
+      category: "activity",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Compare completed",
+      body: [
+        `${result.left.label || result.left.run_id} vs ${result.right.label || result.right.run_id}`,
+        result.recommend.next_action || "reconcile_consult",
+      ].join(" · "),
+      details: [
+        { label: "winner", value: result.recommend.winning_run_id || "none" },
+        { label: "diffs", value: `${result.differences.length}` },
+        {
+          label: "delta",
+          value: result.confidence_delta !== null
+            ? formatConfidencePercent(Math.abs(result.confidence_delta))
+            : "n/a",
+        },
+      ],
+      tone: result.recommend.reconcile_consult ? "warning" : "info",
+      runId: leftRunId,
+    });
+    renderConversation(getConversationItems());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendRuntimeConversation({
+      type: "operator",
+      category: "attention",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+      actor: "Operator",
+      title: "Compare failed",
+      body: message,
+      details: [
+        { label: "left", value: leftRunId },
+        { label: "right", value: rightRunId },
+      ],
+      tone: "warning",
+      runId: leftRunId,
+    });
+    renderConversation(getConversationItems());
+  } finally {
+    comparingRunPairKeys.delete(pairKey);
+    renderContextPanel();
   }
 }
 
@@ -1513,6 +2040,7 @@ function appendFallbackExplain() {
     runId: selectedRunId,
   });
   renderRunSummary();
+  renderContextPanel();
   renderConversation(getConversationItems());
 }
 
@@ -2095,12 +2623,54 @@ function summarizeReviewVerdict(payload: DesktopExplainPayload) {
   return parts.join(" ");
 }
 
+function summarizeProjectionExperiment(projection: DesktopRunProjection) {
+  if (!projection.hypothesis) {
+    return "";
+  }
+
+  const parts = [`Hypothesis ${projection.hypothesis}`];
+  if (projection.confidence !== null) {
+    parts.push(`confidence ${formatConfidencePercent(projection.confidence)}`);
+  }
+
+  return parts.join(" · ");
+}
+
+function summarizeProjectionConsultation(projection: DesktopRunProjection) {
+  if (!projection.consultation_ref) {
+    return "";
+  }
+
+  const parts = [summarizeProjectionExperiment(projection) || "Consultation linked"];
+  parts.push(`Next ${projection.next_action || "idle"}`);
+  const reasons = projection.reasons.filter((value) => Boolean(value)).slice(0, 2);
+  if (reasons.length > 0) {
+    parts.push(`Reasons ${reasons.join(" | ")}`);
+  }
+
+  return parts.join(" · ");
+}
+
+function formatConfidencePercent(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function summarizeArtifactRef(path: string) {
+  if (!path) {
+    return "";
+  }
+
+  const parts = path.split(/[\\/]/).filter((value) => Boolean(value));
+  return parts[parts.length - 1] || path;
+}
+
 function getRunProjectionFingerprint(projection: DesktopRunProjection | null | undefined) {
   if (!projection) {
     return "";
   }
 
   return JSON.stringify([
+    projection.label,
     projection.head_sha,
     projection.head_short,
     projection.worktree,
@@ -2111,6 +2681,8 @@ function getRunProjectionFingerprint(projection: DesktopRunProjection | null | u
     projection.branch,
     projection.provider_target,
     projection.changed_files.join("|"),
+    projection.hypothesis,
+    projection.confidence,
   ]);
 }
 
@@ -2199,7 +2771,28 @@ function buildDesktopFollowConversation(
     ...diff.addedRunIds.filter((runId) => runId === selected),
     ...diff.changedRunIds.filter((runId) => runId !== selected),
     ...diff.addedRunIds.filter((runId) => runId !== selected),
-  ].slice(0, 3);
+  ]
+    .map((runId, index) => {
+      const projection = nextProjectionMap.get(runId);
+      const selectedRank = runId === selected ? 0 : 1;
+      const signalRank = projection?.consultation_ref ? 0 : projection?.hypothesis ? 1 : 2;
+      const sourceRank = diff.changedRunIds.includes(runId) ? 0 : 1;
+      return { runId, index, selectedRank, signalRank, sourceRank };
+    })
+    .sort((left, right) => {
+      if (left.selectedRank !== right.selectedRank) {
+        return left.selectedRank - right.selectedRank;
+      }
+      if (left.signalRank !== right.signalRank) {
+        return left.signalRank - right.signalRank;
+      }
+      if (left.sourceRank !== right.sourceRank) {
+        return left.sourceRank - right.sourceRank;
+      }
+      return left.index - right.index;
+    })
+    .map((item) => item.runId)
+    .slice(0, 3);
 
   const items: ConversationItem[] = [];
   for (const runId of prioritizedChangedRunIds) {
@@ -2207,6 +2800,27 @@ function buildDesktopFollowConversation(
     if (!projection) {
       continue;
     }
+    const experimentSummary = summarizeProjectionExperiment(projection);
+    const consultationSummary = summarizeProjectionConsultation(projection);
+    const tone: SurfaceTone = consultationSummary
+      ? "focus"
+      : experimentSummary
+        ? "accent"
+        : projection.review_state === "PASS"
+          ? "success"
+          : projection.review_state === "PENDING"
+            ? "warning"
+            : "info";
+    const statusLabel = consultationSummary
+      ? "consultation"
+      : experimentSummary
+        ? "hypothesis"
+        : projection.next_action || undefined;
+    const title = consultationSummary
+      ? (diff.addedRunIds.includes(runId) ? "Consultation surfaced" : "Consultation updated")
+      : experimentSummary
+      ? (diff.addedRunIds.includes(runId) ? "Hypothesis surfaced" : "Hypothesis updated")
+      : (diff.addedRunIds.includes(runId) ? "Run surfaced" : "Run updated");
 
     items.push({
       type: "system",
@@ -2218,25 +2832,55 @@ function buildDesktopFollowConversation(
           : "activity",
       timestamp,
       actor: projection.label || projection.pane_id || "System",
-      title: diff.addedRunIds.includes(runId) ? "Run surfaced" : "Run updated",
-      body:
-        `Next ${projection.next_action || "idle"} · ` +
-        `${projection.changed_files.length} changed files · ` +
-        `review ${projection.review_state || "n/a"}.`,
+      title,
+      body: consultationSummary
+        ? `Consultation: ${consultationSummary}`
+        : experimentSummary
+        ? `Hypothesis: ${experimentSummary}`
+        : `Run: ${projection.next_action || "idle"}`,
       details: [
-        { label: "run", value: runId },
-        { label: "branch", value: projection.branch || "no branch" },
-        { label: "head", value: projection.head_short || "n/a" },
-        { label: "verify", value: projection.verification_outcome || "n/a" },
+        ...((consultationSummary || experimentSummary) && projection.changed_files.length > 0
+          ? [
+              {
+                label: "files",
+                value: `${projection.changed_files.length}: ${summarizeChangedFiles(projection.changed_files)}`,
+              },
+            ]
+          : []),
+        ...(projection.review_state
+          ? [{ label: "review", value: projection.review_state }]
+          : []),
+        ...((consultationSummary || experimentSummary) && projection.head_short
+          ? [{ label: "head", value: projection.head_short }]
+          : []),
+        ...((consultationSummary || experimentSummary)
+          ? [{ label: "branch", value: projection.branch || "no branch" }]
+          : []),
+        ...(!(consultationSummary || experimentSummary) && projection.changed_files.length > 0
+          ? [{ label: "changed", value: `${projection.changed_files.length}` }]
+          : []),
+        ...(projection.verification_outcome
+          ? [{ label: "verify", value: projection.verification_outcome }]
+          : []),
+        ...((consultationSummary || experimentSummary)
+          ? [{ label: "next", value: projection.next_action || "idle" }]
+          : []),
+        ...(!(consultationSummary || experimentSummary) && projection.head_short
+          ? [{ label: "head", value: projection.head_short }]
+          : []),
+        ...(!(consultationSummary || experimentSummary)
+          ? [{ label: "branch", value: projection.branch || "no branch" }]
+          : []),
+        ...(projection.consultation_ref
+          ? [{ label: "consultation", value: summarizeArtifactRef(projection.consultation_ref) }]
+          : []),
+        ...(projection.hypothesis
+          ? [{ label: "hypothesis", value: projection.hypothesis }]
+          : []),
       ],
-      tone:
-        projection.review_state === "PASS"
-          ? "success"
-          : projection.review_state === "PENDING"
-            ? "warning"
-            : "info",
+      tone,
       runId,
-      statusLabel: projection.next_action || projection.review_state || undefined,
+      statusLabel,
     });
   }
 
@@ -2255,7 +2899,7 @@ function buildDesktopFollowConversation(
       body: `Run ${runId} dropped out of the desktop summary snapshot.`,
       details: [
         { label: "branch", value: previousProjection.branch || "no branch" },
-        { label: "head", value: previousProjection.head_short || "n/a" },
+        ...(previousProjection.head_short ? [{ label: "head", value: previousProjection.head_short }] : []),
       ],
       tone: "warning",
       runId,
@@ -2438,6 +3082,33 @@ function findEditorFile(target: EditorTarget | null) {
 
 function countEditorLines(content: string) {
   return content.split(/\r?\n/).length;
+}
+
+function getUpperRecordField(record: Record<string, unknown> | null | undefined, key: string) {
+  const value = record?.[key];
+  return typeof value === "string" ? value.toUpperCase() : "";
+}
+
+function isDesktopRunPromotable(run: DesktopExplainPayload["run"]) {
+  const taskState = (run.task_state || "").toLowerCase();
+  const reviewState = (run.review_state || "").toUpperCase();
+  const verificationOutcome = getUpperRecordField(run.verification_result, "outcome");
+  const securityVerdict = getUpperRecordField(run.security_verdict, "verdict");
+
+  if (!["completed", "task_completed", "commit_ready", "done"].includes(taskState)) {
+    return false;
+  }
+  if (reviewState && reviewState !== "PASS") {
+    return false;
+  }
+  if (verificationOutcome !== "PASS") {
+    return false;
+  }
+  if (!["ALLOW", "PASS"].includes(securityVerdict)) {
+    return false;
+  }
+
+  return true;
 }
 
 function buildCachedEditorFile(
@@ -2642,6 +3313,19 @@ function pruneExplainCache(snapshot: DesktopSummarySnapshot, preservedRunId?: st
       desktopExplainCache.delete(runId);
     }
   }
+
+  for (const pairKey of Array.from(desktopRunCompareCache.keys())) {
+    const [leftRunId, rightRunId] = pairKey.split("::");
+    if (!activeRunIds.has(leftRunId) || !activeRunIds.has(rightRunId)) {
+      desktopRunCompareCache.delete(pairKey);
+    }
+  }
+
+  for (const runId of Array.from(promotedRunCandidates.keys())) {
+    if (!activeRunIds.has(runId)) {
+      promotedRunCandidates.delete(runId);
+    }
+  }
 }
 
 function renderDesktopSurfaces() {
@@ -2667,6 +3351,24 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
     const previousSelectedRunId = selectedRunId;
     const snapshot = await getDesktopSummarySnapshot();
     const diff = diffDesktopSummarySnapshots(previousSnapshot, snapshot);
+    const invalidatedRunIds = new Set([
+      ...diff.changedRunIds,
+      ...diff.addedRunIds,
+      ...diff.removedRunIds,
+    ]);
+    for (const pairKey of Array.from(desktopRunCompareCache.keys())) {
+      const [leftRunId, rightRunId] = pairKey.split("::");
+      if (
+        invalidatedRunIds.has(leftRunId) ||
+        invalidatedRunIds.has(rightRunId)
+      ) {
+        desktopRunCompareCache.delete(pairKey);
+      }
+    }
+    for (const runId of invalidatedRunIds) {
+      promotedRunCandidates.delete(runId);
+    }
+    desktopSummaryRefreshSerial += 1;
     desktopSummarySnapshot = snapshot;
     desktopSummaryLastSuccessfulRefreshAt = Date.now();
     selectedRunId = resolveSelectedRunId(snapshot, forceExplainRunId);
