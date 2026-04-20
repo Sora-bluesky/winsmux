@@ -116,6 +116,7 @@ declare global {
     __winsmuxViewportHarness?: {
       registerPreviewTarget: (sourceLabel: string, url: string) => void;
       openPreviewTarget: (url: string) => void;
+      openEditorPreview: (path: string, content: string, worktree?: string) => void;
       setContextPanel: (open: boolean) => void;
       setTerminalDrawer: (open: boolean) => void;
     };
@@ -992,6 +993,32 @@ function registerPreviewTargetForHarness(sourceLabel: string, url: string) {
   });
   renderContextPanel();
   renderEditorSurface();
+}
+
+function openEditorPreviewForHarness(path: string, content: string, worktree = "") {
+  const target = createStandaloneEditorTarget(path, worktree);
+  desktopStandaloneEditorTargets.set(target.key, target);
+  desktopEditorFileCache.set(target.key, {
+    key: target.key,
+    path,
+    summary: target.summary,
+    content,
+    language: inferLanguageFromPath(path),
+    lineCount: countEditorLines(content),
+    modified: false,
+    origin: "explorer",
+  });
+  desktopEditorLoadErrors.delete(target.key);
+  desktopEditorLoadingPaths.delete(target.key);
+  editorSurfaceMode = "code";
+  selectedPreviewUrl = "";
+  lastPreviewExternalState = null;
+  lastPreviewClipboardState = null;
+  selectedEditorKey = target.key;
+  setEditorSurface(true);
+  renderOpenEditors();
+  renderSourceSummary();
+  renderRunSummary();
 }
 
 function getPreviewTargets(activeUrl = selectedPreviewUrl) {
@@ -3810,6 +3837,9 @@ function installViewportHarnessHooks() {
     },
     openPreviewTarget: (url: string) => {
       openPreviewTarget(url);
+    },
+    openEditorPreview: (path: string, content: string, worktree?: string) => {
+      openEditorPreviewForHarness(path, content, worktree);
     },
     setContextPanel: (open: boolean) => {
       setContextPanel(open);

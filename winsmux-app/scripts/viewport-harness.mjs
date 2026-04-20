@@ -189,6 +189,37 @@ async function openHarnessPreviewTarget(page, previewUrl) {
   }, previewUrl);
 }
 
+async function waitForPreviewTargetEntry(page) {
+  await page.waitForFunction(() => {
+    return document.querySelectorAll("#preview-target-list .context-file-row").length > 0;
+  });
+}
+
+async function openFirstSourceContextEntry(page) {
+  const firstSourceEntry = page.locator("#context-file-list .context-file-row").first();
+  if (await firstSourceEntry.isVisible().catch(() => false)) {
+    await firstSourceEntry.click();
+  } else {
+    await page.waitForFunction(() => Boolean(window.__winsmuxViewportHarness));
+    await page.evaluate(() => {
+      window.__winsmuxViewportHarness?.openEditorPreview(
+        "winsmux-app/src/main.ts",
+        [
+          "const viewportHarnessPreview = true;",
+          "function sampleViewportState() {",
+          "  return 'context + editor';",
+          "}",
+        ].join("\n"),
+      );
+    });
+  }
+  await page.locator("#editor-surface").waitFor({ state: "visible" });
+  await page.locator("#editor-tabs .editor-tab").first().waitFor({ state: "visible" });
+  await assertHorizontallyVisible(page, "#editor-surface");
+  await assertHorizontallyVisible(page, "#editor-file-path");
+  await assertHorizontallyVisible(page, "#editor-statusbar");
+}
+
 async function verifyDesktopViewport(page, previewUrl) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
@@ -201,8 +232,24 @@ async function verifyDesktopViewport(page, previewUrl) {
   await assertNoOverlap(page, "#workspace-header", "#workspace-body");
   await assertNoOverlap(page, "#workspace-body", "#workspace-footer");
 
+  await page.click("#open-command-bar-btn");
+  await page.locator("#command-bar-shell").waitFor({ state: "visible" });
+  await assertFullyVisible(page, "#command-bar");
+  await assertButtonVisible(page, "#command-bar-input");
+  await page.keyboard.press("Escape");
+  await page.locator("#command-bar-shell").waitFor({ state: "hidden" });
+
+  await page.click("#settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "visible" });
+  await assertFullyVisible(page, "#settings-sheet");
+  await assertButtonVisible(page, "#close-settings-btn");
+  await page.click("#close-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "hidden" });
+
+  await openFirstSourceContextEntry(page);
+
   await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
-  await page.locator("#preview-target-list .context-file-row").first().waitFor({ state: "visible" });
+  await waitForPreviewTargetEntry(page);
   await openHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
   await page.locator("#browser-reload-btn").waitFor({ state: "visible" });
   await assertButtonVisible(page, "#browser-back-btn");
@@ -226,11 +273,24 @@ async function verifyNarrowViewport(page, previewUrl) {
   await assertFullyVisible(page, "#workspace-footer");
   await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
 
+  await page.click("#open-command-bar-btn");
+  await page.locator("#command-bar-shell").waitFor({ state: "visible" });
+  await assertFullyVisible(page, "#command-bar");
+  await assertButtonVisible(page, "#command-bar-input");
+  await page.keyboard.press("Escape");
+  await page.locator("#command-bar-shell").waitFor({ state: "hidden" });
+
   await page.click("#toggle-sidebar-btn");
   await page.locator("#toggle-sidebar-btn[aria-expanded='true']").waitFor();
   await waitForHorizontalVisibility(page, "#left-rail");
   await assertHorizontallyVisible(page, "#left-rail");
   await assertFullyVisible(page, "#sidebar-overlay");
+  await page.click("#settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "visible" });
+  await assertFullyVisible(page, "#settings-sheet");
+  await assertButtonVisible(page, "#close-settings-btn");
+  await page.click("#close-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "hidden" });
   const narrowViewport = page.viewportSize();
   if (!narrowViewport) {
     throw new Error("Viewport size is unavailable");
@@ -242,6 +302,7 @@ async function verifyNarrowViewport(page, previewUrl) {
   await page.locator("#toggle-context-btn[aria-expanded='true']").waitFor();
   await waitForHorizontalVisibility(page, "#context-panel");
   await assertHorizontallyVisible(page, "#context-panel");
+  await openFirstSourceContextEntry(page);
 
   await page.click("#toggle-terminal-btn");
   await page.locator("#terminal-drawer").waitFor({ state: "visible" });
@@ -251,7 +312,7 @@ async function verifyNarrowViewport(page, previewUrl) {
   await page.locator("#terminal-drawer").waitFor({ state: "hidden" });
 
   await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
-  await page.locator("#preview-target-list .context-file-row").first().waitFor({ state: "visible" });
+  await waitForPreviewTargetEntry(page);
   await openHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
   await page.locator("#browser-reload-btn").waitFor({ state: "visible" });
   await assertButtonVisible(page, "#browser-back-btn");
@@ -261,6 +322,18 @@ async function verifyNarrowViewport(page, previewUrl) {
   await assertReachableFrame(page, "#browser-frame");
   await page.locator("#browser-target-list .editor-tab").first().waitFor({ state: "visible" });
   await assertReachableFrame(page, "#browser-frame");
+}
+
+async function verifyShortNarrowViewport(page, previewUrl) {
+  await page.setViewportSize({ width: 393, height: 720 });
+  await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
+
+  await assertButtonVisible(page, "#send-btn");
+  await page.click("#toggle-terminal-btn");
+  await page.locator("#terminal-drawer").waitFor({ state: "visible" });
+  await assertButtonVisible(page, "#add-pane-btn");
+  await assertHorizontallyVisible(page, "#terminal-drawer");
+  await assertHorizontallyVisible(page, "#terminal-toolbar");
 }
 
 async function run() {
@@ -278,6 +351,7 @@ async function run() {
 
     await verifyDesktopViewport(page, previewUrl);
     await verifyNarrowViewport(page, previewUrl);
+    await verifyShortNarrowViewport(page, previewUrl);
 
     await fs.writeFile(
       path.join(OUTPUT_DIR, "viewport-harness.json"),
@@ -288,12 +362,19 @@ async function run() {
           previewUrl,
           checks: [
             "desktop-1440x900",
+            "desktop-command-bar",
+            "desktop-settings-sheet",
+            "desktop-source-context",
             "desktop-preview-browser",
             "desktop-terminal-drawer",
             "narrow-393x852",
+            "narrow-command-bar",
+            "narrow-settings-sheet",
             "narrow-context-panel",
+            "narrow-source-context",
             "narrow-terminal-drawer",
             "narrow-preview-browser",
+            "short-narrow-terminal-drawer",
           ],
         },
         null,
