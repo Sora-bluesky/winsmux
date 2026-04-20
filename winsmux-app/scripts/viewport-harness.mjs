@@ -283,16 +283,38 @@ async function assertPopoutShell(popup, visibleSelector) {
   await assertHorizontallyVisible(popup, "#editor-surface");
 }
 
+async function assertDetachedSessionEntry(page, expectedName) {
+  await page.waitForFunction((name) => {
+    const rows = Array.from(document.querySelectorAll("#session-list .sidebar-row"));
+    return rows.some((row) => {
+      const title = row.querySelector(".sidebar-row-title");
+      return title instanceof HTMLElement && title.textContent?.trim() === name;
+    });
+  }, expectedName);
+}
+
+async function assertDetachedSessionEntryCleared(page, expectedName) {
+  await page.waitForFunction((name) => {
+    const rows = Array.from(document.querySelectorAll("#session-list .sidebar-row"));
+    return rows.every((row) => {
+      const title = row.querySelector(".sidebar-row-title");
+      return !(title instanceof HTMLElement) || title.textContent?.trim() !== name;
+    });
+  }, expectedName);
+}
+
 async function assertPreviewPopout(page) {
   const popupPromise = page.waitForEvent("popup");
   await page.click("#popout-editor-btn");
   const popup = await popupPromise;
+  await assertDetachedSessionEntry(page, "detached-preview");
   await assertPopoutShell(popup, "#browser-surface");
   await popup.locator("#browser-frame").waitFor({ state: "visible" });
   await popup.locator("#browser-toolbar").waitFor({ state: "visible" });
   const closePromise = popup.waitForEvent("close");
   await popup.click("#close-editor-btn");
   await closePromise;
+  await assertDetachedSessionEntryCleared(page, "detached-preview");
   await page.locator("#browser-surface").waitFor({ state: "visible" });
   await page.locator("#browser-toolbar").waitFor({ state: "visible" });
   await assertHorizontallyVisible(page, "#editor-surface");
@@ -302,6 +324,7 @@ async function assertEditorPopout(page) {
   const popupPromise = page.waitForEvent("popup");
   await page.click("#popout-editor-btn");
   const popup = await popupPromise;
+  await assertDetachedSessionEntry(page, "detached-editor");
   await assertPopoutShell(popup, "#editor-code");
   await popup.locator("#editor-file-path").waitFor({ state: "visible" });
   await popup.locator("#editor-statusbar").waitFor({ state: "visible" });
@@ -312,6 +335,7 @@ async function assertEditorPopout(page) {
   const closePromise = popup.waitForEvent("close");
   await popup.click("#close-editor-btn");
   await closePromise;
+  await assertDetachedSessionEntryCleared(page, "detached-editor");
   await page.locator("#editor-code").waitFor({ state: "visible" });
   await page.waitForFunction(() => {
     const target = document.querySelector("#editor-code");

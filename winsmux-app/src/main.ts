@@ -490,7 +490,14 @@ function renderSessions() {
 
 function getSessionItems() {
   if (!desktopSummarySnapshot) {
-    return [{ name: "winsmux", meta: "Connecting to desktop summary", active: true }] satisfies SessionItem[];
+    const items: SessionItem[] = [{ name: "winsmux", meta: "Connecting to desktop summary", active: true }];
+    if (detachedSurfaceSession) {
+      items.push({
+        name: detachedSurfaceSession.name,
+        meta: detachedSurfaceSession.meta,
+      });
+    }
+    return items;
   }
 
   const board = desktopSummarySnapshot.board.summary;
@@ -1400,7 +1407,7 @@ async function openEditorSurfacePopout() {
     return;
   }
 
-  const popup = window.open(popoutUrl, "_blank", "noopener");
+  const popup = window.open(popoutUrl, "_blank");
   if (!popup) {
     return;
   }
