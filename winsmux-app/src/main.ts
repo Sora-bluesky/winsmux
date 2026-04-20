@@ -1,6 +1,8 @@
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "xterm/css/xterm.css";
+import { isTauri } from "@tauri-apps/api/core";
+import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   compareDesktopRuns,
   getDesktopEditorFile,
@@ -71,6 +73,11 @@ interface SessionItem {
   active?: boolean;
 }
 
+interface DetachedSurfaceSessionState {
+  name: string;
+  meta: string;
+}
+
 interface ExplorerItem {
   label: string;
   meta?: string;
@@ -110,6 +117,29 @@ interface PreviewTarget {
   sourceLabel: string;
   lastSeenAt: number;
 }
+
+type PopoutSurfaceState =
+  | {
+      mode: "preview";
+      url: string;
+      portLabel: string;
+      sourceLabel: string;
+      lastSeenAt: number;
+      runId?: string;
+      runLabel?: string;
+    }
+  | {
+      mode: "editor";
+      path: string;
+      worktree: string;
+      summary: string;
+      origin: "explorer" | "context";
+      modified: boolean;
+      sourceChange?: SourceChange | null;
+      content?: string;
+      runId?: string;
+      runLabel?: string;
+    };
 
 declare global {
   interface Window {
@@ -229,6 +259,9 @@ let selectedPreviewUrl = "";
 let lastPreviewExternalState: { url: string; at: number; ok: boolean } | null = null;
 let lastPreviewClipboardState: { url: string; at: number; ok: boolean } | null = null;
 let selectedRunId: string | null = null;
+let detachedSurfaceRunLabel = "";
+let detachedSurfaceSession: DetachedSurfaceSessionState | null = null;
+let detachedSurfacePollTimer: number | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
 let composerSlashOpen = false;
 let composerSlashQuery = "";
@@ -287,6 +320,7 @@ let settingsDraftState: ThemeState | null = null;
 let preferredWideSidebarOpen = true;
 let preferredWideContextOpen = true;
 const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
+const POPOUT_SURFACE_STORAGE_KEY_PREFIX = "winsmux.popout-surface.";
 
 const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: string }> = [
   { mode: "ask", label: "Ask", placeholder: "Ask the Operator for clarification, status, or guidance" },
@@ -456,14 +490,21 @@ function renderSessions() {
 
 function getSessionItems() {
   if (!desktopSummarySnapshot) {
-    return [{ name: "winsmux", meta: "Connecting to desktop summary", active: true }] satisfies SessionItem[];
+    const items: SessionItem[] = [{ name: "winsmux", meta: "Connecting to desktop summary", active: true }];
+    if (detachedSurfaceSession) {
+      items.push({
+        name: detachedSurfaceSession.name,
+        meta: detachedSurfaceSession.meta,
+      });
+    }
+    return items;
   }
 
   const board = desktopSummarySnapshot.board.summary;
   const inbox = desktopSummarySnapshot.inbox.summary;
   const digest = desktopSummarySnapshot.digest.summary;
 
-  return [
+  const items = [
     {
       name: "winsmux",
       meta: `${board.pane_count} panes · ${inbox.item_count} inbox · ${board.tasks_blocked} blocked`,
@@ -474,6 +515,15 @@ function getSessionItems() {
       meta: `${digest.item_count} runs · ${digest.actionable_items} actionable · ${board.review_pending} review pending`,
     },
   ] satisfies SessionItem[];
+
+  if (detachedSurfaceSession) {
+    items.push({
+      name: detachedSurfaceSession.name,
+      meta: detachedSurfaceSession.meta,
+    });
+  }
+
+  return items;
 }
 
 function getRunProjections() {
@@ -1044,17 +1094,38 @@ function registerPreviewTargetForHarness(sourceLabel: string, url: string) {
 }
 
 function openEditorPreviewForHarness(path: string, content: string, worktree = "") {
-  const target = createStandaloneEditorTarget(path, worktree);
+  restoreStandaloneEditorFromSnapshot({
+    mode: "editor",
+    path,
+    worktree,
+    summary: `Project file preview · ${path.split("/").pop() ?? path}`,
+    origin: "explorer",
+    modified: false,
+    sourceChange: null,
+    content,
+  });
+}
+
+function restoreStandaloneEditorFromSnapshot(state: Extract<PopoutSurfaceState, { mode: "editor" }> & { content: string }) {
+  const target: EditorTarget = {
+    key: getEditorFileKey(state.path, state.worktree),
+    path: state.path,
+    summary: state.summary,
+    worktree: state.worktree,
+    origin: state.origin,
+    modified: state.modified,
+    sourceChange: state.sourceChange ?? undefined,
+  };
   desktopStandaloneEditorTargets.set(target.key, target);
   desktopEditorFileCache.set(target.key, {
     key: target.key,
-    path,
-    summary: target.summary,
-    content,
-    language: inferLanguageFromPath(path),
-    lineCount: countEditorLines(content),
-    modified: false,
-    origin: "explorer",
+    path: state.path,
+    summary: state.summary,
+    content: state.content,
+    language: inferLanguageFromPath(state.path),
+    lineCount: countEditorLines(state.content),
+    modified: state.modified,
+    origin: state.origin,
   });
   desktopEditorLoadErrors.delete(target.key);
   desktopEditorLoadingPaths.delete(target.key);
@@ -1063,10 +1134,154 @@ function openEditorPreviewForHarness(path: string, content: string, worktree = "
   lastPreviewExternalState = null;
   lastPreviewClipboardState = null;
   selectedEditorKey = target.key;
+  setSelectedRun(target.sourceChange?.run ?? selectedRunId);
   setEditorSurface(true);
   renderOpenEditors();
   renderSourceSummary();
   renderRunSummary();
+}
+
+function getCurrentEditorSurfaceState(): PopoutSurfaceState | null {
+  const selectedProjection = getPrimaryRunProjection();
+  const runId = selectedProjection?.run_id || undefined;
+  const runLabel = selectedProjection?.label || selectedProjection?.run_id || undefined;
+  const previewTarget = selectedPreviewUrl ? detectedPreviewTargets.get(selectedPreviewUrl) ?? null : null;
+  if (editorSurfaceMode === "preview" && previewTarget) {
+    return {
+      mode: "preview",
+      url: previewTarget.url,
+      portLabel: previewTarget.portLabel,
+      sourceLabel: previewTarget.sourceLabel,
+      lastSeenAt: previewTarget.lastSeenAt,
+      runId,
+      runLabel,
+    };
+  }
+
+  const editors = getEditorFiles();
+  const selected = editors.find((editor) => editor.key === selectedEditorKey) || editors[0];
+  if (!selected) {
+    return null;
+  }
+
+  const selectedTarget = getEditorTargetByKey(selected.key);
+  return {
+    mode: "editor",
+    path: selected.path,
+    worktree: selectedTarget?.worktree ?? "",
+    summary: selected.summary,
+    origin: selected.origin,
+    modified: Boolean(selected.modified),
+    sourceChange: selectedTarget?.sourceChange ?? null,
+    content: isTauri() ? undefined : selected.content,
+    runId,
+    runLabel,
+  };
+}
+
+function readPopoutSurfaceState() {
+  const searchParams = new URLSearchParams(window.location.search);
+  if (searchParams.get("popout") !== "1") {
+    return null;
+  }
+
+  const key = searchParams.get("popout-key");
+  if (!key) {
+    return null;
+  }
+
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) {
+      return null;
+    }
+    window.localStorage.removeItem(key);
+    return JSON.parse(raw) as PopoutSurfaceState;
+  } catch {
+    return null;
+  }
+}
+
+function describeDetachedSurfaceSession(state: PopoutSurfaceState): DetachedSurfaceSessionState {
+  if (state.mode === "preview") {
+    return {
+      name: "detached-preview",
+      meta: `${state.portLabel} · ${state.sourceLabel}${state.runLabel ? ` · ${state.runLabel}` : ""}`,
+    };
+  }
+
+  const fileLabel = state.path.split("/").pop() ?? state.path;
+  const worktreeLabel = state.worktree ? getWorktreeLabel(state.worktree) : "Project root";
+  return {
+    name: "detached-editor",
+    meta: `${fileLabel} · ${worktreeLabel}${state.runLabel ? ` · ${state.runLabel}` : ""}`,
+  };
+}
+
+function clearDetachedSurfaceSession() {
+  detachedSurfaceSession = null;
+  if (detachedSurfacePollTimer !== null) {
+    window.clearInterval(detachedSurfacePollTimer);
+    detachedSurfacePollTimer = null;
+  }
+  renderSessions();
+}
+
+function setDetachedSurfaceSession(state: PopoutSurfaceState) {
+  detachedSurfaceSession = describeDetachedSurfaceSession(state);
+  renderSessions();
+}
+
+function applyPopoutSurfaceState(state: PopoutSurfaceState | null) {
+  if (!state) {
+    return;
+  }
+
+  document.body.dataset.popoutSurface = "1";
+  detachedSurfaceRunLabel = state.runLabel ?? state.runId ?? "";
+  const title = document.getElementById("workspace-title");
+  const subtitle = document.getElementById("workspace-subtitle");
+  const editorLabel = state.mode === "editor" ? state.path.split("/").pop() ?? state.path : "";
+  const editorWorktreeLabel = state.mode === "editor" && state.worktree ? getWorktreeLabel(state.worktree) : "Project root";
+  if (title) {
+    title.textContent =
+      state.mode === "preview"
+        ? `${state.portLabel} preview`
+        : `${editorLabel} editor`;
+  }
+  if (subtitle) {
+    subtitle.textContent =
+      state.mode === "preview"
+        ? `Detached secondary surface from ${state.sourceLabel}${detachedSurfaceRunLabel ? ` · ${detachedSurfaceRunLabel}` : ""}.`
+        : `Detached secondary surface for ${editorWorktreeLabel}${detachedSurfaceRunLabel ? ` · ${detachedSurfaceRunLabel}` : ""}.`;
+  }
+
+  setSidebarOpen(false, { preserveWidePreference: false });
+  setContextPanel(false, { preserveWidePreference: false });
+  setTerminalDrawer(false);
+  setSettingsSheet(false);
+  closeCommandBar();
+
+  if (state.mode === "preview") {
+    setSelectedRun(state.runId ?? null);
+    registerPreviewTargetForHarness(state.sourceLabel, state.url);
+    const target = detectedPreviewTargets.get(state.url);
+    if (target) {
+      target.portLabel = state.portLabel || target.portLabel;
+      target.lastSeenAt = state.lastSeenAt || target.lastSeenAt;
+    }
+    openPreviewTarget(state.url);
+    return;
+  }
+
+  if (typeof state.content === "string") {
+    setSelectedRun(state.runId ?? null);
+    restoreStandaloneEditorFromSnapshot({ ...state, content: state.content });
+    return;
+  }
+
+  setSelectedRun(state.runId ?? null);
+  void openEditorPath(state.path, state.worktree);
 }
 
 function getPreviewTargets(activeUrl = selectedPreviewUrl) {
@@ -1158,6 +1373,53 @@ async function copyPreviewTargetUrl() {
     };
   }
   renderEditorSurface();
+}
+
+async function openEditorSurfacePopout() {
+  const state = getCurrentEditorSurfaceState();
+  if (!state) {
+    return;
+  }
+
+  const key = `${POPOUT_SURFACE_STORAGE_KEY_PREFIX}${Date.now()}`;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(state));
+  } catch {
+    return;
+  }
+
+  const popoutUrl = `/?popout=1&popout-key=${encodeURIComponent(key)}`;
+  if (isTauri()) {
+    const label = `secondary-surface-${Date.now()}`;
+    const detachedWindow = new WebviewWindow(label, {
+      url: popoutUrl,
+      title: state.mode === "preview" ? "winsmux Preview" : "winsmux Editor",
+      width: state.mode === "preview" ? 1180 : 1040,
+      height: 760,
+      minWidth: 720,
+      minHeight: 480,
+      focus: true,
+    });
+    setDetachedSurfaceSession(state);
+    void detachedWindow.once("tauri://destroyed", () => {
+      clearDetachedSurfaceSession();
+    });
+    return;
+  }
+
+  const popup = window.open(popoutUrl, "_blank");
+  if (!popup) {
+    return;
+  }
+  setDetachedSurfaceSession(state);
+  if (detachedSurfacePollTimer !== null) {
+    window.clearInterval(detachedSurfacePollTimer);
+  }
+  detachedSurfacePollTimer = window.setInterval(() => {
+    if (popup.closed) {
+      clearDetachedSurfaceSession();
+    }
+  }, 500);
 }
 
 function getSourceFilterLabel(filter: SourceFilter) {
@@ -3561,10 +3823,11 @@ function renderEditorSurface() {
   const browserCopyButton = document.getElementById("browser-copy-btn") as HTMLButtonElement | null;
   const browserReloadButton = document.getElementById("browser-reload-btn") as HTMLButtonElement | null;
   const browserOpenButton = document.getElementById("browser-open-btn") as HTMLButtonElement | null;
+  const popoutButton = document.getElementById("popout-editor-btn") as HTMLButtonElement | null;
   const tabs = document.getElementById("editor-tabs");
   const code = document.getElementById("editor-code");
   const statusbar = document.getElementById("editor-statusbar");
-  if (!title || !summary || !path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserToolbarSummary || !browserBackButton || !browserCopyButton || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
+  if (!title || !summary || !path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserToolbarSummary || !browserBackButton || !browserCopyButton || !browserReloadButton || !browserOpenButton || !popoutButton || !tabs || !code || !statusbar) {
     return;
   }
 
@@ -3573,6 +3836,7 @@ function renderEditorSurface() {
   const previewTarget = selectedPreviewUrl ? detectedPreviewTargets.get(selectedPreviewUrl) ?? null : null;
   const previewTargets = getPreviewTargets();
   const previewModeActive = editorSurfaceMode === "preview" && Boolean(previewTarget);
+  const detachedSurface = document.body.dataset.popoutSurface === "1";
   if (!selected && !previewModeActive) {
     title.textContent = "Editor";
     path.textContent = "Editor idle";
@@ -3595,6 +3859,7 @@ function renderEditorSurface() {
       { label: "Surface", value: "Idle" },
       { label: "Files", value: "0 projected" },
     ]);
+    popoutButton.disabled = true;
     return;
   }
   if (selected && !previewModeActive) {
@@ -3631,9 +3896,14 @@ function renderEditorSurface() {
     path.textContent = previewTarget.url;
     for (const item of [
       "Preview",
+      detachedSurface ? "Detached" : "",
+      detachedSurfaceRunLabel,
       previewTarget.portLabel,
       previewTarget.sourceLabel,
     ]) {
+      if (!item) {
+        continue;
+      }
       const chip = document.createElement("span");
       chip.className = "editor-meta-chip";
       chip.dataset.tone = item === "Preview" ? "focus" : "default";
@@ -3691,6 +3961,8 @@ function renderEditorSurface() {
     code.hidden = true;
     renderEditorStatusbar(statusbar, [
       { label: "Surface", value: "Preview" },
+      ...(detachedSurface ? [{ label: "Window", value: "Detached" }] : []),
+      ...(detachedSurface && detachedSurfaceRunLabel ? [{ label: "Run", value: detachedSurfaceRunLabel }] : []),
       { label: "Target", value: previewTarget.portLabel },
       { label: "Source", value: previewTarget.sourceLabel },
       { label: "Seen", value: formatPreviewSeenAt(previewTarget.lastSeenAt) },
@@ -3698,11 +3970,14 @@ function renderEditorSurface() {
         ? [{ label: "External", value: lastPreviewExternalState.ok ? "Opened" : "Blocked" }]
         : []),
     ]);
+    popoutButton.disabled = false;
   } else if (selected) {
     title.textContent = selectedTarget?.sourceChange ? "Diff review" : "Editor";
     path.textContent = selected.path;
     for (const item of [
       "Code",
+      detachedSurface ? "Detached" : "",
+      detachedSurfaceRunLabel,
       selected.origin === "context" ? "Run context" : "Explorer",
       selectedWorktreeLabel,
     ]) {
@@ -3770,9 +4045,12 @@ function renderEditorSurface() {
     code.textContent = selected.content;
     renderEditorStatusbar(statusbar, [
       { label: "Surface", value: selectedTarget?.sourceChange ? "Diff review" : "Editor" },
+      ...(detachedSurface ? [{ label: "Window", value: "Detached" }] : []),
+      ...(detachedSurface && detachedSurfaceRunLabel ? [{ label: "Run", value: detachedSurfaceRunLabel }] : []),
       { label: "Source", value: selected.origin === "context" ? "Run context" : "Explorer" },
       ...(selectedWorktreeLabel ? [{ label: "Worktree", value: selectedWorktreeLabel }] : []),
     ]);
+    popoutButton.disabled = false;
   }
   tabs.innerHTML = "";
 
@@ -5038,6 +5316,7 @@ function initializeSidebarResize() {
 
 window.addEventListener("DOMContentLoaded", async () => {
   installViewportHarnessHooks();
+  const popoutSurfaceState = readPopoutSurfaceState();
 
   const storedShellPreferences = readStoredShellPreferences();
   if (storedShellPreferences) {
@@ -5079,11 +5358,12 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderAttachmentTray();
   renderCommandBar();
   renderEditorSurface();
-  await refreshDesktopSummary();
-  registerDesktopSummaryLiveRefresh();
   syncResponsiveShell();
   setEditorSurface(false);
   setTerminalDrawer(false);
+  applyPopoutSurfaceState(popoutSurfaceState);
+  await refreshDesktopSummary();
+  registerDesktopSummaryLiveRefresh();
   initializeSidebarResize();
 
   document.getElementById("toggle-sidebar-btn")?.addEventListener("click", () => {
@@ -5122,8 +5402,20 @@ window.addEventListener("DOMContentLoaded", async () => {
     setContextPanel(!contextPanelOpen);
   });
 
-  document.getElementById("close-editor-btn")?.addEventListener("click", () => {
+  document.getElementById("close-editor-btn")?.addEventListener("click", async () => {
+    if (document.body.dataset.popoutSurface === "1") {
+      if (isTauri()) {
+        await getCurrentWebviewWindow().close();
+        return;
+      }
+      window.close();
+      return;
+    }
     setEditorSurface(false);
+  });
+
+  document.getElementById("popout-editor-btn")?.addEventListener("click", async () => {
+    await openEditorSurfacePopout();
   });
 
   document.getElementById("settings-btn")?.addEventListener("click", () => {

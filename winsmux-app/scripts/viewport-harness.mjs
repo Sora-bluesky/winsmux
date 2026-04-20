@@ -259,6 +259,91 @@ async function assertBackToCode(page) {
   await assertHorizontallyVisible(page, "#editor-code");
 }
 
+async function assertPopoutShell(popup, visibleSelector) {
+  await popup.locator(visibleSelector).waitFor({ state: "visible" });
+  const isPopout = await popup.evaluate(() => document.body.dataset.popoutSurface === "1");
+  if (!isPopout) {
+    throw new Error("Pop-out window did not enter detached surface mode");
+  }
+  await popup.locator("#workspace-header").waitFor({ state: "visible" });
+  await popup.waitForFunction(() => {
+    const title = document.querySelector("#workspace-title");
+    const subtitle = document.querySelector("#workspace-subtitle");
+    return (
+      title instanceof HTMLElement &&
+      subtitle instanceof HTMLElement &&
+      Boolean(title.textContent?.trim()) &&
+      subtitle.textContent?.includes("Detached secondary surface")
+    );
+  });
+  await popup.locator("#conversation-panel").waitFor({ state: "hidden" });
+  await popup.locator("#context-panel").waitFor({ state: "hidden" });
+  await popup.locator("#workspace-footer").waitFor({ state: "hidden" });
+  await popup.locator("#header-actions").waitFor({ state: "hidden" });
+  await assertHorizontallyVisible(popup, "#editor-surface");
+}
+
+async function assertDetachedSessionEntry(page, expectedName) {
+  await page.waitForFunction((name) => {
+    const rows = Array.from(document.querySelectorAll("#session-list .sidebar-row"));
+    return rows.some((row) => {
+      const title = row.querySelector(".sidebar-row-title");
+      return title instanceof HTMLElement && title.textContent?.trim() === name;
+    });
+  }, expectedName);
+}
+
+async function assertDetachedSessionEntryCleared(page, expectedName) {
+  await page.waitForFunction((name) => {
+    const rows = Array.from(document.querySelectorAll("#session-list .sidebar-row"));
+    return rows.every((row) => {
+      const title = row.querySelector(".sidebar-row-title");
+      return !(title instanceof HTMLElement) || title.textContent?.trim() !== name;
+    });
+  }, expectedName);
+}
+
+async function assertPreviewPopout(page) {
+  const popupPromise = page.waitForEvent("popup");
+  await page.click("#popout-editor-btn");
+  const popup = await popupPromise;
+  await assertDetachedSessionEntry(page, "detached-preview");
+  await assertPopoutShell(popup, "#browser-surface");
+  await popup.locator("#browser-frame").waitFor({ state: "visible" });
+  await popup.locator("#browser-toolbar").waitFor({ state: "visible" });
+  const closePromise = popup.waitForEvent("close");
+  await popup.click("#close-editor-btn");
+  await closePromise;
+  await assertDetachedSessionEntryCleared(page, "detached-preview");
+  await page.locator("#browser-surface").waitFor({ state: "visible" });
+  await page.locator("#browser-toolbar").waitFor({ state: "visible" });
+  await assertHorizontallyVisible(page, "#editor-surface");
+}
+
+async function assertEditorPopout(page) {
+  const popupPromise = page.waitForEvent("popup");
+  await page.click("#popout-editor-btn");
+  const popup = await popupPromise;
+  await assertDetachedSessionEntry(page, "detached-editor");
+  await assertPopoutShell(popup, "#editor-code");
+  await popup.locator("#editor-file-path").waitFor({ state: "visible" });
+  await popup.locator("#editor-statusbar").waitFor({ state: "visible" });
+  await popup.waitForFunction(() => {
+    const target = document.querySelector("#editor-code");
+    return target instanceof HTMLElement && target.textContent?.includes("context + editor");
+  });
+  const closePromise = popup.waitForEvent("close");
+  await popup.click("#close-editor-btn");
+  await closePromise;
+  await assertDetachedSessionEntryCleared(page, "detached-editor");
+  await page.locator("#editor-code").waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const target = document.querySelector("#editor-code");
+    return target instanceof HTMLElement && target.textContent?.includes("context + editor");
+  });
+  await assertHorizontallyVisible(page, "#editor-surface");
+}
+
 async function assertPreviewClosed(page) {
   await page.click("#browser-back-btn");
   await page.locator("#browser-surface").waitFor({ state: "hidden" });
@@ -346,6 +431,7 @@ async function verifyDesktopViewport(page, previewUrl) {
   await page.locator("#settings-sheet").waitFor({ state: "hidden" });
 
   await openFirstSourceContextEntry(page);
+  await assertEditorPopout(page);
   await assertCommandBarRoundtrip(page, "#editor-surface");
   await assertSettingsRoundtrip(page, "#editor-surface");
   await assertTerminalDrawerWithSourceContext(page, "#editor-surface", "#context-panel");
@@ -360,6 +446,7 @@ async function verifyDesktopViewport(page, previewUrl) {
   await assertHorizontallyVisible(page, "#browser-toolbar");
   await assertFullyVisible(page, "#browser-frame");
   await assertToolbarActionStates(page);
+  await assertPreviewPopout(page);
   await assertCommandBarRoundtrip(page, "#browser-toolbar");
   await assertSettingsRoundtrip(page, "#browser-toolbar");
 
@@ -514,11 +601,13 @@ async function run() {
             "desktop-command-bar",
             "desktop-settings-sheet",
             "desktop-source-context",
+            "desktop-editor-popout",
             "desktop-command-bar-with-editor",
             "desktop-settings-with-editor",
             "desktop-source-context-with-terminal-drawer",
             "desktop-preview-browser",
             "desktop-preview-toolbar-actions",
+            "desktop-preview-popout",
             "desktop-command-bar-with-preview",
             "desktop-settings-with-preview",
             "desktop-preview-back-to-code",
