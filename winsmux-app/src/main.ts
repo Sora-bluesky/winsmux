@@ -1060,6 +1060,28 @@ function renderExperimentContext() {
             { label: "changed", value: `${payload.evidence_digest.changed_file_count}` },
             { label: "verify", value: payload.evidence_digest.verification_outcome || "n/a" },
           ],
+      lines: compareResult
+        ? [
+            {
+              label: "Shared files",
+              value: compareResult.shared_changed_files.length > 0
+                ? summarizeChangedFiles(compareResult.shared_changed_files, 4)
+                : "none",
+            },
+            {
+              label: `${selectedProjection.label || "Selected"} only`,
+              value: compareResult.left_only_changed_files.length > 0
+                ? summarizeChangedFiles(compareResult.left_only_changed_files, 4)
+                : "none",
+            },
+            {
+              label: `${comparePeer?.label || compareResult.right.label || "Peer"} only`,
+              value: compareResult.right_only_changed_files.length > 0
+                ? summarizeChangedFiles(compareResult.right_only_changed_files, 4)
+                : "none",
+            },
+          ]
+        : [],
     },
     {
       title: "Playbook Candidate",
@@ -1112,6 +1134,20 @@ function renderExperimentContext() {
       meta.appendChild(pill);
     }
     card.appendChild(meta);
+
+    if (item.lines && item.lines.length > 0) {
+      const lineList = document.createElement("div");
+      lineList.className = "experiment-detail-lines";
+      for (const line of item.lines) {
+        const row = document.createElement("div");
+        row.className = "experiment-detail-line";
+        row.innerHTML =
+          `<span class="experiment-detail-line-label">${line.label}</span>` +
+          `<span class="experiment-detail-line-value">${line.value}</span>`;
+        lineList.appendChild(row);
+      }
+      card.appendChild(lineList);
+    }
 
     if (item.actionLabel && selectedProjection.run_id) {
       const chipRow = document.createElement("div");
