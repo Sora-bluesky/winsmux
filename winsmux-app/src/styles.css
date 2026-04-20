@@ -977,6 +977,13 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
+}
+
+#browser-toolbar-summary {
+  margin-right: auto;
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
 }
 
 #browser-frame {

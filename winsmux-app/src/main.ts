@@ -2894,13 +2894,14 @@ function renderEditorSurface() {
   const browserFrame = document.getElementById("browser-frame") as HTMLIFrameElement | null;
   const browserMeta = document.getElementById("browser-meta-row");
   const browserTargetList = document.getElementById("browser-target-list");
+  const browserToolbarSummary = document.getElementById("browser-toolbar-summary");
   const browserBackButton = document.getElementById("browser-back-btn") as HTMLButtonElement | null;
   const browserReloadButton = document.getElementById("browser-reload-btn") as HTMLButtonElement | null;
   const browserOpenButton = document.getElementById("browser-open-btn") as HTMLButtonElement | null;
   const tabs = document.getElementById("editor-tabs");
   const code = document.getElementById("editor-code");
   const statusbar = document.getElementById("editor-statusbar");
-  if (!path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserBackButton || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
+  if (!path || !meta || !diffPreview || !browserSurface || !browserFrame || !browserMeta || !browserTargetList || !browserToolbarSummary || !browserBackButton || !browserReloadButton || !browserOpenButton || !tabs || !code || !statusbar) {
     return;
   }
 
@@ -2941,6 +2942,7 @@ function renderEditorSurface() {
   diffPreview.hidden = true;
   browserMeta.innerHTML = "";
   browserTargetList.innerHTML = "";
+  browserToolbarSummary.textContent = "";
   browserTargetList.hidden = true;
   browserSurface.hidden = true;
   browserBackButton.disabled = true;
@@ -2997,6 +2999,7 @@ function renderEditorSurface() {
       }
       browserTargetList.hidden = false;
     }
+    browserToolbarSummary.textContent = `${previewTargets.length} targets · active ${previewTarget.portLabel}${lastExternalPreviewOpen?.url === previewTarget.url ? " · external open" : ""}`;
     browserFrame.src = previewTarget.url;
     browserSurface.hidden = false;
     browserBackButton.disabled = false;
