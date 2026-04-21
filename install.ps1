@@ -116,6 +116,35 @@ function Install-SecuritySupportScripts {
     Download-File "winsmux-core/scripts/vault.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "vault.ps1")
 }
 
+function Remove-ProfileExcludedSupportScripts {
+    param([Parameter(Mandatory = $true)][string]$Profile)
+
+    $scriptGroups = @(
+        [PSCustomObject]@{
+            Content = "orchestration_scripts"
+            Files = @("agent-launch.ps1", "orchestra-start.ps1", "orchestra-layout.ps1", "settings.ps1")
+        },
+        [PSCustomObject]@{
+            Content = "vault"
+            Files = @("vault.ps1")
+        }
+    )
+
+    foreach ($group in $scriptGroups) {
+        if (Test-InstallProfileContent -Profile $Profile -Content $group.Content) {
+            continue
+        }
+
+        foreach ($fileName in $group.Files) {
+            $path = Join-Path $BRIDGE_SCRIPTS_DIR $fileName
+            if (Test-Path -LiteralPath $path -PathType Leaf) {
+                Remove-Item -LiteralPath $path -Force
+                Write-Status "Removed profile-excluded support script: $fileName"
+            }
+        }
+    }
+}
+
 function Sync-WindowsTerminalFragment {
     param([Parameter(Mandatory = $true)][string]$Profile)
 
@@ -337,6 +366,7 @@ function Invoke-Install {
     if (Test-InstallProfileContent -Profile $resolvedInstallProfile -Content "vault") {
         Install-SecuritySupportScripts
     }
+    Remove-ProfileExcludedSupportScripts -Profile $resolvedInstallProfile
 
     # .winsmux.conf (backup existing)
     $confDest = Join-Path $HOME ".winsmux.conf"

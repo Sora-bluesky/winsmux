@@ -168,6 +168,8 @@ winsmux install --profile full
 記録先は `~\.winsmux\install-profile` です。
 インストーラーは、指定したプロファイルに応じて導入対象を切り分けます。
 たとえば `core` では、`orchestra` 向けスクリプト、`vault` 機能、Windows Terminal の設定プロファイルを含めません。
+後からプロファイルを変更した場合、インストーラーは対象外になった支援スクリプトを削除します。
+Windows Terminal の設定プロファイルも、選択したプロファイルに応じて追加または削除します。
 
 ## クイックスタート
 

@@ -57,6 +57,9 @@ Profile scope is enforced by the installer:
 - `security` installs vault-oriented support without the Windows Terminal profile.
 - `full` installs both orchestration and security support.
 
+When a later install or update switches profiles, support scripts that are no
+longer part of the selected profile are removed from `~\.winsmux\winsmux-core\scripts`.
+
 ## Release gate
 
 - the staged package must pass the Windows verify job
