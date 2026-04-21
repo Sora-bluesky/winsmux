@@ -6933,7 +6933,7 @@ function Invoke-ConsultError {
 function Invoke-ProviderSwitch {
     $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
     if ($tokens.Count -lt 1) {
-        Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--json]"
+        Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--restart] [--json]"
     }
 
     $slotId = [string]$tokens[0]
@@ -6941,6 +6941,7 @@ function Invoke-ProviderSwitch {
     $model = ''
     $promptTransport = ''
     $reason = ''
+    $restartRequested = $false
     $jsonOutput = $false
 
     for ($index = 1; $index -lt $tokens.Count; $index++) {
@@ -6976,8 +6977,11 @@ function Invoke-ProviderSwitch {
             '--json' {
                 $jsonOutput = $true
             }
+            '--restart' {
+                $restartRequested = $true
+            }
             default {
-                Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--json]"
+                Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--restart] [--json]"
             }
         }
     }
@@ -6995,6 +6999,19 @@ function Invoke-ProviderSwitch {
         Stop-WithError "provider-switch target slot '$slotId' is not present in agent_slots."
     }
 
+    $restartPaneId = ''
+    if ($restartRequested) {
+        $manifestEntry = @(Get-PaneControlManifestEntries -ProjectDir $projectDir | Where-Object {
+            [string]::Equals([string]$_.Label, $slotId, [System.StringComparison]::OrdinalIgnoreCase)
+        } | Select-Object -First 1)
+
+        if ($manifestEntry.Count -lt 1) {
+            Stop-WithError "provider-switch --restart target slot '$slotId' is not present in the orchestra manifest."
+        }
+
+        $restartPaneId = [string]$manifestEntry[0].PaneId
+    }
+
     $entry = Write-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId -Agent $agent -Model $model -PromptTransport $promptTransport -Reason $reason
     $effective = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $settings -RootPath $projectDir
     $result = [ordered]@{
@@ -7006,6 +7023,15 @@ function Invoke-ProviderSwitch {
         registry_path    = Get-BridgeProviderRegistryPath -RootPath $projectDir
         updated_at_utc   = [string]$entry.updated_at_utc
         reason           = if ($entry.Contains('reason')) { [string]$entry.reason } else { '' }
+        restart_requested = $restartRequested
+        restarted        = $false
+        restart_pane_id  = ''
+    }
+
+    if ($restartRequested) {
+        $restartResult = Invoke-RestartPane -PaneId $restartPaneId -ProjectDir $projectDir
+        $result['restarted'] = $true
+        $result['restart_pane_id'] = [string]$restartResult.PaneId
     }
 
     if ($jsonOutput) {
@@ -7049,7 +7075,7 @@ Commands:
   consult-request <mode> [--message <text>] [--target-slot <slot>]  Record a consultation request packet/event
   consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json]  Record a consultation result packet/event
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
-  provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--json]  Record a runtime provider reassignment for a managed slot
+  provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--restart] [--json]  Record a runtime provider reassignment for a managed slot
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
   wait <channel> [timeout]  Block until signal received (replaces polling)
@@ -7218,6 +7244,61 @@ function Invoke-Kill {
     Write-Output "killed $paneId"
 }
 
+function Invoke-RestartPane {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $settings = $null
+    if (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue) {
+        $settings = Get-BridgeSettings -RootPath $ProjectDir
+    }
+
+    $plan = Get-PaneControlRestartPlan -ProjectDir $ProjectDir -PaneId $PaneId -Settings $settings
+
+    & winsmux respawn-pane -k -t $PaneId -c $plan.LaunchDir
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
+        Stop-WithError "failed to restart pane shell: $PaneId"
+    }
+
+    Wait-PaneShellReady -PaneId $PaneId
+    try {
+        Update-PaneControlManifestPaneLabel -ProjectDir $ProjectDir -PaneId $PaneId | Out-Null
+    } catch {
+    }
+
+    & winsmux send-keys -t $PaneId -l -- "$($plan.LaunchCommand)"
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
+        Stop-WithError "failed to send launch command to $PaneId"
+    }
+    & winsmux send-keys -t $PaneId Enter
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
+        Stop-WithError "failed to submit launch command to $PaneId"
+    }
+
+    Clear-ReadMark $PaneId
+    Clear-Watermark $PaneId
+
+    if ($plan.Agent.Trim().ToLowerInvariant() -eq 'codex') {
+        $deadline = (Get-Date).AddSeconds(60)
+        while ((Get-Date) -lt $deadline) {
+            if (Test-CodexReadyPrompt $PaneId) {
+                return $plan
+            }
+
+            Start-Sleep -Seconds 2
+        }
+
+        Stop-WithError "timed out waiting for Codex after restart in $PaneId"
+    }
+
+    return $plan
+}
+
 function Invoke-Restart {
     if (-not $Target) { Stop-WithError "usage: winsmux restart <target>" }
     if ($Rest -and $Rest.Count -gt 0) { Stop-WithError "usage: winsmux restart <target>" }
@@ -7225,54 +7306,7 @@ function Invoke-Restart {
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
     $projectDir = (Get-Location).Path
-
-    $settings = $null
-    if (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue) {
-        $settings = Get-BridgeSettings
-    }
-
-    $plan = Get-PaneControlRestartPlan -ProjectDir $projectDir -PaneId $paneId -Settings $settings
-
-    & winsmux respawn-pane -k -t $paneId -c $plan.LaunchDir
-    $nativeExitCode = Get-SafeLastExitCode
-    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
-        Stop-WithError "failed to restart pane shell: $paneId"
-    }
-
-    Wait-PaneShellReady -PaneId $paneId
-    try {
-        Update-PaneControlManifestPaneLabel -ProjectDir $projectDir -PaneId $paneId | Out-Null
-    } catch {
-    }
-
-    & winsmux send-keys -t $paneId -l -- "$($plan.LaunchCommand)"
-    $nativeExitCode = Get-SafeLastExitCode
-    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
-        Stop-WithError "failed to send launch command to $paneId"
-    }
-    & winsmux send-keys -t $paneId Enter
-    $nativeExitCode = Get-SafeLastExitCode
-    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
-        Stop-WithError "failed to submit launch command to $paneId"
-    }
-
-    Clear-ReadMark $paneId
-    Clear-Watermark $paneId
-
-    if ($plan.Agent.Trim().ToLowerInvariant() -eq 'codex') {
-        $deadline = (Get-Date).AddSeconds(60)
-        while ((Get-Date) -lt $deadline) {
-            if (Test-CodexReadyPrompt $paneId) {
-                Write-Output "restarted $paneId ($($plan.Label))"
-                return
-            }
-
-            Start-Sleep -Seconds 2
-        }
-
-        Stop-WithError "timed out waiting for Codex after restart in $paneId"
-    }
-
+    $plan = Invoke-RestartPane -PaneId $paneId -ProjectDir $projectDir
     Write-Output "restarted $paneId ($($plan.Label))"
 }
 

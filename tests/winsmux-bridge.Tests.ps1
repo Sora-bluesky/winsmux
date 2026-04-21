@@ -8399,7 +8399,7 @@ agent-slots:
     }
 
     It 'documents provider-switch in usage and writes a provider registry entry' {
-        $script:winsmuxCoreRawContent | Should -Match 'provider-switch <slot> \[--agent <name>\] \[--model <name>\] \[--prompt-transport <argv\|file\|stdin>\]'
+        $script:winsmuxCoreRawContent | Should -Match 'provider-switch <slot> \[--agent <name>\] \[--model <name>\] \[--prompt-transport <argv\|file\|stdin>\] \[--reason <text>\] \[--restart\] \[--json\]'
         $script:winsmuxCoreRawContent | Should -Match "'provider-switch'\s*\{"
 
         Push-Location $script:providerSwitchTempRoot
@@ -8415,6 +8415,8 @@ agent-slots:
         $result.model | Should -Be 'opus'
         $result.prompt_transport | Should -Be 'file'
         $result.source | Should -Be 'registry'
+        $result.restart_requested | Should -Be $false
+        $result.restarted | Should -Be $false
 
         $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
         Test-Path -LiteralPath $registryPath | Should -Be $true
@@ -8423,6 +8425,14 @@ agent-slots:
         $registry.slots.'worker-1'.model | Should -Be 'opus'
         $registry.slots.'worker-1'.prompt_transport | Should -Be 'file'
         $registry.slots.'worker-1'.reason | Should -Be 'operator requested provider switch'
+    }
+
+    It 'documents provider-switch restart and routes it through the manifest-backed restart helper' {
+        $script:winsmuxCoreRawContent | Should -Match "'--restart'\s*\{"
+        $script:winsmuxCoreRawContent | Should -Match 'Get-PaneControlManifestEntries -ProjectDir \$projectDir'
+        $script:winsmuxCoreRawContent | Should -Match 'Invoke-RestartPane -PaneId'
+        $script:winsmuxCoreRawContent | Should -Match 'restart_requested'
+        $script:winsmuxCoreRawContent | Should -Match 'restart_pane_id'
     }
 }
 
