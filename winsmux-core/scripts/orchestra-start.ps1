@@ -667,7 +667,8 @@ function New-OrchestraPaneBootstrapPlan {
         [Parameter(Mandatory = $true)][string]$StartupToken,
         [Parameter(Mandatory = $true)][string]$LaunchDir,
         [Parameter(Mandatory = $true)]$CleanPtyEnv,
-        [Parameter(Mandatory = $true)][string]$LaunchCommand
+        [Parameter(Mandatory = $true)][string]$LaunchCommand,
+        [bool]$SupportsInterrupt = $true
     )
 
     $bootstrapDir = Join-Path (Join-Path $ProjectDir '.winsmux') 'orchestra-bootstrap'
@@ -691,6 +692,7 @@ function New-OrchestraPaneBootstrapPlan {
         startup_token  = $StartupToken
         launch_dir     = $LaunchDir
         launch_command = $LaunchCommand
+        supports_interrupt = $SupportsInterrupt
         ready_marker_path = $readyMarkerPath
         environment    = $CleanPtyEnv.Environment
     }
@@ -707,11 +709,66 @@ function Start-OrchestraPaneBootstrap {
     )
 
     $bootstrapScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'orchestra-pane-bootstrap.ps1'))
+    $supportsInterrupt = $true
+    try {
+        $plan = Get-Content -LiteralPath $PlanPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($plan.PSObject.Properties.Name -contains 'supports_interrupt') {
+            $supportsInterrupt = [bool]$plan.supports_interrupt
+        }
+    } catch {
+        $supportsInterrupt = $true
+    }
+
     Wait-PaneShellReady -PaneId $PaneId
-    Invoke-Bridge -Arguments @('keys', $PaneId, 'C-c') -AllowFailure | Out-Null
-    Start-Sleep -Milliseconds 200
+    if ($supportsInterrupt) {
+        Invoke-Bridge -Arguments @('keys', $PaneId, 'C-c') -AllowFailure | Out-Null
+        Start-Sleep -Milliseconds 200
+    }
     Send-OrchestraBridgeCommand -Target $PaneId -Text ("pwsh -NoProfile -File {0} -PlanFile {1}" -f (ConvertTo-PowerShellLiteral -Value $bootstrapScriptPath), (ConvertTo-PowerShellLiteral -Value $PlanPath))
     Start-Sleep -Milliseconds 500
+}
+
+function Get-OrchestraObjectPropertyValue {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Default = $null
+    )
+
+    if ($null -eq $InputObject) {
+        return $Default
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary] -and $InputObject.Contains($Name)) {
+        return $InputObject[$Name]
+    }
+
+    if ($null -ne $InputObject.PSObject -and $InputObject.PSObject.Properties.Name -contains $Name) {
+        return $InputObject.PSObject.Properties[$Name].Value
+    }
+
+    return $Default
+}
+
+function Test-OrchestraProviderInterruptAvailable {
+    param([AllowNull()]$SlotAgentConfig)
+
+    if ($null -eq $SlotAgentConfig) {
+        return $true
+    }
+
+    $capabilityAdapter = [string](Get-OrchestraObjectPropertyValue -InputObject $SlotAgentConfig -Name 'CapabilityAdapter' -Default '')
+    $capabilityCommand = [string](Get-OrchestraObjectPropertyValue -InputObject $SlotAgentConfig -Name 'CapabilityCommand' -Default '')
+    if ([string]::IsNullOrWhiteSpace($capabilityAdapter) -and [string]::IsNullOrWhiteSpace($capabilityCommand)) {
+        return $true
+    }
+
+    $interruptDeclared = [bool](Get-OrchestraObjectPropertyValue -InputObject $SlotAgentConfig -Name 'SupportsInterruptDeclared' -Default $false)
+    if (-not $interruptDeclared) {
+        return $true
+    }
+
+    return [bool](Get-OrchestraObjectPropertyValue -InputObject $SlotAgentConfig -Name 'SupportsInterrupt' -Default $false)
 }
 
 function Get-OrchestraPaneBootstrapMarkerPath {
@@ -2002,6 +2059,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         $slotAgentConfig = Get-SlotAgentConfig -Role $canonicalRole -SlotId $label -Settings $settings -RootPath $projectDir
         $execMode = ([string]$slotAgentConfig.Agent).Trim().ToLowerInvariant() -eq 'codex'
         $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -RootPath $projectDir -ExecMode $false
+        $supportsInterrupt = Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $slotAgentConfig
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
@@ -2026,7 +2084,8 @@ if ($MyInvocation.InvocationName -ne '.') {
                     -StartupToken $startupToken `
                     -LaunchDir $launchDir `
                     -CleanPtyEnv $cleanPtyEnv `
-                    -LaunchCommand $launchCommand
+                    -LaunchCommand $launchCommand `
+                    -SupportsInterrupt $supportsInterrupt
                 Start-OrchestraPaneBootstrap -PaneId $paneId -PlanPath $bootstrapPlanPath
                 # TASK-231: verify pane exists after respawn
                 try {
