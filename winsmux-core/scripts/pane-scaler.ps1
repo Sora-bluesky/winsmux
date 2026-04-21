@@ -457,10 +457,6 @@ function Remove-OrchestraPane {
         [int]$MinimumBuilders = 2
     )
 
-    if ($null -eq $Settings) {
-        $Settings = Get-BridgeSettings
-    }
-
     $workload = Get-PaneWorkload -ManifestPath $ManifestPath -Settings $Settings
     if ($workload.BuilderCount -le $MinimumBuilders) {
         return [PSCustomObject]@{
@@ -517,10 +513,6 @@ function Invoke-PaneScalingCheck {
         [double]$ScaleDownThreshold = 0.3,
         [int]$MinimumBuilders = 2
     )
-
-    if ($null -eq $Settings) {
-        $Settings = Get-BridgeSettings
-    }
 
     $workload = Get-PaneWorkload -ManifestPath $ManifestPath -Settings $Settings
     if ($workload.TotalPanes -eq 0) {

@@ -2706,6 +2706,21 @@ Describe 'agent-watchdog helpers' {
     }
 
     It 'runs a watchdog cycle through Invoke-AgentMonitorCycle with the requested thresholds' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-watchdog-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  worker-1:
+    pane_id: %2
+    role: Worker
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+
         Mock Get-BridgeSettings {
             [ordered]@{
                 agent = 'codex'
@@ -2724,13 +2739,22 @@ Describe 'agent-watchdog helpers' {
             }
         }
 
-        $result = Invoke-AgentWatchdogCycle -ManifestPath 'C:\repo\.winsmux\manifest.yaml' -SessionName 'winsmux-orchestra' -IdleThreshold 120
+        try {
+            $result = Invoke-AgentWatchdogCycle -ManifestPath $manifestPath -SessionName 'winsmux-orchestra' -IdleThreshold 120
 
-        $result.Checked | Should -Be 1
-        Should -Invoke Invoke-AgentMonitorCycle -Times 1 -Exactly -ParameterFilter {
-            $ManifestPath -eq 'C:\repo\.winsmux\manifest.yaml' -and
-            $SessionName -eq 'winsmux-orchestra' -and
-            $IdleThreshold -eq 120
+            $result.Checked | Should -Be 1
+            Should -Invoke Get-BridgeSettings -Times 1 -Exactly -ParameterFilter {
+                $RootPath -eq $tempRoot
+            }
+            Should -Invoke Invoke-AgentMonitorCycle -Times 1 -Exactly -ParameterFilter {
+                $ManifestPath -eq $manifestPath -and
+                $SessionName -eq 'winsmux-orchestra' -and
+                $IdleThreshold -eq 120
+            }
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
         }
     }
 
@@ -4671,22 +4695,79 @@ panes:
             [PSCustomObject]@{ Status = 'ready'; ExitReason = '' }
         }
 
-        $settings = [ordered]@{
-            agent = 'codex'
-            model = 'gpt-5.4'
-            roles = [ordered]@{
-                builder = [ordered]@{
-                    agent = 'codex'
-                    model = 'gpt-5.4'
-                }
-            }
-        }
-
-        Get-PaneWorkload -ManifestPath $script:paneScalerManifestPath -Settings $settings | Out-Null
+        Get-PaneWorkload -ManifestPath $script:paneScalerManifestPath | Out-Null
 
         Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
             $PaneId -eq '%2' -and $Agent -eq 'claude' -and $Role -eq 'Builder'
         }
+    }
+
+    It 'uses provider registry overrides through the pane scaling entrypoint without explicit settings' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+        Write-BridgeProviderRegistryEntry `
+            -RootPath $script:paneScalerTempRoot `
+            -SlotId 'builder-1' `
+            -Agent 'claude' `
+            -Model 'opus' `
+            -PromptTransport 'file' `
+            -Reason 'operator requested provider hot-swap' | Out-Null
+
+        Mock Get-PaneAgentStatus {
+            [PSCustomObject]@{ Status = 'ready'; ExitReason = '' }
+        }
+
+        Push-Location ([System.IO.Path]::GetTempPath())
+        try {
+            Invoke-PaneScalingCheck -ManifestPath $script:paneScalerManifestPath -ScaleUpThreshold 0.95 -ScaleDownThreshold 0.0 | Out-Null
+        } finally {
+            Pop-Location
+        }
+
+        Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2' -and $Agent -eq 'claude' -and $Role -eq 'Builder'
+        }
+    }
+
+    It 'fails closed when the provider registry is malformed during Builder workload calculation' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+        @'
+{
+  "version": 1,
+  "slots": {
+    "builder-1": {
+      "prompt_transport": "pipe"
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:paneScalerManifestDir 'provider-registry.json') -Encoding UTF8
+
+        Mock Get-PaneAgentStatus {
+            throw 'Get-PaneAgentStatus should not be called when provider registry is malformed.'
+        }
+
+        {
+            Get-PaneWorkload -ManifestPath $script:paneScalerManifestPath
+        } | Should -Throw "*Invalid provider registry prompt_transport*"
     }
 
     It 'reads dictionary-style pane manifests written by orchestra-start' {
