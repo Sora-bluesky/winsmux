@@ -9187,7 +9187,7 @@ Describe 'winsmux public first-run commands' {
     }
 
     It 'documents init and launch in usage and dispatches them through the public first-run helper' {
-        $script:winsmuxCoreRawContent | Should -Match 'init \[--json\] \[--project-dir <path>\] \[--force\] \[--agent <codex\|claude>\] \[--model <name>\] \[--worker-count <count>\]\s+Create or refresh public first-run config'
+        $script:winsmuxCoreRawContent | Should -Match 'init \[--json\] \[--project-dir <path>\] \[--force\] \[--agent <provider>\] \[--model <name>\] \[--worker-count <count>\]\s+Create or refresh public first-run config'
         $script:winsmuxCoreRawContent | Should -Match 'launch \[--json\] \[--project-dir <path>\] \[--skip-doctor\]\s+Run public first-run checks and startup'
         $script:winsmuxCoreRawContent | Should -Match "'init'\s*\{"
         $script:winsmuxCoreRawContent | Should -Match "'launch'\s*\{"
@@ -9336,6 +9336,21 @@ Describe 'public first-run helper' {
         $settings.worker_count | Should -Be 6
         $settings.agent_slots.Count | Should -Be 6
         $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
+    }
+
+    It 'stores custom provider names in managed slots on init' {
+        $result = Invoke-WinsmuxPublicInit -ProjectDir $script:publicFirstRunTempRoot -Agent 'codex-nightly' -Model 'gpt-5.4-code' -WorkerCount 2
+
+        $result.status | Should -Be 'initialized'
+        $result.slot_count | Should -Be 2
+
+        $settings = Get-BridgeSettings -RootPath $script:publicFirstRunTempRoot
+        $settings.agent | Should -Be 'codex-nightly'
+        $settings.model | Should -Be 'gpt-5.4-code'
+        $settings.worker_count | Should -Be 2
+        $settings.agent_slots.Count | Should -Be 2
+        $settings.agent_slots[0].agent | Should -Be 'codex-nightly'
+        $settings.agent_slots[0].model | Should -Be 'gpt-5.4-code'
     }
 
     It 'returns already_initialized when config exists and force is not set' {
@@ -10029,6 +10044,11 @@ Describe 'operator startup restore contract docs' {
 
         $settingsContent | Should -Match 'function Get-WinsmuxOperatorNotFoundMessage'
         $settingsContent | Should -Match 'Could not resolve the winsmux executable from PATH'
+        $setupWizardContent | Should -Match 'AI agent provider'
+        $setupWizardContent | Should -Match 'Test-SetupWizardAgentProvider'
+        $setupWizardContent | Should -Match 'provider-capabilities\.json first'
+        $setupWizardContent | Should -Not -Match 'AI agent CLI \(codex/claude\)'
+        $setupWizardContent | Should -Not -Match "Please enter 'codex' or 'claude'\."
         $setupWizardContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
         $commanderPollContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
         $agentMonitorContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'

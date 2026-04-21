@@ -42,6 +42,22 @@ function Get-BridgeCommand {
     return $null
 }
 
+function Get-SetupWizardProjectRoot {
+    return [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+}
+
+function Test-SetupWizardAgentProvider {
+    param([Parameter(Mandatory = $true)][string]$Provider)
+
+    $projectRoot = Get-SetupWizardProjectRoot
+    try {
+        $null = Get-BridgeProviderLaunchCommand -ProviderId $Provider -Model '' -ProjectDir $projectRoot -GitWorktreeDir $projectRoot -RootPath $projectRoot -ExecMode:$false
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Read-DefaultValue {
     param(
         [Parameter(Mandatory = $true)][string]$Prompt,
@@ -60,12 +76,12 @@ function Read-AgentCli {
     param([string]$Default = 'codex')
 
     while ($true) {
-        $value = (Read-DefaultValue -Prompt 'AI agent CLI (codex/claude)' -Default $Default).ToLowerInvariant()
-        if ($value -in @('codex', 'claude')) {
+        $value = (Read-DefaultValue -Prompt 'AI agent provider' -Default $Default).ToLowerInvariant()
+        if (Test-SetupWizardAgentProvider -Provider $value) {
             return $value
         }
 
-        Write-Host "Please enter 'codex' or 'claude'."
+        Write-Host "Provider '$value' is not launchable yet. Use 'codex', 'claude', or add it to .winsmux/provider-capabilities.json first."
     }
 }
 
@@ -200,9 +216,6 @@ if ($externalCommander) {
     }
 }
 
-function Get-SetupWizardProjectRoot {
-    return [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
-}
 $storeVault = Read-YesNo -Prompt 'Store GH_TOKEN in the winsmux vault?' -Default $false
 
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-agent' -OptionValue $agentCli
