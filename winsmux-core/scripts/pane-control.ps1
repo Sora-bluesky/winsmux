@@ -541,6 +541,7 @@ function Get-PaneControlRestartPlan {
         GitWorktreeDir = $context.GitWorktreeDir
         Agent          = [string]$agentConfig.Agent
         Model          = [string]$agentConfig.Model
+        CapabilityAdapter = [string]$agentConfig.CapabilityAdapter
         PromptTransport = [string]$agentConfig.PromptTransport
         Source         = [string]$agentConfig.Source
         LaunchCommand  = $launchCommand
