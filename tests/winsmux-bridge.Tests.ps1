@@ -8399,7 +8399,7 @@ agent-slots:
     }
 
     It 'documents provider-switch in usage and writes a provider registry entry' {
-        $script:winsmuxCoreRawContent | Should -Match 'provider-switch <slot> \[--agent <name>\] \[--model <name>\] \[--prompt-transport <argv\|file\|stdin>\]'
+        $script:winsmuxCoreRawContent | Should -Match 'provider-switch <slot> \[--agent <name>\] \[--model <name>\] \[--prompt-transport <argv\|file\|stdin>\] \[--reason <text>\] \[--restart\] \[--json\]'
         $script:winsmuxCoreRawContent | Should -Match "'provider-switch'\s*\{"
 
         Push-Location $script:providerSwitchTempRoot
@@ -8415,6 +8415,8 @@ agent-slots:
         $result.model | Should -Be 'opus'
         $result.prompt_transport | Should -Be 'file'
         $result.source | Should -Be 'registry'
+        $result.restart_requested | Should -Be $false
+        $result.restarted | Should -Be $false
 
         $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
         Test-Path -LiteralPath $registryPath | Should -Be $true
@@ -8423,6 +8425,57 @@ agent-slots:
         $registry.slots.'worker-1'.model | Should -Be 'opus'
         $registry.slots.'worker-1'.prompt_transport | Should -Be 'file'
         $registry.slots.'worker-1'.reason | Should -Be 'operator requested provider switch'
+    }
+
+    It 'documents provider-switch restart and routes it through the manifest-backed restart helper' {
+        $script:winsmuxCoreRawContent | Should -Match "'--restart'\s*\{"
+        $script:winsmuxCoreRawContent | Should -Match 'Get-PaneControlManifestEntries -ProjectDir \$projectDir'
+        $script:winsmuxCoreRawContent | Should -Match 'Confirm-Target \(\[string\]\$manifestEntry\[0\]\.PaneId\)'
+        $script:winsmuxCoreRawContent | Should -Match 'Invoke-RestartPane -PaneId'
+        $script:winsmuxCoreRawContent | Should -Match 'restart_requested'
+        $script:winsmuxCoreRawContent | Should -Match 'restart_pane_id'
+    }
+
+    It 'rejects provider-switch restart when the manifest pane id is stale before writing the registry' {
+        $winsmuxBin = Join-Path $script:providerSwitchTempRoot 'bin'
+        New-Item -ItemType Directory -Path $winsmuxBin -Force | Out-Null
+        @'
+@echo off
+if "%1"=="list-panes" (
+  echo %%live
+  exit /b 0
+)
+exit /b 0
+'@ | Set-Content -Path (Join-Path $winsmuxBin 'winsmux.cmd') -Encoding ASCII
+
+        New-Item -ItemType Directory -Path (Join-Path $script:providerSwitchTempRoot '.winsmux') -Force | Out-Null
+        $manifestContent = @'
+session:
+  name: winsmux-orchestra
+  project_dir: __PROJECT_DIR__
+panes:
+  worker-1:
+    pane_id: "%stale"
+    role: Builder
+    launch_dir: __PROJECT_DIR__
+'@
+        $manifestContent.Replace('__PROJECT_DIR__', $script:providerSwitchTempRoot) |
+            Set-Content -Path (Join-Path $script:providerSwitchTempRoot '.winsmux\manifest.yaml') -Encoding UTF8
+
+        $originalPath = $env:PATH
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $env:PATH = "$winsmuxBin$([System.IO.Path]::PathSeparator)$env:PATH"
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --restart --json 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            $env:PATH = $originalPath
+            Pop-Location
+        }
+
+        $exitCode | Should -Be 1
+        ($output | Out-String) | Should -Match 'invalid target: %stale'
+        Test-Path -LiteralPath (Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json') | Should -Be $false
     }
 }
 
