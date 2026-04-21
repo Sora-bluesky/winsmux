@@ -1179,11 +1179,18 @@ function Invoke-AgentMonitorCycle {
 
         $agentName = [string]$roleAgentConfig.Agent
         $modelName = [string]$roleAgentConfig.Model
+        $statusAgentName = [string](Get-MonitorPropertyValue -InputObject $roleAgentConfig -Name 'CapabilityAdapter' -Default '')
+        if ([string]::IsNullOrWhiteSpace($statusAgentName)) {
+            $statusAgentName = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'capability_adapter' -Default '')
+        }
+        if ([string]::IsNullOrWhiteSpace($statusAgentName)) {
+            $statusAgentName = $agentName
+        }
         $launchDirFromManifest = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'launch_dir' -Default '')
         $builderWorktreePath = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'builder_worktree_path' -Default '')
 
         $checkedCount++
-        $status = Get-PaneAgentStatus -PaneId $paneId -Agent $agentName -Role $role -ExecMode $paneExecMode -HungThreshold $IdleThreshold
+        $status = Get-PaneAgentStatus -PaneId $paneId -Agent $statusAgentName -Role $role -ExecMode $paneExecMode -HungThreshold $IdleThreshold
         $statusName = [string](Get-MonitorPropertyValue -InputObject $status -Name 'Status' -Default '')
 
         # TASK-240: override empty with bootstrap_invalid if manifest says so
@@ -1291,7 +1298,7 @@ function Invoke-AgentMonitorCycle {
         }
 
         $contextRemainingPercent = Get-MonitorContextRemainingPercent -Text $statusSnapshotTail
-        if ($agentName -eq 'codex' -and $statusName -eq 'ready' -and $null -ne $contextRemainingPercent) {
+        if ($statusAgentName -eq 'codex' -and $statusName -eq 'ready' -and $null -ne $contextRemainingPercent) {
             $result['ContextRemainingPercent'] = $contextRemainingPercent
             if ($contextRemainingPercent -le $ContextResetThresholdPercent) {
                 try {

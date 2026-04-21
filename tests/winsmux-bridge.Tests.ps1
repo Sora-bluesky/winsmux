@@ -2817,6 +2817,97 @@ panes:
         }
     }
 
+    It 'uses provider capability adapters during a monitor cycle' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  worker-2:
+    pane_id: %4
+    role: Worker
+    launch_dir: $tempRoot
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex-nightly": {
+      "adapter": "codex",
+      "command": "codex-nightly",
+      "prompt_transports": ["argv"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $manifestDir 'provider-capabilities.json') -Encoding UTF8
+            Write-BridgeProviderRegistryEntry `
+                -RootPath $tempRoot `
+                -SlotId 'worker-2' `
+                -Agent 'codex-nightly' `
+                -Model 'gpt-5.4-nightly' `
+                -PromptTransport 'argv' `
+                -Reason 'operator requested provider hot-swap' | Out-Null
+
+            Mock Get-PaneAgentStatus {
+                [PSCustomObject]@{
+                    Status       = 'ready'
+                    PaneId       = '%4'
+                    SnapshotTail = 'gpt-5.4   42% context left'
+                    SnapshotHash = 'hash-worker'
+                    ExitReason   = ''
+                }
+            }
+            Mock Update-MonitorIdleAlertState {
+                [ordered]@{
+                    ShouldAlert = $false
+                    Message     = ''
+                }
+            }
+            Mock Test-BuilderStall { $false }
+
+            Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                agent = 'codex'
+                model = 'gpt-5.4'
+                roles = [ordered]@{
+                    worker = [ordered]@{
+                        agent = 'codex'
+                        model = 'gpt-5.4'
+                    }
+                }
+                agent_slots = @(
+                    [ordered]@{
+                        slot_id = 'worker-2'
+                        runtime_role = 'worker'
+                        agent = 'codex'
+                        model = 'gpt-5.4'
+                    }
+                )
+            }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra' | Out-Null
+
+            Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+                $PaneId -eq '%4' -and $Agent -eq 'codex' -and $Role -eq 'Worker'
+            }
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
     It 'fails closed when the provider registry is malformed during a monitor cycle' {
         $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
         $manifestDir = Join-Path $tempRoot '.winsmux'
