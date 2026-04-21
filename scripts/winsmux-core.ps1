@@ -7009,7 +7009,7 @@ function Invoke-ProviderSwitch {
             Stop-WithError "provider-switch --restart target slot '$slotId' is not present in the orchestra manifest."
         }
 
-        $restartPaneId = [string]$manifestEntry[0].PaneId
+        $restartPaneId = Confirm-Target ([string]$manifestEntry[0].PaneId)
     }
 
     $entry = Write-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId -Agent $agent -Model $model -PromptTransport $promptTransport -Reason $reason
