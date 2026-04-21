@@ -598,7 +598,7 @@ function ConvertTo-BridgeProviderCapabilityEntry {
         }
 
         if ($key -in $stringFields) {
-            if (-not (Test-BridgeProviderRegistryScalarValue $pair.Value)) {
+            if ($pair.Value -isnot [string]) {
                 throw "Invalid provider capability field '$key'."
             }
 
@@ -688,6 +688,10 @@ function Read-BridgeProviderCapabilityRegistry {
 
     $version = 1
     if ($null -ne $parsed.PSObject -and $parsed.PSObject.Properties.Name -contains 'version') {
+        if ($parsed.version -isnot [int] -and $parsed.version -isnot [long]) {
+            throw "Invalid provider capability registry version at '$path'."
+        }
+
         $version = [int]$parsed.version
     }
     if ($version -ne 1) {

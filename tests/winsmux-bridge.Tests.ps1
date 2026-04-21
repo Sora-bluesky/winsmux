@@ -671,11 +671,55 @@ agent-slots:
 
 @'
 {
+  "version": "1",
+  "providers": {}
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw '*provider capability registry version*'
+
+@'
+{
+  "version": 1.1,
+  "providers": {}
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw '*provider capability registry version*'
+
+@'
+{
   "version": 1,
   "providers": []
 }
 '@ | Set-Content -Path $registryPath -Encoding UTF8
         { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw '*provider capability registry providers*'
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": true,
+      "command": "codex",
+      "prompt_transports": ["argv"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider capability field 'adapter'*"
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": 123,
+      "prompt_transports": ["argv"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider capability field 'command'*"
 
 @'
 {
