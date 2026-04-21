@@ -13,6 +13,9 @@ Describe 'winsmux npm release package contract' {
         $script:PackageReadmePath = Join-Path $script:PackageRoot 'README.md'
         $script:EntrypointPath = Join-Path $script:PackageRoot 'index.mjs'
         $script:StageScriptPath = Join-Path $script:RepoRoot 'scripts\stage-npm-release.mjs'
+        $script:ReleaseWorkflowPath = Join-Path $script:RepoRoot '.github\workflows\release-npm.yml'
+        $script:RootReadmePath = Join-Path $script:RepoRoot 'README.md'
+        $script:RootReadmeJaPath = Join-Path $script:RepoRoot 'README.ja.md'
         $script:OutputRoot = Join-Path $script:RepoRoot 'output\npm-release\winsmux'
 
         $nodeCommand = Get-Command node -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -122,6 +125,9 @@ Describe 'winsmux npm release package contract' {
         $result = Invoke-NodeProcess -Arguments @($script:EntrypointPath, 'help') -WorkingDirectory $script:PackageRoot
         $packageReadme = Get-Content -LiteralPath $script:PackageReadmePath -Raw -Encoding UTF8
         $packageJson = Get-Content -LiteralPath $script:PackageJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+        $rootReadme = Get-Content -LiteralPath $script:RootReadmePath -Raw -Encoding UTF8
+        $rootReadmeJa = Get-Content -LiteralPath $script:RootReadmeJaPath -Raw -Encoding UTF8
+        $releaseWorkflow = Get-Content -LiteralPath $script:ReleaseWorkflowPath -Raw -Encoding UTF8
 
         $result.ExitCode | Should -Be 1
         $result.StdOut | Should -Be ''
@@ -130,12 +136,24 @@ Describe 'winsmux npm release package contract' {
         $packageJson.description | Should -Match 'Windows npm install surface'
         $packageReadme | Should -Match '## Planned public contract'
         $packageReadme | Should -Match 'Windows only'
+        $packageReadme | Should -Match 'npm install -g winsmux'
         $packageReadme | Should -Match 'winsmux install'
         $packageReadme | Should -Match 'winsmux update'
         $packageReadme | Should -Match 'winsmux uninstall'
         $packageReadme | Should -Match 'winsmux version'
         $packageReadme | Should -Match 'winsmux help'
         $packageReadme | Should -Match 'same GitHub release tag'
+        $packageReadme | Should -Match '## Release gate'
+        $packageReadme | Should -Match 'Windows verify job'
+        $packageReadme | Should -Match 'tag-driven'
+        $rootReadme | Should -Match 'npm install -g winsmux'
+        $rootReadme | Should -Match 'Windows verification'
+        $rootReadmeJa | Should -Match 'npm install -g winsmux'
+        $rootReadmeJa | Should -Match 'Windows 検証'
+        $releaseWorkflow | Should -Match 'tags:\s*\r?\n\s*-\s*"v\*"'
+        $releaseWorkflow | Should -Match 'name:\s+Verify Windows entrypoint'
+        $releaseWorkflow | Should -Match 'if:\s+steps\.stage\.outputs\.publish_ready == ''true'''
+        $releaseWorkflow | Should -Match 'NODE_AUTH_TOKEN:\s+\$\{\{\s*secrets\.NPM_TOKEN\s*\}\}'
     }
 
     It 'skips staging while package publish stays gated' {
@@ -184,12 +202,16 @@ Describe 'winsmux npm release package contract' {
             @($stagedPackage.os) | Should -Be @('win32')
             $stagedReadme | Should -Match '## Planned public contract'
             $stagedReadme | Should -Match 'Windows only'
+            $stagedReadme | Should -Match 'npm install -g winsmux'
             $stagedReadme | Should -Match 'winsmux install'
             $stagedReadme | Should -Match 'winsmux update'
             $stagedReadme | Should -Match 'winsmux uninstall'
             $stagedReadme | Should -Match 'winsmux version'
             $stagedReadme | Should -Match 'winsmux help'
             $stagedReadme | Should -Match 'same GitHub release tag'
+            $stagedReadme | Should -Match '## Release gate'
+            $stagedReadme | Should -Match 'Windows verify job'
+            $stagedReadme | Should -Match 'tag-driven'
 
             $stagedEntrypoint = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'index.mjs') -Raw -Encoding UTF8
             $stagedEntrypoint | Should -Match 'const releaseTag = `v\$\{packageJson\.version\}`;'

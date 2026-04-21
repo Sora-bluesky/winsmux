@@ -14,12 +14,20 @@ to the bundled Windows installer flow.
 ## Planned public contract
 
 - Windows only
+- future public install command: `npm install -g winsmux`
 - `winsmux install`
 - `winsmux update`
 - `winsmux uninstall`
 - `winsmux version`
 - `winsmux help`
 - the npm package version will pin `install.ps1` to the same GitHub release tag
+
+## Release gate
+
+- the staged package must pass the Windows verify job
+- the publish workflow stays tag-driven
+- the publish job uses the staged package from `scripts/stage-npm-release.mjs`
+- repository publishing stays closed until that gate is intentionally opened
 
 This package stays gated in the repository until the installer contract,
 release verification, and public docs all match that surface.
