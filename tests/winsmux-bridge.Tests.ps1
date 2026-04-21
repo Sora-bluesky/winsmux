@@ -1643,6 +1643,29 @@ NEXT_ACTION: rerun focused verification
         $targets.VerifyTarget | Should -BeNullOrEmpty
     }
 
+    It 'blocks one-shot orchestration when verification is required but no structured verifier exists' {
+        $manifest = [PSCustomObject]@{
+            Session = [PSCustomObject]@{
+                name        = 'winsmux-orchestra'
+                project_dir = 'C:\repo'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\repo\.worktrees\builder-1'; supports_verification = 'true'; supports_structured_result = 'false' }
+                'researcher' = [PSCustomObject]@{ pane_id = '%3'; role = 'Researcher'; supports_verification = 'true'; supports_structured_result = 'false' }
+            }
+        }
+
+        Mock Read-TeamPipelineManifest { $manifest }
+        Mock Invoke-TeamPipelineBridge { throw 'pipeline should not dispatch without a structured verifier' }
+
+        $result = Invoke-TeamPipeline -Task 'Investigate cache drift' -Builder 'builder-1' -Researcher 'researcher'
+
+        $result.Success | Should -Be $false
+        $result.FinalStatus | Should -Be 'VERIFY_UNAVAILABLE'
+        $result.VerificationUnavailableReason | Should -Match 'structured results'
+        Should -Invoke Invoke-TeamPipelineBridge -Times 0 -Exactly
+    }
+
     It 'prefers reviewer then researcher for consult targets and skips builder-only runs' {
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel 'reviewer') | Should -Be 'reviewer'
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel '') | Should -Be 'researcher'

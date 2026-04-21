@@ -1312,10 +1312,17 @@ function Invoke-TeamPipeline {
         FinalConsult        = $null
         StuckConsults       = @()
         VerificationPackets = @()
+        VerificationUnavailableReason = ''
         SecurityVerdicts    = @()
         Attempts            = @()
         Success             = $false
         FinalStatus         = 'NOT_STARTED'
+    }
+
+    if (-not $SkipVerify -and [string]::IsNullOrWhiteSpace($targets.VerifyTarget)) {
+        $result.VerificationUnavailableReason = 'No verification target supports both verification and structured results.'
+        $result.FinalStatus = 'VERIFY_UNAVAILABLE'
+        return [PSCustomObject]$result
     }
 
     $planSummary = ''
