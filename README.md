@@ -159,6 +159,9 @@ bundled installer:
 winsmux install --profile full
 ```
 
+If `winsmux update` does not receive a new profile, it keeps the previously
+recorded profile from `~\.winsmux\install-profile`.
+
 ## Quick start
 
 The current public quick start uses `winsmux init` and `winsmux launch`. `winsmux compare` remains planned, while `/winsmux-start` remains a Claude Code dogfooding-only flow.
