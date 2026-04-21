@@ -125,7 +125,25 @@ function Get-TeamPipelinePaneCapabilityFlag {
         [Parameter(Mandatory = $true)][string]$Name
     )
 
-    return [bool](Get-TeamPipelineValue -InputObject $Pane -Name $Name -Default $false)
+    $value = Get-TeamPipelineValue -InputObject $Pane -Name $Name -Default $false
+    if ($value -is [bool]) {
+        return [bool]$value
+    }
+
+    $text = ([string]$value).Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $false
+    }
+
+    if ([string]::Equals($text, 'true', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+
+    if ([string]::Equals($text, 'false', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+
+    return $false
 }
 
 function Get-TeamPipelineCapabilityTarget {

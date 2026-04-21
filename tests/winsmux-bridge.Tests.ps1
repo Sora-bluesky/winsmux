@@ -1592,9 +1592,9 @@ NEXT_ACTION: rerun focused verification
     It 'uses manifest capability flags when no explicit verification target is supplied' {
         $manifest = [PSCustomObject]@{
             Panes = [ordered]@{
-                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = $false }
-                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = $true }
-                'reviewer' = [ordered]@{ role = 'Reviewer'; supports_verification = $true }
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'true' }
+                'reviewer' = [ordered]@{ role = 'Reviewer'; supports_verification = 'true' }
             }
         }
 
@@ -1606,8 +1606,8 @@ NEXT_ACTION: rerun focused verification
     It 'falls back to configured researcher when no manifest verification capability is available' {
         $manifest = [PSCustomObject]@{
             Panes = [ordered]@{
-                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = $false }
-                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = $false }
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'false' }
             }
         }
 
@@ -1626,8 +1626,8 @@ NEXT_ACTION: rerun focused verification
     It 'uses manifest consultation capability when no explicit consult target is supplied' {
         $manifest = [PSCustomObject]@{
             Panes = [ordered]@{
-                'worker-1' = [ordered]@{ role = 'Worker'; supports_consultation = $false }
-                'worker-2' = [ordered]@{ role = 'Worker'; supports_consultation = $true }
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_consultation = 'false' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_consultation = 'true' }
             }
         }
 
