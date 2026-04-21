@@ -2178,6 +2178,52 @@ panes:
         }
     }
 
+    It 'fails closed when the provider registry is malformed during a monitor cycle' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        $registryPath = Join-Path $manifestDir 'provider-registry.json'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  worker-2:
+    pane_id: %4
+    role: Worker
+    launch_dir: $tempRoot
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+            '{ invalid json' | Set-Content -Path $registryPath -Encoding UTF8
+
+            Mock Get-PaneAgentStatus {
+                throw 'Get-PaneAgentStatus should not be called when provider registry is malformed.'
+            }
+            Mock Update-MonitorIdleAlertState { throw 'Update-MonitorIdleAlertState should not be called.' }
+            Mock Test-BuilderStall { throw 'Test-BuilderStall should not be called.' }
+
+            {
+                Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                    agent = 'codex'
+                    model = 'gpt-5.4'
+                    roles = [ordered]@{
+                        worker = [ordered]@{
+                            agent = 'codex'
+                            model = 'gpt-5.4'
+                        }
+                    }
+                }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra'
+            } | Should -Throw "*Invalid provider registry JSON*"
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
     It 'writes state, idle, and stalled events for detected pane states during a monitor cycle' {
         $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
         $manifestDir = Join-Path $tempRoot '.winsmux'
@@ -4601,6 +4647,48 @@ panes:
         $workload.BusyRatio | Should -BeLessThan 0.67
     }
 
+    It 'uses provider registry overrides when calculating Builder workload' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+        Write-BridgeProviderRegistryEntry `
+            -RootPath $script:paneScalerTempRoot `
+            -SlotId 'builder-1' `
+            -Agent 'claude' `
+            -Model 'opus' `
+            -PromptTransport 'file' `
+            -Reason 'operator requested provider hot-swap' | Out-Null
+
+        Mock Get-PaneAgentStatus {
+            [PSCustomObject]@{ Status = 'ready'; ExitReason = '' }
+        }
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            roles = [ordered]@{
+                builder = [ordered]@{
+                    agent = 'codex'
+                    model = 'gpt-5.4'
+                }
+            }
+        }
+
+        Get-PaneWorkload -ManifestPath $script:paneScalerManifestPath -Settings $settings | Out-Null
+
+        Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2' -and $Agent -eq 'claude' -and $Role -eq 'Builder'
+        }
+    }
+
     It 'reads dictionary-style pane manifests written by orchestra-start' {
         @"
 version: 1
@@ -4653,6 +4741,61 @@ panes:
         $content | Should -Match "panes:\r?\n  'builder-1':"
         $content | Should -Not -Match "panes:\r?\n  - label:"
         $content | Should -Match "saved_at: '2026-04-09T11:00:00\+09:00'"
+    }
+
+    It 'uses provider registry overrides when adding a Builder pane' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    launch_dir: $script:paneScalerTempRoot
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+        Write-BridgeProviderRegistryEntry `
+            -RootPath $script:paneScalerTempRoot `
+            -SlotId 'builder-2' `
+            -Agent 'claude' `
+            -Model 'opus' `
+            -PromptTransport 'file' `
+            -Reason 'operator requested provider hot-swap' | Out-Null
+
+        Mock New-PaneScalerBuilderWorktree {
+            [PSCustomObject]@{
+                BranchName     = 'worktree-builder-2'
+                WorktreePath   = Join-Path $script:paneScalerTempRoot '.worktrees\builder-2'
+                GitWorktreeDir = Join-Path $script:paneScalerTempRoot '.git\worktrees\builder-2'
+            }
+        }
+        Mock Invoke-MonitorWinsmux {
+            if ($Arguments -contains '-F') {
+                return '%3'
+            }
+            return ''
+        }
+        Mock Wait-MonitorPaneShellReady { }
+        Mock Send-MonitorBridgeCommand { }
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            roles = [ordered]@{
+                builder = [ordered]@{
+                    agent = 'codex'
+                    model = 'gpt-5.4'
+                }
+            }
+        }
+
+        Add-OrchestraPane -ManifestPath $script:paneScalerManifestPath -Settings $settings | Out-Null
+
+        Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%3' -and $Text -eq 'claude --permission-mode bypassPermissions'
+        }
     }
 
     It 'scales up when workload exceeds the threshold' {
