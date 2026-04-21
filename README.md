@@ -135,6 +135,9 @@ You can also download a release `.zip` from GitHub Releases or build from source
 - `winsmux compare` remains a planned public-first entrypoint
 - npm-based installation is planned
 - the public npm install surface will be a **single `winsmux` package**
+- the planned npm contract is **Windows only**
+- the planned npm commands are `winsmux install`, `winsmux update`, `winsmux uninstall`, `winsmux version`, and `winsmux help`
+- the npm package version is expected to pin `install.ps1` to the same GitHub release tag
 - current internal packages such as `winsmux-mcp` and the private `winsmux-app` build are **not** the public npm install contract
 - the npm package name `winsmux` is already reserved, but repository-driven npm release remains gated until the public installer contract is ready
 
