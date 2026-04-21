@@ -7784,6 +7784,62 @@ Describe 'public first-run helper' {
     }
 }
 
+Describe 'winsmux provider-switch command' {
+    BeforeAll {
+        $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreRawContent = Get-Content -Path $script:winsmuxCoreRawPath -Raw -Encoding UTF8
+    }
+
+    BeforeEach {
+        $script:providerSwitchTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-provider-switch-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:providerSwitchTempRoot -Force | Out-Null
+        @'
+agent: codex
+model: gpt-5.4
+prompt-transport: argv
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:providerSwitchTempRoot '.winsmux.yaml') -Encoding UTF8
+    }
+
+    AfterEach {
+        if ($script:providerSwitchTempRoot -and (Test-Path $script:providerSwitchTempRoot)) {
+            Remove-Item -Path $script:providerSwitchTempRoot -Recurse -Force
+        }
+    }
+
+    It 'documents provider-switch in usage and writes a provider registry entry' {
+        $script:winsmuxCoreRawContent | Should -Match 'provider-switch <slot> \[--agent <name>\] \[--model <name>\] \[--prompt-transport <argv\|file\|stdin>\]'
+        $script:winsmuxCoreRawContent | Should -Match "'provider-switch'\s*\{"
+
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --prompt-transport file --reason 'operator requested provider switch' --json
+        } finally {
+            Pop-Location
+        }
+
+        $result = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $result.slot_id | Should -Be 'worker-1'
+        $result.agent | Should -Be 'claude'
+        $result.model | Should -Be 'opus'
+        $result.prompt_transport | Should -Be 'file'
+        $result.source | Should -Be 'registry'
+
+        $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
+        Test-Path -LiteralPath $registryPath | Should -Be $true
+        $registry = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $registry.slots.'worker-1'.agent | Should -Be 'claude'
+        $registry.slots.'worker-1'.model | Should -Be 'opus'
+        $registry.slots.'worker-1'.prompt_transport | Should -Be 'file'
+        $registry.slots.'worker-1'.reason | Should -Be 'operator requested provider switch'
+    }
+}
+
 Describe 'winsmux orchestra-smoke command' {
     BeforeAll {
         $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'

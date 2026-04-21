@@ -6930,6 +6930,92 @@ function Invoke-ConsultError {
     Write-ConsultationCommandRecord -Kind 'consult_error' -Mode ([string]$args.mode) -Message ([string]$args.message) -TargetSlot ([string]$args.target_slot)
 }
 
+function Invoke-ProviderSwitch {
+    $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
+    if ($tokens.Count -lt 1) {
+        Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--json]"
+    }
+
+    $slotId = [string]$tokens[0]
+    $agent = ''
+    $model = ''
+    $promptTransport = ''
+    $reason = ''
+    $jsonOutput = $false
+
+    for ($index = 1; $index -lt $tokens.Count; $index++) {
+        switch ($tokens[$index]) {
+            '--agent' {
+                if ($index + 1 -ge $tokens.Count) {
+                    Stop-WithError '--agent requires a value'
+                }
+                $agent = [string]$tokens[$index + 1]
+                $index++
+            }
+            '--model' {
+                if ($index + 1 -ge $tokens.Count) {
+                    Stop-WithError '--model requires a value'
+                }
+                $model = [string]$tokens[$index + 1]
+                $index++
+            }
+            '--prompt-transport' {
+                if ($index + 1 -ge $tokens.Count) {
+                    Stop-WithError '--prompt-transport requires a value'
+                }
+                $promptTransport = [string]$tokens[$index + 1]
+                $index++
+            }
+            '--reason' {
+                if ($index + 1 -ge $tokens.Count) {
+                    Stop-WithError '--reason requires a value'
+                }
+                $reason = [string]$tokens[$index + 1]
+                $index++
+            }
+            '--json' {
+                $jsonOutput = $true
+            }
+            default {
+                Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--json]"
+            }
+        }
+    }
+
+    $projectDir = (Get-Location).Path
+    $settings = Get-BridgeSettings -RootPath $projectDir
+    $knownSlot = $false
+    foreach ($slot in @($settings.agent_slots)) {
+        if ([string]::Equals([string]$slot.slot_id, $slotId, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $knownSlot = $true
+            break
+        }
+    }
+    if (-not $knownSlot) {
+        Stop-WithError "provider-switch target slot '$slotId' is not present in agent_slots."
+    }
+
+    $entry = Write-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId -Agent $agent -Model $model -PromptTransport $promptTransport -Reason $reason
+    $effective = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $settings -RootPath $projectDir
+    $result = [ordered]@{
+        slot_id          = $slotId
+        agent            = [string]$effective.Agent
+        model            = [string]$effective.Model
+        prompt_transport = [string]$effective.PromptTransport
+        source           = [string]$effective.Source
+        registry_path    = Get-BridgeProviderRegistryPath -RootPath $projectDir
+        updated_at_utc   = [string]$entry.updated_at_utc
+        reason           = if ($entry.Contains('reason')) { [string]$entry.reason } else { '' }
+    }
+
+    if ($jsonOutput) {
+        $result | ConvertTo-Json -Depth 8 -Compress | Write-Output
+        return
+    }
+
+    Write-Output "provider switched for ${slotId}: $($result.agent) / $($result.model) ($($result.prompt_transport))"
+}
+
 function Show-Usage {
     Write-Output @"
 winsmux $VERSION - winsmux bridge for winsmux
@@ -6963,6 +7049,7 @@ Commands:
   consult-request <mode> [--message <text>] [--target-slot <slot>]  Record a consultation request packet/event
   consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json]  Record a consultation result packet/event
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
+  provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--json]  Record a runtime provider reassignment for a managed slot
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
   wait <channel> [timeout]  Block until signal received (replaces polling)
@@ -7435,6 +7522,7 @@ switch ($Command) {
     'consult-request' { Invoke-ConsultRequest }
     'consult-result'  { Invoke-ConsultResult }
     'consult-error'   { Invoke-ConsultError }
+    'provider-switch' { Invoke-ProviderSwitch }
     'rebind-worktree' { Invoke-RebindWorktree }
     ''                { Show-Usage }
     default           { Stop-WithError "unknown command: $Command. Run without arguments for usage." }
