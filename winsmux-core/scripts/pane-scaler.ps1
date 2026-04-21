@@ -169,8 +169,18 @@ function Get-PaneScalerLaunchCommand {
         [Parameter(Mandatory = $true)][string]$Agent,
         [Parameter(Mandatory = $true)][string]$Model,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$GitWorktreeDir
+        [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
+        [string]$RootPath = ''
     )
+
+    if (Get-Command Get-BridgeProviderLaunchCommand -ErrorAction SilentlyContinue) {
+        return Get-BridgeProviderLaunchCommand `
+            -ProviderId $Agent `
+            -Model $Model `
+            -ProjectDir $ProjectDir `
+            -GitWorktreeDir $GitWorktreeDir `
+            -RootPath $RootPath
+    }
 
     switch ($Agent.Trim().ToLowerInvariant()) {
         'codex' {
@@ -401,7 +411,7 @@ function Add-OrchestraPane {
         }
 
         Wait-MonitorPaneShellReady -PaneId $newPaneId
-        Send-MonitorBridgeCommand -PaneId $newPaneId -Text (Get-PaneScalerLaunchCommand -Agent ([string]$roleAgentConfig.Agent) -Model ([string]$roleAgentConfig.Model) -ProjectDir $worktree.WorktreePath -GitWorktreeDir $worktree.GitWorktreeDir)
+        Send-MonitorBridgeCommand -PaneId $newPaneId -Text (Get-PaneScalerLaunchCommand -Agent ([string]$roleAgentConfig.Agent) -Model ([string]$roleAgentConfig.Model) -ProjectDir $worktree.WorktreePath -GitWorktreeDir $worktree.GitWorktreeDir -RootPath $projectDir)
 
         $newPane = [ordered]@{
             label                = $newLabel

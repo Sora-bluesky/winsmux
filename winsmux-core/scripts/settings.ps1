@@ -658,6 +658,22 @@ function ConvertTo-BridgeProviderCapabilityEntry {
     return $entry
 }
 
+function ConvertTo-BridgePowerShellLiteral {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    return "'" + ($Value -replace "'", "''") + "'"
+}
+
+function ConvertTo-BridgePowerShellCommandInvocation {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    if ($Value -match '^[a-zA-Z0-9_.:/\\-]+$') {
+        return $Value
+    }
+
+    return '& ' + (ConvertTo-BridgePowerShellLiteral -Value $Value)
+}
+
 function Read-BridgeProviderCapabilityRegistry {
     param([string]$RootPath)
 
@@ -748,6 +764,35 @@ function Get-BridgeProviderCapability {
     return $null
 }
 
+function Resolve-BridgeProviderCapability {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProviderId,
+        [string]$RootPath,
+        [switch]$RequireWhenRegistryPresent
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ProviderId)) {
+        return $null
+    }
+
+    $registry = Read-BridgeProviderCapabilityRegistry -RootPath $RootPath
+    if ($registry.providers.Count -lt 1) {
+        return $null
+    }
+
+    foreach ($entry in $registry.providers.GetEnumerator()) {
+        if ([string]::Equals([string]$entry.Key, $ProviderId, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $entry.Value
+        }
+    }
+
+    if ($RequireWhenRegistryPresent) {
+        throw "Provider capability '$ProviderId' was not found."
+    }
+
+    return $null
+}
+
 function Assert-BridgeProviderCapabilityTransport {
     param(
         [Parameter(Mandatory = $true)][string]$ProviderId,
@@ -759,21 +804,9 @@ function Assert-BridgeProviderCapabilityTransport {
         return
     }
 
-    $registry = Read-BridgeProviderCapabilityRegistry -RootPath $RootPath
-    if ($registry.providers.Count -lt 1) {
-        return
-    }
-
-    $capability = $null
-    foreach ($entry in $registry.providers.GetEnumerator()) {
-        if ([string]::Equals([string]$entry.Key, $ProviderId, [System.StringComparison]::OrdinalIgnoreCase)) {
-            $capability = $entry.Value
-            break
-        }
-    }
-
+    $capability = Resolve-BridgeProviderCapability -ProviderId $ProviderId -RootPath $RootPath -RequireWhenRegistryPresent
     if ($null -eq $capability) {
-        throw "Provider capability '$ProviderId' was not found."
+        return
     }
 
     $transports = @()
@@ -789,6 +822,57 @@ function Assert-BridgeProviderCapabilityTransport {
     $supportedTransports = @($transports | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() })
     if ($requestedTransport -notin $supportedTransports) {
         throw "Provider capability '$ProviderId' does not support prompt_transport '$requestedTransport'. Supported values: $($supportedTransports -join ', ')."
+    }
+}
+
+function Get-BridgeProviderLaunchCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProviderId,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
+        [string]$RootPath,
+        [bool]$ExecMode = $false
+    )
+
+    $provider = $ProviderId.Trim()
+    if ([string]::IsNullOrWhiteSpace($provider)) {
+        throw 'Provider id must not be empty.'
+    }
+
+    $capability = Resolve-BridgeProviderCapability -ProviderId $provider -RootPath $RootPath -RequireWhenRegistryPresent
+    $adapter = $provider
+    $command = $provider
+    if ($null -ne $capability) {
+        $adapter = [string]$capability.adapter
+        $command = [string]$capability.command
+    }
+
+    $adapterKey = $adapter.Trim().ToLowerInvariant()
+    $commandInvocation = ConvertTo-BridgePowerShellCommandInvocation -Value $command
+    switch ($adapterKey) {
+        'codex' {
+            if ($ExecMode) {
+                return ''
+            }
+
+            $projectLiteral = ConvertTo-BridgePowerShellLiteral -Value $ProjectDir
+            $worktreeLiteral = ConvertTo-BridgePowerShellLiteral -Value $GitWorktreeDir
+            return "$commandInvocation -c model=$Model --sandbox danger-full-access -C $projectLiteral --add-dir $worktreeLiteral"
+        }
+        'claude' {
+            $parts = @($commandInvocation)
+            if (-not [string]::IsNullOrWhiteSpace($Model)) {
+                $parts += '--model'
+                $parts += (ConvertTo-BridgePowerShellLiteral -Value $Model)
+            }
+            $parts += '--permission-mode'
+            $parts += 'bypassPermissions'
+            return ($parts -join ' ')
+        }
+        default {
+            throw "Unsupported provider adapter '$adapter' for provider '$provider'."
+        }
     }
 }
 
