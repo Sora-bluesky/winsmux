@@ -7377,6 +7377,29 @@ function Invoke-MailboxListen {
 }
 
 # --- Kill / Restart ---
+function Get-RestartReadinessAgentName {
+    param(
+        [Parameter(Mandatory = $true)]$Plan
+    )
+
+    $readinessAgent = ''
+    if ($Plan -is [System.Collections.IDictionary] -and $Plan.Contains('CapabilityAdapter')) {
+        $readinessAgent = [string]$Plan['CapabilityAdapter']
+    } elseif ($null -ne $Plan.PSObject -and ($Plan.PSObject.Properties.Name -contains 'CapabilityAdapter')) {
+        $readinessAgent = [string]$Plan.CapabilityAdapter
+    }
+
+    if ([string]::IsNullOrWhiteSpace($readinessAgent)) {
+        if ($Plan -is [System.Collections.IDictionary] -and $Plan.Contains('Agent')) {
+            $readinessAgent = [string]$Plan['Agent']
+        } else {
+            $readinessAgent = [string]$Plan.Agent
+        }
+    }
+
+    return $readinessAgent
+}
+
 function Invoke-Kill {
     if (-not $Target) { Stop-WithError "usage: winsmux kill <target>" }
     if ($Rest -and $Rest.Count -gt 0) { Stop-WithError "usage: winsmux kill <target>" }
@@ -7434,7 +7457,9 @@ function Invoke-RestartPane {
     Clear-ReadMark $PaneId
     Clear-Watermark $PaneId
 
-    if ($plan.Agent.Trim().ToLowerInvariant() -eq 'codex') {
+    $restartReadinessAgent = Get-RestartReadinessAgentName -Plan $plan
+
+    if ($restartReadinessAgent.Trim().ToLowerInvariant() -eq 'codex') {
         $deadline = (Get-Date).AddSeconds(60)
         while ((Get-Date) -lt $deadline) {
             if (Test-CodexReadyPrompt $PaneId) {

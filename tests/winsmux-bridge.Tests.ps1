@@ -2112,6 +2112,57 @@ agent_slots:
         $plan.LaunchCommand | Should -Be "claude --model 'opus' --permission-mode bypassPermissions"
     }
 
+    It 'projects provider capability adapters into restart plans' {
+@"
+version: 1
+saved_at: '2026-04-07T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: '${script:paneControlTempRoot}'
+  git_worktree_dir: '${script:paneControlTempRoot}\.git'
+panes:
+  - label: 'worker-1'
+    pane_id: '%2'
+    role: 'Worker'
+    exec_mode: false
+    launch_dir: '${script:paneControlTempRoot}'
+    task: null
+"@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex-nightly": {
+      "adapter": "codex",
+      "command": "codex-nightly",
+      "prompt_transports": ["argv", "file"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'provider-capabilities.json') -Encoding UTF8
+        Write-BridgeProviderRegistryEntry `
+            -RootPath $script:paneControlTempRoot `
+            -SlotId 'worker-1' `
+            -Agent 'codex-nightly' `
+            -Model 'gpt-5.4-nightly' `
+            -PromptTransport 'argv' `
+            -Reason 'operator requested provider hot-swap' | Out-Null
+        $settings = Get-BridgeSettings -RootPath $script:paneControlTempRoot
+
+        $plan = Get-PaneControlRestartPlan -ProjectDir $script:paneControlTempRoot -PaneId '%2' -Settings $settings
+
+        $plan.Agent | Should -Be 'codex-nightly'
+        $plan.CapabilityAdapter | Should -Be 'codex'
+        $plan.LaunchCommand | Should -Match '^codex-nightly -c model=gpt-5\.4-nightly'
+    }
+
     It 'includes slot-level prompt transport overrides in the restart plan' {
 @'
 version: 1
@@ -8960,6 +9011,15 @@ Describe 'winsmux send dispatch payload' {
         $script:winsmuxCoreSendRawContent | Should -Match 'CapabilityCommand'
     }
 
+    It 'resolves restart readiness through dictionary capability adapters' {
+        $plan = [ordered]@{
+            Agent = 'codex-nightly'
+            CapabilityAdapter = 'codex'
+        }
+
+        Get-RestartReadinessAgentName -Plan $plan | Should -Be 'codex'
+    }
+
     It 'writes long text to a dispatch file and returns a prompt pointer for non-exec panes' {
         $longText = 'a' * 4001
 
@@ -9543,6 +9603,7 @@ agent-slots:
         $script:winsmuxCoreRawContent | Should -Match 'Get-PaneControlManifestEntries -ProjectDir \$projectDir'
         $script:winsmuxCoreRawContent | Should -Match 'Confirm-Target \(\[string\]\$manifestEntry\[0\]\.PaneId\)'
         $script:winsmuxCoreRawContent | Should -Match 'Invoke-RestartPane -PaneId'
+        $script:winsmuxCoreRawContent | Should -Match '\$restartReadinessAgent\s*=\s*Get-RestartReadinessAgentName -Plan \$plan'
         $script:winsmuxCoreRawContent | Should -Match 'Remove-BridgeProviderRegistryEntry -RootPath \$projectDir -SlotId \$slotId'
         $script:winsmuxCoreRawContent | Should -Match 'clear_requested'
         $script:winsmuxCoreRawContent | Should -Match 'restart_requested'
