@@ -8892,6 +8892,8 @@ Describe 'winsmux send dispatch payload' {
     It 'resolves managed pane send settings through the project capability root' {
         $script:winsmuxCoreSendRawContent | Should -Match 'Get-SlotAgentConfig -Role \$context\.Role -SlotId \$context\.Label -RootPath \$projectDir'
         $script:winsmuxCoreSendRawContent | Should -Match 'Provider capability'
+        $script:winsmuxCoreSendRawContent | Should -Match 'CapabilityAdapter'
+        $script:winsmuxCoreSendRawContent | Should -Match 'CapabilityCommand'
     }
 
     It 'writes long text to a dispatch file and returns a prompt pointer for non-exec panes' {
@@ -8954,6 +8956,39 @@ Describe 'winsmux send dispatch payload' {
         $plan['PromptPath'] | Should -Not -BeNullOrEmpty
         (Get-Content -LiteralPath $plan['PromptPath'] -Raw -Encoding UTF8).TrimEnd("`r", "`n") | Should -BeExactly ('a' * 5000)
         $plan['ExecInstruction'] | Should -Match 'codex exec'
+    }
+
+    It 'uses the provider capability command for exec-mode send plans' {
+        $plan = Resolve-SendTransportPlan `
+            -Text 'Summarize status' `
+            -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 `
+            -PromptTransport 'argv' `
+            -ExecMode:$true `
+            -LaunchDir 'C:\repo' `
+            -GitWorktreeDir 'C:\repo' `
+            -Model 'gpt-5.4-nightly' `
+            -ExecCommand 'codex-nightly'
+
+        $plan['Mode'] | Should -Be 'codex_exec_file'
+        $plan['ExecInstruction'] | Should -Match '^codex-nightly exec'
+        $plan['ExecInstruction'] | Should -Not -Match '^codex exec'
+    }
+
+    It 'quotes provider capability executable paths for exec-mode send plans' {
+        $plan = Resolve-SendTransportPlan `
+            -Text 'Summarize status' `
+            -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 `
+            -PromptTransport 'argv' `
+            -ExecMode:$true `
+            -LaunchDir 'C:\repo' `
+            -GitWorktreeDir 'C:\repo' `
+            -Model 'gpt-5.4-nightly' `
+            -ExecCommand 'C:\Tools\Codex Nightly\codex.exe'
+
+        $plan['Mode'] | Should -Be 'codex_exec_file'
+        $plan['ExecInstruction'] | Should -Match "^& 'C:\\Tools\\Codex Nightly\\codex.exe' exec"
     }
 
     It 'normalizes task prompt slugs and writes a stable task prompt file when task_slug is supplied' {
