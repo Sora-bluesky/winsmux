@@ -25,10 +25,17 @@ function Get-AgentLaunchCommand {
 function Get-AgentBootstrapPrompt {
     param(
         [Parameter(Mandatory = $true)][string]$Agent,
-        [Parameter(Mandatory = $true)][string]$Role
+        [Parameter(Mandatory = $true)][string]$Role,
+        [string]$RootPath
     )
 
-    if ($Agent.Trim().ToLowerInvariant() -ne 'codex') {
+    $adapter = $Agent.Trim()
+    $capability = Resolve-BridgeProviderCapability -ProviderId $adapter -RootPath $RootPath -RequireWhenRegistryPresent
+    if ($null -ne $capability) {
+        $adapter = [string](Get-BridgeProviderCapabilityValue -Capability $capability -Name 'adapter' -Default $adapter)
+    }
+
+    if ($adapter.Trim().ToLowerInvariant() -ne 'codex') {
         return $null
     }
 

@@ -176,6 +176,55 @@ Describe 'agent launch helpers' {
         (Get-AgentBootstrapPrompt -Agent 'codex' -Role 'Reviewer') | Should -BeNullOrEmpty
         (Get-AgentBootstrapPrompt -Agent 'claude' -Role 'Builder') | Should -BeNullOrEmpty
     }
+
+    It 'uses provider capability adapters for Codex bootstrap prompts' {
+        $root = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-bootstrap-tests-' + [guid]::NewGuid().ToString('N'))
+        try {
+            $registryDir = Join-Path $root '.winsmux'
+            New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex-nightly": {
+      "adapter": "codex",
+      "command": "codex-nightly",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    },
+    "claude-opus": {
+      "adapter": "claude",
+      "command": "claude",
+      "prompt_transports": ["argv"],
+      "supports_parallel_runs": false,
+      "supports_interrupt": true,
+      "supports_structured_result": false,
+      "supports_file_edit": true,
+      "supports_subagents": false,
+      "supports_verification": false,
+      "supports_consultation": true
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $registryDir 'provider-capabilities.json') -Encoding UTF8
+
+            $prompt = Get-AgentBootstrapPrompt -Agent 'codex-nightly' -Role 'Builder' -RootPath $root
+            $prompt | Should -Match 'ConstrainedLanguageMode'
+            $prompt | Should -Match 'apply_patch'
+
+            Get-AgentBootstrapPrompt -Agent 'claude-opus' -Role 'Builder' -RootPath $root | Should -BeNullOrEmpty
+        } finally {
+            if (Test-Path -LiteralPath $root) {
+                Remove-Item -LiteralPath $root -Recurse -Force
+            }
+        }
+    }
 }
 
 Describe 'manifest round-trip' {
