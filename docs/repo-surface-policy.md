@@ -23,6 +23,8 @@ Rules:
 - must not contain maintainer-local paths
 - must not require private planning roots or live operational notes
 - must not link readers directly into local-only operational files
+- may publish capability contracts, evidence contracts, and operator judgement rules
+- must not publish generic persona prompt bodies or maintainer-only skill bodies as product capabilities
 
 ## 2. Runtime contract surface
 
