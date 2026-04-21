@@ -359,6 +359,7 @@ function Get-PaneControlManifestEntries {
             ReviewRequired      = ConvertFrom-PaneControlBoolean -Value (Get-PaneControlValue -InputObject $pane -Name 'review_required' -Default $false) -Default $false
             ProviderTarget      = [string](Get-PaneControlValue -InputObject $pane -Name 'provider_target' -Default '')
             AgentRole           = [string](Get-PaneControlValue -InputObject $pane -Name 'agent_role' -Default '')
+            CapabilityAdapter   = [string](Get-PaneControlValue -InputObject $pane -Name 'capability_adapter' -Default '')
             TimeoutPolicy       = [string](Get-PaneControlValue -InputObject $pane -Name 'timeout_policy' -Default '')
             HandoffRefs         = @(ConvertFrom-PaneControlStringArray -Value (Get-PaneControlValue -InputObject $pane -Name 'handoff_refs' -Default @()))
             SecurityPolicy      = ConvertFrom-PaneControlSecurityPolicy -Value (Get-PaneControlValue -InputObject $pane -Name 'security_policy' -Default $null)
