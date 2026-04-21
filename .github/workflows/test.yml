@@ -7,6 +7,28 @@ on:
     branches: [main]
 
 jobs:
+  secret-scan:
+    name: Gitleaks Full History Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="8.30.0"
+          curl -fsSL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${version}/gitleaks_${version}_linux_x64.tar.gz"
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Run full-history secret scan
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/gitleaks-history.ps1
+
   public-surface:
     name: Public Surface Audit
     runs-on: windows-latest

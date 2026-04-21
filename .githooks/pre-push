@@ -30,3 +30,4 @@ fi
 
 "$pwsh_bin" -NoProfile -File "$repo_root_pwsh\\scripts\\git-guard.ps1" -Mode full
 "$pwsh_bin" -NoProfile -File "$repo_root_pwsh\\scripts\\audit-public-surface.ps1"
+"$pwsh_bin" -NoProfile -File "$repo_root_pwsh\\scripts\\gitleaks-history.ps1"
