@@ -225,12 +225,6 @@ function Get-PaneControlGitWorktreeDir {
     return $ProjectDir
 }
 
-function ConvertTo-PaneControlPowerShellLiteral {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
-
-    return "'" + ($Value -replace "'", "''") + "'"
-}
-
 function Get-PaneControlLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Agent,
@@ -240,26 +234,12 @@ function Get-PaneControlLaunchCommand {
         [string]$RootPath = ''
     )
 
-    if (Get-Command Get-BridgeProviderLaunchCommand -ErrorAction SilentlyContinue) {
-        return Get-BridgeProviderLaunchCommand `
-            -ProviderId $Agent `
-            -Model $Model `
-            -ProjectDir $ProjectDir `
-            -GitWorktreeDir $GitWorktreeDir `
-            -RootPath $RootPath
-    }
-
-    switch ($Agent.Trim().ToLowerInvariant()) {
-        'codex' {
-            return "codex -c model=$Model --sandbox danger-full-access -C $(ConvertTo-PaneControlPowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PaneControlPowerShellLiteral -Value $GitWorktreeDir)"
-        }
-        'claude' {
-            return 'claude --permission-mode bypassPermissions'
-        }
-        default {
-            throw "Unsupported agent setting: $Agent"
-        }
-    }
+    return Get-BridgeProviderLaunchCommand `
+        -ProviderId $Agent `
+        -Model $Model `
+        -ProjectDir $ProjectDir `
+        -GitWorktreeDir $GitWorktreeDir `
+        -RootPath $RootPath
 }
 
 function ConvertFrom-PaneControlManifestContent {
