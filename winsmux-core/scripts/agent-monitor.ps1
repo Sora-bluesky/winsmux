@@ -906,7 +906,14 @@ function Invoke-AgentRespawn {
         }
     }
 
+    $statusAgentName = $Agent
     try {
+        $providerCapability = Resolve-BridgeProviderCapability -ProviderId $Agent -RootPath $capabilityRootPath -RequireWhenRegistryPresent
+        $capabilityAdapter = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'adapter' -Default '')
+        if (-not [string]::IsNullOrWhiteSpace($capabilityAdapter)) {
+            $statusAgentName = $capabilityAdapter
+        }
+
         $launchCommand = Get-BridgeProviderLaunchCommand `
             -ProviderId $Agent `
             -Model $Model `
@@ -935,6 +942,10 @@ function Invoke-AgentRespawn {
                 $paneRole = [string](Get-MonitorPropertyValue -InputObject $manifestPaneValue -Name 'role' -Default '')
                 $execModeValue = [string](Get-MonitorPropertyValue -InputObject $manifestPaneValue -Name 'exec_mode' -Default '')
                 $paneExecMode = $execModeValue.Trim().ToLowerInvariant() -eq 'true'
+                $manifestCapabilityAdapter = [string](Get-MonitorPropertyValue -InputObject $manifestPaneValue -Name 'capability_adapter' -Default '')
+                if (-not [string]::IsNullOrWhiteSpace($manifestCapabilityAdapter)) {
+                    $statusAgentName = $manifestCapabilityAdapter
+                }
                 break
             }
         } catch {
@@ -942,7 +953,7 @@ function Invoke-AgentRespawn {
     }
 
     if ($paneExecMode) {
-        $currentStatus = Get-PaneAgentStatus -PaneId $PaneId -Agent $Agent -Role $paneRole -ExecMode $true
+        $currentStatus = Get-PaneAgentStatus -PaneId $PaneId -Agent $statusAgentName -Role $paneRole -ExecMode $true
         if ($currentStatus.Status -eq 'waiting_for_dispatch') {
             return [ordered]@{
                 Success = $true
@@ -970,7 +981,7 @@ function Invoke-AgentRespawn {
     $deadline = (Get-Date).AddSeconds($ReadyTimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 3
-        $status = Get-PaneAgentStatus -PaneId $PaneId -Agent $Agent -Role $paneRole -ExecMode $paneExecMode
+        $status = Get-PaneAgentStatus -PaneId $PaneId -Agent $statusAgentName -Role $paneRole -ExecMode $paneExecMode
         if ($status.Status -eq 'ready') {
             if (-not [string]::IsNullOrWhiteSpace($ManifestPath) -and (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
                 try {
