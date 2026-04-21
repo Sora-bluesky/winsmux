@@ -1592,9 +1592,9 @@ NEXT_ACTION: rerun focused verification
     It 'uses manifest capability flags when no explicit verification target is supplied' {
         $manifest = [PSCustomObject]@{
             Panes = [ordered]@{
-                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false' }
-                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'true' }
-                'reviewer' = [ordered]@{ role = 'Reviewer'; supports_verification = 'true' }
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false'; supports_structured_result = 'true' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'true'; supports_structured_result = 'true' }
+                'reviewer' = [ordered]@{ role = 'Reviewer'; supports_verification = 'true'; supports_structured_result = 'true' }
             }
         }
 
@@ -1603,11 +1603,25 @@ NEXT_ACTION: rerun focused verification
         $targets.VerifyTarget | Should -Be 'reviewer'
     }
 
+    It 'requires structured results for automatic verification targets' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false'; supports_structured_result = 'true' }
+                'reviewer' = [ordered]@{ role = 'Reviewer'; supports_verification = 'true'; supports_structured_result = 'false' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'true'; supports_structured_result = 'true' }
+            }
+        }
+
+        $targets = Get-TeamPipelineStageTargets -BuilderLabel 'worker-1' -ResearcherLabel '' -ReviewerLabel '' -Manifest $manifest
+
+        $targets.VerifyTarget | Should -Be 'worker-2'
+    }
+
     It 'falls back to configured researcher when no manifest verification capability is available' {
         $manifest = [PSCustomObject]@{
             Panes = [ordered]@{
-                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false' }
-                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'false' }
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false'; supports_structured_result = 'true' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'true'; supports_structured_result = 'false' }
             }
         }
 
