@@ -113,7 +113,10 @@ function Test-CodexSessionText {
 }
 
 function Get-PaneActualStateFromText {
-    param([AllowNull()][string]$Text)
+    param(
+        [AllowNull()][string]$Text,
+        [string]$Agent = 'codex'
+    )
 
     if ([string]::IsNullOrWhiteSpace($Text)) {
         return 'unknown'
@@ -124,15 +127,15 @@ function Get-PaneActualStateFromText {
         return 'pwsh'
     }
 
-    if (Test-CodexBusyIndicatorText -Text $Text) {
+    if ($Agent -eq 'codex' -and (Test-CodexBusyIndicatorText -Text $Text)) {
         return 'busy'
     }
 
-    if (Test-AgentPromptText -Text $Text -Agent 'codex') {
+    if (Test-AgentPromptText -Text $Text -Agent $Agent) {
         return 'idle'
     }
 
-    if (Test-CodexSessionText -Text $Text) {
+    if ($Agent -eq 'codex' -and (Test-CodexSessionText -Text $Text)) {
         return 'codex'
     }
 
@@ -216,6 +219,10 @@ function Get-PaneStatusRecords {
     foreach ($entry in $entries) {
         $snapshot = ''
         $state = 'unknown'
+        $stateAgent = [string]$entry.CapabilityAdapter
+        if ([string]::IsNullOrWhiteSpace($stateAgent)) {
+            $stateAgent = 'codex'
+        }
 
         if (-not [string]::IsNullOrWhiteSpace($entry.PaneId)) {
             try {
@@ -223,7 +230,7 @@ function Get-PaneStatusRecords {
                 if ($null -ne $captured) {
                     $snapshot = [string]$captured
                 }
-                $state = Get-PaneActualStateFromText -Text $snapshot
+                $state = Get-PaneActualStateFromText -Text $snapshot -Agent $stateAgent
             } catch {
                 $state = 'unknown'
             }

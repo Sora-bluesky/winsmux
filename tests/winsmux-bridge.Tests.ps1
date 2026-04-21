@@ -6098,6 +6098,35 @@ Esc to interrupt
 "@) | Should -Be 'busy'
     }
 
+    It 'uses manifest capability adapters when classifying pane captures' {
+        $manifestPath = Join-Path (Join-Path $script:paneStatusTempRoot '.winsmux') 'manifest.yaml'
+@'
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  reviewer:
+    pane_id: %4
+    role: Reviewer
+    capability_adapter: claude
+'@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+        $records = Get-PaneStatusRecords -ProjectDir $script:paneStatusTempRoot -SnapshotProvider {
+            param($PaneId)
+
+            if ($PaneId -eq '%4') {
+                return 'Welcome to Claude Code!'
+            }
+
+            throw "unexpected pane id: $PaneId"
+        }
+
+        $records.Count | Should -Be 1
+        $records[0].Label | Should -Be 'reviewer'
+        $records[0].State | Should -Be 'idle'
+    }
+
     It 'builds status rows from manifest panes and capture snapshots' {
         $records = Get-PaneStatusRecords -ProjectDir $script:paneStatusTempRoot -SnapshotProvider {
             param($PaneId)
