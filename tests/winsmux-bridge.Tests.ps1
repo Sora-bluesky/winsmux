@@ -4998,6 +4998,24 @@ Describe 'orchestra-start session reuse contract' {
         $script:orchestraStartContent | Should -Match 'supports_verification\s*=\s*\[bool\]\$paneSummary\.SupportsVerification'
     }
 
+    It 'uses the capability adapter for startup readiness detection' {
+        $summary = [pscustomobject]@{
+            Agent = 'codex-nightly'
+            CapabilityAdapter = 'codex'
+        }
+
+        Get-OrchestraReadinessAgentName -PaneSummary $summary | Should -Be 'codex'
+
+        $legacySummary = [pscustomobject]@{
+            Agent = 'codex'
+            CapabilityAdapter = ''
+        }
+
+        Get-OrchestraReadinessAgentName -PaneSummary $legacySummary | Should -Be 'codex'
+        $script:orchestraStartContent | Should -Match '\$readinessAgent\s*=\s*Get-OrchestraReadinessAgentName -PaneSummary \$paneSummary'
+        $script:orchestraStartContent | Should -Match 'Wait-AgentReady -PaneId \$paneSummary\.PaneId -Agent \$readinessAgent'
+    }
+
     It 'routes partial bootstrap invalid state into the startup rollback path by throwing' {
         {
             Assert-OrchestraBootstrapVerification -PaneSummaries @(
