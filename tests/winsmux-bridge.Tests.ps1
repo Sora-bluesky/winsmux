@@ -7507,6 +7507,132 @@ Describe 'winsmux task-run command' {
     }
 }
 
+Describe 'winsmux public first-run commands' {
+    BeforeAll {
+        $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreRawContent = Get-Content -Path $script:winsmuxCoreRawPath -Raw -Encoding UTF8
+        $script:publicFirstRunPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\public-first-run.ps1'
+        $script:publicFirstRunContent = Get-Content -Path $script:publicFirstRunPath -Raw -Encoding UTF8
+    }
+
+    It 'documents init and launch in usage and dispatches them through the public first-run helper' {
+        $script:winsmuxCoreRawContent | Should -Match 'init \[--json\] \[--project-dir <path>\] \[--force\] \[--agent <codex\|claude>\] \[--model <name>\] \[--worker-count <count>\]\s+Create or refresh public first-run config'
+        $script:winsmuxCoreRawContent | Should -Match 'launch \[--json\] \[--project-dir <path>\] \[--skip-doctor\]\s+Run public first-run checks and startup'
+        $script:winsmuxCoreRawContent | Should -Match "'init'\s*\{"
+        $script:winsmuxCoreRawContent | Should -Match "'launch'\s*\{"
+        $script:winsmuxCoreRawContent | Should -Match 'public-first-run\.ps1'
+        $script:publicFirstRunContent | Should -Match 'function Invoke-WinsmuxPublicInit'
+        $script:publicFirstRunContent | Should -Match 'function Invoke-WinsmuxPublicLaunch'
+        $script:publicFirstRunContent | Should -Match 'Run winsmux launch\.'
+    }
+}
+
+Describe 'public first-run helper' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\settings.ps1')
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\public-first-run.ps1')
+    }
+
+    BeforeEach {
+        $script:publicFirstRunTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-public-first-run-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:publicFirstRunTempRoot -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:publicFirstRunTempRoot -and (Test-Path $script:publicFirstRunTempRoot)) {
+            Remove-Item -Path $script:publicFirstRunTempRoot -Recurse -Force
+        }
+    }
+
+    It 'writes the default managed-slot config on init' {
+        $result = Invoke-WinsmuxPublicInit -ProjectDir $script:publicFirstRunTempRoot
+
+        $result.status | Should -Be 'initialized'
+        $result.created | Should -Be $true
+        $result.slot_count | Should -Be 6
+        $result.external_commander | Should -Be $true
+        Test-Path -LiteralPath $result.config_path | Should -Be $true
+
+        $settings = Get-BridgeSettings -RootPath $script:publicFirstRunTempRoot
+        $settings.external_commander | Should -Be $true
+        $settings.worker_count | Should -Be 6
+        $settings.agent_slots.Count | Should -Be 6
+        $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
+    }
+
+    It 'returns already_initialized when config exists and force is not set' {
+        $null = Invoke-WinsmuxPublicInit -ProjectDir $script:publicFirstRunTempRoot
+
+        $result = Invoke-WinsmuxPublicInit -ProjectDir $script:publicFirstRunTempRoot
+
+        $result.status | Should -Be 'already_initialized'
+        $result.created | Should -Be $false
+        $result.slot_count | Should -Be 6
+    }
+
+    It 'blocks launch when the project config is missing' {
+        $result = Invoke-WinsmuxPublicLaunch -ProjectDir $script:publicFirstRunTempRoot -SkipDoctor -BridgeScriptPath 'C:\bridge.ps1'
+
+        $result.status | Should -Be 'blocked'
+        $result.reason | Should -Be 'missing_config'
+        $result.next_action | Should -Be 'Run winsmux init first.'
+    }
+
+    It 'blocks launch when doctor fails before startup' {
+        $null = Invoke-WinsmuxPublicInit -ProjectDir $script:publicFirstRunTempRoot
+
+        Mock Invoke-WinsmuxPublicDoctorProbe {
+            [PSCustomObject]@{
+                exit_code = 1
+                output    = 'doctor failed'
+            }
+        }
+
+        $result = Invoke-WinsmuxPublicLaunch -ProjectDir $script:publicFirstRunTempRoot -BridgeScriptPath 'C:\bridge.ps1' -DoctorScriptPath 'C:\doctor.ps1'
+
+        $result.status | Should -Be 'blocked'
+        $result.reason | Should -Be 'doctor_failed'
+        $result.doctor_exit_code | Should -Be 1
+        $result.doctor_output | Should -Be 'doctor failed'
+    }
+
+    It 'returns the operator contract when startup smoke succeeds' {
+        $null = Invoke-WinsmuxPublicInit -ProjectDir $script:publicFirstRunTempRoot
+
+        Mock Invoke-WinsmuxPublicDoctorProbe {
+            [PSCustomObject]@{
+                exit_code = 0
+                output    = '[PASS] doctor'
+            }
+        }
+
+        Mock Invoke-WinsmuxPublicSmokeProbe {
+            [PSCustomObject]@{
+                exit_code   = 0
+                raw_output  = '{"operator_contract":{"operator_state":"ready","can_dispatch":true,"requires_startup":false,"operator_message":"ready","next_action":"Dispatch work or continue operator flow."}}'
+                parse_error = ''
+                parsed      = [PSCustomObject]@{
+                    operator_contract = [PSCustomObject]@{
+                        operator_state   = 'ready'
+                        can_dispatch     = $true
+                        requires_startup = $false
+                        operator_message = 'ready'
+                        next_action      = 'Dispatch work or continue operator flow.'
+                    }
+                }
+            }
+        }
+
+        $result = Invoke-WinsmuxPublicLaunch -ProjectDir $script:publicFirstRunTempRoot -BridgeScriptPath 'C:\bridge.ps1' -DoctorScriptPath 'C:\doctor.ps1'
+
+        $result.status | Should -Be 'ready'
+        $result.can_dispatch | Should -Be $true
+        $result.requires_startup | Should -Be $false
+        $result.operator_message | Should -Be 'ready'
+        $result.next_action | Should -Be 'Dispatch work or continue operator flow.'
+    }
+}
+
 Describe 'winsmux orchestra-smoke command' {
     BeforeAll {
         $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
