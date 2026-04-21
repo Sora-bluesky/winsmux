@@ -236,8 +236,18 @@ function Get-PaneControlLaunchCommand {
         [Parameter(Mandatory = $true)][string]$Agent,
         [Parameter(Mandatory = $true)][string]$Model,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$GitWorktreeDir
+        [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
+        [string]$RootPath = ''
     )
+
+    if (Get-Command Get-BridgeProviderLaunchCommand -ErrorAction SilentlyContinue) {
+        return Get-BridgeProviderLaunchCommand `
+            -ProviderId $Agent `
+            -Model $Model `
+            -ProjectDir $ProjectDir `
+            -GitWorktreeDir $GitWorktreeDir `
+            -RootPath $RootPath
+    }
 
     switch ($Agent.Trim().ToLowerInvariant()) {
         'codex' {
@@ -539,7 +549,7 @@ function Get-PaneControlRestartPlan {
         }
     }
 
-    $launchCommand = Get-PaneControlLaunchCommand -Agent $agentConfig.Agent -Model $agentConfig.Model -ProjectDir $context.LaunchDir -GitWorktreeDir $context.GitWorktreeDir
+    $launchCommand = Get-PaneControlLaunchCommand -Agent $agentConfig.Agent -Model $agentConfig.Model -ProjectDir $context.LaunchDir -GitWorktreeDir $context.GitWorktreeDir -RootPath $ProjectDir
 
     return [ordered]@{
         PaneId         = $context.PaneId

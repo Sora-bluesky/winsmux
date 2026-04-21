@@ -731,24 +731,17 @@ function Get-AgentLaunchCommand {
         [Parameter(Mandatory = $true)][string]$Model,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
+        [string]$RootPath,
         [bool]$ExecMode = $false
     )
 
-    switch ($Agent.Trim().ToLowerInvariant()) {
-        'codex' {
-            if ($ExecMode) {
-                return ''
-            }
-
-            return "codex -c model=$Model --sandbox danger-full-access -C $(ConvertTo-PowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PowerShellLiteral -Value $GitWorktreeDir)"
-        }
-        'claude' {
-            return "claude --model $Model --permission-mode bypassPermissions"
-        }
-        default {
-            throw "Unsupported agent setting: $Agent"
-        }
-    }
+    return Get-BridgeProviderLaunchCommand `
+        -ProviderId $Agent `
+        -Model $Model `
+        -ProjectDir $ProjectDir `
+        -GitWorktreeDir $GitWorktreeDir `
+        -RootPath $RootPath `
+        -ExecMode $ExecMode
 }
 
 function Get-VaultValue {
@@ -1999,7 +1992,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         $slotAgentConfig = Get-SlotAgentConfig -Role $canonicalRole -SlotId $label -Settings $settings -RootPath $projectDir
         $execMode = ([string]$slotAgentConfig.Agent).Trim().ToLowerInvariant() -eq 'codex'
-        $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -ExecMode $false
+        $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -RootPath $projectDir -ExecMode $false
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {

@@ -773,6 +773,37 @@ agent-slots:
         } | Should -Throw "*Provider capability 'claude' was not found*"
     }
 
+    It 'builds launch commands from provider capability adapter and command metadata' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex-local": {
+      "adapter": "codex",
+      "command": "codex-beta",
+      "prompt_transports": ["argv", "file"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+        $command = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'codex-local' `
+            -Model 'gpt-5.4' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+            -RootPath $script:settingsTempRoot
+
+        $command | Should -Match 'codex-beta'
+        $command | Should -Match '-c model=gpt-5\.4'
+        $command | Should -Match "-C 'C:\\Project Root'"
+        $command | Should -Match "--add-dir 'C:\\Project Root\\.git\\worktrees\\worker-1'"
+    }
+
     It 'rejects structurally malformed provider capability registries' {
         $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
         $registryDir = Split-Path -Parent $registryPath
@@ -1796,7 +1827,7 @@ panes:
         $plan.Agent | Should -Be 'claude'
         $plan.Model | Should -Be 'sonnet'
         $plan.PromptTransport | Should -Be 'argv'
-        $plan.LaunchCommand | Should -Be 'claude --permission-mode bypassPermissions'
+        $plan.LaunchCommand | Should -Be "claude --model 'sonnet' --permission-mode bypassPermissions"
     }
 
     It 'uses provider registry overrides when building a restart plan' {
@@ -1842,7 +1873,7 @@ agent_slots:
         $plan.Model | Should -Be 'opus'
         $plan.PromptTransport | Should -Be 'file'
         $plan.Source | Should -Be 'registry'
-        $plan.LaunchCommand | Should -Be 'claude --permission-mode bypassPermissions'
+        $plan.LaunchCommand | Should -Be "claude --model 'opus' --permission-mode bypassPermissions"
     }
 
     It 'includes slot-level prompt transport overrides in the restart plan' {
@@ -5439,7 +5470,7 @@ panes:
         Add-OrchestraPane -ManifestPath $script:paneScalerManifestPath -Settings $settings | Out-Null
 
         Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
-            $PaneId -eq '%3' -and $Text -eq 'claude --permission-mode bypassPermissions'
+            $PaneId -eq '%3' -and $Text -eq "claude --model 'opus' --permission-mode bypassPermissions"
         }
     }
 
@@ -9301,6 +9332,11 @@ Describe 'orchestra pane bootstrap plan' {
 
     It 'passes the project root into slot provider resolution' {
         $script:orchestraStartContent | Should -Match 'Get-SlotAgentConfig -Role \$canonicalRole -SlotId \$label -Settings \$settings -RootPath \$projectDir'
+    }
+
+    It 'builds pane launch commands through provider capability metadata' {
+        $script:orchestraStartContent | Should -Match 'Get-BridgeProviderLaunchCommand'
+        $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'
     }
 
     It 'prints a concise startup summary before invoking the agent launch command' {

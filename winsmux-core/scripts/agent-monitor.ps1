@@ -886,29 +886,38 @@ function Invoke-AgentRespawn {
         [Parameter(Mandatory = $true)][string]$Model,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
+        [string]$RootPath = '',
         [string]$ManifestPath = '',
         [int]$ReadyTimeoutSeconds = 60
     )
 
-    # Build launch command (same logic as orchestra-start Get-AgentLaunchCommand)
     $launchCommand = $null
     $paneExecMode = $false
     $paneRole = ''
-    switch ($Agent.Trim().ToLowerInvariant()) {
-        'codex' {
-            $escapedProject = "'" + ($ProjectDir -replace "'", "''") + "'"
-            $escapedWorktree = "'" + ($GitWorktreeDir -replace "'", "''") + "'"
-            $launchCommand = "codex -c model=$Model --sandbox danger-full-access -C $escapedProject --add-dir $escapedWorktree"
-        }
-        'claude' {
-            $launchCommand = 'claude --permission-mode bypassPermissions'
-        }
-        default {
-            return [ordered]@{
-                Success = $false
-                PaneId  = $PaneId
-                Message = "Unsupported agent: $Agent"
+
+    $capabilityRootPath = $RootPath
+    if ([string]::IsNullOrWhiteSpace($capabilityRootPath)) {
+        $capabilityRootPath = $ProjectDir
+        if (-not [string]::IsNullOrWhiteSpace($ManifestPath)) {
+            $manifestDir = Split-Path -Parent $ManifestPath
+            if (-not [string]::IsNullOrWhiteSpace($manifestDir) -and (Split-Path -Leaf $manifestDir) -eq '.winsmux') {
+                $capabilityRootPath = Split-Path -Parent $manifestDir
             }
+        }
+    }
+
+    try {
+        $launchCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId $Agent `
+            -Model $Model `
+            -ProjectDir $ProjectDir `
+            -GitWorktreeDir $GitWorktreeDir `
+            -RootPath $capabilityRootPath
+    } catch {
+        return [ordered]@{
+            Success = $false
+            PaneId  = $PaneId
+            Message = $_.Exception.Message
         }
     }
 
@@ -1450,6 +1459,7 @@ function Invoke-AgentMonitorCycle {
                 -Model $modelName `
                 -ProjectDir $launchDir `
                 -GitWorktreeDir $launchGitWorktreeDir `
+                -RootPath $projectDir `
                 -ManifestPath $ManifestPath
 
             $result['Respawned'] = $respawnResult.Success
