@@ -50,6 +50,27 @@ function Get-TeamPipelineValue {
     return $Default
 }
 
+function Test-TeamPipelineValueExists {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $InputObject) {
+        return $false
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        return $InputObject.Contains($Name)
+    }
+
+    if ($null -ne $InputObject.PSObject -and $InputObject.PSObject.Properties.Name -contains $Name) {
+        return $true
+    }
+
+    return $false
+}
+
 function ConvertFrom-TeamPipelineYamlScalar {
     param([AllowNull()]$Value)
 
@@ -144,6 +165,34 @@ function Get-TeamPipelinePaneCapabilityFlag {
     }
 
     return $false
+}
+
+function Test-TeamPipelineBuildTargetAvailable {
+    param(
+        [AllowNull()]$Manifest,
+        [Parameter(Mandatory = $true)][string]$BuilderLabel
+    )
+
+    if ($null -eq $Manifest -or $null -eq $Manifest.Panes) {
+        return $true
+    }
+
+    $pane = Get-TeamPipelinePaneInfo -Manifest $Manifest -Label $BuilderLabel
+    if ($null -eq $pane) {
+        return $true
+    }
+
+    if (-not (Test-TeamPipelineValueExists -InputObject $pane -Name 'supports_file_edit')) {
+        return $true
+    }
+
+    $capabilityAdapter = [string](Get-TeamPipelineValue -InputObject $pane -Name 'capability_adapter' -Default '')
+    $capabilityCommand = [string](Get-TeamPipelineValue -InputObject $pane -Name 'capability_command' -Default '')
+    if ([string]::IsNullOrWhiteSpace($capabilityAdapter) -and [string]::IsNullOrWhiteSpace($capabilityCommand)) {
+        return $true
+    }
+
+    return (Get-TeamPipelinePaneCapabilityFlag -Pane $pane -Name 'supports_file_edit')
 }
 
 function Get-TeamPipelineCapabilityTarget {
@@ -1312,11 +1361,18 @@ function Invoke-TeamPipeline {
         FinalConsult        = $null
         StuckConsults       = @()
         VerificationPackets = @()
+        BuildUnavailableReason = ''
         VerificationUnavailableReason = ''
         SecurityVerdicts    = @()
         Attempts            = @()
         Success             = $false
         FinalStatus         = 'NOT_STARTED'
+    }
+
+    if (-not (Test-TeamPipelineBuildTargetAvailable -Manifest $manifest -BuilderLabel $Builder)) {
+        $result.BuildUnavailableReason = 'Build target does not support file edits.'
+        $result.FinalStatus = 'EXEC_UNAVAILABLE'
+        return [PSCustomObject]$result
     }
 
     if (-not $SkipVerify -and [string]::IsNullOrWhiteSpace($targets.VerifyTarget)) {
