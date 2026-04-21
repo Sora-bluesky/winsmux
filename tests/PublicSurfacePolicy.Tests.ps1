@@ -15,6 +15,8 @@ Describe 'Public surface policy' {
         $surfacePolicy = Get-Content (Join-Path $repoRoot 'docs/repo-surface-policy.md') -Raw
         $gitignore = Get-Content (Join-Path $repoRoot '.gitignore') -Raw
         $claudeContract = Get-Content (Join-Path $repoRoot '.claude/CLAUDE.md') -Raw
+        $thirdPartyNotices = Get-Content (Join-Path $repoRoot 'THIRD_PARTY_NOTICES.md') -Raw
+        $appIndex = Get-Content (Join-Path $repoRoot 'winsmux-app/index.html') -Raw
         $syncRoadmap = Get-Content (Join-Path $repoRoot 'winsmux-core/scripts/sync-roadmap.ps1') -Raw
         $syncInternalDocs = Get-Content (Join-Path $repoRoot 'winsmux-core/scripts/sync-internal-docs.ps1') -Raw
     }
@@ -109,5 +111,15 @@ Describe 'Public surface policy' {
         $example | Should -Match 'TaskTitles\s*=\s*@\{\}'
         $example | Should -Not -Match '"v0\.'
         $example | Should -Not -Match '"TASK-'
+    }
+
+    It 'describes Codex UI provenance as public openai/codex TUI-derived work' {
+        $agents | Should -Match 'public `openai/codex` TUI-derived UI work'
+        $agents | Should -Match 'Do not treat non-public Codex App desktop source as an upstream reference'
+        $thirdPartyNotices | Should -Match 'public `openai/codex` TUI-derived UI work'
+        $thirdPartyNotices | Should -Match 'does not imply.*non-public Codex App desktop source code'
+        $thirdPartyNotices | Should -Not -Match 'Codex-derived UI'
+        $appIndex | Should -Match 'Public openai/codex TUI-derived typography'
+        $appIndex | Should -Not -Match 'Codex-derived typography'
     }
 }
