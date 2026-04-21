@@ -80,6 +80,39 @@ The current default task mapping for `#460` is:
 
 If a pattern does not clearly fit one of those landing zones, reject it until the destination is clear.
 
+## Minimum reevaluation record
+
+Every accepted reevaluation pass should leave a short durable record.
+
+That record should answer these questions:
+
+1. Which upstream source set was reviewed?
+2. Which patterns were accepted?
+3. Which patterns were rejected?
+4. Which landing zone received the accepted change?
+5. Which issue and `TASK-*` entries now track the result?
+
+Use this minimum shape:
+
+- source date or release range
+- source type:
+  - official docs
+  - release notes
+  - CLI help
+  - policy/checklist shape
+  - public issue/PR discussion
+- accepted pattern summary
+- rejected pattern summary with a reason
+- landing zone:
+  - public docs
+  - contributor docs
+  - external planning
+  - private maintainer assets
+- related issue or PR
+- related `TASK-*`
+
+If that record cannot be written clearly, the pattern is not ready to become a durable contract.
+
 ## Command surface
 
 The working command surface for `TASK-315` is:
