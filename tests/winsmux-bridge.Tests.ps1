@@ -5222,6 +5222,12 @@ Describe 'orchestra-start session reuse contract' {
         $script:orchestraStartContent | Should -Match 'Wait-AgentReady -PaneId \$paneSummary\.PaneId -Agent \$readinessAgent'
     }
 
+    It 'uses the capability adapter for startup exec-mode labels' {
+        $script:orchestraStartContent | Should -Match '\$execModeAgent = \[string\]\$slotAgentConfig\.CapabilityAdapter'
+        $script:orchestraStartContent | Should -Match '\$execMode = \$execModeAgent\.Trim\(\)\.ToLowerInvariant\(\) -eq ''codex'''
+        $script:orchestraStartContent | Should -Not -Match '\$execMode = \(\[string\]\$slotAgentConfig\.Agent\)\.Trim\(\)\.ToLowerInvariant\(\) -eq ''codex'''
+    }
+
     It 'routes partial bootstrap invalid state into the startup rollback path by throwing' {
         {
             Assert-OrchestraBootstrapVerification -PaneSummaries @(
