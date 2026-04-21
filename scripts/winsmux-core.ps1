@@ -7104,19 +7104,28 @@ function Invoke-ProviderSwitch {
     }
     $effective = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $settings -RootPath $projectDir
     $result = [ordered]@{
-        slot_id          = $slotId
-        agent            = [string]$effective.Agent
-        model            = [string]$effective.Model
-        prompt_transport = [string]$effective.PromptTransport
-        source           = [string]$effective.Source
-        registry_path    = Get-BridgeProviderRegistryPath -RootPath $projectDir
-        updated_at_utc   = if ($clearRequested) { [string]$clearResult.UpdatedAtUtc } else { [string]$entry.updated_at_utc }
-        reason           = if ((-not $clearRequested) -and $entry.Contains('reason')) { [string]$entry.reason } else { '' }
-        clear_requested  = $clearRequested
-        cleared          = $cleared
-        restart_requested = $restartRequested
-        restarted        = $false
-        restart_pane_id  = ''
+        slot_id                    = $slotId
+        agent                      = [string]$effective.Agent
+        model                      = [string]$effective.Model
+        prompt_transport           = [string]$effective.PromptTransport
+        source                     = [string]$effective.Source
+        capability_adapter         = [string]$effective.CapabilityAdapter
+        capability_command         = [string]$effective.CapabilityCommand
+        supports_parallel_runs     = [bool]$effective.SupportsParallelRuns
+        supports_interrupt         = [bool]$effective.SupportsInterrupt
+        supports_structured_result = [bool]$effective.SupportsStructuredResult
+        supports_file_edit         = [bool]$effective.SupportsFileEdit
+        supports_subagents         = [bool]$effective.SupportsSubagents
+        supports_verification      = [bool]$effective.SupportsVerification
+        supports_consultation      = [bool]$effective.SupportsConsultation
+        registry_path              = Get-BridgeProviderRegistryPath -RootPath $projectDir
+        updated_at_utc             = if ($clearRequested) { [string]$clearResult.UpdatedAtUtc } else { [string]$entry.updated_at_utc }
+        reason                     = if ((-not $clearRequested) -and $entry.Contains('reason')) { [string]$entry.reason } else { '' }
+        clear_requested            = $clearRequested
+        cleared                    = $cleared
+        restart_requested          = $restartRequested
+        restarted                  = $false
+        restart_pane_id            = ''
     }
 
     if ($restartRequested) {

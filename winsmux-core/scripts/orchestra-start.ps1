@@ -1035,14 +1035,23 @@ function Save-OrchestraSessionState {
     $paneMap = [ordered]@{}
     foreach ($paneSummary in @($PaneSummaries)) {
         $paneEntry = [PSCustomObject]@{
-            pane_id               = $paneSummary.PaneId
-            role                  = $paneSummary.Role
-            exec_mode             = [bool]$paneSummary.ExecMode
-            launch_dir            = $paneSummary.LaunchDir
-            builder_branch        = $paneSummary.BuilderBranch
-            builder_worktree_path = $paneSummary.BuilderWorktreePath
-            task                  = $null
-            status                = if ($paneSummary.Status) { $paneSummary.Status } else { 'ready' }
+            pane_id                    = $paneSummary.PaneId
+            role                       = $paneSummary.Role
+            exec_mode                  = [bool]$paneSummary.ExecMode
+            launch_dir                 = $paneSummary.LaunchDir
+            builder_branch             = $paneSummary.BuilderBranch
+            builder_worktree_path      = $paneSummary.BuilderWorktreePath
+            capability_adapter         = [string]$paneSummary.CapabilityAdapter
+            capability_command         = [string]$paneSummary.CapabilityCommand
+            supports_parallel_runs     = [bool]$paneSummary.SupportsParallelRuns
+            supports_interrupt         = [bool]$paneSummary.SupportsInterrupt
+            supports_structured_result = [bool]$paneSummary.SupportsStructuredResult
+            supports_file_edit         = [bool]$paneSummary.SupportsFileEdit
+            supports_subagents         = [bool]$paneSummary.SupportsSubagents
+            supports_verification      = [bool]$paneSummary.SupportsVerification
+            supports_consultation      = [bool]$paneSummary.SupportsConsultation
+            task                       = $null
+            status                     = if ($paneSummary.Status) { $paneSummary.Status } else { 'ready' }
         }
         if ($paneSummary.Contains('BootstrapFailures') -and $paneSummary['BootstrapFailures']) {
             $paneEntry | Add-Member -NotePropertyName 'bootstrap_failures' -NotePropertyValue $paneSummary['BootstrapFailures']
@@ -2041,6 +2050,15 @@ if ($MyInvocation.InvocationName -ne '.') {
             Role = $canonicalRole
             Agent = [string]$slotAgentConfig.Agent
             Model = [string]$slotAgentConfig.Model
+            CapabilityAdapter = [string]$slotAgentConfig.CapabilityAdapter
+            CapabilityCommand = [string]$slotAgentConfig.CapabilityCommand
+            SupportsParallelRuns = [bool]$slotAgentConfig.SupportsParallelRuns
+            SupportsInterrupt = [bool]$slotAgentConfig.SupportsInterrupt
+            SupportsStructuredResult = [bool]$slotAgentConfig.SupportsStructuredResult
+            SupportsFileEdit = [bool]$slotAgentConfig.SupportsFileEdit
+            SupportsSubagents = [bool]$slotAgentConfig.SupportsSubagents
+            SupportsVerification = [bool]$slotAgentConfig.SupportsVerification
+            SupportsConsultation = [bool]$slotAgentConfig.SupportsConsultation
             ExecMode = $false
             LaunchDir = $launchDir
             BuilderBranch = $builderBranch
