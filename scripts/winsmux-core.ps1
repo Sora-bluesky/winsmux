@@ -676,6 +676,16 @@ function ConvertTo-DispatchPowerShellLiteral {
     return "'" + ($Value -replace "'", "''") + "'"
 }
 
+function ConvertTo-DispatchPowerShellCommandInvocation {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    if ($Value -match '^[a-zA-Z0-9_.:/\\-]+$') {
+        return $Value
+    }
+
+    return '& ' + (ConvertTo-DispatchPowerShellLiteral -Value $Value)
+}
+
 function Resolve-SendTransportPlan {
     param(
         [Parameter(Mandatory = $true)][string]$Text,
@@ -686,7 +696,8 @@ function Resolve-SendTransportPlan {
         [bool]$ExecMode = $false,
         [string]$LaunchDir,
         [string]$GitWorktreeDir,
-        [string]$Model
+        [string]$Model,
+        [string]$ExecCommand = 'codex'
     )
 
     $resolvedPromptTransport = Resolve-SupportedPromptTransport -PromptTransport $PromptTransport
@@ -720,7 +731,10 @@ function Resolve-SendTransportPlan {
     }
     $outputPath = '{0}.last-message.txt' -f $promptPath
     $promptInstruction = 'Read the prompt file at {0} and follow its instructions' -f $promptPath
-    $execInstruction = 'codex exec --sandbox danger-full-access -C {0} --add-dir {1} -o {2} -m {3} {4}' -f `
+    $resolvedExecCommand = if ([string]::IsNullOrWhiteSpace($ExecCommand)) { 'codex' } else { $ExecCommand }
+    $execCommandInvocation = ConvertTo-DispatchPowerShellCommandInvocation -Value $resolvedExecCommand
+    $execInstruction = '{0} exec --sandbox danger-full-access -C {1} --add-dir {2} -o {3} -m {4} {5}' -f `
+        $execCommandInvocation, `
         (ConvertTo-DispatchPowerShellLiteral -Value $LaunchDir), `
         (ConvertTo-DispatchPowerShellLiteral -Value $GitWorktreeDir), `
         (ConvertTo-DispatchPowerShellLiteral -Value $outputPath), `
@@ -2519,6 +2533,32 @@ function Invoke-Message {
     Clear-ReadMark $paneId
 }
 
+function Get-SendConfigValue {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Default = ''
+    )
+
+    if ($null -eq $InputObject) {
+        return $Default
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        if ($InputObject.Contains($Name)) {
+            return $InputObject[$Name]
+        }
+
+        return $Default
+    }
+
+    if ($null -ne $InputObject.PSObject -and ($InputObject.PSObject.Properties.Name -contains $Name)) {
+        return $InputObject.$Name
+    }
+
+    return $Default
+}
+
 function Invoke-Send {
     if (-not $Target) { Stop-WithError "usage: winsmux send <target> <text>" }
     if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: winsmux send <target> <text>" }
@@ -2597,7 +2637,11 @@ function Invoke-Send {
                     }
                 }
 
-                $execMode = $execModeValue.Trim().ToLowerInvariant() -eq 'true' -and [string]$agentConfig.Agent -eq 'codex'
+                $capabilityAdapter = [string](Get-SendConfigValue -InputObject $agentConfig -Name 'CapabilityAdapter' -Default '')
+                if ([string]::IsNullOrWhiteSpace($capabilityAdapter)) {
+                    $capabilityAdapter = [string]$agentConfig.Agent
+                }
+                $execMode = $execModeValue.Trim().ToLowerInvariant() -eq 'true' -and $capabilityAdapter -eq 'codex'
             }
         } catch {
             if ($_.Exception.Message -match 'Provider capability') {
@@ -2664,7 +2708,8 @@ function Invoke-Send {
         -ExecMode:$execMode `
         -LaunchDir $contextLaunchDir `
         -GitWorktreeDir $contextGitWorktreeDir `
-        -Model ([string]$agentConfig.Model)
+        -Model ([string]$agentConfig.Model) `
+        -ExecCommand ([string](Get-SendConfigValue -InputObject $agentConfig -Name 'CapabilityCommand' -Default $agentConfig.Agent))
 
     if ($transportPlan['Mode'] -eq 'codex_exec_file') {
         Send-TextToPane -PaneId $paneId -CommandText ([string]$transportPlan['ExecInstruction'])
