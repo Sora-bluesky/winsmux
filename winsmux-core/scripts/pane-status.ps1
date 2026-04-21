@@ -13,6 +13,7 @@ if (Test-Path $paneControlScript -PathType Leaf) {
 function Invoke-PaneStatusWinsmux {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
+    $global:LASTEXITCODE = 0
     $output = & winsmux @Arguments 2>&1
     if ($LASTEXITCODE -ne 0) {
         $message = ($output | Out-String).Trim()

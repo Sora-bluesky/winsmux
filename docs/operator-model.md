@@ -106,11 +106,11 @@ The public product-facing operator contract is centered on:
 - `README.md`
 - this file
 
-The public future entrypoints are intended to converge on:
+The public first-run entrypoints now converge on:
 
 - `winsmux init`
 - `winsmux launch`
-- `winsmux compare`
+- `winsmux compare` remains the next planned public review entrypoint
 
 That direction is public product behavior. `/winsmux-start` remains a repository-operated Claude Code dogfooding flow and is not part of the primary public UX.
 

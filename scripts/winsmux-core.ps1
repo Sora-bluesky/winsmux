@@ -9,6 +9,7 @@ param(
 $VERSION = "0.22.1"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
+$BridgeScriptPath = $PSCommandPath
 
 $ReadMarkDir    = Join-Path $env:TEMP "winsmux\read_marks"
 $WatermarkDir   = Join-Path $env:TEMP "winsmux\watermarks"
@@ -21,6 +22,7 @@ $PaneStatusScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\w
 $RoleGateScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\role-gate.ps1'))
 $ClmSafeIoScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\clm-safe-io.ps1'))
 $PaneEnvScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-env.ps1'))
+$PublicFirstRunScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\public-first-run.ps1'))
 
 if (Test-Path $BridgeSettingsScript -PathType Leaf) {
     . $BridgeSettingsScript
@@ -44,6 +46,10 @@ if (Test-Path $ClmSafeIoScript -PathType Leaf) {
 
 if (Test-Path $PaneEnvScript -PathType Leaf) {
     . $PaneEnvScript
+}
+
+if (Test-Path $PublicFirstRunScript -PathType Leaf) {
+    . $PublicFirstRunScript
 }
 
 # --- Windows Credential Manager P/Invoke ---
@@ -3067,6 +3073,118 @@ function Invoke-Doctor {
         $hookCount = @(Get-ChildItem $hooksDir -Filter '*.js').Count
         Write-Output "Hooks: $hookCount scripts"
     }
+}
+
+function ConvertTo-WinsmuxPublicJson {
+    param([Parameter(Mandatory = $true)]$InputObject)
+
+    return ($InputObject | ConvertTo-Json -Depth 8)
+}
+
+function Invoke-Init {
+    $projectDir = ''
+    $force = $false
+    $asJson = $false
+    $agent = 'codex'
+    $model = 'gpt-5.4'
+    $workerCount = 6
+    $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
+
+    for ($index = 0; $index -lt $remaining.Count; $index++) {
+        switch ($remaining[$index]) {
+            '--json' { $asJson = $true }
+            '--force' { $force = $true }
+            '--project-dir' {
+                if ($index + 1 -ge $remaining.Count) {
+                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <codex|claude>] [--model <name>] [--worker-count <count>]"
+                }
+
+                $projectDir = $remaining[$index + 1]
+                $index++
+            }
+            '--agent' {
+                if ($index + 1 -ge $remaining.Count) {
+                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <codex|claude>] [--model <name>] [--worker-count <count>]"
+                }
+
+                $agent = $remaining[$index + 1]
+                $index++
+            }
+            '--model' {
+                if ($index + 1 -ge $remaining.Count) {
+                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <codex|claude>] [--model <name>] [--worker-count <count>]"
+                }
+
+                $model = $remaining[$index + 1]
+                $index++
+            }
+            '--worker-count' {
+                if ($index + 1 -ge $remaining.Count) {
+                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <codex|claude>] [--model <name>] [--worker-count <count>]"
+                }
+
+                $workerCount = [int]$remaining[$index + 1]
+                $index++
+            }
+            default {
+                Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <codex|claude>] [--model <name>] [--worker-count <count>]"
+            }
+        }
+    }
+
+    $result = Invoke-WinsmuxPublicInit -ProjectDir $projectDir -Force:$force -Agent $agent -Model $model -WorkerCount $workerCount
+    if ($asJson) {
+        Write-Output (ConvertTo-WinsmuxPublicJson -InputObject $result)
+        return
+    }
+
+    Write-Output "init status: $($result.status)"
+    Write-Output "project: $($result.project_dir)"
+    Write-Output "config: $($result.config_path)"
+    Write-Output "slots: $($result.slot_count)"
+    Write-Output "next: $($result.next_action)"
+}
+
+function Invoke-Launch {
+    $projectDir = ''
+    $skipDoctor = $false
+    $asJson = $false
+    $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
+    $doctorScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\doctor.ps1'))
+
+    for ($index = 0; $index -lt $remaining.Count; $index++) {
+        switch ($remaining[$index]) {
+            '--json' { $asJson = $true }
+            '--skip-doctor' { $skipDoctor = $true }
+            '--project-dir' {
+                if ($index + 1 -ge $remaining.Count) {
+                    Stop-WithError "usage: winsmux launch [--json] [--project-dir <path>] [--skip-doctor]"
+                }
+
+                $projectDir = $remaining[$index + 1]
+                $index++
+            }
+            default {
+                Stop-WithError "usage: winsmux launch [--json] [--project-dir <path>] [--skip-doctor]"
+            }
+        }
+    }
+
+    $result = Invoke-WinsmuxPublicLaunch -ProjectDir $projectDir -SkipDoctor:$skipDoctor -BridgeScriptPath $BridgeScriptPath -DoctorScriptPath $doctorScriptPath
+    if ($asJson) {
+        Write-Output (ConvertTo-WinsmuxPublicJson -InputObject $result)
+        return
+    }
+
+    Write-Output "launch status: $($result.status)"
+    Write-Output "project: $($result.project_dir)"
+    if ($result.PSObject.Properties.Name -contains 'operator_message' -and -not [string]::IsNullOrWhiteSpace([string]$result.operator_message)) {
+        Write-Output "message: $($result.operator_message)"
+    }
+    if ($result.PSObject.Properties.Name -contains 'doctor_output' -and -not [string]::IsNullOrWhiteSpace([string]$result.doctor_output)) {
+        Write-Output $result.doctor_output
+    }
+    Write-Output "next: $($result.next_action)"
 }
 
 function Invoke-ImeInput {
@@ -6763,6 +6881,8 @@ function Show-Usage {
 winsmux $VERSION - winsmux bridge for winsmux
 
 Commands:
+  init [--json] [--project-dir <path>] [--force] [--agent <codex|claude>] [--model <name>] [--worker-count <count>]  Create or refresh public first-run config
+  launch [--json] [--project-dir <path>] [--skip-doctor]  Run public first-run checks and startup
   id                        Show current pane ID
   list                      List all panes
   read <target> [lines]     Capture pane output (default 50 lines)
@@ -7043,6 +7163,8 @@ function Invoke-RebindWorktree {
 
 # --- Dispatch ---
 switch ($Command) {
+    'init'            { Invoke-Init }
+    'launch'          { Invoke-Launch }
     'id'              { Invoke-Id }
     'list'            { Invoke-List }
     'read'            { Invoke-Read }

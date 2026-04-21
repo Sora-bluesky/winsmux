@@ -130,7 +130,8 @@ You can also download a release `.zip` from GitHub Releases or build from source
 
 ### Planned installation paths
 
-- `winsmux init`, `winsmux launch`, and `winsmux compare` are planned public-first entrypoints
+- `winsmux init` and `winsmux launch` are now the public first-run entrypoints
+- `winsmux compare` remains a planned public-first entrypoint
 - npm-based installation is planned
 - the public npm install surface will be a **single `winsmux` package**
 - current internal packages such as `winsmux-mcp` and the private `winsmux-app` build are **not** the public npm install contract
@@ -138,18 +139,18 @@ You can also download a release `.zip` from GitHub Releases or build from source
 
 ## Quick start
 
-The current public quick start is still the terminal-first runtime flow shown below. `winsmux init`, `winsmux launch`, and `winsmux compare` are planned public entrypoints, while `/winsmux-start` remains a Claude Code dogfooding-only flow.
+The current public quick start uses `winsmux init` and `winsmux launch`. `winsmux compare` remains planned, while `/winsmux-start` remains a Claude Code dogfooding-only flow.
 
 ```powershell
-# Verify the environment
-winsmux doctor
+# Create the default first-run config
+winsmux init
 
-# Start a winsmux session
-winsmux new-session -s orchestra
-
-# Launch the default orchestra layout
-pwsh winsmux-core/scripts/orchestra-start.ps1
+# Run checks and start the default orchestra layout
+winsmux launch
 ```
+
+`winsmux init` writes the default `.winsmux.yaml` for the current project.
+`winsmux launch` then folds the old `doctor -> orchestra-start` flow into one public entrypoint.
 
 If `winsmux doctor` reports the Windows worktree git sandbox limitation, keep using the managed pane for edits and tests, but run `git add`, `git commit`, and `git push` from a regular shell outside the sandboxed pane when `.git/worktrees/*/index.lock` cannot be created.
 
