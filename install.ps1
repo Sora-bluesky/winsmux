@@ -21,6 +21,7 @@ $BRIDGE_DIR   = Join-Path $WINSMUX_DIR "winsmux-core"
 $BRIDGE_SCRIPTS_DIR = Join-Path $BRIDGE_DIR "scripts"
 $VERSION_FILE = Join-Path $WINSMUX_DIR "version"
 $PROFILE_FILE = Join-Path $WINSMUX_DIR "install-profile"
+$PROFILE_MANIFEST_FILE = Join-Path $WINSMUX_DIR "install-profile.json"
 $PROFILE_MATRIX = @{
     core = "Runtime binary, wrapper scripts, PATH setup, and base config."
     orchestra = "Core profile plus orchestration scripts and Windows Terminal profile."
@@ -46,7 +47,12 @@ if ([string]::IsNullOrWhiteSpace($EffectiveReleaseTag)) {
 function Write-Status($msg) { Write-Host "[winsmux] $msg" }
 
 function Resolve-InstallProfile {
+    param([switch]$PreferExisting)
+
     $profileName = if ([string]::IsNullOrWhiteSpace($InstallProfile)) { $env:WINSMUX_INSTALL_PROFILE } else { $InstallProfile }
+    if ([string]::IsNullOrWhiteSpace($profileName) -and $PreferExisting -and (Test-Path -LiteralPath $PROFILE_FILE -PathType Leaf)) {
+        $profileName = (Get-Content -LiteralPath $PROFILE_FILE -Raw -ErrorAction SilentlyContinue).Trim()
+    }
     if ([string]::IsNullOrWhiteSpace($profileName)) {
         $profileName = "full"
     }
@@ -58,6 +64,36 @@ function Resolve-InstallProfile {
     }
 
     return $normalized
+}
+
+function Get-InstallProfileContents {
+    param([Parameter(Mandatory = $true)][string]$Profile)
+
+    switch ($Profile) {
+        "core" { return @("runtime", "wrappers", "path", "base_config") }
+        "orchestra" { return @("runtime", "wrappers", "path", "base_config", "orchestration_scripts", "windows_terminal_profile") }
+        "security" { return @("runtime", "wrappers", "path", "base_config", "vault", "redaction", "audit_scripts") }
+        "full" { return @("runtime", "wrappers", "path", "base_config", "orchestration_scripts", "windows_terminal_profile", "vault", "redaction", "audit_scripts") }
+        default { throw "Unsupported install profile '$Profile'." }
+    }
+}
+
+function Write-InstallProfileManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Profile,
+        [Parameter(Mandatory = $true)][bool]$IsUpdate
+    )
+
+    $manifest = [ordered]@{
+        version = $VERSION
+        profile = $Profile
+        release_tag = $EffectiveReleaseTag
+        mode = if ($IsUpdate) { "update" } else { "install" }
+        contents = @(Get-InstallProfileContents -Profile $Profile)
+        recorded_at = (Get-Date).ToUniversalTime().ToString("o")
+    }
+
+    $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $PROFILE_MANIFEST_FILE -Encoding UTF8
 }
 
 function Test-Administrator {
@@ -209,7 +245,7 @@ function Download-File($relativeUrl, $destPath) {
 function Invoke-Install {
     param([switch]$IsUpdate)
     $label = if ($IsUpdate) { "Updating" } else { "Installing" }
-    $resolvedInstallProfile = Resolve-InstallProfile
+    $resolvedInstallProfile = Resolve-InstallProfile -PreferExisting:$IsUpdate
     Write-Status "$label winsmux v$VERSION with profile '$resolvedInstallProfile' ..."
 
     # 1. PowerShell version check
@@ -306,6 +342,7 @@ pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux.ps1" %*
     # 9. Record version
     $VERSION | Set-Content $VERSION_FILE
     $resolvedInstallProfile | Set-Content $PROFILE_FILE
+    Write-InstallProfileManifest -Profile $resolvedInstallProfile -IsUpdate:$IsUpdate
 
     # 10. Completion message
     if ($IsUpdate) {
@@ -313,6 +350,7 @@ pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux.ps1" %*
         Write-Status "Updated to v$VERSION!"
         Write-Host "  winsmux: $(Join-Path $BIN_DIR 'winsmux-core.ps1')"
         Write-Host "  winsmux config:  $confDest"
+        Write-Host "  install profile: $resolvedInstallProfile"
     } else {
         Write-Host ""
         Write-Status "Installed successfully! (v$VERSION)"

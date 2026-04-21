@@ -44,6 +44,12 @@ winsmux update --profile orchestra
 `install.ps1` accepts the same profile names through `-Profile`. The package
 entrypoint forwards `--profile` to that script as `-Profile`.
 
+Updates keep the previously recorded profile when no new profile is supplied.
+Each install or update records the selected shape in:
+
+- `~\.winsmux\install-profile`
+- `~\.winsmux\install-profile.json`
+
 ## Release gate
 
 - the staged package must pass the Windows verify job
