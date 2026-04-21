@@ -1,0 +1,4 @@
+.gitattributes text eol=lf
+.githooks/* text eol=lf
+.github/workflows/* text eol=lf
+*.sh text eol=lf
