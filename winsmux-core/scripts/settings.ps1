@@ -793,6 +793,41 @@ function Resolve-BridgeProviderCapability {
     return $null
 }
 
+function Get-BridgeProviderCapabilityValue {
+    param(
+        [AllowNull()]$Capability,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [AllowNull()]$Default = $null
+    )
+
+    if ($null -eq $Capability) {
+        return $Default
+    }
+
+    if ($Capability -is [System.Collections.IDictionary]) {
+        if ($Capability.Contains($Name)) {
+            return $Capability[$Name]
+        }
+
+        return $Default
+    }
+
+    if ($null -ne $Capability.PSObject -and $Capability.PSObject.Properties.Name -contains $Name) {
+        return $Capability.PSObject.Properties[$Name].Value
+    }
+
+    return $Default
+}
+
+function Get-BridgeProviderCapabilityBoolean {
+    param(
+        [AllowNull()]$Capability,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    return [bool](Get-BridgeProviderCapabilityValue -Capability $Capability -Name $Name -Default $false)
+}
+
 function Assert-BridgeProviderCapabilityTransport {
     param(
         [Parameter(Mandatory = $true)][string]$ProviderId,
@@ -1561,16 +1596,27 @@ function Get-SlotAgentConfig {
         $source = 'registry'
     }
 
+    $providerCapability = $null
     if (-not [string]::IsNullOrWhiteSpace($RootPath)) {
         Assert-BridgeProviderCapabilityTransport -ProviderId $agent -PromptTransport $promptTransport -RootPath $RootPath
+        $providerCapability = Resolve-BridgeProviderCapability -ProviderId $agent -RootPath $RootPath -RequireWhenRegistryPresent
     }
 
     return [PSCustomObject]@{
-        SlotId          = [string]$SlotId
-        Agent           = [string]$agent
-        Model           = [string]$model
-        PromptTransport = [string]$promptTransport
-        Source          = [string]$source
+        SlotId                   = [string]$SlotId
+        Agent                    = [string]$agent
+        Model                    = [string]$model
+        PromptTransport          = [string]$promptTransport
+        Source                   = [string]$source
+        CapabilityAdapter        = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'adapter' -Default '')
+        CapabilityCommand        = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'command' -Default '')
+        SupportsParallelRuns     = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_parallel_runs'
+        SupportsInterrupt        = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_interrupt'
+        SupportsStructuredResult = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_structured_result'
+        SupportsFileEdit         = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_file_edit'
+        SupportsSubagents        = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_subagents'
+        SupportsVerification     = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_verification'
+        SupportsConsultation     = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_consultation'
     }
 }
 

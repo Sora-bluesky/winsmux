@@ -656,6 +656,58 @@ agent-slots:
         $capability.command | Should -Be 'codex'
     }
 
+    It 'projects provider capability fields onto resolved slot configs' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $config = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+
+        $config.CapabilityAdapter | Should -Be 'codex'
+        $config.CapabilityCommand | Should -Be 'codex'
+        $config.SupportsParallelRuns | Should -Be $true
+        $config.SupportsInterrupt | Should -Be $true
+        $config.SupportsStructuredResult | Should -Be $true
+        $config.SupportsFileEdit | Should -Be $true
+        $config.SupportsSubagents | Should -Be $true
+        $config.SupportsVerification | Should -Be $true
+        $config.SupportsConsultation | Should -Be $false
+    }
+
     It 'rejects slot prompt transport values not supported by provider capabilities' {
         $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
         $registryDir = Split-Path -Parent $registryPath
@@ -4753,6 +4805,15 @@ Describe 'orchestra-start session reuse contract' {
         $script:orchestraStartContent | Should -Match '\$defaultModel'
     }
 
+    It 'persists provider capability fields in pane manifest entries' {
+        $script:orchestraStartContent | Should -Match 'CapabilityAdapter = \[string\]\$slotAgentConfig\.CapabilityAdapter'
+        $script:orchestraStartContent | Should -Match 'SupportsFileEdit = \[bool\]\$slotAgentConfig\.SupportsFileEdit'
+        $script:orchestraStartContent | Should -Match 'SupportsVerification = \[bool\]\$slotAgentConfig\.SupportsVerification'
+        $script:orchestraStartContent | Should -Match 'capability_adapter\s*=\s*\[string\]\$paneSummary\.CapabilityAdapter'
+        $script:orchestraStartContent | Should -Match 'supports_file_edit\s*=\s*\[bool\]\$paneSummary\.SupportsFileEdit'
+        $script:orchestraStartContent | Should -Match 'supports_verification\s*=\s*\[bool\]\$paneSummary\.SupportsVerification'
+    }
+
     It 'routes partial bootstrap invalid state into the startup rollback path by throwing' {
         {
             Assert-OrchestraBootstrapVerification -PaneSummaries @(
@@ -8814,6 +8875,38 @@ agent-slots:
     model: gpt-5.4
     prompt-transport: argv
 '@ | Set-Content -Path (Join-Path $script:providerSwitchTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:providerSwitchTempRoot '.winsmux') -Force | Out-Null
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    },
+    "claude": {
+      "adapter": "claude",
+      "command": "claude",
+      "prompt_transports": ["file"],
+      "supports_parallel_runs": false,
+      "supports_interrupt": true,
+      "supports_structured_result": false,
+      "supports_file_edit": true,
+      "supports_subagents": false,
+      "supports_verification": true,
+      "supports_consultation": true
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:providerSwitchTempRoot '.winsmux\provider-capabilities.json') -Encoding UTF8
     }
 
     AfterEach {
@@ -8839,6 +8932,11 @@ agent-slots:
         $result.model | Should -Be 'opus'
         $result.prompt_transport | Should -Be 'file'
         $result.source | Should -Be 'registry'
+        $result.capability_adapter | Should -Be 'claude'
+        $result.capability_command | Should -Be 'claude'
+        $result.supports_file_edit | Should -Be $true
+        $result.supports_subagents | Should -Be $false
+        $result.supports_consultation | Should -Be $true
         $result.restart_requested | Should -Be $false
         $result.restarted | Should -Be $false
 
@@ -8866,6 +8964,10 @@ agent-slots:
         $result.model | Should -Be 'gpt-5.4'
         $result.prompt_transport | Should -Be 'argv'
         $result.source | Should -Be 'slot'
+        $result.capability_adapter | Should -Be 'codex'
+        $result.supports_parallel_runs | Should -Be $true
+        $result.supports_verification | Should -Be $true
+        $result.supports_consultation | Should -Be $false
         $result.clear_requested | Should -Be $true
         $result.cleared | Should -Be $true
         $registry = Get-Content -LiteralPath (Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json') -Raw -Encoding UTF8 | ConvertFrom-Json
