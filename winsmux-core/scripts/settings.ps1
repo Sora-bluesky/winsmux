@@ -14,6 +14,7 @@ Dot-source this script to load the helpers:
 #>
 
 $script:BridgeSettingsFileName = '.winsmux.yaml'
+$script:BridgeProviderRegistryFileName = 'provider-registry.json'
 $script:BridgeSettingsSchema = [ordered]@{
     config_version      = @{ Type = 'int';      Default = 1;             Option = $null }
     agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
@@ -267,6 +268,185 @@ function New-BridgeManagedAgentSlots {
     }
 
     return @($slots)
+}
+
+function Get-BridgeProviderRegistryPath {
+    param([string]$RootPath)
+
+    if ([string]::IsNullOrWhiteSpace($RootPath)) {
+        $RootPath = (Get-Location).Path
+    }
+
+    return Join-Path (Join-Path $RootPath '.winsmux') $script:BridgeProviderRegistryFileName
+}
+
+function ConvertTo-BridgeProviderRegistryEntry {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    $pairs = @()
+    if ($Value -is [System.Collections.IDictionary]) {
+        $pairs = $Value.GetEnumerator()
+    } elseif ($null -ne $Value.PSObject) {
+        $pairs = $Value.PSObject.Properties | ForEach-Object {
+            [PSCustomObject]@{
+                Key = $_.Name
+                Value = $_.Value
+            }
+        }
+    } else {
+        return $null
+    }
+
+    $entry = [ordered]@{}
+    foreach ($pair in $pairs) {
+        $key = $pair.Key.ToString() -replace '-', '_'
+        if ($key -notin @('agent', 'model', 'prompt_transport', 'updated_at_utc', 'reason')) {
+            continue
+        }
+
+        $text = ConvertFrom-BridgeYamlScalar $pair.Value
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            continue
+        }
+
+        if ($key -eq 'prompt_transport' -and $text -notin @('argv', 'file', 'stdin')) {
+            throw "Invalid provider registry prompt_transport '$text'."
+        }
+
+        $entry[$key] = $text
+    }
+
+    if (-not ($entry.Contains('agent') -or $entry.Contains('model') -or $entry.Contains('prompt_transport'))) {
+        return $null
+    }
+
+    return $entry
+}
+
+function Read-BridgeProviderRegistry {
+    param([string]$RootPath)
+
+    $path = Get-BridgeProviderRegistryPath -RootPath $RootPath
+    $registry = [ordered]@{
+        version = 1
+        slots   = [ordered]@{}
+    }
+
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        return $registry
+    }
+
+    $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return $registry
+    }
+
+    try {
+        $parsed = $raw | ConvertFrom-Json -Depth 16 -ErrorAction Stop
+    } catch {
+        throw "Invalid provider registry JSON at '$path'."
+    }
+
+    $version = 1
+    if ($null -ne $parsed.PSObject -and $parsed.PSObject.Properties.Name -contains 'version') {
+        $version = [int]$parsed.version
+    }
+    if ($version -ne 1) {
+        throw "Unsupported provider registry version '$version'. Supported versions: 1."
+    }
+
+    $registry.version = $version
+    if ($null -eq $parsed.PSObject -or -not ($parsed.PSObject.Properties.Name -contains 'slots') -or $null -eq $parsed.slots) {
+        return $registry
+    }
+
+    foreach ($slotProperty in $parsed.slots.PSObject.Properties) {
+        $slotId = ConvertFrom-BridgeYamlScalar $slotProperty.Name
+        if ([string]::IsNullOrWhiteSpace($slotId)) {
+            continue
+        }
+
+        $entry = ConvertTo-BridgeProviderRegistryEntry $slotProperty.Value
+        if ($null -ne $entry) {
+            $registry.slots[$slotId] = $entry
+        }
+    }
+
+    return $registry
+}
+
+function Get-BridgeProviderRegistryEntry {
+    param(
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [string]$RootPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SlotId)) {
+        return $null
+    }
+
+    $registry = Read-BridgeProviderRegistry -RootPath $RootPath
+    foreach ($entry in $registry.slots.GetEnumerator()) {
+        if ([string]::Equals([string]$entry.Key, $SlotId, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $entry.Value
+        }
+    }
+
+    return $null
+}
+
+function Write-BridgeProviderRegistryEntry {
+    param(
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [string]$Agent,
+        [string]$Model,
+        [string]$PromptTransport,
+        [string]$Reason,
+        [string]$RootPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SlotId)) {
+        throw 'Provider registry entry requires a slot id.'
+    }
+
+    $entry = [ordered]@{}
+    if (-not [string]::IsNullOrWhiteSpace($Agent)) {
+        $entry.agent = $Agent.Trim()
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Model)) {
+        $entry.model = $Model.Trim()
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PromptTransport)) {
+        $normalizedTransport = $PromptTransport.Trim().ToLowerInvariant()
+        if ($normalizedTransport -notin @('argv', 'file', 'stdin')) {
+            throw "Invalid provider registry prompt_transport '$PromptTransport'."
+        }
+        $entry.prompt_transport = $normalizedTransport
+    }
+    if (-not ($entry.Contains('agent') -or $entry.Contains('model') -or $entry.Contains('prompt_transport'))) {
+        throw 'Provider registry entry requires agent, model, or prompt_transport.'
+    }
+
+    $entry.updated_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) {
+        $entry.reason = $Reason.Trim()
+    }
+
+    $registry = Read-BridgeProviderRegistry -RootPath $RootPath
+    $registry.slots[$SlotId] = $entry
+
+    $path = Get-BridgeProviderRegistryPath -RootPath $RootPath
+    $directory = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+
+    $registry | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $path -Encoding UTF8
+    return $registry.slots[$SlotId]
 }
 
 function ConvertFrom-BridgeManualYaml {
@@ -852,7 +1032,8 @@ function Get-SlotAgentConfig {
     param(
         [Parameter(Mandatory = $true)][string]$Role,
         [string]$SlotId,
-        $Settings = (Get-BridgeSettings)
+        $Settings = (Get-BridgeSettings),
+        [string]$RootPath
     )
 
     if ($null -eq $Settings) {
@@ -934,6 +1115,23 @@ function Get-SlotAgentConfig {
 
             break
         }
+    }
+
+    $registryEntry = Get-BridgeProviderRegistryEntry -SlotId $SlotId -RootPath $RootPath
+    if ($null -ne $registryEntry) {
+        if ($registryEntry.Contains('agent')) {
+            $agent = [string]$registryEntry.agent
+        }
+
+        if ($registryEntry.Contains('model')) {
+            $model = [string]$registryEntry.model
+        }
+
+        if ($registryEntry.Contains('prompt_transport')) {
+            $promptTransport = [string]$registryEntry.prompt_transport
+        }
+
+        $source = 'registry'
     }
 
     return [PSCustomObject]@{

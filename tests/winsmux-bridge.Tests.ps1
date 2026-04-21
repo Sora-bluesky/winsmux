@@ -545,6 +545,50 @@ agent-slots:
         $workerThreeConfig.Source | Should -Be 'role'
     }
 
+    It 'lets the provider registry override a slot without mutating project settings' {
+@'
+agent: codex
+model: gpt-5.4
+prompt-transport: argv
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $registryEntry = Write-BridgeProviderRegistryEntry -RootPath $script:settingsTempRoot -SlotId 'worker-1' -Agent 'claude' -Model 'opus' -PromptTransport 'file' -Reason 'operator requested provider hot-swap'
+        $registryEntry.agent | Should -Be 'claude'
+        $registryEntry.model | Should -Be 'opus'
+        $registryEntry.prompt_transport | Should -Be 'file'
+
+        $registryPath = Get-BridgeProviderRegistryPath -RootPath $script:settingsTempRoot
+        Test-Path -LiteralPath $registryPath | Should -Be $true
+        $registryContent = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8
+        $registryContent | Should -Match '"worker-1"'
+        $registryContent | Should -Match '"reason":\s*"operator requested provider hot-swap"'
+
+        $workerOneConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        $workerOneConfig.Agent | Should -Be 'claude'
+        $workerOneConfig.Model | Should -Be 'opus'
+        $workerOneConfig.PromptTransport | Should -Be 'file'
+        $workerOneConfig.Source | Should -Be 'registry'
+
+        $settings.agent_slots[0].agent | Should -Be 'codex'
+        $settings.agent_slots[0].model | Should -Be 'gpt-5.4'
+        $settings.agent_slots[0].prompt_transport | Should -Be 'argv'
+    }
+
+    It 'rejects provider registry entries with invalid prompt transport values' {
+        {
+            Write-BridgeProviderRegistryEntry -RootPath $script:settingsTempRoot -SlotId 'worker-1' -Agent 'claude' -PromptTransport 'socket'
+        } | Should -Throw '*prompt_transport*'
+    }
+
     It 'fails closed when explicit agent slot entries are malformed' {
 @'
 agent: codex
