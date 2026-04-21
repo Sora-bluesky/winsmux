@@ -225,6 +225,54 @@ function Get-PaneScalerBuilderIndex {
     return 0
 }
 
+function Get-PaneScalerNextBuilderLabel {
+    param([Parameter(Mandatory = $true)]$Manifest)
+
+    $nextIndex = 1
+    foreach ($builderPane in @(Get-PaneScalerBuilderPanes -Manifest $Manifest)) {
+        $nextIndex = [Math]::Max($nextIndex, (Get-PaneScalerBuilderIndex -Label $builderPane.Label) + 1)
+    }
+
+    return "builder-$nextIndex"
+}
+
+function Get-PaneScalerSlotAgentConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)]$Settings,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
+        return Get-SlotAgentConfig -Role 'Builder' -SlotId $SlotId -Settings $Settings -RootPath $ProjectDir
+    }
+
+    try {
+        return Get-RoleAgentConfig -Role 'Builder' -Settings $Settings
+    } catch {
+        return [PSCustomObject]@{
+            Agent = [string]$Settings.agent
+            Model = [string]$Settings.model
+        }
+    }
+}
+
+function Test-PaneScalerParallelRunsAvailable {
+    param([AllowNull()]$SlotAgentConfig)
+
+    if ($null -eq $SlotAgentConfig) {
+        return $true
+    }
+
+    $capabilityAdapter = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'CapabilityAdapter' -Default '')
+    $capabilityCommand = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'CapabilityCommand' -Default '')
+    if ([string]::IsNullOrWhiteSpace($capabilityAdapter) -and [string]::IsNullOrWhiteSpace($capabilityCommand)) {
+        return $true
+    }
+
+    return [bool](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'SupportsParallelRuns' -Default $false)
+}
+
 function New-PaneScalerBuilderWorktree {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -372,15 +420,18 @@ function Add-OrchestraPane {
         throw 'Cannot add a Builder pane because no existing Builder pane was found.'
     }
 
-    $nextIndex = 1
-    foreach ($builderPane in $builderPanes) {
-        $nextIndex = [Math]::Max($nextIndex, (Get-PaneScalerBuilderIndex -Label $builderPane.Label) + 1)
-    }
+    $newLabel = Get-PaneScalerNextBuilderLabel -Manifest $manifest
+    $nextIndex = Get-PaneScalerBuilderIndex -Label $newLabel
 
     $seedPane = $builderPanes | Sort-Object { Get-PaneScalerBuilderIndex -Label $_.Label } | Select-Object -Last 1
     $seedPaneId = [string](Get-MonitorPropertyValue -InputObject $seedPane.Pane -Name 'pane_id' -Default '')
     if ([string]::IsNullOrWhiteSpace($seedPaneId)) {
         throw 'Cannot add a Builder pane because the seed pane has no pane_id.'
+    }
+
+    $roleAgentConfig = Get-PaneScalerSlotAgentConfig -SlotId $newLabel -Settings $Settings -ProjectDir $projectDir
+    if (-not (Test-PaneScalerParallelRunsAvailable -SlotAgentConfig $roleAgentConfig)) {
+        throw "Provider '$([string]$roleAgentConfig.Agent)' does not support parallel Builder panes."
     }
 
     $worktree = $null
@@ -393,22 +444,7 @@ function Add-OrchestraPane {
             throw 'winsmux split-window did not return a pane id.'
         }
 
-        $newLabel = "builder-$nextIndex"
         Invoke-MonitorWinsmux -Arguments @('select-pane', '-t', $newPaneId, '-T', $newLabel) | Out-Null
-
-        $roleAgentConfig = $null
-        if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
-            $roleAgentConfig = Get-SlotAgentConfig -Role 'Builder' -SlotId $newLabel -Settings $Settings -RootPath $projectDir
-        } else {
-            try {
-                $roleAgentConfig = Get-RoleAgentConfig -Role 'Builder' -Settings $Settings
-            } catch {
-                $roleAgentConfig = [PSCustomObject]@{
-                    Agent = [string]$Settings.agent
-                    Model = [string]$Settings.model
-                }
-            }
-        }
 
         Wait-MonitorPaneShellReady -PaneId $newPaneId
         Send-MonitorBridgeCommand -PaneId $newPaneId -Text (Get-PaneScalerLaunchCommand -Agent ([string]$roleAgentConfig.Agent) -Model ([string]$roleAgentConfig.Model) -ProjectDir $worktree.WorktreePath -GitWorktreeDir $worktree.GitWorktreeDir -RootPath $projectDir)
@@ -535,6 +571,24 @@ function Invoke-PaneScalingCheck {
     }
 
     if ($workload.BusyRatio -gt $ScaleUpThreshold) {
+        $resolvedSettings = $Settings
+        if ($null -eq $resolvedSettings) {
+            $resolvedSettings = Get-BridgeSettings -RootPath $workload.ProjectDir
+        }
+
+        $newLabel = Get-PaneScalerNextBuilderLabel -Manifest $workload.Manifest
+        $slotAgentConfig = Get-PaneScalerSlotAgentConfig -SlotId $newLabel -Settings $resolvedSettings -ProjectDir $workload.ProjectDir
+        if (-not (Test-PaneScalerParallelRunsAvailable -SlotAgentConfig $slotAgentConfig)) {
+            return [PSCustomObject]@{
+                Action   = 'no_change'
+                Reason   = 'parallel_runs_unsupported'
+                Provider = [string]$slotAgentConfig.Agent
+                SlotId   = $newLabel
+                Workload = $workload
+                Changed  = $false
+            }
+        }
+
         $result = Add-OrchestraPane -ManifestPath $ManifestPath -Settings $Settings
         $result | Add-Member -MemberType NoteProperty -Name Workload -Value $workload -Force
         return $result

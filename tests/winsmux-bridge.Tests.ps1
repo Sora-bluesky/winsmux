@@ -5679,8 +5679,17 @@ panes:
     }
 
     It 'scales up when workload exceeds the threshold' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder' }
+                'builder-2' = [PSCustomObject]@{ pane_id = '%3'; role = 'Builder' }
+                'builder-3' = [PSCustomObject]@{ pane_id = '%4'; role = 'Builder' }
+            }
+        }
         Mock Get-PaneWorkload {
             [PSCustomObject]@{
+                Manifest     = $manifest
+                ProjectDir   = $script:paneScalerTempRoot
                 BusyRatio    = 0.9
                 BusyPanes    = 3
                 TotalPanes   = 3
@@ -5704,6 +5713,60 @@ panes:
         $result.Label | Should -Be 'builder-4'
         Should -Invoke Add-OrchestraPane -Times 1 -Exactly
         Should -Invoke Remove-OrchestraPane -Times 0 -Exactly
+    }
+
+    It 'does not scale up when the next Builder provider cannot run in parallel' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+  builder-2:
+    pane_id: %3
+    role: Builder
+  builder-3:
+    pane_id: %4
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+
+        @'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv"],
+      "supports_parallel_runs": false,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:paneScalerManifestDir 'provider-capabilities.json') -Encoding UTF8
+
+        Mock Get-PaneAgentStatus {
+            [PSCustomObject]@{ Status = 'busy'; ExitReason = '' }
+        }
+        Mock Add-OrchestraPane { throw 'should not add a Builder pane without parallel-run support' }
+        Mock Remove-OrchestraPane { throw 'should not remove' }
+
+        $result = Invoke-PaneScalingCheck -ManifestPath $script:paneScalerManifestPath -ScaleUpThreshold 0.8 -ScaleDownThreshold 0.0
+
+        $result.Action | Should -Be 'no_change'
+        $result.Reason | Should -Be 'parallel_runs_unsupported'
+        $result.Provider | Should -Be 'codex'
+        $result.SlotId | Should -Be 'builder-4'
+        Should -Invoke Add-OrchestraPane -Times 0 -Exactly
     }
 
     It 'scales down when workload is low and more than two builders exist' {
