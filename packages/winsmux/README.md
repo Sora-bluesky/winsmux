@@ -22,6 +22,28 @@ to the bundled Windows installer flow.
 - `winsmux help`
 - the npm package version will pin `install.ps1` to the same GitHub release tag
 
+## Installer profiles
+
+The public package will keep one package name and expose profile selection through
+the installer command instead of publishing separate package names.
+
+| Profile | Shape | Primary use |
+| ------- | ------- | ------- |
+| `core` | runtime binary, wrapper scripts, `PATH` setup, and base config | users who only need the Windows-native tmux-compatible runtime |
+| `orchestra` | `core` plus orchestration scripts and the Windows Terminal profile | users who need managed pane agents under one operator |
+| `security` | `core` plus vault, redaction, and audit-oriented scripts | users who need credential handling and evidence checks without the full orchestration surface |
+| `full` | `core`, `orchestra`, and `security` contents | default public install profile |
+
+The planned npm form is:
+
+```powershell
+winsmux install --profile full
+winsmux update --profile orchestra
+```
+
+`install.ps1` accepts the same profile names through `-Profile`. The package
+entrypoint forwards `--profile` to that script as `-Profile`.
+
 ## Release gate
 
 - the staged package must pass the Windows verify job

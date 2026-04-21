@@ -13,6 +13,7 @@ const packageJson = JSON.parse(
 
 const args = process.argv.slice(2);
 const action = args[0] ?? "install";
+const installerArgs = toInstallerArgs(args.slice(1));
 const supportedActions = new Set(["install", "update", "uninstall", "version", "help"]);
 const releaseTag = `v${packageJson.version}`;
 
@@ -54,6 +55,7 @@ const command = [
   action,
   "-ReleaseTag",
   releaseTag,
+  ...installerArgs,
 ];
 
 const result = spawnSync(shell, ["/d", "/s", "/c", command.map(quoteWindowsArg).join(" ")], {
@@ -73,4 +75,36 @@ function quoteWindowsArg(value) {
   }
 
   return `"${value.replace(/"/gu, '""')}"`;
+}
+
+function toInstallerArgs(values) {
+  const result = [];
+
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index];
+    if (value === "--profile") {
+      const profile = values[index + 1];
+      if (!profile) {
+        console.error("Missing value for --profile.");
+        process.exit(1);
+      }
+      result.push("-Profile", profile);
+      index += 1;
+      continue;
+    }
+
+    if (value.startsWith("--profile=")) {
+      const profile = value.slice("--profile=".length);
+      if (!profile) {
+        console.error("Missing value for --profile.");
+        process.exit(1);
+      }
+      result.push("-Profile", profile);
+      continue;
+    }
+
+    result.push(value);
+  }
+
+  return result;
 }
