@@ -158,12 +158,6 @@ function Get-PaneScalerGitWorktreeDir {
     return $ProjectDir
 }
 
-function ConvertTo-PaneScalerPowerShellLiteral {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
-
-    return "'" + ($Value -replace "'", "''") + "'"
-}
-
 function Get-PaneScalerLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Agent,
@@ -173,26 +167,12 @@ function Get-PaneScalerLaunchCommand {
         [string]$RootPath = ''
     )
 
-    if (Get-Command Get-BridgeProviderLaunchCommand -ErrorAction SilentlyContinue) {
-        return Get-BridgeProviderLaunchCommand `
-            -ProviderId $Agent `
-            -Model $Model `
-            -ProjectDir $ProjectDir `
-            -GitWorktreeDir $GitWorktreeDir `
-            -RootPath $RootPath
-    }
-
-    switch ($Agent.Trim().ToLowerInvariant()) {
-        'codex' {
-            return "codex -c model=$Model --sandbox danger-full-access -C $(ConvertTo-PaneScalerPowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PaneScalerPowerShellLiteral -Value $GitWorktreeDir)"
-        }
-        'claude' {
-            return 'claude --permission-mode bypassPermissions'
-        }
-        default {
-            throw "Unsupported agent setting: $Agent"
-        }
-    }
+    return Get-BridgeProviderLaunchCommand `
+        -ProviderId $Agent `
+        -Model $Model `
+        -ProjectDir $ProjectDir `
+        -GitWorktreeDir $GitWorktreeDir `
+        -RootPath $RootPath
 }
 
 function Get-PaneScalerBuilderPanes {
