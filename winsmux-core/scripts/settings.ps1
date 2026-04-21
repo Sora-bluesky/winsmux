@@ -828,6 +828,23 @@ function Get-BridgeProviderCapabilityBoolean {
     return [bool](Get-BridgeProviderCapabilityValue -Capability $Capability -Name $Name -Default $false)
 }
 
+function Test-BridgeProviderCapabilityField {
+    param(
+        [AllowNull()]$Capability,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $Capability) {
+        return $false
+    }
+
+    if ($Capability -is [System.Collections.IDictionary]) {
+        return $Capability.Contains($Name)
+    }
+
+    return ($null -ne $Capability.PSObject -and $Capability.PSObject.Properties.Name -contains $Name)
+}
+
 function Assert-BridgeProviderCapabilityTransport {
     param(
         [Parameter(Mandatory = $true)][string]$ProviderId,
@@ -1612,6 +1629,7 @@ function Get-SlotAgentConfig {
         CapabilityCommand        = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'command' -Default '')
         SupportsParallelRuns     = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_parallel_runs'
         SupportsInterrupt        = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_interrupt'
+        SupportsInterruptDeclared = Test-BridgeProviderCapabilityField -Capability $providerCapability -Name 'supports_interrupt'
         SupportsStructuredResult = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_structured_result'
         SupportsFileEdit         = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_file_edit'
         SupportsSubagents        = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_subagents'

@@ -701,11 +701,52 @@ agent-slots:
         $config.CapabilityCommand | Should -Be 'codex'
         $config.SupportsParallelRuns | Should -Be $true
         $config.SupportsInterrupt | Should -Be $true
+        $config.SupportsInterruptDeclared | Should -Be $true
         $config.SupportsStructuredResult | Should -Be $true
         $config.SupportsFileEdit | Should -Be $true
         $config.SupportsSubagents | Should -Be $true
         $config.SupportsVerification | Should -Be $true
         $config.SupportsConsultation | Should -Be $false
+    }
+
+    It 'distinguishes a missing interrupt capability from an explicit false value' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $config = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+
+        $config.CapabilityAdapter | Should -Be 'codex'
+        $config.CapabilityCommand | Should -Be 'codex'
+        $config.SupportsInterrupt | Should -Be $false
+        $config.SupportsInterruptDeclared | Should -Be $false
     }
 
     It 'rejects slot prompt transport values not supported by provider capabilities' {
@@ -5281,6 +5322,7 @@ Describe 'orchestra-start rollback helpers' {
         [string]$plan.environment.WINSMUX_ROLE | Should -Be 'Worker'
         [string]$plan.environment.WINSMUX_GOVERNANCE_MODE | Should -Be 'enhanced'
         [string]$plan.launch_command | Should -Be 'codex --help'
+        [bool]$plan.supports_interrupt | Should -Be $true
         [string]$plan.startup_token | Should -Be 'token-123'
         [string]$plan.ready_marker_path | Should -Match '[\\/]2-token-123\.ready\.json$'
         $bridgeCalls.Count | Should -Be 1
@@ -5288,6 +5330,84 @@ Describe 'orchestra-start rollback helpers' {
         $sentCommands.Count | Should -Be 1
         $sentCommands[0] | Should -Match 'orchestra-pane-bootstrap\.ps1'
         $sentCommands[0] | Should -Match '-PlanFile'
+    }
+
+    It 'does not send an interrupt key when the provider cannot interrupt' {
+        $sentCommands = [System.Collections.Generic.List[string]]::new()
+        $bridgeCalls = [System.Collections.Generic.List[object]]::new()
+        $cleanPtyEnv = [PSCustomObject]@{
+            RemoveCommand = ''
+            Environment   = [ordered]@{
+                WINSMUX_ROLE = 'Worker'
+            }
+        }
+
+        Mock Wait-PaneShellReady { }
+        Mock Invoke-Bridge {
+            $bridgeCalls.Add([ordered]@{
+                Arguments    = @($Arguments)
+                CaptureOutput = [bool]$CaptureOutput
+                AllowFailure  = [bool]$AllowFailure
+            }) | Out-Null
+
+            return [ordered]@{
+                ExitCode = 0
+                Output   = @()
+            }
+        } -ParameterFilter {
+            $Arguments[0] -eq 'keys'
+        }
+        Mock Send-OrchestraBridgeCommand {
+            $sentCommands.Add($Text) | Out-Null
+        }
+
+        $planPath = New-OrchestraPaneBootstrapPlan `
+            -ProjectDir $script:orchestraStartTempRoot `
+            -PaneId '%2' `
+            -Label 'worker-1' `
+            -Role 'Worker' `
+            -Agent 'example' `
+            -Model 'example-model' `
+            -StartupToken 'token-456' `
+            -LaunchDir 'C:\repo\.worktrees\builder-1' `
+            -CleanPtyEnv $cleanPtyEnv `
+            -LaunchCommand 'example-agent --help' `
+            -SupportsInterrupt $false
+
+        Start-OrchestraPaneBootstrap -PaneId '%2' -PlanPath $planPath
+
+        Should -Invoke Wait-PaneShellReady -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2'
+        }
+        $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 8
+        [bool]$plan.supports_interrupt | Should -Be $false
+        $bridgeCalls.Count | Should -Be 0
+        $sentCommands.Count | Should -Be 1
+        $sentCommands[0] | Should -Match 'orchestra-pane-bootstrap\.ps1'
+        $sentCommands[0] | Should -Match '-PlanFile'
+    }
+
+    It 'keeps bootstrap interrupts enabled when the capability flag is absent' {
+        $unknownInterrupt = [PSCustomObject]@{
+            CapabilityAdapter = 'example'
+            CapabilityCommand = 'example'
+            SupportsInterrupt = $false
+        }
+        $explicitNoInterrupt = [PSCustomObject]@{
+            CapabilityAdapter = 'example'
+            CapabilityCommand = 'example'
+            SupportsInterrupt = $false
+            SupportsInterruptDeclared = $true
+        }
+        $legacyConfig = [PSCustomObject]@{
+            Agent = 'example'
+            Model = 'example-model'
+            SupportsInterrupt = $false
+        }
+
+        Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $unknownInterrupt | Should -Be $true
+        Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $explicitNoInterrupt | Should -Be $false
+        Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $legacyConfig | Should -Be $true
     }
 }
 
