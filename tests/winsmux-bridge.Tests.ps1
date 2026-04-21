@@ -589,6 +589,43 @@ agent-slots:
         } | Should -Throw '*prompt_transport*'
     }
 
+    It 'rejects structurally malformed provider registries' {
+        $registryPath = Get-BridgeProviderRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+        @'
+{
+  "version": 1,
+  "slots": []
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderRegistry -RootPath $script:settingsTempRoot } | Should -Throw '*provider registry slots*'
+
+        @'
+{
+  "version": 1,
+  "slots": {
+    "worker-1": "claude"
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider registry slot 'worker-1'*"
+
+        @'
+{
+  "version": 1,
+  "slots": {
+    "worker-1": {
+      "updated_at_utc": "2026-04-21T00:00:00Z",
+      "reason": "metadata only"
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider registry slot 'worker-1'*"
+    }
+
     It 'fails closed when explicit agent slot entries are malformed' {
 @'
 agent: codex
@@ -2220,6 +2257,94 @@ panes:
         } finally {
             if (Test-Path $tempRoot) {
                 Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'fails closed when the provider registry structure is invalid during a monitor cycle' {
+        $cases = @(
+            [PSCustomObject]@{
+                Name = 'slots array'
+                Body = @'
+{
+  "version": 1,
+  "slots": []
+}
+'@
+                Message = '*provider registry slots*'
+            },
+            [PSCustomObject]@{
+                Name = 'scalar slot entry'
+                Body = @'
+{
+  "version": 1,
+  "slots": {
+    "worker-2": "claude"
+  }
+}
+'@
+                Message = "*provider registry slot 'worker-2'*"
+            },
+            [PSCustomObject]@{
+                Name = 'metadata-only slot entry'
+                Body = @'
+{
+  "version": 1,
+  "slots": {
+    "worker-2": {
+      "updated_at_utc": "2026-04-21T00:00:00Z",
+      "reason": "metadata only"
+    }
+  }
+}
+'@
+                Message = "*provider registry slot 'worker-2'*"
+            }
+        )
+
+        foreach ($case in $cases) {
+            $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+            $manifestDir = Join-Path $tempRoot '.winsmux'
+            $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+            $registryPath = Join-Path $manifestDir 'provider-registry.json'
+
+            try {
+                New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  worker-2:
+    pane_id: %4
+    role: Worker
+    launch_dir: $tempRoot
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+                $case.Body | Set-Content -Path $registryPath -Encoding UTF8
+
+                Mock Get-PaneAgentStatus {
+                    throw "Get-PaneAgentStatus should not be called for malformed provider registry case '$($case.Name)'."
+                }
+                Mock Update-MonitorIdleAlertState { throw 'Update-MonitorIdleAlertState should not be called.' }
+                Mock Test-BuilderStall { throw 'Test-BuilderStall should not be called.' }
+
+                {
+                    Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                        agent = 'codex'
+                        model = 'gpt-5.4'
+                        roles = [ordered]@{
+                            worker = [ordered]@{
+                                agent = 'codex'
+                                model = 'gpt-5.4'
+                            }
+                        }
+                    }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra'
+                } | Should -Throw $case.Message
+            } finally {
+                if (Test-Path $tempRoot) {
+                    Remove-Item -Path $tempRoot -Recurse -Force
+                }
             }
         }
     }
@@ -4768,6 +4893,76 @@ panes:
         {
             Get-PaneWorkload -ManifestPath $script:paneScalerManifestPath
         } | Should -Throw "*Invalid provider registry prompt_transport*"
+    }
+
+    It 'fails closed when provider registry structure is invalid through the pane scaling entrypoint' {
+        $cases = @(
+            [PSCustomObject]@{
+                Name = 'slots array'
+                Body = @'
+{
+  "version": 1,
+  "slots": []
+}
+'@
+                Message = '*provider registry slots*'
+            },
+            [PSCustomObject]@{
+                Name = 'scalar slot entry'
+                Body = @'
+{
+  "version": 1,
+  "slots": {
+    "builder-1": "claude"
+  }
+}
+'@
+                Message = "*provider registry slot 'builder-1'*"
+            },
+            [PSCustomObject]@{
+                Name = 'metadata-only slot entry'
+                Body = @'
+{
+  "version": 1,
+  "slots": {
+    "builder-1": {
+      "updated_at_utc": "2026-04-21T00:00:00Z",
+      "reason": "metadata only"
+    }
+  }
+}
+'@
+                Message = "*provider registry slot 'builder-1'*"
+            }
+        )
+
+        foreach ($case in $cases) {
+            @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+            $case.Body | Set-Content -Path (Join-Path $script:paneScalerManifestDir 'provider-registry.json') -Encoding UTF8
+
+            Mock Get-PaneAgentStatus {
+                throw "Get-PaneAgentStatus should not be called for malformed provider registry case '$($case.Name)'."
+            }
+
+            Push-Location ([System.IO.Path]::GetTempPath())
+            try {
+                {
+                    Invoke-PaneScalingCheck -ManifestPath $script:paneScalerManifestPath -ScaleUpThreshold 0.95 -ScaleDownThreshold 0.0
+                } | Should -Throw $case.Message
+            } finally {
+                Pop-Location
+            }
+        }
     }
 
     It 'reads dictionary-style pane manifests written by orchestra-start' {
