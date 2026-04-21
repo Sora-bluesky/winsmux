@@ -6933,7 +6933,7 @@ function Invoke-ConsultError {
 function Invoke-ProviderSwitch {
     $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
     if ($tokens.Count -lt 1) {
-        Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--restart] [--json]"
+        Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--restart] [--clear] [--json]"
     }
 
     $slotId = [string]$tokens[0]
@@ -6942,6 +6942,7 @@ function Invoke-ProviderSwitch {
     $promptTransport = ''
     $reason = ''
     $restartRequested = $false
+    $clearRequested = $false
     $jsonOutput = $false
 
     for ($index = 1; $index -lt $tokens.Count; $index++) {
@@ -6980,10 +6981,17 @@ function Invoke-ProviderSwitch {
             '--restart' {
                 $restartRequested = $true
             }
+            '--clear' {
+                $clearRequested = $true
+            }
             default {
-                Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--restart] [--json]"
+                Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--restart] [--clear] [--json]"
             }
         }
+    }
+
+    if ($clearRequested -and (-not [string]::IsNullOrWhiteSpace($agent) -or -not [string]::IsNullOrWhiteSpace($model) -or -not [string]::IsNullOrWhiteSpace($promptTransport))) {
+        Stop-WithError 'provider-switch --clear cannot be combined with --agent, --model, or --prompt-transport.'
     }
 
     $projectDir = (Get-Location).Path
@@ -7012,7 +7020,14 @@ function Invoke-ProviderSwitch {
         $restartPaneId = Confirm-Target ([string]$manifestEntry[0].PaneId)
     }
 
-    $entry = Write-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId -Agent $agent -Model $model -PromptTransport $promptTransport -Reason $reason
+    $entry = $null
+    $cleared = $false
+    if ($clearRequested) {
+        $clearResult = Remove-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId
+        $cleared = [bool]$clearResult.Removed
+    } else {
+        $entry = Write-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId -Agent $agent -Model $model -PromptTransport $promptTransport -Reason $reason
+    }
     $effective = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $settings -RootPath $projectDir
     $result = [ordered]@{
         slot_id          = $slotId
@@ -7021,8 +7036,10 @@ function Invoke-ProviderSwitch {
         prompt_transport = [string]$effective.PromptTransport
         source           = [string]$effective.Source
         registry_path    = Get-BridgeProviderRegistryPath -RootPath $projectDir
-        updated_at_utc   = [string]$entry.updated_at_utc
-        reason           = if ($entry.Contains('reason')) { [string]$entry.reason } else { '' }
+        updated_at_utc   = if ($clearRequested) { [string]$clearResult.UpdatedAtUtc } else { [string]$entry.updated_at_utc }
+        reason           = if ((-not $clearRequested) -and $entry.Contains('reason')) { [string]$entry.reason } else { '' }
+        clear_requested  = $clearRequested
+        cleared          = $cleared
         restart_requested = $restartRequested
         restarted        = $false
         restart_pane_id  = ''
@@ -7036,6 +7053,11 @@ function Invoke-ProviderSwitch {
 
     if ($jsonOutput) {
         $result | ConvertTo-Json -Depth 8 -Compress | Write-Output
+        return
+    }
+
+    if ($clearRequested) {
+        Write-Output "provider switch cleared for ${slotId}: $($result.agent) / $($result.model) ($($result.prompt_transport))"
         return
     }
 
@@ -7075,7 +7097,7 @@ Commands:
   consult-request <mode> [--message <text>] [--target-slot <slot>]  Record a consultation request packet/event
   consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json]  Record a consultation result packet/event
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
-  provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--restart] [--json]  Record a runtime provider reassignment for a managed slot
+  provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--restart] [--clear] [--json]  Record or clear a runtime provider reassignment for a managed slot
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
   wait <channel> [timeout]  Block until signal received (replaces polling)

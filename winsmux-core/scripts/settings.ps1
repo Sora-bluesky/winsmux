@@ -506,6 +506,45 @@ function Write-BridgeProviderRegistryEntry {
     return $registry.slots[$SlotId]
 }
 
+function Remove-BridgeProviderRegistryEntry {
+    param(
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [string]$RootPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SlotId)) {
+        throw 'Provider registry entry requires a slot id.'
+    }
+
+    $registry = Read-BridgeProviderRegistry -RootPath $RootPath
+    $matchedSlotId = $null
+    foreach ($entry in $registry.slots.GetEnumerator()) {
+        if ([string]::Equals([string]$entry.Key, $SlotId, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $matchedSlotId = [string]$entry.Key
+            break
+        }
+    }
+
+    if ($null -ne $matchedSlotId) {
+        $registry.slots.Remove($matchedSlotId)
+    }
+
+    $path = Get-BridgeProviderRegistryPath -RootPath $RootPath
+    $directory = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+
+    $registry | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $path -Encoding UTF8
+
+    return [PSCustomObject][ordered]@{
+        SlotId        = [string]$SlotId
+        Removed       = ($null -ne $matchedSlotId)
+        RegistryPath  = [string]$path
+        UpdatedAtUtc  = (Get-Date).ToUniversalTime().ToString('o')
+    }
+}
+
 function ConvertFrom-BridgeManualYaml {
     param([Parameter(Mandatory = $true)][string]$Content)
 
