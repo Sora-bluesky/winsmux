@@ -119,6 +119,56 @@ function Get-TeamPipelinePaneInfo {
     return $Manifest.Panes[$Label]
 }
 
+function Get-TeamPipelinePaneCapabilityFlag {
+    param(
+        [AllowNull()]$Pane,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    return [bool](Get-TeamPipelineValue -InputObject $Pane -Name $Name -Default $false)
+}
+
+function Get-TeamPipelineCapabilityTarget {
+    param(
+        [AllowNull()]$Manifest,
+        [Parameter(Mandatory = $true)][string]$CapabilityName,
+        [Parameter(Mandatory = $true)][string]$BuilderLabel
+    )
+
+    if ($null -eq $Manifest -or $null -eq $Manifest.Panes) {
+        return $null
+    }
+
+    foreach ($roleName in @('Reviewer', 'Researcher', 'Worker', 'Builder')) {
+        foreach ($label in @($Manifest.Panes.Keys)) {
+            $labelText = [string]$label
+            if ([string]::Equals($labelText, $BuilderLabel, [System.StringComparison]::OrdinalIgnoreCase)) {
+                continue
+            }
+
+            $pane = $Manifest.Panes[$label]
+            if (-not (Get-TeamPipelinePaneCapabilityFlag -Pane $pane -Name $CapabilityName)) {
+                continue
+            }
+
+            $role = [string](Get-TeamPipelineValue -InputObject $pane -Name 'role' -Default '')
+            if ($roleName -eq 'Builder') {
+                if ([string]::IsNullOrWhiteSpace($role) -or [string]::Equals($role, 'Builder', [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return $labelText
+                }
+
+                continue
+            }
+
+            if ([string]::Equals($role, $roleName, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $labelText
+            }
+        }
+    }
+
+    return $null
+}
+
 function Resolve-TeamPipelineBuilderContext {
     param(
         [Parameter(Mandatory = $true)][string]$BuilderLabel,
@@ -172,6 +222,7 @@ function Get-TeamPipelineStageTargets {
         [Parameter(Mandatory = $true)][string]$BuilderLabel,
         [string]$ResearcherLabel,
         [string]$ReviewerLabel,
+        [AllowNull()]$Manifest,
         [switch]$SkipPlan,
         [switch]$SkipVerify
     )
@@ -189,9 +240,13 @@ function Get-TeamPipelineStageTargets {
     if (-not $SkipVerify) {
         if (-not [string]::IsNullOrWhiteSpace($ReviewerLabel)) {
             $verifyTarget = $ReviewerLabel
-        } elseif (-not [string]::IsNullOrWhiteSpace($ResearcherLabel)) {
+        } elseif ($null -ne $Manifest) {
+            $verifyTarget = Get-TeamPipelineCapabilityTarget -Manifest $Manifest -CapabilityName 'supports_verification' -BuilderLabel $BuilderLabel
+        }
+
+        if ([string]::IsNullOrWhiteSpace($verifyTarget) -and -not [string]::IsNullOrWhiteSpace($ResearcherLabel)) {
             $verifyTarget = $ResearcherLabel
-        } else {
+        } elseif ([string]::IsNullOrWhiteSpace($verifyTarget)) {
             $verifyTarget = $BuilderLabel
         }
     }
@@ -207,7 +262,8 @@ function Get-TeamPipelineConsultTarget {
     param(
         [Parameter(Mandatory = $true)][string]$BuilderLabel,
         [string]$ResearcherLabel,
-        [string]$ReviewerLabel
+        [string]$ReviewerLabel,
+        [AllowNull()]$Manifest
     )
 
     if (-not [string]::IsNullOrWhiteSpace($ReviewerLabel) -and $ReviewerLabel -ne $BuilderLabel) {
@@ -216,6 +272,11 @@ function Get-TeamPipelineConsultTarget {
 
     if (-not [string]::IsNullOrWhiteSpace($ResearcherLabel) -and $ResearcherLabel -ne $BuilderLabel) {
         return $ResearcherLabel
+    }
+
+    $capabilityTarget = Get-TeamPipelineCapabilityTarget -Manifest $Manifest -CapabilityName 'supports_consultation' -BuilderLabel $BuilderLabel
+    if (-not [string]::IsNullOrWhiteSpace($capabilityTarget)) {
+        return $capabilityTarget
     }
 
     return $null
@@ -1161,7 +1222,7 @@ function Invoke-TeamPipeline {
     $manifest = Read-TeamPipelineManifest -Path $resolvedManifestPath
     $builderContext = Resolve-TeamPipelineBuilderContext -BuilderLabel $Builder -Manifest $manifest -OverrideWorktreePath $BuilderWorktreePath
     $sessionName = Get-TeamPipelineSessionName -Manifest $manifest
-    $targets = Get-TeamPipelineStageTargets -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -SkipPlan:$SkipPlan -SkipVerify:$SkipVerify
+    $targets = Get-TeamPipelineStageTargets -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -Manifest $manifest -SkipPlan:$SkipPlan -SkipVerify:$SkipVerify
 
     $result = [ordered]@{
         Task                = $Task
@@ -1185,7 +1246,7 @@ function Invoke-TeamPipeline {
     }
 
     $planSummary = ''
-    $consultTarget = Get-TeamPipelineConsultTarget -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer
+    $consultTarget = Get-TeamPipelineConsultTarget -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -Manifest $manifest
     if (-not [string]::IsNullOrWhiteSpace($targets.PlanTarget)) {
         $planPrompt = New-TeamPipelinePlanPrompt -Task $Task
         $planDispatchResult = Invoke-TeamPipelineGuardedSend -StageName 'PLAN' -Target $targets.PlanTarget -Prompt $planPrompt -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role 'Researcher' -Task $Task
