@@ -748,6 +748,50 @@ function Get-BridgeProviderCapability {
     return $null
 }
 
+function Assert-BridgeProviderCapabilityTransport {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProviderId,
+        [Parameter(Mandatory = $true)][string]$PromptTransport,
+        [string]$RootPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ProviderId) -or [string]::IsNullOrWhiteSpace($PromptTransport)) {
+        return
+    }
+
+    $registry = Read-BridgeProviderCapabilityRegistry -RootPath $RootPath
+    if ($registry.providers.Count -lt 1) {
+        return
+    }
+
+    $capability = $null
+    foreach ($entry in $registry.providers.GetEnumerator()) {
+        if ([string]::Equals([string]$entry.Key, $ProviderId, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $capability = $entry.Value
+            break
+        }
+    }
+
+    if ($null -eq $capability) {
+        throw "Provider capability '$ProviderId' was not found."
+    }
+
+    $transports = @()
+    if ($capability.Contains('prompt_transports')) {
+        $transports = @($capability.prompt_transports)
+    }
+
+    if ($transports.Count -lt 1) {
+        throw "Provider capability '$ProviderId' does not declare prompt_transports."
+    }
+
+    $requestedTransport = $PromptTransport.Trim().ToLowerInvariant()
+    $supportedTransports = @($transports | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() })
+    if ($requestedTransport -notin $supportedTransports) {
+        throw "Provider capability '$ProviderId' does not support prompt_transport '$requestedTransport'. Supported values: $($supportedTransports -join ', ')."
+    }
+}
+
 function ConvertFrom-BridgeManualYaml {
     param([Parameter(Mandatory = $true)][string]$Content)
 
@@ -1431,6 +1475,10 @@ function Get-SlotAgentConfig {
         }
 
         $source = 'registry'
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($RootPath)) {
+        Assert-BridgeProviderCapabilityTransport -ProviderId $agent -PromptTransport $promptTransport -RootPath $RootPath
     }
 
     return [PSCustomObject]@{

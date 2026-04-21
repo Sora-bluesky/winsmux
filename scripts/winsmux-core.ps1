@@ -2583,7 +2583,7 @@ function Invoke-Send {
                 }
 
                 if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
-                    $agentConfig = Get-SlotAgentConfig -Role $context.Role -SlotId $context.Label
+                    $agentConfig = Get-SlotAgentConfig -Role $context.Role -SlotId $context.Label -RootPath $projectDir
                 } else {
                     $agentConfig = Get-RoleAgentConfig -Role $context.Role
                 }
@@ -2600,6 +2600,9 @@ function Invoke-Send {
                 $execMode = $execModeValue.Trim().ToLowerInvariant() -eq 'true' -and [string]$agentConfig.Agent -eq 'codex'
             }
         } catch {
+            if ($_.Exception.Message -match 'Provider capability') {
+                throw
+            }
         }
     }
 

@@ -656,6 +656,123 @@ agent-slots:
         $capability.command | Should -Be 'codex'
     }
 
+    It 'rejects slot prompt transport values not supported by provider capabilities' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: file
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        {
+            Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        } | Should -Throw "*does not support prompt_transport 'file'*"
+    }
+
+    It 'rejects provider registry prompt transport overrides not supported by provider capabilities' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "claude": {
+      "adapter": "claude",
+      "command": "claude",
+      "prompt_transports": ["file"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        Write-BridgeProviderRegistryEntry `
+            -RootPath $script:settingsTempRoot `
+            -SlotId 'worker-1' `
+            -Agent 'claude' `
+            -PromptTransport 'stdin' | Out-Null
+
+        {
+            Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        } | Should -Throw "*does not support prompt_transport 'stdin'*"
+    }
+
+    It 'rejects providers missing from a non-empty provider capability registry' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: claude
+    model: opus
+    prompt-transport: stdin
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        {
+            Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        } | Should -Throw "*Provider capability 'claude' was not found*"
+    }
+
     It 'rejects structurally malformed provider capability registries' {
         $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
         $registryDir = Split-Path -Parent $registryPath
@@ -8192,6 +8309,7 @@ panes:
 Describe 'winsmux send dispatch payload' {
     BeforeAll {
         $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreSendRawContent = Get-Content -Path $script:winsmuxCorePath -Raw -Encoding UTF8
         . $script:winsmuxCorePath 'version' *> $null
     }
 
@@ -8213,6 +8331,11 @@ Describe 'winsmux send dispatch payload' {
         $payload['TextToSend'] | Should -Be 'Write-Host short'
         $payload['PromptPath'] | Should -Be $null
         Test-Path (Join-Path $script:sendTempRoot '.winsmux\dispatch-prompts') | Should -Be $false
+    }
+
+    It 'resolves managed pane send settings through the project capability root' {
+        $script:winsmuxCoreSendRawContent | Should -Match 'Get-SlotAgentConfig -Role \$context\.Role -SlotId \$context\.Label -RootPath \$projectDir'
+        $script:winsmuxCoreSendRawContent | Should -Match 'Provider capability'
     }
 
     It 'writes long text to a dispatch file and returns a prompt pointer for non-exec panes' {
