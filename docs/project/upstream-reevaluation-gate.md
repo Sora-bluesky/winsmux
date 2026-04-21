@@ -45,6 +45,41 @@ The gate must keep these outputs separate.
 Public docs get durable contracts.
 Private maintainer skills get maintainer-only bodies and detailed prompt assets.
 
+## Default landing zones
+
+Accepted patterns should land in the smallest durable surface that matches their effect.
+
+Use these defaults:
+
+- public product docs:
+  - user-facing capability contracts
+  - public verification expectations
+  - operator judgement boundaries that users must understand
+- contributor/test docs:
+  - contributor workflow notes
+  - public/private boundary rules
+  - validation and evidence-shape rules for contributors
+- external planning:
+  - task-level scope changes
+  - roadmap placement
+  - issue-to-task mapping
+  - reevaluation outcomes that change version or lane priority
+- private maintainer assets:
+  - maintainer-only skill bodies
+  - maintainer-only prompt assets
+  - local operating details that are not durable public contracts
+
+The current default task mapping for `#460` is:
+
+- `TASK-315`: reevaluation gate and adoption rule
+- `TASK-321`: review evidence envelope
+- `TASK-323`: public capability and evidence contract inventory
+- `TASK-337`: command/help surfaces that expose required evidence and judgement boundaries
+- `TASK-361`: context-pack references that carry evidence without exposing prompt bodies
+- `TASK-362`: approval and audit evidence normalization
+
+If a pattern does not clearly fit one of those landing zones, reject it until the destination is clear.
+
 ## Command surface
 
 The working command surface for `TASK-315` is:
