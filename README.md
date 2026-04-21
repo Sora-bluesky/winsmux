@@ -184,6 +184,8 @@ winsmux send worker-3 "Summarize the upstream issue."
 - **Worktree isolation**: each managed worker pane can run in its own git worktree branch and directory
 - **Credential Vault**: secrets are stored with Windows DPAPI and injected into panes without writing repo `.env` files
 - **Evidence Ledger**: prompts, actions, and review evidence can be captured for audit and compliance workflows
+- **Evidence-first verification**: representative tool output such as `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, and `cargo audit` should be handled as reusable review evidence instead of prompt-only commentary
+- **Operator-owned final judgement**: review-capable panes may report findings and evidence, but the final accept/reject decision stays with the external operator
 
 ## Core commands
 

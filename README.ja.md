@@ -187,6 +187,8 @@ winsmux send worker-3 "upstream issue を要約してください。"
 - **Worktree isolation**: ワーカーごとに独立した git ワークツリーを持てる
 - **Credential Vault**: Windows DPAPI でシークレットを管理し、repo に `.env` を置かない
 - **Evidence Ledger**: プロンプト、操作、レビュー証跡を記録できる
+- **証拠を先に扱う検証**: `cargo fmt --check`、`cargo clippy -- -D warnings`、`cargo test`、`cargo audit` のような代表コマンドは、単なる感想ではなく、再利用できるレビュー証拠として扱う
+- **最終判断はオペレーターが持つ**: レビュー可能なペインは指摘と証拠を返しますが、受け入れ可否の最終判断は外部オペレーターが持つ
 
 ## 主要コマンド
 

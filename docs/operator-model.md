@@ -55,6 +55,27 @@ In the standard winsmux operating model, the operator is responsible for:
 
 Direct file mutation or command execution by the operator is outside the standard winsmux operating model.
 
+## 2a. Verification and evidence contract
+
+winsmux treats verification as evidence, not as freeform approval prose.
+
+That means:
+
+- a review-capable slot should return findings, blocking state, and evidence references
+- representative tool output should stay attributable to the tool that produced it
+- the operator should make the final accept / reject judgement after reading that evidence
+
+For Rust-oriented work, the representative evidence set currently includes:
+
+- `cargo fmt --check`
+- `cargo clippy -- -D warnings`
+- `cargo test`
+- `cargo audit`
+
+winsmux may learn from public harness structures, checklists, and policy shapes.
+It does not treat a generic persona prompt as a public product capability.
+The durable public contract is slot capability, evidence shape, and operator-owned final judgement.
+
 ## 3. Pane execution layer
 
 The managed pane layer is where agent CLIs run inside winsmux-controlled panes or slots.
