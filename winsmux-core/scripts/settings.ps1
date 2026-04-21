@@ -588,10 +588,15 @@ function ConvertTo-BridgeProviderCapabilityEntry {
         'supports_verification',
         'supports_consultation'
     )
+    $allowedFields = @($stringFields + $transportFields + $boolFields)
 
     $entry = [ordered]@{}
     foreach ($pair in $pairs) {
         $key = $pair.Key.ToString() -replace '-', '_'
+        if ($key -notin $allowedFields) {
+            throw "Invalid provider capability field '$key'."
+        }
+
         if ($key -in $stringFields) {
             if (-not (Test-BridgeProviderRegistryScalarValue $pair.Value)) {
                 throw "Invalid provider capability field '$key'."
@@ -611,12 +616,20 @@ function ConvertTo-BridgeProviderCapabilityEntry {
 
             $transports = @()
             foreach ($transport in @($pair.Value)) {
-                $text = (ConvertFrom-BridgeYamlScalar $transport).ToLowerInvariant()
+                $text = ConvertFrom-BridgeYamlScalar $transport
+                if ([string]::IsNullOrWhiteSpace($text)) {
+                    throw "Invalid provider capability field '$key'."
+                }
+
+                $text = $text.ToLowerInvariant()
                 if ($text -notin @('argv', 'file', 'stdin')) {
                     throw "Invalid provider capability prompt transport '$text'."
                 }
 
                 $transports += $text
+            }
+            if ($transports.Count -lt 1) {
+                throw "Invalid provider capability field '$key'."
             }
 
             $entry[$key] = @($transports)
@@ -634,6 +647,12 @@ function ConvertTo-BridgeProviderCapabilityEntry {
 
     if ($entry.Count -lt 1) {
         return $null
+    }
+
+    foreach ($requiredField in @('adapter', 'command', 'prompt_transports')) {
+        if (-not $entry.Contains($requiredField)) {
+            throw "Missing provider capability field '$requiredField'."
+        }
     }
 
     return $entry

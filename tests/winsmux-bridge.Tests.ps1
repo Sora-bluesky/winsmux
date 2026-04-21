@@ -682,6 +682,9 @@ agent-slots:
   "version": 1,
   "providers": {
     "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv"],
       "supports_file_edit": "yes"
     }
   }
@@ -694,6 +697,35 @@ agent-slots:
   "version": 1,
   "providers": {
     "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv"],
+      "supports_verificaton": true
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider capability field 'supports_verificaton'*"
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "supports_file_edit": true
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*Missing provider capability field 'adapter'*"
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
       "prompt_transports": ["socket"]
     }
   }
