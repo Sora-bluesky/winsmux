@@ -6930,6 +6930,77 @@ function Invoke-ConsultError {
     Write-ConsultationCommandRecord -Kind 'consult_error' -Mode ([string]$args.mode) -Message ([string]$args.message) -TargetSlot ([string]$args.target_slot)
 }
 
+function Invoke-ProviderCapabilities {
+    $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
+    $providerId = ''
+    $jsonOutput = $false
+
+    for ($index = 0; $index -lt $tokens.Count; $index++) {
+        switch ($tokens[$index]) {
+            '--json' {
+                $jsonOutput = $true
+            }
+            default {
+                if ([string]::IsNullOrWhiteSpace($providerId)) {
+                    $providerId = [string]$tokens[$index]
+                    continue
+                }
+
+                Stop-WithError "usage: winsmux provider-capabilities [provider] [--json]"
+            }
+        }
+    }
+
+    $projectDir = (Get-Location).Path
+    $registry = Read-BridgeProviderCapabilityRegistry -RootPath $projectDir
+    if (-not [string]::IsNullOrWhiteSpace($providerId)) {
+        $capabilities = Get-BridgeProviderCapability -RootPath $projectDir -ProviderId $providerId
+        if ($null -eq $capabilities) {
+            Stop-WithError "provider capability '$providerId' was not found."
+        }
+
+        $result = [ordered]@{
+            provider_id   = $providerId
+            capabilities  = $capabilities
+            registry_path = Get-BridgeProviderCapabilityRegistryPath -RootPath $projectDir
+        }
+        if ($jsonOutput) {
+            $result | ConvertTo-Json -Depth 16 -Compress | Write-Output
+            return
+        }
+
+        Write-Output "provider capability $providerId"
+        foreach ($property in $capabilities.GetEnumerator()) {
+            $value = $property.Value
+            if ($value -is [System.Array]) {
+                $value = ($value -join ',')
+            }
+            Write-Output "  $($property.Key): $value"
+        }
+        return
+    }
+
+    $result = [ordered]@{
+        version       = [int]$registry.version
+        registry_path = Get-BridgeProviderCapabilityRegistryPath -RootPath $projectDir
+        providers     = $registry.providers
+    }
+    if ($jsonOutput) {
+        $result | ConvertTo-Json -Depth 16 -Compress | Write-Output
+        return
+    }
+
+    if ($registry.providers.Count -lt 1) {
+        Write-Output 'provider capabilities: none'
+        return
+    }
+
+    Write-Output 'provider capabilities'
+    foreach ($entry in $registry.providers.GetEnumerator()) {
+        Write-Output "  $($entry.Key)"
+    }
+}
+
 function Invoke-ProviderSwitch {
     $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
     if ($tokens.Count -lt 1) {
@@ -7097,6 +7168,7 @@ Commands:
   consult-request <mode> [--message <text>] [--target-slot <slot>]  Record a consultation request packet/event
   consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json]  Record a consultation result packet/event
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
+  provider-capabilities [provider] [--json]  Inspect the provider capability registry contract
   provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--restart] [--clear] [--json]  Record or clear a runtime provider reassignment for a managed slot
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
@@ -7578,6 +7650,7 @@ switch ($Command) {
     'consult-request' { Invoke-ConsultRequest }
     'consult-result'  { Invoke-ConsultResult }
     'consult-error'   { Invoke-ConsultError }
+    'provider-capabilities' { Invoke-ProviderCapabilities }
     'provider-switch' { Invoke-ProviderSwitch }
     'rebind-worktree' { Invoke-RebindWorktree }
     ''                { Show-Usage }

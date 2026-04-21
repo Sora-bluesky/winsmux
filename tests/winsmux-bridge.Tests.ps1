@@ -621,6 +621,87 @@ agent-slots:
         $registryAfterRemove.slots.Count | Should -Be 0
     }
 
+    It 'reads provider capability registry entries' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "display_name": "Codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+        $registry = Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot
+        $registry.providers.codex.adapter | Should -Be 'codex'
+        $registry.providers.codex.prompt_transports | Should -Be @('argv', 'file', 'stdin')
+        $registry.providers.codex.supports_file_edit | Should -Be $true
+
+        $capability = Get-BridgeProviderCapability -RootPath $script:settingsTempRoot -ProviderId 'CODEX'
+        $capability.command | Should -Be 'codex'
+    }
+
+    It 'rejects structurally malformed provider capability registries' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 2,
+  "providers": {}
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw '*provider capability registry version*'
+
+@'
+{
+  "version": 1,
+  "providers": []
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw '*provider capability registry providers*'
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "supports_file_edit": "yes"
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider capability field 'supports_file_edit'*"
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "prompt_transports": ["socket"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw '*provider capability prompt transport*'
+    }
+
     It 'rejects structurally malformed provider registries' {
         $registryPath = Get-BridgeProviderRegistryPath -RootPath $script:settingsTempRoot
         $registryDir = Split-Path -Parent $registryPath
@@ -8399,6 +8480,73 @@ Describe 'public first-run helper' {
         $result.requires_startup | Should -Be $false
         $result.operator_message | Should -Be 'ready'
         $result.next_action | Should -Be 'Dispatch work or continue operator flow.'
+    }
+}
+
+Describe 'winsmux provider-capabilities command' {
+    BeforeAll {
+        $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreRawContent = Get-Content -Raw -Path $script:winsmuxCoreRawPath -Encoding UTF8
+    }
+
+    BeforeEach {
+        $script:providerCapabilitiesTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-provider-capabilities-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:providerCapabilitiesTempRoot '.winsmux') -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "display_name": "Codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "supports_file_edit": true,
+      "supports_verification": true,
+      "supports_subagents": true
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:providerCapabilitiesTempRoot '.winsmux\provider-capabilities.json') -Encoding UTF8
+    }
+
+    AfterEach {
+        if ($script:providerCapabilitiesTempRoot -and (Test-Path $script:providerCapabilitiesTempRoot)) {
+            Remove-Item -Path $script:providerCapabilitiesTempRoot -Recurse -Force
+        }
+    }
+
+    It 'documents provider-capabilities in usage and reports the registry contract' {
+        $script:winsmuxCoreRawContent | Should -Match 'provider-capabilities \[provider\] \[--json\]'
+        $script:winsmuxCoreRawContent | Should -Match "'provider-capabilities'\s*\{"
+
+        Push-Location $script:providerCapabilitiesTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-capabilities --json
+        } finally {
+            Pop-Location
+        }
+
+        $payload = $output | ConvertFrom-Json
+        $payload.version | Should -Be 1
+        $payload.providers.codex.adapter | Should -Be 'codex'
+        $payload.providers.codex.prompt_transports | Should -Be @('argv', 'file', 'stdin')
+        $payload.providers.codex.supports_file_edit | Should -Be $true
+    }
+
+    It 'reports one provider capability entry' {
+        Push-Location $script:providerCapabilitiesTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-capabilities CODEX --json
+        } finally {
+            Pop-Location
+        }
+
+        $payload = $output | ConvertFrom-Json
+        $payload.provider_id | Should -Be 'CODEX'
+        $payload.capabilities.command | Should -Be 'codex'
+        $payload.capabilities.supports_verification | Should -Be $true
     }
 }
 
