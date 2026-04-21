@@ -161,6 +161,8 @@ winsmux install --profile full
 
 If `winsmux update` does not receive a new profile, it keeps the previously
 recorded profile from `~\.winsmux\install-profile`.
+The installer enforces this scope, so `core` does not install orchestration
+scripts, vault support, or the Windows Terminal profile.
 
 ## Quick start
 

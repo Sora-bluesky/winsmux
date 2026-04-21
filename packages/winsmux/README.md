@@ -50,6 +50,13 @@ Each install or update records the selected shape in:
 - `~\.winsmux\install-profile`
 - `~\.winsmux\install-profile.json`
 
+Profile scope is enforced by the installer:
+
+- `core` does not install orchestration scripts, vault support, or the Windows Terminal profile.
+- `orchestra` installs orchestration scripts and the Windows Terminal profile.
+- `security` installs vault-oriented support without the Windows Terminal profile.
+- `full` installs both orchestration and security support.
+
 ## Release gate
 
 - the staged package must pass the Windows verify job

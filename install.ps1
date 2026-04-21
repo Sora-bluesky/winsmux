@@ -78,6 +78,15 @@ function Get-InstallProfileContents {
     }
 }
 
+function Test-InstallProfileContent {
+    param(
+        [Parameter(Mandatory = $true)][string]$Profile,
+        [Parameter(Mandatory = $true)][string]$Content
+    )
+
+    return @(Get-InstallProfileContents -Profile $Profile) -contains $Content
+}
+
 function Write-InstallProfileManifest {
     param(
         [Parameter(Mandatory = $true)][string]$Profile,
@@ -94,6 +103,52 @@ function Write-InstallProfileManifest {
     }
 
     $manifest | ConvertTo-Json -Depth 8 | Set-Content -Path $PROFILE_MANIFEST_FILE -Encoding UTF8
+}
+
+function Install-OrchestraSupportScripts {
+    Download-File "winsmux-core/scripts/agent-launch.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-launch.ps1")
+    Download-File "winsmux-core/scripts/orchestra-start.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-start.ps1")
+    Download-File "winsmux-core/scripts/orchestra-layout.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-layout.ps1")
+    Download-File "winsmux-core/scripts/settings.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "settings.ps1")
+}
+
+function Install-SecuritySupportScripts {
+    Download-File "winsmux-core/scripts/vault.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "vault.ps1")
+}
+
+function Sync-WindowsTerminalFragment {
+    param([Parameter(Mandatory = $true)][string]$Profile)
+
+    $fragmentDir = Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\Fragments\winsmux"
+    $fragmentFile = Join-Path $fragmentDir "winsmux.json"
+    $shouldInstallFragment = Test-InstallProfileContent -Profile $Profile -Content "windows_terminal_profile"
+
+    if (-not $shouldInstallFragment) {
+        if (Test-Path $fragmentFile) {
+            Remove-Item $fragmentFile -Force
+            Write-Status "Removed Windows Terminal fragment for profile '$Profile': $fragmentFile"
+        }
+        return
+    }
+
+    if (-not (Test-Path $fragmentDir)) {
+        New-Item -ItemType Directory -Path $fragmentDir -Force | Out-Null
+    }
+    $fragmentJson = @'
+{
+  "profiles": [
+    {
+      "name": "winsmux Orchestra",
+      "commandline": "pwsh -NoProfile -Command \"$dir = Read-Host 'Project dir'; if ([string]::IsNullOrWhiteSpace($dir)) { Write-Error 'Project dir is required.'; exit 1 }; & '%USERPROFILE%\\.winsmux\\bin\\winsmux.ps1' start -C $dir\"",
+      "icon": "🎼",
+      "startingDirectory": "%USERPROFILE%",
+      "tabTitle": "winsmux Orchestra"
+    }
+  ]
+}
+'@
+    $fragmentJson | Set-Content -Path $fragmentFile -Encoding UTF8
+    Write-Status "Registered Windows Terminal fragment: $fragmentFile"
 }
 
 function Test-Administrator {
@@ -276,12 +331,12 @@ function Invoke-Install {
     # winsmux.ps1 CLI
     Download-File "winsmux.ps1" (Join-Path $BIN_DIR "winsmux.ps1")
 
-    # Orchestra support scripts
-    Download-File "winsmux-core/scripts/agent-launch.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-launch.ps1")
-    Download-File "winsmux-core/scripts/orchestra-start.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-start.ps1")
-    Download-File "winsmux-core/scripts/orchestra-layout.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-layout.ps1")
-    Download-File "winsmux-core/scripts/settings.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "settings.ps1")
-    Download-File "winsmux-core/scripts/vault.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "vault.ps1")
+    if (Test-InstallProfileContent -Profile $resolvedInstallProfile -Content "orchestration_scripts") {
+        Install-OrchestraSupportScripts
+    }
+    if (Test-InstallProfileContent -Profile $resolvedInstallProfile -Content "vault") {
+        Install-SecuritySupportScripts
+    }
 
     # .winsmux.conf (backup existing)
     $confDest = Join-Path $HOME ".winsmux.conf"
@@ -302,26 +357,7 @@ pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux.ps1" %*
 "@ | Set-Content -Path $winsmuxCmd -Encoding ASCII
 
     # 7.5. Register Windows Terminal Fragments
-    $fragmentDir = Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\Fragments\winsmux"
-    if (-not (Test-Path $fragmentDir)) {
-        New-Item -ItemType Directory -Path $fragmentDir -Force | Out-Null
-    }
-    $fragmentJson = @'
-{
-  "profiles": [
-    {
-      "name": "winsmux Orchestra",
-      "commandline": "pwsh -NoProfile -Command \"$dir = Read-Host 'Project dir'; if ([string]::IsNullOrWhiteSpace($dir)) { Write-Error 'Project dir is required.'; exit 1 }; & '%USERPROFILE%\\.winsmux\\bin\\winsmux.ps1' start -C $dir\"",
-      "icon": "🎼",
-      "startingDirectory": "%USERPROFILE%",
-      "tabTitle": "winsmux Orchestra"
-    }
-  ]
-}
-'@
-    $fragmentFile = Join-Path $fragmentDir "winsmux.json"
-    $fragmentJson | Set-Content -Path $fragmentFile -Encoding UTF8
-    Write-Status "Registered Windows Terminal fragment: $fragmentFile"
+    Sync-WindowsTerminalFragment -Profile $resolvedInstallProfile
 
     # 8. Add to PATH via $PROFILE
     $profileLine = "`$env:PATH = `"$BIN_DIR;`$env:PATH`""
