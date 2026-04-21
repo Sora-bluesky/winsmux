@@ -15,6 +15,7 @@ Dot-source this script to load the helpers:
 
 $script:BridgeSettingsFileName = '.winsmux.yaml'
 $script:BridgeProviderRegistryFileName = 'provider-registry.json'
+$script:BridgeProviderCapabilityRegistryFileName = 'provider-capabilities.json'
 $script:BridgeSettingsSchema = [ordered]@{
     config_version      = @{ Type = 'int';      Default = 1;             Option = $null }
     agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
@@ -543,6 +544,208 @@ function Remove-BridgeProviderRegistryEntry {
         RegistryPath  = [string]$path
         UpdatedAtUtc  = (Get-Date).ToUniversalTime().ToString('o')
     }
+}
+
+function Get-BridgeProviderCapabilityRegistryPath {
+    param([string]$RootPath)
+
+    if ([string]::IsNullOrWhiteSpace($RootPath)) {
+        $RootPath = (Get-Location).Path
+    }
+
+    return Join-Path (Join-Path $RootPath '.winsmux') $script:BridgeProviderCapabilityRegistryFileName
+}
+
+function ConvertTo-BridgeProviderCapabilityEntry {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    $pairs = @()
+    if ($Value -is [System.Collections.IDictionary]) {
+        $pairs = $Value.GetEnumerator()
+    } elseif ($Value -is [PSCustomObject]) {
+        $pairs = $Value.PSObject.Properties | ForEach-Object {
+            [PSCustomObject]@{
+                Key   = $_.Name
+                Value = $_.Value
+            }
+        }
+    } else {
+        return $null
+    }
+
+    $stringFields = @('adapter', 'display_name', 'command')
+    $transportFields = @('prompt_transports')
+    $boolFields = @(
+        'supports_parallel_runs',
+        'supports_interrupt',
+        'supports_structured_result',
+        'supports_file_edit',
+        'supports_subagents',
+        'supports_verification',
+        'supports_consultation'
+    )
+    $allowedFields = @($stringFields + $transportFields + $boolFields)
+
+    $entry = [ordered]@{}
+    foreach ($pair in $pairs) {
+        $key = $pair.Key.ToString()
+        if ($key -notin $allowedFields) {
+            throw "Invalid provider capability field '$key'."
+        }
+
+        if ($key -in $stringFields) {
+            if ($pair.Value -isnot [string]) {
+                throw "Invalid provider capability field '$key'."
+            }
+
+            $text = ConvertFrom-BridgeYamlScalar $pair.Value
+            if (-not [string]::IsNullOrWhiteSpace($text)) {
+                $entry[$key] = $text
+            }
+            continue
+        }
+
+        if ($key -in $transportFields) {
+            if ($pair.Value -isnot [System.Collections.IEnumerable] -or $pair.Value -is [string]) {
+                throw "Invalid provider capability field '$key'."
+            }
+
+            $transports = @()
+            foreach ($transport in @($pair.Value)) {
+                $text = ConvertFrom-BridgeYamlScalar $transport
+                if ([string]::IsNullOrWhiteSpace($text)) {
+                    throw "Invalid provider capability field '$key'."
+                }
+
+                $text = $text.ToLowerInvariant()
+                if ($text -notin @('argv', 'file', 'stdin')) {
+                    throw "Invalid provider capability prompt transport '$text'."
+                }
+
+                $transports += $text
+            }
+            if ($transports.Count -lt 1) {
+                throw "Invalid provider capability field '$key'."
+            }
+
+            $entry[$key] = @($transports)
+            continue
+        }
+
+        if ($key -in $boolFields) {
+            if ($pair.Value -isnot [bool]) {
+                throw "Invalid provider capability field '$key'."
+            }
+
+            $entry[$key] = [bool]$pair.Value
+        }
+    }
+
+    if ($entry.Count -lt 1) {
+        return $null
+    }
+
+    foreach ($requiredField in @('adapter', 'command', 'prompt_transports')) {
+        if (-not $entry.Contains($requiredField)) {
+            throw "Missing provider capability field '$requiredField'."
+        }
+    }
+
+    return $entry
+}
+
+function Read-BridgeProviderCapabilityRegistry {
+    param([string]$RootPath)
+
+    $path = Get-BridgeProviderCapabilityRegistryPath -RootPath $RootPath
+    $registry = [ordered]@{
+        version   = 1
+        providers = [ordered]@{}
+    }
+
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        return $registry
+    }
+
+    $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return $registry
+    }
+
+    try {
+        $parsed = $raw | ConvertFrom-Json -Depth 16 -ErrorAction Stop
+    } catch {
+        throw "Invalid provider capability registry JSON at '$path'."
+    }
+
+    if (-not (Test-BridgeProviderRegistryObject $parsed)) {
+        throw "Invalid provider capability registry JSON at '$path'."
+    }
+
+    $version = 1
+    if ($null -ne $parsed.PSObject -and $parsed.PSObject.Properties.Name -contains 'version') {
+        if ($parsed.version -isnot [int] -and $parsed.version -isnot [long]) {
+            throw "Invalid provider capability registry version at '$path'."
+        }
+
+        $version = [int]$parsed.version
+    }
+    if ($version -ne 1) {
+        throw "Unsupported provider capability registry version '$version'. Supported versions: 1."
+    }
+
+    $registry.version = $version
+    if ($null -eq $parsed.PSObject -or -not ($parsed.PSObject.Properties.Name -contains 'providers') -or $null -eq $parsed.providers) {
+        return $registry
+    }
+
+    if (-not (Test-BridgeProviderRegistryObject $parsed.providers)) {
+        throw "Invalid provider capability registry providers at '$path'."
+    }
+
+    foreach ($providerProperty in (Get-BridgeProviderRegistryObjectProperties $parsed.providers)) {
+        $providerId = ConvertFrom-BridgeYamlScalar $providerProperty.Name
+        if ([string]::IsNullOrWhiteSpace($providerId)) {
+            throw "Invalid provider capability id at '$path'."
+        }
+
+        if (-not (Test-BridgeProviderRegistryObject $providerProperty.Value)) {
+            throw "Invalid provider capability entry '$providerId' at '$path'."
+        }
+
+        $entry = ConvertTo-BridgeProviderCapabilityEntry $providerProperty.Value
+        if ($null -eq $entry) {
+            throw "Invalid provider capability entry '$providerId' at '$path'."
+        }
+
+        $registry.providers[$providerId] = $entry
+    }
+
+    return $registry
+}
+
+function Get-BridgeProviderCapability {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProviderId,
+        [string]$RootPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ProviderId)) {
+        return $null
+    }
+
+    $registry = Read-BridgeProviderCapabilityRegistry -RootPath $RootPath
+    foreach ($entry in $registry.providers.GetEnumerator()) {
+        if ([string]::Equals([string]$entry.Key, $ProviderId, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $entry.Value
+        }
+    }
+
+    return $null
 }
 
 function ConvertFrom-BridgeManualYaml {
