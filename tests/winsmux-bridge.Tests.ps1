@@ -2526,6 +2526,70 @@ Describe 'agent-monitor helpers' {
         }
     }
 
+    It 'uses provider capability adapters while waiting for respawn readiness' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $registryDir = Join-Path $tempRoot '.winsmux'
+
+        try {
+            New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex-nightly": {
+      "adapter": "codex",
+      "command": "codex-nightly",
+      "prompt_transports": ["argv", "file"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $registryDir 'provider-capabilities.json') -Encoding UTF8
+
+            Mock Invoke-MonitorWinsmux { } -ParameterFilter {
+                $Arguments[0] -eq 'respawn-pane'
+            }
+            Mock Wait-MonitorPaneShellReady { }
+            Mock Send-MonitorBridgeCommand { }
+            Mock Get-PaneAgentStatus {
+                [PSCustomObject]@{
+                    Status       = 'ready'
+                    PaneId       = '%2'
+                    SnapshotTail = ''
+                    ExitReason   = ''
+                }
+            }
+
+            $result = Invoke-AgentRespawn `
+                -PaneId '%2' `
+                -Agent 'codex-nightly' `
+                -Model 'gpt-5.4-nightly' `
+                -ProjectDir $tempRoot `
+                -GitWorktreeDir 'C:\repo\.git\worktrees\builder-1' `
+                -RootPath $tempRoot `
+                -ReadyTimeoutSeconds 5
+
+            $result.Success | Should -Be $true
+            Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
+                $PaneId -eq '%2' -and
+                $Text -match '^codex-nightly -c model=gpt-5\.4-nightly'
+            }
+            Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+                $PaneId -eq '%2' -and $Agent -eq 'codex'
+            }
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
     It 'updates the manifest pane label after a successful respawn' {
         $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
         $manifestDir = Join-Path $tempRoot '.winsmux'
