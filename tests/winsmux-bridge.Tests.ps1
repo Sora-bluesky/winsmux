@@ -1666,6 +1666,59 @@ NEXT_ACTION: rerun focused verification
         Should -Invoke Invoke-TeamPipelineBridge -Times 0 -Exactly
     }
 
+    It 'blocks one-shot orchestration when the build target cannot edit files' {
+        $manifest = [PSCustomObject]@{
+            Session = [PSCustomObject]@{
+                name        = 'winsmux-orchestra'
+                project_dir = 'C:\repo'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\repo\.worktrees\builder-1'; capability_adapter = 'codex'; capability_command = 'codex'; supports_file_edit = 'false'; supports_verification = 'true'; supports_structured_result = 'true' }
+                'reviewer'  = [PSCustomObject]@{ pane_id = '%3'; role = 'Reviewer'; supports_file_edit = 'false'; supports_verification = 'true'; supports_structured_result = 'true' }
+            }
+        }
+
+        Mock Read-TeamPipelineManifest { $manifest }
+        Mock Invoke-TeamPipelineBridge { throw 'pipeline should not dispatch to a build target without file edit support' }
+
+        $result = Invoke-TeamPipeline -Task 'Investigate cache drift' -Builder 'builder-1' -Reviewer 'reviewer' -SkipVerify
+
+        $result.Success | Should -Be $false
+        $result.FinalStatus | Should -Be 'EXEC_UNAVAILABLE'
+        $result.BuildUnavailableReason | Should -Match 'file edits'
+        Should -Invoke Invoke-TeamPipelineBridge -Times 0 -Exactly
+    }
+
+    It 'treats generated default file edit flags without capability identity as unknown' {
+        $manifest = [PSCustomObject]@{
+            Session = [PSCustomObject]@{
+                name        = 'winsmux-orchestra'
+                project_dir = 'C:\repo'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\repo\.worktrees\builder-1'; supports_file_edit = 'false' }
+            }
+        }
+
+        $script:teamPipelineBridgeCalls = @()
+
+        Mock Read-TeamPipelineManifest { $manifest }
+        Mock Invoke-TeamPipelineBridge {
+            param([string[]]$Arguments, [switch]$AllowFailure)
+            $script:teamPipelineBridgeCalls += ,@($Arguments)
+            [PSCustomObject]@{ ExitCode = 0; Output = '' }
+        }
+        Mock Wait-TeamPipelineStage {
+            [PSCustomObject]@{ Stage = 'EXEC'; Target = 'builder-1'; Status = 'EXEC_DONE'; Summary = 'build summary'; Transcript = '' }
+        }
+
+        $result = Invoke-TeamPipeline -Task 'Investigate cache drift' -Builder 'builder-1' -SkipPlan -SkipVerify
+
+        $result.Success | Should -Be $true
+        $result.FinalStatus | Should -Be 'EXEC_DONE'
+        @($script:teamPipelineBridgeCalls | Where-Object { $_[0] -eq 'send' -and $_[1] -eq 'builder-1' }).Count | Should -Be 1
+    }
+
     It 'prefers reviewer then researcher for consult targets and skips builder-only runs' {
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel 'reviewer') | Should -Be 'reviewer'
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel '') | Should -Be 'researcher'
