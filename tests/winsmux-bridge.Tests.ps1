@@ -624,6 +624,21 @@ agent-slots:
 }
 '@ | Set-Content -Path $registryPath -Encoding UTF8
         { Read-BridgeProviderRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider registry slot 'worker-1'*"
+
+        @'
+{
+  "version": 1,
+  "slots": {
+    "worker-1": {
+      "agent": {
+        "name": "claude"
+      },
+      "model": "opus"
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider registry field 'agent'*"
     }
 
     It 'fails closed when explicit agent slot entries are malformed' {
@@ -2299,6 +2314,23 @@ panes:
 }
 '@
                 Message = "*provider registry slot 'worker-2'*"
+            },
+            [PSCustomObject]@{
+                Name = 'non-scalar provider field'
+                Body = @'
+{
+  "version": 1,
+  "slots": {
+    "worker-2": {
+      "agent": {
+        "name": "claude"
+      },
+      "model": "opus"
+    }
+  }
+}
+'@
+                Message = "*provider registry field 'agent'*"
             }
         )
 
@@ -4933,6 +4965,23 @@ panes:
 }
 '@
                 Message = "*provider registry slot 'builder-1'*"
+            },
+            [PSCustomObject]@{
+                Name = 'non-scalar provider field'
+                Body = @'
+{
+  "version": 1,
+  "slots": {
+    "builder-1": {
+      "agent": {
+        "name": "claude"
+      },
+      "model": "opus"
+    }
+  }
+}
+'@
+                Message = "*provider registry field 'agent'*"
             }
         )
 

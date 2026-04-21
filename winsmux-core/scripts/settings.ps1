@@ -286,6 +286,20 @@ function Test-BridgeProviderRegistryObject {
     return (($Value -is [System.Collections.IDictionary]) -or ($Value -is [PSCustomObject]))
 }
 
+function Test-BridgeProviderRegistryScalarValue {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $true
+    }
+
+    if ($Value -is [string] -or $Value -is [char]) {
+        return $true
+    }
+
+    return ($Value -is [ValueType])
+}
+
 function Get-BridgeProviderRegistryObjectProperties {
     param([Parameter(Mandatory = $true)]$Value)
 
@@ -329,8 +343,16 @@ function ConvertTo-BridgeProviderRegistryEntry {
             continue
         }
 
+        if (-not (Test-BridgeProviderRegistryScalarValue $pair.Value)) {
+            throw "Invalid provider registry field '$key'."
+        }
+
         $text = ConvertFrom-BridgeYamlScalar $pair.Value
         if ([string]::IsNullOrWhiteSpace($text)) {
+            if ($key -in @('agent', 'model', 'prompt_transport')) {
+                throw "Invalid provider registry field '$key'."
+            }
+
             continue
         }
 
