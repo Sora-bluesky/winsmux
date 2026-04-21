@@ -166,6 +166,8 @@ winsmux install --profile full
 
 `winsmux update` に新しいプロファイルを渡さない場合は、前回記録したプロファイルを使います。
 記録先は `~\.winsmux\install-profile` です。
+インストーラーは、指定したプロファイルに応じて導入対象を切り分けます。
+たとえば `core` では、`orchestra` 向けスクリプト、`vault` 機能、Windows Terminal の設定プロファイルを含めません。
 
 ## クイックスタート
 
