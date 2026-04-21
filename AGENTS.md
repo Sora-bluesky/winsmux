@@ -277,6 +277,13 @@ Before every version release, Codex must verify:
    - public product surface, or
    - dogfooding/contributor surface.
 5. when releasing `v0.21.2`, update `README.md` and `README.ja.md` so they describe the terminal-based final form as the last pre-Tauri release shape before the `v0.22.0` desktop control-plane handoff.
+6. public documentation changed in the release window has been reviewed as part of the release flow.
+   - This includes `README.md`, `README.ja.md`, `docs/operator-model.md`, package READMEs, install docs, and public release notes.
+   - Treat public documentation review as release-blocking, not as optional cleanup after tagging.
+7. Japanese public documentation has an Opus review result before the release is finalized.
+   - The review must check for unclear Japanese caused by excessive English terms, mixed-language noun chains, and direct English word-order translation.
+   - If Opus is unavailable, stop the release and report the blocker instead of publishing first and reviewing later.
+   - Record the review result or blocker in `.claude/local/operator-handoff.md`.
 
 If drift is found, fix or explicitly track it before the release is finalized.
 
