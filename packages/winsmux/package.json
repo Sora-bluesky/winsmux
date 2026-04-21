@@ -2,7 +2,7 @@
   "name": "winsmux",
   "version": "0.0.0-development",
   "private": true,
-  "description": "Public npm install surface for winsmux. Publishing stays gated until the installer contract is ready.",
+  "description": "Public Windows npm install surface for winsmux. Publishing stays gated until the installer contract is ready.",
   "license": "MIT",
   "type": "module",
   "os": [

@@ -10,6 +10,7 @@ Describe 'winsmux npm release package contract' {
 
         $script:PackageRoot = Join-Path $script:RepoRoot 'packages\winsmux'
         $script:PackageJsonPath = Join-Path $script:PackageRoot 'package.json'
+        $script:PackageReadmePath = Join-Path $script:PackageRoot 'README.md'
         $script:EntrypointPath = Join-Path $script:PackageRoot 'index.mjs'
         $script:StageScriptPath = Join-Path $script:RepoRoot 'scripts\stage-npm-release.mjs'
         $script:OutputRoot = Join-Path $script:RepoRoot 'output\npm-release\winsmux'
@@ -119,11 +120,22 @@ Describe 'winsmux npm release package contract' {
 
     It 'keeps the public entrypoint blocked while package publish stays gated' {
         $result = Invoke-NodeProcess -Arguments @($script:EntrypointPath, 'help') -WorkingDirectory $script:PackageRoot
+        $packageReadme = Get-Content -LiteralPath $script:PackageReadmePath -Raw -Encoding UTF8
+        $packageJson = Get-Content -LiteralPath $script:PackageJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
 
         $result.ExitCode | Should -Be 1
         $result.StdOut | Should -Be ''
         $result.StdErr | Should -Match 'not enabled in this repository yet'
         $result.StdErr | Should -Match 'install flows documented in the repository README'
+        $packageJson.description | Should -Match 'Windows npm install surface'
+        $packageReadme | Should -Match '## Planned public contract'
+        $packageReadme | Should -Match 'Windows only'
+        $packageReadme | Should -Match 'winsmux install'
+        $packageReadme | Should -Match 'winsmux update'
+        $packageReadme | Should -Match 'winsmux uninstall'
+        $packageReadme | Should -Match 'winsmux version'
+        $packageReadme | Should -Match 'winsmux help'
+        $packageReadme | Should -Match 'same GitHub release tag'
     }
 
     It 'skips staging while package publish stays gated' {
@@ -163,11 +175,21 @@ Describe 'winsmux npm release package contract' {
             }
 
             $stagedPackage = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $stagedReadme = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'README.md') -Raw -Encoding UTF8
             $stagedPackage.name | Should -Be 'winsmux'
             $stagedPackage.version | Should -Be '0.22.1'
+            $stagedPackage.description | Should -Match 'Windows npm install surface'
             $stagedPackage.PSObject.Properties.Name | Should -Not -Contain 'private'
             @($stagedPackage.files) | Should -Be @('README.md', 'index.mjs', 'install.ps1', 'LICENSE')
             @($stagedPackage.os) | Should -Be @('win32')
+            $stagedReadme | Should -Match '## Planned public contract'
+            $stagedReadme | Should -Match 'Windows only'
+            $stagedReadme | Should -Match 'winsmux install'
+            $stagedReadme | Should -Match 'winsmux update'
+            $stagedReadme | Should -Match 'winsmux uninstall'
+            $stagedReadme | Should -Match 'winsmux version'
+            $stagedReadme | Should -Match 'winsmux help'
+            $stagedReadme | Should -Match 'same GitHub release tag'
 
             $stagedEntrypoint = Get-Content -LiteralPath (Join-Path $script:OutputRoot 'index.mjs') -Raw -Encoding UTF8
             $stagedEntrypoint | Should -Match 'const releaseTag = `v\$\{packageJson\.version\}`;'
