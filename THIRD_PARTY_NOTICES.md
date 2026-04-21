@@ -46,7 +46,7 @@ In other words, this entry is not permanent. It should evolve with the compatibi
 
 ### winsmux usage policy
 
-winsmux may directly reuse or adapt selected Codex UI assets for the Tauri operator shell, including:
+winsmux may directly reuse or adapt selected public `openai/codex` TUI assets for the Tauri operator shell, including:
 
 - typography and color/style direction
 - wrapping and footer/status-lane behavior
@@ -61,7 +61,7 @@ When code or UI definitions are directly copied or closely adapted from `openai/
 
 ### Current tracked source references
 
-These upstream areas are the current reference set for Codex-derived UI work:
+These upstream areas are the current reference set for public `openai/codex` TUI-derived UI work:
 
 - `codex-rs/tui/`
 - `codex-rs/tui/src/app.rs`
@@ -77,7 +77,7 @@ These upstream areas are the current reference set for Codex-derived UI work:
 
 ### Current winsmux adaptation scope
 
-The current `winsmux-app` shell work tracks these Codex-derived areas most closely:
+The current `winsmux-app` shell work tracks these public `openai/codex` TUI-derived areas most closely:
 
 - typography and semantic theme token direction
 - conversation-shell wrapping behavior
@@ -86,8 +86,8 @@ The current `winsmux-app` shell work tracks these Codex-derived areas most close
 
 ### Adaptation guardrails
 
-Codex-derived UI reuse in winsmux follows the active release-train acceptance rules for utility-first surfaces, real-data-first release paths, minimal chrome, and Playwright viewport verification evidence recorded in backlog notes, pull requests, or handoff.
+Public `openai/codex` TUI-derived UI reuse in winsmux follows the active release-train acceptance rules for utility-first surfaces, real-data-first release paths, minimal chrome, and Playwright viewport verification evidence recorded in backlog notes, pull requests, or handoff.
 
 These are project adaptation guardrails, not additional license terms.
 
-This notice covers attribution and provenance tracking. It does not imply that winsmux reproduces Codex verbatim end-to-end.
+This notice covers attribution and provenance tracking. It does not imply that winsmux reproduces Codex verbatim end-to-end, or that winsmux incorporates non-public Codex App desktop source code.

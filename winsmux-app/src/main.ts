@@ -354,7 +354,7 @@ const timelineFilters: Array<{ filter: TimelineFilter; label: string }> = [
 ];
 
 const themeOptions: Array<{ value: ThemeMode; label: string; description: string }> = [
-  { value: "codex-dark", label: "Codex Dark", description: "Close adaptation of Codex typography and contrast." },
+  { value: "codex-dark", label: "Codex TUI Dark", description: "Adaptation of public openai/codex TUI typography and contrast." },
   { value: "graphite-dark", label: "Graphite", description: "Softer shell contrast for long operator sessions." },
 ];
 

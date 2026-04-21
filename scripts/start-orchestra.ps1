@@ -270,7 +270,7 @@ pwsh $bridgePath read <label>
 ## Git Operations
 Builders NEVER run git commands. Commander handles all staging, committing, and pushing sequentially.
 
-## Codex Builders
+## Builder Agents
 All builder tasks must target files within the project directory. Do not instruct builders to clone, cd, or operate outside the project root.
 
 ## Multi-Builder Coordination Protocol
@@ -281,9 +281,9 @@ All builder tasks must target files within the project directory. Do not instruc
 5. MERGE: If no conflicts, commit. If conflicts, resolve manually then commit.
 
 ## POLL Guard (anti-hang protocol)
-1. Before sending any task via winsmux send, ALWAYS run ``winsmux read <label>`` first and verify the last line shows Codex idle prompt.
+1. Before sending any task via winsmux send, ALWAYS run ``winsmux read <label>`` first and verify that the pane is idle for its configured agent.
 2. If ``wait-ready`` command is available, use it: ``winsmux wait-ready <label> 60``.
-3. If an agent appears hung (no output change after 30 seconds), run ``respawn-pane -k`` and restart codex.
+3. If an agent appears hung (no output change after 30 seconds), run ``respawn-pane -k`` and restart the configured agent command for that label.
 "@
 
 Set-Content -Path $promptFile -Value $promptContent -Encoding UTF8

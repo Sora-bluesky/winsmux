@@ -296,7 +296,7 @@ When winsmux directly reuses or closely adapts UI assets, style definitions, men
 3. preserve the original OSS license attribution in-repo,
 4. mention the provenance in `.claude/local/operator-handoff.md` when the change is active in the current session.
 
-For Codex-derived UI work, use `openai/codex` as the upstream reference and track the exact source areas being reused.
+For public `openai/codex` TUI-derived UI work, use `openai/codex` as the upstream reference and track the exact source areas being reused. Do not treat non-public Codex App desktop source as an upstream reference.
 
 ## Subagent Review Gate
 

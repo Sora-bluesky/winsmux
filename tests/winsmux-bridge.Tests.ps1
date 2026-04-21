@@ -10061,6 +10061,18 @@ Describe 'operator startup restore contract docs' {
         $watchdogContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
         $orchestraStartContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
     }
+
+    It 'keeps the legacy orchestra prompt provider-neutral' {
+        $legacyStartPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\start-orchestra.ps1'
+        $legacyStartContent = Get-Content -Path $legacyStartPath -Raw -Encoding UTF8
+
+        $legacyStartContent | Should -Match '## Builder Agents'
+        $legacyStartContent | Should -Match 'configured agent'
+        $legacyStartContent | Should -Match 'configured agent command'
+        $legacyStartContent | Should -Not -Match '## Codex Builders'
+        $legacyStartContent | Should -Not -Match 'Codex idle prompt'
+        $legacyStartContent | Should -Not -Match 'restart codex'
+    }
 }
 
 Describe 'orchestra pane bootstrap plan' {
