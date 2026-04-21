@@ -1589,11 +1589,51 @@ NEXT_ACTION: rerun focused verification
         $skipTargets.VerifyTarget | Should -BeNullOrEmpty
     }
 
+    It 'uses manifest capability flags when no explicit verification target is supplied' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'true' }
+                'reviewer' = [ordered]@{ role = 'Reviewer'; supports_verification = 'true' }
+            }
+        }
+
+        $targets = Get-TeamPipelineStageTargets -BuilderLabel 'worker-1' -ResearcherLabel '' -ReviewerLabel '' -Manifest $manifest
+
+        $targets.VerifyTarget | Should -Be 'reviewer'
+    }
+
+    It 'falls back to configured researcher when no manifest verification capability is available' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'false' }
+            }
+        }
+
+        $targets = Get-TeamPipelineStageTargets -BuilderLabel 'worker-1' -ResearcherLabel 'researcher' -ReviewerLabel '' -Manifest $manifest
+
+        $targets.VerifyTarget | Should -Be 'researcher'
+    }
+
     It 'prefers reviewer then researcher for consult targets and skips builder-only runs' {
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel 'reviewer') | Should -Be 'reviewer'
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel '') | Should -Be 'researcher'
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel '' -ReviewerLabel 'builder-1') | Should -BeNullOrEmpty
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel '' -ReviewerLabel '') | Should -BeNullOrEmpty
+    }
+
+    It 'uses manifest consultation capability when no explicit consult target is supplied' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_consultation = 'false' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_consultation = 'true' }
+            }
+        }
+
+        $target = Get-TeamPipelineConsultTarget -BuilderLabel 'worker-1' -ResearcherLabel '' -ReviewerLabel '' -Manifest $manifest
+
+        $target | Should -Be 'worker-2'
     }
 
     It 'inserts early and final consult stages into successful one-shot orchestration when a consult target exists' {
