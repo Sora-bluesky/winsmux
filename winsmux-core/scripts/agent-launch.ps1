@@ -1,31 +1,25 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-function ConvertTo-PowerShellLiteral {
-    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
-
-    return "'" + ($Value -replace "'", "''") + "'"
-}
+. (Join-Path $PSScriptRoot 'settings.ps1')
 
 function Get-AgentLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Agent,
         [Parameter(Mandatory = $true)][string]$Model,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$GitWorktreeDir
+        [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
+        [string]$RootPath,
+        [bool]$ExecMode = $false
     )
 
-    switch ($Agent.Trim().ToLowerInvariant()) {
-        'codex' {
-            return "codex -c model=$Model --sandbox danger-full-access -C $(ConvertTo-PowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PowerShellLiteral -Value $GitWorktreeDir)"
-        }
-        'claude' {
-            return 'claude --permission-mode bypassPermissions'
-        }
-        default {
-            throw "Unsupported agent setting: $Agent"
-        }
-    }
+    return Get-BridgeProviderLaunchCommand `
+        -ProviderId $Agent `
+        -Model $Model `
+        -ProjectDir $ProjectDir `
+        -GitWorktreeDir $GitWorktreeDir `
+        -RootPath $RootPath `
+        -ExecMode $ExecMode
 }
 
 function Get-AgentBootstrapPrompt {
