@@ -3149,7 +3149,7 @@ function Invoke-Init {
             '--force' { $force = $true }
             '--project-dir' {
                 if ($index + 1 -ge $remaining.Count) {
-                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <codex|claude>] [--model <name>] [--worker-count <count>]"
+                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>]"
                 }
 
                 $projectDir = $remaining[$index + 1]
@@ -3157,7 +3157,7 @@ function Invoke-Init {
             }
             '--agent' {
                 if ($index + 1 -ge $remaining.Count) {
-                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <codex|claude>] [--model <name>] [--worker-count <count>]"
+                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>]"
                 }
 
                 $agent = $remaining[$index + 1]
@@ -3165,7 +3165,7 @@ function Invoke-Init {
             }
             '--model' {
                 if ($index + 1 -ge $remaining.Count) {
-                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <codex|claude>] [--model <name>] [--worker-count <count>]"
+                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>]"
                 }
 
                 $model = $remaining[$index + 1]
@@ -3173,14 +3173,14 @@ function Invoke-Init {
             }
             '--worker-count' {
                 if ($index + 1 -ge $remaining.Count) {
-                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <codex|claude>] [--model <name>] [--worker-count <count>]"
+                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>]"
                 }
 
                 $workerCount = [int]$remaining[$index + 1]
                 $index++
             }
             default {
-                Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <codex|claude>] [--model <name>] [--worker-count <count>]"
+                Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>]"
             }
         }
     }
@@ -7197,7 +7197,7 @@ function Show-Usage {
 winsmux $VERSION - winsmux bridge for winsmux
 
 Commands:
-  init [--json] [--project-dir <path>] [--force] [--agent <codex|claude>] [--model <name>] [--worker-count <count>]  Create or refresh public first-run config
+  init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>]  Create or refresh public first-run config
   launch [--json] [--project-dir <path>] [--skip-doctor]  Run public first-run checks and startup
   id                        Show current pane ID
   list                      List all panes
