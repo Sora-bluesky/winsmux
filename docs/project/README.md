@@ -13,3 +13,4 @@ The active planning source of truth is maintained outside the public product doc
 Contributor-facing contract inventory:
 
 - [Rust Schema Freeze Inventory](./rust-schema-freeze-inventory.md)
+- [Upstream Reevaluation Gate](./upstream-reevaluation-gate.md)
