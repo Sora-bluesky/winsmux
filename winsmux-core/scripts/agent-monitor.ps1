@@ -1156,7 +1156,7 @@ function Invoke-AgentMonitorCycle {
         $roleAgentConfig = $null
         try {
             if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
-                $roleAgentConfig = Get-SlotAgentConfig -Role $role -SlotId $label -Settings $Settings
+                $roleAgentConfig = Get-SlotAgentConfig -Role $role -SlotId $label -Settings $Settings -RootPath $projectDir
             } else {
                 $roleAgentConfig = Get-RoleAgentConfig -Role $role -Settings $Settings
             }
@@ -1530,7 +1530,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         exit 1
     }
 
-    $settings = Get-BridgeSettings
+    $settings = Get-BridgeSettings -RootPath $resolvedProjectDir
     $result = Invoke-AgentMonitorCycle `
         -Settings $settings `
         -ManifestPath $manifestPath `

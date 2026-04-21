@@ -1427,6 +1427,52 @@ panes:
         $plan.LaunchCommand | Should -Be 'claude --permission-mode bypassPermissions'
     }
 
+    It 'uses provider registry overrides when building a restart plan' {
+@"
+version: 1
+saved_at: '2026-04-07T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: '${script:paneControlTempRoot}'
+  git_worktree_dir: '${script:paneControlTempRoot}\.git'
+panes:
+  - label: 'worker-1'
+    pane_id: '%2'
+    role: 'Worker'
+    exec_mode: false
+    launch_dir: '${script:paneControlTempRoot}'
+    task: null
+"@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        @"
+agent: codex
+model: gpt-5.4
+agent_slots:
+  - slot_id: worker-1
+    runtime_role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt_transport: argv
+"@ | Set-Content -Path (Join-Path $script:paneControlTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Write-BridgeProviderRegistryEntry `
+            -RootPath $script:paneControlTempRoot `
+            -SlotId 'worker-1' `
+            -Agent 'claude' `
+            -Model 'opus' `
+            -PromptTransport 'file' `
+            -Reason 'operator requested provider hot-swap' | Out-Null
+        $settings = Get-BridgeSettings -RootPath $script:paneControlTempRoot
+
+        $plan = Get-PaneControlRestartPlan -ProjectDir $script:paneControlTempRoot -PaneId '%2' -Settings $settings
+
+        $plan.Agent | Should -Be 'claude'
+        $plan.Model | Should -Be 'opus'
+        $plan.PromptTransport | Should -Be 'file'
+        $plan.Source | Should -Be 'registry'
+        $plan.LaunchCommand | Should -Be 'claude --permission-mode bypassPermissions'
+    }
+
     It 'includes slot-level prompt transport overrides in the restart plan' {
 @'
 version: 1
@@ -2046,6 +2092,78 @@ panes:
                         runtime_role = 'worker'
                         agent = 'claude'
                         model = 'sonnet'
+                    }
+                )
+            }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra' | Out-Null
+
+            Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+                $PaneId -eq '%4' -and $Agent -eq 'claude' -and $Role -eq 'Worker'
+            }
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'uses provider registry overrides during a monitor cycle' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  worker-2:
+    pane_id: %4
+    role: Worker
+    launch_dir: $tempRoot
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+            Write-BridgeProviderRegistryEntry `
+                -RootPath $tempRoot `
+                -SlotId 'worker-2' `
+                -Agent 'claude' `
+                -Model 'opus' `
+                -PromptTransport 'file' `
+                -Reason 'operator requested provider hot-swap' | Out-Null
+
+            Mock Get-PaneAgentStatus {
+                [PSCustomObject]@{
+                    Status       = 'ready'
+                    PaneId       = '%4'
+                    SnapshotTail = ''
+                    SnapshotHash = 'hash-worker'
+                    ExitReason   = ''
+                }
+            }
+            Mock Update-MonitorIdleAlertState {
+                [ordered]@{
+                    ShouldAlert = $false
+                    Message     = ''
+                }
+            }
+            Mock Test-BuilderStall { $false }
+
+            Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                agent = 'codex'
+                model = 'gpt-5.4'
+                roles = [ordered]@{
+                    worker = [ordered]@{
+                        agent = 'codex'
+                        model = 'gpt-5.4'
+                    }
+                }
+                agent_slots = @(
+                    [ordered]@{
+                        slot_id = 'worker-2'
+                        runtime_role = 'worker'
+                        agent = 'codex'
+                        model = 'gpt-5.4'
                     }
                 )
             }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra' | Out-Null
@@ -8241,6 +8359,10 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraStartContent | Should -Match 'Start-OrchestraPaneBootstrap -PaneId \$paneId -PlanPath \$bootstrapPlanPath'
         $script:orchestraStartContent | Should -Match 'ready_marker_path'
         $script:orchestraStartContent | Should -Match 'Wait-OrchestraServerSessionAbsent -SessionName \$SessionName -TimeoutSeconds 20'
+    }
+
+    It 'passes the project root into slot provider resolution' {
+        $script:orchestraStartContent | Should -Match 'Get-SlotAgentConfig -Role \$canonicalRole -SlotId \$label -Settings \$settings -RootPath \$projectDir'
     }
 
     It 'prints a concise startup summary before invoking the agent launch command' {
