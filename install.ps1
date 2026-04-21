@@ -1,11 +1,12 @@
 # install.ps1 — winsmux one-command installer
 # Usage: irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | iex
-# Or: pwsh install.ps1 [install|update|uninstall|version|help] [-ReleaseTag vX.Y.Z]
+# Or: pwsh install.ps1 [install|update|uninstall|version|help] [-ReleaseTag vX.Y.Z] [-Profile full]
 
 [CmdletBinding()]
 param(
     [Parameter(Position=0)][string]$Action = "install",
-    [string]$ReleaseTag = ""
+    [string]$ReleaseTag = "",
+    [Alias("Profile")][string]$InstallProfile = ""
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,6 +20,13 @@ $SCRIPT_DIR   = Join-Path $WINSMUX_DIR "scripts"
 $BRIDGE_DIR   = Join-Path $WINSMUX_DIR "winsmux-core"
 $BRIDGE_SCRIPTS_DIR = Join-Path $BRIDGE_DIR "scripts"
 $VERSION_FILE = Join-Path $WINSMUX_DIR "version"
+$PROFILE_FILE = Join-Path $WINSMUX_DIR "install-profile"
+$PROFILE_MATRIX = @{
+    core = "Runtime binary, wrapper scripts, PATH setup, and base config."
+    orchestra = "Core profile plus orchestration scripts and Windows Terminal profile."
+    security = "Core profile plus vault, redaction, and audit-oriented scripts."
+    full = "Core, orchestra, and security profile contents."
+}
 $EffectiveReleaseTag = if ([string]::IsNullOrWhiteSpace($ReleaseTag)) { $env:WINSMUX_RELEASE_TAG } else { $ReleaseTag }
 if ([string]::IsNullOrWhiteSpace($EffectiveReleaseTag)) {
     $BASE_URL = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/main"
@@ -36,6 +44,21 @@ if ([string]::IsNullOrWhiteSpace($EffectiveReleaseTag)) {
 # ---------------------------------------------------------------------------
 
 function Write-Status($msg) { Write-Host "[winsmux] $msg" }
+
+function Resolve-InstallProfile {
+    $profileName = if ([string]::IsNullOrWhiteSpace($InstallProfile)) { $env:WINSMUX_INSTALL_PROFILE } else { $InstallProfile }
+    if ([string]::IsNullOrWhiteSpace($profileName)) {
+        $profileName = "full"
+    }
+
+    $normalized = $profileName.Trim().ToLowerInvariant()
+    if (-not $PROFILE_MATRIX.ContainsKey($normalized)) {
+        $supported = ($PROFILE_MATRIX.Keys | Sort-Object) -join ", "
+        throw "Unsupported install profile '$profileName'. Supported profiles: $supported"
+    }
+
+    return $normalized
+}
 
 function Test-Administrator {
     $identity  = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -186,7 +209,8 @@ function Download-File($relativeUrl, $destPath) {
 function Invoke-Install {
     param([switch]$IsUpdate)
     $label = if ($IsUpdate) { "Updating" } else { "Installing" }
-    Write-Status "$label winsmux v$VERSION ..."
+    $resolvedInstallProfile = Resolve-InstallProfile
+    Write-Status "$label winsmux v$VERSION with profile '$resolvedInstallProfile' ..."
 
     # 1. PowerShell version check
     if ($PSVersionTable.PSVersion.Major -lt 7) {
@@ -281,6 +305,7 @@ pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux.ps1" %*
 
     # 9. Record version
     $VERSION | Set-Content $VERSION_FILE
+    $resolvedInstallProfile | Set-Content $PROFILE_FILE
 
     # 10. Completion message
     if ($IsUpdate) {
@@ -293,6 +318,7 @@ pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux.ps1" %*
         Write-Status "Installed successfully! (v$VERSION)"
         Write-Host "  winsmux: $(Join-Path $BIN_DIR 'winsmux-core.ps1')"
         Write-Host "  winsmux config:  $confDest"
+        Write-Host "  install profile: $resolvedInstallProfile"
         Write-Host ""
         Write-Host "Next steps:"
         Write-Host "  1. Start a winsmux session:  winsmux new-session -s work"
@@ -355,7 +381,7 @@ function Invoke-Uninstall {
 
 function Show-Help {
     Write-Host @"
-Usage: install.ps1 [action]
+Usage: install.ps1 [action] [-Profile core|orchestra|security|full]
 
 Actions:
   install     Install winsmux (default)
@@ -363,6 +389,12 @@ Actions:
   uninstall   Remove winsmux
   version     Show version
   help        Show this help
+
+Profiles:
+  core        Runtime, wrapper scripts, PATH, and base config
+  orchestra  core plus orchestration scripts and Windows Terminal profile
+  security   core plus vault, redaction, and audit-oriented scripts
+  full       core, orchestra, and security contents (default)
 "@
 }
 

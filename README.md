@@ -143,6 +143,22 @@ You can also download a release `.zip` from GitHub Releases or build from source
 - current internal packages such as `winsmux-mcp` and the private `winsmux-app` build are **not** the public npm install contract
 - the npm package name `winsmux` is already reserved, but repository-driven npm release remains gated until the public installer contract is ready
 
+The planned installer profile names are:
+
+| Profile | Contents |
+| ------- | ------- |
+| `core` | runtime binary, wrapper scripts, `PATH` setup, and base config |
+| `orchestra` | `core` plus orchestration scripts and the Windows Terminal profile |
+| `security` | `core` plus vault, redaction, and audit-oriented scripts |
+| `full` | `core`, `orchestra`, and `security` contents |
+
+The future npm command will keep one package name and pass the profile to the
+bundled installer:
+
+```powershell
+winsmux install --profile full
+```
+
 ## Quick start
 
 The current public quick start uses `winsmux init` and `winsmux launch`. `winsmux compare` remains planned, while `/winsmux-start` remains a Claude Code dogfooding-only flow.
