@@ -149,11 +149,21 @@ function Get-TeamPipelinePaneCapabilityFlag {
 function Get-TeamPipelineCapabilityTarget {
     param(
         [AllowNull()]$Manifest,
-        [Parameter(Mandatory = $true)][string]$CapabilityName,
+        [string]$CapabilityName = '',
+        [string[]]$CapabilityNames = @(),
         [Parameter(Mandatory = $true)][string]$BuilderLabel
     )
 
     if ($null -eq $Manifest -or $null -eq $Manifest.Panes) {
+        return $null
+    }
+
+    $requiredCapabilities = @()
+    if (-not [string]::IsNullOrWhiteSpace($CapabilityName)) {
+        $requiredCapabilities += $CapabilityName
+    }
+    $requiredCapabilities += @($CapabilityNames | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($requiredCapabilities.Count -lt 1) {
         return $null
     }
 
@@ -165,7 +175,15 @@ function Get-TeamPipelineCapabilityTarget {
             }
 
             $pane = $Manifest.Panes[$label]
-            if (-not (Get-TeamPipelinePaneCapabilityFlag -Pane $pane -Name $CapabilityName)) {
+            $hasRequiredCapabilities = $true
+            foreach ($requiredCapability in $requiredCapabilities) {
+                if (-not (Get-TeamPipelinePaneCapabilityFlag -Pane $pane -Name $requiredCapability)) {
+                    $hasRequiredCapabilities = $false
+                    break
+                }
+            }
+
+            if (-not $hasRequiredCapabilities) {
                 continue
             }
 
@@ -185,6 +203,35 @@ function Get-TeamPipelineCapabilityTarget {
     }
 
     return $null
+}
+
+function Test-TeamPipelineTargetCapabilities {
+    param(
+        [AllowNull()]$Manifest,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [string[]]$CapabilityNames = @()
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Label)) {
+        return $false
+    }
+
+    if ($null -eq $Manifest -or $null -eq $Manifest.Panes) {
+        return $true
+    }
+
+    $pane = Get-TeamPipelinePaneInfo -Manifest $Manifest -Label $Label
+    if ($null -eq $pane) {
+        return $true
+    }
+
+    foreach ($capabilityName in @($CapabilityNames | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })) {
+        if (-not (Get-TeamPipelinePaneCapabilityFlag -Pane $pane -Name $capabilityName)) {
+            return $false
+        }
+    }
+
+    return $true
 }
 
 function Resolve-TeamPipelineBuilderContext {
@@ -255,16 +302,24 @@ function Get-TeamPipelineStageTargets {
     }
 
     $verifyTarget = $null
+    $requiredVerifyCapabilities = @('supports_verification', 'supports_structured_result')
     if (-not $SkipVerify) {
         if (-not [string]::IsNullOrWhiteSpace($ReviewerLabel)) {
             $verifyTarget = $ReviewerLabel
         } elseif ($null -ne $Manifest) {
-            $verifyTarget = Get-TeamPipelineCapabilityTarget -Manifest $Manifest -CapabilityName 'supports_verification' -BuilderLabel $BuilderLabel
+            $verifyTarget = Get-TeamPipelineCapabilityTarget -Manifest $Manifest -CapabilityNames $requiredVerifyCapabilities -BuilderLabel $BuilderLabel
         }
 
-        if ([string]::IsNullOrWhiteSpace($verifyTarget) -and -not [string]::IsNullOrWhiteSpace($ResearcherLabel)) {
+        if (
+            [string]::IsNullOrWhiteSpace($verifyTarget) -and
+            -not [string]::IsNullOrWhiteSpace($ResearcherLabel) -and
+            (Test-TeamPipelineTargetCapabilities -Manifest $Manifest -Label $ResearcherLabel -CapabilityNames $requiredVerifyCapabilities)
+        ) {
             $verifyTarget = $ResearcherLabel
-        } elseif ([string]::IsNullOrWhiteSpace($verifyTarget)) {
+        } elseif (
+            [string]::IsNullOrWhiteSpace($verifyTarget) -and
+            (Test-TeamPipelineTargetCapabilities -Manifest $Manifest -Label $BuilderLabel -CapabilityNames $requiredVerifyCapabilities)
+        ) {
             $verifyTarget = $BuilderLabel
         }
     }
@@ -1257,10 +1312,17 @@ function Invoke-TeamPipeline {
         FinalConsult        = $null
         StuckConsults       = @()
         VerificationPackets = @()
+        VerificationUnavailableReason = ''
         SecurityVerdicts    = @()
         Attempts            = @()
         Success             = $false
         FinalStatus         = 'NOT_STARTED'
+    }
+
+    if (-not $SkipVerify -and [string]::IsNullOrWhiteSpace($targets.VerifyTarget)) {
+        $result.VerificationUnavailableReason = 'No verification target supports both verification and structured results.'
+        $result.FinalStatus = 'VERIFY_UNAVAILABLE'
+        return [PSCustomObject]$result
     }
 
     $planSummary = ''

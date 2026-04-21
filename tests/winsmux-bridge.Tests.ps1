@@ -1592,9 +1592,9 @@ NEXT_ACTION: rerun focused verification
     It 'uses manifest capability flags when no explicit verification target is supplied' {
         $manifest = [PSCustomObject]@{
             Panes = [ordered]@{
-                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false' }
-                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'true' }
-                'reviewer' = [ordered]@{ role = 'Reviewer'; supports_verification = 'true' }
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false'; supports_structured_result = 'true' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'true'; supports_structured_result = 'true' }
+                'reviewer' = [ordered]@{ role = 'Reviewer'; supports_verification = 'true'; supports_structured_result = 'true' }
             }
         }
 
@@ -1603,17 +1603,67 @@ NEXT_ACTION: rerun focused verification
         $targets.VerifyTarget | Should -Be 'reviewer'
     }
 
+    It 'requires structured results for automatic verification targets' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false'; supports_structured_result = 'true' }
+                'reviewer' = [ordered]@{ role = 'Reviewer'; supports_verification = 'true'; supports_structured_result = 'false' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'true'; supports_structured_result = 'true' }
+            }
+        }
+
+        $targets = Get-TeamPipelineStageTargets -BuilderLabel 'worker-1' -ResearcherLabel '' -ReviewerLabel '' -Manifest $manifest
+
+        $targets.VerifyTarget | Should -Be 'worker-2'
+    }
+
     It 'falls back to configured researcher when no manifest verification capability is available' {
         $manifest = [PSCustomObject]@{
             Panes = [ordered]@{
-                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false' }
-                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'false' }
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false'; supports_structured_result = 'true' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'true'; supports_structured_result = 'false' }
             }
         }
 
         $targets = Get-TeamPipelineStageTargets -BuilderLabel 'worker-1' -ResearcherLabel 'researcher' -ReviewerLabel '' -Manifest $manifest
 
         $targets.VerifyTarget | Should -Be 'researcher'
+    }
+
+    It 'does not fall back to unstructured verification targets from the manifest' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'true'; supports_structured_result = 'false' }
+                'researcher' = [ordered]@{ role = 'Researcher'; supports_verification = 'true'; supports_structured_result = 'false' }
+            }
+        }
+
+        $targets = Get-TeamPipelineStageTargets -BuilderLabel 'worker-1' -ResearcherLabel 'researcher' -ReviewerLabel '' -Manifest $manifest
+
+        $targets.VerifyTarget | Should -BeNullOrEmpty
+    }
+
+    It 'blocks one-shot orchestration when verification is required but no structured verifier exists' {
+        $manifest = [PSCustomObject]@{
+            Session = [PSCustomObject]@{
+                name        = 'winsmux-orchestra'
+                project_dir = 'C:\repo'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\repo\.worktrees\builder-1'; supports_verification = 'true'; supports_structured_result = 'false' }
+                'researcher' = [PSCustomObject]@{ pane_id = '%3'; role = 'Researcher'; supports_verification = 'true'; supports_structured_result = 'false' }
+            }
+        }
+
+        Mock Read-TeamPipelineManifest { $manifest }
+        Mock Invoke-TeamPipelineBridge { throw 'pipeline should not dispatch without a structured verifier' }
+
+        $result = Invoke-TeamPipeline -Task 'Investigate cache drift' -Builder 'builder-1' -Researcher 'researcher'
+
+        $result.Success | Should -Be $false
+        $result.FinalStatus | Should -Be 'VERIFY_UNAVAILABLE'
+        $result.VerificationUnavailableReason | Should -Match 'structured results'
+        Should -Invoke Invoke-TeamPipelineBridge -Times 0 -Exactly
     }
 
     It 'prefers reviewer then researcher for consult targets and skips builder-only runs' {
