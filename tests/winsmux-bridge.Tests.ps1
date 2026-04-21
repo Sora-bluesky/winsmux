@@ -589,6 +589,38 @@ agent-slots:
         } | Should -Throw '*prompt_transport*'
     }
 
+    It 'removes a provider registry override and falls back to configured slot settings' {
+@'
+agent: codex
+model: gpt-5.4
+prompt-transport: argv
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        Write-BridgeProviderRegistryEntry -RootPath $script:settingsTempRoot -SlotId 'worker-1' -Agent 'claude' -Model 'opus' -PromptTransport 'file' | Out-Null
+        $before = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        $before.Source | Should -Be 'registry'
+
+        $removeResult = Remove-BridgeProviderRegistryEntry -RootPath $script:settingsTempRoot -SlotId 'worker-1'
+        $removeResult.Removed | Should -Be $true
+
+        $after = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        $after.Agent | Should -Be 'codex'
+        $after.Model | Should -Be 'gpt-5.4'
+        $after.PromptTransport | Should -Be 'argv'
+        $after.Source | Should -Be 'slot'
+        $registryAfterRemove = Read-BridgeProviderRegistry -RootPath $script:settingsTempRoot
+        $registryAfterRemove.slots.Count | Should -Be 0
+    }
+
     It 'rejects structurally malformed provider registries' {
         $registryPath = Get-BridgeProviderRegistryPath -RootPath $script:settingsTempRoot
         $registryDir = Split-Path -Parent $registryPath
@@ -8399,7 +8431,7 @@ agent-slots:
     }
 
     It 'documents provider-switch in usage and writes a provider registry entry' {
-        $script:winsmuxCoreRawContent | Should -Match 'provider-switch <slot> \[--agent <name>\] \[--model <name>\] \[--prompt-transport <argv\|file\|stdin>\] \[--reason <text>\] \[--restart\] \[--json\]'
+        $script:winsmuxCoreRawContent | Should -Match 'provider-switch <slot> \[--agent <name>\] \[--model <name>\] \[--prompt-transport <argv\|file\|stdin>\] \[--reason <text>\] \[--restart\] \[--clear\] \[--json\]'
         $script:winsmuxCoreRawContent | Should -Match "'provider-switch'\s*\{"
 
         Push-Location $script:providerSwitchTempRoot
@@ -8427,11 +8459,35 @@ agent-slots:
         $registry.slots.'worker-1'.reason | Should -Be 'operator requested provider switch'
     }
 
+    It 'clears provider-switch overrides and reports the configured slot provider' {
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --prompt-transport file --json | Out-Null
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --clear --json
+        } finally {
+            Pop-Location
+        }
+
+        $result = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $result.slot_id | Should -Be 'worker-1'
+        $result.agent | Should -Be 'codex'
+        $result.model | Should -Be 'gpt-5.4'
+        $result.prompt_transport | Should -Be 'argv'
+        $result.source | Should -Be 'slot'
+        $result.clear_requested | Should -Be $true
+        $result.cleared | Should -Be $true
+        $registry = Get-Content -LiteralPath (Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $registry.slots.PSObject.Properties.Name | Should -Not -Contain 'worker-1'
+    }
+
     It 'documents provider-switch restart and routes it through the manifest-backed restart helper' {
         $script:winsmuxCoreRawContent | Should -Match "'--restart'\s*\{"
+        $script:winsmuxCoreRawContent | Should -Match "'--clear'\s*\{"
         $script:winsmuxCoreRawContent | Should -Match 'Get-PaneControlManifestEntries -ProjectDir \$projectDir'
         $script:winsmuxCoreRawContent | Should -Match 'Confirm-Target \(\[string\]\$manifestEntry\[0\]\.PaneId\)'
         $script:winsmuxCoreRawContent | Should -Match 'Invoke-RestartPane -PaneId'
+        $script:winsmuxCoreRawContent | Should -Match 'Remove-BridgeProviderRegistryEntry -RootPath \$projectDir -SlotId \$slotId'
+        $script:winsmuxCoreRawContent | Should -Match 'clear_requested'
         $script:winsmuxCoreRawContent | Should -Match 'restart_requested'
         $script:winsmuxCoreRawContent | Should -Match 'restart_pane_id'
     }
