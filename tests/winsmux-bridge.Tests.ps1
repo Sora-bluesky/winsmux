@@ -1630,6 +1630,19 @@ NEXT_ACTION: rerun focused verification
         $targets.VerifyTarget | Should -Be 'researcher'
     }
 
+    It 'does not fall back to unstructured verification targets from the manifest' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'true'; supports_structured_result = 'false' }
+                'researcher' = [ordered]@{ role = 'Researcher'; supports_verification = 'true'; supports_structured_result = 'false' }
+            }
+        }
+
+        $targets = Get-TeamPipelineStageTargets -BuilderLabel 'worker-1' -ResearcherLabel 'researcher' -ReviewerLabel '' -Manifest $manifest
+
+        $targets.VerifyTarget | Should -BeNullOrEmpty
+    }
+
     It 'prefers reviewer then researcher for consult targets and skips builder-only runs' {
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel 'reviewer') | Should -Be 'reviewer'
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel '') | Should -Be 'researcher'

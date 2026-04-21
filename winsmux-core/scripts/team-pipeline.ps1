@@ -205,6 +205,35 @@ function Get-TeamPipelineCapabilityTarget {
     return $null
 }
 
+function Test-TeamPipelineTargetCapabilities {
+    param(
+        [AllowNull()]$Manifest,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [string[]]$CapabilityNames = @()
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Label)) {
+        return $false
+    }
+
+    if ($null -eq $Manifest -or $null -eq $Manifest.Panes) {
+        return $true
+    }
+
+    $pane = Get-TeamPipelinePaneInfo -Manifest $Manifest -Label $Label
+    if ($null -eq $pane) {
+        return $true
+    }
+
+    foreach ($capabilityName in @($CapabilityNames | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })) {
+        if (-not (Get-TeamPipelinePaneCapabilityFlag -Pane $pane -Name $capabilityName)) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
 function Resolve-TeamPipelineBuilderContext {
     param(
         [Parameter(Mandatory = $true)][string]$BuilderLabel,
@@ -273,16 +302,24 @@ function Get-TeamPipelineStageTargets {
     }
 
     $verifyTarget = $null
+    $requiredVerifyCapabilities = @('supports_verification', 'supports_structured_result')
     if (-not $SkipVerify) {
         if (-not [string]::IsNullOrWhiteSpace($ReviewerLabel)) {
             $verifyTarget = $ReviewerLabel
         } elseif ($null -ne $Manifest) {
-            $verifyTarget = Get-TeamPipelineCapabilityTarget -Manifest $Manifest -CapabilityNames @('supports_verification', 'supports_structured_result') -BuilderLabel $BuilderLabel
+            $verifyTarget = Get-TeamPipelineCapabilityTarget -Manifest $Manifest -CapabilityNames $requiredVerifyCapabilities -BuilderLabel $BuilderLabel
         }
 
-        if ([string]::IsNullOrWhiteSpace($verifyTarget) -and -not [string]::IsNullOrWhiteSpace($ResearcherLabel)) {
+        if (
+            [string]::IsNullOrWhiteSpace($verifyTarget) -and
+            -not [string]::IsNullOrWhiteSpace($ResearcherLabel) -and
+            (Test-TeamPipelineTargetCapabilities -Manifest $Manifest -Label $ResearcherLabel -CapabilityNames $requiredVerifyCapabilities)
+        ) {
             $verifyTarget = $ResearcherLabel
-        } elseif ([string]::IsNullOrWhiteSpace($verifyTarget)) {
+        } elseif (
+            [string]::IsNullOrWhiteSpace($verifyTarget) -and
+            (Test-TeamPipelineTargetCapabilities -Manifest $Manifest -Label $BuilderLabel -CapabilityNames $requiredVerifyCapabilities)
+        ) {
             $verifyTarget = $BuilderLabel
         }
     }
