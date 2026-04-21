@@ -1997,7 +1997,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             $builderWorktreePath = $builderWorktree.WorktreePath
         }
 
-        $slotAgentConfig = Get-SlotAgentConfig -Role $canonicalRole -SlotId $label -Settings $settings
+        $slotAgentConfig = Get-SlotAgentConfig -Role $canonicalRole -SlotId $label -Settings $settings -RootPath $projectDir
         $execMode = ([string]$slotAgentConfig.Agent).Trim().ToLowerInvariant() -eq 'codex'
         $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -ExecMode $false
 

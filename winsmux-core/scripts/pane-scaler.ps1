@@ -280,11 +280,12 @@ function Get-PaneWorkload {
         [int]$HungThreshold = 120
     )
 
+    $manifest = Read-PaneScalerManifest -ManifestPath $ManifestPath
+    $projectDir = Get-PaneScalerProjectDir -Manifest $manifest -ManifestPath $ManifestPath
     if ($null -eq $Settings) {
-        $Settings = Get-BridgeSettings
+        $Settings = Get-BridgeSettings -RootPath $projectDir
     }
 
-    $manifest = Read-PaneScalerManifest -ManifestPath $ManifestPath
     $builderPanes = @(Get-PaneScalerBuilderPanes -Manifest $manifest)
     $statusResults = [System.Collections.Generic.List[object]]::new()
     $busyCount = 0
@@ -298,16 +299,16 @@ function Get-PaneWorkload {
         }
 
         $roleAgentConfig = $null
-        try {
-            if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
-                $roleAgentConfig = Get-SlotAgentConfig -Role 'Builder' -SlotId $label -Settings $Settings
-            } else {
+        if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
+            $roleAgentConfig = Get-SlotAgentConfig -Role 'Builder' -SlotId $label -Settings $Settings -RootPath $projectDir
+        } else {
+            try {
                 $roleAgentConfig = Get-RoleAgentConfig -Role 'Builder' -Settings $Settings
-            }
-        } catch {
-            $roleAgentConfig = [PSCustomObject]@{
-                Agent = [string]$Settings.agent
-                Model = [string]$Settings.model
+            } catch {
+                $roleAgentConfig = [PSCustomObject]@{
+                    Agent = [string]$Settings.agent
+                    Model = [string]$Settings.model
+                }
             }
         }
 
@@ -334,7 +335,7 @@ function Get-PaneWorkload {
 
     return [PSCustomObject]@{
         Manifest     = $manifest
-        ProjectDir   = Get-PaneScalerProjectDir -Manifest $manifest -ManifestPath $ManifestPath
+        ProjectDir   = $projectDir
         SessionName  = [string](Get-MonitorPropertyValue -InputObject $manifest.Session -Name 'name' -Default 'winsmux-orchestra')
         BusyPanes    = $busyCount
         TotalPanes   = $totalCount
@@ -350,12 +351,12 @@ function Add-OrchestraPane {
         $Settings = $null
     )
 
-    if ($null -eq $Settings) {
-        $Settings = Get-BridgeSettings
-    }
-
     $manifest = Read-PaneScalerManifest -ManifestPath $ManifestPath
     $projectDir = Get-PaneScalerProjectDir -Manifest $manifest -ManifestPath $ManifestPath
+    if ($null -eq $Settings) {
+        $Settings = Get-BridgeSettings -RootPath $projectDir
+    }
+
     $builderPanes = @(Get-PaneScalerBuilderPanes -Manifest $manifest)
     if ($builderPanes.Count -eq 0) {
         throw 'Cannot add a Builder pane because no existing Builder pane was found.'
@@ -376,26 +377,26 @@ function Add-OrchestraPane {
     $newPaneId = ''
     try {
         $worktree = New-PaneScalerBuilderWorktree -ProjectDir $projectDir -BuilderIndex $nextIndex
-        $splitOutput = Invoke-MonitorPsmux -Arguments @('split-window', '-t', $seedPaneId, '-h', '-c', $worktree.WorktreePath, '-P', '-F', '#{pane_id}') -CaptureOutput
+        $splitOutput = Invoke-MonitorWinsmux -Arguments @('split-window', '-t', $seedPaneId, '-h', '-c', $worktree.WorktreePath, '-P', '-F', '#{pane_id}') -CaptureOutput
         $newPaneId = (($splitOutput | Out-String).Trim() -split "\r?\n" | Where-Object { $_ -match '^%\d+$' } | Select-Object -Last 1)
         if ([string]::IsNullOrWhiteSpace($newPaneId)) {
             throw 'winsmux split-window did not return a pane id.'
         }
 
         $newLabel = "builder-$nextIndex"
-        Invoke-MonitorPsmux -Arguments @('select-pane', '-t', $newPaneId, '-T', $newLabel) | Out-Null
+        Invoke-MonitorWinsmux -Arguments @('select-pane', '-t', $newPaneId, '-T', $newLabel) | Out-Null
 
         $roleAgentConfig = $null
-        try {
-            if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
-                $roleAgentConfig = Get-SlotAgentConfig -Role 'Builder' -SlotId $newLabel -Settings $Settings
-            } else {
+        if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
+            $roleAgentConfig = Get-SlotAgentConfig -Role 'Builder' -SlotId $newLabel -Settings $Settings -RootPath $projectDir
+        } else {
+            try {
                 $roleAgentConfig = Get-RoleAgentConfig -Role 'Builder' -Settings $Settings
-            }
-        } catch {
-            $roleAgentConfig = [PSCustomObject]@{
-                Agent = [string]$Settings.agent
-                Model = [string]$Settings.model
+            } catch {
+                $roleAgentConfig = [PSCustomObject]@{
+                    Agent = [string]$Settings.agent
+                    Model = [string]$Settings.model
+                }
             }
         }
 
@@ -433,7 +434,7 @@ function Add-OrchestraPane {
     } catch {
         if (-not [string]::IsNullOrWhiteSpace($newPaneId)) {
             try {
-                Invoke-MonitorPsmux -Arguments @('kill-pane', '-t', $newPaneId) | Out-Null
+                Invoke-MonitorWinsmux -Arguments @('kill-pane', '-t', $newPaneId) | Out-Null
             } catch {
             }
         }
@@ -455,10 +456,6 @@ function Remove-OrchestraPane {
         $Settings = $null,
         [int]$MinimumBuilders = 2
     )
-
-    if ($null -eq $Settings) {
-        $Settings = Get-BridgeSettings
-    }
 
     $workload = Get-PaneWorkload -ManifestPath $ManifestPath -Settings $Settings
     if ($workload.BuilderCount -le $MinimumBuilders) {
@@ -490,7 +487,7 @@ function Remove-OrchestraPane {
     $branchName = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'builder_branch' -Default '')
 
     if (-not [string]::IsNullOrWhiteSpace($paneId)) {
-        Invoke-MonitorPsmux -Arguments @('kill-pane', '-t', $paneId) | Out-Null
+        Invoke-MonitorWinsmux -Arguments @('kill-pane', '-t', $paneId) | Out-Null
     }
 
     Remove-PaneScalerBuilderWorktree -ProjectDir $projectDir -WorktreePath $worktreePath -BranchName $branchName
@@ -516,10 +513,6 @@ function Invoke-PaneScalingCheck {
         [double]$ScaleDownThreshold = 0.3,
         [int]$MinimumBuilders = 2
     )
-
-    if ($null -eq $Settings) {
-        $Settings = Get-BridgeSettings
-    }
 
     $workload = Get-PaneWorkload -ManifestPath $ManifestPath -Settings $Settings
     if ($workload.TotalPanes -eq 0) {

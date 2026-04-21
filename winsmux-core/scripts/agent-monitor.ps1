@@ -1154,17 +1154,17 @@ function Invoke-AgentMonitorCycle {
 
         # Determine agent config for this role
         $roleAgentConfig = $null
-        try {
-            if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
-                $roleAgentConfig = Get-SlotAgentConfig -Role $role -SlotId $label -Settings $Settings
-            } else {
+        if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
+            $roleAgentConfig = Get-SlotAgentConfig -Role $role -SlotId $label -Settings $Settings -RootPath $projectDir
+        } else {
+            try {
                 $roleAgentConfig = Get-RoleAgentConfig -Role $role -Settings $Settings
-            }
-        } catch {
-            # Fallback to default settings
-            $roleAgentConfig = [ordered]@{
-                Agent = [string]$Settings.agent
-                Model = [string]$Settings.model
+            } catch {
+                # Fallback to default settings when only the legacy role helper is unavailable or malformed.
+                $roleAgentConfig = [ordered]@{
+                    Agent = [string]$Settings.agent
+                    Model = [string]$Settings.model
+                }
             }
         }
 
@@ -1530,7 +1530,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         exit 1
     }
 
-    $settings = Get-BridgeSettings
+    $settings = Get-BridgeSettings -RootPath $resolvedProjectDir
     $result = Invoke-AgentMonitorCycle `
         -Settings $settings `
         -ManifestPath $manifestPath `

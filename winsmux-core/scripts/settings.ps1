@@ -280,6 +280,41 @@ function Get-BridgeProviderRegistryPath {
     return Join-Path (Join-Path $RootPath '.winsmux') $script:BridgeProviderRegistryFileName
 }
 
+function Test-BridgeProviderRegistryObject {
+    param([AllowNull()]$Value)
+
+    return (($Value -is [System.Collections.IDictionary]) -or ($Value -is [PSCustomObject]))
+}
+
+function Test-BridgeProviderRegistryScalarValue {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $true
+    }
+
+    if ($Value -is [string] -or $Value -is [char]) {
+        return $true
+    }
+
+    return ($Value -is [ValueType])
+}
+
+function Get-BridgeProviderRegistryObjectProperties {
+    param([Parameter(Mandatory = $true)]$Value)
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        return @($Value.GetEnumerator() | ForEach-Object {
+            [PSCustomObject]@{
+                Name  = $_.Key
+                Value = $_.Value
+            }
+        })
+    }
+
+    return @($Value.PSObject.Properties)
+}
+
 function ConvertTo-BridgeProviderRegistryEntry {
     param([AllowNull()]$Value)
 
@@ -290,7 +325,7 @@ function ConvertTo-BridgeProviderRegistryEntry {
     $pairs = @()
     if ($Value -is [System.Collections.IDictionary]) {
         $pairs = $Value.GetEnumerator()
-    } elseif ($null -ne $Value.PSObject) {
+    } elseif ($Value -is [PSCustomObject]) {
         $pairs = $Value.PSObject.Properties | ForEach-Object {
             [PSCustomObject]@{
                 Key = $_.Name
@@ -308,8 +343,16 @@ function ConvertTo-BridgeProviderRegistryEntry {
             continue
         }
 
+        if (-not (Test-BridgeProviderRegistryScalarValue $pair.Value)) {
+            throw "Invalid provider registry field '$key'."
+        }
+
         $text = ConvertFrom-BridgeYamlScalar $pair.Value
         if ([string]::IsNullOrWhiteSpace($text)) {
+            if ($key -in @('agent', 'model', 'prompt_transport')) {
+                throw "Invalid provider registry field '$key'."
+            }
+
             continue
         }
 
@@ -351,6 +394,10 @@ function Read-BridgeProviderRegistry {
         throw "Invalid provider registry JSON at '$path'."
     }
 
+    if (-not (Test-BridgeProviderRegistryObject $parsed)) {
+        throw "Invalid provider registry JSON at '$path'."
+    }
+
     $version = 1
     if ($null -ne $parsed.PSObject -and $parsed.PSObject.Properties.Name -contains 'version') {
         $version = [int]$parsed.version
@@ -364,16 +411,26 @@ function Read-BridgeProviderRegistry {
         return $registry
     }
 
-    foreach ($slotProperty in $parsed.slots.PSObject.Properties) {
+    if (-not (Test-BridgeProviderRegistryObject $parsed.slots)) {
+        throw "Invalid provider registry slots at '$path'."
+    }
+
+    foreach ($slotProperty in (Get-BridgeProviderRegistryObjectProperties $parsed.slots)) {
         $slotId = ConvertFrom-BridgeYamlScalar $slotProperty.Name
         if ([string]::IsNullOrWhiteSpace($slotId)) {
-            continue
+            throw "Invalid provider registry slot id at '$path'."
+        }
+
+        if (-not (Test-BridgeProviderRegistryObject $slotProperty.Value)) {
+            throw "Invalid provider registry slot '$slotId' at '$path'."
         }
 
         $entry = ConvertTo-BridgeProviderRegistryEntry $slotProperty.Value
-        if ($null -ne $entry) {
-            $registry.slots[$slotId] = $entry
+        if ($null -eq $entry) {
+            throw "Invalid provider registry slot '$slotId' at '$path'."
         }
+
+        $registry.slots[$slotId] = $entry
     }
 
     return $registry

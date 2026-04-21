@@ -22,7 +22,10 @@ function Invoke-AgentWatchdogCycle {
         [AllowNull()][System.Collections.IDictionary]$PreviousResults = $null
     )
 
-    $settings = Get-BridgeSettings
+    $content = Get-Content -Path $ManifestPath -Raw -Encoding UTF8
+    $manifest = ConvertFrom-MonitorManifest -Content $content
+    $projectDir = Get-MonitorProjectDir -Manifest $manifest -ManifestPath $ManifestPath
+    $settings = Get-BridgeSettings -RootPath $projectDir
     return (Invoke-AgentMonitorCycle -Settings $settings -ManifestPath $ManifestPath -SessionName $SessionName -IdleThreshold $IdleThreshold -PreviousResults $PreviousResults)
 }
 

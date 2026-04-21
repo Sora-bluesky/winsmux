@@ -516,7 +516,7 @@ function Get-PaneControlRestartPlan {
 
     if ($null -eq $Settings) {
         if (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue) {
-            $Settings = Get-BridgeSettings
+            $Settings = Get-BridgeSettings -RootPath $ProjectDir
         } else {
             $Settings = [ordered]@{
                 agent = 'codex'
@@ -529,7 +529,7 @@ function Get-PaneControlRestartPlan {
     $context = Get-PaneControlManifestContext -ProjectDir $ProjectDir -PaneId $PaneId
     $agentConfig = $null
     if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
-        $agentConfig = Get-SlotAgentConfig -Role $context.Role -SlotId $context.Label -Settings $Settings
+        $agentConfig = Get-SlotAgentConfig -Role $context.Role -SlotId $context.Label -Settings $Settings -RootPath $ProjectDir
     } elseif (Get-Command Get-RoleAgentConfig -ErrorAction SilentlyContinue) {
         $agentConfig = Get-RoleAgentConfig -Role $context.Role -Settings $Settings
     } else {
@@ -551,6 +551,7 @@ function Get-PaneControlRestartPlan {
         Agent          = [string]$agentConfig.Agent
         Model          = [string]$agentConfig.Model
         PromptTransport = [string]$agentConfig.PromptTransport
+        Source         = [string]$agentConfig.Source
         LaunchCommand  = $launchCommand
     }
 }
