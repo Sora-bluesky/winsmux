@@ -592,7 +592,7 @@ function ConvertTo-BridgeProviderCapabilityEntry {
 
     $entry = [ordered]@{}
     foreach ($pair in $pairs) {
-        $key = $pair.Key.ToString() -replace '-', '_'
+        $key = $pair.Key.ToString()
         if ($key -notin $allowedFields) {
             throw "Invalid provider capability field '$key'."
         }

@@ -756,6 +756,20 @@ agent-slots:
   "version": 1,
   "providers": {
     "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt-transports": ["argv"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider capability field 'prompt-transports'*"
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
       "supports_file_edit": true
     }
   }
