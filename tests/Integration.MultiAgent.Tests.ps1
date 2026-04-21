@@ -130,6 +130,41 @@ Describe 'agent launch helpers' {
         $command | Should -Be "codex -c model=gpt-5.4 --sandbox danger-full-access -C 'C:\repo path\builder-1' --add-dir 'C:\repo path\.git'"
     }
 
+    It 'uses provider capability command metadata for launch commands' {
+        $root = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-launch-tests-' + [guid]::NewGuid().ToString('N'))
+        try {
+            $registryDir = Join-Path $root '.winsmux'
+            New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex-nightly": {
+      "adapter": "codex",
+      "command": "C:\\Tools\\Codex Nightly\\codex.exe",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $registryDir 'provider-capabilities.json') -Encoding UTF8
+
+            $command = Get-AgentLaunchCommand -Agent 'codex-nightly' -Model 'gpt-5.4' -ProjectDir "C:\repo path\builder-1" -GitWorktreeDir "C:\repo path\.git" -RootPath $root
+
+            $command | Should -Be "& 'C:\Tools\Codex Nightly\codex.exe' -c model=gpt-5.4 --sandbox danger-full-access -C 'C:\repo path\builder-1' --add-dir 'C:\repo path\.git'"
+        } finally {
+            if (Test-Path -LiteralPath $root) {
+                Remove-Item -LiteralPath $root -Recurse -Force
+            }
+        }
+    }
+
     It 'returns a CLM workaround bootstrap for Codex worktree workers' {
         $builderPrompt = Get-AgentBootstrapPrompt -Agent 'codex' -Role 'Builder'
         $builderPrompt | Should -Match 'ConstrainedLanguageMode'
