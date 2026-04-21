@@ -1281,6 +1281,17 @@ function Wait-AgentReady {
     throw "Timed out waiting for pane $PaneId to become ready. Last output:`n$(Get-TailPreview -Text $finalText)"
 }
 
+function Get-OrchestraReadinessAgentName {
+    param([Parameter(Mandatory = $true)]$PaneSummary)
+
+    $capabilityAdapter = [string](Get-OrchestraObjectPropertyValue -InputObject $PaneSummary -Name 'CapabilityAdapter' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($capabilityAdapter)) {
+        return $capabilityAdapter
+    }
+
+    return [string](Get-OrchestraObjectPropertyValue -InputObject $PaneSummary -Name 'Agent' -Default '')
+}
+
 function Start-AgentWatchdogJob {
     param(
         [Parameter(Mandatory = $true)][string]$WatchdogScriptPath,
@@ -2129,7 +2140,8 @@ if ($MyInvocation.InvocationName -ne '.') {
 
     foreach ($paneSummary in $paneSummaries) {
         try {
-            Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $paneSummary.Agent -TimeoutSeconds 60
+            $readinessAgent = Get-OrchestraReadinessAgentName -PaneSummary $paneSummary
+            Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $readinessAgent -TimeoutSeconds 60
         } catch {
             Write-Error "Agent readiness timeout for $($paneSummary.Label) [$($paneSummary.PaneId)]: $($_.Exception.Message)"
             exit 1
