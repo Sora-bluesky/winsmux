@@ -23,6 +23,7 @@ $RoleGateScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\win
 $ClmSafeIoScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\clm-safe-io.ps1'))
 $PaneEnvScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-env.ps1'))
 $PublicFirstRunScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\public-first-run.ps1'))
+$ConflictPreflightScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\conflict-preflight.ps1'))
 
 if (Test-Path $BridgeSettingsScript -PathType Leaf) {
     . $BridgeSettingsScript
@@ -50,6 +51,10 @@ if (Test-Path $PaneEnvScript -PathType Leaf) {
 
 if (Test-Path $PublicFirstRunScript -PathType Leaf) {
     . $PublicFirstRunScript
+}
+
+if (Test-Path $ConflictPreflightScript -PathType Leaf) {
+    . $ConflictPreflightScript
 }
 
 # --- Windows Credential Manager P/Invoke ---
@@ -6015,6 +6020,55 @@ function Invoke-CompareRuns {
     }
 }
 
+function Invoke-ConflictPreflight {
+    param(
+        [AllowNull()][string]$PreflightTarget = $Target,
+        [AllowNull()][string[]]$PreflightRest = $Rest
+    )
+
+    $tokens = @()
+    if (-not [string]::IsNullOrWhiteSpace($PreflightTarget)) {
+        $tokens += $PreflightTarget
+    }
+    if ($PreflightRest) {
+        $tokens += @($PreflightRest)
+    }
+
+    $jsonOutput = $false
+    $refs = [System.Collections.Generic.List[string]]::new()
+    foreach ($token in $tokens) {
+        if ([string]$token -eq '--json') {
+            $jsonOutput = $true
+        } elseif (-not [string]::IsNullOrWhiteSpace([string]$token)) {
+            $refs.Add([string]$token) | Out-Null
+        }
+    }
+
+    if ($refs.Count -ne 2) {
+        Stop-WithError 'usage: winsmux conflict-preflight <left_ref> <right_ref> [--json]'
+    }
+
+    $payload = Get-WinsmuxConflictPreflightPayload -ProjectDir (Get-Location).Path -LeftRef ([string]$refs[0]) -RightRef ([string]$refs[1])
+    if ($jsonOutput) {
+        $payload | ConvertTo-Json -Compress -Depth 10 | Write-Output
+        return
+    }
+
+    Write-Output ("conflict preflight: {0}" -f [string]$payload.status)
+    Write-Output ("left: {0} ({1})" -f [string]$payload.left_ref, (Get-ShortHeadSha -HeadSha ([string]$payload.left_sha)))
+    Write-Output ("right: {0} ({1})" -f [string]$payload.right_ref, (Get-ShortHeadSha -HeadSha ([string]$payload.right_sha)))
+    if (-not [string]::IsNullOrWhiteSpace([string]$payload.merge_base)) {
+        Write-Output ("merge-base: {0}" -f (Get-ShortHeadSha -HeadSha ([string]$payload.merge_base)))
+    }
+    Write-Output ("overlap paths: {0}" -f (@($payload.overlap_paths).Count))
+    if (@($payload.overlap_paths).Count -gt 0) {
+        foreach ($path in @($payload.overlap_paths)) {
+            Write-Output ("- {0}" -f [string]$path)
+        }
+    }
+    Write-Output ("next: {0}" -f [string]$payload.next_action)
+}
+
 function Invoke-PromoteTactic {
     param(
         [AllowNull()][string]$PromoteTarget = $Target,
@@ -6922,6 +6976,7 @@ runs [--json]             Report run-oriented session view
 digest [--json] [--stream] [--events] Report high-signal evidence digest per run or actionable event summaries
 explain <run_id> [--json] [--follow]  Explain one run and optionally follow new events
 compare-runs <left_run_id> <right_run_id> [--json]  Compare two runs and surface evidence/confidence deltas
+conflict-preflight <left_ref> <right_ref> [--json]  Run git merge-tree preflight before compare UI or merge review
 promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>] [--json]  Export a reusable tactic candidate from a successful run
   poll-events [cursor]      Return new monitor events from .winsmux/events.jsonl
   signal <channel>          Send signal to unblock a waiting process
@@ -7353,6 +7408,7 @@ switch ($Command) {
     'digest'          { Invoke-Digest }
     'explain'         { Invoke-Explain }
     'compare-runs'    { Invoke-CompareRuns }
+    'conflict-preflight' { Invoke-ConflictPreflight }
     'promote-tactic'  { Invoke-PromoteTactic }
     'poll-events'     { Invoke-PollEvents }
     'signal'          { Invoke-Signal }

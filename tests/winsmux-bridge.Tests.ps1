@@ -7527,6 +7527,113 @@ Describe 'winsmux public first-run commands' {
     }
 }
 
+Describe 'winsmux conflict-preflight command' {
+    BeforeAll {
+        $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreRawContent = Get-Content -Path $script:winsmuxCoreRawPath -Raw -Encoding UTF8
+        $script:conflictPreflightPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\conflict-preflight.ps1'
+        $script:conflictPreflightContent = Get-Content -Path $script:conflictPreflightPath -Raw -Encoding UTF8
+    }
+
+    It 'documents conflict-preflight in usage and dispatches it through the helper script' {
+        $script:winsmuxCoreRawContent | Should -Match 'conflict-preflight <left_ref> <right_ref> \[--json\]\s+Run git merge-tree preflight before compare UI or merge review'
+        $script:winsmuxCoreRawContent | Should -Match "'conflict-preflight'\s*\{"
+        $script:winsmuxCoreRawContent | Should -Match 'conflict-preflight\.ps1'
+        $script:conflictPreflightContent | Should -Match 'function Get-WinsmuxConflictPreflightPayload'
+        $script:conflictPreflightContent | Should -Match 'function Invoke-WinsmuxGitProbe'
+    }
+}
+
+Describe 'conflict preflight helper' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\conflict-preflight.ps1')
+    }
+
+    BeforeEach {
+        $script:conflictPreflightTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-conflict-preflight-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:conflictPreflightTempRoot -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:conflictPreflightTempRoot -and (Test-Path $script:conflictPreflightTempRoot)) {
+            Remove-Item -Path $script:conflictPreflightTempRoot -Recurse -Force
+        }
+    }
+
+    It 'returns a clean preflight result with overlap paths when merge-tree succeeds' {
+        Mock Invoke-WinsmuxGitProbe {
+            param($ProjectDir, [string[]]$Arguments)
+
+            $commandLine = ($Arguments | ForEach-Object { [string]$_ }) -join ' '
+            switch ($commandLine) {
+                'rev-parse --show-toplevel' { return [PSCustomObject]@{ exit_code = 0; output = $script:conflictPreflightTempRoot } }
+                'rev-parse --verify left^{commit}' { return [PSCustomObject]@{ exit_code = 0; output = '1111111111111111111111111111111111111111' } }
+                'rev-parse --verify right^{commit}' { return [PSCustomObject]@{ exit_code = 0; output = '2222222222222222222222222222222222222222' } }
+                'merge-base left right' { return [PSCustomObject]@{ exit_code = 0; output = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }
+                'diff --name-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa left' { return [PSCustomObject]@{ exit_code = 0; output = "src/a.ps1`nsrc/shared.ps1" } }
+                'diff --name-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa right' { return [PSCustomObject]@{ exit_code = 0; output = "src/shared.ps1`nsrc/b.ps1" } }
+                'merge-tree --write-tree --quiet left right' { return [PSCustomObject]@{ exit_code = 0; output = '' } }
+                default { throw "unexpected git probe: $commandLine" }
+            }
+        }
+
+        $result = Get-WinsmuxConflictPreflightPayload -ProjectDir $script:conflictPreflightTempRoot -LeftRef 'left' -RightRef 'right'
+
+        $result.status | Should -Be 'clean'
+        $result.conflict_detected | Should -Be $false
+        $result.merge_tree_exit_code | Should -Be 0
+        @($result.overlap_paths) | Should -Be @('src/shared.ps1')
+        @($result.left_only_paths) | Should -Be @('src/a.ps1')
+        @($result.right_only_paths) | Should -Be @('src/b.ps1')
+    }
+
+    It 'returns a conflict result when merge-tree detects a merge conflict' {
+        Mock Invoke-WinsmuxGitProbe {
+            param($ProjectDir, [string[]]$Arguments)
+
+            $commandLine = ($Arguments | ForEach-Object { [string]$_ }) -join ' '
+            switch ($commandLine) {
+                'rev-parse --show-toplevel' { return [PSCustomObject]@{ exit_code = 0; output = $script:conflictPreflightTempRoot } }
+                'rev-parse --verify left^{commit}' { return [PSCustomObject]@{ exit_code = 0; output = '1111111111111111111111111111111111111111' } }
+                'rev-parse --verify right^{commit}' { return [PSCustomObject]@{ exit_code = 0; output = '2222222222222222222222222222222222222222' } }
+                'merge-base left right' { return [PSCustomObject]@{ exit_code = 0; output = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } }
+                'diff --name-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa left' { return [PSCustomObject]@{ exit_code = 0; output = "src/shared.ps1" } }
+                'diff --name-only aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa right' { return [PSCustomObject]@{ exit_code = 0; output = "src/shared.ps1" } }
+                'merge-tree --write-tree --quiet left right' { return [PSCustomObject]@{ exit_code = 1; output = '' } }
+                default { throw "unexpected git probe: $commandLine" }
+            }
+        }
+
+        $result = Get-WinsmuxConflictPreflightPayload -ProjectDir $script:conflictPreflightTempRoot -LeftRef 'left' -RightRef 'right'
+
+        $result.status | Should -Be 'conflict'
+        $result.reason | Should -Be 'merge_conflict'
+        $result.conflict_detected | Should -Be $true
+        $result.next_action | Should -Be 'Inspect overlap paths before compare or merge.'
+    }
+
+    It 'returns blocked when refs do not share a merge base' {
+        Mock Invoke-WinsmuxGitProbe {
+            param($ProjectDir, [string[]]$Arguments)
+
+            $commandLine = ($Arguments | ForEach-Object { [string]$_ }) -join ' '
+            switch ($commandLine) {
+                'rev-parse --show-toplevel' { return [PSCustomObject]@{ exit_code = 0; output = $script:conflictPreflightTempRoot } }
+                'rev-parse --verify left^{commit}' { return [PSCustomObject]@{ exit_code = 0; output = '1111111111111111111111111111111111111111' } }
+                'rev-parse --verify right^{commit}' { return [PSCustomObject]@{ exit_code = 0; output = '2222222222222222222222222222222222222222' } }
+                'merge-base left right' { return [PSCustomObject]@{ exit_code = 1; output = '' } }
+                default { throw "unexpected git probe: $commandLine" }
+            }
+        }
+
+        $result = Get-WinsmuxConflictPreflightPayload -ProjectDir $script:conflictPreflightTempRoot -LeftRef 'left' -RightRef 'right'
+
+        $result.status | Should -Be 'blocked'
+        $result.reason | Should -Be 'no_merge_base'
+        $result.next_action | Should -Be 'Choose related refs with a shared merge base and rerun winsmux conflict-preflight.'
+    }
+}
+
 Describe 'public first-run helper' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\settings.ps1')
