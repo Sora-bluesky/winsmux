@@ -2068,7 +2068,11 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
 
         $slotAgentConfig = Get-SlotAgentConfig -Role $canonicalRole -SlotId $label -Settings $settings -RootPath $projectDir
-        $execMode = ([string]$slotAgentConfig.Agent).Trim().ToLowerInvariant() -eq 'codex'
+        $execModeAgent = [string]$slotAgentConfig.CapabilityAdapter
+        if ([string]::IsNullOrWhiteSpace($execModeAgent)) {
+            $execModeAgent = [string]$slotAgentConfig.Agent
+        }
+        $execMode = $execModeAgent.Trim().ToLowerInvariant() -eq 'codex'
         $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -RootPath $projectDir -ExecMode $false
         $supportsInterrupt = Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $slotAgentConfig
 
