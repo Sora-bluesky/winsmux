@@ -12,6 +12,7 @@ import {
   promoteDesktopRunTactic,
   subscribeToDesktopSummaryRefresh,
   type DesktopCompareRunsResult,
+  type DesktopBoardPane,
   type DesktopEditorFilePayload,
   type DesktopExplainPayload,
   type DesktopRunProjection,
@@ -30,6 +31,9 @@ interface PaneEntry {
   terminal: Terminal;
   fitAddon: FitAddon;
   container: HTMLElement;
+  labelElement: HTMLElement;
+  metaElement: HTMLElement;
+  lastOutputAt: number | null;
 }
 
 type ChipAction =
@@ -280,6 +284,7 @@ let lastCommandBarFocus: HTMLElement | null = null;
 let pendingAttachments: ComposerAttachment[] = [];
 const detectedPreviewTargets = new Map<string, PreviewTarget>();
 const PREVIEW_FRESHNESS_WINDOW_MS = 30_000;
+const PANE_META_REFRESH_INTERVAL_MS = 30_000;
 let desktopSummarySnapshot: DesktopSummarySnapshot | null = null;
 let desktopSummaryRefreshInFlight: Promise<void> | null = null;
 let desktopSummaryRefreshTimeout: number | null = null;
@@ -377,16 +382,25 @@ function createPane(paneId?: string): string {
   const header = document.createElement("div");
   header.className = "pane-header";
 
+  const labelGroup = document.createElement("div");
+  labelGroup.className = "pane-heading";
+
   const label = document.createElement("span");
   label.className = "pane-label";
   label.textContent = id;
+
+  const meta = document.createElement("span");
+  meta.className = "pane-meta";
+  meta.textContent = "No branch · waiting for summary";
 
   const closeBtn = document.createElement("button");
   closeBtn.className = "pane-close";
   closeBtn.textContent = "×";
   closeBtn.onclick = () => closePane(id);
 
-  header.appendChild(label);
+  labelGroup.appendChild(label);
+  labelGroup.appendChild(meta);
+  header.appendChild(labelGroup);
   header.appendChild(closeBtn);
 
   const termDiv = document.createElement("div");
@@ -427,7 +441,14 @@ function createPane(paneId?: string): string {
     void resizePtyPane(id, cols, rows);
   });
 
-  panes.set(id, { terminal, fitAddon, container: paneDiv });
+  panes.set(id, {
+    terminal,
+    fitAddon,
+    container: paneDiv,
+    labelElement: label,
+    metaElement: meta,
+    lastOutputAt: null,
+  });
 
   const { cols, rows } = { cols: terminal.cols, rows: terminal.rows };
   void spawnPtyPane(id, cols, rows)
@@ -4401,6 +4422,21 @@ function getRunProjectionFingerprint(projection: DesktopRunProjection | null | u
   ]);
 }
 
+function getBoardPaneFingerprint(pane: DesktopBoardPane) {
+  return JSON.stringify([
+    pane.label,
+    pane.role,
+    pane.state,
+    pane.task_state,
+    pane.review_state,
+    pane.branch,
+    pane.worktree,
+    pane.head_sha,
+    pane.changed_file_count,
+    pane.last_event_at,
+  ]);
+}
+
 function diffDesktopSummarySnapshots(
   previousSnapshot: DesktopSummarySnapshot | null,
   nextSnapshot: DesktopSummarySnapshot,
@@ -4421,10 +4457,17 @@ function diffDesktopSummarySnapshots(
   const nextProjectionMap = new Map(
     nextSnapshot.run_projections.map((projection) => [projection.run_id, projection]),
   );
+  const previousBoardPaneMap = new Map(
+    previousSnapshot.board.panes.map((pane) => [pane.pane_id, pane]),
+  );
+  const nextBoardPaneMap = new Map(
+    nextSnapshot.board.panes.map((pane) => [pane.pane_id, pane]),
+  );
 
   const changedRunIds: string[] = [];
   const addedRunIds: string[] = [];
   const removedRunIds: string[] = [];
+  let boardPaneChanged = previousSnapshot.board.panes.length !== nextSnapshot.board.panes.length;
 
   for (const [runId, nextProjection] of nextProjectionMap) {
     const previousProjection = previousProjectionMap.get(runId);
@@ -4444,15 +4487,32 @@ function diffDesktopSummarySnapshots(
     }
   }
 
+  if (!boardPaneChanged) {
+    for (const [paneId, nextPane] of nextBoardPaneMap) {
+      const previousPane = previousBoardPaneMap.get(paneId);
+      if (!previousPane) {
+        boardPaneChanged = true;
+        break;
+      }
+
+      if (getBoardPaneFingerprint(previousPane) !== getBoardPaneFingerprint(nextPane)) {
+        boardPaneChanged = true;
+        break;
+      }
+    }
+  }
+
   const inboxCountChanged =
     previousSnapshot.inbox.summary.item_count !== nextSnapshot.inbox.summary.item_count;
 
   return {
     hasMeaningfulChange:
+      boardPaneChanged ||
       inboxCountChanged ||
       addedRunIds.length > 0 ||
       removedRunIds.length > 0 ||
       changedRunIds.length > 0,
+    boardPaneChanged,
     changedRunIds,
     inboxCountChanged,
     addedRunIds,
@@ -5104,6 +5164,7 @@ function pruneExplainCache(snapshot: DesktopSummarySnapshot, preservedRunId?: st
 }
 
 function renderDesktopSurfaces() {
+  renderPaneMetadata();
   renderSessions();
   renderFooterLane();
   renderRunSummary();
@@ -5113,6 +5174,109 @@ function renderDesktopSurfaces() {
   renderOpenEditors();
   renderEditorSurface();
   renderConversation(getConversationItems());
+}
+
+function formatPaneMetaTime(timestamp: string) {
+  const parsed = Date.parse(timestamp);
+  if (Number.isNaN(parsed)) {
+    return "";
+  }
+
+  return new Date(parsed).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatPaneWaitDuration(timestamp: string, now = Date.now()) {
+  const parsed = Date.parse(timestamp);
+  if (Number.isNaN(parsed)) {
+    return "";
+  }
+
+  const elapsedMs = Math.max(0, now - parsed);
+  const elapsedMinutes = Math.floor(elapsedMs / 60000);
+  if (elapsedMinutes < 1) {
+    return "<1m wait";
+  }
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes}m wait`;
+  }
+
+  const hours = Math.floor(elapsedMinutes / 60);
+  const minutes = elapsedMinutes % 60;
+  if (minutes === 0) {
+    return `${hours}h wait`;
+  }
+
+  return `${hours}h ${minutes}m wait`;
+}
+
+function summarizeBoardPaneStatus(pane: DesktopBoardPane | null) {
+  if (!pane) {
+    return "";
+  }
+
+  const role = pane.role || "pane";
+  const taskState = (pane.task_state || "").toLowerCase();
+  const reviewState = (pane.review_state || "").toUpperCase();
+
+  if (taskState === "blocked") {
+    return `${role} · blocked`;
+  }
+  if (reviewState === "FAIL" || reviewState === "FAILED") {
+    return `${role} · review failed`;
+  }
+  if (reviewState === "PENDING") {
+    return `${role} · review pending`;
+  }
+  if (reviewState === "PASS") {
+    return `${role} · review pass`;
+  }
+  if (taskState === "commit_ready") {
+    return `${role} · commit ready`;
+  }
+  if (taskState === "completed" || taskState === "task_completed" || taskState === "done") {
+    return `${role} · completed`;
+  }
+  if (pane.task_state) {
+    return `${role} · ${pane.task_state}`;
+  }
+
+  return role;
+}
+
+function renderPaneMetadata() {
+  const boardPanes = desktopSummarySnapshot?.board.panes ?? [];
+  const now = Date.now();
+
+  panes.forEach((pane, paneId) => {
+    const paneRecord = boardPanes.find((item) => item.pane_id === paneId) ?? null;
+    const paneLabel = paneRecord?.label || paneId;
+    pane.labelElement.textContent = paneLabel;
+
+    const status = summarizeBoardPaneStatus(paneRecord);
+    const branch = paneRecord?.branch || "";
+    const eventTime = paneRecord?.last_event_at ? formatPaneMetaTime(paneRecord.last_event_at) : "";
+    const waitDuration = paneRecord?.last_event_at
+      ? formatPaneWaitDuration(paneRecord.last_event_at, now)
+      : pane.lastOutputAt
+        ? `${formatPreviewSeenAt(pane.lastOutputAt)} · live output`
+        : "waiting for summary";
+
+    const parts = [status];
+    if (branch) {
+      parts.push(branch);
+    }
+    if (eventTime) {
+      parts.push(eventTime);
+    }
+    parts.push(waitDuration);
+    const metaText = parts.filter((value) => Boolean(value)).join(" · ");
+    pane.metaElement.textContent = metaText;
+    pane.metaElement.title = metaText;
+    pane.labelElement.title = paneLabel;
+  });
 }
 
 async function refreshDesktopSummary(forceExplainRunId?: string | null) {
@@ -5330,13 +5494,17 @@ window.addEventListener("DOMContentLoaded", async () => {
     registerPreviewTargets(payload.pane_id, payload.data);
     const entry = payload.pane_id ? panes.get(payload.pane_id) : undefined;
     if (entry) {
+      entry.lastOutputAt = Date.now();
       entry.terminal.write(payload.data);
+      renderPaneMetadata();
       return;
     }
 
     const first = panes.values().next().value as PaneEntry | undefined;
     if (first) {
+      first.lastOutputAt = Date.now();
       first.terminal.write(payload.data);
+      renderPaneMetadata();
     }
   });
 
@@ -5365,6 +5533,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   await refreshDesktopSummary();
   registerDesktopSummaryLiveRefresh();
   initializeSidebarResize();
+  window.setInterval(() => {
+    renderPaneMetadata();
+  }, PANE_META_REFRESH_INTERVAL_MS);
 
   document.getElementById("toggle-sidebar-btn")?.addEventListener("click", () => {
     setSidebarOpen(!sidebarOpen);
