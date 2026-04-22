@@ -435,6 +435,7 @@ panes:
                 'python -c "from os import remove as r; r(''C:/repo/README.md'')"',
                 'python -c "from os import rename as rn; rn(''C:/repo/.worktrees/worker-1/a.txt'', ''C:/repo/README.md'')"',
                 'python -c "from os import remove as r; target=''C:/repo/README.md''; r(target)"',
+                'python -c "import os; f=os.remove; f(''C:/repo/README.md'')"',
                 'python -c "import os; os.rename(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"',
                 'python -c "from pathlib import Path; import os; dest=''C:/repo/README.md''; Path(''C:/repo/.worktrees/worker-1/safe.txt'').write_text(''x''); os.rename(''C:/repo/.worktrees/worker-1/safe.txt'', dest)"',
                 'python -c "from pathlib import Path; dest=''C:/repo/README.md''; Path(''C:/repo/.worktrees/worker-1/safe.txt'').write_text(''x''); Path(dest).write_text(''y'')"',
@@ -563,6 +564,8 @@ PY
         foreach ($command in @(
                 'cd C:\repo; "demo" > README.md',
                 'bash -c "cd ..; touch README.md"',
+                'command cd .. && touch outside.txt',
+                'builtin cd .. && touch outside.txt',
                 'env -C C:\repo python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"',
                 'FOO=1 env -C C:\repo python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"'
             )) {
@@ -1121,6 +1124,7 @@ EOF
                 'bash -lc "command git add README.md"',
                 'bash -lc "exec git push origin feature/review-gate"',
                 'Start-Process git -ArgumentList ''add README.md''',
+                '$g=''git''; Start-Process $g -ArgumentList ''add README.md''',
                 'Start-Process (Get-Command git) -ArgumentList ''add README.md''',
                 'Start-Process $env:COMSPEC -ArgumentList ''/c git add README.md''',
                 'pwsh -Command "Start-Process git -ArgumentList ''add README.md''"',

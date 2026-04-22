@@ -1992,7 +1992,17 @@ function getPowerShellStartProcessCommand(tokens) {
     }
   }
 
-  return [filePath, ...argumentList].filter(Boolean).join(" ").trim();
+  const joinedArguments = argumentList.filter(Boolean).join(" ").trim();
+  if (isPowerShellVariableReference(filePath)) {
+    if (hasGhLifecycleArgumentHint(joinedArguments)) {
+      return ["gh", joinedArguments].filter(Boolean).join(" ").trim();
+    }
+    if (hasGitLifecycleArgumentHint(joinedArguments)) {
+      return ["git", joinedArguments].filter(Boolean).join(" ").trim();
+    }
+  }
+
+  return [filePath, joinedArguments].filter(Boolean).join(" ").trim();
 }
 
 function cleanPowerShellStartProcessArgument(value) {
@@ -2001,6 +2011,21 @@ function cleanPowerShellStartProcessArgument(value) {
     .replace(/\)$/u, "")
     .replace(/^,+|,+$/gu, "")
     .trim();
+}
+
+function isPowerShellVariableReference(value) {
+  return /^\$(?:env:)?[A-Za-z_][A-Za-z0-9_]*$/u.test(stripOuterQuotes(String(value || "").trim()));
+}
+
+function hasGitLifecycleArgumentHint(value) {
+  const normalized = normalizeAgentValue(String(value || ""));
+  return /\b(?:add|commit|merge|push|rebase|reset|restore|rm|checkout-index|update-index|notes|branch|tag|worktree|config)\b/u.test(normalized);
+}
+
+function hasGhLifecycleArgumentHint(value) {
+  const normalized = normalizeAgentValue(String(value || ""));
+  return /\bpr\s+merge\b/u.test(normalized) ||
+    /\bapi\b[\s\S]*\b(?:pulls\/\d+\/merge|git\/refs?|git\/ref\/heads)\b/u.test(normalized);
 }
 
 function unescapeCmdCaretEscapes(value) {
@@ -3040,6 +3065,19 @@ function collectPythonMutationAliases(segment) {
     }
   }
 
+  const moduleAliasPattern = /\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(os|shutil)\.([A-Za-z_][A-Za-z0-9_]*)\b/giu;
+  for (const match of String(segment || "").matchAll(moduleAliasPattern)) {
+    const aliasName = match[1];
+    const importedName = match[3];
+    if (singleTargetNames.has(importedName)) {
+      aliases.push({ name: aliasName, kind: "single" });
+    } else if (sourceAndDestinationNames.has(importedName)) {
+      aliases.push({ name: aliasName, kind: "sourceAndDestination" });
+    } else if (destinationNames.has(importedName)) {
+      aliases.push({ name: aliasName, kind: "destination" });
+    }
+  }
+
   return aliases;
 }
 
@@ -3182,7 +3220,7 @@ function hasShellCwdChangeCommand(command) {
 
 function isShellCwdChangeSegment(segment) {
   const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
-  const tokens = stripInlineEnvironmentPrefixes(tokenizeCommandLine(normalizedSegment));
+  const tokens = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokenizeCommandLine(normalizedSegment)));
   if (tokens.length === 0) {
     return false;
   }
