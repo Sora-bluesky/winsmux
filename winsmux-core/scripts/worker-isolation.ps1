@@ -51,7 +51,21 @@ function ConvertTo-WinsmuxWorkerIsolationSafeOrigin {
         return ''
     }
 
-    return [regex]::Replace($Origin, '^(https?://)[^/@]+@', '$1[redacted]@')
+    $trimmed = $Origin.Trim()
+    $trimmed = [regex]::Replace($trimmed, '^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]+@', '$1[redacted]@')
+    return [regex]::Replace($trimmed, '^[^/@\s]+@([^:\s]+:.+)$', '[redacted]@$1')
+}
+
+function ConvertTo-WinsmuxWorkerIsolationComparableOrigin {
+    param([AllowEmptyString()][string]$Origin)
+
+    if ([string]::IsNullOrWhiteSpace($Origin)) {
+        return ''
+    }
+
+    $trimmed = $Origin.Trim()
+    $trimmed = [regex]::Replace($trimmed, '^([A-Za-z][A-Za-z0-9+.-]*://)[^/@]+@', '$1')
+    return [regex]::Replace($trimmed, '^[^/@\s]+@([^:\s]+:.+)$', '$1')
 }
 
 function Get-WinsmuxWorkerIsolationPaneEntries {
@@ -234,7 +248,9 @@ function Get-WinsmuxWorkerIsolationReport {
             $originProbe = Invoke-WinsmuxWorkerIsolationGit -GitPath $GitPath -WorktreePath $worktreePath -Arguments @('config', '--get', 'remote.origin.url') -GitInvoker $GitInvoker
             if ($originProbe.Ok) {
                 $actualOrigin = $originProbe.Output.Trim()
-                if (-not [string]::IsNullOrWhiteSpace($originExpected) -and $actualOrigin -ne $originExpected) {
+                $actualOriginComparable = ConvertTo-WinsmuxWorkerIsolationComparableOrigin -Origin $actualOrigin
+                $originExpectedComparable = ConvertTo-WinsmuxWorkerIsolationComparableOrigin -Origin $originExpected
+                if (-not [string]::IsNullOrWhiteSpace($originExpected) -and $actualOriginComparable -ne $originExpectedComparable) {
                     $safeActualOrigin = ConvertTo-WinsmuxWorkerIsolationSafeOrigin -Origin $actualOrigin
                     $safeExpectedOrigin = ConvertTo-WinsmuxWorkerIsolationSafeOrigin -Origin $originExpected
                     Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message "origin is $safeActualOrigin; expected $safeExpectedOrigin"

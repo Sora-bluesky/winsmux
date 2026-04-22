@@ -5906,17 +5906,42 @@ Describe 'worker isolation diagnostics' {
         $report.remediation | Should -Match 'Operator shell'
     }
 
+    It 'passes when actual origin only differs by credentials' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest -ExpectedOrigin 'https://github.com/example/repo.git') `
+            -GitPath 'git' `
+            -GitInvoker {
+                param([string]$WorktreePath, [string[]]$Arguments)
+
+                switch ($Arguments -join ' ') {
+                    'rev-parse --show-toplevel' { $WorktreePath; break }
+                    'branch --show-current' { 'worktree-worker-1'; break }
+                    'config --get remote.origin.url' { 'https://actual-token@github.com/example/repo.git'; break }
+                    'rev-parse --git-dir' { $script:workerIsolationGitDir; break }
+                    default { throw "unexpected git args: $($Arguments -join ' ')" }
+                }
+            }
+
+        $report.ok | Should -Be $true
+        $report.findings.Count | Should -Be 0
+        $report.workers[0].actual_origin | Should -Be 'https://[redacted]@github.com/example/repo.git'
+    }
+
     It 'redacts credentials from origin drift findings' {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
 
         $report = Get-WinsmuxWorkerIsolationReport `
             -ProjectDir $script:workerIsolationTempRoot `
-            -Manifest (New-TestWorkerIsolationManifest -ExpectedOrigin 'https://expected-token@github.com/example/repo.git') `
+            -Manifest (New-TestWorkerIsolationManifest -ExpectedOrigin 'ssh://expected-token@example.com/example/repo.git') `
             -GitPath 'git' `
-            -GitInvoker (New-TestWorkerIsolationGitInvoker -Origin 'https://actual-token@github.com/example/repo.git')
+            -GitInvoker (New-TestWorkerIsolationGitInvoker -Origin 'ssh://actual-token@github.com/example/other.git')
 
         $message = ($report.findings | ForEach-Object { $_.message }) -join '; '
         $message | Should -Match '\[redacted\]@github.com'
+        $message | Should -Match '\[redacted\]@example.com'
         $message | Should -Not -Match 'expected-token'
         $message | Should -Not -Match 'actual-token'
     }
