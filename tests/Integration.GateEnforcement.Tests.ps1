@@ -388,8 +388,11 @@ panes:
                 'node -e "require(''fs'').truncateSync(''C:/repo/README.md'', 0)"',
                 'node -e "require(''fs'').createWriteStream(''C:/repo/README.md'')"',
                 'env node -e "require(''fs'').writeFileSync(''C:/repo/README.md'', ''x'')"',
+                'bash -lc "command node -e ''require(''''fs'''').writeFileSync(''''C:/repo/README.md'''', ''''x'''')''"',
+                'exec node -e "require(''fs'').writeFileSync(''C:/repo/README.md'', ''x'')"',
                 'FOO=1 node -e "require(''fs'').writeFileSync(''C:/repo/README.md'', ''x'')"',
                 'python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
+                'sh -c"python -c ''from pathlib import Path; Path(''''C:/repo/README.md'''').write_text(''''x'''')''"',
                 'python3.11 -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'env python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'env -C C:\repo python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
@@ -428,6 +431,18 @@ panes:
     It 'denies Worker shell writes with unresolved targets' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
             command = '$p = ''C:\repo\README.md''; Set-Content -LiteralPath $p -Value demo'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE              = 'Worker'
+            WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'unresolved shell write target'
+    }
+
+    It 'denies Worker PowerShell splatted write targets' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = 'pwsh -Command "function x { Set-Content @args }; x -LiteralPath C:\repo\README.md -Value demo"'
         } -Environment ([ordered]@{
             WINSMUX_ROLE              = 'Worker'
             WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
@@ -1040,6 +1055,11 @@ EOF
                 'FOO=1 git diff --output=C:/repo/README.md',
                 'pwsh -Com "git add README.md"',
                 'pwsh -Com "git push origin feature/review-gate"',
+                'bash -c"git add README.md"',
+                'bash -lc "command git add README.md"',
+                'bash -lc "exec git push origin feature/review-gate"',
+                'command git add README.md',
+                'builtin command git commit -m x',
                 'Set-Alias g git; g add README.md',
                 'Set-Alias -Name g -Value git; g add README.md',
                 'Set-Alias -Nam:g -Val:git; g add README.md',
@@ -1087,6 +1107,20 @@ EOF
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+
+        foreach ($command in @(
+                'command git status --short',
+                'bash -c"git status --short"'
+            )) {
+            $wrappedResult = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+            } -Environment ([ordered]@{
+                WINSMUX_ROLE = 'Worker'
+            })
+
+            $wrappedResult.ExitCode | Should -Be 0
+            $wrappedResult.StdErr | Should -Be ''
+        }
     }
 
     It 'allows Worker to search for git lifecycle examples' {

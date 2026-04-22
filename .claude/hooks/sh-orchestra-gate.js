@@ -1576,6 +1576,11 @@ function getShellCommandArgument(tokens) {
     if (/^-[a-z]*c[a-z]*$/u.test(token)) {
       return stripOuterQuotes(tokens.slice(index + 1).join(" "));
     }
+
+    const inlineCommandMatch = /^-[a-z]*?c([\s\S]+)$/u.exec(stripOuterQuotes(tokens[index]));
+    if (inlineCommandMatch) {
+      return stripOuterQuotes([inlineCommandMatch[1], ...tokens.slice(index + 1)].filter(Boolean).join(" "));
+    }
   }
 
   return "";
@@ -1586,7 +1591,7 @@ function unescapeCmdCaretEscapes(value) {
 }
 
 function unwrapEnvCommandTokens(tokens) {
-  const withoutInlineAssignments = stripInlineEnvironmentPrefixes(tokens);
+  const withoutInlineAssignments = stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(tokens));
   if (withoutInlineAssignments.length === 0) {
     return withoutInlineAssignments;
   }
@@ -1630,7 +1635,37 @@ function unwrapEnvCommandTokens(tokens) {
     index += 1;
   }
 
-  return stripInlineEnvironmentPrefixes(withoutInlineAssignments.slice(index));
+  return stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes(withoutInlineAssignments.slice(index)));
+}
+
+function stripShellCommandBuiltinPrefixes(tokens) {
+  let index = 0;
+  while (index < tokens.length) {
+    const executable = normalizeAgentValue(getExecutableBasename(tokens[index]));
+    if (executable !== "command" && executable !== "exec" && executable !== "builtin") {
+      break;
+    }
+
+    index += 1;
+    while (index < tokens.length) {
+      const option = normalizeAgentValue(stripOuterQuotes(tokens[index]));
+      if (option === "--") {
+        index += 1;
+        break;
+      }
+      if (option === "-p" || option === "-v" || option === "-V") {
+        index += 1;
+        continue;
+      }
+      if (executable === "exec" && option === "-a") {
+        index += 2;
+        continue;
+      }
+      break;
+    }
+  }
+
+  return tokens.slice(index);
 }
 
 function stripInlineEnvironmentPrefixes(tokens) {
@@ -1841,9 +1876,11 @@ function isUnresolvedShellTarget(target) {
   const normalized = String(target || "").trim();
   return normalized.startsWith("$") ||
          normalized.startsWith("%") ||
+         normalized.startsWith("@") ||
          normalized.startsWith("(") ||
          normalized.includes("$") ||
          normalized.includes("$(") ||
+         normalized.includes("@args") ||
          normalized.includes("${");
 }
 
