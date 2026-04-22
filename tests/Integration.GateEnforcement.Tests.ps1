@@ -347,6 +347,8 @@ panes:
                 'pwsh -Command "[System.IO.File]::Open(''C:\repo\README.md'', [System.IO.FileMode]::Create)"',
                 'pwsh -Command "[System.IO.File]::Move(''C:\repo\README.md'', ''C:\repo\.worktrees\worker-1\README.md'')"',
                 'pwsh -Command "[System.IO.FileInfo]::new(''C:\repo\README.md'').MoveTo(''C:\repo\.worktrees\worker-1\README.md'')"',
+                'pwsh -Command "(New-Object System.IO.FileInfo ''C:\repo\README.md'').Delete()"',
+                'pwsh -Command "([System.IO.FileInfo]''C:\repo\README.md'').Delete()"',
                 'pwsh -Command "Export-Csv -Path C:\repo\out.csv -InputObject @{}"',
                 'pwsh -Command "Export-Clixml -Path C:\repo\out.xml -InputObject @{}"',
                 'pwsh -Command "Start-Transcript -Path C:\repo\transcript.txt"',
@@ -370,11 +372,13 @@ panes:
                 'python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'python3.11 -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'env python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
+                'env -C C:\repo python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'cmd /c p^ython -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'env FOO=1 python3.11 -c "import os; os.remove(''C:/repo/README.md'')"',
                 'FOO=1 python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'python -c "from pathlib import Path; Path(''C:/repo/README.md'').unlink()"',
                 'python -c "from pathlib import Path; Path(''C:/repo/.worktrees/worker-1/README.md'').rename(''C:/repo/README.md'')"',
+                'python -c "from pathlib import Path; Path(''C:/repo/.worktrees/worker-1/README.md'').rename(Path(''C:/repo/README.md''))"',
                 'python -c "import os; os.remove(''C:/repo/README.md'')"',
                 'python -c "import os as o; o.remove(''C:/repo/README.md'')"',
                 'python -c "import os; os.rename(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"',
@@ -446,6 +450,12 @@ JS
 '@,
                 @'
 cmd /c python <<'PY'
+from pathlib import Path
+Path('C:/repo/README.md').write_text('x')
+PY
+'@,
+                @'
+cat <<'PY' | python
 from pathlib import Path
 Path('C:/repo/README.md').write_text('x')
 PY
@@ -908,6 +918,7 @@ EOF
 
         foreach ($command in @(
                 'gh pr merge 112 --squash --delete-branch',
+                'cmd /c g^h pr merge 112 --squash --delete-branch',
                 'gh api repos/OWNER/REPO/pulls/123/merge -X PUT'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{

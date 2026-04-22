@@ -921,6 +921,7 @@ function isReviewGatedCommand(command) {
   return isGitCommitOrMergeCommandLine(command) ||
          isGitCommitCommand(command) ||
          isGitMergeCommand(command) ||
+         isGhPrMergeCommandLine(command) ||
          isGhPrMergeCommand(command) ||
          isGhApiMergeCommandLine(command);
 }
@@ -955,6 +956,33 @@ function isGitCommitOrMergeCommandLine(command) {
 
       const gitSubcommand = getGitSubcommandName(tokens, gitSubcommandIndex);
       return gitSubcommand === "commit" || gitSubcommand === "merge";
+    }));
+}
+
+function isGhPrMergeCommandLine(command) {
+  return splitCommandSegments(command).some((segment) =>
+    splitCommandPipelineStages(segment).some((stage) => {
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapPowerShellCommandWrapper(stage)));
+      if (tokens.length === 0) {
+        return false;
+      }
+
+      const executable = getExecutableBasename(tokens[0]);
+      if (executable === "cmd" || executable === "cmd.exe") {
+        const nestedCommand = getCmdShellArgument(tokens);
+        return nestedCommand ? isGhPrMergeCommandLine(nestedCommand) : false;
+      }
+
+      if (isPowerShellExecutable(executable)) {
+        const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
+        return nestedCommand ? isGhPrMergeCommandLine(nestedCommand) : false;
+      }
+
+      return (executable === "gh" || executable === "gh.exe") &&
+             tokens.some((token, index) =>
+               normalizeAgentValue(stripOuterQuotes(token)) === "pr" &&
+               tokens.slice(index + 1).some((nextToken) =>
+                 normalizeAgentValue(stripOuterQuotes(nextToken)) === "merge"));
     }));
 }
 
@@ -1222,7 +1250,13 @@ function unwrapEnvCommandTokens(tokens) {
       continue;
     }
 
+    if (normalizedToken === "-c" || normalizedToken === "--chdir") {
+      index += 2;
+      continue;
+    }
+
     if (normalizedToken.startsWith("--unset=") ||
+        normalizedToken.startsWith("--chdir=") ||
         normalizedToken === "-i" ||
         normalizedToken === "--ignore-environment") {
       index += 1;
@@ -1582,11 +1616,15 @@ function collectPowerShellDotNetMutationTargets(segment, targets) {
     /\[(?:system\.)?io\.file\]\s*::\s*(?:writealltext|writeallbytes|writealllines|appendalltext|appendalllines|create|createtext|delete|open|openwrite|openhandle)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.directory\]\s*::\s*(?:createdirectory|delete|move)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*::\s*new\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
+    /\(\s*new-object\s+(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
+    /\(\s*\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
   ];
   const twoArgumentPatterns = [
     /\[(?:system\.)?io\.file\]\s*::\s*(?:copy|move|replace)\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.directory\]\s*::\s*(?:move)\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*::\s*new\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
+    /\(\s*new-object\s+(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
+    /\(\s*\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
   ];
   let foundTarget = false;
   for (const pattern of firstArgumentPatterns) {
@@ -1647,6 +1685,7 @@ function collectPythonMutationTargets(segment, targets) {
     /(?:^|[^\w])Path\s*\(\s*["']([^"']+)["']\s*\)\s*\.\s*(?:write_text|write_bytes)\s*\(/giu,
     /(?:^|[^\w])Path\s*\(\s*["']([^"']+)["']\s*\)\s*\.\s*(?:mkdir|rename|replace|rmdir|touch|unlink)\s*\(/giu,
     /(?:^|[^\w])Path\s*\(\s*["'][^"']+["']\s*\)\s*\.\s*(?:rename|replace)\s*\(\s*["']([^"']+)["']\s*\)/giu,
+    /(?:^|[^\w])Path\s*\(\s*["'][^"']+["']\s*\)\s*\.\s*(?:rename|replace)\s*\(\s*Path\s*\(\s*["']([^"']+)["']\s*\)\s*\)/giu,
     /(?:^|[^\w])open\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']*[wax+][^"']*["']/giu,
     /(?:^|[^\w])os\.(?:makedirs|mkdir|removedirs|remove|rmdir|unlink)\s*\(\s*["']([^"']+)["']\s*\)/giu,
     /(?:^|[^\w])os\.(?:rename|replace)\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']+["']\s*\)/giu,
@@ -1703,9 +1742,19 @@ function hasWriteCapableInterpreterHeredoc(command) {
     if (hasWriteCapableInterpreterHeredocPrefix(prefix)) {
       return true;
     }
+
+    const suffix = line.slice(markerIndex + 2).trim();
+    if (hasWriteCapableInterpreterHeredocSuffix(suffix)) {
+      return true;
+    }
   }
 
   return false;
+}
+
+function hasWriteCapableInterpreterHeredocSuffix(suffix) {
+  const stages = splitCommandPipelineStages(suffix);
+  return stages.slice(1).some((stage) => hasWriteCapableInterpreterHeredocPrefix(stage));
 }
 
 function hasWriteCapableInterpreterHeredocPrefix(prefix) {
