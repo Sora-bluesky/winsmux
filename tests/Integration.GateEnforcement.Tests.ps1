@@ -432,6 +432,9 @@ panes:
                 'python -c "import os; os.remove(''C:/repo/README.md'')"',
                 'python -c "import os as o; o.remove(''C:/repo/README.md'')"',
                 'python -c "from os import remove; remove(''C:/repo/README.md'')"',
+                'python -c "from os import remove as r; r(''C:/repo/README.md'')"',
+                'python -c "from os import rename as rn; rn(''C:/repo/.worktrees/worker-1/a.txt'', ''C:/repo/README.md'')"',
+                'python -c "from os import remove as r; target=''C:/repo/README.md''; r(target)"',
                 'python -c "import os; os.rename(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"',
                 'python -c "from pathlib import Path; import os; dest=''C:/repo/README.md''; Path(''C:/repo/.worktrees/worker-1/safe.txt'').write_text(''x''); os.rename(''C:/repo/.worktrees/worker-1/safe.txt'', dest)"',
                 'python -c "from pathlib import Path; dest=''C:/repo/README.md''; Path(''C:/repo/.worktrees/worker-1/safe.txt'').write_text(''x''); Path(dest).write_text(''y'')"',
@@ -597,7 +600,8 @@ PY
                 'curl https://example.com',
                 'pwsh -Command "Invoke-WebRequest https://example.com -OutFile C:\repo\.worktrees\worker-1\download.txt"',
                 'node -e "require(''fs'').writeFileSync(''C:/repo/.worktrees/worker-1/README.md'', ''x'')"',
-                'python -c "from pathlib import Path; Path(''C:/repo/.worktrees/worker-1/README.md'').write_text(''x'')"'
+                'python -c "from pathlib import Path; Path(''C:/repo/.worktrees/worker-1/README.md'').write_text(''x'')"',
+                'python -c "from os import remove as r; r(''C:/repo/.worktrees/worker-1/README.md'')"'
             )) {
             $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -979,6 +983,8 @@ EOF
         foreach ($command in @(
                 'git commit -m "feat: gated"',
                 'Start-Process git -ArgumentList commit -Wait',
+                'Start-Process (Get-Command git) -ArgumentList commit -Wait',
+                'Start-Process (''g''+''it'') -ArgumentList commit -Wait',
                 'bash -lc "git commit -m x"',
                 'pwsh -Command "Set-Alias g git; g commit -m x"',
                 'git -c alias.ci=commit ci -m "feat: gated"',
@@ -1029,6 +1035,8 @@ EOF
         foreach ($command in @(
                 'gh pr merge 112 --squash --delete-branch',
                 'Start-Process gh -ArgumentList ''pr'', ''merge'', ''123'' -Wait',
+                'Start-Process (Get-Command gh) -ArgumentList ''pr merge 123'' -Wait',
+                'Start-Process (''g''+''h'') -ArgumentList ''pr merge 123'' -Wait',
                 'bash -lc "gh pr merge 112 --squash"',
                 'cmd /c g^h pr merge 112 --squash --delete-branch',
                 'gh api repos/OWNER/REPO/pulls/123/merge -X PUT',

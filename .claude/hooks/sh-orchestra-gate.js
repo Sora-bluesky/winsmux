@@ -854,7 +854,7 @@ function hasPowerShellStartProcessLifecycleHint(segment) {
   }
 
   return hasGitLifecycleHint(source) &&
-    /(?:\(\s*get-command\b|\$env:comspec\b|\bpwsh\b|\bpowershell\b|\bcmd\b)/iu.test(source);
+    /(?:\(\s*get-command\b|\$env:comspec\b|\bpwsh\b|\bpowershell\b|\bcmd\b|['"]g['"]\s*\+\s*['"](?:it|h)['"])/iu.test(source);
 }
 
 function hasGitLifecycleHint(source) {
@@ -865,6 +865,7 @@ function hasGitLifecycleHint(source) {
 
   return /\b(?:git|gh)\b/u.test(normalized) ||
     /['"]g['"]\s*\+\s*['"]it['"]/u.test(normalized) ||
+    /['"]g['"]\s*\+\s*['"]h['"]/u.test(normalized) ||
     /\bget-command\s+(?:git|gh)\b/u.test(normalized) ||
     /\$env:comspec\b/u.test(normalized) ||
     /(?:^|[\s;|])&\s*(?:\(|\$|\$\{)/u.test(normalized);
@@ -1570,7 +1571,8 @@ function isReviewGatedCommand(command) {
 function isGitCommitOrMergeCommandLine(command) {
   return splitCommandSegments(command).some((segment) =>
     splitCommandPipelineStages(segment).some((stage) => {
-      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapPowerShellCommandWrapper(stage)));
+      const normalizedStage = unwrapPowerShellCommandWrapper(stage);
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
       if (tokens.length === 0) {
         return false;
       }
@@ -1592,6 +1594,9 @@ function isGitCommitOrMergeCommandLine(command) {
       }
 
       if (isPowerShellStartProcessExecutable(executable)) {
+        if (hasPowerShellStartProcessLifecycleHint(normalizedStage)) {
+          return true;
+        }
         const nestedCommand = getPowerShellStartProcessCommand(tokens);
         return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
@@ -1613,7 +1618,8 @@ function isGitCommitOrMergeCommandLine(command) {
 function isGhPrMergeCommandLine(command) {
   return splitCommandSegments(command).some((segment) =>
     splitCommandPipelineStages(segment).some((stage) => {
-      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapPowerShellCommandWrapper(stage)));
+      const normalizedStage = unwrapPowerShellCommandWrapper(stage);
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
       if (tokens.length === 0) {
         return false;
       }
@@ -1635,6 +1641,9 @@ function isGhPrMergeCommandLine(command) {
       }
 
       if (isPowerShellStartProcessExecutable(executable)) {
+        if (hasPowerShellStartProcessLifecycleHint(normalizedStage)) {
+          return true;
+        }
         const nestedCommand = getPowerShellStartProcessCommand(tokens);
         return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
@@ -1650,7 +1659,8 @@ function isGhPrMergeCommandLine(command) {
 function isGhApiMergeCommandLine(command) {
   return splitCommandSegments(command).some((segment) =>
     splitCommandPipelineStages(segment).some((stage) => {
-      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapPowerShellCommandWrapper(stage)));
+      const normalizedStage = unwrapPowerShellCommandWrapper(stage);
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
       if (tokens.length === 0) {
         return false;
       }
@@ -1672,6 +1682,9 @@ function isGhApiMergeCommandLine(command) {
       }
 
       if (isPowerShellStartProcessExecutable(executable)) {
+        if (hasPowerShellStartProcessLifecycleHint(normalizedStage)) {
+          return true;
+        }
         const nestedCommand = getPowerShellStartProcessCommand(tokens);
         return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
@@ -2956,6 +2969,27 @@ function collectPythonMutationTargets(segment, targets) {
     }
   }
 
+  for (const alias of collectPythonMutationAliases(segment)) {
+    const escapedAlias = escapeRegex(alias.name);
+    if (alias.kind === "single") {
+      const pattern = new RegExp(`(?:^|[^\\w])${escapedAlias}\\s*\\(\\s*["']([^"']+)["']\\s*\\)`, "giu");
+      for (const match of segment.matchAll(pattern)) {
+        targets.push(match[1] || "");
+        foundTarget = true;
+      }
+      continue;
+    }
+
+    const pattern = new RegExp(`(?:^|[^\\w])${escapedAlias}\\s*\\(\\s*["']([^"']+)["']\\s*,\\s*["']([^"']+)["']\\s*\\)`, "giu");
+    for (const match of segment.matchAll(pattern)) {
+      if (alias.kind === "sourceAndDestination") {
+        targets.push(match[1] || "");
+      }
+      targets.push(match[2] || "");
+      foundTarget = true;
+    }
+  }
+
   if (/(?:^|[^\w])Path\s*\(\s*["'][^"']+["']\s*\)\s*\.\s*(?:rename|replace)\s*\(\s*(?!["'])/iu.test(segment)) {
     targets.push("$unparsed-python-write");
   }
@@ -2971,9 +3005,53 @@ function collectPythonMutationTargets(segment, targets) {
     targets.push("$unparsed-python-write");
   }
 
+  if (hasUnparsedPythonMutationAliasCall(segment)) {
+    targets.push("$unparsed-python-write");
+  }
+
   if (!foundTarget && /(?:write_text|write_bytes|\.write\s*\(|\bopen\s*\(|\.(?:makedirs|mkdir|removedirs|remove|rename|replace|rmdir|touch|unlink)\s*\(|\b(?:copy|copy2|copyfile|copytree|move|rmtree)\s*\()/iu.test(segment)) {
     targets.push("$unparsed-python-write");
   }
+}
+
+function collectPythonMutationAliases(segment) {
+  const aliases = [];
+  const singleTargetNames = new Set(["makedirs", "mkdir", "removedirs", "remove", "rmdir", "unlink", "rmtree"]);
+  const sourceAndDestinationNames = new Set(["rename", "replace"]);
+  const destinationNames = new Set(["copy", "copy2", "copyfile", "copytree", "move"]);
+
+  for (const match of String(segment || "").matchAll(/\bfrom\s+(os|shutil)\s+import\s+([^;\n]+)/giu)) {
+    const importList = match[2] || "";
+    for (const part of importList.split(",")) {
+      const aliasMatch = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/u.exec(part);
+      if (!aliasMatch) {
+        continue;
+      }
+
+      const importedName = aliasMatch[1];
+      const aliasName = aliasMatch[2];
+      if (singleTargetNames.has(importedName)) {
+        aliases.push({ name: aliasName, kind: "single" });
+      } else if (sourceAndDestinationNames.has(importedName)) {
+        aliases.push({ name: aliasName, kind: "sourceAndDestination" });
+      } else if (destinationNames.has(importedName)) {
+        aliases.push({ name: aliasName, kind: "destination" });
+      }
+    }
+  }
+
+  return aliases;
+}
+
+function hasUnparsedPythonMutationAliasCall(segment) {
+  for (const alias of collectPythonMutationAliases(segment)) {
+    const escapedAlias = escapeRegex(alias.name);
+    if (new RegExp(`(?:^|[^\\w])${escapedAlias}\\s*\\(\\s*(?!["'])`, "iu").test(segment)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function collectNodeMutationTargets(segment, targets) {
