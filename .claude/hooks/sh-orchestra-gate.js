@@ -2055,9 +2055,36 @@ function collectShellWriteTargets(segment, targets, powerShellAliases = new Map(
   }
 
   collectRedirectionTargets(normalizedSegment, targets);
+  collectWindowsCopyUtilityTargets(tokens, targets);
   collectPowerShellMutationTargets(tokens, targets);
   collectPowerShellDotNetMutationTargets(normalizedSegment, targets);
   collectInterpreterMutationTargets(normalizedSegment, tokens, targets);
+}
+
+function collectWindowsCopyUtilityTargets(tokens, targets) {
+  const executable = normalizeAgentValue(getExecutableBasename(tokens[0]));
+  if (executable !== "xcopy" && executable !== "xcopy.exe" &&
+      executable !== "robocopy" && executable !== "robocopy.exe") {
+    return;
+  }
+
+  const positional = tokens.slice(1)
+    .map((token) => stripOuterQuotes(token))
+    .filter((token) => token && !token.startsWith("/") && !token.startsWith("-"));
+  if (executable === "xcopy" || executable === "xcopy.exe") {
+    if (positional.length >= 2) {
+      targets.push(positional[positional.length - 1]);
+    } else {
+      targets.push("$unparsed-windows-copy-target");
+    }
+    return;
+  }
+
+  if (positional.length >= 2) {
+    targets.push(positional[1]);
+  } else {
+    targets.push("$unparsed-windows-copy-target");
+  }
 }
 
 function collectPowerShellScriptBlockWriteTargets(segment, targets, powerShellAliases) {
@@ -2384,6 +2411,9 @@ function collectPythonMutationTargets(segment, targets) {
     /(?:^|[^\w])os\.(?:makedirs|mkdir|removedirs|remove|rmdir|unlink)\s*\(\s*["']([^"']+)["']\s*\)/giu,
     /(?:^|[^\w])os\.(?:rename|replace)\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']+["']\s*\)/giu,
     /(?:^|[^\w])os\.(?:rename|replace)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']\s*\)/giu,
+    /(?:^|[^\w])(?:makedirs|mkdir|removedirs|remove|rmdir|unlink)\s*\(\s*["']([^"']+)["']\s*\)/giu,
+    /(?:^|[^\w])(?:rename|replace)\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']+["']\s*\)/giu,
+    /(?:^|[^\w])(?:rename|replace)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']\s*\)/giu,
     /(?:^|[^\w])shutil\.(?:rmtree)\s*\(\s*["']([^"']+)["']\s*\)/giu,
     /(?:^|[^\w])shutil\.(?:move)\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']+["']\s*\)/giu,
     /(?:^|[^\w])shutil\.(?:copy|copy2|copyfile|copytree|move)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']\s*\)/giu,
