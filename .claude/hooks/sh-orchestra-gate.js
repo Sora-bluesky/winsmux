@@ -653,9 +653,13 @@ function hasXargsGitLifecycleCommand(command, reviewOnly) {
         return false;
       }
 
-      const nestedTokens = getXargsCommandTokens(tokens);
+      const nestedTokens = getNormalizedXargsCommandTokens(tokens);
       if (isGitTokenLifecycleCommand(nestedTokens, reviewOnly) ||
           isGhTokenLifecycleCommand(nestedTokens)) {
+        return true;
+      }
+
+      if (hasShellWrappedXargsLifecycleCommand(nestedTokens, source, reviewOnly)) {
         return true;
       }
 
@@ -666,6 +670,10 @@ function hasXargsGitLifecycleCommand(command, reviewOnly) {
 
       if (nestedExecutable === "gh") {
         return hasGhLifecycleArgumentHint(source);
+      }
+
+      if (hasXargsLifecycleArgumentHint(source, reviewOnly)) {
+        return true;
       }
 
       return false;
@@ -712,9 +720,10 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
   }
 
   if (executable === "xargs" || executable === "xargs.exe") {
-    const nestedTokens = getXargsCommandTokens(tokens);
+    const nestedTokens = getNormalizedXargsCommandTokens(tokens);
     return isGitTokenLifecycleCommand(nestedTokens, false) ||
-      isGhTokenLifecycleCommand(nestedTokens);
+      isGhTokenLifecycleCommand(nestedTokens) ||
+      hasShellWrappedXargsLifecycleCommand(nestedTokens, segment, false);
   }
 
   if (isPowerShellStartProcessExecutable(executable)) {
@@ -2093,6 +2102,39 @@ function getXargsCommandTokens(tokens) {
   return [];
 }
 
+function getNormalizedXargsCommandTokens(tokens) {
+  return unwrapEnvCommandTokens(getXargsCommandTokens(tokens));
+}
+
+function hasShellWrappedXargsLifecycleCommand(tokens, source, reviewOnly) {
+  const executable = normalizeExecutableName(tokens[0] || "");
+  if (!isShellCommandExecutable(executable)) {
+    return false;
+  }
+
+  const nestedCommand = getShellCommandArgument(tokens);
+  if (!nestedCommand) {
+    return false;
+  }
+
+  return reviewOnly
+    ? isReviewGatedCommand(nestedCommand) || hasXargsLifecycleArgumentHint(source, true)
+    : isOperatorOnlyGitLifecycleCommand(nestedCommand) || hasXargsLifecycleArgumentHint(source, false);
+}
+
+function hasXargsLifecycleArgumentHint(source, reviewOnly) {
+  const normalized = normalizeAgentValue(String(source || ""));
+  const hasXargsGit = /\bxargs\b[\s\S]*\bgit\b/u.test(normalized);
+  const hasXargsGh = /\bxargs\b[\s\S]*\bgh\b/u.test(normalized);
+  if (reviewOnly) {
+    return (hasXargsGit && /\b(?:commit|merge)\b/u.test(normalized)) ||
+      (hasXargsGh && hasGhLifecycleArgumentHint(source));
+  }
+
+  return (hasXargsGit && hasGitLifecycleArgumentHint(source)) ||
+    (hasXargsGh && hasGhLifecycleArgumentHint(source));
+}
+
 function isPowerShellStartProcessExecutable(executable) {
   const normalized = normalizeExecutableName(executable);
   return normalized === "start-process" || normalized === "saps" || normalized === "start";
@@ -2590,6 +2632,10 @@ function isUnresolvedShellTarget(target) {
 function collectShellWriteTargets(segment, targets, powerShellAliases = new Map()) {
   const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
   collectPowerShellScriptBlockWriteTargets(normalizedSegment, targets, powerShellAliases);
+  if (hasPowerShellComputedMutationCall(normalizedSegment)) {
+    targets.push("$unparsed-powershell-computed-write");
+    return;
+  }
 
   const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedSegment));
   if (tokens.length === 0) {
@@ -2597,6 +2643,10 @@ function collectShellWriteTargets(segment, targets, powerShellAliases = new Map(
   }
 
   if (collectPowerShellDynamicWriteTargets(normalizedSegment, tokens, targets, powerShellAliases)) {
+    return;
+  }
+
+  if (collectPowerShellComputedCallWriteTargets(normalizedSegment, tokens, targets)) {
     return;
   }
 
@@ -2672,10 +2722,66 @@ function collectXargsMutationTargets(tokens, targets) {
   }
 
   const nestedTargets = [];
-  collectPosixMutationTargets(getXargsCommandTokens(tokens), nestedTargets);
+  const nestedTokens = getNormalizedXargsCommandTokens(tokens);
+  collectPosixMutationTargets(nestedTokens, nestedTargets);
+  if (isShellCommandExecutable(normalizeExecutableName(nestedTokens[0] || ""))) {
+    const nestedCommand = getShellCommandArgument(nestedTokens);
+    if (nestedCommand) {
+      collectShellWriteTargetsFromCommand(nestedCommand, nestedTargets);
+    }
+  }
   if (nestedTargets.length > 0) {
     targets.push("$unparsed-xargs-write");
   }
+}
+
+function collectPowerShellComputedCallWriteTargets(segment, tokens, targets) {
+  if (normalizeAgentValue(tokens[0]) !== "&") {
+    return false;
+  }
+
+  const executable = resolvePowerShellComputedCallExecutable(segment, tokens);
+  if (!isPowerShellMutationExecutable(executable)) {
+    return false;
+  }
+
+  const initialTargetCount = targets.length;
+  collectPowerShellMutationTargets([executable, ...tokens.slice(2)], targets);
+  if (targets.length === initialTargetCount) {
+    targets.push("$unparsed-powershell-computed-write");
+  }
+  return true;
+}
+
+function hasPowerShellComputedMutationCall(segment) {
+  const compact = normalizeAgentValue(segment)
+    .replace(/[`'"\s()]/gu, "");
+  return getPowerShellMutationExecutableNames()
+    .map((name) => normalizeAgentValue(name).replace(/-/gu, "+-"))
+    .some((computedName) => compact.includes("&" + computedName));
+}
+
+function resolvePowerShellComputedCallExecutable(segment, tokens) {
+  const expression = extractPowerShellCallOperatorExpression(segment) || tokens[1] || "";
+  const quotedParts = [...String(expression).matchAll(/["']([^"']+)["']/gu)]
+    .map((match) => match[1])
+    .filter(Boolean);
+  if (quotedParts.length > 0) {
+    return quotedParts.join("");
+  }
+
+  const compactExpression = String(expression)
+    .replace(/^\s*\(/u, "")
+    .replace(/\)\s*$/u, "")
+    .split("+")
+    .map((part) => stripOuterQuotes(part.trim()))
+    .join("");
+  return compactExpression;
+}
+
+function extractPowerShellCallOperatorExpression(segment) {
+  const match = String(segment || "").match(/^\s*&\s+(\([^)]*\)|[^\s]+)/u);
+  return match ? match[1] || "" : "";
 }
 
 function collectPowerShellStartProcessRedirectTargets(tokens, targets) {
