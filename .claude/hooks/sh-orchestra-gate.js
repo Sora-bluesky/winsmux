@@ -1964,8 +1964,7 @@ function getPowerShellStartProcessCommand(tokens) {
 
     if ((token === "-argumentlist" || token === "-args") && index + 1 < tokens.length) {
       for (let argumentIndex = index + 1; argumentIndex < tokens.length; argumentIndex += 1) {
-        const argument = cleanPowerShellStartProcessArgument(tokens[argumentIndex]);
-        if (argument) {
+        for (const argument of cleanPowerShellStartProcessArguments(tokens[argumentIndex])) {
           argumentList.push(argument);
         }
       }
@@ -1974,13 +1973,11 @@ function getPowerShellStartProcessCommand(tokens) {
 
     const inlineArgumentList = /^-(?:argumentlist|args):(.+)$/iu.exec(rawToken);
     if (inlineArgumentList) {
-      const inlineArgument = cleanPowerShellStartProcessArgument(inlineArgumentList[1]);
-      if (inlineArgument) {
+      for (const inlineArgument of cleanPowerShellStartProcessArguments(inlineArgumentList[1])) {
         argumentList.push(inlineArgument);
       }
       for (let argumentIndex = index + 1; argumentIndex < tokens.length; argumentIndex += 1) {
-        const argument = cleanPowerShellStartProcessArgument(tokens[argumentIndex]);
-        if (argument) {
+        for (const argument of cleanPowerShellStartProcessArguments(tokens[argumentIndex])) {
           argumentList.push(argument);
         }
       }
@@ -2005,12 +2002,60 @@ function getPowerShellStartProcessCommand(tokens) {
   return [filePath, joinedArguments].filter(Boolean).join(" ").trim();
 }
 
+function cleanPowerShellStartProcessArguments(value) {
+  const cleaned = cleanPowerShellStartProcessArgument(value);
+  if (!cleaned) {
+    return [];
+  }
+
+  const normalizedArray = cleaned
+    .replace(/'\s*,\s*'/gu, ",")
+    .replace(/"\s*,\s*"/gu, ",");
+  return splitPowerShellCommaArguments(normalizedArray)
+    .map((argument) => cleanPowerShellStartProcessArgument(argument))
+    .filter(Boolean);
+}
+
 function cleanPowerShellStartProcessArgument(value) {
   return stripOuterQuotes(String(value || "").trim())
     .replace(/^@\(/u, "")
     .replace(/\)$/u, "")
     .replace(/^,+|,+$/gu, "")
     .trim();
+}
+
+function splitPowerShellCommaArguments(value) {
+  const source = String(value || "");
+  const parts = [];
+  let current = "";
+  let quote = "";
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (char === quote && source[index - 1] !== "\\") {
+        quote = "";
+      }
+      current += char;
+      continue;
+    }
+
+    if (char === "'" || char === "\"") {
+      quote = char;
+      current += char;
+      continue;
+    }
+
+    if (char === ",") {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+
+    current += char;
+  }
+
+  parts.push(current);
+  return parts;
 }
 
 function isPowerShellVariableReference(value) {

@@ -401,6 +401,7 @@ panes:
                 'cp -t C:\repo\outside C:\repo\.worktrees\worker-1\src.txt',
                 'sed -i s/a/b/ C:/repo/README.md',
                 'install C:/repo/.worktrees/worker-1/source.txt C:/repo/README.md',
+                'Start-Process pwsh -ArgumentList ''-Command'',''Set-Content C:\repo\README.md x''',
                 'Set-Content -LiteralPath \Users\me\out.txt -Value demo',
                 'Set-Content -LiteralPath ~\out.txt -Value demo',
                 'xcopy C:\repo\.worktrees\worker-1\safe.txt C:\repo\out.txt',
