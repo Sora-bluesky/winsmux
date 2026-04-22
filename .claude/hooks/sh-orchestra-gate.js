@@ -895,6 +895,9 @@ function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
   if (hasShellFunctionLifecycleCommand(command, reviewOnly)) {
     return true;
   }
+  if (hasPowerShellFunctionLifecycleCommand(command, reviewOnly)) {
+    return true;
+  }
 
   for (const segment of splitCommandSegments(command)) {
     for (const pipelineStage of splitCommandPipelineStages(segment)) {
@@ -905,7 +908,7 @@ function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
       }
 
       const executable = normalizeAgentValue(getExecutableBasename(tokens[0]));
-      if (executable === "set-alias" || executable === "sal") {
+      if (executable === "set-alias" || executable === "sal" || executable === "new-alias" || executable === "nal") {
         const { aliasName, aliasTarget } = getSetAliasDefinition(tokens);
         if (aliasName && (aliasTarget === "git" || aliasTarget === "git.exe")) {
           aliases.set(aliasName, []);
@@ -1037,6 +1040,44 @@ function hasShellFunctionLifecycleCommand(command, reviewOnly) {
     if (toolName === "gh") {
       const effectiveTokens = ["gh"];
       if (bodySubcommand && bodySubcommand !== "$@") {
+        effectiveTokens.push(bodySubcommand);
+      }
+      effectiveTokens.push(...callTokens);
+      if (effectiveTokens.some((token, index) =>
+        normalizeAgentValue(stripOuterQuotes(token)) === "pr" &&
+        effectiveTokens.slice(index + 1).some((nextToken) => normalizeAgentValue(stripOuterQuotes(nextToken)) === "merge")) ||
+        isGhApiMergeCommand(effectiveTokens)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function hasPowerShellFunctionLifecycleCommand(command, reviewOnly) {
+  const functionPattern = /(?:^|[;&])\s*function\s+([A-Za-z_][A-Za-z0-9_-]*)\s*\{[^}]*\b(git|gh)\b(?:\s+([A-Za-z0-9_-]+))?[^}]*\}\s*;?\s*\1(?:\s+([^;&\r\n]+))?/giu;
+  for (const match of command.matchAll(functionPattern)) {
+    const toolName = normalizeAgentValue(match[2] || "");
+    const bodySubcommand = normalizeAgentValue(match[3] || "");
+    const callTokens = tokenizeCommandLine(match[4] || "");
+    if (toolName === "git") {
+      const subcommand = bodySubcommand && bodySubcommand !== "$args" ? bodySubcommand : normalizeAgentValue(callTokens[0] || "");
+      if (reviewOnly) {
+        if (subcommand === "commit" || subcommand === "merge") {
+          return true;
+        }
+        continue;
+      }
+
+      if (isGitLifecycleSubcommandName(subcommand) || !isReadOnlyGitSubcommand(subcommand, [match[1], subcommand], 1)) {
+        return true;
+      }
+    }
+
+    if (toolName === "gh") {
+      const effectiveTokens = ["gh"];
+      if (bodySubcommand && bodySubcommand !== "$args") {
         effectiveTokens.push(bodySubcommand);
       }
       effectiveTokens.push(...callTokens);
@@ -1570,7 +1611,17 @@ function getOptionValue(tokens, optionNames) {
 }
 
 function getExecutableBasename(token) {
-  return path.posix.basename(stripOuterQuotes(normalizePathValue(token)));
+  let basename = path.posix.basename(stripOuterQuotes(normalizePathValue(token)));
+  basename = basename.replace(/`([\s\S])/gu, "$1");
+  while (true) {
+    const expressionMatch = /^\(\s*['"]?([^'"()]+)['"]?\s*\)$/u.exec(basename);
+    if (!expressionMatch) {
+      break;
+    }
+    basename = expressionMatch[1].trim();
+  }
+
+  return stripOuterQuotes(basename);
 }
 
 function hasStandaloneCommandToken(tokens, expectedToken, startIndex) {
@@ -1659,7 +1710,7 @@ function isPathInsideOrSame(candidatePath, rootPath) {
 }
 
 function normalizeAgentValue(value) {
-  return typeof value === "string" ? value.trim().toLowerCase() : "";
+  return typeof value === "string" ? value.trim().replace(/`([\s\S])/gu, "$1").toLowerCase() : "";
 }
 
 function normalizePathValue(value) {
@@ -1822,6 +1873,7 @@ function collectPowerShellMutationTargets(tokens, targets) {
   const initialTargetCount = targets.length;
   const pathOptionNames = [
     "-path",
+    "-pspath",
     "-literalpath",
     "-filepath",
     "-destination",

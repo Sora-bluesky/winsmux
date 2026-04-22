@@ -340,6 +340,8 @@ panes:
                 'cmd /d/c pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
                 'pwsh -Command "Set-Content -LiteralPath:C:\repo\README.md -Value:demo"',
                 'pwsh -Command "Set-Content -Lit:C:\repo\README.md -Value demo"',
+                'pwsh -Command "Set-Content -PSPath:C:\repo\README.md -Value demo"',
+                'pwsh -Command "&(''Set-Content'') -LiteralPath C:\repo\README.md -Value demo"',
                 'pwsh -Command "Move-Item -Path:C:\repo\README.md -Destination:C:\repo\.worktrees\worker-1\README.md"',
                 'pwsh -Command "Invoke-WebRequest https://example.com -OutFile:C:\repo\out.txt"',
                 'pwsh -Command "[System.IO.File]::WriteAllText(''C:\repo\README.md'', ''x'')"',
@@ -920,6 +922,9 @@ EOF
                 'Set-Alias g git; g commit -m "feat: gated"',
                 'Set-Alias -Name g -Value git; g commit -m "feat: gated"',
                 'Set-Alias -Nam:g -Val:git; g commit -m "feat: gated"',
+                'New-Alias g git; g commit -m "feat: gated"',
+                'pwsh -Command "New-Alias g git; g commit -m x"',
+                'pwsh -Command "function g { git }; g commit -m x"',
                 'alias g=git; g commit -m x',
                 'alias g="command git"; g commit -m x',
                 'alias gc="git commit"; gc -m x',
@@ -1091,7 +1096,11 @@ EOF
 
         foreach ($command in @(
                 '& git add README.md',
-                '& { git push origin feature/review-gate }'
+                '& { git push origin feature/review-gate }',
+                'pwsh -Command "&(''git'') add README.md"',
+                'pwsh -Command "g`it add README.md"',
+                'pwsh -Command "New-Alias g git; g add README.md"',
+                'pwsh -Command "function g { git }; g add README.md"'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
