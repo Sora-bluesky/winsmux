@@ -643,27 +643,7 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
       return !isReadOnlyGitWorktreeCommand(tokens, gitSubcommandIndex);
     }
 
-    return [
-      "add",
-      "am",
-      "apply",
-      "cherry-pick",
-      "checkout",
-      "clean",
-      "commit",
-      "fetch",
-      "merge",
-      "mv",
-      "pull",
-      "push",
-      "rebase",
-      "restore",
-      "revert",
-      "rm",
-      "reset",
-      "stash",
-      "switch",
-    ].includes(gitSubcommand);
+    return !isReadOnlyGitSubcommand(gitSubcommand, tokens, gitSubcommandIndex);
   }
 
   if (executable === "gh" || executable === "gh.exe") {
@@ -673,6 +653,97 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
   }
 
   return false;
+}
+
+function isReadOnlyGitSubcommand(gitSubcommand, tokens, subcommandIndex) {
+  if ([
+    "diff",
+    "grep",
+    "log",
+    "ls-files",
+    "merge-base",
+    "rev-list",
+    "rev-parse",
+    "show",
+    "status",
+  ].includes(gitSubcommand)) {
+    return !hasGitWriteOption(tokens, subcommandIndex);
+  }
+
+  if (gitSubcommand === "config") {
+    return isReadOnlyGitConfigCommand(tokens, subcommandIndex);
+  }
+
+  if (gitSubcommand === "remote") {
+    return isReadOnlyGitRemoteCommand(tokens, subcommandIndex);
+  }
+
+  return false;
+}
+
+function hasGitWriteOption(tokens, subcommandIndex) {
+  const args = tokens.slice(subcommandIndex + 1).map((token) => normalizeAgentValue(stripOuterQuotes(token)));
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--output") {
+      return true;
+    }
+
+    if (arg.startsWith("--output=")) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isReadOnlyGitConfigCommand(tokens, subcommandIndex) {
+  const args = tokens.slice(subcommandIndex + 1).map((token) => normalizeAgentValue(stripOuterQuotes(token)));
+  if (args.length === 0) {
+    return false;
+  }
+
+  const readOptions = new Set([
+    "--get",
+    "--get-all",
+    "--get-regexp",
+    "--list",
+    "--show-origin",
+    "--show-scope",
+    "-l",
+  ]);
+  const bareArgs = args.filter((arg) => !arg.startsWith("-"));
+  const hasWriteFlag = args.some((arg) =>
+    arg === "--add" ||
+    arg === "--replace-all" ||
+    arg === "--unset" ||
+    arg === "--unset-all" ||
+    arg === "--rename-section" ||
+    arg === "--remove-section" ||
+    arg === "--edit" ||
+    arg === "-e");
+  if (hasWriteFlag || bareArgs.length > 1 || bareArgs.some((arg) => arg.includes("="))) {
+    return false;
+  }
+
+  return args.every((arg) =>
+    readOptions.has(arg) ||
+    arg.startsWith("--get-regexp=") ||
+    (!arg.startsWith("-") && !arg.includes("=")));
+}
+
+function isReadOnlyGitRemoteCommand(tokens, subcommandIndex) {
+  const args = tokens.slice(subcommandIndex + 1).map((token) => normalizeAgentValue(stripOuterQuotes(token)));
+  if (args.length === 0) {
+    return true;
+  }
+
+  if (args.every((arg) => arg === "-v" || arg === "--verbose")) {
+    return true;
+  }
+
+  const subcommand = args.find((arg) => !arg.startsWith("-")) || "";
+  return subcommand === "-v" || subcommand === "show" || subcommand === "get-url";
 }
 
 function findGitSubcommandIndex(tokens) {
@@ -885,6 +956,14 @@ function splitCommandSegments(command) {
       }
       current = "";
       index += 1;
+      continue;
+    }
+
+    if (char === "&" && command[index - 1] !== ">") {
+      if (current.trim() !== "") {
+        segments.push(current.trim());
+      }
+      current = "";
       continue;
     }
 
@@ -1300,12 +1379,12 @@ function collectPowerShellMutationTargets(tokens, targets) {
 }
 
 function collectInterpreterMutationTargets(segment, tokens, targets) {
-  const executable = normalizeAgentValue(getExecutableBasename(tokens[0]));
-  if (!["python", "python.exe", "python3", "py", "node", "node.exe"].includes(executable)) {
+  const interpreterKind = getShellInterpreterKind(tokens);
+  if (!interpreterKind) {
     return;
   }
 
-  if (executable === "node" || executable === "node.exe") {
+  if (interpreterKind === "node") {
     collectNodeMutationTargets(segment, targets);
     return;
   }
@@ -1313,10 +1392,65 @@ function collectInterpreterMutationTargets(segment, tokens, targets) {
   collectPythonMutationTargets(segment, targets);
 }
 
+function getShellInterpreterKind(tokens) {
+  if (tokens.length === 0) {
+    return "";
+  }
+
+  let index = 0;
+  let executable = normalizeAgentValue(getExecutableBasename(tokens[index]));
+  if (executable === "env" || executable === "env.exe") {
+    index += 1;
+    while (index < tokens.length) {
+      const token = stripOuterQuotes(tokens[index]);
+      const normalizedToken = normalizeAgentValue(token);
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token)) {
+        index += 1;
+        continue;
+      }
+
+      if (normalizedToken === "-u" || normalizedToken === "--unset") {
+        index += 2;
+        continue;
+      }
+
+      if (normalizedToken.startsWith("--unset=") ||
+          normalizedToken === "-i" ||
+          normalizedToken === "--ignore-environment") {
+        index += 1;
+        continue;
+      }
+
+      if (!token.startsWith("-")) {
+        break;
+      }
+
+      index += 1;
+    }
+
+    executable = normalizeAgentValue(getExecutableBasename(tokens[index] || ""));
+  }
+
+  if (/^python(?:\d+(?:\.\d+)*)?(?:\.exe)?$/u.test(executable) || executable === "py" || executable === "py.exe") {
+    return "python";
+  }
+
+  if (/^(?:node|nodejs)(?:\.exe)?$/u.test(executable)) {
+    return "node";
+  }
+
+  return "";
+}
+
 function collectPythonMutationTargets(segment, targets) {
   const writePatterns = [
     /(?:^|[^\w])Path\s*\(\s*["']([^"']+)["']\s*\)\s*\.\s*(?:write_text|write_bytes)\s*\(/giu,
+    /(?:^|[^\w])Path\s*\(\s*["']([^"']+)["']\s*\)\s*\.\s*(?:mkdir|rename|replace|rmdir|touch|unlink)\s*\(/giu,
     /(?:^|[^\w])open\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']*[wax+][^"']*["']/giu,
+    /(?:^|[^\w])os\.(?:makedirs|mkdir|removedirs|remove|rmdir|unlink)\s*\(\s*["']([^"']+)["']\s*\)/giu,
+    /(?:^|[^\w])os\.(?:rename|replace)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']\s*\)/giu,
+    /(?:^|[^\w])shutil\.(?:rmtree)\s*\(\s*["']([^"']+)["']\s*\)/giu,
+    /(?:^|[^\w])shutil\.(?:copy|copy2|copyfile|copytree|move)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']\s*\)/giu,
   ];
   let foundTarget = false;
   for (const pattern of writePatterns) {
@@ -1326,17 +1460,19 @@ function collectPythonMutationTargets(segment, targets) {
     }
   }
 
-  if (!foundTarget && /(?:write_text|write_bytes|\.write\s*\(|\bopen\s*\()/iu.test(segment)) {
+  if (!foundTarget && /(?:write_text|write_bytes|\.write\s*\(|\bopen\s*\(|\.(?:makedirs|mkdir|removedirs|remove|rename|replace|rmdir|touch|unlink)\s*\(|\b(?:copy|copy2|copyfile|copytree|move|rmtree)\s*\()/iu.test(segment)) {
     targets.push("$unparsed-python-write");
   }
 }
 
 function collectNodeMutationTargets(segment, targets) {
   const writePatterns = [
-    /(?:writeFileSync|appendFileSync|rmSync|unlinkSync|mkdirSync)\s*\(\s*["']([^"']+)["']/giu,
-    /(?:renameSync|copyFileSync)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']/giu,
-    /(?:writeFile|appendFile|rm|unlink|mkdir)\s*\(\s*["']([^"']+)["']/giu,
-    /(?:rename|copyFile)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']/giu,
+    /(?:writeFileSync|appendFileSync|rmSync|unlinkSync|mkdirSync|mkdtempSync|rmdirSync|truncateSync|createWriteStream)\s*\(\s*["']([^"']+)["']/giu,
+    /(?:openSync)\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']*[wax+][^"']*["']/giu,
+    /(?:renameSync|copyFileSync|cpSync)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']/giu,
+    /(?:writeFile|appendFile|rm|unlink|mkdir|mkdtemp|rmdir|truncate)\s*\(\s*["']([^"']+)["']/giu,
+    /(?:open)\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']*[wax+][^"']*["']/giu,
+    /(?:rename|copyFile|cp)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']/giu,
   ];
   let foundTarget = false;
   for (const pattern of writePatterns) {
@@ -1346,13 +1482,25 @@ function collectNodeMutationTargets(segment, targets) {
     }
   }
 
-  if (!foundTarget && /(?:writeFileSync|appendFileSync|rmSync|unlinkSync|mkdirSync|renameSync|copyFileSync|\.write\s*\()/iu.test(segment)) {
+  if (!foundTarget && /(?:writeFileSync|appendFileSync|rmSync|unlinkSync|mkdirSync|mkdtempSync|rmdirSync|truncateSync|createWriteStream|openSync|renameSync|copyFileSync|cpSync|writeFile|appendFile|rm|unlink|mkdir|mkdtemp|rmdir|truncate|open|rename|copyFile|cp|\.write\s*\()/iu.test(segment)) {
     targets.push("$unparsed-node-write");
   }
 }
 
 function hasWriteCapableInterpreterHeredoc(command) {
-  return /(?:^|[;&|]\s*)(?:python|python3|py|node)(?:\.exe)?\b[\s\S]*<<[-~]?/iu.test(command);
+  for (const line of command.split(/\r?\n/u)) {
+    const markerIndex = line.indexOf("<<");
+    if (markerIndex < 0) {
+      continue;
+    }
+
+    const prefix = line.slice(0, markerIndex).trim();
+    if (getShellInterpreterKind(tokenizeCommandLine(prefix))) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function resolveShellTargetPath(target) {

@@ -344,7 +344,23 @@ panes:
                 'Set-Content -LiteralPath \Users\me\out.txt -Value demo',
                 'Set-Content -LiteralPath ~\out.txt -Value demo',
                 'node -e "require(''fs'').writeFileSync(''C:/repo/README.md'', ''x'')"',
-                'python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"'
+                'node -e "const fs=require(''fs''); const fd=fs.openSync(''C:/repo/README.md'', ''w''); fs.writeSync(fd, ''x'')"',
+                'node -e "require(''fs'').mkdtempSync(''C:/repo/out'')"',
+                'node -e "require(''fs'').cpSync(''C:/repo/source'', ''C:/repo/dest'')"',
+                'node -e "require(''fs'').truncateSync(''C:/repo/README.md'', 0)"',
+                'node -e "require(''fs'').createWriteStream(''C:/repo/README.md'')"',
+                'env node -e "require(''fs'').writeFileSync(''C:/repo/README.md'', ''x'')"',
+                'python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
+                'python3.11 -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
+                'env python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
+                'env FOO=1 python3.11 -c "import os; os.remove(''C:/repo/README.md'')"',
+                'python -c "from pathlib import Path; Path(''C:/repo/README.md'').unlink()"',
+                'python -c "import os; os.remove(''C:/repo/README.md'')"',
+                'python -c "import os as o; o.remove(''C:/repo/README.md'')"',
+                'python -c "import os; os.makedirs(''C:/repo/out'')"',
+                'python -c "import shutil; shutil.rmtree(''C:/repo/out'')"',
+                'python -c "from shutil import copyfile; copyfile(''C:/repo/source.txt'', ''C:/repo/README.md'')"',
+                'python -c "import shutil; shutil.copyfile(''C:/repo/source.txt'', ''C:/repo/README.md'')"'
             )) {
             $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -354,7 +370,7 @@ panes:
             })
 
             & $script:AssertDenyResult -Result $result
-            $result.OutputObject.systemMessage | Should -Match 'shell writes must target assigned worktree'
+            $result.OutputObject.systemMessage | Should -Match 'shell writes must target assigned worktree|unresolved shell write target'
         }
     }
 
@@ -383,20 +399,45 @@ panes:
     }
 
     It 'denies Worker write-capable interpreter heredocs' {
-        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
-            command = @'
+        foreach ($command in @(
+                @'
 python - <<'PY'
 from pathlib import Path
 Path('C:/repo/README.md').write_text('x')
 PY
+'@,
+                @'
+/usr/bin/node <<'JS'
+require('fs').writeFileSync('C:/repo/README.md', 'x')
+JS
+'@,
+                @'
+env node <<'JS'
+require('fs').writeFileSync('C:/repo/README.md', 'x')
+JS
+'@,
+                @'
+env FOO=1 node <<'JS'
+require('fs').writeFileSync('C:/repo/README.md', 'x')
+JS
+'@,
+                @'
+python3.11 <<'PY'
+from pathlib import Path
+Path('C:/repo/README.md').write_text('x')
+PY
 '@
-        } -Environment ([ordered]@{
-            WINSMUX_ROLE              = 'Worker'
-            WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
-        })
+            )) {
+            $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+                command = $command
+            } -Environment ([ordered]@{
+                WINSMUX_ROLE              = 'Worker'
+                WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+            })
 
-        & $script:AssertDenyResult -Result $result
-        $result.OutputObject.systemMessage | Should -Match 'interpreter heredocs'
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'interpreter heredocs'
+        }
     }
 
     It 'denies Worker relative shell writes after changing directory' {
@@ -850,7 +891,14 @@ EOF
 
         foreach ($command in @(
                 'git rm --cached README.md',
-                'git restore --staged README.md'
+                'git restore --staged README.md',
+                'git update-index --add README.md',
+                'git checkout-index -f README.md',
+                'git notes add -m note',
+                'git -c alias.ci=commit ci -m x',
+                'git config user.name Worker',
+                'git diff --output=C:/repo/README.md',
+                'cmd /c "echo x & git add README.md"'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -1002,7 +1050,9 @@ EOF
                 'git branch --format "%(refname:short)"',
                 'git tag --list',
                 'git tag --format "%(refname:short)"',
-                'git worktree list'
+                'git worktree list',
+                'git remote -v',
+                'git config --get user.name'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
