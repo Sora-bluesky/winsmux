@@ -350,10 +350,12 @@ panes:
                 'node -e "require(''fs'').truncateSync(''C:/repo/README.md'', 0)"',
                 'node -e "require(''fs'').createWriteStream(''C:/repo/README.md'')"',
                 'env node -e "require(''fs'').writeFileSync(''C:/repo/README.md'', ''x'')"',
+                'FOO=1 node -e "require(''fs'').writeFileSync(''C:/repo/README.md'', ''x'')"',
                 'python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'python3.11 -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'env python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'env FOO=1 python3.11 -c "import os; os.remove(''C:/repo/README.md'')"',
+                'FOO=1 python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'python -c "from pathlib import Path; Path(''C:/repo/README.md'').unlink()"',
                 'python -c "import os; os.remove(''C:/repo/README.md'')"',
                 'python -c "import os as o; o.remove(''C:/repo/README.md'')"',
@@ -418,6 +420,11 @@ JS
 '@,
                 @'
 env FOO=1 node <<'JS'
+require('fs').writeFileSync('C:/repo/README.md', 'x')
+JS
+'@,
+                @'
+FOO=1 node <<'JS'
 require('fs').writeFileSync('C:/repo/README.md', 'x')
 JS
 '@,
@@ -898,7 +905,10 @@ EOF
                 'git -c alias.ci=commit ci -m x',
                 'git config user.name Worker',
                 'git diff --output=C:/repo/README.md',
-                'cmd /c "echo x & git add README.md"'
+                'env FOO=1 git config user.name Worker',
+                'FOO=1 git diff --output=C:/repo/README.md',
+                'cmd /c "echo x & git add README.md"',
+                'cmd /c"echo x & git add README.md"'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command

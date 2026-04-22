@@ -602,7 +602,7 @@ function isOperatorOnlyGitLifecycleCommand(command) {
 
 function isOperatorOnlyGitLifecycleSegment(segment) {
   const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
-  const tokens = tokenizeCommandLine(normalizedSegment);
+  const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedSegment));
   if (tokens.length === 0) {
     return false;
   }
@@ -1064,9 +1064,69 @@ function getCmdShellArgument(tokens) {
     if (token === "/c" || token === "/k") {
       return tokens.slice(index + 1).join(" ");
     }
+
+    if (token.startsWith("/c") || token.startsWith("/k")) {
+      const inlineCommand = tokens[index].slice(2);
+      return [inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" ");
+    }
   }
 
   return "";
+}
+
+function unwrapEnvCommandTokens(tokens) {
+  const withoutInlineAssignments = stripInlineEnvironmentPrefixes(tokens);
+  if (withoutInlineAssignments.length === 0) {
+    return withoutInlineAssignments;
+  }
+
+  const executable = normalizeAgentValue(getExecutableBasename(withoutInlineAssignments[0]));
+  if (executable !== "env" && executable !== "env.exe") {
+    return withoutInlineAssignments;
+  }
+
+  let index = 1;
+  while (index < withoutInlineAssignments.length) {
+    const token = stripOuterQuotes(withoutInlineAssignments[index]);
+    const normalizedToken = normalizeAgentValue(token);
+    if (isInlineEnvironmentAssignment(token)) {
+      index += 1;
+      continue;
+    }
+
+    if (normalizedToken === "-u" || normalizedToken === "--unset") {
+      index += 2;
+      continue;
+    }
+
+    if (normalizedToken.startsWith("--unset=") ||
+        normalizedToken === "-i" ||
+        normalizedToken === "--ignore-environment") {
+      index += 1;
+      continue;
+    }
+
+    if (!token.startsWith("-")) {
+      break;
+    }
+
+    index += 1;
+  }
+
+  return stripInlineEnvironmentPrefixes(withoutInlineAssignments.slice(index));
+}
+
+function stripInlineEnvironmentPrefixes(tokens) {
+  let index = 0;
+  while (index < tokens.length && isInlineEnvironmentAssignment(stripOuterQuotes(tokens[index]))) {
+    index += 1;
+  }
+
+  return tokens.slice(index);
+}
+
+function isInlineEnvironmentAssignment(token) {
+  return /^[A-Za-z_][A-Za-z0-9_]*=/u.test(String(token || ""));
 }
 
 function getOptionValue(tokens, optionNames) {
@@ -1393,43 +1453,12 @@ function collectInterpreterMutationTargets(segment, tokens, targets) {
 }
 
 function getShellInterpreterKind(tokens) {
-  if (tokens.length === 0) {
+  const effectiveTokens = unwrapEnvCommandTokens(tokens);
+  if (effectiveTokens.length === 0) {
     return "";
   }
 
-  let index = 0;
-  let executable = normalizeAgentValue(getExecutableBasename(tokens[index]));
-  if (executable === "env" || executable === "env.exe") {
-    index += 1;
-    while (index < tokens.length) {
-      const token = stripOuterQuotes(tokens[index]);
-      const normalizedToken = normalizeAgentValue(token);
-      if (/^[A-Za-z_][A-Za-z0-9_]*=/u.test(token)) {
-        index += 1;
-        continue;
-      }
-
-      if (normalizedToken === "-u" || normalizedToken === "--unset") {
-        index += 2;
-        continue;
-      }
-
-      if (normalizedToken.startsWith("--unset=") ||
-          normalizedToken === "-i" ||
-          normalizedToken === "--ignore-environment") {
-        index += 1;
-        continue;
-      }
-
-      if (!token.startsWith("-")) {
-        break;
-      }
-
-      index += 1;
-    }
-
-    executable = normalizeAgentValue(getExecutableBasename(tokens[index] || ""));
-  }
+  const executable = normalizeAgentValue(getExecutableBasename(effectiveTokens[0]));
 
   if (/^python(?:\d+(?:\.\d+)*)?(?:\.exe)?$/u.test(executable) || executable === "py" || executable === "py.exe") {
     return "python";
