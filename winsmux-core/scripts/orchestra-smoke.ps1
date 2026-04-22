@@ -13,6 +13,7 @@ $scriptsRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $scriptsRoot 'settings.ps1')
 . (Join-Path $scriptsRoot 'manifest.ps1')
 . (Join-Path $scriptsRoot 'orchestra-ui-attach.ps1')
+. (Join-Path $scriptsRoot 'worker-isolation.ps1')
 
 function Get-OrchestraSmokeLayoutSettings {
     param([string]$Root)
@@ -495,6 +496,23 @@ $attachedClientRegistryCount = [int]$attachResolution.AttachedClientRegistryCoun
 $attachedClientSnapshot = @($attachResolution.AttachedClientSnapshot)
 $attachAdapterTrace = @($attachResolution.AttachAdapterTrace)
 
+$gitPath = ''
+try {
+    $gitPath = (Get-Command 'git' -ErrorAction Stop).Source
+} catch {
+}
+
+$manifestObject = $null
+if ($manifestFound -and $manifestReadable) {
+    try {
+        $manifestObject = Get-WinsmuxManifest -ProjectDir $ProjectDir
+    } catch {
+        $manifestObject = $null
+    }
+}
+
+$workerIsolation = Get-WinsmuxWorkerIsolationReport -ProjectDir $ProjectDir -Manifest $manifestObject -GitPath $gitPath
+
 $smokeErrors = [System.Collections.Generic.List[string]]::new()
 if ($startExitCode -ne 0) { $smokeErrors.Add("orchestra-start exited with code $startExitCode.") | Out-Null }
 if (-not $manifestFound) {
@@ -505,6 +523,11 @@ if (-not $manifestFound) {
 if (-not $sessionReady) { $smokeErrors.Add('session_ready is false.') | Out-Null }
 if (-not $paneProbeOk) { $smokeErrors.Add("pane probe failed: $paneProbeError") | Out-Null }
 if ($paneProbeOk -and $paneCount -lt $expectedPaneCount) { $smokeErrors.Add("pane count $paneCount is below expected $expectedPaneCount.") | Out-Null }
+if (-not [bool]$workerIsolation.ok) {
+    foreach ($finding in @($workerIsolation.findings)) {
+        $smokeErrors.Add("worker isolation drift: $($finding.label): $($finding.message)") | Out-Null
+    }
+}
 $operatorContract = Get-OrchestraOperatorContract `
     -SmokeOk ($smokeErrors.Count -eq 0) `
     -SessionReady $sessionReady `
@@ -542,6 +565,7 @@ $result = [ordered]@{
     ui_attach_reason    = $uiAttachReason
     ui_attach_source    = $uiAttachSource
     ui_host_kind        = $uiHostKind
+    worker_isolation    = $workerIsolation
     smoke_ok            = ($smokeErrors.Count -eq 0)
     smoke_errors        = @($smokeErrors)
     operator_contract   = $operatorContract

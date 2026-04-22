@@ -12,6 +12,8 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'planning-paths.ps1')
 . (Join-Path $PSScriptRoot 'pane-env.ps1')
 . (Join-Path $PSScriptRoot 'settings.ps1')
+. (Join-Path $PSScriptRoot 'manifest.ps1')
+. (Join-Path $PSScriptRoot 'worker-isolation.ps1')
 
 function New-DoctorResult {
     param(
@@ -331,6 +333,34 @@ function Test-StaleWorktreesCheck {
     return New-DoctorResult -Status pass -Label 'Stale worktrees' -Detail '0 found'
 }
 
+function Test-WorkerGitDriftCheck {
+    $repoRoot = Get-DoctorRepoRoot
+    $manifestPath = Join-Path $repoRoot '.winsmux/manifest.yaml'
+
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        return New-DoctorResult -Status warn -Label 'Worker isolation drift' -Detail 'manifest not found (orchestra not started)'
+    }
+
+    try {
+        $manifest = Get-WinsmuxManifest -ProjectDir $repoRoot
+    } catch {
+        return New-DoctorResult -Status fail -Label 'Worker isolation drift' -Detail $_.Exception.Message
+    }
+
+    $gitPath = Get-DoctorGitCommandPath
+    $report = Get-WinsmuxWorkerIsolationReport -ProjectDir $repoRoot -Manifest $manifest -GitPath $gitPath
+    if ($report.ok) {
+        return New-DoctorResult -Status pass -Label 'Worker isolation drift' -Detail $report.summary
+    }
+
+    $findingText = (@($report.findings) | ForEach-Object { "$($_.label): $($_.message)" }) -join '; '
+    if (-not [string]::IsNullOrWhiteSpace($report.remediation)) {
+        $findingText = "$findingText; $($report.remediation)"
+    }
+
+    return New-DoctorResult -Status fail -Label 'Worker isolation drift' -Detail $findingText
+}
+
 function Test-ZombieProcessesCheck {
     $repoRoot = Get-DoctorRepoRoot
     $snapshot = Get-DoctorProcessSnapshot
@@ -475,6 +505,7 @@ if (-not $script:__winsmux_doctor_functions_only) {
         Test-BacklogYamlCheck
         Test-ManifestYamlCheck
         Test-StaleWorktreesCheck
+        Test-WorkerGitDriftCheck
         Test-ZombieProcessesCheck
         Test-BridgeConfigCheck
         Test-BridgeConfigMetadataCheck

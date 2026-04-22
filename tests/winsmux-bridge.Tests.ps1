@@ -5781,6 +5781,145 @@ Describe 'doctor bridge config metadata check' {
         $result.Label | Should -Be 'Bridge config metadata'
         $result.Detail | Should -Be '.winsmux.yaml not found'
     }
+
+    It 'fails worker drift check with operator remediation text' {
+        Mock Get-DoctorRepoRoot { $script:doctorTempRoot }
+        Mock Get-DoctorGitCommandPath { 'git' }
+        Mock Get-WinsmuxManifest { [pscustomobject]@{} }
+        Mock Get-WinsmuxWorkerIsolationReport {
+            [pscustomobject]@{
+                ok          = $false
+                summary     = '1 worker isolation issue'
+                findings    = @([pscustomobject]@{ label = 'worker-1'; message = 'branch is main; expected worktree-worker-1' })
+                remediation = 'Run git add, git commit, git push, and PR merge from the Operator shell.'
+            }
+        }
+
+        New-Item -ItemType Directory -Path (Join-Path $script:doctorTempRoot '.winsmux') -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $script:doctorTempRoot '.winsmux\manifest.yaml') -Force | Out-Null
+
+        $result = Test-WorkerGitDriftCheck
+
+        $result.Status | Should -Be 'fail'
+        $result.Label | Should -Be 'Worker isolation drift'
+        $result.Detail | Should -Match 'branch is main'
+        $result.Detail | Should -Match 'Operator shell'
+    }
+}
+
+Describe 'worker isolation diagnostics' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+    }
+
+    BeforeEach {
+        $script:workerIsolationTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-worker-isolation-tests-' + [guid]::NewGuid().ToString('N'))
+        $script:workerIsolationWorktree = Join-Path $script:workerIsolationTempRoot '.worktrees\worker-1'
+        $script:workerIsolationGitDir = Join-Path $script:workerIsolationTempRoot '.git\worktrees\worker-1'
+        New-Item -ItemType Directory -Path $script:workerIsolationWorktree -Force | Out-Null
+        New-Item -ItemType Directory -Path $script:workerIsolationGitDir -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:workerIsolationTempRoot -and (Test-Path $script:workerIsolationTempRoot)) {
+            Remove-Item -Path $script:workerIsolationTempRoot -Recurse -Force
+        }
+    }
+
+    BeforeAll {
+        function script:New-TestWorkerIsolationManifest {
+            param(
+                [string]$ExpectedOrigin = 'https://github.com/example/repo.git'
+            )
+
+            [pscustomobject]@{
+                panes = [ordered]@{
+                    'worker-1' = [pscustomobject]@{
+                        role                  = 'Worker'
+                        launch_dir            = $script:workerIsolationWorktree
+                        builder_worktree_path = $script:workerIsolationWorktree
+                        builder_branch        = 'worktree-worker-1'
+                        worktree_git_dir      = $script:workerIsolationGitDir
+                        expected_origin       = $ExpectedOrigin
+                    }
+                }
+            }
+        }
+
+        function script:New-TestWorkerIsolationGitInvoker {
+            param(
+                [string]$Branch = 'worktree-worker-1',
+                [string]$Origin = 'https://github.com/example/repo.git'
+            )
+
+            return {
+                param([string]$WorktreePath, [string[]]$Arguments)
+
+                switch ($Arguments -join ' ') {
+                    'rev-parse --show-toplevel' { $WorktreePath; break }
+                    'branch --show-current' { $Branch; break }
+                    'config --get remote.origin.url' { $Origin; break }
+                    'rev-parse --git-dir' { $script:workerIsolationGitDir; break }
+                    default { throw "unexpected git args: $($Arguments -join ' ')" }
+                }
+            }.GetNewClosure()
+        }
+    }
+
+    It 'passes when worker root, branch, origin, and gitdir match the manifest' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest) `
+            -GitPath 'git' `
+            -GitInvoker {
+                param([string]$WorktreePath, [string[]]$Arguments)
+
+                switch ($Arguments -join ' ') {
+                    'rev-parse --show-toplevel' { $WorktreePath; break }
+                    'branch --show-current' { 'worktree-worker-1'; break }
+                    'config --get remote.origin.url' { 'https://github.com/example/repo.git'; break }
+                    'rev-parse --git-dir' { $script:workerIsolationGitDir; break }
+                    default { throw "unexpected git args: $($Arguments -join ' ')" }
+                }
+            }
+
+        $report.ok | Should -Be $true
+        $report.status | Should -Be 'pass'
+        $report.worker_count | Should -Be 1
+        $report.summary | Should -Be '1 worker pane(s) isolated'
+    }
+
+    It 'fails when the worker branch drifts from the manifest' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest) `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker -Branch 'main')
+
+        $report.ok | Should -Be $false
+        $report.status | Should -Be 'fail'
+        $report.findings[0].message | Should -Match 'branch is main'
+        $report.remediation | Should -Match 'Operator shell'
+    }
+
+    It 'redacts credentials from origin drift findings' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest -ExpectedOrigin 'https://expected-token@github.com/example/repo.git') `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker -Origin 'https://actual-token@github.com/example/repo.git')
+
+        $message = ($report.findings | ForEach-Object { $_.message }) -join '; '
+        $message | Should -Match '\[redacted\]@github.com'
+        $message | Should -Not -Match 'expected-token'
+        $message | Should -Not -Match 'actual-token'
+    }
 }
 
 Describe 'pane scaler helpers' {
@@ -10123,6 +10262,8 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'ready-with-ui-warning'
         $script:orchestraSmokeContent | Should -Match 'can_dispatch'
         $script:orchestraSmokeContent | Should -Match 'requires_startup'
+        $script:orchestraSmokeContent | Should -Match 'worker_isolation'
+        $script:orchestraSmokeContent | Should -Match 'worker isolation drift'
     }
 
     It 'keeps ready-with-ui-warning fail-closed only for external operator mode' {
