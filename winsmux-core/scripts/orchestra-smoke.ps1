@@ -142,6 +142,16 @@ function Get-OrchestraOperatorContract {
     $requiresStartup = $true
     $uiWarning = $false
     $nextAction = 'Inspect smoke_errors and rerun orchestra-start before dispatching work.'
+    $workerIsolationOnly = $false
+    if ($SmokeErrors.Count -gt 0) {
+        $workerIsolationOnly = $true
+        foreach ($error in @($SmokeErrors)) {
+            if (-not ([string]$error).StartsWith('worker isolation drift:')) {
+                $workerIsolationOnly = $false
+                break
+            }
+        }
+    }
 
     if ($SmokeOk) {
         $state = 'ready-with-ui-warning'
@@ -164,6 +174,12 @@ function Get-OrchestraOperatorContract {
         } elseif ($SessionReady) {
             $uiWarning = $true
         }
+    } elseif ($workerIsolationOnly -and $SessionReady -and $PaneCount -ge $ExpectedPaneCount) {
+        $state = 'blocked-worker-isolation'
+        $message = 'Worker isolation drift blocks dispatch, but orchestra startup is already session-ready.'
+        $canDispatch = $false
+        $requiresStartup = $false
+        $nextAction = 'Fix worker root, branch, origin, or gitdir drift from the Operator shell, then recheck orchestra-smoke.'
     } elseif ($PaneCount -lt $ExpectedPaneCount -or -not $SessionReady) {
         $state = 'blocked'
         $message = 'Orchestra startup did not reach session-ready.'

@@ -10344,6 +10344,25 @@ Describe 'winsmux orchestra-smoke command' {
         $attachFailed.next_action | Should -Match 'attached-client confirmation'
     }
 
+    It 'classifies worker isolation drift without requiring startup rerun' {
+        $workerDrift = Invoke-TestOrchestraOperatorContract `
+            -SmokeOk $false `
+            -SessionReady $true `
+            -UiAttachLaunched $true `
+            -UiAttached $true `
+            -UiAttachStatus 'attach_confirmed' `
+            -ExternalOperatorMode $true `
+            -PaneCount 6 `
+            -ExpectedPaneCount 6 `
+            -SmokeErrors @('worker isolation drift: worker-1: branch is main; expected worktree-worker-1')
+
+        $workerDrift.operator_state | Should -Be 'blocked-worker-isolation'
+        $workerDrift.can_dispatch | Should -Be $false
+        $workerDrift.requires_startup | Should -Be $false
+        $workerDrift.operator_message | Should -Match 'startup is already session-ready'
+        $workerDrift.next_action | Should -Match 'Operator shell'
+    }
+
     It 'fails closed to runtime attach state instead of trusting manifest ui_attached alone' {
         $script:orchestraSmokeContent | Should -Match '\$uiAttached = \$false'
         $script:orchestraSmokeContent | Should -Match 'if \(\$null -eq \$attachState\)'
