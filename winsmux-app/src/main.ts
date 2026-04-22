@@ -885,7 +885,9 @@ function getPreferredEditorTargetForSelectedRun(): EditorTarget | null {
     }
 
     if (path) {
-      return createStandaloneEditorTarget(path, worktree);
+      const target = createStandaloneEditorTarget(path, worktree);
+      desktopStandaloneEditorTargets.set(target.key, target);
+      return target;
     }
   }
 

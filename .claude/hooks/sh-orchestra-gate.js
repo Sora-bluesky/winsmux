@@ -635,6 +635,11 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
     }
   }
 
+  if (isPowerShellStartProcessExecutable(executable)) {
+    const nestedCommand = getPowerShellStartProcessCommand(tokens);
+    return nestedCommand ? isOperatorOnlyGitLifecycleCommand(nestedCommand) : false;
+  }
+
   if (executable === "git" || executable === "git.exe") {
     const gitSubcommandIndex = findGitSubcommandIndex(tokens);
     if (gitSubcommandIndex < 0) {
@@ -1586,6 +1591,53 @@ function getShellCommandArgument(tokens) {
   return "";
 }
 
+function isPowerShellStartProcessExecutable(executable) {
+  const normalized = normalizeAgentValue(getExecutableBasename(executable));
+  return normalized === "start-process" || normalized === "saps" || normalized === "start";
+}
+
+function getPowerShellStartProcessCommand(tokens) {
+  if (tokens.length < 2) {
+    return "";
+  }
+
+  let filePath = "";
+  const argumentList = [];
+  for (let index = 1; index < tokens.length; index += 1) {
+    const rawToken = stripOuterQuotes(tokens[index]);
+    const token = normalizeAgentValue(rawToken);
+    if ((token === "-filepath" || token === "-file") && index + 1 < tokens.length) {
+      filePath = stripOuterQuotes(tokens[index + 1]);
+      index += 1;
+      continue;
+    }
+
+    const inlineFilePath = /^-(?:filepath|file):(.+)$/u.exec(rawToken);
+    if (inlineFilePath) {
+      filePath = stripOuterQuotes(inlineFilePath[1]);
+      continue;
+    }
+
+    if ((token === "-argumentlist" || token === "-args") && index + 1 < tokens.length) {
+      argumentList.push(stripOuterQuotes(tokens[index + 1]));
+      index += 1;
+      continue;
+    }
+
+    const inlineArgumentList = /^-(?:argumentlist|args):(.+)$/iu.exec(rawToken);
+    if (inlineArgumentList) {
+      argumentList.push(stripOuterQuotes(inlineArgumentList[1]));
+      continue;
+    }
+
+    if (!filePath && !token.startsWith("-")) {
+      filePath = stripOuterQuotes(tokens[index]);
+    }
+  }
+
+  return [filePath, ...argumentList].filter(Boolean).join(" ").trim();
+}
+
 function unescapeCmdCaretEscapes(value) {
   return String(value || "").replace(/\^([\s\S])/gu, "$1");
 }
@@ -1917,6 +1969,14 @@ function collectShellWriteTargets(segment, targets, powerShellAliases = new Map(
       collectShellWriteTargetsFromCommand(nestedCommand, targets, powerShellAliases);
       return;
     }
+  }
+
+  if (isPowerShellStartProcessExecutable(executable)) {
+    const nestedCommand = getPowerShellStartProcessCommand(tokens);
+    if (nestedCommand) {
+      collectShellWriteTargetsFromCommand(nestedCommand, targets, powerShellAliases);
+    }
+    return;
   }
 
   const normalizedExecutable = normalizeAgentValue(executable);
