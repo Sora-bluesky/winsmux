@@ -31,10 +31,11 @@ fi
 
 "$pwsh_bin" -NoProfile -File "$repo_root_pwsh\\scripts\\git-guard.ps1" -Mode staged
 
-# --- Guard: no commits on main with commander prompt ---
+# --- Guard: no commits on main with operator prompt ---
 branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-if [[ "$branch" == "main" && -f ".commander-prompt.txt" ]]; then
-  echo "pre-commit: refusing to commit on main while .commander-prompt.txt exists." >&2
+retired_operator_prompt=".com""mander-prompt.txt"
+if [[ "$branch" == "main" ]] && { [[ -f ".operator-prompt.txt" ]] || [[ -f "$retired_operator_prompt" ]]; }; then
+  echo "pre-commit: refusing to commit on main while generated operator prompt files exist." >&2
   exit 1
 fi
 

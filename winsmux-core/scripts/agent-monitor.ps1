@@ -267,7 +267,7 @@ function Update-MonitorIdleAlertState {
 
     $elapsedSeconds = ($Now - $readySince).TotalSeconds
     if (($elapsedSeconds -ge $IdleThresholdSeconds) -and ((-not $alertSent) -or $repeatAlertDue)) {
-        $message = "Commander alert: idle pane $Label ($PaneId, role=$Role)"
+        $message = "Operator alert: idle pane $Label ($PaneId, role=$Role)"
         Save-MonitorIdleState -PaneId $PaneId -ReadySince $readySince -AlertSent $true -LastAlertAt $Now
         $result['ShouldAlert'] = $true
         $result['Message'] = $message
@@ -595,7 +595,7 @@ function Write-MonitorEvent {
     }
 }
 
-function Get-MonitorCommanderMailboxChannel {
+function Get-MonitorOperatorMailboxChannel {
     param([string]$SessionName = 'winsmux-orchestra')
 
     $resolvedSessionName = if ([string]::IsNullOrWhiteSpace($SessionName)) {
@@ -605,10 +605,10 @@ function Get-MonitorCommanderMailboxChannel {
     }
 
     $safeSessionName = [regex]::Replace($resolvedSessionName, '[^A-Za-z0-9_-]', '-')
-    return "$safeSessionName-commander"
+    return "$safeSessionName-operator"
 }
 
-function Send-MonitorCommanderMailboxMessage {
+function Send-MonitorOperatorMailboxMessage {
     param(
         [string]$SessionName = 'winsmux-orchestra',
         [Parameter(Mandatory = $true)][string]$Event,
@@ -626,10 +626,10 @@ function Send-MonitorCommanderMailboxMessage {
     }
 
     $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scripts\winsmux-core.ps1'))
-    $channel = Get-MonitorCommanderMailboxChannel -SessionName $SessionName
+    $channel = Get-MonitorOperatorMailboxChannel -SessionName $SessionName
     $payload = [ordered]@{
         from      = if ([string]::IsNullOrWhiteSpace($Label)) { 'agent-monitor' } else { $Label }
-        to        = 'Commander'
+        to        = 'Operator'
         content   = [ordered]@{
             session     = if ([string]::IsNullOrWhiteSpace($SessionName)) { 'winsmux-orchestra' } else { $SessionName }
             event       = $Event
@@ -1289,18 +1289,18 @@ function Invoke-AgentMonitorCycle {
                     $result['Message'] = [string](Get-MonitorPropertyValue -InputObject $approvalResult -Name 'Message' -Default "Auto-approved trust prompt in pane $paneId")
                     Write-Output $result['Message']
                 } catch {
-                    $approvalMessage = "Commander alert: $label ($paneId) awaiting approval (auto-approve failed: $($_.Exception.Message))"
+                    $approvalMessage = "Operator alert: $label ($paneId) awaiting approval (auto-approve failed: $($_.Exception.Message))"
                     $result['Message'] = $approvalMessage
                     Write-Output $approvalMessage
                 }
             } else {
-                $approvalMessage = "Commander alert: $label ($paneId) awaiting approval"
+                $approvalMessage = "Operator alert: $label ($paneId) awaiting approval"
                 $result['Message'] = $approvalMessage
                 Write-Output $approvalMessage
             }
 
             try {
-                Send-MonitorCommanderMailboxMessage -SessionName $SessionName `
+                Send-MonitorOperatorMailboxMessage -SessionName $SessionName `
                     -Event 'pane.approval_waiting' -Message $result['Message'] `
                     -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
                     -Data (Merge-OrchestraPaneEventData -StateModel $paneStateModel -Data $stateEventData) | Out-Null
@@ -1360,7 +1360,7 @@ function Invoke-AgentMonitorCycle {
                     snapshot_hash          = $statusSnapshotHash
                 })) | Out-Null
             try {
-                Send-MonitorCommanderMailboxMessage -SessionName $SessionName `
+                Send-MonitorOperatorMailboxMessage -SessionName $SessionName `
                     -Event 'pane.idle' -Message $idleAlert.Message `
                     -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
                     -Data (Merge-OrchestraPaneEventData -StateModel $paneStateModel -Data ([ordered]@{
@@ -1377,7 +1377,7 @@ function Invoke-AgentMonitorCycle {
         if ($stallDetected) {
             $stallCount++
             $result['StallDetected'] = $true
-            $stallMessage = "Commander alert: stalled Builder pane $label ($paneId)"
+            $stallMessage = "Operator alert: stalled Builder pane $label ($paneId)"
             $result['Message'] = $stallMessage
             Write-Output $stallMessage
             Write-MonitorEvent -ProjectDir $projectDir -SessionName $SessionName `
@@ -1390,7 +1390,7 @@ function Invoke-AgentMonitorCycle {
                     snapshot_hash    = $statusSnapshotHash
                 })) | Out-Null
             try {
-                Send-MonitorCommanderMailboxMessage -SessionName $SessionName `
+                Send-MonitorOperatorMailboxMessage -SessionName $SessionName `
                     -Event 'pane.stalled' -Message $stallMessage `
                     -Label $label -PaneId $paneId -Role $role -Status $statusName -ExitReason $statusExitReason `
                     -Data (Merge-OrchestraPaneEventData -StateModel $paneStateModel -Data ([ordered]@{

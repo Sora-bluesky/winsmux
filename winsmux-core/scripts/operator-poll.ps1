@@ -31,7 +31,7 @@ if (-not (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue)) {
     }
 }
 
-function Get-CommanderPollValue {
+function Get-OperatorPollValue {
     param(
         [AllowNull()]$InputObject,
         [Parameter(Mandatory = $true)][string]$Name,
@@ -53,7 +53,7 @@ function Get-CommanderPollValue {
     return $Default
 }
 
-function ConvertFrom-CommanderPollYamlScalar {
+function ConvertFrom-OperatorPollYamlScalar {
     param([AllowNull()]$Value)
 
     if ($null -eq $Value) {
@@ -74,7 +74,7 @@ function ConvertFrom-CommanderPollYamlScalar {
     return $text
 }
 
-function ConvertFrom-CommanderPollManifestContent {
+function ConvertFrom-OperatorPollManifestContent {
     param([Parameter(Mandatory = $true)][string]$Content)
 
     $parsed = ConvertFrom-ManifestYaml -Content $Content
@@ -84,7 +84,7 @@ function ConvertFrom-CommanderPollManifestContent {
     }
 }
 
-function Read-CommanderPollManifest {
+function Read-OperatorPollManifest {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -96,16 +96,16 @@ function Read-CommanderPollManifest {
         throw "Manifest is empty: $Path"
     }
 
-    return ConvertFrom-CommanderPollManifestContent -Content $content
+    return ConvertFrom-OperatorPollManifestContent -Content $content
 }
 
-function Get-CommanderPollProjectDir {
+function Get-OperatorPollProjectDir {
     param(
         [Parameter(Mandatory = $true)]$Manifest,
         [Parameter(Mandatory = $true)][string]$ManifestPath
     )
 
-    $projectDir = [string](Get-CommanderPollValue -InputObject $Manifest['Session'] -Name 'project_dir' -Default '')
+    $projectDir = [string](Get-OperatorPollValue -InputObject $Manifest['Session'] -Name 'project_dir' -Default '')
     if (-not [string]::IsNullOrWhiteSpace($projectDir)) {
         return $projectDir
     }
@@ -113,10 +113,10 @@ function Get-CommanderPollProjectDir {
     return Split-Path (Split-Path $ManifestPath -Parent) -Parent
 }
 
-function Get-CommanderPollSessionName {
+function Get-OperatorPollSessionName {
     param([Parameter(Mandatory = $true)]$Manifest)
 
-    $sessionName = [string](Get-CommanderPollValue -InputObject $Manifest['Session'] -Name 'name' -Default '')
+    $sessionName = [string](Get-OperatorPollValue -InputObject $Manifest['Session'] -Name 'name' -Default '')
     if ([string]::IsNullOrWhiteSpace($sessionName)) {
         return 'winsmux-orchestra'
     }
@@ -124,21 +124,21 @@ function Get-CommanderPollSessionName {
     return $sessionName
 }
 
-function Get-CommanderPollEventsPath {
+function Get-OperatorPollEventsPath {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
     return Join-Path (Join-Path $ProjectDir '.winsmux') 'events.jsonl'
 }
 
-function Get-CommanderPollLogPath {
+function Get-OperatorPollLogPath {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
     $logDir = Join-Path $ProjectDir '.winsmux\logs'
     [System.IO.Directory]::CreateDirectory($logDir) | Out-Null
-    return Join-Path $logDir 'commander-poll.jsonl'
+    return Join-Path $logDir 'operator-poll.jsonl'
 }
 
-function Write-CommanderPollLog {
+function Write-OperatorPollLog {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$SessionName,
@@ -160,27 +160,27 @@ function Write-CommanderPollLog {
     }
 
     $line = ($record | ConvertTo-Json -Compress -Depth 10)
-    Write-WinsmuxTextFile -Path (Get-CommanderPollLogPath -ProjectDir $ProjectDir) -Content $line -Append
+    Write-WinsmuxTextFile -Path (Get-OperatorPollLogPath -ProjectDir $ProjectDir) -Content $line -Append
 }
 
-function Get-CommanderPollPaneContext {
+function Get-OperatorPollPaneContext {
     param(
         [Parameter(Mandatory = $true)]$Manifest,
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [Parameter(Mandatory = $true)]$EventRecord
     )
 
-    $eventPaneId = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'pane_id' -Default '')
-    $eventLabel = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'label' -Default '')
-    $eventRole = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'role' -Default '')
-    $projectDir = Get-CommanderPollProjectDir -Manifest $Manifest -ManifestPath $ManifestPath
+    $eventPaneId = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'pane_id' -Default '')
+    $eventLabel = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'label' -Default '')
+    $eventRole = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'role' -Default '')
+    $projectDir = Get-OperatorPollProjectDir -Manifest $Manifest -ManifestPath $ManifestPath
 
     $matchedLabel = $eventLabel
     $matchedPane = $null
 
     foreach ($label in $Manifest['Panes'].Keys) {
         $pane = $Manifest['Panes'][$label]
-        $paneId = [string](Get-CommanderPollValue -InputObject $pane -Name 'pane_id' -Default '')
+        $paneId = [string](Get-OperatorPollValue -InputObject $pane -Name 'pane_id' -Default '')
 
         if (-not [string]::IsNullOrWhiteSpace($eventPaneId) -and $paneId -eq $eventPaneId) {
             $matchedLabel = $label
@@ -197,7 +197,7 @@ function Get-CommanderPollPaneContext {
 
     $role = $eventRole
     if ($null -ne $matchedPane) {
-        $paneRole = [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'role' -Default '')
+        $paneRole = [string](Get-OperatorPollValue -InputObject $matchedPane -Name 'role' -Default '')
         if (-not [string]::IsNullOrWhiteSpace($paneRole)) {
             $role = $paneRole
         }
@@ -206,7 +206,7 @@ function Get-CommanderPollPaneContext {
     $worktreePath = ''
     if ($null -ne $matchedPane) {
         foreach ($key in @('builder_worktree_path', 'launch_dir')) {
-            $candidate = [string](Get-CommanderPollValue -InputObject $matchedPane -Name $key -Default '')
+            $candidate = [string](Get-OperatorPollValue -InputObject $matchedPane -Name $key -Default '')
             if (-not [string]::IsNullOrWhiteSpace($candidate)) {
                 $worktreePath = $candidate
                 break
@@ -220,27 +220,27 @@ function Get-CommanderPollPaneContext {
 
     $resolvedPaneId = $eventPaneId
     if ([string]::IsNullOrWhiteSpace($resolvedPaneId) -and $null -ne $matchedPane) {
-        $resolvedPaneId = [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'pane_id' -Default '')
+        $resolvedPaneId = [string](Get-OperatorPollValue -InputObject $matchedPane -Name 'pane_id' -Default '')
     }
 
     return [ordered]@{
         project_dir   = $projectDir
-        session_name  = Get-CommanderPollSessionName -Manifest $Manifest
+        session_name  = Get-OperatorPollSessionName -Manifest $Manifest
         pane_id       = $resolvedPaneId
         label         = $matchedLabel
         role          = $role
         worktree_path = $worktreePath
-        task_id       = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'task_id' -Default '') } else { '' }
-        task          = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'task' -Default '') } else { '' }
-        task_state    = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'task_state' -Default '') } else { '' }
-        task_owner    = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'task_owner' -Default '') } else { '' }
-        review_state  = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'review_state' -Default '') } else { '' }
-        branch        = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'branch' -Default '') } else { '' }
-        head_sha      = if ($null -ne $matchedPane) { [string](Get-CommanderPollValue -InputObject $matchedPane -Name 'head_sha' -Default '') } else { '' }
+        task_id       = if ($null -ne $matchedPane) { [string](Get-OperatorPollValue -InputObject $matchedPane -Name 'task_id' -Default '') } else { '' }
+        task          = if ($null -ne $matchedPane) { [string](Get-OperatorPollValue -InputObject $matchedPane -Name 'task' -Default '') } else { '' }
+        task_state    = if ($null -ne $matchedPane) { [string](Get-OperatorPollValue -InputObject $matchedPane -Name 'task_state' -Default '') } else { '' }
+        task_owner    = if ($null -ne $matchedPane) { [string](Get-OperatorPollValue -InputObject $matchedPane -Name 'task_owner' -Default '') } else { '' }
+        review_state  = if ($null -ne $matchedPane) { [string](Get-OperatorPollValue -InputObject $matchedPane -Name 'review_state' -Default '') } else { '' }
+        branch        = if ($null -ne $matchedPane) { [string](Get-OperatorPollValue -InputObject $matchedPane -Name 'branch' -Default '') } else { '' }
+        head_sha      = if ($null -ne $matchedPane) { [string](Get-OperatorPollValue -InputObject $matchedPane -Name 'head_sha' -Default '') } else { '' }
     }
 }
 
-function Update-CommanderPollPaneState {
+function Update-OperatorPollPaneState {
     param(
         [Parameter(Mandatory = $true)]$PaneContext,
         [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Properties
@@ -262,7 +262,7 @@ function Update-CommanderPollPaneState {
     }
 }
 
-function New-CommanderPollStateData {
+function New-OperatorPollStateData {
     param(
         [Parameter(Mandatory = $true)]$PaneContext,
         [AllowNull()]$Data = $null
@@ -288,7 +288,7 @@ function New-CommanderPollStateData {
     return $stateData
 }
 
-function Invoke-CommanderPollWinsmux {
+function Invoke-OperatorPollWinsmux {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
     $winsmuxBin = Get-WinsmuxBin
@@ -309,22 +309,22 @@ function Invoke-CommanderPollWinsmux {
     return $output
 }
 
-function Approve-CommanderPollPane {
+function Approve-OperatorPollPane {
     param([Parameter(Mandatory = $true)][string]$PaneId)
 
-    Invoke-CommanderPollWinsmux -Arguments @('send-keys', '-t', $PaneId, 'Enter') | Out-Null
+    Invoke-OperatorPollWinsmux -Arguments @('send-keys', '-t', $PaneId, 'Enter') | Out-Null
 }
 
-function Send-CommanderPollLiteral {
+function Send-OperatorPollLiteral {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
         [Parameter(Mandatory = $true)][string]$Text
     )
 
-    Invoke-CommanderPollWinsmux -Arguments @('send-keys', '-t', $PaneId, '-l', '--', $Text) | Out-Null
+    Invoke-OperatorPollWinsmux -Arguments @('send-keys', '-t', $PaneId, '-l', '--', $Text) | Out-Null
 }
 
-function Get-CommanderPollGitOutput {
+function Get-OperatorPollGitOutput {
     param(
         [Parameter(Mandatory = $true)][string]$WorktreePath,
         [Parameter(Mandatory = $true)][string[]]$Arguments
@@ -342,14 +342,14 @@ function Get-CommanderPollGitOutput {
     return @($output | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 }
 
-function Get-CommanderPollDiffData {
+function Get-OperatorPollDiffData {
     param([Parameter(Mandatory = $true)][string]$WorktreePath)
 
-    $statusLines = Get-CommanderPollGitOutput -WorktreePath $WorktreePath -Arguments @('status', '--short', '--untracked-files=all')
-    $unstagedDiff = Get-CommanderPollGitOutput -WorktreePath $WorktreePath -Arguments @('diff', '--stat', '--no-ext-diff')
-    $stagedDiff = Get-CommanderPollGitOutput -WorktreePath $WorktreePath -Arguments @('diff', '--cached', '--stat', '--no-ext-diff')
-    $branchLines = Get-CommanderPollGitOutput -WorktreePath $WorktreePath -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')
-    $headShaLines = Get-CommanderPollGitOutput -WorktreePath $WorktreePath -Arguments @('rev-parse', 'HEAD')
+    $statusLines = Get-OperatorPollGitOutput -WorktreePath $WorktreePath -Arguments @('status', '--short', '--untracked-files=all')
+    $unstagedDiff = Get-OperatorPollGitOutput -WorktreePath $WorktreePath -Arguments @('diff', '--stat', '--no-ext-diff')
+    $stagedDiff = Get-OperatorPollGitOutput -WorktreePath $WorktreePath -Arguments @('diff', '--cached', '--stat', '--no-ext-diff')
+    $branchLines = Get-OperatorPollGitOutput -WorktreePath $WorktreePath -Arguments @('rev-parse', '--abbrev-ref', 'HEAD')
+    $headShaLines = Get-OperatorPollGitOutput -WorktreePath $WorktreePath -Arguments @('rev-parse', 'HEAD')
 
     $changedFiles = @()
     foreach ($statusLine in $statusLines) {
@@ -374,25 +374,25 @@ function Get-CommanderPollDiffData {
     }
 }
 
-function Test-CommanderPollApprovalEvent {
+function Test-OperatorPollApprovalEvent {
     param([Parameter(Mandatory = $true)]$EventRecord)
 
-    $eventName = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'event' -Default '')
+    $eventName = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'event' -Default '')
     if ($eventName -eq 'approval_waiting') {
         return $true
     }
 
-    $status = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'status' -Default '')
+    $status = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'status' -Default '')
     if ($status -eq 'approval_waiting') {
         return $true
     }
 
-    $data = Get-CommanderPollValue -InputObject $EventRecord -Name 'data' -Default $null
-    $dataStatus = [string](Get-CommanderPollValue -InputObject $data -Name 'status' -Default '')
+    $data = Get-OperatorPollValue -InputObject $EventRecord -Name 'data' -Default $null
+    $dataStatus = [string](Get-OperatorPollValue -InputObject $data -Name 'status' -Default '')
     return ($eventName -eq 'monitor.status' -and $dataStatus -eq 'approval_waiting')
 }
 
-function New-CommanderPollCycleSummary {
+function New-OperatorPollCycleSummary {
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [Parameter(Mandatory = $true)][string]$EventsPath
@@ -412,7 +412,7 @@ function New-CommanderPollCycleSummary {
     }
 }
 
-function Get-CommanderPollMailboxChannel {
+function Get-OperatorPollMailboxChannel {
     param([string]$SessionName = 'winsmux-orchestra')
 
     $resolvedSessionName = if ([string]::IsNullOrWhiteSpace($SessionName)) {
@@ -422,10 +422,10 @@ function Get-CommanderPollMailboxChannel {
     }
 
     $safeSessionName = [regex]::Replace($resolvedSessionName, '[^A-Za-z0-9_-]', '-')
-    return "$safeSessionName-commander"
+    return "$safeSessionName-operator"
 }
 
-function Receive-CommanderPollMailboxMessages {
+function Receive-OperatorPollMailboxMessages {
     param(
         [string]$SessionName = 'winsmux-orchestra',
         [int]$TimeoutMilliseconds = 25,
@@ -433,7 +433,7 @@ function Receive-CommanderPollMailboxMessages {
     )
 
     $messages = [System.Collections.Generic.List[object]]::new()
-    $pipeName = "winsmux-mailbox-$(Get-CommanderPollMailboxChannel -SessionName $SessionName)"
+    $pipeName = "winsmux-mailbox-$(Get-OperatorPollMailboxChannel -SessionName $SessionName)"
 
     for ($messageIndex = 0; $messageIndex -lt $MaxMessages; $messageIndex++) {
         $server = $null
@@ -468,25 +468,25 @@ function Receive-CommanderPollMailboxMessages {
                 continue
             }
 
-            $content = Get-CommanderPollValue -InputObject $mailboxMessage -Name 'content' -Default $null
-            $eventName = [string](Get-CommanderPollValue -InputObject $content -Name 'event' -Default '')
+            $content = Get-OperatorPollValue -InputObject $mailboxMessage -Name 'content' -Default $null
+            $eventName = [string](Get-OperatorPollValue -InputObject $content -Name 'event' -Default '')
             if ([string]::IsNullOrWhiteSpace($eventName)) {
                 continue
             }
 
             $messages.Add([ordered]@{
-                timestamp   = [string](Get-CommanderPollValue -InputObject $mailboxMessage -Name 'timestamp' -Default ([System.DateTimeOffset]::Now.ToString('o')))
-                session     = [string](Get-CommanderPollValue -InputObject $content -Name 'session' -Default $SessionName)
+                timestamp   = [string](Get-OperatorPollValue -InputObject $mailboxMessage -Name 'timestamp' -Default ([System.DateTimeOffset]::Now.ToString('o')))
+                session     = [string](Get-OperatorPollValue -InputObject $content -Name 'session' -Default $SessionName)
                 event       = $eventName
-                message     = [string](Get-CommanderPollValue -InputObject $content -Name 'message' -Default '')
-                label       = [string](Get-CommanderPollValue -InputObject $content -Name 'label' -Default '')
-                pane_id     = [string](Get-CommanderPollValue -InputObject $content -Name 'pane_id' -Default '')
-                role        = [string](Get-CommanderPollValue -InputObject $content -Name 'role' -Default '')
-                status      = [string](Get-CommanderPollValue -InputObject $content -Name 'status' -Default '')
-                exit_reason = [string](Get-CommanderPollValue -InputObject $content -Name 'exit_reason' -Default '')
-                data        = Get-CommanderPollValue -InputObject $content -Name 'data' -Default ([ordered]@{})
+                message     = [string](Get-OperatorPollValue -InputObject $content -Name 'message' -Default '')
+                label       = [string](Get-OperatorPollValue -InputObject $content -Name 'label' -Default '')
+                pane_id     = [string](Get-OperatorPollValue -InputObject $content -Name 'pane_id' -Default '')
+                role        = [string](Get-OperatorPollValue -InputObject $content -Name 'role' -Default '')
+                status      = [string](Get-OperatorPollValue -InputObject $content -Name 'status' -Default '')
+                exit_reason = [string](Get-OperatorPollValue -InputObject $content -Name 'exit_reason' -Default '')
+                data        = Get-OperatorPollValue -InputObject $content -Name 'data' -Default ([ordered]@{})
                 source      = 'mailbox'
-                mailbox_from = [string](Get-CommanderPollValue -InputObject $mailboxMessage -Name 'from' -Default '')
+                mailbox_from = [string](Get-OperatorPollValue -InputObject $mailboxMessage -Name 'from' -Default '')
             })
         } catch {
             break
@@ -500,18 +500,18 @@ function Receive-CommanderPollMailboxMessages {
     return @($messages)
 }
 
-function Get-CommanderPollEventSignature {
+function Get-OperatorPollEventSignature {
     param([Parameter(Mandatory = $true)]$EventRecord)
 
     return '{0}|{1}|{2}|{3}|{4}' -f `
-        ([string](Get-CommanderPollValue -InputObject $EventRecord -Name 'event' -Default '')), `
-        ([string](Get-CommanderPollValue -InputObject $EventRecord -Name 'pane_id' -Default '')), `
-        ([string](Get-CommanderPollValue -InputObject $EventRecord -Name 'label' -Default '')), `
-        ([string](Get-CommanderPollValue -InputObject $EventRecord -Name 'status' -Default '')), `
-        ([string](Get-CommanderPollValue -InputObject $EventRecord -Name 'message' -Default ''))
+        ([string](Get-OperatorPollValue -InputObject $EventRecord -Name 'event' -Default '')), `
+        ([string](Get-OperatorPollValue -InputObject $EventRecord -Name 'pane_id' -Default '')), `
+        ([string](Get-OperatorPollValue -InputObject $EventRecord -Name 'label' -Default '')), `
+        ([string](Get-OperatorPollValue -InputObject $EventRecord -Name 'status' -Default '')), `
+        ([string](Get-OperatorPollValue -InputObject $EventRecord -Name 'message' -Default ''))
 }
 
-function Get-CommanderTelegramNotificationProfile {
+function Get-OperatorTelegramNotificationProfile {
     $profile = [string]$env:WINSMUX_TELEGRAM_PROFILE
     if (-not [string]::IsNullOrWhiteSpace($profile)) {
         switch ($profile.Trim().ToLowerInvariant()) {
@@ -529,27 +529,27 @@ function Get-CommanderTelegramNotificationProfile {
     return 'external'
 }
 
-function Test-CommanderTelegramNotificationEnabled {
+function Test-OperatorTelegramNotificationEnabled {
     param([Parameter(Mandatory = $true)][string]$Event)
 
     $externalFacingEvents = @(
-        'commander.review_requested',
-        'commander.review_passed',
-        'commander.review_failed',
-        'commander.blocked',
-        'commander.commit_ready',
-        'commander.commit_done'
+        'operator.review_requested',
+        'operator.review_passed',
+        'operator.review_failed',
+        'operator.blocked',
+        'operator.commit_ready',
+        'operator.commit_done'
     )
 
     $internalOnlyEvents = @(
-        'commander.dispatch_needed',
-        'commander.auto_approved',
-        'commander.started',
+        'operator.dispatch_needed',
+        'operator.auto_approved',
+        'operator.started',
         'pane.completed',
         'pane.exec_completed'
     )
 
-    switch (Get-CommanderTelegramNotificationProfile) {
+    switch (Get-OperatorTelegramNotificationProfile) {
         'none' { return $false }
         'verbose' { return $true }
         default {
@@ -566,7 +566,7 @@ function Test-CommanderTelegramNotificationEnabled {
     }
 }
 
-function Send-CommanderTelegramNotification {
+function Send-OperatorTelegramNotification {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$SessionName,
@@ -579,7 +579,7 @@ function Send-CommanderTelegramNotification {
         [string]$HeadSha = ''
     )
 
-    if (-not (Test-CommanderTelegramNotificationEnabled -Event $Event)) {
+    if (-not (Test-OperatorTelegramNotificationEnabled -Event $Event)) {
         return
     }
 
@@ -616,7 +616,7 @@ function Send-CommanderTelegramNotification {
     }
 }
 
-function Invoke-CommanderPollEventRecord {
+function Invoke-OperatorPollEventRecord {
     param(
         [Parameter(Mandatory = $true)]$Manifest,
         [Parameter(Mandatory = $true)][string]$ManifestPath,
@@ -624,26 +624,26 @@ function Invoke-CommanderPollEventRecord {
         [Parameter(Mandatory = $true)]$Summary
     )
 
-    $projectDir = Get-CommanderPollProjectDir -Manifest $Manifest -ManifestPath $ManifestPath
-    $sessionName = Get-CommanderPollSessionName -Manifest $Manifest
-    $eventName = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'event' -Default '')
-    $paneContext = Get-CommanderPollPaneContext -Manifest $Manifest -ManifestPath $ManifestPath -EventRecord $EventRecord
+    $projectDir = Get-OperatorPollProjectDir -Manifest $Manifest -ManifestPath $ManifestPath
+    $sessionName = Get-OperatorPollSessionName -Manifest $Manifest
+    $eventName = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'event' -Default '')
+    $paneContext = Get-OperatorPollPaneContext -Manifest $Manifest -ManifestPath $ManifestPath -EventRecord $EventRecord
     $paneId = [string]$paneContext['pane_id']
-    $sourceName = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'source' -Default 'events_jsonl')
-    $sourceId = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'id' -Default '')
+    $sourceName = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'source' -Default 'events_jsonl')
+    $sourceId = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'id' -Default '')
     $Summary['new_events'] = [int]$Summary['new_events'] + 1
 
     if ($eventName -in @('pane.exec_completed', 'pane.completed')) {
-        $diffData = Get-CommanderPollDiffData -WorktreePath ([string]$paneContext['worktree_path'])
+        $diffData = Get-OperatorPollDiffData -WorktreePath ([string]$paneContext['worktree_path'])
         $message = "$($paneContext['label']) ($paneId) 完了。変更ファイル: $($diffData['changed_file_count'])件"
 
-        Write-CommanderPollLog `
+        Write-OperatorPollLog `
             -ProjectDir $projectDir `
             -SessionName $sessionName `
-            -EventName 'commander.poll.exec_completed' `
+            -EventName 'operator.poll.exec_completed' `
             -Message $message `
             -PaneId $paneId `
-            -Data (New-CommanderPollStateData -PaneContext $paneContext -Data ([ordered]@{
+            -Data (New-OperatorPollStateData -PaneContext $paneContext -Data ([ordered]@{
                     label     = $paneContext['label']
                     role      = $paneContext['role']
                     diff      = $diffData
@@ -653,18 +653,18 @@ function Invoke-CommanderPollEventRecord {
 
         $Summary['completions'] = [int]$Summary['completions'] + 1
         $Summary['messages'] += @($message)
-        Update-CommanderPollPaneState -PaneContext $paneContext -Properties ([ordered]@{
+        Update-OperatorPollPaneState -PaneContext $paneContext -Properties ([ordered]@{
                 task_state         = 'completed'
-                task_owner         = 'Commander'
-                branch             = [string](Get-CommanderPollValue -InputObject $diffData -Name 'branch' -Default '')
-                head_sha           = [string](Get-CommanderPollValue -InputObject $diffData -Name 'head_sha' -Default '')
-                changed_file_count = [int](Get-CommanderPollValue -InputObject $diffData -Name 'changed_file_count' -Default 0)
-                changed_files      = @(Get-CommanderPollValue -InputObject $diffData -Name 'changed_files' -Default @())
-                last_event         = 'commander.poll.exec_completed'
+                task_owner         = 'Operator'
+                branch             = [string](Get-OperatorPollValue -InputObject $diffData -Name 'branch' -Default '')
+                head_sha           = [string](Get-OperatorPollValue -InputObject $diffData -Name 'head_sha' -Default '')
+                changed_file_count = [int](Get-OperatorPollValue -InputObject $diffData -Name 'changed_file_count' -Default 0)
+                changed_files      = @(Get-OperatorPollValue -InputObject $diffData -Name 'changed_files' -Default @())
+                last_event         = 'operator.poll.exec_completed'
                 last_event_at      = (Get-Date).ToString('o')
             })
 
-        Send-CommanderTelegramNotification -ProjectDir $projectDir -SessionName $sessionName `
+        Send-OperatorTelegramNotification -ProjectDir $projectDir -SessionName $sessionName `
             -Event $eventName -Message $message -PaneId $paneId `
             -Label ([string]$paneContext['label']) -Role ([string]$paneContext['role']) `
             -Branch (git -C $projectDir rev-parse --abbrev-ref HEAD 2>$null) `
@@ -675,16 +675,16 @@ function Invoke-CommanderPollEventRecord {
     if ($eventName -eq 'pane.idle') {
         $message = "$($paneContext['label']) ($paneId) がアイドル。次タスクのディスパッチが必要"
 
-        Write-CommanderPollLog `
+        Write-OperatorPollLog `
             -ProjectDir $projectDir `
             -SessionName $sessionName `
-            -EventName 'commander.poll.idle_dispatch_needed' `
+            -EventName 'operator.poll.idle_dispatch_needed' `
             -Message $message `
             -PaneId $paneId `
-            -Data (New-CommanderPollStateData -PaneContext $paneContext -Data ([ordered]@{
+            -Data (New-OperatorPollStateData -PaneContext $paneContext -Data ([ordered]@{
                     label      = $paneContext['label']
                     role       = $paneContext['role']
-                    status     = [string](Get-CommanderPollValue -InputObject $EventRecord -Name 'status' -Default '')
+                    status     = [string](Get-OperatorPollValue -InputObject $EventRecord -Name 'status' -Default '')
                     event      = $eventName
                     source     = $sourceName
                     source_id  = $sourceId
@@ -692,36 +692,36 @@ function Invoke-CommanderPollEventRecord {
 
         $Summary['dispatches'] = [int]$Summary['dispatches'] + 1
         $Summary['messages'] += @($message)
-        Update-CommanderPollPaneState -PaneContext $paneContext -Properties ([ordered]@{
+        Update-OperatorPollPaneState -PaneContext $paneContext -Properties ([ordered]@{
                 task_state    = 'waiting_for_dispatch'
-                task_owner    = 'Commander'
-                last_event    = 'commander.poll.idle_dispatch_needed'
+                task_owner    = 'Operator'
+                last_event    = 'operator.poll.idle_dispatch_needed'
                 last_event_at = (Get-Date).ToString('o')
             })
 
-        Send-CommanderTelegramNotification -ProjectDir $projectDir -SessionName $sessionName `
-            -Event 'commander.dispatch_needed' -Message $message -PaneId $paneId `
+        Send-OperatorTelegramNotification -ProjectDir $projectDir -SessionName $sessionName `
+            -Event 'operator.dispatch_needed' -Message $message -PaneId $paneId `
             -Label ([string]$paneContext['label']) -Role ([string]$paneContext['role'])
         return
     }
 
-    if (Test-CommanderPollApprovalEvent -EventRecord $EventRecord) {
+    if (Test-OperatorPollApprovalEvent -EventRecord $EventRecord) {
         if ([string]::IsNullOrWhiteSpace($paneId)) {
             $Summary['errors'] = [int]$Summary['errors'] + 1
             $Summary['messages'] += @('approval_waiting event is missing pane_id')
             return
         }
 
-        Approve-CommanderPollPane -PaneId $paneId
+        Approve-OperatorPollPane -PaneId $paneId
         $message = "$($paneContext['label']) ($paneId) を自動承認"
 
-        Write-CommanderPollLog `
+        Write-OperatorPollLog `
             -ProjectDir $projectDir `
             -SessionName $sessionName `
-            -EventName 'commander.poll.auto_approved' `
+            -EventName 'operator.poll.auto_approved' `
             -Message $message `
             -PaneId $paneId `
-            -Data (New-CommanderPollStateData -PaneContext $paneContext -Data ([ordered]@{
+            -Data (New-OperatorPollStateData -PaneContext $paneContext -Data ([ordered]@{
                     label     = $paneContext['label']
                     role      = $paneContext['role']
                     source    = $sourceName
@@ -730,19 +730,19 @@ function Invoke-CommanderPollEventRecord {
 
         $Summary['approvals'] = [int]$Summary['approvals'] + 1
         $Summary['messages'] += @($message)
-        Update-CommanderPollPaneState -PaneContext $paneContext -Properties ([ordered]@{
-                task_owner    = 'Commander'
-                last_event    = 'commander.poll.auto_approved'
+        Update-OperatorPollPaneState -PaneContext $paneContext -Properties ([ordered]@{
+                task_owner    = 'Operator'
+                last_event    = 'operator.poll.auto_approved'
                 last_event_at = (Get-Date).ToString('o')
             })
 
-        Send-CommanderTelegramNotification -ProjectDir $projectDir -SessionName $sessionName `
-            -Event 'commander.auto_approved' -Message $message -PaneId $paneId `
+        Send-OperatorTelegramNotification -ProjectDir $projectDir -SessionName $sessionName `
+            -Event 'operator.auto_approved' -Message $message -PaneId $paneId `
             -Label ([string]$paneContext['label']) -Role ([string]$paneContext['role'])
     }
 }
 
-function Invoke-CommanderPollCycle {
+function Invoke-OperatorPollCycle {
     param(
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [int]$ProcessedLineCount = 0,
@@ -757,11 +757,11 @@ function Invoke-CommanderPollCycle {
         $ProcessedEventSignatures = [ordered]@{}
     }
 
-    $manifest = Read-CommanderPollManifest -Path $ManifestPath
-    $projectDir = Get-CommanderPollProjectDir -Manifest $manifest -ManifestPath $ManifestPath
-    $sessionName = Get-CommanderPollSessionName -Manifest $manifest
-    $eventsPath = Get-CommanderPollEventsPath -ProjectDir $projectDir
-    $summary = New-CommanderPollCycleSummary -ManifestPath $ManifestPath -EventsPath $eventsPath
+    $manifest = Read-OperatorPollManifest -Path $ManifestPath
+    $projectDir = Get-OperatorPollProjectDir -Manifest $manifest -ManifestPath $ManifestPath
+    $sessionName = Get-OperatorPollSessionName -Manifest $manifest
+    $eventsPath = Get-OperatorPollEventsPath -ProjectDir $projectDir
+    $summary = New-OperatorPollCycleSummary -ManifestPath $ManifestPath -EventsPath $eventsPath
 
     try {
         $eventRecords = [System.Collections.Generic.List[object]]::new()
@@ -792,30 +792,30 @@ function Invoke-CommanderPollCycle {
 
         $ProcessedLineCount = $lines.Count
 
-        $mailboxRecords = @(Receive-CommanderPollMailboxMessages -SessionName $sessionName)
+        $mailboxRecords = @(Receive-OperatorPollMailboxMessages -SessionName $sessionName)
         $summary['mailbox_events'] = $mailboxRecords.Count
         foreach ($mailboxRecord in $mailboxRecords) {
             $eventRecords.Add($mailboxRecord)
         }
 
         foreach ($eventRecord in $eventRecords) {
-            $signature = Get-CommanderPollEventSignature -EventRecord $eventRecord
+            $signature = Get-OperatorPollEventSignature -EventRecord $eventRecord
             if ($ProcessedEventSignatures.Contains($signature)) {
                 continue
             }
 
-            $ProcessedEventSignatures[$signature] = [string](Get-CommanderPollValue -InputObject $eventRecord -Name 'timestamp' -Default ([System.DateTimeOffset]::Now.ToString('o')))
-            Invoke-CommanderPollEventRecord -Manifest $manifest -ManifestPath $ManifestPath -EventRecord $eventRecord -Summary $summary
+            $ProcessedEventSignatures[$signature] = [string](Get-OperatorPollValue -InputObject $eventRecord -Name 'timestamp' -Default ([System.DateTimeOffset]::Now.ToString('o')))
+            Invoke-OperatorPollEventRecord -Manifest $manifest -ManifestPath $ManifestPath -EventRecord $eventRecord -Summary $summary
         }
     } catch {
         $summary['errors'] = [int]$summary['errors'] + 1
-        $errorMessage = "commander-poll cycle failed: $($_.Exception.Message)"
+        $errorMessage = "operator-poll cycle failed: $($_.Exception.Message)"
         $summary['messages'] += @($errorMessage)
 
-        Write-CommanderPollLog `
+        Write-OperatorPollLog `
             -ProjectDir $projectDir `
             -SessionName $sessionName `
-            -EventName 'commander.poll.error' `
+            -EventName 'operator.poll.error' `
             -Message $errorMessage `
             -Level 'error'
     }
@@ -827,7 +827,7 @@ function Invoke-CommanderPollCycle {
     }
 }
 
-function Get-CommanderPollPreferredReviewPane {
+function Get-OperatorPollPreferredReviewPane {
     param([AllowNull()]$Manifest)
 
     if ($null -eq $Manifest -or $null -eq $Manifest.Panes) {
@@ -837,11 +837,11 @@ function Get-CommanderPollPreferredReviewPane {
     foreach ($preferredRole in @('Reviewer', 'Worker')) {
         foreach ($label in $Manifest.Panes.Keys) {
             $pane = $Manifest.Panes[$label]
-            $role = [string](Get-CommanderPollValue -InputObject $pane -Name 'role' -Default '')
-            $status = [string](Get-CommanderPollValue -InputObject $pane -Name 'status' -Default '')
+            $role = [string](Get-OperatorPollValue -InputObject $pane -Name 'role' -Default '')
+            $status = [string](Get-OperatorPollValue -InputObject $pane -Name 'status' -Default '')
             if ($role -eq $preferredRole -and $status -ne 'bootstrap_invalid') {
                 return [ordered]@{
-                    PaneId = [string](Get-CommanderPollValue -InputObject $pane -Name 'pane_id' -Default '')
+                    PaneId = [string](Get-OperatorPollValue -InputObject $pane -Name 'pane_id' -Default '')
                     Label  = [string]$label
                     Role   = $role
                 }
@@ -852,7 +852,7 @@ function Get-CommanderPollPreferredReviewPane {
     return $null
 }
 
-function Invoke-CommanderStateMachine {
+function Invoke-OperatorStateMachine {
     param(
         [Parameter(Mandatory = $true)][string]$CurrentState,
         [Parameter(Mandatory = $true)]$CycleSummary,
@@ -877,17 +877,17 @@ function Invoke-CommanderStateMachine {
             try {
                 $branch = (git -C $ProjectDir rev-parse --abbrev-ref HEAD 2>$null)
                 $headSha = (git -C $ProjectDir rev-parse HEAD 2>$null)
-                $manifest = Read-CommanderPollManifest -Path $ManifestPath
-                $reviewPane = Get-CommanderPollPreferredReviewPane -Manifest $manifest
+                $manifest = Read-OperatorPollManifest -Path $ManifestPath
+                $reviewPane = Get-OperatorPollPreferredReviewPane -Manifest $manifest
                 if ($null -eq $reviewPane -or [string]::IsNullOrWhiteSpace([string]$reviewPane.PaneId)) {
-                    Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
-                        -Event 'commander.blocked' -Message "Review 可能なペインが見つかりません。" -Branch $branch -HeadSha $headSha
+                    Send-OperatorTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                        -Event 'operator.blocked' -Message "Review 可能なペインが見つかりません。" -Branch $branch -HeadSha $headSha
                     $nextState = 'blocked_no_review_target'
                 } else {
-                    Send-CommanderPollLiteral -PaneId $reviewPane.PaneId -Text 'winsmux review-request'
-                    Approve-CommanderPollPane -PaneId $reviewPane.PaneId
-                    Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
-                        -Event 'commander.review_requested' -Message "$($reviewPane.Label) ($($reviewPane.PaneId)) にレビュー依頼送信。PASS/FAIL 待機中。" `
+                    Send-OperatorPollLiteral -PaneId $reviewPane.PaneId -Text 'winsmux review-request'
+                    Approve-OperatorPollPane -PaneId $reviewPane.PaneId
+                    Send-OperatorTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                        -Event 'operator.review_requested' -Message "$($reviewPane.Label) ($($reviewPane.PaneId)) にレビュー依頼送信。PASS/FAIL 待機中。" `
                         -PaneId $reviewPane.PaneId -Label $reviewPane.Label -Role $reviewPane.Role -Branch $branch -HeadSha $headSha
                     $nextState = 'review_requested'
                 }
@@ -918,21 +918,21 @@ function Invoke-CommanderStateMachine {
                             }
                         }
                         $manifestReviewPaneId = ''
-                        $manifest2 = Read-CommanderPollManifest -Path $ManifestPath
-                        $reviewPane = Get-CommanderPollPreferredReviewPane -Manifest $manifest2
+                        $manifest2 = Read-OperatorPollManifest -Path $ManifestPath
+                        $reviewPane = Get-OperatorPollPreferredReviewPane -Manifest $manifest2
                         if ($null -ne $reviewPane) {
                             $manifestReviewPaneId = [string]$reviewPane.PaneId
                         }
                         $reviewTargetMatch = [string]::IsNullOrWhiteSpace($rsReviewPaneId) -or $rsReviewPaneId -eq $manifestReviewPaneId
                         if ($st -eq 'PASS' -and $sha -eq $headSha -and $reviewTargetMatch) {
-                            Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
-                                -Event 'commander.review_passed' -Message "レビュー PASS。" -Branch $branch -HeadSha $headSha
+                            Send-OperatorTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                                -Event 'operator.review_passed' -Message "レビュー PASS。" -Branch $branch -HeadSha $headSha
                             $nextState = 'review_passed'
                         } elseif ($st -eq 'PASS' -and $sha -eq $headSha -and -not $reviewTargetMatch) {
                             Write-Warning "TASK-238: review PASS pane_id mismatch: review-state=$rsReviewPaneId manifest=$manifestReviewPaneId"
                         } elseif ($st -eq 'FAIL') {
-                            Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
-                                -Event 'commander.review_failed' -Message "レビュー FAIL。修正が必要。" -Branch $branch -HeadSha $headSha
+                            Send-OperatorTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                                -Event 'operator.review_failed' -Message "レビュー FAIL。修正が必要。" -Branch $branch -HeadSha $headSha
                             $nextState = 'blocked_review_failed'
                         }
                     }
@@ -942,15 +942,15 @@ function Invoke-CommanderStateMachine {
         'review_passed' {
             $headSha = (git -C $ProjectDir rev-parse HEAD 2>$null)
             $nextCommitReadySha = $headSha
-            Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
-                -Event 'commander.commit_ready' -Message "コミット準備完了。" -HeadSha $headSha
+            Send-OperatorTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                -Event 'operator.commit_ready' -Message "コミット準備完了。" -HeadSha $headSha
             $nextState = 'commit_ready'
         }
         'commit_ready' {
             $currentSha = (git -C $ProjectDir rev-parse HEAD 2>$null)
             if ($CommitReadySha -and $currentSha -ne $CommitReadySha) {
-                Send-CommanderTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
-                    -Event 'commander.commit_done' -Message "コミット検出。次タスク待機。" -HeadSha $currentSha
+                Send-OperatorTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                    -Event 'operator.commit_done' -Message "コミット検出。次タスク待機。" -HeadSha $currentSha
                 $nextState = 'waiting_for_dispatch'
                 $nextCommitReadySha = ''
             }
@@ -960,8 +960,8 @@ function Invoke-CommanderStateMachine {
         }
         'blocked_no_review_target' {
             try {
-                $manifest = Read-CommanderPollManifest -Path $ManifestPath
-                if ($null -ne (Get-CommanderPollPreferredReviewPane -Manifest $manifest)) {
+                $manifest = Read-OperatorPollManifest -Path $ManifestPath
+                if ($null -ne (Get-OperatorPollPreferredReviewPane -Manifest $manifest)) {
                     $nextState = 'waiting_for_review'
                 }
             } catch { }
@@ -970,15 +970,15 @@ function Invoke-CommanderStateMachine {
     }
 
     if ($nextState -ne $CurrentState) {
-        Write-CommanderPollLog -ProjectDir $ProjectDir -SessionName $SessionName `
-            -EventName 'commander.state_transition' -Message "State: $CurrentState -> $nextState" `
+        Write-OperatorPollLog -ProjectDir $ProjectDir -SessionName $SessionName `
+            -EventName 'operator.state_transition' -Message "State: $CurrentState -> $nextState" `
             -Data ([ordered]@{ from = $CurrentState; to = $nextState })
         try {
             $ep = Join-Path (Join-Path $ProjectDir '.winsmux') 'events.jsonl'
             $rec = [ordered]@{
                 timestamp = (Get-Date).ToString('o'); session = $SessionName
-                event = 'commander.state_transition'; message = "State: $CurrentState -> $nextState"
-                label = ''; pane_id = ''; role = 'Commander'; status = $nextState
+                event = 'operator.state_transition'; message = "State: $CurrentState -> $nextState"
+                label = ''; pane_id = ''; role = 'Operator'; status = $nextState
                 exit_reason = ''; data = [ordered]@{ from = $CurrentState; to = $nextState }
             }
             Write-WinsmuxTextFile -Path $ep -Content ($rec | ConvertTo-Json -Compress -Depth 10) -Append
@@ -993,9 +993,9 @@ if ($MyInvocation.InvocationName -ne '.') {
         throw "Manifest not found: $ManifestPath"
     }
 
-    $initialManifest = Read-CommanderPollManifest -Path $ManifestPath
-    $initialProjectDir = Get-CommanderPollProjectDir -Manifest $initialManifest -ManifestPath $ManifestPath
-    $eventsPath = Get-CommanderPollEventsPath -ProjectDir $initialProjectDir
+    $initialManifest = Read-OperatorPollManifest -Path $ManifestPath
+    $initialProjectDir = Get-OperatorPollProjectDir -Manifest $initialManifest -ManifestPath $ManifestPath
+    $eventsPath = Get-OperatorPollEventsPath -ProjectDir $initialProjectDir
     $processedLineCount = 0
     $processedEventSignatures = [ordered]@{}
 
@@ -1003,34 +1003,34 @@ if ($MyInvocation.InvocationName -ne '.') {
         $processedLineCount = @(Get-Content -LiteralPath $eventsPath -Encoding UTF8).Count
     }
 
-    Send-CommanderTelegramNotification -ProjectDir $initialProjectDir `
-        -SessionName (Get-CommanderPollSessionName -Manifest $initialManifest) `
-        -Event 'commander.started' -Message "Commander Poll 開始。間隔: ${Interval}秒"
+    Send-OperatorTelegramNotification -ProjectDir $initialProjectDir `
+        -SessionName (Get-OperatorPollSessionName -Manifest $initialManifest) `
+        -Event 'operator.started' -Message "Operator Poll 開始。間隔: ${Interval}秒"
 
-    $commanderState = 'starting'
+    $operatorState = 'starting'
     $commitReadySha = ''
 
     while ($true) {
-        $cycleResult = Invoke-CommanderPollCycle `
+        $cycleResult = Invoke-OperatorPollCycle `
             -ManifestPath $ManifestPath `
             -ProcessedLineCount $processedLineCount `
             -ProcessedEventSignatures $processedEventSignatures
 
         $processedLineCount = [int]$cycleResult['ProcessedLineCount']
         $processedEventSignatures = $cycleResult['ProcessedEventSignatures']
-        $smResult = Invoke-CommanderStateMachine `
-            -CurrentState $commanderState `
+        $smResult = Invoke-OperatorStateMachine `
+            -CurrentState $operatorState `
             -CycleSummary ($cycleResult['Summary']) `
             -ProjectDir $initialProjectDir `
-            -SessionName (Get-CommanderPollSessionName -Manifest (Read-CommanderPollManifest -Path $ManifestPath)) `
+            -SessionName (Get-OperatorPollSessionName -Manifest (Read-OperatorPollManifest -Path $ManifestPath)) `
             -ManifestPath $ManifestPath `
             -CommitReadySha $commitReadySha
 
-        $commanderState = [string]$smResult['State']
+        $operatorState = [string]$smResult['State']
         $commitReadySha = [string]$smResult['CommitReadySha']
 
         $summaryOutput = $cycleResult['Summary']
-        $summaryOutput['commander_state'] = $commanderState
+        $summaryOutput['operator_state'] = $operatorState
         Write-Output ($summaryOutput | ConvertTo-Json -Compress -Depth 10)
         Start-Sleep -Seconds $Interval
     }

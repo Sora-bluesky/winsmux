@@ -346,7 +346,7 @@ function Get-BridgeSettings {
     param([string]$RootPath)
     [pscustomobject]@{
         worker_count       = 6
-        external_commander = $true
+        external_operator = $true
     }
 }
 '@
@@ -395,7 +395,7 @@ function Get-BridgeSettings {
     param([string]$RootPath)
     [pscustomobject]@{
         worker_count       = 6
-        external_commander = $true
+        external_operator = $true
     }
 }
 '@

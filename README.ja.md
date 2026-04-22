@@ -195,7 +195,7 @@ Windows の `ConstrainedLanguageMode` を含む詳細な回避策は [docs/TROUB
 
 - 管理対象ウィンドウの外に外部オペレーター用ターミナル
 - 管理対象ウィンドウの中に複数の `worker-*` ペイン
-- 旧 `Commander / Builder / Researcher / Reviewer` レイアウトは互換モードでのみ有効
+- 旧 `Operator / Builder / Researcher / Reviewer` レイアウトは互換モードでのみ有効
 
 デスクトップ側のロードマップは、次の 3 つの UX レイヤーに再整理しています。
 

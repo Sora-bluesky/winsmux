@@ -320,7 +320,7 @@ fn rust_parity_inbox_fixture_deserializes() {
     assert_eq!(blocked_item.branch, "worktree-worker-1");
     assert_eq!(blocked_item.head_sha, "def5678abc1234");
     assert_eq!(blocked_item.changed_file_count, 0);
-    assert_eq!(blocked_item.event, "commander.state_transition");
+    assert_eq!(blocked_item.event, "operator.state_transition");
     assert_eq!(blocked_item.timestamp, "__TIMESTAMP__");
     assert_eq!(blocked_item.source, "manifest");
 }
@@ -374,7 +374,7 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.run.primary_label, "builder-1");
     assert_eq!(fixture.run.primary_pane_id, "%2");
     assert_eq!(fixture.run.primary_role, "Builder");
-    assert_eq!(fixture.run.last_event, "commander.review_requested");
+    assert_eq!(fixture.run.last_event, "operator.review_requested");
     assert_eq!(fixture.run.tokens_remaining, "64% context left");
     assert_eq!(fixture.run.pane_count, 1);
     assert_eq!(fixture.run.changed_file_count, 1);
@@ -447,7 +447,7 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.explanation.current_state.review_state, "PENDING");
     assert_eq!(
         fixture.explanation.current_state.last_event,
-        "commander.review_requested"
+        "operator.review_requested"
     );
     assert!(fixture.run.security_policy.is_null());
     assert!(fixture.run.security_verdict.is_null());
@@ -466,7 +466,7 @@ fn rust_parity_explain_fixture_deserializes() {
         .find(|item| item.kind == "review_pending")
         .expect("explain fixture should contain review_pending action item");
     assert_eq!(review_pending.message, "builder-1 が review 待機中。");
-    assert_eq!(review_pending.event, "commander.review_requested");
+    assert_eq!(review_pending.event, "operator.review_requested");
     assert_eq!(review_pending.timestamp, "__TIMESTAMP__");
     assert_eq!(review_pending.source, "manifest");
     assert_eq!(fixture.consultation_packet.run_id, "task:task-256");

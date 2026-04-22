@@ -190,27 +190,27 @@ Write-Host ''
 
 $agentCli = Read-AgentCli -Default 'codex'
 $model = Read-DefaultValue -Prompt 'Model' -Default 'gpt-5.4'
-$externalCommander = Read-YesNo -Prompt 'Use an external Operator terminal?' -Default $true
+$externalOperator = Read-YesNo -Prompt 'Use an external Operator terminal?' -Default $true
 $legacyRoleLayout = $false
-$commanders = 0
+$operators = 0
 $workerCount = 6
 $agentSlots = @()
 $builders = 0
 $researchers = 0
 $reviewers = 0
 
-if ($externalCommander) {
+if ($externalOperator) {
     $workerCount = Read-PositiveInt -Prompt 'Managed worker pane count' -Default 6
     $agentSlots = New-BridgeManagedAgentSlots -Count $workerCount -Agent $agentCli -Model $model
 } else {
-    $legacyRoleLayout = Read-YesNo -Prompt 'Use legacy role layout (Commander/Builder/Researcher/Reviewer panes)?' -Default $false
+    $legacyRoleLayout = Read-YesNo -Prompt 'Use legacy role layout (Operator/Builder/Researcher/Reviewer panes)?' -Default $false
     if ($legacyRoleLayout) {
-        $commanders = Read-PositiveInt -Prompt 'Commanders count' -Default 1
+        $operators = Read-PositiveInt -Prompt 'Operators count' -Default 1
         $builders = Read-PositiveInt -Prompt 'Builders count' -Default 4
         $researchers = Read-PositiveInt -Prompt 'Researchers count' -Default 1
         $reviewers = Read-PositiveInt -Prompt 'Reviewers count' -Default 1
     } else {
-        $commanders = 0
+        $operators = 0
         $workerCount = Read-PositiveInt -Prompt 'Managed worker pane count' -Default 6
         $agentSlots = New-BridgeManagedAgentSlots -Count $workerCount -Agent $agentCli -Model $model
     }
@@ -220,9 +220,9 @@ $storeVault = Read-YesNo -Prompt 'Store GH_TOKEN in the winsmux vault?' -Default
 
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-agent' -OptionValue $agentCli
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-model' -OptionValue $model
-Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-external-commander' -OptionValue $(if ($externalCommander) { 'on' } else { 'off' })
+Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-external-operator' -OptionValue $(if ($externalOperator) { 'on' } else { 'off' })
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-legacy-role-layout' -OptionValue $(if ($legacyRoleLayout) { 'on' } else { 'off' })
-Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-commanders' -OptionValue $commanders.ToString()
+Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-operators' -OptionValue $operators.ToString()
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-worker-count' -OptionValue $workerCount.ToString()
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-builders' -OptionValue $builders.ToString()
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-researchers' -OptionValue $researchers.ToString()
@@ -231,11 +231,11 @@ Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-reviewers' -Optio
 Save-BridgeSettings -Scope project -Settings ([ordered]@{
     agent               = $agentCli
     model               = $model
-    external_commander  = $externalCommander
+    external_operator  = $externalOperator
     worker_count        = $workerCount
     agent_slots         = @($agentSlots)
     legacy_role_layout  = $legacyRoleLayout
-    commanders          = $commanders
+    operators          = $operators
     builders            = $builders
     researchers         = $researchers
     reviewers           = $reviewers
@@ -257,9 +257,9 @@ Write-Host 'Saved settings:'
 Write-Host "  winsmux binary:         $winsmuxBin"
 Write-Host "  @bridge-agent:        $agentCli"
 Write-Host "  @bridge-model:        $model"
-Write-Host "  @bridge-external-commander: $externalCommander"
+Write-Host "  @bridge-external-operator: $externalOperator"
 Write-Host "  @bridge-legacy-role-layout: $legacyRoleLayout"
-Write-Host "  @bridge-commanders:   $commanders"
+Write-Host "  @bridge-operators:   $operators"
 Write-Host "  @bridge-worker-count: $workerCount"
 Write-Host "  @bridge-builders:     $builders"
 Write-Host "  @bridge-researchers:  $researchers"

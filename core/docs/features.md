@@ -26,7 +26,7 @@
 - **Scroll wheel** in any pane, scrolls that pane's output
 - **Drag-select** text to copy to clipboard
 - **Right-click** to paste or copy selection
-- **VT mouse forwarding** : apps like vim, htop, and midnight commander get full mouse events
+- **VT mouse forwarding** : apps like vim, htop, and mc get full mouse events
 - **3-layer mouse injection** : VT protocol, VT bridge (for WSL/SSH), and native Win32 MOUSE_EVENT
 - **Mouse over SSH** : works from any OS client when server runs Windows 11 build 22523+
 

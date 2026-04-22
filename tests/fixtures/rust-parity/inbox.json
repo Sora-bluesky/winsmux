@@ -25,7 +25,7 @@
       "branch": "worktree-worker-1",
       "head_sha": "def5678abc1234",
       "changed_file_count": 0,
-      "event": "commander.state_transition",
+      "event": "operator.state_transition",
       "timestamp": "__TIMESTAMP__",
       "source": "manifest"
     },
@@ -71,7 +71,7 @@
       "message": "コミット準備完了。",
       "label": "",
       "pane_id": "",
-      "role": "Commander",
+      "role": "Operator",
       "task_id": "",
       "task": "",
       "task_state": "",

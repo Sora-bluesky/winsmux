@@ -1,5 +1,5 @@
 // sh-orchestra-gate.js — PreToolUse hook
-// Prevents Commander from writing code or bypassing winsmux CLI
+// Prevents Operator from writing code or bypassing winsmux CLI
 "use strict";
 
 const { execFileSync } = require("child_process");
@@ -23,7 +23,7 @@ try {
 
   logCommand(toolName, rawCommand);
 
-  // Rule 1: Commander cannot write/edit code files
+  // Rule 1: Operator cannot write/edit code files
   if (toolName === "Write" || toolName === "Edit") {
     const filePath = toolInput.file_path || toolInput.file || "";
     if (isProtectedReviewStatePath(filePath)) {
@@ -31,7 +31,7 @@ try {
     }
 
     if (/\.(ps1|js|rs|ts|py)$/i.test(filePath)) {
-      deny("Commander cannot write code files. Delegate to Builder via winsmux send.");
+      deny("Operator cannot write code files. Delegate to Builder via winsmux send.");
     }
   }
 
@@ -291,7 +291,7 @@ if ($settings -is [System.Collections.IDictionary]) {
   $agentSlots = @($settings.agent_slots)
 }
 if ($agentSlots.Count -gt 0) { $workerCount = $agentSlots.Count }
-$expected = $workerCount + $(if ([bool]$settings.external_commander) { 0 } else { 1 })
+$expected = $workerCount + $(if ([bool]$settings.external_operator) { 0 } else { 1 })
 $winsmuxBin = $null
 foreach ($candidate in @('winsmux','pmux','tmux','psmux')) {
   if (Get-Command $candidate -ErrorAction SilentlyContinue) { $winsmuxBin = $candidate; break }

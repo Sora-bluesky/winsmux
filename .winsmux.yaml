@@ -1,6 +1,6 @@
 # Public-safe project defaults.
 # Provider/model pinning belongs in local overrides or operator instructions.
-external-commander: true
+external-operator: true
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker

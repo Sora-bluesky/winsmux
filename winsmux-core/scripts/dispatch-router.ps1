@@ -2,7 +2,7 @@
 param(
     [string]$Text,
     [string[]]$AvailableTargets = @(),
-    [ValidateSet('Worker', 'Builder', 'Reviewer', 'Researcher', 'Commander')]
+    [ValidateSet('Worker', 'Builder', 'Reviewer', 'Researcher', 'Operator')]
     [string]$DefaultRole = 'Worker',
     [switch]$AsJson
 )
@@ -31,7 +31,7 @@ function Get-DispatchRouterKeywordMap {
             'lookup', 'document', 'docs',
             '調査', 'リサーチ', '分析', '探して', '比較', '要約', '検索'
         )
-        Commander = @(
+        Operator = @(
             'plan', 'planner', 'backlog', 'triage', 'coordinate', 'orchestrate',
             'dispatch', 'assign', 'commit', 'merge', 'branch', 'release', 'session',
             'マージ', 'デプロイ', 'リリース', '承認', '計画'
@@ -47,7 +47,7 @@ function Get-DispatchRouterCanonicalRole {
         '^(?i)builder(?:$|[-_:/\s])' { return 'Builder' }
         '^(?i)reviewer(?:$|[-_:/\s])' { return 'Reviewer' }
         '^(?i)researcher(?:$|[-_:/\s])' { return 'Researcher' }
-        '^(?i)commander(?:$|[-_:/\s])' { return 'Commander' }
+        '^(?i)operator(?:$|[-_:/\s])' { return 'Operator' }
         default { return $null }
     }
 }
@@ -110,7 +110,7 @@ function Get-DispatchRoute {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
         [string[]]$AvailableTargets = @(),
-        [ValidateSet('Worker', 'Builder', 'Reviewer', 'Researcher', 'Commander')]
+        [ValidateSet('Worker', 'Builder', 'Reviewer', 'Researcher', 'Operator')]
         [string]$DefaultRole = 'Worker'
     )
 
@@ -146,11 +146,11 @@ function Get-DispatchRoute {
     }
 
     $selectedTarget = Get-DispatchRouterPreferredLabel -Role $bestRole -AvailableTargets $AvailableTargets
-    if ($bestRole -ne 'Commander' -and $null -eq $selectedTarget) {
+    if ($bestRole -ne 'Operator' -and $null -eq $selectedTarget) {
         $selectedTarget = Get-DispatchRouterPreferredLabel -Role 'Worker' -AvailableTargets $AvailableTargets
     }
 
-    $handleLocally = $bestRole -eq 'Commander' -or $null -eq $selectedTarget
+    $handleLocally = $bestRole -eq 'Operator' -or $null -eq $selectedTarget
 
     $reason = if ($bestScore -gt 0) {
         "Matched role '$bestRole' via: $($bestMatches -join ', ')"
@@ -158,14 +158,14 @@ function Get-DispatchRoute {
         "No routing keywords matched. Defaulted to '$bestRole'."
     }
 
-    if ($bestRole -ne 'Commander' -and $null -eq $selectedTarget) {
+    if ($bestRole -ne 'Operator' -and $null -eq $selectedTarget) {
         $reason = "$reason No '$bestRole' target is available."
-    } elseif ($bestRole -ne 'Commander' -and $null -ne $selectedTarget -and (Get-DispatchRouterCanonicalRole $selectedTarget) -eq 'Worker') {
+    } elseif ($bestRole -ne 'Operator' -and $null -ne $selectedTarget -and (Get-DispatchRouterCanonicalRole $selectedTarget) -eq 'Worker') {
         $reason = "$reason Routed to generic worker target '$selectedTarget'."
     }
 
-    if ($bestRole -eq 'Commander') {
-        $reason = "$reason Handle this task locally as Commander."
+    if ($bestRole -eq 'Operator') {
+        $reason = "$reason Handle this task locally as Operator."
     }
 
     return [PSCustomObject]@{

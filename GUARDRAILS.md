@@ -15,10 +15,10 @@
 - **Instruction**: Always include `-l` (literal mode) flag.
 - **Reason**: Without `-l`, commands silently vanish. No error, no feedback — just lost work.
 
-### 3. Commander writing code directly
-- **Trigger**: Commander tempted to "quickly fix" a file
+### 3. Operator writing code directly
+- **Trigger**: Operator tempted to "quickly fix" a file
 - **Instruction**: Dispatch all code changes to Builder panes via worktree.
-- **Reason**: sh-orchestra-gate.js enforces this. Commander is read-only; separation prevents unreviewed changes.
+- **Reason**: sh-orchestra-gate.js enforces this. Operator is read-only; separation prevents unreviewed changes.
 
 ### 4. Builder without worktree isolation
 - **Trigger**: Dispatching implementation tasks to Builder
@@ -82,5 +82,5 @@
 
 ### 16. Codex sandbox git operations
 - **Trigger**: Builder (Codex) needs to commit changes
-- **Instruction**: Builder edits only. Git operations delegated to Researcher (Sonnet) or Commander.
+- **Instruction**: Builder edits only. Git operations delegated to Researcher (Sonnet) or Operator.
 - **Reason**: Codex --sandbox danger-full-access bypasses CLM; previously --full-auto blocked .git/worktrees/*/index.lock creation.

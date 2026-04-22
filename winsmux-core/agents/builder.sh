@@ -130,7 +130,7 @@ Additional fixed guardrails for this builder run:
 - Treat WORKTREE as the only workspace you may modify for this task.
 - Do not finish until you have run the relevant tests or checks from that workspace, unless you are blocked.
 - In the verification summary, include the exact commands you ran and whether they passed or failed.
-- Do NOT run git add, git commit, git push, or any git write commands. Your role is code editing only. Git operations are handled by the Researcher or Commander.
+- Do NOT run git add, git commit, git push, or any git write commands. Your role is code editing only. Git operations are handled by the Researcher or Operator.
 - Do NOT run git mv, git rm, or git checkout. Only edit file contents.
 
 Respond with:

@@ -124,7 +124,7 @@ Contributor workflows, release operations, repository-specific runtime contracts
 
 ## 6. Legacy layouts vs current model
 
-Older `Commander / Builder / Researcher / Reviewer` pane layouts still exist for compatibility, but they are not the long-term architecture.
+Older `Operator / Builder / Researcher / Reviewer` pane layouts still exist for compatibility, but they are not the long-term architecture.
 
 The current model is:
 

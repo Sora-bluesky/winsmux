@@ -363,7 +363,7 @@ EOF
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
             command = 'pwsh scripts/winsmux-core.ps1 review-approve'
         }) -Environment ([ordered]@{
-            WINSMUX_ROLE = 'Commander'
+            WINSMUX_ROLE = 'Operator'
         })
 
         & $script:AssertDenyResult -Result $result
@@ -396,7 +396,7 @@ EOF
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
             command = 'rg review-approve docs/'
         }) -Environment ([ordered]@{
-            WINSMUX_ROLE = 'Commander'
+            WINSMUX_ROLE = 'Operator'
         })
 
         $result.ExitCode | Should -Be 0
@@ -407,7 +407,7 @@ EOF
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
             command = 'pwsh -Command "rg review-approve .claude/"'
         }) -Environment ([ordered]@{
-            WINSMUX_ROLE = 'Commander'
+            WINSMUX_ROLE = 'Operator'
         })
 
         $result.ExitCode | Should -Be 0
@@ -418,7 +418,7 @@ EOF
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
             command = 'pwsh -Command "Set-Content -LiteralPath scripts/demo.ps1 -Value ''Write-Host hi''"'
         }) -Environment ([ordered]@{
-            WINSMUX_ROLE = 'Commander'
+            WINSMUX_ROLE = 'Operator'
         })
 
         & $script:AssertDenyResult -Result $result
@@ -429,7 +429,7 @@ EOF
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
             command = 'cmd /c "echo Write-Host hi > scripts\\demo.ps1"'
         }) -Environment ([ordered]@{
-            WINSMUX_ROLE = 'Commander'
+            WINSMUX_ROLE = 'Operator'
         })
 
         & $script:AssertDenyResult -Result $result
@@ -440,7 +440,7 @@ EOF
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
             command = 'python -c "from pathlib import Path; Path(''scripts/demo.py'').write_text(''print(1)'', encoding=''utf-8'')"'
         }) -Environment ([ordered]@{
-            WINSMUX_ROLE = 'Commander'
+            WINSMUX_ROLE = 'Operator'
         })
 
         & $script:AssertDenyResult -Result $result
@@ -559,7 +559,7 @@ EOF
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
             command = 'psmux --version'
         } -Environment ([ordered]@{
-            WINSMUX_ROLE = 'Commander'
+            WINSMUX_ROLE = 'Operator'
         })
 
         & $script:AssertDenyResult -Result $result
@@ -570,7 +570,7 @@ EOF
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
             command = 'pwsh -Command "Get-Process psmux-server -ErrorAction SilentlyContinue"'
         } -Environment ([ordered]@{
-            WINSMUX_ROLE = 'Commander'
+            WINSMUX_ROLE = 'Operator'
         })
 
         & $script:AssertDenyResult -Result $result
@@ -581,7 +581,7 @@ EOF
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
             command = 'pwsh -NoProfile -File scripts/winsmux-core.ps1 orchestra-smoke --json'
         } -Environment ([ordered]@{
-            WINSMUX_ROLE = 'Commander'
+            WINSMUX_ROLE = 'Operator'
         })
 
         $result.ExitCode | Should -Be 0
@@ -592,7 +592,7 @@ EOF
         $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
             command = 'pwsh -NoProfile -File scripts/winsmux-core.ps1 orchestra-attach --json'
         } -Environment ([ordered]@{
-            WINSMUX_ROLE = 'Commander'
+            WINSMUX_ROLE = 'Operator'
         })
 
         $result.ExitCode | Should -Be 0

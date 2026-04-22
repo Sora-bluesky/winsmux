@@ -190,7 +190,7 @@ The default layout is now:
 
 - external operator terminal outside the managed window
 - 6 managed `worker-*` panes inside the orchestra window
-- legacy `Commander / Builder / Researcher / Reviewer` pane layouts only when explicitly enabled for compatibility
+- legacy `Operator / Builder / Researcher / Reviewer` pane layouts only when explicitly enabled for compatibility
 
 This is the last release line where the terminal surface is the primary operator surface. The next train (`v0.22.0`) keeps the terminal runtime, but shifts primary desktop orchestration toward the Tauri desktop shell.
 

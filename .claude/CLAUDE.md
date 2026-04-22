@@ -38,7 +38,7 @@ The panes are responsible for execution.
 ## User-facing reporting
 
 In user-facing progress updates, status summaries, and blocker reports, use the term
-**operator**. `Commander` remains an internal runtime/gate role label and must not be
+**operator**. `Operator` remains an internal runtime/gate role label and must not be
 treated as the preferred user-facing name.
 
 ## Authority boundary
@@ -107,7 +107,7 @@ When `/winsmux-start` or another restoration flow reports `needs-startup`:
 14. Once `operator_contract.can_dispatch=true`, do not use Explore subagents for PR/task analysis. Dispatch the task through `winsmux dispatch-task "<task text>"` or `winsmux dispatch-review`.
 15. Do not report that review was dispatched until formal review evidence is observed. Require
     the dispatch command to succeed and at least one review confirmation signal such as
-    `commander.review_requested`, `review_state=PENDING`, or target-pane capture showing the
+    `operator.review_requested`, `review_state=PENDING`, or target-pane capture showing the
     request.
 16. If review confirmation is missing, report `review dispatch blocked` or `review dispatch unconfirmed`
     instead of claiming that review is in progress.

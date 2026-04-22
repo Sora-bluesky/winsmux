@@ -74,7 +74,7 @@ function Read-WinsmuxGovernanceFile {
 }
 
 function Get-WinsmuxSupportedHookProfiles {
-    return @('standard', 'commander', 'builder', 'ci')
+    return @('standard', 'operator', 'builder', 'ci')
 }
 
 function Resolve-WinsmuxHookProfile {
