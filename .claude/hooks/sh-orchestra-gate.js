@@ -604,6 +604,10 @@ function isOperatorOnlyGitLifecycleCommand(command) {
     return true;
   }
 
+  if (hasXargsGitLifecycleCommand(command, false)) {
+    return true;
+  }
+
   if (hasPowerShellScriptBlockGitLifecycleCommand(command)) {
     return true;
   }
@@ -637,6 +641,35 @@ function hasNestedPowerShellControlBlock(source) {
   const normalized = normalizeAgentValue(String(source || ""));
   return /\{[\s\S]*\{[\s\S]*\}[\s\S]*\}/u.test(normalized) &&
     /\b(?:if|foreach|for|while|switch|try|catch|finally|function)\b/u.test(normalized);
+}
+
+function hasXargsGitLifecycleCommand(command, reviewOnly) {
+  const source = String(command || "");
+  return splitCommandSegments(source).some((segment) =>
+    splitCommandPipelineStages(segment).some((stage) => {
+      const normalizedStage = unwrapPowerShellCommandWrapper(stage);
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedStage));
+      if (tokens.length === 0 || normalizeExecutableName(tokens[0]) !== "xargs") {
+        return false;
+      }
+
+      const nestedTokens = getXargsCommandTokens(tokens);
+      if (isGitTokenLifecycleCommand(nestedTokens, reviewOnly) ||
+          isGhTokenLifecycleCommand(nestedTokens)) {
+        return true;
+      }
+
+      const nestedExecutable = normalizeExecutableName(nestedTokens[0] || "");
+      if (reviewOnly && nestedExecutable === "git") {
+        return /\b(?:commit|merge)\b/u.test(normalizeAgentValue(source));
+      }
+
+      if (nestedExecutable === "gh") {
+        return hasGhLifecycleArgumentHint(source);
+      }
+
+      return false;
+    }));
 }
 
 function isOperatorOnlyGitLifecycleSegment(segment) {
@@ -676,6 +709,12 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
     if (nestedCommand) {
       return isOperatorOnlyGitLifecycleCommand(nestedCommand);
     }
+  }
+
+  if (executable === "xargs" || executable === "xargs.exe") {
+    const nestedTokens = getXargsCommandTokens(tokens);
+    return isGitTokenLifecycleCommand(nestedTokens, false) ||
+      isGhTokenLifecycleCommand(nestedTokens);
   }
 
   if (isPowerShellStartProcessExecutable(executable)) {
@@ -1635,6 +1674,10 @@ function isReviewGatedCommand(command) {
     return true;
   }
 
+  if (hasXargsGitLifecycleCommand(command, true)) {
+    return true;
+  }
+
   return isGitCommitOrMergeCommandLine(command) ||
          isGitCommitCommand(command) ||
          isGitMergeCommand(command) ||
@@ -2008,6 +2051,46 @@ function getShellCommandArgument(tokens) {
   }
 
   return "";
+}
+
+function getXargsCommandTokens(tokens) {
+  const optionsWithValue = new Set([
+    "-a",
+    "--arg-file",
+    "-d",
+    "--delimiter",
+    "-e",
+    "-E",
+    "--eof",
+    "-I",
+    "-i",
+    "--replace",
+    "-L",
+    "--max-lines",
+    "-n",
+    "--max-args",
+    "-P",
+    "--max-procs",
+    "-s",
+    "--max-chars",
+  ].map((option) => normalizeAgentValue(option)));
+
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(token);
+    if (!normalizedToken.startsWith("-")) {
+      return tokens.slice(index);
+    }
+
+    const optionName = normalizedToken.includes("=")
+      ? normalizedToken.slice(0, normalizedToken.indexOf("="))
+      : normalizedToken;
+    if (optionsWithValue.has(optionName) && !normalizedToken.includes("=")) {
+      index += 1;
+    }
+  }
+
+  return [];
 }
 
 function isPowerShellStartProcessExecutable(executable) {
@@ -2574,11 +2657,25 @@ function collectShellWriteTargets(segment, targets, powerShellAliases = new Map(
   }
 
   collectRedirectionTargets(normalizedSegment, targets);
+  collectXargsMutationTargets(tokens, targets);
   collectPosixMutationTargets(tokens, targets);
   collectWindowsCopyUtilityTargets(tokens, targets);
   collectPowerShellMutationTargets(tokens, targets);
   collectPowerShellDotNetMutationTargets(normalizedSegment, targets);
   collectInterpreterMutationTargets(normalizedSegment, tokens, targets);
+}
+
+function collectXargsMutationTargets(tokens, targets) {
+  const executable = normalizeExecutableName(tokens[0]);
+  if (executable !== "xargs") {
+    return;
+  }
+
+  const nestedTargets = [];
+  collectPosixMutationTargets(getXargsCommandTokens(tokens), nestedTargets);
+  if (nestedTargets.length > 0) {
+    targets.push("$unparsed-xargs-write");
+  }
 }
 
 function collectPowerShellStartProcessRedirectTargets(tokens, targets) {
