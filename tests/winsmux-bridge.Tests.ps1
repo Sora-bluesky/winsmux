@@ -9184,6 +9184,58 @@ Describe 'winsmux task-run command' {
     }
 }
 
+Describe 'winsmux profile command' {
+    BeforeAll {
+        $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreRawContent = Get-Content -Path $script:winsmuxCoreRawPath -Raw -Encoding UTF8
+    }
+
+    BeforeEach {
+        $script:profileTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-profile-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:profileTempRoot -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:profileTempRoot -and (Test-Path $script:profileTempRoot)) {
+            Remove-Item -Path $script:profileTempRoot -Recurse -Force
+        }
+    }
+
+    It 'passes custom provider commands into the generated Windows Terminal profile' {
+        $script:winsmuxCoreRawContent | Should -Match 'function ConvertTo-ProfileAgentHashtableLiteral'
+        $script:winsmuxCoreRawContent | Should -Match 'function Get-ProfileAgentGrid'
+        $script:winsmuxCoreRawContent | Should -Match 'label:agent-command'
+        $script:winsmuxCoreRawContent | Should -Match '\$agentArgument = '' -Rows \{0\} -Cols \{1\} -Agents @\(\{2\}\)'''
+
+        $oldLocalAppData = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = $script:profileTempRoot
+        try {
+            & pwsh -NoProfile -File $script:winsmuxCoreRawPath profile nightly builder:codex-nightly 'researcher:claude --model opus' 'reviewer:claude --append-system-prompt "hello world"' | Out-Null
+        } finally {
+            $env:LOCALAPPDATA = $oldLocalAppData
+        }
+
+        $fragmentPath = Join-Path $script:profileTempRoot 'Microsoft\Windows Terminal\Fragments\winsmux\winsmux.json'
+        Test-Path -LiteralPath $fragmentPath | Should -Be $true
+        $fragment = Get-Content -LiteralPath $fragmentPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $commandline = [string]$fragment.profiles[0].commandline
+        $commandline | Should -Match '-EncodedCommand '
+        $encodedCommand = ($commandline -replace '^.*-EncodedCommand\s+', '').Trim()
+        $decodedCommand = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encodedCommand))
+        $startOrchestraCall = "& (Join-Path `$env:USERPROFILE '.winsmux\bin\start-orchestra.ps1')"
+        $childStartOrchestraCall = "pwsh (Join-Path `$env:USERPROFILE '.winsmux\bin\start-orchestra.ps1')"
+        $decodedCommand | Should -Match ([regex]::Escape($startOrchestraCall))
+        $decodedCommand | Should -Not -Match ([regex]::Escape($childStartOrchestraCall))
+        $decodedCommand | Should -Match '-Rows 1 -Cols 3 -Agents @\('
+        $decodedCommand | Should -Match "winsmux new-session -s 'nightly'"
+        $decodedCommand | Should -Match "label = 'builder'"
+        $decodedCommand | Should -Match "command = 'codex-nightly'"
+        $decodedCommand | Should -Match "label = 'researcher'"
+        $decodedCommand | Should -Match "command = 'claude --model opus'"
+        $decodedCommand | Should -Match 'command = ''claude --append-system-prompt "hello world"'''
+    }
+}
+
 Describe 'winsmux public first-run commands' {
     BeforeAll {
         $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'

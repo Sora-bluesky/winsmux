@@ -6653,6 +6653,45 @@ function Invoke-FocusUnlock {
     Write-Output "Focus unlocked $($entry.paneId) ($($entry.target))"
 }
 
+function ConvertTo-ProfileAgentHashtableLiteral {
+    param([Parameter(Mandatory = $true)][string]$Definition)
+
+    $separatorIndex = $Definition.IndexOf(':')
+    if ($separatorIndex -le 0 -or $separatorIndex -ge ($Definition.Length - 1)) {
+        Stop-WithError "usage: winsmux profile <name> <label:agent-command> [label:agent-command...]"
+    }
+
+    $label = $Definition.Substring(0, $separatorIndex).Trim()
+    $command = $Definition.Substring($separatorIndex + 1).Trim()
+    if ([string]::IsNullOrWhiteSpace($label) -or [string]::IsNullOrWhiteSpace($command)) {
+        Stop-WithError "usage: winsmux profile <name> <label:agent-command> [label:agent-command...]"
+    }
+
+    $adapter = ($command -split '\s+', 2)[0].Trim()
+    $labelLiteral = ConvertTo-BridgePowerShellLiteral -Value $label
+    $commandLiteral = ConvertTo-BridgePowerShellLiteral -Value $command
+    $adapterLiteral = ConvertTo-BridgePowerShellLiteral -Value $adapter
+    return "@{ label = $labelLiteral; command = $commandLiteral; adapter = $adapterLiteral }"
+}
+
+function Get-ProfileAgentGrid {
+    param([Parameter(Mandatory = $true)][int]$Count)
+
+    if ($Count -lt 1) {
+        Stop-WithError 'profile agent count must be greater than zero'
+    }
+
+    $rows = [Math]::Floor([Math]::Sqrt($Count))
+    while ($rows -gt 1 -and ($Count % $rows) -ne 0) {
+        $rows--
+    }
+
+    [PSCustomObject]@{
+        Rows = [int]$rows
+        Cols = [int]($Count / $rows)
+    }
+}
+
 function Invoke-Profile {
     $fragmentDir = Join-Path $env:LOCALAPPDATA "Microsoft\Windows Terminal\Fragments\winsmux"
     $fragmentFile = Join-Path $fragmentDir "winsmux.json"
@@ -6668,7 +6707,7 @@ function Invoke-Profile {
     }
 
     # Generate custom profile fragment
-    # $Target = profile name, $Rest = agent definitions like "builder:codex" "reviewer:claude"
+    # $Target = profile name, $Rest = agent definitions like "builder:codex-nightly" "reviewer:claude --model opus"
     $profileName = $Target
     $agents = @()
     if ($Rest -and $Rest.Count -gt 0) {
@@ -6681,6 +6720,15 @@ function Invoke-Profile {
     if ($agents.Count -gt 0) {
         $agentComment = " # agents: $($agents -join ', ')"
     }
+    $agentArgument = ''
+    if ($agents.Count -gt 0) {
+        $agentLiterals = @($agents | ForEach-Object { ConvertTo-ProfileAgentHashtableLiteral -Definition $_ })
+        $agentGrid = Get-ProfileAgentGrid -Count $agents.Count
+        $agentArgument = ' -Rows {0} -Cols {1} -Agents @({2})' -f $agentGrid.Rows, $agentGrid.Cols, ($agentLiterals -join ', ')
+    }
+    $profileNameLiteral = ConvertTo-BridgePowerShellLiteral -Value $profileName
+    $profileCommand = "& (Join-Path `$env:USERPROFILE '.winsmux\bin\winsmux-core.ps1') doctor; winsmux new-session -s $profileNameLiteral; & (Join-Path `$env:USERPROFILE '.winsmux\bin\start-orchestra.ps1')$agentArgument"
+    $encodedProfileCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($profileCommand))
 
     if (-not (Test-Path $fragmentDir)) {
         New-Item -ItemType Directory -Path $fragmentDir -Force | Out-Null
@@ -6690,7 +6738,7 @@ function Invoke-Profile {
         profiles = @(
             @{
                 name             = "winsmux $profileName"
-                commandline      = "pwsh -NoProfile -Command `"& '%USERPROFILE%\.winsmux\bin\winsmux-core.ps1' doctor; winsmux new-session -s $profileName; pwsh '%USERPROFILE%\.winsmux\bin\start-orchestra.ps1'`""
+                commandline      = "pwsh -NoProfile -EncodedCommand $encodedProfileCommand"
                 icon             = "`u{1F3BC}"
                 startingDirectory = "%USERPROFILE%"
                 tabTitle         = "winsmux $profileName"
