@@ -661,7 +661,8 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
     return tokens.some((token, index) =>
       normalizeAgentValue(stripOuterQuotes(token)) === "pr" &&
       tokens.slice(index + 1).some((nextToken) => normalizeAgentValue(stripOuterQuotes(nextToken)) === "merge")) ||
-      isGhApiMergeCommand(tokens);
+      isGhApiMergeCommand(tokens) ||
+      isGhApiRefWriteCommand(tokens);
   }
 
   return false;
@@ -678,6 +679,58 @@ function isGhApiMergeCommand(tokens) {
     /(?:^|\/)repos\/[^/]+\/[^/]+\/pulls\/\d+\/merge(?:$|[?#])/u.test(token) ||
     /(?:^|\/)pulls\/\d+\/merge(?:$|[?#])/u.test(token) ||
     token.includes("mergepullrequest"));
+}
+
+function isGhApiRefWriteCommand(tokens) {
+  const normalizedTokens = tokens.map((token) => normalizeAgentValue(stripOuterQuotes(token)));
+  const apiIndex = normalizedTokens.indexOf("api");
+  if (apiIndex < 0) {
+    return false;
+  }
+
+  const args = normalizedTokens.slice(apiIndex + 1);
+  if (!args.some(isGhApiGitRefEndpoint)) {
+    return false;
+  }
+
+  return hasGhApiWriteMethod(args) || hasGhApiWriteField(args);
+}
+
+function isGhApiGitRefEndpoint(token) {
+  return /(?:^|\/)repos\/[^/]+\/[^/]+\/git\/refs(?:\/|$|[?#])/u.test(token) ||
+         /(?:^|\/)repos\/[^/]+\/[^/]+\/git\/ref(?:\/|$|[?#])/u.test(token);
+}
+
+function hasGhApiWriteMethod(args) {
+  const writeMethods = new Set(["post", "put", "patch", "delete"]);
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if ((arg === "-x" || arg === "--method") && index + 1 < args.length) {
+      if (writeMethods.has(args[index + 1])) {
+        return true;
+      }
+      index += 1;
+      continue;
+    }
+
+    const inlineMethod = /^(?:-x=?|--method=)(post|put|patch|delete)$/u.exec(arg);
+    if (inlineMethod) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasGhApiWriteField(args) {
+  return args.some((arg) =>
+    arg === "-f" ||
+    arg === "-F" ||
+    arg === "--field" ||
+    arg === "--raw-field" ||
+    arg === "--input" ||
+    /^-(?:f|F).+/u.test(arg) ||
+    /^--(?:field|raw-field|input)=/u.test(arg));
 }
 
 function isReadOnlyGitSubcommand(gitSubcommand, tokens, subcommandIndex) {
@@ -953,7 +1006,8 @@ function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
         if (effectiveTokens.some((token, index) =>
           normalizeAgentValue(stripOuterQuotes(token)) === "pr" &&
           effectiveTokens.slice(index + 1).some((nextToken) => normalizeAgentValue(stripOuterQuotes(nextToken)) === "merge")) ||
-          isGhApiMergeCommand(effectiveTokens)) {
+          isGhApiMergeCommand(effectiveTokens) ||
+          isGhApiRefWriteCommand(effectiveTokens)) {
           return true;
         }
       }
@@ -1046,7 +1100,8 @@ function hasShellFunctionLifecycleCommand(command, reviewOnly) {
       if (effectiveTokens.some((token, index) =>
         normalizeAgentValue(stripOuterQuotes(token)) === "pr" &&
         effectiveTokens.slice(index + 1).some((nextToken) => normalizeAgentValue(stripOuterQuotes(nextToken)) === "merge")) ||
-        isGhApiMergeCommand(effectiveTokens)) {
+        isGhApiMergeCommand(effectiveTokens) ||
+        isGhApiRefWriteCommand(effectiveTokens)) {
         return true;
       }
     }
@@ -1084,7 +1139,8 @@ function hasPowerShellFunctionLifecycleCommand(command, reviewOnly) {
       if (effectiveTokens.some((token, index) =>
         normalizeAgentValue(stripOuterQuotes(token)) === "pr" &&
         effectiveTokens.slice(index + 1).some((nextToken) => normalizeAgentValue(stripOuterQuotes(nextToken)) === "merge")) ||
-        isGhApiMergeCommand(effectiveTokens)) {
+        isGhApiMergeCommand(effectiveTokens) ||
+        isGhApiRefWriteCommand(effectiveTokens)) {
         return true;
       }
     }
@@ -1099,7 +1155,7 @@ function isReadOnlyGitBranchCommand(tokens, subcommandIndex) {
     return true;
   }
 
-  const selectorOptions = ["--list", "-l", "--contains", "--merged", "--no-merged"];
+  const selectorOptions = ["--list", "-l", "--contains", "--merged", "--no-merged", "--all", "-a", "--remotes", "-r"];
   let hasSelector = false;
 
   for (let index = 0; index < args.length; index += 1) {
@@ -1284,7 +1340,8 @@ function isGhApiMergeCommandLine(command) {
         return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
 
-      return (executable === "gh" || executable === "gh.exe") && isGhApiMergeCommand(tokens);
+      return (executable === "gh" || executable === "gh.exe") &&
+             (isGhApiMergeCommand(tokens) || isGhApiRefWriteCommand(tokens));
     }));
 }
 

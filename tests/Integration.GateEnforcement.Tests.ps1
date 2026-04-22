@@ -988,6 +988,27 @@ EOF
         }
     }
 
+    It 'denies GitHub ref writes without Reviewer PASS for the current branch' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        foreach ($command in @(
+                'gh api -X PATCH repos/OWNER/REPO/git/refs/heads/main -f sha=abc',
+                'gh api -XPATCH repos/OWNER/REPO/git/refs/heads/main -f sha=abc',
+                'gh api --method DELETE repos/OWNER/REPO/git/refs/heads/old',
+                'gh api --method=PATCH repos/OWNER/REPO/git/ref/heads/main --field sha=abc',
+                'gh api repos/OWNER/REPO/git/refs -f ref=refs/heads/topic -f sha=abc'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+            }
+
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'review-approve'
+            $result.OutputObject.systemMessage | Should -Match 'review-request'
+        }
+    }
+
     It 'denies Worker git add even before the review gate' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
@@ -1036,7 +1057,12 @@ EOF
                 'cmd /c g^it add README.md',
                 'cmd /d/c git add README.md',
                 'cmd /d/c"git add README.md"',
-                'gh api repos/OWNER/REPO/pulls/123/merge -X PUT'
+                'gh api repos/OWNER/REPO/pulls/123/merge -X PUT',
+                'gh api -X PATCH repos/OWNER/REPO/git/refs/heads/main -f sha=abc',
+                'gh api -XPATCH repos/OWNER/REPO/git/refs/heads/main -f sha=abc',
+                'gh api repos/OWNER/REPO/git/refs -f ref=refs/heads/topic -f sha=abc',
+                'gh api repos/OWNER/REPO/git/ref/heads/main --method=PATCH --field sha=abc',
+                'pwsh -Command "gh api --method PATCH repos/OWNER/REPO/git/refs/heads/main -f sha=abc"'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -1149,6 +1175,8 @@ EOF
         foreach ($command in @(
                 'git branch feature/new',
                 'git branch -D old-topic',
+                'git branch -m old-topic new-topic',
+                'git branch --set-upstream-to origin/main',
                 'git tag v0.0.1',
                 'git tag -d v0.0.1'
             )) {
@@ -1189,6 +1217,10 @@ EOF
         foreach ($command in @(
                 'git branch --show-current',
                 'git branch --list',
+                'git branch -a',
+                'git branch --all',
+                'git branch -r',
+                'git branch --remotes',
                 'git branch --format "%(refname:short)"',
                 'git tag --list',
                 'git tag --format "%(refname:short)"',
