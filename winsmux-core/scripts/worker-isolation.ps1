@@ -80,11 +80,9 @@ function Test-WinsmuxWorkerIsolationPaneEntry {
         return $true
     }
 
-    foreach ($name in @('launch_dir', 'builder_worktree_path', 'builder_branch', 'worktree_git_dir', 'expected_origin')) {
-        $value = [string](Get-WinsmuxWorkerIsolationProperty -Value $Pane -Name $name)
-        if (-not [string]::IsNullOrWhiteSpace($value)) {
-            return $true
-        }
+    $worktreePath = [string](Get-WinsmuxWorkerIsolationProperty -Value $Pane -Name 'builder_worktree_path')
+    if (-not [string]::IsNullOrWhiteSpace($worktreePath)) {
+        return $true
     }
 
     return $false
@@ -252,14 +250,6 @@ function Get-WinsmuxWorkerIsolationReport {
 
         if ([string]::IsNullOrWhiteSpace($branchExpected)) {
             Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message 'builder_branch is missing'
-        }
-
-        if ([string]::IsNullOrWhiteSpace($gitDirExpected)) {
-            Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message 'worktree_git_dir is missing'
-        }
-
-        if ([string]::IsNullOrWhiteSpace($originExpected)) {
-            Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message 'expected_origin is missing'
         }
 
         if (-not [string]::IsNullOrWhiteSpace($worktreePath) -and -not (Test-Path -LiteralPath $worktreePath -PathType Container)) {

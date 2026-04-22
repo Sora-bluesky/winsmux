@@ -5920,6 +5920,54 @@ Describe 'worker isolation diagnostics' {
         $report.findings[0].message | Should -Match 'branch is main'
     }
 
+    It 'ignores non-worker panes without assigned worktree metadata' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $manifest = [pscustomobject]@{
+            panes = [ordered]@{
+                operator = [pscustomobject]@{
+                    role             = 'Operator'
+                    launch_dir       = $script:workerIsolationTempRoot
+                    worktree_git_dir = $script:workerIsolationGitDir
+                    expected_origin  = 'https://github.com/example/repo.git'
+                }
+            }
+        }
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest $manifest `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker -Branch 'main')
+
+        $report.ok | Should -Be $true
+        $report.worker_count | Should -Be 0
+    }
+
+    It 'allows scaled worker panes before gitdir and origin metadata are refreshed' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $manifest = [pscustomobject]@{
+            panes = [ordered]@{
+                'worker-7' = [pscustomobject]@{
+                    role                  = 'Worker'
+                    launch_dir            = $script:workerIsolationWorktree
+                    builder_worktree_path = $script:workerIsolationWorktree
+                    builder_branch        = 'worktree-worker-1'
+                }
+            }
+        }
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest $manifest `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker)
+
+        $report.ok | Should -Be $true
+        $report.worker_count | Should -Be 1
+    }
+
     It 'fails when the worker branch drifts from the manifest' {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
 
