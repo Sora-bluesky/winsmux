@@ -3085,6 +3085,11 @@ function isShellCwdChangeSegment(segment) {
     return nestedCommand ? hasShellCwdChangeCommand(nestedCommand) : false;
   }
 
+  if (isShellCommandExecutable(executable)) {
+    const nestedCommand = getShellCommandArgument(tokens);
+    return nestedCommand ? hasShellCwdChangeCommand(nestedCommand) : false;
+  }
+
   return [
     "cd",
     "chdir",
@@ -3100,6 +3105,12 @@ function hasEnvChdirOption(tokens) {
     const normalizedToken = normalizeAgentValue(stripOuterQuotes(tokens[index]));
     if (normalizedToken === "-c" || normalizedToken === "--chdir" || normalizedToken.startsWith("--chdir=")) {
       return true;
+    }
+    if (normalizedToken === "--") {
+      return false;
+    }
+    if (!normalizedToken.startsWith("-") && !/^[A-Za-z_][A-Za-z0-9_]*=/u.test(stripOuterQuotes(tokens[index]))) {
+      return false;
     }
   }
 

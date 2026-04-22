@@ -558,6 +558,7 @@ PY
     It 'denies Worker relative shell writes after changing directory' {
         foreach ($command in @(
                 'cd C:\repo; "demo" > README.md',
+                'bash -c "cd ..; touch README.md"',
                 'env -C C:\repo python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"',
                 'FOO=1 env -C C:\repo python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"'
             )) {
@@ -571,6 +572,18 @@ PY
             & $script:AssertDenyResult -Result $result
             $result.OutputObject.systemMessage | Should -Match 'relative shell write targets'
         }
+    }
+
+    It 'allows Worker env-wrapped relative shell writes without chdir' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = 'env python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE              = 'Worker'
+            WINSMUX_ASSIGNED_WORKTREE = (Get-Location).Path
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
     }
 
     It 'allows Worker shell writes inside the assigned worktree' {
