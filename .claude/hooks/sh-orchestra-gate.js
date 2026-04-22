@@ -596,6 +596,10 @@ function isGhPrMergeCommand(command) {
 }
 
 function isOperatorOnlyGitLifecycleCommand(command) {
+  if (hasPowerShellGitAliasLifecycleCommand(command, false)) {
+    return true;
+  }
+
   return splitCommandSegments(command).some((segment) =>
     splitCommandPipelineStages(segment).some(isOperatorOnlyGitLifecycleSegment));
 }
@@ -878,6 +882,48 @@ function isGitLifecycleSubcommandName(value) {
   ].includes(normalizeAgentValue(value));
 }
 
+function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
+  const aliases = new Set();
+  for (const segment of splitCommandSegments(command)) {
+    for (const pipelineStage of splitCommandPipelineStages(segment)) {
+      const normalizedSegment = unwrapPowerShellCommandWrapper(pipelineStage);
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedSegment));
+      if (tokens.length === 0) {
+        continue;
+      }
+
+      const executable = normalizeAgentValue(getExecutableBasename(tokens[0]));
+      if (executable === "set-alias" || executable === "sal") {
+        const aliasName = normalizeAgentValue(stripOuterQuotes(tokens[1] || ""));
+        const aliasTarget = normalizeAgentValue(stripOuterQuotes(tokens[2] || ""));
+        if (aliasName && (aliasTarget === "git" || aliasTarget === "git.exe")) {
+          aliases.add(aliasName);
+        }
+        continue;
+      }
+
+      if (!aliases.has(executable)) {
+        continue;
+      }
+
+      const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[1] || ""));
+      if (reviewOnly) {
+        if (subcommand === "commit" || subcommand === "merge") {
+          return true;
+        }
+        continue;
+      }
+
+      if (isGitLifecycleSubcommandName(subcommand) ||
+          !isReadOnlyGitSubcommand(subcommand, tokens, 1)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 function isReadOnlyGitBranchCommand(tokens, subcommandIndex) {
   const args = tokens.slice(subcommandIndex + 1);
   if (args.length === 0) {
@@ -963,6 +1009,10 @@ function isReadOnlyGitWorktreeCommand(tokens, subcommandIndex) {
 }
 
 function isReviewGatedCommand(command) {
+  if (hasPowerShellGitAliasLifecycleCommand(command, true)) {
+    return true;
+  }
+
   return isGitCommitOrMergeCommandLine(command) ||
          isGitCommitCommand(command) ||
          isGitMergeCommand(command) ||
@@ -1733,6 +1783,10 @@ function collectPowerShellDotNetMutationTargets(segment, targets) {
     }
   }
 
+  if (/\bnew-object\b[\s\S]*(?:system\.)?io\.(?:fileinfo|directoryinfo)\b[\s\S]*\.\s*(?:delete|create|createtext|openwrite|moveto|copyto)\s*\(/iu.test(segment)) {
+    targets.push("$unparsed-powershell-dotnet-write");
+  }
+
   if (!foundTarget && (/\[(?:system\.)?io\.(?:file|directory)\]\s*::\s*(?:writealltext|writeallbytes|writealllines|appendalltext|appendalllines|create|createtext|delete|open|openwrite|openhandle|copy|move|replace|createdirectory)\s*\(/iu.test(segment) ||
       /\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*::\s*new\s*\([^)]*\)\s*\.\s*(?:delete|create|createtext|openwrite|moveto|copyto)\s*\(/iu.test(segment))) {
     targets.push("$unparsed-powershell-dotnet-write");
@@ -1798,6 +1852,11 @@ function collectPythonMutationTargets(segment, targets) {
     targets.push("$unparsed-python-write");
   }
 
+  if (/(?:^|[^\w])os\.(?:rename|replace)\s*\(\s*["'][^"']+["']\s*,\s*(?!["'])/iu.test(segment) ||
+      /(?:^|[^\w])shutil\.(?:copy|copy2|copyfile|copytree|move)\s*\(\s*["'][^"']+["']\s*,\s*(?!["'])/iu.test(segment)) {
+    targets.push("$unparsed-python-write");
+  }
+
   if (!foundTarget && /(?:write_text|write_bytes|\.write\s*\(|\bopen\s*\(|\.(?:makedirs|mkdir|removedirs|remove|rename|replace|rmdir|touch|unlink)\s*\(|\b(?:copy|copy2|copyfile|copytree|move|rmtree)\s*\()/iu.test(segment)) {
     targets.push("$unparsed-python-write");
   }
@@ -1820,6 +1879,11 @@ function collectNodeMutationTargets(segment, targets) {
       targets.push(match[1] || "");
       foundTarget = true;
     }
+  }
+
+  if (/(?:renameSync|copyFileSync|cpSync)\s*\(\s*["'][^"']+["']\s*,\s*(?!["'])/iu.test(segment) ||
+      /(?:rename|copyFile|cp)\s*\(\s*["'][^"']+["']\s*,\s*(?!["'])/iu.test(segment)) {
+    targets.push("$unparsed-node-write");
   }
 
   if (!foundTarget && /(?:writeFileSync|appendFileSync|rmSync|unlinkSync|mkdirSync|mkdtempSync|rmdirSync|truncateSync|createWriteStream|openSync|renameSync|copyFileSync|cpSync|writeFile|appendFile|rm|unlink|mkdir|mkdtemp|rmdir|truncate|open|rename|copyFile|cp|\.write\s*\()/iu.test(segment)) {
@@ -1922,7 +1986,7 @@ function hasShellCwdChangeCommand(command) {
 
 function isShellCwdChangeSegment(segment) {
   const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
-  const tokens = tokenizeCommandLine(normalizedSegment);
+  const tokens = stripInlineEnvironmentPrefixes(tokenizeCommandLine(normalizedSegment));
   if (tokens.length === 0) {
     return false;
   }

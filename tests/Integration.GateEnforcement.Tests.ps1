@@ -353,6 +353,8 @@ panes:
                 'pwsh -Command "(New-Object -TypeName System.IO.FileInfo -ArgumentList ''C:\repo\README.md'').Delete()"',
                 'pwsh -Command "(New-Object -TypeName:System.IO.FileInfo -ArgumentList:''C:\repo\README.md'').Delete()"',
                 'pwsh -Command "(New-Object -TypeName System.IO.FileInfo -ArgumentList C:\repo\README.md).Delete()"',
+                'pwsh -Command "(New-Object -Type System.IO.FileInfo -Arg ''C:\repo\README.md'').Delete()"',
+                'pwsh -Command "(New-Object -TypeName ''System.IO.FileInfo'' -ArgumentList ''C:\repo\README.md'').Delete()"',
                 'pwsh -Command "New-Item -Name README.md -ItemType File"',
                 'pwsh -Command "New-Item -Name:README.md -ItemType:File"',
                 'pwsh -Command "Export-Csv -Path C:\repo\out.csv -InputObject @{}"',
@@ -390,12 +392,14 @@ panes:
                 'python -c "import os; os.remove(''C:/repo/README.md'')"',
                 'python -c "import os as o; o.remove(''C:/repo/README.md'')"',
                 'python -c "import os; os.rename(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"',
+                'python -c "from pathlib import Path; import os; dest=''C:/repo/README.md''; Path(''C:/repo/.worktrees/worker-1/safe.txt'').write_text(''x''); os.rename(''C:/repo/.worktrees/worker-1/safe.txt'', dest)"',
                 'python -c "import os; os.makedirs(''C:/repo/out'')"',
                 'python -c "import shutil; shutil.rmtree(''C:/repo/out'')"',
                 'python -c "import shutil; shutil.move(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"',
                 'python -c "from shutil import copyfile; copyfile(''C:/repo/source.txt'', ''C:/repo/README.md'')"',
                 'python -c "import shutil; shutil.copyfile(''C:/repo/source.txt'', ''C:/repo/README.md'')"',
-                'node -e "require(''fs'').renameSync(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"'
+                'node -e "require(''fs'').renameSync(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"',
+                'node -e "const fs=require(''fs''); const dest=''C:/repo/README.md''; fs.writeFileSync(''C:/repo/.worktrees/worker-1/safe.txt'', ''x''); fs.renameSync(''C:/repo/.worktrees/worker-1/safe.txt'', dest)"'
             )) {
             $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -500,7 +504,8 @@ PY
     It 'denies Worker relative shell writes after changing directory' {
         foreach ($command in @(
                 'cd C:\repo; "demo" > README.md',
-                'env -C C:\repo python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"'
+                'env -C C:\repo python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"',
+                'FOO=1 env -C C:\repo python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"'
             )) {
             $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -900,7 +905,8 @@ EOF
 
         foreach ($command in @(
                 'git commit -m "feat: gated"',
-                'git -c alias.ci=commit ci -m "feat: gated"'
+                'git -c alias.ci=commit ci -m "feat: gated"',
+                'Set-Alias g git; g commit -m "feat: gated"'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -981,6 +987,7 @@ EOF
                 'FOO=1 git diff --output=C:/repo/README.md',
                 'pwsh -Com "git add README.md"',
                 'pwsh -Com "git push origin feature/review-gate"',
+                'Set-Alias g git; g add README.md',
                 'git -c alias.m="!git m merge main" m',
                 'cmd /c "echo x & git add README.md"',
                 'cmd /c"echo x & git add README.md"',
