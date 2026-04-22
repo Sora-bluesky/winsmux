@@ -1569,6 +1569,7 @@ function collectPowerShellMutationTargets(tokens, targets) {
     "-outfile",
     "-outputdirectory",
   ];
+  const pathOptionPrefixes = expandPowerShellOptionPrefixes(pathOptionNames);
   const valueOptionNames = [
     "-value",
     "-encoding",
@@ -1576,11 +1577,12 @@ function collectPowerShellMutationTargets(tokens, targets) {
     "-itemtype",
     "-name",
   ];
+  const valueOptionPrefixes = expandPowerShellOptionPrefixes(valueOptionNames);
 
   for (let index = 1; index < tokens.length; index += 1) {
     const token = stripOuterQuotes(tokens[index]);
     const normalizedToken = normalizeAgentValue(token);
-    if (pathOptionNames.includes(normalizedToken)) {
+    if (pathOptionPrefixes.includes(normalizedToken)) {
       if (index + 1 < tokens.length) {
         targets.push(stripOuterQuotes(tokens[index + 1]));
       }
@@ -1588,17 +1590,17 @@ function collectPowerShellMutationTargets(tokens, targets) {
       continue;
     }
 
-    if (valueOptionNames.includes(normalizedToken)) {
+    if (valueOptionPrefixes.includes(normalizedToken)) {
       index += 1;
       continue;
     }
 
-    if (valueOptionNames.some((optionName) =>
+    if (valueOptionPrefixes.some((optionName) =>
       normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"))) {
       continue;
     }
 
-    const inlinePathOption = pathOptionNames.find((optionName) =>
+    const inlinePathOption = pathOptionPrefixes.find((optionName) =>
       normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"));
     if (inlinePathOption) {
       targets.push(token.slice(inlinePathOption.length + 1));
@@ -1611,19 +1613,31 @@ function collectPowerShellMutationTargets(tokens, targets) {
   }
 }
 
+function expandPowerShellOptionPrefixes(optionNames) {
+  const prefixes = new Set();
+  for (const optionName of optionNames) {
+    const normalizedOption = normalizeAgentValue(optionName);
+    for (let length = 2; length <= normalizedOption.length; length += 1) {
+      prefixes.add(normalizedOption.slice(0, length));
+    }
+  }
+
+  return Array.from(prefixes);
+}
+
 function collectPowerShellDotNetMutationTargets(segment, targets) {
   const firstArgumentPatterns = [
     /\[(?:system\.)?io\.file\]\s*::\s*(?:writealltext|writeallbytes|writealllines|appendalltext|appendalllines|create|createtext|delete|open|openwrite|openhandle)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.directory\]\s*::\s*(?:createdirectory|delete|move)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*::\s*new\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
-    /\(\s*new-object\s+(?:-typename\s+)?(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:-argumentlist\s+)?(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
+    /\(\s*new-object\s+(?:-typename(?:\s+|:))?(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:-argumentlist(?:\s+|:))?(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
     /\(\s*\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
   ];
   const twoArgumentPatterns = [
     /\[(?:system\.)?io\.file\]\s*::\s*(?:copy|move|replace)\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.directory\]\s*::\s*(?:move)\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*::\s*new\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
-    /\(\s*new-object\s+(?:-typename\s+)?(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:-argumentlist\s+)?(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
+    /\(\s*new-object\s+(?:-typename(?:\s+|:))?(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:-argumentlist(?:\s+|:))?(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\(\s*\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
   ];
   let foundTarget = false;
@@ -1700,6 +1714,10 @@ function collectPythonMutationTargets(segment, targets) {
       targets.push(match[1] || "");
       foundTarget = true;
     }
+  }
+
+  if (/(?:^|[^\w])Path\s*\(\s*["'][^"']+["']\s*\)\s*\.\s*(?:rename|replace)\s*\(\s*Path\s*\(\s*(?!["'])/iu.test(segment)) {
+    targets.push("$unparsed-python-write");
   }
 
   if (!foundTarget && /(?:write_text|write_bytes|\.write\s*\(|\bopen\s*\(|\.(?:makedirs|mkdir|removedirs|remove|rename|replace|rmdir|touch|unlink)\s*\(|\b(?:copy|copy2|copyfile|copytree|move|rmtree)\s*\()/iu.test(segment)) {
