@@ -26,6 +26,23 @@ function Get-WinsmuxWorkerIsolationProperty {
     return $null
 }
 
+function Test-WinsmuxWorkerIsolationProperty {
+    param(
+        [AllowNull()]$Value,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $Value) {
+        return $false
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        return $Value.Contains($Name)
+    }
+
+    return ($null -ne $Value.PSObject -and $Value.PSObject.Properties.Name -contains $Name)
+}
+
 function Resolve-WinsmuxWorkerIsolationPath {
     param(
         [Parameter(Mandatory = $true)][string]$BasePath,
@@ -233,6 +250,8 @@ function Get-WinsmuxWorkerIsolationReport {
         $branchExpected = [string](Get-WinsmuxWorkerIsolationProperty -Value $pane -Name 'builder_branch')
         $gitDirExpectedRaw = [string](Get-WinsmuxWorkerIsolationProperty -Value $pane -Name 'worktree_git_dir')
         $originExpected = [string](Get-WinsmuxWorkerIsolationProperty -Value $pane -Name 'expected_origin')
+        $hasGitDirExpected = Test-WinsmuxWorkerIsolationProperty -Value $pane -Name 'worktree_git_dir'
+        $hasOriginExpected = Test-WinsmuxWorkerIsolationProperty -Value $pane -Name 'expected_origin'
 
         $worktreePath = Resolve-WinsmuxWorkerIsolationPath -BasePath $ProjectDir -Path $worktreePathRaw
         $launchPath = Resolve-WinsmuxWorkerIsolationPath -BasePath $ProjectDir -Path $launchDir
@@ -284,28 +303,40 @@ function Get-WinsmuxWorkerIsolationReport {
                 Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message "branch probe failed: $($branchProbe.Error)$($branchProbe.Output)"
             }
 
-            $originProbe = Invoke-WinsmuxWorkerIsolationGit -GitPath $GitPath -WorktreePath $worktreePath -Arguments @('config', '--get', 'remote.origin.url') -GitInvoker $GitInvoker
-            if ($originProbe.Ok) {
-                $actualOrigin = $originProbe.Output.Trim()
-                $actualOriginComparable = ConvertTo-WinsmuxWorkerIsolationComparableOrigin -Origin $actualOrigin
-                $originExpectedComparable = ConvertTo-WinsmuxWorkerIsolationComparableOrigin -Origin $originExpected
-                if (-not [string]::IsNullOrWhiteSpace($originExpected) -and $actualOriginComparable -ne $originExpectedComparable) {
-                    $safeActualOrigin = ConvertTo-WinsmuxWorkerIsolationSafeOrigin -Origin $actualOrigin
-                    $safeExpectedOrigin = ConvertTo-WinsmuxWorkerIsolationSafeOrigin -Origin $originExpected
-                    Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message "origin is $safeActualOrigin; expected $safeExpectedOrigin"
+            if ($hasOriginExpected) {
+                $originProbe = Invoke-WinsmuxWorkerIsolationGit -GitPath $GitPath -WorktreePath $worktreePath -Arguments @('config', '--get', 'remote.origin.url') -GitInvoker $GitInvoker
+                if ($originProbe.Ok) {
+                    $actualOrigin = $originProbe.Output.Trim()
+                    $actualOriginComparable = ConvertTo-WinsmuxWorkerIsolationComparableOrigin -Origin $actualOrigin
+                    $originExpectedComparable = ConvertTo-WinsmuxWorkerIsolationComparableOrigin -Origin $originExpected
+                    if ($actualOriginComparable -ne $originExpectedComparable) {
+                        $safeActualOrigin = ConvertTo-WinsmuxWorkerIsolationSafeOrigin -Origin $actualOrigin
+                        $safeExpectedOrigin = ConvertTo-WinsmuxWorkerIsolationSafeOrigin -Origin $originExpected
+                        if ([string]::IsNullOrWhiteSpace($safeExpectedOrigin)) {
+                            Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message "origin is $safeActualOrigin; expected no origin"
+                        } else {
+                            Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message "origin is $safeActualOrigin; expected $safeExpectedOrigin"
+                        }
+                    }
+                } elseif (-not [string]::IsNullOrWhiteSpace($originExpected)) {
+                    Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message "origin probe failed: $($originProbe.Error)$($originProbe.Output)"
                 }
-            } else {
-                Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message "origin probe failed: $($originProbe.Error)$($originProbe.Output)"
             }
 
-            $gitDirProbe = Invoke-WinsmuxWorkerIsolationGit -GitPath $GitPath -WorktreePath $worktreePath -Arguments @('rev-parse', '--git-dir') -GitInvoker $GitInvoker
-            if ($gitDirProbe.Ok) {
-                $actualGitDir = Resolve-WinsmuxWorkerIsolationPath -BasePath $worktreePath -Path $gitDirProbe.Output
-                if (-not [string]::IsNullOrWhiteSpace($gitDirExpected) -and $actualGitDir -ne $gitDirExpected) {
-                    Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message "gitdir is $actualGitDir; expected $gitDirExpected"
+            if ($hasGitDirExpected) {
+                if ([string]::IsNullOrWhiteSpace($gitDirExpected)) {
+                    Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message 'worktree_git_dir is empty'
+                } else {
+                    $gitDirProbe = Invoke-WinsmuxWorkerIsolationGit -GitPath $GitPath -WorktreePath $worktreePath -Arguments @('rev-parse', '--git-dir') -GitInvoker $GitInvoker
+                    if ($gitDirProbe.Ok) {
+                        $actualGitDir = Resolve-WinsmuxWorkerIsolationPath -BasePath $worktreePath -Path $gitDirProbe.Output
+                        if ($actualGitDir -ne $gitDirExpected) {
+                            Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message "gitdir is $actualGitDir; expected $gitDirExpected"
+                        }
+                    } else {
+                        Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message "gitdir probe failed: $($gitDirProbe.Error)$($gitDirProbe.Output)"
+                    }
                 }
-            } else {
-                Add-WinsmuxWorkerIsolationFinding -Findings $findings -Label $label -Message "gitdir probe failed: $($gitDirProbe.Error)$($gitDirProbe.Output)"
             }
         }
 

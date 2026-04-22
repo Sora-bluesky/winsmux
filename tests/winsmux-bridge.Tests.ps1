@@ -5968,6 +5968,82 @@ Describe 'worker isolation diagnostics' {
         $report.worker_count | Should -Be 1
     }
 
+    It 'allows local-only repositories when expected origin is recorded as empty' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest -ExpectedOrigin '') `
+            -GitPath 'git' `
+            -GitInvoker {
+                param([string]$WorktreePath, [string[]]$Arguments)
+
+                switch ($Arguments -join ' ') {
+                    'rev-parse --show-toplevel' { $WorktreePath; break }
+                    'branch --show-current' { 'worktree-worker-1'; break }
+                    'config --get remote.origin.url' { throw 'remote origin not configured' }
+                    'rev-parse --git-dir' { $script:workerIsolationGitDir; break }
+                    default { throw "unexpected git args: $($Arguments -join ' ')" }
+                }
+            }
+
+        $report.ok | Should -Be $true
+        $report.findings.Count | Should -Be 0
+    }
+
+    It 'fails when expected origin is empty but the worker has an origin' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest -ExpectedOrigin '') `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker -Origin 'https://github.com/example/repo.git')
+
+        $report.ok | Should -Be $false
+        $report.findings[0].message | Should -Match 'expected no origin'
+    }
+
+    It 'fails when expected gitdir is recorded as empty' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $manifest = New-TestWorkerIsolationManifest
+        $manifest.panes.'worker-1'.worktree_git_dir = ''
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest $manifest `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker)
+
+        $report.ok | Should -Be $false
+        $report.findings[0].message | Should -Be 'worktree_git_dir is empty'
+    }
+
+    It 'fails when actual gitdir drifts from the manifest' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $otherGitDir = Join-Path $script:workerIsolationTempRoot '.git\worktrees\other-worker'
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest) `
+            -GitPath 'git' `
+            -GitInvoker {
+                param([string]$WorktreePath, [string[]]$Arguments)
+
+                switch ($Arguments -join ' ') {
+                    'rev-parse --show-toplevel' { $WorktreePath; break }
+                    'branch --show-current' { 'worktree-worker-1'; break }
+                    'config --get remote.origin.url' { 'https://github.com/example/repo.git'; break }
+                    'rev-parse --git-dir' { $otherGitDir; break }
+                    default { throw "unexpected git args: $($Arguments -join ' ')" }
+                }
+            }
+
+        $report.ok | Should -Be $false
+        $report.findings[0].message | Should -Match 'gitdir is'
+    }
+
     It 'fails when the worker branch drifts from the manifest' {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
 
