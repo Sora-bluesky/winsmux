@@ -399,6 +399,8 @@ panes:
                 'Tee-Object -FilePath C:\repo\README.md',
                 'bash -c "touch C:/repo/outside.py"',
                 'cp -t C:\repo\outside C:\repo\.worktrees\worker-1\src.txt',
+                'sed -i s/a/b/ C:/repo/README.md',
+                'install C:/repo/.worktrees/worker-1/source.txt C:/repo/README.md',
                 'Set-Content -LiteralPath \Users\me\out.txt -Value demo',
                 'Set-Content -LiteralPath ~\out.txt -Value demo',
                 'xcopy C:\repo\.worktrees\worker-1\safe.txt C:\repo\out.txt',
@@ -432,6 +434,7 @@ panes:
                 'python -c "import os; os.remove(''C:/repo/README.md'')"',
                 'python -c "import os as o; o.remove(''C:/repo/README.md'')"',
                 'python -c "from os import remove; remove(''C:/repo/README.md'')"',
+                'python -c "from os import remove; target=''C:/repo/README.md''; remove(target)"',
                 'python -c "from os import remove as r; r(''C:/repo/README.md'')"',
                 'python -c "from os import rename as rn; rn(''C:/repo/.worktrees/worker-1/a.txt'', ''C:/repo/README.md'')"',
                 'python -c "from os import remove as r; target=''C:/repo/README.md''; r(target)"',
@@ -566,6 +569,8 @@ PY
                 'bash -c "cd ..; touch README.md"',
                 'command cd .. && touch outside.txt',
                 'builtin cd .. && touch outside.txt',
+                'pwsh -Command "pushd ..; Set-Content -LiteralPath README.md -Value demo"',
+                'Start-Process -WorkingDirectory .. -FilePath pwsh -ArgumentList "-Command", "Set-Content -LiteralPath README.md -Value demo"',
                 'env -C C:\repo python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"',
                 'FOO=1 env -C C:\repo python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"'
             )) {

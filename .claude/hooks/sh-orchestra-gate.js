@@ -2550,6 +2550,32 @@ function collectPosixMutationTargets(tokens, targets) {
     return;
   }
 
+  if (executable === "install") {
+    const targetDirectory = getPosixOptionValue(tokens, ["-t", "--target-directory"]);
+    if (targetDirectory) {
+      targets.push(targetDirectory);
+      return;
+    }
+
+    const positional = collectPosixPositionalValues(tokens);
+    if (positional.length >= 2) {
+      targets.push(positional[positional.length - 1]);
+    } else {
+      targets.push("$unparsed-posix-write-target");
+    }
+    return;
+  }
+
+  if (executable === "sed" && hasPosixOption(tokens, ["-i", "--in-place"])) {
+    const positional = collectPosixPositionalValues(tokens);
+    if (positional.length >= 2) {
+      targets.push(...positional.slice(1));
+    } else {
+      targets.push("$unparsed-posix-write-target");
+    }
+    return;
+  }
+
   if (executable === "mv") {
     const positional = collectPosixPositionalValues(tokens);
     if (positional.length >= 2) {
@@ -2583,6 +2609,17 @@ function getPosixOptionValue(tokens, optionNames) {
   }
 
   return "";
+}
+
+function hasPosixOption(tokens, optionNames) {
+  const normalizedOptionNames = optionNames.map((name) => normalizeAgentValue(name));
+  return tokens.slice(1).some((token) => {
+    const normalizedToken = normalizeAgentValue(stripOuterQuotes(token));
+    return normalizedOptionNames.some((name) =>
+      normalizedToken === name ||
+      normalizedToken.startsWith(name + "=") ||
+      (name.length === 2 && normalizedToken.startsWith(name) && !normalizedToken.startsWith("--")));
+  });
 }
 
 function collectPowerShellScriptBlockWriteTargets(segment, targets, powerShellAliases) {
@@ -3048,13 +3085,13 @@ function collectPythonMutationAliases(segment) {
   for (const match of String(segment || "").matchAll(/\bfrom\s+(os|shutil)\s+import\s+([^;\n]+)/giu)) {
     const importList = match[2] || "";
     for (const part of importList.split(",")) {
-      const aliasMatch = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*$/u.exec(part);
-      if (!aliasMatch) {
+      const aliasMatch = /^\s*([A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?\s*$/u.exec(part);
+      if (!aliasMatch || !aliasMatch[1]) {
         continue;
       }
 
       const importedName = aliasMatch[1];
-      const aliasName = aliasMatch[2];
+      const aliasName = aliasMatch[2] || importedName;
       if (singleTargetNames.has(importedName)) {
         aliases.push({ name: aliasName, kind: "single" });
       } else if (sourceAndDestinationNames.has(importedName)) {
@@ -3245,14 +3282,25 @@ function isShellCwdChangeSegment(segment) {
     return nestedCommand ? hasShellCwdChangeCommand(nestedCommand) : false;
   }
 
+  if (isPowerShellStartProcessExecutable(executable)) {
+    return hasPowerShellStartProcessWorkingDirectoryOption(tokens);
+  }
+
   return [
     "cd",
     "chdir",
+    "pushd",
+    "popd",
     "set-location",
     "sl",
     "push-location",
     "pop-location",
   ].includes(executable);
+}
+
+function hasPowerShellStartProcessWorkingDirectoryOption(tokens) {
+  return collectPowerShellOptionValues(tokens, expandPowerShellOptionPrefixes(["-workingdirectory"]))
+    .some((value) => Boolean(stripOuterQuotes(String(value || "").trim())));
 }
 
 function hasEnvChdirOption(tokens) {
