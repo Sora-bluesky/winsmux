@@ -628,6 +628,13 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
     }
   }
 
+  if (isShellCommandExecutable(executable)) {
+    const nestedCommand = getShellCommandArgument(tokens);
+    if (nestedCommand) {
+      return isOperatorOnlyGitLifecycleCommand(nestedCommand);
+    }
+  }
+
   if (executable === "git" || executable === "git.exe") {
     const gitSubcommandIndex = findGitSubcommandIndex(tokens);
     if (gitSubcommandIndex < 0) {
@@ -883,7 +890,12 @@ function isGitLifecycleSubcommandName(value) {
 }
 
 function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
-  const aliases = new Set();
+  const aliases = new Map();
+  const ghAliases = new Map();
+  if (hasShellFunctionLifecycleCommand(command, reviewOnly)) {
+    return true;
+  }
+
   for (const segment of splitCommandSegments(command)) {
     for (const pipelineStage of splitCommandPipelineStages(segment)) {
       const normalizedSegment = unwrapPowerShellCommandWrapper(pipelineStage);
@@ -894,19 +906,122 @@ function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
 
       const executable = normalizeAgentValue(getExecutableBasename(tokens[0]));
       if (executable === "set-alias" || executable === "sal") {
-        const aliasName = normalizeAgentValue(stripOuterQuotes(tokens[1] || ""));
-        const aliasTarget = normalizeAgentValue(stripOuterQuotes(tokens[2] || ""));
+        const { aliasName, aliasTarget } = getSetAliasDefinition(tokens);
         if (aliasName && (aliasTarget === "git" || aliasTarget === "git.exe")) {
-          aliases.add(aliasName);
+          aliases.set(aliasName, []);
+        }
+        if (aliasName && (aliasTarget === "gh" || aliasTarget === "gh.exe")) {
+          ghAliases.set(aliasName, []);
         }
         continue;
       }
 
-      if (!aliases.has(executable)) {
+      if (executable === "alias") {
+        const aliasDefinition = getShellAliasDefinition(tokens);
+        if (aliasDefinition.aliasName && aliasDefinition.aliasTarget === "git") {
+          aliases.set(aliasDefinition.aliasName, aliasDefinition.aliasArgs);
+        }
+        if (aliasDefinition.aliasName && aliasDefinition.aliasTarget === "gh") {
+          ghAliases.set(aliasDefinition.aliasName, aliasDefinition.aliasArgs);
+        }
         continue;
       }
 
-      const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[1] || ""));
+      if (aliases.has(executable)) {
+        const aliasArgs = aliases.get(executable) || [];
+        const effectiveTokens = [tokens[0], ...aliasArgs, ...tokens.slice(1)];
+        const subcommand = normalizeAgentValue(stripOuterQuotes(effectiveTokens[1] || ""));
+        if (reviewOnly) {
+          if (subcommand === "commit" || subcommand === "merge") {
+            return true;
+          }
+          continue;
+        }
+
+        if (isGitLifecycleSubcommandName(subcommand) ||
+            !isReadOnlyGitSubcommand(subcommand, effectiveTokens, 1)) {
+          return true;
+        }
+      }
+
+      if (ghAliases.has(executable)) {
+        const aliasArgs = ghAliases.get(executable) || [];
+        const effectiveTokens = [tokens[0], ...aliasArgs, ...tokens.slice(1)];
+        if (effectiveTokens.some((token, index) =>
+          normalizeAgentValue(stripOuterQuotes(token)) === "pr" &&
+          effectiveTokens.slice(index + 1).some((nextToken) => normalizeAgentValue(stripOuterQuotes(nextToken)) === "merge")) ||
+          isGhApiMergeCommand(effectiveTokens)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+}
+
+function getSetAliasDefinition(tokens) {
+  let aliasName = "";
+  let aliasTarget = "";
+  const nameOptionPrefixes = expandPowerShellOptionPrefixes(["-name"]);
+  const valueOptionPrefixes = expandPowerShellOptionPrefixes(["-value"]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(token);
+    if (nameOptionPrefixes.includes(normalizedToken) && index + 1 < tokens.length) {
+      aliasName = normalizeAgentValue(stripOuterQuotes(tokens[index + 1]));
+      index += 1;
+      continue;
+    }
+    if (valueOptionPrefixes.includes(normalizedToken) && index + 1 < tokens.length) {
+      aliasTarget = normalizeAgentValue(stripOuterQuotes(tokens[index + 1]));
+      index += 1;
+      continue;
+    }
+    const inlineNameOption = nameOptionPrefixes.find((optionName) => normalizedToken.startsWith(optionName + ":"));
+    if (inlineNameOption) {
+      aliasName = normalizeAgentValue(token.slice(inlineNameOption.length + 1));
+      continue;
+    }
+    const inlineValueOption = valueOptionPrefixes.find((optionName) => normalizedToken.startsWith(optionName + ":"));
+    if (inlineValueOption) {
+      aliasTarget = normalizeAgentValue(token.slice(inlineValueOption.length + 1));
+      continue;
+    }
+    if (!normalizedToken.startsWith("-")) {
+      if (!aliasName) {
+        aliasName = normalizedToken;
+      } else if (!aliasTarget) {
+        aliasTarget = normalizedToken;
+      }
+    }
+  }
+
+  return { aliasName, aliasTarget };
+}
+
+function getShellAliasDefinition(tokens) {
+  const assignment = stripOuterQuotes(tokens[1] || "");
+  const match = /^([A-Za-z_][A-Za-z0-9_-]*)=(?:command\s+)?(git|gh)(?:\.exe)?(?:\s+(.+))?$/iu.exec(assignment);
+  if (!match) {
+    return { aliasName: "", aliasTarget: "", aliasArgs: [] };
+  }
+
+  return {
+    aliasName: normalizeAgentValue(match[1]),
+    aliasTarget: normalizeAgentValue(match[2]),
+    aliasArgs: tokenizeCommandLine(match[3] || ""),
+  };
+}
+
+function hasShellFunctionLifecycleCommand(command, reviewOnly) {
+  const functionPattern = /(?:^|[;&])\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\(\)\s*\{[^}]*\b(git|gh)\b(?:\s+([A-Za-z0-9_-]+))?[^}]*\}\s*;\s*\1(?:\s+([^;&\r\n]+))?/giu;
+  for (const match of command.matchAll(functionPattern)) {
+    const toolName = normalizeAgentValue(match[2] || "");
+    const bodySubcommand = normalizeAgentValue(match[3] || "");
+    const callTokens = tokenizeCommandLine(match[4] || "");
+    if (toolName === "git") {
+      const subcommand = bodySubcommand && bodySubcommand !== "$@" ? bodySubcommand : normalizeAgentValue(callTokens[0] || "");
       if (reviewOnly) {
         if (subcommand === "commit" || subcommand === "merge") {
           return true;
@@ -914,8 +1029,21 @@ function hasPowerShellGitAliasLifecycleCommand(command, reviewOnly) {
         continue;
       }
 
-      if (isGitLifecycleSubcommandName(subcommand) ||
-          !isReadOnlyGitSubcommand(subcommand, tokens, 1)) {
+      if (isGitLifecycleSubcommandName(subcommand) || !isReadOnlyGitSubcommand(subcommand, [match[1], subcommand], 1)) {
+        return true;
+      }
+    }
+
+    if (toolName === "gh") {
+      const effectiveTokens = ["gh"];
+      if (bodySubcommand && bodySubcommand !== "$@") {
+        effectiveTokens.push(bodySubcommand);
+      }
+      effectiveTokens.push(...callTokens);
+      if (effectiveTokens.some((token, index) =>
+        normalizeAgentValue(stripOuterQuotes(token)) === "pr" &&
+        effectiveTokens.slice(index + 1).some((nextToken) => normalizeAgentValue(stripOuterQuotes(nextToken)) === "merge")) ||
+        isGhApiMergeCommand(effectiveTokens)) {
         return true;
       }
     }
@@ -1032,12 +1160,17 @@ function isGitCommitOrMergeCommandLine(command) {
       const executable = getExecutableBasename(tokens[0]);
       if (executable === "cmd" || executable === "cmd.exe") {
         const nestedCommand = getCmdShellArgument(tokens);
-        return nestedCommand ? isGitCommitOrMergeCommandLine(nestedCommand) : false;
+        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
 
       if (isPowerShellExecutable(executable)) {
         const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
-        return nestedCommand ? isGitCommitOrMergeCommandLine(nestedCommand) : false;
+        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
+      }
+
+      if (isShellCommandExecutable(executable)) {
+        const nestedCommand = getShellCommandArgument(tokens);
+        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
 
       if (executable !== "git" && executable !== "git.exe") {
@@ -1065,12 +1198,17 @@ function isGhPrMergeCommandLine(command) {
       const executable = getExecutableBasename(tokens[0]);
       if (executable === "cmd" || executable === "cmd.exe") {
         const nestedCommand = getCmdShellArgument(tokens);
-        return nestedCommand ? isGhPrMergeCommandLine(nestedCommand) : false;
+        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
 
       if (isPowerShellExecutable(executable)) {
         const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
-        return nestedCommand ? isGhPrMergeCommandLine(nestedCommand) : false;
+        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
+      }
+
+      if (isShellCommandExecutable(executable)) {
+        const nestedCommand = getShellCommandArgument(tokens);
+        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
 
       return (executable === "gh" || executable === "gh.exe") &&
@@ -1092,12 +1230,17 @@ function isGhApiMergeCommandLine(command) {
       const executable = getExecutableBasename(tokens[0]);
       if (executable === "cmd" || executable === "cmd.exe") {
         const nestedCommand = getCmdShellArgument(tokens);
-        return nestedCommand ? isGhApiMergeCommandLine(nestedCommand) : false;
+        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
 
       if (isPowerShellExecutable(executable)) {
         const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
-        return nestedCommand ? isGhApiMergeCommandLine(nestedCommand) : false;
+        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
+      }
+
+      if (isShellCommandExecutable(executable)) {
+        const nestedCommand = getShellCommandArgument(tokens);
+        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
 
       return (executable === "gh" || executable === "gh.exe") && isGhApiMergeCommand(tokens);
@@ -1310,6 +1453,30 @@ function getCmdShellArgument(tokens) {
     if (inlineSwitchIndex > 0) {
       const inlineCommand = tokens[index].slice(inlineSwitchIndex + 2);
       return unescapeCmdCaretEscapes([inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" "));
+    }
+  }
+
+  return "";
+}
+
+function isShellCommandExecutable(executable) {
+  return [
+    "bash",
+    "bash.exe",
+    "sh",
+    "sh.exe",
+    "dash",
+    "dash.exe",
+    "zsh",
+    "zsh.exe",
+  ].includes(normalizeAgentValue(executable));
+}
+
+function getShellCommandArgument(tokens) {
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = normalizeAgentValue(stripOuterQuotes(tokens[index]));
+    if (/^-[a-z]*c[a-z]*$/u.test(token)) {
+      return stripOuterQuotes(tokens.slice(index + 1).join(" "));
     }
   }
 
@@ -1554,10 +1721,10 @@ function getShellWriteTargets(command) {
   return targets.filter((target) => target);
 }
 
-function collectShellWriteTargetsFromCommand(command, targets) {
+function collectShellWriteTargetsFromCommand(command, targets, powerShellAliases = new Map()) {
   for (const segment of splitCommandSegments(command)) {
     for (const pipelineStage of splitCommandPipelineStages(segment)) {
-      collectShellWriteTargets(pipelineStage, targets);
+      collectShellWriteTargets(pipelineStage, targets, powerShellAliases);
     }
   }
 }
@@ -1567,23 +1734,26 @@ function isUnresolvedShellTarget(target) {
   return normalized.startsWith("$") ||
          normalized.startsWith("%") ||
          normalized.startsWith("(") ||
+         normalized.includes("$") ||
          normalized.includes("$(") ||
          normalized.includes("${");
 }
 
-function collectShellWriteTargets(segment, targets) {
+function collectShellWriteTargets(segment, targets, powerShellAliases = new Map()) {
   const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
+  collectPowerShellScriptBlockWriteTargets(normalizedSegment, targets, powerShellAliases);
+
   const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedSegment));
   if (tokens.length === 0) {
     return;
   }
 
-  const executable = getExecutableBasename(tokens[0]);
+  let executable = getExecutableBasename(tokens[0]);
   if (executable === "cmd" || executable === "cmd.exe") {
     const nestedCommand = getCmdShellArgument(tokens);
     if (nestedCommand) {
-      collectShellWriteTargets(nestedCommand, targets);
-      collectShellWriteTargetsFromCommand(nestedCommand, targets);
+      collectShellWriteTargets(nestedCommand, targets, powerShellAliases);
+      collectShellWriteTargetsFromCommand(nestedCommand, targets, powerShellAliases);
     }
     return;
   }
@@ -1591,15 +1761,49 @@ function collectShellWriteTargets(segment, targets) {
   if (isPowerShellExecutable(executable)) {
     const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
     if (nestedCommand) {
-      collectShellWriteTargetsFromCommand(nestedCommand, targets);
+      collectShellWriteTargetsFromCommand(nestedCommand, targets, powerShellAliases);
       return;
     }
+  }
+
+  if (isShellCommandExecutable(executable)) {
+    const nestedCommand = getShellCommandArgument(tokens);
+    if (nestedCommand) {
+      collectShellWriteTargetsFromCommand(nestedCommand, targets, powerShellAliases);
+      return;
+    }
+  }
+
+  const normalizedExecutable = normalizeAgentValue(executable);
+  if (normalizedExecutable === "set-alias" || normalizedExecutable === "sal") {
+    const { aliasName, aliasTarget } = getSetAliasDefinition(tokens);
+    if (aliasName && isPowerShellMutationExecutable(aliasTarget)) {
+      powerShellAliases.set(aliasName, aliasTarget);
+    }
+    return;
+  }
+
+  const aliasTarget = powerShellAliases.get(normalizedExecutable);
+  if (aliasTarget) {
+    tokens[0] = aliasTarget;
+    executable = getExecutableBasename(tokens[0]);
   }
 
   collectRedirectionTargets(normalizedSegment, targets);
   collectPowerShellMutationTargets(tokens, targets);
   collectPowerShellDotNetMutationTargets(normalizedSegment, targets);
   collectInterpreterMutationTargets(normalizedSegment, tokens, targets);
+}
+
+function collectPowerShellScriptBlockWriteTargets(segment, targets, powerShellAliases) {
+  const commandNames = powerShellAliases.size > 0
+    ? [...getPowerShellMutationExecutableNames(), ...powerShellAliases.keys()]
+    : getPowerShellMutationExecutableNames();
+  const mutationNames = commandNames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|");
+  const scriptBlockPattern = new RegExp(`\\{([^{}]*\\b(?:${mutationNames})\\b[^{}]*)\\}`, "giu");
+  for (const match of segment.matchAll(scriptBlockPattern)) {
+    collectShellWriteTargetsFromCommand(match[1] || "", targets, powerShellAliases);
+  }
 }
 
 function collectRedirectionTargets(segment, targets) {
@@ -1611,48 +1815,7 @@ function collectRedirectionTargets(segment, targets) {
 
 function collectPowerShellMutationTargets(tokens, targets) {
   const executable = normalizeAgentValue(getExecutableBasename(tokens[0]));
-  if (![
-    "set-content",
-    "sc",
-    "add-content",
-    "ac",
-    "out-file",
-    "copy-item",
-    "copy",
-    "cp",
-    "cpi",
-    "move-item",
-    "move",
-    "mv",
-    "mi",
-    "rename-item",
-    "ren",
-    "rni",
-    "remove-item",
-    "remove",
-    "rm",
-    "del",
-    "erase",
-    "rd",
-    "ri",
-    "rmdir",
-    "clear-content",
-    "clc",
-    "new-item",
-    "ni",
-    "tee-object",
-    "tee",
-    "export-csv",
-    "epcsv",
-    "export-clixml",
-    "start-transcript",
-    "invoke-webrequest",
-    "iwr",
-    "wget",
-    "curl",
-    "invoke-restmethod",
-    "irm",
-  ].includes(executable)) {
+  if (!isPowerShellMutationExecutable(executable)) {
     return;
   }
 
@@ -1708,17 +1871,119 @@ function collectPowerShellMutationTargets(tokens, targets) {
     }
   }
 
-  if ((executable === "new-item" || executable === "ni") &&
-      targets.length === initialTargetCount &&
-      tokens.slice(1).some((token) => {
-        const normalizedToken = normalizeAgentValue(stripOuterQuotes(token));
-        return valueOptionPrefixes.some((optionName) =>
-          normalizedToken === optionName ||
-          normalizedToken.startsWith(optionName + "=") ||
-          normalizedToken.startsWith(optionName + ":"));
-      })) {
-    targets.push("$unparsed-powershell-write");
+  if (executable === "new-item" || executable === "ni") {
+    const nameValues = collectPowerShellOptionValues(tokens, expandPowerShellOptionPrefixes(["-name"]));
+    const pathValues = [
+      ...collectPowerShellOptionValues(tokens, pathOptionPrefixes),
+      ...collectPowerShellPositionalValues(tokens, pathOptionPrefixes, valueOptionPrefixes).slice(0, 1),
+    ];
+    if (nameValues.length > 0 && pathValues.length > 0) {
+      for (const pathValue of pathValues) {
+        for (const nameValue of nameValues) {
+          targets.push(path.join(stripOuterQuotes(pathValue), stripOuterQuotes(nameValue)));
+        }
+      }
+    } else if (nameValues.length > 0 && targets.length === initialTargetCount) {
+      targets.push("$unparsed-powershell-write");
+    }
   }
+}
+
+function isPowerShellMutationExecutable(executable) {
+  const normalizedExecutable = normalizeAgentValue(getExecutableBasename(executable));
+  return getPowerShellMutationExecutableNames().includes(normalizedExecutable);
+}
+
+function getPowerShellMutationExecutableNames() {
+  return [
+    "set-content",
+    "sc",
+    "add-content",
+    "ac",
+    "out-file",
+    "copy-item",
+    "copy",
+    "cp",
+    "cpi",
+    "move-item",
+    "move",
+    "mv",
+    "mi",
+    "rename-item",
+    "ren",
+    "rni",
+    "remove-item",
+    "remove",
+    "rm",
+    "del",
+    "erase",
+    "rd",
+    "ri",
+    "rmdir",
+    "clear-content",
+    "clc",
+    "new-item",
+    "ni",
+    "tee-object",
+    "tee",
+    "export-csv",
+    "epcsv",
+    "export-clixml",
+    "start-transcript",
+    "invoke-webrequest",
+    "iwr",
+    "wget",
+    "curl",
+    "invoke-restmethod",
+    "irm",
+  ];
+}
+
+function collectPowerShellOptionValues(tokens, optionPrefixes) {
+  const values = [];
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(token);
+    if (optionPrefixes.includes(normalizedToken)) {
+      if (index + 1 < tokens.length) {
+        values.push(stripOuterQuotes(tokens[index + 1]));
+      }
+      index += 1;
+      continue;
+    }
+
+    const inlineOption = optionPrefixes.find((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"));
+    if (inlineOption) {
+      values.push(token.slice(inlineOption.length + 1));
+    }
+  }
+
+  return values;
+}
+
+function collectPowerShellPositionalValues(tokens, pathOptionPrefixes, valueOptionPrefixes) {
+  const values = [];
+  const allValueOptions = new Set([...pathOptionPrefixes, ...valueOptionPrefixes]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(token);
+    if (allValueOptions.has(normalizedToken)) {
+      index += 1;
+      continue;
+    }
+
+    if ([...allValueOptions].some((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"))) {
+      continue;
+    }
+
+    if (!normalizedToken.startsWith("-")) {
+      values.push(token);
+    }
+  }
+
+  return values;
 }
 
 function expandPowerShellOptionPrefixes(optionNames) {
@@ -1765,9 +2030,11 @@ function collectPowerShellDotNetMutationTargets(segment, targets) {
 
   const unquotedNewObjectFirstArgumentPatterns = [
     /\(\s*new-object\s+(?:-typename(?:\s+|:))?(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:-argumentlist(?:\s+|:))?([^\s)]+)\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
+    /\(\s*\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*([^\s)]+)\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
   ];
   const unquotedNewObjectTwoArgumentPatterns = [
     /\(\s*new-object\s+(?:-typename(?:\s+|:))?(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:-argumentlist(?:\s+|:))?([^\s)]+)\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)'|([^\s)]+))/giu,
+    /\(\s*\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*([^\s)]+)\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)'|([^\s)]+))/giu,
   ];
   for (const pattern of unquotedNewObjectFirstArgumentPatterns) {
     for (const match of segment.matchAll(pattern)) {

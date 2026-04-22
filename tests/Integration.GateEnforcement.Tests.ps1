@@ -355,8 +355,17 @@ panes:
                 'pwsh -Command "(New-Object -TypeName System.IO.FileInfo -ArgumentList C:\repo\README.md).Delete()"',
                 'pwsh -Command "(New-Object -Type System.IO.FileInfo -Arg ''C:\repo\README.md'').Delete()"',
                 'pwsh -Command "(New-Object -TypeName ''System.IO.FileInfo'' -ArgumentList ''C:\repo\README.md'').Delete()"',
+                'pwsh -Command "([System.IO.FileInfo]C:\repo\README.md).Delete()"',
                 'pwsh -Command "New-Item -Name README.md -ItemType File"',
+                'pwsh -Command "New-Item -Path C:\repo\.worktrees\worker-1 -Name ..\..\README.md -ItemType File"',
+                'pwsh -Command "New-Item C:\repo\.worktrees\worker-1 -Name ..\..\README.md -ItemType File"',
                 'pwsh -Command "New-Item -Name:README.md -ItemType:File"',
+                'pwsh -Command "Set-Alias x Set-Content; x -LiteralPath C:\repo\README.md -Value demo"',
+                'pwsh -Command "Set-Alias x Microsoft.PowerShell.Management\Set-Content; x -LiteralPath C:\repo\README.md -Value demo"',
+                'pwsh -Command "Set-Content -LiteralPath C:\repo\.worktrees\worker-1\$n -Value demo"',
+                'pwsh -Command "1 | ForEach-Object { Set-Content -LiteralPath C:\repo\README.md -Value demo }"',
+                'pwsh -Command "1 | ForEach-Object { sc -LiteralPath C:\repo\README.md -Value demo }"',
+                'pwsh -Command "Set-Alias x Set-Content; 1 | ForEach-Object { x -LiteralPath C:\repo\README.md -Value demo }"',
                 'pwsh -Command "Export-Csv -Path C:\repo\out.csv -InputObject @{}"',
                 'pwsh -Command "Export-Clixml -Path C:\repo\out.xml -InputObject @{}"',
                 'pwsh -Command "Start-Transcript -Path C:\repo\transcript.txt"',
@@ -905,8 +914,16 @@ EOF
 
         foreach ($command in @(
                 'git commit -m "feat: gated"',
+                'bash -lc "git commit -m x"',
+                'pwsh -Command "Set-Alias g git; g commit -m x"',
                 'git -c alias.ci=commit ci -m "feat: gated"',
-                'Set-Alias g git; g commit -m "feat: gated"'
+                'Set-Alias g git; g commit -m "feat: gated"',
+                'Set-Alias -Name g -Value git; g commit -m "feat: gated"',
+                'Set-Alias -Nam:g -Val:git; g commit -m "feat: gated"',
+                'alias g=git; g commit -m x',
+                'alias g="command git"; g commit -m x',
+                'alias gc="git commit"; gc -m x',
+                'g(){ git "$@"; }; g commit -m x'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -943,8 +960,17 @@ EOF
 
         foreach ($command in @(
                 'gh pr merge 112 --squash --delete-branch',
+                'bash -lc "gh pr merge 112 --squash"',
                 'cmd /c g^h pr merge 112 --squash --delete-branch',
-                'gh api repos/OWNER/REPO/pulls/123/merge -X PUT'
+                'gh api repos/OWNER/REPO/pulls/123/merge -X PUT',
+                'Set-Alias h gh; h pr merge 123 --squash',
+                'Set-Alias -Name h -Value gh; h pr merge 123 --squash',
+                'Set-Alias -Nam:h -Val:gh; h pr merge 123 --squash',
+                'alias h="command gh"; h pr merge 123 --squash',
+                'bash -lc "alias h=gh; h pr merge 123 --squash"',
+                'alias h="gh api"; h repos/OWNER/REPO/pulls/123/merge -X PUT',
+                'h(){ gh "$@"; }; h pr merge 123 --squash',
+                'h(){ gh api "$@"; }; h repos/OWNER/REPO/pulls/123/merge -X PUT'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -988,6 +1014,16 @@ EOF
                 'pwsh -Com "git add README.md"',
                 'pwsh -Com "git push origin feature/review-gate"',
                 'Set-Alias g git; g add README.md',
+                'Set-Alias -Name g -Value git; g add README.md',
+                'Set-Alias -Nam:g -Val:git; g add README.md',
+                'Set-Alias h gh; h pr merge 123 --squash',
+                'alias g=git; g add README.md',
+                'alias g="command git"; g add README.md',
+                'alias ga="git add"; ga README.md',
+                'g(){ git "$@"; }; g add README.md',
+                'g(){ git add README.md; }; g',
+                'sh -c "git add README.md"',
+                'bash -lc "git add README.md"',
                 'git -c alias.m="!git m merge main" m',
                 'cmd /c "echo x & git add README.md"',
                 'cmd /c"echo x & git add README.md"',
