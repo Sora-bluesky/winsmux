@@ -9762,6 +9762,8 @@ agent-slots:
         $script:winsmuxCoreRawContent | Should -Match 'Confirm-Target \(\[string\]\$manifestEntry\[0\]\.PaneId\)'
         $script:winsmuxCoreRawContent | Should -Match 'Invoke-RestartPane -PaneId'
         $script:winsmuxCoreRawContent | Should -Match '\$restartReadinessAgent\s*=\s*Get-RestartReadinessAgentName -Plan \$plan'
+        $script:winsmuxCoreRawContent | Should -Match 'Test-AgentReadyPrompt -PaneId \$PaneId -Agent \$restartReadinessAgent'
+        $script:winsmuxCoreRawContent | Should -Not -Match 'timed out waiting for Codex after restart'
         $script:winsmuxCoreRawContent | Should -Match 'Remove-BridgeProviderRegistryEntry -RootPath \$projectDir -SlotId \$slotId'
         $script:winsmuxCoreRawContent | Should -Match 'clear_requested'
         $script:winsmuxCoreRawContent | Should -Match 'restart_requested'

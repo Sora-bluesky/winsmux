@@ -7733,20 +7733,17 @@ function Invoke-RestartPane {
 
     $restartReadinessAgent = Get-RestartReadinessAgentName -Plan $plan
 
-    if ($restartReadinessAgent.Trim().ToLowerInvariant() -eq 'codex') {
-        $deadline = (Get-Date).AddSeconds(60)
-        while ((Get-Date) -lt $deadline) {
-            if (Test-CodexReadyPrompt $PaneId) {
-                return $plan
-            }
-
-            Start-Sleep -Seconds 2
+    $deadline = (Get-Date).AddSeconds(60)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-AgentReadyPrompt -PaneId $PaneId -Agent $restartReadinessAgent) {
+            return $plan
         }
 
-        Stop-WithError "timed out waiting for Codex after restart in $PaneId"
+        Start-Sleep -Seconds 2
     }
 
-    return $plan
+    $readinessName = ConvertTo-ReadinessAgentName $restartReadinessAgent
+    Stop-WithError "timed out waiting for $readinessName prompt after restart in $PaneId"
 }
 
 function Invoke-Restart {
