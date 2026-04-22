@@ -398,6 +398,7 @@ panes:
                 'del C:\repo\README.md',
                 'Tee-Object -FilePath C:\repo\README.md',
                 'bash -c "touch C:/repo/outside.py"',
+                'cp -t C:\repo\outside C:\repo\.worktrees\worker-1\src.txt',
                 'Set-Content -LiteralPath \Users\me\out.txt -Value demo',
                 'Set-Content -LiteralPath ~\out.txt -Value demo',
                 'xcopy C:\repo\.worktrees\worker-1\safe.txt C:\repo\out.txt',
@@ -592,6 +593,7 @@ PY
                 'pwsh -Command "Set-Content -LiteralPath C:\repo\.worktrees\worker-1\README.md -Value demo"',
                 'pwsh -Command "Copy-Item -Path C:\repo\README.md -Destination C:\repo\.worktrees\worker-1\README.md"',
                 'bash -c "touch C:/repo/.worktrees/worker-1/outside.py"',
+                'cp -t C:\repo\.worktrees\worker-1 C:\repo\source.txt',
                 'curl https://example.com',
                 'pwsh -Command "Invoke-WebRequest https://example.com -OutFile C:\repo\.worktrees\worker-1\download.txt"',
                 'node -e "require(''fs'').writeFileSync(''C:/repo/.worktrees/worker-1/README.md'', ''x'')"',
@@ -976,6 +978,7 @@ EOF
 
         foreach ($command in @(
                 'git commit -m "feat: gated"',
+                'Start-Process git -ArgumentList commit -Wait',
                 'bash -lc "git commit -m x"',
                 'pwsh -Command "Set-Alias g git; g commit -m x"',
                 'git -c alias.ci=commit ci -m "feat: gated"',
@@ -1025,6 +1028,7 @@ EOF
 
         foreach ($command in @(
                 'gh pr merge 112 --squash --delete-branch',
+                'Start-Process gh -ArgumentList ''pr'', ''merge'', ''123'' -Wait',
                 'bash -lc "gh pr merge 112 --squash"',
                 'cmd /c g^h pr merge 112 --squash --delete-branch',
                 'gh api repos/OWNER/REPO/pulls/123/merge -X PUT',

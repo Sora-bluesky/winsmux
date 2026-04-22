@@ -1591,6 +1591,11 @@ function isGitCommitOrMergeCommandLine(command) {
         return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
 
+      if (isPowerShellStartProcessExecutable(executable)) {
+        const nestedCommand = getPowerShellStartProcessCommand(tokens);
+        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
+      }
+
       if (executable !== "git" && executable !== "git.exe") {
         return false;
       }
@@ -1629,6 +1634,11 @@ function isGhPrMergeCommandLine(command) {
         return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
 
+      if (isPowerShellStartProcessExecutable(executable)) {
+        const nestedCommand = getPowerShellStartProcessCommand(tokens);
+        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
+      }
+
       return (executable === "gh" || executable === "gh.exe") &&
              tokens.some((token, index) =>
                normalizeAgentValue(stripOuterQuotes(token)) === "pr" &&
@@ -1658,6 +1668,11 @@ function isGhApiMergeCommandLine(command) {
 
       if (isShellCommandExecutable(executable)) {
         const nestedCommand = getShellCommandArgument(tokens);
+        return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
+      }
+
+      if (isPowerShellStartProcessExecutable(executable)) {
+        const nestedCommand = getPowerShellStartProcessCommand(tokens);
         return nestedCommand ? isReviewGatedCommand(nestedCommand) : false;
       }
 
@@ -2482,6 +2497,12 @@ function collectPosixMutationTargets(tokens, targets) {
   }
 
   if (executable === "cp") {
+    const targetDirectory = getPosixOptionValue(tokens, ["-t", "--target-directory"]);
+    if (targetDirectory) {
+      targets.push(targetDirectory);
+      return;
+    }
+
     const positional = collectPosixPositionalValues(tokens);
     if (positional.length >= 2) {
       targets.push(positional[positional.length - 1]);
@@ -2506,6 +2527,24 @@ function collectPosixPositionalValues(tokens) {
   return tokens.slice(1)
     .map((token) => stripOuterQuotes(token))
     .filter((token) => token && !token.startsWith("-"));
+}
+
+function getPosixOptionValue(tokens, optionNames) {
+  const normalizedOptionNames = optionNames.map((name) => normalizeAgentValue(name));
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(token);
+    if (normalizedOptionNames.includes(normalizedToken) && index + 1 < tokens.length) {
+      return stripOuterQuotes(tokens[index + 1]);
+    }
+
+    const inlineOption = normalizedOptionNames.find((name) => normalizedToken.startsWith(name + "="));
+    if (inlineOption) {
+      return token.slice(inlineOption.length + 1);
+    }
+  }
+
+  return "";
 }
 
 function collectPowerShellScriptBlockWriteTargets(segment, targets, powerShellAliases) {
