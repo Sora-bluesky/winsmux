@@ -374,6 +374,7 @@ panes:
                 'pwsh -Command "Invoke-WebRequest https://example.com -OutFile C:\repo\out.txt"',
                 '"demo" | Set-Content -LiteralPath C:\repo\README.md',
                 'echo demo>C:\repo\README.md',
+                'echo demo>>C:\repo\README.md',
                 'Write-Error demo 2> C:\repo\err.txt',
                 'rm C:\repo\README.md',
                 'del C:\repo\README.md',

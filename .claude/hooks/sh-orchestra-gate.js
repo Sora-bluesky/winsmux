@@ -1858,7 +1858,7 @@ function collectPowerShellScriptBlockWriteTargets(segment, targets, powerShellAl
 }
 
 function collectRedirectionTargets(segment, targets) {
-  const redirectionPattern = /(?:^|[^\r\n])(?:\d|\*)?(?:>|>>)\s*(?:"([^"]+)"|'([^']+)'|([^\s&|;]+))/gu;
+  const redirectionPattern = /(?:^|[^\r\n])(?:\d|\*)?(?:>>|>)\s*(?:"([^"]+)"|'([^']+)'|([^\s&|;]+))/gu;
   for (const match of segment.matchAll(redirectionPattern)) {
     targets.push(match[1] || match[2] || match[3] || "");
   }
