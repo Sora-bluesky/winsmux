@@ -334,6 +334,7 @@ panes:
         foreach ($command in @(
                 'cmd /c "echo demo > C:\repo\README.md"',
                 'pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
+                'pwsh -Command "if ($true) { Set-Content -LiteralPath C:\repo\README.md -Value demo; if ($false) {} }"',
                 'pwsh -Command Set-Content -LiteralPath C:\repo\README.md -Value demo',
                 'FOO=1 pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
                 'env FOO=1 pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
@@ -1077,7 +1078,10 @@ EOF
                 'gh api -XPATCH repos/OWNER/REPO/git/refs/heads/main -f sha=abc',
                 'gh api --method DELETE repos/OWNER/REPO/git/refs/heads/old',
                 'gh api --method=PATCH repos/OWNER/REPO/git/ref/heads/main --field sha=abc',
-                'gh api repos/OWNER/REPO/git/refs -f ref=refs/heads/topic -f sha=abc'
+                'gh api repos/OWNER/REPO/git/refs -f ref=refs/heads/topic -f sha=abc',
+                'gh api graphql -f query=''mutation { createRef(input:{}) { ref { id } } }''',
+                'gh api graphql -f query=''mutation { updateRef(input:{}) { clientMutationId } }''',
+                'gh api graphql -f query=''mutation { deleteRef(input:{}) { clientMutationId } }'''
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -1121,6 +1125,8 @@ EOF
                 'pwsh -Com "git add README.md"',
                 'pwsh -Com "git push origin feature/review-gate"',
                 'pwsh -Command "if ($true) { git add README.md }"',
+                'pwsh -Command "if ($true) { git add README.md; if ($false) {} }"',
+                'pwsh -Command "& { if ($true) { git add README.md } }"',
                 'pwsh -Command "foreach ($x in 1) { git push origin feature/review-gate }"',
                 'pwsh -Command "iex ''git add README.md''"',
                 'pwsh -Command "Invoke-Expression ''git add README.md''"',

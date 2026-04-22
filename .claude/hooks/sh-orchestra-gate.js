@@ -154,6 +154,10 @@ try {
     }
 
     if (!worktreePath) {
+      if (toolName === "Bash" && isOperatorOnlyGitLifecycleCommand(bashCommand)) {
+        deny("Worker-pane Git lifecycle blocked. Keep editing and testing in the assigned worktree; run git add, git commit, git push, and PR merge from the Operator shell.");
+      }
+
       if (isFileMutationTool(toolName) || shellWriteTargets.length > 0) {
         deny("Worker isolation: assigned worktree is required before file mutations are allowed.");
       }
@@ -622,7 +626,17 @@ function hasPowerShellScriptBlockGitLifecycleCommand(command) {
     }
   }
 
+  if (hasNestedPowerShellControlBlock(source) && hasGitLifecycleHint(source)) {
+    return true;
+  }
+
   return false;
+}
+
+function hasNestedPowerShellControlBlock(source) {
+  const normalized = normalizeAgentValue(String(source || ""));
+  return /\{[\s\S]*\{[\s\S]*\}[\s\S]*\}/u.test(normalized) &&
+    /\b(?:if|foreach|for|while|switch|try|catch|finally|function)\b/u.test(normalized);
 }
 
 function isOperatorOnlyGitLifecycleSegment(segment) {
@@ -913,11 +927,22 @@ function isGhApiRefWriteCommand(tokens) {
   }
 
   const args = normalizedTokens.slice(apiIndex + 1);
+  if (isGhApiGraphqlRefMutation(args)) {
+    return true;
+  }
+
   if (!args.some(isGhApiGitRefEndpoint)) {
     return false;
   }
 
   return hasGhApiWriteMethod(args) || hasGhApiWriteField(args);
+}
+
+function isGhApiGraphqlRefMutation(args) {
+  const joinedArgs = args.join(" ");
+  return /\bgraphql\b/u.test(joinedArgs) &&
+    /\bmutation\b/u.test(joinedArgs) &&
+    /\b(?:createref|updateref|deleteref)\b/u.test(joinedArgs);
 }
 
 function isGhApiGitRefEndpoint(token) {
@@ -2671,11 +2696,27 @@ function collectPowerShellScriptBlockWriteTargets(segment, targets, powerShellAl
   const commandNames = powerShellAliases.size > 0
     ? [...getPowerShellMutationExecutableNames(), ...powerShellAliases.keys()]
     : getPowerShellMutationExecutableNames();
+  const initialTargetCount = targets.length;
   const mutationNames = commandNames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|");
   const scriptBlockPattern = new RegExp(`\\{([^{}]*\\b(?:${mutationNames})\\b[^{}]*)\\}`, "giu");
   for (const match of segment.matchAll(scriptBlockPattern)) {
     collectShellWriteTargetsFromCommand(match[1] || "", targets, powerShellAliases);
   }
+
+  if (targets.length === initialTargetCount &&
+      hasNestedPowerShellControlBlock(segment) &&
+      hasPowerShellMutationHint(segment, commandNames)) {
+    targets.push("$unparsed-powershell-scriptblock-write");
+  }
+}
+
+function hasPowerShellMutationHint(source, commandNames) {
+  const mutationNames = commandNames
+    .map((name) => normalizeAgentValue(name))
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"))
+    .join("|");
+  const pattern = new RegExp(`\\b(?:${mutationNames})\\b`, "u");
+  return pattern.test(normalizeAgentValue(String(source || "")));
 }
 
 function collectRedirectionTargets(segment, targets) {
