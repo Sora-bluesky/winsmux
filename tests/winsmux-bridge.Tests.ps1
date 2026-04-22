@@ -2082,6 +2082,64 @@ panes:
         $plan.LaunchCommand | Should -Match $([regex]::Escape("-C 'C:\repo\.worktrees\builder-2'"))
     }
 
+    It 'preserves explicit worktree_git_dir when reading a worker entry' {
+@'
+version: 1
+saved_at: '2026-04-07T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: 'C:\repo'
+  git_worktree_dir: 'C:\repo\.git'
+panes:
+  - label: 'worker-1'
+    pane_id: '%2'
+    role: 'Worker'
+    exec_mode: true
+    launch_dir: 'C:\repo\.worktrees\worker-1'
+    builder_branch: 'worktree-worker-1'
+    builder_worktree_path: 'C:\repo\.worktrees\worker-1'
+    worktree_git_dir: 'C:\repo\.git\worktrees\worker-1'
+    task: null
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        $entries = @(Get-PaneControlManifestEntries -ProjectDir $script:paneControlTempRoot)
+
+        $entries.Count | Should -Be 1
+        $entries[0].LaunchDir | Should -Be 'C:\repo\.worktrees\worker-1'
+        $entries[0].BuilderBranch | Should -Be 'worktree-worker-1'
+        $entries[0].GitWorktreeDir | Should -Be 'C:\repo\.git\worktrees\worker-1'
+    }
+
+    It 'ignores stale worker worktree metadata when reading a non-worker entry' {
+@'
+version: 1
+saved_at: '2026-04-23T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: 'C:\repo'
+  git_worktree_dir: 'C:\repo\.git'
+panes:
+  - label: 'reviewer'
+    pane_id: '%4'
+    role: 'Reviewer'
+    exec_mode: true
+    launch_dir: ''
+    builder_branch: 'worktree-worker-1'
+    builder_worktree_path: 'C:\repo\.worktrees\worker-1'
+    worktree_git_dir: 'C:\repo\.git\worktrees\worker-1'
+    task: null
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        $entries = @(Get-PaneControlManifestEntries -ProjectDir $script:paneControlTempRoot)
+
+        $entries.Count | Should -Be 1
+        $entries[0].Role | Should -Be 'Reviewer'
+        $entries[0].LaunchDir | Should -Be 'C:\repo'
+        $entries[0].BuilderBranch | Should -Be ''
+        $entries[0].BuilderWorktreePath | Should -Be ''
+        $entries[0].GitWorktreeDir | Should -Be 'C:\repo\.git'
+    }
+
     It 'uses slot-level agent and model overrides when building a restart plan' {
 @'
 version: 1
@@ -10184,6 +10242,56 @@ Describe 'winsmux provider-capabilities command' {
         $payload.provider_id | Should -Be 'CODEX'
         $payload.capabilities.command | Should -Be 'codex'
         $payload.capabilities.supports_verification | Should -Be $true
+    }
+}
+
+Describe 'winsmux role command provider routing' {
+    BeforeAll {
+        $script:winsmuxRoleRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxRoleRawContent = Get-Content -Raw -Path $script:winsmuxRoleRawPath -Encoding UTF8
+    }
+
+    It 'builds reassigned role launch commands through provider capabilities' {
+        $script:winsmuxRoleRawContent | Should -Match 'Get-SlotAgentConfig -Role \$newRole -SlotId \$newLabel'
+        $script:winsmuxRoleRawContent | Should -Match 'Get-BridgeProviderLaunchCommand'
+        $script:winsmuxRoleRawContent | Should -Match '\$launchDir = \[string\]\$manifestEntry\.LaunchDir'
+        $script:winsmuxRoleRawContent | Should -Match '\$gitDir = \[string\]\$manifestEntry\.GitWorktreeDir'
+        $script:winsmuxRoleRawContent | Should -Match 'ProjectDir \$launchDir'
+        $script:winsmuxRoleRawContent | Should -Match 'respawn-pane -k -t \$paneId -c \$launchDir'
+        $script:winsmuxRoleRawContent | Should -Match 'role\s*=\s*\$manifestRole'
+        $script:winsmuxRoleRawContent | Should -Match 'launch_dir\s*=\s*\$launchDir'
+        $script:winsmuxRoleRawContent | Should -Match 'worktree_git_dir\s*=\s*\$gitDir'
+        $script:winsmuxRoleRawContent | Should -Match 'provider_target\s*=\s*\$providerTarget'
+        $script:winsmuxRoleRawContent | Should -Match 'capability_adapter\s*=\s*\[string\]\$roleAgentConfig\.CapabilityAdapter'
+        $script:winsmuxRoleRawContent | Should -Match "builder_worktree_path'\]\s*=\s*''"
+        $script:winsmuxRoleRawContent | Should -Match "builder_branch'\]\s*=\s*''"
+        $script:winsmuxRoleRawContent | Should -Match '\$environmentGitDir\s*=\s*'''''
+        $script:winsmuxRoleRawContent | Should -Match '\$assignedBranch\s*=\s*\[string\]\$manifestEntry\.BuilderBranch'
+        $script:winsmuxRoleRawContent | Should -Match 'Get-WinsmuxEnvironmentVariableNames'
+        $script:winsmuxRoleRawContent | Should -Match 'Get-WinsmuxPaneEnvironment'
+        $script:winsmuxRoleRawContent | Should -Match 'WINSMUX_ROLE_MAP'
+        $script:winsmuxRoleRawContent | Should -Match 'set-environment -t \$sessionName'
+        $script:winsmuxRoleRawContent | Should -Match 'set-environment -u -t \$sessionName \$name'
+        $script:winsmuxRoleRawContent | Should -Not -Match 'codex --sandbox danger-full-access -C'
+        $launchIndex = $script:winsmuxRoleRawContent.IndexOf('$launchCmd = Get-BridgeProviderLaunchCommand')
+        $nonWorkerResetIndex = $script:winsmuxRoleRawContent.IndexOf('$manifestRole -notin @(''Builder'', ''Worker'')')
+        $renameIndex = $script:winsmuxRoleRawContent.IndexOf('& winsmux select-pane -t $paneId -T $newLabel')
+        $manifestUpdateIndex = $script:winsmuxRoleRawContent.IndexOf('Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath')
+        $environmentIndex = $script:winsmuxRoleRawContent.IndexOf('$paneEnvironment = Get-WinsmuxPaneEnvironment')
+        $environmentClearIndex = $script:winsmuxRoleRawContent.IndexOf('& winsmux set-environment -u -t $sessionName $name')
+        $respawnIndex = $script:winsmuxRoleRawContent.IndexOf('& winsmux respawn-pane -k -t $paneId -c $launchDir')
+        $launchIndex | Should -BeGreaterThan -1
+        $nonWorkerResetIndex | Should -BeGreaterThan -1
+        $renameIndex | Should -BeGreaterThan -1
+        $manifestUpdateIndex | Should -BeGreaterThan -1
+        $environmentIndex | Should -BeGreaterThan -1
+        $environmentClearIndex | Should -BeGreaterThan -1
+        $respawnIndex | Should -BeGreaterThan -1
+        $nonWorkerResetIndex | Should -BeLessThan $launchIndex
+        $launchIndex | Should -BeLessThan $renameIndex
+        $manifestUpdateIndex | Should -BeLessThan $respawnIndex
+        $environmentClearIndex | Should -BeLessThan $environmentIndex
+        $environmentIndex | Should -BeLessThan $respawnIndex
     }
 }
 

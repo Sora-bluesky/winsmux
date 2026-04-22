@@ -310,10 +310,18 @@ function Get-PaneControlManifestEntries {
     foreach ($label in $manifest.Panes.Keys) {
         $pane = $manifest.Panes[$label]
         $role = Get-PaneControlCanonicalRole -Role ([string](Get-PaneControlValue -InputObject $pane -Name 'role' -Default '')) -Label $label
+        $usesWorkerWorktree = $role -in @('Builder', 'Worker')
         $launchDir = [string](Get-PaneControlValue -InputObject $pane -Name 'launch_dir' -Default '')
         $builderWorktreePath = [string](Get-PaneControlValue -InputObject $pane -Name 'builder_worktree_path' -Default '')
+        if (-not $usesWorkerWorktree) {
+            $builderWorktreePath = ''
+        }
+        $builderBranch = [string](Get-PaneControlValue -InputObject $pane -Name 'builder_branch' -Default '')
+        if (-not $usesWorkerWorktree) {
+            $builderBranch = ''
+        }
 
-        if ([string]::IsNullOrWhiteSpace($launchDir) -and -not [string]::IsNullOrWhiteSpace($builderWorktreePath)) {
+        if ($usesWorkerWorktree -and [string]::IsNullOrWhiteSpace($launchDir) -and -not [string]::IsNullOrWhiteSpace($builderWorktreePath)) {
             $launchDir = $builderWorktreePath
         }
 
@@ -321,9 +329,16 @@ function Get-PaneControlManifestEntries {
             $launchDir = $projectRoot
         }
 
-        $gitWorktreeDir = $sessionGitWorktreeDir
-        if ($role -in @('Builder', 'Worker') -or [string]::IsNullOrWhiteSpace($gitWorktreeDir)) {
-            $gitWorktreeDir = Get-PaneControlGitWorktreeDir -ProjectDir $launchDir
+        $paneGitWorktreeDir = ''
+        if ($usesWorkerWorktree) {
+            $paneGitWorktreeDir = [string](Get-PaneControlValue -InputObject $pane -Name 'worktree_git_dir' -Default '')
+        }
+        $gitWorktreeDir = $paneGitWorktreeDir
+        if ([string]::IsNullOrWhiteSpace($gitWorktreeDir)) {
+            $gitWorktreeDir = $sessionGitWorktreeDir
+            if ($usesWorkerWorktree -or [string]::IsNullOrWhiteSpace($gitWorktreeDir)) {
+                $gitWorktreeDir = Get-PaneControlGitWorktreeDir -ProjectDir $launchDir
+            }
         }
 
         $entries += [PSCustomObject][ordered]@{
@@ -333,6 +348,7 @@ function Get-PaneControlManifestEntries {
             PaneId              = [string](Get-PaneControlValue -InputObject $pane -Name 'pane_id' -Default '')
             Role                = $role
             LaunchDir           = $launchDir
+            BuilderBranch       = $builderBranch
             BuilderWorktreePath = $builderWorktreePath
             GitWorktreeDir      = $gitWorktreeDir
             TaskId              = [string](Get-PaneControlValue -InputObject $pane -Name 'task_id' -Default '')
