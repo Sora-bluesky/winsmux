@@ -19,6 +19,7 @@ Describe 'Public surface policy' {
         $appIndex = Get-Content (Join-Path $repoRoot 'winsmux-app/index.html') -Raw
         $syncRoadmap = Get-Content (Join-Path $repoRoot 'winsmux-core/scripts/sync-roadmap.ps1') -Raw
         $syncInternalDocs = Get-Content (Join-Path $repoRoot 'winsmux-core/scripts/sync-internal-docs.ps1') -Raw
+        $installer = Get-Content (Join-Path $repoRoot 'install.ps1') -Raw
     }
 
     It 'keeps public docs free of contributor/private direct links' {
@@ -121,5 +122,26 @@ Describe 'Public surface policy' {
         $thirdPartyNotices | Should -Not -Match 'Codex-derived UI'
         $appIndex | Should -Match 'Public openai/codex TUI-derived typography'
         $appIndex | Should -Not -Match 'Codex-derived typography'
+    }
+
+    It 'keeps installer next steps aligned with public first-run commands' {
+        $installerSingleLine = $installer -replace '\s+', ' '
+        $installer | Should -Match 'winsmux init'
+        $installer | Should -Match 'winsmux launch'
+        $installer | Should -Not -Match "WINSMUX_AGENT_NAME = 'claude'"
+        $installerSingleLine | Should -Match '"orchestra".*"vault"'
+        $installer | Should -Match 'Test-InstallProfileContent -Profile \$resolvedInstallProfile -Content "orchestration_scripts"'
+        $installer | Should -Match 'winsmux-core/scripts/public-first-run\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/orchestra-smoke\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/doctor\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/orchestra-attach-confirm\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/orchestra-pane-bootstrap\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/commander-poll\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/pane-control\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/agent-monitor\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/agent-watchdog\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/orchestra-state\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/server-watchdog\.ps1'
+        $installer | Should -Match 'winsmux-core/scripts/pane-border\.ps1'
     }
 }

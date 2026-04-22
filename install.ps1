@@ -24,7 +24,7 @@ $PROFILE_FILE = Join-Path $WINSMUX_DIR "install-profile"
 $PROFILE_MANIFEST_FILE = Join-Path $WINSMUX_DIR "install-profile.json"
 $PROFILE_MATRIX = @{
     core = "Runtime binary, wrapper scripts, PATH setup, and base config."
-    orchestra = "Core profile plus orchestration scripts and Windows Terminal profile."
+    orchestra = "Core profile plus orchestration scripts, runtime dependencies, and Windows Terminal profile."
     security = "Core profile plus vault, redaction, and audit-oriented scripts."
     full = "Core, orchestra, and security profile contents."
 }
@@ -71,7 +71,7 @@ function Get-InstallProfileContents {
 
     switch ($Profile) {
         "core" { return @("runtime", "wrappers", "path", "base_config") }
-        "orchestra" { return @("runtime", "wrappers", "path", "base_config", "orchestration_scripts", "windows_terminal_profile") }
+        "orchestra" { return @("runtime", "wrappers", "path", "base_config", "orchestration_scripts", "windows_terminal_profile", "vault") }
         "security" { return @("runtime", "wrappers", "path", "base_config", "vault", "redaction", "audit_scripts") }
         "full" { return @("runtime", "wrappers", "path", "base_config", "orchestration_scripts", "windows_terminal_profile", "vault", "redaction", "audit_scripts") }
         default { throw "Unsupported install profile '$Profile'." }
@@ -107,9 +107,32 @@ function Write-InstallProfileManifest {
 
 function Install-OrchestraSupportScripts {
     Download-File "winsmux-core/scripts/agent-launch.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-launch.ps1")
+    Download-File "winsmux-core/scripts/agent-monitor.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-monitor.ps1")
+    Download-File "winsmux-core/scripts/agent-readiness.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-readiness.ps1")
+    Download-File "winsmux-core/scripts/agent-watchdog.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-watchdog.ps1")
+    Download-File "winsmux-core/scripts/builder-worktree.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "builder-worktree.ps1")
+    Download-File "winsmux-core/scripts/clm-safe-io.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "clm-safe-io.ps1")
+    Download-File "winsmux-core/scripts/commander-poll.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "commander-poll.ps1")
+    Download-File "winsmux-core/scripts/doctor.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "doctor.ps1")
+    Download-File "winsmux-core/scripts/logger.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "logger.ps1")
+    Download-File "winsmux-core/scripts/manifest.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "manifest.ps1")
+    Download-File "winsmux-core/scripts/orchestra-attach-confirm.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-attach-confirm.ps1")
+    Download-File "winsmux-core/scripts/orchestra-attach-entry.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-attach-entry.ps1")
+    Download-File "winsmux-core/scripts/orchestra-pane-bootstrap.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-pane-bootstrap.ps1")
+    Download-File "winsmux-core/scripts/orchestra-preflight.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-preflight.ps1")
+    Download-File "winsmux-core/scripts/orchestra-smoke.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-smoke.ps1")
     Download-File "winsmux-core/scripts/orchestra-start.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-start.ps1")
+    Download-File "winsmux-core/scripts/orchestra-state.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-state.ps1")
     Download-File "winsmux-core/scripts/orchestra-layout.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-layout.ps1")
+    Download-File "winsmux-core/scripts/orchestra-ui-attach.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "orchestra-ui-attach.ps1")
+    Download-File "winsmux-core/scripts/pane-control.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "pane-control.ps1")
+    Download-File "winsmux-core/scripts/pane-env.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "pane-env.ps1")
+    Download-File "winsmux-core/scripts/pane-border.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "pane-border.ps1")
+    Download-File "winsmux-core/scripts/planning-paths.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "planning-paths.ps1")
+    Download-File "winsmux-core/scripts/public-first-run.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "public-first-run.ps1")
+    Download-File "winsmux-core/scripts/server-watchdog.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "server-watchdog.ps1")
     Download-File "winsmux-core/scripts/settings.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "settings.ps1")
+    Download-File "winsmux-core/scripts/vault.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "vault.ps1")
 }
 
 function Install-SecuritySupportScripts {
@@ -122,7 +145,34 @@ function Remove-ProfileExcludedSupportScripts {
     $scriptGroups = @(
         [PSCustomObject]@{
             Content = "orchestration_scripts"
-            Files = @("agent-launch.ps1", "orchestra-start.ps1", "orchestra-layout.ps1", "settings.ps1")
+            Files = @(
+                "agent-launch.ps1",
+                "agent-monitor.ps1",
+                "agent-readiness.ps1",
+                "agent-watchdog.ps1",
+                "builder-worktree.ps1",
+                "clm-safe-io.ps1",
+                "commander-poll.ps1",
+                "doctor.ps1",
+                "logger.ps1",
+                "manifest.ps1",
+                "orchestra-attach-confirm.ps1",
+                "orchestra-attach-entry.ps1",
+                "orchestra-pane-bootstrap.ps1",
+                "orchestra-preflight.ps1",
+                "orchestra-smoke.ps1",
+                "orchestra-start.ps1",
+                "orchestra-state.ps1",
+                "orchestra-layout.ps1",
+                "orchestra-ui-attach.ps1",
+                "pane-control.ps1",
+                "pane-env.ps1",
+                "pane-border.ps1",
+                "planning-paths.ps1",
+                "public-first-run.ps1",
+                "server-watchdog.ps1",
+                "settings.ps1"
+            )
         },
         [PSCustomObject]@{
             Content = "vault"
@@ -425,9 +475,14 @@ pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux.ps1" %*
         Write-Host "  install profile: $resolvedInstallProfile"
         Write-Host ""
         Write-Host "Next steps:"
-        Write-Host "  1. Start a winsmux session:  winsmux new-session -s work"
-        Write-Host "  2. Set your agent name:    `$env:WINSMUX_AGENT_NAME = 'claude'"
-        Write-Host "  3. Try it out:             winsmux list"
+        if (Test-InstallProfileContent -Profile $resolvedInstallProfile -Content "orchestration_scripts") {
+            Write-Host "  1. Create project config:  winsmux init"
+            Write-Host "  2. Launch first run:       winsmux launch"
+            Write-Host "  3. Inspect panes:          winsmux list"
+        } else {
+            Write-Host "  1. Start a session:        winsmux new-session -s work"
+            Write-Host "  2. Inspect panes:          winsmux list"
+        }
     }
 }
 

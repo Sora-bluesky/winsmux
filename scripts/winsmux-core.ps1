@@ -3442,9 +3442,21 @@ function Invoke-Init {
     Write-Output "next: $($result.next_action)"
 }
 
+function Test-WinsmuxInstalledBinLayout {
+    param([string]$ScriptRoot = $PSScriptRoot)
+
+    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        return $false
+    }
+
+    $installedBin = [System.IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.winsmux\bin')).TrimEnd([char[]]@('\', '/'))
+    $currentRoot = [System.IO.Path]::GetFullPath($ScriptRoot).TrimEnd([char[]]@('\', '/'))
+    return [string]::Equals($currentRoot, $installedBin, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Invoke-Launch {
     $projectDir = ''
-    $skipDoctor = $false
+    $skipDoctor = Test-WinsmuxInstalledBinLayout
     $asJson = $false
     $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
     $doctorScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\doctor.ps1'))
