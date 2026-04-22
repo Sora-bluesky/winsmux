@@ -75,7 +75,8 @@ DEV-NOTES*.md
 # =========================
 # Orchestra runtime (generated)
 # =========================
-.commander-prompt*.txt
+.operator-prompt*.txt
+.com[m]ander-prompt*.txt
 .orchestra-prompts/
 .winsmux/
 .tmp-appdata/

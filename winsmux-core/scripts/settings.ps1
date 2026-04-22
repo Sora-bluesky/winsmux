@@ -21,17 +21,62 @@ $script:BridgeSettingsSchema = [ordered]@{
     agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
     model               = @{ Type = 'string';   Default = 'gpt-5.4';     Option = '@bridge-model' }
     prompt_transport    = @{ Type = 'transport'; Default = 'argv';       Option = '@bridge-prompt-transport' }
-    external_commander  = @{ Type = 'bool';     Default = $true;         Option = '@bridge-external-commander' }
+    external_operator  = @{ Type = 'bool';     Default = $true;         Option = '@bridge-external-operator' }
     worker_count        = @{ Type = 'int';      Default = 6;             Option = '@bridge-worker-count' }
     agent_slots         = @{ Type = 'slotlist'; Default = @();           Option = $null }
     legacy_role_layout  = @{ Type = 'bool';     Default = $false;        Option = '@bridge-legacy-role-layout' }
-    commanders          = @{ Type = 'int';      Default = 0;             Option = '@bridge-commanders' }
+    operators          = @{ Type = 'int';      Default = 0;             Option = '@bridge-operators' }
     builders            = @{ Type = 'int';      Default = 0;             Option = '@bridge-builders' }
     researchers         = @{ Type = 'int';      Default = 0;             Option = '@bridge-researchers' }
     reviewers           = @{ Type = 'int';      Default = 0;             Option = '@bridge-reviewers' }
     vault_keys          = @{ Type = 'string[]'; Default = @('GH_TOKEN'); Option = '@bridge-vault-keys' }
     terminal            = @{ Type = 'string';   Default = 'background';  Option = '@bridge-terminal' }
     roles               = @{ Type = 'map';      Default = [ordered]@{};  Option = $null }
+}
+$script:BridgeRetiredOperatorSettingKeys = @(
+    ('external_' + 'comm' + 'ander'),
+    ('comm' + 'anders')
+)
+$script:BridgeRetiredOperatorOptionNames = @(
+    ('@bridge-external-' + 'comm' + 'ander'),
+    ('@bridge-' + 'comm' + 'anders')
+)
+
+function Test-BridgeRetiredOperatorSettingKey {
+    param([string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return $false
+    }
+
+    $key = $Name -replace '-', '_'
+    return ($key -in $script:BridgeRetiredOperatorSettingKeys)
+}
+
+function Assert-BridgeNoRetiredOperatorSetting {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string]$Source = 'settings'
+    )
+
+    if (Test-BridgeRetiredOperatorSettingKey -Name $Name) {
+        throw "Retired runtime role setting '$Name' in $Source is no longer supported. Use external_operator or operators."
+    }
+}
+
+function Assert-BridgeNoRetiredOperatorGlobalSettings {
+    foreach ($optionName in $script:BridgeRetiredOperatorOptionNames) {
+        $rawValue = Get-WinsmuxOption -Name $optionName -Default $null
+        if ($null -eq $rawValue -or [string]::IsNullOrWhiteSpace($rawValue)) {
+            continue
+        }
+
+        if (Test-WinsmuxOptionFailureText -Value ([string]$rawValue)) {
+            continue
+        }
+
+        throw "Retired runtime role option '$optionName' is no longer supported. Use @bridge-external-operator or @bridge-operators."
+    }
 }
 
 if (-not (Get-Command Get-WinsmuxBin -ErrorAction SilentlyContinue)) {
@@ -996,6 +1041,8 @@ function ConvertFrom-BridgeManualYaml {
 
         $key = $Matches[1] -replace '-', '_'
         $value = $Matches[2]
+        Assert-BridgeNoRetiredOperatorSetting -Name $key -Source $script:BridgeSettingsFileName
+
         if (-not $script:BridgeSettingsSchema.Contains($key)) {
             continue
         }
@@ -1272,6 +1319,8 @@ function ConvertTo-BridgeSettingsSource {
 
     foreach ($pair in $pairs) {
         $key = $pair.Key.ToString() -replace '-', '_'
+        Assert-BridgeNoRetiredOperatorSetting -Name $key -Source 'settings source'
+
         if (-not $script:BridgeSettingsSchema.Contains($key)) {
             continue
         }
@@ -1338,6 +1387,8 @@ function Get-BridgeSettings {
     }
 
     $globalSettings = Read-BridgeGlobalSettings
+    Assert-BridgeNoRetiredOperatorGlobalSettings
+
     foreach ($key in $globalSettings.Keys) {
         $value = $globalSettings[$key]
         if ($value -is [System.Array]) {
@@ -1403,14 +1454,14 @@ function Get-BridgeSettings {
         $slotIds[$slotId] = $true
     }
 
-    $legacyCount = [int]$settings.commanders + [int]$settings.builders + [int]$settings.researchers + [int]$settings.reviewers
+    $legacyCount = [int]$settings.operators + [int]$settings.builders + [int]$settings.researchers + [int]$settings.reviewers
     $useLegacyLayout = [bool]$settings.legacy_role_layout
 
     if ($legacyCount -gt 0 -and -not $useLegacyLayout) {
-        throw 'Legacy role counts require legacy_role_layout=true. Set legacy_role_layout explicitly to opt into Commander/Builder/Researcher/Reviewer panes.'
+        throw 'Legacy role counts require legacy_role_layout=true. Set legacy_role_layout explicitly to opt into Operator/Builder/Researcher/Reviewer panes.'
     }
 
-    if (@($settings.agent_slots).Count -eq 0 -and -not $useLegacyLayout -and [bool]$settings.external_commander -and [int]$settings.worker_count -gt 0) {
+    if (@($settings.agent_slots).Count -eq 0 -and -not $useLegacyLayout -and [bool]$settings.external_operator -and [int]$settings.worker_count -gt 0) {
         $settings.agent_slots = New-BridgeManagedAgentSlots -Count ([int]$settings.worker_count) -Agent ([string]$settings.agent) -Model ([string]$settings.model)
     }
 

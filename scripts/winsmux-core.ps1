@@ -4092,7 +4092,7 @@ function Get-InboxActionableEventKind {
         'pane.stalled'           { return 'stalled' }
     }
 
-    if ($eventName -eq 'commander.state_transition') {
+    if ($eventName -eq 'operator.state_transition') {
         switch ($status) {
             'blocked_no_review_target' { return 'blocked' }
             'blocked_review_failed'    { return 'review_failed' }
@@ -4107,10 +4107,10 @@ function Get-InboxActionableEventKind {
     }
 
     switch ($eventName) {
-        'commander.review_requested' { return 'review_requested' }
-        'commander.review_failed'    { return 'review_failed' }
-        'commander.blocked'          { return 'blocked' }
-        'commander.commit_ready'     { return 'commit_ready' }
+        'operator.review_requested' { return 'review_requested' }
+        'operator.review_failed'    { return 'review_failed' }
+        'operator.blocked'          { return 'blocked' }
+        'operator.commit_ready'     { return 'commit_ready' }
         'pipeline.security.blocked'  { return 'blocked' }
         'security.policy.blocked'    { return 'blocked' }
         default                      { return '' }
@@ -4164,8 +4164,8 @@ function Get-InboxEventEntityKey {
     param([Parameter(Mandatory = $true)]$EventRecord)
 
     $eventName = [string]$EventRecord['event']
-    if ($eventName -like 'commander.*') {
-        return 'commander'
+    if ($eventName -like 'operator.*') {
+        return 'operator'
     }
 
     $paneId = [string]$EventRecord['pane_id']
@@ -7025,7 +7025,7 @@ function Invoke-DispatchTask {
 
     $route = Get-DispatchRoute -Text $taskText -AvailableTargets $availableTargets -DefaultRole 'Worker'
     if ($route.HandleLocally) {
-        Stop-WithError "dispatch-task routed to Commander. Refine the task text so it can be delegated to a managed pane."
+        Stop-WithError "dispatch-task routed to Operator. Refine the task text so it can be delegated to a managed pane."
     }
 
     $selectedLabel = [string]$route.SelectedTarget
@@ -7162,7 +7162,7 @@ function Invoke-ReviewApprove {
     Save-ReviewState -ProjectDir $projectDir -State $state
     Update-ReviewPaneManifestState -ProjectDir $projectDir -Properties ([ordered]@{
         review_state = 'pass'
-        task_owner   = 'Commander'
+        task_owner   = 'Operator'
         branch       = $branch
         head_sha     = $headSha
         last_event   = 'review.pass'
@@ -7232,7 +7232,7 @@ function Invoke-ReviewFail {
     Save-ReviewState -ProjectDir $projectDir -State $state
     Update-ReviewPaneManifestState -ProjectDir $projectDir -Properties ([ordered]@{
         review_state = 'fail'
-        task_owner   = 'Commander'
+        task_owner   = 'Operator'
         branch       = $branch
         head_sha     = $headSha
         last_event   = 'review.fail'

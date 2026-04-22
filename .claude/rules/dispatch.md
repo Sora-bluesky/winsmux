@@ -4,7 +4,7 @@ paths: ["winsmux-core/scripts/**", ".claude/**"]
 
 # Operator Dispatch Procedure
 
-User-facing progress updates must use **operator**. `Commander` is an internal role/gate term only.
+User-facing progress updates must use **operator**. `Operator` is an internal role/gate term only.
 
 ## Orchestra restore preflight
 1. If restoration state is `needs-startup`, do not triage PRs, plan merges, read backlog, or dispatch work yet.
@@ -42,7 +42,7 @@ User-facing progress updates must use **operator**. `Commander` is an internal r
 1. Use `pwsh -NoProfile -File scripts/winsmux-core.ps1 dispatch-review "<task text>"` when the next action is to request a formal review-state transition from a review-capable slot.
 2. Do not perform local diff review as operator. The operator may inspect dispatch evidence and test output only.
 3. Before reporting that review was dispatched, require command success and at least one confirmation signal:
-   - `commander.review_requested`
+   - `operator.review_requested`
    - `review_state=PENDING`
    - target pane capture showing the review request
 4. If confirmation is missing, report `review dispatch blocked` or `review dispatch unconfirmed` instead of saying that review is in progress.
@@ -52,7 +52,7 @@ User-facing progress updates must use **operator**. `Commander` is an internal r
 1. Use `pwsh -NoProfile -File scripts/winsmux-core.ps1 dispatch-task "<task text>"` as the default operator-to-pane dispatch path.
 2. Use `dispatch-review` only when the next action is to request a formal review-state transition.
 3. Verify the chosen pane with `winsmux capture-pane -t <pane_id> -p | tail -15` before reporting that work was dispatched.
-4. In user-facing progress messages, say `operator` rather than `Commander`.
+4. In user-facing progress messages, say `operator` rather than `Operator`.
 
 ## Post-Review Commit
 1. Verify `review-state.json` has PASS

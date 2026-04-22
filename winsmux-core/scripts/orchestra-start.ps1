@@ -503,7 +503,7 @@ function Get-CanonicalRole {
         '^(?i)builder(?:$|[-_:/\s])' { return 'Builder' }
         '^(?i)researcher(?:$|[-_:/\s])' { return 'Researcher' }
         '^(?i)reviewer(?:$|[-_:/\s])' { return 'Reviewer' }
-        '^(?i)commander(?:$|[-_:/\s])' { return 'Commander' }
+        '^(?i)operator(?:$|[-_:/\s])' { return 'Operator' }
         default { throw "Unsupported pane role label: $AssignmentRole" }
     }
 }
@@ -511,7 +511,7 @@ function Get-CanonicalRole {
 function Get-OrchestraLayoutSettings {
     param([Parameter(Mandatory = $true)]$Settings)
 
-    $commanders = [int]$Settings.commanders
+    $operators = [int]$Settings.operators
     $workers = [int]$Settings.worker_count
     $agentSlots = @()
     if ($Settings -is [System.Collections.IDictionary]) {
@@ -524,14 +524,14 @@ function Get-OrchestraLayoutSettings {
     $builders = [int]$Settings.builders
     $researchers = [int]$Settings.researchers
     $reviewers = [int]$Settings.reviewers
-    $externalCommander = [bool]$Settings.external_commander
+    $externalOperator = [bool]$Settings.external_operator
     $legacyRoleLayout = [bool]$Settings.legacy_role_layout
 
-    $legacyCount = $commanders + $builders + $researchers + $reviewers
+    $legacyCount = $operators + $builders + $researchers + $reviewers
     $useLegacyLayout = $legacyRoleLayout
 
     if ($legacyCount -gt 0 -and -not $useLegacyLayout) {
-        throw 'Legacy role counts require legacy_role_layout=true. Set legacy_role_layout explicitly to opt into Commander/Builder/Researcher/Reviewer panes.'
+        throw 'Legacy role counts require legacy_role_layout=true. Set legacy_role_layout explicitly to opt into Operator/Builder/Researcher/Reviewer panes.'
     }
 
     if (-not $useLegacyLayout -and $agentSlots.Count -gt 0) {
@@ -589,9 +589,9 @@ function Get-OrchestraLayoutSettings {
 
     if ($useLegacyLayout) {
         return [ordered]@{
-            ExternalCommander = $false
+            ExternalOperator = $false
             LegacyRoleLayout  = $true
-            Commanders        = $commanders
+            Operators        = $operators
             Workers           = 0
             Builders          = $builders
             Researchers       = $researchers
@@ -599,18 +599,18 @@ function Get-OrchestraLayoutSettings {
         }
     }
 
-    $managedCommanders = if ($externalCommander) { 0 } else { 1 }
+    $managedOperators = if ($externalOperator) { 0 } else { 1 }
     if ($agentSlots.Count -gt 0) {
         $workers = $agentSlots.Count
     }
     if ($workers -lt 1) {
-        throw "worker_count must be 1 or greater in external commander mode (got $workers)."
+        throw "worker_count must be 1 or greater in external operator mode (got $workers)."
     }
 
     return [ordered]@{
-        ExternalCommander = $externalCommander
+        ExternalOperator = $externalOperator
         LegacyRoleLayout  = $false
-        Commanders        = $managedCommanders
+        Operators        = $managedOperators
         Workers           = $workers
         Builders          = 0
         Researchers       = 0
@@ -621,7 +621,7 @@ function Get-OrchestraLayoutSettings {
 function Get-OrchestraExpectedPaneCount {
     param([Parameter(Mandatory = $true)]$LayoutSettings)
 
-    return [int]$LayoutSettings.Commanders +
+    return [int]$LayoutSettings.Operators +
         [int]$LayoutSettings.Workers +
         [int]$LayoutSettings.Builders +
         [int]$LayoutSettings.Researchers +
@@ -1073,7 +1073,7 @@ function Save-OrchestraSessionState {
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [Parameter(Mandatory = $true)][System.Collections.IEnumerable]$PaneSummaries,
         [AllowEmptyString()][string]$StartupToken = '',
-        [Nullable[int]]$CommanderPollPid = $null,
+        [Nullable[int]]$OperatorPollPid = $null,
         [Nullable[int]]$WatchdogPid = $null,
         [Nullable[int]]$ServerWatchdogPid = $null,
         [AllowEmptyString()][string]$BootstrapMode = '',
@@ -1127,7 +1127,7 @@ function Save-OrchestraSessionState {
             project_dir         = $ProjectDir
             git_worktree_dir    = $GitWorktreeDir
             startup_token       = $StartupToken
-            commander_poll_pid  = $CommanderPollPid
+            operator_poll_pid  = $OperatorPollPid
             watchdog_pid        = $WatchdogPid
             server_watchdog_pid = $ServerWatchdogPid
             bootstrap_mode      = $BootstrapMode
@@ -1190,7 +1190,7 @@ function Stop-OrchestraBackgroundProcessesFromManifest {
     }
 
     $pidMap = [ordered]@{}
-    foreach ($propertyName in @('commander_poll_pid', 'watchdog_pid', 'server_watchdog_pid')) {
+    foreach ($propertyName in @('operator_poll_pid', 'watchdog_pid', 'server_watchdog_pid')) {
         $rawPid = $null
         if ($manifest.session -is [System.Collections.IDictionary]) {
             if ($manifest.session.Contains($propertyName)) {
@@ -1224,7 +1224,7 @@ function Stop-OrchestraBackgroundProcessesFromManifest {
             $process = $snapshot.ById[$processId]
             $commandLine = [string]$process.CommandLine
             $requiredScript = switch ($label) {
-                'commander_poll_pid' { 'commander-poll.ps1' }
+                'operator_poll_pid' { 'operator-poll.ps1' }
                 'watchdog_pid' { 'agent-watchdog.ps1' }
                 'server_watchdog_pid' { 'server-watchdog.ps1' }
                 default { '' }
@@ -1319,9 +1319,9 @@ function Start-AgentWatchdogJob {
         ) -WindowStyle Hidden -PassThru)
 }
 
-function Start-CommanderPollJob {
+function Start-OperatorPollJob {
     param(
-        [Parameter(Mandatory = $true)][string]$CommanderPollScriptPath,
+        [Parameter(Mandatory = $true)][string]$OperatorPollScriptPath,
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [AllowEmptyString()][string]$StartupToken = '',
         [int]$Interval = 20
@@ -1330,7 +1330,7 @@ function Start-CommanderPollJob {
     return (Start-Process -FilePath 'pwsh' -ArgumentList @(
             '-NoProfile',
             '-File',
-            $CommanderPollScriptPath,
+            $OperatorPollScriptPath,
             '-ManifestPath',
             $ManifestPath,
             '-StartupToken',
@@ -1784,7 +1784,7 @@ function Test-PaneBootstrapInvariants {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
-    $commanderPollProcess = $null
+    $operatorPollProcess = $null
     $watchdogProcess = $null
     $serverWatchdogProcess = $null
     $projectDir = $null
@@ -1816,10 +1816,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-WinsmuxLog -Level INFO -Event 'preflight.settings.loaded' -Message 'Loaded orchestra settings.' -Data @{
             agent              = $settings.agent
             model              = $settings.model
-            external_commander = $layoutSettings.ExternalCommander
+            external_operator = $layoutSettings.ExternalOperator
             legacy_role_layout = $layoutSettings.LegacyRoleLayout
             workers            = $layoutSettings.Workers
-            commanders         = $layoutSettings.Commanders
+            operators         = $layoutSettings.Operators
             builders           = $layoutSettings.Builders
             researchers        = $layoutSettings.Researchers
             reviewers          = $layoutSettings.Reviewers
@@ -1990,8 +1990,8 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         try {
             try {
-                Write-Warning "DEBUG: layout start session=$sessionName external=$($layoutSettings.ExternalCommander) legacy=$($layoutSettings.LegacyRoleLayout) C=$($layoutSettings.Commanders) W=$($layoutSettings.Workers) B=$($layoutSettings.Builders) R=$($layoutSettings.Researchers) Rev=$($layoutSettings.Reviewers)"
-                $layout = . $layoutScript -SessionName $sessionName -Commanders $layoutSettings.Commanders -Workers $layoutSettings.Workers -Builders $layoutSettings.Builders -Researchers $layoutSettings.Researchers -Reviewers $layoutSettings.Reviewers
+                Write-Warning "DEBUG: layout start session=$sessionName external=$($layoutSettings.ExternalOperator) legacy=$($layoutSettings.LegacyRoleLayout) C=$($layoutSettings.Operators) W=$($layoutSettings.Workers) B=$($layoutSettings.Builders) R=$($layoutSettings.Researchers) Rev=$($layoutSettings.Reviewers)"
+                $layout = . $layoutScript -SessionName $sessionName -Operators $layoutSettings.Operators -Workers $layoutSettings.Workers -Builders $layoutSettings.Builders -Researchers $layoutSettings.Researchers -Reviewers $layoutSettings.Reviewers
                 Write-Warning "DEBUG: layout done, panes=$($layout.Panes.Count)"
                 foreach ($sessionPaneId in @(Get-OrchestraSessionPaneIds -SessionName $sessionName)) {
                     if ($createdPaneIds -notcontains $sessionPaneId) {
@@ -2189,17 +2189,17 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
 
     $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $false -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source) -UiHostKind ([string]$uiAttachResult.ui_host_kind) -AttachRequestId ([string]$uiAttachResult.attach_request_id) -AttachAdapterTrace @($uiAttachResult.attach_adapter_trace)
-    $commanderPollScriptPath = Join-Path $scriptDir 'commander-poll.ps1'
-    $commanderPollProcess = Start-CommanderPollJob -CommanderPollScriptPath $commanderPollScriptPath -ManifestPath $manifestPath -StartupToken $startupToken -Interval 20
-    Write-WinsmuxLog -Level INFO -Event 'preflight.commander_poll.started' -Message "Started commander poll for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; commander_poll_pid = $commanderPollProcess.Id; process_name = $commanderPollProcess.ProcessName } | Out-Null
+    $operatorPollScriptPath = Join-Path $scriptDir 'operator-poll.ps1'
+    $operatorPollProcess = Start-OperatorPollJob -OperatorPollScriptPath $operatorPollScriptPath -ManifestPath $manifestPath -StartupToken $startupToken -Interval 20
+    Write-WinsmuxLog -Level INFO -Event 'preflight.operator_poll.started' -Message "Started operator poll for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; operator_poll_pid = $operatorPollProcess.Id; process_name = $operatorPollProcess.ProcessName } | Out-Null
     $watchdogScriptPath = Join-Path $scriptDir 'agent-watchdog.ps1'
     $watchdogProcess = Start-AgentWatchdogJob -WatchdogScriptPath $watchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName -StartupToken $startupToken
     $serverWatchdogScriptPath = Join-Path $scriptDir 'server-watchdog.ps1'
     $serverWatchdogProcess = Start-ServerWatchdogJob -WatchdogScriptPath $serverWatchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName -StartupToken $startupToken
-    Assert-OrchestraBackgroundProcessStarted -Process $commanderPollProcess -Name 'Commander poll job'
+    Assert-OrchestraBackgroundProcessStarted -Process $operatorPollProcess -Name 'Operator poll job'
     Assert-OrchestraBackgroundProcessStarted -Process $watchdogProcess -Name 'Agent watchdog job'
     Assert-OrchestraBackgroundProcessStarted -Process $serverWatchdogProcess -Name 'Server watchdog job'
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -CommanderPollPid $commanderPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $true -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source) -UiHostKind ([string]$uiAttachResult.ui_host_kind) -AttachRequestId ([string]$uiAttachResult.attach_request_id) -AttachAdapterTrace @($uiAttachResult.attach_adapter_trace)
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -OperatorPollPid $operatorPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $true -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source) -UiHostKind ([string]$uiAttachResult.ui_host_kind) -AttachRequestId ([string]$uiAttachResult.attach_request_id) -AttachAdapterTrace @($uiAttachResult.attach_adapter_trace)
     Write-WinsmuxLog -Level INFO -Event 'preflight.watchdog.started' -Message "Started agent watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; watchdog_pid = $watchdogProcess.Id; process_name = $watchdogProcess.ProcessName } | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'preflight.server_watchdog.started' -Message "Started server watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; server_watchdog_pid = $serverWatchdogProcess.Id; process_name = $serverWatchdogProcess.ProcessName } | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'orchestra.startup.session_ready' -Message "Orchestra session $sessionName reached session-ready; UI attach remains a separate state." -Data ([ordered]@{
@@ -2235,10 +2235,10 @@ if ($MyInvocation.InvocationName -ne '.') {
     Write-Output "Model: $(if ([string]::IsNullOrWhiteSpace($defaultModel)) { 'per-slot / override only' } else { $defaultModel })"
     if ($layoutSettings.LegacyRoleLayout) {
         Write-Output "Mode: legacy role layout"
-    } elseif ($layoutSettings.ExternalCommander) {
-        Write-Output "Mode: external commander + $($layoutSettings.Workers) workers"
+    } elseif ($layoutSettings.ExternalOperator) {
+        Write-Output "Mode: external operator + $($layoutSettings.Workers) workers"
     } else {
-        Write-Output "Mode: managed commander + $($layoutSettings.Workers) workers"
+        Write-Output "Mode: managed operator + $($layoutSettings.Workers) workers"
     }
     Write-Output "ProjectDir: $projectDir"
     Write-Output "GitWorktreeDir: $gitWorktreeDir"
@@ -2263,17 +2263,17 @@ if ($MyInvocation.InvocationName -ne '.') {
 
     Write-Output ''
     Write-Output "Manifest: $manifestPath"
-    Write-Output "Commander Poll PID: $($commanderPollProcess.Id)"
+    Write-Output "Operator Poll PID: $($operatorPollProcess.Id)"
     Write-Output "Watchdog PID: $($watchdogProcess.Id)"
     Write-Output "Server Watchdog PID: $($serverWatchdogProcess.Id)"
-    Write-Output 'Cleanup: stop the commander poll and watchdogs after the session ends.'
-    Write-Output ("  Stop-Process -Id {0}" -f $commanderPollProcess.Id)
+    Write-Output 'Cleanup: stop the operator poll and watchdogs after the session ends.'
+    Write-Output ("  Stop-Process -Id {0}" -f $operatorPollProcess.Id)
     Write-Output ("  Stop-Process -Id {0},{1}" -f $watchdogProcess.Id, $serverWatchdogProcess.Id)
 } catch {
     Write-Warning "STARTUP ERROR: $($_.Exception.Message)"
     Write-Warning "AT: $($_.ScriptStackTrace)"
-    if ($null -ne $commanderPollProcess) {
-        try { Stop-Process -Id $commanderPollProcess.Id -Force -ErrorAction SilentlyContinue } catch {}
+    if ($null -ne $operatorPollProcess) {
+        try { Stop-Process -Id $operatorPollProcess.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
     if ($null -ne $watchdogProcess) {
         try { Stop-Process -Id $watchdogProcess.Id -Force -ErrorAction SilentlyContinue } catch {}

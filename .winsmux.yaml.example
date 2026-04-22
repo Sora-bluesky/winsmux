@@ -1,11 +1,11 @@
 # Project-level winsmux settings.
 # Default mode is external operator + managed worker slots.
-# Set legacy_role_layout: true only if you explicitly want Commander/Builder/Researcher/Reviewer panes.
+# Set legacy_role_layout: true only if you explicitly want Operator/Builder/Researcher/Reviewer panes.
 
 # Optional:
 # agent: codex
 # model: gpt-5.4
-external-commander: true
+external-operator: true
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker

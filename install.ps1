@@ -112,7 +112,7 @@ function Install-OrchestraSupportScripts {
     Download-File "winsmux-core/scripts/agent-watchdog.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "agent-watchdog.ps1")
     Download-File "winsmux-core/scripts/builder-worktree.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "builder-worktree.ps1")
     Download-File "winsmux-core/scripts/clm-safe-io.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "clm-safe-io.ps1")
-    Download-File "winsmux-core/scripts/commander-poll.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "commander-poll.ps1")
+    Download-File "winsmux-core/scripts/operator-poll.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "operator-poll.ps1")
     Download-File "winsmux-core/scripts/doctor.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "doctor.ps1")
     Download-File "winsmux-core/scripts/logger.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "logger.ps1")
     Download-File "winsmux-core/scripts/manifest.ps1" (Join-Path $BRIDGE_SCRIPTS_DIR "manifest.ps1")
@@ -152,7 +152,7 @@ function Remove-ProfileExcludedSupportScripts {
                 "agent-watchdog.ps1",
                 "builder-worktree.ps1",
                 "clm-safe-io.ps1",
-                "commander-poll.ps1",
+                "operator-poll.ps1",
                 "doctor.ps1",
                 "logger.ps1",
                 "manifest.ps1",

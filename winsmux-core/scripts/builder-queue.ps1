@@ -569,7 +569,7 @@ function Complete-BuilderQueueTask {
         task_id       = $completedEntry.TaskId
         task          = $completedEntry.Task
         task_state    = 'completed'
-        task_owner    = 'Commander'
+        task_owner    = 'Operator'
         last_event    = 'builder.queue.completed'
         last_event_at = (Get-Date).ToString('o')
     })

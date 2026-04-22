@@ -29,7 +29,7 @@
         "scripts/winsmux-core.ps1"
       ],
       "action_item_count": 3,
-      "last_event": "commander.review_failed",
+      "last_event": "operator.review_failed",
       "last_event_at": "__LAST_EVENT_AT__",
       "verification_outcome": "",
       "security_blocked": "",

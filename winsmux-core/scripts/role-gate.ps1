@@ -1,9 +1,9 @@
 $RolePermissions = @{
-    Commander = @{
+    Operator = @{
         ReadOwn       = $true
         ReadOther     = $true
         SendAny       = $true
-        SendCommander = $true
+        SendOperator = $true
         HealthCheck   = $true
         Watch         = $true
         WaitReady     = $true
@@ -42,7 +42,7 @@ $RolePermissions = @{
         ReadOwn       = $true
         ReadOther     = $false
         SendAny       = $false
-        SendCommander = $true
+        SendOperator = $true
         HealthCheck   = $false
         Watch         = $false
         WaitReady     = $false
@@ -81,7 +81,7 @@ $RolePermissions = @{
         ReadOwn       = $true
         ReadOther     = $false
         SendAny       = $false
-        SendCommander = $true
+        SendOperator = $true
         HealthCheck   = $false
         Watch         = $false
         WaitReady     = $false
@@ -120,7 +120,7 @@ $RolePermissions = @{
         ReadOwn       = $true
         ReadOther     = $false
         SendAny       = $false
-        SendCommander = $true
+        SendOperator = $true
         HealthCheck   = $false
         Watch         = $false
         WaitReady     = $false
@@ -159,7 +159,7 @@ $RolePermissions = @{
         ReadOwn       = $true
         ReadOther     = $false
         SendAny       = $false
-        SendCommander = $true
+        SendOperator = $true
         HealthCheck   = $false
         Watch         = $false
         WaitReady     = $false
@@ -206,7 +206,7 @@ function ConvertTo-CanonicalWinsmuxRole {
     }
 
     switch -Regex ($RoleName.Trim()) {
-        '^(?i)Commander$' { return 'Commander' }
+        '^(?i)Operator$' { return 'Operator' }
         '^(?i)Worker$' { return 'Worker' }
         '^(?i)Builder$' { return 'Builder' }
         '^(?i)Researcher$' { return 'Researcher' }
@@ -353,14 +353,14 @@ function Get-RoleGateTargetRole {
     return $roleMap[$resolvedPane]
 }
 
-function Test-RoleGateCommanderTarget {
+function Test-RoleGateOperatorTarget {
     param([AllowNull()][string]$TargetPane)
 
     if ([string]::IsNullOrWhiteSpace($TargetPane)) {
         return $false
     }
 
-    return (Get-RoleGateTargetRole $TargetPane) -eq 'Commander'
+    return (Get-RoleGateTargetRole $TargetPane) -eq 'Operator'
 }
 
 function Deny-RoleCommand {
@@ -397,12 +397,12 @@ function Assert-Role {
         }
         'send' {
             if ($permissions.SendAny) { return $true }
-            if ($permissions.SendCommander -and (Test-RoleGateCommanderTarget $TargetPane)) { return $true }
+            if ($permissions.SendOperator -and (Test-RoleGateOperatorTarget $TargetPane)) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
         'message' {
             if ($permissions.SendAny) { return $true }
-            if ($permissions.SendCommander -and (Test-RoleGateCommanderTarget $TargetPane)) { return $true }
+            if ($permissions.SendOperator -and (Test-RoleGateOperatorTarget $TargetPane)) { return $true }
             return Deny-RoleCommand -Role $role -Command $normalizedCommand
         }
         'health-check' {

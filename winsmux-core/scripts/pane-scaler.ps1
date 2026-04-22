@@ -66,7 +66,7 @@ function Get-PaneScalerCanonicalRole {
         '^(?i)builder(?:$|[-_:/\s])' { return 'Builder' }
         '^(?i)researcher(?:$|[-_:/\s])' { return 'Researcher' }
         '^(?i)reviewer(?:$|[-_:/\s])' { return 'Reviewer' }
-        '^(?i)commander(?:$|[-_:/\s])' { return 'Commander' }
+        '^(?i)operator(?:$|[-_:/\s])' { return 'Operator' }
         default { return $candidate.Trim() }
     }
 }

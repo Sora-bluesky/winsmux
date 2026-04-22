@@ -1569,7 +1569,7 @@ mod tests {
         assert_eq!(snapshot.inbox.items[0].task_id, "task-999");
         assert_eq!(snapshot.inbox.items[0].task, "Fix blocker");
         assert_eq!(snapshot.inbox.items[0].head_sha, "def5678abc1234");
-        assert_eq!(snapshot.inbox.items[0].event, "commander.state_transition");
+        assert_eq!(snapshot.inbox.items[0].event, "operator.state_transition");
         assert_eq!(snapshot.inbox.items[0].timestamp, "__TIMESTAMP__");
         assert_eq!(snapshot.inbox.items[0].source, "manifest");
         assert_eq!(snapshot.digest.summary.actionable_items, 1);
@@ -1580,7 +1580,7 @@ mod tests {
         assert_eq!(snapshot.digest.items[0].action_item_count, 3);
         assert_eq!(
             snapshot.digest.items[0].last_event,
-            "commander.review_failed"
+            "operator.review_failed"
         );
         assert_eq!(snapshot.digest.items[0].verification_outcome, "");
         assert_eq!(snapshot.digest.items[0].security_blocked, "");
@@ -2044,7 +2044,7 @@ mod tests {
         assert_eq!(payload.run.primary_label, "builder-1");
         assert_eq!(payload.run.primary_pane_id, "%2");
         assert_eq!(payload.run.primary_role, "Builder");
-        assert_eq!(payload.run.last_event, "commander.review_requested");
+        assert_eq!(payload.run.last_event, "operator.review_requested");
         assert_eq!(payload.run.last_event_at, "__LAST_EVENT_AT__");
         assert_eq!(payload.run.tokens_remaining, "64% context left");
         assert_eq!(payload.run.pane_count, 1);
@@ -2110,7 +2110,7 @@ mod tests {
         assert_eq!(payload.explanation.current_state.review_state, "PENDING");
         assert_eq!(
             payload.explanation.current_state.last_event,
-            "commander.review_requested"
+            "operator.review_requested"
         );
         assert!(payload.run.security_policy.is_null());
         assert!(payload.run.security_verdict.is_null());
@@ -2125,7 +2125,7 @@ mod tests {
         );
         assert_eq!(
             payload.run.action_items[0].event,
-            "commander.review_requested"
+            "operator.review_requested"
         );
         assert_eq!(payload.run.action_items[0].timestamp, "__TIMESTAMP__");
         assert_eq!(payload.run.action_items[0].source, "manifest");
@@ -2351,7 +2351,7 @@ mod tests {
                 assert_eq!(result["run"]["priority"], "P0");
                 assert_eq!(result["run"]["primary_label"], "builder-1");
                 assert_eq!(result["run"]["primary_pane_id"], "%2");
-                assert_eq!(result["run"]["last_event"], "commander.review_requested");
+                assert_eq!(result["run"]["last_event"], "operator.review_requested");
                 assert_eq!(result["run"]["tokens_remaining"], "64% context left");
                 assert_eq!(result["run"]["pane_count"], 1);
                 assert_eq!(result["run"]["labels"][0], "builder-1");
@@ -2385,7 +2385,7 @@ mod tests {
                 );
                 assert_eq!(
                     result["explanation"]["current_state"]["last_event"],
-                    "commander.review_requested"
+                    "operator.review_requested"
                 );
                 assert_eq!(
                     result["consultation_packet"]["recommendation"],

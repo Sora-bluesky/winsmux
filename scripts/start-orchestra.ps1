@@ -22,7 +22,7 @@ param(
     [int]$Rows = 2,
     [int]$Cols = 2,
     [hashtable[]]$Agents,
-    [string]$CommanderPromptFile,
+    [string]$OperatorPromptFile,
     [switch]$ShieldHarness
 )
 
@@ -492,10 +492,10 @@ for ($i = 0; $i -lt [Math]::Min($Agents.Count, $paneIds.Count); $i++) {
     pwsh $bridgePath name $paneId $label 2>$null | Out-Null
 }
 
-# --- Generate commander prompt ---
-$promptFile = $CommanderPromptFile
+# --- Generate operator prompt ---
+$promptFile = $OperatorPromptFile
 if (-not $promptFile) {
-    $promptFile = Join-Path $ProjectDir ".commander-prompt.txt"
+    $promptFile = Join-Path $ProjectDir ".operator-prompt.txt"
 }
 
 $builderLabels = ($Agents | Where-Object { $_.label -match 'builder' } | ForEach-Object { $_.label }) -join ', '
@@ -507,7 +507,7 @@ $agentRows = $Agents | ForEach-Object {
 }
 
 $promptContent = @"
-You are the COMMANDER in a winsmux Orchestra. You run directly in the user's terminal. $($Agents.Count) background agents run in winsmux panes.
+You are the Operator in a winsmux Orchestra. You run directly in the user's terminal. $($Agents.Count) background agents run in winsmux panes.
 
 ## Background Agents
 
@@ -534,7 +534,7 @@ pwsh $bridgePath read <label>
 6. Poll all agents with ``read`` to check progress. Agents cannot push to you.
 
 ## Git Operations
-Builders NEVER run git commands. Commander handles all staging, committing, and pushing sequentially.
+Builders NEVER run git commands. Operator handles all staging, committing, and pushing sequentially.
 
 ## Builder Agents
 All builder tasks must target files within the project directory. Do not instruct builders to clone, cd, or operate outside the project root.
@@ -553,7 +553,7 @@ All builder tasks must target files within the project directory. Do not instruc
 "@
 
 Set-Content -Path $promptFile -Value $promptContent -Encoding UTF8
-Write-Output "[orchestra] Commander prompt written to $promptFile"
+Write-Output "[orchestra] Operator prompt written to $promptFile"
 
 # --- Codex MCP URL quarantine (workaround: v0.117.0 "url not supported for stdio") ---
 $hasCodex = ($Agents | Where-Object { $_.adapter -eq 'codex' -or $_.command -match 'codex' }).Count -gt 0
@@ -644,7 +644,7 @@ foreach ($agent in $Agents) {
 }
 
 Write-Output ""
-Write-Output "Commander:"
+Write-Output "Operator:"
 Write-Output "  cd $ProjectDir"
 Write-Output "  claude --model claude-opus-4-6 --permission-mode bypassPermissions --append-system-prompt-file $promptFile"
 

@@ -10,7 +10,7 @@ Describe 'orchestra cleanup helpers' {
         (Test-OrchestraManagedPaneTitle -Title 'worker-1') | Should -Be $true
         (Test-OrchestraManagedPaneTitle -Title 'researcher-2') | Should -Be $true
         (Test-OrchestraManagedPaneTitle -Title 'Reviewer-3') | Should -Be $true
-        (Test-OrchestraManagedPaneTitle -Title 'Commander') | Should -Be $false
+        (Test-OrchestraManagedPaneTitle -Title 'Operator') | Should -Be $false
         (Test-OrchestraManagedPaneTitle -Title 'PowerShell') | Should -Be $false
     }
 
@@ -58,9 +58,9 @@ Describe 'Get-BridgeSettings defaults' {
 
         $settings.agent | Should -Be 'codex'
         $settings.model | Should -Be 'gpt-5.4'
-        $settings.external_commander | Should -Be $true
+        $settings.external_operator | Should -Be $true
         $settings.legacy_role_layout | Should -Be $false
-        $settings.commanders | Should -Be 0
+        $settings.operators | Should -Be 0
         $settings.worker_count | Should -Be 6
         $settings.builders | Should -Be 0
         $settings.researchers | Should -Be 0
@@ -113,9 +113,9 @@ Describe 'Get-RoleAgentConfig with fallback' {
         $reviewerConfig.Agent | Should -Be 'claude'
         $reviewerConfig.Model | Should -Be 'gpt-5.4'
 
-        $commanderConfig = Get-RoleAgentConfig -Role 'Commander' -Settings $settings
-        $commanderConfig.Agent | Should -Be 'codex'
-        $commanderConfig.Model | Should -Be 'gpt-5.4'
+        $operatorConfig = Get-RoleAgentConfig -Role 'Operator' -Settings $settings
+        $operatorConfig.Agent | Should -Be 'codex'
+        $operatorConfig.Model | Should -Be 'gpt-5.4'
     }
 }
 
@@ -409,7 +409,7 @@ Describe 'orchestra state model' {
                 branch             = 'codex/task-243'
                 head_sha           = 'abcdef1234567'
                 changed_file_count = 2
-                changed_files      = @('winsmux-core/scripts/commander-poll.ps1', 'scripts/winsmux-core.ps1')
+                changed_files      = @('winsmux-core/scripts/operator-poll.ps1', 'scripts/winsmux-core.ps1')
             }
         }
 
@@ -424,7 +424,7 @@ Describe 'orchestra state model' {
         $builderModel.branch | Should -Be 'codex/task-243'
         $builderModel.head_sha | Should -Be 'abcdef1234567'
         $builderModel.changed_file_count | Should -Be 2
-        $builderModel.changed_files | Should -Be @('winsmux-core/scripts/commander-poll.ps1', 'scripts/winsmux-core.ps1')
+        $builderModel.changed_files | Should -Be @('winsmux-core/scripts/operator-poll.ps1', 'scripts/winsmux-core.ps1')
 
         $saved = Get-WinsmuxManifest -ProjectDir $script:orchestraStateTempRoot
         $saved.panes['builder-1'].task_id | Should -Be 'task-243'
@@ -433,7 +433,7 @@ Describe 'orchestra state model' {
         $saved.panes['builder-1'].branch | Should -Be 'codex/task-243'
         $saved.panes['builder-1'].head_sha | Should -Be 'abcdef1234567'
         $saved.panes['builder-1'].changed_file_count | Should -Be '2'
-        $saved.panes['builder-1'].changed_files | Should -Be @('winsmux-core/scripts/commander-poll.ps1', 'scripts/winsmux-core.ps1')
+        $saved.panes['builder-1'].changed_files | Should -Be @('winsmux-core/scripts/operator-poll.ps1', 'scripts/winsmux-core.ps1')
     }
 
     It 'embeds first-class task, git, and review state in emitted event payloads' {
@@ -531,7 +531,7 @@ Describe 'agent monitor idle alerts' {
         $script:agentMonitorIdleStateDir = Join-Path $script:agentMonitorTempRoot 'idle'
         New-Item -ItemType Directory -Path $script:agentMonitorTempRoot -Force | Out-Null
         $script:IdleStateDir = $script:agentMonitorIdleStateDir
-        Mock Send-MonitorCommanderMailboxMessage { return $true }
+        Mock Send-MonitorOperatorMailboxMessage { return $true }
     }
 
     AfterEach {
@@ -548,7 +548,7 @@ Describe 'agent monitor idle alerts' {
 
         $alert = Update-MonitorIdleAlertState -PaneId '%2' -Label 'builder-1' -Role 'Builder' -Status 'ready' -SnapshotTail '> ' -IdleThresholdSeconds 120 -Now $start.AddSeconds(121)
         $alert.ShouldAlert | Should -Be $true
-        $alert.Message | Should -Match 'Commander alert: idle pane builder-1 \(%2, role=Builder\)'
+        $alert.Message | Should -Match 'Operator alert: idle pane builder-1 \(%2, role=Builder\)'
 
         $repeat = Update-MonitorIdleAlertState -PaneId '%2' -Label 'builder-1' -Role 'Builder' -Status 'ready' -SnapshotTail '> ' -IdleThresholdSeconds 120 -Now $start.AddSeconds(240)
         $repeat.ShouldAlert | Should -Be $false
@@ -564,7 +564,7 @@ Describe 'agent monitor idle alerts' {
         $stateAfterBusy | Should -BeNullOrEmpty
     }
 
-    It 'emits commander alerts to stdout and monitor events during a monitor cycle' {
+    It 'emits operator alerts to stdout and monitor events during a monitor cycle' {
         $manifestDir = Join-Path $script:agentMonitorTempRoot '.winsmux'
         New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
         @"
@@ -603,17 +603,17 @@ panes:
         $output = @(Invoke-AgentMonitorCycle -Settings $settings -ManifestPath (Join-Path $manifestDir 'manifest.yaml') -SessionName 'winsmux-orchestra' -IdleThreshold 120)
 
         $output.Count | Should -Be 2
-        $output[0] | Should -Match 'Commander alert: idle pane builder-1 \(%2, role=Builder\)'
+        $output[0] | Should -Match 'Operator alert: idle pane builder-1 \(%2, role=Builder\)'
         $output[1].IdleAlerts | Should -Be 1
         $output[1].Results[0].IdleAlerted | Should -Be $true
-        $output[1].Results[0].Message | Should -Match 'Commander alert: idle pane builder-1'
+        $output[1].Results[0].Message | Should -Match 'Operator alert: idle pane builder-1'
         Should -Invoke Write-MonitorEvent -Times 1 -Exactly -ParameterFilter {
             $Event -eq 'pane.idle' -and
             $PaneId -eq '%2' -and
             $Role -eq 'Builder' -and
-            $Message -match 'Commander alert: idle pane builder-1'
+            $Message -match 'Operator alert: idle pane builder-1'
         }
-        Should -Invoke Send-MonitorCommanderMailboxMessage -Times 1 -Exactly -ParameterFilter {
+        Should -Invoke Send-MonitorOperatorMailboxMessage -Times 1 -Exactly -ParameterFilter {
             $Event -eq 'pane.idle' -and
             $Label -eq 'builder-1' -and
             $PaneId -eq '%2'
@@ -661,7 +661,7 @@ panes:
         $output = @(Invoke-AgentMonitorCycle -Settings $settings -ManifestPath $manifestPath -SessionName 'winsmux-orchestra' -IdleThreshold 120)
 
         $output.Count | Should -Be 2
-        $output[0] | Should -Match 'Commander alert: idle pane builder-1 \(%2, role=Builder\)'
+        $output[0] | Should -Match 'Operator alert: idle pane builder-1 \(%2, role=Builder\)'
         $output[1].IdleAlerts | Should -Be 1
         $output[1].Results[0].Label | Should -Be 'builder-1'
         Should -Invoke Write-MonitorEvent -Times 1 -Exactly -ParameterFilter {
@@ -711,10 +711,10 @@ panes:
         $output = @(Invoke-AgentMonitorCycle -Settings $settings -ManifestPath (Join-Path $manifestDir 'manifest.yaml') -SessionName 'winsmux-orchestra' -IdleThreshold 120)
 
         $output.Count | Should -Be 2
-        $output[0] | Should -Be 'Commander alert: builder-1 (%2) awaiting approval'
+        $output[0] | Should -Be 'Operator alert: builder-1 (%2) awaiting approval'
         $output[1].ApprovalWaiting | Should -Be 1
         $output[1].Results[0].Status | Should -Be 'approval_waiting'
-        $output[1].Results[0].Message | Should -Be 'Commander alert: builder-1 (%2) awaiting approval'
+        $output[1].Results[0].Message | Should -Be 'Operator alert: builder-1 (%2) awaiting approval'
         Should -Invoke Write-MonitorEvent -Times 1 -Exactly -ParameterFilter {
             $Event -eq 'pane.approval_waiting' -and
             $PaneId -eq '%2' -and
@@ -784,7 +784,7 @@ panes:
         }
     }
 
-    It 'emits commander alerts when a Builder stays busy with the same snapshot for three cycles' {
+    It 'emits operator alerts when a Builder stays busy with the same snapshot for three cycles' {
         $script:BuilderStallHistory = @{}
         $manifestDir = Join-Path $script:agentMonitorTempRoot '.winsmux'
         New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
@@ -827,15 +827,15 @@ panes:
         $output = @(Invoke-AgentMonitorCycle -Settings $settings -ManifestPath (Join-Path $manifestDir 'manifest.yaml') -SessionName 'winsmux-orchestra' -IdleThreshold 120)
 
         $output.Count | Should -Be 2
-        $output[0] | Should -Match 'Commander alert: stalled Builder pane builder-1 \(%2\)'
+        $output[0] | Should -Match 'Operator alert: stalled Builder pane builder-1 \(%2\)'
         $output[1].Stalls | Should -Be 1
         $output[1].Results[0].StallDetected | Should -Be $true
-        $output[1].Results[0].Message | Should -Match 'Commander alert: stalled Builder pane builder-1'
+        $output[1].Results[0].Message | Should -Match 'Operator alert: stalled Builder pane builder-1'
         Should -Invoke Write-MonitorEvent -Times 1 -Exactly -ParameterFilter {
             $Event -eq 'pane.stalled' -and
             $PaneId -eq '%2' -and
             $Role -eq 'Builder' -and
-            $Message -match 'Commander alert: stalled Builder pane builder-1'
+            $Message -match 'Operator alert: stalled Builder pane builder-1'
         }
     }
 

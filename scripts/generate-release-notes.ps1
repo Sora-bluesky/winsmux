@@ -211,7 +211,7 @@ function ConvertTo-UserBenefit {
         'runtime state machine|closed-loop dispatch/review/commit|closed-loop orchestra startup' {
             return 'Established the closed-loop runtime required for dispatch -> review -> commit orchestration'
         }
-        'Direct Commander.?Reviewer review flow|direct review flow' {
+        'Direct Operator.?Reviewer review flow|direct review flow' {
             return 'Added a direct review handoff from the operator to the reviewer path'
         }
         'bootstrap invariants|bootstrap verification|cwd|WINSMUX_ROLE|pane_id mismatch|stale manifest invalidation' {
@@ -226,7 +226,7 @@ function ConvertTo-UserBenefit {
         'winsmux send silent failure|target pane.*not found|focus_pane_by_id|fail when target pane is missing' {
             return 'Stop silent success when a target pane does not exist and fail explicitly instead'
         }
-        'Monitoring stack non-functional|watchdog.?Commander delivery path missing' {
+        'Monitoring stack non-functional|watchdog.?Operator delivery path missing' {
             return 'Restored watchdog-to-operator delivery for monitoring events'
         }
         'false success|pane creation does not actually occur|detached orchestra layout reliability' {
@@ -235,7 +235,7 @@ function ConvertTo-UserBenefit {
         'Manifest convergence|split-brain schema|CLM-safe writes' {
             return 'Converged the manifest schema and unified CLM-safe write paths'
         }
-        'Commander first-class defaults|default Commander pane|commanders=1' {
+        'Operator first-class defaults|default Operator pane|operators=1' {
             return 'Clarified the default operator pane assumptions and minimum startup layout'
         }
         'defaults alignment and pane status in manifest' {
@@ -250,7 +250,7 @@ function ConvertTo-UserBenefit {
         'Guard settings\.local\.json|hook disable' {
             return 'Made dangerous hook-disable changes harder to land without an explicit approval path'
         }
-        'Commander Telegram dense notifications' {
+        'Operator Telegram dense notifications' {
             return 'Reduced noisy operator notifications and improved visibility into approvals and state changes'
         }
         'pane\.completed|PostToolUse pane monitor hook' {
@@ -503,16 +503,16 @@ if ($highlightCandidates.Count -eq 0) {
 
 $featureSource = @()
 $featureSource += @($doneTaskTitlesForVersion | Where-Object { $_ -notmatch '#\d+' })
-$featureSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Direct Commander.?Reviewer review flow')
+$featureSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Direct Operator.?Reviewer review flow')
 $featureSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('runtime state machine', 'closed-loop orchestra startup')
 $featureSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('bootstrap verification', 'bootstrap invariants')
-$featureSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Commander first-class defaults', 'defaults alignment')
+$featureSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Operator first-class defaults', 'defaults alignment')
 $featureSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('first-class task and review state model', 'first-class pane state model')
 $featureSource += @($commitSubjects | Where-Object { $_ -match '^feat' })
 $fixSource = @()
 $fixSource += @($doneTaskTitlesForVersion | Where-Object { $_ -match '#\d+' })
 $fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('winsmux send silent failure', 'target pane.*not found', 'fail when target pane is missing')
-$fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Monitoring stack non-functional', 'watchdog.?Commander delivery path missing')
+$fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Monitoring stack non-functional', 'watchdog.?Operator delivery path missing')
 $fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('false success', 'pane creation does not actually occur', 'detached orchestra layout reliability')
 $fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Manifest convergence', 'CLM-safe writes')
 $fixSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('native-exit handling', 'fixture temp dirs out of repo root', 'review-gate CI')
@@ -527,10 +527,10 @@ $fixSource += @(
                 'review-approve',
                 'bootstrap verification',
                 'bootstrap invariants',
-                'Direct Commander.?Reviewer review flow',
+                'Direct Operator.?Reviewer review flow',
                 'first-class task and review state model',
                 'first-class pane state model',
-                'Commander first-class defaults',
+                'Operator first-class defaults',
                 'defaults alignment'
             ))
         }
@@ -549,7 +549,7 @@ $docsSource = @(
         }
 )
 $choreSource = @()
-$choreSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Commander Telegram dense notifications', 'pane\.completed', 'winsmux-surface rename')
+$choreSource += Get-MatchedCommits -Subjects $commitSubjects -Patterns @('Operator Telegram dense notifications', 'pane\.completed', 'winsmux-surface rename')
 $choreSource += @(
     $commitSubjects |
         Where-Object {

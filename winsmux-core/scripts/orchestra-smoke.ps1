@@ -30,7 +30,7 @@ function Get-OrchestraSmokeLayoutSettings {
 
     if ([bool]$settings.legacy_role_layout) {
         return [ordered]@{
-            Commanders  = [int]$settings.commanders
+            Operators  = [int]$settings.operators
             Workers     = 0
             Builders    = [int]$settings.builders
             Researchers = [int]$settings.researchers
@@ -43,7 +43,7 @@ function Get-OrchestraSmokeLayoutSettings {
     }
 
     return [ordered]@{
-        Commanders = if ([bool]$settings.external_commander) { 0 } else { 1 }
+        Operators = if ([bool]$settings.external_operator) { 0 } else { 1 }
         Workers    = $workers
         Builders   = 0
         Researchers = 0
@@ -54,7 +54,7 @@ function Get-OrchestraSmokeLayoutSettings {
 function Get-OrchestraSmokeExpectedPaneCount {
     param($LayoutSettings)
 
-    return [int]$LayoutSettings.Commanders +
+    return [int]$LayoutSettings.Operators +
         [int]$LayoutSettings.Workers +
         [int]$LayoutSettings.Builders +
         [int]$LayoutSettings.Researchers +
@@ -420,7 +420,7 @@ $startScript = Join-Path $scriptsRoot 'orchestra-start.ps1'
 $winsmuxCorePath = Join-Path (Split-Path -Parent $scriptsRoot) '..\scripts\winsmux-core.ps1'
 $winsmuxCorePath = [System.IO.Path]::GetFullPath($winsmuxCorePath)
 $layoutSettings = Get-OrchestraSmokeLayoutSettings -Root $ProjectDir
-$externalOperatorMode = ([int]$layoutSettings.Commanders -eq 0)
+$externalOperatorMode = ([int]$layoutSettings.Operators -eq 0)
 $expectedPaneCount = Get-OrchestraSmokeExpectedPaneCount -LayoutSettings $layoutSettings
 
 $winsmuxBin = ''

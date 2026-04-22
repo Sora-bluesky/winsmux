@@ -47,7 +47,7 @@ function Invoke-WinsmuxPublicInit {
             project_dir         = $resolvedProjectDir
             config_path         = $configPath
             created             = $false
-            external_commander  = [bool]$existing.external_commander
+            external_operator  = [bool]$existing.external_operator
             worker_count        = [int]$existing.worker_count
             slot_count          = @($existing.agent_slots).Count
             next_action         = 'Run winsmux launch.'
@@ -58,11 +58,11 @@ function Invoke-WinsmuxPublicInit {
     Save-BridgeSettings -Scope project -RootPath $resolvedProjectDir -Settings ([ordered]@{
         agent               = $Agent
         model               = $Model
-        external_commander  = $true
+        external_operator  = $true
         worker_count        = $WorkerCount
         agent_slots         = @($agentSlots)
         legacy_role_layout  = $false
-        commanders          = 0
+        operators          = 0
         builders            = 0
         researchers         = 0
         reviewers           = 0
@@ -75,7 +75,7 @@ function Invoke-WinsmuxPublicInit {
         project_dir         = $resolvedProjectDir
         config_path         = $configPath
         created             = $true
-        external_commander  = $true
+        external_operator  = $true
         worker_count        = $WorkerCount
         slot_count          = @($agentSlots).Count
         next_action         = 'Run winsmux launch.'
