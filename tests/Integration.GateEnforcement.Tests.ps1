@@ -341,6 +341,8 @@ panes:
                 'pwsh -Command "[System.IO.File]::WriteAllText(''C:\repo\README.md'', ''x'')"',
                 'FOO=1 pwsh -Command "[IO.File]::WriteAllBytes(''C:\repo\README.md'', [byte[]]@(1))"',
                 'env FOO=1 pwsh -Command "[System.IO.File]::Delete(''C:\repo\README.md'')"',
+                'pwsh -Command "[System.IO.File]::Open(''C:\repo\README.md'', [System.IO.FileMode]::Create)"',
+                'pwsh -Command "[System.IO.File]::Move(''C:\repo\README.md'', ''C:\repo\.worktrees\worker-1\README.md'')"',
                 '"demo" | Set-Content -LiteralPath C:\repo\README.md',
                 'echo demo>C:\repo\README.md',
                 'Write-Error demo 2> C:\repo\err.txt',
@@ -365,10 +367,13 @@ panes:
                 'python -c "from pathlib import Path; Path(''C:/repo/README.md'').unlink()"',
                 'python -c "import os; os.remove(''C:/repo/README.md'')"',
                 'python -c "import os as o; o.remove(''C:/repo/README.md'')"',
+                'python -c "import os; os.rename(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"',
                 'python -c "import os; os.makedirs(''C:/repo/out'')"',
                 'python -c "import shutil; shutil.rmtree(''C:/repo/out'')"',
+                'python -c "import shutil; shutil.move(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"',
                 'python -c "from shutil import copyfile; copyfile(''C:/repo/source.txt'', ''C:/repo/README.md'')"',
-                'python -c "import shutil; shutil.copyfile(''C:/repo/source.txt'', ''C:/repo/README.md'')"'
+                'python -c "import shutil; shutil.copyfile(''C:/repo/source.txt'', ''C:/repo/README.md'')"',
+                'node -e "require(''fs'').renameSync(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"'
             )) {
             $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -916,7 +921,8 @@ EOF
                 'cmd /c "echo x & git add README.md"',
                 'cmd /c"echo x & git add README.md"',
                 'cmd /d/c git add README.md',
-                'cmd /d/c"git add README.md"'
+                'cmd /d/c"git add README.md"',
+                'gh api repos/OWNER/REPO/pulls/123/merge -X PUT'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command

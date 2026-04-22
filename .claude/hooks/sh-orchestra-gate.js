@@ -649,10 +649,24 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
   if (executable === "gh" || executable === "gh.exe") {
     return tokens.some((token, index) =>
       normalizeAgentValue(stripOuterQuotes(token)) === "pr" &&
-      tokens.slice(index + 1).some((nextToken) => normalizeAgentValue(stripOuterQuotes(nextToken)) === "merge"));
+      tokens.slice(index + 1).some((nextToken) => normalizeAgentValue(stripOuterQuotes(nextToken)) === "merge")) ||
+      isGhApiMergeCommand(tokens);
   }
 
   return false;
+}
+
+function isGhApiMergeCommand(tokens) {
+  const normalizedTokens = tokens.map((token) => normalizeAgentValue(stripOuterQuotes(token)));
+  const apiIndex = normalizedTokens.indexOf("api");
+  if (apiIndex < 0) {
+    return false;
+  }
+
+  return normalizedTokens.slice(apiIndex + 1).some((token) =>
+    /(?:^|\/)repos\/[^/]+\/[^/]+\/pulls\/\d+\/merge(?:$|[?#])/u.test(token) ||
+    /(?:^|\/)pulls\/\d+\/merge(?:$|[?#])/u.test(token) ||
+    token.includes("mergepullrequest"));
 }
 
 function isReadOnlyGitSubcommand(gitSubcommand, tokens, subcommandIndex) {
@@ -1447,22 +1461,29 @@ function collectPowerShellMutationTargets(tokens, targets) {
 
 function collectPowerShellDotNetMutationTargets(segment, targets) {
   const firstArgumentPatterns = [
-    /\[(?:system\.)?io\.file\]\s*::\s*(?:writealltext|writeallbytes|writealllines|appendalltext|appendalllines|create|createtext|delete)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
+    /\[(?:system\.)?io\.file\]\s*::\s*(?:writealltext|writeallbytes|writealllines|appendalltext|appendalllines|create|createtext|delete|open|openwrite|openhandle)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.directory\]\s*::\s*(?:createdirectory|delete|move)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
   ];
-  const destinationArgumentPatterns = [
-    /\[(?:system\.)?io\.file\]\s*::\s*(?:copy|move|replace)\s*\(\s*(?:"[^"]+"|'[^']+')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
-    /\[(?:system\.)?io\.directory\]\s*::\s*(?:move)\s*\(\s*(?:"[^"]+"|'[^']+')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
+  const twoArgumentPatterns = [
+    /\[(?:system\.)?io\.file\]\s*::\s*(?:copy|move|replace)\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
+    /\[(?:system\.)?io\.directory\]\s*::\s*(?:move)\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
   ];
   let foundTarget = false;
-  for (const pattern of [...firstArgumentPatterns, ...destinationArgumentPatterns]) {
+  for (const pattern of firstArgumentPatterns) {
     for (const match of segment.matchAll(pattern)) {
       targets.push(match[1] || match[2] || "");
       foundTarget = true;
     }
   }
+  for (const pattern of twoArgumentPatterns) {
+    for (const match of segment.matchAll(pattern)) {
+      targets.push(match[1] || match[2] || "");
+      targets.push(match[3] || match[4] || "");
+      foundTarget = true;
+    }
+  }
 
-  if (!foundTarget && /\[(?:system\.)?io\.(?:file|directory)\]\s*::\s*(?:writealltext|writeallbytes|writealllines|appendalltext|appendalllines|create|createtext|delete|copy|move|replace|createdirectory)\s*\(/iu.test(segment)) {
+  if (!foundTarget && /\[(?:system\.)?io\.(?:file|directory)\]\s*::\s*(?:writealltext|writeallbytes|writealllines|appendalltext|appendalllines|create|createtext|delete|open|openwrite|openhandle|copy|move|replace|createdirectory)\s*\(/iu.test(segment)) {
     targets.push("$unparsed-powershell-dotnet-write");
   }
 }
@@ -1506,8 +1527,10 @@ function collectPythonMutationTargets(segment, targets) {
     /(?:^|[^\w])Path\s*\(\s*["']([^"']+)["']\s*\)\s*\.\s*(?:mkdir|rename|replace|rmdir|touch|unlink)\s*\(/giu,
     /(?:^|[^\w])open\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']*[wax+][^"']*["']/giu,
     /(?:^|[^\w])os\.(?:makedirs|mkdir|removedirs|remove|rmdir|unlink)\s*\(\s*["']([^"']+)["']\s*\)/giu,
+    /(?:^|[^\w])os\.(?:rename|replace)\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']+["']\s*\)/giu,
     /(?:^|[^\w])os\.(?:rename|replace)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']\s*\)/giu,
     /(?:^|[^\w])shutil\.(?:rmtree)\s*\(\s*["']([^"']+)["']\s*\)/giu,
+    /(?:^|[^\w])shutil\.(?:move)\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']+["']\s*\)/giu,
     /(?:^|[^\w])shutil\.(?:copy|copy2|copyfile|copytree|move)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']\s*\)/giu,
   ];
   let foundTarget = false;
@@ -1527,9 +1550,11 @@ function collectNodeMutationTargets(segment, targets) {
   const writePatterns = [
     /(?:writeFileSync|appendFileSync|rmSync|unlinkSync|mkdirSync|mkdtempSync|rmdirSync|truncateSync|createWriteStream)\s*\(\s*["']([^"']+)["']/giu,
     /(?:openSync)\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']*[wax+][^"']*["']/giu,
+    /(?:renameSync)\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']+["']/giu,
     /(?:renameSync|copyFileSync|cpSync)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']/giu,
     /(?:writeFile|appendFile|rm|unlink|mkdir|mkdtemp|rmdir|truncate)\s*\(\s*["']([^"']+)["']/giu,
     /(?:open)\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']*[wax+][^"']*["']/giu,
+    /(?:rename)\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']+["']/giu,
     /(?:rename|copyFile|cp)\s*\(\s*["'][^"']+["']\s*,\s*["']([^"']+)["']/giu,
   ];
   let foundTarget = false;
