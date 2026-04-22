@@ -2174,6 +2174,7 @@ function collectShellWriteTargets(segment, targets, powerShellAliases = new Map(
   }
 
   if (isPowerShellStartProcessExecutable(executable)) {
+    collectPowerShellStartProcessRedirectTargets(tokens, targets);
     const nestedCommand = getPowerShellStartProcessCommand(tokens);
     if (nestedCommand) {
       collectShellWriteTargetsFromCommand(nestedCommand, targets, powerShellAliases);
@@ -2202,6 +2203,16 @@ function collectShellWriteTargets(segment, targets, powerShellAliases = new Map(
   collectPowerShellMutationTargets(tokens, targets);
   collectPowerShellDotNetMutationTargets(normalizedSegment, targets);
   collectInterpreterMutationTargets(normalizedSegment, tokens, targets);
+}
+
+function collectPowerShellStartProcessRedirectTargets(tokens, targets) {
+  const redirectOptionPrefixes = expandPowerShellOptionPrefixes([
+    "-redirectstandardoutput",
+    "-redirectstandarderror",
+  ]);
+  for (const value of collectPowerShellOptionValues(tokens, redirectOptionPrefixes)) {
+    pushPowerShellTargetValues(targets, value);
+  }
 }
 
 function collectPowerShellDynamicWriteTargets(segment, tokens, targets, powerShellAliases) {
@@ -2251,6 +2262,12 @@ function collectWindowsCopyUtilityTargets(tokens, targets) {
   }
 
   if (positional.length >= 2) {
+    if (tokens.some((token) => {
+      const normalizedToken = normalizeAgentValue(stripOuterQuotes(token));
+      return normalizedToken === "/mov" || normalizedToken === "/move";
+    })) {
+      targets.push(positional[0]);
+    }
     targets.push(positional[1]);
   } else {
     targets.push("$unparsed-windows-copy-target");
