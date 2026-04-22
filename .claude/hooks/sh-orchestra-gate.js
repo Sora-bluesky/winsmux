@@ -1351,6 +1351,7 @@ function collectShellWriteTargets(segment, targets) {
 
   collectRedirectionTargets(normalizedSegment, targets);
   collectPowerShellMutationTargets(tokens, targets);
+  collectPowerShellDotNetMutationTargets(normalizedSegment, targets);
   collectInterpreterMutationTargets(normalizedSegment, tokens, targets);
 }
 
@@ -1441,6 +1442,28 @@ function collectPowerShellMutationTargets(tokens, targets) {
     if (!normalizedToken.startsWith("-")) {
       targets.push(token);
     }
+  }
+}
+
+function collectPowerShellDotNetMutationTargets(segment, targets) {
+  const firstArgumentPatterns = [
+    /\[(?:system\.)?io\.file\]\s*::\s*(?:writealltext|writeallbytes|writealllines|appendalltext|appendalllines|create|createtext|delete)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
+    /\[(?:system\.)?io\.directory\]\s*::\s*(?:createdirectory|delete|move)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
+  ];
+  const destinationArgumentPatterns = [
+    /\[(?:system\.)?io\.file\]\s*::\s*(?:copy|move|replace)\s*\(\s*(?:"[^"]+"|'[^']+')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
+    /\[(?:system\.)?io\.directory\]\s*::\s*(?:move)\s*\(\s*(?:"[^"]+"|'[^']+')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
+  ];
+  let foundTarget = false;
+  for (const pattern of [...firstArgumentPatterns, ...destinationArgumentPatterns]) {
+    for (const match of segment.matchAll(pattern)) {
+      targets.push(match[1] || match[2] || "");
+      foundTarget = true;
+    }
+  }
+
+  if (!foundTarget && /\[(?:system\.)?io\.(?:file|directory)\]\s*::\s*(?:writealltext|writeallbytes|writealllines|appendalltext|appendalllines|create|createtext|delete|copy|move|replace|createdirectory)\s*\(/iu.test(segment)) {
+    targets.push("$unparsed-powershell-dotnet-write");
   }
 }
 
