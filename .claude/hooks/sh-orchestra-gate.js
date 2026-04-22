@@ -661,6 +661,14 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
     return nestedCommand ? isOperatorOnlyGitLifecycleCommand(nestedCommand) : false;
   }
 
+  if (hasPowerShellDynamicGitLifecycleCommand(normalizedSegment, tokens)) {
+    return true;
+  }
+
+  if (hasInterpreterGitLifecycleCommand(normalizedSegment, tokens)) {
+    return true;
+  }
+
   if (executable === "git" || executable === "git.exe") {
     const gitSubcommandIndex = findGitSubcommandIndex(tokens);
     if (gitSubcommandIndex < 0) {
@@ -692,6 +700,109 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
   }
 
   return false;
+}
+
+function hasPowerShellDynamicGitLifecycleCommand(segment, tokens) {
+  const executable = normalizeAgentValue(getExecutableBasename(tokens[0] || ""));
+  if (executable === "invoke-expression" || executable === "iex") {
+    const nestedCommand = stripOuterQuotes(tokens.slice(1).join(" "));
+    if (!nestedCommand || /^\$/u.test(nestedCommand)) {
+      return true;
+    }
+    return isOperatorOnlyGitLifecycleCommand(nestedCommand);
+  }
+
+  for (const nestedCommand of getPowerShellScriptBlockCreateCommands(segment)) {
+    if (!nestedCommand || isOperatorOnlyGitLifecycleCommand(nestedCommand)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function getPowerShellScriptBlockCreateCommands(segment) {
+  const commands = [];
+  const pattern = /\[\s*scriptblock\s*\]\s*::\s*create\s*\(\s*(?:"([^"]*)"|'([^']*)')\s*\)/giu;
+  for (const match of String(segment || "").matchAll(pattern)) {
+    commands.push(match[1] || match[2] || "");
+  }
+  return commands;
+}
+
+function hasInterpreterGitLifecycleCommand(segment, tokens) {
+  const interpreterKind = getShellInterpreterKind(tokens);
+  if (!interpreterKind) {
+    return false;
+  }
+
+  return interpreterKind === "node"
+    ? hasNodeGitLifecycleCommand(segment)
+    : hasPythonGitLifecycleCommand(segment);
+}
+
+function hasPythonGitLifecycleCommand(segment) {
+  const source = String(segment || "");
+  const literalCommandPatterns = [
+    /\b(?:subprocess\.(?:run|call|check_call|check_output|popen)|os\.system)\s*\(\s*(?:"([^"]*\b(?:git|gh)\b[^"]*)"|'([^']*\b(?:git|gh)\b[^']*)')/giu,
+  ];
+  for (const pattern of literalCommandPatterns) {
+    for (const match of source.matchAll(pattern)) {
+      const command = match[1] || match[2] || "";
+      if (command && isOperatorOnlyGitLifecycleCommand(command)) {
+        return true;
+      }
+    }
+  }
+
+  return hasArrayGitLifecycleCommand(source);
+}
+
+function hasNodeGitLifecycleCommand(segment) {
+  const source = String(segment || "");
+  const literalCommandPatterns = [
+    /\b(?:execsync|exec)\s*\(\s*(?:"([^"]*\b(?:git|gh)\b[^"]*)"|'([^']*\b(?:git|gh)\b[^']*)')/giu,
+  ];
+  for (const pattern of literalCommandPatterns) {
+    for (const match of source.matchAll(pattern)) {
+      const command = match[1] || match[2] || "";
+      if (command && isOperatorOnlyGitLifecycleCommand(command)) {
+        return true;
+      }
+    }
+  }
+
+  const fileCommandPattern = /\b(?:execfilesync|execfile|spawnsync|spawn)\s*\(\s*(?:"(git|gh)(?:\.exe)?"|'(git|gh)(?:\.exe)?')\s*,\s*\[([^\]]*)\]/giu;
+  for (const match of source.matchAll(fileCommandPattern)) {
+    const tool = match[1] || match[2] || "";
+    const args = extractQuotedArguments(match[3] || "");
+    if (tool && isOperatorOnlyGitLifecycleCommand([tool, ...args].join(" "))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasArrayGitLifecycleCommand(source) {
+  const arrayPattern = /\[\s*(?:"(git|gh)(?:\.exe)?"|'(git|gh)(?:\.exe)?')\s*,([^\]]*)\]/giu;
+  for (const match of String(source || "").matchAll(arrayPattern)) {
+    const tool = match[1] || match[2] || "";
+    const args = extractQuotedArguments(match[3] || "");
+    if (tool && isOperatorOnlyGitLifecycleCommand([tool, ...args].join(" "))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function extractQuotedArguments(value) {
+  const args = [];
+  const pattern = /"([^"]*)"|'([^']*)'/gu;
+  for (const match of String(value || "").matchAll(pattern)) {
+    args.push(match[1] || match[2] || "");
+  }
+  return args;
 }
 
 function isGhApiMergeCommand(tokens) {
@@ -2027,6 +2138,10 @@ function collectShellWriteTargets(segment, targets, powerShellAliases = new Map(
     return;
   }
 
+  if (collectPowerShellDynamicWriteTargets(normalizedSegment, tokens, targets, powerShellAliases)) {
+    return;
+  }
+
   let executable = getExecutableBasename(tokens[0]);
   if (executable === "cmd" || executable === "cmd.exe") {
     const nestedCommand = getCmdShellArgument(tokens);
@@ -2087,6 +2202,33 @@ function collectShellWriteTargets(segment, targets, powerShellAliases = new Map(
   collectPowerShellMutationTargets(tokens, targets);
   collectPowerShellDotNetMutationTargets(normalizedSegment, targets);
   collectInterpreterMutationTargets(normalizedSegment, tokens, targets);
+}
+
+function collectPowerShellDynamicWriteTargets(segment, tokens, targets, powerShellAliases) {
+  const executable = normalizeAgentValue(getExecutableBasename(tokens[0] || ""));
+  if (executable === "invoke-expression" || executable === "iex") {
+    const nestedCommand = stripOuterQuotes(tokens.slice(1).join(" "));
+    if (!nestedCommand || /^\$/u.test(nestedCommand)) {
+      targets.push("$unparsed-powershell-dynamic-write");
+      return true;
+    }
+    collectShellWriteTargetsFromCommand(nestedCommand, targets, powerShellAliases);
+    return true;
+  }
+
+  const nestedCommands = getPowerShellScriptBlockCreateCommands(segment);
+  if (nestedCommands.length === 0) {
+    return false;
+  }
+
+  for (const nestedCommand of nestedCommands) {
+    if (!nestedCommand) {
+      targets.push("$unparsed-powershell-dynamic-write");
+      continue;
+    }
+    collectShellWriteTargetsFromCommand(nestedCommand, targets, powerShellAliases);
+  }
+  return true;
 }
 
 function collectWindowsCopyUtilityTargets(tokens, targets) {
@@ -2159,6 +2301,11 @@ function collectPowerShellMutationTargets(tokens, targets) {
   ];
   const valueOptionPrefixes = expandPowerShellOptionPrefixes(valueOptionNames);
 
+  if (isPowerShellRequestExecutable(executable)) {
+    collectPowerShellRequestOutputTargets(tokens, targets);
+    return;
+  }
+
   for (let index = 1; index < tokens.length; index += 1) {
     const token = stripOuterQuotes(tokens[index]);
     const normalizedToken = normalizeAgentValue(token);
@@ -2206,6 +2353,43 @@ function collectPowerShellMutationTargets(tokens, targets) {
       }
     } else if (nameValues.length > 0 && targets.length === initialTargetCount) {
       targets.push("$unparsed-powershell-write");
+    }
+  }
+}
+
+function isPowerShellRequestExecutable(executable) {
+  return [
+    "invoke-webrequest",
+    "iwr",
+    "wget",
+    "curl",
+    "invoke-restmethod",
+    "irm",
+  ].includes(normalizeAgentValue(getExecutableBasename(executable)));
+}
+
+function collectPowerShellRequestOutputTargets(tokens, targets) {
+  const outputOptionPrefixes = new Set([
+    ...expandPowerShellOptionPrefixes(["-outfile"]),
+    "-o",
+    "--output",
+  ]);
+
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(token);
+    if (outputOptionPrefixes.has(normalizedToken)) {
+      if (index + 1 < tokens.length) {
+        pushPowerShellTargetValues(targets, stripOuterQuotes(tokens[index + 1]));
+      }
+      index += 1;
+      continue;
+    }
+
+    const inlineOption = [...outputOptionPrefixes].find((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"));
+    if (inlineOption) {
+      pushPowerShellTargetValues(targets, token.slice(inlineOption.length + 1));
     }
   }
 }

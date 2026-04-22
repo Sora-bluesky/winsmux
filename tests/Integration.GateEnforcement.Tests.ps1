@@ -338,6 +338,9 @@ panes:
                 'FOO=1 pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
                 'env FOO=1 pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
                 'cmd /d/c pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
+                'pwsh -Command "iex ''Set-Content -LiteralPath C:\repo\README.md -Value demo''"',
+                'pwsh -Command "Invoke-Expression ''Set-Content -LiteralPath C:\repo\README.md -Value demo''"',
+                'pwsh -Command "[scriptblock]::Create(''Set-Content -LiteralPath C:\repo\README.md -Value demo'').Invoke()"',
                 'pwsh -Command "Set-Content -LiteralPath:C:\repo\README.md -Value:demo"',
                 'pwsh -Command "Set-Content -Lit:C:\repo\README.md -Value demo"',
                 'pwsh -Command "Set-Content -PSPath:C:\repo\README.md -Value demo"',
@@ -563,6 +566,8 @@ PY
         foreach ($command in @(
                 'cmd /c "echo demo > C:\repo\.worktrees\worker-1\README.md"',
                 'pwsh -Command "Set-Content -LiteralPath C:\repo\.worktrees\worker-1\README.md -Value demo"',
+                'curl https://example.com',
+                'pwsh -Command "Invoke-WebRequest https://example.com -OutFile C:\repo\.worktrees\worker-1\download.txt"',
                 'node -e "require(''fs'').writeFileSync(''C:/repo/.worktrees/worker-1/README.md'', ''x'')"',
                 'python -c "from pathlib import Path; Path(''C:/repo/.worktrees/worker-1/README.md'').write_text(''x'')"'
             )) {
@@ -1070,6 +1075,9 @@ EOF
                 'pwsh -Com "git push origin feature/review-gate"',
                 'pwsh -Command "if ($true) { git add README.md }"',
                 'pwsh -Command "foreach ($x in 1) { git push origin feature/review-gate }"',
+                'pwsh -Command "iex ''git add README.md''"',
+                'pwsh -Command "Invoke-Expression ''git add README.md''"',
+                'pwsh -Command "[scriptblock]::Create(''git add README.md'').Invoke()"',
                 'bash -c"git add README.md"',
                 'bash -lc "command git add README.md"',
                 'bash -lc "exec git push origin feature/review-gate"',
@@ -1098,6 +1106,9 @@ EOF
                 'cmd /c g^it add README.md',
                 'cmd /d/c git add README.md',
                 'cmd /d/c"git add README.md"',
+                'python -c "import subprocess; subprocess.run([''git'', ''add'', ''README.md''])"',
+                'node -e "require(''child_process'').execFileSync(''git'', [''add'', ''README.md''])"',
+                'node -e "require(''child_process'').execSync(''git add README.md'')"',
                 'gh api repos/OWNER/REPO/pulls/123/merge -X PUT',
                 'gh api -X PATCH repos/OWNER/REPO/git/refs/heads/main -f sha=abc',
                 'gh api -XPATCH repos/OWNER/REPO/git/refs/heads/main -f sha=abc',
