@@ -250,6 +250,186 @@ panes:
         $result.StdErr | Should -Be ''
     }
 
+    It 'denies Worker writes outside the assigned worktree' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Write' -ToolInput @{
+            file_path = 'C:\repo\README.md'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE              = 'Worker'
+            WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'assigned worktree'
+    }
+
+    It 'denies Worker file mutations when assigned worktree is missing' {
+        foreach ($case in @(
+                @{
+                    ToolName  = 'Write'
+                    ToolInput = @{ file_path = 'C:\repo\src\demo.js' }
+                },
+                @{
+                    ToolName  = 'Bash'
+                    ToolInput = @{ command = 'Set-Content -LiteralPath C:\repo\README.md -Value demo' }
+                }
+            )) {
+            $result = & $script:InvokeOrchestraGate -ToolName $case.ToolName -ToolInput $case.ToolInput -Environment ([ordered]@{
+                WINSMUX_ROLE = 'Worker'
+            })
+
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'assigned worktree is required'
+        }
+    }
+
+    It 'denies Worker writes to sibling worktrees with a shared prefix' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Write' -ToolInput @{
+            file_path = 'C:\repo\.worktrees\worker-10\README.md'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE              = 'Worker'
+            WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'assigned worktree'
+    }
+
+    It 'denies Worker MultiEdit outside the assigned worktree' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'MultiEdit' -ToolInput @{
+            file_path = 'C:\repo\README.md'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE              = 'Worker'
+            WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'assigned worktree'
+    }
+
+    It 'allows Worker writes inside the assigned worktree' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Write' -ToolInput @{
+            file_path = 'C:\repo\.worktrees\worker-1\README.md'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE              = 'Worker'
+            WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'allows Worker MultiEdit on code inside the assigned worktree' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'MultiEdit' -ToolInput @{
+            file_path = 'C:\repo\.worktrees\worker-1\src\demo.js'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE              = 'Worker'
+            WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'denies Worker shell writes outside the assigned worktree' {
+        foreach ($command in @(
+                'cmd /c "echo demo > C:\repo\README.md"',
+                'pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
+                'pwsh -Command Set-Content -LiteralPath C:\repo\README.md -Value demo',
+                '"demo" | Set-Content -LiteralPath C:\repo\README.md',
+                'echo demo>C:\repo\README.md',
+                'Write-Error demo 2> C:\repo\err.txt',
+                'rm C:\repo\README.md',
+                'del C:\repo\README.md',
+                'Tee-Object -FilePath C:\repo\README.md',
+                'Set-Content -LiteralPath \Users\me\out.txt -Value demo',
+                'Set-Content -LiteralPath ~\out.txt -Value demo',
+                'node -e "require(''fs'').writeFileSync(''C:/repo/README.md'', ''x'')"',
+                'python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"'
+            )) {
+            $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+                command = $command
+            } -Environment ([ordered]@{
+                WINSMUX_ROLE              = 'Worker'
+                WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+            })
+
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'shell writes must target assigned worktree'
+        }
+    }
+
+    It 'denies Worker shell writes with unresolved targets' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = '$p = ''C:\repo\README.md''; Set-Content -LiteralPath $p -Value demo'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE              = 'Worker'
+            WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'unresolved shell write target'
+    }
+
+    It 'denies Worker python writes when the write target cannot be parsed' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = 'python -c "from pathlib import Path; target = ''C:/repo/README.md''; Path(target).write_text(''x'')"'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE              = 'Worker'
+            WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'unresolved shell write target'
+    }
+
+    It 'denies Worker write-capable interpreter heredocs' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = @'
+python - <<'PY'
+from pathlib import Path
+Path('C:/repo/README.md').write_text('x')
+PY
+'@
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE              = 'Worker'
+            WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'interpreter heredocs'
+    }
+
+    It 'denies Worker relative shell writes after changing directory' {
+        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+            command = 'cd C:\repo; "demo" > README.md'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE              = 'Worker'
+            WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'relative shell write targets'
+    }
+
+    It 'allows Worker shell writes inside the assigned worktree' {
+        foreach ($command in @(
+                'cmd /c "echo demo > C:\repo\.worktrees\worker-1\README.md"',
+                'pwsh -Command "Set-Content -LiteralPath C:\repo\.worktrees\worker-1\README.md -Value demo"',
+                'node -e "require(''fs'').writeFileSync(''C:/repo/.worktrees/worker-1/README.md'', ''x'')"',
+                'python -c "from pathlib import Path; Path(''C:/repo/.worktrees/worker-1/README.md'').write_text(''x'')"'
+            )) {
+            $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+                command = $command
+            } -Environment ([ordered]@{
+                WINSMUX_ROLE              = 'Worker'
+                WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+        }
+    }
+
     It 'denies direct Write access to review-state.json' {
         $result = & $script:InvokeOrchestraGate -ToolName 'Write' -ToolInput ([ordered]@{
             file_path = '.winsmux\review-state.json'
@@ -415,14 +595,19 @@ EOF
     }
 
     It 'denies pwsh -Command writing a code file from the operator pane' {
-        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
-            command = 'pwsh -Command "Set-Content -LiteralPath scripts/demo.ps1 -Value ''Write-Host hi''"'
-        }) -Environment ([ordered]@{
-            WINSMUX_ROLE = 'Operator'
-        })
+        foreach ($command in @(
+                'pwsh -Command "Set-Content -LiteralPath scripts/demo.ps1 -Value ''Write-Host hi''"',
+                'pwsh -Command Set-Content -LiteralPath scripts/demo.ps1 -Value ''Write-Host hi'''
+            )) {
+            $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput ([ordered]@{
+                command = $command
+            }) -Environment ([ordered]@{
+                WINSMUX_ROLE = 'Operator'
+            })
 
-        & $script:AssertDenyResult -Result $result
-        $result.OutputObject.systemMessage | Should -Match 'Operator shell write bypass blocked'
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'Operator shell write bypass blocked'
+        }
     }
 
     It 'denies cmd /c writing a code file from the operator pane' {
@@ -643,6 +828,191 @@ EOF
         & $script:AssertDenyResult -Result $result
         $result.OutputObject.systemMessage | Should -Match 'review-approve'
         $result.OutputObject.systemMessage | Should -Match 'review-request'
+    }
+
+    It 'denies Worker git add even before the review gate' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'git add README.md'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Worker'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'Worker-pane Git lifecycle blocked'
+    }
+
+    It 'denies Worker git index mutation commands' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        foreach ($command in @(
+                'git rm --cached README.md',
+                'git restore --staged README.md'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+            } -Environment ([ordered]@{
+                WINSMUX_ROLE = 'Worker'
+            })
+
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'Worker-pane Git lifecycle blocked'
+        }
+    }
+
+    It 'allows Worker read-only git status checks' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'git status --short'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Worker'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'allows Worker to search for git lifecycle examples' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'rg "git add" docs'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Worker'
+        })
+
+        $result.ExitCode | Should -Be 0
+        $result.StdErr | Should -Be ''
+    }
+
+    It 'denies Worker git push as an Operator-only lifecycle command' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'pwsh -Command "git push origin feature/review-gate"'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Worker'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'Worker-pane Git lifecycle blocked'
+    }
+
+    It 'denies Worker git lifecycle commands behind PowerShell call operators' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        foreach ($command in @(
+                '& git add README.md',
+                '& { git push origin feature/review-gate }'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+            } -Environment ([ordered]@{
+                WINSMUX_ROLE = 'Worker'
+            })
+
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'Worker-pane Git lifecycle blocked'
+        }
+    }
+
+    It 'denies Worker git lifecycle commands behind PowerShell pipelines' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'Write-Output x | git add README.md'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Worker'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'Worker-pane Git lifecycle blocked'
+    }
+
+    It 'denies Worker git lifecycle commands behind unquoted PowerShell command arguments' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+            command = 'pwsh -Command git push origin feature/review-gate'
+        } -Environment ([ordered]@{
+            WINSMUX_ROLE = 'Worker'
+        })
+
+        & $script:AssertDenyResult -Result $result
+        $result.OutputObject.systemMessage | Should -Match 'Worker-pane Git lifecycle blocked'
+    }
+
+    It 'denies Worker git branch and tag mutations' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        foreach ($command in @(
+                'git branch feature/new',
+                'git branch -D old-topic',
+                'git tag v0.0.1',
+                'git tag -d v0.0.1'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+            } -Environment ([ordered]@{
+                WINSMUX_ROLE = 'Worker'
+            })
+
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'Worker-pane Git lifecycle blocked'
+        }
+    }
+
+    It 'denies Worker git worktree mutation commands' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        foreach ($command in @(
+                'git worktree add C:\repo\.worktrees\worker-2 main',
+                'git worktree remove C:\repo\.worktrees\worker-2'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+            } -Environment ([ordered]@{
+                WINSMUX_ROLE = 'Worker'
+            })
+
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'Worker-pane Git lifecycle blocked'
+        }
+    }
+
+    It 'allows Worker read-only git branch and tag queries' {
+        $fixture = New-GateFixture
+        $script:FixtureRoot = $fixture.Root
+
+        foreach ($command in @(
+                'git branch --show-current',
+                'git branch --list',
+                'git branch --format "%(refname:short)"',
+                'git tag --list',
+                'git tag --format "%(refname:short)"',
+                'git worktree list'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+            } -Environment ([ordered]@{
+                WINSMUX_ROLE = 'Worker'
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+        }
     }
 
     It 'denies git commit when PASS head_sha does not match current HEAD' {
