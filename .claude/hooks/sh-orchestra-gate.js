@@ -639,6 +639,10 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
   }
 
   if (isPowerShellExecutable(executable)) {
+    if (hasPowerShellEncodedCommandOption(tokens)) {
+      return true;
+    }
+
     const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
     if (nestedCommand) {
       return isOperatorOnlyGitLifecycleCommand(nestedCommand);
@@ -1799,6 +1803,23 @@ function isPowerShellExecutable(executable) {
   return executable === "pwsh" || executable === "pwsh.exe" || executable === "powershell" || executable === "powershell.exe";
 }
 
+function hasPowerShellEncodedCommandOption(tokens) {
+  const encodedOptionPrefixes = expandPowerShellOptionPrefixes(["-encodedcommand"]);
+  for (let index = 1; index < tokens.length; index += 1) {
+    const normalizedToken = normalizeAgentValue(stripOuterQuotes(tokens[index]));
+    if (encodedOptionPrefixes.includes(normalizedToken)) {
+      return true;
+    }
+
+    if (encodedOptionPrefixes.some((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"))) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function isReadOnlySearchCommand(executable) {
   return executable === "rg" ||
     executable === "rg.exe" ||
@@ -1973,6 +1994,11 @@ function collectShellWriteTargets(segment, targets, powerShellAliases = new Map(
   }
 
   if (isPowerShellExecutable(executable)) {
+    if (hasPowerShellEncodedCommandOption(tokens)) {
+      targets.push("$encoded-powershell-command");
+      return;
+    }
+
     const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
     if (nestedCommand) {
       collectShellWriteTargetsFromCommand(nestedCommand, targets, powerShellAliases);

@@ -371,6 +371,7 @@ panes:
                 'pwsh -Command "Set-Alias x Set-Content; 1 | ForEach-Object { x -LiteralPath C:\repo\README.md -Value demo }"',
                 'pwsh -Command "mkdir C:\repo\outside"',
                 'pwsh -Command "md C:\repo\outside"',
+                'pwsh -EncodedCommand UwBlAHQALQBDAG8AbgB0AGUAbgB0AA==',
                 'pwsh -Command "Export-Csv -Path C:\repo\out.csv -InputObject @{}"',
                 'pwsh -Command "Export-Clixml -Path C:\repo\out.xml -InputObject @{}"',
                 'pwsh -Command "Start-Transcript -Path C:\repo\transcript.txt"',
