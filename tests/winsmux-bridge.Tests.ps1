@@ -5829,13 +5829,14 @@ Describe 'worker isolation diagnostics' {
     BeforeAll {
         function script:New-TestWorkerIsolationManifest {
             param(
-                [string]$ExpectedOrigin = 'https://github.com/example/repo.git'
+                [string]$ExpectedOrigin = 'https://github.com/example/repo.git',
+                [string]$Role = 'Worker'
             )
 
             [pscustomobject]@{
                 panes = [ordered]@{
                     'worker-1' = [pscustomobject]@{
-                        role                  = 'Worker'
+                        role                  = $Role
                         launch_dir            = $script:workerIsolationWorktree
                         builder_worktree_path = $script:workerIsolationWorktree
                         builder_branch        = 'worktree-worker-1'
@@ -5889,6 +5890,34 @@ Describe 'worker isolation diagnostics' {
         $report.status | Should -Be 'pass'
         $report.worker_count | Should -Be 1
         $report.summary | Should -Be '1 worker pane(s) isolated'
+    }
+
+    It 'audits legacy Builder panes with worktree metadata' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest -Role 'Builder') `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker -Branch 'main')
+
+        $report.ok | Should -Be $false
+        $report.worker_count | Should -Be 1
+        $report.findings[0].message | Should -Match 'branch is main'
+    }
+
+    It 'audits pane entries that expose worktree metadata even without worker role' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest -Role 'Researcher') `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker -Branch 'main')
+
+        $report.ok | Should -Be $false
+        $report.worker_count | Should -Be 1
+        $report.findings[0].message | Should -Match 'branch is main'
     }
 
     It 'fails when the worker branch drifts from the manifest' {

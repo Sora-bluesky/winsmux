@@ -68,6 +68,42 @@ function ConvertTo-WinsmuxWorkerIsolationComparableOrigin {
     return [regex]::Replace($trimmed, '^[^/@\s]+@([^:\s]+:.+)$', '$1')
 }
 
+function Test-WinsmuxWorkerIsolationPaneEntry {
+    param([AllowNull()]$Pane)
+
+    if ($null -eq $Pane) {
+        return $false
+    }
+
+    $role = [string](Get-WinsmuxWorkerIsolationProperty -Value $Pane -Name 'role')
+    if ($role -ieq 'Worker' -or $role -ieq 'Builder') {
+        return $true
+    }
+
+    foreach ($name in @('launch_dir', 'builder_worktree_path', 'builder_branch', 'worktree_git_dir', 'expected_origin')) {
+        $value = [string](Get-WinsmuxWorkerIsolationProperty -Value $Pane -Name $name)
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Get-WinsmuxWorkerIsolationPaneLabel {
+    param(
+        [AllowNull()]$Pane,
+        [AllowEmptyString()][string]$Fallback
+    )
+
+    $label = [string](Get-WinsmuxWorkerIsolationProperty -Value $Pane -Name 'label')
+    if (-not [string]::IsNullOrWhiteSpace($label)) {
+        return $label
+    }
+
+    return $Fallback
+}
+
 function Get-WinsmuxWorkerIsolationPaneEntries {
     param([AllowNull()]$Manifest)
 
@@ -80,10 +116,24 @@ function Get-WinsmuxWorkerIsolationPaneEntries {
     if ($panes -is [System.Collections.IDictionary]) {
         foreach ($key in $panes.Keys) {
             $pane = $panes[$key]
-            $role = [string](Get-WinsmuxWorkerIsolationProperty -Value $pane -Name 'role')
-            if ($role -ieq 'Worker') {
+            if (Test-WinsmuxWorkerIsolationPaneEntry -Pane $pane) {
                 $entries.Add([PSCustomObject]@{
-                    Label = [string]$key
+                    Label = Get-WinsmuxWorkerIsolationPaneLabel -Pane $pane -Fallback ([string]$key)
+                    Pane  = $pane
+                }) | Out-Null
+            }
+        }
+
+        return @($entries)
+    }
+
+    if ($panes -is [System.Collections.IEnumerable] -and -not ($panes -is [string])) {
+        $index = 0
+        foreach ($pane in @($panes)) {
+            $index++
+            if (Test-WinsmuxWorkerIsolationPaneEntry -Pane $pane) {
+                $entries.Add([PSCustomObject]@{
+                    Label = Get-WinsmuxWorkerIsolationPaneLabel -Pane $pane -Fallback "pane-$index"
                     Pane  = $pane
                 }) | Out-Null
             }
@@ -94,10 +144,9 @@ function Get-WinsmuxWorkerIsolationPaneEntries {
 
     foreach ($property in $panes.PSObject.Properties) {
         $pane = $property.Value
-        $role = [string](Get-WinsmuxWorkerIsolationProperty -Value $pane -Name 'role')
-        if ($role -ieq 'Worker') {
+        if (Test-WinsmuxWorkerIsolationPaneEntry -Pane $pane) {
             $entries.Add([PSCustomObject]@{
-                Label = [string]$property.Name
+                Label = Get-WinsmuxWorkerIsolationPaneLabel -Pane $pane -Fallback ([string]$property.Name)
                 Pane  = $pane
             }) | Out-Null
         }
