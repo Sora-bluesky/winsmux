@@ -879,7 +879,33 @@ function isReadOnlyGitWorktreeCommand(tokens, subcommandIndex) {
 }
 
 function isReviewGatedCommand(command) {
-  return isGitCommitCommand(command) || isGitMergeCommand(command) || isGhPrMergeCommand(command);
+  return isGitCommitCommand(command) ||
+         isGitMergeCommand(command) ||
+         isGhPrMergeCommand(command) ||
+         isGhApiMergeCommandLine(command);
+}
+
+function isGhApiMergeCommandLine(command) {
+  return splitCommandSegments(command).some((segment) =>
+    splitCommandPipelineStages(segment).some((stage) => {
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapPowerShellCommandWrapper(stage)));
+      if (tokens.length === 0) {
+        return false;
+      }
+
+      const executable = getExecutableBasename(tokens[0]);
+      if (executable === "cmd" || executable === "cmd.exe") {
+        const nestedCommand = getCmdShellArgument(tokens);
+        return nestedCommand ? isGhApiMergeCommandLine(nestedCommand) : false;
+      }
+
+      if (isPowerShellExecutable(executable)) {
+        const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
+        return nestedCommand ? isGhApiMergeCommandLine(nestedCommand) : false;
+      }
+
+      return (executable === "gh" || executable === "gh.exe") && isGhApiMergeCommand(tokens);
+    }));
 }
 
 function isReviewerOnlyCommand(command) {
@@ -1409,6 +1435,16 @@ function collectPowerShellMutationTargets(tokens, targets) {
     "ni",
     "tee-object",
     "tee",
+    "export-csv",
+    "epcsv",
+    "export-clixml",
+    "start-transcript",
+    "invoke-webrequest",
+    "iwr",
+    "wget",
+    "curl",
+    "invoke-restmethod",
+    "irm",
   ].includes(executable)) {
     return;
   }
@@ -1418,6 +1454,8 @@ function collectPowerShellMutationTargets(tokens, targets) {
     "-literalpath",
     "-filepath",
     "-destination",
+    "-outfile",
+    "-outputdirectory",
   ];
   const valueOptionNames = [
     "-value",
@@ -1463,10 +1501,12 @@ function collectPowerShellDotNetMutationTargets(segment, targets) {
   const firstArgumentPatterns = [
     /\[(?:system\.)?io\.file\]\s*::\s*(?:writealltext|writeallbytes|writealllines|appendalltext|appendalllines|create|createtext|delete|open|openwrite|openhandle)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.directory\]\s*::\s*(?:createdirectory|delete|move)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
+    /\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*::\s*new\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
   ];
   const twoArgumentPatterns = [
     /\[(?:system\.)?io\.file\]\s*::\s*(?:copy|move|replace)\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.directory\]\s*::\s*(?:move)\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
+    /\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*::\s*new\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
   ];
   let foundTarget = false;
   for (const pattern of firstArgumentPatterns) {
@@ -1483,7 +1523,8 @@ function collectPowerShellDotNetMutationTargets(segment, targets) {
     }
   }
 
-  if (!foundTarget && /\[(?:system\.)?io\.(?:file|directory)\]\s*::\s*(?:writealltext|writeallbytes|writealllines|appendalltext|appendalllines|create|createtext|delete|open|openwrite|openhandle|copy|move|replace|createdirectory)\s*\(/iu.test(segment)) {
+  if (!foundTarget && (/\[(?:system\.)?io\.(?:file|directory)\]\s*::\s*(?:writealltext|writeallbytes|writealllines|appendalltext|appendalllines|create|createtext|delete|open|openwrite|openhandle|copy|move|replace|createdirectory)\s*\(/iu.test(segment) ||
+      /\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*::\s*new\s*\([^)]*\)\s*\.\s*(?:delete|create|createtext|openwrite|moveto|copyto)\s*\(/iu.test(segment))) {
     targets.push("$unparsed-powershell-dotnet-write");
   }
 }
@@ -1525,6 +1566,7 @@ function collectPythonMutationTargets(segment, targets) {
   const writePatterns = [
     /(?:^|[^\w])Path\s*\(\s*["']([^"']+)["']\s*\)\s*\.\s*(?:write_text|write_bytes)\s*\(/giu,
     /(?:^|[^\w])Path\s*\(\s*["']([^"']+)["']\s*\)\s*\.\s*(?:mkdir|rename|replace|rmdir|touch|unlink)\s*\(/giu,
+    /(?:^|[^\w])Path\s*\(\s*["'][^"']+["']\s*\)\s*\.\s*(?:rename|replace)\s*\(\s*["']([^"']+)["']\s*\)/giu,
     /(?:^|[^\w])open\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']*[wax+][^"']*["']/giu,
     /(?:^|[^\w])os\.(?:makedirs|mkdir|removedirs|remove|rmdir|unlink)\s*\(\s*["']([^"']+)["']\s*\)/giu,
     /(?:^|[^\w])os\.(?:rename|replace)\s*\(\s*["']([^"']+)["']\s*,\s*["'][^"']+["']\s*\)/giu,
@@ -1578,9 +1620,33 @@ function hasWriteCapableInterpreterHeredoc(command) {
     }
 
     const prefix = line.slice(0, markerIndex).trim();
-    if (getShellInterpreterKind(tokenizeCommandLine(prefix))) {
+    if (hasWriteCapableInterpreterHeredocPrefix(prefix)) {
       return true;
     }
+  }
+
+  return false;
+}
+
+function hasWriteCapableInterpreterHeredocPrefix(prefix) {
+  const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapPowerShellCommandWrapper(prefix)));
+  if (getShellInterpreterKind(tokens)) {
+    return true;
+  }
+
+  if (tokens.length === 0) {
+    return false;
+  }
+
+  const executable = getExecutableBasename(tokens[0]);
+  if (executable === "cmd" || executable === "cmd.exe") {
+    const nestedCommand = getCmdShellArgument(tokens);
+    return nestedCommand ? hasWriteCapableInterpreterHeredocPrefix(nestedCommand) : false;
+  }
+
+  if (isPowerShellExecutable(executable)) {
+    const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
+    return nestedCommand ? hasWriteCapableInterpreterHeredocPrefix(nestedCommand) : false;
   }
 
   return false;

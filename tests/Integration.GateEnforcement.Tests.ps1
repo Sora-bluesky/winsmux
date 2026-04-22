@@ -343,6 +343,11 @@ panes:
                 'env FOO=1 pwsh -Command "[System.IO.File]::Delete(''C:\repo\README.md'')"',
                 'pwsh -Command "[System.IO.File]::Open(''C:\repo\README.md'', [System.IO.FileMode]::Create)"',
                 'pwsh -Command "[System.IO.File]::Move(''C:\repo\README.md'', ''C:\repo\.worktrees\worker-1\README.md'')"',
+                'pwsh -Command "[System.IO.FileInfo]::new(''C:\repo\README.md'').MoveTo(''C:\repo\.worktrees\worker-1\README.md'')"',
+                'pwsh -Command "Export-Csv -Path C:\repo\out.csv -InputObject @{}"',
+                'pwsh -Command "Export-Clixml -Path C:\repo\out.xml -InputObject @{}"',
+                'pwsh -Command "Start-Transcript -Path C:\repo\transcript.txt"',
+                'pwsh -Command "Invoke-WebRequest https://example.com -OutFile C:\repo\out.txt"',
                 '"demo" | Set-Content -LiteralPath C:\repo\README.md',
                 'echo demo>C:\repo\README.md',
                 'Write-Error demo 2> C:\repo\err.txt',
@@ -365,6 +370,7 @@ panes:
                 'env FOO=1 python3.11 -c "import os; os.remove(''C:/repo/README.md'')"',
                 'FOO=1 python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'python -c "from pathlib import Path; Path(''C:/repo/README.md'').unlink()"',
+                'python -c "from pathlib import Path; Path(''C:/repo/.worktrees/worker-1/README.md'').rename(''C:/repo/README.md'')"',
                 'python -c "import os; os.remove(''C:/repo/README.md'')"',
                 'python -c "import os as o; o.remove(''C:/repo/README.md'')"',
                 'python -c "import os; os.rename(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"',
@@ -433,6 +439,12 @@ JS
 env FOO=1 node <<'JS'
 require('fs').writeFileSync('C:/repo/README.md', 'x')
 JS
+'@,
+                @'
+cmd /c python <<'PY'
+from pathlib import Path
+Path('C:/repo/README.md').write_text('x')
+PY
 '@,
                 @'
 FOO=1 node <<'JS'
@@ -876,17 +888,22 @@ EOF
         $result.OutputObject.systemMessage | Should -Match 'review-request'
     }
 
-    It 'denies gh pr merge without Reviewer PASS for the current branch' {
+    It 'denies GitHub pull request merge without Reviewer PASS for the current branch' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
 
-        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
-            command = 'gh pr merge 112 --squash --delete-branch'
-        }
+        foreach ($command in @(
+                'gh pr merge 112 --squash --delete-branch',
+                'gh api repos/OWNER/REPO/pulls/123/merge -X PUT'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+            }
 
-        & $script:AssertDenyResult -Result $result
-        $result.OutputObject.systemMessage | Should -Match 'review-approve'
-        $result.OutputObject.systemMessage | Should -Match 'review-request'
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'review-approve'
+            $result.OutputObject.systemMessage | Should -Match 'review-request'
+        }
     }
 
     It 'denies Worker git add even before the review gate' {
