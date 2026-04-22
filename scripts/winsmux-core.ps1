@@ -2885,7 +2885,8 @@ function Invoke-Send {
                 if ([string]::IsNullOrWhiteSpace($capabilityAdapter)) {
                     $capabilityAdapter = [string]$agentConfig.Agent
                 }
-                $execMode = $execModeValue.Trim().ToLowerInvariant() -eq 'true' -and $capabilityAdapter -eq 'codex'
+                $execModeAgent = ConvertTo-ReadinessAgentName $capabilityAdapter
+                $execMode = $execModeValue.Trim().ToLowerInvariant() -eq 'true' -and $execModeAgent -eq 'codex'
             }
         } catch {
             if ($_.Exception.Message -match 'Provider capability') {

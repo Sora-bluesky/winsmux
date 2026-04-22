@@ -350,7 +350,12 @@ function Get-PaneWorkload {
             }
         }
 
-        $status = Get-PaneAgentStatus -PaneId $paneId -Agent ([string]$roleAgentConfig.Agent) -Role 'Builder' -HungThreshold $HungThreshold
+        $statusAgent = [string](Get-MonitorPropertyValue -InputObject $roleAgentConfig -Name 'CapabilityAdapter' -Default '')
+        if ([string]::IsNullOrWhiteSpace($statusAgent)) {
+            $statusAgent = [string]$roleAgentConfig.Agent
+        }
+
+        $status = Get-PaneAgentStatus -PaneId $paneId -Agent $statusAgent -Role 'Builder' -HungThreshold $HungThreshold
         $statusName = [string](Get-MonitorPropertyValue -InputObject $status -Name 'Status' -Default '')
         if ($statusName -in @('busy', 'approval_waiting')) {
             $busyCount++
