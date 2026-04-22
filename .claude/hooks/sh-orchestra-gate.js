@@ -1069,6 +1069,12 @@ function getCmdShellArgument(tokens) {
       const inlineCommand = tokens[index].slice(2);
       return [inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" ");
     }
+
+    const inlineSwitchIndex = Math.max(token.lastIndexOf("/c"), token.lastIndexOf("/k"));
+    if (inlineSwitchIndex > 0) {
+      const inlineCommand = tokens[index].slice(inlineSwitchIndex + 2);
+      return [inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" ");
+    }
   }
 
   return "";
@@ -1321,7 +1327,7 @@ function isUnresolvedShellTarget(target) {
 
 function collectShellWriteTargets(segment, targets) {
   const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
-  const tokens = tokenizeCommandLine(normalizedSegment);
+  const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedSegment));
   if (tokens.length === 0) {
     return;
   }

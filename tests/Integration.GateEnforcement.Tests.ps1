@@ -335,6 +335,9 @@ panes:
                 'cmd /c "echo demo > C:\repo\README.md"',
                 'pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
                 'pwsh -Command Set-Content -LiteralPath C:\repo\README.md -Value demo',
+                'FOO=1 pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
+                'env FOO=1 pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
+                'cmd /d/c pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
                 '"demo" | Set-Content -LiteralPath C:\repo\README.md',
                 'echo demo>C:\repo\README.md',
                 'Write-Error demo 2> C:\repo\err.txt',
@@ -908,7 +911,9 @@ EOF
                 'env FOO=1 git config user.name Worker',
                 'FOO=1 git diff --output=C:/repo/README.md',
                 'cmd /c "echo x & git add README.md"',
-                'cmd /c"echo x & git add README.md"'
+                'cmd /c"echo x & git add README.md"',
+                'cmd /d/c git add README.md',
+                'cmd /d/c"git add README.md"'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
