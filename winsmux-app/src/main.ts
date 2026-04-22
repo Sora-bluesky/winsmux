@@ -846,6 +846,54 @@ function getEditorTargetForSourceChange(sourceChange: SourceChange | undefined):
   };
 }
 
+function getPreferredEditorTargetForSelectedRun(): EditorTarget | null {
+  const runId = getSelectedRunId();
+  if (!runId) {
+    return null;
+  }
+
+  const runChanges = [
+    ...getVisibleSourceChanges().filter((entry) => entry.run === runId),
+    ...getProjectionSourceEntries().filter((entry) => entry.run === runId),
+  ];
+  const dedupedRunChanges = Array.from(
+    new Map(runChanges.map((entry) => [getSourceChangeKey(entry), entry])).values(),
+  );
+
+  const selectedChange = dedupedRunChanges.find((entry) => getSourceChangeKey(entry) === selectedEditorKey);
+  if (selectedChange) {
+    return getEditorTargetForSourceChange(selectedChange);
+  }
+
+  if (dedupedRunChanges.length > 0) {
+    return getEditorTargetForSourceChange(dedupedRunChanges[0]);
+  }
+
+  const projection = getRunProjectionByRunId(runId);
+  const explainPayload = desktopExplainCache.get(runId) ?? null;
+  const candidatePaths = [
+    ...(explainPayload?.evidence_digest.changed_files ?? []),
+    ...(projection?.changed_files ?? []),
+    ...(explainPayload?.run.changed_files ?? []),
+  ];
+  const worktree = projection?.worktree || explainPayload?.run.worktree || "";
+
+  for (const path of candidatePaths) {
+    const existingChange = findSourceChangeByPath(path, worktree);
+    if (existingChange) {
+      return getEditorTargetForSourceChange(existingChange);
+    }
+
+    if (path) {
+      const target = createStandaloneEditorTarget(path, worktree);
+      desktopStandaloneEditorTargets.set(target.key, target);
+      return target;
+    }
+  }
+
+  return null;
+}
+
 function getEditorTargetByKey(key: string): EditorTarget | null {
   const sourceChange = findSourceChangeByKey(key);
   if (sourceChange) {
@@ -3544,7 +3592,8 @@ function handleChipAction(action: ChipAction) {
   switch (action) {
     case "open-editor":
       void openEditorTarget(
-        getEditorTargetForSourceChange(getPrimarySourceChange(getVisibleSourceChanges())) ??
+        getPreferredEditorTargetForSelectedRun() ??
+          getEditorTargetForSourceChange(getPrimarySourceChange(getVisibleSourceChanges())) ??
           getEditorTargetByKey(selectedEditorKey),
       );
       break;

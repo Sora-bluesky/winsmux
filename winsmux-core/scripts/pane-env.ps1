@@ -141,6 +141,11 @@ function Get-WinsmuxEnvironmentVariableNames {
         'WINSMUX_ROLE',
         'WINSMUX_PANE_ID',
         'WINSMUX_BUILDER_WORKTREE',
+        'WINSMUX_ASSIGNED_WORKTREE',
+        'WINSMUX_ASSIGNED_BRANCH',
+        'WINSMUX_WORKTREE_GITDIR',
+        'WINSMUX_SLOT_ID',
+        'WINSMUX_EXPECTED_ORIGIN',
         'WINSMUX_HOOK_PROFILE',
         'WINSMUX_GOVERNANCE_MODE'
     )
@@ -164,7 +169,11 @@ function Get-WinsmuxPaneEnvironment {
         [string]$SessionName = '',
         [string]$ProjectDir = (Get-Location).Path,
         [string]$RoleMapJson = '',
-        [string]$BuilderWorktreePath = ''
+        [string]$BuilderWorktreePath = '',
+        [string]$SlotId = '',
+        [string]$AssignedBranch = '',
+        [string]$GitWorktreeDir = '',
+        [string]$ExpectedOrigin = ''
     )
 
     $contract = Get-WinsmuxEnvironmentContract -ProjectDir $ProjectDir
@@ -186,6 +195,23 @@ function Get-WinsmuxPaneEnvironment {
 
     if (-not [string]::IsNullOrWhiteSpace($BuilderWorktreePath)) {
         $environment['WINSMUX_BUILDER_WORKTREE'] = $BuilderWorktreePath
+        $environment['WINSMUX_ASSIGNED_WORKTREE'] = $BuilderWorktreePath
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($SlotId)) {
+        $environment['WINSMUX_SLOT_ID'] = $SlotId
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($AssignedBranch)) {
+        $environment['WINSMUX_ASSIGNED_BRANCH'] = $AssignedBranch
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($GitWorktreeDir)) {
+        $environment['WINSMUX_WORKTREE_GITDIR'] = $GitWorktreeDir
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedOrigin)) {
+        $environment['WINSMUX_EXPECTED_ORIGIN'] = $ExpectedOrigin
     }
 
     return $environment

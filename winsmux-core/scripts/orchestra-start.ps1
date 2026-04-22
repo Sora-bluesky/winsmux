@@ -1093,11 +1093,15 @@ function Save-OrchestraSessionState {
     foreach ($paneSummary in @($PaneSummaries)) {
         $paneEntry = [PSCustomObject]@{
             pane_id                    = $paneSummary.PaneId
+            slot_id                    = $paneSummary.SlotId
             role                       = $paneSummary.Role
             exec_mode                  = [bool]$paneSummary.ExecMode
+            project_dir                = $paneSummary.ProjectDir
             launch_dir                 = $paneSummary.LaunchDir
             builder_branch             = $paneSummary.BuilderBranch
             builder_worktree_path      = $paneSummary.BuilderWorktreePath
+            worktree_git_dir           = $paneSummary.WorktreeGitDir
+            expected_origin            = $paneSummary.ExpectedOrigin
             capability_adapter         = [string]$paneSummary.CapabilityAdapter
             capability_command         = [string]$paneSummary.CapabilityCommand
             supports_parallel_runs     = [bool]$paneSummary.SupportsParallelRuns
@@ -1783,12 +1787,49 @@ function Test-PaneBootstrapInvariants {
     return $failures
 }
 
+function Get-OrchestraExpectedOrigin {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    try {
+        $origin = & git -C $ProjectDir remote get-url origin 2>$null | Select-Object -First 1
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$origin)) {
+            return ConvertTo-SafeGitRemoteUrl -RemoteUrl ([string]$origin).Trim()
+        }
+    } catch {
+    }
+
+    return ''
+}
+
+function ConvertTo-SafeGitRemoteUrl {
+    param([AllowEmptyString()][string]$RemoteUrl = '')
+
+    if ([string]::IsNullOrWhiteSpace($RemoteUrl)) {
+        return ''
+    }
+
+    $trimmed = $RemoteUrl.Trim()
+    try {
+        $builder = [System.UriBuilder]::new($trimmed)
+        if (-not [string]::IsNullOrWhiteSpace($builder.UserName) -or
+            -not [string]::IsNullOrWhiteSpace($builder.Password)) {
+            $builder.UserName = ''
+            $builder.Password = ''
+            return $builder.Uri.AbsoluteUri
+        }
+    } catch {
+    }
+
+    return ($trimmed -replace '^([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@', '$1')
+}
+
 if ($MyInvocation.InvocationName -ne '.') {
     $operatorPollProcess = $null
     $watchdogProcess = $null
     $serverWatchdogProcess = $null
     $projectDir = $null
     $gitWorktreeDir = $null
+    $expectedOrigin = ''
     $startupToken = ''
     $orchestraServer = $null
     $createdPaneIds = @()
@@ -1829,6 +1870,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-WinsmuxLog -Level INFO -Event 'preflight.project_dir.resolved' -Message "Resolved project directory: $projectDir." -Data @{ project_dir = $projectDir } | Out-Null
         $gitWorktreeDir = Get-GitWorktreeDir -ProjectDir $projectDir
         Write-WinsmuxLog -Level INFO -Event 'preflight.git_worktree.resolved' -Message "Resolved git worktree directory: $gitWorktreeDir." -Data @{ git_worktree_dir = $gitWorktreeDir } | Out-Null
+        $expectedOrigin = Get-OrchestraExpectedOrigin -ProjectDir $projectDir
+        if (-not [string]::IsNullOrWhiteSpace($expectedOrigin)) {
+            Write-WinsmuxLog -Level INFO -Event 'preflight.git_origin.resolved' -Message "Resolved git origin: $expectedOrigin." -Data @{ origin = $expectedOrigin } | Out-Null
+        }
         $startupLock = Acquire-OrchestraStartupLock -ProjectDir $projectDir -SessionName $sessionName
         $startupToken = [string]$startupLock.StartupToken
         Write-WinsmuxLog -Level INFO -Event 'preflight.startup_lock.acquired' -Message "Acquired orchestra startup lock for $sessionName." -Data @{ session_name = $sessionName; startup_token = $startupToken } | Out-Null
@@ -2078,7 +2123,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
-            $paneEnvironment = Get-WinsmuxPaneEnvironment -Role $canonicalRole -PaneId $paneId -SessionName $sessionName -ProjectDir $projectDir -RoleMapJson $sessionRoleMapJson -BuilderWorktreePath $builderWorktreePath
+            $paneEnvironment = Get-WinsmuxPaneEnvironment -Role $canonicalRole -PaneId $paneId -SessionName $sessionName -ProjectDir $projectDir -RoleMapJson $sessionRoleMapJson -BuilderWorktreePath $builderWorktreePath -SlotId $label -AssignedBranch $builderBranch -GitWorktreeDir $launchGitWorktreeDir -ExpectedOrigin $expectedOrigin
             $cleanPtyEnv = Get-CleanPtyEnv -AllowedEnvironment $paneEnvironment
             foreach ($entry in $paneEnvironment.GetEnumerator()) {
                 if ($entry.Key -in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {
@@ -2121,6 +2166,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         $paneSummaries.Add([ordered]@{
             Label = $label
             PaneId = $paneId
+            SlotId = $label
             Role = $canonicalRole
             Agent = [string]$slotAgentConfig.Agent
             Model = [string]$slotAgentConfig.Model
@@ -2135,8 +2181,11 @@ if ($MyInvocation.InvocationName -ne '.') {
             SupportsConsultation = [bool]$slotAgentConfig.SupportsConsultation
             ExecMode = $false
             LaunchDir = $launchDir
+            ProjectDir = $projectDir
             BuilderBranch = $builderBranch
             BuilderWorktreePath = $builderWorktreePath
+            WorktreeGitDir = $launchGitWorktreeDir
+            ExpectedOrigin = $expectedOrigin
             BootstrapMarkerPath = if ([string]::IsNullOrWhiteSpace($bootstrapPlanPath)) { '' } else { Get-OrchestraPaneBootstrapMarkerPath -PlanPath $bootstrapPlanPath -StartupToken $startupToken }
             Status = 'ready'
         })

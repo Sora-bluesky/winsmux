@@ -1912,6 +1912,34 @@ NEXT_ACTION: rerun focused verification
     }
 }
 
+Describe 'manifest worker isolation metadata' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\manifest.ps1')
+    }
+
+    It 'persists worker assignment fields in pane entries' {
+        $entry = ConvertTo-ManifestPaneEntry -PaneSummary ([ordered]@{
+            Label = 'worker-1'
+            PaneId = '%2'
+            SlotId = 'worker-1'
+            Role = 'Worker'
+            ProjectDir = 'C:\repo'
+            BuilderBranch = 'worktree-worker-1'
+            BuilderWorktreePath = 'C:\repo\.worktrees\worker-1'
+            WorktreeGitDir = 'C:\repo\.git\worktrees\worker-1'
+            ExpectedOrigin = 'https://github.com/example/repo.git'
+        })
+
+        $entry.pane_id | Should -Be '%2'
+        $entry.slot_id | Should -Be 'worker-1'
+        $entry.project_dir | Should -Be 'C:\repo'
+        $entry.builder_branch | Should -Be 'worktree-worker-1'
+        $entry.builder_worktree_path | Should -Be 'C:\repo\.worktrees\worker-1'
+        $entry.worktree_git_dir | Should -Be 'C:\repo\.git\worktrees\worker-1'
+        $entry.expected_origin | Should -Be 'https://github.com/example/repo.git'
+    }
+}
+
 Describe 'winsmux pane env contract' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\pane-env.ps1')
@@ -1972,7 +2000,7 @@ hook_profile: ci
         $env:WINSMUX_HOOK_PROFILE = 'builder'
         $env:WINSMUX_GOVERNANCE_MODE = 'enhanced'
 
-        $payload = Get-WinsmuxPaneEnvironment -Role 'Worker' -PaneId '%4' -SessionName 'winsmux-orchestra' -ProjectDir $script:paneEnvTempRoot -RoleMapJson '{"%4":"Worker"}' -BuilderWorktreePath 'C:\repo\.worktrees\builder-1'
+        $payload = Get-WinsmuxPaneEnvironment -Role 'Worker' -PaneId '%4' -SessionName 'winsmux-orchestra' -ProjectDir $script:paneEnvTempRoot -RoleMapJson '{"%4":"Worker"}' -BuilderWorktreePath 'C:\repo\.worktrees\builder-1' -SlotId 'worker-1' -AssignedBranch 'worktree-worker-1' -GitWorktreeDir 'C:\repo\.git\worktrees\worker-1' -ExpectedOrigin 'https://github.com/example/repo.git'
 
         $payload.WINSMUX_ORCHESTRA_SESSION | Should -Be 'winsmux-orchestra'
         $payload.WINSMUX_ORCHESTRA_PROJECT_DIR | Should -Be $script:paneEnvTempRoot
@@ -1980,6 +2008,11 @@ hook_profile: ci
         $payload.WINSMUX_PANE_ID | Should -Be '%4'
         $payload.WINSMUX_ROLE_MAP | Should -Be '{"%4":"Worker"}'
         $payload.WINSMUX_BUILDER_WORKTREE | Should -Be 'C:\repo\.worktrees\builder-1'
+        $payload.WINSMUX_ASSIGNED_WORKTREE | Should -Be 'C:\repo\.worktrees\builder-1'
+        $payload.WINSMUX_SLOT_ID | Should -Be 'worker-1'
+        $payload.WINSMUX_ASSIGNED_BRANCH | Should -Be 'worktree-worker-1'
+        $payload.WINSMUX_WORKTREE_GITDIR | Should -Be 'C:\repo\.git\worktrees\worker-1'
+        $payload.WINSMUX_EXPECTED_ORIGIN | Should -Be 'https://github.com/example/repo.git'
         $payload.WINSMUX_HOOK_PROFILE | Should -Be 'builder'
         $payload.WINSMUX_GOVERNANCE_MODE | Should -Be 'enhanced'
     }
@@ -4118,6 +4151,59 @@ Describe 'orchestra-start server bootstrap' {
             $script:attachStateStore = [pscustomobject]$merged
             return $script:attachStateStore
         }
+    }
+
+    It 'redacts credentials from expected origin metadata' {
+        ConvertTo-SafeGitRemoteUrl -RemoteUrl 'https://token@example.com/org/repo.git' |
+            Should -Be 'https://example.com/org/repo.git'
+        ConvertTo-SafeGitRemoteUrl -RemoteUrl 'ssh://user:secret@example.com/org/repo.git' |
+            Should -Be 'ssh://example.com/org/repo.git'
+        ConvertTo-SafeGitRemoteUrl -RemoteUrl 'git@example.com:org/repo.git' |
+            Should -Be 'git@example.com:org/repo.git'
+    }
+
+    It 'persists worker isolation metadata through Save-OrchestraSessionState' {
+        $script:savedManifest = $null
+        Mock Save-WinsmuxManifest {
+            param([string]$ProjectDir, $Manifest)
+            $script:savedManifest = $Manifest
+        }
+
+        Save-OrchestraSessionState `
+            -ProjectDir 'C:\repo' `
+            -SessionName 'winsmux-orchestra' `
+            -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4' }) `
+            -GitWorktreeDir 'C:\repo\.git\worktrees' `
+            -PaneSummaries @([ordered]@{
+                Label                  = 'worker-1'
+                PaneId                 = '%2'
+                SlotId                 = 'worker-1'
+                Role                   = 'Worker'
+                ExecMode               = $false
+                ProjectDir             = 'C:\repo'
+                LaunchDir              = 'C:\repo\.worktrees\worker-1'
+                BuilderBranch          = 'worktree-worker-1'
+                BuilderWorktreePath    = 'C:\repo\.worktrees\worker-1'
+                WorktreeGitDir         = 'C:\repo\.git\worktrees\worker-1'
+                ExpectedOrigin         = 'https://github.com/example/repo.git'
+                Status                 = 'ready'
+                CapabilityAdapter      = 'codex'
+                CapabilityCommand      = 'codex'
+                SupportsParallelRuns   = $true
+                SupportsInterrupt      = $true
+                SupportsStructuredResult = $true
+                SupportsFileEdit       = $true
+                SupportsSubagents      = $true
+                SupportsVerification   = $true
+                SupportsConsultation   = $true
+            }) | Out-Null
+
+        $script:savedManifest | Should -Not -BeNullOrEmpty
+        $pane = $script:savedManifest.panes.'worker-1'
+        $pane.slot_id | Should -Be 'worker-1'
+        $pane.project_dir | Should -Be 'C:\repo'
+        $pane.worktree_git_dir | Should -Be 'C:\repo\.git\worktrees\worker-1'
+        $pane.expected_origin | Should -Be 'https://github.com/example/repo.git'
     }
 
     It 'returns success when the server session already exists' {
