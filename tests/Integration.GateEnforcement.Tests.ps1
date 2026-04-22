@@ -338,6 +338,9 @@ panes:
                 'FOO=1 pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
                 'env FOO=1 pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
                 'cmd /d/c pwsh -Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
+                'pwsh -Command "Set-Content -LiteralPath:C:\repo\README.md -Value:demo"',
+                'pwsh -Command "Move-Item -Path:C:\repo\README.md -Destination:C:\repo\.worktrees\worker-1\README.md"',
+                'pwsh -Command "Invoke-WebRequest https://example.com -OutFile:C:\repo\out.txt"',
                 'pwsh -Command "[System.IO.File]::WriteAllText(''C:\repo\README.md'', ''x'')"',
                 'FOO=1 pwsh -Command "[IO.File]::WriteAllBytes(''C:\repo\README.md'', [byte[]]@(1))"',
                 'env FOO=1 pwsh -Command "[System.IO.File]::Delete(''C:\repo\README.md'')"',
@@ -367,6 +370,7 @@ panes:
                 'python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'python3.11 -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'env python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
+                'cmd /c p^ython -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'env FOO=1 python3.11 -c "import os; os.remove(''C:/repo/README.md'')"',
                 'FOO=1 python -c "from pathlib import Path; Path(''C:/repo/README.md'').write_text(''x'')"',
                 'python -c "from pathlib import Path; Path(''C:/repo/README.md'').unlink()"',
@@ -866,26 +870,36 @@ EOF
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
 
-        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
-            command = 'git commit -m "feat: gated"'
-        }
+        foreach ($command in @(
+                'git commit -m "feat: gated"',
+                'git -c alias.ci=commit ci -m "feat: gated"'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+            }
 
-        & $script:AssertDenyResult -Result $result
-        $result.OutputObject.systemMessage | Should -Match 'review-request'
-        $result.OutputObject.systemMessage | Should -Match 'review-approve'
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'review-request'
+            $result.OutputObject.systemMessage | Should -Match 'review-approve'
+        }
     }
 
     It 'denies git merge without Reviewer PASS for the current branch' {
         $fixture = New-GateFixture
         $script:FixtureRoot = $fixture.Root
 
-        $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
-            command = 'git merge main'
-        }
+        foreach ($command in @(
+                'git merge main',
+                'git -c alias.m=merge m main'
+            )) {
+            $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
+                command = $command
+            }
 
-        & $script:AssertDenyResult -Result $result
-        $result.OutputObject.systemMessage | Should -Match 'review-approve'
-        $result.OutputObject.systemMessage | Should -Match 'review-request'
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'review-approve'
+            $result.OutputObject.systemMessage | Should -Match 'review-request'
+        }
     }
 
     It 'denies GitHub pull request merge without Reviewer PASS for the current branch' {
@@ -937,6 +951,7 @@ EOF
                 'FOO=1 git diff --output=C:/repo/README.md',
                 'cmd /c "echo x & git add README.md"',
                 'cmd /c"echo x & git add README.md"',
+                'cmd /c g^it add README.md',
                 'cmd /d/c git add README.md',
                 'cmd /d/c"git add README.md"',
                 'gh api repos/OWNER/REPO/pulls/123/merge -X PUT'

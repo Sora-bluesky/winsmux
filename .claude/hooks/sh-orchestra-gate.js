@@ -794,6 +794,45 @@ function findGitSubcommandIndex(tokens) {
   return -1;
 }
 
+function getGitSubcommandName(tokens, subcommandIndex) {
+  const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[subcommandIndex]));
+  const aliasSubcommand = getGitAliasSubcommandName(tokens, subcommandIndex, subcommand);
+  return aliasSubcommand || subcommand;
+}
+
+function getGitAliasSubcommandName(tokens, subcommandIndex, subcommand) {
+  for (let index = 1; index < subcommandIndex; index += 1) {
+    const token = stripOuterQuotes(tokens[index]);
+    const normalizedToken = normalizeAgentValue(token);
+    let configValue = "";
+
+    if (normalizedToken === "-c" && index + 1 < subcommandIndex) {
+      index += 1;
+      configValue = stripOuterQuotes(tokens[index]);
+    } else if (normalizedToken.startsWith("-c=")) {
+      configValue = token.slice(3);
+    }
+
+    if (!configValue) {
+      continue;
+    }
+
+    const aliasMatch = configValue.match(/^alias\.([A-Za-z0-9_.-]+)=(.+)$/iu);
+    if (!aliasMatch || normalizeAgentValue(aliasMatch[1]) !== subcommand) {
+      continue;
+    }
+
+    const aliasTokens = tokenizeCommandLine(aliasMatch[2]);
+    if (aliasTokens.length === 0) {
+      continue;
+    }
+
+    return normalizeAgentValue(stripOuterQuotes(aliasTokens[0]));
+  }
+
+  return "";
+}
+
 function isReadOnlyGitBranchCommand(tokens, subcommandIndex) {
   const args = tokens.slice(subcommandIndex + 1);
   if (args.length === 0) {
@@ -879,10 +918,44 @@ function isReadOnlyGitWorktreeCommand(tokens, subcommandIndex) {
 }
 
 function isReviewGatedCommand(command) {
-  return isGitCommitCommand(command) ||
+  return isGitCommitOrMergeCommandLine(command) ||
+         isGitCommitCommand(command) ||
          isGitMergeCommand(command) ||
          isGhPrMergeCommand(command) ||
          isGhApiMergeCommandLine(command);
+}
+
+function isGitCommitOrMergeCommandLine(command) {
+  return splitCommandSegments(command).some((segment) =>
+    splitCommandPipelineStages(segment).some((stage) => {
+      const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(unwrapPowerShellCommandWrapper(stage)));
+      if (tokens.length === 0) {
+        return false;
+      }
+
+      const executable = getExecutableBasename(tokens[0]);
+      if (executable === "cmd" || executable === "cmd.exe") {
+        const nestedCommand = getCmdShellArgument(tokens);
+        return nestedCommand ? isGitCommitOrMergeCommandLine(nestedCommand) : false;
+      }
+
+      if (isPowerShellExecutable(executable)) {
+        const nestedCommand = getOptionRemainderValue(tokens, ["-command", "-c"]);
+        return nestedCommand ? isGitCommitOrMergeCommandLine(nestedCommand) : false;
+      }
+
+      if (executable !== "git" && executable !== "git.exe") {
+        return false;
+      }
+
+      const gitSubcommandIndex = findGitSubcommandIndex(tokens);
+      if (gitSubcommandIndex < 0) {
+        return false;
+      }
+
+      const gitSubcommand = getGitSubcommandName(tokens, gitSubcommandIndex);
+      return gitSubcommand === "commit" || gitSubcommand === "merge";
+    }));
 }
 
 function isGhApiMergeCommandLine(command) {
@@ -1102,22 +1175,26 @@ function getCmdShellArgument(tokens) {
   for (let index = 1; index < tokens.length; index += 1) {
     const token = normalizeAgentValue(tokens[index]);
     if (token === "/c" || token === "/k") {
-      return tokens.slice(index + 1).join(" ");
+      return unescapeCmdCaretEscapes(tokens.slice(index + 1).join(" "));
     }
 
     if (token.startsWith("/c") || token.startsWith("/k")) {
       const inlineCommand = tokens[index].slice(2);
-      return [inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" ");
+      return unescapeCmdCaretEscapes([inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" "));
     }
 
     const inlineSwitchIndex = Math.max(token.lastIndexOf("/c"), token.lastIndexOf("/k"));
     if (inlineSwitchIndex > 0) {
       const inlineCommand = tokens[index].slice(inlineSwitchIndex + 2);
-      return [inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" ");
+      return unescapeCmdCaretEscapes([inlineCommand, ...tokens.slice(index + 1)].filter(Boolean).join(" "));
     }
   }
 
   return "";
+}
+
+function unescapeCmdCaretEscapes(value) {
+  return String(value || "").replace(/\^([\s\S])/gu, "$1");
 }
 
 function unwrapEnvCommandTokens(tokens) {
@@ -1376,6 +1453,7 @@ function collectShellWriteTargets(segment, targets) {
   if (executable === "cmd" || executable === "cmd.exe") {
     const nestedCommand = getCmdShellArgument(tokens);
     if (nestedCommand) {
+      collectShellWriteTargets(nestedCommand, targets);
       collectShellWriteTargetsFromCommand(nestedCommand, targets);
     }
     return;
@@ -1481,11 +1559,13 @@ function collectPowerShellMutationTargets(tokens, targets) {
       continue;
     }
 
-    if (valueOptionNames.some((optionName) => normalizedToken.startsWith(optionName + "="))) {
+    if (valueOptionNames.some((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"))) {
       continue;
     }
 
-    const inlinePathOption = pathOptionNames.find((optionName) => normalizedToken.startsWith(optionName + "="));
+    const inlinePathOption = pathOptionNames.find((optionName) =>
+      normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"));
     if (inlinePathOption) {
       targets.push(token.slice(inlinePathOption.length + 1));
       continue;
