@@ -1007,7 +1007,8 @@ EOF
                 'alias g=git; g commit -m x',
                 'alias g="command git"; g commit -m x',
                 'alias gc="git commit"; gc -m x',
-                'g(){ git "$@"; }; g commit -m x'
+                'g(){ git "$@"; }; g commit -m x',
+                'g(){ "$@"; }; g git commit -m x'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -1157,6 +1158,8 @@ EOF
                 'alias h="builtin gh"; h pr merge 123 --squash',
                 'alias ga="git add"; ga README.md',
                 'g(){ git "$@"; }; g add README.md',
+                'g(){ "$@"; }; g git add README.md',
+                'g(){ command "$@"; }; g git add README.md',
                 'g(){ git add README.md; }; g',
                 'sh -c "git add README.md"',
                 'bash -lc "git add README.md"',

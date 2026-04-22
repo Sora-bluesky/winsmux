@@ -1332,6 +1332,10 @@ function getShellAliasDefinition(tokens) {
 }
 
 function hasShellFunctionLifecycleCommand(command, reviewOnly) {
+  if (hasShellForwardingFunctionLifecycleCommand(command, reviewOnly)) {
+    return true;
+  }
+
   const functionPattern = /(?:^|[;&])\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\(\)\s*\{[^}]*\b(git|gh)\b(?:\s+([A-Za-z0-9_-]+))?[^}]*\}\s*;\s*\1(?:\s+([^;&\r\n]+))?/giu;
   for (const match of command.matchAll(functionPattern)) {
     const toolName = normalizeAgentValue(match[2] || "");
@@ -1368,6 +1372,52 @@ function hasShellFunctionLifecycleCommand(command, reviewOnly) {
   }
 
   return false;
+}
+
+function hasShellForwardingFunctionLifecycleCommand(command, reviewOnly) {
+  const functionPattern = /(?:^|[;&])\s*([A-Za-z_][A-Za-z0-9_-]*)\s*\(\)\s*\{([^}]*)\}\s*;\s*\1(?:\s+([^;&\r\n]+))?/giu;
+  for (const match of String(command || "").matchAll(functionPattern)) {
+    const body = match[2] || "";
+    if (!/(?:^|[\s;|&])(?:command\s+|exec\s+|builtin\s+)?["']?\$@["']?(?:$|[\s;|&])/u.test(body)) {
+      continue;
+    }
+
+    const callTokens = unwrapEnvCommandTokens(tokenizeCommandLine(match[3] || ""));
+    if (isGitTokenLifecycleCommand(callTokens, reviewOnly)) {
+      return true;
+    }
+    if (isGhTokenLifecycleCommand(callTokens)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function isGitTokenLifecycleCommand(tokens, reviewOnly) {
+  if (tokens.length === 0 || normalizeExecutableName(tokens[0]) !== "git") {
+    return false;
+  }
+
+  const subcommand = normalizeAgentValue(stripOuterQuotes(tokens[1] || ""));
+  if (reviewOnly) {
+    return subcommand === "commit" || subcommand === "merge";
+  }
+
+  return isGitLifecycleSubcommandName(subcommand) ||
+    !isReadOnlyGitSubcommand(subcommand, tokens, 1);
+}
+
+function isGhTokenLifecycleCommand(tokens) {
+  if (tokens.length === 0 || normalizeExecutableName(tokens[0]) !== "gh") {
+    return false;
+  }
+
+  return tokens.some((token, index) =>
+    normalizeAgentValue(stripOuterQuotes(token)) === "pr" &&
+    tokens.slice(index + 1).some((nextToken) => normalizeAgentValue(stripOuterQuotes(nextToken)) === "merge")) ||
+    isGhApiMergeCommand(tokens) ||
+    isGhApiRefWriteCommand(tokens);
 }
 
 function hasPowerShellFunctionLifecycleCommand(command, reviewOnly) {
