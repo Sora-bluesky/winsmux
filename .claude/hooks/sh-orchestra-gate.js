@@ -1616,14 +1616,14 @@ function collectPowerShellDotNetMutationTargets(segment, targets) {
     /\[(?:system\.)?io\.file\]\s*::\s*(?:writealltext|writeallbytes|writealllines|appendalltext|appendalllines|create|createtext|delete|open|openwrite|openhandle)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.directory\]\s*::\s*(?:createdirectory|delete|move)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*::\s*new\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
-    /\(\s*new-object\s+(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
+    /\(\s*new-object\s+(?:-typename\s+)?(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:-argumentlist\s+)?(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
     /\(\s*\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
   ];
   const twoArgumentPatterns = [
     /\[(?:system\.)?io\.file\]\s*::\s*(?:copy|move|replace)\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.directory\]\s*::\s*(?:move)\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*,\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*::\s*new\s*\(\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
-    /\(\s*new-object\s+(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
+    /\(\s*new-object\s+(?:-typename\s+)?(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:-argumentlist\s+)?(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
     /\(\s*\[(?:system\.)?io\.(?:fileinfo|directoryinfo)\]\s*(?:"([^"]+)"|'([^']+)')\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)')/giu,
   ];
   let foundTarget = false;
@@ -1768,6 +1768,10 @@ function hasWriteCapableInterpreterHeredocPrefix(prefix) {
   }
 
   const executable = getExecutableBasename(tokens[0]);
+  if (isPowerShellExecutable(executable) || isShellHeredocConsumerExecutable(executable)) {
+    return true;
+  }
+
   if (executable === "cmd" || executable === "cmd.exe") {
     const nestedCommand = getCmdShellArgument(tokens);
     return nestedCommand ? hasWriteCapableInterpreterHeredocPrefix(nestedCommand) : false;
@@ -1779,6 +1783,19 @@ function hasWriteCapableInterpreterHeredocPrefix(prefix) {
   }
 
   return false;
+}
+
+function isShellHeredocConsumerExecutable(executable) {
+  return [
+    "bash",
+    "bash.exe",
+    "sh",
+    "sh.exe",
+    "dash",
+    "dash.exe",
+    "zsh",
+    "zsh.exe",
+  ].includes(executable);
 }
 
 function resolveShellTargetPath(target) {
@@ -1815,6 +1832,10 @@ function isShellCwdChangeSegment(segment) {
   }
 
   const executable = getExecutableBasename(tokens[0]);
+  if ((executable === "env" || executable === "env.exe") && hasEnvChdirOption(tokens)) {
+    return true;
+  }
+
   if (executable === "cmd" || executable === "cmd.exe") {
     const nestedCommand = getCmdShellArgument(tokens);
     return nestedCommand ? hasShellCwdChangeCommand(nestedCommand) : false;
@@ -1833,6 +1854,17 @@ function isShellCwdChangeSegment(segment) {
     "push-location",
     "pop-location",
   ].includes(executable);
+}
+
+function hasEnvChdirOption(tokens) {
+  for (let index = 1; index < tokens.length; index += 1) {
+    const normalizedToken = normalizeAgentValue(stripOuterQuotes(tokens[index]));
+    if (normalizedToken === "-c" || normalizedToken === "--chdir" || normalizedToken.startsWith("--chdir=")) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function isRelativeShellTarget(target) {

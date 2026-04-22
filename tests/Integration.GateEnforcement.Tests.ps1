@@ -349,6 +349,7 @@ panes:
                 'pwsh -Command "[System.IO.FileInfo]::new(''C:\repo\README.md'').MoveTo(''C:\repo\.worktrees\worker-1\README.md'')"',
                 'pwsh -Command "(New-Object System.IO.FileInfo ''C:\repo\README.md'').Delete()"',
                 'pwsh -Command "([System.IO.FileInfo]''C:\repo\README.md'').Delete()"',
+                'pwsh -Command "(New-Object -TypeName System.IO.FileInfo -ArgumentList ''C:\repo\README.md'').Delete()"',
                 'pwsh -Command "Export-Csv -Path C:\repo\out.csv -InputObject @{}"',
                 'pwsh -Command "Export-Clixml -Path C:\repo\out.xml -InputObject @{}"',
                 'pwsh -Command "Start-Transcript -Path C:\repo\transcript.txt"',
@@ -461,6 +462,11 @@ Path('C:/repo/README.md').write_text('x')
 PY
 '@,
                 @'
+cat <<'PS' | pwsh
+Set-Content -LiteralPath C:\repo\README.md -Value demo
+PS
+'@,
+                @'
 FOO=1 node <<'JS'
 require('fs').writeFileSync('C:/repo/README.md', 'x')
 JS
@@ -485,15 +491,20 @@ PY
     }
 
     It 'denies Worker relative shell writes after changing directory' {
-        $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
-            command = 'cd C:\repo; "demo" > README.md'
-        } -Environment ([ordered]@{
-            WINSMUX_ROLE              = 'Worker'
-            WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
-        })
+        foreach ($command in @(
+                'cd C:\repo; "demo" > README.md',
+                'env -C C:\repo python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"'
+            )) {
+            $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+                command = $command
+            } -Environment ([ordered]@{
+                WINSMUX_ROLE              = 'Worker'
+                WINSMUX_ASSIGNED_WORKTREE = 'C:\repo\.worktrees\worker-1'
+            })
 
-        & $script:AssertDenyResult -Result $result
-        $result.OutputObject.systemMessage | Should -Match 'relative shell write targets'
+            & $script:AssertDenyResult -Result $result
+            $result.OutputObject.systemMessage | Should -Match 'relative shell write targets'
+        }
     }
 
     It 'allows Worker shell writes inside the assigned worktree' {
