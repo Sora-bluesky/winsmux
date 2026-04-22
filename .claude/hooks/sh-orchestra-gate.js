@@ -604,6 +604,10 @@ function isOperatorOnlyGitLifecycleCommand(command) {
     return true;
   }
 
+  if (hasPowerShellDynamicCallLifecycleCommand(command)) {
+    return true;
+  }
+
   return splitCommandSegments(command).some((segment) =>
     splitCommandPipelineStages(segment).some(isOperatorOnlyGitLifecycleSegment));
 }
@@ -622,6 +626,10 @@ function hasPowerShellScriptBlockGitLifecycleCommand(command) {
 }
 
 function isOperatorOnlyGitLifecycleSegment(segment) {
+  if (hasPowerShellDynamicCallLifecycleCommand(segment)) {
+    return true;
+  }
+
   const normalizedSegment = unwrapPowerShellCommandWrapper(segment);
   const tokens = unwrapEnvCommandTokens(tokenizeCommandLine(normalizedSegment));
   if (tokens.length === 0) {
@@ -657,6 +665,9 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
   }
 
   if (isPowerShellStartProcessExecutable(executable)) {
+    if (hasPowerShellStartProcessLifecycleHint(normalizedSegment)) {
+      return true;
+    }
     const nestedCommand = getPowerShellStartProcessCommand(tokens);
     return nestedCommand ? isOperatorOnlyGitLifecycleCommand(nestedCommand) : false;
   }
@@ -703,7 +714,7 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
 }
 
 function hasPowerShellDynamicGitLifecycleCommand(segment, tokens) {
-  const executable = normalizeAgentValue(getExecutableBasename(tokens[0] || ""));
+  const executable = normalizeExecutableName(tokens[0] || "");
   if (executable === "invoke-expression" || executable === "iex") {
     const nestedCommand = stripOuterQuotes(tokens.slice(1).join(" "));
     if (!nestedCommand || /^\$/u.test(nestedCommand)) {
@@ -713,7 +724,7 @@ function hasPowerShellDynamicGitLifecycleCommand(segment, tokens) {
   }
 
   for (const nestedCommand of getPowerShellScriptBlockCreateCommands(segment)) {
-    if (!nestedCommand || isOperatorOnlyGitLifecycleCommand(nestedCommand)) {
+    if (isUnparsedPowerShellDynamicCommand(nestedCommand) || isOperatorOnlyGitLifecycleCommand(nestedCommand)) {
       return true;
     }
   }
@@ -723,11 +734,39 @@ function hasPowerShellDynamicGitLifecycleCommand(segment, tokens) {
 
 function getPowerShellScriptBlockCreateCommands(segment) {
   const commands = [];
-  const pattern = /\[\s*scriptblock\s*\]\s*::\s*create\s*\(\s*(?:"([^"]*)"|'([^']*)')\s*\)/giu;
+  const assignments = getPowerShellStringAssignments(segment);
+  const pattern = /\[\s*scriptblock\s*\]\s*::\s*create\s*\(\s*(?:"([^"]*)"|'([^']*)'|(\$[A-Za-z_][A-Za-z0-9_]*(?::[A-Za-z_][A-Za-z0-9_]*)?))\s*\)/giu;
   for (const match of String(segment || "").matchAll(pattern)) {
+    const variableName = normalizePowerShellVariableName(match[3] || "");
+    if (variableName) {
+      commands.push(assignments.get(variableName) || "$unparsed-powershell-dynamic");
+      continue;
+    }
+    if (match[3]) {
+      commands.push("$unparsed-powershell-dynamic");
+      continue;
+    }
     commands.push(match[1] || match[2] || "");
   }
   return commands;
+}
+
+function getPowerShellStringAssignments(segment) {
+  const assignments = new Map();
+  const pattern = /\$([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/gu;
+  for (const match of String(segment || "").matchAll(pattern)) {
+    assignments.set(normalizePowerShellVariableName(match[1] || ""), match[2] || match[3] || "");
+  }
+  return assignments;
+}
+
+function normalizePowerShellVariableName(value) {
+  const normalized = String(value || "").trim().replace(/^\$/u, "").toLowerCase();
+  return /^[a-z_][a-z0-9_]*$/u.test(normalized) ? normalized : "";
+}
+
+function isUnparsedPowerShellDynamicCommand(value) {
+  return value === "$unparsed-powershell-dynamic";
 }
 
 function hasInterpreterGitLifecycleCommand(segment, tokens) {
@@ -755,7 +794,7 @@ function hasPythonGitLifecycleCommand(segment) {
     }
   }
 
-  return hasArrayGitLifecycleCommand(source);
+  return hasArrayGitLifecycleCommand(source) || hasDynamicInterpreterLifecycleHint(source);
 }
 
 function hasNodeGitLifecycleCommand(segment) {
@@ -781,7 +820,54 @@ function hasNodeGitLifecycleCommand(segment) {
     }
   }
 
-  return false;
+  return hasDynamicInterpreterLifecycleHint(source);
+}
+
+function hasDynamicInterpreterLifecycleHint(source) {
+  const text = String(source || "").toLowerCase();
+  const subprocessAliases = [...text.matchAll(/\bimport\s+subprocess\s+as\s+([a-z_][a-z0-9_]*)/gu)]
+    .map((match) => match[1])
+    .filter(Boolean);
+  const subprocessCallPattern = subprocessAliases.length > 0
+    ? new RegExp(`\\b(?:subprocess|${subprocessAliases.join("|")})\\.(?:run|call|check_call|check_output|popen)\\b|\\bos\\.system\\b|\\b(?:execfilesync|execfile|spawnsync|spawn|execsync|exec)\\b`, "u")
+    : /\b(?:subprocess\.(?:run|call|check_call|check_output|popen)|os\.system|execfilesync|execfile|spawnsync|spawn|execsync|exec)\b/u;
+  if (!subprocessCallPattern.test(text)) {
+    return false;
+  }
+
+  return /\b(?:add|commit|merge|push|rebase|reset|restore|rm|checkout-index|update-index|notes|branch|tag|worktree|config)\b/u.test(text);
+}
+
+function hasPowerShellDynamicCallLifecycleCommand(segment) {
+  const source = String(segment || "");
+  if (!/(?:^|[\s;|])&\s*(?:\(|\$|\$\{)/u.test(source)) {
+    return false;
+  }
+
+  return hasGitLifecycleHint(source);
+}
+
+function hasPowerShellStartProcessLifecycleHint(segment) {
+  const source = String(segment || "");
+  if (!/^\s*start-process\b/iu.test(source)) {
+    return false;
+  }
+
+  return hasGitLifecycleHint(source) &&
+    /(?:\(\s*get-command\b|\$env:comspec\b|\bpwsh\b|\bpowershell\b|\bcmd\b)/iu.test(source);
+}
+
+function hasGitLifecycleHint(source) {
+  const normalized = normalizeAgentValue(String(source || ""));
+  if (!/\b(?:add|commit|merge|push|rebase|reset|restore|rm|checkout-index|update-index|notes|branch|tag|worktree|config)\b/u.test(normalized)) {
+    return false;
+  }
+
+  return /\b(?:git|gh)\b/u.test(normalized) ||
+    /['"]g['"]\s*\+\s*['"]it['"]/u.test(normalized) ||
+    /\bget-command\s+(?:git|gh)\b/u.test(normalized) ||
+    /\$env:comspec\b/u.test(normalized) ||
+    /(?:^|[\s;|])&\s*(?:\(|\$|\$\{)/u.test(normalized);
 }
 
 function hasArrayGitLifecycleCommand(source) {
@@ -1731,7 +1817,7 @@ function getShellCommandArgument(tokens) {
 }
 
 function isPowerShellStartProcessExecutable(executable) {
-  const normalized = normalizeAgentValue(getExecutableBasename(executable));
+  const normalized = normalizeExecutableName(executable);
   return normalized === "start-process" || normalized === "saps" || normalized === "start";
 }
 
@@ -1791,7 +1877,11 @@ function getPowerShellStartProcessCommand(tokens) {
 }
 
 function cleanPowerShellStartProcessArgument(value) {
-  return stripOuterQuotes(String(value || "").trim()).replace(/^,+|,+$/gu, "").trim();
+  return stripOuterQuotes(String(value || "").trim())
+    .replace(/^@\(/u, "")
+    .replace(/\)$/u, "")
+    .replace(/^,+|,+$/gu, "")
+    .trim();
 }
 
 function unescapeCmdCaretEscapes(value) {
@@ -1942,6 +2032,11 @@ function getExecutableBasename(token) {
   }
 
   return stripOuterQuotes(basename);
+}
+
+function normalizeExecutableName(token) {
+  const normalized = normalizeAgentValue(getExecutableBasename(token));
+  return normalized.endsWith(".exe") ? normalized.slice(0, -4) : normalized;
 }
 
 function hasStandaloneCommandToken(tokens, expectedToken, startIndex) {
@@ -2216,7 +2311,7 @@ function collectPowerShellStartProcessRedirectTargets(tokens, targets) {
 }
 
 function collectPowerShellDynamicWriteTargets(segment, tokens, targets, powerShellAliases) {
-  const executable = normalizeAgentValue(getExecutableBasename(tokens[0] || ""));
+  const executable = normalizeExecutableName(tokens[0] || "");
   if (executable === "invoke-expression" || executable === "iex") {
     const nestedCommand = stripOuterQuotes(tokens.slice(1).join(" "));
     if (!nestedCommand || /^\$/u.test(nestedCommand)) {
@@ -2233,7 +2328,7 @@ function collectPowerShellDynamicWriteTargets(segment, tokens, targets, powerShe
   }
 
   for (const nestedCommand of nestedCommands) {
-    if (!nestedCommand) {
+    if (!nestedCommand || isUnparsedPowerShellDynamicCommand(nestedCommand)) {
       targets.push("$unparsed-powershell-dynamic-write");
       continue;
     }
@@ -2243,16 +2338,15 @@ function collectPowerShellDynamicWriteTargets(segment, tokens, targets, powerShe
 }
 
 function collectWindowsCopyUtilityTargets(tokens, targets) {
-  const executable = normalizeAgentValue(getExecutableBasename(tokens[0]));
-  if (executable !== "xcopy" && executable !== "xcopy.exe" &&
-      executable !== "robocopy" && executable !== "robocopy.exe") {
+  const executable = normalizeExecutableName(tokens[0]);
+  if (executable !== "xcopy" && executable !== "robocopy") {
     return;
   }
 
   const positional = tokens.slice(1)
     .map((token) => stripOuterQuotes(token))
     .filter((token) => token && !token.startsWith("/") && !token.startsWith("-"));
-  if (executable === "xcopy" || executable === "xcopy.exe") {
+  if (executable === "xcopy") {
     if (positional.length >= 2) {
       targets.push(positional[positional.length - 1]);
     } else {
@@ -2293,7 +2387,7 @@ function collectRedirectionTargets(segment, targets) {
 }
 
 function collectPowerShellMutationTargets(tokens, targets) {
-  const executable = normalizeAgentValue(getExecutableBasename(tokens[0]));
+  const executable = normalizeExecutableName(tokens[0]);
   if (!isPowerShellMutationExecutable(executable)) {
     return;
   }
@@ -2320,6 +2414,11 @@ function collectPowerShellMutationTargets(tokens, targets) {
 
   if (isPowerShellRequestExecutable(executable)) {
     collectPowerShellRequestOutputTargets(tokens, targets);
+    return;
+  }
+
+  if (isPowerShellCopyExecutable(executable)) {
+    collectPowerShellCopyTargets(tokens, targets, pathOptionPrefixes, valueOptionPrefixes);
     return;
   }
 
@@ -2374,6 +2473,29 @@ function collectPowerShellMutationTargets(tokens, targets) {
   }
 }
 
+function isPowerShellCopyExecutable(executable) {
+  return ["copy-item", "copy", "cp", "cpi"].includes(normalizeExecutableName(executable));
+}
+
+function collectPowerShellCopyTargets(tokens, targets, pathOptionPrefixes, valueOptionPrefixes) {
+  const destinationPrefixes = expandPowerShellOptionPrefixes(["-destination"]);
+  const destinationValues = collectPowerShellOptionValues(tokens, destinationPrefixes);
+  if (destinationValues.length > 0) {
+    for (const value of destinationValues) {
+      pushPowerShellTargetValues(targets, value);
+    }
+    return;
+  }
+
+  const positionalValues = collectPowerShellPositionalValues(tokens, pathOptionPrefixes, valueOptionPrefixes);
+  if (positionalValues.length >= 2) {
+    pushPowerShellTargetValues(targets, positionalValues[1]);
+    return;
+  }
+
+  targets.push("$unparsed-powershell-copy-target");
+}
+
 function isPowerShellRequestExecutable(executable) {
   return [
     "invoke-webrequest",
@@ -2382,7 +2504,7 @@ function isPowerShellRequestExecutable(executable) {
     "curl",
     "invoke-restmethod",
     "irm",
-  ].includes(normalizeAgentValue(getExecutableBasename(executable)));
+  ].includes(normalizeExecutableName(executable));
 }
 
 function collectPowerShellRequestOutputTargets(tokens, targets) {
@@ -2425,7 +2547,7 @@ function splitPowerShellTargetValue(value) {
 }
 
 function isPowerShellMutationExecutable(executable) {
-  const normalizedExecutable = normalizeAgentValue(getExecutableBasename(executable));
+  const normalizedExecutable = normalizeExecutableName(executable);
   return getPowerShellMutationExecutableNames().includes(normalizedExecutable);
 }
 
