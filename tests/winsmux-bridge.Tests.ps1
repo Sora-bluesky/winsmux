@@ -6194,6 +6194,37 @@ panes:
         }
     }
 
+    It 'uses capability adapters when calculating Builder workload' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+
+        Mock Get-SlotAgentConfig {
+            [PSCustomObject]@{
+                Agent             = 'codex-nightly'
+                Model             = 'gpt-5.4-nightly'
+                CapabilityAdapter = 'codex'
+            }
+        }
+        Mock Get-PaneAgentStatus {
+            [PSCustomObject]@{ Status = 'ready'; ExitReason = '' }
+        }
+
+        Get-PaneWorkload -ManifestPath $script:paneScalerManifestPath -Settings ([ordered]@{ agent = 'codex-nightly'; model = 'gpt-5.4-nightly'; roles = [ordered]@{} }) | Out-Null
+
+        Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2' -and $Agent -eq 'codex' -and $Role -eq 'Builder'
+        }
+    }
+
     It 'uses provider registry overrides through the pane scaling entrypoint without explicit settings' {
         @"
 version: 1
@@ -6661,6 +6692,35 @@ panes:
     pane_id: %4
     role: Reviewer
     capability_adapter: claude
+'@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+        $records = Get-PaneStatusRecords -ProjectDir $script:paneStatusTempRoot -SnapshotProvider {
+            param($PaneId)
+
+            if ($PaneId -eq '%4') {
+                return 'Welcome to Claude Code!'
+            }
+
+            throw "unexpected pane id: $PaneId"
+        }
+
+        $records.Count | Should -Be 1
+        $records[0].Label | Should -Be 'reviewer'
+        $records[0].State | Should -Be 'idle'
+    }
+
+    It 'uses manifest provider targets when classifying pane captures' {
+        $manifestPath = Join-Path (Join-Path $script:paneStatusTempRoot '.winsmux') 'manifest.yaml'
+@'
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  reviewer:
+    pane_id: %4
+    role: Reviewer
+    provider_target: claude:opus
 '@ | Set-Content -Path $manifestPath -Encoding UTF8
 
         $records = Get-PaneStatusRecords -ProjectDir $script:paneStatusTempRoot -SnapshotProvider {
@@ -10036,6 +10096,12 @@ thinking
 Welcome to Claude Code!
 thinking
 "@ -Agent 'claude') | Should -Be $false
+    }
+
+    It 'normalizes provider aliases before adapter readiness checks' {
+        ConvertTo-ReadinessAgentName 'codex-nightly' | Should -Be 'codex'
+        ConvertTo-ReadinessAgentName 'Claude/opus' | Should -Be 'claude'
+        ConvertTo-ReadinessAgentName 'gemini:flash' | Should -Be 'gemini'
     }
 
     It 'resolves readiness adapters from the pane manifest' {

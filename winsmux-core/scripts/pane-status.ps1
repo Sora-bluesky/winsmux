@@ -142,6 +142,45 @@ function Get-PaneActualStateFromText {
     return 'busy'
 }
 
+function ConvertTo-PaneStatusReadinessAgent {
+    param([AllowNull()][string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name)) {
+        return ''
+    }
+
+    $normalized = $Name.Trim().ToLowerInvariant()
+    if ($normalized -in @('codex', 'claude', 'gemini')) {
+        return $normalized
+    }
+
+    if ($normalized -match '^(codex|claude|gemini)(?:$|[:/_-])') {
+        return $Matches[1]
+    }
+
+    return ''
+}
+
+function Get-PaneStatusReadinessAgent {
+    param([AllowNull()]$Entry)
+
+    if ($null -eq $Entry) {
+        return 'codex'
+    }
+
+    $adapterName = ConvertTo-PaneStatusReadinessAgent ([string]$Entry.CapabilityAdapter)
+    if (-not [string]::IsNullOrWhiteSpace($adapterName)) {
+        return $adapterName
+    }
+
+    $providerName = ConvertTo-PaneStatusReadinessAgent ([string]$Entry.ProviderTarget)
+    if (-not [string]::IsNullOrWhiteSpace($providerName)) {
+        return $providerName
+    }
+
+    return 'codex'
+}
+
 function Get-PaneStatusWorktree {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
@@ -219,10 +258,7 @@ function Get-PaneStatusRecords {
     foreach ($entry in $entries) {
         $snapshot = ''
         $state = 'unknown'
-        $stateAgent = [string]$entry.CapabilityAdapter
-        if ([string]::IsNullOrWhiteSpace($stateAgent)) {
-            $stateAgent = 'codex'
-        }
+        $stateAgent = Get-PaneStatusReadinessAgent -Entry $entry
 
         if (-not [string]::IsNullOrWhiteSpace($entry.PaneId)) {
             try {
