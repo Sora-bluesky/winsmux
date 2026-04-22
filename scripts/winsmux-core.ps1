@@ -2046,6 +2046,250 @@ function Test-CodexReadyPrompt {
     return Test-CodexReadyPromptText (($output | Out-String).TrimEnd())
 }
 
+function Get-AgentReadinessRecentLines {
+    param(
+        [AllowNull()][string]$Text,
+        [int]$MaxCount = 8
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text) -or $MaxCount -lt 1) {
+        return @()
+    }
+
+    $lines = $Text -split "\r?\n"
+    $recent = [System.Collections.Generic.List[string]]::new()
+    for ($index = $lines.Length - 1; $index -ge 0 -and $recent.Count -lt $MaxCount; $index--) {
+        $line = $lines[$index]
+        if (-not [string]::IsNullOrWhiteSpace($line)) {
+            $recent.Insert(0, $line)
+        }
+    }
+
+    return @($recent)
+}
+
+function Test-AgentReadyPromptLine {
+    param(
+        [AllowNull()][string]$Line,
+        [string]$Agent = 'codex'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Line)) {
+        return $false
+    }
+
+    $line = $Line.Trim()
+    if ($line -match '^(>|›|▌|❯)$') {
+        return $true
+    }
+
+    if (Get-Command Test-AgentPromptText -ErrorAction SilentlyContinue) {
+        if (Test-AgentPromptText -Text $line -Agent $Agent) {
+            return $true
+        }
+    }
+
+    $agentName = if ([string]::IsNullOrWhiteSpace($Agent)) {
+        'codex'
+    } else {
+        $Agent.Trim().ToLowerInvariant()
+    }
+
+    switch ($agentName) {
+        'codex' {
+            return $line.StartsWith('>')
+        }
+        'claude' {
+            return $line -match '(?i)^Welcome to Claude Code!?$' -or
+                $line -match '(?i)^/help for help,\s*/status for your current setup$' -or
+                $line -match '(?i)^\?\s+for shortcuts\b'
+        }
+        'gemini' {
+            return $line -match '(?i)^Type your message(?:\s+or\s+@path/to/file)?\b' -or
+                $line -match '(?i)^Using:\s+\d+\s+GEMINI\.md\s+file' -or
+                $line -match '(?i)^gemini-[A-Za-z0-9._-]+\b.*\b\d+(?:\.\d+)?%\s+context\s+left\b'
+        }
+        default {
+            return $false
+        }
+    }
+}
+
+function Test-AgentReadyPromptTrailingLine {
+    param([AllowNull()][string]$Line)
+
+    if ([string]::IsNullOrWhiteSpace($Line)) {
+        return $true
+    }
+
+    $line = $Line.Trim()
+    if ($line -match '^[\s╭╮╰╯─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬┄┈┊┋]+$') {
+        return $true
+    }
+
+    return $false
+}
+
+function Test-AgentRecentReadyPromptTail {
+    param(
+        [AllowNull()][string]$Text,
+        [string]$Agent = 'codex'
+    )
+
+    $recentLines = @(Get-AgentReadinessRecentLines -Text $Text -MaxCount 8)
+    if ($recentLines.Count -eq 0) {
+        return $false
+    }
+
+    for ($index = $recentLines.Count - 1; $index -ge 0; $index--) {
+        if (-not (Test-AgentReadyPromptLine -Line $recentLines[$index] -Agent $Agent)) {
+            continue
+        }
+
+        for ($trailingIndex = $index + 1; $trailingIndex -lt $recentLines.Count; $trailingIndex++) {
+            if (-not (Test-AgentReadyPromptTrailingLine -Line $recentLines[$trailingIndex])) {
+                return $false
+            }
+        }
+
+        return $true
+    }
+
+    return $false
+}
+
+function ConvertTo-ReadinessAgentName {
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return ''
+    }
+
+    $candidate = $Value.Trim().ToLowerInvariant()
+    if ($candidate -match '^(codex|claude|gemini)(?:$|[:/_-])') {
+        return $matches[1]
+    }
+
+    return ''
+}
+
+function Test-AgentReadyPromptText {
+    param(
+        [AllowNull()][string]$Text,
+        [string]$Agent = 'codex'
+    )
+
+    $agentName = if ([string]::IsNullOrWhiteSpace($Agent)) {
+        'codex'
+    } else {
+        $Agent.Trim().ToLowerInvariant()
+    }
+
+    if (-not (Test-AgentRecentReadyPromptTail -Text $Text -Agent $agentName)) {
+        return $false
+    }
+
+    if (Get-Command Test-AgentPromptText -ErrorAction SilentlyContinue) {
+        if (Test-AgentPromptText -Text $Text -Agent $agentName) {
+            return $true
+        }
+
+        if ($agentName -ne 'codex') {
+            return $false
+        }
+    }
+
+    if ($agentName -eq 'codex') {
+        return Test-CodexReadyPromptText $Text
+    }
+
+    return $false
+}
+
+function Test-AgentReadyPrompt {
+    param(
+        [string]$PaneId,
+        [string]$Agent = 'codex'
+    )
+
+    $output = & winsmux capture-pane -t $PaneId -p -J -S -50
+    return Test-AgentReadyPromptText -Text (($output | Out-String).TrimEnd()) -Agent $Agent
+}
+
+function Get-PaneReadinessAgent {
+    param(
+        [string]$Target,
+        [string]$PaneId,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $fallback = 'codex'
+    if (-not (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue)) {
+        return $fallback
+    }
+
+    try {
+        $entries = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir)
+    } catch {
+        return $fallback
+    }
+
+    foreach ($entry in $entries) {
+        $entryLabel = [string]$entry.Label
+        $entryPaneId = [string]$entry.PaneId
+        $targetMatches = -not [string]::IsNullOrWhiteSpace($Target) -and
+            [string]::Equals($entryLabel, $Target, [System.StringComparison]::OrdinalIgnoreCase)
+        $paneMatches = -not [string]::IsNullOrWhiteSpace($PaneId) -and
+            [string]::Equals($entryPaneId, $PaneId, [System.StringComparison]::OrdinalIgnoreCase)
+
+        if (-not ($targetMatches -or $paneMatches)) {
+            continue
+        }
+
+        $adapterName = ConvertTo-ReadinessAgentName ([string]$entry.CapabilityAdapter)
+        if (-not [string]::IsNullOrWhiteSpace($adapterName)) {
+            return $adapterName
+        }
+
+        $providerName = ConvertTo-ReadinessAgentName ([string]$entry.ProviderTarget)
+        if (-not [string]::IsNullOrWhiteSpace($providerName)) {
+            return $providerName
+        }
+
+        if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
+            try {
+                $roleName = [string]$entry.Role
+                if ([string]::IsNullOrWhiteSpace($roleName)) {
+                    $roleName = 'Worker'
+                }
+
+                $settings = if (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue) {
+                    Get-BridgeSettings -RootPath $ProjectDir
+                } else {
+                    $null
+                }
+
+                $effective = Get-SlotAgentConfig -Role $roleName -SlotId $entryLabel -Settings $settings -RootPath $ProjectDir
+                $effectiveAdapter = ConvertTo-ReadinessAgentName ([string]$effective.CapabilityAdapter)
+                if (-not [string]::IsNullOrWhiteSpace($effectiveAdapter)) {
+                    return $effectiveAdapter
+                }
+
+                $effectiveAgent = ConvertTo-ReadinessAgentName ([string]$effective.Agent)
+                if (-not [string]::IsNullOrWhiteSpace($effectiveAgent)) {
+                    return $effectiveAgent
+                }
+            } catch {
+                # Fall back to the default adapter when no running-pane metadata is available.
+            }
+        }
+
+        return $fallback
+    }
+
+    return $fallback
+}
+
 function Wait-PaneShellReady {
     param([string]$PaneId, [int]$TimeoutSeconds = 15)
 
@@ -3427,6 +3671,7 @@ function Invoke-WaitReady {
 
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
+    $readinessAgent = Get-PaneReadinessAgent -Target $Target -PaneId $paneId -ProjectDir (Get-Location).Path
 
     $timeoutSec = 60
     if ($Rest -and $Rest.Count -gt 0) { $timeoutSec = [int]$Rest[0] }
@@ -3436,7 +3681,7 @@ function Invoke-WaitReady {
     $printedDot = $false
 
     while ((Get-Date) -lt $deadline) {
-        if (Test-CodexReadyPrompt $paneId) {
+        if (Test-AgentReadyPrompt -PaneId $paneId -Agent $readinessAgent) {
             if ($printedDot) { Write-Host "" }
             exit 0
         }
@@ -3446,7 +3691,7 @@ function Invoke-WaitReady {
         Start-Sleep -Seconds $intervalSec
     }
 
-    if (Test-CodexReadyPrompt $paneId) {
+    if (Test-AgentReadyPrompt -PaneId $paneId -Agent $readinessAgent) {
         if ($printedDot) { Write-Host "" }
         exit 0
     }
@@ -3468,6 +3713,7 @@ function Invoke-HealthCheck {
     $orderedLabels = $labels.Keys | Sort-Object
     $initialRuntime = Get-PaneRuntimeMap
     $firstSnapshots = @{}
+    $projectDir = (Get-Location).Path
 
     foreach ($label in $orderedLabels) {
         $paneId = $labels[$label]
@@ -3489,11 +3735,12 @@ function Invoke-HealthCheck {
     foreach ($label in $orderedLabels) {
         $paneId = $labels[$label]
         $status = 'DEAD'
+        $readinessAgent = Get-PaneReadinessAgent -Target $label -PaneId $paneId -ProjectDir $projectDir
 
         if ($finalRuntime.ContainsKey($paneId) -and $finalRuntime[$paneId].IsRunning) {
             try {
                 $secondSnapshot = Get-PaneSnapshotText -PaneId $paneId
-                if (Test-CodexReadyPromptText $secondSnapshot) {
+                if (Test-AgentReadyPromptText -Text $secondSnapshot -Agent $readinessAgent) {
                     $status = 'READY'
                 } else {
                     $firstSnapshot = $null
@@ -7230,7 +7477,7 @@ Commands:
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
   wait <channel> [timeout]  Block until signal received (replaces polling)
-  wait-ready <target> [timeout_seconds]  Wait for Codex prompt in pane
+  wait-ready <target> [timeout_seconds]  Wait for the configured agent prompt in pane
   health-check              Report READY/BUSY/HUNG/DEAD for labeled panes
   status                    Report manifest pane states via capture-pane
   board [--json]            Report pane/task/review/git session board
@@ -7400,6 +7647,31 @@ function Get-RestartReadinessAgentName {
     return $readinessAgent
 }
 
+function Set-PaneReadinessManifestFromRestartPlan {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)]$Plan
+    )
+
+    if (-not (Get-Command Get-PaneControlManifestContext -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Set-PaneControlManifestPaneProperties -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    try {
+        $context = Get-PaneControlManifestContext -ProjectDir $ProjectDir -PaneId $PaneId
+        $properties = [ordered]@{
+            provider_target    = [string]$Plan.Agent
+            capability_adapter = [string]$Plan.CapabilityAdapter
+        }
+
+        Set-PaneControlManifestPaneProperties -ManifestPath $context.ManifestPath -PaneId $PaneId -Properties $properties
+    } catch {
+        # Restart has already changed the running process; readiness metadata sync is best-effort.
+    }
+}
+
 function Invoke-Kill {
     if (-not $Target) { Stop-WithError "usage: winsmux kill <target>" }
     if ($Rest -and $Rest.Count -gt 0) { Stop-WithError "usage: winsmux kill <target>" }
@@ -7453,6 +7725,8 @@ function Invoke-RestartPane {
     if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
         Stop-WithError "failed to submit launch command to $PaneId"
     }
+
+    Set-PaneReadinessManifestFromRestartPlan -ProjectDir $ProjectDir -PaneId $PaneId -Plan $plan
 
     Clear-ReadMark $PaneId
     Clear-Watermark $PaneId

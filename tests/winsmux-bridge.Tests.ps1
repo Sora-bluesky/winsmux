@@ -9432,6 +9432,143 @@ Describe 'public first-run helper' {
     }
 }
 
+Describe 'winsmux readiness adapter helpers' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreRawContent = Get-Content -Raw -Path $script:winsmuxCorePath -Encoding UTF8
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:readinessTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-readiness-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:readinessTempRoot '.winsmux') -Force | Out-Null
+
+@'
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  reviewer:
+    pane_id: %4
+    role: Reviewer
+    capability_adapter: claude
+  builder-1:
+    pane_id: %2
+    role: Builder
+    capability_adapter: codex
+  legacy:
+    pane_id: %8
+    role: Worker
+    provider_target: codex:gpt-5.4
+  switched:
+    pane_id: %10
+    role: Worker
+    capability_adapter: codex
+'@ | Set-Content -Path (Join-Path $script:readinessTempRoot '.winsmux\manifest.yaml') -Encoding UTF8
+
+@'
+agent: codex
+model: gpt-5.4
+prompt-transport: argv
+agent-slots:
+  - slot-id: switched
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:readinessTempRoot '.winsmux.yaml') -Encoding UTF8
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"]
+    },
+    "claude": {
+      "adapter": "claude",
+      "command": "claude",
+      "prompt_transports": ["file"]
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:readinessTempRoot '.winsmux\provider-capabilities.json') -Encoding UTF8
+
+@'
+{
+  "version": 1,
+  "slots": {
+    "switched": {
+      "agent": "claude",
+      "model": "opus",
+      "prompt_transport": "file"
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:readinessTempRoot '.winsmux\provider-registry.json') -Encoding UTF8
+    }
+
+    AfterEach {
+        if ($script:readinessTempRoot -and (Test-Path $script:readinessTempRoot)) {
+            Remove-Item -Path $script:readinessTempRoot -Recurse -Force
+        }
+    }
+
+    It 'uses the shared readiness detector for configured adapters' {
+        (Test-AgentReadyPromptText -Text @"
+gpt-5.4   64% context left
+? send   Ctrl+J newline
+>
+"@ -Agent 'codex') | Should -Be $true
+
+        (Test-AgentReadyPromptText -Text '>' -Agent 'codex') | Should -Be $true
+        (Test-AgentReadyPromptText -Text 'Welcome to Claude Code!' -Agent 'claude') | Should -Be $true
+        (Test-AgentReadyPromptText -Text '›' -Agent 'claude') | Should -Be $true
+        (Test-AgentReadyPromptText -Text @"
+│ ✻ Welcome to Claude Code! │
+╰──────────────────────╯
+"@ -Agent 'claude') | Should -Be $true
+        (Test-AgentReadyPromptText -Text 'gemini-2.5-pro   84% context left' -Agent 'gemini') | Should -Be $true
+        (Test-AgentReadyPromptText -Text '▌' -Agent 'gemini') | Should -Be $true
+        (Test-AgentReadyPromptText -Text @"
+│ Type your message... │
+╰──────────────────────╯
+"@ -Agent 'gemini') | Should -Be $true
+    }
+
+    It 'does not treat stale prompt markers as ready' {
+        (Test-AgentReadyPromptText -Text @"
+gpt-5.4   64% context left
+? send   Ctrl+J newline
+>
+thinking
+"@ -Agent 'codex') | Should -Be $false
+
+        (Test-AgentReadyPromptText -Text @"
+Welcome to Claude Code!
+thinking
+"@ -Agent 'claude') | Should -Be $false
+    }
+
+    It 'resolves readiness adapters from the pane manifest' {
+        Get-PaneReadinessAgent -Target 'reviewer' -PaneId '%4' -ProjectDir $script:readinessTempRoot | Should -Be 'claude'
+        Get-PaneReadinessAgent -Target 'builder-1' -PaneId '%2' -ProjectDir $script:readinessTempRoot | Should -Be 'codex'
+        Get-PaneReadinessAgent -Target 'legacy' -PaneId '%8' -ProjectDir $script:readinessTempRoot | Should -Be 'codex'
+        Get-PaneReadinessAgent -Target 'switched' -PaneId '%10' -ProjectDir $script:readinessTempRoot | Should -Be 'codex'
+        Get-PaneReadinessAgent -Target 'missing' -PaneId '%9' -ProjectDir $script:readinessTempRoot | Should -Be 'codex'
+    }
+
+    It 'documents wait-ready without a Codex-only prompt contract' {
+        $script:winsmuxCoreRawContent | Should -Match 'Wait for the configured agent prompt in pane'
+        $script:winsmuxCoreRawContent | Should -Match 'Test-AgentReadyPrompt -PaneId \$paneId -Agent \$readinessAgent'
+        $script:winsmuxCoreRawContent | Should -Match 'Test-AgentReadyPromptText -Text \$secondSnapshot -Agent \$readinessAgent'
+        $script:winsmuxCoreRawContent | Should -Match 'Set-PaneReadinessManifestFromRestartPlan -ProjectDir \$ProjectDir -PaneId \$PaneId -Plan \$plan'
+    }
+}
+
 Describe 'winsmux provider-capabilities command' {
     BeforeAll {
         $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
