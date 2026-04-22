@@ -600,8 +600,25 @@ function isOperatorOnlyGitLifecycleCommand(command) {
     return true;
   }
 
+  if (hasPowerShellScriptBlockGitLifecycleCommand(command)) {
+    return true;
+  }
+
   return splitCommandSegments(command).some((segment) =>
     splitCommandPipelineStages(segment).some(isOperatorOnlyGitLifecycleSegment));
+}
+
+function hasPowerShellScriptBlockGitLifecycleCommand(command) {
+  const source = String(command || "");
+  const scriptBlockPattern = /\{([^{}]*\b(?:git|gh)\b[^{}]*)\}/giu;
+  for (const match of source.matchAll(scriptBlockPattern)) {
+    const body = (match[1] || "").trim();
+    if (body && body !== source.trim() && isOperatorOnlyGitLifecycleCommand(body)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 function isOperatorOnlyGitLifecycleSegment(segment) {
@@ -2077,7 +2094,7 @@ function collectPowerShellMutationTargets(tokens, targets) {
     }
   }
 
-  if (executable === "new-item" || executable === "ni") {
+  if (executable === "new-item" || executable === "ni" || executable === "mkdir" || executable === "md") {
     const nameValues = collectPowerShellOptionValues(tokens, expandPowerShellOptionPrefixes(["-name"]));
     const pathValues = [
       ...collectPowerShellOptionValues(tokens, pathOptionPrefixes),
@@ -2130,6 +2147,8 @@ function getPowerShellMutationExecutableNames() {
     "clc",
     "new-item",
     "ni",
+    "mkdir",
+    "md",
     "tee-object",
     "tee",
     "export-csv",
