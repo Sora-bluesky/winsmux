@@ -1085,15 +1085,22 @@ function getSetAliasDefinition(tokens) {
 
 function getShellAliasDefinition(tokens) {
   const assignment = stripOuterQuotes(tokens[1] || "");
-  const match = /^([A-Za-z_][A-Za-z0-9_-]*)=(?:command\s+)?(git|gh)(?:\.exe)?(?:\s+(.+))?$/iu.exec(assignment);
+  const match = /^([A-Za-z_][A-Za-z0-9_-]*)=(.+)$/u.exec(assignment);
   if (!match) {
+    return { aliasName: "", aliasTarget: "", aliasArgs: [] };
+  }
+
+  const aliasTokens = unwrapEnvCommandTokens(tokenizeCommandLine(match[2] || ""));
+  const aliasTarget = normalizeAgentValue(getExecutableBasename(aliasTokens[0] || ""));
+  if (aliasTarget !== "git" && aliasTarget !== "git.exe" &&
+      aliasTarget !== "gh" && aliasTarget !== "gh.exe") {
     return { aliasName: "", aliasTarget: "", aliasArgs: [] };
   }
 
   return {
     aliasName: normalizeAgentValue(match[1]),
-    aliasTarget: normalizeAgentValue(match[2]),
-    aliasArgs: tokenizeCommandLine(match[3] || ""),
+    aliasTarget: aliasTarget.endsWith(".exe") ? aliasTarget.slice(0, -4) : aliasTarget,
+    aliasArgs: aliasTokens.slice(1),
   };
 }
 
@@ -1700,6 +1707,26 @@ function unwrapEnvCommandTokens(tokens) {
       continue;
     }
 
+    if (normalizedToken === "-s" || normalizedToken === "--split-string") {
+      if (index + 1 >= withoutInlineAssignments.length) {
+        return [];
+      }
+      const splitTokens = tokenizeCommandLine(stripOuterQuotes(withoutInlineAssignments[index + 1]));
+      return stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes([
+        ...splitTokens,
+        ...withoutInlineAssignments.slice(index + 2),
+      ]));
+    }
+
+    if (normalizedToken.startsWith("--split-string=")) {
+      const splitValue = token.slice(token.indexOf("=") + 1);
+      const splitTokens = tokenizeCommandLine(stripOuterQuotes(splitValue));
+      return stripShellCommandBuiltinPrefixes(stripInlineEnvironmentPrefixes([
+        ...splitTokens,
+        ...withoutInlineAssignments.slice(index + 1),
+      ]));
+    }
+
     if (normalizedToken === "-u" || normalizedToken === "--unset") {
       index += 2;
       continue;
@@ -2040,7 +2067,8 @@ function collectShellWriteTargets(segment, targets, powerShellAliases = new Map(
   }
 
   const normalizedExecutable = normalizeAgentValue(executable);
-  if (normalizedExecutable === "set-alias" || normalizedExecutable === "sal") {
+  if (normalizedExecutable === "set-alias" || normalizedExecutable === "sal" ||
+      normalizedExecutable === "new-alias" || normalizedExecutable === "nal") {
     const { aliasName, aliasTarget } = getSetAliasDefinition(tokens);
     if (aliasName && isPowerShellMutationExecutable(aliasTarget)) {
       powerShellAliases.set(aliasName, aliasTarget);
