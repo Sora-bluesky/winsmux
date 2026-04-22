@@ -345,6 +345,7 @@ panes:
                 'pwsh -Command "Move-Item -Path:C:\repo\README.md -Destination:C:\repo\.worktrees\worker-1\README.md"',
                 'pwsh -Command "Invoke-WebRequest https://example.com -OutFile:C:\repo\out.txt"',
                 'Start-Process pwsh -ArgumentList ''-Command "Set-Content -LiteralPath C:\repo\README.md -Value demo"''',
+                'Start-Process -FilePath pwsh -ArgumentList "-NoProfile", "-Command", "Set-Content -LiteralPath C:\repo\README.md -Value demo"',
                 'pwsh -Command "[System.IO.File]::WriteAllText(''C:\repo\README.md'', ''x'')"',
                 'FOO=1 pwsh -Command "[IO.File]::WriteAllBytes(''C:\repo\README.md'', [byte[]]@(1))"',
                 'env FOO=1 pwsh -Command "[System.IO.File]::Delete(''C:\repo\README.md'')"',
@@ -366,6 +367,7 @@ panes:
                 'pwsh -Command "Set-Alias x Set-Content; x -LiteralPath C:\repo\README.md -Value demo"',
                 'pwsh -Command "Set-Alias x Microsoft.PowerShell.Management\Set-Content; x -LiteralPath C:\repo\README.md -Value demo"',
                 'pwsh -Command "Set-Content -LiteralPath C:\repo\.worktrees\worker-1\$n -Value demo"',
+                'pwsh -Command "Set-Content -LiteralPath C:\repo\.worktrees\worker-1\safe.txt,C:\repo\README.md -Value demo"',
                 'pwsh -Command "1 | ForEach-Object { Set-Content -LiteralPath C:\repo\README.md -Value demo }"',
                 'pwsh -Command "1 | ForEach-Object { sc -LiteralPath C:\repo\README.md -Value demo }"',
                 'pwsh -Command "Set-Alias x Set-Content; 1 | ForEach-Object { x -LiteralPath C:\repo\README.md -Value demo }"',
@@ -412,13 +414,15 @@ panes:
                 'python -c "import os as o; o.remove(''C:/repo/README.md'')"',
                 'python -c "import os; os.rename(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"',
                 'python -c "from pathlib import Path; import os; dest=''C:/repo/README.md''; Path(''C:/repo/.worktrees/worker-1/safe.txt'').write_text(''x''); os.rename(''C:/repo/.worktrees/worker-1/safe.txt'', dest)"',
+                'python -c "from pathlib import Path; dest=''C:/repo/README.md''; Path(''C:/repo/.worktrees/worker-1/safe.txt'').write_text(''x''); Path(dest).write_text(''y'')"',
                 'python -c "import os; os.makedirs(''C:/repo/out'')"',
                 'python -c "import shutil; shutil.rmtree(''C:/repo/out'')"',
                 'python -c "import shutil; shutil.move(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"',
                 'python -c "from shutil import copyfile; copyfile(''C:/repo/source.txt'', ''C:/repo/README.md'')"',
                 'python -c "import shutil; shutil.copyfile(''C:/repo/source.txt'', ''C:/repo/README.md'')"',
                 'node -e "require(''fs'').renameSync(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"',
-                'node -e "const fs=require(''fs''); const dest=''C:/repo/README.md''; fs.writeFileSync(''C:/repo/.worktrees/worker-1/safe.txt'', ''x''); fs.renameSync(''C:/repo/.worktrees/worker-1/safe.txt'', dest)"'
+                'node -e "const fs=require(''fs''); const dest=''C:/repo/README.md''; fs.writeFileSync(''C:/repo/.worktrees/worker-1/safe.txt'', ''x''); fs.renameSync(''C:/repo/.worktrees/worker-1/safe.txt'', dest)"',
+                'node -e "const fs=require(''fs''); const dest=''C:/repo/README.md''; fs.writeFileSync(''C:/repo/.worktrees/worker-1/safe.txt'', ''x''); fs.writeFileSync(dest, ''y'')"'
             )) {
             $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -1066,6 +1070,7 @@ EOF
                 'bash -lc "exec git push origin feature/review-gate"',
                 'Start-Process git -ArgumentList ''add README.md''',
                 'pwsh -Command "Start-Process git -ArgumentList ''add README.md''"',
+                'pwsh -Command "Start-Process -FilePath pwsh -ArgumentList ''-NoProfile'', ''-Command'', ''git add README.md''"',
                 'command git add README.md',
                 'builtin command git commit -m x',
                 'Set-Alias g git; g add README.md',

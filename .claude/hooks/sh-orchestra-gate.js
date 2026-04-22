@@ -1640,15 +1640,28 @@ function getPowerShellStartProcessCommand(tokens) {
     }
 
     if ((token === "-argumentlist" || token === "-args") && index + 1 < tokens.length) {
-      argumentList.push(stripOuterQuotes(tokens[index + 1]));
-      index += 1;
-      continue;
+      for (let argumentIndex = index + 1; argumentIndex < tokens.length; argumentIndex += 1) {
+        const argument = cleanPowerShellStartProcessArgument(tokens[argumentIndex]);
+        if (argument) {
+          argumentList.push(argument);
+        }
+      }
+      break;
     }
 
     const inlineArgumentList = /^-(?:argumentlist|args):(.+)$/iu.exec(rawToken);
     if (inlineArgumentList) {
-      argumentList.push(stripOuterQuotes(inlineArgumentList[1]));
-      continue;
+      const inlineArgument = cleanPowerShellStartProcessArgument(inlineArgumentList[1]);
+      if (inlineArgument) {
+        argumentList.push(inlineArgument);
+      }
+      for (let argumentIndex = index + 1; argumentIndex < tokens.length; argumentIndex += 1) {
+        const argument = cleanPowerShellStartProcessArgument(tokens[argumentIndex]);
+        if (argument) {
+          argumentList.push(argument);
+        }
+      }
+      break;
     }
 
     if (!filePath && !token.startsWith("-")) {
@@ -1657,6 +1670,10 @@ function getPowerShellStartProcessCommand(tokens) {
   }
 
   return [filePath, ...argumentList].filter(Boolean).join(" ").trim();
+}
+
+function cleanPowerShellStartProcessArgument(value) {
+  return stripOuterQuotes(String(value || "").trim()).replace(/^,+|,+$/gu, "").trim();
 }
 
 function unescapeCmdCaretEscapes(value) {
@@ -2092,7 +2109,7 @@ function collectPowerShellMutationTargets(tokens, targets) {
     const normalizedToken = normalizeAgentValue(token);
     if (pathOptionPrefixes.includes(normalizedToken)) {
       if (index + 1 < tokens.length) {
-        targets.push(stripOuterQuotes(tokens[index + 1]));
+        pushPowerShellTargetValues(targets, stripOuterQuotes(tokens[index + 1]));
       }
       index += 1;
       continue;
@@ -2111,12 +2128,12 @@ function collectPowerShellMutationTargets(tokens, targets) {
     const inlinePathOption = pathOptionPrefixes.find((optionName) =>
       normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":"));
     if (inlinePathOption) {
-      targets.push(token.slice(inlinePathOption.length + 1));
+      pushPowerShellTargetValues(targets, token.slice(inlinePathOption.length + 1));
       continue;
     }
 
     if (!normalizedToken.startsWith("-")) {
-      targets.push(token);
+      pushPowerShellTargetValues(targets, token);
     }
   }
 
@@ -2136,6 +2153,19 @@ function collectPowerShellMutationTargets(tokens, targets) {
       targets.push("$unparsed-powershell-write");
     }
   }
+}
+
+function pushPowerShellTargetValues(targets, value) {
+  for (const target of splitPowerShellTargetValue(value)) {
+    targets.push(target);
+  }
+}
+
+function splitPowerShellTargetValue(value) {
+  return String(value || "")
+    .split(",")
+    .map((target) => stripOuterQuotes(target.trim()))
+    .filter(Boolean);
 }
 
 function isPowerShellMutationExecutable(executable) {
@@ -2370,6 +2400,12 @@ function collectPythonMutationTargets(segment, targets) {
     targets.push("$unparsed-python-write");
   }
 
+  if (/(?:^|[^\w])Path\s*\(\s*(?!["'])[A-Za-z_][A-Za-z0-9_]*\s*\)\s*\.\s*(?:write_text|write_bytes|mkdir|rename|replace|rmdir|touch|unlink)\s*\(/iu.test(segment) ||
+      /(?:^|[^\w])open\s*\(\s*(?!["'])[A-Za-z_][A-Za-z0-9_]*\s*,/iu.test(segment) ||
+      /(?:^|[^\w])os\.(?:makedirs|mkdir|removedirs|remove|rmdir|unlink)\s*\(\s*(?!["'])[A-Za-z_][A-Za-z0-9_]*/iu.test(segment)) {
+    targets.push("$unparsed-python-write");
+  }
+
   if (/(?:^|[^\w])os\.(?:rename|replace)\s*\(\s*["'][^"']+["']\s*,\s*(?!["'])/iu.test(segment) ||
       /(?:^|[^\w])shutil\.(?:copy|copy2|copyfile|copytree|move)\s*\(\s*["'][^"']+["']\s*,\s*(?!["'])/iu.test(segment)) {
     targets.push("$unparsed-python-write");
@@ -2401,6 +2437,10 @@ function collectNodeMutationTargets(segment, targets) {
 
   if (/(?:renameSync|copyFileSync|cpSync)\s*\(\s*["'][^"']+["']\s*,\s*(?!["'])/iu.test(segment) ||
       /(?:rename|copyFile|cp)\s*\(\s*["'][^"']+["']\s*,\s*(?!["'])/iu.test(segment)) {
+    targets.push("$unparsed-node-write");
+  }
+
+  if (/(?:writeFileSync|appendFileSync|rmSync|unlinkSync|mkdirSync|mkdtempSync|rmdirSync|truncateSync|createWriteStream|openSync|writeFile|appendFile|rm|unlink|mkdir|mkdtemp|rmdir|truncate|open)\s*\(\s*(?!["'])[A-Za-z_$][A-Za-z0-9_$]*/iu.test(segment)) {
     targets.push("$unparsed-node-write");
   }
 
