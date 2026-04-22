@@ -2061,6 +2061,13 @@ function getPowerShellStartProcessCommand(tokens) {
 
     if (!filePath && !token.startsWith("-")) {
       filePath = stripOuterQuotes(tokens[index]);
+      continue;
+    }
+
+    if (filePath && !token.startsWith("-")) {
+      for (const argument of cleanPowerShellStartProcessArguments(tokens[index])) {
+        argumentList.push(argument);
+      }
     }
   }
 

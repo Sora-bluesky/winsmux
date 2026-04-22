@@ -993,6 +993,7 @@ EOF
         foreach ($command in @(
                 'git commit -m "feat: gated"',
                 'Start-Process git -ArgumentList commit -Wait',
+                'Start-Process git commit -m x',
                 'Start-Process (Get-Command git) -ArgumentList commit -Wait',
                 'Start-Process (''g''+''it'') -ArgumentList commit -Wait',
                 'bash -lc "git commit -m x"',
@@ -1046,6 +1047,7 @@ EOF
         foreach ($command in @(
                 'gh pr merge 112 --squash --delete-branch',
                 'Start-Process gh -ArgumentList ''pr'', ''merge'', ''123'' -Wait',
+                'Start-Process gh pr merge 123',
                 'Start-Process (Get-Command gh) -ArgumentList ''pr merge 123'' -Wait',
                 'Start-Process (''g''+''h'') -ArgumentList ''pr merge 123'' -Wait',
                 'bash -lc "gh pr merge 112 --squash"',
@@ -1137,9 +1139,11 @@ EOF
                 'bash -lc "command git add README.md"',
                 'bash -lc "exec git push origin feature/review-gate"',
                 'Start-Process git -ArgumentList ''add README.md''',
+                'Start-Process git add README.md',
                 '$g=''git''; Start-Process $g -ArgumentList ''add README.md''',
                 'Start-Process (Get-Command git) -ArgumentList ''add README.md''',
                 'Start-Process $env:COMSPEC -ArgumentList ''/c git add README.md''',
+                'cmd /c start git add README.md',
                 'pwsh -Command "Start-Process git -ArgumentList ''add README.md''"',
                 'pwsh -Command "Start-Process -FilePath pwsh -ArgumentList ''-NoProfile'', ''-Command'', ''git add README.md''"',
                 'Start-Process -FilePath pwsh -ArgumentList @(''-NoProfile'', ''-Command'', ''git add README.md'')',
