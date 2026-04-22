@@ -579,7 +579,10 @@ PY
                 'pwsh -Command "pushd ..; Set-Content -LiteralPath README.md -Value demo"',
                 'Start-Process -WorkingDirectory .. -FilePath pwsh -ArgumentList "-Command", "Set-Content -LiteralPath README.md -Value demo"',
                 'env -C C:\repo python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"',
-                'FOO=1 env -C C:\repo python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"'
+                'FOO=1 env -C C:\repo python -c "from pathlib import Path; Path(''README.md'').write_text(''x'')"',
+                'python -c "import os; os.chdir(''C:/repo''); open(''README.md'', ''w'').write(''x'')"',
+                'python -c "from os import chdir; chdir(''C:/repo''); open(''README.md'', ''w'').write(''x'')"',
+                'node -e "process.chdir(''C:/repo''); require(''fs'').writeFileSync(''README.md'', ''x'')"'
             )) {
             $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -603,6 +606,24 @@ PY
 
         $result.ExitCode | Should -Be 0
         $result.StdErr | Should -Be ''
+    }
+
+    It 'allows Worker read-only interpreter commands' {
+        foreach ($command in @(
+                'python -c "open(''README.md'').read()"',
+                'python -c "import sys; sys.stdout.write(''ok'')"',
+                'node -e "process.stdout.write(''ok'')"'
+            )) {
+            $result = & $script:InvokeOrchestraGate -ToolName 'Bash' -ToolInput @{
+                command = $command
+            } -Environment ([ordered]@{
+                WINSMUX_ROLE              = 'Worker'
+                WINSMUX_ASSIGNED_WORKTREE = (Get-Location).Path
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+        }
     }
 
     It 'allows Worker shell writes inside the assigned worktree' {

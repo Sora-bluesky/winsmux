@@ -3417,7 +3417,7 @@ function collectPythonMutationTargets(segment, targets) {
     targets.push("$unparsed-python-write");
   }
 
-  if (!foundTarget && /(?:write_text|write_bytes|\.write\s*\(|\bopen\s*\(|\.(?:makedirs|mkdir|removedirs|remove|rename|replace|rmdir|touch|unlink)\s*\(|\b(?:copy|copy2|copyfile|copytree|move|rmtree)\s*\()/iu.test(segment)) {
+  if (!foundTarget && /(?:write_text|write_bytes|\.(?:makedirs|mkdir|removedirs|remove|rename|replace|rmdir|touch|unlink)\s*\(|\b(?:copy|copy2|copyfile|copytree|move|rmtree)\s*\()/iu.test(segment)) {
     targets.push("$unparsed-python-write");
   }
 }
@@ -3503,7 +3503,7 @@ function collectNodeMutationTargets(segment, targets) {
     targets.push("$unparsed-node-write");
   }
 
-  if (!foundTarget && /(?:writeFileSync|appendFileSync|rmSync|unlinkSync|mkdirSync|mkdtempSync|rmdirSync|truncateSync|createWriteStream|openSync|renameSync|copyFileSync|cpSync|writeFile|appendFile|rm|unlink|mkdir|mkdtemp|rmdir|truncate|open|rename|copyFile|cp|\.write\s*\()/iu.test(segment)) {
+  if (!foundTarget && /(?:writeFileSync|appendFileSync|rmSync|unlinkSync|mkdirSync|mkdtempSync|rmdirSync|truncateSync|createWriteStream|openSync|renameSync|copyFileSync|cpSync|writeFile|appendFile|rm|unlink|mkdir|mkdtemp|rmdir|truncate|open|rename|copyFile|cp)/iu.test(segment)) {
     targets.push("$unparsed-node-write");
   }
 }
@@ -3613,6 +3613,11 @@ function isShellCwdChangeSegment(segment) {
     return true;
   }
 
+  const effectiveTokens = unwrapEnvCommandTokens(tokens);
+  if (hasInterpreterCwdChangeCommand(normalizedSegment, effectiveTokens)) {
+    return true;
+  }
+
   if (executable === "cmd" || executable === "cmd.exe") {
     const nestedCommand = getCmdShellArgument(tokens);
     return nestedCommand ? hasShellCwdChangeCommand(nestedCommand) : false;
@@ -3642,6 +3647,40 @@ function isShellCwdChangeSegment(segment) {
     "push-location",
     "pop-location",
   ].includes(executable);
+}
+
+function hasInterpreterCwdChangeCommand(segment, tokens) {
+  const kind = getShellInterpreterKind(tokens);
+  if (!kind) {
+    return false;
+  }
+
+  const inlineScript = getInterpreterInlineScript(tokens, kind) || segment;
+  if (kind === "python") {
+    return hasPythonCwdChangeCommand(inlineScript);
+  }
+
+  if (kind === "node") {
+    return hasNodeCwdChangeCommand(inlineScript);
+  }
+
+  return false;
+}
+
+function getInterpreterInlineScript(tokens, kind) {
+  const scriptOptions = kind === "python" ? ["-c"] : ["-e", "--eval"];
+  return getOptionRemainderValue(tokens, scriptOptions);
+}
+
+function hasPythonCwdChangeCommand(script) {
+  const text = String(script || "");
+  return /\bos\s*\.\s*chdir\s*\(/iu.test(text) ||
+    /\bfrom\s+os\s+import\s+[^;\n]*\bchdir\b/iu.test(text) && /(?:^|[^\w])(?:chdir|[A-Za-z_][A-Za-z0-9_]*)\s*\(/iu.test(text) ||
+    /\bimport\s+os\s+as\s+([A-Za-z_][A-Za-z0-9_]*)/iu.test(text) && /\b[A-Za-z_][A-Za-z0-9_]*\s*\.\s*chdir\s*\(/iu.test(text);
+}
+
+function hasNodeCwdChangeCommand(script) {
+  return /\bprocess\s*\.\s*chdir\s*\(/iu.test(String(script || ""));
 }
 
 function hasPowerShellStartProcessWorkingDirectoryOption(tokens) {
