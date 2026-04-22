@@ -9250,6 +9250,9 @@ Describe 'winsmux public first-run commands' {
         $script:winsmuxCoreRawContent | Should -Match "'init'\s*\{"
         $script:winsmuxCoreRawContent | Should -Match "'launch'\s*\{"
         $script:winsmuxCoreRawContent | Should -Match 'public-first-run\.ps1'
+        $script:winsmuxCoreRawContent | Should -Match 'function Test-WinsmuxInstalledBinLayout'
+        $script:winsmuxCoreRawContent | Should -Match '\$skipDoctor = Test-WinsmuxInstalledBinLayout'
+        $script:winsmuxCoreRawContent | Should -Match 'Invoke-WinsmuxPublicLaunch -ProjectDir \$projectDir -SkipDoctor:\$skipDoctor'
         $script:publicFirstRunContent | Should -Match 'function Invoke-WinsmuxPublicInit'
         $script:publicFirstRunContent | Should -Match 'function Invoke-WinsmuxPublicLaunch'
         $script:publicFirstRunContent | Should -Match 'Run winsmux launch\.'
