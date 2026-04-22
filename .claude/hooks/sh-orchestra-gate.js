@@ -630,7 +630,7 @@ function isOperatorOnlyGitLifecycleSegment(segment) {
       return false;
     }
 
-    const gitSubcommand = normalizeAgentValue(stripOuterQuotes(tokens[gitSubcommandIndex]));
+    const gitSubcommand = getGitSubcommandName(tokens, gitSubcommandIndex);
     if (gitSubcommand === "branch") {
       return !isReadOnlyGitBranchCommand(tokens, gitSubcommandIndex);
     }
@@ -827,10 +827,55 @@ function getGitAliasSubcommandName(tokens, subcommandIndex, subcommand) {
       continue;
     }
 
+    const delegatedSubcommand = getGitShellAliasDelegatedSubcommand(aliasTokens);
+    if (delegatedSubcommand) {
+      return delegatedSubcommand;
+    }
+
     return normalizeAgentValue(stripOuterQuotes(aliasTokens[0]));
   }
 
   return "";
+}
+
+function getGitShellAliasDelegatedSubcommand(aliasTokens) {
+  const normalizedTokens = aliasTokens.map((token) => normalizeAgentValue(stripOuterQuotes(token)));
+  const gitLikeIndex = normalizedTokens.findIndex((token) => token === "git" || token === "!git");
+  if (gitLikeIndex < 0) {
+    return "";
+  }
+
+  for (const token of normalizedTokens.slice(gitLikeIndex + 1)) {
+    if (token.startsWith("-")) {
+      continue;
+    }
+
+    if (isGitLifecycleSubcommandName(token)) {
+      return token;
+    }
+  }
+
+  return normalizedTokens[gitLikeIndex + 1] || "";
+}
+
+function isGitLifecycleSubcommandName(value) {
+  return [
+    "add",
+    "commit",
+    "merge",
+    "push",
+    "rebase",
+    "reset",
+    "restore",
+    "rm",
+    "checkout-index",
+    "update-index",
+    "notes",
+    "branch",
+    "tag",
+    "worktree",
+    "config",
+  ].includes(normalizeAgentValue(value));
 }
 
 function isReadOnlyGitBranchCommand(tokens, subcommandIndex) {
@@ -1363,7 +1408,7 @@ function isDirectReviewStateWriteCommand(command) {
 }
 
 function getOptionRemainderValue(tokens, optionNames) {
-  const normalizedOptionNames = optionNames.map((optionName) => optionName.toLowerCase());
+  const normalizedOptionNames = expandPowerShellOptionPrefixes(optionNames);
 
   for (let index = 1; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -1373,7 +1418,7 @@ function getOptionRemainderValue(tokens, optionNames) {
     }
 
     for (const optionName of normalizedOptionNames) {
-      if (normalizedToken.startsWith(optionName + "=")) {
+      if (normalizedToken.startsWith(optionName + "=") || normalizedToken.startsWith(optionName + ":")) {
         return stripOuterQuotes(token.slice(optionName.length + 1));
       }
     }
@@ -1561,6 +1606,7 @@ function collectPowerShellMutationTargets(tokens, targets) {
     return;
   }
 
+  const initialTargetCount = targets.length;
   const pathOptionNames = [
     "-path",
     "-literalpath",
@@ -1611,6 +1657,18 @@ function collectPowerShellMutationTargets(tokens, targets) {
       targets.push(token);
     }
   }
+
+  if ((executable === "new-item" || executable === "ni") &&
+      targets.length === initialTargetCount &&
+      tokens.slice(1).some((token) => {
+        const normalizedToken = normalizeAgentValue(stripOuterQuotes(token));
+        return valueOptionPrefixes.some((optionName) =>
+          normalizedToken === optionName ||
+          normalizedToken.startsWith(optionName + "=") ||
+          normalizedToken.startsWith(optionName + ":"));
+      })) {
+    targets.push("$unparsed-powershell-write");
+  }
 }
 
 function expandPowerShellOptionPrefixes(optionNames) {
@@ -1651,6 +1709,26 @@ function collectPowerShellDotNetMutationTargets(segment, targets) {
     for (const match of segment.matchAll(pattern)) {
       targets.push(match[1] || match[2] || "");
       targets.push(match[3] || match[4] || "");
+      foundTarget = true;
+    }
+  }
+
+  const unquotedNewObjectFirstArgumentPatterns = [
+    /\(\s*new-object\s+(?:-typename(?:\s+|:))?(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:-argumentlist(?:\s+|:))?([^\s)]+)\s*\)\s*\.\s*(?:delete|create|createtext|openwrite)\s*\(/giu,
+  ];
+  const unquotedNewObjectTwoArgumentPatterns = [
+    /\(\s*new-object\s+(?:-typename(?:\s+|:))?(?:system\.)?io\.(?:fileinfo|directoryinfo)\s+(?:-argumentlist(?:\s+|:))?([^\s)]+)\s*\)\s*\.\s*(?:moveto|copyto)\s*\(\s*(?:"([^"]+)"|'([^']+)'|([^\s)]+))/giu,
+  ];
+  for (const pattern of unquotedNewObjectFirstArgumentPatterns) {
+    for (const match of segment.matchAll(pattern)) {
+      targets.push(match[1] || "");
+      foundTarget = true;
+    }
+  }
+  for (const pattern of unquotedNewObjectTwoArgumentPatterns) {
+    for (const match of segment.matchAll(pattern)) {
+      targets.push(match[1] || "");
+      targets.push(match[2] || match[3] || match[4] || "");
       foundTarget = true;
     }
   }
@@ -1716,7 +1794,7 @@ function collectPythonMutationTargets(segment, targets) {
     }
   }
 
-  if (/(?:^|[^\w])Path\s*\(\s*["'][^"']+["']\s*\)\s*\.\s*(?:rename|replace)\s*\(\s*Path\s*\(\s*(?!["'])/iu.test(segment)) {
+  if (/(?:^|[^\w])Path\s*\(\s*["'][^"']+["']\s*\)\s*\.\s*(?:rename|replace)\s*\(\s*(?!["'])/iu.test(segment)) {
     targets.push("$unparsed-python-write");
   }
 

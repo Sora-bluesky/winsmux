@@ -352,6 +352,9 @@ panes:
                 'pwsh -Command "([System.IO.FileInfo]''C:\repo\README.md'').Delete()"',
                 'pwsh -Command "(New-Object -TypeName System.IO.FileInfo -ArgumentList ''C:\repo\README.md'').Delete()"',
                 'pwsh -Command "(New-Object -TypeName:System.IO.FileInfo -ArgumentList:''C:\repo\README.md'').Delete()"',
+                'pwsh -Command "(New-Object -TypeName System.IO.FileInfo -ArgumentList C:\repo\README.md).Delete()"',
+                'pwsh -Command "New-Item -Name README.md -ItemType File"',
+                'pwsh -Command "New-Item -Name:README.md -ItemType:File"',
                 'pwsh -Command "Export-Csv -Path C:\repo\out.csv -InputObject @{}"',
                 'pwsh -Command "Export-Clixml -Path C:\repo\out.xml -InputObject @{}"',
                 'pwsh -Command "Start-Transcript -Path C:\repo\transcript.txt"',
@@ -383,6 +386,7 @@ panes:
                 'python -c "from pathlib import Path; Path(''C:/repo/.worktrees/worker-1/README.md'').rename(''C:/repo/README.md'')"',
                 'python -c "from pathlib import Path; Path(''C:/repo/.worktrees/worker-1/README.md'').rename(Path(''C:/repo/README.md''))"',
                 'python -c "from pathlib import Path; target=''C:/repo/README.md''; Path(''C:/repo/.worktrees/worker-1/README.md'').rename(Path(target))"',
+                'python -c "from pathlib import Path; target=''C:/repo/README.md''; Path(''C:/repo/.worktrees/worker-1/README.md'').rename(target)"',
                 'python -c "import os; os.remove(''C:/repo/README.md'')"',
                 'python -c "import os as o; o.remove(''C:/repo/README.md'')"',
                 'python -c "import os; os.rename(''C:/repo/README.md'', ''C:/repo/.worktrees/worker-1/README.md'')"',
@@ -914,7 +918,8 @@ EOF
 
         foreach ($command in @(
                 'git merge main',
-                'git -c alias.m=merge m main'
+                'git -c alias.m=merge m main',
+                'git -c alias.m="!git m merge main" m'
             )) {
             $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
                 command = $command
@@ -974,6 +979,9 @@ EOF
                 'git diff --output=C:/repo/README.md',
                 'env FOO=1 git config user.name Worker',
                 'FOO=1 git diff --output=C:/repo/README.md',
+                'pwsh -Com "git add README.md"',
+                'pwsh -Com "git push origin feature/review-gate"',
+                'git -c alias.m="!git m merge main" m',
                 'cmd /c "echo x & git add README.md"',
                 'cmd /c"echo x & git add README.md"',
                 'cmd /c g^it add README.md',
