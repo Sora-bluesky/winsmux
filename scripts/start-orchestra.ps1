@@ -31,6 +31,10 @@ $paneEnvScript = Join-Path $PSScriptRoot '..\winsmux-core\scripts\pane-env.ps1'
 if (Test-Path $paneEnvScript -PathType Leaf) {
     . $paneEnvScript
 }
+$settingsScript = Join-Path $PSScriptRoot '..\winsmux-core\scripts\settings.ps1'
+if (Test-Path $settingsScript -PathType Leaf) {
+    . $settingsScript
+}
 
 function Show-WinsmuxBanner {
     $bannerScript = Join-Path $PSScriptRoot "banner.mjs"
@@ -68,13 +72,271 @@ if ($currentBranch -eq 'main') {
     $currentBranch = '(unknown)'
 }
 
+function ConvertTo-LegacyCodexModelArgument {
+    param([Parameter(Mandatory = $true)][string]$Model)
+
+    $modelArgument = "model=$Model"
+    if (Get-Command ConvertTo-BridgePowerShellLiteral -ErrorAction SilentlyContinue) {
+        return ConvertTo-BridgePowerShellLiteral -Value $modelArgument
+    }
+
+    return "'$($modelArgument -replace "'", "''")'"
+}
+
+function Get-LegacyDefaultAgentSpec {
+    param(
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)][string]$SlotId,
+        [Parameter(Mandatory = $true)][string]$FallbackCommand,
+        [Parameter(Mandatory = $true)][string]$FallbackAdapter
+    )
+
+    if (-not (Get-Command Get-BridgeSettings -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Read-BridgeGlobalSettings -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Read-BridgeProjectSettings -ErrorAction SilentlyContinue) -or
+        -not (Get-Command ConvertTo-BridgeSettingsSource -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Get-BridgeProviderRegistryEntry -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Resolve-BridgeProviderCapability -ErrorAction SilentlyContinue) -or
+        -not (Get-Command Get-BridgeProviderCapabilityValue -ErrorAction SilentlyContinue)) {
+        return [PSCustomObject]@{ Command = $FallbackCommand; Adapter = $FallbackAdapter }
+    }
+
+    $settings = Get-BridgeSettings -RootPath $ProjectDir
+    $globalSettings = Read-BridgeGlobalSettings
+    $projectSettings = ConvertTo-BridgeSettingsSource (Read-BridgeProjectSettings -RootPath $ProjectDir)
+    $hasExplicitRoleConfig = $false
+    $hasExplicitSlotConfig = $false
+    $hasExplicitAgentOverride = $false
+    $hasExplicitModelOverride = $false
+    $roles = $null
+    $agentSlots = @()
+    if (($globalSettings.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$globalSettings['agent'])) -or
+        ($projectSettings.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$projectSettings['agent']))) {
+        $hasExplicitAgentOverride = $true
+    }
+    if (($globalSettings.Contains('model') -and -not [string]::IsNullOrWhiteSpace([string]$globalSettings['model'])) -or
+        ($projectSettings.Contains('model') -and -not [string]::IsNullOrWhiteSpace([string]$projectSettings['model']))) {
+        $hasExplicitModelOverride = $true
+    }
+
+    if ($settings -is [System.Collections.IDictionary]) {
+        if ($settings.Contains('roles')) {
+            $roles = $settings['roles']
+        }
+        if ($settings.Contains('agent_slots')) {
+            $agentSlots = @($settings['agent_slots'])
+        }
+    } elseif ($null -ne $settings.PSObject -and ($settings.PSObject.Properties.Name -contains 'roles')) {
+        $roles = $settings.roles
+        if ($settings.PSObject.Properties.Name -contains 'agent_slots') {
+            $agentSlots = @($settings.agent_slots)
+        }
+    }
+    if ($roles -is [System.Collections.IDictionary]) {
+        foreach ($entry in $roles.GetEnumerator()) {
+            if ([string]::Equals([string]$entry.Key, $Role, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $hasExplicitRoleConfig = $true
+                if ($entry.Value -is [System.Collections.IDictionary]) {
+                    if ($entry.Value.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$entry.Value['agent'])) {
+                        $hasExplicitAgentOverride = $true
+                    }
+                    if ($entry.Value.Contains('model') -and -not [string]::IsNullOrWhiteSpace([string]$entry.Value['model'])) {
+                        $hasExplicitModelOverride = $true
+                    }
+                } elseif ($null -ne $entry.Value -and $null -ne $entry.Value.PSObject) {
+                    if ($entry.Value.PSObject.Properties.Name -contains 'agent' -and -not [string]::IsNullOrWhiteSpace([string]$entry.Value.agent)) {
+                        $hasExplicitAgentOverride = $true
+                    }
+                    if ($entry.Value.PSObject.Properties.Name -contains 'model' -and -not [string]::IsNullOrWhiteSpace([string]$entry.Value.model)) {
+                        $hasExplicitModelOverride = $true
+                    }
+                }
+                break
+            }
+        }
+    } elseif ($null -ne $roles -and $null -ne $roles.PSObject) {
+        foreach ($property in $roles.PSObject.Properties) {
+            if ([string]::Equals([string]$property.Name, $Role, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $hasExplicitRoleConfig = $true
+                $roleValue = $property.Value
+                if ($roleValue -is [System.Collections.IDictionary]) {
+                    if ($roleValue.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$roleValue['agent'])) {
+                        $hasExplicitAgentOverride = $true
+                    }
+                    if ($roleValue.Contains('model') -and -not [string]::IsNullOrWhiteSpace([string]$roleValue['model'])) {
+                        $hasExplicitModelOverride = $true
+                    }
+                } elseif ($null -ne $roleValue -and $null -ne $roleValue.PSObject) {
+                    if ($roleValue.PSObject.Properties.Name -contains 'agent' -and -not [string]::IsNullOrWhiteSpace([string]$roleValue.agent)) {
+                        $hasExplicitAgentOverride = $true
+                    }
+                    if ($roleValue.PSObject.Properties.Name -contains 'model' -and -not [string]::IsNullOrWhiteSpace([string]$roleValue.model)) {
+                        $hasExplicitModelOverride = $true
+                    }
+                }
+                break
+            }
+        }
+    }
+
+    foreach ($slot in $agentSlots) {
+        $candidateSlotId = ''
+        if ($slot -is [System.Collections.IDictionary]) {
+            if ($slot.Contains('slot_id')) {
+                $candidateSlotId = [string]$slot['slot_id']
+            }
+        } elseif ($null -ne $slot -and $null -ne $slot.PSObject -and ($slot.PSObject.Properties.Name -contains 'slot_id')) {
+            $candidateSlotId = [string]$slot.slot_id
+        }
+
+        if ([string]::Equals($candidateSlotId, $SlotId, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $hasExplicitSlotConfig = $true
+            if ($slot -is [System.Collections.IDictionary]) {
+                if ($slot.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$slot['agent'])) {
+                    $hasExplicitAgentOverride = $true
+                }
+                if ($slot.Contains('model') -and -not [string]::IsNullOrWhiteSpace([string]$slot['model'])) {
+                    $hasExplicitModelOverride = $true
+                }
+            } elseif ($null -ne $slot -and $null -ne $slot.PSObject) {
+                if ($slot.PSObject.Properties.Name -contains 'agent' -and -not [string]::IsNullOrWhiteSpace([string]$slot.agent)) {
+                    $hasExplicitAgentOverride = $true
+                }
+                if ($slot.PSObject.Properties.Name -contains 'model' -and -not [string]::IsNullOrWhiteSpace([string]$slot.model)) {
+                    $hasExplicitModelOverride = $true
+                }
+            }
+            break
+        }
+    }
+
+    $registryEntry = Get-BridgeProviderRegistryEntry -SlotId $SlotId -RootPath $ProjectDir
+    if ($null -ne $registryEntry) {
+        if ($registryEntry -is [System.Collections.IDictionary]) {
+            if ($registryEntry.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$registryEntry['agent'])) {
+                $hasExplicitAgentOverride = $true
+            }
+            if ($registryEntry.Contains('model') -and -not [string]::IsNullOrWhiteSpace([string]$registryEntry['model'])) {
+                $hasExplicitModelOverride = $true
+            }
+        } elseif ($null -ne $registryEntry.PSObject) {
+            if ($registryEntry.PSObject.Properties.Name -contains 'agent' -and -not [string]::IsNullOrWhiteSpace([string]$registryEntry.agent)) {
+                $hasExplicitAgentOverride = $true
+            }
+            if ($registryEntry.PSObject.Properties.Name -contains 'model' -and -not [string]::IsNullOrWhiteSpace([string]$registryEntry.model)) {
+                $hasExplicitModelOverride = $true
+            }
+        }
+    }
+    if (-not $hasExplicitRoleConfig -and -not $hasExplicitSlotConfig -and -not $hasExplicitAgentOverride -and -not $hasExplicitModelOverride -and $null -eq $registryEntry) {
+        return [PSCustomObject]@{ Command = $FallbackCommand; Adapter = $FallbackAdapter }
+    }
+
+    $slotAgentConfig = Get-SlotAgentConfig -Role $Role -SlotId $SlotId -Settings $settings -RootPath $ProjectDir
+    if ($slotAgentConfig.Source -eq 'role' -and -not $hasExplicitRoleConfig -and -not $hasExplicitAgentOverride -and -not $hasExplicitModelOverride) {
+        return [PSCustomObject]@{ Command = $FallbackCommand; Adapter = $FallbackAdapter }
+    }
+
+    if (-not $hasExplicitAgentOverride) {
+        if (-not $hasExplicitModelOverride) {
+            return [PSCustomObject]@{ Command = $FallbackCommand; Adapter = $FallbackAdapter }
+        }
+
+        $effectiveProvider = ([string]$slotAgentConfig.Agent).Trim()
+        if (-not [string]::Equals($effectiveProvider, $FallbackAdapter, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [PSCustomObject]@{ Command = $FallbackCommand; Adapter = $FallbackAdapter }
+        }
+
+        $fallbackModel = [string]$slotAgentConfig.Model
+        switch ($FallbackAdapter.Trim().ToLowerInvariant()) {
+            'codex' {
+                if (-not [string]::IsNullOrWhiteSpace($fallbackModel)) {
+                    $modelArgumentLiteral = ConvertTo-LegacyCodexModelArgument -Model $fallbackModel
+                    return [PSCustomObject]@{ Command = "codex -c $modelArgumentLiteral"; Adapter = 'codex' }
+                }
+                return [PSCustomObject]@{ Command = 'codex'; Adapter = 'codex' }
+            }
+            'claude' {
+                if (-not [string]::IsNullOrWhiteSpace($fallbackModel)) {
+                    $modelLiteral = if (Get-Command ConvertTo-BridgePowerShellLiteral -ErrorAction SilentlyContinue) {
+                        ConvertTo-BridgePowerShellLiteral -Value $fallbackModel
+                    } else {
+                        "'$($fallbackModel -replace "'", "''")'"
+                    }
+                    return [PSCustomObject]@{ Command = "claude --model $modelLiteral"; Adapter = 'claude' }
+                }
+                return [PSCustomObject]@{ Command = 'claude'; Adapter = 'claude' }
+            }
+            default {
+                return [PSCustomObject]@{ Command = $FallbackCommand; Adapter = $FallbackAdapter }
+            }
+        }
+    }
+
+    $provider = ([string]$slotAgentConfig.Agent).Trim()
+    if ([string]::IsNullOrWhiteSpace($provider)) {
+        return [PSCustomObject]@{ Command = $FallbackCommand; Adapter = $FallbackAdapter }
+    }
+
+    $adapter = $provider
+    $command = $provider
+    $capability = Resolve-BridgeProviderCapability -ProviderId $provider -RootPath $ProjectDir -RequireWhenRegistryPresent
+    if ($null -ne $capability) {
+        $adapter = [string](Get-BridgeProviderCapabilityValue -Capability $capability -Name 'adapter' -Default $provider)
+        $command = [string](Get-BridgeProviderCapabilityValue -Capability $capability -Name 'command' -Default $provider)
+    }
+
+    if ([string]::IsNullOrWhiteSpace($command)) {
+        $command = $provider
+    }
+
+    if (Get-Command ConvertTo-BridgePowerShellCommandInvocation -ErrorAction SilentlyContinue) {
+        $command = ConvertTo-BridgePowerShellCommandInvocation -Value $command
+    }
+
+    $model = [string]$slotAgentConfig.Model
+    if (-not $hasExplicitModelOverride) {
+        $model = ''
+    }
+
+    switch ($adapter.Trim().ToLowerInvariant()) {
+        'codex' {
+            if (-not [string]::IsNullOrWhiteSpace($model)) {
+                $modelArgumentLiteral = ConvertTo-LegacyCodexModelArgument -Model $model
+                return [PSCustomObject]@{ Command = "$command -c $modelArgumentLiteral"; Adapter = 'codex' }
+            }
+            return [PSCustomObject]@{ Command = $command; Adapter = 'codex' }
+        }
+        'claude' {
+            $parts = @($command)
+            if (-not [string]::IsNullOrWhiteSpace($model)) {
+                $modelLiteral = if (Get-Command ConvertTo-BridgePowerShellLiteral -ErrorAction SilentlyContinue) {
+                    ConvertTo-BridgePowerShellLiteral -Value $model
+                } else {
+                    "'$($model -replace "'", "''")'"
+                }
+                $parts += '--model'
+                $parts += $modelLiteral
+            }
+            return [PSCustomObject]@{ Command = ($parts -join ' '); Adapter = 'claude' }
+        }
+        default {
+            return [PSCustomObject]@{ Command = $command; Adapter = $adapter }
+        }
+    }
+}
+
 # --- Default agents (backward compatible 2x2) ---
 if (-not $Agents -or $Agents.Count -eq 0) {
+    $builderAgent = Get-LegacyDefaultAgentSpec -Role 'Builder' -SlotId 'builder' -FallbackCommand 'codex' -FallbackAdapter 'codex'
+    $researcherAgent = Get-LegacyDefaultAgentSpec -Role 'Researcher' -SlotId 'researcher' -FallbackCommand 'claude --model sonnet' -FallbackAdapter 'claude'
+    $reviewerAgent = Get-LegacyDefaultAgentSpec -Role 'Reviewer' -SlotId 'reviewer' -FallbackCommand 'codex' -FallbackAdapter 'codex'
     $Agents = @(
-        @{ label = "builder";    command = "codex" },
-        @{ label = "researcher"; command = "claude --model sonnet" },
-        @{ label = "reviewer";   command = "codex" },
-        @{ label = "monitor";    command = "pwsh" }
+        @{ label = "builder";    command = $builderAgent.Command;    adapter = $builderAgent.Adapter },
+        @{ label = "researcher"; command = $researcherAgent.Command; adapter = $researcherAgent.Adapter },
+        @{ label = "reviewer";   command = $reviewerAgent.Command;   adapter = $reviewerAgent.Adapter },
+        @{ label = "monitor";    command = "pwsh";                   adapter = "pwsh" }
     )
 }
 
@@ -121,16 +383,20 @@ if (Get-Command Resolve-WinsmuxGovernanceMode -ErrorAction SilentlyContinue) {
 
 # --- Approval-free mode flags (only with ShieldHarness) ---
 function Get-ApprovalFreeCommand {
-    param([string]$Cmd)
+    param(
+        [string]$Cmd,
+        [string]$Adapter
+    )
     if (-not $shieldActive) { return $Cmd }
 
-    if ($Cmd -match '^claude\b' -and $Cmd -notmatch '--permission-mode') {
+    $adapterKey = if ([string]::IsNullOrWhiteSpace($Adapter)) { '' } else { $Adapter.Trim().ToLowerInvariant() }
+    if (($adapterKey -eq 'claude' -or $Cmd -match '^claude\b') -and $Cmd -notmatch '--permission-mode') {
         return "$Cmd --permission-mode bypassPermissions"
     }
-    if ($Cmd -match '^codex\b' -and $Cmd -notmatch '--sandbox') {
+    if (($adapterKey -eq 'codex' -or $Cmd -match '^codex\b') -and $Cmd -notmatch '--sandbox') {
         return "$Cmd --sandbox danger-full-access"
     }
-    if ($Cmd -match '^gemini\b' -and $Cmd -notmatch '--yolo') {
+    if (($adapterKey -eq 'gemini' -or $Cmd -match '^gemini\b') -and $Cmd -notmatch '--yolo') {
         return "$Cmd --yolo"
     }
     return $Cmd
@@ -290,7 +556,7 @@ Set-Content -Path $promptFile -Value $promptContent -Encoding UTF8
 Write-Output "[orchestra] Commander prompt written to $promptFile"
 
 # --- Codex MCP URL quarantine (workaround: v0.117.0 "url not supported for stdio") ---
-$hasCodex = ($Agents | Where-Object { $_.command -match 'codex' }).Count -gt 0
+$hasCodex = ($Agents | Where-Object { $_.adapter -eq 'codex' -or $_.command -match 'codex' }).Count -gt 0
 $codexConfigPath = Join-Path $HOME ".codex" "config.toml"
 $codexConfigBackup = $null
 
@@ -326,7 +592,7 @@ if ($hasCodex -and (Test-Path $codexConfigPath)) {
 for ($i = 0; $i -lt $Agents.Count; $i++) {
     $agent = $Agents[$i]
     $paneId = $paneIds[$i]
-    $cmd = Get-ApprovalFreeCommand $agent.command
+    $cmd = Get-ApprovalFreeCommand -Cmd $agent.command -Adapter $agent.adapter
     $envPrefix = @(
         ('$env:WINSMUX_ORCHESTRA_SESSION = ''{0}''' -f ($session -replace "'", "''"))
         ('$env:WINSMUX_ORCHESTRA_PROJECT_DIR = ''{0}''' -f ($ProjectDir -replace "'", "''"))
