@@ -52,13 +52,13 @@ PowerShell で現在の公開版をインストールします。
 irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | iex
 ```
 
-予定している `npm` 経由のインストールでは、同じ公開パッケージ名を使います。
+Windows では `npm` からもインストールできます。
 
 ```powershell
 npm install -g winsmux
 ```
 
-この経路が公開された後は、最初のセットアップで次のコマンドを使います。
+最初のセットアップでは、次のコマンドを使います。
 
 ```powershell
 winsmux install --profile full
@@ -69,7 +69,7 @@ winsmux install --profile full
 `core` では、オーケストレーション用のスクリプトを含めません。
 Windows Terminal 側のプロファイルも、選んだインストールプロファイルに合わせて扱います。
 後からインストールプロファイルを変更した場合、インストーラーは対象外になった支援スクリプトを削除します。
-`npm` 経由での公開は、Windows 検証が通るまで止めています。
+`npm` への公開は、Windows 検証が通った後に実行されます。
 
 次に、プロジェクト設定を作り、既定のワークスペースを起動します。
 

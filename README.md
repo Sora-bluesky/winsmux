@@ -52,13 +52,13 @@ Install the current release from PowerShell:
 irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | iex
 ```
 
-The planned npm install path will use the same public package name:
+Install with npm on Windows:
 
 ```powershell
 npm install -g winsmux
 ```
 
-After that package path opens, the first setup command will be:
+Then run the first setup command:
 
 ```powershell
 winsmux install --profile full
@@ -72,7 +72,7 @@ scripts.
 Windows Terminal app profiles also follow the selected install profile.
 When profiles change, support scripts that no longer
 belong to the selected profile are removed.
-Publishing the npm path remains blocked until Windows verification passes.
+The npm release is verified by the Windows release workflow before publishing.
 
 Then create project settings and start the default workspace:
 
