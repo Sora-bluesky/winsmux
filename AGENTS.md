@@ -142,6 +142,18 @@ Rules:
    - Keep helper files such as templates outside the main TOC by using a non-book prefix like `_`.
    - Update the index note when a new chapter note is added.
 8. If the session did not use or discuss Rust-adjacent commands, no learning-note update is required.
+9. Keep the external Rust learning note at the same Japanese readability bar as `README.ja.md`.
+   - Write for a beginner who does not know the project internals.
+   - Prefer short paragraphs, explicit subjects, and concrete verbs.
+   - Do not mix maintainer shorthand, untranslated workflow jargon, and English noun chains into the body text.
+   - When a section needs both concept and procedure, split them instead of compressing them into one paragraph.
+10. Treat the external Rust learning note as user-facing Japanese, not as maintainer scratch notes.
+    - Keep local paths, private planning roots, and operator-only rituals out of the note body unless they are strictly required for the concrete example.
+    - If a repo-specific example is needed, explain the purpose of the command before naming the file or module.
+    - Preserve the “what it does / when to use it / winsmux example / Rust Book link” structure when revising existing entries.
+11. Japanese updates to the external Rust learning note require an `Opus` review result in the same session.
+    - The review must check readability, mixed-language drift, and whether the note still reads at the same level as `README.ja.md`.
+    - If `Opus` is unavailable, stop before treating the learning-note update as complete and record the blocker in `.claude/local/operator-handoff.md`.
 
 ## Private Maintainer Skill Gate
 

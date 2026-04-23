@@ -21,6 +21,7 @@ mod util;
 mod format;
 mod help;
 mod server;
+mod terminal_engine;
 mod client;
 mod app;
 mod ssh_input;
@@ -43,7 +44,6 @@ use crate::session::{cleanup_stale_port_files, read_session_key, send_control,
     send_control_with_response, resolve_last_session_name, resolve_default_session_name,
     kill_remaining_server_processes};
 use crate::rendering::apply_cursor_style;
-use crate::server::run_server;
 use crate::client::run_remote;
 use crate::ssh_input::{send_mouse_enable, InputSource};
 
@@ -386,31 +386,8 @@ fn run_main() -> io::Result<()> {
             }
             "server" => {
                 // Internal command - run headless server (used when spawning background server)
-                let name = args.iter().position(|a| a == "-s").and_then(|i| args.get(i+1)).map(|s| s.clone()).unwrap_or_else(|| "default".to_string());
-                // Parse -L socket name for namespace isolation
-                let server_socket_name = args.iter().position(|a| a == "-L").and_then(|i| args.get(i+1)).map(|s| s.clone());
-                // Check for initial command via -c flag (shell-wrapped)
-                let initial_cmd = args.iter().position(|a| a == "-c").and_then(|i| args.get(i+1)).map(|s| s.clone());
-                // Parse start directory via -d flag
-                let srv_start_dir = args.iter().position(|a| a == "-d").and_then(|i| args.get(i+1)).map(|s| s.clone());
-                // Parse window name via -n flag
-                let srv_window_name = args.iter().position(|a| a == "-n").and_then(|i| args.get(i+1)).map(|s| s.clone());
-                // Parse initial dimensions via -x / -y flags
-                let srv_init_width = args.iter().position(|a| a == "-x").and_then(|i| args.get(i+1)).and_then(|s| s.parse::<u16>().ok());
-                let srv_init_height = args.iter().position(|a| a == "-y").and_then(|i| args.get(i+1)).and_then(|s| s.parse::<u16>().ok());
-                let srv_init_size = match (srv_init_width, srv_init_height) {
-                    (Some(w), Some(h)) => Some((w, h)),
-                    (Some(w), None) => Some((w, 24)),
-                    (None, Some(h)) => Some((80, h)),
-                    _ => None,
-                };
-                // Parse session group target via -g flag
-                let srv_group_target = args.iter().position(|a| a == "-g").and_then(|i| args.get(i+1)).map(|s| s.clone());
-                // Check for raw command after -- (direct execution)
-                let raw_cmd: Option<Vec<String>> = args.iter().position(|a| a == "--").map(|pos| {
-                    args.iter().skip(pos + 1).cloned().collect()
-                }).filter(|v: &Vec<String>| !v.is_empty());
-                return run_server(name, server_socket_name, initial_cmd, raw_cmd, srv_start_dir, srv_window_name, srv_init_size, srv_group_target);
+                let config = terminal_engine::parse_headless_server_config(&args);
+                return terminal_engine::run_headless_server(config);
             }
             "new-session" | "new" => {
                 // Prevent nesting: block new-session inside an existing psmux session
@@ -611,49 +588,17 @@ fn run_main() -> io::Result<()> {
 
                 if !claimed_warm {
                 // Cold path: spawn a background server from scratch
-                let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("psmux"));
-                let mut server_args: Vec<String> = vec!["server".into(), "-s".into(), name.clone()];
-                // Pass -L socket name to server for namespace isolation
-                if let Some(ref l) = l_socket_name {
-                    server_args.push("-L".into());
-                    server_args.push(l.clone());
-                }
-                // Pass initial command if provided
-                if let Some(ref init_cmd) = initial_cmd {
-                    server_args.push("-c".into());
-                    server_args.push(init_cmd.clone());
-                }
-                // Pass start directory to server
-                if let Some(ref dir) = start_dir {
-                    server_args.push("-d".into());
-                    server_args.push(dir.clone());
-                }
-                // Pass window name to server
-                if let Some(ref wn) = window_name {
-                    server_args.push("-n".into());
-                    server_args.push(wn.clone());
-                }
-                // Pass initial dimensions to server
-                if let Some(w) = init_width {
-                    server_args.push("-x".into());
-                    server_args.push(w.to_string());
-                }
-                if let Some(h) = init_height {
-                    server_args.push("-y".into());
-                    server_args.push(h.to_string());
-                }
-                // Pass session group target to server
-                if let Some(ref gt) = group_target {
-                    server_args.push("-g".into());
-                    server_args.push(gt.clone());
-                }
-                // Pass raw command args (direct execution) if -- was used
-                if let Some(ref raw_args) = raw_cmd_args {
-                    server_args.push("--".into());
-                    for a in raw_args {
-                        server_args.push(a.clone());
-                    }
-                }
+                let server_config = terminal_engine::HeadlessServerConfig {
+                    session_name: name.clone(),
+                    socket_name: l_socket_name.clone(),
+                    initial_command: initial_cmd.clone(),
+                    raw_command: raw_cmd_args.clone(),
+                    start_dir: start_dir.clone(),
+                    window_name: window_name.clone(),
+                    initial_width: init_width,
+                    initial_height: init_height,
+                    group_target: group_target.clone(),
+                };
                 // On Windows, mark parent's stdout/stderr as non-inheritable before
                 // spawning the server. This prevents the server from inheriting
                 // PowerShell's redirect pipes (which would cause the parent to hang
@@ -676,19 +621,7 @@ fn run_main() -> io::Result<()> {
                         SetHandleInformation(stderr, HANDLE_FLAG_INHERIT, 0);
                     }
                 }
-                // Spawn server with a hidden console window via CreateProcessW.
-                // This gives ConPTY a real console while keeping the window invisible.
-                #[cfg(windows)]
-                crate::platform::spawn_server_hidden(&exe, &server_args)?;
-                #[cfg(not(windows))]
-                {
-                    let mut cmd = std::process::Command::new(&exe);
-                    for a in &server_args { cmd.arg(a); }
-                    cmd.stdin(std::process::Stdio::null());
-                    cmd.stdout(std::process::Stdio::null());
-                    cmd.stderr(std::process::Stdio::null());
-                    let _child = cmd.spawn().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to spawn server: {e}")))?;
-                }
+                terminal_engine::spawn_headless_server(&server_config)?;
                 } // end if !claimed_warm (cold path)
                 } // end else (not PSMUX_REMOTE_ATTACH)
                 
@@ -2353,33 +2286,20 @@ fn run_main() -> io::Result<()> {
                 // Clean up stale port file if any
                 let _ = std::fs::remove_file(&warm_port_path);
                 // Spawn the warm server
-                let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("psmux"));
-                let mut server_args: Vec<String> = vec!["server".into(), "-s".into(), "__warm__".into()];
-                if let Some(ref l) = l_socket_name {
-                    server_args.push("-L".into());
-                    server_args.push(l.clone());
-                }
+                let mut config = terminal_engine::HeadlessServerConfig {
+                    session_name: "__warm__".to_string(),
+                    socket_name: l_socket_name.clone(),
+                    ..terminal_engine::HeadlessServerConfig::default()
+                };
                 // Detect terminal size for the warm server
                 if let Ok((tw, th)) = crossterm::terminal::size() {
                     let h = th.saturating_sub(1);
                     if tw > 0 && h > 0 {
-                        server_args.push("-x".into());
-                        server_args.push(tw.to_string());
-                        server_args.push("-y".into());
-                        server_args.push(h.to_string());
+                        config.initial_width = Some(tw);
+                        config.initial_height = Some(h);
                     }
                 }
-                #[cfg(windows)]
-                crate::platform::spawn_server_hidden(&exe, &server_args)?;
-                #[cfg(not(windows))]
-                {
-                    let mut cmd = std::process::Command::new(&exe);
-                    for a in &server_args { cmd.arg(a); }
-                    cmd.stdin(std::process::Stdio::null());
-                    cmd.stdout(std::process::Stdio::null());
-                    cmd.stderr(std::process::Stdio::null());
-                    let _child = cmd.spawn().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to spawn warm server: {e}")))?;
-                }
+                terminal_engine::spawn_headless_server(&config)?;
                 return Ok(());
             }
             // confirm-before - Ask for confirmation before running a command
@@ -2578,19 +2498,12 @@ fn run_main() -> io::Result<()> {
 
         if !warm_claimed {
             // Cold path: spawn a new background server
-            let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("psmux"));
-            let server_args: Vec<String> = vec!["server".into(), "-s".into(), session_name.clone()];
-            #[cfg(windows)]
-            crate::platform::spawn_server_hidden(&exe, &server_args)?;
-            #[cfg(not(windows))]
-            {
-                let mut cmd = std::process::Command::new(&exe);
-                for a in &server_args { cmd.arg(a); }
-                cmd.stdin(std::process::Stdio::null());
-                cmd.stdout(std::process::Stdio::null());
-                cmd.stderr(std::process::Stdio::null());
-                let _child = cmd.spawn().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to spawn server: {e}")))?;
-            }
+            terminal_engine::spawn_headless_server(
+                &terminal_engine::HeadlessServerConfig {
+                    session_name: session_name.clone(),
+                    ..terminal_engine::HeadlessServerConfig::default()
+                },
+            )?;
 
             // Wait for server to start (fast polling — port file is written early)
             for _ in 0..500 {
