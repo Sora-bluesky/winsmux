@@ -192,6 +192,7 @@ interface ExperimentDetailLine {
 }
 
 type SurfaceTone = "default" | "accent" | "success" | "warning" | "danger" | "info" | "focus";
+type CompareRiskLevel = "low" | "medium" | "high";
 type ThemeMode = "codex-dark" | "graphite-dark";
 type DensityMode = "comfortable" | "compact";
 type WrapMode = "balanced" | "compact";
@@ -677,6 +678,54 @@ function summarizeCompareDifferenceFields(
     return fields.join(", ");
   }
   return `${fields.slice(0, limit).join(", ")} +${fields.length - limit}`;
+}
+
+function getCompareConflictRadar(result: DesktopCompareRunsResult): {
+  level: CompareRiskLevel;
+  label: string;
+  tone: SurfaceTone;
+  hotspots: string[];
+  summary: string;
+} {
+  const hotspots = result.shared_changed_files.filter((path) => Boolean(path));
+  const requiresConsult = result.recommend.reconcile_consult;
+  const riskyFields = new Set([
+    "branch",
+    "worktree",
+    "env_fingerprint",
+    "command_hash",
+    "result",
+    "changed_files",
+  ]);
+  const riskyDifferenceCount = result.differences.filter((difference) =>
+    riskyFields.has(difference.field),
+  ).length;
+  const hasMaterialDrift = riskyDifferenceCount > 0 || result.differences.length >= 3;
+  const hasUnrecommendableRun = !result.left.recommendable || !result.right.recommendable;
+  const level: CompareRiskLevel =
+    hasUnrecommendableRun || (requiresConsult && hotspots.length > 0)
+      ? "high"
+      : (hotspots.length > 0 || hasMaterialDrift ? "medium" : "low");
+  const label = level === "high"
+    ? "High"
+    : (level === "medium" ? "Medium" : "Low");
+  const tone: SurfaceTone =
+    level === "high" ? "danger" : (level === "medium" ? "warning" : "success");
+  const reason = hasUnrecommendableRun
+    ? "run not recommendable"
+    : (
+      hotspots.length > 0
+        ? `${hotspots.length} hotspot${hotspots.length === 1 ? "" : "s"}`
+        : (hasMaterialDrift ? `${riskyDifferenceCount || result.differences.length} risk fields` : "no shared files")
+    );
+
+  return {
+    level,
+    label,
+    tone,
+    hotspots,
+    summary: `${label} risk · ${reason}`,
+  };
 }
 
 function setSelectedRun(runId: string | null) {
@@ -1620,6 +1669,9 @@ function renderExperimentContext() {
   const compareDifferenceSummary = compareResult
     ? summarizeCompareDifferenceFields(compareResult)
     : "";
+  const compareConflictRadar = compareResult
+    ? getCompareConflictRadar(compareResult)
+    : null;
   const compareFileSummary = compareResult
     ? [
         compareResult.shared_changed_files.length > 0
@@ -1637,9 +1689,13 @@ function renderExperimentContext() {
     : "";
   const compareTone: SurfaceTone = compareResult
     ? (
-      compareResult.recommend.reconcile_consult
-        ? "warning"
-        : (compareWinnerLabel ? "success" : "info")
+      compareConflictRadar?.level === "high"
+        ? "danger"
+        : (
+          compareConflictRadar?.level === "medium"
+            ? "warning"
+            : (compareWinnerLabel ? "success" : "info")
+        )
     )
     : hasPersistedCompareWinner
       ? "success"
@@ -1651,6 +1707,7 @@ function renderExperimentContext() {
           : `Winner ${compareWinnerLabel || "not decided"}`,
         compareResult.recommend.next_action || "reconcile_consult",
         [
+          compareConflictRadar?.summary || "",
           compareDifferenceSummary,
           compareFileSummary,
         ]
@@ -1700,6 +1757,7 @@ function renderExperimentContext() {
   const compareCandidateSummary = compareResult
     ? [
         compareWinnerLabel ? `winner ${compareWinnerLabel}` : "",
+        compareConflictRadar?.summary || "",
         `diffs ${compareResult.differences.length}`,
       ]
         .filter((value) => Boolean(value))
@@ -1794,6 +1852,16 @@ function renderExperimentContext() {
               value: comparePeer?.label || compareResult.right.label || compareResult.right.run_id,
             },
             { label: "winner", value: compareWinnerLabel || "none" },
+            {
+              label: "risk",
+              value: compareConflictRadar?.label || "n/a",
+              tone: compareConflictRadar?.tone,
+            },
+            {
+              label: "hotspots",
+              value: `${compareConflictRadar?.hotspots.length ?? 0}`,
+              tone: compareConflictRadar?.tone,
+            },
             { label: "diffs", value: `${compareResult.differences.length}` },
             {
               label: "delta",
@@ -1870,8 +1938,12 @@ function renderExperimentContext() {
               label: "Difference fields",
               value: compareDifferenceSummary || "none",
             },
+            {
+              label: "Conflict radar",
+              value: compareConflictRadar?.summary || "low risk · no shared files",
+            },
             buildExperimentFileLine(
-              "Shared files",
+              "Hotspot files",
               compareResult.shared_changed_files,
               compareLeftProjection?.worktree || selectedProjection.worktree || "",
             ),
@@ -1935,6 +2007,9 @@ function renderExperimentContext() {
     for (const detail of item.details) {
       const pill = document.createElement("span");
       pill.className = "experiment-detail-pill";
+      if ("tone" in detail && detail.tone) {
+        pill.dataset.tone = detail.tone;
+      }
       pill.innerHTML = `<span class="experiment-detail-pill-label">${detail.label}</span><span>${detail.value}</span>`;
       meta.appendChild(pill);
     }

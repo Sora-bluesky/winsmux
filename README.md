@@ -134,7 +134,7 @@ You can also download a release `.zip` from GitHub Releases or build from source
 - `winsmux launcher presets [--json]` inspects capability-aware launcher presets and pair templates
 - `winsmux launcher lifecycle [preset|--clear] [--json]` selects the workspace lifecycle policy for the current project
 - `winsmux launcher save <name>` stores the current launcher template for later reuse
-- `winsmux conflict-preflight` is now the public coordination guard before compare UI lands
+- `winsmux conflict-preflight` remains the compatibility preflight command behind compare coordination
 - `winsmux compare <runs|preflight|promote>` is now the public compare coordination entrypoint
 - npm-based installation is planned
 - the public npm install surface will be a **single `winsmux` package**
@@ -193,6 +193,7 @@ Lifecycle presets are declarative policy only. winsmux does not execute arbitrar
 Use `winsmux compare runs <left_run_id> <right_run_id>` to compare evidence and confidence between two recorded runs.
 Use `winsmux compare preflight <left_ref> <right_ref>` before a merge or compare review.
 Use `winsmux compare promote <run_id>` to export a reusable follow-up candidate from a successful run.
+The desktop compare card highlights shared changed files as hotspots and shows a risk badge before winner selection.
 `winsmux conflict-preflight <left_ref> <right_ref>` remains available as a compatibility command.
 
 If `winsmux doctor` reports the Windows worktree git sandbox limitation, keep using the managed pane for edits and tests, but run `git add`, `git commit`, and `git push` from a regular shell outside the sandboxed pane when `.git/worktrees/*/index.lock` cannot be created.

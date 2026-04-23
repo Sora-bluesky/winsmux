@@ -122,6 +122,7 @@ That direction is public product behavior. `/winsmux-start` remains a repository
 Lifecycle presets are declarative workspace policy. They do not execute arbitrary setup or teardown scripts from project configuration.
 `winsmux compare <runs|preflight|promote>` is the public compare coordination surface.
 It wraps run comparison, merge preflight, and follow-up candidate promotion behind one entrypoint.
+The desktop compare card surfaces shared changed files as hotspots and displays a risk badge before winner selection.
 
 Repository-operated runtime contracts also exist for contributor flows, but they are maintained as contributor/runtime documents rather than primary public product docs.
 

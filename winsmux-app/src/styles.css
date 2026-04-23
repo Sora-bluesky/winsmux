@@ -1323,6 +1323,14 @@ body[data-popout-surface="1"] #editor-surface {
   border-color: var(--status-success-border);
 }
 
+.experiment-detail-card[data-tone="warning"] {
+  border-color: var(--status-warning-border);
+}
+
+.experiment-detail-card[data-tone="danger"] {
+  border-color: var(--status-danger-border);
+}
+
 .experiment-detail-title {
   font-size: var(--text-sm);
   color: var(--text-primary);
@@ -1396,6 +1404,20 @@ body[data-popout-surface="1"] #editor-surface {
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+
+.experiment-detail-pill[data-tone="success"] {
+  border-color: var(--status-success-border);
+}
+
+.experiment-detail-pill[data-tone="warning"] {
+  border-color: var(--status-warning-border);
+  color: var(--text-primary);
+}
+
+.experiment-detail-pill[data-tone="danger"] {
+  border-color: var(--status-danger-border);
+  color: var(--text-primary);
 }
 
 .sidebar-row[data-tone="success"],
