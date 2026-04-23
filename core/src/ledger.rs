@@ -1,6 +1,7 @@
 use crate::event_contract::{parse_event_jsonl, EventRecord};
 use crate::manifest_contract::{NormalizedManifestPane, WinsmuxManifest};
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 #[derive(Debug)]
 pub struct LedgerSnapshot {
@@ -11,6 +12,41 @@ pub struct LedgerSnapshot {
 }
 
 impl LedgerSnapshot {
+    pub fn from_project_dir(project_dir: impl AsRef<Path>) -> Result<Self, String> {
+        let winsmux_dir = project_dir.as_ref().join(".winsmux");
+        Self::from_paths(
+            winsmux_dir.join("manifest.yaml"),
+            winsmux_dir.join("events.jsonl"),
+        )
+    }
+
+    pub fn from_paths(
+        manifest_path: impl AsRef<Path>,
+        events_path: impl AsRef<Path>,
+    ) -> Result<Self, String> {
+        let manifest_path = manifest_path.as_ref();
+        let events_path = events_path.as_ref();
+
+        let manifest_yaml = std::fs::read_to_string(manifest_path).map_err(|err| {
+            format!(
+                "failed to read manifest '{}': {err}",
+                manifest_path.display()
+            )
+        })?;
+        let events_jsonl = match std::fs::read_to_string(events_path) {
+            Ok(content) => content,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => {
+                return Err(format!(
+                    "failed to read events '{}': {err}",
+                    events_path.display()
+                ));
+            }
+        };
+
+        Self::from_manifest_and_events(&manifest_yaml, &events_jsonl)
+    }
+
     pub fn from_manifest_and_events(
         manifest_yaml: &str,
         events_jsonl: &str,
