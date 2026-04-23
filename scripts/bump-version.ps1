@@ -189,6 +189,36 @@ $targets = @(
         Replace = "`${1}$Version`${2}"
     },
     @{
+        Path    = Join-Path $Root "core\Cargo.toml"
+        Pattern = '(?m)^(version\s*=\s*")[^"]*(")'
+        Replace = "`${1}$Version`${2}"
+    },
+    @{
+        Path    = Join-Path $Root "core\Cargo.lock"
+        Pattern = '(?ms)(name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*")[^"]*(")'
+        Replace = "`${1}$Version`${2}"
+    },
+    @{
+        Path    = Join-Path $Root "winsmux-app\package.json"
+        Pattern = '("version"\s*:\s*")[^"]*(")'
+        Replace = "`${1}$Version`${2}"
+    },
+    @{
+        Path    = Join-Path $Root "winsmux-app\src-tauri\Cargo.toml"
+        Pattern = '(?m)^(version\s*=\s*")[^"]*(")'
+        Replace = "`${1}$Version`${2}"
+    },
+    @{
+        Path    = Join-Path $Root "winsmux-app\src-tauri\Cargo.lock"
+        Pattern = '(?ms)(name\s*=\s*"winsmux-app"\s*\r?\nversion\s*=\s*")[^"]*(")'
+        Replace = "`${1}$Version`${2}"
+    },
+    @{
+        Path    = Join-Path $Root "winsmux-app\src-tauri\tauri.conf.json"
+        Pattern = '("version"\s*:\s*")[^"]*(")'
+        Replace = "`${1}$Version`${2}"
+    },
+    @{
         Path    = Join-Path $Root "skills\winsmux\SKILL.md"
         Pattern = '(version:\s*")[^"]*(")'
         Replace = "`${1}$Version`${2}"
@@ -199,6 +229,40 @@ $targets = @(
         Replace = "`${1}$Version"
     }
 )
+
+function Update-WinsmuxAppPackageLockVersion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Version
+    )
+
+    $relPath = [IO.Path]::GetRelativePath($Root, $Path)
+    if (-not (Test-Path $Path)) {
+        Write-Warning "[bump] SKIP $relPath (file not found)"
+        return 'missing'
+    }
+
+    $content = Get-Content $Path -Raw
+    $updated = $content
+
+    $topPattern = '(?ms)^(\{\s*\r?\n\s*"name"\s*:\s*"winsmux-app",\s*\r?\n\s*"version"\s*:\s*")[^"]*(")'
+    $rootPackagePattern = '(?ms)("packages"\s*:\s*\{\s*\r?\n\s*""\s*:\s*\{\s*\r?\n\s*"name"\s*:\s*"winsmux-app",\s*\r?\n\s*"version"\s*:\s*")[^"]*(")'
+
+    $updated = [regex]::Replace($updated, $topPattern, "`${1}$Version`${2}", 1)
+    $updated = [regex]::Replace($updated, $rootPackagePattern, "`${1}$Version`${2}", 1)
+
+    if ($updated -ne $content) {
+        Set-Content -Path $Path -Value $updated -NoNewline -Encoding UTF8
+        Write-Host "[bump] UPDATED $relPath"
+        return 'changed'
+    }
+
+    Write-Host "[bump] OK      $relPath (already $Version)"
+    return 'synced'
+}
 
 # --- Apply replacements ---
 $changed = 0
@@ -224,10 +288,17 @@ foreach ($t in $targets) {
     }
 }
 
+$packageLockResult = Update-WinsmuxAppPackageLockVersion -Path (Join-Path $Root "winsmux-app\package-lock.json") -Version $Version
+if ($packageLockResult -eq 'changed') {
+    $changed++
+} elseif ($packageLockResult -eq 'synced') {
+    $synced++
+}
+
 # --- Summary ---
 Write-Host ""
 if ($changed -eq 0) {
-    Write-Host "[bump] All $($targets.Count) files are in sync at v$Version" -ForegroundColor Green
+    Write-Host "[bump] All $($targets.Count + 1) files are in sync at v$Version" -ForegroundColor Green
 } else {
     Write-Host "[bump] Updated $changed file(s), $synced already in sync." -ForegroundColor Yellow
 }
@@ -247,7 +318,20 @@ try {
     Write-Host "[release] Created branch $branch"
 
     # Stage and commit (filter to existing files only — #154)
-    $filesToAdd = @("VERSION", "install.ps1", "scripts/winsmux-core.ps1", "skills/winsmux/SKILL.md", "skills/winsmux/references/winsmux-core.md")
+    $filesToAdd = @(
+        "VERSION",
+        "install.ps1",
+        "scripts/winsmux-core.ps1",
+        "core/Cargo.toml",
+        "core/Cargo.lock",
+        "winsmux-app/package.json",
+        "winsmux-app/package-lock.json",
+        "winsmux-app/src-tauri/Cargo.toml",
+        "winsmux-app/src-tauri/Cargo.lock",
+        "winsmux-app/src-tauri/tauri.conf.json",
+        "skills/winsmux/SKILL.md",
+        "skills/winsmux/references/winsmux-core.md"
+    )
     $existingFiles = $filesToAdd | Where-Object { Test-Path (Join-Path $Root $_) }
     if ($existingFiles) { git add $existingFiles }
 
