@@ -775,6 +775,25 @@ pub fn handle_desktop_json_rpc(
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
             }
         }
+        "desktop.control_plane.contract" => json_rpc_result(
+            request_id,
+            serde_json::json!({
+                "version": 1,
+                "transport": "named_pipe_json_rpc",
+                "pipe": r"\\.\pipe\winsmux-control",
+                "jsonrpc": DESKTOP_JSON_RPC_VERSION,
+                "localhost_http": false,
+                "websocket": false,
+                "methods": [
+                    "desktop.control_plane.contract",
+                    "desktop.summary.snapshot",
+                    "desktop.run.explain",
+                    "desktop.run.compare",
+                    "desktop.run.promote",
+                    "desktop.run.pick_winner",
+                ],
+            }),
+        ),
         "desktop.run.explain" => {
             let run_id = match get_required_string_param(params.as_ref(), &["runId", "run_id"]) {
                 Ok(value) => value,

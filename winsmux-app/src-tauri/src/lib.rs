@@ -1,6 +1,8 @@
+mod control_pipe;
 mod desktop_backend;
 mod pty_backend;
 
+use control_pipe::start_control_pipe_server;
 use desktop_backend::{
     handle_desktop_json_rpc, load_desktop_run_explain, load_desktop_summary_snapshot,
     spawn_desktop_summary_refresh_stream, DesktopExplainPayload, DesktopJsonRpcRequest,
@@ -293,6 +295,7 @@ pub fn run() {
             stop_requested: Arc::new(AtomicBool::new(false)),
         })
         .setup(|app| {
+            start_control_pipe_server();
             start_desktop_summary_refresh_streams(&app.handle().clone());
             Ok(())
         })
