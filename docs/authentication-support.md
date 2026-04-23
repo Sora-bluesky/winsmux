@@ -70,6 +70,8 @@ winsmux does not:
 ## Preflight handling
 
 Preflight handling looks at both the CLI name and the authentication mode.
+The launcher uses the provider capability registry and the configured `auth_mode`
+before it starts a pane.
 
 Examples:
 
@@ -83,6 +85,15 @@ Local interactive modes are allowed only when the official CLI owns the login.
 They are not shared credentials for other panes.
 Preflight must stop if a workflow asks winsmux to receive callback URLs,
 extract tokens, or share tokens across panes.
+
+The following `auth_mode` values are explicitly blocked:
+
+- `oauth-broker`
+- `token-broker`
+- `callback-url`
+- `callback-url-receiver`
+- `shared-token`
+- `provider-api-proxy`
 
 ## Terminology
 

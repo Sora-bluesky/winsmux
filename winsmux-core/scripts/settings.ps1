@@ -21,6 +21,7 @@ $script:BridgeSettingsSchema = [ordered]@{
     agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
     model               = @{ Type = 'string';   Default = 'gpt-5.4';     Option = '@bridge-model' }
     prompt_transport    = @{ Type = 'transport'; Default = 'argv';       Option = '@bridge-prompt-transport' }
+    auth_mode           = @{ Type = 'string';   Default = '';            Option = $null }
     external_operator  = @{ Type = 'bool';     Default = $true;         Option = '@bridge-external-operator' }
     worker_count        = @{ Type = 'int';      Default = 6;             Option = '@bridge-worker-count' }
     agent_slots         = @{ Type = 'slotlist'; Default = @();           Option = $null }
@@ -273,7 +274,7 @@ function ConvertTo-BridgeSlotEntry {
     $slot = [ordered]@{}
     foreach ($pair in $pairs) {
         $key = $pair.Key.ToString() -replace '-', '_'
-        if ($key -notin @('slot_id', 'runtime_role', 'agent', 'model', 'prompt_transport', 'worktree_mode')) {
+        if ($key -notin @('slot_id', 'runtime_role', 'agent', 'model', 'prompt_transport', 'auth_mode', 'worktree_mode')) {
             continue
         }
 
@@ -386,7 +387,7 @@ function ConvertTo-BridgeProviderRegistryEntry {
     $entry = [ordered]@{}
     foreach ($pair in $pairs) {
         $key = $pair.Key.ToString() -replace '-', '_'
-        if ($key -notin @('agent', 'model', 'prompt_transport', 'updated_at_utc', 'reason')) {
+        if ($key -notin @('agent', 'model', 'prompt_transport', 'auth_mode', 'updated_at_utc', 'reason')) {
             continue
         }
 
@@ -396,7 +397,7 @@ function ConvertTo-BridgeProviderRegistryEntry {
 
         $text = ConvertFrom-BridgeYamlScalar $pair.Value
         if ([string]::IsNullOrWhiteSpace($text)) {
-            if ($key -in @('agent', 'model', 'prompt_transport')) {
+            if ($key -in @('agent', 'model', 'prompt_transport', 'auth_mode')) {
                 throw "Invalid provider registry field '$key'."
             }
 
@@ -410,7 +411,7 @@ function ConvertTo-BridgeProviderRegistryEntry {
         $entry[$key] = $text
     }
 
-    if (-not ($entry.Contains('agent') -or $entry.Contains('model') -or $entry.Contains('prompt_transport'))) {
+    if (-not ($entry.Contains('agent') -or $entry.Contains('model') -or $entry.Contains('prompt_transport') -or $entry.Contains('auth_mode'))) {
         return $null
     }
 
@@ -509,6 +510,7 @@ function Write-BridgeProviderRegistryEntry {
         [string]$Agent,
         [string]$Model,
         [string]$PromptTransport,
+        [string]$AuthMode,
         [string]$Reason,
         [string]$RootPath
     )
@@ -531,8 +533,11 @@ function Write-BridgeProviderRegistryEntry {
         }
         $entry.prompt_transport = $normalizedTransport
     }
-    if (-not ($entry.Contains('agent') -or $entry.Contains('model') -or $entry.Contains('prompt_transport'))) {
-        throw 'Provider registry entry requires agent, model, or prompt_transport.'
+    if (-not [string]::IsNullOrWhiteSpace($AuthMode)) {
+        $entry.auth_mode = $AuthMode.Trim()
+    }
+    if (-not ($entry.Contains('agent') -or $entry.Contains('model') -or $entry.Contains('prompt_transport') -or $entry.Contains('auth_mode'))) {
+        throw 'Provider registry entry requires agent, model, prompt_transport, or auth_mode.'
     }
 
     $entry.updated_at_utc = (Get-Date).ToUniversalTime().ToString('o')
@@ -625,6 +630,7 @@ function ConvertTo-BridgeProviderCapabilityEntry {
 
     $stringFields = @('adapter', 'display_name', 'command')
     $transportFields = @('prompt_transports')
+    $stringArrayFields = @('auth_modes', 'local_interactive_oauth_modes')
     $boolFields = @(
         'supports_parallel_runs',
         'supports_interrupt',
@@ -634,7 +640,7 @@ function ConvertTo-BridgeProviderCapabilityEntry {
         'supports_verification',
         'supports_consultation'
     )
-    $allowedFields = @($stringFields + $transportFields + $boolFields)
+    $allowedFields = @($stringFields + $transportFields + $stringArrayFields + $boolFields)
 
     $entry = [ordered]@{}
     foreach ($pair in $pairs) {
@@ -679,6 +685,25 @@ function ConvertTo-BridgeProviderCapabilityEntry {
             }
 
             $entry[$key] = @($transports)
+            continue
+        }
+
+        if ($key -in $stringArrayFields) {
+            if ($pair.Value -isnot [System.Collections.IEnumerable] -or $pair.Value -is [string]) {
+                throw "Invalid provider capability field '$key'."
+            }
+
+            $items = @()
+            foreach ($item in @($pair.Value)) {
+                $text = ConvertFrom-BridgeYamlScalar $item
+                if ([string]::IsNullOrWhiteSpace($text)) {
+                    throw "Invalid provider capability field '$key'."
+                }
+
+                $items += $text.Trim().ToLowerInvariant()
+            }
+
+            $entry[$key] = @($items)
             continue
         }
 
@@ -920,6 +945,78 @@ function Assert-BridgeProviderCapabilityTransport {
     $supportedTransports = @($transports | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() })
     if ($requestedTransport -notin $supportedTransports) {
         throw "Provider capability '$ProviderId' does not support prompt_transport '$requestedTransport'. Supported values: $($supportedTransports -join ', ')."
+    }
+}
+
+function Test-BridgeProviderBlockedAuthMode {
+    param([AllowNull()][string]$AuthMode)
+
+    if ([string]::IsNullOrWhiteSpace($AuthMode)) {
+        return $false
+    }
+
+    $normalized = $AuthMode.Trim().ToLowerInvariant()
+    return ($normalized -in @(
+        'oauth-broker',
+        'token-broker',
+        'callback-url',
+        'callback-url-receiver',
+        'shared-token',
+        'provider-api-proxy'
+    ))
+}
+
+function Get-BridgeProviderAuthPolicy {
+    param(
+        [AllowNull()]$Capability,
+        [AllowNull()][string]$AuthMode
+    )
+
+    if ([string]::IsNullOrWhiteSpace($AuthMode)) {
+        return 'unspecified'
+    }
+
+    $normalized = $AuthMode.Trim().ToLowerInvariant()
+    $localModes = @()
+    if ($null -ne $Capability -and $Capability.Contains('local_interactive_oauth_modes')) {
+        $localModes = @($Capability.local_interactive_oauth_modes | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() })
+    }
+
+    if ($normalized -in $localModes -or $normalized -match '(oauth|chatgpt-local)$') {
+        return 'local_interactive_only'
+    }
+
+    return 'standard'
+}
+
+function Assert-BridgeProviderCapabilityAuthMode {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProviderId,
+        [AllowNull()][string]$AuthMode,
+        [string]$RootPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($AuthMode)) {
+        return
+    }
+
+    $requestedAuthMode = $AuthMode.Trim().ToLowerInvariant()
+    if (Test-BridgeProviderBlockedAuthMode -AuthMode $requestedAuthMode) {
+        throw "Provider auth_mode '$requestedAuthMode' is not allowed. winsmux must not broker OAuth, receive callback URLs, extract provider tokens, or share provider tokens across panes."
+    }
+
+    $capability = Resolve-BridgeProviderCapability -ProviderId $ProviderId -RootPath $RootPath -RequireWhenRegistryPresent
+    if ($null -eq $capability) {
+        return
+    }
+
+    if (-not $capability.Contains('auth_modes')) {
+        throw "Provider capability '$ProviderId' does not declare auth_modes."
+    }
+
+    $supportedAuthModes = @($capability.auth_modes | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() })
+    if ($requestedAuthMode -notin $supportedAuthModes) {
+        throw "Provider capability '$ProviderId' does not support auth_mode '$requestedAuthMode'. Supported values: $($supportedAuthModes -join ', ')."
     }
 }
 
@@ -1284,7 +1381,7 @@ function Test-BridgeSettingValue {
 
                 foreach ($rolePair in $rolePairs) {
                     $propertyKey = $rolePair.Key.ToString() -replace '-', '_'
-                    if ($propertyKey -notin @('agent', 'model', 'prompt_transport')) {
+                    if ($propertyKey -notin @('agent', 'model', 'prompt_transport', 'auth_mode')) {
                         continue
                     }
 
@@ -1548,12 +1645,21 @@ function Get-RoleAgentConfig {
     $agent = $Settings.agent
     $model = $Settings.model
     $promptTransport = 'argv'
+    $authMode = ''
     if ($Settings -is [System.Collections.IDictionary]) {
         if ($Settings.Contains('prompt_transport') -and -not [string]::IsNullOrWhiteSpace([string]$Settings['prompt_transport'])) {
             $promptTransport = [string]$Settings['prompt_transport']
         }
-    } elseif ($null -ne $Settings.PSObject -and $Settings.PSObject.Properties.Name -contains 'prompt_transport' -and -not [string]::IsNullOrWhiteSpace([string]$Settings.prompt_transport)) {
-        $promptTransport = [string]$Settings.prompt_transport
+        if ($Settings.Contains('auth_mode') -and -not [string]::IsNullOrWhiteSpace([string]$Settings['auth_mode'])) {
+            $authMode = [string]$Settings['auth_mode']
+        }
+    } elseif ($null -ne $Settings.PSObject) {
+        if ($Settings.PSObject.Properties.Name -contains 'prompt_transport' -and -not [string]::IsNullOrWhiteSpace([string]$Settings.prompt_transport)) {
+            $promptTransport = [string]$Settings.prompt_transport
+        }
+        if ($Settings.PSObject.Properties.Name -contains 'auth_mode' -and -not [string]::IsNullOrWhiteSpace([string]$Settings.auth_mode)) {
+            $authMode = [string]$Settings.auth_mode
+        }
     }
 
     if ($resolvedRoleConfig -is [System.Collections.IDictionary]) {
@@ -1568,6 +1674,10 @@ function Get-RoleAgentConfig {
         if ($resolvedRoleConfig.Contains('prompt_transport') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['prompt_transport'])) {
             $promptTransport = [string]$resolvedRoleConfig['prompt_transport']
         }
+
+        if ($resolvedRoleConfig.Contains('auth_mode') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['auth_mode'])) {
+            $authMode = [string]$resolvedRoleConfig['auth_mode']
+        }
     } elseif ($null -ne $resolvedRoleConfig -and $null -ne $resolvedRoleConfig.PSObject) {
         if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'agent' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.agent)) {
             $agent = [string]$resolvedRoleConfig.agent
@@ -1580,12 +1690,17 @@ function Get-RoleAgentConfig {
         if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'prompt_transport' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.prompt_transport)) {
             $promptTransport = [string]$resolvedRoleConfig.prompt_transport
         }
+
+        if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'auth_mode' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.auth_mode)) {
+            $authMode = [string]$resolvedRoleConfig.auth_mode
+        }
     }
 
     return [PSCustomObject]@{
         Agent           = [string]$agent
         Model           = [string]$model
         PromptTransport = [string]$promptTransport
+        AuthMode        = [string]$authMode
     }
 }
 
@@ -1605,6 +1720,7 @@ function Get-SlotAgentConfig {
     $agent = [string]$roleAgentConfig.Agent
     $model = [string]$roleAgentConfig.Model
     $promptTransport = [string]$roleAgentConfig.PromptTransport
+    $authMode = [string]$roleAgentConfig.AuthMode
     $source = 'role'
 
     if (-not [string]::IsNullOrWhiteSpace($SlotId)) {
@@ -1626,6 +1742,7 @@ function Get-SlotAgentConfig {
             $slotAgent = ''
             $slotModel = ''
             $slotPromptTransport = ''
+            $slotAuthMode = ''
 
             if ($slot -is [System.Collections.IDictionary]) {
                 if ($slot.Contains('slot_id')) {
@@ -1640,6 +1757,9 @@ function Get-SlotAgentConfig {
                 if ($slot.Contains('prompt_transport')) {
                     $slotPromptTransport = [string]$slot['prompt_transport']
                 }
+                if ($slot.Contains('auth_mode')) {
+                    $slotAuthMode = [string]$slot['auth_mode']
+                }
             } elseif ($null -ne $slot.PSObject) {
                 if ($slot.PSObject.Properties.Name -contains 'slot_id') {
                     $candidateSlotId = [string]$slot.slot_id
@@ -1652,6 +1772,9 @@ function Get-SlotAgentConfig {
                 }
                 if ($slot.PSObject.Properties.Name -contains 'prompt_transport') {
                     $slotPromptTransport = [string]$slot.prompt_transport
+                }
+                if ($slot.PSObject.Properties.Name -contains 'auth_mode') {
+                    $slotAuthMode = [string]$slot.auth_mode
                 }
             }
 
@@ -1674,6 +1797,11 @@ function Get-SlotAgentConfig {
                 $source = 'slot'
             }
 
+            if (-not [string]::IsNullOrWhiteSpace($slotAuthMode)) {
+                $authMode = $slotAuthMode
+                $source = 'slot'
+            }
+
             break
         }
     }
@@ -1692,12 +1820,17 @@ function Get-SlotAgentConfig {
             $promptTransport = [string]$registryEntry.prompt_transport
         }
 
+        if ($registryEntry.Contains('auth_mode')) {
+            $authMode = [string]$registryEntry.auth_mode
+        }
+
         $source = 'registry'
     }
 
     $providerCapability = $null
     if (-not [string]::IsNullOrWhiteSpace($RootPath)) {
         Assert-BridgeProviderCapabilityTransport -ProviderId $agent -PromptTransport $promptTransport -RootPath $RootPath
+        Assert-BridgeProviderCapabilityAuthMode -ProviderId $agent -AuthMode $authMode -RootPath $RootPath
         $providerCapability = Resolve-BridgeProviderCapability -ProviderId $agent -RootPath $RootPath -RequireWhenRegistryPresent
     }
 
@@ -1706,6 +1839,8 @@ function Get-SlotAgentConfig {
         Agent                    = [string]$agent
         Model                    = [string]$model
         PromptTransport          = [string]$promptTransport
+        AuthMode                 = [string]$authMode
+        AuthPolicy               = Get-BridgeProviderAuthPolicy -Capability $providerCapability -AuthMode $authMode
         Source                   = [string]$source
         CapabilityAdapter        = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'adapter' -Default '')
         CapabilityCommand        = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'command' -Default '')

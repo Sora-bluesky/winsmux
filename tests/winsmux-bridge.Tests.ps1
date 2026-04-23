@@ -673,6 +673,8 @@ agent-slots:
       "display_name": "Codex",
       "command": "codex",
       "prompt_transports": ["argv", "file", "stdin"],
+      "auth_modes": ["api-key", "codex-chatgpt-local"],
+      "local_interactive_oauth_modes": ["codex-chatgpt-local"],
       "supports_parallel_runs": true,
       "supports_interrupt": true,
       "supports_structured_result": true,
@@ -688,6 +690,8 @@ agent-slots:
         $registry = Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot
         $registry.providers.codex.adapter | Should -Be 'codex'
         $registry.providers.codex.prompt_transports | Should -Be @('argv', 'file', 'stdin')
+        $registry.providers.codex.auth_modes | Should -Be @('api-key', 'codex-chatgpt-local')
+        $registry.providers.codex.local_interactive_oauth_modes | Should -Be @('codex-chatgpt-local')
         $registry.providers.codex.supports_file_edit | Should -Be $true
 
         $capability = Get-BridgeProviderCapability -RootPath $script:settingsTempRoot -ProviderId 'CODEX'
@@ -707,6 +711,8 @@ agent-slots:
       "adapter": "codex",
       "command": "codex",
       "prompt_transports": ["argv", "file", "stdin"],
+      "auth_modes": ["api-key", "codex-chatgpt-local"],
+      "local_interactive_oauth_modes": ["codex-chatgpt-local"],
       "supports_parallel_runs": true,
       "supports_interrupt": true,
       "supports_structured_result": true,
@@ -728,6 +734,7 @@ agent-slots:
     agent: codex
     model: gpt-5.4
     prompt-transport: argv
+    auth-mode: codex-chatgpt-local
 '@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
 
         Mock Get-WinsmuxOption { param($Name, $Default) return $null }
@@ -737,6 +744,8 @@ agent-slots:
 
         $config.CapabilityAdapter | Should -Be 'codex'
         $config.CapabilityCommand | Should -Be 'codex'
+        $config.AuthMode | Should -Be 'codex-chatgpt-local'
+        $config.AuthPolicy | Should -Be 'local_interactive_only'
         $config.SupportsParallelRuns | Should -Be $true
         $config.SupportsInterrupt | Should -Be $true
         $config.SupportsInterruptDeclared | Should -Be $true
@@ -865,6 +874,84 @@ agent-slots:
         {
             Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
         } | Should -Throw "*does not support prompt_transport 'stdin'*"
+    }
+
+    It 'rejects blocked provider auth modes before launch resolution' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "claude": {
+      "adapter": "claude",
+      "command": "claude",
+      "prompt_transports": ["file"],
+      "auth_modes": ["api-key", "claude-pro-max-oauth"],
+      "local_interactive_oauth_modes": ["claude-pro-max-oauth"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: claude
+model: opus
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: claude
+    model: opus
+    prompt-transport: file
+    auth-mode: token-broker
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        {
+            Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        } | Should -Throw '*must not broker OAuth*'
+    }
+
+    It 'rejects top-level blocked provider auth modes before launch resolution' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "claude": {
+      "adapter": "claude",
+      "command": "claude",
+      "prompt_transports": ["file"],
+      "auth_modes": ["api-key", "claude-pro-max-oauth"],
+      "local_interactive_oauth_modes": ["claude-pro-max-oauth"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: claude
+model: opus
+prompt-transport: file
+auth-mode: callback-url-receiver
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        {
+            Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        } | Should -Throw '*must not broker OAuth*'
     }
 
     It 'rejects providers missing from a non-empty provider capability registry' {
@@ -10295,6 +10382,7 @@ agent_slots:
     agent: claude
     model: opus
     prompt_transport: file
+    auth_mode: claude-pro-max-oauth
   - slot_id: reviewer-1
     runtime_role: reviewer
     agent: claude
@@ -10311,6 +10399,8 @@ agent_slots:
       "display_name": "Codex",
       "command": "codex",
       "prompt_transports": ["argv", "file", "stdin"],
+      "auth_modes": ["api-key", "codex-chatgpt-local"],
+      "local_interactive_oauth_modes": ["codex-chatgpt-local"],
       "supports_file_edit": true,
       "supports_verification": true,
       "supports_structured_result": true,
@@ -10321,6 +10411,8 @@ agent_slots:
       "display_name": "Claude",
       "command": "claude",
       "prompt_transports": ["file"],
+      "auth_modes": ["api-key", "claude-pro-max-oauth"],
+      "local_interactive_oauth_modes": ["claude-pro-max-oauth"],
       "supports_file_edit": true,
       "supports_verification": true,
       "supports_structured_result": false,
@@ -10354,6 +10446,8 @@ agent_slots:
         $payload.slots[0].slot_id | Should -Be 'worker-1'
         $payload.slots[0].capability_adapter | Should -Be 'codex'
         $payload.slots[1].prompt_transport | Should -Be 'file'
+        $payload.slots[1].auth_mode | Should -Be 'claude-pro-max-oauth'
+        $payload.slots[1].auth_policy | Should -Be 'local_interactive_only'
         @($payload.presets.name) | Should -Contain 'all-workers'
         @($payload.presets.name) | Should -Contain 'balanced-build-review'
         @($payload.presets.name) | Should -Contain 'verification'
@@ -10547,6 +10641,8 @@ agent-slots:
       "adapter": "codex",
       "command": "codex",
       "prompt_transports": ["argv", "file", "stdin"],
+      "auth_modes": ["api-key", "codex-chatgpt-local"],
+      "local_interactive_oauth_modes": ["codex-chatgpt-local"],
       "supports_parallel_runs": true,
       "supports_interrupt": true,
       "supports_structured_result": true,
@@ -10559,6 +10655,8 @@ agent-slots:
       "adapter": "claude",
       "command": "claude",
       "prompt_transports": ["file"],
+      "auth_modes": ["api-key", "claude-pro-max-oauth"],
+      "local_interactive_oauth_modes": ["claude-pro-max-oauth"],
       "supports_parallel_runs": false,
       "supports_interrupt": true,
       "supports_structured_result": false,
@@ -10579,12 +10677,12 @@ agent-slots:
     }
 
     It 'documents provider-switch in usage and writes a provider registry entry' {
-        $script:winsmuxCoreRawContent | Should -Match 'provider-switch <slot> \[--agent <name>\] \[--model <name>\] \[--prompt-transport <argv\|file\|stdin>\] \[--reason <text>\] \[--restart\] \[--clear\] \[--json\]'
+        $script:winsmuxCoreRawContent | Should -Match 'provider-switch <slot> \[--agent <name>\] \[--model <name>\] \[--prompt-transport <argv\|file\|stdin>\] \[--auth-mode <mode>\] \[--reason <text>\] \[--restart\] \[--clear\] \[--json\]'
         $script:winsmuxCoreRawContent | Should -Match "'provider-switch'\s*\{"
 
         Push-Location $script:providerSwitchTempRoot
         try {
-            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --prompt-transport file --reason 'operator requested provider switch' --json
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --prompt-transport file --auth-mode claude-pro-max-oauth --reason 'operator requested provider switch' --json
         } finally {
             Pop-Location
         }
@@ -10594,6 +10692,8 @@ agent-slots:
         $result.agent | Should -Be 'claude'
         $result.model | Should -Be 'opus'
         $result.prompt_transport | Should -Be 'file'
+        $result.auth_mode | Should -Be 'claude-pro-max-oauth'
+        $result.auth_policy | Should -Be 'local_interactive_only'
         $result.source | Should -Be 'registry'
         $result.capability_adapter | Should -Be 'claude'
         $result.capability_command | Should -Be 'claude'
@@ -10610,6 +10710,19 @@ agent-slots:
         $registry.slots.'worker-1'.model | Should -Be 'opus'
         $registry.slots.'worker-1'.prompt_transport | Should -Be 'file'
         $registry.slots.'worker-1'.reason | Should -Be 'operator requested provider switch'
+    }
+
+    It 'rejects provider-switch blocked auth modes before writing the provider registry' {
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --prompt-transport file --auth-mode token-broker --json 2>&1
+        } finally {
+            Pop-Location
+        }
+
+        [string]::Join("`n", @($output)) | Should -Match 'must not broker OAuth'
+        $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
+        Test-Path $registryPath | Should -BeFalse
     }
 
     It 'clears provider-switch overrides and reports the configured slot provider' {

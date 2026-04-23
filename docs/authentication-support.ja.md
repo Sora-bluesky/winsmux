@@ -69,6 +69,8 @@ winsmux は次を行いません。
 ## 起動前の確認での扱い
 
 起動前の確認では、CLI 名だけでなく認証方式も見ます。
+起動処理は、プロバイダー対応表と設定された `auth_mode` を見ます。
+その確認を通ってから、ペインを起動します。
 
 例:
 
@@ -82,6 +84,15 @@ winsmux は次を行いません。
 他のペインで共有する資格情報ではありません。
 起動前の確認では、winsmux に認証完了 URL の受信、トークン抽出、
 ペイン間のトークン共有を求める設定を拒否します。
+
+次の `auth_mode` の値は明示的に拒否します。
+
+- `oauth-broker`
+- `token-broker`
+- `callback-url`
+- `callback-url-receiver`
+- `shared-token`
+- `provider-api-proxy`
 
 ## 用語統一
 

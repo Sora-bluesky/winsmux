@@ -162,8 +162,14 @@ Describe 'Public surface policy' {
 
         $authSupport | Should -Match 'claude-pro-max-oauth.*interactive use on that same PC'
         $authSupport | Should -Match 'gemini-google-oauth.*interactive use on that same PC'
+        $authSupport | Should -Match 'configured `auth_mode`'
+        $authSupport | Should -Match 'token-broker'
+        $authSupport | Should -Match 'provider-api-proxy'
         $authSupportJa | Should -Match 'claude-pro-max-oauth.*その PC 上での対話利用のみ'
         $authSupportJa | Should -Match 'gemini-google-oauth.*その PC 上での対話利用のみ'
+        $authSupportJa | Should -Match '設定された `auth_mode`'
+        $authSupportJa | Should -Match 'token-broker'
+        $authSupportJa | Should -Match 'provider-api-proxy'
     }
 
     It 'uses recorded-baseline gitleaks scans for routine push and CI checks' {
