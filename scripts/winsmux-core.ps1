@@ -6,7 +6,7 @@ param(
 )
 
 # --- Config ---
-$VERSION = "0.23.0"
+$VERSION = "0.23.1"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -1720,7 +1720,7 @@ function Resolve-Target {
 # --- Helper: Confirm-Target ---
 function Confirm-Target {
     param([string]$PaneId)
-    # display-message -t ignores the -t flag in winsmux v3.3.1, so validate via list-panes
+        # Older core builds ignored the display-message -t flag, so validate via list-panes.
     $allPanes = (Invoke-WinsmuxRaw -Arguments @('list-panes', '-a', '-F', '#{pane_id}') | Out-String).Trim() -split "`n" | ForEach-Object { $_.Trim() }
     if ($PaneId -notin $allPanes) {
         Stop-WithError "invalid target: $PaneId"

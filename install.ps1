@@ -12,7 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-$VERSION      = "0.23.0"
+$VERSION      = "0.23.1"
 $WINSMUX_DIR  = Join-Path $HOME ".winsmux"
 $BIN_DIR      = Join-Path $WINSMUX_DIR "bin"
 $BACKUP_DIR   = Join-Path $WINSMUX_DIR "backups"
@@ -249,13 +249,44 @@ function Get-PreferredReleaseAssetName {
     }
 }
 
-function Install-WinsmuxBinary {
-    if (Get-Command winsmux -ErrorAction SilentlyContinue) {
-        $ver = (winsmux -V 2>&1 | Out-String).Trim()
-        Write-Status "winsmux found: $ver"
-        return
+function Get-WinsmuxCommandVersion {
+    param([Parameter(Mandatory = $true)]$CommandInfo)
+
+    try {
+        $output = (& $CommandInfo.Source -V 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            return $null
+        }
+        if ($output -match 'winsmux(?:-[^\s]+)?\s+(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)') {
+            return [PSCustomObject]@{
+                Version = $Matches.version
+                Output  = $output
+            }
+        }
+    } catch {
+        return $null
     }
-    Write-Status "winsmux binary not found. Downloading winsmux-core..."
+
+    return $null
+}
+
+function Install-WinsmuxBinary {
+    $existing = Get-Command winsmux -ErrorAction SilentlyContinue
+    if ($existing) {
+        $detected = Get-WinsmuxCommandVersion -CommandInfo $existing
+        if ($detected -and $detected.Version -eq $VERSION) {
+            Write-Status "winsmux found: $($detected.Output)"
+            return
+        }
+
+        if ($detected) {
+            Write-Warning "[winsmux] Existing winsmux version '$($detected.Version)' does not match installer version '$VERSION'. Reinstalling release binary."
+        } else {
+            Write-Warning "[winsmux] Existing winsmux command did not return a compatible version. Reinstalling release binary."
+        }
+    } else {
+        Write-Status "winsmux binary not found. Downloading winsmux-core..."
+    }
 
     $localBin = Join-Path $HOME ".local/bin"
     $winsmuxExe = Join-Path $localBin "winsmux.exe"

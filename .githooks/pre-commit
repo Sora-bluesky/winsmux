@@ -69,9 +69,11 @@ if [[ -f "$VERSION_FILE" ]]; then
   }
 
   check_version "install.ps1"                              's/.*\$VERSION *= *"\([^"]*\)".*/\1/p' "install.ps1"
-  check_version "scripts/psmux-bridge.ps1"                 's/.*\$VERSION *= *"\([^"]*\)".*/\1/p' "psmux-bridge.ps1"
-  check_version "skills/winsmux/SKILL.md"                  's/.*version: *"\([^"]*\)".*/\1/p'     "SKILL.md"
-  check_version "skills/winsmux/references/psmux-bridge.md" 's/.*Version: *\([^ ]*\).*/\1/p'      "psmux-bridge.md"
+  check_version "scripts/winsmux-core.ps1"                 's/.*\$VERSION *= *"\([^"]*\)".*/\1/p' "winsmux-core.ps1"
+  check_version "core/Cargo.toml"                          's/^version *= *"\([^"]*\)".*/\1/p'    "core/Cargo.toml"
+  check_version "winsmux-app/package.json"                 's/.*"version": *"\([^"]*\)".*/\1/p'   "winsmux-app/package.json"
+  check_version "winsmux-app/src-tauri/Cargo.toml"         's/^version *= *"\([^"]*\)".*/\1/p'    "winsmux-app/src-tauri/Cargo.toml"
+  check_version "winsmux-app/src-tauri/tauri.conf.json"    's/.*"version": *"\([^"]*\)".*/\1/p'   "winsmux-app/src-tauri/tauri.conf.json"
 
   if (( fail )); then
     echo "" >&2
