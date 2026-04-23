@@ -588,20 +588,17 @@ fn run_main() -> io::Result<()> {
 
                 if !claimed_warm {
                 // Cold path: spawn a background server from scratch
-                let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("psmux"));
-                let server_args = terminal_engine::build_headless_server_args(
-                    &terminal_engine::HeadlessServerConfig {
-                        session_name: name.clone(),
-                        socket_name: l_socket_name.clone(),
-                        initial_command: initial_cmd.clone(),
-                        raw_command: raw_cmd_args.clone(),
-                        start_dir: start_dir.clone(),
-                        window_name: window_name.clone(),
-                        initial_width: init_width,
-                        initial_height: init_height,
-                        group_target: group_target.clone(),
-                    },
-                );
+                let server_config = terminal_engine::HeadlessServerConfig {
+                    session_name: name.clone(),
+                    socket_name: l_socket_name.clone(),
+                    initial_command: initial_cmd.clone(),
+                    raw_command: raw_cmd_args.clone(),
+                    start_dir: start_dir.clone(),
+                    window_name: window_name.clone(),
+                    initial_width: init_width,
+                    initial_height: init_height,
+                    group_target: group_target.clone(),
+                };
                 // On Windows, mark parent's stdout/stderr as non-inheritable before
                 // spawning the server. This prevents the server from inheriting
                 // PowerShell's redirect pipes (which would cause the parent to hang
@@ -624,19 +621,7 @@ fn run_main() -> io::Result<()> {
                         SetHandleInformation(stderr, HANDLE_FLAG_INHERIT, 0);
                     }
                 }
-                // Spawn server with a hidden console window via CreateProcessW.
-                // This gives ConPTY a real console while keeping the window invisible.
-                #[cfg(windows)]
-                crate::platform::spawn_server_hidden(&exe, &server_args)?;
-                #[cfg(not(windows))]
-                {
-                    let mut cmd = std::process::Command::new(&exe);
-                    for a in &server_args { cmd.arg(a); }
-                    cmd.stdin(std::process::Stdio::null());
-                    cmd.stdout(std::process::Stdio::null());
-                    cmd.stderr(std::process::Stdio::null());
-                    let _child = cmd.spawn().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to spawn server: {e}")))?;
-                }
+                terminal_engine::spawn_headless_server(&server_config)?;
                 } // end if !claimed_warm (cold path)
                 } // end else (not PSMUX_REMOTE_ATTACH)
                 
@@ -2301,7 +2286,6 @@ fn run_main() -> io::Result<()> {
                 // Clean up stale port file if any
                 let _ = std::fs::remove_file(&warm_port_path);
                 // Spawn the warm server
-                let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("psmux"));
                 let mut config = terminal_engine::HeadlessServerConfig {
                     session_name: "__warm__".to_string(),
                     socket_name: l_socket_name.clone(),
@@ -2315,18 +2299,7 @@ fn run_main() -> io::Result<()> {
                         config.initial_height = Some(h);
                     }
                 }
-                let server_args = terminal_engine::build_headless_server_args(&config);
-                #[cfg(windows)]
-                crate::platform::spawn_server_hidden(&exe, &server_args)?;
-                #[cfg(not(windows))]
-                {
-                    let mut cmd = std::process::Command::new(&exe);
-                    for a in &server_args { cmd.arg(a); }
-                    cmd.stdin(std::process::Stdio::null());
-                    cmd.stdout(std::process::Stdio::null());
-                    cmd.stderr(std::process::Stdio::null());
-                    let _child = cmd.spawn().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to spawn warm server: {e}")))?;
-                }
+                terminal_engine::spawn_headless_server(&config)?;
                 return Ok(());
             }
             // confirm-before - Ask for confirmation before running a command
@@ -2525,24 +2498,12 @@ fn run_main() -> io::Result<()> {
 
         if !warm_claimed {
             // Cold path: spawn a new background server
-            let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("psmux"));
-            let server_args = terminal_engine::build_headless_server_args(
+            terminal_engine::spawn_headless_server(
                 &terminal_engine::HeadlessServerConfig {
                     session_name: session_name.clone(),
                     ..terminal_engine::HeadlessServerConfig::default()
                 },
-            );
-            #[cfg(windows)]
-            crate::platform::spawn_server_hidden(&exe, &server_args)?;
-            #[cfg(not(windows))]
-            {
-                let mut cmd = std::process::Command::new(&exe);
-                for a in &server_args { cmd.arg(a); }
-                cmd.stdin(std::process::Stdio::null());
-                cmd.stdout(std::process::Stdio::null());
-                cmd.stderr(std::process::Stdio::null());
-                let _child = cmd.spawn().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("failed to spawn server: {e}")))?;
-            }
+            )?;
 
             // Wait for server to start (fast polling — port file is written early)
             for _ in 0..500 {

@@ -102,6 +102,12 @@ pub(crate) fn run_headless_server(config: HeadlessServerConfig) -> io::Result<()
     )
 }
 
+pub(crate) fn spawn_headless_server(config: &HeadlessServerConfig) -> io::Result<()> {
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("psmux"));
+    let args = build_headless_server_args(config);
+    spawn_headless_server_process(&exe, &args)
+}
+
 fn flag_value(args: &[String], flag: &str) -> Option<String> {
     args.iter()
         .take_while(|arg| arg.as_str() != "--")
@@ -131,6 +137,29 @@ fn initial_size_from_parts(width: Option<u16>, height: Option<u16>) -> Option<(u
         (None, Some(height)) => Some((80, height)),
         _ => None,
     }
+}
+
+#[cfg(windows)]
+fn spawn_headless_server_process(exe: &std::path::Path, args: &[String]) -> io::Result<()> {
+    crate::platform::spawn_server_hidden(exe, args)
+}
+
+#[cfg(not(windows))]
+fn spawn_headless_server_process(exe: &std::path::Path, args: &[String]) -> io::Result<()> {
+    let mut cmd = std::process::Command::new(exe);
+    for arg in args {
+        cmd.arg(arg);
+    }
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    let _child = cmd.spawn().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("failed to spawn server: {err}"),
+        )
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
