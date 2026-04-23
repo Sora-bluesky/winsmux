@@ -43,8 +43,8 @@ Describe 'Public surface policy' {
         $readme | Should -Match '/winsmux-start'
         $readmeJa | Should -Match '/winsmux-start'
         $operatorModel | Should -Match '/winsmux-start'
-        $readme | Should -Match 'dogfooding-only flow'
-        $readmeJa | Should -Match 'dogfooding 専用フロー'
+        $readme | Should -Match 'test this repository itself'
+        $readmeJa | Should -Match '動作確認専用'
         $operatorModel | Should -Match 'dogfooding flow'
 
         foreach ($entrypoint in @('winsmux init', 'winsmux launch', 'winsmux launcher presets', 'winsmux compare')) {
