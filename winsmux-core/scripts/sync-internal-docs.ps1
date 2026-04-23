@@ -182,7 +182,7 @@ function Get-VersionSortTuple {
 
 function Get-PlanningState {
     param(
-        [Parameter(Mandatory = $true)][string[]]$TaskIds,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$TaskIds,
         [Parameter(Mandatory = $true)][hashtable]$TasksById
     )
 

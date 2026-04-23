@@ -222,6 +222,14 @@
         }
         @{
             Order = 90
+            Version = 'v0.24.6'
+            TaskIds = @()
+            Focus = 'ultrareview 指摘の吸収'
+            Example = 'v1.0.0 前にバグや再発を独立枠で確認'
+            Memo = '指摘が出た時点で TASK を追加'
+        }
+        @{
+            Order = 100
             Version = 'v1.0.0'
             TaskIds = @('TASK-220')
             Focus = '公開ゲート'
@@ -229,7 +237,7 @@
             Memo = ''
         }
         @{
-            Order = 100
+            Order = 110
             Version = 'v1.1.0'
             TaskIds = @('TASK-311', 'TASK-317', 'TASK-318', 'TASK-319')
             Focus = '管理された自律 run の基盤'
@@ -237,7 +245,7 @@
             Memo = ''
         }
         @{
-            Order = 110
+            Order = 120
             Version = 'v1.2.0'
             TaskIds = @('TASK-320', 'TASK-321', 'TASK-322')
             Focus = '自律 run の TDD と自己確認'
@@ -245,7 +253,7 @@
             Memo = ''
         }
         @{
-            Order = 120
+            Order = 130
             Version = 'v1.3.0'
             TaskIds = @('TASK-312', 'TASK-323', 'TASK-324', 'TASK-325', 'TASK-326')
             Focus = '知識、手順書、並列子 run、handoff 画面'
@@ -253,7 +261,7 @@
             Memo = ''
         }
         @{
-            Order = 130
+            Order = 140
             Version = 'pending'
             TaskIds = @('TASK-249', 'TASK-250', 'TASK-251', 'TASK-252', 'TASK-267', 'TASK-268', 'TASK-271')
             Focus = 'Windows 以外への展開'
@@ -261,7 +269,7 @@
             Memo = ''
         }
         @{
-            Order = 140
+            Order = 150
             Version = 'v1.6.0'
             TaskIds = @('TASK-045', 'TASK-046', 'TASK-047', 'TASK-048', 'TASK-050', 'TASK-073', 'TASK-076')
             Focus = '公開後の設計書と細かな承認制御'
