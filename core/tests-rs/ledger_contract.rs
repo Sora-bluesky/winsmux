@@ -46,6 +46,7 @@ fn ledger_contract_exposes_ordered_pane_read_models() {
     assert_eq!(panes[0].label, "builder-1");
     assert_eq!(panes[0].pane_id, "%2");
     assert_eq!(panes[0].role, "Builder");
+    assert_eq!(panes[0].state, "idle");
     assert_eq!(panes[0].task_id, "task-256");
     assert_eq!(panes[0].task_state, "in_progress");
     assert_eq!(panes[0].review_state, "PENDING");
@@ -57,6 +58,313 @@ fn ledger_contract_exposes_ordered_pane_read_models() {
     assert_eq!(panes[0].event_count, 2);
     assert_eq!(panes[1].label, "reviewer-1");
     assert_eq!(panes[1].event_count, 0);
+}
+
+#[test]
+fn ledger_contract_derives_board_summary_from_manifest_panes() {
+    let snapshot =
+        ledger::LedgerSnapshot::from_manifest_and_events(MANIFEST_FIXTURE, EVENTS_FIXTURE)
+            .expect("ledger snapshot should load frozen fixtures");
+
+    let summary = snapshot.board_summary();
+
+    assert_eq!(summary.pane_count, 2);
+    assert_eq!(summary.dirty_panes, 1);
+    assert_eq!(summary.review_pending, 1);
+    assert_eq!(summary.review_failed, 0);
+    assert_eq!(summary.review_passed, 0);
+    assert_eq!(summary.tasks_in_progress, 1);
+    assert_eq!(summary.tasks_blocked, 0);
+    assert_eq!(summary.by_state["idle"], 2);
+    assert_eq!(summary.by_review["PENDING"], 1);
+    assert_eq!(summary.by_review["unknown"], 1);
+    assert_eq!(summary.by_task_state["in_progress"], 1);
+    assert_eq!(summary.by_task_state["backlog"], 1);
+}
+
+#[test]
+fn ledger_contract_exposes_board_projection_in_manifest_order() {
+    let snapshot =
+        ledger::LedgerSnapshot::from_manifest_and_events(MANIFEST_FIXTURE, EVENTS_FIXTURE)
+            .expect("ledger snapshot should load frozen fixtures");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.summary.pane_count, 2);
+    assert_eq!(board.summary.review_pending, 1);
+    assert_eq!(board.summary.tasks_in_progress, 1);
+    assert_eq!(board.panes.len(), 2);
+    assert_eq!(board.panes[0].label, "builder-1");
+    assert_eq!(board.panes[0].pane_id, "%2");
+    assert_eq!(board.panes[0].role, "Builder");
+    assert_eq!(board.panes[0].state, "idle");
+    assert_eq!(board.panes[0].task_id, "task-256");
+    assert_eq!(board.panes[0].task, "Implement run ledger");
+    assert_eq!(board.panes[0].task_state, "in_progress");
+    assert_eq!(board.panes[0].review_state, "PENDING");
+    assert_eq!(board.panes[0].branch, "worktree-builder-1");
+    assert_eq!(board.panes[0].worktree, ".worktrees/builder-1");
+    assert_eq!(board.panes[0].head_sha, "abc1234def5678");
+    assert_eq!(board.panes[0].changed_file_count, 1);
+    assert_eq!(board.panes[0].last_event_at, "__LAST_EVENT_AT__");
+    assert_eq!(board.panes[1].label, "reviewer-1");
+}
+
+#[test]
+fn ledger_contract_derives_board_worktree_from_legacy_path_fields() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+    builder_worktree_path: C:\repo\.worktrees\builder-1
+    launch_dir: C:\repo
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should load legacy path fields");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].worktree, ".worktrees/builder-1");
+}
+
+#[test]
+fn ledger_contract_prefers_rebound_launch_dir_for_board_worktree() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+    builder_worktree_path: C:\repo\.worktrees\builder-1
+    launch_dir: C:\repo\.worktrees\builder-2
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should load rebound launch_dir");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].worktree, ".worktrees/builder-2");
+}
+
+#[test]
+fn ledger_contract_derives_board_worktree_from_branch_label_fallback() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+    branch: worktree-builder-1
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should load branch label fallback");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].worktree, ".worktrees/builder-1");
+}
+
+#[test]
+fn ledger_contract_uses_live_project_dir_when_manifest_omits_project_dir() {
+    let fixture = TempProject::new("project-dir-fallback");
+    let root = fixture.path_string();
+    let manifest = format!(
+        r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+    launch_dir: {root}
+    builder_worktree_path: {root}/.worktrees/builder-1
+"#
+    );
+    fixture.write_winsmux_file("manifest.yaml", &manifest);
+    fs::create_dir_all(fixture.path().join(".worktrees").join("builder-1"))
+        .expect("temp builder worktree dir should be created");
+
+    let snapshot = ledger::LedgerSnapshot::from_project_dir(fixture.path())
+        .expect("ledger snapshot should use live project dir fallback");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].worktree, ".worktrees/builder-1");
+}
+
+#[test]
+fn ledger_contract_does_not_assign_branch_label_worktree_to_reviewer() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  reviewer-1:
+    pane_id: "%2"
+    role: Reviewer
+    state: idle
+    branch: worktree-reviewer-1
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should load reviewer branch");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].worktree, "");
+}
+
+#[test]
+fn ledger_contract_ignores_stale_worker_paths_on_reviewer() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  reviewer-1:
+    pane_id: "%2"
+    role: Reviewer
+    state: idle
+    launch_dir: C:\repo\.worktrees\worker-1
+    builder_worktree_path: C:\repo\.worktrees\worker-1
+    branch: worktree-worker-1
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should ignore stale reviewer paths");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].worktree, "");
+}
+
+#[test]
+fn ledger_contract_ignores_stale_explicit_worktree_on_reviewer() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  reviewer-1:
+    pane_id: "%2"
+    role: Reviewer
+    state: idle
+    worktree: .worktrees\worker-1
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should ignore stale explicit reviewer worktree");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].worktree, "");
+}
+
+#[test]
+fn ledger_contract_uses_status_as_state_fallback() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    status: ready
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should use status as state fallback");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].state, "ready");
+    assert_eq!(board.summary.by_state["ready"], 1);
+}
+
+#[test]
+fn ledger_contract_prefers_current_paths_over_stale_explicit_worktree() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+    worktree: .worktrees\builder-1
+    launch_dir: C:\repo\.worktrees\builder-9
+    builder_worktree_path: C:\repo\.worktrees\builder-9
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should prefer current path fields");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].worktree, ".worktrees/builder-9");
+}
+
+#[test]
+fn ledger_contract_counts_lowercase_review_states() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  pending:
+    pane_id: "%2"
+    role: Builder
+    review_state: pending
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+  pass:
+    pane_id: "%3"
+    role: Reviewer
+    review_state: pass
+    branch: worktree-reviewer-1
+    head_sha: def5678abc1234
+  fail:
+    pane_id: "%4"
+    role: Reviewer
+    review_state: fail
+    branch: worktree-reviewer-2
+    head_sha: 1234def5678abc
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should load lowercase review states");
+
+    let summary = snapshot.board_summary();
+
+    assert_eq!(summary.review_pending, 1);
+    assert_eq!(summary.review_passed, 1);
+    assert_eq!(summary.review_failed, 1);
 }
 
 #[test]
@@ -106,6 +414,97 @@ fn ledger_contract_allows_missing_live_events_file() {
     assert_eq!(snapshot.event_count(), 0);
 }
 
+#[test]
+fn ledger_contract_relativizes_live_paths_loaded_from_relative_manifest_path() {
+    let fixture = TempProject::new_under_current("relative-manifest");
+    let root = fixture.path_string();
+    let manifest = format!(
+        r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+    launch_dir: {root}
+    builder_worktree_path: {root}/.worktrees/builder-1
+"#
+    );
+    fixture.write_winsmux_file("manifest.yaml", &manifest);
+    fixture.write_winsmux_file("events.jsonl", "");
+
+    let current_dir = std::env::current_dir().expect("current dir should be available");
+    let manifest_path = fixture
+        .root
+        .join(".winsmux")
+        .join("manifest.yaml")
+        .strip_prefix(&current_dir)
+        .expect("fixture should be under current dir")
+        .to_path_buf();
+    let events_path = fixture
+        .root
+        .join(".winsmux")
+        .join("events.jsonl")
+        .strip_prefix(&current_dir)
+        .expect("fixture should be under current dir")
+        .to_path_buf();
+
+    let snapshot = ledger::LedgerSnapshot::from_paths(manifest_path, events_path)
+        .expect("ledger snapshot should load relative manifest path");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].worktree, ".worktrees/builder-1");
+}
+
+#[test]
+fn ledger_contract_relativizes_extended_windows_paths() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: \\?\C:\repo
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+    launch_dir: \\?\C:\repo\.worktrees\builder-1
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should relativize extended paths");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].worktree, ".worktrees/builder-1");
+}
+
+#[test]
+fn ledger_contract_relativizes_drive_root_project_paths() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+    launch_dir: C:\.worktrees\builder-1
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should relativize drive root paths");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].worktree, ".worktrees/builder-1");
+}
+
 struct TempProject {
     root: PathBuf,
 }
@@ -124,8 +523,26 @@ impl TempProject {
         Self { root }
     }
 
+    fn new_under_current(label: &str) -> Self {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let root = std::env::current_dir()
+            .expect("current dir should be available")
+            .join("target")
+            .join("ledger-contract")
+            .join(format!("{label}-{}-{unique}", std::process::id()));
+        fs::create_dir_all(root.join(".winsmux")).expect("temp .winsmux dir should be created");
+        Self { root }
+    }
+
     fn path(&self) -> &std::path::Path {
         &self.root
+    }
+
+    fn path_string(&self) -> String {
+        self.root.to_string_lossy().replace('\\', "/")
     }
 
     fn write_winsmux_file(&self, name: &str, content: &str) {
