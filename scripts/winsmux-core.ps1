@@ -3652,6 +3652,361 @@ function Invoke-Launch {
     Write-Output "next: $($result.next_action)"
 }
 
+function Get-LauncherSlotProperty {
+    param(
+        [AllowNull()]$Slot,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $Slot) {
+        return ''
+    }
+
+    if ($Slot -is [System.Collections.IDictionary]) {
+        if ($Slot.Contains($Name)) {
+            return [string]$Slot[$Name]
+        }
+        return ''
+    }
+
+    if ($null -ne $Slot.PSObject -and ($Slot.PSObject.Properties.Name -contains $Name)) {
+        return [string]$Slot.$Name
+    }
+
+    return ''
+}
+
+function New-LauncherSlotSummary {
+    param(
+        [Parameter(Mandatory = $true)]$Slot,
+        [Parameter(Mandatory = $true)]$Settings,
+        [Parameter(Mandatory = $true)][string]$ProjectDir
+    )
+
+    $slotId = Get-LauncherSlotProperty -Slot $Slot -Name 'slot_id'
+    if ([string]::IsNullOrWhiteSpace($slotId)) {
+        return $null
+    }
+
+    $runtimeRole = Get-LauncherSlotProperty -Slot $Slot -Name 'runtime_role'
+    if ([string]::IsNullOrWhiteSpace($runtimeRole)) {
+        $runtimeRole = 'worker'
+    }
+
+    $roleForConfig = $runtimeRole
+    if ([string]::Equals($roleForConfig, 'worker', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $roleForConfig = 'Worker'
+    }
+
+    $effective = Get-SlotAgentConfig -Role $roleForConfig -SlotId $slotId -Settings $Settings -RootPath $ProjectDir
+    return [ordered]@{
+        slot_id                    = $slotId
+        runtime_role               = $runtimeRole
+        agent                      = [string]$effective.Agent
+        model                      = [string]$effective.Model
+        prompt_transport           = [string]$effective.PromptTransport
+        source                     = [string]$effective.Source
+        capability_adapter         = [string]$effective.CapabilityAdapter
+        capability_command         = [string]$effective.CapabilityCommand
+        supports_parallel_runs     = [bool]$effective.SupportsParallelRuns
+        supports_interrupt         = [bool]$effective.SupportsInterrupt
+        supports_structured_result = [bool]$effective.SupportsStructuredResult
+        supports_file_edit         = [bool]$effective.SupportsFileEdit
+        supports_subagents         = [bool]$effective.SupportsSubagents
+        supports_verification      = [bool]$effective.SupportsVerification
+        supports_consultation      = [bool]$effective.SupportsConsultation
+    }
+}
+
+function New-LauncherPreset {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [Parameter(Mandatory = $true)][string[]]$SlotIds,
+        [string]$SelectionMode = 'multi',
+        [string]$CapabilityFocus = ''
+    )
+
+    return [ordered]@{
+        name             = $Name
+        description      = $Description
+        selection_mode   = $SelectionMode
+        capability_focus = $CapabilityFocus
+        slot_ids         = @($SlotIds)
+    }
+}
+
+function Get-LauncherTemplatesPath {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    return [System.IO.Path]::GetFullPath((Join-Path $ProjectDir '.winsmux\launcher-templates.json'))
+}
+
+function Read-LauncherTemplateStore {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $path = Get-LauncherTemplatesPath -ProjectDir $ProjectDir
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        return [ordered]@{
+            version   = 1
+            templates = @()
+        }
+    }
+
+    try {
+        $parsed = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable -Depth 32
+    } catch {
+        Stop-WithError "launcher template store is not valid JSON: $path"
+    }
+
+    $templates = @()
+    if ($parsed.Contains('templates')) {
+        $templates = @($parsed['templates'])
+    }
+
+    return [ordered]@{
+        version   = if ($parsed.Contains('version')) { [int]$parsed['version'] } else { 1 }
+        templates = @($templates)
+    }
+}
+
+function Write-LauncherTemplateStore {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)]$Store
+    )
+
+    $path = Get-LauncherTemplatesPath -ProjectDir $ProjectDir
+    $json = $Store | ConvertTo-Json -Depth 32
+    Write-ClmSafeTextFile -Path $path -Content $json
+    return $path
+}
+
+function Assert-LauncherTemplateName {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    if ([string]::IsNullOrWhiteSpace($Name) -or $Name -notmatch '^[A-Za-z0-9._-]+$') {
+        Stop-WithError 'launcher template name must use only letters, numbers, dot, underscore, or hyphen.'
+    }
+}
+
+function Get-LauncherPresetPayload {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $settings = Get-BridgeSettings -RootPath $ProjectDir
+    $slots = @()
+    foreach ($slot in @($settings.agent_slots)) {
+        $summary = New-LauncherSlotSummary -Slot $slot -Settings $settings -ProjectDir $ProjectDir
+        if ($null -ne $summary) {
+            $slots += [PSCustomObject]$summary
+        }
+    }
+
+    $editSlots = @($slots | Where-Object { $_.supports_file_edit })
+    $reviewSlots = @($slots | Where-Object {
+        $_.supports_verification -or $_.supports_structured_result -or $_.supports_consultation
+    })
+    $verificationSlots = @($slots | Where-Object { $_.supports_verification })
+    $workerSlots = @($slots | Where-Object {
+        [string]::Equals([string]$_.runtime_role, 'worker', [System.StringComparison]::OrdinalIgnoreCase)
+    })
+
+    $presets = @()
+    if ($workerSlots.Count -gt 0) {
+        $presets += [PSCustomObject](New-LauncherPreset `
+            -Name 'all-workers' `
+            -Description 'Select every managed worker slot.' `
+            -SlotIds @($workerSlots | ForEach-Object { [string]$_.slot_id }) `
+            -CapabilityFocus 'parallel_start')
+    }
+
+    if ($editSlots.Count -gt 0 -and $reviewSlots.Count -gt 0) {
+        $selected = @([string]$editSlots[0].slot_id)
+        $reviewSlot = @($reviewSlots | Where-Object {
+            -not [string]::Equals([string]$_.slot_id, [string]$editSlots[0].slot_id, [System.StringComparison]::OrdinalIgnoreCase)
+        } | Select-Object -First 1)
+        if ($reviewSlot.Count -gt 0) {
+            $selected += [string]$reviewSlot[0].slot_id
+        }
+        $presets += [PSCustomObject](New-LauncherPreset `
+            -Name 'balanced-build-review' `
+            -Description 'Select one edit-capable slot and one review-capable slot.' `
+            -SlotIds $selected `
+            -CapabilityFocus 'build_review')
+    }
+
+    if ($verificationSlots.Count -gt 0) {
+        $presets += [PSCustomObject](New-LauncherPreset `
+            -Name 'verification' `
+            -Description 'Select slots that declare verification support.' `
+            -SlotIds @($verificationSlots | ForEach-Object { [string]$_.slot_id }) `
+            -CapabilityFocus 'verification')
+    }
+
+    $pairTemplates = @()
+    $pairSource = @($editSlots)
+    if ($pairSource.Count -lt 2) {
+        $pairSource = @($workerSlots)
+    }
+    if ($pairSource.Count -ge 2) {
+        $left = $pairSource[0]
+        $right = $pairSource[1]
+        $pairTemplates += [PSCustomObject]([ordered]@{
+            name          = 'ab-pair'
+            description   = 'Compare two worker slots with the same task prompt.'
+            left_slot_id  = [string]$left.slot_id
+            right_slot_id = [string]$right.slot_id
+            slot_ids      = @([string]$left.slot_id, [string]$right.slot_id)
+            left_agent    = [string]$left.agent
+            right_agent   = [string]$right.agent
+        })
+    }
+
+    return [ordered]@{
+        version        = 1
+        project_dir    = $ProjectDir
+        slot_count     = $slots.Count
+        templates_path = Get-LauncherTemplatesPath -ProjectDir $ProjectDir
+        slots          = @($slots)
+        presets        = @($presets)
+        pair_templates = @($pairTemplates)
+    }
+}
+
+function Save-LauncherTemplate {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    Assert-LauncherTemplateName -Name $Name
+    $payload = Get-LauncherPresetPayload -ProjectDir $ProjectDir
+    $store = Read-LauncherTemplateStore -ProjectDir $ProjectDir
+    $record = [ordered]@{
+        name           = $Name
+        saved_at_utc   = (Get-Date).ToUniversalTime().ToString('o')
+        slot_count     = [int]$payload.slot_count
+        slots          = @($payload.slots)
+        presets        = @($payload.presets)
+        pair_templates = @($payload.pair_templates)
+    }
+
+    $templates = @($store.templates | Where-Object {
+        $recordName = ''
+        if ($_ -is [System.Collections.IDictionary] -and $_.Contains('name')) {
+            $recordName = [string]($_['name'])
+        } elseif ($null -ne $_.PSObject -and ($_.PSObject.Properties.Name -contains 'name')) {
+            $recordName = [string]$_.name
+        }
+
+        -not [string]::Equals($recordName, $Name, [System.StringComparison]::OrdinalIgnoreCase)
+    })
+    $templates += $record
+    $nextStore = [ordered]@{
+        version   = 1
+        templates = @($templates)
+    }
+    $path = Write-LauncherTemplateStore -ProjectDir $ProjectDir -Store $nextStore
+
+    return [ordered]@{
+        name           = $Name
+        templates_path = $path
+        saved          = $true
+        template       = $record
+    }
+}
+
+function Get-LauncherTemplateListPayload {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $store = Read-LauncherTemplateStore -ProjectDir $ProjectDir
+    return [ordered]@{
+        version        = [int]$store.version
+        templates_path = Get-LauncherTemplatesPath -ProjectDir $ProjectDir
+        template_count = @($store.templates).Count
+        templates      = @($store.templates)
+    }
+}
+
+function Invoke-Launcher {
+    $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
+    $mode = 'presets'
+    $templateName = ''
+    $jsonOutput = $false
+
+    for ($index = 0; $index -lt $tokens.Count; $index++) {
+        switch ($tokens[$index]) {
+            '--json' {
+                $jsonOutput = $true
+            }
+            'presets' {
+                $mode = 'presets'
+            }
+            'list' {
+                $mode = 'list'
+            }
+            'save' {
+                $mode = 'save'
+            }
+            default {
+                if ([string]::Equals($mode, 'save', [System.StringComparison]::OrdinalIgnoreCase) -and [string]::IsNullOrWhiteSpace($templateName)) {
+                    $templateName = [string]$tokens[$index]
+                } else {
+                    Stop-WithError "usage: winsmux launcher <presets|list|save> [name] [--json]"
+                }
+            }
+        }
+    }
+
+    $projectDir = (Get-Location).Path
+    if ([string]::Equals($mode, 'save', [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ([string]::IsNullOrWhiteSpace($templateName)) {
+            Stop-WithError "usage: winsmux launcher save <name> [--json]"
+        }
+
+        $saveResult = Save-LauncherTemplate -ProjectDir $projectDir -Name $templateName
+        if ($jsonOutput) {
+            $saveResult | ConvertTo-Json -Depth 32 -Compress | Write-Output
+            return
+        }
+
+        Write-Output "launcher template saved: $($saveResult.name)"
+        Write-Output "templates: $($saveResult.templates_path)"
+        return
+    }
+
+    if ([string]::Equals($mode, 'list', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $listResult = Get-LauncherTemplateListPayload -ProjectDir $projectDir
+        if ($jsonOutput) {
+            $listResult | ConvertTo-Json -Depth 32 -Compress | Write-Output
+            return
+        }
+
+        Write-Output "launcher templates: $($listResult.template_count)"
+        foreach ($template in @($listResult.templates)) {
+            Write-Output "  $($template.name)"
+        }
+        Write-Output "templates: $($listResult.templates_path)"
+        return
+    }
+
+    $result = Get-LauncherPresetPayload -ProjectDir $projectDir
+    if ($jsonOutput) {
+        $result | ConvertTo-Json -Depth 16 -Compress | Write-Output
+        return
+    }
+
+    Write-Output "launcher presets: $(@($result.presets).Count)"
+    foreach ($preset in @($result.presets)) {
+        Write-Output "  $($preset.name): $($preset.slot_ids -join ',')"
+    }
+    Write-Output "pair templates: $(@($result.pair_templates).Count)"
+    foreach ($pair in @($result.pair_templates)) {
+        Write-Output "  $($pair.name): $($pair.left_slot_id),$($pair.right_slot_id)"
+    }
+    Write-Output "templates: $($result.templates_path)"
+}
+
 function Invoke-ImeInput {
     if (-not $Target) { Stop-WithError "usage: winsmux ime-input <target>" }
 
@@ -7662,6 +8017,7 @@ winsmux $VERSION - winsmux bridge for winsmux
 Commands:
   init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>]  Create or refresh public first-run config
   launch [--json] [--project-dir <path>] [--skip-doctor]  Run public first-run checks and startup
+  launcher <presets|list|save> [name] [--json]  Inspect or save capability-aware launcher templates
   id                        Show current pane ID
   list                      List all panes
   read <target> [lines]     Capture pane output (default 50 lines)
@@ -8219,6 +8575,7 @@ switch ($Command) {
     'consult-request' { Invoke-ConsultRequest }
     'consult-result'  { Invoke-ConsultResult }
     'consult-error'   { Invoke-ConsultError }
+    'launcher'        { Invoke-Launcher }
     'provider-capabilities' { Invoke-ProviderCapabilities }
     'provider-switch' { Invoke-ProviderSwitch }
     'rebind-worktree' { Invoke-RebindWorktree }

@@ -131,6 +131,8 @@ You can also download a release `.zip` from GitHub Releases or build from source
 ### Planned installation paths
 
 - `winsmux init` and `winsmux launch` are now the public first-run entrypoints
+- `winsmux launcher presets [--json]` inspects capability-aware launcher presets and pair templates
+- `winsmux launcher save <name>` stores the current launcher template for later reuse
 - `winsmux conflict-preflight` is now the public coordination guard before compare UI lands
 - `winsmux compare` remains a planned public-first entrypoint
 - npm-based installation is planned
@@ -180,6 +182,8 @@ winsmux launch
 
 `winsmux init` writes the default `.winsmux.yaml` for the current project.
 `winsmux launch` then folds the old `doctor -> orchestra-start` flow into one public entrypoint.
+Use `winsmux launcher presets [--json]` to inspect the launcher presets that match available slot capabilities, including pair templates for compare-oriented runs.
+Use `winsmux launcher save <name>` and `winsmux launcher list` to keep reusable launcher templates in the project `.winsmux` directory.
 Before the compare surface lands, `winsmux conflict-preflight <left_ref> <right_ref>` is the public CLI guard for merge-risk checks.
 
 If `winsmux doctor` reports the Windows worktree git sandbox limitation, keep using the managed pane for edits and tests, but run `git add`, `git commit`, and `git push` from a regular shell outside the sandboxed pane when `.git/worktrees/*/index.lock` cannot be created.
@@ -226,6 +230,7 @@ winsmux send worker-3 "Summarize the upstream issue."
 | `winsmux read <target> [lines]` | Read pane output before acting |
 | `winsmux send <target> <text>` | Send text and press Enter |
 | `winsmux health-check` | Report READY/BUSY/HUNG/DEAD for labeled panes |
+| `winsmux launcher <presets|list|save>` | Inspect or store launcher presets and pair templates |
 | `winsmux vault set <key> [value]` | Store a credential in DPAPI-backed vault |
 | `winsmux vault inject <pane>` | Inject stored credentials into a target pane |
 | `winsmux update` | Update winsmux to the latest version |

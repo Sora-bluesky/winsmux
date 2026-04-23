@@ -110,17 +110,20 @@ The public first-run entrypoints now converge on:
 
 - `winsmux init`
 - `winsmux launch`
+- `winsmux launcher presets [--json]`
 - `winsmux conflict-preflight`
 - `winsmux compare` remains the next planned public review entrypoint
 
 That direction is public product behavior. `/winsmux-start` remains a repository-operated Claude Code dogfooding flow and is not part of the primary public UX.
+`winsmux launcher presets [--json]` reports the launcher presets, pair templates, and slot capabilities that should exist before a launch or compare-oriented run.
+`winsmux launcher save <name>` stores that launcher template in the project `.winsmux` directory for later reuse.
 
-Repository-operated runtime contracts also exist for dogfooding and contributor flows, but they are maintained as contributor/runtime documents rather than primary public product docs.
+Repository-operated runtime contracts also exist for contributor flows, but they are maintained as contributor/runtime documents rather than primary public product docs.
 
 ## 5. Public docs vs contributor docs
 
 The public-facing docs describe the operator model and product shape.
-Contributor workflows, release operations, repository-specific runtime contracts, and dogfooding procedures are documented separately and do not define the public operator or pane contract.
+Contributor workflows, release operations, and repository-specific runtime contracts are documented separately and do not define the public operator or pane contract.
 
 ## 6. Legacy layouts vs current model
 

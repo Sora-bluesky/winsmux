@@ -10245,6 +10245,136 @@ Describe 'winsmux provider-capabilities command' {
     }
 }
 
+Describe 'winsmux launcher command' {
+    BeforeAll {
+        $script:winsmuxLauncherRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxLauncherRawContent = Get-Content -Raw -Path $script:winsmuxLauncherRawPath -Encoding UTF8
+    }
+
+    BeforeEach {
+        $script:winsmuxLauncherTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-launcher-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:winsmuxLauncherTempRoot '.winsmux') -Force | Out-Null
+
+@'
+version: 1
+agent: codex
+model: gpt-5.4
+external_operator: true
+worker_count: 3
+agent_slots:
+  - slot_id: worker-1
+    runtime_role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt_transport: argv
+  - slot_id: worker-2
+    runtime_role: worker
+    agent: claude
+    model: opus
+    prompt_transport: file
+  - slot_id: reviewer-1
+    runtime_role: reviewer
+    agent: claude
+    model: opus
+    prompt_transport: file
+'@ | Set-Content -Path (Join-Path $script:winsmuxLauncherTempRoot '.winsmux.yaml') -Encoding UTF8
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "display_name": "Codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "supports_file_edit": true,
+      "supports_verification": true,
+      "supports_structured_result": true,
+      "supports_subagents": true
+    },
+    "claude": {
+      "adapter": "claude",
+      "display_name": "Claude",
+      "command": "claude",
+      "prompt_transports": ["file"],
+      "supports_file_edit": true,
+      "supports_verification": true,
+      "supports_structured_result": false,
+      "supports_consultation": true
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:winsmuxLauncherTempRoot '.winsmux\provider-capabilities.json') -Encoding UTF8
+    }
+
+    AfterEach {
+        if ($script:winsmuxLauncherTempRoot -and (Test-Path $script:winsmuxLauncherTempRoot)) {
+            Remove-Item -Path $script:winsmuxLauncherTempRoot -Recurse -Force
+        }
+    }
+
+    It 'documents launcher in usage and returns capability-aware presets' {
+        $script:winsmuxLauncherRawContent | Should -Match 'launcher <presets\|list\|save> \[name\] \[--json\]'
+        $script:winsmuxLauncherRawContent | Should -Match "'launcher'\s*\{"
+
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher presets --json
+        } finally {
+            Pop-Location
+        }
+
+        $payload = $output | ConvertFrom-Json
+        $payload.version | Should -Be 1
+        $payload.slot_count | Should -Be 3
+        $payload.slots[0].slot_id | Should -Be 'worker-1'
+        $payload.slots[0].capability_adapter | Should -Be 'codex'
+        $payload.slots[1].prompt_transport | Should -Be 'file'
+        @($payload.presets.name) | Should -Contain 'all-workers'
+        @($payload.presets.name) | Should -Contain 'balanced-build-review'
+        @($payload.presets.name) | Should -Contain 'verification'
+        $payload.pair_templates[0].name | Should -Be 'ab-pair'
+        @($payload.pair_templates[0].slot_ids) | Should -Be @('worker-1', 'worker-2')
+        $payload.templates_path | Should -Match '\\.winsmux\\launcher-templates\.json$'
+    }
+
+    It 'saves and lists launcher templates without rewriting project settings' {
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $saveOutput = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher save build-review --json
+            $listOutput = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher list --json
+        } finally {
+            Pop-Location
+        }
+
+        $saved = $saveOutput | ConvertFrom-Json
+        $listed = $listOutput | ConvertFrom-Json
+        $saved.name | Should -Be 'build-review'
+        $saved.saved | Should -Be $true
+        $saved.template.slot_count | Should -Be 3
+        @($saved.template.presets.name) | Should -Contain 'balanced-build-review'
+        Test-Path -LiteralPath $saved.templates_path | Should -Be $true
+        $listed.template_count | Should -Be 1
+        $listed.templates[0].name | Should -Be 'build-review'
+        Test-Path -LiteralPath (Join-Path $script:winsmuxLauncherTempRoot '.winsmux.yaml') | Should -Be $true
+    }
+
+    It 'rejects save when only --json is supplied instead of a template name' {
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher save --json 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+
+        $exitCode | Should -Be 1
+        ($output | Out-String) | Should -Match 'usage: winsmux launcher save <name> \[--json\]'
+        Test-Path -LiteralPath (Join-Path $script:winsmuxLauncherTempRoot '.winsmux\launcher-templates.json') | Should -Be $false
+    }
+}
+
 Describe 'winsmux role command provider routing' {
     BeforeAll {
         $script:winsmuxRoleRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
