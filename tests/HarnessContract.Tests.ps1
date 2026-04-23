@@ -453,6 +453,69 @@ tasks:
         }
     }
 
+    It 'does not inject unrelated planning when manifest task ids do not match backlog' {
+        $fixture = New-SessionStartFixture
+        try {
+            Write-TestFileWithCmd -Path (Join-Path $fixture.Root '.winsmux\manifest.yaml') -Content @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: '$($fixture.Root)'
+panes:
+  builder-1:
+    task_id: TASK-999
+    task_state: in_progress
+    task: Detached resume state
+"@
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-session-start.js' -Payload ([ordered]@{
+                session_id      = 'session-start-unmatched-task'
+                hook_event_name = 'SessionStart'
+            }) -EnvironmentVariables @{
+                WINSMUX_BACKLOG_PATH = $fixture.BacklogPath
+            }
+
+            $result.ExitCode | Should -Be 0
+            $context = [string]$result.Json.hookSpecificOutput.additionalContext
+            $context | Should -Match '\[winsmux-resume\] Pane: builder-1 TASK-999 in_progress - Detached resume state'
+            $context | Should -Not -Match '\[winsmux-resume\] Planning:'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'recovers when session.json is not an object' {
+        $fixture = New-SessionStartFixture
+        try {
+            $shieldDir = Join-Path $fixture.Root '.shield-harness'
+            New-Item -ItemType Directory -Path $shieldDir -Force | Out-Null
+            Write-TestFileWithCmd -Path (Join-Path $shieldDir 'session.json') -Content '"broken"'
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-session-start.js' -Payload ([ordered]@{
+                session_id      = 'session-start-broken-session'
+                hook_event_name = 'SessionStart'
+            }) -EnvironmentVariables @{
+                WINSMUX_BACKLOG_PATH = $fixture.BacklogPath
+            }
+
+            $result.ExitCode | Should -Be 0
+            $context = [string]$result.Json.hookSpecificOutput.additionalContext
+            $context | Should -Match '\[winsmux-resume\] Session: winsmux-orchestra'
+            $context | Should -Not -Match 'Initialization error'
+
+            $sessionPath = Join-Path $shieldDir 'session.json'
+            $session = Get-Content -LiteralPath $sessionPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $session.token_budget.session_limit | Should -Be 200000
+            $session.winsmux_resume.manifest_path | Should -Match 'manifest\.yaml$'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
     It 'blocks PR merge commands while orchestra restore is still needs-startup' {
         $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-startup-gate-" + [guid]::NewGuid().ToString('N'))
         try {

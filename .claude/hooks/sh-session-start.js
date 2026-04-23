@@ -146,6 +146,13 @@ function collectManifestResumeState() {
 }
 
 function collectPlanningResumeState(preferredTaskIds = []) {
+  const preferredSet = new Set(
+    preferredTaskIds.map((taskId) => normalizeTaskId(taskId)).filter(Boolean),
+  );
+  if (preferredSet.size === 0) {
+    return null;
+  }
+
   const backlogPath = getBacklogPath();
   if (!backlogPath || !fs.existsSync(backlogPath)) {
     return null;
@@ -153,16 +160,7 @@ function collectPlanningResumeState(preferredTaskIds = []) {
 
   const backlog = readYaml(backlogPath);
   const tasks = Array.isArray(backlog.tasks) ? backlog.tasks : [];
-  const preferredSet = new Set(
-    preferredTaskIds.map((taskId) => normalizeTaskId(taskId)).filter(Boolean),
-  );
-
   let selected = tasks.filter((task) => preferredSet.has(normalizeTaskId(task.id)));
-  if (selected.length === 0) {
-    selected = tasks.filter(
-      (task) => String(task.status || "").trim().toLowerCase() === "active",
-    );
-  }
 
   selected = selected.slice(0, 2).map((task) => ({
     id: String(task.id || "").trim(),
@@ -339,7 +337,11 @@ try {
   contextParts.push(`[env-check] Platform: ${platform}`);
 
   // 2b: Token budget initialization
-  const session = readSession();
+  const rawSession = readSession();
+  const session =
+    rawSession && typeof rawSession === "object" && !Array.isArray(rawSession)
+      ? rawSession
+      : {};
   if (!session.token_budget) {
     session.token_budget = { ...DEFAULT_TOKEN_BUDGET };
   }
