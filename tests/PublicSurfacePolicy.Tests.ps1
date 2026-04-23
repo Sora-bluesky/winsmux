@@ -47,7 +47,7 @@ Describe 'Public surface policy' {
         $readmeJa | Should -Match 'dogfooding 専用フロー'
         $operatorModel | Should -Match 'dogfooding flow'
 
-        foreach ($entrypoint in @('winsmux init', 'winsmux launch', 'winsmux compare')) {
+        foreach ($entrypoint in @('winsmux init', 'winsmux launch', 'winsmux launcher presets', 'winsmux compare')) {
             $readme | Should -Match ([Regex]::Escape($entrypoint))
             $readmeJa | Should -Match ([Regex]::Escape($entrypoint))
             $operatorModel | Should -Match ([Regex]::Escape($entrypoint))
