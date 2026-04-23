@@ -260,6 +260,51 @@ struct RustParityExplainEvidenceDigest {
     consultation_ref: String,
 }
 
+#[derive(Deserialize)]
+struct RustParityReviewStateRecord {
+    status: String,
+    branch: String,
+    head_sha: String,
+    request: RustParityReviewStateRequest,
+    reviewer: RustParityReviewStateReviewer,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+}
+
+#[derive(Deserialize)]
+struct RustParityReviewStateRequest {
+    id: String,
+    branch: String,
+    head_sha: String,
+    target_review_pane_id: String,
+    target_review_label: String,
+    target_review_role: String,
+    target_reviewer_pane_id: String,
+    target_reviewer_label: String,
+    target_reviewer_role: String,
+    review_contract: RustParityReviewContract,
+    dispatched_at: String,
+}
+
+#[derive(Deserialize)]
+struct RustParityReviewStateReviewer {
+    pane_id: String,
+    label: String,
+    role: String,
+    agent_name: String,
+}
+
+#[derive(Deserialize)]
+struct RustParityReviewContract {
+    version: u32,
+    source_task: String,
+    issue_ref: String,
+    style: String,
+    required_scope: Vec<String>,
+    checklist_labels: Vec<String>,
+    rationale: String,
+}
+
 #[test]
 fn rust_parity_board_fixture_deserializes() {
     let fixture: RustParityBoardFixture = read_rust_parity_fixture_typed("board.json");
@@ -436,12 +481,10 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.run.experiment_packet.command_hash, "");
     assert_eq!(fixture.explanation.summary, "Implement run ledger");
     assert_eq!(fixture.explanation.next_action, "review_pending");
-    assert!(
-        fixture
-            .explanation
-            .reasons
-            .contains(&"review_state=PENDING".to_string())
-    );
+    assert!(fixture
+        .explanation
+        .reasons
+        .contains(&"review_state=PENDING".to_string()));
     assert_eq!(fixture.explanation.current_state.state, "idle");
     assert_eq!(fixture.explanation.current_state.task_state, "in_progress");
     assert_eq!(fixture.explanation.current_state.review_state, "PENDING");
@@ -520,6 +563,59 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.evidence_digest.next_action, "review_pending");
     assert_eq!(fixture.evidence_digest.changed_file_count, 1);
     assert!(fixture.evidence_digest.consultation_ref.contains("__ID__"));
+}
+
+#[test]
+fn rust_parity_review_state_fixture_deserializes() {
+    let fixture: HashMap<String, RustParityReviewStateRecord> =
+        read_rust_parity_fixture_typed("review-state.json");
+    let record = fixture
+        .get("worktree-builder-1")
+        .expect("review-state fixture should contain worktree-builder-1");
+
+    assert_eq!(record.status, "PENDING");
+    assert_eq!(record.branch, "worktree-builder-1");
+    assert_eq!(record.head_sha, "abc1234def5678");
+    assert_eq!(record.updated_at, "__TIMESTAMP__");
+    assert_eq!(record.request.id, "review-request-__ID__");
+    assert_eq!(record.request.branch, "worktree-builder-1");
+    assert_eq!(record.request.head_sha, "abc1234def5678");
+    assert_eq!(record.request.target_review_pane_id, "%4");
+    assert_eq!(record.request.target_review_label, "reviewer-1");
+    assert_eq!(record.request.target_review_role, "Reviewer");
+    assert_eq!(record.request.target_reviewer_pane_id, "%4");
+    assert_eq!(record.request.target_reviewer_label, "reviewer-1");
+    assert_eq!(record.request.target_reviewer_role, "Reviewer");
+    assert_eq!(record.request.dispatched_at, "__TIMESTAMP__");
+    assert_eq!(record.request.review_contract.version, 1);
+    assert_eq!(record.request.review_contract.source_task, "TASK-210");
+    assert_eq!(record.request.review_contract.issue_ref, "#315");
+    assert_eq!(record.request.review_contract.style, "utility_first");
+    assert_eq!(
+        record.request.review_contract.required_scope,
+        vec![
+            "design_impact".to_string(),
+            "replacement_coverage".to_string(),
+            "orphaned_artifacts".to_string()
+        ]
+    );
+    assert_eq!(
+        record.request.review_contract.checklist_labels,
+        vec![
+            "design impact".to_string(),
+            "replacement coverage".to_string(),
+            "orphaned artifacts".to_string()
+        ]
+    );
+    assert!(record
+        .request
+        .review_contract
+        .rationale
+        .contains("runtime contract"));
+    assert_eq!(record.reviewer.pane_id, "%4");
+    assert_eq!(record.reviewer.label, "reviewer-1");
+    assert_eq!(record.reviewer.role, "Reviewer");
+    assert_eq!(record.reviewer.agent_name, "codex");
 }
 
 // ════════════════════════════════════════════════════════════════════════════

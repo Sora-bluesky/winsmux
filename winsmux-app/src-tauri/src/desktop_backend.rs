@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -441,15 +441,21 @@ pub struct DesktopReviewStateRecord {
     pub evidence: Option<DesktopReviewStateEvidence>,
 }
 
+#[allow(dead_code)]
+pub type DesktopReviewStateSnapshot = BTreeMap<String, DesktopReviewStateRecord>;
+
 #[derive(Serialize, Deserialize)]
 pub struct DesktopReviewStateRequest {
     #[serde(default)]
     pub id: Option<String>,
     pub branch: String,
     pub head_sha: String,
-    pub target_review_pane_id: String,
-    pub target_review_label: String,
-    pub target_review_role: String,
+    #[serde(default)]
+    pub target_review_pane_id: Option<String>,
+    #[serde(default)]
+    pub target_review_label: Option<String>,
+    #[serde(default)]
+    pub target_review_role: Option<String>,
     #[serde(default)]
     pub target_reviewer_pane_id: Option<String>,
     #[serde(default)]
@@ -683,8 +689,165 @@ pub fn load_desktop_run_explain(
         run_id,
         project_dir,
     })?;
-    serde_json::from_value(payload)
-        .map_err(|err| format!("Failed to parse desktop explain payload: {err}"))
+    let payload: DesktopExplainPayload = serde_json::from_value(payload)
+        .map_err(|err| format!("Failed to parse desktop explain payload: {err}"))?;
+    if let Some(review_state) = payload.review_state.as_ref() {
+        validate_desktop_review_state_record(review_state)
+            .map_err(|err| format!("Failed to parse desktop explain payload: {err}"))?;
+    }
+    Ok(payload)
+}
+
+#[allow(dead_code)]
+pub fn parse_desktop_review_state_snapshot(
+    payload: Value,
+) -> Result<DesktopReviewStateSnapshot, String> {
+    let snapshot: DesktopReviewStateSnapshot = serde_json::from_value(payload)
+        .map_err(|err| format!("Failed to parse review-state payload: {err}"))?;
+    for (branch, record) in snapshot.iter() {
+        validate_non_empty("review-state branch key", branch)?;
+        validate_desktop_review_state_record(record)?;
+        if record.branch != *branch {
+            return Err(format!(
+                "review-state record branch mismatch: key={branch}, record={}",
+                record.branch
+            ));
+        }
+    }
+    Ok(snapshot)
+}
+
+fn validate_desktop_review_state_record(record: &DesktopReviewStateRecord) -> Result<(), String> {
+    validate_non_empty("review_state.status", &record.status)?;
+    validate_non_empty("review_state.branch", &record.branch)?;
+    validate_non_empty("review_state.head_sha", &record.head_sha)?;
+    validate_non_empty("review_state.updatedAt", &record.updated_at)?;
+    validate_non_empty("review_state.request.branch", &record.request.branch)?;
+    validate_non_empty("review_state.request.head_sha", &record.request.head_sha)?;
+    validate_equal(
+        "review_state.request.branch",
+        &record.request.branch,
+        "review_state.branch",
+        &record.branch,
+    )?;
+    validate_equal(
+        "review_state.request.head_sha",
+        &record.request.head_sha,
+        "review_state.head_sha",
+        &record.head_sha,
+    )?;
+    validate_non_empty(
+        "review_state.request.target_review_pane_id",
+        review_request_target_value(
+            &record.request.target_review_pane_id,
+            &record.request.target_reviewer_pane_id,
+        ),
+    )?;
+    validate_non_empty(
+        "review_state.request.target_review_label",
+        review_request_target_value(
+            &record.request.target_review_label,
+            &record.request.target_reviewer_label,
+        ),
+    )?;
+    validate_non_empty(
+        "review_state.request.target_review_role",
+        review_request_target_value(
+            &record.request.target_review_role,
+            &record.request.target_reviewer_role,
+        ),
+    )?;
+    validate_non_empty("review_state.reviewer.pane_id", &record.reviewer.pane_id)?;
+    validate_non_empty("review_state.reviewer.label", &record.reviewer.label)?;
+    validate_non_empty("review_state.reviewer.role", &record.reviewer.role)?;
+    validate_desktop_review_contract(
+        "review_state.request.review_contract",
+        &record.request.review_contract,
+    )?;
+
+    match record.status.to_ascii_uppercase().as_str() {
+        "PASS" => {
+            let evidence = record
+                .evidence
+                .as_ref()
+                .ok_or_else(|| "review_state.evidence is required for PASS".to_string())?;
+            validate_non_empty(
+                "review_state.evidence.approved_at",
+                evidence.approved_at.as_deref().unwrap_or_default(),
+            )?;
+            validate_non_empty(
+                "review_state.evidence.approved_via",
+                evidence.approved_via.as_deref().unwrap_or_default(),
+            )?;
+            validate_desktop_review_contract(
+                "review_state.evidence.review_contract_snapshot",
+                &evidence.review_contract_snapshot,
+            )?;
+        }
+        "FAIL" | "FAILED" => {
+            let evidence = record
+                .evidence
+                .as_ref()
+                .ok_or_else(|| "review_state.evidence is required for FAIL".to_string())?;
+            validate_non_empty(
+                "review_state.evidence.failed_at",
+                evidence.failed_at.as_deref().unwrap_or_default(),
+            )?;
+            validate_non_empty(
+                "review_state.evidence.failed_via",
+                evidence.failed_via.as_deref().unwrap_or_default(),
+            )?;
+            validate_desktop_review_contract(
+                "review_state.evidence.review_contract_snapshot",
+                &evidence.review_contract_snapshot,
+            )?;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+fn validate_desktop_review_contract(
+    name: &str,
+    contract: &DesktopReviewContract,
+) -> Result<(), String> {
+    if contract.required_scope.is_empty() {
+        return Err(format!("{name}.required_scope must not be empty"));
+    }
+    Ok(())
+}
+
+fn review_request_target_value<'a>(
+    primary: &'a Option<String>,
+    legacy: &'a Option<String>,
+) -> &'a str {
+    primary
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| legacy.as_deref().filter(|value| !value.trim().is_empty()))
+        .unwrap_or_default()
+}
+
+fn validate_equal(
+    left_name: &str,
+    left: &str,
+    right_name: &str,
+    right: &str,
+) -> Result<(), String> {
+    if left != right {
+        return Err(format!(
+            "{left_name} mismatch: expected {right_name}={right}, got {left}"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_non_empty(name: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{name} must not be empty"));
+    }
+    Ok(())
 }
 
 pub fn load_desktop_run_compare(
@@ -1347,6 +1510,10 @@ mod tests {
     }
 
     fn rust_parity_review_state_payload() -> Value {
+        rust_parity_review_state_snapshot_payload()["worktree-builder-1"].clone()
+    }
+
+    fn rust_parity_review_state_snapshot_payload() -> Value {
         read_rust_parity_fixture("review-state.json")
     }
 
@@ -3518,6 +3685,174 @@ mod tests {
     }
 
     #[test]
+    fn parse_desktop_review_state_snapshot_deserializes_branch_map() {
+        let snapshot =
+            parse_desktop_review_state_snapshot(rust_parity_review_state_snapshot_payload())
+                .expect("review-state fixture should deserialize");
+
+        let record = snapshot
+            .get("worktree-builder-1")
+            .expect("review-state fixture should contain branch key");
+        assert_eq!(record.status, "PENDING");
+        assert_eq!(record.branch, "worktree-builder-1");
+        assert_eq!(record.request.review_contract.source_task, "TASK-210");
+        assert_eq!(
+            record.request.review_contract.required_scope,
+            vec![
+                "design_impact".to_string(),
+                "replacement_coverage".to_string(),
+                "orphaned_artifacts".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_desktop_review_state_snapshot_accepts_legacy_target_reviewer_fields() {
+        let mut response = rust_parity_review_state_snapshot_payload();
+        let request = response["worktree-builder-1"]["request"]
+            .as_object_mut()
+            .expect("review-state request must be an object");
+        request.remove("target_review_pane_id");
+        request.remove("target_review_label");
+        request.remove("target_review_role");
+
+        parse_desktop_review_state_snapshot(response)
+            .expect("legacy target_reviewer fields should remain readable");
+    }
+
+    #[test]
+    fn parse_desktop_review_state_snapshot_rejects_missing_target_review_identity() {
+        let mut response = rust_parity_review_state_snapshot_payload();
+        let request = response["worktree-builder-1"]["request"]
+            .as_object_mut()
+            .expect("review-state request must be an object");
+        request.remove("target_review_pane_id");
+        request.remove("target_reviewer_pane_id");
+
+        let err = match parse_desktop_review_state_snapshot(response) {
+            Ok(_) => panic!("expected review-state payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("target_review_pane_id"),
+            "unexpected review-state parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_desktop_review_state_snapshot_rejects_missing_reviewer() {
+        let mut response = rust_parity_review_state_snapshot_payload();
+        response["worktree-builder-1"]
+            .as_object_mut()
+            .expect("review-state record must be an object")
+            .remove("reviewer");
+
+        let err = match parse_desktop_review_state_snapshot(response) {
+            Ok(_) => panic!("expected review-state payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("reviewer"),
+            "unexpected review-state parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_desktop_review_state_snapshot_rejects_branch_mismatch() {
+        let mut response = rust_parity_review_state_snapshot_payload();
+        response["worktree-builder-1"]["branch"] = serde_json::json!("other-branch");
+
+        let err = match parse_desktop_review_state_snapshot(response) {
+            Ok(_) => panic!("expected review-state payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("branch mismatch"),
+            "unexpected review-state parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_desktop_review_state_snapshot_rejects_request_branch_mismatch() {
+        let mut response = rust_parity_review_state_snapshot_payload();
+        response["worktree-builder-1"]["request"]["branch"] = serde_json::json!("other-branch");
+
+        let err = match parse_desktop_review_state_snapshot(response) {
+            Ok(_) => panic!("expected review-state payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("request.branch"),
+            "unexpected review-state parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_desktop_review_state_snapshot_rejects_request_head_mismatch() {
+        let mut response = rust_parity_review_state_snapshot_payload();
+        response["worktree-builder-1"]["request"]["head_sha"] = serde_json::json!("other-head");
+
+        let err = match parse_desktop_review_state_snapshot(response) {
+            Ok(_) => panic!("expected review-state payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("request.head_sha"),
+            "unexpected review-state parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_pass_review_state_without_approved_via() {
+        let mut response = rust_parity_explain_payload_with_review_state();
+        response["review_state"]["status"] = serde_json::json!("PASS");
+        response["review_state"]["evidence"] = serde_json::json!({
+            "approved_at": "__TIMESTAMP__",
+            "review_contract_snapshot": response["review_state"]["request"]["review_contract"].clone()
+        });
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!("expected explain payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("approved_via"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_desktop_review_state_snapshot_rejects_fail_without_failed_via() {
+        let mut response = rust_parity_review_state_snapshot_payload();
+        response["worktree-builder-1"]["status"] = serde_json::json!("FAIL");
+        response["worktree-builder-1"]["evidence"] = serde_json::json!({
+            "failed_at": "__TIMESTAMP__",
+            "review_contract_snapshot": response["worktree-builder-1"]["request"]["review_contract"].clone()
+        });
+
+        let err = match parse_desktop_review_state_snapshot(response) {
+            Ok(_) => panic!("expected review-state payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("failed_via"),
+            "unexpected review-state parse error: {err}"
+        );
+    }
+
+    #[test]
     fn load_desktop_run_explain_rejects_missing_review_contract_required_scope() {
         let mut response = rust_parity_explain_payload_with_review_state();
         response["review_state"]["request"]["review_contract"]
@@ -3538,6 +3873,57 @@ mod tests {
         assert!(
             err.contains("required_scope"),
             "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_rejects_empty_review_contract_required_scope() {
+        let mut response = rust_parity_explain_payload_with_review_state();
+        response["review_state"]["request"]["review_contract"]["required_scope"] =
+            serde_json::json!([]);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let err = match load_desktop_run_explain(&transport, "task:task-256".to_string(), None) {
+            Ok(_) => panic!("expected explain payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("required_scope"),
+            "unexpected explain parse error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_desktop_review_state_snapshot_rejects_empty_evidence_required_scope() {
+        let mut response = rust_parity_review_state_snapshot_payload();
+        response["worktree-builder-1"]["status"] = serde_json::json!("PASS");
+        response["worktree-builder-1"]["evidence"] = serde_json::json!({
+            "approved_at": "__TIMESTAMP__",
+            "approved_via": "winsmux review-approve",
+            "review_contract_snapshot": {
+                "version": 1,
+                "source_task": "TASK-210",
+                "issue_ref": "#315",
+                "style": "utility_first",
+                "required_scope": [],
+                "checklist_labels": ["design impact"],
+                "rationale": "Contract snapshot"
+            }
+        });
+
+        let err = match parse_desktop_review_state_snapshot(response) {
+            Ok(_) => panic!("expected review-state payload parse failure"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("required_scope"),
+            "unexpected review-state parse error: {err}"
         );
     }
 

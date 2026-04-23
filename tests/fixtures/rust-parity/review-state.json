@@ -1,41 +1,43 @@
 {
-  "status": "PENDING",
-  "branch": "worktree-builder-1",
-  "head_sha": "abc1234def5678",
-  "request": {
-    "id": "review-request-__ID__",
+  "worktree-builder-1": {
+    "status": "PENDING",
     "branch": "worktree-builder-1",
     "head_sha": "abc1234def5678",
-    "target_review_pane_id": "%4",
-    "target_review_label": "reviewer-1",
-    "target_review_role": "Reviewer",
-    "target_reviewer_pane_id": "%4",
-    "target_reviewer_label": "reviewer-1",
-    "target_reviewer_role": "Reviewer",
-    "review_contract": {
-      "version": 1,
-      "source_task": "TASK-210",
-      "issue_ref": "#315",
-      "style": "utility_first",
-      "required_scope": [
-        "design_impact",
-        "replacement_coverage",
-        "orphaned_artifacts"
-      ],
-      "checklist_labels": [
-        "design impact",
-        "replacement coverage",
-        "orphaned artifacts"
-      ],
-      "rationale": "Review requests must audit downstream design impact, replacement coverage, and orphaned artifacts as part of the runtime contract."
+    "request": {
+      "id": "review-request-__ID__",
+      "branch": "worktree-builder-1",
+      "head_sha": "abc1234def5678",
+      "target_review_pane_id": "%4",
+      "target_review_label": "reviewer-1",
+      "target_review_role": "Reviewer",
+      "target_reviewer_pane_id": "%4",
+      "target_reviewer_label": "reviewer-1",
+      "target_reviewer_role": "Reviewer",
+      "review_contract": {
+        "version": 1,
+        "source_task": "TASK-210",
+        "issue_ref": "#315",
+        "style": "utility_first",
+        "required_scope": [
+          "design_impact",
+          "replacement_coverage",
+          "orphaned_artifacts"
+        ],
+        "checklist_labels": [
+          "design impact",
+          "replacement coverage",
+          "orphaned artifacts"
+        ],
+        "rationale": "Review requests must audit downstream design impact, replacement coverage, and orphaned artifacts as part of the runtime contract."
+      },
+      "dispatched_at": "__TIMESTAMP__"
     },
-    "dispatched_at": "__TIMESTAMP__"
-  },
-  "reviewer": {
-    "pane_id": "%4",
-    "label": "reviewer-1",
-    "role": "Reviewer",
-    "agent_name": "codex"
-  },
-  "updatedAt": "__TIMESTAMP__"
+    "reviewer": {
+      "pane_id": "%4",
+      "label": "reviewer-1",
+      "role": "Reviewer",
+      "agent_name": "codex"
+    },
+    "updatedAt": "__TIMESTAMP__"
+  }
 }
