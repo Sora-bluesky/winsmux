@@ -726,8 +726,24 @@ foreach ($task in $tasksWithoutTargetVersion) {
 
 $tasksWithTargetVersion = @($tasks | Where-Object { -not [string]::IsNullOrWhiteSpace($_.TargetVersion) })
 
-$versionGroups = $tasksWithTargetVersion |
-    Group-Object -Property TargetVersion |
+$versionGroupMap = [ordered]@{}
+foreach ($group in ($tasksWithTargetVersion | Group-Object -Property TargetVersion)) {
+    $versionGroupMap[$group.Name] = [pscustomobject]@{
+        Name  = $group.Name
+        Group = @($group.Group)
+    }
+}
+
+foreach ($version in $versionTitles.Keys) {
+    if (-not $versionGroupMap.Contains($version)) {
+        $versionGroupMap[$version] = [pscustomobject]@{
+            Name  = $version
+            Group = @()
+        }
+    }
+}
+
+$versionGroups = @($versionGroupMap.Values) |
     Sort-Object @{ Expression = { (Get-VersionSortKey -Version $_.Name).Major } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Minor } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Patch } }, @{ Expression = { (Get-VersionSortKey -Version $_.Name).Raw } }
 
 $builder = [System.Text.StringBuilder]::new()
