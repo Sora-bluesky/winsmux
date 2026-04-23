@@ -8,22 +8,6 @@ repository = "https://github.com/winsmux/winsmux"
 keywords = ["terminal", "multiplexer", "tmux", "windows", "powershell"]
 categories = ["command-line-utilities"]
 
-[workspace]
-members = [".", "crates/portable-pty-winsmux", "crates/vt100-winsmux"]
-exclude = [
-    "target/",
-    "release/",
-    "tests/",
-    "tests-rs/",
-    "packages/",
-    "winsmux-windows-x86_64/",
-    ".github/",
-    "scripts/",
-    "scoop/",
-    "examples/",
-    "*.txt",
-]
-
 # Disable auto-discovery of integration tests from tests/ directory
 [[test]]
 name = "test_vt100_mouse"
@@ -74,9 +58,3 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 regex = "1"
 glob = "0.3"
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = "symbols"

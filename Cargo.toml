@@ -1,0 +1,21 @@
+[workspace]
+members = [
+    "core",
+    "winsmux-app/src-tauri",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/Sora-bluesky/winsmux"
+
+[workspace.metadata.winsmux]
+purpose = "Cargo workspace bootstrap for the Rust core and Tauri desktop migration seed."
+upstream_snapshot = "1dc3535e17666884800ada37d7eb94cf974d38fe"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "symbols"

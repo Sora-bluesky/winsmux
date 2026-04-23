@@ -13,6 +13,8 @@ $whitelistPatterns = @(
     'README.md',
     'README.ja.md',
     'VERSION',
+    'Cargo.toml',
+    'Cargo.lock',
     'install.ps1',
     'core/Cargo.toml',
     'core/Cargo.lock',

@@ -49,6 +49,9 @@
 #![allow(clippy::too_many_lines)]
 #![allow(clippy::type_complexity)]
 
+#[cfg(test)]
+extern crate self as vt100;
+
 mod attrs;
 mod callbacks;
 mod cell;
