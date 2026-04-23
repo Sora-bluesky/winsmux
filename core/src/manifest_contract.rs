@@ -241,6 +241,16 @@ pub struct NormalizedManifestPane {
     pub label: String,
     pub pane_id: String,
     pub role: String,
+    pub task_id: String,
+    pub task: String,
+    pub task_state: String,
+    pub review_state: String,
+    pub priority: String,
+    pub branch: String,
+    pub head_sha: String,
+    pub changed_file_count: usize,
+    pub last_event: String,
+    pub last_event_at: String,
 }
 
 impl WinsmuxManifest {
@@ -253,23 +263,11 @@ impl WinsmuxManifest {
         match &self.panes {
             ManifestPanes::Map(panes) => panes
                 .iter()
-                .map(|(label, pane)| NormalizedManifestPane {
-                    label: if pane.label.is_empty() {
-                        label.clone()
-                    } else {
-                        pane.label.clone()
-                    },
-                    pane_id: pane.pane_id.clone(),
-                    role: pane.role.clone(),
-                })
+                .map(|(label, pane)| normalize_manifest_pane(label, pane))
                 .collect(),
             ManifestPanes::List(panes) => panes
                 .iter()
-                .map(|pane| NormalizedManifestPane {
-                    label: pane.label.clone(),
-                    pane_id: pane.pane_id.clone(),
-                    role: pane.role.clone(),
-                })
+                .map(|pane| normalize_manifest_pane(&pane.label, pane))
                 .collect(),
         }
     }
@@ -305,6 +303,28 @@ impl WinsmuxManifest {
                 .map(|pane| (pane.label.clone(), pane))
                 .collect(),
         }
+    }
+}
+
+fn normalize_manifest_pane(label: &str, pane: &ManifestPane) -> NormalizedManifestPane {
+    NormalizedManifestPane {
+        label: if pane.label.is_empty() {
+            label.to_string()
+        } else {
+            pane.label.clone()
+        },
+        pane_id: pane.pane_id.clone(),
+        role: pane.role.clone(),
+        task_id: pane.task_id.clone(),
+        task: pane.task.clone(),
+        task_state: pane.task_state.clone(),
+        review_state: pane.review_state.clone(),
+        priority: pane.priority.clone(),
+        branch: pane.branch.clone(),
+        head_sha: pane.head_sha.clone(),
+        changed_file_count: pane.changed_file_count.value().unwrap_or(0),
+        last_event: pane.last_event.clone(),
+        last_event_at: pane.last_event_at.clone(),
     }
 }
 
@@ -391,9 +411,12 @@ fn validate_pane(label: &str, pane: &ManifestPane) -> Result<(), String> {
             ));
         }
     }
-    if pane.changed_file_count.value().unwrap_or(usize::MAX) > 0
-        && pane.changed_files.values().is_empty()
-    {
+    let Some(changed_file_count) = pane.changed_file_count.value() else {
+        return Err(format!(
+            "manifest pane '{label}' changed_file_count must be numeric"
+        ));
+    };
+    if changed_file_count > 0 && pane.changed_files.values().is_empty() {
         return Err(format!(
             "manifest pane '{label}' changed_file_count requires changed_files"
         ));
@@ -530,6 +553,28 @@ panes:
         )
         .unwrap();
         manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn manifest_rejects_non_numeric_changed_file_count() {
+        let manifest = WinsmuxManifest::from_yaml(
+            r#"
+version: 1
+session:
+  project_dir: C:\repo
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    changed_file_count: nope
+    changed_files: scripts/winsmux-core.ps1
+"#,
+        )
+        .unwrap();
+
+        let err = manifest.validate().unwrap_err();
+
+        assert!(err.contains("changed_file_count must be numeric"));
     }
 
     #[test]
