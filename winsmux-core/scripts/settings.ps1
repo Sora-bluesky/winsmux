@@ -31,6 +31,7 @@ $script:BridgeSettingsSchema = [ordered]@{
     reviewers           = @{ Type = 'int';      Default = 0;             Option = '@bridge-reviewers' }
     vault_keys          = @{ Type = 'string[]'; Default = @('GH_TOKEN'); Option = '@bridge-vault-keys' }
     terminal            = @{ Type = 'string';   Default = 'background';  Option = '@bridge-terminal' }
+    workspace_lifecycle_preset = @{ Type = 'lifecycle'; Default = 'managed-worktree'; Option = $null }
     roles               = @{ Type = 'map';      Default = [ordered]@{};  Option = $null }
 }
 $script:BridgeRetiredOperatorSettingKeys = @(
@@ -1194,6 +1195,30 @@ function Test-BridgeSettingValue {
                 }
             }
         }
+        'lifecycle' {
+            $text = ConvertFrom-BridgeYamlScalar $Value
+            if ([string]::IsNullOrWhiteSpace($text)) {
+                return $false
+            }
+
+            switch ($text.Trim().ToLowerInvariant()) {
+                'none' {
+                    $NormalizedValue.Value = 'none'
+                    return $true
+                }
+                'managed-worktree' {
+                    $NormalizedValue.Value = 'managed-worktree'
+                    return $true
+                }
+                'ephemeral-worktree' {
+                    $NormalizedValue.Value = 'ephemeral-worktree'
+                    return $true
+                }
+                default {
+                    return $false
+                }
+            }
+        }
         'string[]' {
             $items = @()
 
@@ -1401,8 +1426,14 @@ function Get-BridgeSettings {
     $rawProjectSettings = Read-BridgeProjectSettings -RootPath $RootPath
     $projectSettings = ConvertTo-BridgeSettingsSource $rawProjectSettings
 
-    if ($rawProjectSettings -is [System.Collections.IDictionary] -and $rawProjectSettings.Contains('prompt_transport') -and -not $projectSettings.Contains('prompt_transport')) {
-        throw "Invalid prompt_transport configuration: unsupported value '$($rawProjectSettings['prompt_transport'])'."
+    if ($rawProjectSettings -is [System.Collections.IDictionary] -and ($rawProjectSettings.Contains('prompt_transport') -or $rawProjectSettings.Contains('prompt-transport')) -and -not $projectSettings.Contains('prompt_transport')) {
+        $rawPromptTransport = if ($rawProjectSettings.Contains('prompt_transport')) { $rawProjectSettings['prompt_transport'] } else { $rawProjectSettings['prompt-transport'] }
+        throw "Invalid prompt_transport configuration: unsupported value '$rawPromptTransport'."
+    }
+
+    if ($rawProjectSettings -is [System.Collections.IDictionary] -and ($rawProjectSettings.Contains('workspace_lifecycle_preset') -or $rawProjectSettings.Contains('workspace-lifecycle-preset')) -and -not $projectSettings.Contains('workspace_lifecycle_preset')) {
+        $rawLifecyclePreset = if ($rawProjectSettings.Contains('workspace_lifecycle_preset')) { $rawProjectSettings['workspace_lifecycle_preset'] } else { $rawProjectSettings['workspace-lifecycle-preset'] }
+        throw "Invalid workspace_lifecycle_preset configuration: unsupported value '$rawLifecyclePreset'."
     }
 
     if ($rawProjectSettings -is [System.Collections.IDictionary] -and $rawProjectSettings.Contains('agent_slots')) {

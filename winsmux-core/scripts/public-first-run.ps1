@@ -23,18 +23,32 @@ function Resolve-WinsmuxPublicProjectDir {
     return (Get-Item -LiteralPath $resolved -Force).FullName
 }
 
+function Get-WinsmuxPublicWorkspaceLifecyclePresetNames {
+    return @('none', 'managed-worktree', 'ephemeral-worktree')
+}
+
+function Assert-WinsmuxPublicWorkspaceLifecyclePreset {
+    param([Parameter(Mandatory = $true)][string]$Preset)
+
+    if ([string]::IsNullOrWhiteSpace($Preset) -or $Preset -notin (Get-WinsmuxPublicWorkspaceLifecyclePresetNames)) {
+        throw "unsupported workspace lifecycle preset: $Preset"
+    }
+}
+
 function Invoke-WinsmuxPublicInit {
     param(
         [string]$ProjectDir,
         [switch]$Force,
         [string]$Agent = 'codex',
         [string]$Model = 'gpt-5.4',
-        [int]$WorkerCount = 6
+        [int]$WorkerCount = 6,
+        [string]$WorkspaceLifecyclePreset = 'managed-worktree'
     )
 
     if ($WorkerCount -lt 1) {
         throw 'worker count must be 1 or greater.'
     }
+    Assert-WinsmuxPublicWorkspaceLifecyclePreset -Preset $WorkspaceLifecyclePreset
 
     $resolvedProjectDir = Resolve-WinsmuxPublicProjectDir -ProjectDir $ProjectDir
     $configPath = Get-BridgeProjectSettingsPath -RootPath $resolvedProjectDir
@@ -50,6 +64,7 @@ function Invoke-WinsmuxPublicInit {
             external_operator  = [bool]$existing.external_operator
             worker_count        = [int]$existing.worker_count
             slot_count          = @($existing.agent_slots).Count
+            workspace_lifecycle_preset = [string]$existing.workspace_lifecycle_preset
             next_action         = 'Run winsmux launch.'
         }
     }
@@ -67,6 +82,7 @@ function Invoke-WinsmuxPublicInit {
         researchers         = 0
         reviewers           = 0
         vault_keys          = @('GH_TOKEN')
+        workspace_lifecycle_preset = $WorkspaceLifecyclePreset
     })
 
     return [PSCustomObject][ordered]@{
@@ -78,6 +94,7 @@ function Invoke-WinsmuxPublicInit {
         external_operator  = $true
         worker_count        = $WorkerCount
         slot_count          = @($agentSlots).Count
+        workspace_lifecycle_preset = $WorkspaceLifecyclePreset
         next_action         = 'Run winsmux launch.'
     }
 }
