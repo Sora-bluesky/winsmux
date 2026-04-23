@@ -7062,10 +7062,60 @@ function Invoke-CompareRuns {
     }
 }
 
+function Invoke-Compare {
+    param(
+        [AllowNull()][string]$CompareTarget = $Target,
+        [AllowNull()][string[]]$CompareRest = $Rest
+    )
+
+    $tokens = @()
+    if (-not [string]::IsNullOrWhiteSpace($CompareTarget)) {
+        $tokens += $CompareTarget
+    }
+    if ($CompareRest) {
+        $tokens += @($CompareRest)
+    }
+
+    if ($tokens.Count -lt 1) {
+        Stop-WithError 'usage: winsmux compare <runs|preflight|promote> ... [--json]'
+    }
+
+    $mode = ([string]$tokens[0]).Trim().ToLowerInvariant()
+    $remaining = @()
+    if ($tokens.Count -gt 1) {
+        $remaining = @($tokens | Select-Object -Skip 1)
+    }
+
+    switch ($mode) {
+        'runs' {
+            $runTarget = if ($remaining.Count -gt 0) { [string]$remaining[0] } else { '' }
+            $runRest = if ($remaining.Count -gt 1) { @($remaining | Select-Object -Skip 1) } else { @() }
+            Invoke-CompareRuns -CompareTarget $runTarget -CompareRest $runRest
+            return
+        }
+        'preflight' {
+            $preflightTarget = if ($remaining.Count -gt 0) { [string]$remaining[0] } else { '' }
+            $preflightRest = if ($remaining.Count -gt 1) { @($remaining | Select-Object -Skip 1) } else { @() }
+            Invoke-ConflictPreflight -PreflightTarget $preflightTarget -PreflightRest $preflightRest -CompareAlias
+            return
+        }
+        'promote' {
+            $promoteTarget = if ($remaining.Count -gt 0) { [string]$remaining[0] } else { '' }
+            $promoteRest = if ($remaining.Count -gt 1) { @($remaining | Select-Object -Skip 1) } else { @() }
+            Invoke-PromoteTactic -PromoteTarget $promoteTarget -PromoteRest $promoteRest
+            return
+        }
+        default {
+            Stop-WithError 'usage: winsmux compare <runs|preflight|promote> ... [--json]'
+        }
+    }
+}
+
 function Invoke-ConflictPreflight {
     param(
         [AllowNull()][string]$PreflightTarget = $Target,
-        [AllowNull()][string[]]$PreflightRest = $Rest
+        [AllowNull()][string[]]$PreflightRest = $Rest,
+        [switch]$CompareAlias
     )
 
     $tokens = @()
@@ -7087,16 +7137,25 @@ function Invoke-ConflictPreflight {
     }
 
     if ($refs.Count -ne 2) {
+        if ($CompareAlias) {
+            Stop-WithError 'usage: winsmux compare preflight <left_ref> <right_ref> [--json]'
+        }
+
         Stop-WithError 'usage: winsmux conflict-preflight <left_ref> <right_ref> [--json]'
     }
 
     $payload = Get-WinsmuxConflictPreflightPayload -ProjectDir (Get-Location).Path -LeftRef ([string]$refs[0]) -RightRef ([string]$refs[1])
+    if ($CompareAlias) {
+        $payload.command = 'compare preflight'
+        $payload.next_action = ([string]$payload.next_action) -replace 'winsmux conflict-preflight', 'winsmux compare preflight'
+    }
     if ($jsonOutput) {
         $payload | ConvertTo-Json -Compress -Depth 10 | Write-Output
         return
     }
 
-    Write-Output ("conflict preflight: {0}" -f [string]$payload.status)
+    $preflightLabel = if ($CompareAlias) { 'compare preflight' } else { 'conflict preflight' }
+    Write-Output ("{0}: {1}" -f $preflightLabel, [string]$payload.status)
     Write-Output ("left: {0} ({1})" -f [string]$payload.left_ref, (Get-ShortHeadSha -HeadSha ([string]$payload.left_sha)))
     Write-Output ("right: {0} ({1})" -f [string]$payload.right_ref, (Get-ShortHeadSha -HeadSha ([string]$payload.right_sha)))
     if (-not [string]::IsNullOrWhiteSpace([string]$payload.merge_base)) {
@@ -8283,6 +8342,7 @@ runs [--json]             Report run-oriented session view
 digest [--json] [--stream] [--events] Report high-signal evidence digest per run or actionable event summaries
 explain <run_id> [--json] [--follow]  Explain one run and optionally follow new events
 compare-runs <left_run_id> <right_run_id> [--json]  Compare two runs and surface evidence/confidence deltas
+compare <runs|preflight|promote> ... [--json]  Public compare entrypoint for run comparison, preflight, and promotion
 conflict-preflight <left_ref> <right_ref> [--json]  Run git merge-tree preflight before compare UI or merge review
 promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>] [--json]  Export a reusable tactic candidate from a successful run
   poll-events [cursor]      Return new monitor events from .winsmux/events.jsonl
@@ -8771,6 +8831,7 @@ switch ($Command) {
     'runs'            { Invoke-Runs }
     'digest'          { Invoke-Digest }
     'explain'         { Invoke-Explain }
+    'compare'         { Invoke-Compare }
     'compare-runs'    { Invoke-CompareRuns }
     'conflict-preflight' { Invoke-ConflictPreflight }
     'promote-tactic'  { Invoke-PromoteTactic }
