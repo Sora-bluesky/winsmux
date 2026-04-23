@@ -11845,6 +11845,50 @@ panes:
         @($result.differences | ForEach-Object { $_.field }) | Should -Contain 'changed_files'
     }
 
+    It 'routes public compare runs through the same run comparison contract' {
+        $result = (Invoke-Compare -CompareTarget 'runs' -CompareRest @('task:task-compare-a', 'task:task-compare-b', '--json') | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.left.run_id | Should -Be 'task:task-compare-a'
+        $result.right.run_id | Should -Be 'task:task-compare-b'
+        $result.recommend.winning_run_id | Should -Be 'task:task-compare-a'
+    }
+
+    It 'routes public compare preflight with compare-specific command guidance' {
+        Mock Invoke-WinsmuxGitProbe {
+            param($ProjectDir, [string[]]$Arguments)
+
+            $commandLine = ($Arguments | ForEach-Object { [string]$_ }) -join ' '
+            switch ($commandLine) {
+                'rev-parse --show-toplevel' { return [PSCustomObject]@{ exit_code = 0; output = $script:compareTempRoot } }
+                'rev-parse --verify left^{commit}' { return [PSCustomObject]@{ exit_code = 0; output = '1111111111111111111111111111111111111111' } }
+                'rev-parse --verify right^{commit}' { return [PSCustomObject]@{ exit_code = 0; output = '2222222222222222222222222222222222222222' } }
+                'merge-base left right' { return [PSCustomObject]@{ exit_code = 1; output = '' } }
+                default { throw "unexpected git probe: $commandLine" }
+            }
+        }
+
+        $result = (Invoke-Compare -CompareTarget 'preflight' -CompareRest @('left', 'right', '--json') | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.command | Should -Be 'compare preflight'
+        $result.status | Should -Be 'blocked'
+        $result.next_action | Should -Match 'winsmux compare preflight'
+    }
+
+    It 'routes public compare promote through follow-up candidate export' {
+        $result = (Invoke-Compare -CompareTarget 'promote' -CompareRest @('task:task-compare-a', '--title', 'Deterministic build command', '--json') | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.run_id | Should -Be 'task:task-compare-a'
+        $result.candidate.title | Should -Be 'Deterministic build command'
+        $result.candidate.observation_pack_ref | Should -Be $script:compareObsA.reference
+    }
+
+    It 'documents public compare and dispatches it from the top-level command table' {
+        $raw = Get-Content -Path $script:winsmuxCorePath -Raw -Encoding UTF8
+
+        $raw | Should -Match 'compare <runs\|preflight\|promote> \.\.\. \[--json\]\s+Public compare entrypoint'
+        $raw | Should -Match "'compare'\s*\{\s*Invoke-Compare\s*\}"
+    }
+
     It 'suppresses winner selection when a higher-confidence run is unhealthy' {
         @"
 version: 1

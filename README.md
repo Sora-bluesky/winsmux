@@ -135,7 +135,7 @@ You can also download a release `.zip` from GitHub Releases or build from source
 - `winsmux launcher lifecycle [preset|--clear] [--json]` selects the workspace lifecycle policy for the current project
 - `winsmux launcher save <name>` stores the current launcher template for later reuse
 - `winsmux conflict-preflight` is now the public coordination guard before compare UI lands
-- `winsmux compare` remains a planned public-first entrypoint
+- `winsmux compare <runs|preflight|promote>` is now the public compare coordination entrypoint
 - npm-based installation is planned
 - the public npm install surface will be a **single `winsmux` package**
 - the planned public command is `npm install -g winsmux`
@@ -171,7 +171,7 @@ belong to the selected profile are removed.
 
 ## Quick start
 
-The current public quick start uses `winsmux init` and `winsmux launch`. `winsmux compare` remains planned, while `/winsmux-start` remains a Claude Code dogfooding-only flow.
+The current public quick start uses `winsmux init` and `winsmux launch`. `winsmux compare` is the public compare coordination entrypoint, while `/winsmux-start` remains a Claude Code dogfooding-only flow.
 
 ```powershell
 # Create the default first-run config
@@ -190,7 +190,10 @@ Use `winsmux launcher presets [--json]` to inspect the launcher presets that mat
 Use `winsmux launcher save <name>` and `winsmux launcher list` to keep reusable launcher templates in the project `.winsmux` directory.
 Use `winsmux launcher lifecycle ephemeral-worktree` to store a local lifecycle override without rewriting `.winsmux.yaml`.
 Lifecycle presets are declarative policy only. winsmux does not execute arbitrary setup or teardown scripts from project configuration.
-Before the compare surface lands, `winsmux conflict-preflight <left_ref> <right_ref>` is the public CLI guard for merge-risk checks.
+Use `winsmux compare runs <left_run_id> <right_run_id>` to compare evidence and confidence between two recorded runs.
+Use `winsmux compare preflight <left_ref> <right_ref>` before a merge or compare review.
+Use `winsmux compare promote <run_id>` to export a reusable follow-up candidate from a successful run.
+`winsmux conflict-preflight <left_ref> <right_ref>` remains available as a compatibility command.
 
 If `winsmux doctor` reports the Windows worktree git sandbox limitation, keep using the managed pane for edits and tests, but run `git add`, `git commit`, and `git push` from a regular shell outside the sandboxed pane when `.git/worktrees/*/index.lock` cannot be created.
 
@@ -237,6 +240,7 @@ winsmux send worker-3 "Summarize the upstream issue."
 | `winsmux send <target> <text>` | Send text and press Enter |
 | `winsmux health-check` | Report READY/BUSY/HUNG/DEAD for labeled panes |
 | `winsmux launcher <presets|lifecycle|list|save>` | Inspect launcher presets, lifecycle policy, and saved templates |
+| `winsmux compare <runs|preflight|promote>` | Compare runs, preflight refs, or promote a follow-up candidate |
 | `winsmux vault set <key> [value]` | Store a credential in DPAPI-backed vault |
 | `winsmux vault inject <pane>` | Inject stored credentials into a target pane |
 | `winsmux update` | Update winsmux to the latest version |
