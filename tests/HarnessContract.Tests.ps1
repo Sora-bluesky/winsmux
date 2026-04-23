@@ -31,11 +31,8 @@ Describe 'harness-check contract' {
                 New-Item -ItemType Directory -Path $parent -Force | Out-Null
             }
 
-            $escapedPath = $Path -replace '"', '""'
-            $Content | cmd /d /c ('more > "{0}"' -f $escapedPath) | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                throw "cmd.exe failed to write $Path"
-            }
+            $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+            [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
         }
 
         function Remove-TestSettingsLocal {
@@ -157,6 +154,51 @@ Describe 'harness-check contract' {
                 }
             } finally {
                 $process.Dispose()
+            }
+        }
+
+        function New-SessionStartFixture {
+            $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-session-start-" + [guid]::NewGuid().ToString('N'))
+            $hooksDir = Join-Path $fixtureRoot '.claude\hooks'
+            $libDir = Join-Path $hooksDir 'lib'
+            $patternsDir = Join-Path $fixtureRoot '.claude\patterns'
+            $winsmuxDir = Join-Path $fixtureRoot '.winsmux'
+
+            New-Item -ItemType Directory -Path $libDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $patternsDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $winsmuxDir -Force | Out-Null
+
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-session-start.js') -Destination (Join-Path $hooksDir 'sh-session-start.js') -Force
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\lib\sh-utils.js') -Destination (Join-Path $libDir 'sh-utils.js') -Force
+
+            Write-TestFileWithCmd -Path (Join-Path $fixtureRoot 'CLAUDE.md') -Content '# Fixture'
+            Write-TestFileWithCmd -Path (Join-Path $fixtureRoot '.claude\settings.json') -Content '{"permissions":{"deny":["backlog.yaml"]}}'
+            Write-TestFileWithCmd -Path (Join-Path $patternsDir 'injection-patterns.json') -Content '{}'
+            Write-TestFileWithCmd -Path (Join-Path $winsmuxDir 'manifest.yaml') -Content @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: '$fixtureRoot'
+panes:
+  builder-1:
+    task_id: TASK-154
+    task_state: in_progress
+    task: Resume session context
+"@
+
+            $backlogPath = Join-Path $fixtureRoot 'backlog.yaml'
+            Write-TestFileWithCmd -Path $backlogPath -Content @"
+version: 3
+tasks:
+  - id: TASK-154
+    title: Manifest-aware session resume / context injection
+    status: active
+    target_version: v0.24.1
+"@
+
+            return [PSCustomObject]@{
+                Root        = $fixtureRoot
+                BacklogPath = $backlogPath
             }
         }
     }
@@ -324,6 +366,152 @@ Describe 'harness-check contract' {
         } finally {
             if (Test-Path -LiteralPath $fixtureRoot) {
                 Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'injects winsmux resume context from manifest and backlog during SessionStart' {
+        $fixture = New-SessionStartFixture
+        try {
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-session-start.js' -Payload ([ordered]@{
+                session_id      = 'session-start-test'
+                hook_event_name = 'SessionStart'
+            }) -EnvironmentVariables @{
+                WINSMUX_BACKLOG_PATH = $fixture.BacklogPath
+            }
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $context = [string]$result.Json.hookSpecificOutput.additionalContext
+            $context | Should -Match '\[winsmux-resume\] Session: winsmux-orchestra'
+            $context | Should -Match '\[winsmux-resume\] Managed panes: 1'
+            $context | Should -Match '\[winsmux-resume\] Pane: builder-1 TASK-154 in_progress - Resume session context'
+            $context | Should -Match '\[winsmux-resume\] Planning: TASK-154 v0.24.1 - Manifest-aware session resume / context injection'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'does not inject planning context when manifest is missing' {
+        $fixture = New-SessionStartFixture
+        try {
+            Remove-Item -LiteralPath (Join-Path $fixture.Root '.winsmux\manifest.yaml') -Force
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-session-start.js' -Payload ([ordered]@{
+                session_id      = 'session-start-no-manifest'
+                hook_event_name = 'SessionStart'
+            }) -EnvironmentVariables @{
+                WINSMUX_BACKLOG_PATH = $fixture.BacklogPath
+            }
+
+            $result.ExitCode | Should -Be 0
+            $context = [string]$result.Json.hookSpecificOutput.additionalContext
+            $context | Should -Not -Match '\[winsmux-resume\] Planning:'
+            $context | Should -Not -Match '\[winsmux-resume\] Session:'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'clears stale winsmux resume state when resume sources disappear' {
+        $fixture = New-SessionStartFixture
+        try {
+            $payload = [ordered]@{
+                session_id      = 'session-start-reset'
+                hook_event_name = 'SessionStart'
+            }
+            $environment = @{
+                WINSMUX_BACKLOG_PATH = $fixture.BacklogPath
+            }
+
+            $first = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-session-start.js' -Payload $payload -EnvironmentVariables $environment
+            $first.ExitCode | Should -Be 0
+
+            Remove-Item -LiteralPath (Join-Path $fixture.Root '.winsmux\manifest.yaml') -Force
+            Remove-Item -LiteralPath $fixture.BacklogPath -Force
+
+            $second = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-session-start.js' -Payload $payload -EnvironmentVariables $environment
+
+            $second.ExitCode | Should -Be 0
+            $context = [string]$second.Json.hookSpecificOutput.additionalContext
+            $context | Should -Not -Match '\[winsmux-resume\]'
+
+            $sessionPath = Join-Path $fixture.Root '.shield-harness\session.json'
+            $session = Get-Content -LiteralPath $sessionPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $session.winsmux_resume.manifest_path | Should -BeNullOrEmpty
+            $session.winsmux_resume.backlog_path | Should -BeNullOrEmpty
+            @($session.winsmux_resume.task_ids).Count | Should -Be 0
+            $session.winsmux_resume.pane_count | Should -Be 0
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'does not inject unrelated planning when manifest task ids do not match backlog' {
+        $fixture = New-SessionStartFixture
+        try {
+            Write-TestFileWithCmd -Path (Join-Path $fixture.Root '.winsmux\manifest.yaml') -Content @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: '$($fixture.Root)'
+panes:
+  builder-1:
+    task_id: TASK-999
+    task_state: in_progress
+    task: Detached resume state
+"@
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-session-start.js' -Payload ([ordered]@{
+                session_id      = 'session-start-unmatched-task'
+                hook_event_name = 'SessionStart'
+            }) -EnvironmentVariables @{
+                WINSMUX_BACKLOG_PATH = $fixture.BacklogPath
+            }
+
+            $result.ExitCode | Should -Be 0
+            $context = [string]$result.Json.hookSpecificOutput.additionalContext
+            $context | Should -Match '\[winsmux-resume\] Pane: builder-1 TASK-999 in_progress - Detached resume state'
+            $context | Should -Not -Match '\[winsmux-resume\] Planning:'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
+            }
+        }
+    }
+
+    It 'recovers when session.json is not an object' {
+        $fixture = New-SessionStartFixture
+        try {
+            $shieldDir = Join-Path $fixture.Root '.shield-harness'
+            New-Item -ItemType Directory -Path $shieldDir -Force | Out-Null
+            Write-TestFileWithCmd -Path (Join-Path $shieldDir 'session.json') -Content '"broken"'
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixture.Root -HookRelativePath '.claude\hooks\sh-session-start.js' -Payload ([ordered]@{
+                session_id      = 'session-start-broken-session'
+                hook_event_name = 'SessionStart'
+            }) -EnvironmentVariables @{
+                WINSMUX_BACKLOG_PATH = $fixture.BacklogPath
+            }
+
+            $result.ExitCode | Should -Be 0
+            $context = [string]$result.Json.hookSpecificOutput.additionalContext
+            $context | Should -Match '\[winsmux-resume\] Session: winsmux-orchestra'
+            $context | Should -Not -Match 'Initialization error'
+
+            $sessionPath = Join-Path $shieldDir 'session.json'
+            $session = Get-Content -LiteralPath $sessionPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+            $session.token_budget.session_limit | Should -Be 200000
+            $session.winsmux_resume.manifest_path | Should -Match 'manifest\.yaml$'
+        } finally {
+            if (Test-Path -LiteralPath $fixture.Root) {
+                Remove-Item -LiteralPath $fixture.Root -Recurse -Force
             }
         }
     }

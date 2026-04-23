@@ -14,6 +14,8 @@ const {
   readSession,
   writeSession,
   appendEvidence,
+  readYaml,
+  getBacklogPath,
 } = require("./lib/sh-utils");
 // Enterprise libs — soft-disable with try-catch (Tier 3, not yet validated)
 let detectOpenShell = () => ({ available: false, reason: "module_not_loaded" });
@@ -57,6 +59,173 @@ const DEFAULT_TOKEN_BUDGET = {
   tool_output_limit: 50000,
   used: 0,
 };
+
+function findUpFile(startDir, relativeSegments) {
+  if (!startDir) {
+    return "";
+  }
+
+  let currentDir = path.resolve(startDir);
+  while (true) {
+    const candidate = path.join(currentDir, ...relativeSegments);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) {
+      return "";
+    }
+
+    currentDir = parentDir;
+  }
+}
+
+function resolveManifestPath() {
+  const starts = [process.cwd(), path.resolve(__dirname, "..", "..")];
+  for (const startDir of starts) {
+    const candidate = findUpFile(startDir, [".winsmux", "manifest.yaml"]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  return "";
+}
+
+function normalizeTaskId(value) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function collectManifestResumeState() {
+  const manifestPath = resolveManifestPath();
+  if (!manifestPath) {
+    return null;
+  }
+
+  const manifest = readYaml(manifestPath);
+  const sessionInfo =
+    manifest && typeof manifest.session === "object" ? manifest.session : {};
+  const paneEntries =
+    manifest && manifest.panes && typeof manifest.panes === "object"
+      ? Object.entries(manifest.panes)
+      : [];
+
+  const activePanes = paneEntries
+    .map(([label, pane]) => {
+      if (!pane || typeof pane !== "object") {
+        return null;
+      }
+
+      const taskId = String(pane.task_id || "").trim();
+      const taskState = String(pane.task_state || "").trim();
+      const taskTitle = String(pane.task || pane.goal || "").trim();
+      if (!taskId && !taskState && !taskTitle) {
+        return null;
+      }
+
+      return {
+        label,
+        taskId,
+        taskState,
+        taskTitle,
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    manifestPath,
+    sessionName: String(sessionInfo.name || "").trim(),
+    projectDir: String(sessionInfo.project_dir || "").trim(),
+    paneCount: paneEntries.length,
+    activePanes: activePanes.slice(0, 3),
+    taskIds: activePanes
+      .map((pane) => normalizeTaskId(pane.taskId))
+      .filter(Boolean),
+  };
+}
+
+function collectPlanningResumeState(preferredTaskIds = []) {
+  const preferredSet = new Set(
+    preferredTaskIds.map((taskId) => normalizeTaskId(taskId)).filter(Boolean),
+  );
+  if (preferredSet.size === 0) {
+    return null;
+  }
+
+  const backlogPath = getBacklogPath();
+  if (!backlogPath || !fs.existsSync(backlogPath)) {
+    return null;
+  }
+
+  const backlog = readYaml(backlogPath);
+  const tasks = Array.isArray(backlog.tasks) ? backlog.tasks : [];
+  let selected = tasks.filter((task) => preferredSet.has(normalizeTaskId(task.id)));
+
+  selected = selected.slice(0, 2).map((task) => ({
+    id: String(task.id || "").trim(),
+    title: String(task.title || "").trim(),
+    targetVersion: String(task.target_version || "").trim(),
+  }));
+
+  if (selected.length === 0) {
+    return null;
+  }
+
+  return {
+    backlogPath,
+    selected,
+  };
+}
+
+function buildWinsmuxResumeContext() {
+  const lines = [];
+  const manifestState = collectManifestResumeState();
+  if (manifestState) {
+    if (manifestState.sessionName) {
+      lines.push(`[winsmux-resume] Session: ${manifestState.sessionName}`);
+    }
+    if (manifestState.projectDir) {
+      lines.push(`[winsmux-resume] Project: ${manifestState.projectDir}`);
+    }
+    lines.push(`[winsmux-resume] Managed panes: ${manifestState.paneCount}`);
+    for (const pane of manifestState.activePanes) {
+      const details = [pane.label];
+      if (pane.taskId) {
+        details.push(pane.taskId);
+      }
+      if (pane.taskState) {
+        details.push(pane.taskState);
+      }
+      if (pane.taskTitle) {
+        details.push(`- ${pane.taskTitle}`);
+      }
+      lines.push(`[winsmux-resume] Pane: ${details.join(" ")}`);
+    }
+  }
+
+  const planningState = manifestState
+    ? collectPlanningResumeState(manifestState.taskIds)
+    : null;
+  if (planningState) {
+    for (const task of planningState.selected) {
+      const details = [task.id];
+      if (task.targetVersion) {
+        details.push(task.targetVersion);
+      }
+      if (task.title) {
+        details.push(`- ${task.title}`);
+      }
+      lines.push(`[winsmux-resume] Planning: ${details.join(" ")}`);
+    }
+  }
+
+  return {
+    lines,
+    manifestState,
+    planningState,
+  };
+}
 
 const winsmuxHookProfile = (process.env.WINSMUX_HOOK_PROFILE || "standard").trim() || "standard";
 const winsmuxGovernanceMode = (process.env.WINSMUX_GOVERNANCE_MODE || "standard").trim() || "standard";
@@ -168,7 +337,11 @@ try {
   contextParts.push(`[env-check] Platform: ${platform}`);
 
   // 2b: Token budget initialization
-  const session = readSession();
+  const rawSession = readSession();
+  const session =
+    rawSession && typeof rawSession === "object" && !Array.isArray(rawSession)
+      ? rawSession
+      : {};
   if (!session.token_budget) {
     session.token_budget = { ...DEFAULT_TOKEN_BUDGET };
   }
@@ -180,6 +353,28 @@ try {
     hook_profile: winsmuxHookProfile,
     governance_mode: winsmuxGovernanceMode,
   };
+  session.winsmux_resume = {
+    manifest_path: null,
+    pane_count: 0,
+    task_ids: [],
+    backlog_path: null,
+  };
+  const winsmuxResumeContext = buildWinsmuxResumeContext();
+  if (winsmuxResumeContext.lines.length > 0) {
+    contextParts.push(...winsmuxResumeContext.lines);
+    session.winsmux_resume.manifest_path = winsmuxResumeContext.manifestState
+      ? winsmuxResumeContext.manifestState.manifestPath
+      : null;
+    session.winsmux_resume.pane_count = winsmuxResumeContext.manifestState
+      ? winsmuxResumeContext.manifestState.paneCount
+      : 0;
+    session.winsmux_resume.task_ids = winsmuxResumeContext.manifestState
+      ? winsmuxResumeContext.manifestState.taskIds
+      : [];
+    session.winsmux_resume.backlog_path = winsmuxResumeContext.planningState
+      ? winsmuxResumeContext.planningState.backlogPath
+      : null;
+  }
   contextParts.push("[env-check] Session initialized, token budget set");
   contextParts.push(
     `[winsmux] Hook profile: ${winsmuxHookProfile}, governance mode: ${winsmuxGovernanceMode}`,
