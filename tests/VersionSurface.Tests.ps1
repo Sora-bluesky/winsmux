@@ -27,6 +27,8 @@ Describe 'winsmux version surface' {
         $bridgeScript | Should -Match ('\$VERSION\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
         $workspaceLock | Should -Match ('(?ms)^name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
         $coreManifest | Should -Match ('(?m)^version\s*=\s*"{0}"\r?$' -f [regex]::Escape($script:ProductVersion))
+        $coreManifest | Should -Match '(?m)^license\s*=\s*"Apache-2\.0 AND MIT"\r?$'
+        $coreManifest | Should -Match '(?m)^repository\s*=\s*"https://github\.com/Sora-bluesky/winsmux"\r?$'
         $coreLock | Should -Match ('(?ms)^name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
     }
 
@@ -42,7 +44,11 @@ Describe 'winsmux version surface' {
         $appPackageLock['version'] | Should -Be $script:ProductVersion
         $appPackageLock['packages']['']['version'] | Should -Be $script:ProductVersion
         $tauriConfig.version | Should -Be $script:ProductVersion
+        $tauriConfig.productName | Should -Be 'winsmux'
+        $tauriConfig.app.windows[0].title | Should -Be 'winsmux'
         $tauriManifest | Should -Match ('(?m)^version\s*=\s*"{0}"\r?$' -f [regex]::Escape($script:ProductVersion))
+        $tauriManifest | Should -Match '(?m)^description\s*=\s*"Desktop control plane for winsmux"\r?$'
+        $tauriManifest | Should -Match '(?m)^authors\s*=\s*\["Sora-bluesky"\]\r?$'
         $workspaceLock | Should -Match ('(?ms)^name\s*=\s*"winsmux-app"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
         $tauriLock | Should -Match ('(?ms)^name\s*=\s*"winsmux-app"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
     }
@@ -62,5 +68,37 @@ Describe 'winsmux version surface' {
 
         $stagedPackage.version | Should -Be $script:ProductVersion
         $stagedInstaller | Should -Match ('\$VERSION\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
+    }
+
+    It 'keeps tracked package metadata aligned with the public product surface' {
+        $mcpPackage = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-core\package.json') -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 20
+        $mcpServer = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-core\mcp-server.js') -Raw -Encoding UTF8
+
+        $mcpPackage.name | Should -Be 'winsmux-mcp'
+        $mcpPackage.version | Should -Be $script:ProductVersion
+        $mcpPackage.private | Should -BeTrue
+        $mcpPackage.license | Should -Be 'Apache-2.0'
+        $mcpServer | Should -Match ('const SERVER_VERSION = "{0}";' -f [regex]::Escape($script:ProductVersion))
+    }
+
+    It 'documents the public license split for runtime compatibility notices' {
+        $readme = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md') -Raw -Encoding UTF8
+        $readmeJa = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.ja.md') -Raw -Encoding UTF8
+        $packageReadme = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'packages\winsmux\README.md') -Raw -Encoding UTF8
+        $thirdPartyNotices = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'THIRD_PARTY_NOTICES.md') -Raw -Encoding UTF8
+        $coreLicense = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'core\LICENSE') -Raw -Encoding UTF8
+
+        $readme | Should -Match 'Apache License 2\.0'
+        $readme | Should -Match 'core/LICENSE'
+        $readme | Should -Match 'THIRD_PARTY_NOTICES\.md'
+        $readmeJa | Should -Match 'Apache License 2\.0'
+        $readmeJa | Should -Match 'core/LICENSE'
+        $readmeJa | Should -Match 'THIRD_PARTY_NOTICES\.md'
+        $packageReadme | Should -Match 'The public npm package is Apache-2\.0'
+        $packageReadme | Should -Match 'github\.com/Sora-bluesky/winsmux/blob/main/core/LICENSE'
+        $packageReadme | Should -Match 'github\.com/Sora-bluesky/winsmux/blob/main/THIRD_PARTY_NOTICES\.md'
+        $thirdPartyNotices | Should -Match 'License: MIT'
+        $thirdPartyNotices | Should -Match 'MIT-derived `psmux` compatibility surface'
+        $coreLicense | Should -Match 'MIT License'
     }
 }

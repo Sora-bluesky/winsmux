@@ -229,6 +229,16 @@ $targets = @(
         Replace = "`${1}$Version`${2}"
     },
     @{
+        Path    = Join-Path $Root "winsmux-core\package.json"
+        Pattern = '("version"\s*:\s*")[^"]*(")'
+        Replace = "`${1}$Version`${2}"
+    },
+    @{
+        Path    = Join-Path $Root "winsmux-core\mcp-server.js"
+        Pattern = '(const SERVER_VERSION\s*=\s*")[^"]*(";)'
+        Replace = "`${1}$Version`${2}"
+    },
+    @{
         Path    = Join-Path $Root "skills\winsmux\SKILL.md"
         Pattern = '(version:\s*")[^"]*(")'
         Replace = "`${1}$Version`${2}"
@@ -341,6 +351,8 @@ try {
         "winsmux-app/src-tauri/Cargo.toml",
         "winsmux-app/src-tauri/Cargo.lock",
         "winsmux-app/src-tauri/tauri.conf.json",
+        "winsmux-core/package.json",
+        "winsmux-core/mcp-server.js",
         "skills/winsmux/SKILL.md",
         "skills/winsmux/references/winsmux-core.md"
     )

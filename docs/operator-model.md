@@ -115,7 +115,8 @@ The public first-run entrypoints now converge on:
 - `winsmux conflict-preflight`
 - `winsmux compare <runs|preflight|promote>`
 
-That direction is public product behavior. `/winsmux-start` remains a repository-operated Claude Code dogfooding flow and is not part of the primary public UX.
+That direction is public product behavior.
+Repository-specific startup flows are kept in contributor documents, not in the primary public UX.
 `winsmux launcher presets [--json]` reports the launcher presets, pair templates, and slot capabilities that should exist before a launch or compare-oriented run.
 `winsmux launcher lifecycle [preset|--clear] [--json]` reports or stores the local workspace lifecycle override.
 `winsmux launcher save <name>` stores that launcher template in the project `.winsmux` directory for later reuse.
@@ -124,7 +125,7 @@ Lifecycle presets are declarative workspace policy. They do not execute arbitrar
 It wraps run comparison, merge preflight, and follow-up candidate promotion behind one entrypoint.
 The desktop compare card surfaces shared changed files as hotspots and displays a risk badge before winner selection.
 
-Repository-operated runtime contracts also exist for contributor flows, but they are maintained as contributor/runtime documents rather than primary public product docs.
+Repository-specific runtime contracts also exist for contributor flows, but they are maintained as contributor documents rather than primary public product docs.
 
 ## 5. Public docs vs contributor docs
 

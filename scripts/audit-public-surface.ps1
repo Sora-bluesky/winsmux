@@ -32,8 +32,10 @@ function Test-IsPublicDoc {
     return $normalized -in @(
         'README.md',
         'README.ja.md',
+        'THIRD_PARTY_NOTICES.md',
         'docs/operator-model.md',
-        'docs/TROUBLESHOOTING.md'
+        'docs/TROUBLESHOOTING.md',
+        'packages/winsmux/README.md'
     )
 }
 
@@ -117,11 +119,24 @@ $forbiddenPublicRefs = @(
     'tasks/roadmap-title-ja.psd1',
     '.agents/skills/'
 )
+$forbiddenPublicProductFragments = @(
+    '/winsmux-start',
+    'test this repository itself',
+    '動作確認専用',
+    'dogfooding',
+    'Repository-operated',
+    'contributor/runtime'
+)
 foreach ($file in ($trackedFiles | Where-Object { Test-IsPublicDoc -Path $_ })) {
     $content = Get-Content -LiteralPath $file -Raw -ErrorAction Stop
     foreach ($reference in $forbiddenPublicRefs) {
         if ($content -match [Regex]::Escape($reference)) {
             $failures.Add("public doc directly references private/contributor surface '$reference': $file")
+        }
+    }
+    foreach ($fragment in $forbiddenPublicProductFragments) {
+        if ($content -match [Regex]::Escape($fragment)) {
+            $failures.Add("public doc exposes repository-only startup wording '$fragment': $file")
         }
     }
 }

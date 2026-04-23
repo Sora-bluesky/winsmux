@@ -84,8 +84,6 @@ winsmux init --workspace-lifecycle managed-worktree
 winsmux launcher presets --json
 ```
 
-`/winsmux-start` は、このリポジトリ自体の動作確認専用のコマンドです。公開利用では `winsmux init` と `winsmux launch` から始めます。
-
 ## 主要コマンド
 
 ```powershell
@@ -151,4 +149,7 @@ winsmux compare promote <run_id>
 
 ## ライセンス
 
-Apache License 2.0
+Apache License 2.0 です。
+
+一部のランタイム互換コードには、上流由来の MIT ライセンス表示が `core/LICENSE` に残ります。
+詳しくは [サードパーティライセンス](THIRD_PARTY_NOTICES.md) を参照してください。

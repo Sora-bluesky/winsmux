@@ -87,8 +87,6 @@ Inspect launcher presets before starting a compare-oriented run:
 winsmux launcher presets --json
 ```
 
-`/winsmux-start` is only used to test this repository itself. Public usage should start from `winsmux init` and `winsmux launch`.
-
 ## Main Commands
 
 ```powershell
@@ -154,4 +152,7 @@ Developer and contributor rules are intentionally kept out of this README. Start
 
 ## License
 
-Apache License 2.0
+Apache License 2.0.
+
+Some runtime compatibility code keeps an upstream MIT notice under `core/LICENSE`.
+See [Third-party notices](THIRD_PARTY_NOTICES.md) for the split.
