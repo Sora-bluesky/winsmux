@@ -3083,6 +3083,60 @@ function Invoke-Role {
     while ("$newRole-$nextNum" -in $existingLabels) { $nextNum++ }
     $newLabel = "$newRole-$nextNum"
 
+    $manifestEntry = $null
+    if ((Test-Path $manifestPath -PathType Leaf) -and
+        (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue)) {
+        $manifestEntry = @(Get-PaneControlManifestEntries -ProjectDir $projectDir | Where-Object {
+            [string]::Equals([string]$_.PaneId, $paneId, [System.StringComparison]::OrdinalIgnoreCase)
+        } | Select-Object -First 1)
+        if ($manifestEntry.Count -gt 0) {
+            $manifestEntry = $manifestEntry[0]
+        } else {
+            $manifestEntry = $null
+        }
+    }
+    $launchDir = $projectDir
+    if ($null -ne $manifestEntry -and -not [string]::IsNullOrWhiteSpace([string]$manifestEntry.LaunchDir)) {
+        $launchDir = [string]$manifestEntry.LaunchDir
+    } elseif ($null -ne $manifestEntry -and -not [string]::IsNullOrWhiteSpace([string]$manifestEntry.BuilderWorktreePath)) {
+        $launchDir = [string]$manifestEntry.BuilderWorktreePath
+    }
+    $gitDir = Join-Path $launchDir ".git"
+    if ($null -ne $manifestEntry -and -not [string]::IsNullOrWhiteSpace([string]$manifestEntry.GitWorktreeDir)) {
+        $gitDir = [string]$manifestEntry.GitWorktreeDir
+    }
+    $settings = Get-BridgeSettings -RootPath $projectDir
+    if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
+        $roleAgentConfig = Get-SlotAgentConfig -Role $newRole -SlotId $newLabel -Settings $settings -RootPath $projectDir
+    } else {
+        $roleAgentConfig = Get-RoleAgentConfig -Role $newRole -Settings $settings
+    }
+    $manifestRole = switch ($newRole) {
+        'worker' { 'Worker' }
+        'builder' { 'Builder' }
+        'researcher' { 'Researcher' }
+        'reviewer' { 'Reviewer' }
+        default { $newRole }
+    }
+    if ($manifestRole -notin @('Builder', 'Worker')) {
+        $launchDir = $projectDir
+        if (Get-Command Get-PaneControlGitWorktreeDir -ErrorAction SilentlyContinue) {
+            $gitDir = Get-PaneControlGitWorktreeDir -ProjectDir $projectDir
+        } else {
+            $gitDir = Join-Path $projectDir ".git"
+        }
+    }
+    $launchCmd = Get-BridgeProviderLaunchCommand `
+        -ProviderId ([string]$roleAgentConfig.Agent) `
+        -Model ([string]$roleAgentConfig.Model) `
+        -ProjectDir $launchDir `
+        -GitWorktreeDir $gitDir `
+        -RootPath $projectDir
+    $providerTarget = [string]$roleAgentConfig.Agent
+    if (-not [string]::IsNullOrWhiteSpace([string]$roleAgentConfig.Model)) {
+        $providerTarget = "${providerTarget}:$([string]$roleAgentConfig.Model)"
+    }
+
     # Rename pane first (before respawn)
     & winsmux select-pane -t $paneId -T $newLabel
 
@@ -3091,28 +3145,129 @@ function Invoke-Role {
     if ($labels.ContainsKey($oldLabel)) { $labels.Remove($oldLabel) }
     Save-Labels $labels
 
-    # Respawn pane (kills current process + restarts shell in one step, #174)
-    & winsmux respawn-pane -k -t $paneId
-
-    # Wait for shell ready (poll for PS prompt)
-    $deadline = (Get-Date).AddSeconds(15)
-    while ((Get-Date) -lt $deadline) {
-        $snapshot = (& winsmux capture-pane -t $paneId -p 2>$null | Out-String).TrimEnd()
-        $lastLine = ($snapshot -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)
-        if ($lastLine -and $lastLine.Trim() -match '^PS ') { break }
-        Start-Sleep -Milliseconds 500
+    if ((Test-Path $manifestPath -PathType Leaf) -and
+        (Get-Command Set-PaneControlManifestPaneProperties -ErrorAction SilentlyContinue)) {
+        $manifestProperties = [ordered]@{
+            label                      = $newLabel
+            role                       = $manifestRole
+            launch_dir                 = $launchDir
+            worktree_git_dir           = $gitDir
+            provider_target            = $providerTarget
+            capability_adapter         = [string]$roleAgentConfig.CapabilityAdapter
+            capability_command         = [string]$roleAgentConfig.CapabilityCommand
+            supports_parallel_runs     = [bool]$roleAgentConfig.SupportsParallelRuns
+            supports_interrupt         = [bool]$roleAgentConfig.SupportsInterrupt
+            supports_structured_result = [bool]$roleAgentConfig.SupportsStructuredResult
+            supports_file_edit         = [bool]$roleAgentConfig.SupportsFileEdit
+            supports_subagents         = [bool]$roleAgentConfig.SupportsSubagents
+            supports_verification      = [bool]$roleAgentConfig.SupportsVerification
+            supports_consultation      = [bool]$roleAgentConfig.SupportsConsultation
+        }
+        if ($manifestRole -notin @('Builder', 'Worker')) {
+            $manifestProperties['builder_worktree_path'] = ''
+            $manifestProperties['builder_branch'] = ''
+        }
+        Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath -PaneId $paneId -Properties $manifestProperties
     }
 
+    $sessionName = [string]$env:WINSMUX_ORCHESTRA_SESSION
     try {
-        Update-PaneControlManifestPaneLabel -ProjectDir $projectDir -PaneId $paneId -Label $newLabel | Out-Null
+        $manifestForEnvironment = Get-WinsmuxManifest -ProjectDir $projectDir
+        $manifestSessionName = [string](Get-PaneControlValue -InputObject $manifestForEnvironment.session -Name 'name' -Default '')
+        if ([string]::IsNullOrWhiteSpace($sessionName)) {
+            $sessionName = $manifestSessionName
+        }
     } catch {
     }
 
-    # Launch Codex agent
-    $gitDir = Join-Path $projectDir ".git"
-    $launchCmd = "codex --sandbox danger-full-access -C '$projectDir' --add-dir '$gitDir'"
-    & winsmux send-keys -t $paneId -l $launchCmd
-    & winsmux send-keys -t $paneId Enter
+    $transientEnvironmentNames = @()
+    if (-not [string]::IsNullOrWhiteSpace($sessionName) -and
+        (Get-Command Get-WinsmuxPaneEnvironment -ErrorAction SilentlyContinue)) {
+        $persistentEnvironmentNames = @('WINSMUX_ORCHESTRA_SESSION', 'WINSMUX_ORCHESTRA_PROJECT_DIR', 'WINSMUX_ROLE_MAP', 'WINSMUX_HOOK_PROFILE', 'WINSMUX_GOVERNANCE_MODE')
+        if (Get-Command Get-WinsmuxEnvironmentVariableNames -ErrorAction SilentlyContinue) {
+            $transientEnvironmentNames = @(Get-WinsmuxEnvironmentVariableNames | Where-Object { $_ -notin $persistentEnvironmentNames })
+        } else {
+            $transientEnvironmentNames = @(
+                'WINSMUX_ROLE',
+                'WINSMUX_PANE_ID',
+                'WINSMUX_BUILDER_WORKTREE',
+                'WINSMUX_ASSIGNED_WORKTREE',
+                'WINSMUX_ASSIGNED_BRANCH',
+                'WINSMUX_WORKTREE_GITDIR',
+                'WINSMUX_SLOT_ID',
+                'WINSMUX_EXPECTED_ORIGIN'
+            )
+        }
+        foreach ($name in $transientEnvironmentNames) {
+            try {
+                & winsmux set-environment -u -t $sessionName $name
+            } catch {
+            }
+        }
+        $roleMap = [ordered]@{}
+        try {
+            foreach ($entry in @(Get-PaneControlManifestEntries -ProjectDir $projectDir)) {
+                if ([string]::IsNullOrWhiteSpace([string]$entry.PaneId)) {
+                    continue
+                }
+
+                $roleMap[[string]$entry.PaneId] = [string]$entry.Role
+            }
+        } catch {
+        }
+        $roleMap[[string]$paneId] = $manifestRole
+        $roleMapJson = ($roleMap | ConvertTo-Json -Compress)
+        $builderWorktreePath = ''
+        $assignedBranch = ''
+        $environmentGitDir = ''
+        if ($manifestRole -in @('Builder', 'Worker') -and $null -ne $manifestEntry) {
+            $builderWorktreePath = [string]$manifestEntry.BuilderWorktreePath
+            $assignedBranch = [string]$manifestEntry.BuilderBranch
+            $environmentGitDir = $gitDir
+        }
+        $paneEnvironment = Get-WinsmuxPaneEnvironment `
+            -Role $manifestRole `
+            -PaneId $paneId `
+            -SessionName $sessionName `
+            -ProjectDir $projectDir `
+            -RoleMapJson $roleMapJson `
+            -BuilderWorktreePath $builderWorktreePath `
+            -SlotId $newLabel `
+            -AssignedBranch $assignedBranch `
+            -GitWorktreeDir $environmentGitDir
+        foreach ($entry in $paneEnvironment.GetEnumerator()) {
+            & winsmux set-environment -t $sessionName ([string]$entry.Key) ([string]$entry.Value)
+            if ($entry.Key -notin $persistentEnvironmentNames -and $entry.Key -notin $transientEnvironmentNames) {
+                $transientEnvironmentNames += [string]$entry.Key
+            }
+        }
+    }
+
+    try {
+        # Respawn pane (kills current process + restarts shell in one step, #174)
+        & winsmux respawn-pane -k -t $paneId -c $launchDir
+
+        # Wait for shell ready (poll for PS prompt)
+        $deadline = (Get-Date).AddSeconds(15)
+        while ((Get-Date) -lt $deadline) {
+            $snapshot = (& winsmux capture-pane -t $paneId -p 2>$null | Out-String).TrimEnd()
+            $lastLine = ($snapshot -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)
+            if ($lastLine -and $lastLine.Trim() -match '^PS ') { break }
+            Start-Sleep -Milliseconds 500
+        }
+
+        & winsmux send-keys -t $paneId -l $launchCmd
+        & winsmux send-keys -t $paneId Enter
+    } finally {
+        if (-not [string]::IsNullOrWhiteSpace($sessionName)) {
+            foreach ($name in @($transientEnvironmentNames | Select-Object -Unique)) {
+                try {
+                    & winsmux set-environment -u -t $sessionName $name
+                } catch {
+                }
+            }
+        }
+    }
 
     Write-Output "Role changed: $oldLabel -> $newLabel ($paneId)"
 }
