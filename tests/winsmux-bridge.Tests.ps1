@@ -93,7 +93,7 @@ Describe 'Assert-Role' {
         $labelsPath = Join-Path $tempRoot 'labels.json'
         @{
             self       = 'pane-self'
-            commander  = 'pane-commander'
+            operator  = 'pane-operator'
             builder    = 'pane-builder'
             worker     = 'pane-worker'
             researcher = 'pane-researcher'
@@ -103,7 +103,7 @@ Describe 'Assert-Role' {
         $script:roleGateTempRoot = $tempRoot
         $script:RoleGateLabelsFile = $labelsPath
         $env:WINSMUX_PANE_ID = 'pane-self'
-        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Commander","pane-commander":"Commander","pane-builder":"Builder","pane-worker":"Worker","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
+        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Operator","pane-operator":"Operator","pane-builder":"Builder","pane-worker":"Worker","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
     }
 
     AfterEach {
@@ -117,8 +117,8 @@ Describe 'Assert-Role' {
         }
     }
 
-    It 'allows Commander to send anywhere and denies typing into another pane' {
-        $env:WINSMUX_ROLE = 'Commander'
+    It 'allows Operator to send anywhere and denies typing into another pane' {
+        $env:WINSMUX_ROLE = 'Operator'
 
         (Assert-Role -Command 'send' -TargetPane 'reviewer') | Should -Be $true
         (Assert-Role -Command 'status') | Should -Be $true
@@ -134,11 +134,11 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'type' -TargetPane 'reviewer') | Should -Be $false
     }
 
-    It 'allows Builder to message Commander and denies sending to peers' {
+    It 'allows Builder to message Operator and denies sending to peers' {
         $env:WINSMUX_ROLE = 'Builder'
-        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Builder","pane-commander":"Commander","pane-builder":"Builder","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
+        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Builder","pane-operator":"Operator","pane-builder":"Builder","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
 
-        (Assert-Role -Command 'send' -TargetPane 'commander') | Should -Be $true
+        (Assert-Role -Command 'send' -TargetPane 'operator') | Should -Be $true
         (Assert-Role -Command 'status') | Should -Be $true
         (Assert-Role -Command 'board') | Should -Be $true
         (Assert-Role -Command 'inbox') | Should -Be $true
@@ -147,16 +147,16 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'explain') | Should -Be $true
         (Assert-Role -Command 'consult-result') | Should -Be $true
         (Assert-Role -Command 'type' -TargetPane 'self') | Should -Be $true
-        (Assert-Role -Command 'context-reset' -TargetPane 'commander') | Should -Be $false
+        (Assert-Role -Command 'context-reset' -TargetPane 'operator') | Should -Be $false
         (Assert-Role -Command 'send' -TargetPane 'reviewer') | Should -Be $false
         (Assert-Role -Command 'read' -TargetPane 'reviewer') | Should -Be $false
     }
 
-    It 'allows Researcher to message Commander and denies orchestration commands' {
+    It 'allows Researcher to message Operator and denies orchestration commands' {
         $env:WINSMUX_ROLE = 'Researcher'
-        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Researcher","pane-commander":"Commander","pane-builder":"Builder","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
+        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Researcher","pane-operator":"Operator","pane-builder":"Builder","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
 
-        (Assert-Role -Command 'message' -TargetPane 'commander') | Should -Be $true
+        (Assert-Role -Command 'message' -TargetPane 'operator') | Should -Be $true
         (Assert-Role -Command 'read' -TargetPane 'self') | Should -Be $true
         (Assert-Role -Command 'digest') | Should -Be $true
         (Assert-Role -Command 'consult-error') | Should -Be $true
@@ -165,11 +165,11 @@ Describe 'Assert-Role' {
         (Assert-Role -Command 'wait') | Should -Be $false
     }
 
-    It 'allows Reviewer to message Commander and denies privileged commands' {
+    It 'allows Reviewer to message Operator and denies privileged commands' {
         $env:WINSMUX_ROLE = 'Reviewer'
-        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Reviewer","pane-commander":"Commander","pane-builder":"Builder","pane-worker":"Worker","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
+        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Reviewer","pane-operator":"Operator","pane-builder":"Builder","pane-worker":"Worker","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
 
-        (Assert-Role -Command 'message' -TargetPane 'commander') | Should -Be $true
+        (Assert-Role -Command 'message' -TargetPane 'operator') | Should -Be $true
         (Assert-Role -Command 'review-request') | Should -Be $true
         (Assert-Role -Command 'review-approve') | Should -Be $true
         (Assert-Role -Command 'consult-result') | Should -Be $true
@@ -182,9 +182,9 @@ Describe 'Assert-Role' {
 
     It 'allows Worker to act as a review-capable pane while staying non-privileged' {
         $env:WINSMUX_ROLE = 'Worker'
-        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Worker","pane-commander":"Commander","pane-builder":"Builder","pane-worker":"Worker","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
+        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Worker","pane-operator":"Operator","pane-builder":"Builder","pane-worker":"Worker","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
 
-        (Assert-Role -Command 'message' -TargetPane 'commander') | Should -Be $true
+        (Assert-Role -Command 'message' -TargetPane 'operator') | Should -Be $true
         (Assert-Role -Command 'review-request') | Should -Be $true
         (Assert-Role -Command 'review-approve') | Should -Be $true
         (Assert-Role -Command 'review-fail') | Should -Be $true
@@ -196,7 +196,7 @@ Describe 'Assert-Role' {
 
     It 'denies review approval commands outside Reviewer role' {
         $env:WINSMUX_ROLE = 'Builder'
-        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Builder","pane-commander":"Commander","pane-builder":"Builder","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
+        $env:WINSMUX_ROLE_MAP = '{"pane-self":"Builder","pane-operator":"Operator","pane-builder":"Builder","pane-researcher":"Researcher","pane-reviewer":"Reviewer"}'
 
         (Assert-Role -Command 'review-request') | Should -Be $false
         (Assert-Role -Command 'review-approve') | Should -Be $false
@@ -244,9 +244,9 @@ Describe 'Get-BridgeSettings' {
         $settings.model | Should -Be 'gpt-5.4'
         $settings.config_version | Should -Be 1
         $settings.prompt_transport | Should -Be 'argv'
-        $settings.external_commander | Should -Be $true
+        $settings.external_operator | Should -Be $true
         $settings.legacy_role_layout | Should -Be $false
-        $settings.commanders | Should -Be 0
+        $settings.operators | Should -Be 0
         $settings.worker_count | Should -Be 6
         $settings.agent_slots.Count | Should -Be 6
         $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
@@ -262,7 +262,7 @@ Describe 'Get-BridgeSettings' {
 @'
 agent: claude
 reviewers: 3
-external-commander: false
+external-operator: false
 legacy-role-layout: true
 vault-keys:
   - GH_TOKEN
@@ -276,7 +276,7 @@ terminal: tab
             switch ($Name) {
                 '@bridge-agent' { 'gemini' }
                 '@bridge-model' { 'gpt-5.5-mini' }
-                '@bridge-external-commander' { 'on' }
+                '@bridge-external-operator' { 'on' }
                 '@bridge-worker-count' { '9' }
                 '@bridge-builders' { '7' }
                 '@bridge-researchers' { '2' }
@@ -291,7 +291,7 @@ terminal: tab
 
         $settings.agent | Should -Be 'claude'
         $settings.model | Should -Be 'gpt-5.5-mini'
-        $settings.external_commander | Should -Be $false
+        $settings.external_operator | Should -Be $false
         $settings.legacy_role_layout | Should -Be $true
         $settings.worker_count | Should -Be 9
         $settings.builders | Should -Be 7
@@ -305,7 +305,7 @@ terminal: tab
 @'
 agent: codex
 model: gpt-5.4
-external-commander: true
+external-operator: true
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
@@ -371,9 +371,9 @@ roles:
         $reviewerConfig.Agent | Should -Be 'codex'
         $reviewerConfig.Model | Should -Be 'gpt-5.4'
 
-        $commanderConfig = Get-RoleAgentConfig -Role 'Commander' -Settings $settings
-        $commanderConfig.Agent | Should -Be 'codex'
-        $commanderConfig.Model | Should -Be 'gpt-5.4'
+        $operatorConfig = Get-RoleAgentConfig -Role 'Operator' -Settings $settings
+        $operatorConfig.Agent | Should -Be 'codex'
+        $operatorConfig.Model | Should -Be 'gpt-5.4'
     }
 
     It 'parses per-role and slot-level prompt transport overrides with the same precedence as agent/model' {
@@ -461,6 +461,17 @@ prompt-transport: stdin
         $settings.prompt_transport | Should -Be 'stdin'
     }
 
+    It 'rejects unsupported workspace lifecycle presets from project settings' {
+@'
+workspace-lifecycle-preset: custom-script
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        { Get-BridgeSettings } |
+            Should -Throw "Invalid workspace_lifecycle_preset configuration: unsupported value 'custom-script'."
+    }
+
     It 'fails closed when prompt_transport is unsupported' {
 @'
 prompt-transport: socket
@@ -484,6 +495,33 @@ prompt-transport: socket
         $settings = Get-BridgeSettings
 
         $settings.prompt_transport | Should -Be 'argv'
+    }
+
+    It 'rejects retired operator role keys from project settings' {
+        $retiredExternalKey = 'external-' + 'comm' + 'ander'
+        $settingsPath = Join-Path $script:settingsTempRoot '.winsmux.yaml'
+@"
+${retiredExternalKey}: false
+"@ | Set-Content -Path $settingsPath -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        { Get-BridgeSettings } | Should -Throw '*Retired runtime role setting*external*'
+    }
+
+    It 'rejects retired operator role options from global settings' {
+        $retiredOption = '@bridge-external-' + 'comm' + 'ander'
+        Mock Get-WinsmuxOption {
+            param($Name, $Default)
+
+            if ($Name -eq $retiredOption) {
+                return 'false'
+            }
+
+            return $null
+        }
+
+        { Get-BridgeSettings } | Should -Throw '*Retired runtime role option*'
     }
 
     It 'ignores server-not-running probe text during raw global settings normalization' {
@@ -545,11 +583,638 @@ agent-slots:
         $workerThreeConfig.Source | Should -Be 'role'
     }
 
+    It 'lets the provider registry override a slot without mutating project settings' {
+@'
+agent: codex
+model: gpt-5.4
+prompt-transport: argv
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $registryEntry = Write-BridgeProviderRegistryEntry -RootPath $script:settingsTempRoot -SlotId 'worker-1' -Agent 'claude' -Model 'opus' -PromptTransport 'file' -Reason 'operator requested provider hot-swap'
+        $registryEntry.agent | Should -Be 'claude'
+        $registryEntry.model | Should -Be 'opus'
+        $registryEntry.prompt_transport | Should -Be 'file'
+
+        $registryPath = Get-BridgeProviderRegistryPath -RootPath $script:settingsTempRoot
+        Test-Path -LiteralPath $registryPath | Should -Be $true
+        $registryContent = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8
+        $registryContent | Should -Match '"worker-1"'
+        $registryContent | Should -Match '"reason":\s*"operator requested provider hot-swap"'
+
+        $workerOneConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        $workerOneConfig.Agent | Should -Be 'claude'
+        $workerOneConfig.Model | Should -Be 'opus'
+        $workerOneConfig.PromptTransport | Should -Be 'file'
+        $workerOneConfig.Source | Should -Be 'registry'
+
+        $settings.agent_slots[0].agent | Should -Be 'codex'
+        $settings.agent_slots[0].model | Should -Be 'gpt-5.4'
+        $settings.agent_slots[0].prompt_transport | Should -Be 'argv'
+    }
+
+    It 'rejects provider registry entries with invalid prompt transport values' {
+        {
+            Write-BridgeProviderRegistryEntry -RootPath $script:settingsTempRoot -SlotId 'worker-1' -Agent 'claude' -PromptTransport 'socket'
+        } | Should -Throw '*prompt_transport*'
+    }
+
+    It 'removes a provider registry override and falls back to configured slot settings' {
+@'
+agent: codex
+model: gpt-5.4
+prompt-transport: argv
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        Write-BridgeProviderRegistryEntry -RootPath $script:settingsTempRoot -SlotId 'worker-1' -Agent 'claude' -Model 'opus' -PromptTransport 'file' | Out-Null
+        $before = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        $before.Source | Should -Be 'registry'
+
+        $removeResult = Remove-BridgeProviderRegistryEntry -RootPath $script:settingsTempRoot -SlotId 'worker-1'
+        $removeResult.Removed | Should -Be $true
+
+        $after = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        $after.Agent | Should -Be 'codex'
+        $after.Model | Should -Be 'gpt-5.4'
+        $after.PromptTransport | Should -Be 'argv'
+        $after.Source | Should -Be 'slot'
+        $registryAfterRemove = Read-BridgeProviderRegistry -RootPath $script:settingsTempRoot
+        $registryAfterRemove.slots.Count | Should -Be 0
+    }
+
+    It 'reads provider capability registry entries' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "display_name": "Codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "auth_modes": ["api-key", "codex-chatgpt-local"],
+      "local_interactive_oauth_modes": ["codex-chatgpt-local"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+        $registry = Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot
+        $registry.providers.codex.adapter | Should -Be 'codex'
+        $registry.providers.codex.prompt_transports | Should -Be @('argv', 'file', 'stdin')
+        $registry.providers.codex.auth_modes | Should -Be @('api-key', 'codex-chatgpt-local')
+        $registry.providers.codex.local_interactive_oauth_modes | Should -Be @('codex-chatgpt-local')
+        $registry.providers.codex.supports_file_edit | Should -Be $true
+
+        $capability = Get-BridgeProviderCapability -RootPath $script:settingsTempRoot -ProviderId 'CODEX'
+        $capability.command | Should -Be 'codex'
+    }
+
+    It 'projects provider capability fields onto resolved slot configs' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "auth_modes": ["api-key", "codex-chatgpt-local"],
+      "local_interactive_oauth_modes": ["codex-chatgpt-local"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+    auth-mode: codex-chatgpt-local
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $config = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+
+        $config.CapabilityAdapter | Should -Be 'codex'
+        $config.CapabilityCommand | Should -Be 'codex'
+        $config.AuthMode | Should -Be 'codex-chatgpt-local'
+        $config.AuthPolicy | Should -Be 'local_interactive_only'
+        $config.SupportsParallelRuns | Should -Be $true
+        $config.SupportsInterrupt | Should -Be $true
+        $config.SupportsInterruptDeclared | Should -Be $true
+        $config.SupportsStructuredResult | Should -Be $true
+        $config.SupportsFileEdit | Should -Be $true
+        $config.SupportsSubagents | Should -Be $true
+        $config.SupportsVerification | Should -Be $true
+        $config.SupportsConsultation | Should -Be $false
+    }
+
+    It 'distinguishes a missing interrupt capability from an explicit false value' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        $config = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+
+        $config.CapabilityAdapter | Should -Be 'codex'
+        $config.CapabilityCommand | Should -Be 'codex'
+        $config.SupportsInterrupt | Should -Be $false
+        $config.SupportsInterruptDeclared | Should -Be $false
+    }
+
+    It 'rejects slot prompt transport values not supported by provider capabilities' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: file
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        {
+            Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        } | Should -Throw "*does not support prompt_transport 'file'*"
+    }
+
+    It 'rejects provider registry prompt transport overrides not supported by provider capabilities' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "claude": {
+      "adapter": "claude",
+      "command": "claude",
+      "prompt_transports": ["file"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        Write-BridgeProviderRegistryEntry `
+            -RootPath $script:settingsTempRoot `
+            -SlotId 'worker-1' `
+            -Agent 'claude' `
+            -PromptTransport 'stdin' | Out-Null
+
+        {
+            Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        } | Should -Throw "*does not support prompt_transport 'stdin'*"
+    }
+
+    It 'rejects blocked provider auth modes before launch resolution' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "claude": {
+      "adapter": "claude",
+      "command": "claude",
+      "prompt_transports": ["file"],
+      "auth_modes": ["api-key", "claude-pro-max-oauth"],
+      "local_interactive_oauth_modes": ["claude-pro-max-oauth"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: claude
+model: opus
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: claude
+    model: opus
+    prompt-transport: file
+    auth-mode: token-broker
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        {
+            Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        } | Should -Throw '*must not broker OAuth*'
+    }
+
+    It 'rejects top-level blocked provider auth modes before launch resolution' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "claude": {
+      "adapter": "claude",
+      "command": "claude",
+      "prompt_transports": ["file"],
+      "auth_modes": ["api-key", "claude-pro-max-oauth"],
+      "local_interactive_oauth_modes": ["claude-pro-max-oauth"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: claude
+model: opus
+prompt-transport: file
+auth-mode: callback-url-receiver
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        {
+            Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        } | Should -Throw '*must not broker OAuth*'
+    }
+
+    It 'rejects providers missing from a non-empty provider capability registry' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+@'
+agent: codex
+model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: claude
+    model: opus
+    prompt-transport: stdin
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+        {
+            Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        } | Should -Throw "*Provider capability 'claude' was not found*"
+    }
+
+    It 'builds launch commands from provider capability adapter and command metadata' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex-local": {
+      "adapter": "codex",
+      "command": "codex-beta",
+      "prompt_transports": ["argv", "file"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+        $command = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'codex-local' `
+            -Model 'gpt-5.4' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+            -RootPath $script:settingsTempRoot
+
+        $command | Should -Match 'codex-beta'
+        $command | Should -Match '-c model=gpt-5\.4'
+        $command | Should -Match "-C 'C:\\Project Root'"
+        $command | Should -Match "--add-dir 'C:\\Project Root\\.git\\worktrees\\worker-1'"
+    }
+
+    It 'rejects structurally malformed provider capability registries' {
+        $registryPath = Get-BridgeProviderCapabilityRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+@'
+{
+  "version": 2,
+  "providers": {}
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw '*provider capability registry version*'
+
+@'
+{
+  "version": "1",
+  "providers": {}
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw '*provider capability registry version*'
+
+@'
+{
+  "version": 1.1,
+  "providers": {}
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw '*provider capability registry version*'
+
+@'
+{
+  "version": 1,
+  "providers": []
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw '*provider capability registry providers*'
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": true,
+      "command": "codex",
+      "prompt_transports": ["argv"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider capability field 'adapter'*"
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": 123,
+      "prompt_transports": ["argv"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider capability field 'command'*"
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv"],
+      "supports_file_edit": "yes"
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider capability field 'supports_file_edit'*"
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv"],
+      "supports_verificaton": true
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider capability field 'supports_verificaton'*"
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt-transports": ["argv"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider capability field 'prompt-transports'*"
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "supports_file_edit": true
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*Missing provider capability field 'adapter'*"
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["socket"]
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot } | Should -Throw '*provider capability prompt transport*'
+    }
+
+    It 'rejects structurally malformed provider registries' {
+        $registryPath = Get-BridgeProviderRegistryPath -RootPath $script:settingsTempRoot
+        $registryDir = Split-Path -Parent $registryPath
+        New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+
+        @'
+{
+  "version": 1,
+  "slots": []
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderRegistry -RootPath $script:settingsTempRoot } | Should -Throw '*provider registry slots*'
+
+        @'
+{
+  "version": 1,
+  "slots": {
+    "worker-1": "claude"
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider registry slot 'worker-1'*"
+
+        @'
+{
+  "version": 1,
+  "slots": {
+    "worker-1": {
+      "updated_at_utc": "2026-04-21T00:00:00Z",
+      "reason": "metadata only"
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider registry slot 'worker-1'*"
+
+        @'
+{
+  "version": 1,
+  "slots": {
+    "worker-1": {
+      "agent": {
+        "name": "claude"
+      },
+      "model": "opus"
+    }
+  }
+}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+        { Read-BridgeProviderRegistry -RootPath $script:settingsTempRoot } | Should -Throw "*provider registry field 'agent'*"
+    }
+
     It 'fails closed when explicit agent slot entries are malformed' {
 @'
 agent: codex
 model: gpt-5.4
-external-commander: true
+external-operator: true
 agent-slots:
   - runtime-role: worker
     agent: codex
@@ -564,7 +1229,7 @@ agent-slots:
 @'
 agent: codex
 model: gpt-5.4
-external-commander: true
+external-operator: true
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
@@ -585,7 +1250,7 @@ agent-slots:
 @'
 agent: codex
 model: gpt-5.4
-external-commander: true
+external-operator: true
 builders: 4
 reviewers: 1
 '@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
@@ -604,7 +1269,7 @@ reviewers: 1
 @'
 agent: claude
 model: sonnet
-external-commander: true
+external-operator: true
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
@@ -632,20 +1297,20 @@ Describe 'Get-OrchestraLayoutSettings' {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1')
     }
 
-    It 'uses external commander mode by default' {
+    It 'uses external operator mode by default' {
         $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
-            external_commander = $true
+            external_operator = $true
             worker_count       = 6
             legacy_role_layout = $false
-            commanders         = 0
+            operators         = 0
             builders           = 0
             researchers        = 0
             reviewers          = 0
         })
 
-        $layout.ExternalCommander | Should -Be $true
+        $layout.ExternalOperator | Should -Be $true
         $layout.LegacyRoleLayout | Should -Be $false
-        $layout.Commanders | Should -Be 0
+        $layout.Operators | Should -Be 0
         $layout.Workers | Should -Be 6
         $layout.Builders | Should -Be 0
         $layout.Researchers | Should -Be 0
@@ -654,7 +1319,7 @@ Describe 'Get-OrchestraLayoutSettings' {
 
     It 'prefers explicit agent slots over worker_count when deriving managed slot count' {
         $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
-            external_commander = $true
+            external_operator = $true
             worker_count       = 2
             agent_slots        = @(
                 [ordered]@{ slot_id = 'worker-1'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worktree_mode = 'managed' },
@@ -664,21 +1329,21 @@ Describe 'Get-OrchestraLayoutSettings' {
             agent             = 'codex'
             model             = 'gpt-5.4'
             legacy_role_layout = $false
-            commanders         = 0
+            operators         = 0
             builders           = 0
             researchers        = 0
             reviewers          = 0
         })
 
-        $layout.ExternalCommander | Should -Be $true
+        $layout.ExternalOperator | Should -Be $true
         $layout.LegacyRoleLayout | Should -Be $false
-        $layout.Commanders | Should -Be 0
+        $layout.Operators | Should -Be 0
         $layout.Workers | Should -Be 3
     }
 
     It 'allows agent slots without agent or model fields under strict mode' {
         $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
-            external_commander = $true
+            external_operator = $true
             worker_count       = 1
             agent_slots        = @(
                 [pscustomobject]@{
@@ -693,22 +1358,22 @@ Describe 'Get-OrchestraLayoutSettings' {
                 }
             )
             legacy_role_layout = $false
-            commanders         = 0
+            operators         = 0
             builders           = 0
             researchers        = 0
             reviewers          = 0
         })
 
-        $layout.ExternalCommander | Should -Be $true
+        $layout.ExternalOperator | Should -Be $true
         $layout.LegacyRoleLayout | Should -Be $false
-        $layout.Commanders | Should -Be 0
+        $layout.Operators | Should -Be 0
         $layout.Workers | Should -Be 2
     }
 
     It 'rejects unsupported non-worker runtime_role overrides until slot runtime wiring expands' {
         {
             Get-OrchestraLayoutSettings -Settings ([ordered]@{
-                external_commander = $true
+                external_operator = $true
                 worker_count       = 2
                 agent_slots        = @(
                     [ordered]@{ slot_id = 'worker-1'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worktree_mode = 'managed' },
@@ -717,7 +1382,7 @@ Describe 'Get-OrchestraLayoutSettings' {
                 agent              = 'codex'
                 model              = 'gpt-5.4'
                 legacy_role_layout = $false
-                commanders         = 0
+                operators         = 0
                 builders           = 0
                 researchers        = 0
                 reviewers          = 0
@@ -732,7 +1397,7 @@ Describe 'Get-OrchestraLayoutSettings' {
         Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{
             agent              = 'codex'
             model              = 'gpt-5.4'
-            external_commander = $true
+            external_operator = $true
             worker_count       = 2
             agent_slots        = @(
                 [ordered]@{ slot_id = 'worker-1'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worktree_mode = 'managed' },
@@ -750,18 +1415,18 @@ Describe 'Get-OrchestraLayoutSettings' {
 
     It 'preserves legacy role layouts only when explicit opt-in is enabled' {
         $layout = Get-OrchestraLayoutSettings -Settings ([ordered]@{
-            external_commander = $false
+            external_operator = $false
             worker_count       = 0
             legacy_role_layout = $true
-            commanders         = 1
+            operators         = 1
             builders           = 4
             researchers        = 1
             reviewers          = 1
         })
 
-        $layout.ExternalCommander | Should -Be $false
+        $layout.ExternalOperator | Should -Be $false
         $layout.LegacyRoleLayout | Should -Be $true
-        $layout.Commanders | Should -Be 1
+        $layout.Operators | Should -Be 1
         $layout.Workers | Should -Be 0
         $layout.Builders | Should -Be 4
         $layout.Researchers | Should -Be 1
@@ -771,10 +1436,10 @@ Describe 'Get-OrchestraLayoutSettings' {
     It 'rejects implicit legacy role counts when legacy_role_layout is false' {
         {
             Get-OrchestraLayoutSettings -Settings ([ordered]@{
-                external_commander = $true
+                external_operator = $true
                 worker_count       = 6
                 legacy_role_layout = $false
-                commanders         = 0
+                operators         = 0
                 builders           = 4
                 researchers        = 1
                 reviewers          = 1
@@ -1090,11 +1755,154 @@ NEXT_ACTION: rerun focused verification
         $skipTargets.VerifyTarget | Should -BeNullOrEmpty
     }
 
+    It 'uses manifest capability flags when no explicit verification target is supplied' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false'; supports_structured_result = 'true' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'true'; supports_structured_result = 'true' }
+                'reviewer' = [ordered]@{ role = 'Reviewer'; supports_verification = 'true'; supports_structured_result = 'true' }
+            }
+        }
+
+        $targets = Get-TeamPipelineStageTargets -BuilderLabel 'worker-1' -ResearcherLabel '' -ReviewerLabel '' -Manifest $manifest
+
+        $targets.VerifyTarget | Should -Be 'reviewer'
+    }
+
+    It 'requires structured results for automatic verification targets' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false'; supports_structured_result = 'true' }
+                'reviewer' = [ordered]@{ role = 'Reviewer'; supports_verification = 'true'; supports_structured_result = 'false' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'true'; supports_structured_result = 'true' }
+            }
+        }
+
+        $targets = Get-TeamPipelineStageTargets -BuilderLabel 'worker-1' -ResearcherLabel '' -ReviewerLabel '' -Manifest $manifest
+
+        $targets.VerifyTarget | Should -Be 'worker-2'
+    }
+
+    It 'falls back to configured researcher when no manifest verification capability is available' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'false'; supports_structured_result = 'true' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_verification = 'true'; supports_structured_result = 'false' }
+            }
+        }
+
+        $targets = Get-TeamPipelineStageTargets -BuilderLabel 'worker-1' -ResearcherLabel 'researcher' -ReviewerLabel '' -Manifest $manifest
+
+        $targets.VerifyTarget | Should -Be 'researcher'
+    }
+
+    It 'does not fall back to unstructured verification targets from the manifest' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_verification = 'true'; supports_structured_result = 'false' }
+                'researcher' = [ordered]@{ role = 'Researcher'; supports_verification = 'true'; supports_structured_result = 'false' }
+            }
+        }
+
+        $targets = Get-TeamPipelineStageTargets -BuilderLabel 'worker-1' -ResearcherLabel 'researcher' -ReviewerLabel '' -Manifest $manifest
+
+        $targets.VerifyTarget | Should -BeNullOrEmpty
+    }
+
+    It 'blocks one-shot orchestration when verification is required but no structured verifier exists' {
+        $manifest = [PSCustomObject]@{
+            Session = [PSCustomObject]@{
+                name        = 'winsmux-orchestra'
+                project_dir = 'C:\repo'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\repo\.worktrees\builder-1'; supports_verification = 'true'; supports_structured_result = 'false' }
+                'researcher' = [PSCustomObject]@{ pane_id = '%3'; role = 'Researcher'; supports_verification = 'true'; supports_structured_result = 'false' }
+            }
+        }
+
+        Mock Read-TeamPipelineManifest { $manifest }
+        Mock Invoke-TeamPipelineBridge { throw 'pipeline should not dispatch without a structured verifier' }
+
+        $result = Invoke-TeamPipeline -Task 'Investigate cache drift' -Builder 'builder-1' -Researcher 'researcher'
+
+        $result.Success | Should -Be $false
+        $result.FinalStatus | Should -Be 'VERIFY_UNAVAILABLE'
+        $result.VerificationUnavailableReason | Should -Match 'structured results'
+        Should -Invoke Invoke-TeamPipelineBridge -Times 0 -Exactly
+    }
+
+    It 'blocks one-shot orchestration when the build target cannot edit files' {
+        $manifest = [PSCustomObject]@{
+            Session = [PSCustomObject]@{
+                name        = 'winsmux-orchestra'
+                project_dir = 'C:\repo'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\repo\.worktrees\builder-1'; capability_adapter = 'codex'; capability_command = 'codex'; supports_file_edit = 'false'; supports_verification = 'true'; supports_structured_result = 'true' }
+                'reviewer'  = [PSCustomObject]@{ pane_id = '%3'; role = 'Reviewer'; supports_file_edit = 'false'; supports_verification = 'true'; supports_structured_result = 'true' }
+            }
+        }
+
+        Mock Read-TeamPipelineManifest { $manifest }
+        Mock Invoke-TeamPipelineBridge { throw 'pipeline should not dispatch to a build target without file edit support' }
+
+        $result = Invoke-TeamPipeline -Task 'Investigate cache drift' -Builder 'builder-1' -Reviewer 'reviewer' -SkipVerify
+
+        $result.Success | Should -Be $false
+        $result.FinalStatus | Should -Be 'EXEC_UNAVAILABLE'
+        $result.BuildUnavailableReason | Should -Match 'file edits'
+        Should -Invoke Invoke-TeamPipelineBridge -Times 0 -Exactly
+    }
+
+    It 'treats generated default file edit flags without capability identity as unknown' {
+        $manifest = [PSCustomObject]@{
+            Session = [PSCustomObject]@{
+                name        = 'winsmux-orchestra'
+                project_dir = 'C:\repo'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\repo\.worktrees\builder-1'; supports_file_edit = 'false' }
+            }
+        }
+
+        $script:teamPipelineBridgeCalls = @()
+
+        Mock Read-TeamPipelineManifest { $manifest }
+        Mock Invoke-TeamPipelineBridge {
+            param([string[]]$Arguments, [switch]$AllowFailure)
+            $script:teamPipelineBridgeCalls += ,@($Arguments)
+            [PSCustomObject]@{ ExitCode = 0; Output = '' }
+        }
+        Mock Wait-TeamPipelineStage {
+            [PSCustomObject]@{ Stage = 'EXEC'; Target = 'builder-1'; Status = 'EXEC_DONE'; Summary = 'build summary'; Transcript = '' }
+        }
+
+        $result = Invoke-TeamPipeline -Task 'Investigate cache drift' -Builder 'builder-1' -SkipPlan -SkipVerify
+
+        $result.Success | Should -Be $true
+        $result.FinalStatus | Should -Be 'EXEC_DONE'
+        @($script:teamPipelineBridgeCalls | Where-Object { $_[0] -eq 'send' -and $_[1] -eq 'builder-1' }).Count | Should -Be 1
+    }
+
     It 'prefers reviewer then researcher for consult targets and skips builder-only runs' {
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel 'reviewer') | Should -Be 'reviewer'
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel 'researcher' -ReviewerLabel '') | Should -Be 'researcher'
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel '' -ReviewerLabel 'builder-1') | Should -BeNullOrEmpty
         (Get-TeamPipelineConsultTarget -BuilderLabel 'builder-1' -ResearcherLabel '' -ReviewerLabel '') | Should -BeNullOrEmpty
+    }
+
+    It 'uses manifest consultation capability when no explicit consult target is supplied' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'worker-1' = [ordered]@{ role = 'Worker'; supports_consultation = 'false' }
+                'worker-2' = [ordered]@{ role = 'Worker'; supports_consultation = 'true' }
+            }
+        }
+
+        $target = Get-TeamPipelineConsultTarget -BuilderLabel 'worker-1' -ResearcherLabel '' -ReviewerLabel '' -Manifest $manifest
+
+        $target | Should -Be 'worker-2'
     }
 
     It 'inserts early and final consult stages into successful one-shot orchestration when a consult target exists' {
@@ -1202,6 +2010,34 @@ NEXT_ACTION: rerun focused verification
     }
 }
 
+Describe 'manifest worker isolation metadata' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\manifest.ps1')
+    }
+
+    It 'persists worker assignment fields in pane entries' {
+        $entry = ConvertTo-ManifestPaneEntry -PaneSummary ([ordered]@{
+            Label = 'worker-1'
+            PaneId = '%2'
+            SlotId = 'worker-1'
+            Role = 'Worker'
+            ProjectDir = 'C:\repo'
+            BuilderBranch = 'worktree-worker-1'
+            BuilderWorktreePath = 'C:\repo\.worktrees\worker-1'
+            WorktreeGitDir = 'C:\repo\.git\worktrees\worker-1'
+            ExpectedOrigin = 'https://github.com/example/repo.git'
+        })
+
+        $entry.pane_id | Should -Be '%2'
+        $entry.slot_id | Should -Be 'worker-1'
+        $entry.project_dir | Should -Be 'C:\repo'
+        $entry.builder_branch | Should -Be 'worktree-worker-1'
+        $entry.builder_worktree_path | Should -Be 'C:\repo\.worktrees\worker-1'
+        $entry.worktree_git_dir | Should -Be 'C:\repo\.git\worktrees\worker-1'
+        $entry.expected_origin | Should -Be 'https://github.com/example/repo.git'
+    }
+}
+
 Describe 'winsmux pane env contract' {
     BeforeAll {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\pane-env.ps1')
@@ -1251,10 +2087,10 @@ hook_profile: builder
 mode: core
 hook_profile: ci
 '@ | Set-Content -Path (Join-Path $script:paneEnvTempRoot '.winsmux\governance.yaml') -Encoding UTF8
-        $env:WINSMUX_HOOK_PROFILE = 'commander'
+        $env:WINSMUX_HOOK_PROFILE = 'operator'
         $env:WINSMUX_GOVERNANCE_MODE = 'standard'
 
-        (Resolve-WinsmuxHookProfile -ProjectDir $script:paneEnvTempRoot) | Should -Be 'commander'
+        (Resolve-WinsmuxHookProfile -ProjectDir $script:paneEnvTempRoot) | Should -Be 'operator'
         (Resolve-WinsmuxGovernanceMode -ProjectDir $script:paneEnvTempRoot) | Should -Be 'standard'
     }
 
@@ -1262,7 +2098,7 @@ hook_profile: ci
         $env:WINSMUX_HOOK_PROFILE = 'builder'
         $env:WINSMUX_GOVERNANCE_MODE = 'enhanced'
 
-        $payload = Get-WinsmuxPaneEnvironment -Role 'Worker' -PaneId '%4' -SessionName 'winsmux-orchestra' -ProjectDir $script:paneEnvTempRoot -RoleMapJson '{"%4":"Worker"}' -BuilderWorktreePath 'C:\repo\.worktrees\builder-1'
+        $payload = Get-WinsmuxPaneEnvironment -Role 'Worker' -PaneId '%4' -SessionName 'winsmux-orchestra' -ProjectDir $script:paneEnvTempRoot -RoleMapJson '{"%4":"Worker"}' -BuilderWorktreePath 'C:\repo\.worktrees\builder-1' -SlotId 'worker-1' -AssignedBranch 'worktree-worker-1' -GitWorktreeDir 'C:\repo\.git\worktrees\worker-1' -ExpectedOrigin 'https://github.com/example/repo.git'
 
         $payload.WINSMUX_ORCHESTRA_SESSION | Should -Be 'winsmux-orchestra'
         $payload.WINSMUX_ORCHESTRA_PROJECT_DIR | Should -Be $script:paneEnvTempRoot
@@ -1270,6 +2106,11 @@ hook_profile: ci
         $payload.WINSMUX_PANE_ID | Should -Be '%4'
         $payload.WINSMUX_ROLE_MAP | Should -Be '{"%4":"Worker"}'
         $payload.WINSMUX_BUILDER_WORKTREE | Should -Be 'C:\repo\.worktrees\builder-1'
+        $payload.WINSMUX_ASSIGNED_WORKTREE | Should -Be 'C:\repo\.worktrees\builder-1'
+        $payload.WINSMUX_SLOT_ID | Should -Be 'worker-1'
+        $payload.WINSMUX_ASSIGNED_BRANCH | Should -Be 'worktree-worker-1'
+        $payload.WINSMUX_WORKTREE_GITDIR | Should -Be 'C:\repo\.git\worktrees\worker-1'
+        $payload.WINSMUX_EXPECTED_ORIGIN | Should -Be 'https://github.com/example/repo.git'
         $payload.WINSMUX_HOOK_PROFILE | Should -Be 'builder'
         $payload.WINSMUX_GOVERNANCE_MODE | Should -Be 'enhanced'
     }
@@ -1339,6 +2180,64 @@ panes:
         $plan.LaunchCommand | Should -Match $([regex]::Escape("-C 'C:\repo\.worktrees\builder-2'"))
     }
 
+    It 'preserves explicit worktree_git_dir when reading a worker entry' {
+@'
+version: 1
+saved_at: '2026-04-07T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: 'C:\repo'
+  git_worktree_dir: 'C:\repo\.git'
+panes:
+  - label: 'worker-1'
+    pane_id: '%2'
+    role: 'Worker'
+    exec_mode: true
+    launch_dir: 'C:\repo\.worktrees\worker-1'
+    builder_branch: 'worktree-worker-1'
+    builder_worktree_path: 'C:\repo\.worktrees\worker-1'
+    worktree_git_dir: 'C:\repo\.git\worktrees\worker-1'
+    task: null
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        $entries = @(Get-PaneControlManifestEntries -ProjectDir $script:paneControlTempRoot)
+
+        $entries.Count | Should -Be 1
+        $entries[0].LaunchDir | Should -Be 'C:\repo\.worktrees\worker-1'
+        $entries[0].BuilderBranch | Should -Be 'worktree-worker-1'
+        $entries[0].GitWorktreeDir | Should -Be 'C:\repo\.git\worktrees\worker-1'
+    }
+
+    It 'ignores stale worker worktree metadata when reading a non-worker entry' {
+@'
+version: 1
+saved_at: '2026-04-23T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: 'C:\repo'
+  git_worktree_dir: 'C:\repo\.git'
+panes:
+  - label: 'reviewer'
+    pane_id: '%4'
+    role: 'Reviewer'
+    exec_mode: true
+    launch_dir: ''
+    builder_branch: 'worktree-worker-1'
+    builder_worktree_path: 'C:\repo\.worktrees\worker-1'
+    worktree_git_dir: 'C:\repo\.git\worktrees\worker-1'
+    task: null
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        $entries = @(Get-PaneControlManifestEntries -ProjectDir $script:paneControlTempRoot)
+
+        $entries.Count | Should -Be 1
+        $entries[0].Role | Should -Be 'Reviewer'
+        $entries[0].LaunchDir | Should -Be 'C:\repo'
+        $entries[0].BuilderBranch | Should -Be ''
+        $entries[0].BuilderWorktreePath | Should -Be ''
+        $entries[0].GitWorktreeDir | Should -Be 'C:\repo\.git'
+    }
+
     It 'uses slot-level agent and model overrides when building a restart plan' {
 @'
 version: 1
@@ -1380,7 +2279,104 @@ panes:
         $plan.Agent | Should -Be 'claude'
         $plan.Model | Should -Be 'sonnet'
         $plan.PromptTransport | Should -Be 'argv'
-        $plan.LaunchCommand | Should -Be 'claude --permission-mode bypassPermissions'
+        $plan.LaunchCommand | Should -Be "claude --model 'sonnet' --permission-mode bypassPermissions"
+    }
+
+    It 'uses provider registry overrides when building a restart plan' {
+@"
+version: 1
+saved_at: '2026-04-07T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: '${script:paneControlTempRoot}'
+  git_worktree_dir: '${script:paneControlTempRoot}\.git'
+panes:
+  - label: 'worker-1'
+    pane_id: '%2'
+    role: 'Worker'
+    exec_mode: false
+    launch_dir: '${script:paneControlTempRoot}'
+    task: null
+"@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+
+        @"
+agent: codex
+model: gpt-5.4
+agent_slots:
+  - slot_id: worker-1
+    runtime_role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt_transport: argv
+"@ | Set-Content -Path (Join-Path $script:paneControlTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Write-BridgeProviderRegistryEntry `
+            -RootPath $script:paneControlTempRoot `
+            -SlotId 'worker-1' `
+            -Agent 'claude' `
+            -Model 'opus' `
+            -PromptTransport 'file' `
+            -Reason 'operator requested provider hot-swap' | Out-Null
+        $settings = Get-BridgeSettings -RootPath $script:paneControlTempRoot
+
+        $plan = Get-PaneControlRestartPlan -ProjectDir $script:paneControlTempRoot -PaneId '%2' -Settings $settings
+
+        $plan.Agent | Should -Be 'claude'
+        $plan.Model | Should -Be 'opus'
+        $plan.PromptTransport | Should -Be 'file'
+        $plan.Source | Should -Be 'registry'
+        $plan.LaunchCommand | Should -Be "claude --model 'opus' --permission-mode bypassPermissions"
+    }
+
+    It 'projects provider capability adapters into restart plans' {
+@"
+version: 1
+saved_at: '2026-04-07T00:00:00+09:00'
+session:
+  name: 'winsmux-orchestra'
+  project_dir: '${script:paneControlTempRoot}'
+  git_worktree_dir: '${script:paneControlTempRoot}\.git'
+panes:
+  - label: 'worker-1'
+    pane_id: '%2'
+    role: 'Worker'
+    exec_mode: false
+    launch_dir: '${script:paneControlTempRoot}'
+    task: null
+"@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'manifest.yaml') -Encoding UTF8
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex-nightly": {
+      "adapter": "codex",
+      "command": "codex-nightly",
+      "prompt_transports": ["argv", "file"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:paneControlManifestDir 'provider-capabilities.json') -Encoding UTF8
+        Write-BridgeProviderRegistryEntry `
+            -RootPath $script:paneControlTempRoot `
+            -SlotId 'worker-1' `
+            -Agent 'codex-nightly' `
+            -Model 'gpt-5.4-nightly' `
+            -PromptTransport 'argv' `
+            -Reason 'operator requested provider hot-swap' | Out-Null
+        $settings = Get-BridgeSettings -RootPath $script:paneControlTempRoot
+
+        $plan = Get-PaneControlRestartPlan -ProjectDir $script:paneControlTempRoot -PaneId '%2' -Settings $settings
+
+        $plan.Agent | Should -Be 'codex-nightly'
+        $plan.CapabilityAdapter | Should -Be 'codex'
+        $plan.LaunchCommand | Should -Match '^codex-nightly -c model=gpt-5\.4-nightly'
     }
 
     It 'includes slot-level prompt transport overrides in the restart plan' {
@@ -1719,7 +2715,7 @@ Describe 'agent-monitor helpers' {
     }
 
     BeforeEach {
-        Mock Send-MonitorCommanderMailboxMessage { return $true }
+        Mock Send-MonitorOperatorMailboxMessage { return $true }
     }
 
     It 'treats Codex context exhaustion followed by a PowerShell prompt as a crash reason' {
@@ -1794,6 +2790,70 @@ Describe 'agent-monitor helpers' {
         Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
             $PaneId -eq '%2' -and
             $Text -eq "codex -c model=gpt-5.4 --sandbox danger-full-access -C 'C:\repo\.worktrees\builder-1' --add-dir 'C:\repo\.git\worktrees\builder-1'"
+        }
+    }
+
+    It 'uses provider capability adapters while waiting for respawn readiness' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $registryDir = Join-Path $tempRoot '.winsmux'
+
+        try {
+            New-Item -ItemType Directory -Path $registryDir -Force | Out-Null
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex-nightly": {
+      "adapter": "codex",
+      "command": "codex-nightly",
+      "prompt_transports": ["argv", "file"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $registryDir 'provider-capabilities.json') -Encoding UTF8
+
+            Mock Invoke-MonitorWinsmux { } -ParameterFilter {
+                $Arguments[0] -eq 'respawn-pane'
+            }
+            Mock Wait-MonitorPaneShellReady { }
+            Mock Send-MonitorBridgeCommand { }
+            Mock Get-PaneAgentStatus {
+                [PSCustomObject]@{
+                    Status       = 'ready'
+                    PaneId       = '%2'
+                    SnapshotTail = ''
+                    ExitReason   = ''
+                }
+            }
+
+            $result = Invoke-AgentRespawn `
+                -PaneId '%2' `
+                -Agent 'codex-nightly' `
+                -Model 'gpt-5.4-nightly' `
+                -ProjectDir $tempRoot `
+                -GitWorktreeDir 'C:\repo\.git\worktrees\builder-1' `
+                -RootPath $tempRoot `
+                -ReadyTimeoutSeconds 5
+
+            $result.Success | Should -Be $true
+            Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
+                $PaneId -eq '%2' -and
+                $Text -match '^codex-nightly -c model=gpt-5\.4-nightly'
+            }
+            Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+                $PaneId -eq '%2' -and $Agent -eq 'codex'
+            }
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
         }
     }
 
@@ -2016,6 +3076,320 @@ panes:
         }
     }
 
+    It 'uses provider registry overrides during a monitor cycle' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  worker-2:
+    pane_id: %4
+    role: Worker
+    launch_dir: $tempRoot
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+            Write-BridgeProviderRegistryEntry `
+                -RootPath $tempRoot `
+                -SlotId 'worker-2' `
+                -Agent 'claude' `
+                -Model 'opus' `
+                -PromptTransport 'file' `
+                -Reason 'operator requested provider hot-swap' | Out-Null
+
+            Mock Get-PaneAgentStatus {
+                [PSCustomObject]@{
+                    Status       = 'ready'
+                    PaneId       = '%4'
+                    SnapshotTail = ''
+                    SnapshotHash = 'hash-worker'
+                    ExitReason   = ''
+                }
+            }
+            Mock Update-MonitorIdleAlertState {
+                [ordered]@{
+                    ShouldAlert = $false
+                    Message     = ''
+                }
+            }
+            Mock Test-BuilderStall { $false }
+
+            Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                agent = 'codex'
+                model = 'gpt-5.4'
+                roles = [ordered]@{
+                    worker = [ordered]@{
+                        agent = 'codex'
+                        model = 'gpt-5.4'
+                    }
+                }
+                agent_slots = @(
+                    [ordered]@{
+                        slot_id = 'worker-2'
+                        runtime_role = 'worker'
+                        agent = 'codex'
+                        model = 'gpt-5.4'
+                    }
+                )
+            }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra' | Out-Null
+
+            Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+                $PaneId -eq '%4' -and $Agent -eq 'claude' -and $Role -eq 'Worker'
+            }
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'uses provider capability adapters during a monitor cycle' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  worker-2:
+    pane_id: %4
+    role: Worker
+    launch_dir: $tempRoot
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex-nightly": {
+      "adapter": "codex",
+      "command": "codex-nightly",
+      "prompt_transports": ["argv"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $manifestDir 'provider-capabilities.json') -Encoding UTF8
+            Write-BridgeProviderRegistryEntry `
+                -RootPath $tempRoot `
+                -SlotId 'worker-2' `
+                -Agent 'codex-nightly' `
+                -Model 'gpt-5.4-nightly' `
+                -PromptTransport 'argv' `
+                -Reason 'operator requested provider hot-swap' | Out-Null
+
+            Mock Get-PaneAgentStatus {
+                [PSCustomObject]@{
+                    Status       = 'ready'
+                    PaneId       = '%4'
+                    SnapshotTail = 'gpt-5.4   42% context left'
+                    SnapshotHash = 'hash-worker'
+                    ExitReason   = ''
+                }
+            }
+            Mock Update-MonitorIdleAlertState {
+                [ordered]@{
+                    ShouldAlert = $false
+                    Message     = ''
+                }
+            }
+            Mock Test-BuilderStall { $false }
+
+            Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                agent = 'codex'
+                model = 'gpt-5.4'
+                roles = [ordered]@{
+                    worker = [ordered]@{
+                        agent = 'codex'
+                        model = 'gpt-5.4'
+                    }
+                }
+                agent_slots = @(
+                    [ordered]@{
+                        slot_id = 'worker-2'
+                        runtime_role = 'worker'
+                        agent = 'codex'
+                        model = 'gpt-5.4'
+                    }
+                )
+            }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra' | Out-Null
+
+            Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+                $PaneId -eq '%4' -and $Agent -eq 'codex' -and $Role -eq 'Worker'
+            }
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'fails closed when the provider registry is malformed during a monitor cycle' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        $registryPath = Join-Path $manifestDir 'provider-registry.json'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  worker-2:
+    pane_id: %4
+    role: Worker
+    launch_dir: $tempRoot
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+            '{ invalid json' | Set-Content -Path $registryPath -Encoding UTF8
+
+            Mock Get-PaneAgentStatus {
+                throw 'Get-PaneAgentStatus should not be called when provider registry is malformed.'
+            }
+            Mock Update-MonitorIdleAlertState { throw 'Update-MonitorIdleAlertState should not be called.' }
+            Mock Test-BuilderStall { throw 'Test-BuilderStall should not be called.' }
+
+            {
+                Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                    agent = 'codex'
+                    model = 'gpt-5.4'
+                    roles = [ordered]@{
+                        worker = [ordered]@{
+                            agent = 'codex'
+                            model = 'gpt-5.4'
+                        }
+                    }
+                }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra'
+            } | Should -Throw "*Invalid provider registry JSON*"
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
+    It 'fails closed when the provider registry structure is invalid during a monitor cycle' {
+        $cases = @(
+            [PSCustomObject]@{
+                Name = 'slots array'
+                Body = @'
+{
+  "version": 1,
+  "slots": []
+}
+'@
+                Message = '*provider registry slots*'
+            },
+            [PSCustomObject]@{
+                Name = 'scalar slot entry'
+                Body = @'
+{
+  "version": 1,
+  "slots": {
+    "worker-2": "claude"
+  }
+}
+'@
+                Message = "*provider registry slot 'worker-2'*"
+            },
+            [PSCustomObject]@{
+                Name = 'metadata-only slot entry'
+                Body = @'
+{
+  "version": 1,
+  "slots": {
+    "worker-2": {
+      "updated_at_utc": "2026-04-21T00:00:00Z",
+      "reason": "metadata only"
+    }
+  }
+}
+'@
+                Message = "*provider registry slot 'worker-2'*"
+            },
+            [PSCustomObject]@{
+                Name = 'non-scalar provider field'
+                Body = @'
+{
+  "version": 1,
+  "slots": {
+    "worker-2": {
+      "agent": {
+        "name": "claude"
+      },
+      "model": "opus"
+    }
+  }
+}
+'@
+                Message = "*provider registry field 'agent'*"
+            }
+        )
+
+        foreach ($case in $cases) {
+            $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+            $manifestDir = Join-Path $tempRoot '.winsmux'
+            $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+            $registryPath = Join-Path $manifestDir 'provider-registry.json'
+
+            try {
+                New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  worker-2:
+    pane_id: %4
+    role: Worker
+    launch_dir: $tempRoot
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+                $case.Body | Set-Content -Path $registryPath -Encoding UTF8
+
+                Mock Get-PaneAgentStatus {
+                    throw "Get-PaneAgentStatus should not be called for malformed provider registry case '$($case.Name)'."
+                }
+                Mock Update-MonitorIdleAlertState { throw 'Update-MonitorIdleAlertState should not be called.' }
+                Mock Test-BuilderStall { throw 'Test-BuilderStall should not be called.' }
+
+                {
+                    Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                        agent = 'codex'
+                        model = 'gpt-5.4'
+                        roles = [ordered]@{
+                            worker = [ordered]@{
+                                agent = 'codex'
+                                model = 'gpt-5.4'
+                            }
+                        }
+                    }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra'
+                } | Should -Throw $case.Message
+            } finally {
+                if (Test-Path $tempRoot) {
+                    Remove-Item -Path $tempRoot -Recurse -Force
+                }
+            }
+        }
+    }
+
     It 'writes state, idle, and stalled events for detected pane states during a monitor cycle' {
         $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
         $manifestDir = Join-Path $tempRoot '.winsmux'
@@ -2115,7 +3489,7 @@ panes:
                 if ($PaneId -eq '%2') {
                     return [ordered]@{
                         ShouldAlert = $true
-                        Message     = 'Commander alert: idle pane builder-1 (%2, role=Builder)'
+                        Message     = 'Operator alert: idle pane builder-1 (%2, role=Builder)'
                     }
                 }
 
@@ -2498,6 +3872,21 @@ Describe 'agent-watchdog helpers' {
     }
 
     It 'runs a watchdog cycle through Invoke-AgentMonitorCycle with the requested thresholds' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-watchdog-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+        New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  worker-1:
+    pane_id: %2
+    role: Worker
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+
         Mock Get-BridgeSettings {
             [ordered]@{
                 agent = 'codex'
@@ -2516,13 +3905,22 @@ Describe 'agent-watchdog helpers' {
             }
         }
 
-        $result = Invoke-AgentWatchdogCycle -ManifestPath 'C:\repo\.winsmux\manifest.yaml' -SessionName 'winsmux-orchestra' -IdleThreshold 120
+        try {
+            $result = Invoke-AgentWatchdogCycle -ManifestPath $manifestPath -SessionName 'winsmux-orchestra' -IdleThreshold 120
 
-        $result.Checked | Should -Be 1
-        Should -Invoke Invoke-AgentMonitorCycle -Times 1 -Exactly -ParameterFilter {
-            $ManifestPath -eq 'C:\repo\.winsmux\manifest.yaml' -and
-            $SessionName -eq 'winsmux-orchestra' -and
-            $IdleThreshold -eq 120
+            $result.Checked | Should -Be 1
+            Should -Invoke Get-BridgeSettings -Times 1 -Exactly -ParameterFilter {
+                $RootPath -eq $tempRoot
+            }
+            Should -Invoke Invoke-AgentMonitorCycle -Times 1 -Exactly -ParameterFilter {
+                $ManifestPath -eq $manifestPath -and
+                $SessionName -eq 'winsmux-orchestra' -and
+                $IdleThreshold -eq 120
+            }
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
         }
     }
 
@@ -2842,18 +4240,18 @@ Describe 'orchestra-start watchdog contract' {
         $script:orchestraStartContent = Get-Content -Path $script:orchestraStartPath -Raw -Encoding UTF8
     }
 
-    It 'launches commander-poll with Start-Process before the watchdog' {
-        $script:orchestraStartContent | Should -Match 'function Start-CommanderPollJob \{'
-        $script:orchestraStartContent | Should -Match 'commander-poll\.ps1'
+    It 'launches operator-poll with Start-Process before the watchdog' {
+        $script:orchestraStartContent | Should -Match 'function Start-OperatorPollJob \{'
+        $script:orchestraStartContent | Should -Match 'operator-poll\.ps1'
         $script:orchestraStartContent | Should -Match "'-Interval'"
         $script:orchestraStartContent | Should -Match '-Interval 20'
-        $script:orchestraStartContent | Should -Match '-CommanderPollPid \$commanderPollProcess\.Id'
+        $script:orchestraStartContent | Should -Match '-OperatorPollPid \$operatorPollProcess\.Id'
 
-        $commanderPollIndex = $script:orchestraStartContent.IndexOf('$commanderPollProcess = Start-CommanderPollJob')
+        $operatorPollIndex = $script:orchestraStartContent.IndexOf('$operatorPollProcess = Start-OperatorPollJob')
         $watchdogIndex = $script:orchestraStartContent.IndexOf('$watchdogProcess = Start-AgentWatchdogJob')
-        $commanderPollIndex | Should -BeGreaterThan -1
+        $operatorPollIndex | Should -BeGreaterThan -1
         $watchdogIndex | Should -BeGreaterThan -1
-        $commanderPollIndex | Should -BeLessThan $watchdogIndex
+        $operatorPollIndex | Should -BeLessThan $watchdogIndex
     }
 
     It 'launches the watchdog with Start-Process so it survives script exit' {
@@ -2867,8 +4265,8 @@ Describe 'orchestra-start watchdog contract' {
     }
 
     It 'persists both process pids and prints cleanup guidance' {
-        $script:orchestraStartContent | Should -Match 'commander_poll_pid\s*=\s*\$CommanderPollPid'
-        $script:orchestraStartContent | Should -Match 'Commander Poll PID: \$\(\$commanderPollProcess\.Id\)'
+        $script:orchestraStartContent | Should -Match 'operator_poll_pid\s*=\s*\$OperatorPollPid'
+        $script:orchestraStartContent | Should -Match 'Operator Poll PID: \$\(\$operatorPollProcess\.Id\)'
         $script:orchestraStartContent | Should -Match 'watchdog_pid\s*=\s*\$WatchdogPid'
         $script:orchestraStartContent | Should -Match 'server_watchdog_pid\s*=\s*\$ServerWatchdogPid'
         $script:orchestraStartContent | Should -Match '-WatchdogPid \$watchdogProcess\.Id'
@@ -2909,6 +4307,59 @@ Describe 'orchestra-start server bootstrap' {
             $script:attachStateStore = [pscustomobject]$merged
             return $script:attachStateStore
         }
+    }
+
+    It 'redacts credentials from expected origin metadata' {
+        ConvertTo-SafeGitRemoteUrl -RemoteUrl 'https://token@example.com/org/repo.git' |
+            Should -Be 'https://example.com/org/repo.git'
+        ConvertTo-SafeGitRemoteUrl -RemoteUrl 'ssh://user:secret@example.com/org/repo.git' |
+            Should -Be 'ssh://example.com/org/repo.git'
+        ConvertTo-SafeGitRemoteUrl -RemoteUrl 'git@example.com:org/repo.git' |
+            Should -Be 'git@example.com:org/repo.git'
+    }
+
+    It 'persists worker isolation metadata through Save-OrchestraSessionState' {
+        $script:savedManifest = $null
+        Mock Save-WinsmuxManifest {
+            param([string]$ProjectDir, $Manifest)
+            $script:savedManifest = $Manifest
+        }
+
+        Save-OrchestraSessionState `
+            -ProjectDir 'C:\repo' `
+            -SessionName 'winsmux-orchestra' `
+            -Settings ([ordered]@{ agent = 'codex'; model = 'gpt-5.4' }) `
+            -GitWorktreeDir 'C:\repo\.git\worktrees' `
+            -PaneSummaries @([ordered]@{
+                Label                  = 'worker-1'
+                PaneId                 = '%2'
+                SlotId                 = 'worker-1'
+                Role                   = 'Worker'
+                ExecMode               = $false
+                ProjectDir             = 'C:\repo'
+                LaunchDir              = 'C:\repo\.worktrees\worker-1'
+                BuilderBranch          = 'worktree-worker-1'
+                BuilderWorktreePath    = 'C:\repo\.worktrees\worker-1'
+                WorktreeGitDir         = 'C:\repo\.git\worktrees\worker-1'
+                ExpectedOrigin         = 'https://github.com/example/repo.git'
+                Status                 = 'ready'
+                CapabilityAdapter      = 'codex'
+                CapabilityCommand      = 'codex'
+                SupportsParallelRuns   = $true
+                SupportsInterrupt      = $true
+                SupportsStructuredResult = $true
+                SupportsFileEdit       = $true
+                SupportsSubagents      = $true
+                SupportsVerification   = $true
+                SupportsConsultation   = $true
+            }) | Out-Null
+
+        $script:savedManifest | Should -Not -BeNullOrEmpty
+        $pane = $script:savedManifest.panes.'worker-1'
+        $pane.slot_id | Should -Be 'worker-1'
+        $pane.project_dir | Should -Be 'C:\repo'
+        $pane.worktree_git_dir | Should -Be 'C:\repo\.git\worktrees\worker-1'
+        $pane.expected_origin | Should -Be 'https://github.com/example/repo.git'
     }
 
     It 'returns success when the server session already exists' {
@@ -3867,7 +5318,7 @@ Describe 'orchestra-start server bootstrap' {
             [PSCustomObject]@{
                 session = [PSCustomObject]@{
                     startup_token       = 'token-123'
-                    commander_poll_pid  = '101'
+                    operator_poll_pid  = '101'
                     watchdog_pid        = '202'
                     server_watchdog_pid = '303'
                 }
@@ -3878,7 +5329,7 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-ProcessSnapshot {
             [PSCustomObject]@{
                 ById = @{
-                    101 = [PSCustomObject]@{ ProcessId = 101; ParentProcessId = 1; CommandLine = 'pwsh commander-poll.ps1 C:\repo\.winsmux\manifest.yaml -StartupToken token-123 winsmux-orchestra C:\repo\scripts\winsmux-core.ps1'; Name = 'pwsh.exe' }
+                    101 = [PSCustomObject]@{ ProcessId = 101; ParentProcessId = 1; CommandLine = 'pwsh operator-poll.ps1 C:\repo\.winsmux\manifest.yaml -StartupToken token-123 winsmux-orchestra C:\repo\scripts\winsmux-core.ps1'; Name = 'pwsh.exe' }
                     202 = [PSCustomObject]@{ ProcessId = 202; ParentProcessId = 1; CommandLine = 'pwsh agent-watchdog.ps1 C:\repo\.winsmux\manifest.yaml -StartupToken token-123 winsmux-orchestra C:\repo\scripts\winsmux-core.ps1'; Name = 'pwsh.exe' }
                     303 = [PSCustomObject]@{ ProcessId = 303; ParentProcessId = 1; CommandLine = 'pwsh server-watchdog.ps1 C:\repo\.winsmux\manifest.yaml -StartupToken token-123 winsmux-orchestra C:\repo\scripts\winsmux-core.ps1'; Name = 'pwsh.exe' }
                 }
@@ -3897,7 +5348,7 @@ Describe 'orchestra-start server bootstrap' {
         Mock Get-WinsmuxManifest {
             [PSCustomObject]@{
                 session = [PSCustomObject]@{
-                    commander_poll_pid = '101'
+                    operator_poll_pid = '101'
                 }
             }
         }
@@ -3936,7 +5387,7 @@ Describe 'orchestra-start session reuse contract' {
 
     It 'does not mark session_ready true in the manifest until watchdog processes are started' {
         $script:orchestraStartContent | Should -Match 'Save-OrchestraSessionState[^\r\n]+SessionReady \$false'
-        $script:orchestraStartContent | Should -Match 'Save-OrchestraSessionState[^\r\n]+CommanderPollPid \$commanderPollProcess\.Id[^\r\n]+SessionReady \$true'
+        $script:orchestraStartContent | Should -Match 'Save-OrchestraSessionState[^\r\n]+OperatorPollPid \$operatorPollProcess\.Id[^\r\n]+SessionReady \$true'
     }
 
     It 'keeps detached startup on the session-ready path even when visible attach still needs retry' {
@@ -4013,10 +5464,43 @@ Describe 'orchestra-start session reuse contract' {
         $script:orchestraStartContent | Should -Match '\$defaultModel'
     }
 
+    It 'persists provider capability fields in pane manifest entries' {
+        $script:orchestraStartContent | Should -Match 'CapabilityAdapter = \[string\]\$slotAgentConfig\.CapabilityAdapter'
+        $script:orchestraStartContent | Should -Match 'SupportsFileEdit = \[bool\]\$slotAgentConfig\.SupportsFileEdit'
+        $script:orchestraStartContent | Should -Match 'SupportsVerification = \[bool\]\$slotAgentConfig\.SupportsVerification'
+        $script:orchestraStartContent | Should -Match 'capability_adapter\s*=\s*\[string\]\$paneSummary\.CapabilityAdapter'
+        $script:orchestraStartContent | Should -Match 'supports_file_edit\s*=\s*\[bool\]\$paneSummary\.SupportsFileEdit'
+        $script:orchestraStartContent | Should -Match 'supports_verification\s*=\s*\[bool\]\$paneSummary\.SupportsVerification'
+    }
+
+    It 'uses the capability adapter for startup readiness detection' {
+        $summary = [pscustomobject]@{
+            Agent = 'codex-nightly'
+            CapabilityAdapter = 'codex'
+        }
+
+        Get-OrchestraReadinessAgentName -PaneSummary $summary | Should -Be 'codex'
+
+        $legacySummary = [pscustomobject]@{
+            Agent = 'codex'
+            CapabilityAdapter = ''
+        }
+
+        Get-OrchestraReadinessAgentName -PaneSummary $legacySummary | Should -Be 'codex'
+        $script:orchestraStartContent | Should -Match '\$readinessAgent\s*=\s*Get-OrchestraReadinessAgentName -PaneSummary \$paneSummary'
+        $script:orchestraStartContent | Should -Match 'Wait-AgentReady -PaneId \$paneSummary\.PaneId -Agent \$readinessAgent'
+    }
+
+    It 'uses the capability adapter for startup exec-mode labels' {
+        $script:orchestraStartContent | Should -Match '\$execModeAgent = \[string\]\$slotAgentConfig\.CapabilityAdapter'
+        $script:orchestraStartContent | Should -Match '\$execMode = \$execModeAgent\.Trim\(\)\.ToLowerInvariant\(\) -eq ''codex'''
+        $script:orchestraStartContent | Should -Not -Match '\$execMode = \(\[string\]\$slotAgentConfig\.Agent\)\.Trim\(\)\.ToLowerInvariant\(\) -eq ''codex'''
+    }
+
     It 'routes partial bootstrap invalid state into the startup rollback path by throwing' {
         {
             Assert-OrchestraBootstrapVerification -PaneSummaries @(
-                [pscustomobject]@{ PaneId = '%1'; Label = 'commander' },
+                [pscustomobject]@{ PaneId = '%1'; Label = 'operator' },
                 [pscustomobject]@{ PaneId = '%2'; Label = 'builder-1' }
             ) -InvalidCount 1 -ReadyCount 1
         } | Should -Throw -ExpectedMessage '*startup aborted because 1 pane(s) are bootstrap_invalid and only 1 of 2 expected pane(s) are ready.*'
@@ -4025,7 +5509,7 @@ Describe 'orchestra-start session reuse contract' {
     It 'throws when bootstrap verification finds no ready panes' {
         {
             Assert-OrchestraBootstrapVerification -PaneSummaries @(
-                [pscustomobject]@{ PaneId = '%1'; Label = 'commander' }
+                [pscustomobject]@{ PaneId = '%1'; Label = 'operator' }
             ) -InvalidCount 1 -ReadyCount 0
         } | Should -Throw -ExpectedMessage '*no panes passed bootstrap verification*'
     }
@@ -4337,6 +5821,7 @@ Describe 'orchestra-start rollback helpers' {
         [string]$plan.environment.WINSMUX_ROLE | Should -Be 'Worker'
         [string]$plan.environment.WINSMUX_GOVERNANCE_MODE | Should -Be 'enhanced'
         [string]$plan.launch_command | Should -Be 'codex --help'
+        [bool]$plan.supports_interrupt | Should -Be $true
         [string]$plan.startup_token | Should -Be 'token-123'
         [string]$plan.ready_marker_path | Should -Match '[\\/]2-token-123\.ready\.json$'
         $bridgeCalls.Count | Should -Be 1
@@ -4344,6 +5829,84 @@ Describe 'orchestra-start rollback helpers' {
         $sentCommands.Count | Should -Be 1
         $sentCommands[0] | Should -Match 'orchestra-pane-bootstrap\.ps1'
         $sentCommands[0] | Should -Match '-PlanFile'
+    }
+
+    It 'does not send an interrupt key when the provider cannot interrupt' {
+        $sentCommands = [System.Collections.Generic.List[string]]::new()
+        $bridgeCalls = [System.Collections.Generic.List[object]]::new()
+        $cleanPtyEnv = [PSCustomObject]@{
+            RemoveCommand = ''
+            Environment   = [ordered]@{
+                WINSMUX_ROLE = 'Worker'
+            }
+        }
+
+        Mock Wait-PaneShellReady { }
+        Mock Invoke-Bridge {
+            $bridgeCalls.Add([ordered]@{
+                Arguments    = @($Arguments)
+                CaptureOutput = [bool]$CaptureOutput
+                AllowFailure  = [bool]$AllowFailure
+            }) | Out-Null
+
+            return [ordered]@{
+                ExitCode = 0
+                Output   = @()
+            }
+        } -ParameterFilter {
+            $Arguments[0] -eq 'keys'
+        }
+        Mock Send-OrchestraBridgeCommand {
+            $sentCommands.Add($Text) | Out-Null
+        }
+
+        $planPath = New-OrchestraPaneBootstrapPlan `
+            -ProjectDir $script:orchestraStartTempRoot `
+            -PaneId '%2' `
+            -Label 'worker-1' `
+            -Role 'Worker' `
+            -Agent 'example' `
+            -Model 'example-model' `
+            -StartupToken 'token-456' `
+            -LaunchDir 'C:\repo\.worktrees\builder-1' `
+            -CleanPtyEnv $cleanPtyEnv `
+            -LaunchCommand 'example-agent --help' `
+            -SupportsInterrupt $false
+
+        Start-OrchestraPaneBootstrap -PaneId '%2' -PlanPath $planPath
+
+        Should -Invoke Wait-PaneShellReady -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2'
+        }
+        $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 8
+        [bool]$plan.supports_interrupt | Should -Be $false
+        $bridgeCalls.Count | Should -Be 0
+        $sentCommands.Count | Should -Be 1
+        $sentCommands[0] | Should -Match 'orchestra-pane-bootstrap\.ps1'
+        $sentCommands[0] | Should -Match '-PlanFile'
+    }
+
+    It 'keeps bootstrap interrupts enabled when the capability flag is absent' {
+        $unknownInterrupt = [PSCustomObject]@{
+            CapabilityAdapter = 'example'
+            CapabilityCommand = 'example'
+            SupportsInterrupt = $false
+        }
+        $explicitNoInterrupt = [PSCustomObject]@{
+            CapabilityAdapter = 'example'
+            CapabilityCommand = 'example'
+            SupportsInterrupt = $false
+            SupportsInterruptDeclared = $true
+        }
+        $legacyConfig = [PSCustomObject]@{
+            Agent = 'example'
+            Model = 'example-model'
+            SupportsInterrupt = $false
+        }
+
+        Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $unknownInterrupt | Should -Be $true
+        Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $explicitNoInterrupt | Should -Be $false
+        Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $legacyConfig | Should -Be $true
     }
 }
 
@@ -4373,6 +5936,323 @@ Describe 'doctor bridge config metadata check' {
         $result.Status | Should -Be 'fail'
         $result.Label | Should -Be 'Bridge config metadata'
         $result.Detail | Should -Be '.winsmux.yaml not found'
+    }
+
+    It 'fails worker drift check with operator remediation text' {
+        Mock Get-DoctorRepoRoot { $script:doctorTempRoot }
+        Mock Get-DoctorGitCommandPath { 'git' }
+        Mock Get-WinsmuxManifest { [pscustomobject]@{} }
+        Mock Get-WinsmuxWorkerIsolationReport {
+            [pscustomobject]@{
+                ok          = $false
+                summary     = '1 worker isolation issue'
+                findings    = @([pscustomobject]@{ label = 'worker-1'; message = 'branch is main; expected worktree-worker-1' })
+                remediation = 'Run git add, git commit, git push, and PR merge from the Operator shell.'
+            }
+        }
+
+        New-Item -ItemType Directory -Path (Join-Path $script:doctorTempRoot '.winsmux') -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $script:doctorTempRoot '.winsmux\manifest.yaml') -Force | Out-Null
+
+        $result = Test-WorkerGitDriftCheck
+
+        $result.Status | Should -Be 'fail'
+        $result.Label | Should -Be 'Worker isolation drift'
+        $result.Detail | Should -Match 'branch is main'
+        $result.Detail | Should -Match 'Operator shell'
+    }
+}
+
+Describe 'worker isolation diagnostics' {
+    BeforeAll {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+    }
+
+    BeforeEach {
+        $script:workerIsolationTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-worker-isolation-tests-' + [guid]::NewGuid().ToString('N'))
+        $script:workerIsolationWorktree = Join-Path $script:workerIsolationTempRoot '.worktrees\worker-1'
+        $script:workerIsolationGitDir = Join-Path $script:workerIsolationTempRoot '.git\worktrees\worker-1'
+        New-Item -ItemType Directory -Path $script:workerIsolationWorktree -Force | Out-Null
+        New-Item -ItemType Directory -Path $script:workerIsolationGitDir -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:workerIsolationTempRoot -and (Test-Path $script:workerIsolationTempRoot)) {
+            Remove-Item -Path $script:workerIsolationTempRoot -Recurse -Force
+        }
+    }
+
+    BeforeAll {
+        function script:New-TestWorkerIsolationManifest {
+            param(
+                [string]$ExpectedOrigin = 'https://github.com/example/repo.git',
+                [string]$Role = 'Worker'
+            )
+
+            [pscustomobject]@{
+                panes = [ordered]@{
+                    'worker-1' = [pscustomobject]@{
+                        role                  = $Role
+                        launch_dir            = $script:workerIsolationWorktree
+                        builder_worktree_path = $script:workerIsolationWorktree
+                        builder_branch        = 'worktree-worker-1'
+                        worktree_git_dir      = $script:workerIsolationGitDir
+                        expected_origin       = $ExpectedOrigin
+                    }
+                }
+            }
+        }
+
+        function script:New-TestWorkerIsolationGitInvoker {
+            param(
+                [string]$Branch = 'worktree-worker-1',
+                [string]$Origin = 'https://github.com/example/repo.git'
+            )
+
+            return {
+                param([string]$WorktreePath, [string[]]$Arguments)
+
+                switch ($Arguments -join ' ') {
+                    'rev-parse --show-toplevel' { $WorktreePath; break }
+                    'branch --show-current' { $Branch; break }
+                    'config --get remote.origin.url' { $Origin; break }
+                    'rev-parse --git-dir' { $script:workerIsolationGitDir; break }
+                    default { throw "unexpected git args: $($Arguments -join ' ')" }
+                }
+            }.GetNewClosure()
+        }
+    }
+
+    It 'passes when worker root, branch, origin, and gitdir match the manifest' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest) `
+            -GitPath 'git' `
+            -GitInvoker {
+                param([string]$WorktreePath, [string[]]$Arguments)
+
+                switch ($Arguments -join ' ') {
+                    'rev-parse --show-toplevel' { $WorktreePath; break }
+                    'branch --show-current' { 'worktree-worker-1'; break }
+                    'config --get remote.origin.url' { 'https://github.com/example/repo.git'; break }
+                    'rev-parse --git-dir' { $script:workerIsolationGitDir; break }
+                    default { throw "unexpected git args: $($Arguments -join ' ')" }
+                }
+            }
+
+        $report.ok | Should -Be $true
+        $report.status | Should -Be 'pass'
+        $report.worker_count | Should -Be 1
+        $report.summary | Should -Be '1 worker pane(s) isolated'
+    }
+
+    It 'audits legacy Builder panes with worktree metadata' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest -Role 'Builder') `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker -Branch 'main')
+
+        $report.ok | Should -Be $false
+        $report.worker_count | Should -Be 1
+        $report.findings[0].message | Should -Match 'branch is main'
+    }
+
+    It 'audits pane entries that expose worktree metadata even without worker role' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest -Role 'Researcher') `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker -Branch 'main')
+
+        $report.ok | Should -Be $false
+        $report.worker_count | Should -Be 1
+        $report.findings[0].message | Should -Match 'branch is main'
+    }
+
+    It 'ignores non-worker panes without assigned worktree metadata' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $manifest = [pscustomobject]@{
+            panes = [ordered]@{
+                operator = [pscustomobject]@{
+                    role             = 'Operator'
+                    launch_dir       = $script:workerIsolationTempRoot
+                    worktree_git_dir = $script:workerIsolationGitDir
+                    expected_origin  = 'https://github.com/example/repo.git'
+                }
+            }
+        }
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest $manifest `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker -Branch 'main')
+
+        $report.ok | Should -Be $true
+        $report.worker_count | Should -Be 0
+    }
+
+    It 'allows scaled worker panes before gitdir and origin metadata are refreshed' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $manifest = [pscustomobject]@{
+            panes = [ordered]@{
+                'worker-7' = [pscustomobject]@{
+                    role                  = 'Worker'
+                    launch_dir            = $script:workerIsolationWorktree
+                    builder_worktree_path = $script:workerIsolationWorktree
+                    builder_branch        = 'worktree-worker-1'
+                }
+            }
+        }
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest $manifest `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker)
+
+        $report.ok | Should -Be $true
+        $report.worker_count | Should -Be 1
+    }
+
+    It 'allows local-only repositories when expected origin is recorded as empty' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest -ExpectedOrigin '') `
+            -GitPath 'git' `
+            -GitInvoker {
+                param([string]$WorktreePath, [string[]]$Arguments)
+
+                switch ($Arguments -join ' ') {
+                    'rev-parse --show-toplevel' { $WorktreePath; break }
+                    'branch --show-current' { 'worktree-worker-1'; break }
+                    'config --get remote.origin.url' { throw 'remote origin not configured' }
+                    'rev-parse --git-dir' { $script:workerIsolationGitDir; break }
+                    default { throw "unexpected git args: $($Arguments -join ' ')" }
+                }
+            }
+
+        $report.ok | Should -Be $true
+        $report.findings.Count | Should -Be 0
+    }
+
+    It 'fails when expected origin is empty but the worker has an origin' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest -ExpectedOrigin '') `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker -Origin 'https://github.com/example/repo.git')
+
+        $report.ok | Should -Be $false
+        $report.findings[0].message | Should -Match 'expected no origin'
+    }
+
+    It 'fails when expected gitdir is recorded as empty' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $manifest = New-TestWorkerIsolationManifest
+        $manifest.panes.'worker-1'.worktree_git_dir = ''
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest $manifest `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker)
+
+        $report.ok | Should -Be $false
+        $report.findings[0].message | Should -Be 'worktree_git_dir is empty'
+    }
+
+    It 'fails when actual gitdir drifts from the manifest' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $otherGitDir = Join-Path $script:workerIsolationTempRoot '.git\worktrees\other-worker'
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest) `
+            -GitPath 'git' `
+            -GitInvoker {
+                param([string]$WorktreePath, [string[]]$Arguments)
+
+                switch ($Arguments -join ' ') {
+                    'rev-parse --show-toplevel' { $WorktreePath; break }
+                    'branch --show-current' { 'worktree-worker-1'; break }
+                    'config --get remote.origin.url' { 'https://github.com/example/repo.git'; break }
+                    'rev-parse --git-dir' { $otherGitDir; break }
+                    default { throw "unexpected git args: $($Arguments -join ' ')" }
+                }
+            }
+
+        $report.ok | Should -Be $false
+        $report.findings[0].message | Should -Match 'gitdir is'
+    }
+
+    It 'fails when the worker branch drifts from the manifest' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest) `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker -Branch 'main')
+
+        $report.ok | Should -Be $false
+        $report.status | Should -Be 'fail'
+        $report.findings[0].message | Should -Match 'branch is main'
+        $report.remediation | Should -Match 'Operator shell'
+    }
+
+    It 'passes when actual origin only differs by credentials' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest -ExpectedOrigin 'https://github.com/example/repo.git') `
+            -GitPath 'git' `
+            -GitInvoker {
+                param([string]$WorktreePath, [string[]]$Arguments)
+
+                switch ($Arguments -join ' ') {
+                    'rev-parse --show-toplevel' { $WorktreePath; break }
+                    'branch --show-current' { 'worktree-worker-1'; break }
+                    'config --get remote.origin.url' { 'https://actual-token@github.com/example/repo.git'; break }
+                    'rev-parse --git-dir' { $script:workerIsolationGitDir; break }
+                    default { throw "unexpected git args: $($Arguments -join ' ')" }
+                }
+            }
+
+        $report.ok | Should -Be $true
+        $report.findings.Count | Should -Be 0
+        $report.workers[0].actual_origin | Should -Be 'https://[redacted]@github.com/example/repo.git'
+    }
+
+    It 'redacts credentials from origin drift findings' {
+        . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\worker-isolation.ps1')
+
+        $report = Get-WinsmuxWorkerIsolationReport `
+            -ProjectDir $script:workerIsolationTempRoot `
+            -Manifest (New-TestWorkerIsolationManifest -ExpectedOrigin 'ssh://expected-token@example.com/example/repo.git') `
+            -GitPath 'git' `
+            -GitInvoker (New-TestWorkerIsolationGitInvoker -Origin 'ssh://actual-token@github.com/example/other.git')
+
+        $message = ($report.findings | ForEach-Object { $_.message }) -join '; '
+        $message | Should -Match '\[redacted\]@github.com'
+        $message | Should -Match '\[redacted\]@example.com'
+        $message | Should -Not -Match 'expected-token'
+        $message | Should -Not -Match 'actual-token'
     }
 }
 
@@ -4439,6 +6319,223 @@ panes:
         $workload.BusyRatio | Should -BeLessThan 0.67
     }
 
+    It 'uses provider registry overrides when calculating Builder workload' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+        Write-BridgeProviderRegistryEntry `
+            -RootPath $script:paneScalerTempRoot `
+            -SlotId 'builder-1' `
+            -Agent 'claude' `
+            -Model 'opus' `
+            -PromptTransport 'file' `
+            -Reason 'operator requested provider hot-swap' | Out-Null
+
+        Mock Get-PaneAgentStatus {
+            [PSCustomObject]@{ Status = 'ready'; ExitReason = '' }
+        }
+
+        Get-PaneWorkload -ManifestPath $script:paneScalerManifestPath | Out-Null
+
+        Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2' -and $Agent -eq 'claude' -and $Role -eq 'Builder'
+        }
+    }
+
+    It 'uses capability adapters when calculating Builder workload' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+
+        Mock Get-SlotAgentConfig {
+            [PSCustomObject]@{
+                Agent             = 'codex-nightly'
+                Model             = 'gpt-5.4-nightly'
+                CapabilityAdapter = 'codex'
+            }
+        }
+        Mock Get-PaneAgentStatus {
+            [PSCustomObject]@{ Status = 'ready'; ExitReason = '' }
+        }
+
+        Get-PaneWorkload -ManifestPath $script:paneScalerManifestPath -Settings ([ordered]@{ agent = 'codex-nightly'; model = 'gpt-5.4-nightly'; roles = [ordered]@{} }) | Out-Null
+
+        Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2' -and $Agent -eq 'codex' -and $Role -eq 'Builder'
+        }
+    }
+
+    It 'uses provider registry overrides through the pane scaling entrypoint without explicit settings' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+        Write-BridgeProviderRegistryEntry `
+            -RootPath $script:paneScalerTempRoot `
+            -SlotId 'builder-1' `
+            -Agent 'claude' `
+            -Model 'opus' `
+            -PromptTransport 'file' `
+            -Reason 'operator requested provider hot-swap' | Out-Null
+
+        Mock Get-PaneAgentStatus {
+            [PSCustomObject]@{ Status = 'ready'; ExitReason = '' }
+        }
+
+        Push-Location ([System.IO.Path]::GetTempPath())
+        try {
+            Invoke-PaneScalingCheck -ManifestPath $script:paneScalerManifestPath -ScaleUpThreshold 0.95 -ScaleDownThreshold 0.0 | Out-Null
+        } finally {
+            Pop-Location
+        }
+
+        Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%2' -and $Agent -eq 'claude' -and $Role -eq 'Builder'
+        }
+    }
+
+    It 'fails closed when the provider registry is malformed during Builder workload calculation' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+        @'
+{
+  "version": 1,
+  "slots": {
+    "builder-1": {
+      "prompt_transport": "pipe"
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:paneScalerManifestDir 'provider-registry.json') -Encoding UTF8
+
+        Mock Get-PaneAgentStatus {
+            throw 'Get-PaneAgentStatus should not be called when provider registry is malformed.'
+        }
+
+        {
+            Get-PaneWorkload -ManifestPath $script:paneScalerManifestPath
+        } | Should -Throw "*Invalid provider registry prompt_transport*"
+    }
+
+    It 'fails closed when provider registry structure is invalid through the pane scaling entrypoint' {
+        $cases = @(
+            [PSCustomObject]@{
+                Name = 'slots array'
+                Body = @'
+{
+  "version": 1,
+  "slots": []
+}
+'@
+                Message = '*provider registry slots*'
+            },
+            [PSCustomObject]@{
+                Name = 'scalar slot entry'
+                Body = @'
+{
+  "version": 1,
+  "slots": {
+    "builder-1": "claude"
+  }
+}
+'@
+                Message = "*provider registry slot 'builder-1'*"
+            },
+            [PSCustomObject]@{
+                Name = 'metadata-only slot entry'
+                Body = @'
+{
+  "version": 1,
+  "slots": {
+    "builder-1": {
+      "updated_at_utc": "2026-04-21T00:00:00Z",
+      "reason": "metadata only"
+    }
+  }
+}
+'@
+                Message = "*provider registry slot 'builder-1'*"
+            },
+            [PSCustomObject]@{
+                Name = 'non-scalar provider field'
+                Body = @'
+{
+  "version": 1,
+  "slots": {
+    "builder-1": {
+      "agent": {
+        "name": "claude"
+      },
+      "model": "opus"
+    }
+  }
+}
+'@
+                Message = "*provider registry field 'agent'*"
+            }
+        )
+
+        foreach ($case in $cases) {
+            @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  - label: builder-1
+    pane_id: %2
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+            $case.Body | Set-Content -Path (Join-Path $script:paneScalerManifestDir 'provider-registry.json') -Encoding UTF8
+
+            Mock Get-PaneAgentStatus {
+                throw "Get-PaneAgentStatus should not be called for malformed provider registry case '$($case.Name)'."
+            }
+
+            Push-Location ([System.IO.Path]::GetTempPath())
+            try {
+                {
+                    Invoke-PaneScalingCheck -ManifestPath $script:paneScalerManifestPath -ScaleUpThreshold 0.95 -ScaleDownThreshold 0.0
+                } | Should -Throw $case.Message
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+
     It 'reads dictionary-style pane manifests written by orchestra-start' {
         @"
 version: 1
@@ -4493,9 +6590,73 @@ panes:
         $content | Should -Match "saved_at: '2026-04-09T11:00:00\+09:00'"
     }
 
+    It 'uses provider registry overrides when adding a Builder pane' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    launch_dir: $script:paneScalerTempRoot
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+        Write-BridgeProviderRegistryEntry `
+            -RootPath $script:paneScalerTempRoot `
+            -SlotId 'builder-2' `
+            -Agent 'claude' `
+            -Model 'opus' `
+            -PromptTransport 'file' `
+            -Reason 'operator requested provider hot-swap' | Out-Null
+
+        Mock New-PaneScalerBuilderWorktree {
+            [PSCustomObject]@{
+                BranchName     = 'worktree-builder-2'
+                WorktreePath   = Join-Path $script:paneScalerTempRoot '.worktrees\builder-2'
+                GitWorktreeDir = Join-Path $script:paneScalerTempRoot '.git\worktrees\builder-2'
+            }
+        }
+        Mock Invoke-MonitorWinsmux {
+            if ($Arguments -contains '-F') {
+                return '%3'
+            }
+            return ''
+        }
+        Mock Wait-MonitorPaneShellReady { }
+        Mock Send-MonitorBridgeCommand { }
+
+        $settings = [ordered]@{
+            agent = 'codex'
+            model = 'gpt-5.4'
+            roles = [ordered]@{
+                builder = [ordered]@{
+                    agent = 'codex'
+                    model = 'gpt-5.4'
+                }
+            }
+        }
+
+        Add-OrchestraPane -ManifestPath $script:paneScalerManifestPath -Settings $settings | Out-Null
+
+        Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
+            $PaneId -eq '%3' -and $Text -eq "claude --model 'opus' --permission-mode bypassPermissions"
+        }
+    }
+
     It 'scales up when workload exceeds the threshold' {
+        $manifest = [PSCustomObject]@{
+            Panes = [ordered]@{
+                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder' }
+                'builder-2' = [PSCustomObject]@{ pane_id = '%3'; role = 'Builder' }
+                'builder-3' = [PSCustomObject]@{ pane_id = '%4'; role = 'Builder' }
+            }
+        }
         Mock Get-PaneWorkload {
             [PSCustomObject]@{
+                Manifest     = $manifest
+                ProjectDir   = $script:paneScalerTempRoot
                 BusyRatio    = 0.9
                 BusyPanes    = 3
                 TotalPanes   = 3
@@ -4519,6 +6680,60 @@ panes:
         $result.Label | Should -Be 'builder-4'
         Should -Invoke Add-OrchestraPane -Times 1 -Exactly
         Should -Invoke Remove-OrchestraPane -Times 0 -Exactly
+    }
+
+    It 'does not scale up when the next Builder provider cannot run in parallel' {
+        @"
+version: 1
+saved_at: 2026-04-05T10:00:00+09:00
+session:
+  name: winsmux-orchestra
+  project_dir: $script:paneScalerTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+  builder-2:
+    pane_id: %3
+    role: Builder
+  builder-3:
+    pane_id: %4
+    role: Builder
+"@ | Set-Content -Path $script:paneScalerManifestPath -Encoding UTF8
+
+        @'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv"],
+      "supports_parallel_runs": false,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:paneScalerManifestDir 'provider-capabilities.json') -Encoding UTF8
+
+        Mock Get-PaneAgentStatus {
+            [PSCustomObject]@{ Status = 'busy'; ExitReason = '' }
+        }
+        Mock Add-OrchestraPane { throw 'should not add a Builder pane without parallel-run support' }
+        Mock Remove-OrchestraPane { throw 'should not remove' }
+
+        $result = Invoke-PaneScalingCheck -ManifestPath $script:paneScalerManifestPath -ScaleUpThreshold 0.8 -ScaleDownThreshold 0.0
+
+        $result.Action | Should -Be 'no_change'
+        $result.Reason | Should -Be 'parallel_runs_unsupported'
+        $result.Provider | Should -Be 'codex'
+        $result.SlotId | Should -Be 'builder-4'
+        Should -Invoke Add-OrchestraPane -Times 0 -Exactly
     }
 
     It 'scales down when workload is low and more than two builders exist' {
@@ -4579,9 +6794,9 @@ panes:
   - label: reviewer
     pane_id: %4
     role: Reviewer
-  - label: commander
+  - label: operator
     pane_id: %1
-    role: Commander
+    role: Operator
 '@ | Set-Content -Path (Join-Path $manifestDir 'manifest.yaml') -Encoding UTF8
     }
 
@@ -4600,7 +6815,7 @@ panes:
         $entries[0].Role | Should -Be 'Builder'
         $entries[0].GitWorktreeDir | Should -Be 'C:\repo\.worktrees\builder-1'
         $entries[1].Role | Should -Be 'Reviewer'
-        $entries[2].Label | Should -Be 'commander'
+        $entries[2].Label | Should -Be 'operator'
     }
 
     It 'classifies pane captures into pwsh, codex, idle, and busy states' {
@@ -4619,6 +6834,64 @@ gpt-5.4   61% context left
 thinking
 Esc to interrupt
 "@) | Should -Be 'busy'
+    }
+
+    It 'uses manifest capability adapters when classifying pane captures' {
+        $manifestPath = Join-Path (Join-Path $script:paneStatusTempRoot '.winsmux') 'manifest.yaml'
+@'
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  reviewer:
+    pane_id: %4
+    role: Reviewer
+    capability_adapter: claude
+'@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+        $records = Get-PaneStatusRecords -ProjectDir $script:paneStatusTempRoot -SnapshotProvider {
+            param($PaneId)
+
+            if ($PaneId -eq '%4') {
+                return 'Welcome to Claude Code!'
+            }
+
+            throw "unexpected pane id: $PaneId"
+        }
+
+        $records.Count | Should -Be 1
+        $records[0].Label | Should -Be 'reviewer'
+        $records[0].State | Should -Be 'idle'
+    }
+
+    It 'uses manifest provider targets when classifying pane captures' {
+        $manifestPath = Join-Path (Join-Path $script:paneStatusTempRoot '.winsmux') 'manifest.yaml'
+@'
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  reviewer:
+    pane_id: %4
+    role: Reviewer
+    provider_target: claude:opus
+'@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+        $records = Get-PaneStatusRecords -ProjectDir $script:paneStatusTempRoot -SnapshotProvider {
+            param($PaneId)
+
+            if ($PaneId -eq '%4') {
+                return 'Welcome to Claude Code!'
+            }
+
+            throw "unexpected pane id: $PaneId"
+        }
+
+        $records.Count | Should -Be 1
+        $records[0].Label | Should -Be 'reviewer'
+        $records[0].State | Should -Be 'idle'
     }
 
     It 'builds status rows from manifest panes and capture snapshots' {
@@ -4658,7 +6931,7 @@ Esc to interrupt
         $records[1].State | Should -Be 'idle'
         $records[1].TokensRemaining | Should -Be '82% context left'
 
-        $records[2].Label | Should -Be 'commander'
+        $records[2].Label | Should -Be 'operator'
         $records[2].State | Should -Be 'busy'
         $records[2].TokensRemaining | Should -Be '61% context left'
     }
@@ -5262,7 +7535,7 @@ panes:
     head_sha: def5678abc1234
     changed_file_count: 0
     changed_files: '[]'
-    last_event: commander.state_transition
+    last_event: operator.state_transition
     last_event_at: 2026-04-10T11:05:00+09:00
 "@ | Set-Content -Path $script:inboxManifestPath -Encoding UTF8
 
@@ -5280,11 +7553,11 @@ panes:
             ([ordered]@{
                 timestamp = '2026-04-10T11:06:00+09:00'
                 session   = 'winsmux-orchestra'
-                event     = 'commander.state_transition'
+                event     = 'operator.state_transition'
                 message   = 'State: review_requested -> blocked_no_review_target'
                 label     = ''
                 pane_id   = ''
-                role      = 'Commander'
+                role      = 'Operator'
                 status    = 'blocked_no_review_target'
                 data      = [ordered]@{
                     from = 'review_requested'
@@ -5349,11 +7622,11 @@ panes:
             ([ordered]@{
                 timestamp = '2026-04-10T11:07:00+09:00'
                 session   = 'winsmux-orchestra'
-                event     = 'commander.commit_ready'
+                event     = 'operator.commit_ready'
                 message   = 'コミット準備完了。'
                 label     = ''
                 pane_id   = ''
-                role      = 'Commander'
+                role      = 'Operator'
                 status    = 'commit_ready'
                 head_sha  = 'abc1234def5678'
             } | ConvertTo-Json -Compress)
@@ -5445,8 +7718,8 @@ Invoke-Inbox -InboxTarget '--json'
         (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'pane.crashed'; status = 'crashed' })) | Should -Be 'crashed'
         (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'pane.hung'; status = 'hung' })) | Should -Be 'hung'
         (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'pane.stalled'; status = 'stalled' })) | Should -Be 'stalled'
-        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'commander.state_transition'; status = 'blocked_no_review_target'; data = [ordered]@{ to = 'blocked_no_review_target' } })) | Should -Be 'blocked'
-        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'commander.commit_ready'; status = 'commit_ready' })) | Should -Be 'commit_ready'
+        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'operator.state_transition'; status = 'blocked_no_review_target'; data = [ordered]@{ to = 'blocked_no_review_target' } })) | Should -Be 'blocked'
+        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'operator.commit_ready'; status = 'commit_ready' })) | Should -Be 'commit_ready'
     }
 
     It 'starts inbox stream after the current event cursor instead of replaying full history' {
@@ -5529,7 +7802,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 2
     changed_files: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
   worker-1:
     pane_id: %6
@@ -5622,7 +7895,7 @@ panes:
     agent_role: worker
     timeout_policy: standard
     handoff_refs: '["docs/handoff.md"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:runsManifestPath -Encoding UTF8
 
@@ -5772,7 +8045,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:runsManifestPath -Encoding UTF8
 
@@ -5818,7 +8091,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
   builder-2:
     pane_id: %6
@@ -5832,7 +8105,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["tests/winsmux-bridge.Tests.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:01:00+09:00
 "@ | Set-Content -Path $script:runsManifestPath -Encoding UTF8
 
@@ -6006,7 +8279,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 2
     changed_files: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T14:00:00+09:00
 "@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
 
@@ -6059,7 +8332,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_failed
+    last_event: operator.review_failed
     last_event_at: 2026-04-10T14:00:00+09:00
 "@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
 
@@ -6087,7 +8360,7 @@ panes:
         ([ordered]@{
             timestamp = '2026-04-10T14:01:00+09:00'
             session   = 'winsmux-orchestra'
-            event     = 'commander.review_failed'
+            event     = 'operator.review_failed'
             message   = 'review failed'
             label     = 'reviewer-1'
             pane_id   = '%3'
@@ -6216,7 +8489,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 2
     changed_files: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T14:00:00+09:00
   worker-1:
     pane_id: %6
@@ -6237,7 +8510,7 @@ panes:
         ([ordered]@{
             timestamp = '2026-04-10T14:01:00+09:00'
             session   = 'winsmux-orchestra'
-            event     = 'commander.review_requested'
+            event     = 'operator.review_requested'
             message   = 'review requested'
             label     = 'reviewer-1'
             pane_id   = '%3'
@@ -6274,7 +8547,7 @@ panes:
             ([ordered]@{
                 timestamp = '2026-04-10T14:03:00+09:00'
                 session   = 'winsmux-orchestra'
-                event     = 'commander.commit_ready'
+                event     = 'operator.commit_ready'
                 message   = 'commit ready'
                 label     = ''
                 pane_id   = ''
@@ -6342,7 +8615,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T14:00:00+09:00
 "@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
 
@@ -6387,7 +8660,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T14:00:00+09:00
 "@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
 
@@ -6464,7 +8737,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T14:00:00+09:00
 "@ | Set-Content -Path $script:digestManifestPath -Encoding UTF8
 
@@ -6554,7 +8827,7 @@ panes:
     agent_role: worker
     timeout_policy: standard
     handoff_refs: '["docs/handoff.md"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
 
@@ -6589,7 +8862,7 @@ panes:
             ([ordered]@{
                 timestamp = '2026-04-10T12:01:00+09:00'
                 session   = 'winsmux-orchestra'
-                event     = 'commander.review_requested'
+                event     = 'operator.review_requested'
                 message   = 'review requested'
                 label     = 'reviewer-1'
                 pane_id   = '%3'
@@ -6762,13 +9035,13 @@ panes:
         $result.Contains('run_packet') | Should -Be $false
         $result.Contains('result_packet') | Should -Be $false
         $result.recent_events.Count | Should -Be 3
-        @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'commander.review_requested'
+        @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'operator.review_requested'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.verify.partial'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pane.approval_waiting'
-        ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).hypothesis | Should -Be 'experiment packet should flow into explain'
-        ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).observation_pack.changed_files | Should -Contain 'scripts/winsmux-core.ps1'
-        ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).observation_pack.packet_type | Should -Be 'observation_pack'
-        ($result.recent_events | Where-Object { $_.event -eq 'commander.review_requested' } | Select-Object -First 1).consultation_packet.kind | Should -Be 'consult_result'
+        ($result.recent_events | Where-Object { $_.event -eq 'operator.review_requested' } | Select-Object -First 1).hypothesis | Should -Be 'experiment packet should flow into explain'
+        ($result.recent_events | Where-Object { $_.event -eq 'operator.review_requested' } | Select-Object -First 1).observation_pack.changed_files | Should -Contain 'scripts/winsmux-core.ps1'
+        ($result.recent_events | Where-Object { $_.event -eq 'operator.review_requested' } | Select-Object -First 1).observation_pack.packet_type | Should -Be 'observation_pack'
+        ($result.recent_events | Where-Object { $_.event -eq 'operator.review_requested' } | Select-Object -First 1).consultation_packet.kind | Should -Be 'consult_result'
     }
 
     It 'rejects explain when matching review-state record is missing reviewer' {
@@ -6790,14 +9063,14 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
 
         ([ordered]@{
             timestamp = '2026-04-10T12:01:00+09:00'
             session   = 'winsmux-orchestra'
-            event     = 'commander.review_requested'
+            event     = 'operator.review_requested'
             message   = 'review requested'
             label     = 'reviewer-1'
             pane_id   = '%3'
@@ -6964,7 +9237,7 @@ panes:
     branch: worktree-builder-1
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
 
@@ -6998,7 +9271,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '[]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
 
@@ -7032,7 +9305,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
 "@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
 
         function global:winsmux {
@@ -7068,7 +9341,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
 
@@ -7105,7 +9378,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
 
@@ -7142,7 +9415,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
 
@@ -7179,7 +9452,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
 
@@ -7213,7 +9486,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 0
     changed_files: '[]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
 
@@ -7224,7 +9497,7 @@ panes:
         ([ordered]@{
             timestamp = '2026-04-10T12:01:00+09:00'
             session   = 'winsmux-orchestra'
-            event     = 'commander.review_requested'
+            event     = 'operator.review_requested'
             message   = 'review requested'
             label     = 'reviewer-1'
             pane_id   = '%3'
@@ -7278,14 +9551,14 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $script:explainManifestPath -Encoding UTF8
 
         ([ordered]@{
             timestamp = '2026-04-10T12:01:00+09:00'
             session   = 'winsmux-orchestra'
-            event     = 'commander.review_requested'
+            event     = 'operator.review_requested'
             message   = 'review requested'
             label     = 'reviewer-1'
             pane_id   = '%3'
@@ -7322,11 +9595,11 @@ panes:
             ([ordered]@{
                 timestamp = '2026-04-10T12:03:00+09:00'
                 session   = 'winsmux-orchestra'
-                event     = 'commander.commit_ready'
+                event     = 'operator.commit_ready'
                 message   = 'commit ready'
                 label     = ''
                 pane_id   = ''
-                role      = 'Commander'
+                role      = 'Operator'
                 branch    = 'worktree-builder-1'
                 head_sha  = 'abc1234def5678'
                 status    = 'commit_ready'
@@ -7349,7 +9622,7 @@ panes:
 
         $delta.cursor | Should -Be 3
         $matching.Count | Should -Be 1
-        $matching[0].event | Should -Be 'commander.commit_ready'
+        $matching[0].event | Should -Be 'operator.commit_ready'
         $matching[0].hypothesis | Should -Be 'follow path should keep experiment fields'
         $matching[0].next_action | Should -Be 'commit_ready'
         $matching[0].observation_pack_ref | Should -Be '.winsmux/observation-packs/task-256.json'
@@ -7359,6 +9632,7 @@ panes:
 Describe 'winsmux send dispatch payload' {
     BeforeAll {
         $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreSendRawContent = Get-Content -Path $script:winsmuxCorePath -Raw -Encoding UTF8
         . $script:winsmuxCorePath 'version' *> $null
     }
 
@@ -7380,6 +9654,22 @@ Describe 'winsmux send dispatch payload' {
         $payload['TextToSend'] | Should -Be 'Write-Host short'
         $payload['PromptPath'] | Should -Be $null
         Test-Path (Join-Path $script:sendTempRoot '.winsmux\dispatch-prompts') | Should -Be $false
+    }
+
+    It 'resolves managed pane send settings through the project capability root' {
+        $script:winsmuxCoreSendRawContent | Should -Match 'Get-SlotAgentConfig -Role \$context\.Role -SlotId \$context\.Label -RootPath \$projectDir'
+        $script:winsmuxCoreSendRawContent | Should -Match 'Provider capability'
+        $script:winsmuxCoreSendRawContent | Should -Match 'CapabilityAdapter'
+        $script:winsmuxCoreSendRawContent | Should -Match 'CapabilityCommand'
+    }
+
+    It 'resolves restart readiness through dictionary capability adapters' {
+        $plan = [ordered]@{
+            Agent = 'codex-nightly'
+            CapabilityAdapter = 'codex'
+        }
+
+        Get-RestartReadinessAgentName -Plan $plan | Should -Be 'codex'
     }
 
     It 'writes long text to a dispatch file and returns a prompt pointer for non-exec panes' {
@@ -7442,6 +9732,39 @@ Describe 'winsmux send dispatch payload' {
         $plan['PromptPath'] | Should -Not -BeNullOrEmpty
         (Get-Content -LiteralPath $plan['PromptPath'] -Raw -Encoding UTF8).TrimEnd("`r", "`n") | Should -BeExactly ('a' * 5000)
         $plan['ExecInstruction'] | Should -Match 'codex exec'
+    }
+
+    It 'uses the provider capability command for exec-mode send plans' {
+        $plan = Resolve-SendTransportPlan `
+            -Text 'Summarize status' `
+            -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 `
+            -PromptTransport 'argv' `
+            -ExecMode:$true `
+            -LaunchDir 'C:\repo' `
+            -GitWorktreeDir 'C:\repo' `
+            -Model 'gpt-5.4-nightly' `
+            -ExecCommand 'codex-nightly'
+
+        $plan['Mode'] | Should -Be 'codex_exec_file'
+        $plan['ExecInstruction'] | Should -Match '^codex-nightly exec'
+        $plan['ExecInstruction'] | Should -Not -Match '^codex exec'
+    }
+
+    It 'quotes provider capability executable paths for exec-mode send plans' {
+        $plan = Resolve-SendTransportPlan `
+            -Text 'Summarize status' `
+            -ProjectDir $script:sendTempRoot `
+            -LengthLimit 4000 `
+            -PromptTransport 'argv' `
+            -ExecMode:$true `
+            -LaunchDir 'C:\repo' `
+            -GitWorktreeDir 'C:\repo' `
+            -Model 'gpt-5.4-nightly' `
+            -ExecCommand 'C:\Tools\Codex Nightly\codex.exe'
+
+        $plan['Mode'] | Should -Be 'codex_exec_file'
+        $plan['ExecInstruction'] | Should -Match "^& 'C:\\Tools\\Codex Nightly\\codex.exe' exec"
     }
 
     It 'normalizes task prompt slugs and writes a stable task prompt file when task_slug is supplied' {
@@ -7507,6 +9830,58 @@ Describe 'winsmux task-run command' {
     }
 }
 
+Describe 'winsmux profile command' {
+    BeforeAll {
+        $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreRawContent = Get-Content -Path $script:winsmuxCoreRawPath -Raw -Encoding UTF8
+    }
+
+    BeforeEach {
+        $script:profileTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-profile-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:profileTempRoot -Force | Out-Null
+    }
+
+    AfterEach {
+        if ($script:profileTempRoot -and (Test-Path $script:profileTempRoot)) {
+            Remove-Item -Path $script:profileTempRoot -Recurse -Force
+        }
+    }
+
+    It 'passes custom provider commands into the generated Windows Terminal profile' {
+        $script:winsmuxCoreRawContent | Should -Match 'function ConvertTo-ProfileAgentHashtableLiteral'
+        $script:winsmuxCoreRawContent | Should -Match 'function Get-ProfileAgentGrid'
+        $script:winsmuxCoreRawContent | Should -Match 'label:agent-command'
+        $script:winsmuxCoreRawContent | Should -Match '\$agentArgument = '' -Rows \{0\} -Cols \{1\} -Agents @\(\{2\}\)'''
+
+        $oldLocalAppData = $env:LOCALAPPDATA
+        $env:LOCALAPPDATA = $script:profileTempRoot
+        try {
+            & pwsh -NoProfile -File $script:winsmuxCoreRawPath profile nightly builder:codex-nightly 'researcher:claude --model opus' 'reviewer:claude --append-system-prompt "hello world"' | Out-Null
+        } finally {
+            $env:LOCALAPPDATA = $oldLocalAppData
+        }
+
+        $fragmentPath = Join-Path $script:profileTempRoot 'Microsoft\Windows Terminal\Fragments\winsmux\winsmux.json'
+        Test-Path -LiteralPath $fragmentPath | Should -Be $true
+        $fragment = Get-Content -LiteralPath $fragmentPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $commandline = [string]$fragment.profiles[0].commandline
+        $commandline | Should -Match '-EncodedCommand '
+        $encodedCommand = ($commandline -replace '^.*-EncodedCommand\s+', '').Trim()
+        $decodedCommand = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encodedCommand))
+        $startOrchestraCall = "& (Join-Path `$env:USERPROFILE '.winsmux\bin\start-orchestra.ps1')"
+        $childStartOrchestraCall = "pwsh (Join-Path `$env:USERPROFILE '.winsmux\bin\start-orchestra.ps1')"
+        $decodedCommand | Should -Match ([regex]::Escape($startOrchestraCall))
+        $decodedCommand | Should -Not -Match ([regex]::Escape($childStartOrchestraCall))
+        $decodedCommand | Should -Match '-Rows 1 -Cols 3 -Agents @\('
+        $decodedCommand | Should -Match "winsmux new-session -s 'nightly'"
+        $decodedCommand | Should -Match "label = 'builder'"
+        $decodedCommand | Should -Match "command = 'codex-nightly'"
+        $decodedCommand | Should -Match "label = 'researcher'"
+        $decodedCommand | Should -Match "command = 'claude --model opus'"
+        $decodedCommand | Should -Match 'command = ''claude --append-system-prompt "hello world"'''
+    }
+}
+
 Describe 'winsmux public first-run commands' {
     BeforeAll {
         $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
@@ -7516,11 +9891,14 @@ Describe 'winsmux public first-run commands' {
     }
 
     It 'documents init and launch in usage and dispatches them through the public first-run helper' {
-        $script:winsmuxCoreRawContent | Should -Match 'init \[--json\] \[--project-dir <path>\] \[--force\] \[--agent <codex\|claude>\] \[--model <name>\] \[--worker-count <count>\]\s+Create or refresh public first-run config'
+        $script:winsmuxCoreRawContent | Should -Match 'init \[--json\] \[--project-dir <path>\] \[--force\] \[--agent <provider>\] \[--model <name>\] \[--worker-count <count>\] \[--workspace-lifecycle <preset>\]\s+Create or refresh public first-run config'
         $script:winsmuxCoreRawContent | Should -Match 'launch \[--json\] \[--project-dir <path>\] \[--skip-doctor\]\s+Run public first-run checks and startup'
         $script:winsmuxCoreRawContent | Should -Match "'init'\s*\{"
         $script:winsmuxCoreRawContent | Should -Match "'launch'\s*\{"
         $script:winsmuxCoreRawContent | Should -Match 'public-first-run\.ps1'
+        $script:winsmuxCoreRawContent | Should -Match 'function Test-WinsmuxInstalledBinLayout'
+        $script:winsmuxCoreRawContent | Should -Match '\$skipDoctor = Test-WinsmuxInstalledBinLayout'
+        $script:winsmuxCoreRawContent | Should -Match 'Invoke-WinsmuxPublicLaunch -ProjectDir \$projectDir -SkipDoctor:\$skipDoctor'
         $script:publicFirstRunContent | Should -Match 'function Invoke-WinsmuxPublicInit'
         $script:publicFirstRunContent | Should -Match 'function Invoke-WinsmuxPublicLaunch'
         $script:publicFirstRunContent | Should -Match 'Run winsmux launch\.'
@@ -7657,14 +10035,40 @@ Describe 'public first-run helper' {
         $result.status | Should -Be 'initialized'
         $result.created | Should -Be $true
         $result.slot_count | Should -Be 6
-        $result.external_commander | Should -Be $true
+        $result.external_operator | Should -Be $true
         Test-Path -LiteralPath $result.config_path | Should -Be $true
 
         $settings = Get-BridgeSettings -RootPath $script:publicFirstRunTempRoot
-        $settings.external_commander | Should -Be $true
+        $settings.external_operator | Should -Be $true
         $settings.worker_count | Should -Be 6
         $settings.agent_slots.Count | Should -Be 6
         $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
+        $settings.workspace_lifecycle_preset | Should -Be 'managed-worktree'
+    }
+
+    It 'stores a custom workspace lifecycle preset on init' {
+        $result = Invoke-WinsmuxPublicInit -ProjectDir $script:publicFirstRunTempRoot -WorkspaceLifecyclePreset 'ephemeral-worktree'
+
+        $result.status | Should -Be 'initialized'
+        $result.workspace_lifecycle_preset | Should -Be 'ephemeral-worktree'
+
+        $settings = Get-BridgeSettings -RootPath $script:publicFirstRunTempRoot
+        $settings.workspace_lifecycle_preset | Should -Be 'ephemeral-worktree'
+    }
+
+    It 'stores custom provider names in managed slots on init' {
+        $result = Invoke-WinsmuxPublicInit -ProjectDir $script:publicFirstRunTempRoot -Agent 'codex-nightly' -Model 'gpt-5.4-code' -WorkerCount 2
+
+        $result.status | Should -Be 'initialized'
+        $result.slot_count | Should -Be 2
+
+        $settings = Get-BridgeSettings -RootPath $script:publicFirstRunTempRoot
+        $settings.agent | Should -Be 'codex-nightly'
+        $settings.model | Should -Be 'gpt-5.4-code'
+        $settings.worker_count | Should -Be 2
+        $settings.agent_slots.Count | Should -Be 2
+        $settings.agent_slots[0].agent | Should -Be 'codex-nightly'
+        $settings.agent_slots[0].model | Should -Be 'gpt-5.4-code'
     }
 
     It 'returns already_initialized when config exists and force is not set' {
@@ -7737,6 +10141,670 @@ Describe 'public first-run helper' {
         $result.requires_startup | Should -Be $false
         $result.operator_message | Should -Be 'ready'
         $result.next_action | Should -Be 'Dispatch work or continue operator flow.'
+    }
+}
+
+Describe 'winsmux readiness adapter helpers' {
+    BeforeAll {
+        $script:winsmuxCorePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreRawContent = Get-Content -Raw -Path $script:winsmuxCorePath -Encoding UTF8
+        . $script:winsmuxCorePath 'version' *> $null
+    }
+
+    BeforeEach {
+        $script:readinessTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-readiness-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:readinessTempRoot '.winsmux') -Force | Out-Null
+
+@'
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\repo
+panes:
+  reviewer:
+    pane_id: %4
+    role: Reviewer
+    capability_adapter: claude
+  builder-1:
+    pane_id: %2
+    role: Builder
+    capability_adapter: codex
+  legacy:
+    pane_id: %8
+    role: Worker
+    provider_target: codex:gpt-5.4
+  switched:
+    pane_id: %10
+    role: Worker
+    capability_adapter: codex
+'@ | Set-Content -Path (Join-Path $script:readinessTempRoot '.winsmux\manifest.yaml') -Encoding UTF8
+
+@'
+agent: codex
+model: gpt-5.4
+prompt-transport: argv
+agent-slots:
+  - slot-id: switched
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:readinessTempRoot '.winsmux.yaml') -Encoding UTF8
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"]
+    },
+    "claude": {
+      "adapter": "claude",
+      "command": "claude",
+      "prompt_transports": ["file"]
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:readinessTempRoot '.winsmux\provider-capabilities.json') -Encoding UTF8
+
+@'
+{
+  "version": 1,
+  "slots": {
+    "switched": {
+      "agent": "claude",
+      "model": "opus",
+      "prompt_transport": "file"
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:readinessTempRoot '.winsmux\provider-registry.json') -Encoding UTF8
+    }
+
+    AfterEach {
+        if ($script:readinessTempRoot -and (Test-Path $script:readinessTempRoot)) {
+            Remove-Item -Path $script:readinessTempRoot -Recurse -Force
+        }
+    }
+
+    It 'uses the shared readiness detector for configured adapters' {
+        (Test-AgentReadyPromptText -Text @"
+gpt-5.4   64% context left
+? send   Ctrl+J newline
+>
+"@ -Agent 'codex') | Should -Be $true
+
+        (Test-AgentReadyPromptText -Text '>' -Agent 'codex') | Should -Be $true
+        (Test-AgentReadyPromptText -Text 'Welcome to Claude Code!' -Agent 'claude') | Should -Be $true
+        (Test-AgentReadyPromptText -Text '›' -Agent 'claude') | Should -Be $true
+        (Test-AgentReadyPromptText -Text @"
+│ ✻ Welcome to Claude Code! │
+╰──────────────────────╯
+"@ -Agent 'claude') | Should -Be $true
+        (Test-AgentReadyPromptText -Text 'gemini-2.5-pro   84% context left' -Agent 'gemini') | Should -Be $true
+        (Test-AgentReadyPromptText -Text '▌' -Agent 'gemini') | Should -Be $true
+        (Test-AgentReadyPromptText -Text @"
+│ Type your message... │
+╰──────────────────────╯
+"@ -Agent 'gemini') | Should -Be $true
+    }
+
+    It 'does not treat stale prompt markers as ready' {
+        (Test-AgentReadyPromptText -Text @"
+gpt-5.4   64% context left
+? send   Ctrl+J newline
+>
+thinking
+"@ -Agent 'codex') | Should -Be $false
+
+        (Test-AgentReadyPromptText -Text @"
+Welcome to Claude Code!
+thinking
+"@ -Agent 'claude') | Should -Be $false
+    }
+
+    It 'normalizes provider aliases before adapter readiness checks' {
+        ConvertTo-ReadinessAgentName 'codex-nightly' | Should -Be 'codex'
+        ConvertTo-ReadinessAgentName 'Claude/opus' | Should -Be 'claude'
+        ConvertTo-ReadinessAgentName 'gemini:flash' | Should -Be 'gemini'
+    }
+
+    It 'resolves readiness adapters from the pane manifest' {
+        Get-PaneReadinessAgent -Target 'reviewer' -PaneId '%4' -ProjectDir $script:readinessTempRoot | Should -Be 'claude'
+        Get-PaneReadinessAgent -Target 'builder-1' -PaneId '%2' -ProjectDir $script:readinessTempRoot | Should -Be 'codex'
+        Get-PaneReadinessAgent -Target 'legacy' -PaneId '%8' -ProjectDir $script:readinessTempRoot | Should -Be 'codex'
+        Get-PaneReadinessAgent -Target 'switched' -PaneId '%10' -ProjectDir $script:readinessTempRoot | Should -Be 'codex'
+        Get-PaneReadinessAgent -Target 'missing' -PaneId '%9' -ProjectDir $script:readinessTempRoot | Should -Be 'codex'
+    }
+
+    It 'documents wait-ready without a Codex-only prompt contract' {
+        $script:winsmuxCoreRawContent | Should -Match 'Wait for the configured agent prompt in pane'
+        $script:winsmuxCoreRawContent | Should -Match 'Test-AgentReadyPrompt -PaneId \$paneId -Agent \$readinessAgent'
+        $script:winsmuxCoreRawContent | Should -Match 'Test-AgentReadyPromptText -Text \$secondSnapshot -Agent \$readinessAgent'
+        $script:winsmuxCoreRawContent | Should -Match 'Set-PaneReadinessManifestFromRestartPlan -ProjectDir \$ProjectDir -PaneId \$PaneId -Plan \$plan'
+    }
+}
+
+Describe 'winsmux provider-capabilities command' {
+    BeforeAll {
+        $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreRawContent = Get-Content -Raw -Path $script:winsmuxCoreRawPath -Encoding UTF8
+    }
+
+    BeforeEach {
+        $script:providerCapabilitiesTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-provider-capabilities-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:providerCapabilitiesTempRoot '.winsmux') -Force | Out-Null
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "display_name": "Codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "supports_file_edit": true,
+      "supports_verification": true,
+      "supports_subagents": true
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:providerCapabilitiesTempRoot '.winsmux\provider-capabilities.json') -Encoding UTF8
+    }
+
+    AfterEach {
+        if ($script:providerCapabilitiesTempRoot -and (Test-Path $script:providerCapabilitiesTempRoot)) {
+            Remove-Item -Path $script:providerCapabilitiesTempRoot -Recurse -Force
+        }
+    }
+
+    It 'documents provider-capabilities in usage and reports the registry contract' {
+        $script:winsmuxCoreRawContent | Should -Match 'provider-capabilities \[provider\] \[--json\]'
+        $script:winsmuxCoreRawContent | Should -Match "'provider-capabilities'\s*\{"
+
+        Push-Location $script:providerCapabilitiesTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-capabilities --json
+        } finally {
+            Pop-Location
+        }
+
+        $payload = $output | ConvertFrom-Json
+        $payload.version | Should -Be 1
+        $payload.providers.codex.adapter | Should -Be 'codex'
+        $payload.providers.codex.prompt_transports | Should -Be @('argv', 'file', 'stdin')
+        $payload.providers.codex.supports_file_edit | Should -Be $true
+    }
+
+    It 'reports one provider capability entry' {
+        Push-Location $script:providerCapabilitiesTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-capabilities CODEX --json
+        } finally {
+            Pop-Location
+        }
+
+        $payload = $output | ConvertFrom-Json
+        $payload.provider_id | Should -Be 'CODEX'
+        $payload.capabilities.command | Should -Be 'codex'
+        $payload.capabilities.supports_verification | Should -Be $true
+    }
+}
+
+Describe 'winsmux launcher command' {
+    BeforeAll {
+        $script:winsmuxLauncherRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxLauncherRawContent = Get-Content -Raw -Path $script:winsmuxLauncherRawPath -Encoding UTF8
+    }
+
+    BeforeEach {
+        $script:winsmuxLauncherTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-launcher-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:winsmuxLauncherTempRoot '.winsmux') -Force | Out-Null
+
+@'
+version: 1
+agent: codex
+model: gpt-5.4
+external_operator: true
+worker_count: 3
+workspace_lifecycle_preset: managed-worktree
+agent_slots:
+  - slot_id: worker-1
+    runtime_role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt_transport: argv
+  - slot_id: worker-2
+    runtime_role: worker
+    agent: claude
+    model: opus
+    prompt_transport: file
+    auth_mode: claude-pro-max-oauth
+  - slot_id: reviewer-1
+    runtime_role: reviewer
+    agent: claude
+    model: opus
+    prompt_transport: file
+'@ | Set-Content -Path (Join-Path $script:winsmuxLauncherTempRoot '.winsmux.yaml') -Encoding UTF8
+
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "display_name": "Codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "auth_modes": ["api-key", "codex-chatgpt-local"],
+      "local_interactive_oauth_modes": ["codex-chatgpt-local"],
+      "supports_file_edit": true,
+      "supports_verification": true,
+      "supports_structured_result": true,
+      "supports_subagents": true
+    },
+    "claude": {
+      "adapter": "claude",
+      "display_name": "Claude",
+      "command": "claude",
+      "prompt_transports": ["file"],
+      "auth_modes": ["api-key", "claude-pro-max-oauth"],
+      "local_interactive_oauth_modes": ["claude-pro-max-oauth"],
+      "supports_file_edit": true,
+      "supports_verification": true,
+      "supports_structured_result": false,
+      "supports_consultation": true
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:winsmuxLauncherTempRoot '.winsmux\provider-capabilities.json') -Encoding UTF8
+    }
+
+    AfterEach {
+        if ($script:winsmuxLauncherTempRoot -and (Test-Path $script:winsmuxLauncherTempRoot)) {
+            Remove-Item -Path $script:winsmuxLauncherTempRoot -Recurse -Force
+        }
+    }
+
+    It 'documents launcher in usage and returns capability-aware presets' {
+        $script:winsmuxLauncherRawContent | Should -Match 'launcher <presets\|lifecycle\|list\|save> \[name\] \[--lifecycle <preset>\] \[--json\]'
+        $script:winsmuxLauncherRawContent | Should -Match "'launcher'\s*\{"
+
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher presets --json
+        } finally {
+            Pop-Location
+        }
+
+        $payload = $output | ConvertFrom-Json
+        $payload.version | Should -Be 1
+        $payload.slot_count | Should -Be 3
+        $payload.slots[0].slot_id | Should -Be 'worker-1'
+        $payload.slots[0].capability_adapter | Should -Be 'codex'
+        $payload.slots[1].prompt_transport | Should -Be 'file'
+        $payload.slots[1].auth_mode | Should -Be 'claude-pro-max-oauth'
+        $payload.slots[1].auth_policy | Should -Be 'local_interactive_only'
+        @($payload.presets.name) | Should -Contain 'all-workers'
+        @($payload.presets.name) | Should -Contain 'balanced-build-review'
+        @($payload.presets.name) | Should -Contain 'verification'
+        $payload.pair_templates[0].name | Should -Be 'ab-pair'
+        @($payload.pair_templates[0].slot_ids) | Should -Be @('worker-1', 'worker-2')
+        $payload.workspace_lifecycle.selected_preset | Should -Be 'managed-worktree'
+        @($payload.workspace_lifecycle.presets.name) | Should -Contain 'ephemeral-worktree'
+        $payload.workspace_lifecycle.presets[0].PSObject.Properties.Name | Should -Not -Contain 'setup_scripts'
+        $payload.workspace_lifecycle.presets[0].PSObject.Properties.Name | Should -Not -Contain 'teardown_scripts'
+        $payload.templates_path | Should -Match '\\.winsmux\\launcher-templates\.json$'
+    }
+
+    It 'saves and lists launcher templates without rewriting project settings' {
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $saveOutput = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher save build-review --json
+            $listOutput = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher list --json
+        } finally {
+            Pop-Location
+        }
+
+        $saved = $saveOutput | ConvertFrom-Json
+        $listed = $listOutput | ConvertFrom-Json
+        $saved.name | Should -Be 'build-review'
+        $saved.saved | Should -Be $true
+        $saved.template.slot_count | Should -Be 3
+        @($saved.template.presets.name) | Should -Contain 'balanced-build-review'
+        $saved.template.workspace_lifecycle.selected_preset | Should -Be 'managed-worktree'
+        Test-Path -LiteralPath $saved.templates_path | Should -Be $true
+        $listed.template_count | Should -Be 1
+        $listed.templates[0].name | Should -Be 'build-review'
+        Test-Path -LiteralPath (Join-Path $script:winsmuxLauncherTempRoot '.winsmux.yaml') | Should -Be $true
+    }
+
+    It 'sets and clears workspace lifecycle override without rewriting project settings' {
+        $settingsPath = Join-Path $script:winsmuxLauncherTempRoot '.winsmux.yaml'
+        $settingsBefore = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8
+
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $setOutput = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher lifecycle ephemeral-worktree --json
+        } finally {
+            Pop-Location
+        }
+
+        $setPayload = $setOutput | ConvertFrom-Json
+        $setPayload.selected_preset | Should -Be 'ephemeral-worktree'
+        $setPayload.override_saved | Should -Be $true
+        Test-Path -LiteralPath $setPayload.saved_path | Should -Be $true
+        $override = Get-Content -LiteralPath $setPayload.saved_path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $override.preset | Should -Be 'ephemeral-worktree'
+
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $clearOutput = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher lifecycle --clear --json
+        } finally {
+            Pop-Location
+        }
+
+        $clearPayload = $clearOutput | ConvertFrom-Json
+        $clearPayload.selected_preset | Should -Be 'managed-worktree'
+        $clearPayload.override_cleared | Should -Be $true
+        Test-Path -LiteralPath $setPayload.saved_path | Should -Be $false
+
+        $settingsAfter = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8
+        $settingsAfter | Should -Be $settingsBefore
+    }
+
+    It 'rejects unknown workspace lifecycle presets' {
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher lifecycle custom-script --json 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+
+        $exitCode | Should -Be 1
+        ($output | Out-String) | Should -Match 'workspace lifecycle preset not found: custom-script'
+        Test-Path -LiteralPath (Join-Path $script:winsmuxLauncherTempRoot '.winsmux\workspace-lifecycle.json') | Should -Be $false
+    }
+
+    It 'rejects lifecycle clear when combined with another launcher mode or preset' {
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $presetOutput = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher presets --clear --json 2>&1
+            $presetExitCode = $LASTEXITCODE
+            $combinedOutput = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher lifecycle ephemeral-worktree --clear --json 2>&1
+            $combinedExitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+
+        $presetExitCode | Should -Be 1
+        ($presetOutput | Out-String) | Should -Match 'usage: winsmux launcher lifecycle \[preset\|--clear\] \[--json\]'
+        $combinedExitCode | Should -Be 1
+        ($combinedOutput | Out-String) | Should -Match 'usage: winsmux launcher lifecycle \[preset\|--clear\] \[--json\]'
+    }
+
+    It 'rejects save when only --json is supplied instead of a template name' {
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher save --json 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+
+        $exitCode | Should -Be 1
+        ($output | Out-String) | Should -Match 'usage: winsmux launcher save <name> \[--json\]'
+        Test-Path -LiteralPath (Join-Path $script:winsmuxLauncherTempRoot '.winsmux\launcher-templates.json') | Should -Be $false
+    }
+}
+
+Describe 'winsmux role command provider routing' {
+    BeforeAll {
+        $script:winsmuxRoleRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxRoleRawContent = Get-Content -Raw -Path $script:winsmuxRoleRawPath -Encoding UTF8
+    }
+
+    It 'builds reassigned role launch commands through provider capabilities' {
+        $script:winsmuxRoleRawContent | Should -Match 'Get-SlotAgentConfig -Role \$newRole -SlotId \$newLabel'
+        $script:winsmuxRoleRawContent | Should -Match 'Get-BridgeProviderLaunchCommand'
+        $script:winsmuxRoleRawContent | Should -Match '\$launchDir = \[string\]\$manifestEntry\.LaunchDir'
+        $script:winsmuxRoleRawContent | Should -Match '\$gitDir = \[string\]\$manifestEntry\.GitWorktreeDir'
+        $script:winsmuxRoleRawContent | Should -Match 'ProjectDir \$launchDir'
+        $script:winsmuxRoleRawContent | Should -Match 'respawn-pane -k -t \$paneId -c \$launchDir'
+        $script:winsmuxRoleRawContent | Should -Match 'role\s*=\s*\$manifestRole'
+        $script:winsmuxRoleRawContent | Should -Match 'launch_dir\s*=\s*\$launchDir'
+        $script:winsmuxRoleRawContent | Should -Match 'worktree_git_dir\s*=\s*\$gitDir'
+        $script:winsmuxRoleRawContent | Should -Match 'provider_target\s*=\s*\$providerTarget'
+        $script:winsmuxRoleRawContent | Should -Match 'capability_adapter\s*=\s*\[string\]\$roleAgentConfig\.CapabilityAdapter'
+        $script:winsmuxRoleRawContent | Should -Match "builder_worktree_path'\]\s*=\s*''"
+        $script:winsmuxRoleRawContent | Should -Match "builder_branch'\]\s*=\s*''"
+        $script:winsmuxRoleRawContent | Should -Match '\$environmentGitDir\s*=\s*'''''
+        $script:winsmuxRoleRawContent | Should -Match '\$assignedBranch\s*=\s*\[string\]\$manifestEntry\.BuilderBranch'
+        $script:winsmuxRoleRawContent | Should -Match 'Get-WinsmuxEnvironmentVariableNames'
+        $script:winsmuxRoleRawContent | Should -Match 'Get-WinsmuxPaneEnvironment'
+        $script:winsmuxRoleRawContent | Should -Match 'WINSMUX_ROLE_MAP'
+        $script:winsmuxRoleRawContent | Should -Match 'set-environment -t \$sessionName'
+        $script:winsmuxRoleRawContent | Should -Match 'set-environment -u -t \$sessionName \$name'
+        $script:winsmuxRoleRawContent | Should -Not -Match 'codex --sandbox danger-full-access -C'
+        $launchIndex = $script:winsmuxRoleRawContent.IndexOf('$launchCmd = Get-BridgeProviderLaunchCommand')
+        $nonWorkerResetIndex = $script:winsmuxRoleRawContent.IndexOf('$manifestRole -notin @(''Builder'', ''Worker'')')
+        $renameIndex = $script:winsmuxRoleRawContent.IndexOf('& winsmux select-pane -t $paneId -T $newLabel')
+        $manifestUpdateIndex = $script:winsmuxRoleRawContent.IndexOf('Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath')
+        $environmentIndex = $script:winsmuxRoleRawContent.IndexOf('$paneEnvironment = Get-WinsmuxPaneEnvironment')
+        $environmentClearIndex = $script:winsmuxRoleRawContent.IndexOf('& winsmux set-environment -u -t $sessionName $name')
+        $respawnIndex = $script:winsmuxRoleRawContent.IndexOf('& winsmux respawn-pane -k -t $paneId -c $launchDir')
+        $launchIndex | Should -BeGreaterThan -1
+        $nonWorkerResetIndex | Should -BeGreaterThan -1
+        $renameIndex | Should -BeGreaterThan -1
+        $manifestUpdateIndex | Should -BeGreaterThan -1
+        $environmentIndex | Should -BeGreaterThan -1
+        $environmentClearIndex | Should -BeGreaterThan -1
+        $respawnIndex | Should -BeGreaterThan -1
+        $nonWorkerResetIndex | Should -BeLessThan $launchIndex
+        $launchIndex | Should -BeLessThan $renameIndex
+        $manifestUpdateIndex | Should -BeLessThan $respawnIndex
+        $environmentClearIndex | Should -BeLessThan $environmentIndex
+        $environmentIndex | Should -BeLessThan $respawnIndex
+    }
+}
+
+Describe 'winsmux provider-switch command' {
+    BeforeAll {
+        $script:winsmuxCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxCoreRawContent = Get-Content -Path $script:winsmuxCoreRawPath -Raw -Encoding UTF8
+    }
+
+    BeforeEach {
+        $script:providerSwitchTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-provider-switch-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:providerSwitchTempRoot -Force | Out-Null
+        @'
+agent: codex
+model: gpt-5.4
+prompt-transport: argv
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+'@ | Set-Content -Path (Join-Path $script:providerSwitchTempRoot '.winsmux.yaml') -Encoding UTF8
+        New-Item -ItemType Directory -Path (Join-Path $script:providerSwitchTempRoot '.winsmux') -Force | Out-Null
+@'
+{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "auth_modes": ["api-key", "codex-chatgpt-local"],
+      "local_interactive_oauth_modes": ["codex-chatgpt-local"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    },
+    "claude": {
+      "adapter": "claude",
+      "command": "claude",
+      "prompt_transports": ["file"],
+      "auth_modes": ["api-key", "claude-pro-max-oauth"],
+      "local_interactive_oauth_modes": ["claude-pro-max-oauth"],
+      "supports_parallel_runs": false,
+      "supports_interrupt": true,
+      "supports_structured_result": false,
+      "supports_file_edit": true,
+      "supports_subagents": false,
+      "supports_verification": true,
+      "supports_consultation": true
+    }
+  }
+}
+'@ | Set-Content -Path (Join-Path $script:providerSwitchTempRoot '.winsmux\provider-capabilities.json') -Encoding UTF8
+    }
+
+    AfterEach {
+        if ($script:providerSwitchTempRoot -and (Test-Path $script:providerSwitchTempRoot)) {
+            Remove-Item -Path $script:providerSwitchTempRoot -Recurse -Force
+        }
+    }
+
+    It 'documents provider-switch in usage and writes a provider registry entry' {
+        $script:winsmuxCoreRawContent | Should -Match 'provider-switch <slot> \[--agent <name>\] \[--model <name>\] \[--prompt-transport <argv\|file\|stdin>\] \[--auth-mode <mode>\] \[--reason <text>\] \[--restart\] \[--clear\] \[--json\]'
+        $script:winsmuxCoreRawContent | Should -Match "'provider-switch'\s*\{"
+
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --prompt-transport file --auth-mode claude-pro-max-oauth --reason 'operator requested provider switch' --json
+        } finally {
+            Pop-Location
+        }
+
+        $result = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $result.slot_id | Should -Be 'worker-1'
+        $result.agent | Should -Be 'claude'
+        $result.model | Should -Be 'opus'
+        $result.prompt_transport | Should -Be 'file'
+        $result.auth_mode | Should -Be 'claude-pro-max-oauth'
+        $result.auth_policy | Should -Be 'local_interactive_only'
+        $result.source | Should -Be 'registry'
+        $result.capability_adapter | Should -Be 'claude'
+        $result.capability_command | Should -Be 'claude'
+        $result.supports_file_edit | Should -Be $true
+        $result.supports_subagents | Should -Be $false
+        $result.supports_consultation | Should -Be $true
+        $result.restart_requested | Should -Be $false
+        $result.restarted | Should -Be $false
+
+        $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
+        Test-Path -LiteralPath $registryPath | Should -Be $true
+        $registry = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $registry.slots.'worker-1'.agent | Should -Be 'claude'
+        $registry.slots.'worker-1'.model | Should -Be 'opus'
+        $registry.slots.'worker-1'.prompt_transport | Should -Be 'file'
+        $registry.slots.'worker-1'.reason | Should -Be 'operator requested provider switch'
+    }
+
+    It 'rejects provider-switch blocked auth modes before writing the provider registry' {
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --prompt-transport file --auth-mode token-broker --json 2>&1
+        } finally {
+            Pop-Location
+        }
+
+        [string]::Join("`n", @($output)) | Should -Match 'must not broker OAuth'
+        $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
+        Test-Path $registryPath | Should -BeFalse
+    }
+
+    It 'clears provider-switch overrides and reports the configured slot provider' {
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --prompt-transport file --json | Out-Null
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --clear --json
+        } finally {
+            Pop-Location
+        }
+
+        $result = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $result.slot_id | Should -Be 'worker-1'
+        $result.agent | Should -Be 'codex'
+        $result.model | Should -Be 'gpt-5.4'
+        $result.prompt_transport | Should -Be 'argv'
+        $result.source | Should -Be 'slot'
+        $result.capability_adapter | Should -Be 'codex'
+        $result.supports_parallel_runs | Should -Be $true
+        $result.supports_verification | Should -Be $true
+        $result.supports_consultation | Should -Be $false
+        $result.clear_requested | Should -Be $true
+        $result.cleared | Should -Be $true
+        $registry = Get-Content -LiteralPath (Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $registry.slots.PSObject.Properties.Name | Should -Not -Contain 'worker-1'
+    }
+
+    It 'documents provider-switch restart and routes it through the manifest-backed restart helper' {
+        $script:winsmuxCoreRawContent | Should -Match "'--restart'\s*\{"
+        $script:winsmuxCoreRawContent | Should -Match "'--clear'\s*\{"
+        $script:winsmuxCoreRawContent | Should -Match 'Get-PaneControlManifestEntries -ProjectDir \$projectDir'
+        $script:winsmuxCoreRawContent | Should -Match 'Confirm-Target \(\[string\]\$manifestEntry\[0\]\.PaneId\)'
+        $script:winsmuxCoreRawContent | Should -Match 'Invoke-RestartPane -PaneId'
+        $script:winsmuxCoreRawContent | Should -Match '\$restartReadinessAgent\s*=\s*Get-RestartReadinessAgentName -Plan \$plan'
+        $script:winsmuxCoreRawContent | Should -Match 'Test-AgentReadyPrompt -PaneId \$PaneId -Agent \$restartReadinessAgent'
+        $script:winsmuxCoreRawContent | Should -Not -Match 'timed out waiting for Codex after restart'
+        $script:winsmuxCoreRawContent | Should -Match 'Remove-BridgeProviderRegistryEntry -RootPath \$projectDir -SlotId \$slotId'
+        $script:winsmuxCoreRawContent | Should -Match 'clear_requested'
+        $script:winsmuxCoreRawContent | Should -Match 'restart_requested'
+        $script:winsmuxCoreRawContent | Should -Match 'restart_pane_id'
+    }
+
+    It 'rejects provider-switch restart when the manifest pane id is stale before writing the registry' {
+        $winsmuxBin = Join-Path $script:providerSwitchTempRoot 'bin'
+        New-Item -ItemType Directory -Path $winsmuxBin -Force | Out-Null
+        @'
+@echo off
+if "%1"=="list-panes" (
+  echo %%live
+  exit /b 0
+)
+exit /b 0
+'@ | Set-Content -Path (Join-Path $winsmuxBin 'winsmux.cmd') -Encoding ASCII
+
+        New-Item -ItemType Directory -Path (Join-Path $script:providerSwitchTempRoot '.winsmux') -Force | Out-Null
+        $manifestContent = @'
+session:
+  name: winsmux-orchestra
+  project_dir: __PROJECT_DIR__
+panes:
+  worker-1:
+    pane_id: "%stale"
+    role: Builder
+    launch_dir: __PROJECT_DIR__
+'@
+        $manifestContent.Replace('__PROJECT_DIR__', $script:providerSwitchTempRoot) |
+            Set-Content -Path (Join-Path $script:providerSwitchTempRoot '.winsmux\manifest.yaml') -Encoding UTF8
+
+        $originalPath = $env:PATH
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $env:PATH = "$winsmuxBin$([System.IO.Path]::PathSeparator)$env:PATH"
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --restart --json 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            $env:PATH = $originalPath
+            Pop-Location
+        }
+
+        $exitCode | Should -Be 1
+        ($output | Out-String) | Should -Match 'invalid target: %stale'
+        Test-Path -LiteralPath (Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json') | Should -Be $false
     }
 }
 
@@ -7882,6 +10950,8 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'ready-with-ui-warning'
         $script:orchestraSmokeContent | Should -Match 'can_dispatch'
         $script:orchestraSmokeContent | Should -Match 'requires_startup'
+        $script:orchestraSmokeContent | Should -Match 'worker_isolation'
+        $script:orchestraSmokeContent | Should -Match 'worker isolation drift'
     }
 
     It 'keeps ready-with-ui-warning fail-closed only for external operator mode' {
@@ -7935,6 +11005,25 @@ Describe 'winsmux orchestra-smoke command' {
         $attachFailed.requires_startup | Should -Be $false
         $attachFailed.operator_message | Should -Match 'session-ready'
         $attachFailed.next_action | Should -Match 'attached-client confirmation'
+    }
+
+    It 'classifies worker isolation drift without requiring startup rerun' {
+        $workerDrift = Invoke-TestOrchestraOperatorContract `
+            -SmokeOk $false `
+            -SessionReady $true `
+            -UiAttachLaunched $true `
+            -UiAttached $true `
+            -UiAttachStatus 'attach_confirmed' `
+            -ExternalOperatorMode $true `
+            -PaneCount 6 `
+            -ExpectedPaneCount 6 `
+            -SmokeErrors @('worker isolation drift: worker-1: branch is main; expected worktree-worker-1')
+
+        $workerDrift.operator_state | Should -Be 'blocked-worker-isolation'
+        $workerDrift.can_dispatch | Should -Be $false
+        $workerDrift.requires_startup | Should -Be $false
+        $workerDrift.operator_message | Should -Match 'startup is already session-ready'
+        $workerDrift.next_action | Should -Match 'Operator shell'
     }
 
     It 'fails closed to runtime attach state instead of trusting manifest ui_attached alone' {
@@ -8102,25 +11191,75 @@ Describe 'operator startup restore contract docs' {
     It 'keeps operator-facing script errors pinned to winsmux instead of exposing compatibility aliases' {
         $settingsPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\settings.ps1'
         $setupWizardPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\setup-wizard.ps1'
-        $commanderPollPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\commander-poll.ps1'
+        $operatorPollPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\operator-poll.ps1'
         $agentMonitorPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\agent-monitor.ps1'
         $watchdogPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\server-watchdog.ps1'
         $orchestraStartPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-start.ps1'
 
         $settingsContent = Get-Content -Path $settingsPath -Raw -Encoding UTF8
         $setupWizardContent = Get-Content -Path $setupWizardPath -Raw -Encoding UTF8
-        $commanderPollContent = Get-Content -Path $commanderPollPath -Raw -Encoding UTF8
+        $operatorPollContent = Get-Content -Path $operatorPollPath -Raw -Encoding UTF8
         $agentMonitorContent = Get-Content -Path $agentMonitorPath -Raw -Encoding UTF8
         $watchdogContent = Get-Content -Path $watchdogPath -Raw -Encoding UTF8
         $orchestraStartContent = Get-Content -Path $orchestraStartPath -Raw -Encoding UTF8
 
         $settingsContent | Should -Match 'function Get-WinsmuxOperatorNotFoundMessage'
         $settingsContent | Should -Match 'Could not resolve the winsmux executable from PATH'
+        $setupWizardContent | Should -Match 'AI agent provider'
+        $setupWizardContent | Should -Match 'Test-SetupWizardAgentProvider'
+        $setupWizardContent | Should -Match 'provider-capabilities\.json first'
+        $setupWizardContent | Should -Not -Match 'AI agent CLI \(codex/claude\)'
+        $setupWizardContent | Should -Not -Match "Please enter 'codex' or 'claude'\."
         $setupWizardContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
-        $commanderPollContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
+        $operatorPollContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
         $agentMonitorContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
         $watchdogContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
         $orchestraStartContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
+    }
+
+    It 'keeps the legacy orchestra prompt provider-neutral' {
+        $legacyStartPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\start-orchestra.ps1'
+        $legacyStartContent = Get-Content -Path $legacyStartPath -Raw -Encoding UTF8
+
+        $legacyStartContent | Should -Match '## Builder Agents'
+        $legacyStartContent | Should -Match 'configured agent'
+        $legacyStartContent | Should -Match 'configured agent command'
+        $legacyStartContent | Should -Match 'settings\.ps1'
+        $legacyStartContent | Should -Match 'function ConvertTo-LegacyCodexModelArgument'
+        $legacyStartContent | Should -Match '\$modelArgument = "model=\$Model"'
+        $legacyStartContent | Should -Match 'ConvertTo-BridgePowerShellLiteral -Value \$modelArgument'
+        $legacyStartContent | Should -Match 'function Get-LegacyDefaultAgentSpec'
+        $legacyStartContent | Should -Match 'Read-BridgeGlobalSettings'
+        $legacyStartContent | Should -Match 'Read-BridgeProjectSettings -RootPath \$ProjectDir'
+        $legacyStartContent | Should -Match 'ConvertTo-BridgeSettingsSource'
+        $legacyStartContent | Should -Match 'Get-BridgeProviderRegistryEntry -SlotId \$SlotId -RootPath \$ProjectDir'
+        $legacyStartContent | Should -Match '\$hasExplicitSlotConfig = \$true'
+        $legacyStartContent | Should -Match '\$hasExplicitAgentOverride = \$true'
+        $legacyStartContent | Should -Match '\$hasExplicitModelOverride = \$true'
+        $legacyStartContent | Should -Match '\$globalSettings\.Contains\(''agent''\)'
+        $legacyStartContent | Should -Match '\$globalSettings\.Contains\(''model''\)'
+        $legacyStartContent | Should -Match '\$projectSettings\.Contains\(''agent''\)'
+        $legacyStartContent | Should -Match '\$projectSettings\.Contains\(''model''\)'
+        $legacyStartContent | Should -Match '\$null -eq \$registryEntry'
+        $legacyStartContent | Should -Match 'Get-SlotAgentConfig -Role \$Role -SlotId \$SlotId -Settings \$settings -RootPath \$ProjectDir'
+        $legacyStartContent | Should -Match '\$slotAgentConfig\.Source -eq ''role'' -and -not \$hasExplicitRoleConfig -and -not \$hasExplicitAgentOverride'
+        $legacyStartContent | Should -Match 'if \(-not \$hasExplicitAgentOverride\)'
+        $legacyStartContent | Should -Match '\$effectiveProvider = \(\[string\]\$slotAgentConfig\.Agent\)\.Trim\(\)'
+        $legacyStartContent | Should -Match '\[string\]::Equals\(\$effectiveProvider, \$FallbackAdapter, \[System\.StringComparison\]::OrdinalIgnoreCase\)'
+        $legacyStartContent | Should -Match 'ConvertTo-LegacyCodexModelArgument -Model \$fallbackModel'
+        $legacyStartContent | Should -Match 'if \(-not \$hasExplicitModelOverride\)'
+        $legacyStartContent | Should -Match 'ConvertTo-LegacyCodexModelArgument -Model \$model'
+        $legacyStartContent | Should -Match 'claude --model \$modelLiteral'
+        $legacyStartContent | Should -Match 'Resolve-BridgeProviderCapability -ProviderId \$provider -RootPath \$ProjectDir -RequireWhenRegistryPresent'
+        $legacyStartContent | Should -Match 'Get-ApprovalFreeCommand -Cmd \$agent\.command -Adapter \$agent\.adapter'
+        $legacyStartContent | Should -Match '\$adapterKey -eq ''codex'''
+        $legacyStartContent | Should -Match '\$_.adapter -eq ''codex'''
+        $legacyStartContent | Should -Match 'Get-Command Resolve-BridgeProviderCapability -ErrorAction SilentlyContinue'
+        $legacyStartContent | Should -Match 'Get-Command Get-BridgeProviderCapabilityValue -ErrorAction SilentlyContinue'
+        $legacyStartContent | Should -Not -Match 'Falling back to legacy command'
+        $legacyStartContent | Should -Not -Match '## Codex Builders'
+        $legacyStartContent | Should -Not -Match 'Codex idle prompt'
+        $legacyStartContent | Should -Not -Match 'restart codex'
     }
 }
 
@@ -8141,6 +11280,15 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraStartContent | Should -Match 'Start-OrchestraPaneBootstrap -PaneId \$paneId -PlanPath \$bootstrapPlanPath'
         $script:orchestraStartContent | Should -Match 'ready_marker_path'
         $script:orchestraStartContent | Should -Match 'Wait-OrchestraServerSessionAbsent -SessionName \$SessionName -TimeoutSeconds 20'
+    }
+
+    It 'passes the project root into slot provider resolution' {
+        $script:orchestraStartContent | Should -Match 'Get-SlotAgentConfig -Role \$canonicalRole -SlotId \$label -Settings \$settings -RootPath \$projectDir'
+    }
+
+    It 'builds pane launch commands through provider capability metadata' {
+        $script:orchestraStartContent | Should -Match 'Get-BridgeProviderLaunchCommand'
+        $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'
     }
 
     It 'prints a concise startup summary before invoking the agent launch command' {
@@ -8267,7 +11415,7 @@ panes:
     head_sha: def5678abc1234
     changed_file_count: 0
     changed_files: '[]'
-    last_event: commander.state_transition
+    last_event: operator.state_transition
     last_event_at: 2026-04-10T11:05:00+09:00
 "@ | Set-Content -Path $manifestPath -Encoding UTF8
 
@@ -8285,11 +11433,11 @@ panes:
                 ([ordered]@{
                     timestamp = '2026-04-10T11:06:00+09:00'
                     session   = 'winsmux-orchestra'
-                    event     = 'commander.state_transition'
+                    event     = 'operator.state_transition'
                     message   = 'State: review_requested -> blocked_no_review_target'
                     label     = ''
                     pane_id   = ''
-                    role      = 'Commander'
+                    role      = 'Operator'
                     status    = 'blocked_no_review_target'
                     data      = [ordered]@{
                         from = 'review_requested'
@@ -8299,11 +11447,11 @@ panes:
                 ([ordered]@{
                     timestamp = '2026-04-10T11:08:00+09:00'
                     session   = 'winsmux-orchestra'
-                    event     = 'commander.commit_ready'
+                    event     = 'operator.commit_ready'
                     message   = 'コミット準備完了。'
                     label     = ''
                     pane_id   = ''
-                    role      = 'Commander'
+                    role      = 'Operator'
                     status    = 'commit_ready'
                     head_sha  = 'abc1234def5678'
                 } | ConvertTo-Json -Compress)
@@ -8354,7 +11502,7 @@ panes:
     head_sha: abc1234def5678
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_failed
+    last_event: operator.review_failed
     last_event_at: 2026-04-10T14:00:00+09:00
 "@ | Set-Content -Path $manifestPath -Encoding UTF8
 
@@ -8382,7 +11530,7 @@ panes:
             ([ordered]@{
                 timestamp = '2026-04-10T14:03:00+09:00'
                 session   = 'winsmux-orchestra'
-                event     = 'commander.review_failed'
+                event     = 'operator.review_failed'
                 message   = 'review failed'
                 label     = 'builder-1'
                 pane_id   = '%2'
@@ -8462,7 +11610,7 @@ panes:
     agent_role: worker
     timeout_policy: standard
     handoff_refs: '["docs/handoff.md"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-10T12:00:00+09:00
 "@ | Set-Content -Path $manifestPath -Encoding UTF8
 
@@ -8497,7 +11645,7 @@ panes:
                 ([ordered]@{
                     timestamp = '2026-04-10T12:01:00+09:00'
                     session   = 'winsmux-orchestra'
-                    event     = 'commander.review_requested'
+                    event     = 'operator.review_requested'
                     message   = 'review requested'
                     label     = 'reviewer-1'
                     pane_id   = '%3'
@@ -8597,7 +11745,7 @@ panes:
     head_sha: aaaabbbbccccdddd
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-12T10:00:00+09:00
   builder-2:
     pane_id: %4
@@ -8663,7 +11811,7 @@ panes:
             ([ordered]@{
                 timestamp = '2026-04-12T10:00:00+09:00'
                 session   = 'winsmux-orchestra'
-                event     = 'commander.review_requested'
+                event     = 'operator.review_requested'
                 message   = 'review requested'
                 label     = 'builder-1'
                 pane_id   = '%2'
@@ -8810,6 +11958,50 @@ panes:
         @($result.differences | ForEach-Object { $_.field }) | Should -Contain 'changed_files'
     }
 
+    It 'routes public compare runs through the same run comparison contract' {
+        $result = (Invoke-Compare -CompareTarget 'runs' -CompareRest @('task:task-compare-a', 'task:task-compare-b', '--json') | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.left.run_id | Should -Be 'task:task-compare-a'
+        $result.right.run_id | Should -Be 'task:task-compare-b'
+        $result.recommend.winning_run_id | Should -Be 'task:task-compare-a'
+    }
+
+    It 'routes public compare preflight with compare-specific command guidance' {
+        Mock Invoke-WinsmuxGitProbe {
+            param($ProjectDir, [string[]]$Arguments)
+
+            $commandLine = ($Arguments | ForEach-Object { [string]$_ }) -join ' '
+            switch ($commandLine) {
+                'rev-parse --show-toplevel' { return [PSCustomObject]@{ exit_code = 0; output = $script:compareTempRoot } }
+                'rev-parse --verify left^{commit}' { return [PSCustomObject]@{ exit_code = 0; output = '1111111111111111111111111111111111111111' } }
+                'rev-parse --verify right^{commit}' { return [PSCustomObject]@{ exit_code = 0; output = '2222222222222222222222222222222222222222' } }
+                'merge-base left right' { return [PSCustomObject]@{ exit_code = 1; output = '' } }
+                default { throw "unexpected git probe: $commandLine" }
+            }
+        }
+
+        $result = (Invoke-Compare -CompareTarget 'preflight' -CompareRest @('left', 'right', '--json') | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.command | Should -Be 'compare preflight'
+        $result.status | Should -Be 'blocked'
+        $result.next_action | Should -Match 'winsmux compare preflight'
+    }
+
+    It 'routes public compare promote through follow-up candidate export' {
+        $result = (Invoke-Compare -CompareTarget 'promote' -CompareRest @('task:task-compare-a', '--title', 'Deterministic build command', '--json') | Out-String | ConvertFrom-Json -AsHashtable)
+
+        $result.run_id | Should -Be 'task:task-compare-a'
+        $result.candidate.title | Should -Be 'Deterministic build command'
+        $result.candidate.observation_pack_ref | Should -Be $script:compareObsA.reference
+    }
+
+    It 'documents public compare and dispatches it from the top-level command table' {
+        $raw = Get-Content -Path $script:winsmuxCorePath -Raw -Encoding UTF8
+
+        $raw | Should -Match 'compare <runs\|preflight\|promote> \.\.\. \[--json\]\s+Public compare entrypoint'
+        $raw | Should -Match "'compare'\s*\{\s*Invoke-Compare\s*\}"
+    }
+
     It 'suppresses winner selection when a higher-confidence run is unhealthy' {
         @"
 version: 1
@@ -8828,7 +12020,7 @@ panes:
     head_sha: aaaabbbbccccdddd
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-12T10:00:00+09:00
   builder-2:
     pane_id: %4
@@ -8849,7 +12041,7 @@ panes:
             ([ordered]@{
                 timestamp = '2026-04-12T10:00:00+09:00'
                 session   = 'winsmux-orchestra'
-                event     = 'commander.review_requested'
+                event     = 'operator.review_requested'
                 message   = 'review requested'
                 label     = 'builder-1'
                 pane_id   = '%2'
@@ -9000,7 +12192,7 @@ panes:
     head_sha: aaaabbbbccccdddd
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-12T10:00:00+09:00
 "@ | Set-Content -Path $script:compareManifestPath -Encoding UTF8
 
@@ -9025,7 +12217,7 @@ panes:
     head_sha: aaaabbbbccccdddd
     changed_file_count: 1
     changed_files: '["scripts/winsmux-core.ps1"]'
-    last_event: commander.review_requested
+    last_event: operator.review_requested
     last_event_at: 2026-04-12T10:00:00+09:00
 "@ | Set-Content -Path $script:compareManifestPath -Encoding UTF8
 
@@ -9033,7 +12225,7 @@ panes:
             ([ordered]@{
                 timestamp = '2026-04-12T10:00:00+09:00'
                 session   = 'winsmux-orchestra'
-                event     = 'commander.review_requested'
+                event     = 'operator.review_requested'
                 message   = 'review requested'
                 label     = 'builder-1'
                 pane_id   = '%2'
@@ -9299,46 +12491,46 @@ Describe 'winsmux poll-events command' {
     }
 }
 
-Describe 'commander-poll helpers' {
+Describe 'operator-poll helpers' {
     BeforeAll {
-        $script:commanderPollScriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\commander-poll.ps1'
+        $script:operatorPollScriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\operator-poll.ps1'
     }
 
     BeforeEach {
-        $script:commanderPollTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-commander-poll-tests-' + [guid]::NewGuid().ToString('N'))
-        $script:commanderPollManifestDir = Join-Path $script:commanderPollTempRoot '.winsmux'
-        $script:commanderPollManifestPath = Join-Path $script:commanderPollManifestDir 'manifest.yaml'
-        New-Item -ItemType Directory -Path $script:commanderPollManifestDir -Force | Out-Null
+        $script:operatorPollTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-operator-poll-tests-' + [guid]::NewGuid().ToString('N'))
+        $script:operatorPollManifestDir = Join-Path $script:operatorPollTempRoot '.winsmux'
+        $script:operatorPollManifestPath = Join-Path $script:operatorPollManifestDir 'manifest.yaml'
+        New-Item -ItemType Directory -Path $script:operatorPollManifestDir -Force | Out-Null
 
 @"
 version: 1
 session:
   name: winsmux-orchestra
-  project_dir: $script:commanderPollTempRoot
+  project_dir: $script:operatorPollTempRoot
 panes:
   - label: builder-1
     pane_id: %2
     role: Builder
-    launch_dir: $script:commanderPollTempRoot
-"@ | Set-Content -Path $script:commanderPollManifestPath -Encoding UTF8
+    launch_dir: $script:operatorPollTempRoot
+"@ | Set-Content -Path $script:operatorPollManifestPath -Encoding UTF8
 
-        . $script:commanderPollScriptPath -ManifestPath $script:commanderPollManifestPath
+        . $script:operatorPollScriptPath -ManifestPath $script:operatorPollManifestPath
     }
 
     AfterEach {
-        if ($script:commanderPollTempRoot -and (Test-Path $script:commanderPollTempRoot)) {
-            Remove-Item -Path $script:commanderPollTempRoot -Recurse -Force
+        if ($script:operatorPollTempRoot -and (Test-Path $script:operatorPollTempRoot)) {
+            Remove-Item -Path $script:operatorPollTempRoot -Recurse -Force
         }
     }
 
     It 'processes mailbox idle messages and logs dispatch-needed guidance' {
-        Mock Receive-CommanderPollMailboxMessages {
+        Mock Receive-OperatorPollMailboxMessages {
             @(
                 [ordered]@{
                     timestamp   = '2026-04-07T09:00:00.0000000+09:00'
                     session     = 'winsmux-orchestra'
                     event       = 'pane.idle'
-                    message     = 'Commander alert: idle pane builder-1 (%2, role=Builder)'
+                    message     = 'Operator alert: idle pane builder-1 (%2, role=Builder)'
                     label       = 'builder-1'
                     pane_id     = '%2'
                     role        = 'Builder'
@@ -9351,17 +12543,17 @@ panes:
                 }
             )
         }
-        Mock Write-CommanderPollLog { }
+        Mock Write-OperatorPollLog { }
 
-        $cycle = Invoke-CommanderPollCycle -ManifestPath $script:commanderPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+        $cycle = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
         $summary = $cycle['Summary']
 
         $summary.mailbox_events | Should -Be 1
         $summary.new_events | Should -Be 1
         $summary.dispatches | Should -Be 1
         $summary.messages[0] | Should -Be 'builder-1 (%2) がアイドル。次タスクのディスパッチが必要'
-        Should -Invoke Write-CommanderPollLog -Times 1 -Exactly -ParameterFilter {
-            $EventName -eq 'commander.poll.idle_dispatch_needed' -and
+        Should -Invoke Write-OperatorPollLog -Times 1 -Exactly -ParameterFilter {
+            $EventName -eq 'operator.poll.idle_dispatch_needed' -and
             $PaneId -eq '%2' -and
             $Message -eq 'builder-1 (%2) がアイドル。次タスクのディスパッチが必要'
         }
@@ -9373,21 +12565,21 @@ version: 1
 saved_at: 2026-04-09T11:00:00+09:00
 session:
   name: winsmux-orchestra
-  project_dir: $script:commanderPollTempRoot
+  project_dir: $script:operatorPollTempRoot
 panes:
   builder-1:
     pane_id: %2
     role: Builder
-    launch_dir: $script:commanderPollTempRoot
-"@ | Set-Content -Path $script:commanderPollManifestPath -Encoding UTF8
+    launch_dir: $script:operatorPollTempRoot
+"@ | Set-Content -Path $script:operatorPollManifestPath -Encoding UTF8
 
-        Mock Receive-CommanderPollMailboxMessages {
+        Mock Receive-OperatorPollMailboxMessages {
             @(
                 [ordered]@{
                     timestamp   = '2026-04-07T09:00:00.0000000+09:00'
                     session     = 'winsmux-orchestra'
                     event       = 'pane.idle'
-                    message     = 'Commander alert: idle pane builder-1 (%2, role=Builder)'
+                    message     = 'Operator alert: idle pane builder-1 (%2, role=Builder)'
                     label       = 'builder-1'
                     pane_id     = '%2'
                     role        = 'Builder'
@@ -9400,9 +12592,9 @@ panes:
                 }
             )
         }
-        Mock Write-CommanderPollLog { }
+        Mock Write-OperatorPollLog { }
 
-        $cycle = Invoke-CommanderPollCycle -ManifestPath $script:commanderPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
+        $cycle = Invoke-OperatorPollCycle -ManifestPath $script:operatorPollManifestPath -ProcessedLineCount 0 -ProcessedEventSignatures ([ordered]@{})
         $summary = $cycle['Summary']
 
         $summary.mailbox_events | Should -Be 1
@@ -9417,16 +12609,16 @@ version: 1
 saved_at: 2026-04-09T11:00:00+09:00
 session:
   name: winsmux-orchestra
-  project_dir: $script:commanderPollTempRoot
+  project_dir: $script:operatorPollTempRoot
 panes:
   worker-1:
     pane_id: %2
     role: Worker
-    launch_dir: $script:commanderPollTempRoot
-"@ | Set-Content -Path $script:commanderPollManifestPath -Encoding UTF8
+    launch_dir: $script:operatorPollTempRoot
+"@ | Set-Content -Path $script:operatorPollManifestPath -Encoding UTF8
 
-        $manifest = Read-CommanderPollManifest -Path $script:commanderPollManifestPath
-        $reviewPane = Get-CommanderPollPreferredReviewPane -Manifest $manifest
+        $manifest = Read-OperatorPollManifest -Path $script:operatorPollManifestPath
+        $reviewPane = Get-OperatorPollPreferredReviewPane -Manifest $manifest
 
         $reviewPane.PaneId | Should -Be '%2'
         $reviewPane.Label | Should -Be 'worker-1'
@@ -9439,13 +12631,13 @@ version: 1
 saved_at: 2026-04-09T11:00:00+09:00
 session:
   name: winsmux-orchestra
-  project_dir: $script:commanderPollTempRoot
+  project_dir: $script:operatorPollTempRoot
 panes:
   worker-1:
     pane_id: %2
     role: Worker
-    launch_dir: $script:commanderPollTempRoot
-"@ | Set-Content -Path $script:commanderPollManifestPath -Encoding UTF8
+    launch_dir: $script:operatorPollTempRoot
+"@ | Set-Content -Path $script:operatorPollManifestPath -Encoding UTF8
 
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-state.ps1')
 
@@ -9464,25 +12656,25 @@ panes:
         $record.status | Should -Be 'PENDING'
     }
 
-    It 'appends commander poll log records as jsonl' {
-        Write-CommanderPollLog -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' -EventName 'commander.poll.idle_dispatch_needed' -Message 'idle' -PaneId '%2'
-        Write-CommanderPollLog -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' -EventName 'commander.poll.auto_approved' -Message 'approved' -PaneId '%2'
+    It 'appends operator poll log records as jsonl' {
+        Write-OperatorPollLog -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' -EventName 'operator.poll.idle_dispatch_needed' -Message 'idle' -PaneId '%2'
+        Write-OperatorPollLog -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' -EventName 'operator.poll.auto_approved' -Message 'approved' -PaneId '%2'
 
-        $logPath = Get-CommanderPollLogPath -ProjectDir $script:commanderPollTempRoot
+        $logPath = Get-OperatorPollLogPath -ProjectDir $script:operatorPollTempRoot
         $lines = @(Get-Content -Path $logPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
 
         $lines.Count | Should -Be 2
-        ($lines[0] | ConvertFrom-Json).event | Should -Be 'commander.poll.idle_dispatch_needed'
-        ($lines[1] | ConvertFrom-Json).event | Should -Be 'commander.poll.auto_approved'
+        ($lines[0] | ConvertFrom-Json).event | Should -Be 'operator.poll.idle_dispatch_needed'
+        ($lines[1] | ConvertFrom-Json).event | Should -Be 'operator.poll.auto_approved'
     }
 
-    It 'does not forward commander dispatch-needed alerts to Telegram by default' {
+    It 'does not forward operator dispatch-needed alerts to Telegram by default' {
         Mock Test-Path { $true }
         Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
         Mock Invoke-RestMethod { }
 
-        Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
-            -Event 'commander.dispatch_needed' -Message 'idle' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
+        Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+            -Event 'operator.dispatch_needed' -Message 'idle' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
 
         Should -Not -Invoke Invoke-RestMethod
     }
@@ -9492,8 +12684,8 @@ panes:
         Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
         Mock Invoke-RestMethod { }
 
-        Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
-            -Event 'commander.auto_approved' -Message 'approved' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
+        Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+            -Event 'operator.auto_approved' -Message 'approved' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
 
         Should -Not -Invoke Invoke-RestMethod
     }
@@ -9503,8 +12695,8 @@ panes:
         Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
         Mock Invoke-RestMethod { }
 
-        Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
-            -Event 'commander.review_requested' -Message 'review requested' -PaneId '%4' -Label 'worker-1' -Role 'Worker'
+        Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+            -Event 'operator.review_requested' -Message 'review requested' -PaneId '%4' -Label 'worker-1' -Role 'Worker'
 
         Should -Invoke Invoke-RestMethod -Times 1 -Exactly
     }
@@ -9514,13 +12706,13 @@ panes:
         Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
         Mock Invoke-RestMethod { }
 
-        Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
-            -Event 'commander.commit_ready' -Message 'ready to commit' -HeadSha 'abc1234def5678'
+        Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+            -Event 'operator.commit_ready' -Message 'ready to commit' -HeadSha 'abc1234def5678'
 
         Should -Invoke Invoke-RestMethod -Times 1 -Exactly
     }
 
-    It 'allows all commander Telegram alerts when verbose profile is enabled' {
+    It 'allows all operator Telegram alerts when verbose profile is enabled' {
         $previousProfile = $env:WINSMUX_TELEGRAM_PROFILE
         $env:WINSMUX_TELEGRAM_PROFILE = 'verbose'
 
@@ -9529,8 +12721,8 @@ panes:
             Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
             Mock Invoke-RestMethod { }
 
-            Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
-                -Event 'commander.dispatch_needed' -Message 'idle' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
+            Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+                -Event 'operator.dispatch_needed' -Message 'idle' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
 
             Should -Invoke Invoke-RestMethod -Times 1 -Exactly
         } finally {
@@ -9551,8 +12743,8 @@ panes:
             Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
             Mock Invoke-RestMethod { }
 
-            Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
-                -Event 'commander.review_failed' -Message 'review failed' -HeadSha 'abc1234def5678'
+            Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+                -Event 'operator.review_failed' -Message 'review failed' -HeadSha 'abc1234def5678'
 
             Should -Not -Invoke Invoke-RestMethod
         } finally {
@@ -9564,7 +12756,7 @@ panes:
         }
     }
 
-    It 'allows internal commander Telegram alerts only when explicitly overridden' {
+    It 'allows internal operator Telegram alerts only when explicitly overridden' {
         $previousOverride = $env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS
         $env:WINSMUX_TELEGRAM_INCLUDE_INTERNAL_EVENTS = 'true'
 
@@ -9573,8 +12765,8 @@ panes:
             Mock Get-Content { 'TELEGRAM_BOT_TOKEN=test-token' }
             Mock Invoke-RestMethod { }
 
-            Send-CommanderTelegramNotification -ProjectDir $script:commanderPollTempRoot -SessionName 'winsmux-orchestra' `
-                -Event 'commander.dispatch_needed' -Message 'idle' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
+            Send-OperatorTelegramNotification -ProjectDir $script:operatorPollTempRoot -SessionName 'winsmux-orchestra' `
+                -Event 'operator.dispatch_needed' -Message 'idle' -PaneId '%2' -Label 'builder-1' -Role 'Builder'
 
             Should -Invoke Invoke-RestMethod -Times 1 -Exactly
         } finally {
@@ -9586,36 +12778,36 @@ panes:
         }
     }
 
-    It 'dispatches review requests through commander poll wrappers' {
+    It 'dispatches review requests through operator poll wrappers' {
 @"
 version: 1
 saved_at: 2026-04-12T10:00:00+09:00
 session:
   name: winsmux-orchestra
-  project_dir: $script:commanderPollTempRoot
+  project_dir: $script:operatorPollTempRoot
 panes:
   reviewer-1:
     pane_id: %4
     role: Reviewer
-    launch_dir: $script:commanderPollTempRoot
-"@ | Set-Content -Path $script:commanderPollManifestPath -Encoding UTF8
+    launch_dir: $script:operatorPollTempRoot
+"@ | Set-Content -Path $script:operatorPollManifestPath -Encoding UTF8
 
-        Mock Send-CommanderPollLiteral { }
-        Mock Approve-CommanderPollPane { }
-        Mock Send-CommanderTelegramNotification { }
+        Mock Send-OperatorPollLiteral { }
+        Mock Approve-OperatorPollPane { }
+        Mock Send-OperatorTelegramNotification { }
 
-        $result = Invoke-CommanderStateMachine `
+        $result = Invoke-OperatorStateMachine `
             -CurrentState 'waiting_for_review' `
             -CycleSummary @{ completions = 1 } `
-            -ProjectDir $script:commanderPollTempRoot `
+            -ProjectDir $script:operatorPollTempRoot `
             -SessionName 'winsmux-orchestra' `
-            -ManifestPath $script:commanderPollManifestPath
+            -ManifestPath $script:operatorPollManifestPath
 
         $result.State | Should -Be 'review_requested'
-        Should -Invoke Send-CommanderPollLiteral -Times 1 -Exactly -ParameterFilter {
+        Should -Invoke Send-OperatorPollLiteral -Times 1 -Exactly -ParameterFilter {
             $PaneId -eq '%4' -and $Text -eq 'winsmux review-request'
         }
-        Should -Invoke Approve-CommanderPollPane -Times 1 -Exactly -ParameterFilter {
+        Should -Invoke Approve-OperatorPollPane -Times 1 -Exactly -ParameterFilter {
             $PaneId -eq '%4'
         }
     }

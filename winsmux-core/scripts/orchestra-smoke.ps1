@@ -13,6 +13,7 @@ $scriptsRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $scriptsRoot 'settings.ps1')
 . (Join-Path $scriptsRoot 'manifest.ps1')
 . (Join-Path $scriptsRoot 'orchestra-ui-attach.ps1')
+. (Join-Path $scriptsRoot 'worker-isolation.ps1')
 
 function Get-OrchestraSmokeLayoutSettings {
     param([string]$Root)
@@ -30,7 +31,7 @@ function Get-OrchestraSmokeLayoutSettings {
 
     if ([bool]$settings.legacy_role_layout) {
         return [ordered]@{
-            Commanders  = [int]$settings.commanders
+            Operators  = [int]$settings.operators
             Workers     = 0
             Builders    = [int]$settings.builders
             Researchers = [int]$settings.researchers
@@ -43,7 +44,7 @@ function Get-OrchestraSmokeLayoutSettings {
     }
 
     return [ordered]@{
-        Commanders = if ([bool]$settings.external_commander) { 0 } else { 1 }
+        Operators = if ([bool]$settings.external_operator) { 0 } else { 1 }
         Workers    = $workers
         Builders   = 0
         Researchers = 0
@@ -54,7 +55,7 @@ function Get-OrchestraSmokeLayoutSettings {
 function Get-OrchestraSmokeExpectedPaneCount {
     param($LayoutSettings)
 
-    return [int]$LayoutSettings.Commanders +
+    return [int]$LayoutSettings.Operators +
         [int]$LayoutSettings.Workers +
         [int]$LayoutSettings.Builders +
         [int]$LayoutSettings.Researchers +
@@ -141,6 +142,16 @@ function Get-OrchestraOperatorContract {
     $requiresStartup = $true
     $uiWarning = $false
     $nextAction = 'Inspect smoke_errors and rerun orchestra-start before dispatching work.'
+    $workerIsolationOnly = $false
+    if ($SmokeErrors.Count -gt 0) {
+        $workerIsolationOnly = $true
+        foreach ($error in @($SmokeErrors)) {
+            if (-not ([string]$error).StartsWith('worker isolation drift:')) {
+                $workerIsolationOnly = $false
+                break
+            }
+        }
+    }
 
     if ($SmokeOk) {
         $state = 'ready-with-ui-warning'
@@ -163,6 +174,12 @@ function Get-OrchestraOperatorContract {
         } elseif ($SessionReady) {
             $uiWarning = $true
         }
+    } elseif ($workerIsolationOnly -and $SessionReady -and $PaneCount -ge $ExpectedPaneCount) {
+        $state = 'blocked-worker-isolation'
+        $message = 'Worker isolation drift blocks dispatch, but orchestra startup is already session-ready.'
+        $canDispatch = $false
+        $requiresStartup = $false
+        $nextAction = 'Fix worker root, branch, origin, or gitdir drift from the Operator shell, then recheck orchestra-smoke.'
     } elseif ($PaneCount -lt $ExpectedPaneCount -or -not $SessionReady) {
         $state = 'blocked'
         $message = 'Orchestra startup did not reach session-ready.'
@@ -420,7 +437,7 @@ $startScript = Join-Path $scriptsRoot 'orchestra-start.ps1'
 $winsmuxCorePath = Join-Path (Split-Path -Parent $scriptsRoot) '..\scripts\winsmux-core.ps1'
 $winsmuxCorePath = [System.IO.Path]::GetFullPath($winsmuxCorePath)
 $layoutSettings = Get-OrchestraSmokeLayoutSettings -Root $ProjectDir
-$externalOperatorMode = ([int]$layoutSettings.Commanders -eq 0)
+$externalOperatorMode = ([int]$layoutSettings.Operators -eq 0)
 $expectedPaneCount = Get-OrchestraSmokeExpectedPaneCount -LayoutSettings $layoutSettings
 
 $winsmuxBin = ''
@@ -495,6 +512,23 @@ $attachedClientRegistryCount = [int]$attachResolution.AttachedClientRegistryCoun
 $attachedClientSnapshot = @($attachResolution.AttachedClientSnapshot)
 $attachAdapterTrace = @($attachResolution.AttachAdapterTrace)
 
+$gitPath = ''
+try {
+    $gitPath = (Get-Command 'git' -ErrorAction Stop).Source
+} catch {
+}
+
+$manifestObject = $null
+if ($manifestFound -and $manifestReadable) {
+    try {
+        $manifestObject = Get-WinsmuxManifest -ProjectDir $ProjectDir
+    } catch {
+        $manifestObject = $null
+    }
+}
+
+$workerIsolation = Get-WinsmuxWorkerIsolationReport -ProjectDir $ProjectDir -Manifest $manifestObject -GitPath $gitPath
+
 $smokeErrors = [System.Collections.Generic.List[string]]::new()
 if ($startExitCode -ne 0) { $smokeErrors.Add("orchestra-start exited with code $startExitCode.") | Out-Null }
 if (-not $manifestFound) {
@@ -505,6 +539,11 @@ if (-not $manifestFound) {
 if (-not $sessionReady) { $smokeErrors.Add('session_ready is false.') | Out-Null }
 if (-not $paneProbeOk) { $smokeErrors.Add("pane probe failed: $paneProbeError") | Out-Null }
 if ($paneProbeOk -and $paneCount -lt $expectedPaneCount) { $smokeErrors.Add("pane count $paneCount is below expected $expectedPaneCount.") | Out-Null }
+if (-not [bool]$workerIsolation.ok) {
+    foreach ($finding in @($workerIsolation.findings)) {
+        $smokeErrors.Add("worker isolation drift: $($finding.label): $($finding.message)") | Out-Null
+    }
+}
 $operatorContract = Get-OrchestraOperatorContract `
     -SmokeOk ($smokeErrors.Count -eq 0) `
     -SessionReady $sessionReady `
@@ -542,6 +581,7 @@ $result = [ordered]@{
     ui_attach_reason    = $uiAttachReason
     ui_attach_source    = $uiAttachSource
     ui_host_kind        = $uiHostKind
+    worker_isolation    = $workerIsolation
     smoke_ok            = ($smokeErrors.Count -eq 0)
     smoke_errors        = @($smokeErrors)
     operator_contract   = $operatorContract

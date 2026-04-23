@@ -503,7 +503,7 @@ function Get-CanonicalRole {
         '^(?i)builder(?:$|[-_:/\s])' { return 'Builder' }
         '^(?i)researcher(?:$|[-_:/\s])' { return 'Researcher' }
         '^(?i)reviewer(?:$|[-_:/\s])' { return 'Reviewer' }
-        '^(?i)commander(?:$|[-_:/\s])' { return 'Commander' }
+        '^(?i)operator(?:$|[-_:/\s])' { return 'Operator' }
         default { throw "Unsupported pane role label: $AssignmentRole" }
     }
 }
@@ -511,7 +511,7 @@ function Get-CanonicalRole {
 function Get-OrchestraLayoutSettings {
     param([Parameter(Mandatory = $true)]$Settings)
 
-    $commanders = [int]$Settings.commanders
+    $operators = [int]$Settings.operators
     $workers = [int]$Settings.worker_count
     $agentSlots = @()
     if ($Settings -is [System.Collections.IDictionary]) {
@@ -524,14 +524,14 @@ function Get-OrchestraLayoutSettings {
     $builders = [int]$Settings.builders
     $researchers = [int]$Settings.researchers
     $reviewers = [int]$Settings.reviewers
-    $externalCommander = [bool]$Settings.external_commander
+    $externalOperator = [bool]$Settings.external_operator
     $legacyRoleLayout = [bool]$Settings.legacy_role_layout
 
-    $legacyCount = $commanders + $builders + $researchers + $reviewers
+    $legacyCount = $operators + $builders + $researchers + $reviewers
     $useLegacyLayout = $legacyRoleLayout
 
     if ($legacyCount -gt 0 -and -not $useLegacyLayout) {
-        throw 'Legacy role counts require legacy_role_layout=true. Set legacy_role_layout explicitly to opt into Commander/Builder/Researcher/Reviewer panes.'
+        throw 'Legacy role counts require legacy_role_layout=true. Set legacy_role_layout explicitly to opt into Operator/Builder/Researcher/Reviewer panes.'
     }
 
     if (-not $useLegacyLayout -and $agentSlots.Count -gt 0) {
@@ -589,9 +589,9 @@ function Get-OrchestraLayoutSettings {
 
     if ($useLegacyLayout) {
         return [ordered]@{
-            ExternalCommander = $false
+            ExternalOperator = $false
             LegacyRoleLayout  = $true
-            Commanders        = $commanders
+            Operators        = $operators
             Workers           = 0
             Builders          = $builders
             Researchers       = $researchers
@@ -599,18 +599,18 @@ function Get-OrchestraLayoutSettings {
         }
     }
 
-    $managedCommanders = if ($externalCommander) { 0 } else { 1 }
+    $managedOperators = if ($externalOperator) { 0 } else { 1 }
     if ($agentSlots.Count -gt 0) {
         $workers = $agentSlots.Count
     }
     if ($workers -lt 1) {
-        throw "worker_count must be 1 or greater in external commander mode (got $workers)."
+        throw "worker_count must be 1 or greater in external operator mode (got $workers)."
     }
 
     return [ordered]@{
-        ExternalCommander = $externalCommander
+        ExternalOperator = $externalOperator
         LegacyRoleLayout  = $false
-        Commanders        = $managedCommanders
+        Operators        = $managedOperators
         Workers           = $workers
         Builders          = 0
         Researchers       = 0
@@ -621,7 +621,7 @@ function Get-OrchestraLayoutSettings {
 function Get-OrchestraExpectedPaneCount {
     param([Parameter(Mandatory = $true)]$LayoutSettings)
 
-    return [int]$LayoutSettings.Commanders +
+    return [int]$LayoutSettings.Operators +
         [int]$LayoutSettings.Workers +
         [int]$LayoutSettings.Builders +
         [int]$LayoutSettings.Researchers +
@@ -667,7 +667,8 @@ function New-OrchestraPaneBootstrapPlan {
         [Parameter(Mandatory = $true)][string]$StartupToken,
         [Parameter(Mandatory = $true)][string]$LaunchDir,
         [Parameter(Mandatory = $true)]$CleanPtyEnv,
-        [Parameter(Mandatory = $true)][string]$LaunchCommand
+        [Parameter(Mandatory = $true)][string]$LaunchCommand,
+        [bool]$SupportsInterrupt = $true
     )
 
     $bootstrapDir = Join-Path (Join-Path $ProjectDir '.winsmux') 'orchestra-bootstrap'
@@ -691,6 +692,7 @@ function New-OrchestraPaneBootstrapPlan {
         startup_token  = $StartupToken
         launch_dir     = $LaunchDir
         launch_command = $LaunchCommand
+        supports_interrupt = $SupportsInterrupt
         ready_marker_path = $readyMarkerPath
         environment    = $CleanPtyEnv.Environment
     }
@@ -707,11 +709,66 @@ function Start-OrchestraPaneBootstrap {
     )
 
     $bootstrapScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'orchestra-pane-bootstrap.ps1'))
+    $supportsInterrupt = $true
+    try {
+        $plan = Get-Content -LiteralPath $PlanPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($plan.PSObject.Properties.Name -contains 'supports_interrupt') {
+            $supportsInterrupt = [bool]$plan.supports_interrupt
+        }
+    } catch {
+        $supportsInterrupt = $true
+    }
+
     Wait-PaneShellReady -PaneId $PaneId
-    Invoke-Bridge -Arguments @('keys', $PaneId, 'C-c') -AllowFailure | Out-Null
-    Start-Sleep -Milliseconds 200
+    if ($supportsInterrupt) {
+        Invoke-Bridge -Arguments @('keys', $PaneId, 'C-c') -AllowFailure | Out-Null
+        Start-Sleep -Milliseconds 200
+    }
     Send-OrchestraBridgeCommand -Target $PaneId -Text ("pwsh -NoProfile -File {0} -PlanFile {1}" -f (ConvertTo-PowerShellLiteral -Value $bootstrapScriptPath), (ConvertTo-PowerShellLiteral -Value $PlanPath))
     Start-Sleep -Milliseconds 500
+}
+
+function Get-OrchestraObjectPropertyValue {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Default = $null
+    )
+
+    if ($null -eq $InputObject) {
+        return $Default
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary] -and $InputObject.Contains($Name)) {
+        return $InputObject[$Name]
+    }
+
+    if ($null -ne $InputObject.PSObject -and $InputObject.PSObject.Properties.Name -contains $Name) {
+        return $InputObject.PSObject.Properties[$Name].Value
+    }
+
+    return $Default
+}
+
+function Test-OrchestraProviderInterruptAvailable {
+    param([AllowNull()]$SlotAgentConfig)
+
+    if ($null -eq $SlotAgentConfig) {
+        return $true
+    }
+
+    $capabilityAdapter = [string](Get-OrchestraObjectPropertyValue -InputObject $SlotAgentConfig -Name 'CapabilityAdapter' -Default '')
+    $capabilityCommand = [string](Get-OrchestraObjectPropertyValue -InputObject $SlotAgentConfig -Name 'CapabilityCommand' -Default '')
+    if ([string]::IsNullOrWhiteSpace($capabilityAdapter) -and [string]::IsNullOrWhiteSpace($capabilityCommand)) {
+        return $true
+    }
+
+    $interruptDeclared = [bool](Get-OrchestraObjectPropertyValue -InputObject $SlotAgentConfig -Name 'SupportsInterruptDeclared' -Default $false)
+    if (-not $interruptDeclared) {
+        return $true
+    }
+
+    return [bool](Get-OrchestraObjectPropertyValue -InputObject $SlotAgentConfig -Name 'SupportsInterrupt' -Default $false)
 }
 
 function Get-OrchestraPaneBootstrapMarkerPath {
@@ -731,24 +788,17 @@ function Get-AgentLaunchCommand {
         [Parameter(Mandatory = $true)][string]$Model,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
+        [string]$RootPath,
         [bool]$ExecMode = $false
     )
 
-    switch ($Agent.Trim().ToLowerInvariant()) {
-        'codex' {
-            if ($ExecMode) {
-                return ''
-            }
-
-            return "codex -c model=$Model --sandbox danger-full-access -C $(ConvertTo-PowerShellLiteral -Value $ProjectDir) --add-dir $(ConvertTo-PowerShellLiteral -Value $GitWorktreeDir)"
-        }
-        'claude' {
-            return "claude --model $Model --permission-mode bypassPermissions"
-        }
-        default {
-            throw "Unsupported agent setting: $Agent"
-        }
-    }
+    return Get-BridgeProviderLaunchCommand `
+        -ProviderId $Agent `
+        -Model $Model `
+        -ProjectDir $ProjectDir `
+        -GitWorktreeDir $GitWorktreeDir `
+        -RootPath $RootPath `
+        -ExecMode $ExecMode
 }
 
 function Get-VaultValue {
@@ -1023,7 +1073,7 @@ function Save-OrchestraSessionState {
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [Parameter(Mandatory = $true)][System.Collections.IEnumerable]$PaneSummaries,
         [AllowEmptyString()][string]$StartupToken = '',
-        [Nullable[int]]$CommanderPollPid = $null,
+        [Nullable[int]]$OperatorPollPid = $null,
         [Nullable[int]]$WatchdogPid = $null,
         [Nullable[int]]$ServerWatchdogPid = $null,
         [AllowEmptyString()][string]$BootstrapMode = '',
@@ -1042,14 +1092,27 @@ function Save-OrchestraSessionState {
     $paneMap = [ordered]@{}
     foreach ($paneSummary in @($PaneSummaries)) {
         $paneEntry = [PSCustomObject]@{
-            pane_id               = $paneSummary.PaneId
-            role                  = $paneSummary.Role
-            exec_mode             = [bool]$paneSummary.ExecMode
-            launch_dir            = $paneSummary.LaunchDir
-            builder_branch        = $paneSummary.BuilderBranch
-            builder_worktree_path = $paneSummary.BuilderWorktreePath
-            task                  = $null
-            status                = if ($paneSummary.Status) { $paneSummary.Status } else { 'ready' }
+            pane_id                    = $paneSummary.PaneId
+            slot_id                    = $paneSummary.SlotId
+            role                       = $paneSummary.Role
+            exec_mode                  = [bool]$paneSummary.ExecMode
+            project_dir                = $paneSummary.ProjectDir
+            launch_dir                 = $paneSummary.LaunchDir
+            builder_branch             = $paneSummary.BuilderBranch
+            builder_worktree_path      = $paneSummary.BuilderWorktreePath
+            worktree_git_dir           = $paneSummary.WorktreeGitDir
+            expected_origin            = $paneSummary.ExpectedOrigin
+            capability_adapter         = [string]$paneSummary.CapabilityAdapter
+            capability_command         = [string]$paneSummary.CapabilityCommand
+            supports_parallel_runs     = [bool]$paneSummary.SupportsParallelRuns
+            supports_interrupt         = [bool]$paneSummary.SupportsInterrupt
+            supports_structured_result = [bool]$paneSummary.SupportsStructuredResult
+            supports_file_edit         = [bool]$paneSummary.SupportsFileEdit
+            supports_subagents         = [bool]$paneSummary.SupportsSubagents
+            supports_verification      = [bool]$paneSummary.SupportsVerification
+            supports_consultation      = [bool]$paneSummary.SupportsConsultation
+            task                       = $null
+            status                     = if ($paneSummary.Status) { $paneSummary.Status } else { 'ready' }
         }
         if ($paneSummary.Contains('BootstrapFailures') -and $paneSummary['BootstrapFailures']) {
             $paneEntry | Add-Member -NotePropertyName 'bootstrap_failures' -NotePropertyValue $paneSummary['BootstrapFailures']
@@ -1068,7 +1131,7 @@ function Save-OrchestraSessionState {
             project_dir         = $ProjectDir
             git_worktree_dir    = $GitWorktreeDir
             startup_token       = $StartupToken
-            commander_poll_pid  = $CommanderPollPid
+            operator_poll_pid  = $OperatorPollPid
             watchdog_pid        = $WatchdogPid
             server_watchdog_pid = $ServerWatchdogPid
             bootstrap_mode      = $BootstrapMode
@@ -1131,7 +1194,7 @@ function Stop-OrchestraBackgroundProcessesFromManifest {
     }
 
     $pidMap = [ordered]@{}
-    foreach ($propertyName in @('commander_poll_pid', 'watchdog_pid', 'server_watchdog_pid')) {
+    foreach ($propertyName in @('operator_poll_pid', 'watchdog_pid', 'server_watchdog_pid')) {
         $rawPid = $null
         if ($manifest.session -is [System.Collections.IDictionary]) {
             if ($manifest.session.Contains($propertyName)) {
@@ -1165,7 +1228,7 @@ function Stop-OrchestraBackgroundProcessesFromManifest {
             $process = $snapshot.ById[$processId]
             $commandLine = [string]$process.CommandLine
             $requiredScript = switch ($label) {
-                'commander_poll_pid' { 'commander-poll.ps1' }
+                'operator_poll_pid' { 'operator-poll.ps1' }
                 'watchdog_pid' { 'agent-watchdog.ps1' }
                 'server_watchdog_pid' { 'server-watchdog.ps1' }
                 default { '' }
@@ -1222,6 +1285,17 @@ function Wait-AgentReady {
     throw "Timed out waiting for pane $PaneId to become ready. Last output:`n$(Get-TailPreview -Text $finalText)"
 }
 
+function Get-OrchestraReadinessAgentName {
+    param([Parameter(Mandatory = $true)]$PaneSummary)
+
+    $capabilityAdapter = [string](Get-OrchestraObjectPropertyValue -InputObject $PaneSummary -Name 'CapabilityAdapter' -Default '')
+    if (-not [string]::IsNullOrWhiteSpace($capabilityAdapter)) {
+        return $capabilityAdapter
+    }
+
+    return [string](Get-OrchestraObjectPropertyValue -InputObject $PaneSummary -Name 'Agent' -Default '')
+}
+
 function Start-AgentWatchdogJob {
     param(
         [Parameter(Mandatory = $true)][string]$WatchdogScriptPath,
@@ -1249,9 +1323,9 @@ function Start-AgentWatchdogJob {
         ) -WindowStyle Hidden -PassThru)
 }
 
-function Start-CommanderPollJob {
+function Start-OperatorPollJob {
     param(
-        [Parameter(Mandatory = $true)][string]$CommanderPollScriptPath,
+        [Parameter(Mandatory = $true)][string]$OperatorPollScriptPath,
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [AllowEmptyString()][string]$StartupToken = '',
         [int]$Interval = 20
@@ -1260,7 +1334,7 @@ function Start-CommanderPollJob {
     return (Start-Process -FilePath 'pwsh' -ArgumentList @(
             '-NoProfile',
             '-File',
-            $CommanderPollScriptPath,
+            $OperatorPollScriptPath,
             '-ManifestPath',
             $ManifestPath,
             '-StartupToken',
@@ -1713,12 +1787,49 @@ function Test-PaneBootstrapInvariants {
     return $failures
 }
 
+function Get-OrchestraExpectedOrigin {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    try {
+        $origin = & git -C $ProjectDir remote get-url origin 2>$null | Select-Object -First 1
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$origin)) {
+            return ConvertTo-SafeGitRemoteUrl -RemoteUrl ([string]$origin).Trim()
+        }
+    } catch {
+    }
+
+    return ''
+}
+
+function ConvertTo-SafeGitRemoteUrl {
+    param([AllowEmptyString()][string]$RemoteUrl = '')
+
+    if ([string]::IsNullOrWhiteSpace($RemoteUrl)) {
+        return ''
+    }
+
+    $trimmed = $RemoteUrl.Trim()
+    try {
+        $builder = [System.UriBuilder]::new($trimmed)
+        if (-not [string]::IsNullOrWhiteSpace($builder.UserName) -or
+            -not [string]::IsNullOrWhiteSpace($builder.Password)) {
+            $builder.UserName = ''
+            $builder.Password = ''
+            return $builder.Uri.AbsoluteUri
+        }
+    } catch {
+    }
+
+    return ($trimmed -replace '^([A-Za-z][A-Za-z0-9+.-]*://)[^/@\s]+@', '$1')
+}
+
 if ($MyInvocation.InvocationName -ne '.') {
-    $commanderPollProcess = $null
+    $operatorPollProcess = $null
     $watchdogProcess = $null
     $serverWatchdogProcess = $null
     $projectDir = $null
     $gitWorktreeDir = $null
+    $expectedOrigin = ''
     $startupToken = ''
     $orchestraServer = $null
     $createdPaneIds = @()
@@ -1746,10 +1857,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-WinsmuxLog -Level INFO -Event 'preflight.settings.loaded' -Message 'Loaded orchestra settings.' -Data @{
             agent              = $settings.agent
             model              = $settings.model
-            external_commander = $layoutSettings.ExternalCommander
+            external_operator = $layoutSettings.ExternalOperator
             legacy_role_layout = $layoutSettings.LegacyRoleLayout
             workers            = $layoutSettings.Workers
-            commanders         = $layoutSettings.Commanders
+            operators         = $layoutSettings.Operators
             builders           = $layoutSettings.Builders
             researchers        = $layoutSettings.Researchers
             reviewers          = $layoutSettings.Reviewers
@@ -1759,6 +1870,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-WinsmuxLog -Level INFO -Event 'preflight.project_dir.resolved' -Message "Resolved project directory: $projectDir." -Data @{ project_dir = $projectDir } | Out-Null
         $gitWorktreeDir = Get-GitWorktreeDir -ProjectDir $projectDir
         Write-WinsmuxLog -Level INFO -Event 'preflight.git_worktree.resolved' -Message "Resolved git worktree directory: $gitWorktreeDir." -Data @{ git_worktree_dir = $gitWorktreeDir } | Out-Null
+        $expectedOrigin = Get-OrchestraExpectedOrigin -ProjectDir $projectDir
+        if (-not [string]::IsNullOrWhiteSpace($expectedOrigin)) {
+            Write-WinsmuxLog -Level INFO -Event 'preflight.git_origin.resolved' -Message "Resolved git origin: $expectedOrigin." -Data @{ origin = $expectedOrigin } | Out-Null
+        }
         $startupLock = Acquire-OrchestraStartupLock -ProjectDir $projectDir -SessionName $sessionName
         $startupToken = [string]$startupLock.StartupToken
         Write-WinsmuxLog -Level INFO -Event 'preflight.startup_lock.acquired' -Message "Acquired orchestra startup lock for $sessionName." -Data @{ session_name = $sessionName; startup_token = $startupToken } | Out-Null
@@ -1920,8 +2035,8 @@ if ($MyInvocation.InvocationName -ne '.') {
 
         try {
             try {
-                Write-Warning "DEBUG: layout start session=$sessionName external=$($layoutSettings.ExternalCommander) legacy=$($layoutSettings.LegacyRoleLayout) C=$($layoutSettings.Commanders) W=$($layoutSettings.Workers) B=$($layoutSettings.Builders) R=$($layoutSettings.Researchers) Rev=$($layoutSettings.Reviewers)"
-                $layout = . $layoutScript -SessionName $sessionName -Commanders $layoutSettings.Commanders -Workers $layoutSettings.Workers -Builders $layoutSettings.Builders -Researchers $layoutSettings.Researchers -Reviewers $layoutSettings.Reviewers
+                Write-Warning "DEBUG: layout start session=$sessionName external=$($layoutSettings.ExternalOperator) legacy=$($layoutSettings.LegacyRoleLayout) C=$($layoutSettings.Operators) W=$($layoutSettings.Workers) B=$($layoutSettings.Builders) R=$($layoutSettings.Researchers) Rev=$($layoutSettings.Reviewers)"
+                $layout = . $layoutScript -SessionName $sessionName -Operators $layoutSettings.Operators -Workers $layoutSettings.Workers -Builders $layoutSettings.Builders -Researchers $layoutSettings.Researchers -Reviewers $layoutSettings.Reviewers
                 Write-Warning "DEBUG: layout done, panes=$($layout.Panes.Count)"
                 foreach ($sessionPaneId in @(Get-OrchestraSessionPaneIds -SessionName $sessionName)) {
                     if ($createdPaneIds -notcontains $sessionPaneId) {
@@ -1997,13 +2112,18 @@ if ($MyInvocation.InvocationName -ne '.') {
             $builderWorktreePath = $builderWorktree.WorktreePath
         }
 
-        $slotAgentConfig = Get-SlotAgentConfig -Role $canonicalRole -SlotId $label -Settings $settings
-        $execMode = ([string]$slotAgentConfig.Agent).Trim().ToLowerInvariant() -eq 'codex'
-        $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -ExecMode $false
+        $slotAgentConfig = Get-SlotAgentConfig -Role $canonicalRole -SlotId $label -Settings $settings -RootPath $projectDir
+        $execModeAgent = [string]$slotAgentConfig.CapabilityAdapter
+        if ([string]::IsNullOrWhiteSpace($execModeAgent)) {
+            $execModeAgent = [string]$slotAgentConfig.Agent
+        }
+        $execMode = $execModeAgent.Trim().ToLowerInvariant() -eq 'codex'
+        $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -RootPath $projectDir -ExecMode $false
+        $supportsInterrupt = Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $slotAgentConfig
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
-            $paneEnvironment = Get-WinsmuxPaneEnvironment -Role $canonicalRole -PaneId $paneId -SessionName $sessionName -ProjectDir $projectDir -RoleMapJson $sessionRoleMapJson -BuilderWorktreePath $builderWorktreePath
+            $paneEnvironment = Get-WinsmuxPaneEnvironment -Role $canonicalRole -PaneId $paneId -SessionName $sessionName -ProjectDir $projectDir -RoleMapJson $sessionRoleMapJson -BuilderWorktreePath $builderWorktreePath -SlotId $label -AssignedBranch $builderBranch -GitWorktreeDir $launchGitWorktreeDir -ExpectedOrigin $expectedOrigin
             $cleanPtyEnv = Get-CleanPtyEnv -AllowedEnvironment $paneEnvironment
             foreach ($entry in $paneEnvironment.GetEnumerator()) {
                 if ($entry.Key -in @('WINSMUX_ROLE', 'WINSMUX_PANE_ID')) {
@@ -2024,7 +2144,8 @@ if ($MyInvocation.InvocationName -ne '.') {
                     -StartupToken $startupToken `
                     -LaunchDir $launchDir `
                     -CleanPtyEnv $cleanPtyEnv `
-                    -LaunchCommand $launchCommand
+                    -LaunchCommand $launchCommand `
+                    -SupportsInterrupt $supportsInterrupt
                 Start-OrchestraPaneBootstrap -PaneId $paneId -PlanPath $bootstrapPlanPath
                 # TASK-231: verify pane exists after respawn
                 try {
@@ -2045,13 +2166,26 @@ if ($MyInvocation.InvocationName -ne '.') {
         $paneSummaries.Add([ordered]@{
             Label = $label
             PaneId = $paneId
+            SlotId = $label
             Role = $canonicalRole
             Agent = [string]$slotAgentConfig.Agent
             Model = [string]$slotAgentConfig.Model
+            CapabilityAdapter = [string]$slotAgentConfig.CapabilityAdapter
+            CapabilityCommand = [string]$slotAgentConfig.CapabilityCommand
+            SupportsParallelRuns = [bool]$slotAgentConfig.SupportsParallelRuns
+            SupportsInterrupt = [bool]$slotAgentConfig.SupportsInterrupt
+            SupportsStructuredResult = [bool]$slotAgentConfig.SupportsStructuredResult
+            SupportsFileEdit = [bool]$slotAgentConfig.SupportsFileEdit
+            SupportsSubagents = [bool]$slotAgentConfig.SupportsSubagents
+            SupportsVerification = [bool]$slotAgentConfig.SupportsVerification
+            SupportsConsultation = [bool]$slotAgentConfig.SupportsConsultation
             ExecMode = $false
             LaunchDir = $launchDir
+            ProjectDir = $projectDir
             BuilderBranch = $builderBranch
             BuilderWorktreePath = $builderWorktreePath
+            WorktreeGitDir = $launchGitWorktreeDir
+            ExpectedOrigin = $expectedOrigin
             BootstrapMarkerPath = if ([string]::IsNullOrWhiteSpace($bootstrapPlanPath)) { '' } else { Get-OrchestraPaneBootstrapMarkerPath -PlanPath $bootstrapPlanPath -StartupToken $startupToken }
             Status = 'ready'
         })
@@ -2059,7 +2193,8 @@ if ($MyInvocation.InvocationName -ne '.') {
 
     foreach ($paneSummary in $paneSummaries) {
         try {
-            Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $paneSummary.Agent -TimeoutSeconds 60
+            $readinessAgent = Get-OrchestraReadinessAgentName -PaneSummary $paneSummary
+            Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $readinessAgent -TimeoutSeconds 60
         } catch {
             Write-Error "Agent readiness timeout for $($paneSummary.Label) [$($paneSummary.PaneId)]: $($_.Exception.Message)"
             exit 1
@@ -2103,17 +2238,17 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
 
     $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $false -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source) -UiHostKind ([string]$uiAttachResult.ui_host_kind) -AttachRequestId ([string]$uiAttachResult.attach_request_id) -AttachAdapterTrace @($uiAttachResult.attach_adapter_trace)
-    $commanderPollScriptPath = Join-Path $scriptDir 'commander-poll.ps1'
-    $commanderPollProcess = Start-CommanderPollJob -CommanderPollScriptPath $commanderPollScriptPath -ManifestPath $manifestPath -StartupToken $startupToken -Interval 20
-    Write-WinsmuxLog -Level INFO -Event 'preflight.commander_poll.started' -Message "Started commander poll for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; commander_poll_pid = $commanderPollProcess.Id; process_name = $commanderPollProcess.ProcessName } | Out-Null
+    $operatorPollScriptPath = Join-Path $scriptDir 'operator-poll.ps1'
+    $operatorPollProcess = Start-OperatorPollJob -OperatorPollScriptPath $operatorPollScriptPath -ManifestPath $manifestPath -StartupToken $startupToken -Interval 20
+    Write-WinsmuxLog -Level INFO -Event 'preflight.operator_poll.started' -Message "Started operator poll for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; operator_poll_pid = $operatorPollProcess.Id; process_name = $operatorPollProcess.ProcessName } | Out-Null
     $watchdogScriptPath = Join-Path $scriptDir 'agent-watchdog.ps1'
     $watchdogProcess = Start-AgentWatchdogJob -WatchdogScriptPath $watchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName -StartupToken $startupToken
     $serverWatchdogScriptPath = Join-Path $scriptDir 'server-watchdog.ps1'
     $serverWatchdogProcess = Start-ServerWatchdogJob -WatchdogScriptPath $serverWatchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName -StartupToken $startupToken
-    Assert-OrchestraBackgroundProcessStarted -Process $commanderPollProcess -Name 'Commander poll job'
+    Assert-OrchestraBackgroundProcessStarted -Process $operatorPollProcess -Name 'Operator poll job'
     Assert-OrchestraBackgroundProcessStarted -Process $watchdogProcess -Name 'Agent watchdog job'
     Assert-OrchestraBackgroundProcessStarted -Process $serverWatchdogProcess -Name 'Server watchdog job'
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -CommanderPollPid $commanderPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $true -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source) -UiHostKind ([string]$uiAttachResult.ui_host_kind) -AttachRequestId ([string]$uiAttachResult.attach_request_id) -AttachAdapterTrace @($uiAttachResult.attach_adapter_trace)
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -OperatorPollPid $operatorPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $true -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source) -UiHostKind ([string]$uiAttachResult.ui_host_kind) -AttachRequestId ([string]$uiAttachResult.attach_request_id) -AttachAdapterTrace @($uiAttachResult.attach_adapter_trace)
     Write-WinsmuxLog -Level INFO -Event 'preflight.watchdog.started' -Message "Started agent watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; watchdog_pid = $watchdogProcess.Id; process_name = $watchdogProcess.ProcessName } | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'preflight.server_watchdog.started' -Message "Started server watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; server_watchdog_pid = $serverWatchdogProcess.Id; process_name = $serverWatchdogProcess.ProcessName } | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'orchestra.startup.session_ready' -Message "Orchestra session $sessionName reached session-ready; UI attach remains a separate state." -Data ([ordered]@{
@@ -2149,10 +2284,10 @@ if ($MyInvocation.InvocationName -ne '.') {
     Write-Output "Model: $(if ([string]::IsNullOrWhiteSpace($defaultModel)) { 'per-slot / override only' } else { $defaultModel })"
     if ($layoutSettings.LegacyRoleLayout) {
         Write-Output "Mode: legacy role layout"
-    } elseif ($layoutSettings.ExternalCommander) {
-        Write-Output "Mode: external commander + $($layoutSettings.Workers) workers"
+    } elseif ($layoutSettings.ExternalOperator) {
+        Write-Output "Mode: external operator + $($layoutSettings.Workers) workers"
     } else {
-        Write-Output "Mode: managed commander + $($layoutSettings.Workers) workers"
+        Write-Output "Mode: managed operator + $($layoutSettings.Workers) workers"
     }
     Write-Output "ProjectDir: $projectDir"
     Write-Output "GitWorktreeDir: $gitWorktreeDir"
@@ -2177,17 +2312,17 @@ if ($MyInvocation.InvocationName -ne '.') {
 
     Write-Output ''
     Write-Output "Manifest: $manifestPath"
-    Write-Output "Commander Poll PID: $($commanderPollProcess.Id)"
+    Write-Output "Operator Poll PID: $($operatorPollProcess.Id)"
     Write-Output "Watchdog PID: $($watchdogProcess.Id)"
     Write-Output "Server Watchdog PID: $($serverWatchdogProcess.Id)"
-    Write-Output 'Cleanup: stop the commander poll and watchdogs after the session ends.'
-    Write-Output ("  Stop-Process -Id {0}" -f $commanderPollProcess.Id)
+    Write-Output 'Cleanup: stop the operator poll and watchdogs after the session ends.'
+    Write-Output ("  Stop-Process -Id {0}" -f $operatorPollProcess.Id)
     Write-Output ("  Stop-Process -Id {0},{1}" -f $watchdogProcess.Id, $serverWatchdogProcess.Id)
 } catch {
     Write-Warning "STARTUP ERROR: $($_.Exception.Message)"
     Write-Warning "AT: $($_.ScriptStackTrace)"
-    if ($null -ne $commanderPollProcess) {
-        try { Stop-Process -Id $commanderPollProcess.Id -Force -ErrorAction SilentlyContinue } catch {}
+    if ($null -ne $operatorPollProcess) {
+        try { Stop-Process -Id $operatorPollProcess.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
     if ($null -ne $watchdogProcess) {
         try { Stop-Process -Id $watchdogProcess.Id -Force -ErrorAction SilentlyContinue } catch {}

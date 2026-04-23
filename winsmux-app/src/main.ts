@@ -192,6 +192,7 @@ interface ExperimentDetailLine {
 }
 
 type SurfaceTone = "default" | "accent" | "success" | "warning" | "danger" | "info" | "focus";
+type CompareRiskLevel = "low" | "medium" | "high";
 type ThemeMode = "codex-dark" | "graphite-dark";
 type DensityMode = "comfortable" | "compact";
 type WrapMode = "balanced" | "compact";
@@ -354,7 +355,7 @@ const timelineFilters: Array<{ filter: TimelineFilter; label: string }> = [
 ];
 
 const themeOptions: Array<{ value: ThemeMode; label: string; description: string }> = [
-  { value: "codex-dark", label: "Codex Dark", description: "Close adaptation of Codex typography and contrast." },
+  { value: "codex-dark", label: "Codex TUI Dark", description: "Adaptation of public openai/codex TUI typography and contrast." },
   { value: "graphite-dark", label: "Graphite", description: "Softer shell contrast for long operator sessions." },
 ];
 
@@ -679,6 +680,54 @@ function summarizeCompareDifferenceFields(
   return `${fields.slice(0, limit).join(", ")} +${fields.length - limit}`;
 }
 
+function getCompareConflictRadar(result: DesktopCompareRunsResult): {
+  level: CompareRiskLevel;
+  label: string;
+  tone: SurfaceTone;
+  hotspots: string[];
+  summary: string;
+} {
+  const hotspots = result.shared_changed_files.filter((path) => Boolean(path));
+  const requiresConsult = result.recommend.reconcile_consult;
+  const riskyFields = new Set([
+    "branch",
+    "worktree",
+    "env_fingerprint",
+    "command_hash",
+    "result",
+    "changed_files",
+  ]);
+  const riskyDifferenceCount = result.differences.filter((difference) =>
+    riskyFields.has(difference.field),
+  ).length;
+  const hasMaterialDrift = riskyDifferenceCount > 0 || result.differences.length >= 3;
+  const hasUnrecommendableRun = !result.left.recommendable || !result.right.recommendable;
+  const level: CompareRiskLevel =
+    hasUnrecommendableRun || (requiresConsult && hotspots.length > 0)
+      ? "high"
+      : (hotspots.length > 0 || hasMaterialDrift ? "medium" : "low");
+  const label = level === "high"
+    ? "High"
+    : (level === "medium" ? "Medium" : "Low");
+  const tone: SurfaceTone =
+    level === "high" ? "danger" : (level === "medium" ? "warning" : "success");
+  const reason = hasUnrecommendableRun
+    ? "run not recommendable"
+    : (
+      hotspots.length > 0
+        ? `${hotspots.length} hotspot${hotspots.length === 1 ? "" : "s"}`
+        : (hasMaterialDrift ? `${riskyDifferenceCount || result.differences.length} risk fields` : "no shared files")
+    );
+
+  return {
+    level,
+    label,
+    tone,
+    hotspots,
+    summary: `${label} risk · ${reason}`,
+  };
+}
+
 function setSelectedRun(runId: string | null) {
   selectedRunId = resolveSelectedRunId(desktopSummarySnapshot, runId);
 }
@@ -844,6 +893,54 @@ function getEditorTargetForSourceChange(sourceChange: SourceChange | undefined):
     modified: sourceChange.status !== "deleted",
     sourceChange,
   };
+}
+
+function getPreferredEditorTargetForSelectedRun(): EditorTarget | null {
+  const runId = getSelectedRunId();
+  if (!runId) {
+    return null;
+  }
+
+  const runChanges = [
+    ...getVisibleSourceChanges().filter((entry) => entry.run === runId),
+    ...getProjectionSourceEntries().filter((entry) => entry.run === runId),
+  ];
+  const dedupedRunChanges = Array.from(
+    new Map(runChanges.map((entry) => [getSourceChangeKey(entry), entry])).values(),
+  );
+
+  const selectedChange = dedupedRunChanges.find((entry) => getSourceChangeKey(entry) === selectedEditorKey);
+  if (selectedChange) {
+    return getEditorTargetForSourceChange(selectedChange);
+  }
+
+  if (dedupedRunChanges.length > 0) {
+    return getEditorTargetForSourceChange(dedupedRunChanges[0]);
+  }
+
+  const projection = getRunProjectionByRunId(runId);
+  const explainPayload = desktopExplainCache.get(runId) ?? null;
+  const candidatePaths = [
+    ...(explainPayload?.evidence_digest.changed_files ?? []),
+    ...(projection?.changed_files ?? []),
+    ...(explainPayload?.run.changed_files ?? []),
+  ];
+  const worktree = projection?.worktree || explainPayload?.run.worktree || "";
+
+  for (const path of candidatePaths) {
+    const existingChange = findSourceChangeByPath(path, worktree);
+    if (existingChange) {
+      return getEditorTargetForSourceChange(existingChange);
+    }
+
+    if (path) {
+      const target = createStandaloneEditorTarget(path, worktree);
+      desktopStandaloneEditorTargets.set(target.key, target);
+      return target;
+    }
+  }
+
+  return null;
 }
 
 function getEditorTargetByKey(key: string): EditorTarget | null {
@@ -1572,6 +1669,9 @@ function renderExperimentContext() {
   const compareDifferenceSummary = compareResult
     ? summarizeCompareDifferenceFields(compareResult)
     : "";
+  const compareConflictRadar = compareResult
+    ? getCompareConflictRadar(compareResult)
+    : null;
   const compareFileSummary = compareResult
     ? [
         compareResult.shared_changed_files.length > 0
@@ -1589,9 +1689,13 @@ function renderExperimentContext() {
     : "";
   const compareTone: SurfaceTone = compareResult
     ? (
-      compareResult.recommend.reconcile_consult
-        ? "warning"
-        : (compareWinnerLabel ? "success" : "info")
+      compareConflictRadar?.level === "high"
+        ? "danger"
+        : (
+          compareConflictRadar?.level === "medium"
+            ? "warning"
+            : (compareWinnerLabel ? "success" : "info")
+        )
     )
     : hasPersistedCompareWinner
       ? "success"
@@ -1603,6 +1707,7 @@ function renderExperimentContext() {
           : `Winner ${compareWinnerLabel || "not decided"}`,
         compareResult.recommend.next_action || "reconcile_consult",
         [
+          compareConflictRadar?.summary || "",
           compareDifferenceSummary,
           compareFileSummary,
         ]
@@ -1652,6 +1757,7 @@ function renderExperimentContext() {
   const compareCandidateSummary = compareResult
     ? [
         compareWinnerLabel ? `winner ${compareWinnerLabel}` : "",
+        compareConflictRadar?.summary || "",
         `diffs ${compareResult.differences.length}`,
       ]
         .filter((value) => Boolean(value))
@@ -1746,6 +1852,16 @@ function renderExperimentContext() {
               value: comparePeer?.label || compareResult.right.label || compareResult.right.run_id,
             },
             { label: "winner", value: compareWinnerLabel || "none" },
+            {
+              label: "risk",
+              value: compareConflictRadar?.label || "n/a",
+              tone: compareConflictRadar?.tone,
+            },
+            {
+              label: "hotspots",
+              value: `${compareConflictRadar?.hotspots.length ?? 0}`,
+              tone: compareConflictRadar?.tone,
+            },
             { label: "diffs", value: `${compareResult.differences.length}` },
             {
               label: "delta",
@@ -1822,8 +1938,12 @@ function renderExperimentContext() {
               label: "Difference fields",
               value: compareDifferenceSummary || "none",
             },
+            {
+              label: "Conflict radar",
+              value: compareConflictRadar?.summary || "low risk · no shared files",
+            },
             buildExperimentFileLine(
-              "Shared files",
+              "Hotspot files",
               compareResult.shared_changed_files,
               compareLeftProjection?.worktree || selectedProjection.worktree || "",
             ),
@@ -1887,6 +2007,9 @@ function renderExperimentContext() {
     for (const detail of item.details) {
       const pill = document.createElement("span");
       pill.className = "experiment-detail-pill";
+      if ("tone" in detail && detail.tone) {
+        pill.dataset.tone = detail.tone;
+      }
       pill.innerHTML = `<span class="experiment-detail-pill-label">${detail.label}</span><span>${detail.value}</span>`;
       meta.appendChild(pill);
     }
@@ -3544,7 +3667,8 @@ function handleChipAction(action: ChipAction) {
   switch (action) {
     case "open-editor":
       void openEditorTarget(
-        getEditorTargetForSourceChange(getPrimarySourceChange(getVisibleSourceChanges())) ??
+        getPreferredEditorTargetForSelectedRun() ??
+          getEditorTargetForSourceChange(getPrimarySourceChange(getVisibleSourceChanges())) ??
           getEditorTargetByKey(selectedEditorKey),
       );
       break;
