@@ -24,7 +24,7 @@ Describe 'winsmux version surface' {
         $installScript | Should -Match 'does not match installer version'
         $installScript | Should -Match 'Reinstalling release binary'
         $bridgeScript | Should -Match ('\$VERSION\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
-        $coreManifest | Should -Match ('(?m)^version\s*=\s*"{0}"$' -f [regex]::Escape($script:ProductVersion))
+        $coreManifest | Should -Match ('(?m)^version\s*=\s*"{0}"\r?$' -f [regex]::Escape($script:ProductVersion))
         $coreLock | Should -Match ('(?ms)^name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
     }
 
@@ -39,7 +39,7 @@ Describe 'winsmux version surface' {
         $appPackageLock['version'] | Should -Be $script:ProductVersion
         $appPackageLock['packages']['']['version'] | Should -Be $script:ProductVersion
         $tauriConfig.version | Should -Be $script:ProductVersion
-        $tauriManifest | Should -Match ('(?m)^version\s*=\s*"{0}"$' -f [regex]::Escape($script:ProductVersion))
+        $tauriManifest | Should -Match ('(?m)^version\s*=\s*"{0}"\r?$' -f [regex]::Escape($script:ProductVersion))
         $tauriLock | Should -Match ('(?ms)^name\s*=\s*"winsmux-app"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
     }
 
