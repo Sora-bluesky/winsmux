@@ -1,6 +1,6 @@
 # Rust Schema Freeze Inventory
 
-Purpose: contributor-facing inventory for `TASK-277`.
+Purpose: contributor-facing inventory for Rust schema freeze work.
 This document identifies which runtime data shapes are already close to a typed Rust contract and which shapes are still loose PowerShell schemas.
 
 ## Current conclusion
@@ -9,8 +9,9 @@ This document identifies which runtime data shapes are already close to a typed 
 - `run/explain` is the next most freeze-ready surface.
 - `.winsmux/review-state.json` now has the first fixture-backed typed Rust snapshot contract.
 - `manifest` now has a first Rust-side schema fixture and validation contract.
-- `event` and `verdict` still rely on loose PowerShell object shapes.
-- The next safe implementation step is to freeze the event envelope before ledger persistence.
+- `event` now has a first Rust-side envelope fixture and validation contract.
+- `verdict` still relies on loose PowerShell object shapes.
+- The next safe implementation step is to freeze actionable event payload groups before ledger persistence.
 
 ## Freeze-ready surfaces
 
@@ -184,8 +185,13 @@ Main PowerShell readers/writers:
 
 Current gap:
 
-- The root event envelope is fairly stable, but `data` remains polymorphic.
-- Downstream projections infer event meaning through conversion helpers instead of a shared typed event contract.
+- A first Rust-side typed event envelope now exists in `core/src/event_contract.rs`.
+- The current event contract is fixture-backed and test-only.
+- The fixture lives in `tests/fixtures/rust-parity/events.jsonl`.
+- The current contract keeps envelope strings typed while allowing sparse legacy lines and `null` optional fields.
+- Legacy `data.branch` / `data.head_sha` lines are still covered because current PowerShell readers still fall back to them.
+- `data` is now limited to JSON object payloads, while the inner payload catalog still remains polymorphic.
+- Downstream projections still infer event meaning through conversion helpers instead of a shared typed payload catalog.
 
 ### 6. `verdict`
 
@@ -200,7 +206,7 @@ Current gap:
 
 ## Recommended order after this inventory
 
-1. Freeze the `.winsmux/events.jsonl` envelope next.
+1. Freeze actionable event payload groups on top of the new `.winsmux/events.jsonl` envelope.
 2. Keep the review-state fixture as the branch-keyed root file shape.
 3. Keep the manifest contract limited to session and pane boundary validation until ledger persistence needs more fields.
 4. Do not expand the contract work into a full runtime rewrite without a separate task.
