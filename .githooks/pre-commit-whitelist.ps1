@@ -33,6 +33,7 @@ $whitelistPatterns = @(
     'scripts/bump-version.ps1',
     'scripts/git-guard.ps1',
     'scripts/gitleaks-history.ps1',
+    'scripts/gitleaks-history-baseline.txt',
     'scripts/audit-public-surface.ps1',
     'scripts/stage-npm-release.mjs',
     '.githooks/**',

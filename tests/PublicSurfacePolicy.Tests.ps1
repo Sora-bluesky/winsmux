@@ -144,4 +144,43 @@ Describe 'Public surface policy' {
         $installer | Should -Match 'winsmux-core/scripts/server-watchdog\.ps1'
         $installer | Should -Match 'winsmux-core/scripts/pane-border\.ps1'
     }
+
+    It 'keeps public install and OAuth wording aligned with the current policy' {
+        $authSupport = Get-Content (Join-Path $repoRoot 'docs/authentication-support.md') -Raw
+        $authSupportJa = Get-Content (Join-Path $repoRoot 'docs/authentication-support.ja.md') -Raw
+
+        $readme | Should -Not -Match 'raw\.githubusercontent\.com/Sora-bluesky/winsmux/main/install\.ps1'
+        $readmeJa | Should -Not -Match 'raw\.githubusercontent\.com/Sora-bluesky/winsmux/main/install\.ps1'
+
+        $readme | Should -Match 'npm install -g winsmux'
+        $readmeJa | Should -Match 'npm install -g winsmux'
+
+        $readme | Should -Match 'Claude Code \| Pro / Max OAuth \| This PC only, interactive use'
+        $readme | Should -Match 'Gemini CLI \| Google OAuth \| This PC only, interactive use'
+        $readmeJa | Should -Match 'Claude Code \| Pro / Max OAuth \| 当該 PC での対話利用のみ'
+        $readmeJa | Should -Match 'Gemini CLI \| Google OAuth \| 当該 PC での対話利用のみ'
+
+        $authSupport | Should -Match 'claude-pro-max-oauth.*interactive use on that same PC'
+        $authSupport | Should -Match 'gemini-google-oauth.*interactive use on that same PC'
+        $authSupportJa | Should -Match 'claude-pro-max-oauth.*その PC 上での対話利用のみ'
+        $authSupportJa | Should -Match 'gemini-google-oauth.*その PC 上での対話利用のみ'
+    }
+
+    It 'uses recorded-baseline gitleaks scans for routine push and CI checks' {
+        $workflow = Get-Content (Join-Path $repoRoot '.github/workflows/test.yml') -Raw
+        $prePush = Get-Content (Join-Path $repoRoot '.githooks/pre-push') -Raw
+        $gitleaksScript = Get-Content (Join-Path $repoRoot 'scripts/gitleaks-history.ps1') -Raw
+        $baseline = Get-Content (Join-Path $repoRoot 'scripts/gitleaks-history-baseline.txt') -Raw
+
+        $workflow | Should -Match 'Gitleaks Incremental Scan'
+        $workflow | Should -Match 'Run secret scan since recorded baseline'
+        $workflow | Should -Not -Match 'Run full-history secret scan'
+
+        $prePush | Should -Match 'scripts\\\\gitleaks-history\.ps1'
+        $gitleaksScript | Should -Match 'BaselineFile'
+        $gitleaksScript | Should -Match 'baselineCommit\.\.HEAD'
+        $gitleaksScript | Should -Match '-Full'
+        $gitleaksScript | Should -Match '-UpdateBaseline'
+        $baseline.Trim() | Should -Match '^[0-9a-f]{40}$'
+    }
 }

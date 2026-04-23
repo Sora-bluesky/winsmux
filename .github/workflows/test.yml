@@ -8,7 +8,7 @@ on:
 
 jobs:
   secret-scan:
-    name: Gitleaks Full History Scan
+    name: Gitleaks Incremental Scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -25,7 +25,7 @@ jobs:
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
           gitleaks version
 
-      - name: Run full-history secret scan
+      - name: Run secret scan since recorded baseline
         shell: pwsh
         run: pwsh -NoProfile -File scripts/gitleaks-history.ps1
 

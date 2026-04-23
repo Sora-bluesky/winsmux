@@ -342,12 +342,15 @@ Private live-ops files and generated artifacts must not be tracked.
 3. `git config --get core.hooksPath` must resolve to `.githooks` before `commit -> push -> PR -> merge`.
 4. `.githooks/pre-commit` and `.githooks/pre-push` must run the repository `scripts/git-guard.ps1`.
 5. CI must also run `scripts/git-guard.ps1` and `scripts/audit-public-surface.ps1`.
-6. Do not bypass git-guard for:
+6. `scripts/gitleaks-history.ps1` must use the recorded baseline for routine checks.
+   - Do not scan all commits on every commit or push after a full-history scan has passed.
+   - Run `scripts/gitleaks-history.ps1 -Full -UpdateBaseline` only when intentionally refreshing the baseline.
+7. Do not bypass git-guard for:
    - secret-like files or tokens,
    - maintainer-local path leaks,
    - tracked live handoff or planning override files,
    - runtime artifacts such as `.winsmux/` or `.orchestra-prompts/`.
-7. If git-guard or the public-surface audit fails, stop fail-closed and fix the classification or leak before continuing.
+8. If git-guard or the public-surface audit fails, stop fail-closed and fix the classification or leak before continuing.
 9. Before merge, if a delayed subagent result arrives, Codex must incorporate that result into the final merge decision.
 10. If review agents repeatedly return `no result yet` across slices, Codex must treat that as a process issue and either:
    - reduce review scope,
