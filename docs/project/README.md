@@ -14,3 +14,4 @@ Contributor-facing contract inventory:
 
 - [Rust Schema Freeze Inventory](./rust-schema-freeze-inventory.md)
 - [Upstream Reevaluation Gate](./upstream-reevaluation-gate.md)
+- [Upstream Snapshot Baseline](./upstream-snapshot-baseline.md)

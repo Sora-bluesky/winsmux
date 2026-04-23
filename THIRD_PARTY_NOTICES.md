@@ -41,6 +41,7 @@ In other words, this entry is not permanent. It should evolve with the compatibi
 ## openai/codex
 
 - Upstream: https://github.com/openai/codex
+- Pinned snapshot: `1dc3535e17666884800ada37d7eb94cf974d38fe`
 - License: Apache-2.0
 - Copyright: OpenAI
 
@@ -74,6 +75,9 @@ These upstream areas are the current reference set for public `openai/codex` TUI
 - `codex-rs/tui/src/theme_picker.rs`
 - `codex-rs/tui/styles.md`
 - `codex-rs/tui/src/bottom_pane/AGENTS.md`
+
+The contributor-facing snapshot contract is documented in `docs/project/upstream-snapshot-baseline.md`.
+That document defines the pinned commit, local reference checkout, overlay boundary, and update rule.
 
 ### Current winsmux adaptation scope
 
