@@ -2,9 +2,9 @@
 name = "winsmux"
 version = "0.23.1"
 edition = "2021"
-description = "Terminal multiplexer for Windows - tmux alternative for PowerShell and Windows Terminal"
-license = "Apache-2.0"
-repository = "https://github.com/winsmux/winsmux"
+description = "Windows-native terminal multiplexer and agent workspace runtime"
+license = "Apache-2.0 AND MIT"
+repository = "https://github.com/Sora-bluesky/winsmux"
 keywords = ["terminal", "multiplexer", "tmux", "windows", "powershell"]
 categories = ["command-line-utilities"]
 

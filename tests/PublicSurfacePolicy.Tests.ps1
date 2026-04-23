@@ -36,16 +36,20 @@ Describe 'Public surface policy' {
             $readme | Should -Not -Match ([Regex]::Escape($reference))
             $readmeJa | Should -Not -Match ([Regex]::Escape($reference))
             $operatorModel | Should -Not -Match ([Regex]::Escape($reference))
+            $thirdPartyNotices | Should -Not -Match ([Regex]::Escape($reference))
         }
     }
 
-    It 'keeps /winsmux-start out of the public UX and advertises future public entrypoints' {
-        $readme | Should -Match '/winsmux-start'
-        $readmeJa | Should -Match '/winsmux-start'
-        $operatorModel | Should -Match '/winsmux-start'
-        $readme | Should -Match 'test this repository itself'
-        $readmeJa | Should -Match '動作確認専用'
-        $operatorModel | Should -Match 'dogfooding flow'
+    It 'keeps repository startup flows out of the public UX and advertises public entrypoints' {
+        $readme | Should -Not -Match '/winsmux-start'
+        $readmeJa | Should -Not -Match '/winsmux-start'
+        $operatorModel | Should -Not -Match '/winsmux-start'
+        $readme | Should -Not -Match 'test this repository itself'
+        $readmeJa | Should -Not -Match '動作確認専用'
+        $operatorModel | Should -Not -Match 'dogfooding'
+        $operatorModel | Should -Not -Match 'Repository-operated'
+        $operatorModel | Should -Not -Match 'contributor/runtime'
+        $operatorModel | Should -Match 'Repository-specific startup flows are kept in contributor documents'
 
         foreach ($entrypoint in @('winsmux init', 'winsmux launch', 'winsmux launcher presets', 'winsmux compare')) {
             $readme | Should -Match ([Regex]::Escape($entrypoint))

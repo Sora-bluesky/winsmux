@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "winsmux-app",
+  "productName": "winsmux",
   "version": "0.23.1",
   "identifier": "io.github.sora-bluesky.winsmux",
   "build": {
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "winsmux-app",
+        "title": "winsmux",
         "width": 800,
         "height": 600
       }

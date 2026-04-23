@@ -153,6 +153,8 @@ Describe 'winsmux npm release package contract' {
         $packageReadme | Should -Match 'Windows verify job'
         $packageReadme | Should -Match 'tag-driven'
         $packageReadme | Should -Match 'NPM_TOKEN'
+        $packageReadme | Should -Match 'github\.com/Sora-bluesky/winsmux/blob/main/core/LICENSE'
+        $packageReadme | Should -Match 'github\.com/Sora-bluesky/winsmux/blob/main/THIRD_PARTY_NOTICES\.md'
         $rootReadme | Should -Match 'npm install -g winsmux'
         $rootReadme | Should -Match 'winsmux install --profile full'
         $rootReadme | Should -Match 'keeps the previously\r?\nrecorded profile'

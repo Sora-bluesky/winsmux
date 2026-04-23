@@ -69,3 +69,12 @@ longer part of the selected profile are removed from `~\.winsmux\winsmux-core\sc
 - the publish workflow stays tag-driven
 - the publish job uses the staged package from `scripts/stage-npm-release.mjs`
 - the publish job requires the repository `NPM_TOKEN` secret
+
+## License
+
+The public npm package is Apache-2.0.
+Some runtime compatibility code in the repository keeps an upstream MIT notice.
+See the repository notices for provenance details:
+
+- https://github.com/Sora-bluesky/winsmux/blob/main/core/LICENSE
+- https://github.com/Sora-bluesky/winsmux/blob/main/THIRD_PARTY_NOTICES.md
