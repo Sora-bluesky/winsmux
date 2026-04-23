@@ -12813,6 +12813,58 @@ panes:
     }
 }
 
+Describe 'winsmux control-rpc command' {
+    BeforeAll {
+        $script:controlRpcBridgePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:controlRpcBridgeContent = Get-Content -Raw -Path $script:controlRpcBridgePath -Encoding UTF8
+        $null = . $script:controlRpcBridgePath version
+    }
+
+    It 'documents control-rpc in usage and fixes the named pipe endpoint' {
+        $script:controlRpcBridgeContent | Should -Match 'control-rpc <json>'
+        $script:controlRpcBridgeContent | Should -Match "'control-rpc'\s*\{\s*Invoke-ControlRpc\s*\}"
+        $script:controlRpcBridgeContent | Should -Match '\$client\.ReadAsync\(\$buffer, 0, \$buffer\.Length\)'
+        $script:controlRpcBridgeContent | Should -Match 'timed out waiting for response'
+        Get-ControlRpcPipeName | Should -Be 'winsmux-control'
+        Get-ControlRpcPipeDisplayName | Should -Be '\\.\pipe\winsmux-control'
+    }
+
+    It 'normalizes JSON-RPC requests before sending them to the control pipe' {
+        Mock Invoke-ControlRpcPipeExchange {
+            param([string]$Payload)
+            $script:controlRpcPayload = $Payload
+            return '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}'
+        }
+
+        $script:controlRpcPayload = ''
+        $output = Invoke-ControlRpc `
+            -ControlTarget '{"jsonrpc":"2.0","id":1,' `
+            -ControlRest @('"method":"desktop.control_plane.contract"}')
+
+        Should -Invoke Invoke-ControlRpcPipeExchange -Times 1 -Exactly
+        $script:controlRpcPayload | Should -Be '{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract"}'
+        $output | Should -Be '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}'
+    }
+
+    It 'rejects missing JSON-RPC payloads' {
+        { ConvertTo-ControlRpcPayload -JsonText '' } | Should -Throw 'usage: winsmux control-rpc <json>'
+    }
+
+    It 'rejects invalid JSON payloads' {
+        { ConvertTo-ControlRpcPayload -JsonText '{' } | Should -Throw 'control-rpc payload must be valid JSON:*'
+    }
+
+    It 'rejects non JSON-RPC 2.0 payloads' {
+        { ConvertTo-ControlRpcPayload -JsonText '{"jsonrpc":"1.0","method":"desktop.summary.snapshot"}' } |
+            Should -Throw 'control-rpc payload must be a JSON-RPC 2.0 request'
+    }
+
+    It 'rejects JSON-RPC requests without a method' {
+        { ConvertTo-ControlRpcPayload -JsonText '{"jsonrpc":"2.0","id":1}' } |
+            Should -Throw 'control-rpc payload must include a non-empty method'
+    }
+}
+
 Describe 'winsmux send fallback' {
     BeforeAll {
         $bridgePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'

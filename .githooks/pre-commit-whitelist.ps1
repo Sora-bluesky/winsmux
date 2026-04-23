@@ -51,6 +51,7 @@ $whitelistPatterns = @(
     'winsmux-app/src-tauri/Cargo.toml',
     'winsmux-app/src-tauri/Cargo.lock',
     'winsmux-app/src-tauri/tauri.conf.json',
+    'winsmux-app/src-tauri/src/control_pipe.rs',
     'winsmux-core/**',
     '.claude/CLAUDE.md',
     '.claude/hooks/**',

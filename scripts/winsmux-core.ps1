@@ -8383,12 +8383,103 @@ promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>
   mailbox-create <ch>       Create Named Pipe mailbox listener
   mailbox-send <ch> <json>  Send JSON message to mailbox channel
   mailbox-listen <ch>       Alias for mailbox-create
+  control-rpc <json>        Send JSON-RPC to \\.\pipe\winsmux-control
   kill <target>             Stop pane process and respawn its shell
   restart <target>          Restart the pane agent using manifest context
   rebind-worktree <target> <path>  Update a Builder/Worker pane to use a new worktree path
   doctor                    Check environment and IME diagnostics
   version                   Show version
 "@
+}
+
+# --- Control RPC ---
+function Get-ControlRpcPipeName {
+    return 'winsmux-control'
+}
+
+function Get-ControlRpcPipeDisplayName {
+    return '\\.\pipe\winsmux-control'
+}
+
+function ConvertTo-ControlRpcPayload {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$JsonText)
+
+    if ([string]::IsNullOrWhiteSpace($JsonText)) {
+        Stop-WithError "usage: winsmux control-rpc <json>"
+    }
+
+    try {
+        $payload = $JsonText | ConvertFrom-Json -Depth 100
+    } catch {
+        Stop-WithError "control-rpc payload must be valid JSON: $($_.Exception.Message)"
+    }
+
+    $propertyNames = @($payload.PSObject.Properties.Name)
+    if ($propertyNames -notcontains 'jsonrpc' -or [string]$payload.jsonrpc -ne '2.0') {
+        Stop-WithError "control-rpc payload must be a JSON-RPC 2.0 request"
+    }
+
+    if ($propertyNames -notcontains 'method' -or [string]::IsNullOrWhiteSpace([string]$payload.method)) {
+        Stop-WithError "control-rpc payload must include a non-empty method"
+    }
+
+    return ($payload | ConvertTo-Json -Depth 100 -Compress)
+}
+
+function Invoke-ControlRpcPipeExchange {
+    param(
+        [Parameter(Mandatory = $true)][string]$Payload,
+        [int]$TimeoutMs = 5000
+    )
+
+    $pipeName = Get-ControlRpcPipeName
+    $client = $null
+    try {
+        $client = [System.IO.Pipes.NamedPipeClientStream]::new(
+            '.',
+            $pipeName,
+            [System.IO.Pipes.PipeDirection]::InOut
+        )
+        $client.Connect($TimeoutMs)
+
+        $requestBytes = [System.Text.Encoding]::UTF8.GetBytes($Payload)
+        $client.Write($requestBytes, 0, $requestBytes.Length)
+        $client.Flush()
+
+        $buffer = [byte[]]::new(4096)
+        $memory = [System.IO.MemoryStream]::new()
+        try {
+            while ($true) {
+                $readTask = $client.ReadAsync($buffer, 0, $buffer.Length)
+                if (-not $readTask.Wait($TimeoutMs)) {
+                    Stop-WithError "control-rpc timed out waiting for response from $(Get-ControlRpcPipeDisplayName)"
+                }
+                $count = $readTask.GetAwaiter().GetResult()
+                if ($count -le 0) { break }
+                $memory.Write($buffer, 0, $count)
+            }
+            return [System.Text.Encoding]::UTF8.GetString($memory.ToArray())
+        } finally {
+            $memory.Dispose()
+        }
+    } catch {
+        Stop-WithError "control-rpc failed to reach $(Get-ControlRpcPipeDisplayName): $($_.Exception.Message)"
+    } finally {
+        if ($null -ne $client) {
+            $client.Dispose()
+        }
+    }
+}
+
+function Invoke-ControlRpc {
+    param(
+        [AllowEmptyString()][string]$ControlTarget = $Target,
+        [string[]]$ControlRest = $Rest
+    )
+
+    $jsonText = (@($ControlTarget) + @($ControlRest) | Where-Object { $null -ne $_ }) -join ' '
+    $payload = ConvertTo-ControlRpcPayload -JsonText $jsonText
+    Invoke-ControlRpcPipeExchange -Payload $payload | Write-Output
 }
 
 # --- Named Pipe Mailbox ---
@@ -8860,6 +8951,7 @@ switch ($Command) {
     'mailbox-create'  { Invoke-MailboxCreate }
     'mailbox-send'    { Invoke-MailboxSend }
     'mailbox-listen'  { Invoke-MailboxListen }
+    'control-rpc'     { Invoke-ControlRpc }
     'watch'           { Invoke-Watch }
     'profile'         { Invoke-Profile }
     'doctor'          { Invoke-Doctor }
