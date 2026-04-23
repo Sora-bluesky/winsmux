@@ -3541,6 +3541,7 @@ function Invoke-Init {
     $agent = 'codex'
     $model = 'gpt-5.4'
     $workerCount = 6
+    $workspaceLifecyclePreset = 'managed-worktree'
     $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
 
     for ($index = 0; $index -lt $remaining.Count; $index++) {
@@ -3549,7 +3550,7 @@ function Invoke-Init {
             '--force' { $force = $true }
             '--project-dir' {
                 if ($index + 1 -ge $remaining.Count) {
-                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>]"
+                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>] [--workspace-lifecycle <preset>]"
                 }
 
                 $projectDir = $remaining[$index + 1]
@@ -3557,7 +3558,7 @@ function Invoke-Init {
             }
             '--agent' {
                 if ($index + 1 -ge $remaining.Count) {
-                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>]"
+                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>] [--workspace-lifecycle <preset>]"
                 }
 
                 $agent = $remaining[$index + 1]
@@ -3565,7 +3566,7 @@ function Invoke-Init {
             }
             '--model' {
                 if ($index + 1 -ge $remaining.Count) {
-                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>]"
+                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>] [--workspace-lifecycle <preset>]"
                 }
 
                 $model = $remaining[$index + 1]
@@ -3573,19 +3574,27 @@ function Invoke-Init {
             }
             '--worker-count' {
                 if ($index + 1 -ge $remaining.Count) {
-                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>]"
+                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>] [--workspace-lifecycle <preset>]"
                 }
 
                 $workerCount = [int]$remaining[$index + 1]
                 $index++
             }
+            '--workspace-lifecycle' {
+                if ($index + 1 -ge $remaining.Count) {
+                    Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>] [--workspace-lifecycle <preset>]"
+                }
+
+                $workspaceLifecyclePreset = $remaining[$index + 1]
+                $index++
+            }
             default {
-                Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>]"
+                Stop-WithError "usage: winsmux init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>] [--workspace-lifecycle <preset>]"
             }
         }
     }
 
-    $result = Invoke-WinsmuxPublicInit -ProjectDir $projectDir -Force:$force -Agent $agent -Model $model -WorkerCount $workerCount
+    $result = Invoke-WinsmuxPublicInit -ProjectDir $projectDir -Force:$force -Agent $agent -Model $model -WorkerCount $workerCount -WorkspaceLifecyclePreset $workspaceLifecyclePreset
     if ($asJson) {
         Write-Output (ConvertTo-WinsmuxPublicJson -InputObject $result)
         return
@@ -3595,6 +3604,7 @@ function Invoke-Init {
     Write-Output "project: $($result.project_dir)"
     Write-Output "config: $($result.config_path)"
     Write-Output "slots: $($result.slot_count)"
+    Write-Output "workspace lifecycle: $($result.workspace_lifecycle_preset)"
     Write-Output "next: $($result.next_action)"
 }
 
@@ -3790,8 +3800,161 @@ function Assert-LauncherTemplateName {
     }
 }
 
-function Get-LauncherPresetPayload {
+function Get-LauncherWorkspaceLifecycleOverridePath {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    return [System.IO.Path]::GetFullPath((Join-Path $ProjectDir '.winsmux\workspace-lifecycle.json'))
+}
+
+function Get-LauncherObjectValue {
+    param(
+        [AllowNull()]$Value,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Default = $null
+    )
+
+    if ($null -eq $Value) {
+        return $Default
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        if ($Value.Contains($Name)) {
+            return $Value[$Name]
+        }
+
+        return $Default
+    }
+
+    if ($null -ne $Value.PSObject -and ($Value.PSObject.Properties.Name -contains $Name)) {
+        return $Value.$Name
+    }
+
+    return $Default
+}
+
+function New-LauncherWorkspaceLifecyclePreset {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Description,
+        [Parameter(Mandatory = $true)][string]$WorkspaceMode,
+        [Parameter(Mandatory = $true)][string]$SetupPolicy,
+        [Parameter(Mandatory = $true)][string]$TeardownPolicy,
+        [string]$LogsDir = '.winsmux\logs',
+        [bool]$ForceDelete = $false
+    )
+
+    return [ordered]@{
+        name             = $Name
+        description      = $Description
+        workspace_mode   = $WorkspaceMode
+        setup_policy     = $SetupPolicy
+        teardown_policy  = $TeardownPolicy
+        logs_dir         = $LogsDir
+        force_delete     = $ForceDelete
+    }
+}
+
+function Read-LauncherWorkspaceLifecycleOverride {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+
+    try {
+        return Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json -AsHashtable -Depth 32
+    } catch {
+        Stop-WithError "workspace lifecycle override is not valid JSON: $Path"
+    }
+}
+
+function Set-LauncherWorkspaceLifecycleOverride {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$Preset
+    )
+
+    Assert-LauncherTemplateName -Name $Preset
+    $path = Get-LauncherWorkspaceLifecycleOverridePath -ProjectDir $ProjectDir
+    $payload = [ordered]@{
+        version = 1
+        preset  = $Preset
+    }
+    Write-ClmSafeTextFile -Path $path -Content ($payload | ConvertTo-Json -Depth 8)
+    return $path
+}
+
+function Clear-LauncherWorkspaceLifecycleOverride {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $path = Get-LauncherWorkspaceLifecycleOverridePath -ProjectDir $ProjectDir
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        Remove-Item -LiteralPath $path -Force
+    }
+
+    return $path
+}
+
+function Get-LauncherWorkspaceLifecyclePayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [string]$SelectedPreset = ''
+    )
+
+    $settings = Get-BridgeSettings -RootPath $ProjectDir
+    $projectDefault = [string]$settings.workspace_lifecycle_preset
+    if ([string]::IsNullOrWhiteSpace($projectDefault)) {
+        $projectDefault = 'managed-worktree'
+    }
+
+    $overridePath = Get-LauncherWorkspaceLifecycleOverridePath -ProjectDir $ProjectDir
+    $override = Read-LauncherWorkspaceLifecycleOverride -Path $overridePath
+    $userOverride = [string](Get-LauncherObjectValue -Value $override -Name 'preset' -Default '')
+    $presets = [ordered]@{}
+    $presets['none'] = New-LauncherWorkspaceLifecyclePreset `
+        -Name 'none' `
+        -Description 'Use the current project directory without managed workspace changes.' `
+        -WorkspaceMode 'shared-root' `
+        -SetupPolicy 'none' `
+        -TeardownPolicy 'none'
+    $presets['managed-worktree'] = New-LauncherWorkspaceLifecyclePreset `
+        -Name 'managed-worktree' `
+        -Description 'Prepare managed worker worktrees and keep them for inspection after use.' `
+        -WorkspaceMode 'managed-worktree' `
+        -SetupPolicy 'ensure-managed-worktree' `
+        -TeardownPolicy 'keep-for-operator-cleanup'
+    $presets['ephemeral-worktree'] = New-LauncherWorkspaceLifecyclePreset `
+        -Name 'ephemeral-worktree' `
+        -Description 'Prepare disposable worker worktrees and require explicit force cleanup.' `
+        -WorkspaceMode 'ephemeral-worktree' `
+        -SetupPolicy 'ensure-managed-worktree' `
+        -TeardownPolicy 'force-delete-required' `
+        -ForceDelete $true
+
+    if ([string]::IsNullOrWhiteSpace($SelectedPreset)) {
+        $SelectedPreset = if ([string]::IsNullOrWhiteSpace($userOverride)) { $projectDefault } else { $userOverride }
+    }
+
+    Assert-LauncherTemplateName -Name $SelectedPreset
+    if (-not $presets.Contains($SelectedPreset)) {
+        Stop-WithError "workspace lifecycle preset not found: $SelectedPreset"
+    }
+
+    return [ordered]@{
+        version             = 1
+        selected_preset     = $SelectedPreset
+        project_default     = $projectDefault
+        user_override       = $userOverride
+        override_path       = $overridePath
+        presets             = @($presets.Values)
+    }
+}
+
+function Get-LauncherPresetPayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [string]$LifecyclePreset = ''
+    )
 
     $settings = Get-BridgeSettings -RootPath $ProjectDir
     $slots = @()
@@ -3870,17 +4033,19 @@ function Get-LauncherPresetPayload {
         slots          = @($slots)
         presets        = @($presets)
         pair_templates = @($pairTemplates)
+        workspace_lifecycle = Get-LauncherWorkspaceLifecyclePayload -ProjectDir $ProjectDir -SelectedPreset $LifecyclePreset
     }
 }
 
 function Save-LauncherTemplate {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectDir,
-        [Parameter(Mandatory = $true)][string]$Name
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string]$LifecyclePreset = ''
     )
 
     Assert-LauncherTemplateName -Name $Name
-    $payload = Get-LauncherPresetPayload -ProjectDir $ProjectDir
+    $payload = Get-LauncherPresetPayload -ProjectDir $ProjectDir -LifecyclePreset $LifecyclePreset
     $store = Read-LauncherTemplateStore -ProjectDir $ProjectDir
     $record = [ordered]@{
         name           = $Name
@@ -3889,6 +4054,7 @@ function Save-LauncherTemplate {
         slots          = @($payload.slots)
         presets        = @($payload.presets)
         pair_templates = @($payload.pair_templates)
+        workspace_lifecycle = $payload.workspace_lifecycle
     }
 
     $templates = @($store.templates | Where-Object {
@@ -3932,6 +4098,8 @@ function Invoke-Launcher {
     $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
     $mode = 'presets'
     $templateName = ''
+    $lifecyclePreset = ''
+    $clearLifecycleOverride = $false
     $jsonOutput = $false
 
     for ($index = 0; $index -lt $tokens.Count; $index++) {
@@ -3939,8 +4107,22 @@ function Invoke-Launcher {
             '--json' {
                 $jsonOutput = $true
             }
+            '--clear' {
+                $clearLifecycleOverride = $true
+            }
+            '--lifecycle' {
+                $index++
+                if ($index -ge $tokens.Count -or [string]::IsNullOrWhiteSpace([string]$tokens[$index])) {
+                    Stop-WithError "usage: winsmux launcher <presets|lifecycle|list|save> [name] [--lifecycle <preset>] [--json]"
+                }
+
+                $lifecyclePreset = [string]$tokens[$index]
+            }
             'presets' {
                 $mode = 'presets'
+            }
+            'lifecycle' {
+                $mode = 'lifecycle'
             }
             'list' {
                 $mode = 'list'
@@ -3951,11 +4133,21 @@ function Invoke-Launcher {
             default {
                 if ([string]::Equals($mode, 'save', [System.StringComparison]::OrdinalIgnoreCase) -and [string]::IsNullOrWhiteSpace($templateName)) {
                     $templateName = [string]$tokens[$index]
+                } elseif ([string]::Equals($mode, 'lifecycle', [System.StringComparison]::OrdinalIgnoreCase) -and [string]::IsNullOrWhiteSpace($lifecyclePreset)) {
+                    $lifecyclePreset = [string]$tokens[$index]
                 } else {
-                    Stop-WithError "usage: winsmux launcher <presets|list|save> [name] [--json]"
+                    Stop-WithError "usage: winsmux launcher <presets|lifecycle|list|save> [name] [--lifecycle <preset>] [--json]"
                 }
             }
         }
+    }
+
+    if ($clearLifecycleOverride -and -not [string]::Equals($mode, 'lifecycle', [System.StringComparison]::OrdinalIgnoreCase)) {
+        Stop-WithError "usage: winsmux launcher lifecycle [preset|--clear] [--json]"
+    }
+
+    if ($clearLifecycleOverride -and -not [string]::IsNullOrWhiteSpace($lifecyclePreset)) {
+        Stop-WithError "usage: winsmux launcher lifecycle [preset|--clear] [--json]"
     }
 
     $projectDir = (Get-Location).Path
@@ -3964,7 +4156,7 @@ function Invoke-Launcher {
             Stop-WithError "usage: winsmux launcher save <name> [--json]"
         }
 
-        $saveResult = Save-LauncherTemplate -ProjectDir $projectDir -Name $templateName
+        $saveResult = Save-LauncherTemplate -ProjectDir $projectDir -Name $templateName -LifecyclePreset $lifecyclePreset
         if ($jsonOutput) {
             $saveResult | ConvertTo-Json -Depth 32 -Compress | Write-Output
             return
@@ -3990,7 +4182,38 @@ function Invoke-Launcher {
         return
     }
 
-    $result = Get-LauncherPresetPayload -ProjectDir $projectDir
+    if ([string]::Equals($mode, 'lifecycle', [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($clearLifecycleOverride) {
+            $clearedPath = Clear-LauncherWorkspaceLifecycleOverride -ProjectDir $projectDir
+            $lifecycleResult = Get-LauncherWorkspaceLifecyclePayload -ProjectDir $projectDir
+            $lifecycleResult['override_cleared'] = $true
+            $lifecycleResult['cleared_path'] = $clearedPath
+        } elseif (-not [string]::IsNullOrWhiteSpace($lifecyclePreset)) {
+            $lifecycleResult = Get-LauncherWorkspaceLifecyclePayload -ProjectDir $projectDir -SelectedPreset $lifecyclePreset
+            $overridePath = Set-LauncherWorkspaceLifecycleOverride -ProjectDir $projectDir -Preset $lifecyclePreset
+            $lifecycleResult['override_saved'] = $true
+            $lifecycleResult['saved_path'] = $overridePath
+        } else {
+            $lifecycleResult = Get-LauncherWorkspaceLifecyclePayload -ProjectDir $projectDir
+        }
+
+        if ($jsonOutput) {
+            $lifecycleResult | ConvertTo-Json -Depth 32 -Compress | Write-Output
+            return
+        }
+
+        Write-Output "workspace lifecycle presets: $(@($lifecycleResult.presets).Count)"
+        Write-Output "selected: $($lifecycleResult.selected_preset)"
+        foreach ($preset in @($lifecycleResult.presets)) {
+            Write-Output "  $($preset.name): setup=$($preset.setup_policy) teardown=$($preset.teardown_policy)"
+        }
+        Write-Output "project default: $($lifecycleResult.project_default)"
+        Write-Output "user override: $($lifecycleResult.user_override)"
+        Write-Output "override path: $($lifecycleResult.override_path)"
+        return
+    }
+
+    $result = Get-LauncherPresetPayload -ProjectDir $projectDir -LifecyclePreset $lifecyclePreset
     if ($jsonOutput) {
         $result | ConvertTo-Json -Depth 16 -Compress | Write-Output
         return
@@ -4004,6 +4227,7 @@ function Invoke-Launcher {
     foreach ($pair in @($result.pair_templates)) {
         Write-Output "  $($pair.name): $($pair.left_slot_id),$($pair.right_slot_id)"
     }
+    Write-Output "workspace lifecycle: $($result.workspace_lifecycle.selected_preset)"
     Write-Output "templates: $($result.templates_path)"
 }
 
@@ -8015,9 +8239,9 @@ function Show-Usage {
 winsmux $VERSION - winsmux bridge for winsmux
 
 Commands:
-  init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>]  Create or refresh public first-run config
+  init [--json] [--project-dir <path>] [--force] [--agent <provider>] [--model <name>] [--worker-count <count>] [--workspace-lifecycle <preset>]  Create or refresh public first-run config
   launch [--json] [--project-dir <path>] [--skip-doctor]  Run public first-run checks and startup
-  launcher <presets|list|save> [name] [--json]  Inspect or save capability-aware launcher templates
+  launcher <presets|lifecycle|list|save> [name] [--lifecycle <preset>] [--json]  Inspect or save capability-aware launcher templates
   id                        Show current pane ID
   list                      List all panes
   read <target> [lines]     Capture pane output (default 50 lines)

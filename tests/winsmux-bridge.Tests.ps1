@@ -461,6 +461,17 @@ prompt-transport: stdin
         $settings.prompt_transport | Should -Be 'stdin'
     }
 
+    It 'rejects unsupported workspace lifecycle presets from project settings' {
+@'
+workspace-lifecycle-preset: custom-script
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        { Get-BridgeSettings } |
+            Should -Throw "Invalid workspace_lifecycle_preset configuration: unsupported value 'custom-script'."
+    }
+
     It 'fails closed when prompt_transport is unsupported' {
 @'
 prompt-transport: socket
@@ -9793,7 +9804,7 @@ Describe 'winsmux public first-run commands' {
     }
 
     It 'documents init and launch in usage and dispatches them through the public first-run helper' {
-        $script:winsmuxCoreRawContent | Should -Match 'init \[--json\] \[--project-dir <path>\] \[--force\] \[--agent <provider>\] \[--model <name>\] \[--worker-count <count>\]\s+Create or refresh public first-run config'
+        $script:winsmuxCoreRawContent | Should -Match 'init \[--json\] \[--project-dir <path>\] \[--force\] \[--agent <provider>\] \[--model <name>\] \[--worker-count <count>\] \[--workspace-lifecycle <preset>\]\s+Create or refresh public first-run config'
         $script:winsmuxCoreRawContent | Should -Match 'launch \[--json\] \[--project-dir <path>\] \[--skip-doctor\]\s+Run public first-run checks and startup'
         $script:winsmuxCoreRawContent | Should -Match "'init'\s*\{"
         $script:winsmuxCoreRawContent | Should -Match "'launch'\s*\{"
@@ -9945,6 +9956,17 @@ Describe 'public first-run helper' {
         $settings.worker_count | Should -Be 6
         $settings.agent_slots.Count | Should -Be 6
         $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
+        $settings.workspace_lifecycle_preset | Should -Be 'managed-worktree'
+    }
+
+    It 'stores a custom workspace lifecycle preset on init' {
+        $result = Invoke-WinsmuxPublicInit -ProjectDir $script:publicFirstRunTempRoot -WorkspaceLifecyclePreset 'ephemeral-worktree'
+
+        $result.status | Should -Be 'initialized'
+        $result.workspace_lifecycle_preset | Should -Be 'ephemeral-worktree'
+
+        $settings = Get-BridgeSettings -RootPath $script:publicFirstRunTempRoot
+        $settings.workspace_lifecycle_preset | Should -Be 'ephemeral-worktree'
     }
 
     It 'stores custom provider names in managed slots on init' {
@@ -10261,6 +10283,7 @@ agent: codex
 model: gpt-5.4
 external_operator: true
 worker_count: 3
+workspace_lifecycle_preset: managed-worktree
 agent_slots:
   - slot_id: worker-1
     runtime_role: worker
@@ -10315,7 +10338,7 @@ agent_slots:
     }
 
     It 'documents launcher in usage and returns capability-aware presets' {
-        $script:winsmuxLauncherRawContent | Should -Match 'launcher <presets\|list\|save> \[name\] \[--json\]'
+        $script:winsmuxLauncherRawContent | Should -Match 'launcher <presets\|lifecycle\|list\|save> \[name\] \[--lifecycle <preset>\] \[--json\]'
         $script:winsmuxLauncherRawContent | Should -Match "'launcher'\s*\{"
 
         Push-Location $script:winsmuxLauncherTempRoot
@@ -10336,6 +10359,10 @@ agent_slots:
         @($payload.presets.name) | Should -Contain 'verification'
         $payload.pair_templates[0].name | Should -Be 'ab-pair'
         @($payload.pair_templates[0].slot_ids) | Should -Be @('worker-1', 'worker-2')
+        $payload.workspace_lifecycle.selected_preset | Should -Be 'managed-worktree'
+        @($payload.workspace_lifecycle.presets.name) | Should -Contain 'ephemeral-worktree'
+        $payload.workspace_lifecycle.presets[0].PSObject.Properties.Name | Should -Not -Contain 'setup_scripts'
+        $payload.workspace_lifecycle.presets[0].PSObject.Properties.Name | Should -Not -Contain 'teardown_scripts'
         $payload.templates_path | Should -Match '\\.winsmux\\launcher-templates\.json$'
     }
 
@@ -10354,10 +10381,76 @@ agent_slots:
         $saved.saved | Should -Be $true
         $saved.template.slot_count | Should -Be 3
         @($saved.template.presets.name) | Should -Contain 'balanced-build-review'
+        $saved.template.workspace_lifecycle.selected_preset | Should -Be 'managed-worktree'
         Test-Path -LiteralPath $saved.templates_path | Should -Be $true
         $listed.template_count | Should -Be 1
         $listed.templates[0].name | Should -Be 'build-review'
         Test-Path -LiteralPath (Join-Path $script:winsmuxLauncherTempRoot '.winsmux.yaml') | Should -Be $true
+    }
+
+    It 'sets and clears workspace lifecycle override without rewriting project settings' {
+        $settingsPath = Join-Path $script:winsmuxLauncherTempRoot '.winsmux.yaml'
+        $settingsBefore = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8
+
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $setOutput = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher lifecycle ephemeral-worktree --json
+        } finally {
+            Pop-Location
+        }
+
+        $setPayload = $setOutput | ConvertFrom-Json
+        $setPayload.selected_preset | Should -Be 'ephemeral-worktree'
+        $setPayload.override_saved | Should -Be $true
+        Test-Path -LiteralPath $setPayload.saved_path | Should -Be $true
+        $override = Get-Content -LiteralPath $setPayload.saved_path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $override.preset | Should -Be 'ephemeral-worktree'
+
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $clearOutput = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher lifecycle --clear --json
+        } finally {
+            Pop-Location
+        }
+
+        $clearPayload = $clearOutput | ConvertFrom-Json
+        $clearPayload.selected_preset | Should -Be 'managed-worktree'
+        $clearPayload.override_cleared | Should -Be $true
+        Test-Path -LiteralPath $setPayload.saved_path | Should -Be $false
+
+        $settingsAfter = Get-Content -LiteralPath $settingsPath -Raw -Encoding UTF8
+        $settingsAfter | Should -Be $settingsBefore
+    }
+
+    It 'rejects unknown workspace lifecycle presets' {
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher lifecycle custom-script --json 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+
+        $exitCode | Should -Be 1
+        ($output | Out-String) | Should -Match 'workspace lifecycle preset not found: custom-script'
+        Test-Path -LiteralPath (Join-Path $script:winsmuxLauncherTempRoot '.winsmux\workspace-lifecycle.json') | Should -Be $false
+    }
+
+    It 'rejects lifecycle clear when combined with another launcher mode or preset' {
+        Push-Location $script:winsmuxLauncherTempRoot
+        try {
+            $presetOutput = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher presets --clear --json 2>&1
+            $presetExitCode = $LASTEXITCODE
+            $combinedOutput = & pwsh -NoProfile -File $script:winsmuxLauncherRawPath launcher lifecycle ephemeral-worktree --clear --json 2>&1
+            $combinedExitCode = $LASTEXITCODE
+        } finally {
+            Pop-Location
+        }
+
+        $presetExitCode | Should -Be 1
+        ($presetOutput | Out-String) | Should -Match 'usage: winsmux launcher lifecycle \[preset\|--clear\] \[--json\]'
+        $combinedExitCode | Should -Be 1
+        ($combinedOutput | Out-String) | Should -Match 'usage: winsmux launcher lifecycle \[preset\|--clear\] \[--json\]'
     }
 
     It 'rejects save when only --json is supplied instead of a template name' {
