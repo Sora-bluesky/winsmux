@@ -3715,6 +3715,8 @@ function New-LauncherSlotSummary {
         agent                      = [string]$effective.Agent
         model                      = [string]$effective.Model
         prompt_transport           = [string]$effective.PromptTransport
+        auth_mode                  = [string]$effective.AuthMode
+        auth_policy                = [string]$effective.AuthPolicy
         source                     = [string]$effective.Source
         capability_adapter         = [string]$effective.CapabilityAdapter
         capability_command         = [string]$effective.CapabilityCommand
@@ -8153,13 +8155,14 @@ function Invoke-ProviderCapabilities {
 function Invoke-ProviderSwitch {
     $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
     if ($tokens.Count -lt 1) {
-        Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--restart] [--clear] [--json]"
+        Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]"
     }
 
     $slotId = [string]$tokens[0]
     $agent = ''
     $model = ''
     $promptTransport = ''
+    $authMode = ''
     $reason = ''
     $restartRequested = $false
     $clearRequested = $false
@@ -8188,6 +8191,13 @@ function Invoke-ProviderSwitch {
                 $promptTransport = [string]$tokens[$index + 1]
                 $index++
             }
+            '--auth-mode' {
+                if ($index + 1 -ge $tokens.Count) {
+                    Stop-WithError '--auth-mode requires a value'
+                }
+                $authMode = [string]$tokens[$index + 1]
+                $index++
+            }
             '--reason' {
                 if ($index + 1 -ge $tokens.Count) {
                     Stop-WithError '--reason requires a value'
@@ -8205,13 +8215,13 @@ function Invoke-ProviderSwitch {
                 $clearRequested = $true
             }
             default {
-                Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--restart] [--clear] [--json]"
+                Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]"
             }
         }
     }
 
-    if ($clearRequested -and (-not [string]::IsNullOrWhiteSpace($agent) -or -not [string]::IsNullOrWhiteSpace($model) -or -not [string]::IsNullOrWhiteSpace($promptTransport))) {
-        Stop-WithError 'provider-switch --clear cannot be combined with --agent, --model, or --prompt-transport.'
+    if ($clearRequested -and (-not [string]::IsNullOrWhiteSpace($agent) -or -not [string]::IsNullOrWhiteSpace($model) -or -not [string]::IsNullOrWhiteSpace($promptTransport) -or -not [string]::IsNullOrWhiteSpace($authMode))) {
+        Stop-WithError 'provider-switch --clear cannot be combined with --agent, --model, --prompt-transport, or --auth-mode.'
     }
 
     $projectDir = (Get-Location).Path
@@ -8246,7 +8256,15 @@ function Invoke-ProviderSwitch {
         $clearResult = Remove-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId
         $cleared = [bool]$clearResult.Removed
     } else {
-        $entry = Write-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId -Agent $agent -Model $model -PromptTransport $promptTransport -Reason $reason
+        if (-not [string]::IsNullOrWhiteSpace($authMode)) {
+            $currentEffective = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $settings -RootPath $projectDir
+            $candidateAgent = [string]$currentEffective.Agent
+            if (-not [string]::IsNullOrWhiteSpace($agent)) {
+                $candidateAgent = $agent
+            }
+            Assert-BridgeProviderCapabilityAuthMode -ProviderId $candidateAgent -AuthMode $authMode -RootPath $projectDir
+        }
+        $entry = Write-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId -Agent $agent -Model $model -PromptTransport $promptTransport -AuthMode $authMode -Reason $reason
     }
     $effective = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $settings -RootPath $projectDir
     $result = [ordered]@{
@@ -8254,6 +8272,8 @@ function Invoke-ProviderSwitch {
         agent                      = [string]$effective.Agent
         model                      = [string]$effective.Model
         prompt_transport           = [string]$effective.PromptTransport
+        auth_mode                  = [string]$effective.AuthMode
+        auth_policy                = [string]$effective.AuthPolicy
         source                     = [string]$effective.Source
         capability_adapter         = [string]$effective.CapabilityAdapter
         capability_command         = [string]$effective.CapabilityCommand
@@ -8286,11 +8306,11 @@ function Invoke-ProviderSwitch {
     }
 
     if ($clearRequested) {
-        Write-Output "provider switch cleared for ${slotId}: $($result.agent) / $($result.model) ($($result.prompt_transport))"
+        Write-Output "provider switch cleared for ${slotId}: $($result.agent) / $($result.model) ($($result.prompt_transport), $($result.auth_policy))"
         return
     }
 
-    Write-Output "provider switched for ${slotId}: $($result.agent) / $($result.model) ($($result.prompt_transport))"
+    Write-Output "provider switched for ${slotId}: $($result.agent) / $($result.model) ($($result.prompt_transport), $($result.auth_policy))"
 }
 
 function Show-Usage {
@@ -8328,7 +8348,7 @@ Commands:
   consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json]  Record a consultation result packet/event
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
   provider-capabilities [provider] [--json]  Inspect the provider capability registry contract
-  provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--reason <text>] [--restart] [--clear] [--json]  Record or clear a runtime provider reassignment for a managed slot
+  provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]  Record or clear a runtime provider reassignment for a managed slot
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
   wait <channel> [timeout]  Block until signal received (replaces polling)
