@@ -25,6 +25,10 @@ path = "tests-rs/test_issue155_rendering.rs"
 name = "manifest_contract"
 path = "tests-rs/manifest_contract.rs"
 
+[[test]]
+name = "event_contract"
+path = "tests-rs/event_contract.rs"
+
 # Windows only
 [target.'cfg(not(windows))'.dependencies]
 [target.'cfg(windows)'.dependencies]

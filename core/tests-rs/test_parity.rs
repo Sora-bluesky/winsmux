@@ -11,6 +11,9 @@ mod rust_parity_support {
     ));
 }
 
+#[path = "../src/event_contract.rs"]
+mod event_contract_contract;
+
 fn mock_app() -> AppState {
     let mut app = AppState::new("test_session".to_string());
     app.window_base_index = 0;
@@ -395,6 +398,34 @@ fn rust_parity_digest_fixture_deserializes() {
     assert_eq!(fixture.items[0].branch, "worktree-builder-1");
     assert_eq!(fixture.items[0].changed_file_count, 1);
     assert_eq!(fixture.items[0].last_event_at, "__LAST_EVENT_AT__");
+}
+
+#[test]
+fn rust_parity_event_fixture_deserializes() {
+    let raw = rust_parity_support::read_text_fixture(&rust_parity_repo_root(), "events.jsonl");
+    let fixture = event_contract_contract::parse_event_jsonl(&raw)
+        .expect("event fixture should satisfy the shared contract");
+    assert_eq!(fixture.len(), 5);
+    assert_eq!(fixture[0].event, "pane.consult_result");
+    assert_eq!(fixture[0].session, "winsmux-orchestra");
+    assert_eq!(fixture[0].branch, "worktree-builder-1");
+    assert_eq!(fixture[0].head_sha, "abc1234def5678");
+    assert_eq!(fixture[1].event, "pane.completed");
+    assert_eq!(fixture[1].status, "completed");
+    assert_eq!(fixture[1].pane_id, "%2");
+    assert_eq!(fixture[2].event, "server.restarted");
+    assert_eq!(fixture[2].message, "watchdog restarted the server");
+    assert_eq!(fixture[2].exit_reason, "");
+    assert_eq!(fixture[3].event, "pane.consult_request");
+    assert_eq!(fixture[3].branch, "");
+    assert_eq!(fixture[3].head_sha, "");
+    assert_eq!(fixture[3].data["branch"], "worktree-builder-2");
+    assert_eq!(fixture[3].data["head_sha"], "1234567abcdef0");
+    assert_eq!(fixture[4].event, "pane.consult_result");
+    assert_eq!(fixture[4].branch, "worktree-builder-3");
+    assert_eq!(fixture[4].head_sha, "feedbee1234567");
+    assert_eq!(fixture[4].data["branch"], "stale-branch");
+    assert_eq!(fixture[4].data["head_sha"], "stale-head");
 }
 
 #[test]
