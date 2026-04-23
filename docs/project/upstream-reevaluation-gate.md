@@ -113,6 +113,11 @@ Use this minimum shape:
 
 If that record cannot be written clearly, the pattern is not ready to become a durable contract.
 
+When the input reveals public metadata drift such as version, naming, or license mismatch,
+do not patch around it in unrelated product docs.
+Open or update a public issue, map it into the release-hardening lane, and only then decide
+which public docs need a follow-up correction.
+
 ## Command surface
 
 The working command surface for `TASK-315` is:
