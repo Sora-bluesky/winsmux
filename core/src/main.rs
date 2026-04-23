@@ -26,7 +26,6 @@ mod app;
 mod ssh_input;
 mod debug_log;
 mod control;
-
 use std::io::{self, Write, Read as _, BufRead as _, IsTerminal};
 use std::time::Duration;
 use std::env;

@@ -1,0 +1,48 @@
+version: "1"
+session:
+  name: winsmux-orchestra
+  project_dir: __PROJECT_DIR__
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    state: idle
+    tokens_remaining: 64% context left
+    task_id: task-256
+    parent_run_id: operator:session-1
+    goal: Ship run contract primitives
+    task: Implement run ledger
+    task_type: implementation
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    priority: P0
+    blocking: "true"
+    branch: worktree-builder-1
+    security_policy: '{"mode":"blocklist","allow_patterns":["Invoke-Pester"],"block_patterns":["git reset --hard"]}'
+    launch_dir: .worktrees/builder-1
+    builder_worktree_path: .worktrees/builder-1
+    worktree_git_dir: .git
+    worktree: .worktrees/builder-1
+    head_sha: abc1234def5678
+    changed_file_count: "1"
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    write_scope: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
+    read_scope: '["winsmux-core/scripts/pane-status.ps1"]'
+    constraints: '["preserve existing board schema"]'
+    expected_output: Stable explain JSON
+    verification_plan: '["Invoke-Pester tests/winsmux-bridge.Tests.ps1","verify explain --json contract"]'
+    review_required: "true"
+    provider_target: codex:gpt-5.4
+    agent_role: worker
+    timeout_policy: standard
+    handoff_refs: '["docs/handoff.md"]'
+    last_event: operator.review_requested
+    last_event_at: __LAST_EVENT_AT__
+  reviewer-1:
+    pane_id: "%3"
+    role: Reviewer
+    state: idle
+    task_state: backlog
+    changed_file_count: 0
+    changed_files: null

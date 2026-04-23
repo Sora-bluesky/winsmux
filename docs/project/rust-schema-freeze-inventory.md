@@ -8,8 +8,9 @@ This document identifies which runtime data shapes are already close to a typed 
 - `summary` is the most freeze-ready surface.
 - `run/explain` is the next most freeze-ready surface.
 - `.winsmux/review-state.json` now has the first fixture-backed typed Rust snapshot contract.
-- `manifest`, `event`, and `verdict` still rely on loose PowerShell object shapes.
-- The next safe implementation step is to reassess whether `manifest` or `event` is smaller to freeze next.
+- `manifest` now has a first Rust-side schema fixture and validation contract.
+- `event` and `verdict` still rely on loose PowerShell object shapes.
+- The next safe implementation step is to freeze the event envelope before ledger persistence.
 
 ## Freeze-ready surfaces
 
@@ -134,8 +135,6 @@ Frozen shape:
 - `FAIL` / `FAILED` requires `evidence.failed_at` and `evidence.failed_via`.
 - This is a fixture-backed DTO contract. Runtime file ingestion remains PowerShell-owned until the Rust ledger work starts.
 
-## Still-loose surfaces
-
 ### 4. `manifest`
 
 Source file:
@@ -152,14 +151,23 @@ Main PowerShell readers:
 
 Current gap:
 
-- The runtime still depends on specific YAML fields, and there is still no typed Rust schema or fixture set that freezes the full manifest shape.
-- A first PowerShell-side minimum shape now exists for run/explain consumers:
+- The runtime still depends on PowerShell readers for live ingestion.
+- A first Rust-side typed schema now exists in `core/src/manifest_contract.rs`.
+- The contract accepts both dictionary and legacy list `panes` formats.
+- The test parser also normalizes legacy unquoted pane IDs such as `%2`.
+- The parser accepts `changed_files: null` as an empty list.
+- The parser keeps current path fields such as `launch_dir`, `builder_worktree_path`, and `worktree_git_dir`.
+- The fixture lives in `tests/fixtures/rust-parity/manifest.yaml`.
+- The first frozen minimum shape covers the current pane/session slice used by `run` / `explain` consumers:
   - `review_state` requires `branch` and `head_sha`
   - `changed_file_count > 0` requires non-empty `changed_files`
   - `last_event` requires `last_event_at`
-- A second PowerShell-side planning metadata slice now exists for run/explain consumers:
+  - `security_policy` is preserved as a manifest field
+- Planning metadata has the same bundled requirement:
   - if any of `parent_run_id`, `goal`, `task_type`, or `priority` is present, all four fields are required
-- The remaining work is to inventory and freeze the wider pane/session/task fields without widening this slice back into a full manifest rewrite.
+- The remaining work is to connect this contract to ledger persistence without turning it into a full manifest rewrite.
+
+## Still-loose surfaces
 
 ### 5. `event`
 
@@ -192,10 +200,10 @@ Current gap:
 
 ## Recommended order after this inventory
 
-1. Reassess whether `manifest` or `event` is the next smaller contract after review-state.
+1. Freeze the `.winsmux/events.jsonl` envelope next.
 2. Keep the review-state fixture as the branch-keyed root file shape.
-3. Avoid expanding `TASK-277` into a full manifest rewrite unless the next contract slice is explicitly scoped.
-4. Keep `TASK-289` as the next serial desktop lane after `TASK-277` planning clarity, not in parallel with contract changes on the same surface.
+3. Keep the manifest contract limited to session and pane boundary validation until ledger persistence needs more fields.
+4. Do not expand the contract work into a full runtime rewrite without a separate task.
 
 ## Parallel work that stays safe
 

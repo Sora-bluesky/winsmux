@@ -21,6 +21,10 @@ path = "tests-rs/test_issue155_sgr_attrs.rs"
 name = "test_issue155_rendering"
 path = "tests-rs/test_issue155_rendering.rs"
 
+[[test]]
+name = "manifest_contract"
+path = "tests-rs/manifest_contract.rs"
+
 # Windows only
 [target.'cfg(not(windows))'.dependencies]
 [target.'cfg(windows)'.dependencies]
@@ -58,3 +62,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 regex = "1"
 glob = "0.3"
+
+[dev-dependencies]
+serde_yaml = "0.9"
