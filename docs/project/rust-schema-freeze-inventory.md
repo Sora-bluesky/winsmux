@@ -7,8 +7,9 @@ This document identifies which runtime data shapes are already close to a typed 
 
 - `summary` is the most freeze-ready surface.
 - `run/explain` is the next most freeze-ready surface.
-- `manifest`, `state`, `event`, and `verdict` still rely on loose PowerShell object shapes.
-- The smallest safe next implementation slice is a typed freeze for `.winsmux/review-state.json`.
+- `.winsmux/review-state.json` now has the first fixture-backed typed Rust snapshot contract.
+- `manifest`, `event`, and `verdict` still rely on loose PowerShell object shapes.
+- The next safe implementation step is to reassess whether `manifest` or `event` is smaller to freeze next.
 
 ## Freeze-ready surfaces
 
@@ -87,9 +88,55 @@ Why this is close to freeze:
 - 最上位 `observation_pack` と `consultation_packet` の `packet_type` も削除済み。`packet_type` は artifact 本体と `recent_events` の生イベント側だけに残る。
 - Rust parity fixture と PowerShell 契約テストは、今の explain shape に揃っている。
 
+## Fixture-backed frozen surfaces
+
+### 3. `state`
+
+Source file:
+
+- `.winsmux/review-state.json`
+
+Main PowerShell readers/writers:
+
+- `scripts/winsmux-core.ps1`
+  - `Get-ReviewStatePath`
+  - `Get-ReviewStatePropertyValue`
+  - `Get-ReviewState`
+  - `Save-ReviewState`
+  - `ConvertTo-ReviewStateValue`
+
+Typed Rust surface:
+
+- `winsmux-app/src-tauri/src/desktop_backend.rs`
+  - `DesktopReviewStateSnapshot`
+  - `DesktopReviewStateRecord`
+  - `DesktopReviewStateRequest`
+  - `DesktopReviewStateReviewer`
+  - `DesktopReviewStateEvidence`
+  - `DesktopReviewContract`
+
+Parity fixtures:
+
+- `tests/fixtures/rust-parity/review-state.json`
+- `tests/test_support/rust_parity.rs`
+- `core/tests-rs/test_parity.rs`
+
+Frozen shape:
+
+- The root object is keyed by branch name.
+- Each branch record requires `status`, `branch`, `head_sha`, `request`, `reviewer`, and `updatedAt`.
+- Each `request.review_contract` requires `required_scope`, `checklist_labels`, and the other review contract fields.
+- The branch key must match the record `branch`.
+- The request `branch` and `head_sha` must match the saved record.
+- `required_scope` must be present and non-empty in the request contract and evidence snapshot.
+- `target_review_*` is the primary request identity. Legacy `target_reviewer_*` remains readable as a fallback.
+- `PASS` requires `evidence.approved_at` and `evidence.approved_via`.
+- `FAIL` / `FAILED` requires `evidence.failed_at` and `evidence.failed_via`.
+- This is a fixture-backed DTO contract. Runtime file ingestion remains PowerShell-owned until the Rust ledger work starts.
+
 ## Still-loose surfaces
 
-### 3. `manifest`
+### 4. `manifest`
 
 Source file:
 
@@ -113,32 +160,6 @@ Current gap:
 - A second PowerShell-side planning metadata slice now exists for run/explain consumers:
   - if any of `parent_run_id`, `goal`, `task_type`, or `priority` is present, all four fields are required
 - The remaining work is to inventory and freeze the wider pane/session/task fields without widening this slice back into a full manifest rewrite.
-
-### 4. `state`
-
-Source file:
-
-- `.winsmux/review-state.json`
-
-Main PowerShell readers/writers:
-
-- `scripts/winsmux-core.ps1`
-  - `Get-ReviewStatePath`
-  - `Get-ReviewStatePropertyValue`
-  - `Get-ReviewState`
-  - `Save-ReviewState`
-  - `ConvertTo-ReviewStateValue`
-
-Current gap:
-
-- The root object is branch-keyed JSON with nested `request`, `status`, `evidence`, and `result` data.
-- The field contract is currently implied by helpers and downstream consumers rather than frozen in one typed schema.
-
-Why this is the best next slice:
-
-- It is smaller than `manifest`.
-- It is less polymorphic than `events.jsonl`.
-- It already feeds `Get-ExplainPayload`, review approval, and review failure flows.
 
 ### 5. `event`
 
@@ -171,9 +192,9 @@ Current gap:
 
 ## Recommended order after this inventory
 
-1. Freeze `.winsmux/review-state.json` as the first typed schema slice for `TASK-277`.
-2. Add parity fixtures and fail-close tests for the frozen review-state shape.
-3. Reassess whether `manifest` or `event` is the next smaller contract after review-state.
+1. Reassess whether `manifest` or `event` is the next smaller contract after review-state.
+2. Keep the review-state fixture as the branch-keyed root file shape.
+3. Avoid expanding `TASK-277` into a full manifest rewrite unless the next contract slice is explicitly scoped.
 4. Keep `TASK-289` as the next serial desktop lane after `TASK-277` planning clarity, not in parallel with contract changes on the same surface.
 
 ## Parallel work that stays safe
