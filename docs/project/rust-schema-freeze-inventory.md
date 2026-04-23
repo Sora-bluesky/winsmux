@@ -203,6 +203,7 @@ Current location:
 Current boundary:
 
 - `LedgerSnapshot` loads the frozen `manifest` and `events` fixtures together.
+- It can also load live `.winsmux/manifest.yaml` and `.winsmux/events.jsonl` files.
 - It validates the manifest and event envelope before exposing the snapshot.
 - It indexes panes by `pane_id` for later projection work.
 - It rejects duplicate manifest `pane_id` values because they make projection identity ambiguous.
@@ -214,7 +215,7 @@ Current boundary:
 Current limitation:
 
 - The snapshot is still read-only.
-- Live `.winsmux` file ingestion remains outside this first slice.
+- Projection code does not consume the live snapshot yet.
 - `board`, `inbox`, `digest`, and `explain` are not derived from this snapshot yet.
 
 ### 7. `verdict`
