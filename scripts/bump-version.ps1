@@ -199,6 +199,16 @@ $targets = @(
         Replace = "`${1}$Version`${2}"
     },
     @{
+        Path    = Join-Path $Root "Cargo.lock"
+        Pattern = '(?ms)(name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*")[^"]*(")'
+        Replace = "`${1}$Version`${2}"
+    },
+    @{
+        Path    = Join-Path $Root "Cargo.lock"
+        Pattern = '(?ms)(name\s*=\s*"winsmux-app"\s*\r?\nversion\s*=\s*")[^"]*(")'
+        Replace = "`${1}$Version`${2}"
+    },
+    @{
         Path    = Join-Path $Root "winsmux-app\package.json"
         Pattern = '("version"\s*:\s*")[^"]*(")'
         Replace = "`${1}$Version`${2}"
@@ -322,6 +332,8 @@ try {
         "VERSION",
         "install.ps1",
         "scripts/winsmux-core.ps1",
+        "Cargo.toml",
+        "Cargo.lock",
         "core/Cargo.toml",
         "core/Cargo.lock",
         "winsmux-app/package.json",
