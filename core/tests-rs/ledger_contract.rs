@@ -200,6 +200,8 @@ panes:
 "#
     );
     fixture.write_winsmux_file("manifest.yaml", &manifest);
+    fs::create_dir_all(fixture.path().join(".worktrees").join("builder-1"))
+        .expect("temp builder worktree dir should be created");
 
     let snapshot = ledger::LedgerSnapshot::from_project_dir(fixture.path())
         .expect("ledger snapshot should use live project dir fallback");
@@ -474,6 +476,29 @@ panes:
 
     let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
         .expect("ledger snapshot should relativize extended paths");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].worktree, ".worktrees/builder-1");
+}
+
+#[test]
+fn ledger_contract_relativizes_drive_root_project_paths() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: C:\
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+    launch_dir: C:\.worktrees\builder-1
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should relativize drive root paths");
 
     let board = snapshot.board_projection();
 

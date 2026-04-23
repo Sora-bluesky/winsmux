@@ -1,6 +1,7 @@
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::fmt;
+use std::path::Path;
 
 #[derive(Debug, Deserialize)]
 pub struct WinsmuxManifest {
@@ -419,29 +420,49 @@ fn same_path(left: &str, right: &str) -> bool {
 fn relativize_path(project_dir: &str, candidate: &str) -> String {
     let project = normalize_path_for_compare(project_dir);
     let normalized_candidate = normalize_path_for_compare(candidate);
+    let project_prefix = if project == "/" {
+        "/".to_string()
+    } else {
+        project.clone() + "/"
+    };
 
-    if project.is_empty() || !normalized_candidate.starts_with(&(project.clone() + "/")) {
+    if project.is_empty() || !normalized_candidate.starts_with(&project_prefix) {
         return candidate.trim().to_string();
     }
 
-    normalized_candidate[project.len() + 1..].to_string()
+    normalized_candidate[project_prefix.len()..].to_string()
 }
 
 fn normalize_path_for_compare(path: &str) -> String {
-    let normalized = path
-        .trim()
-        .trim_end_matches(['\\', '/'])
-        .replace('\\', "/")
-        .to_ascii_lowercase();
+    let trimmed = path.trim();
+    let comparable_path = Path::new(trimmed)
+        .canonicalize()
+        .ok()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(|| trimmed.to_string());
+    let normalized = comparable_path.replace('\\', "/").to_ascii_lowercase();
 
     if let Some(path) = normalized.strip_prefix("//?/unc/") {
-        return format!("//{path}");
+        return trim_trailing_separator_for_compare(&format!("//{path}"));
     }
     if let Some(path) = normalized.strip_prefix("//?/") {
+        return trim_trailing_separator_for_compare(path);
+    }
+
+    trim_trailing_separator_for_compare(&normalized)
+}
+
+fn trim_trailing_separator_for_compare(path: &str) -> String {
+    if path == "/" {
         return path.to_string();
     }
 
-    normalized
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        path.to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn normalize_legacy_manifest_yaml(content: &str) -> String {
