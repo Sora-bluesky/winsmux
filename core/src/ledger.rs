@@ -1,5 +1,7 @@
 use crate::event_contract::{parse_event_jsonl, EventRecord};
 use crate::manifest_contract::{NormalizedManifestPane, WinsmuxManifest};
+use serde_json::Value;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
@@ -66,6 +68,38 @@ pub struct LedgerBoardPane {
 pub struct LedgerBoardProjection {
     pub summary: LedgerBoardSummary,
     pub panes: Vec<LedgerBoardPane>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerInboxSummary {
+    pub item_count: usize,
+    pub by_kind: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerInboxItem {
+    pub kind: String,
+    pub priority: usize,
+    pub message: String,
+    pub label: String,
+    pub pane_id: String,
+    pub role: String,
+    pub task_id: String,
+    pub task: String,
+    pub task_state: String,
+    pub review_state: String,
+    pub branch: String,
+    pub head_sha: String,
+    pub changed_file_count: usize,
+    pub event: String,
+    pub timestamp: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerInboxProjection {
+    pub summary: LedgerInboxSummary,
+    pub items: Vec<LedgerInboxItem>,
 }
 
 impl LedgerSnapshot {
@@ -270,6 +304,91 @@ impl LedgerSnapshot {
         }
     }
 
+    pub fn inbox_projection(&self) -> LedgerInboxProjection {
+        let mut items_by_key = BTreeMap::new();
+
+        for pane in self.pane_read_models() {
+            let pane_key_base = pane_key_base(&pane.pane_id, &pane.label);
+            if pane.review_state.eq_ignore_ascii_case("pending") {
+                let key = format!("manifest:review_pending:{pane_key_base}");
+                items_by_key.insert(
+                    key,
+                    LedgerInboxItem::from_manifest_pane(
+                        "review_pending",
+                        format!("{} が review 待機中。", pane.label),
+                        &pane,
+                    ),
+                );
+            }
+
+            if pane.review_state.eq_ignore_ascii_case("fail")
+                || pane.review_state.eq_ignore_ascii_case("failed")
+            {
+                let key = format!("manifest:review_failed:{pane_key_base}");
+                items_by_key.insert(
+                    key,
+                    LedgerInboxItem::from_manifest_pane(
+                        "review_failed",
+                        format!("{} の review が FAIL。", pane.label),
+                        &pane,
+                    ),
+                );
+            }
+
+            if pane.task_state.eq_ignore_ascii_case("blocked") {
+                let key = format!("manifest:task_blocked:{pane_key_base}");
+                items_by_key.insert(
+                    key,
+                    LedgerInboxItem::from_manifest_pane(
+                        "task_blocked",
+                        format!("{} が blocked。", pane.label),
+                        &pane,
+                    ),
+                );
+            }
+        }
+
+        for event in self.inbox_active_events() {
+            let Some(item) = LedgerInboxItem::from_event(event) else {
+                continue;
+            };
+            let key = format!(
+                "events:{}:{}",
+                item.kind,
+                pane_key_base(&item.pane_id, &item.label)
+            );
+            items_by_key.insert(key, item);
+        }
+
+        let mut items: Vec<_> = items_by_key.into_values().collect();
+        items.sort_by(compare_inbox_items);
+        let by_kind = count_inbox_by_kind(&items);
+
+        LedgerInboxProjection {
+            summary: LedgerInboxSummary {
+                item_count: items.len(),
+                by_kind,
+            },
+            items,
+        }
+    }
+
+    fn inbox_active_events(&self) -> Vec<&EventRecord> {
+        let mut keys = Vec::new();
+        let mut latest_by_key = HashMap::new();
+        for event in &self.events {
+            let key = inbox_event_entity_key(event);
+            if !latest_by_key.contains_key(&key) {
+                keys.push(key.clone());
+            }
+            latest_by_key.insert(key, event);
+        }
+
+        keys.into_iter()
+            .filter_map(|key| latest_by_key.remove(&key))
+            .collect()
+    }
+
     fn validate_event_sessions(&self) -> Result<(), String> {
         let session_name = self.session_name();
         if session_name.trim().is_empty() {
@@ -291,6 +410,77 @@ impl LedgerSnapshot {
     }
 }
 
+impl LedgerInboxItem {
+    fn from_manifest_pane(kind: &str, message: String, pane: &LedgerPaneReadModel) -> Self {
+        Self {
+            kind: kind.to_string(),
+            priority: inbox_priority(kind),
+            message,
+            label: pane.label.clone(),
+            pane_id: pane.pane_id.clone(),
+            role: pane.role.clone(),
+            task_id: pane.task_id.clone(),
+            task: pane.task.clone(),
+            task_state: pane.task_state.clone(),
+            review_state: pane.review_state.clone(),
+            branch: pane.branch.clone(),
+            head_sha: pane.head_sha.clone(),
+            changed_file_count: pane.changed_file_count,
+            event: pane.last_event.clone(),
+            timestamp: pane.last_event_at.clone(),
+            source: "manifest".to_string(),
+        }
+    }
+
+    fn from_event(event: &EventRecord) -> Option<Self> {
+        let kind = inbox_actionable_event_kind(event);
+        if kind.is_empty() {
+            return None;
+        }
+
+        let task_id = event_data_string(&event.data, "task_id");
+        let branch = if event.branch.trim().is_empty() {
+            event_data_string(&event.data, "branch")
+        } else {
+            event.branch.clone()
+        };
+        let head_sha = if event.head_sha.trim().is_empty() {
+            event_data_string(&event.data, "head_sha")
+        } else {
+            event.head_sha.clone()
+        };
+        let status = if event.status.trim().is_empty() {
+            event_data_string(&event.data, "to")
+        } else {
+            event.status.clone()
+        };
+        let event_label = if status.trim().is_empty() {
+            event.event.clone()
+        } else {
+            status
+        };
+
+        Some(Self {
+            kind: kind.to_string(),
+            priority: inbox_priority(kind),
+            message: event.message.clone(),
+            label: event.label.clone(),
+            pane_id: event.pane_id.clone(),
+            role: event.role.clone(),
+            task_id,
+            task: String::new(),
+            task_state: String::new(),
+            review_state: String::new(),
+            branch,
+            head_sha,
+            changed_file_count: 0,
+            event: event_label,
+            timestamp: event.timestamp.clone(),
+            source: "events".to_string(),
+        })
+    }
+}
+
 fn project_dir_from_manifest_path(manifest_path: &Path) -> String {
     let project_dir_path = manifest_path
         .parent()
@@ -307,6 +497,112 @@ fn project_dir_from_manifest_path(manifest_path: &Path) -> String {
         .unwrap_or_else(|_| project_dir_path.to_path_buf())
         .to_string_lossy()
         .to_string()
+}
+
+fn inbox_priority(kind: &str) -> usize {
+    match kind {
+        "blocked" | "task_blocked" | "review_failed" | "bootstrap_invalid" | "crashed" | "hung"
+        | "stalled" => 0,
+        "approval_waiting" | "review_requested" | "review_pending" => 1,
+        "dispatch_needed" | "task_completed" | "commit_ready" => 2,
+        _ => 3,
+    }
+}
+
+fn inbox_actionable_event_kind(event: &EventRecord) -> &'static str {
+    let data_status = event_data_string(&event.data, "status");
+    if event.event == "approval_waiting"
+        || event.event == "pane.approval_waiting"
+        || event.status == "approval_waiting"
+        || (event.event == "monitor.status" && data_status == "approval_waiting")
+    {
+        return "approval_waiting";
+    }
+
+    match event.event.as_str() {
+        "pane.idle" => return "dispatch_needed",
+        "pane.completed" => return "task_completed",
+        "pane.bootstrap_invalid" => return "bootstrap_invalid",
+        "pane.crashed" => return "crashed",
+        "pane.hung" => return "hung",
+        "pane.stalled" => return "stalled",
+        _ => {}
+    }
+
+    if event.event == "operator.state_transition" {
+        match event.status.as_str() {
+            "blocked_no_review_target" => return "blocked",
+            "blocked_review_failed" => return "review_failed",
+            "commit_ready" => return "commit_ready",
+            _ => {}
+        }
+
+        match data_status.as_str() {
+            "blocked_no_review_target" => return "blocked",
+            "blocked_review_failed" => return "review_failed",
+            "commit_ready" => return "commit_ready",
+            _ => {}
+        }
+    }
+
+    match event.event.as_str() {
+        "operator.review_requested" => "review_requested",
+        "operator.review_failed" => "review_failed",
+        "operator.blocked" => "blocked",
+        "operator.commit_ready" => "commit_ready",
+        "pipeline.security.blocked" => "blocked",
+        "security.policy.blocked" => "blocked",
+        _ => "",
+    }
+}
+
+fn inbox_event_entity_key(event: &EventRecord) -> String {
+    if event.event.starts_with("operator.") {
+        return "operator".to_string();
+    }
+    if !event.pane_id.trim().is_empty() {
+        return format!("pane:{}", event.pane_id);
+    }
+    if !event.label.trim().is_empty() {
+        return format!("label:{}", event.label);
+    }
+    format!("event:{}", event.event)
+}
+
+fn event_data_string(data: &Value, key: &str) -> String {
+    data.as_object()
+        .and_then(|map| map.get(key))
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn pane_key_base(pane_id: &str, label: &str) -> String {
+    if !pane_id.trim().is_empty() {
+        pane_id.to_string()
+    } else {
+        label.to_string()
+    }
+}
+
+fn compare_inbox_items(left: &LedgerInboxItem, right: &LedgerInboxItem) -> Ordering {
+    left.priority
+        .cmp(&right.priority)
+        .then_with(|| right.timestamp.cmp(&left.timestamp))
+        .then_with(|| left.label.cmp(&right.label))
+}
+
+fn count_inbox_by_kind(items: &[LedgerInboxItem]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for item in items {
+        let kind = if item.kind.trim().is_empty() {
+            "unknown"
+        } else {
+            &item.kind
+        };
+        *counts.entry(kind.to_string()).or_insert(0) += 1;
+    }
+    counts
 }
 
 fn count_by<F>(panes: &[LedgerPaneReadModel], selector: F) -> BTreeMap<String, usize>

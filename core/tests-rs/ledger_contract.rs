@@ -111,6 +111,164 @@ fn ledger_contract_exposes_board_projection_in_manifest_order() {
 }
 
 #[test]
+fn ledger_contract_exposes_inbox_projection_from_manifest_and_events() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+    task_id: task-245
+    task: Build inbox surface
+    task_state: in_progress
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: review.requested
+    last_event_at: 2026-04-23T12:00:00+09:00
+  worker-1:
+    pane_id: "%6"
+    role: Worker
+    state: idle
+    task_id: task-999
+    task: Fix blocker
+    task_state: blocked
+    branch: worktree-worker-1
+    head_sha: def5678abc1234
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pane.approval_waiting","message":"approval prompt detected","label":"builder-1","pane_id":"%2","role":"Builder","status":"approval_waiting","data":{"task_id":"task-245"}}
+{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"operator.commit_ready","message":"ready to commit","label":"","pane_id":"","role":"Operator","status":"commit_ready","head_sha":"abc1234def5678","data":{}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load inbox inputs");
+
+    let inbox = snapshot.inbox_projection();
+
+    assert_eq!(inbox.summary.item_count, 4);
+    assert_eq!(inbox.summary.by_kind["task_blocked"], 1);
+    assert_eq!(inbox.summary.by_kind["review_pending"], 1);
+    assert_eq!(inbox.summary.by_kind["approval_waiting"], 1);
+    assert_eq!(inbox.summary.by_kind["commit_ready"], 1);
+    assert_eq!(inbox.items[0].kind, "task_blocked");
+    assert_eq!(inbox.items[0].priority, 0);
+    assert_eq!(inbox.items[0].label, "worker-1");
+    assert_eq!(inbox.items[0].pane_id, "%6");
+    assert_eq!(inbox.items[0].role, "Worker");
+    assert_eq!(inbox.items[0].task_id, "task-999");
+    assert_eq!(inbox.items[0].task, "Fix blocker");
+    assert_eq!(inbox.items[0].source, "manifest");
+    assert_eq!(inbox.items[1].kind, "approval_waiting");
+    assert_eq!(inbox.items[1].event, "approval_waiting");
+    assert_eq!(inbox.items[1].task_id, "task-245");
+    assert_eq!(inbox.items[1].source, "events");
+    assert_eq!(inbox.items[2].kind, "review_pending");
+    assert_eq!(inbox.items[2].event, "review.requested");
+    assert_eq!(inbox.items[3].kind, "commit_ready");
+    assert_eq!(inbox.items[3].head_sha, "abc1234def5678");
+}
+
+#[test]
+fn ledger_contract_uses_latest_event_per_inbox_entity() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pane.approval_waiting","message":"old approval","label":"builder-1","pane_id":"%2","role":"Builder","status":"approval_waiting","data":{"task_id":"task-old"}}
+{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pane.approval_waiting","message":"new approval","label":"builder-1","pane_id":"%2","role":"Builder","status":"approval_waiting","data":{"task_id":"task-new"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load repeated inbox events");
+
+    let inbox = snapshot.inbox_projection();
+
+    assert_eq!(inbox.summary.item_count, 1);
+    assert_eq!(inbox.items[0].message, "new approval");
+    assert_eq!(inbox.items[0].task_id, "task-new");
+}
+
+#[test]
+fn ledger_contract_classifies_inbox_actionable_event_taxonomy() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+  builder-2:
+    pane_id: "%3"
+    role: Builder
+  builder-3:
+    pane_id: "%4"
+    role: Builder
+  builder-4:
+    pane_id: "%5"
+    role: Builder
+  builder-5:
+    pane_id: "%6"
+    role: Builder
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pane.idle","message":"idle","label":"builder-1","pane_id":"%2","role":"Builder","data":{}}
+{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pane.completed","message":"completed","label":"builder-2","pane_id":"%3","role":"Builder","data":{}}
+{"timestamp":"2026-04-23T12:00:03+09:00","session":"winsmux-orchestra","event":"pane.crashed","message":"crashed","label":"builder-3","pane_id":"%4","role":"Builder","data":{}}
+{"timestamp":"2026-04-23T12:00:04+09:00","session":"winsmux-orchestra","event":"pane.hung","message":"hung","label":"builder-4","pane_id":"%5","role":"Builder","data":{}}
+{"timestamp":"2026-04-23T12:00:05+09:00","session":"winsmux-orchestra","event":"operator.state_transition","message":"blocked","label":"","pane_id":"","role":"Operator","status":"blocked_no_review_target","data":{}}
+{"timestamp":"2026-04-23T12:00:06+09:00","session":"winsmux-orchestra","event":"pane.stalled","message":"stalled","label":"builder-5","pane_id":"%6","role":"Builder","data":{}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load inbox taxonomy events");
+
+    let inbox = snapshot.inbox_projection();
+
+    assert_eq!(inbox.summary.by_kind["dispatch_needed"], 1);
+    assert_eq!(inbox.summary.by_kind["task_completed"], 1);
+    assert_eq!(inbox.summary.by_kind["crashed"], 1);
+    assert_eq!(inbox.summary.by_kind["hung"], 1);
+    assert_eq!(inbox.summary.by_kind["blocked"], 1);
+    assert_eq!(inbox.summary.by_kind["stalled"], 1);
+}
+
+#[test]
+fn ledger_contract_filters_inbox_after_latest_event_deduplication() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pane.approval_waiting","message":"old approval","label":"builder-1","pane_id":"%2","role":"Builder","status":"approval_waiting","data":{"task_id":"task-old"}}
+{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pane.output","message":"normal output","label":"builder-1","pane_id":"%2","role":"Builder","data":{}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load deduplication events");
+
+    let inbox = snapshot.inbox_projection();
+
+    assert_eq!(inbox.summary.item_count, 0);
+    assert!(inbox.items.is_empty());
+}
+
+#[test]
 fn ledger_contract_derives_board_worktree_from_legacy_path_fields() {
     let manifest = r#"
 version: 1
