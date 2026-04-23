@@ -1,20 +1,23 @@
 # winsmux npm package
 
-This directory is the future public npm install surface for `winsmux`.
+This directory is the public npm install surface for `winsmux`.
 
-The npm package name `winsmux` is already reserved.
-Repository publishing stays gated until the public installer contract is ready.
+The npm package name is `winsmux`.
+Repository publishing is tag-driven and uses the staged package from
+`scripts/stage-npm-release.mjs`.
 
-Until that contract lands, use the documented install flows in the repository root
-README instead of publishing this package from repository tags.
+Install it on Windows with:
 
-When the public installer contract is ready, the `winsmux` npm command will proxy
-to the bundled Windows installer flow.
+```powershell
+npm install -g winsmux
+```
 
-## Planned public contract
+The `winsmux` npm command proxies to the bundled Windows installer flow.
+
+## Public contract
 
 - Windows only
-- future public install command: `npm install -g winsmux`
+- public install command: `npm install -g winsmux`
 - `winsmux install`
 - `winsmux update`
 - `winsmux uninstall`
@@ -34,7 +37,7 @@ the installer command instead of publishing separate package names.
 | `security` | `core` plus vault, redaction, and audit-oriented scripts | users who need credential handling and evidence checks without the full orchestration surface |
 | `full` | `core`, `orchestra`, and `security` contents | default public install profile |
 
-The planned npm form is:
+The npm form is:
 
 ```powershell
 winsmux install --profile full
@@ -65,7 +68,4 @@ longer part of the selected profile are removed from `~\.winsmux\winsmux-core\sc
 - the staged package must pass the Windows verify job
 - the publish workflow stays tag-driven
 - the publish job uses the staged package from `scripts/stage-npm-release.mjs`
-- repository publishing stays closed until that gate is intentionally opened
-
-This package stays gated in the repository until the installer contract,
-release verification, and public docs all match that surface.
+- the publish job requires the repository `NPM_TOKEN` secret

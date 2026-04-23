@@ -6,7 +6,7 @@ param(
 )
 
 # --- Config ---
-$VERSION = "0.22.2"
+$VERSION = "0.23.0"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
