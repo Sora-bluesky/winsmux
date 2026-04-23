@@ -29,6 +29,10 @@ path = "tests-rs/manifest_contract.rs"
 name = "event_contract"
 path = "tests-rs/event_contract.rs"
 
+[[test]]
+name = "ledger_contract"
+path = "tests-rs/ledger_contract.rs"
+
 # Windows only
 [target.'cfg(not(windows))'.dependencies]
 [target.'cfg(windows)'.dependencies]
@@ -64,8 +68,6 @@ vt100 = { version = "0.16.5", path = "crates/vt100-winsmux", package = "vt100-wi
 unicode-width = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 regex = "1"
 glob = "0.3"
-
-[dev-dependencies]
-serde_yaml = "0.9"

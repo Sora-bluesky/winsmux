@@ -166,7 +166,7 @@ Current gap:
   - `security_policy` is preserved as a manifest field
 - Planning metadata has the same bundled requirement:
   - if any of `parent_run_id`, `goal`, `task_type`, or `priority` is present, all four fields are required
-- The remaining work is to connect this contract to ledger persistence without turning it into a full manifest rewrite.
+- `TASK-265` has started connecting this contract to read-only ledger persistence without turning it into a full manifest rewrite.
 
 ## Still-loose surfaces
 
@@ -193,7 +193,30 @@ Current gap:
 - `data` is now limited to JSON object payloads, while the inner payload catalog still remains polymorphic.
 - Downstream projections still infer event meaning through conversion helpers instead of a shared typed payload catalog.
 
-### 6. `verdict`
+### 6. `ledger`
+
+Current location:
+
+- `core/src/ledger.rs`
+- `core/tests-rs/ledger_contract.rs`
+
+Current boundary:
+
+- `LedgerSnapshot` loads the frozen `manifest` and `events` fixtures together.
+- It validates the manifest and event envelope before exposing the snapshot.
+- It indexes panes by `pane_id` for later projection work.
+- It rejects duplicate manifest `pane_id` values because they make projection identity ambiguous.
+- It preserves manifest pane order separately from the lookup index.
+- It preserves unknown event pane IDs instead of rejecting them, because historical events can outlive the current manifest view.
+- It rejects events that explicitly belong to a different session.
+
+Current limitation:
+
+- The snapshot is still read-only.
+- Live `.winsmux` file ingestion remains outside this first slice.
+- `board`, `inbox`, `digest`, and `explain` are not derived from this snapshot yet.
+
+### 7. `verdict`
 
 Current location:
 
@@ -206,10 +229,11 @@ Current gap:
 
 ## Recommended order after this inventory
 
-1. Freeze actionable event payload groups on top of the new `.winsmux/events.jsonl` envelope.
-2. Keep the review-state fixture as the branch-keyed root file shape.
-3. Keep the manifest contract limited to session and pane boundary validation until ledger persistence needs more fields.
-4. Do not expand the contract work into a full runtime rewrite without a separate task.
+1. Keep `LedgerSnapshot` read-only until projection surfaces are ready.
+2. Freeze actionable event payload groups on top of the new `.winsmux/events.jsonl` envelope.
+3. Keep the review-state fixture as the branch-keyed root file shape.
+4. Keep the manifest contract limited to session and pane boundary validation until ledger persistence needs more fields.
+5. Do not expand the contract work into a full runtime rewrite without a separate task.
 
 ## Parallel work that stays safe
 

@@ -1,5 +1,6 @@
+use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
-use std::collections::HashMap;
+use std::fmt;
 
 #[derive(Debug, Deserialize)]
 pub struct WinsmuxManifest {
@@ -20,11 +21,51 @@ pub struct ManifestSession {
     pub ended: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug)]
 pub enum ManifestPanes {
-    Map(HashMap<String, ManifestPane>),
+    Map(Vec<(String, ManifestPane)>),
     List(Vec<ManifestPane>),
+}
+
+impl<'de> Deserialize<'de> for ManifestPanes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_any(ManifestPanesVisitor)
+    }
+}
+
+struct ManifestPanesVisitor;
+
+impl<'de> Visitor<'de> for ManifestPanesVisitor {
+    type Value = ManifestPanes;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a pane map or pane list")
+    }
+
+    fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+    where
+        M: MapAccess<'de>,
+    {
+        let mut panes = Vec::new();
+        while let Some(entry) = access.next_entry::<String, ManifestPane>()? {
+            panes.push(entry);
+        }
+        Ok(ManifestPanes::Map(panes))
+    }
+
+    fn visit_seq<S>(self, mut access: S) -> Result<Self::Value, S::Error>
+    where
+        S: SeqAccess<'de>,
+    {
+        let mut panes = Vec::new();
+        while let Some(pane) = access.next_element::<ManifestPane>()? {
+            panes.push(pane);
+        }
+        Ok(ManifestPanes::List(panes))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -195,7 +236,7 @@ impl ManifestStringList {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedManifestPane {
     pub label: String,
     pub pane_id: String,
@@ -203,7 +244,6 @@ pub struct NormalizedManifestPane {
 }
 
 impl WinsmuxManifest {
-    #[cfg(test)]
     pub fn from_yaml(content: &str) -> Result<Self, serde_yaml::Error> {
         let normalized = normalize_legacy_manifest_yaml(content);
         serde_yaml::from_str(&normalized)
@@ -268,7 +308,6 @@ impl WinsmuxManifest {
     }
 }
 
-#[cfg(test)]
 fn normalize_legacy_manifest_yaml(content: &str) -> String {
     let mut in_panes = false;
     let mut normalized = Vec::new();
@@ -294,7 +333,6 @@ fn normalize_legacy_manifest_yaml(content: &str) -> String {
     normalized.join("\n")
 }
 
-#[cfg(test)]
 fn normalize_legacy_manifest_line(line: &str) -> String {
     let Some((head, tail)) = line.split_once(':') else {
         return line.to_string();
