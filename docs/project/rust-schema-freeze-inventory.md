@@ -209,6 +209,7 @@ Current boundary:
 - It preserves manifest pane order separately from the lookup index.
 - It preserves unknown event pane IDs instead of rejecting them, because historical events can outlive the current manifest view.
 - It rejects events that explicitly belong to a different session.
+- It is now compiled by the core binary crate, not only by integration tests.
 
 Current limitation:
 
