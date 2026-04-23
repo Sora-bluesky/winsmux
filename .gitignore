@@ -57,6 +57,7 @@ tests/*
 !tests/PublicSurfacePolicy.Tests.ps1
 !tests/HarnessContract.Tests.ps1
 !tests/NpmReleasePackage.Tests.ps1
+!tests/VersionSurface.Tests.ps1
 !tests/README.md
 !tests/fixtures/
 tests/fixtures/*
