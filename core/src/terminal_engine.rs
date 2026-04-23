@@ -33,6 +33,20 @@ impl HeadlessServerConfig {
     pub(crate) fn initial_size(&self) -> Option<(u16, u16)> {
         initial_size_from_parts(self.initial_width, self.initial_height)
     }
+
+    pub(crate) fn warm(socket_name: Option<String>, initial_size: Option<(u16, u16)>) -> Self {
+        let (initial_width, initial_height) = initial_size
+            .map(|(width, height)| (Some(width), Some(height)))
+            .unwrap_or((None, None));
+
+        Self {
+            session_name: "__warm__".to_string(),
+            socket_name,
+            initial_width,
+            initial_height,
+            ..Self::default()
+        }
+    }
 }
 
 pub(crate) fn parse_headless_server_config(args: &[String]) -> HeadlessServerConfig {
@@ -248,6 +262,26 @@ mod tests {
         assert_eq!(
             build_headless_server_args(&config),
             vec!["server", "-s", "work", "-L", "ops", "--", "pwsh", "-NoLogo"]
+        );
+    }
+
+    #[test]
+    fn warm_config_sets_session_socket_and_size() {
+        let config = HeadlessServerConfig::warm(Some("ops".to_string()), Some((120, 30)));
+
+        assert_eq!(
+            build_headless_server_args(&config),
+            vec!["server", "-s", "__warm__", "-L", "ops", "-x", "120", "-y", "30"]
+        );
+    }
+
+    #[test]
+    fn warm_config_allows_missing_size() {
+        let config = HeadlessServerConfig::warm(Some("ops".to_string()), None);
+
+        assert_eq!(
+            build_headless_server_args(&config),
+            vec!["server", "-s", "__warm__", "-L", "ops"]
         );
     }
 }

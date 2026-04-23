@@ -137,32 +137,13 @@ fn spawn_warm_server(app: &AppState) {
         let warm_key_path = format!("{}\\.psmux\\{}.key", home, warm_base);
         let _ = std::fs::remove_file(&warm_key_path);
     }
-    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("psmux"));
-    let mut args: Vec<String> = vec!["server".into(), "-s".into(), "__warm__".into()];
-    if let Some(ref sn) = app.socket_name {
-        args.push("-L".into());
-        args.push(sn.clone());
-    }
     // Pass current terminal dimensions so the warm server's first window
     // and warm pane are spawned at the right size.
     let area = app.last_window_area;
-    if area.width > 1 && area.height > 1 {
-        args.push("-x".into());
-        args.push(area.width.to_string());
-        args.push("-y".into());
-        args.push(area.height.to_string());
-    }
-    #[cfg(windows)]
-    { let _ = crate::platform::spawn_server_hidden(&exe, &args); }
-    #[cfg(not(windows))]
-    {
-        let mut cmd = std::process::Command::new(&exe);
-        for a in &args { cmd.arg(a); }
-        cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::null());
-        let _ = cmd.spawn();
-    }
+    let initial_size = (area.width > 1 && area.height > 1).then_some((area.width, area.height));
+    let config =
+        crate::terminal_engine::HeadlessServerConfig::warm(app.socket_name.clone(), initial_size);
+    let _ = crate::terminal_engine::spawn_headless_server(&config);
 }
 
 /// Parse a popup dimension spec: "80" (absolute) or "95%" (percentage of term_dim).
