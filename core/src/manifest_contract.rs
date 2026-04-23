@@ -79,6 +79,8 @@ pub struct ManifestPane {
     #[serde(default, deserialize_with = "deserialize_manifest_string")]
     pub state: String,
     #[serde(default, deserialize_with = "deserialize_manifest_string")]
+    pub status: String,
+    #[serde(default, deserialize_with = "deserialize_manifest_string")]
     pub tokens_remaining: String,
     #[serde(default, deserialize_with = "deserialize_manifest_string")]
     pub task_id: String,
@@ -241,12 +243,14 @@ pub struct NormalizedManifestPane {
     pub label: String,
     pub pane_id: String,
     pub role: String,
+    pub state: String,
     pub task_id: String,
     pub task: String,
     pub task_state: String,
     pub review_state: String,
     pub priority: String,
     pub branch: String,
+    pub worktree: String,
     pub head_sha: String,
     pub changed_file_count: usize,
     pub last_event: String,
@@ -260,14 +264,27 @@ impl WinsmuxManifest {
     }
 
     pub fn normalized_panes(&self) -> Vec<NormalizedManifestPane> {
+        self.normalized_panes_with_project_dir("")
+    }
+
+    pub fn normalized_panes_with_project_dir(
+        &self,
+        project_dir: &str,
+    ) -> Vec<NormalizedManifestPane> {
+        let project_dir = if self.session.project_dir.trim().is_empty() {
+            project_dir
+        } else {
+            &self.session.project_dir
+        };
+
         match &self.panes {
             ManifestPanes::Map(panes) => panes
                 .iter()
-                .map(|(label, pane)| normalize_manifest_pane(label, pane))
+                .map(|(label, pane)| normalize_manifest_pane(project_dir, label, pane))
                 .collect(),
             ManifestPanes::List(panes) => panes
                 .iter()
-                .map(|pane| normalize_manifest_pane(&pane.label, pane))
+                .map(|pane| normalize_manifest_pane(project_dir, &pane.label, pane))
                 .collect(),
         }
     }
@@ -306,26 +323,125 @@ impl WinsmuxManifest {
     }
 }
 
-fn normalize_manifest_pane(label: &str, pane: &ManifestPane) -> NormalizedManifestPane {
+fn normalize_manifest_pane(
+    project_dir: &str,
+    label: &str,
+    pane: &ManifestPane,
+) -> NormalizedManifestPane {
+    let normalized_label = if pane.label.is_empty() {
+        label.to_string()
+    } else {
+        pane.label.clone()
+    };
     NormalizedManifestPane {
-        label: if pane.label.is_empty() {
-            label.to_string()
-        } else {
-            pane.label.clone()
-        },
+        label: normalized_label.clone(),
         pane_id: pane.pane_id.clone(),
         role: pane.role.clone(),
+        state: normalize_pane_state(&pane.state, &pane.status),
         task_id: pane.task_id.clone(),
         task: pane.task.clone(),
         task_state: pane.task_state.clone(),
         review_state: pane.review_state.clone(),
         priority: pane.priority.clone(),
         branch: pane.branch.clone(),
+        worktree: normalize_pane_worktree(
+            project_dir,
+            &normalized_label,
+            &pane.role,
+            &pane.branch,
+            &pane.worktree,
+            &pane.launch_dir,
+            &pane.builder_worktree_path,
+        ),
         head_sha: pane.head_sha.clone(),
         changed_file_count: pane.changed_file_count.value().unwrap_or(0),
         last_event: pane.last_event.clone(),
         last_event_at: pane.last_event_at.clone(),
     }
+}
+
+fn normalize_pane_worktree(
+    project_dir: &str,
+    label: &str,
+    role: &str,
+    branch: &str,
+    worktree: &str,
+    launch_dir: &str,
+    builder_worktree_path: &str,
+) -> String {
+    let is_managed_worktree = is_managed_worktree_role(role);
+    if !is_managed_worktree {
+        return String::new();
+    }
+
+    let project_dir = project_dir.trim();
+    for candidate in [launch_dir.trim(), builder_worktree_path.trim()] {
+        if candidate.is_empty() || same_path(candidate, project_dir) {
+            continue;
+        }
+        return relativize_path(project_dir, candidate);
+    }
+
+    if !worktree.trim().is_empty() {
+        return worktree.trim().to_string();
+    }
+
+    let label = label.trim();
+    if is_managed_worktree && !label.is_empty() && branch.trim() == format!("worktree-{label}") {
+        return format!(".worktrees/{label}");
+    }
+
+    String::new()
+}
+
+fn normalize_pane_state(state: &str, status: &str) -> String {
+    if state.trim().is_empty() {
+        status.to_string()
+    } else {
+        state.to_string()
+    }
+}
+
+fn is_managed_worktree_role(role: &str) -> bool {
+    matches!(
+        role.trim().to_ascii_lowercase().as_str(),
+        "builder" | "worker"
+    )
+}
+
+fn same_path(left: &str, right: &str) -> bool {
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    normalize_path_for_compare(left) == normalize_path_for_compare(right)
+}
+
+fn relativize_path(project_dir: &str, candidate: &str) -> String {
+    let project = normalize_path_for_compare(project_dir);
+    let normalized_candidate = normalize_path_for_compare(candidate);
+
+    if project.is_empty() || !normalized_candidate.starts_with(&(project.clone() + "/")) {
+        return candidate.trim().to_string();
+    }
+
+    normalized_candidate[project.len() + 1..].to_string()
+}
+
+fn normalize_path_for_compare(path: &str) -> String {
+    let normalized = path
+        .trim()
+        .trim_end_matches(['\\', '/'])
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+
+    if let Some(path) = normalized.strip_prefix("//?/unc/") {
+        return format!("//{path}");
+    }
+    if let Some(path) = normalized.strip_prefix("//?/") {
+        return path.to_string();
+    }
+
+    normalized
 }
 
 fn normalize_legacy_manifest_yaml(content: &str) -> String {
