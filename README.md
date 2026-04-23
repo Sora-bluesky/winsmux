@@ -46,12 +46,6 @@ Rust is only needed when you build the runtime from source.
 
 ## Get Started
 
-Install the current release from PowerShell:
-
-```powershell
-irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | iex
-```
-
 Install with npm on Windows:
 
 ```powershell
@@ -72,7 +66,6 @@ scripts.
 Windows Terminal app profiles also follow the selected install profile.
 When profiles change, support scripts that no longer
 belong to the selected profile are removed.
-The npm release is verified by the Windows release workflow before publishing.
 
 Then create project settings and start the default workspace:
 
@@ -81,7 +74,8 @@ winsmux init
 winsmux launch
 ```
 
-Choose a workspace lifecycle policy when you want isolated worker directories:
+`winsmux init` defaults to managed worker worktrees.
+Use `--workspace-lifecycle` only when you need to state the policy explicitly:
 
 ```powershell
 winsmux init --workspace-lifecycle managed-worktree
@@ -128,20 +122,20 @@ winsmux compare promote <run_id>
 | Tool | Authentication mode | winsmux support |
 | ------- | ------- | ------- |
 | Claude Code | API key or documented enterprise auth | Officially supported |
-| Claude Code | Pro / Max OAuth | Unsupported |
+| Claude Code | Pro / Max OAuth | This PC only, interactive use |
 | Codex CLI | API key | Officially supported |
 | Codex CLI | ChatGPT OAuth | This PC only, interactive use |
 | Gemini CLI | Gemini API key | Officially supported |
 | Gemini CLI | Vertex AI | Officially supported |
-| Gemini CLI | Google OAuth | Unsupported |
+| Gemini CLI | Google OAuth | This PC only, interactive use |
 
 See [Authentication Support](docs/authentication-support.md) for the full policy.
 
 ## Security Notes
 
-- Read a pane before sending instructions to it.
+- Use `winsmux read` to check the target pane output before sending instructions.
 - Keep one human operator responsible for final accept or reject decisions.
-- Use worker worktree isolation when agents edit files in parallel.
+- Keep the managed worktree lifecycle enabled when agents edit files in parallel.
 - Do not paste API keys into pane chat or issue comments.
 - Use `winsmux vault` for credentials that must be injected into a pane.
 - Treat compare results and release evidence as review inputs, not automatic approval.

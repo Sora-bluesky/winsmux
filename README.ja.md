@@ -46,13 +46,7 @@ Rust は、ランタイムをソースからビルドする時だけ必要です
 
 ## 始め方
 
-PowerShell で現在の公開版をインストールします。
-
-```powershell
-irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | iex
-```
-
-Windows では `npm` からもインストールできます。
+Windows では `npm` からインストールします。
 
 ```powershell
 npm install -g winsmux
@@ -69,7 +63,6 @@ winsmux install --profile full
 `core` では、オーケストレーション用のスクリプトを含めません。
 Windows Terminal 側のプロファイルも、選んだインストールプロファイルに合わせて扱います。
 後からインストールプロファイルを変更した場合、インストーラーは対象外になった支援スクリプトを削除します。
-`npm` への公開は、Windows 検証が通った後に実行されます。
 
 次に、プロジェクト設定を作り、既定のワークスペースを起動します。
 
@@ -78,7 +71,8 @@ winsmux init
 winsmux launch
 ```
 
-ワーカー用ディレクトリを分けたい場合は、ワークスペースのライフサイクル方針を選びます。
+`winsmux init` の既定値は、ワーカーごとに管理されたワークツリーです。
+通常は指定不要です。方針を明示したい時だけ、次の指定を使います。
 
 ```powershell
 winsmux init --workspace-lifecycle managed-worktree
@@ -125,20 +119,20 @@ winsmux compare promote <run_id>
 | ツール | 認証方式 | winsmux での扱い |
 | ------- | ------- | ------- |
 | Claude Code | API key / ドキュメント化された企業向け認証 | 公式に対応 |
-| Claude Code | Pro / Max OAuth | サポート対象外 |
+| Claude Code | Pro / Max OAuth | 当該 PC での対話利用のみ |
 | Codex CLI | API key | 公式に対応 |
 | Codex CLI | ChatGPT OAuth | このマシン上での対話利用のみ |
 | Gemini CLI | Gemini API key | 公式に対応 |
 | Gemini CLI | Vertex AI | 公式に対応 |
-| Gemini CLI | Google OAuth | サポート対象外 |
+| Gemini CLI | Google OAuth | 当該 PC での対話利用のみ |
 
 詳しくは [認証方針](docs/authentication-support.ja.md) を参照してください。
 
 ## 安全に使うための注意
 
-- 指示を送る前に、対象ペインを読んでください。
+- 指示を送る前に、`winsmux read` で送り先ペインの出力を確認してください。
 - 受け入れ可否の最終判断は、1 人のオペレーターが担ってください。
-- 複数のエージェントが並列でファイルを編集する時は、ワークツリー分離を使ってください。
+- 複数のエージェントが並列で編集する時は、既定の管理ワークツリー方針を維持してください。
 - API キーをペインのチャットや issue コメントへ貼らないでください。
 - ペインへ資格情報を渡す必要がある時は、`winsmux vault` を使ってください。
 - 比較結果やリリース証跡は、レビュー材料として扱ってください。自動承認には使わないでください。
@@ -147,7 +141,7 @@ winsmux compare promote <run_id>
 
 - [オペレーターモデル](docs/operator-model.md)（英語のみ）
 - [認証方針](docs/authentication-support.ja.md)
-- [トラブルシューティング](docs/TROUBLESHOOTING.md)（英語のみ）
+- [トラブルシューティング](docs/TROUBLESHOOTING.md)
 - [リポジトリの公開面ポリシー](docs/repo-surface-policy.md)（英語のみ）
 - [ランタイム機能](core/docs/features.md)（英語のみ）
 - [ランタイム設定](core/docs/configuration.md)（英語のみ）

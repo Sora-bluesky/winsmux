@@ -15,12 +15,12 @@ Within that model, winsmux does **not** broker OAuth logins or extract and relay
 | Tool | Authentication mode | winsmux support level |
 | ------- | ------- | ------- |
 | Claude Code | API key / documented enterprise auth | Supported |
-| Claude Code | Pro / Max OAuth | Unsupported |
+| Claude Code | Pro / Max OAuth | This PC only, interactive use |
 | Codex CLI | API key | Supported |
 | Codex CLI | ChatGPT OAuth | This PC only, interactive use |
 | Gemini CLI | Gemini API key | Supported |
 | Gemini CLI | Vertex AI | Supported |
-| Gemini CLI | Google OAuth | Unsupported |
+| Gemini CLI | Google OAuth | This PC only, interactive use |
 
 ## What the terms mean
 
@@ -75,9 +75,14 @@ Examples:
 
 - `gemini-api-key` is allowed
 - `gemini-vertex` is allowed
-- `gemini-google-oauth` is rejected as unsupported
+- `gemini-google-oauth` is limited to interactive use on that same PC
 - `codex-chatgpt-local` is limited to interactive use on that same PC
-- `claude-pro-max-oauth` is rejected as unsupported
+- `claude-pro-max-oauth` is limited to interactive use on that same PC
+
+Local interactive modes are allowed only when the official CLI owns the login.
+They are not shared credentials for other panes.
+Preflight must stop if a workflow asks winsmux to receive callback URLs,
+extract tokens, or share tokens across panes.
 
 ## Terminology
 
