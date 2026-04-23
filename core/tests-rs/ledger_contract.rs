@@ -35,6 +35,31 @@ fn ledger_contract_loads_frozen_manifest_and_events() {
 }
 
 #[test]
+fn ledger_contract_exposes_ordered_pane_read_models() {
+    let snapshot =
+        ledger::LedgerSnapshot::from_manifest_and_events(MANIFEST_FIXTURE, EVENTS_FIXTURE)
+            .expect("ledger snapshot should load frozen fixtures");
+
+    let panes = snapshot.pane_read_models();
+
+    assert_eq!(panes.len(), 2);
+    assert_eq!(panes[0].label, "builder-1");
+    assert_eq!(panes[0].pane_id, "%2");
+    assert_eq!(panes[0].role, "Builder");
+    assert_eq!(panes[0].task_id, "task-256");
+    assert_eq!(panes[0].task_state, "in_progress");
+    assert_eq!(panes[0].review_state, "PENDING");
+    assert_eq!(panes[0].priority, "P0");
+    assert_eq!(panes[0].branch, "worktree-builder-1");
+    assert_eq!(panes[0].head_sha, "abc1234def5678");
+    assert_eq!(panes[0].changed_file_count, 1);
+    assert_eq!(panes[0].last_event, "operator.review_requested");
+    assert_eq!(panes[0].event_count, 2);
+    assert_eq!(panes[1].label, "reviewer-1");
+    assert_eq!(panes[1].event_count, 0);
+}
+
+#[test]
 fn ledger_contract_rejects_duplicate_manifest_pane_id() {
     let manifest = r#"
 version: 1

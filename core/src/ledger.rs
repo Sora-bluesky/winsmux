@@ -11,6 +11,24 @@ pub struct LedgerSnapshot {
     panes_by_id: HashMap<String, NormalizedManifestPane>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerPaneReadModel {
+    pub label: String,
+    pub pane_id: String,
+    pub role: String,
+    pub task_id: String,
+    pub task: String,
+    pub task_state: String,
+    pub review_state: String,
+    pub priority: String,
+    pub branch: String,
+    pub head_sha: String,
+    pub changed_file_count: usize,
+    pub last_event: String,
+    pub last_event_at: String,
+    pub event_count: usize,
+}
+
 impl LedgerSnapshot {
     pub fn from_project_dir(project_dir: impl AsRef<Path>) -> Result<Self, String> {
         let winsmux_dir = project_dir.as_ref().join(".winsmux");
@@ -110,6 +128,31 @@ impl LedgerSnapshot {
             .collect();
         unknown.sort();
         unknown
+    }
+
+    pub fn pane_read_models(&self) -> Vec<LedgerPaneReadModel> {
+        self.panes
+            .iter()
+            .map(|pane| {
+                let event_count = self.events_for_pane(&pane.pane_id).len();
+                LedgerPaneReadModel {
+                    label: pane.label.clone(),
+                    pane_id: pane.pane_id.clone(),
+                    role: pane.role.clone(),
+                    task_id: pane.task_id.clone(),
+                    task: pane.task.clone(),
+                    task_state: pane.task_state.clone(),
+                    review_state: pane.review_state.clone(),
+                    priority: pane.priority.clone(),
+                    branch: pane.branch.clone(),
+                    head_sha: pane.head_sha.clone(),
+                    changed_file_count: pane.changed_file_count,
+                    last_event: pane.last_event.clone(),
+                    last_event_at: pane.last_event_at.clone(),
+                    event_count,
+                }
+            })
+            .collect()
     }
 
     fn validate_event_sessions(&self) -> Result<(), String> {

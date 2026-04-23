@@ -206,6 +206,7 @@ Current boundary:
 - It can also load live `.winsmux/manifest.yaml` and `.winsmux/events.jsonl` files.
 - It validates the manifest and event envelope before exposing the snapshot.
 - It indexes panes by `pane_id` for later projection work.
+- It exposes ordered pane read models for later board/inbox/digest/explain projection work.
 - It rejects duplicate manifest `pane_id` values because they make projection identity ambiguous.
 - It preserves manifest pane order separately from the lookup index.
 - It preserves unknown event pane IDs instead of rejecting them, because historical events can outlive the current manifest view.
