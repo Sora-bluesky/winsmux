@@ -166,7 +166,7 @@ Describe 'winsmux npm release package contract' {
             $rootReadmeJa | Should -Match '前回記録したプロファイル'
             $rootReadmeJa | Should -Match '導入対象を切り分けます'
             $rootReadmeJa | Should -Match '対象外になった支援スクリプトを削除します'
-            $rootReadmeJa | Should -Match '設定プロファイルも、選択したプロファイル'
+            $rootReadmeJa | Should -Match 'Windows Terminal 側のプロファイルも、選んだインストールプロファイル'
             $rootReadmeJa | Should -Match 'Windows 検証'
             $releaseWorkflow | Should -Match 'tags:\s*\r?\n\s*-\s*"v\*"'
             $releaseWorkflow | Should -Match 'name:\s+Verify Windows entrypoint'

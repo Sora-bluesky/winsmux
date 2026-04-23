@@ -1,7 +1,7 @@
 [English](README.md) | [日本語](README.ja.md)
 
 <p align="center">
-  <img src="docs/banner.png" alt="WINSMUX" width="600">
+  <img src="docs/winsmux-hero.png" alt="WINSMUX" width="600">
 </p>
 
 # winsmux
@@ -51,6 +51,25 @@ PowerShell で現在の公開版をインストールします。
 ```powershell
 irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | iex
 ```
+
+予定している `npm` 経由のインストールでは、同じ公開パッケージ名を使います。
+
+```powershell
+npm install -g winsmux
+```
+
+この経路が公開された後は、最初のセットアップで次のコマンドを使います。
+
+```powershell
+winsmux install --profile full
+```
+
+`npm` 経由のインストールでは、`--profile` で導入対象を切り分けます。
+`winsmux update` に新しい指定を渡さない場合は、前回記録したプロファイルを使います。
+`core` では、オーケストレーション用のスクリプトを含めません。
+Windows Terminal 側のプロファイルも、選んだインストールプロファイルに合わせて扱います。
+後からインストールプロファイルを変更した場合、インストーラーは対象外になった支援スクリプトを削除します。
+`npm` 経由での公開は、Windows 検証が通るまで止めています。
 
 次に、プロジェクト設定を作り、既定のワークスペースを起動します。
 

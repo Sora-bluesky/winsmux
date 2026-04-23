@@ -1,7 +1,7 @@
 [English](README.md) | [日本語](README.ja.md)
 
 <p align="center">
-  <img src="docs/banner.png" alt="WINSMUX" width="600">
+  <img src="docs/winsmux-hero.png" alt="WINSMUX" width="600">
 </p>
 
 # winsmux
@@ -51,6 +51,28 @@ Install the current release from PowerShell:
 ```powershell
 irm https://raw.githubusercontent.com/Sora-bluesky/winsmux/main/install.ps1 | iex
 ```
+
+The planned npm install path will use the same public package name:
+
+```powershell
+npm install -g winsmux
+```
+
+After that package path opens, the first setup command will be:
+
+```powershell
+winsmux install --profile full
+```
+
+The npm installer profile controls what is installed.
+`winsmux update` keeps the previously
+recorded profile when no new profile is given.
+The `core` profile does not install orchestration
+scripts.
+Windows Terminal app profiles also follow the selected install profile.
+When profiles change, support scripts that no longer
+belong to the selected profile are removed.
+Publishing the npm path remains blocked until Windows verification passes.
 
 Then create project settings and start the default workspace:
 
