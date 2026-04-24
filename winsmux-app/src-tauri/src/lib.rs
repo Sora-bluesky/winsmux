@@ -15,20 +15,27 @@ use pty_backend::{
 };
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 
 const DESKTOP_SUMMARY_REFRESH_EVENT: &str = "desktop-summary-refresh";
+const PTY_CAPTURE_LIMIT: usize = 64 * 1024;
 
 struct SinglePty {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Arc<Mutex<Box<dyn portable_pty::MasterPty + Send>>>,
     child: Arc<Mutex<Box<dyn portable_pty::Child + Send>>>,
+    output_history: Arc<Mutex<String>>,
+    alive: Arc<AtomicBool>,
+    generation: u64,
+    cols: u16,
+    rows: u16,
 }
 
 struct PtyManager {
     panes: Arc<Mutex<HashMap<String, SinglePty>>>,
+    next_generation: AtomicU64,
 }
 
 struct DesktopSummaryStreamManager {
@@ -99,7 +106,7 @@ async fn pty_json_rpc(
 
 #[tauri::command]
 async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
-    spawn_pty(&app, pane_id, cols, rows)
+    spawn_pty(&app, pane_id, cols, rows, "pty.spawn")
 }
 
 #[tauri::command]
@@ -113,11 +120,76 @@ async fn pty_resize(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Re
 }
 
 #[tauri::command]
+async fn pty_capture(app: AppHandle, pane_id: String) -> Result<serde_json::Value, String> {
+    capture_pty(&app, &pane_id)
+}
+
+#[tauri::command]
+async fn pty_respawn(app: AppHandle, pane_id: String) -> Result<(), String> {
+    respawn_pty(&app, &pane_id)
+}
+
+#[tauri::command]
 async fn pty_close(app: AppHandle, pane_id: String) -> Result<(), String> {
     close_pty(&app, &pane_id)
 }
 
-fn spawn_pty(app: &AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
+fn spawn_pty(
+    app: &AppHandle,
+    pane_id: String,
+    cols: u16,
+    rows: u16,
+    reason: &str,
+) -> Result<(), String> {
+    let manager = app.state::<PtyManager>();
+    {
+        let panes = manager.panes.lock().map_err(|e| e.to_string())?;
+        if panes.contains_key(&pane_id) {
+            return Err(format!("Pane {} already exists", pane_id));
+        }
+    }
+
+    let generation = manager.next_generation.fetch_add(1, Ordering::SeqCst);
+    let (single, reader, output_history, alive) = create_single_pty(cols, rows, generation)?;
+
+    {
+        let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
+        if panes.contains_key(&pane_id) {
+            stop_single_pty(&single);
+            return Err(format!("Pane {} already exists", pane_id));
+        }
+        panes.insert(pane_id.clone(), single);
+    }
+
+    emit_desktop_summary_refresh(
+        app,
+        DesktopSummaryRefreshSignal {
+            source: "pty".to_string(),
+            reason: reason.to_string(),
+            pane_id: Some(pane_id.clone()),
+            run_id: None,
+        },
+    );
+
+    start_pty_reader(
+        app,
+        pane_id,
+        reader,
+        output_history,
+        alive,
+        generation,
+        manager.panes.clone(),
+    );
+    Ok(())
+}
+
+type PtyReader = Box<dyn Read + Send>;
+
+fn create_single_pty(
+    cols: u16,
+    rows: u16,
+    generation: u64,
+) -> Result<(SinglePty, PtyReader, Arc<Mutex<String>>, Arc<AtomicBool>), String> {
     let pty_system = native_pty_system();
 
     let pair = pty_system
@@ -142,57 +214,82 @@ fn spawn_pty(app: &AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(
         .take_writer()
         .map_err(|e| format!("Failed to get writer: {e}"))?;
 
-    let mut reader = pair
+    let reader = pair
         .master
         .try_clone_reader()
         .map_err(|e| format!("Failed to get reader: {e}"))?;
+    let output_history = Arc::new(Mutex::new(String::new()));
+    let alive = Arc::new(AtomicBool::new(true));
 
     let single = SinglePty {
         writer: Arc::new(Mutex::new(writer)),
         master: Arc::new(Mutex::new(pair.master)),
         child: Arc::new(Mutex::new(child)),
+        output_history: output_history.clone(),
+        alive: alive.clone(),
+        generation,
+        cols,
+        rows,
     };
 
-    let manager = app.state::<PtyManager>();
-    {
-        let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
-        if panes.contains_key(&pane_id) {
-            return Err(format!("Pane {} already exists", pane_id));
-        }
-        panes.insert(pane_id.clone(), single);
-    }
+    Ok((single, reader, output_history, alive))
+}
 
-    emit_desktop_summary_refresh(
-        app,
-        DesktopSummaryRefreshSignal {
-            source: "pty".to_string(),
-            reason: "pty.spawn".to_string(),
-            pane_id: Some(pane_id.clone()),
-            run_id: None,
-        },
-    );
-
-    // Read PTY output in background thread
+fn start_pty_reader(
+    app: &AppHandle,
+    pane_id: String,
+    mut reader: PtyReader,
+    output_history: Arc<Mutex<String>>,
+    alive: Arc<AtomicBool>,
+    generation: u64,
+    panes: Arc<Mutex<HashMap<String, SinglePty>>>,
+) {
     let app_handle = app.clone();
-    let pane_id_clone = pane_id.clone();
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         loop {
+            if !alive.load(Ordering::SeqCst) {
+                break;
+            }
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
                     let data = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let Ok(current_panes) = panes.lock() else {
+                        break;
+                    };
+                    let is_current = current_panes
+                        .get(&pane_id)
+                        .map(|pty| pty.generation == generation && Arc::ptr_eq(&pty.alive, &alive))
+                        .unwrap_or(false);
+                    if !is_current || !alive.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    if let Ok(mut history) = output_history.lock() {
+                        history.push_str(&data);
+                        trim_pty_history(&mut history);
+                    }
                     let _ = app_handle.emit(
                         "pty-output",
-                        serde_json::json!({"pane_id": pane_id_clone, "data": data}),
+                        serde_json::json!({"pane_id": pane_id, "data": data}),
                     );
                 }
                 Err(_) => break,
             }
         }
     });
+}
 
-    Ok(())
+fn trim_pty_history(history: &mut String) {
+    if history.len() <= PTY_CAPTURE_LIMIT {
+        return;
+    }
+
+    let mut drain_to = history.len() - PTY_CAPTURE_LIMIT;
+    while drain_to < history.len() && !history.is_char_boundary(drain_to) {
+        drain_to += 1;
+    }
+    history.drain(..drain_to);
 }
 
 fn write_pty(app: &AppHandle, pane_id: &str, data: &str) -> Result<(), String> {
@@ -211,20 +308,105 @@ fn write_pty(app: &AppHandle, pane_id: &str, data: &str) -> Result<(), String> {
 
 fn resize_pty(app: &AppHandle, pane_id: &str, cols: u16, rows: u16) -> Result<(), String> {
     let manager = app.state::<PtyManager>();
+    let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
+    let pty = panes
+        .get_mut(pane_id)
+        .ok_or_else(|| format!("Pane {} not found", pane_id))?;
+    {
+        let master = pty.master.lock().map_err(|e| e.to_string())?;
+        master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("Resize failed: {e}"))?;
+    }
+    pty.cols = cols;
+    pty.rows = rows;
+    emit_desktop_summary_refresh(
+        app,
+        DesktopSummaryRefreshSignal {
+            source: "pty".to_string(),
+            reason: "pty.resize".to_string(),
+            pane_id: Some(pane_id.to_string()),
+            run_id: None,
+        },
+    );
+    Ok(())
+}
+
+fn capture_pty(app: &AppHandle, pane_id: &str) -> Result<serde_json::Value, String> {
+    let manager = app.state::<PtyManager>();
     let panes = manager.panes.lock().map_err(|e| e.to_string())?;
     let pty = panes
         .get(pane_id)
         .ok_or_else(|| format!("Pane {} not found", pane_id))?;
-    let master = pty.master.lock().map_err(|e| e.to_string())?;
-    master
-        .resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| format!("Resize failed: {e}"))?;
+    let output = pty
+        .output_history
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    Ok(serde_json::json!({
+        "paneId": pane_id,
+        "output": output
+    }))
+}
+
+fn respawn_pty(app: &AppHandle, pane_id: &str) -> Result<(), String> {
+    let manager = app.state::<PtyManager>();
+    let (cols, rows) = {
+        let panes = manager.panes.lock().map_err(|e| e.to_string())?;
+        let entry = panes
+            .get(pane_id)
+            .ok_or_else(|| format!("Pane {} not found", pane_id))?;
+        (entry.cols, entry.rows)
+    };
+    let generation = manager.next_generation.fetch_add(1, Ordering::SeqCst);
+    let (single, reader, output_history, alive) = create_single_pty(cols, rows, generation)?;
+
+    let old_entry = {
+        let mut panes = manager.panes.lock().map_err(|e| e.to_string())?;
+        if !panes.contains_key(pane_id) {
+            stop_single_pty(&single);
+            return Err(format!("Pane {} not found", pane_id));
+        }
+        panes
+            .insert(pane_id.to_string(), single)
+            .expect("pane existence was checked before replacement")
+    };
+
+    stop_single_pty(&old_entry);
+    drop(old_entry);
+
+    emit_desktop_summary_refresh(
+        app,
+        DesktopSummaryRefreshSignal {
+            source: "pty".to_string(),
+            reason: "pty.respawn".to_string(),
+            pane_id: Some(pane_id.to_string()),
+            run_id: None,
+        },
+    );
+
+    start_pty_reader(
+        app,
+        pane_id.to_string(),
+        reader,
+        output_history,
+        alive,
+        generation,
+        manager.panes.clone(),
+    );
     Ok(())
+}
+
+fn stop_single_pty(entry: &SinglePty) {
+    entry.alive.store(false, Ordering::SeqCst);
+    if let Ok(mut child) = entry.child.lock() {
+        let _ = child.kill();
+    }
 }
 
 fn close_pty(app: &AppHandle, pane_id: &str) -> Result<(), String> {
@@ -233,10 +415,7 @@ fn close_pty(app: &AppHandle, pane_id: &str) -> Result<(), String> {
     let entry = panes
         .remove(pane_id)
         .ok_or_else(|| format!("Pane {} not found", pane_id))?;
-    // Kill child process
-    if let Ok(mut child) = entry.child.lock() {
-        let _ = child.kill();
-    }
+    stop_single_pty(&entry);
     // Drop master to signal EOF to reader thread
     drop(entry.master);
     drop(entry.writer);
@@ -260,7 +439,7 @@ impl PtyCommandTransport for TauriPtyTransport {
                 cols,
                 rows,
             } => {
-                spawn_pty(&self.app, pane_id.clone(), *cols, *rows)?;
+                spawn_pty(&self.app, pane_id.clone(), *cols, *rows, "pty.spawn")?;
                 Ok(serde_json::json!({ "paneId": pane_id }))
             }
             PtyCommand::Write { pane_id, data } => {
@@ -275,11 +454,32 @@ impl PtyCommandTransport for TauriPtyTransport {
                 resize_pty(&self.app, pane_id, *cols, *rows)?;
                 Ok(serde_json::json!({ "paneId": pane_id }))
             }
+            PtyCommand::Capture { pane_id } => capture_pty(&self.app, pane_id),
+            PtyCommand::Respawn { pane_id } => {
+                respawn_pty(&self.app, pane_id)?;
+                Ok(serde_json::json!({ "paneId": pane_id }))
+            }
             PtyCommand::Close { pane_id } => {
                 close_pty(&self.app, pane_id)?;
                 Ok(serde_json::json!({ "paneId": pane_id }))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trim_pty_history_preserves_utf8_boundaries() {
+        let mut history = "あ".repeat((PTY_CAPTURE_LIMIT / 3) + 2);
+
+        trim_pty_history(&mut history);
+
+        assert!(history.len() <= PTY_CAPTURE_LIMIT);
+        assert!(history.is_char_boundary(0));
+        assert!(history.ends_with('あ'));
     }
 }
 
@@ -289,6 +489,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(PtyManager {
             panes: Arc::new(Mutex::new(HashMap::new())),
+            next_generation: AtomicU64::new(1),
         })
         .manage(DesktopSummaryStreamManager {
             started: AtomicBool::new(false),
@@ -307,6 +508,8 @@ pub fn run() {
             pty_spawn,
             pty_write,
             pty_resize,
+            pty_capture,
+            pty_respawn,
             pty_close
         ])
         .build(tauri::generate_context!())

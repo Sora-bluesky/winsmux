@@ -2,7 +2,13 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 const PTY_JSON_RPC_VERSION = "2.0";
-type PtyCommandName = "pty.spawn" | "pty.write" | "pty.resize" | "pty.close";
+type PtyCommandName =
+  | "pty.spawn"
+  | "pty.write"
+  | "pty.resize"
+  | "pty.capture"
+  | "pty.respawn"
+  | "pty.close";
 
 interface PtyOutputEvent {
   pane_id: string;
@@ -34,7 +40,15 @@ type PtyJsonRpcResponse =
     };
 
 export interface PtyCommandTransport {
-  request(command: PtyCommandName, payload: Record<string, unknown>): Promise<void>;
+  request<T = unknown>(
+    command: PtyCommandName,
+    payload: Record<string, unknown>,
+  ): Promise<T>;
+}
+
+export interface PtyCaptureResult {
+  paneId: string;
+  output: string;
 }
 
 let ptyRequestSequence = 0;
@@ -51,9 +65,19 @@ export function createTauriPtyCommandTransport(
   invokeCommand: typeof invoke = invoke,
 ): PtyCommandTransport {
   return {
-    async request(command: PtyCommandName, payload: Record<string, unknown>) {
+    async request<T = unknown>(
+      command: PtyCommandName,
+      payload: Record<string, unknown>,
+    ): Promise<T> {
       if (!isTauri()) {
-        return;
+        if (command === "pty.capture") {
+          return {
+            paneId: String(payload.paneId ?? payload.pane_id ?? ""),
+            output: "",
+          } as T;
+        }
+
+        return undefined as T;
       }
 
       const request: PtyJsonRpcRequest = {
@@ -69,6 +93,8 @@ export function createTauriPtyCommandTransport(
       if ("error" in response) {
         throw new Error(response.error.message);
       }
+
+      return response.result as T;
     },
   };
 }
@@ -108,6 +134,26 @@ export async function resizePtyPane(
     await ptyCommandTransport.request("pty.resize", { paneId, cols, rows });
   } catch (error) {
     throw normalizePtyError(`pty.resize(${paneId})`, error);
+  }
+}
+
+export async function capturePtyPane(
+  paneId: string,
+): Promise<PtyCaptureResult> {
+  try {
+    return await ptyCommandTransport.request<PtyCaptureResult>("pty.capture", {
+      paneId,
+    });
+  } catch (error) {
+    throw normalizePtyError(`pty.capture(${paneId})`, error);
+  }
+}
+
+export async function respawnPtyPane(paneId: string) {
+  try {
+    await ptyCommandTransport.request("pty.respawn", { paneId });
+  } catch (error) {
+    throw normalizePtyError(`pty.respawn(${paneId})`, error);
   }
 }
 

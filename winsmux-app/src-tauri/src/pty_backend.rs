@@ -53,6 +53,12 @@ pub enum PtyCommand {
         cols: u16,
         rows: u16,
     },
+    Capture {
+        pane_id: String,
+    },
+    Respawn {
+        pane_id: String,
+    },
     Close {
         pane_id: String,
     },
@@ -111,6 +117,12 @@ fn parse_command(method: &str, params: Option<&Value>) -> Result<PtyCommand, Par
             pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
             cols: get_required_u16_param(params, &["cols"])?,
             rows: get_required_u16_param(params, &["rows"])?,
+        }),
+        "pty.capture" => Ok(PtyCommand::Capture {
+            pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
+        }),
+        "pty.respawn" => Ok(PtyCommand::Respawn {
+            pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
         }),
         "pty.close" => Ok(PtyCommand::Close {
             pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
@@ -235,6 +247,81 @@ mod tests {
                 pane_id: "pane-1".to_string(),
                 cols: 120,
                 rows: 40
+            }]
+        );
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_routes_capture() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({
+                "paneId": "pane-1",
+                "output": "ready"
+            }),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-capture"),
+                method: "pty.capture".to_string(),
+                params: Some(serde_json::json!({
+                    "paneId": "pane-1"
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Success { result, .. } => {
+                assert_eq!(result["output"], "ready");
+            }
+            PtyJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+
+        assert_eq!(
+            transport.commands.borrow().as_slice(),
+            [PtyCommand::Capture {
+                pane_id: "pane-1".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_routes_respawn() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({ "paneId": "pane-1" }),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-respawn"),
+                method: "pty.respawn".to_string(),
+                params: Some(serde_json::json!({
+                    "paneId": "pane-1"
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Success { result, .. } => {
+                assert_eq!(result["paneId"], "pane-1");
+            }
+            PtyJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+
+        assert_eq!(
+            transport.commands.borrow().as_slice(),
+            [PtyCommand::Respawn {
+                pane_id: "pane-1".to_string()
             }]
         );
     }
