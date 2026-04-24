@@ -28,6 +28,8 @@ pub struct LedgerPaneReadModel {
     pub worktree: String,
     pub head_sha: String,
     pub changed_file_count: usize,
+    pub changed_files: Vec<String>,
+    pub provider_target: String,
     pub last_event: String,
     pub last_event_at: String,
     pub event_count: usize,
@@ -100,6 +102,50 @@ pub struct LedgerInboxItem {
 pub struct LedgerInboxProjection {
     pub summary: LedgerInboxSummary,
     pub items: Vec<LedgerInboxItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerDigestSummary {
+    pub item_count: usize,
+    pub dirty_items: usize,
+    pub review_pending: usize,
+    pub review_failed: usize,
+    pub actionable_items: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerDigestItem {
+    pub run_id: String,
+    pub task_id: String,
+    pub task: String,
+    pub label: String,
+    pub pane_id: String,
+    pub role: String,
+    pub provider_target: String,
+    pub task_state: String,
+    pub review_state: String,
+    pub next_action: String,
+    pub branch: String,
+    pub worktree: String,
+    pub head_sha: String,
+    pub head_short: String,
+    pub changed_file_count: usize,
+    pub changed_files: Vec<String>,
+    pub action_item_count: usize,
+    pub last_event: String,
+    pub last_event_at: String,
+    pub verification_outcome: String,
+    pub security_blocked: String,
+    pub hypothesis: String,
+    pub confidence: Option<f64>,
+    pub observation_pack_ref: String,
+    pub consultation_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerDigestProjection {
+    pub summary: LedgerDigestSummary,
+    pub items: Vec<LedgerDigestItem>,
 }
 
 impl LedgerSnapshot {
@@ -232,6 +278,8 @@ impl LedgerSnapshot {
                     worktree: pane.worktree.clone(),
                     head_sha: pane.head_sha.clone(),
                     changed_file_count: pane.changed_file_count,
+                    changed_files: pane.changed_files.clone(),
+                    provider_target: pane.provider_target.clone(),
                     last_event: pane.last_event.clone(),
                     last_event_at: pane.last_event_at.clone(),
                     event_count,
@@ -373,6 +421,74 @@ impl LedgerSnapshot {
         }
     }
 
+    pub fn digest_projection(&self) -> LedgerDigestProjection {
+        let inbox = self.inbox_projection();
+        let mut runs: BTreeMap<String, LedgerDigestRun> = BTreeMap::new();
+        for pane in self.pane_read_models() {
+            let run_id = run_id_from_pane(&pane);
+            if let Some(run) = runs.get_mut(&run_id) {
+                run.add_pane(&pane);
+            } else {
+                runs.insert(run_id, LedgerDigestRun::from_pane(&pane));
+            }
+        }
+
+        for item in inbox.items {
+            for run in runs.values_mut() {
+                if run.matches_inbox_item(&item) {
+                    run.action_items.push(item.clone());
+                    break;
+                }
+            }
+        }
+
+        for run in runs.values_mut() {
+            let mut matching_events: Vec<_> = self
+                .events
+                .iter()
+                .enumerate()
+                .filter(|(_, event)| run.matches_event(event))
+                .collect();
+            matching_events.sort_by(|(left_index, left), (right_index, right)| {
+                left.timestamp
+                    .cmp(&right.timestamp)
+                    .then_with(|| left_index.cmp(right_index))
+            });
+            for (_, event) in matching_events {
+                run.apply_event(event);
+            }
+        }
+
+        let mut items: Vec<_> = runs.into_values().map(LedgerDigestRun::into_item).collect();
+        items.sort_by(compare_digest_items);
+
+        LedgerDigestProjection {
+            summary: LedgerDigestSummary {
+                item_count: items.len(),
+                dirty_items: items
+                    .iter()
+                    .filter(|item| item.changed_file_count > 0)
+                    .count(),
+                review_pending: items
+                    .iter()
+                    .filter(|item| item.review_state.eq_ignore_ascii_case("pending"))
+                    .count(),
+                review_failed: items
+                    .iter()
+                    .filter(|item| {
+                        item.review_state.eq_ignore_ascii_case("fail")
+                            || item.review_state.eq_ignore_ascii_case("failed")
+                    })
+                    .count(),
+                actionable_items: items
+                    .iter()
+                    .filter(|item| !item.next_action.trim().is_empty())
+                    .count(),
+            },
+            items,
+        }
+    }
+
     fn inbox_active_events(&self) -> Vec<&EventRecord> {
         let mut keys = Vec::new();
         let mut latest_by_key = HashMap::new();
@@ -407,6 +523,160 @@ impl LedgerSnapshot {
         }
 
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LedgerDigestRun {
+    item: LedgerDigestItem,
+    labels: HashSet<String>,
+    pane_ids: HashSet<String>,
+    roles: HashSet<String>,
+    action_items: Vec<LedgerInboxItem>,
+}
+
+impl LedgerDigestRun {
+    fn from_pane(pane: &LedgerPaneReadModel) -> Self {
+        let run_id = run_id_from_pane(pane);
+        let mut run = Self {
+            item: LedgerDigestItem {
+                run_id,
+                task_id: pane.task_id.clone(),
+                task: pane.task.clone(),
+                label: pane.label.clone(),
+                pane_id: pane.pane_id.clone(),
+                role: pane.role.clone(),
+                provider_target: pane.provider_target.clone(),
+                task_state: pane.task_state.clone(),
+                review_state: pane.review_state.clone(),
+                next_action: String::new(),
+                branch: pane.branch.clone(),
+                worktree: pane.worktree.clone(),
+                head_sha: pane.head_sha.clone(),
+                head_short: short_head_sha(&pane.head_sha),
+                changed_file_count: 0,
+                changed_files: Vec::new(),
+                action_item_count: 0,
+                last_event: pane.last_event.clone(),
+                last_event_at: pane.last_event_at.clone(),
+                verification_outcome: String::new(),
+                security_blocked: String::new(),
+                hypothesis: String::new(),
+                confidence: None,
+                observation_pack_ref: String::new(),
+                consultation_ref: String::new(),
+            },
+            labels: HashSet::new(),
+            pane_ids: HashSet::new(),
+            roles: HashSet::new(),
+            action_items: Vec::new(),
+        };
+        run.add_pane(pane);
+        run
+    }
+
+    fn add_pane(&mut self, pane: &LedgerPaneReadModel) {
+        self.item.changed_file_count += pane.changed_file_count;
+        add_unique_string(&mut self.item.changed_files, &pane.changed_files);
+        insert_non_empty(&mut self.labels, &pane.label);
+        insert_non_empty(&mut self.pane_ids, &pane.pane_id);
+        insert_non_empty(&mut self.roles, &pane.role);
+        set_if_empty(&mut self.item.task_id, &pane.task_id);
+        set_if_empty(&mut self.item.task, &pane.task);
+        set_if_empty(&mut self.item.label, &pane.label);
+        set_if_empty(&mut self.item.pane_id, &pane.pane_id);
+        set_if_empty(&mut self.item.role, &pane.role);
+        set_if_empty(&mut self.item.provider_target, &pane.provider_target);
+        set_if_empty(&mut self.item.task_state, &pane.task_state);
+        set_if_empty(&mut self.item.review_state, &pane.review_state);
+        set_if_empty(&mut self.item.branch, &pane.branch);
+        set_if_empty(&mut self.item.worktree, &pane.worktree);
+        set_if_empty(&mut self.item.head_sha, &pane.head_sha);
+        self.item.head_short = short_head_sha(&self.item.head_sha);
+        set_if_empty(&mut self.item.last_event, &pane.last_event);
+        set_if_empty(&mut self.item.last_event_at, &pane.last_event_at);
+    }
+
+    fn matches_inbox_item(&self, item: &LedgerInboxItem) -> bool {
+        (!item.task_id.trim().is_empty() && item.task_id == self.item.task_id)
+            || (!item.branch.trim().is_empty() && item.branch == self.item.branch)
+            || (!item.head_sha.trim().is_empty() && item.head_sha == self.item.head_sha)
+            || (!item.label.trim().is_empty() && self.labels.contains(&item.label))
+            || (!item.pane_id.trim().is_empty() && self.pane_ids.contains(&item.pane_id))
+    }
+
+    fn matches_event(&self, event: &EventRecord) -> bool {
+        let event_run_id = event_data_string(&event.data, "run_id");
+        let event_task_id = event_data_string(&event.data, "task_id");
+        let event_branch = event_branch(event);
+        let event_head_sha = event_head_sha(event);
+
+        if !event_run_id.trim().is_empty() {
+            return event_run_id == self.item.run_id;
+        }
+
+        if !event_task_id.trim().is_empty() && !self.item.task_id.trim().is_empty() {
+            return event_task_id == self.item.task_id;
+        }
+
+        if !event.pane_id.trim().is_empty() {
+            return self.pane_ids.contains(&event.pane_id);
+        }
+
+        if !event.label.trim().is_empty() {
+            return self.labels.contains(&event.label);
+        }
+
+        if !event_task_id.trim().is_empty() || !self.item.task_id.trim().is_empty() {
+            return false;
+        }
+
+        (!self.item.branch.trim().is_empty() && self.item.branch == event_branch)
+            || (!self.item.head_sha.trim().is_empty() && self.item.head_sha == event_head_sha)
+    }
+
+    fn apply_event(&mut self, event: &EventRecord) {
+        set_if_present(
+            &mut self.item.worktree,
+            &event_data_string(&event.data, "worktree"),
+        );
+        set_if_present(
+            &mut self.item.hypothesis,
+            &event_data_string(&event.data, "hypothesis"),
+        );
+        set_if_present(
+            &mut self.item.observation_pack_ref,
+            &event_data_string(&event.data, "observation_pack_ref"),
+        );
+        set_if_present(
+            &mut self.item.consultation_ref,
+            &event_data_string(&event.data, "consultation_ref"),
+        );
+        if let Some(confidence) = event_data_f64(&event.data, "confidence") {
+            self.item.confidence = Some(confidence);
+        }
+        if is_verification_event(&event.event) {
+            if let Some(outcome) =
+                event_data_nested_string(&event.data, "verification_result", "outcome")
+            {
+                self.item.verification_outcome = outcome;
+            }
+        }
+        if is_security_event(&event.event) {
+            if let Some(verdict) = event_data_string_option(&event.data, "verdict") {
+                self.item.security_blocked = verdict;
+            }
+        }
+    }
+
+    fn into_item(mut self) -> LedgerDigestItem {
+        self.item.next_action = run_next_action(
+            &self.action_items,
+            &self.item.review_state,
+            &self.item.task_state,
+        );
+        self.item.action_item_count = self.action_items.len();
+        self.item
     }
 }
 
@@ -478,6 +748,61 @@ impl LedgerInboxItem {
             timestamp: event.timestamp.clone(),
             source: "events".to_string(),
         })
+    }
+}
+
+fn run_id_from_pane(pane: &LedgerPaneReadModel) -> String {
+    if !pane.task_id.trim().is_empty() {
+        return format!("task:{}", pane.task_id);
+    }
+    if !pane.branch.trim().is_empty() {
+        return format!("branch:{}", pane.branch);
+    }
+    if !pane.pane_id.trim().is_empty() {
+        return format!("pane:{}", pane.pane_id);
+    }
+    format!("label:{}", pane.label)
+}
+
+fn run_next_action(
+    action_items: &[LedgerInboxItem],
+    review_state: &str,
+    task_state: &str,
+) -> String {
+    for kind in [
+        "approval_waiting",
+        "review_failed",
+        "task_blocked",
+        "blocked",
+        "commit_ready",
+        "task_completed",
+        "review_pending",
+        "dispatch_needed",
+    ] {
+        if action_items.iter().any(|item| item.kind == kind) {
+            return kind.to_string();
+        }
+    }
+
+    if let Some(item) = action_items
+        .iter()
+        .find(|item| !item.kind.trim().is_empty())
+    {
+        return item.kind.clone();
+    }
+
+    if !review_state.trim().is_empty() {
+        return review_state.to_string();
+    }
+
+    task_state.to_string()
+}
+
+fn short_head_sha(head_sha: &str) -> String {
+    if head_sha.chars().count() <= 7 {
+        head_sha.to_string()
+    } else {
+        head_sha.chars().take(7).collect()
     }
 }
 
@@ -570,11 +895,94 @@ fn inbox_event_entity_key(event: &EventRecord) -> String {
 }
 
 fn event_data_string(data: &Value, key: &str) -> String {
+    event_data_string_option(data, key).unwrap_or_default()
+}
+
+fn event_data_string_option(data: &Value, key: &str) -> Option<String> {
     data.as_object()
         .and_then(|map| map.get(key))
         .and_then(|value| value.as_str())
-        .unwrap_or_default()
-        .to_string()
+        .map(|value| value.to_string())
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn event_data_nested_string(data: &Value, object_key: &str, value_key: &str) -> Option<String> {
+    data.as_object()
+        .and_then(|map| map.get(object_key))
+        .and_then(|value| value.as_object())
+        .and_then(|map| map.get(value_key))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn event_data_f64(data: &Value, key: &str) -> Option<f64> {
+    data.as_object()
+        .and_then(|map| map.get(key))
+        .and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))
+        })
+}
+
+fn is_verification_event(event_name: &str) -> bool {
+    matches!(
+        event_name,
+        "pipeline.verify.pass" | "pipeline.verify.fail" | "pipeline.verify.partial"
+    )
+}
+
+fn is_security_event(event_name: &str) -> bool {
+    matches!(
+        event_name,
+        "pipeline.security.blocked"
+            | "security.policy.blocked"
+            | "pipeline.security.allowed"
+            | "security.policy.allowed"
+    )
+}
+
+fn event_branch(event: &EventRecord) -> String {
+    if event.branch.trim().is_empty() {
+        event_data_string(&event.data, "branch")
+    } else {
+        event.branch.clone()
+    }
+}
+
+fn event_head_sha(event: &EventRecord) -> String {
+    if event.head_sha.trim().is_empty() {
+        event_data_string(&event.data, "head_sha")
+    } else {
+        event.head_sha.clone()
+    }
+}
+
+fn insert_non_empty(values: &mut HashSet<String>, value: &str) {
+    if !value.trim().is_empty() {
+        values.insert(value.to_string());
+    }
+}
+
+fn set_if_empty(target: &mut String, value: &str) {
+    if target.trim().is_empty() && !value.trim().is_empty() {
+        *target = value.to_string();
+    }
+}
+
+fn set_if_present(target: &mut String, value: &str) {
+    if !value.trim().is_empty() {
+        *target = value.to_string();
+    }
+}
+
+fn add_unique_string(target: &mut Vec<String>, values: &[String]) {
+    for value in values {
+        if !value.trim().is_empty() && !target.contains(value) {
+            target.push(value.clone());
+        }
+    }
 }
 
 fn pane_key_base(pane_id: &str, label: &str) -> String {
@@ -603,6 +1011,13 @@ fn count_inbox_by_kind(items: &[LedgerInboxItem]) -> BTreeMap<String, usize> {
         *counts.entry(kind.to_string()).or_insert(0) += 1;
     }
     counts
+}
+
+fn compare_digest_items(left: &LedgerDigestItem, right: &LedgerDigestItem) -> Ordering {
+    right
+        .last_event_at
+        .cmp(&left.last_event_at)
+        .then_with(|| left.run_id.cmp(&right.run_id))
 }
 
 fn count_by<F>(panes: &[LedgerPaneReadModel], selector: F) -> BTreeMap<String, usize>
