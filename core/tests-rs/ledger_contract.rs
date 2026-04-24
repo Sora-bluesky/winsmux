@@ -480,6 +480,35 @@ panes:
 }
 
 #[test]
+fn ledger_contract_serializes_projection_surfaces_to_json() {
+    let snapshot =
+        ledger::LedgerSnapshot::from_manifest_and_events(MANIFEST_FIXTURE, EVENTS_FIXTURE)
+            .expect("ledger snapshot should load frozen fixtures");
+
+    let board = serde_json::to_value(snapshot.board_projection())
+        .expect("board projection should serialize to JSON");
+    let inbox = serde_json::to_value(snapshot.inbox_projection())
+        .expect("inbox projection should serialize to JSON");
+    let digest = serde_json::to_value(snapshot.digest_projection())
+        .expect("digest projection should serialize to JSON");
+    let explain = serde_json::to_value(
+        snapshot
+            .explain_projection("task:task-256")
+            .expect("fixture explain projection should exist"),
+    )
+    .expect("explain projection should serialize to JSON");
+
+    assert_eq!(board["summary"]["pane_count"], 2);
+    assert!(board["panes"].is_array());
+    assert!(inbox["summary"]["by_kind"].is_object());
+    assert!(inbox["items"].is_array());
+    assert!(digest["summary"]["actionable_items"].is_number());
+    assert!(digest["items"].is_array());
+    assert_eq!(explain["run"]["run_id"], "task:task-256");
+    assert!(explain["recent_events"].is_array());
+}
+
+#[test]
 fn ledger_contract_sorts_digest_projection_by_latest_event_time() {
     let manifest = r#"
 version: 1

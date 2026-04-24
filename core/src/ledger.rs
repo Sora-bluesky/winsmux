@@ -1,5 +1,6 @@
 use crate::event_contract::{parse_event_jsonl, EventRecord};
 use crate::manifest_contract::{NormalizedManifestPane, WinsmuxManifest};
+use serde::Serialize;
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -13,7 +14,7 @@ pub struct LedgerSnapshot {
     panes_by_id: HashMap<String, NormalizedManifestPane>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedgerPaneReadModel {
     pub label: String,
     pub pane_id: String,
@@ -50,7 +51,7 @@ pub struct LedgerPaneReadModel {
     pub event_count: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedgerBoardSummary {
     pub pane_count: usize,
     pub dirty_panes: usize,
@@ -64,7 +65,7 @@ pub struct LedgerBoardSummary {
     pub by_task_state: BTreeMap<String, usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedgerBoardPane {
     pub label: String,
     pub pane_id: String,
@@ -81,19 +82,19 @@ pub struct LedgerBoardPane {
     pub last_event_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedgerBoardProjection {
     pub summary: LedgerBoardSummary,
     pub panes: Vec<LedgerBoardPane>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedgerInboxSummary {
     pub item_count: usize,
     pub by_kind: BTreeMap<String, usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedgerInboxItem {
     pub kind: String,
     pub priority: usize,
@@ -113,13 +114,13 @@ pub struct LedgerInboxItem {
     pub source: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedgerInboxProjection {
     pub summary: LedgerInboxSummary,
     pub items: Vec<LedgerInboxItem>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedgerDigestSummary {
     pub item_count: usize,
     pub dirty_items: usize,
@@ -128,7 +129,7 @@ pub struct LedgerDigestSummary {
     pub actionable_items: usize,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LedgerDigestItem {
     pub run_id: String,
     pub task_id: String,
@@ -157,13 +158,13 @@ pub struct LedgerDigestItem {
     pub consultation_ref: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LedgerDigestProjection {
     pub summary: LedgerDigestSummary,
     pub items: Vec<LedgerDigestItem>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LedgerExplainProjection {
     pub run: LedgerExplainRun,
     pub explanation: LedgerExplainExplanation,
@@ -171,7 +172,7 @@ pub struct LedgerExplainProjection {
     pub recent_events: Vec<LedgerExplainRecentEvent>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LedgerExplainRun {
     pub run_id: String,
     pub task_id: String,
@@ -217,7 +218,7 @@ pub struct LedgerExplainRun {
     pub changed_files: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedgerExplainExplanation {
     pub summary: String,
     pub reasons: Vec<String>,
@@ -225,7 +226,7 @@ pub struct LedgerExplainExplanation {
     pub current_state: LedgerExplainCurrentState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedgerExplainCurrentState {
     pub state: String,
     pub task_state: String,
@@ -233,7 +234,7 @@ pub struct LedgerExplainCurrentState {
     pub last_event: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedgerExplainActionItem {
     pub kind: String,
     pub message: String,
@@ -242,7 +243,7 @@ pub struct LedgerExplainActionItem {
     pub source: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LedgerExplainExperimentPacket {
     pub hypothesis: String,
     pub test_plan: Vec<String>,
@@ -259,7 +260,7 @@ pub struct LedgerExplainExperimentPacket {
     pub command_hash: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct LedgerExplainRecentEvent {
     pub timestamp: String,
     pub event: String,
