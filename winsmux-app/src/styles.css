@@ -1846,7 +1846,7 @@ body[data-popout-surface="1"] #editor-surface {
   }
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1366px) {
   #app-shell {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -2089,7 +2089,7 @@ body[data-popout-surface="1"] #editor-surface {
   }
 }
 
-@media (max-width: 1180px) and (max-height: 760px) {
+@media (max-width: 1366px) and (max-height: 760px) {
   #editor-surface {
     gap: 8px;
     padding: 10px;

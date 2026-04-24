@@ -572,6 +572,42 @@ async function verifyShortNarrowViewport(page, previewUrl) {
   await assertPreviewClosed(page);
 }
 
+async function verifyDeveloperWindowViewport(page, previewUrl, width, height, label) {
+  await page.setViewportSize({ width, height });
+  await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
+
+  await assertButtonVisible(page, "#send-btn");
+  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+
+  await page.click("#open-command-bar-btn");
+  await page.locator("#command-bar-shell").waitFor({ state: "visible" });
+  await assertFullyVisible(page, "#command-bar");
+  await assertButtonVisible(page, "#command-bar-input");
+  await page.keyboard.press("Escape");
+  await page.locator("#command-bar-shell").waitFor({ state: "hidden" });
+
+  await page.click("#toggle-sidebar-btn");
+  await page.locator("#toggle-sidebar-btn[aria-expanded='true']").waitFor();
+  await waitForHorizontalVisibility(page, "#left-rail");
+  await assertHorizontallyVisible(page, "#left-rail");
+  await assertFullyVisible(page, "#sidebar-overlay");
+  await assertSettingsRoundtrip(page, "#left-rail");
+  const viewport = page.viewportSize();
+  if (!viewport) {
+    throw new Error(`Viewport size is unavailable for ${label}`);
+  }
+  await page.mouse.click(viewport.width - 10, 24);
+  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+
+  await page.click("#toggle-terminal-btn");
+  await page.locator("#terminal-drawer").waitFor({ state: "visible" });
+  await assertButtonVisible(page, "#add-pane-btn");
+  await assertFullyVisible(page, "#terminal-drawer");
+  await assertHorizontallyVisible(page, "#terminal-toolbar");
+  await page.click("#toggle-terminal-btn");
+  await page.locator("#terminal-drawer").waitFor({ state: "hidden" });
+}
+
 async function run() {
   await ensureOutputDir();
 
@@ -586,6 +622,9 @@ async function run() {
     const page = await browser.newPage();
 
     await verifyDesktopViewport(page, previewUrl);
+    await verifyDeveloperWindowViewport(page, previewUrl, 1366, 768, "developer-1366x768");
+    await verifyDeveloperWindowViewport(page, previewUrl, 1280, 720, "developer-1280x720");
+    await verifyDeveloperWindowViewport(page, previewUrl, 800, 600, "tauri-default-800x600");
     await verifyNarrowViewport(page, previewUrl);
     await verifyShortNarrowViewport(page, previewUrl);
 
@@ -612,6 +651,9 @@ async function run() {
             "desktop-settings-with-preview",
             "desktop-preview-back-to-code",
             "desktop-terminal-drawer",
+            "developer-1366x768",
+            "developer-1280x720",
+            "tauri-default-800x600",
             "narrow-393x852",
             "narrow-command-bar",
             "narrow-settings-sheet",
