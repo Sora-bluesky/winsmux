@@ -168,6 +168,10 @@ textarea {
   --font-code: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
 }
 
+#app-shell[data-focus-mode="focused"] .timeline-detail-pill {
+  background: rgba(14, 17, 26, 0.32);
+}
+
 #sidebar-overlay {
   display: none;
 }
