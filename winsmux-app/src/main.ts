@@ -196,11 +196,13 @@ type CompareRiskLevel = "low" | "medium" | "high";
 type ThemeMode = "codex-dark" | "graphite-dark";
 type DensityMode = "comfortable" | "compact";
 type WrapMode = "balanced" | "compact";
+type CodeFontMode = "system" | "google-sans-code" | "jetbrains-mono";
 
 interface ThemeState {
   theme: ThemeMode;
   density: DensityMode;
   wrapMode: WrapMode;
+  codeFont: CodeFontMode;
 }
 
 interface ShellPreferenceState extends ThemeState {
@@ -321,6 +323,7 @@ const themeState: ThemeState = {
   theme: "codex-dark",
   density: "comfortable",
   wrapMode: "balanced",
+  codeFont: "system",
 };
 let settingsDraftState: ThemeState | null = null;
 let preferredWideSidebarOpen = true;
@@ -368,6 +371,24 @@ const wrapOptions: Array<{ value: WrapMode; label: string; description: string }
   { value: "balanced", label: "Balanced", description: "Preferred readability for timeline, code, and footer lanes." },
   { value: "compact", label: "Compact", description: "Denser wrapping for narrow windows and long traces." },
 ];
+
+const codeFontOptions: Array<{ value: CodeFontMode; label: string; description: string }> = [
+  { value: "system", label: "System mono", description: "Use the current platform monospace stack." },
+  { value: "google-sans-code", label: "Google Sans Code", description: "Cleaner code reading when installed on Windows." },
+  { value: "jetbrains-mono", label: "JetBrains Mono", description: "Familiar developer font with clear symbols." },
+];
+
+function getCodeFontFamily(mode: CodeFontMode = themeState.codeFont) {
+  switch (mode) {
+    case "google-sans-code":
+      return "\"Google Sans Code\", \"Cascadia Code\", \"Consolas\", monospace";
+    case "jetbrains-mono":
+      return "\"JetBrains Mono\", \"Cascadia Code\", \"Consolas\", monospace";
+    case "system":
+    default:
+      return "\"Cascadia Code\", \"Consolas\", monospace";
+  }
+}
 
 function createPane(paneId?: string): string {
   const id = paneId || `pane-${++paneCounter}`;
@@ -421,7 +442,7 @@ function createPane(paneId?: string): string {
   const terminal = new Terminal({
     cursorBlink: true,
     fontSize: 13,
-    fontFamily: "'Cascadia Code', 'Consolas', monospace",
+    fontFamily: getCodeFontFamily(),
     theme: {
       background: "#131722",
       foreground: "#c7d2e6",
@@ -2434,13 +2455,15 @@ function cloneThemeState(state: ThemeState): ThemeState {
     theme: state.theme,
     density: state.density,
     wrapMode: state.wrapMode,
+    codeFont: state.codeFont,
   };
 }
 
 function themeStatesEqual(left: ThemeState, right: ThemeState) {
   return left.theme === right.theme
     && left.density === right.density
-    && left.wrapMode === right.wrapMode;
+    && left.wrapMode === right.wrapMode
+    && left.codeFont === right.codeFont;
 }
 
 function readStoredShellPreferences(): ShellPreferenceState | null {
@@ -2454,6 +2477,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
     const theme = themeOptions.find((item) => item.value === parsed.theme)?.value;
     const density = densityOptions.find((item) => item.value === parsed.density)?.value;
     const wrapMode = wrapOptions.find((item) => item.value === parsed.wrapMode)?.value;
+    const codeFont = codeFontOptions.find((item) => item.value === parsed.codeFont)?.value ?? "system";
     if (!theme || !density || !wrapMode) {
       return null;
     }
@@ -2466,6 +2490,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       theme,
       density,
       wrapMode,
+      codeFont,
       sidebarWidth: Math.max(240, Math.min(380, Math.round(sidebarWidthValue))),
       wideSidebarOpen,
       wideContextOpen,
@@ -2481,6 +2506,7 @@ function persistThemeState() {
       theme: themeState.theme,
       density: themeState.density,
       wrapMode: themeState.wrapMode,
+      codeFont: themeState.codeFont,
       sidebarWidth,
       wideSidebarOpen: preferredWideSidebarOpen,
       wideContextOpen: preferredWideContextOpen,
@@ -2502,14 +2528,25 @@ function applyShellPreferences() {
   shell.dataset.theme = themeState.theme;
   shell.dataset.density = themeState.density;
   shell.dataset.wrapMode = themeState.wrapMode;
+  shell.dataset.codeFont = themeState.codeFont;
 }
 
 function applyThemeState(nextState: ThemeState) {
   themeState.theme = nextState.theme;
   themeState.density = nextState.density;
   themeState.wrapMode = nextState.wrapMode;
+  themeState.codeFont = nextState.codeFont;
   applyShellPreferences();
+  applyCodeFontToPanes();
   renderFooterLane();
+}
+
+function applyCodeFontToPanes() {
+  const fontFamily = getCodeFontFamily();
+  panes.forEach((pane) => {
+    pane.terminal.options.fontFamily = fontFamily;
+    pane.fitAddon.fit();
+  });
 }
 
 function renderPreferenceOptions<T extends string>(
@@ -2560,6 +2597,14 @@ function renderSettingsControls() {
       settingsDraftState = cloneThemeState(themeState);
     }
     settingsDraftState.wrapMode = value;
+    renderSettingsControls();
+  });
+
+  renderPreferenceOptions("code-font-options", codeFontOptions, activeState.codeFont, (value) => {
+    if (!settingsDraftState) {
+      settingsDraftState = cloneThemeState(themeState);
+    }
+    settingsDraftState.codeFont = value;
     renderSettingsControls();
   });
 

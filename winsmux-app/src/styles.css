@@ -160,6 +160,14 @@ textarea {
   --editor-white-space: pre-wrap;
 }
 
+#app-shell[data-code-font="google-sans-code"] {
+  --font-code: "Google Sans Code", "Cascadia Code", "Consolas", monospace;
+}
+
+#app-shell[data-code-font="jetbrains-mono"] {
+  --font-code: "JetBrains Mono", "Cascadia Code", "Consolas", monospace;
+}
+
 #sidebar-overlay {
   display: none;
 }
