@@ -64,6 +64,8 @@ tests/*
 tests/fixtures/*
 !tests/fixtures/rust-parity/
 !tests/fixtures/rust-parity/*.json
+!tests/fixtures/rust-parity/*.jsonl
+!tests/fixtures/rust-parity/*.yaml
 /hooks/
 .worktrees/
 INTERNAL*.md

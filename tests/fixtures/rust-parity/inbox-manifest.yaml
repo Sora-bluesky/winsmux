@@ -1,0 +1,33 @@
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: __PROJECT_DIR__
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-245
+    task: Build inbox surface
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: review.requested
+    last_event_at: __TIMESTAMP__
+  worker-1:
+    pane_id: %6
+    role: Worker
+    task_id: task-999
+    task: Fix blocker
+    task_state: blocked
+    task_owner: worker-1
+    review_state: ''
+    branch: worktree-worker-1
+    head_sha: def5678abc1234
+    changed_file_count: 0
+    changed_files: '[]'
+    last_event: operator.state_transition
+    last_event_at: __TIMESTAMP__

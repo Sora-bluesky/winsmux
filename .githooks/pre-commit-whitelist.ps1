@@ -48,7 +48,7 @@ $whitelistPatterns = @(
     'tests/NpmReleasePackage.Tests.ps1',
     'tests/VersionSurface.Tests.ps1',
     'tests/fixtures/rust-parity/*.json',
-    'tests/fixtures/rust-parity/events.jsonl',
+    'tests/fixtures/rust-parity/*.jsonl',
     'tests/fixtures/rust-parity/*.yaml',
     'tests/test_support/rust_parity.rs',
     'packages/winsmux/**',

@@ -274,7 +274,7 @@ pub struct LedgerExplainRecentEvent {
     pub head_sha: String,
     pub source: String,
     pub hypothesis: String,
-    pub test_plan: Vec<String>,
+    pub test_plan: Option<Vec<String>>,
     pub result: String,
     pub confidence: Option<f64>,
     pub next_action: String,
@@ -1171,7 +1171,7 @@ fn explain_recent_event_from_event(event: &EventRecord) -> LedgerExplainRecentEv
         head_sha: event_head_sha(event),
         source: event_data_string(&event.data, "source"),
         hypothesis: event_data_string(&event.data, "hypothesis"),
-        test_plan: event_data_string_list(&event.data, "test_plan"),
+        test_plan: event_data_string_list_option(&event.data, "test_plan"),
         result: event_data_string(&event.data, "result"),
         confidence: event_data_f64(&event.data, "confidence"),
         next_action: event_data_string(&event.data, "next_action"),
@@ -1213,8 +1213,12 @@ fn explain_experiment_packet(
 
     for event in events {
         set_if_empty(&mut hypothesis, &event.hypothesis);
-        if test_plan.is_empty() && !event.test_plan.is_empty() {
-            test_plan = event.test_plan.clone();
+        if test_plan.is_empty() {
+            if let Some(event_test_plan) = &event.test_plan {
+                if !event_test_plan.is_empty() {
+                    test_plan = event_test_plan.clone();
+                }
+            }
         }
         set_if_empty(&mut result, &event.result);
         if confidence.is_none() {
@@ -1239,10 +1243,10 @@ fn explain_experiment_packet(
         next_action: first_non_empty(&next_action, &digest.next_action),
         observation_pack_ref: first_non_empty(&observation_pack_ref, &digest.observation_pack_ref),
         consultation_ref: first_non_empty(&consultation_ref, &digest.consultation_ref),
-        run_id: first_non_empty(&run_id, &digest.run_id),
+        run_id,
         slot,
         branch: first_non_empty(&branch, &digest.branch),
-        worktree: first_non_empty(&worktree, &digest.worktree),
+        worktree,
         env_fingerprint,
         command_hash,
     }
@@ -1263,9 +1267,9 @@ fn explain_explanation(
     }
 
     LedgerExplainExplanation {
-        summary: first_non_empty(&run.goal, &run.task),
+        summary: run.task.clone(),
         reasons,
-        next_action: first_non_empty(&run.experiment_packet.next_action, &digest.next_action),
+        next_action: digest.next_action.clone(),
         current_state: LedgerExplainCurrentState {
             state: run.state.clone(),
             task_state: run.task_state.clone(),
@@ -1277,7 +1281,8 @@ fn explain_explanation(
 
 fn push_reason(reasons: &mut Vec<String>, key: &str, value: &str) {
     if !value.trim().is_empty() {
-        reasons.push(format!("{key}={value}"));
+        let separator = if key == "action" { ":" } else { "=" };
+        reasons.push(format!("{key}{separator}{value}"));
     }
 }
 
@@ -1288,7 +1293,7 @@ fn event_data_value(data: &Value, key: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
-fn event_data_string_list(data: &Value, key: &str) -> Vec<String> {
+fn event_data_string_list_option(data: &Value, key: &str) -> Option<Vec<String>> {
     data.as_object()
         .and_then(|map| map.get(key))
         .and_then(|value| {
@@ -1311,7 +1316,6 @@ fn event_data_string_list(data: &Value, key: &str) -> Vec<String> {
                 })
             }
         })
-        .unwrap_or_default()
 }
 
 fn manifest_security_policy_value(raw: &str) -> Value {
@@ -1560,8 +1564,17 @@ fn pane_key_base(pane_id: &str, label: &str) -> String {
 fn compare_inbox_items(left: &LedgerInboxItem, right: &LedgerInboxItem) -> Ordering {
     left.priority
         .cmp(&right.priority)
+        .then_with(|| inbox_source_rank(&left.source).cmp(&inbox_source_rank(&right.source)))
         .then_with(|| right.timestamp.cmp(&left.timestamp))
         .then_with(|| left.label.cmp(&right.label))
+}
+
+fn inbox_source_rank(source: &str) -> usize {
+    match source {
+        "manifest" => 0,
+        "events" => 1,
+        _ => 2,
+    }
 }
 
 fn count_inbox_by_kind(items: &[LedgerInboxItem]) -> BTreeMap<String, usize> {

@@ -43,8 +43,13 @@ Typed Rust surface:
 Parity fixtures:
 
 - `tests/fixtures/rust-parity/board.json`
+- `tests/fixtures/rust-parity/board-manifest.yaml`
 - `tests/fixtures/rust-parity/inbox.json`
+- `tests/fixtures/rust-parity/inbox-manifest.yaml`
+- `tests/fixtures/rust-parity/inbox-events.jsonl`
 - `tests/fixtures/rust-parity/digest.json`
+- `tests/fixtures/rust-parity/digest-manifest.yaml`
+- `tests/fixtures/rust-parity/digest-events.jsonl`
 - `tests/test_support/rust_parity.rs`
 
 Why this is close to freeze:
@@ -77,6 +82,8 @@ Typed Rust surface:
 Parity fixtures:
 
 - `tests/fixtures/rust-parity/explain.json`
+- `tests/fixtures/rust-parity/explain-manifest.yaml`
+- `tests/fixtures/rust-parity/explain-events.jsonl`
 - `tests/test_support/rust_parity.rs`
 
 Why this is close to freeze:
@@ -213,7 +220,8 @@ Current boundary:
 - It derives the first Rust digest projection from pane read models and inbox action items.
 - It derives the first Rust explain projection from digest items, matching panes, and matching events.
 - The board, inbox, digest, and explain projection structs serialize to JSON through `serde`.
-- It has a fixture comparison harness skeleton that loads the PowerShell golden corpus and Rust typed projection sources.
+- It compares modeled Rust board, inbox, digest, and explain JSON against the PowerShell golden corpus.
+- It prunes PowerShell-only envelope fields before comparison and keeps the Rust-modeled fields strict.
 - It rejects duplicate manifest `pane_id` values because they make projection identity ambiguous.
 - It preserves manifest pane order separately from the lookup index.
 - It preserves unknown event pane IDs instead of rejecting them, because historical events can outlive the current manifest view.
@@ -228,7 +236,7 @@ Current limitation:
 - The PowerShell and desktop surfaces do not consume the Rust inbox projection yet.
 - The PowerShell and desktop surfaces do not consume the Rust digest projection yet.
 - The PowerShell and desktop surfaces do not consume the Rust explain projection yet.
-- The fixture comparison harness does not diff projection payloads yet.
+- The fixture comparison harness still does not compare PowerShell-only envelope fields such as `generated_at`.
 
 ### 7. `verdict`
 

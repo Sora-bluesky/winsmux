@@ -163,12 +163,13 @@ panes:
     assert_eq!(inbox.items[0].task_id, "task-999");
     assert_eq!(inbox.items[0].task, "Fix blocker");
     assert_eq!(inbox.items[0].source, "manifest");
-    assert_eq!(inbox.items[1].kind, "approval_waiting");
-    assert_eq!(inbox.items[1].event, "approval_waiting");
-    assert_eq!(inbox.items[1].task_id, "task-245");
-    assert_eq!(inbox.items[1].source, "events");
-    assert_eq!(inbox.items[2].kind, "review_pending");
-    assert_eq!(inbox.items[2].event, "review.requested");
+    assert_eq!(inbox.items[1].kind, "review_pending");
+    assert_eq!(inbox.items[1].event, "review.requested");
+    assert_eq!(inbox.items[1].source, "manifest");
+    assert_eq!(inbox.items[2].kind, "approval_waiting");
+    assert_eq!(inbox.items[2].event, "approval_waiting");
+    assert_eq!(inbox.items[2].task_id, "task-245");
+    assert_eq!(inbox.items[2].source, "events");
     assert_eq!(inbox.items[3].kind, "commit_ready");
     assert_eq!(inbox.items[3].head_sha, "abc1234def5678");
 }
@@ -400,7 +401,7 @@ panes:
 {"timestamp":"2026-04-23T12:00:05+09:00","session":"winsmux-orchestra","event":"pane.consult_request","message":"new action only","label":"builder-1","pane_id":"%2","role":"Builder","data":{"task_id":"task-256","next_action":"review_requested"}}
 {"timestamp":"2026-04-23T12:00:06+09:00","session":"winsmux-orchestra","event":"pane.completed","message":"reviewer finished","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{}}
 {"timestamp":"2026-04-23T12:00:07+09:00","session":"winsmux-orchestra","event":"pipeline.verify.fail","message":"other task failed","data":{"task_id":"task-other","branch":"worktree-builder-1","verification_result":{"outcome":"FAIL"}}}
-{"timestamp":"2026-04-23T12:00:08+09:00","session":"winsmux-orchestra","event":"operator.commit_ready","message":"other task ready","data":{"task_id":"task-other","branch":"worktree-builder-1"}}
+{"timestamp":"2026-04-23T12:00:08+09:00","session":"winsmux-orchestra","event":"operator.commit_ready","message":"other task ready","data":{"task_id":"task-other","branch":"worktree-other"}}
 "#;
 
     let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
@@ -440,8 +441,8 @@ panes:
     assert_eq!(explain.run.experiment_packet.branch, "worktree-builder-1");
     assert_eq!(explain.evidence_digest.verification_outcome, "PASS");
     assert_eq!(explain.evidence_digest.security_blocked, "ALLOW");
-    assert_eq!(explain.explanation.summary, "Ship run contract primitives");
-    assert_eq!(explain.explanation.next_action, "review_requested");
+    assert_eq!(explain.explanation.summary, "Implement run ledger");
+    assert_eq!(explain.explanation.next_action, "task_completed");
     assert!(explain
         .explanation
         .reasons

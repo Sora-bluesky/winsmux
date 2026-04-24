@@ -1,0 +1,3 @@
+{"timestamp":"__TIMESTAMP__","session":"winsmux-orchestra","event":"pane.approval_waiting","message":"approval prompt detected","label":"builder-1","pane_id":"%2","role":"Builder","status":"approval_waiting"}
+{"timestamp":"__TIMESTAMP__","session":"winsmux-orchestra","event":"operator.state_transition","message":"State: review_requested -> blocked_no_review_target","label":"","pane_id":"","role":"Operator","status":"blocked_no_review_target","data":{"from":"review_requested","to":"blocked_no_review_target"}}
+{"timestamp":"__TIMESTAMP__","session":"winsmux-orchestra","event":"operator.commit_ready","message":"コミット準備完了。","label":"","pane_id":"","role":"Operator","status":"commit_ready","head_sha":"abc1234def5678"}
