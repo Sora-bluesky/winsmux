@@ -19,17 +19,32 @@ pub struct LedgerPaneReadModel {
     pub pane_id: String,
     pub role: String,
     pub state: String,
+    pub tokens_remaining: String,
     pub task_id: String,
+    pub parent_run_id: String,
+    pub goal: String,
     pub task: String,
+    pub task_type: String,
     pub task_state: String,
     pub review_state: String,
     pub priority: String,
+    pub blocking: bool,
     pub branch: String,
+    pub security_policy: String,
     pub worktree: String,
     pub head_sha: String,
     pub changed_file_count: usize,
     pub changed_files: Vec<String>,
+    pub write_scope: Vec<String>,
+    pub read_scope: Vec<String>,
+    pub constraints: Vec<String>,
+    pub expected_output: String,
+    pub verification_plan: Vec<String>,
+    pub review_required: bool,
     pub provider_target: String,
+    pub agent_role: String,
+    pub timeout_policy: String,
+    pub handoff_refs: Vec<String>,
     pub last_event: String,
     pub last_event_at: String,
     pub event_count: usize,
@@ -146,6 +161,134 @@ pub struct LedgerDigestItem {
 pub struct LedgerDigestProjection {
     pub summary: LedgerDigestSummary,
     pub items: Vec<LedgerDigestItem>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerExplainProjection {
+    pub run: LedgerExplainRun,
+    pub explanation: LedgerExplainExplanation,
+    pub evidence_digest: LedgerDigestItem,
+    pub recent_events: Vec<LedgerExplainRecentEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerExplainRun {
+    pub run_id: String,
+    pub task_id: String,
+    pub parent_run_id: String,
+    pub goal: String,
+    pub task: String,
+    pub task_type: String,
+    pub priority: String,
+    pub blocking: bool,
+    pub state: String,
+    pub task_state: String,
+    pub review_state: String,
+    pub branch: String,
+    pub head_sha: String,
+    pub worktree: String,
+    pub primary_label: String,
+    pub primary_pane_id: String,
+    pub primary_role: String,
+    pub last_event: String,
+    pub last_event_at: String,
+    pub tokens_remaining: String,
+    pub pane_count: usize,
+    pub changed_file_count: usize,
+    pub labels: Vec<String>,
+    pub pane_ids: Vec<String>,
+    pub roles: Vec<String>,
+    pub provider_target: String,
+    pub agent_role: String,
+    pub write_scope: Vec<String>,
+    pub read_scope: Vec<String>,
+    pub constraints: Vec<String>,
+    pub expected_output: String,
+    pub verification_plan: Vec<String>,
+    pub review_required: bool,
+    pub timeout_policy: String,
+    pub handoff_refs: Vec<String>,
+    pub action_items: Vec<LedgerExplainActionItem>,
+    pub experiment_packet: LedgerExplainExperimentPacket,
+    pub security_policy: Value,
+    pub security_verdict: Value,
+    pub verification_contract: Value,
+    pub verification_result: Value,
+    pub changed_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerExplainExplanation {
+    pub summary: String,
+    pub reasons: Vec<String>,
+    pub next_action: String,
+    pub current_state: LedgerExplainCurrentState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerExplainCurrentState {
+    pub state: String,
+    pub task_state: String,
+    pub review_state: String,
+    pub last_event: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LedgerExplainActionItem {
+    pub kind: String,
+    pub message: String,
+    pub event: String,
+    pub timestamp: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerExplainExperimentPacket {
+    pub hypothesis: String,
+    pub test_plan: Vec<String>,
+    pub result: String,
+    pub confidence: Option<f64>,
+    pub next_action: String,
+    pub observation_pack_ref: String,
+    pub consultation_ref: String,
+    pub run_id: String,
+    pub slot: String,
+    pub branch: String,
+    pub worktree: String,
+    pub env_fingerprint: String,
+    pub command_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LedgerExplainRecentEvent {
+    pub timestamp: String,
+    pub event: String,
+    pub status: String,
+    pub message: String,
+    pub label: String,
+    pub pane_id: String,
+    pub role: String,
+    pub task_id: String,
+    pub branch: String,
+    pub head_sha: String,
+    pub source: String,
+    pub hypothesis: String,
+    pub test_plan: Vec<String>,
+    pub result: String,
+    pub confidence: Option<f64>,
+    pub next_action: String,
+    pub observation_pack_ref: String,
+    pub consultation_ref: String,
+    pub run_id: String,
+    pub slot: String,
+    pub worktree: String,
+    pub env_fingerprint: String,
+    pub command_hash: String,
+    pub observation_pack: Value,
+    pub consultation_packet: Value,
+    pub verification_contract: Value,
+    pub verification_result: Value,
+    pub security_verdict: Value,
 }
 
 impl LedgerSnapshot {
@@ -269,17 +412,32 @@ impl LedgerSnapshot {
                     pane_id: pane.pane_id.clone(),
                     role: pane.role.clone(),
                     state: pane.state.clone(),
+                    tokens_remaining: pane.tokens_remaining.clone(),
                     task_id: pane.task_id.clone(),
+                    parent_run_id: pane.parent_run_id.clone(),
+                    goal: pane.goal.clone(),
                     task: pane.task.clone(),
+                    task_type: pane.task_type.clone(),
                     task_state: pane.task_state.clone(),
                     review_state: pane.review_state.clone(),
                     priority: pane.priority.clone(),
+                    blocking: pane.blocking,
                     branch: pane.branch.clone(),
+                    security_policy: pane.security_policy.clone(),
                     worktree: pane.worktree.clone(),
                     head_sha: pane.head_sha.clone(),
                     changed_file_count: pane.changed_file_count,
                     changed_files: pane.changed_files.clone(),
+                    write_scope: pane.write_scope.clone(),
+                    read_scope: pane.read_scope.clone(),
+                    constraints: pane.constraints.clone(),
+                    expected_output: pane.expected_output.clone(),
+                    verification_plan: pane.verification_plan.clone(),
+                    review_required: pane.review_required,
                     provider_target: pane.provider_target.clone(),
+                    agent_role: pane.agent_role.clone(),
+                    timeout_policy: pane.timeout_policy.clone(),
+                    handoff_refs: pane.handoff_refs.clone(),
                     last_event: pane.last_event.clone(),
                     last_event_at: pane.last_event_at.clone(),
                     event_count,
@@ -487,6 +645,117 @@ impl LedgerSnapshot {
             },
             items,
         }
+    }
+
+    pub fn explain_projection(&self, run_id: &str) -> Option<LedgerExplainProjection> {
+        let evidence_digest = self
+            .digest_projection()
+            .items
+            .into_iter()
+            .find(|item| item.run_id == run_id)?;
+        let mut panes: Vec<_> = self
+            .pane_read_models()
+            .into_iter()
+            .filter(|pane| pane_matches_digest_item(pane, &evidence_digest))
+            .collect();
+        panes.sort_by(|left, right| left.label.cmp(&right.label));
+        let primary_pane = panes.first()?;
+        let action_items: Vec<_> = self
+            .inbox_projection()
+            .items
+            .into_iter()
+            .filter(|item| inbox_item_matches_explain_run(item, &evidence_digest, &panes))
+            .map(explain_action_item_from_inbox)
+            .collect();
+        let mut recent_events: Vec<_> = self
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| event_matches_explain_run(event, &evidence_digest, &panes))
+            .collect();
+        recent_events.sort_by(|(left_index, left), (right_index, right)| {
+            right
+                .timestamp
+                .cmp(&left.timestamp)
+                .then_with(|| left_index.cmp(right_index))
+        });
+        let recent_events: Vec<_> = recent_events
+            .into_iter()
+            .map(|(_, event)| explain_recent_event_from_event(event))
+            .collect();
+        let experiment_packet = explain_experiment_packet(&recent_events, &evidence_digest);
+        let security_verdict =
+            first_event_value(&recent_events, |event| event.security_verdict.clone());
+        let verification_contract =
+            first_event_value(&recent_events, |event| event.verification_contract.clone());
+        let verification_result =
+            first_event_value(&recent_events, |event| event.verification_result.clone());
+
+        let mut labels = unique_sorted(panes.iter().map(|pane| pane.label.as_str()));
+        let mut pane_ids = unique_sorted(panes.iter().map(|pane| pane.pane_id.as_str()));
+        let mut roles = unique_sorted(panes.iter().map(|pane| pane.role.as_str()));
+        if labels.is_empty() {
+            labels.push(evidence_digest.label.clone());
+        }
+        if pane_ids.is_empty() {
+            pane_ids.push(evidence_digest.pane_id.clone());
+        }
+        if roles.is_empty() {
+            roles.push(evidence_digest.role.clone());
+        }
+
+        let run = LedgerExplainRun {
+            run_id: evidence_digest.run_id.clone(),
+            task_id: evidence_digest.task_id.clone(),
+            parent_run_id: primary_pane.parent_run_id.clone(),
+            goal: primary_pane.goal.clone(),
+            task: evidence_digest.task.clone(),
+            task_type: primary_pane.task_type.clone(),
+            priority: primary_pane.priority.clone(),
+            blocking: primary_pane.blocking,
+            state: primary_pane.state.clone(),
+            task_state: evidence_digest.task_state.clone(),
+            review_state: evidence_digest.review_state.clone(),
+            branch: evidence_digest.branch.clone(),
+            head_sha: evidence_digest.head_sha.clone(),
+            worktree: evidence_digest.worktree.clone(),
+            primary_label: primary_pane.label.clone(),
+            primary_pane_id: primary_pane.pane_id.clone(),
+            primary_role: primary_pane.role.clone(),
+            last_event: evidence_digest.last_event.clone(),
+            last_event_at: evidence_digest.last_event_at.clone(),
+            tokens_remaining: primary_pane.tokens_remaining.clone(),
+            pane_count: panes.len(),
+            changed_file_count: evidence_digest.changed_file_count,
+            labels,
+            pane_ids,
+            roles,
+            provider_target: evidence_digest.provider_target.clone(),
+            agent_role: primary_pane.agent_role.clone(),
+            write_scope: primary_pane.write_scope.clone(),
+            read_scope: primary_pane.read_scope.clone(),
+            constraints: primary_pane.constraints.clone(),
+            expected_output: primary_pane.expected_output.clone(),
+            verification_plan: primary_pane.verification_plan.clone(),
+            review_required: primary_pane.review_required,
+            timeout_policy: primary_pane.timeout_policy.clone(),
+            handoff_refs: primary_pane.handoff_refs.clone(),
+            action_items: action_items.clone(),
+            experiment_packet,
+            security_policy: manifest_security_policy_value(&primary_pane.security_policy),
+            security_verdict,
+            verification_contract,
+            verification_result,
+            changed_files: evidence_digest.changed_files.clone(),
+        };
+        let explanation = explain_explanation(&run, &evidence_digest);
+
+        Some(LedgerExplainProjection {
+            run,
+            explanation,
+            evidence_digest,
+            recent_events,
+        })
     }
 
     fn inbox_active_events(&self) -> Vec<&EventRecord> {
@@ -796,6 +1065,300 @@ fn run_next_action(
     }
 
     task_state.to_string()
+}
+
+fn pane_matches_digest_item(pane: &LedgerPaneReadModel, item: &LedgerDigestItem) -> bool {
+    run_id_from_pane(pane) == item.run_id
+        || (!pane.task_id.trim().is_empty() && pane.task_id == item.task_id)
+        || (!pane.branch.trim().is_empty() && pane.branch == item.branch)
+        || (!pane.head_sha.trim().is_empty() && pane.head_sha == item.head_sha)
+        || (!pane.label.trim().is_empty() && pane.label == item.label)
+        || (!pane.pane_id.trim().is_empty() && pane.pane_id == item.pane_id)
+}
+
+fn inbox_item_matches_digest_item(item: &LedgerInboxItem, digest: &LedgerDigestItem) -> bool {
+    if !item.task_id.trim().is_empty() {
+        return !digest.task_id.trim().is_empty() && item.task_id == digest.task_id;
+    }
+    (!item.branch.trim().is_empty() && item.branch == digest.branch)
+        || (!item.head_sha.trim().is_empty() && item.head_sha == digest.head_sha)
+        || (!item.label.trim().is_empty() && item.label == digest.label)
+        || (!item.pane_id.trim().is_empty() && item.pane_id == digest.pane_id)
+}
+
+fn inbox_item_matches_explain_run(
+    item: &LedgerInboxItem,
+    digest: &LedgerDigestItem,
+    panes: &[LedgerPaneReadModel],
+) -> bool {
+    if inbox_item_matches_digest_item(item, digest) {
+        return true;
+    }
+    if !item.task_id.trim().is_empty() {
+        return false;
+    }
+    panes.iter().any(|pane| {
+        (!item.pane_id.trim().is_empty() && item.pane_id == pane.pane_id)
+            || (!item.label.trim().is_empty() && item.label == pane.label)
+    })
+}
+
+fn event_matches_digest_item(event: &EventRecord, digest: &LedgerDigestItem) -> bool {
+    let event_run_id = event_data_string(&event.data, "run_id");
+    let event_task_id = event_data_string(&event.data, "task_id");
+    let event_branch = event_branch(event);
+    let event_head_sha = event_head_sha(event);
+
+    if !event_run_id.trim().is_empty() {
+        return event_run_id == digest.run_id;
+    }
+    if !event_task_id.trim().is_empty() {
+        return !digest.task_id.trim().is_empty() && event_task_id == digest.task_id;
+    }
+    if !event.pane_id.trim().is_empty() {
+        return event.pane_id == digest.pane_id;
+    }
+    if !event.label.trim().is_empty() {
+        return event.label == digest.label;
+    }
+    if !event_branch.trim().is_empty() && !digest.branch.trim().is_empty() {
+        return event_branch == digest.branch;
+    }
+    !event_head_sha.trim().is_empty() && event_head_sha == digest.head_sha
+}
+
+fn event_matches_explain_run(
+    event: &EventRecord,
+    digest: &LedgerDigestItem,
+    panes: &[LedgerPaneReadModel],
+) -> bool {
+    if event_matches_digest_item(event, digest) {
+        return true;
+    }
+    let event_task_id = event_data_string(&event.data, "task_id");
+    let event_run_id = event_data_string(&event.data, "run_id");
+    if !event_task_id.trim().is_empty() || !event_run_id.trim().is_empty() {
+        return false;
+    }
+    panes.iter().any(|pane| {
+        (!event.pane_id.trim().is_empty() && event.pane_id == pane.pane_id)
+            || (!event.label.trim().is_empty() && event.label == pane.label)
+    })
+}
+
+fn explain_action_item_from_inbox(item: LedgerInboxItem) -> LedgerExplainActionItem {
+    LedgerExplainActionItem {
+        kind: item.kind,
+        message: item.message,
+        event: item.event,
+        timestamp: item.timestamp,
+        source: item.source,
+    }
+}
+
+fn explain_recent_event_from_event(event: &EventRecord) -> LedgerExplainRecentEvent {
+    LedgerExplainRecentEvent {
+        timestamp: event.timestamp.clone(),
+        event: event.event.clone(),
+        status: event.status.clone(),
+        message: event.message.clone(),
+        label: event.label.clone(),
+        pane_id: event.pane_id.clone(),
+        role: event.role.clone(),
+        task_id: event_data_string(&event.data, "task_id"),
+        branch: event_branch(event),
+        head_sha: event_head_sha(event),
+        source: event_data_string(&event.data, "source"),
+        hypothesis: event_data_string(&event.data, "hypothesis"),
+        test_plan: event_data_string_list(&event.data, "test_plan"),
+        result: event_data_string(&event.data, "result"),
+        confidence: event_data_f64(&event.data, "confidence"),
+        next_action: event_data_string(&event.data, "next_action"),
+        observation_pack_ref: event_data_string(&event.data, "observation_pack_ref"),
+        consultation_ref: event_data_string(&event.data, "consultation_ref"),
+        run_id: event_data_string(&event.data, "run_id"),
+        slot: event_data_string(&event.data, "slot"),
+        worktree: event_data_string(&event.data, "worktree"),
+        env_fingerprint: event_data_string(&event.data, "env_fingerprint"),
+        command_hash: event_data_string(&event.data, "command_hash"),
+        observation_pack: event_data_value(&event.data, "observation_pack"),
+        consultation_packet: event_data_value(&event.data, "consultation_packet"),
+        verification_contract: event_data_value(&event.data, "verification_contract"),
+        verification_result: event_data_value(&event.data, "verification_result"),
+        security_verdict: first_non_null_value([
+            event_data_value(&event.data, "security_verdict"),
+            event_data_value(&event.data, "verdict"),
+        ]),
+    }
+}
+
+fn explain_experiment_packet(
+    events: &[LedgerExplainRecentEvent],
+    digest: &LedgerDigestItem,
+) -> LedgerExplainExperimentPacket {
+    let mut hypothesis = String::new();
+    let mut test_plan = Vec::new();
+    let mut result = String::new();
+    let mut confidence = None;
+    let mut next_action = String::new();
+    let mut observation_pack_ref = String::new();
+    let mut consultation_ref = String::new();
+    let mut run_id = String::new();
+    let mut slot = String::new();
+    let mut branch = String::new();
+    let mut worktree = String::new();
+    let mut env_fingerprint = String::new();
+    let mut command_hash = String::new();
+
+    for event in events {
+        set_if_empty(&mut hypothesis, &event.hypothesis);
+        if test_plan.is_empty() && !event.test_plan.is_empty() {
+            test_plan = event.test_plan.clone();
+        }
+        set_if_empty(&mut result, &event.result);
+        if confidence.is_none() {
+            confidence = event.confidence;
+        }
+        set_if_empty(&mut next_action, &event.next_action);
+        set_if_empty(&mut observation_pack_ref, &event.observation_pack_ref);
+        set_if_empty(&mut consultation_ref, &event.consultation_ref);
+        set_if_empty(&mut run_id, &event.run_id);
+        set_if_empty(&mut slot, &event.slot);
+        set_if_empty(&mut branch, &event.branch);
+        set_if_empty(&mut worktree, &event.worktree);
+        set_if_empty(&mut env_fingerprint, &event.env_fingerprint);
+        set_if_empty(&mut command_hash, &event.command_hash);
+    }
+
+    LedgerExplainExperimentPacket {
+        hypothesis: first_non_empty(&hypothesis, &digest.hypothesis),
+        test_plan,
+        result,
+        confidence: confidence.or(digest.confidence),
+        next_action: first_non_empty(&next_action, &digest.next_action),
+        observation_pack_ref: first_non_empty(&observation_pack_ref, &digest.observation_pack_ref),
+        consultation_ref: first_non_empty(&consultation_ref, &digest.consultation_ref),
+        run_id: first_non_empty(&run_id, &digest.run_id),
+        slot,
+        branch: first_non_empty(&branch, &digest.branch),
+        worktree: first_non_empty(&worktree, &digest.worktree),
+        env_fingerprint,
+        command_hash,
+    }
+}
+
+fn explain_explanation(
+    run: &LedgerExplainRun,
+    digest: &LedgerDigestItem,
+) -> LedgerExplainExplanation {
+    let mut reasons = Vec::new();
+    push_reason(&mut reasons, "task_state", &run.task_state);
+    push_reason(&mut reasons, "review_state", &run.review_state);
+    push_reason(&mut reasons, "last_event", &run.last_event);
+    push_reason(&mut reasons, "verification", &digest.verification_outcome);
+    push_reason(&mut reasons, "security", &digest.security_blocked);
+    for item in run.action_items.iter().take(3) {
+        push_reason(&mut reasons, "action", &item.kind);
+    }
+
+    LedgerExplainExplanation {
+        summary: first_non_empty(&run.goal, &run.task),
+        reasons,
+        next_action: first_non_empty(&run.experiment_packet.next_action, &digest.next_action),
+        current_state: LedgerExplainCurrentState {
+            state: run.state.clone(),
+            task_state: run.task_state.clone(),
+            review_state: run.review_state.clone(),
+            last_event: run.last_event.clone(),
+        },
+    }
+}
+
+fn push_reason(reasons: &mut Vec<String>, key: &str, value: &str) {
+    if !value.trim().is_empty() {
+        reasons.push(format!("{key}={value}"));
+    }
+}
+
+fn event_data_value(data: &Value, key: &str) -> Value {
+    data.as_object()
+        .and_then(|map| map.get(key))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+fn event_data_string_list(data: &Value, key: &str) -> Vec<String> {
+    data.as_object()
+        .and_then(|map| map.get(key))
+        .and_then(|value| {
+            if let Some(items) = value.as_array() {
+                Some(
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .map(str::to_string)
+                        .filter(|item| !item.trim().is_empty())
+                        .collect(),
+                )
+            } else {
+                value.as_str().map(|text| {
+                    text.split('|')
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn manifest_security_policy_value(raw: &str) -> Value {
+    if raw.trim().is_empty() {
+        return Value::Null;
+    }
+    serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+}
+
+fn first_event_value<F>(events: &[LedgerExplainRecentEvent], selector: F) -> Value
+where
+    F: Fn(&LedgerExplainRecentEvent) -> Value,
+{
+    events
+        .iter()
+        .map(selector)
+        .find(|value| !value.is_null())
+        .unwrap_or(Value::Null)
+}
+
+fn first_non_null_value<const N: usize>(values: [Value; N]) -> Value {
+    values
+        .into_iter()
+        .find(|value| !value.is_null())
+        .unwrap_or(Value::Null)
+}
+
+fn first_non_empty(primary: &str, fallback: &str) -> String {
+    if !primary.trim().is_empty() {
+        primary.to_string()
+    } else {
+        fallback.to_string()
+    }
+}
+
+fn unique_sorted<'a, I>(values: I) -> Vec<String>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut values: Vec<_> = values
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    values.sort();
+    values
 }
 
 fn short_head_sha(head_sha: &str) -> String {

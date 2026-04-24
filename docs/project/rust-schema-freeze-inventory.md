@@ -210,6 +210,7 @@ Current boundary:
 - It derives the first Rust board projection from manifest pane read models.
 - It derives the first Rust inbox projection from manifest pane state and latest actionable events.
 - It derives the first Rust digest projection from pane read models and inbox action items.
+- It derives the first Rust explain projection from digest items, matching panes, and matching events.
 - It rejects duplicate manifest `pane_id` values because they make projection identity ambiguous.
 - It preserves manifest pane order separately from the lookup index.
 - It preserves unknown event pane IDs instead of rejecting them, because historical events can outlive the current manifest view.
@@ -221,9 +222,9 @@ Current limitation:
 - The snapshot is still read-only.
 - Projection code does not consume the live snapshot yet.
 - The PowerShell and desktop surfaces do not consume the Rust board projection yet.
-- `explain` is not derived from this snapshot yet.
 - The PowerShell and desktop surfaces do not consume the Rust inbox projection yet.
 - The PowerShell and desktop surfaces do not consume the Rust digest projection yet.
+- The PowerShell and desktop surfaces do not consume the Rust explain projection yet.
 
 ### 7. `verdict`
 
