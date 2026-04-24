@@ -25,6 +25,7 @@ mod terminal_engine;
 mod manifest_contract;
 mod event_contract;
 mod ledger;
+mod operator_cli;
 mod client;
 mod app;
 mod ssh_input;
@@ -234,7 +235,16 @@ fn run_main() -> io::Result<()> {
         _ => {}
     }
 
+    if cmd == "status" && operator_cli::is_operator_status_invocation(&cmd_args[1..]) {
+        return operator_cli::run_status_command(&cmd_args[1..]);
+    }
+
     match cmd {
+        "board" => return operator_cli::run_board_command(&cmd_args[1..]),
+        "inbox" => return operator_cli::run_inbox_command(&cmd_args[1..]),
+        "digest" => return operator_cli::run_digest_command(&cmd_args[1..]),
+        "runs" => return operator_cli::run_runs_command(&cmd_args[1..]),
+        "explain" => return operator_cli::run_explain_command(&cmd_args[1..]),
         // kill-server MUST be handled early before any potential fall-through
         "kill-server" => {
             let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();

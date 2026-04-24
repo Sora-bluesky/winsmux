@@ -316,6 +316,13 @@ const CLI_COMMANDS: &[(&str, &str, &str)] = &[
     ("display-popup",     "popup",    "Display a popup window"),
     ("list-commands",     "lscm",     "List available commands"),
     ("server-info",       "info",     "Show server information"),
+    // Operator read models
+    ("status",            "",         "Print session and pane JSON with --json"),
+    ("board",             "",         "Print pane/task/review board JSON"),
+    ("inbox",             "",         "Print actionable item JSON"),
+    ("digest",            "",         "Print run digest JSON"),
+    ("runs",              "",         "Print run-oriented evidence JSON"),
+    ("explain",           "",         "Print one run explanation JSON"),
     // Misc
     ("confirm-before",    "confirm",  "Confirm before running command"),
     ("if-shell",          "if",       "Conditional command execution"),
