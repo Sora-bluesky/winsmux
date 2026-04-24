@@ -70,6 +70,27 @@ textarea {
   font: inherit;
 }
 
+.ui-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15em;
+  height: 1.15em;
+  color: currentColor;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.ui-icon::before {
+  content: attr(data-icon);
+  font-size: 1em;
+  font-weight: 700;
+}
+
+.btn-label {
+  min-width: 0;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -181,6 +202,9 @@ textarea {
 }
 
 .sidebar-section-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-size: var(--text-2xs);
   font-weight: 700;
   text-transform: uppercase;
@@ -258,6 +282,10 @@ textarea {
 }
 
 .sidebar-settings-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   border: 1px solid var(--border-strong);
   background: var(--bg-surface-raised);
   color: var(--text-secondary);
@@ -325,6 +353,10 @@ textarea {
 }
 
 .ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
   border: 1px solid var(--border-strong);
   background: var(--bg-surface-raised);
   color: var(--text-secondary);
@@ -1740,6 +1772,12 @@ body[data-popout-surface="1"] #editor-surface {
   color: #8f99ba;
 }
 
+#terminal-toolbar span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
 #add-pane-btn {
   border: 1px solid var(--border-strong);
   background: var(--bg-surface-raised);
@@ -1858,6 +1896,11 @@ body[data-popout-surface="1"] #editor-surface {
 
   #header-actions {
     flex-wrap: wrap;
+  }
+
+  #header-actions .ghost-btn {
+    min-width: 42px;
+    padding-inline: 11px;
   }
 
   #sidebar-overlay {
@@ -2019,6 +2062,21 @@ body[data-popout-surface="1"] #editor-surface {
   .command-bar-item-meta {
     align-items: flex-start;
     min-width: 0;
+  }
+}
+
+@media (max-width: 720px) {
+  #header-actions .btn-label {
+    display: none;
+  }
+
+  #header-actions .ghost-btn {
+    border-radius: 14px;
+    padding: 10px;
+  }
+
+  .sidebar-section-title {
+    letter-spacing: 0.06em;
   }
 }
 

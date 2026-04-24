@@ -4831,8 +4831,9 @@ function setTerminalDrawer(open: boolean) {
   }
 
   drawer.hidden = !open;
-  button.textContent = open ? "Hide Terminal" : "Terminal";
+  setCompactButtonLabel(button, open ? "Hide" : "Terminal");
   button.setAttribute("aria-expanded", open ? "true" : "false");
+  button.setAttribute("aria-label", open ? "Hide terminal drawer" : "Open terminal drawer");
 
   if (open && panes.size === 0) {
     createPane("main");
@@ -4859,8 +4860,19 @@ function setContextPanel(open: boolean, options?: { preserveWidePreference?: boo
 
   panel.toggleAttribute("hidden", !open);
   body.classList.toggle("context-collapsed", !open);
-  button.textContent = open ? "Hide Context" : "Context";
+  setCompactButtonLabel(button, open ? "Hide" : "Context");
   button.setAttribute("aria-expanded", open ? "true" : "false");
+  button.setAttribute("aria-label", open ? "Hide context panel" : "Show context panel");
+}
+
+function setCompactButtonLabel(button: Element, label: string) {
+  const labelNode = button.querySelector(".btn-label");
+  if (labelNode) {
+    labelNode.textContent = label;
+    return;
+  }
+
+  button.textContent = label;
 }
 
 function setEditorSurface(open: boolean) {

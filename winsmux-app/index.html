@@ -13,27 +13,30 @@
       <aside id="left-rail">
         <div class="brand-block">
           <div class="brand">winsmux</div>
-          <div class="sidebar-caption">Workspace sidebar</div>
+          <div class="sidebar-caption">Operator shell</div>
         </div>
         <section class="sidebar-section">
-          <div class="sidebar-section-title">Sessions</div>
+          <div class="sidebar-section-title"><span class="ui-icon" data-icon="◴" aria-hidden="true"></span>Sessions</div>
           <div id="session-list" class="sidebar-list"></div>
         </section>
         <section class="sidebar-section">
-          <div class="sidebar-section-title">Explorer</div>
+          <div class="sidebar-section-title"><span class="ui-icon" data-icon="▱" aria-hidden="true"></span>Files</div>
           <div id="explorer-list" class="sidebar-list"></div>
         </section>
         <section class="sidebar-section">
-          <div class="sidebar-section-title">Open Editors</div>
+          <div class="sidebar-section-title"><span class="ui-icon" data-icon="✎" aria-hidden="true"></span>Editors</div>
           <div id="open-editors-list" class="sidebar-list"></div>
         </section>
         <section class="sidebar-section">
-          <div class="sidebar-section-title">Source Control</div>
+          <div class="sidebar-section-title"><span class="ui-icon" data-icon="⌁" aria-hidden="true"></span>Source</div>
           <div id="source-summary-list" class="sidebar-list"></div>
           <div id="source-entry-list" class="sidebar-list"></div>
         </section>
         <div class="sidebar-spacer"></div>
-        <button id="settings-btn" class="sidebar-settings-btn" type="button">Settings</button>
+        <button id="settings-btn" class="sidebar-settings-btn" type="button" aria-label="Open settings">
+          <span class="ui-icon" data-icon="⚙" aria-hidden="true"></span>
+          <span class="btn-label">Settings</span>
+        </button>
         <div id="sidebar-resizer" aria-hidden="true"></div>
       </aside>
       <main id="workspace">
@@ -50,8 +53,10 @@
               type="button"
               aria-controls="command-bar"
               aria-expanded="false"
+              aria-label="Open command bar"
             >
-              Command
+              <span class="ui-icon" data-icon="⌘" aria-hidden="true"></span>
+              <span class="btn-label">Command</span>
             </button>
             <button
               class="ghost-btn"
@@ -59,8 +64,10 @@
               type="button"
               aria-controls="left-rail"
               aria-expanded="true"
+              aria-label="Toggle workspace sidebar"
             >
-              Workspace
+              <span class="ui-icon" data-icon="☰" aria-hidden="true"></span>
+              <span class="btn-label">Workspace</span>
             </button>
             <button
               class="ghost-btn"
@@ -68,8 +75,10 @@
               type="button"
               aria-controls="context-panel"
               aria-expanded="true"
+              aria-label="Hide context panel"
             >
-              Context
+              <span class="ui-icon" data-icon="◐" aria-hidden="true"></span>
+              <span class="btn-label">Context</span>
             </button>
             <button
               class="ghost-btn"
@@ -77,8 +86,10 @@
               type="button"
               aria-controls="terminal-drawer"
               aria-expanded="false"
+              aria-label="Open terminal drawer"
             >
-              Terminal
+              <span class="ui-icon" data-icon="▣" aria-hidden="true"></span>
+              <span class="btn-label">Terminal</span>
             </button>
           </div>
         </header>
@@ -91,7 +102,7 @@
             </div>
             <div id="timeline-toolbar">
               <div id="timeline-filter-row" aria-label="Timeline filters"></div>
-              <div id="timeline-feed-hint">Material events only: user messages, operator updates, and structured system cards.</div>
+              <div id="timeline-feed-hint">Key events only. Details open when needed.</div>
             </div>
             <div id="selected-run-summary"></div>
             <div id="conversation-timeline" role="log" aria-live="polite" aria-relevant="additions text"></div>
@@ -164,7 +175,7 @@
 
         <section id="terminal-drawer" hidden>
           <div id="terminal-toolbar">
-            <span>Utility drawer: terminal / raw logs / diagnostics only</span>
+            <span><span class="ui-icon" data-icon="▣" aria-hidden="true"></span>Utility terminal</span>
             <button id="add-pane-btn">+ Pane</button>
           </div>
           <div id="panes-container"></div>
