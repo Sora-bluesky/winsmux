@@ -222,6 +222,7 @@ Current boundary:
 - The board, inbox, digest, and explain projection structs serialize to JSON through `serde`.
 - It compares modeled Rust board, inbox, digest, and explain JSON against the PowerShell golden corpus.
 - It prunes PowerShell-only envelope fields before comparison and keeps the Rust-modeled fields strict.
+- The Rust CLI now exposes live read-only `board --json` and `status --json` commands.
 - It rejects duplicate manifest `pane_id` values because they make projection identity ambiguous.
 - It preserves manifest pane order separately from the lookup index.
 - It preserves unknown event pane IDs instead of rejecting them, because historical events can outlive the current manifest view.
@@ -231,8 +232,8 @@ Current boundary:
 Current limitation:
 
 - The snapshot is still read-only.
-- Projection code does not consume the live snapshot yet.
 - The PowerShell and desktop surfaces do not consume the Rust board projection yet.
+- The PowerShell and desktop surfaces do not consume the Rust status read model yet.
 - The PowerShell and desktop surfaces do not consume the Rust inbox projection yet.
 - The PowerShell and desktop surfaces do not consume the Rust digest projection yet.
 - The PowerShell and desktop surfaces do not consume the Rust explain projection yet.
