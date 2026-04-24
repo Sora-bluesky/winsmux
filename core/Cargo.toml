@@ -1,6 +1,6 @@
 [package]
 name = "winsmux"
-version = "0.24.0"
+version = "0.24.1"
 edition = "2021"
 description = "Windows-native terminal multiplexer and agent workspace runtime"
 license = "Apache-2.0 AND MIT"
