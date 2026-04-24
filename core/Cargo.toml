@@ -37,6 +37,10 @@ path = "tests-rs/ledger_contract.rs"
 name = "fixture_comparison"
 path = "tests-rs/fixture_comparison.rs"
 
+[[test]]
+name = "operator_cli"
+path = "tests-rs/operator_cli.rs"
+
 # Windows only
 [target.'cfg(not(windows))'.dependencies]
 [target.'cfg(windows)'.dependencies]

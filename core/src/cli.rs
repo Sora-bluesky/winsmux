@@ -126,6 +126,14 @@ CONFIGURATION COMMANDS:
     show-hooks              Show all defined hooks
     list-commands, lscm     List all available commands
 
+OPERATOR COMMANDS:
+    status --json           Print session, pane, and board summary JSON
+    board --json            Print pane, task, review, and git board JSON
+    inbox --json            Print actionable approval and review items JSON
+    digest --json           Print high-signal run digest JSON
+    runs --json             Print run-oriented evidence JSON
+    explain <run_id> --json Print one run explanation JSON
+
 LAYOUT COMMANDS:
     select-layout, selectl  Apply a layout preset
                             Presets: even-horizontal, even-vertical,
