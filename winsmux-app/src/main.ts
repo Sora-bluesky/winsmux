@@ -197,12 +197,14 @@ type ThemeMode = "codex-dark" | "graphite-dark";
 type DensityMode = "comfortable" | "compact";
 type WrapMode = "balanced" | "compact";
 type CodeFontMode = "system" | "google-sans-code" | "jetbrains-mono";
+type FocusMode = "standard" | "focused";
 
 interface ThemeState {
   theme: ThemeMode;
   density: DensityMode;
   wrapMode: WrapMode;
   codeFont: CodeFontMode;
+  focusMode: FocusMode;
 }
 
 interface ShellPreferenceState extends ThemeState {
@@ -324,6 +326,7 @@ const themeState: ThemeState = {
   density: "comfortable",
   wrapMode: "balanced",
   codeFont: "system",
+  focusMode: "standard",
 };
 let settingsDraftState: ThemeState | null = null;
 let preferredWideSidebarOpen = true;
@@ -376,6 +379,11 @@ const codeFontOptions: Array<{ value: CodeFontMode; label: string; description: 
   { value: "system", label: "System mono", description: "Use the current platform monospace stack." },
   { value: "google-sans-code", label: "Google Sans Code", description: "Cleaner code reading when installed on Windows." },
   { value: "jetbrains-mono", label: "JetBrains Mono", description: "Familiar developer font with clear symbols." },
+];
+
+const focusModeOptions: Array<{ value: FocusMode; label: string; description: string }> = [
+  { value: "standard", label: "Standard", description: "Show timeline detail chips on every event." },
+  { value: "focused", label: "Focus", description: "Keep details for selected, review, and attention events." },
 ];
 
 function getCodeFontFamily(mode: CodeFontMode = themeState.codeFont) {
@@ -2456,6 +2464,7 @@ function cloneThemeState(state: ThemeState): ThemeState {
     density: state.density,
     wrapMode: state.wrapMode,
     codeFont: state.codeFont,
+    focusMode: state.focusMode,
   };
 }
 
@@ -2463,7 +2472,8 @@ function themeStatesEqual(left: ThemeState, right: ThemeState) {
   return left.theme === right.theme
     && left.density === right.density
     && left.wrapMode === right.wrapMode
-    && left.codeFont === right.codeFont;
+    && left.codeFont === right.codeFont
+    && left.focusMode === right.focusMode;
 }
 
 function readStoredShellPreferences(): ShellPreferenceState | null {
@@ -2478,6 +2488,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
     const density = densityOptions.find((item) => item.value === parsed.density)?.value;
     const wrapMode = wrapOptions.find((item) => item.value === parsed.wrapMode)?.value;
     const codeFont = codeFontOptions.find((item) => item.value === parsed.codeFont)?.value ?? "system";
+    const focusMode = focusModeOptions.find((item) => item.value === parsed.focusMode)?.value ?? "standard";
     if (!theme || !density || !wrapMode) {
       return null;
     }
@@ -2491,6 +2502,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       density,
       wrapMode,
       codeFont,
+      focusMode,
       sidebarWidth: Math.max(240, Math.min(380, Math.round(sidebarWidthValue))),
       wideSidebarOpen,
       wideContextOpen,
@@ -2507,6 +2519,7 @@ function persistThemeState() {
       density: themeState.density,
       wrapMode: themeState.wrapMode,
       codeFont: themeState.codeFont,
+      focusMode: themeState.focusMode,
       sidebarWidth,
       wideSidebarOpen: preferredWideSidebarOpen,
       wideContextOpen: preferredWideContextOpen,
@@ -2529,6 +2542,7 @@ function applyShellPreferences() {
   shell.dataset.density = themeState.density;
   shell.dataset.wrapMode = themeState.wrapMode;
   shell.dataset.codeFont = themeState.codeFont;
+  shell.dataset.focusMode = themeState.focusMode;
 }
 
 function applyThemeState(nextState: ThemeState) {
@@ -2536,8 +2550,11 @@ function applyThemeState(nextState: ThemeState) {
   themeState.density = nextState.density;
   themeState.wrapMode = nextState.wrapMode;
   themeState.codeFont = nextState.codeFont;
+  themeState.focusMode = nextState.focusMode;
   applyShellPreferences();
+  updateTimelineFeedHint();
   applyCodeFontToPanes();
+  renderConversation(getConversationItems());
   renderFooterLane();
 }
 
@@ -2605,6 +2622,14 @@ function renderSettingsControls() {
       settingsDraftState = cloneThemeState(themeState);
     }
     settingsDraftState.codeFont = value;
+    renderSettingsControls();
+  });
+
+  renderPreferenceOptions("focus-mode-options", focusModeOptions, activeState.focusMode, (value) => {
+    if (!settingsDraftState) {
+      settingsDraftState = cloneThemeState(themeState);
+    }
+    settingsDraftState.focusMode = value;
     renderSettingsControls();
   });
 
@@ -3088,6 +3113,29 @@ function getVisibleConversationItems(items: ConversationItem[]) {
   }
 }
 
+function shouldShowTimelineDetails(item: ConversationItem) {
+  if (themeState.focusMode !== "focused") {
+    return true;
+  }
+
+  if (item.category === "attention" || item.category === "review") {
+    return true;
+  }
+
+  return Boolean(item.runId && item.runId === getSelectedRunId());
+}
+
+function updateTimelineFeedHint() {
+  const hint = document.getElementById("timeline-feed-hint");
+  if (!hint) {
+    return;
+  }
+
+  hint.textContent = themeState.focusMode === "focused"
+    ? "Focus mode hides routine details. Select a run to expand it."
+    : "Key events only. Details open when needed.";
+}
+
 function renderTimelineFilters() {
   const root = document.getElementById("timeline-filter-row");
   if (!root) {
@@ -3235,7 +3283,7 @@ function renderConversation(items: ConversationItem[]) {
     body.textContent = item.body;
     article.appendChild(body);
 
-    if (item.details?.length) {
+    if (item.details?.length && shouldShowTimelineDetails(item)) {
       const detailRow = document.createElement("div");
       detailRow.className = "timeline-detail-row";
       for (const detail of item.details) {
@@ -3801,8 +3849,8 @@ function getCommandActions(): CommandAction[] {
     {
       id: "settings",
       label: "Open settings",
-      description: "Open theme, density, wrap, and workspace preferences.",
-      keywords: ["settings", "theme", "density", "wrap", "preferences"],
+      description: "Open theme, density, wrap, font, and display preferences.",
+      keywords: ["settings", "theme", "density", "wrap", "font", "display", "focus", "preferences"],
       tone: "accent",
       run: () => setSettingsSheet(true),
     },
