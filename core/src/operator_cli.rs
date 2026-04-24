@@ -2,6 +2,7 @@ use std::{
     env, fs,
     io::{self, Write},
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use chrono::{SecondsFormat, Utc};
@@ -126,6 +127,26 @@ pub fn run_explain_command(args: &[&String]) -> io::Result<()> {
     write_json(&payload)
 }
 
+pub fn run_review_reset_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("usage: winsmux review-reset [--project-dir <path>]");
+        return Ok(());
+    }
+    let options = parse_options("review-reset", args, 0)?;
+    if options.json {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("review-reset"),
+        ));
+    }
+
+    let branch = current_git_branch(&options.project_dir)?;
+    clear_review_state_record(&options.project_dir, &branch)?;
+    let _ = clear_current_pane_review_manifest_state(&options.project_dir);
+    println!("review PASS cleared for {branch}");
+    Ok(())
+}
+
 struct ParsedOptions {
     json: bool,
     project_dir: PathBuf,
@@ -208,8 +229,178 @@ fn usage_for(command: &str) -> &'static str {
         "digest" => "usage: winsmux digest --json [--project-dir <path>]",
         "runs" => "usage: winsmux runs --json [--project-dir <path>]",
         "explain" => "usage: winsmux explain <run_id> --json [--project-dir <path>]",
+        "review-reset" => "usage: winsmux review-reset [--project-dir <path>]",
         _ => "usage: winsmux <command> --json [--project-dir <path>]",
     }
+}
+
+fn current_git_branch(project_dir: &Path) -> io::Result<String> {
+    if let Some(branch) = git_output_line(project_dir, &["rev-parse", "--abbrev-ref", "HEAD"])? {
+        if branch != "HEAD" {
+            return Ok(branch);
+        }
+    }
+
+    if let Some(branch) = git_output_line(project_dir, &["symbolic-ref", "--short", "HEAD"])? {
+        return Ok(branch);
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+            "unable to determine current git branch in {}",
+            project_dir.display()
+        ),
+    ))
+}
+
+fn git_output_line(project_dir: &Path, args: &[&str]) -> io::Result<Option<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project_dir)
+        .args(args)
+        .output()
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "unable to determine current git branch in {}: {err}",
+                    project_dir.display()
+                ),
+            )
+        })?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!value.is_empty()).then_some(value))
+}
+
+fn clear_review_state_record(project_dir: &Path, branch: &str) -> io::Result<()> {
+    let path = project_dir.join(".winsmux").join("review-state.json");
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let raw = fs::read_to_string(&path)?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        fs::remove_file(&path)?;
+        return Ok(());
+    }
+
+    let mut state = serde_json::from_str::<Map<String, Value>>(trimmed).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid review state: {}", path.display()),
+        )
+    })?;
+    state.remove(branch);
+
+    if state.is_empty() {
+        fs::remove_file(&path)?;
+        return Ok(());
+    }
+
+    let content = serde_json::to_string_pretty(&state).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize review state: {err}"),
+        )
+    })?;
+    fs::write(path, format!("{content}\n"))
+}
+
+fn clear_current_pane_review_manifest_state(project_dir: &Path) -> io::Result<bool> {
+    let pane_id = match env::var("WINSMUX_PANE_ID") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return Ok(false),
+    };
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let raw = fs::read_to_string(&manifest_path)?;
+    let mut manifest = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid manifest: {}: {err}", manifest_path.display()),
+        )
+    })?;
+
+    let timestamp = generated_at();
+    let updated = update_manifest_pane_review_state(&mut manifest, &pane_id, &timestamp);
+    if !updated {
+        return Ok(false);
+    }
+
+    let content = serde_yaml::to_string(&manifest).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize manifest: {err}"),
+        )
+    })?;
+    fs::write(manifest_path, content)?;
+    Ok(true)
+}
+
+fn update_manifest_pane_review_state(
+    manifest: &mut serde_yaml::Value,
+    pane_id: &str,
+    timestamp: &str,
+) -> bool {
+    let Some(panes) = manifest.get_mut("panes") else {
+        return false;
+    };
+
+    match panes {
+        serde_yaml::Value::Mapping(map) => map
+            .values_mut()
+            .any(|pane| clear_manifest_pane_if_matches(pane, pane_id, timestamp)),
+        serde_yaml::Value::Sequence(items) => items
+            .iter_mut()
+            .any(|pane| clear_manifest_pane_if_matches(pane, pane_id, timestamp)),
+        _ => false,
+    }
+}
+
+fn clear_manifest_pane_if_matches(
+    pane: &mut serde_yaml::Value,
+    pane_id: &str,
+    timestamp: &str,
+) -> bool {
+    let serde_yaml::Value::Mapping(map) = pane else {
+        return false;
+    };
+    let key = serde_yaml::Value::String("pane_id".to_string());
+    let actual = map
+        .get(&key)
+        .and_then(serde_yaml::Value::as_str)
+        .unwrap_or_default();
+    if actual != pane_id {
+        return false;
+    }
+    let role = map
+        .get(serde_yaml::Value::String("role".to_string()))
+        .and_then(serde_yaml::Value::as_str)
+        .unwrap_or_default();
+    if !matches!(role, "Reviewer" | "Worker") {
+        return false;
+    }
+
+    for name in ["review_state", "branch", "head_sha"] {
+        map.insert(
+            serde_yaml::Value::String(name.to_string()),
+            serde_yaml::Value::String(String::new()),
+        );
+    }
+    map.insert(
+        serde_yaml::Value::String("last_event".to_string()),
+        serde_yaml::Value::String("review.reset".to_string()),
+    );
+    map.insert(
+        serde_yaml::Value::String("last_event_at".to_string()),
+        serde_yaml::Value::String(timestamp.to_string()),
+    );
+    true
 }
 
 fn load_snapshot(project_dir: &Path) -> io::Result<LedgerSnapshot> {
