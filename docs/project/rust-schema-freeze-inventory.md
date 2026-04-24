@@ -212,6 +212,7 @@ Current boundary:
 - It derives the first Rust inbox projection from manifest pane state and latest actionable events.
 - It derives the first Rust digest projection from pane read models and inbox action items.
 - It derives the first Rust explain projection from digest items, matching panes, and matching events.
+- The board, inbox, digest, and explain projection structs serialize to JSON through `serde`.
 - It has a fixture comparison harness skeleton that loads the PowerShell golden corpus and Rust typed projection sources.
 - It rejects duplicate manifest `pane_id` values because they make projection identity ambiguous.
 - It preserves manifest pane order separately from the lookup index.
@@ -242,7 +243,7 @@ Current gap:
 
 ## Recommended order after this inventory
 
-1. Keep `LedgerSnapshot` read-only until projection surfaces are ready.
+1. Keep `LedgerSnapshot` read-only until projection surfaces have JSON comparison coverage.
 2. Freeze actionable event payload groups on top of the new `.winsmux/events.jsonl` envelope.
 3. Keep the review-state fixture as the branch-keyed root file shape.
 4. Keep the manifest contract limited to session and pane boundary validation until ledger persistence needs more fields.
