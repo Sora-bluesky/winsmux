@@ -1,0 +1,38 @@
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: __PROJECT_DIR__
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    state: idle
+    tokens_remaining: 64% context left
+    task_id: task-244
+    task: Implement session board
+    task_state: in_progress
+    task_owner: builder-1
+    review_state: PENDING
+    branch: worktree-builder-1
+    builder_worktree_path: .worktrees/builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 2
+    changed_files: '["scripts/winsmux-core.ps1","tests/winsmux-bridge.Tests.ps1"]'
+    last_event: pane.ready
+    last_event_at: __LAST_EVENT_AT__
+  worker-1:
+    pane_id: %6
+    role: Worker
+    state: busy
+    tokens_remaining: 52% context left
+    task_id: ''
+    task: ''
+    task_state: backlog
+    task_owner: ''
+    review_state: ''
+    branch: ''
+    head_sha: ''
+    changed_file_count: 0
+    changed_files: '[]'
+    last_event: pane.idle
+    last_event_at: __LAST_EVENT_AT__

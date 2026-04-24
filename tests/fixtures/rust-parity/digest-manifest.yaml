@@ -1,0 +1,19 @@
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: __PROJECT_DIR__
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-246
+    task: Build evidence digest
+    task_state: blocked
+    task_owner: builder-1
+    review_state: FAIL
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: operator.review_failed
+    last_event_at: __LAST_EVENT_AT__
