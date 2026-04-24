@@ -344,6 +344,142 @@ panes:
 }
 
 #[test]
+fn ledger_contract_exposes_explain_projection_from_digest_and_events() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+    tokens_remaining: 64% context left
+    task_id: task-256
+    parent_run_id: operator:session-1
+    goal: Ship run contract primitives
+    task: Implement run ledger
+    task_type: implementation
+    task_state: in_progress
+    review_state: PENDING
+    priority: P0
+    blocking: true
+    branch: worktree-builder-1
+    security_policy: '{"mode":"blocklist","allow_patterns":["Invoke-Pester"],"block_patterns":["git reset --hard"]}'
+    launch_dir: .worktrees/builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    write_scope: '["scripts/winsmux-core.ps1"]'
+    read_scope: '["tests/winsmux-bridge.Tests.ps1"]'
+    constraints: '["avoid destructive git"]'
+    expected_output: Ledger projection
+    verification_plan: '["cargo test --test ledger_contract"]'
+    review_required: true
+    provider_target: codex:gpt-5.4
+    agent_role: builder
+    timeout_policy: standard
+    handoff_refs: '["docs/handoff.md"]'
+    last_event: pane.started
+    last_event_at: 2026-04-23T12:00:00+09:00
+  reviewer-1:
+    pane_id: "%3"
+    role: Reviewer
+    state: idle
+    task_id: task-256
+    task: Review run ledger
+    task_state: in_progress
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pane.approval_waiting","message":"approval prompt detected","label":"builder-1","pane_id":"%2","role":"Builder","status":"approval_waiting","data":{"task_id":"task-256"}}
+{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","data":{"task_id":"task-256","verification_contract":{"command":"cargo test"},"verification_result":{"outcome":"PASS"}}}
+{"timestamp":"2026-04-23T12:00:03+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","data":{"task_id":"task-256","verdict":"ALLOW"}}
+{"timestamp":"2026-04-23T12:00:04+09:00","session":"winsmux-orchestra","event":"pane.consult_result","message":"experiment result","label":"builder-1","pane_id":"%2","role":"Builder","data":{"task_id":"task-256","hypothesis":"projection can explain the run","test_plan":["load manifest","match events"],"result":"explain payload built","confidence":0.66,"next_action":"approval_waiting","observation_pack_ref":"observations/task-256.json","consultation_ref":"consultations/task-256.json","run_id":"task:task-256","slot":"builder-1","worktree":".worktrees/builder-1","env_fingerprint":"env-123","command_hash":"cmd-456","observation_pack":{"summary":"ok"},"consultation_packet":{"review":"ok"}}}
+{"timestamp":"2026-04-23T12:00:05+09:00","session":"winsmux-orchestra","event":"pane.consult_request","message":"new action only","label":"builder-1","pane_id":"%2","role":"Builder","data":{"task_id":"task-256","next_action":"review_requested"}}
+{"timestamp":"2026-04-23T12:00:06+09:00","session":"winsmux-orchestra","event":"pane.completed","message":"reviewer finished","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{}}
+{"timestamp":"2026-04-23T12:00:07+09:00","session":"winsmux-orchestra","event":"pipeline.verify.fail","message":"other task failed","data":{"task_id":"task-other","branch":"worktree-builder-1","verification_result":{"outcome":"FAIL"}}}
+{"timestamp":"2026-04-23T12:00:08+09:00","session":"winsmux-orchestra","event":"operator.commit_ready","message":"other task ready","data":{"task_id":"task-other","branch":"worktree-builder-1"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load explain inputs");
+
+    let explain = snapshot
+        .explain_projection("task:task-256")
+        .expect("ledger explain projection should exist");
+
+    assert_eq!(explain.run.run_id, "task:task-256");
+    assert_eq!(explain.run.goal, "Ship run contract primitives");
+    assert_eq!(explain.run.tokens_remaining, "64% context left");
+    assert!(explain.run.blocking);
+    assert!(explain.run.review_required);
+    assert_eq!(explain.run.write_scope, vec!["scripts/winsmux-core.ps1"]);
+    assert_eq!(explain.run.pane_count, 2);
+    assert_eq!(explain.run.labels, vec!["builder-1", "reviewer-1"]);
+    assert_eq!(explain.run.experiment_packet.confidence, Some(0.66));
+    assert_eq!(
+        explain.run.experiment_packet.next_action,
+        "review_requested"
+    );
+    assert_eq!(
+        explain.run.experiment_packet.result,
+        "explain payload built"
+    );
+    assert!(explain
+        .run
+        .action_items
+        .iter()
+        .any(|item| item.kind == "task_completed" && item.source == "events"));
+    assert!(!explain
+        .run
+        .action_items
+        .iter()
+        .any(|item| item.message == "other task ready"));
+    assert_eq!(explain.run.experiment_packet.branch, "worktree-builder-1");
+    assert_eq!(explain.evidence_digest.verification_outcome, "PASS");
+    assert_eq!(explain.evidence_digest.security_blocked, "ALLOW");
+    assert_eq!(explain.explanation.summary, "Ship run contract primitives");
+    assert_eq!(explain.explanation.next_action, "review_requested");
+    assert!(explain
+        .explanation
+        .reasons
+        .iter()
+        .any(|reason| reason == "last_event=pane.started"));
+    assert_eq!(explain.recent_events[0].label, "reviewer-1");
+    assert!(!explain
+        .recent_events
+        .iter()
+        .any(|event| event.task_id == "task-other"));
+    assert_eq!(
+        explain.run.security_policy["block_patterns"][0],
+        "git reset --hard"
+    );
+    assert_eq!(explain.run.verification_result["outcome"], "PASS");
+    assert_eq!(explain.run.security_verdict, "ALLOW");
+}
+
+#[test]
+fn ledger_contract_returns_none_for_unknown_explain_run() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-known
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should load minimal explain inputs");
+
+    assert!(snapshot.explain_projection("task:missing").is_none());
+}
+
+#[test]
 fn ledger_contract_sorts_digest_projection_by_latest_event_time() {
     let manifest = r#"
 version: 1
