@@ -269,6 +269,218 @@ panes:
 }
 
 #[test]
+fn ledger_contract_exposes_digest_projection_from_manifest_and_inbox_items() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    state: idle
+    task_id: task-246
+    task: Build evidence digest
+    task_state: blocked
+    review_state: FAIL
+    provider_target: codex:gpt-5.4
+    branch: worktree-builder-1
+    launch_dir: .worktrees/builder-1
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: operator.review_failed
+    last_event_at: 2026-04-23T12:00:00+09:00
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pane.approval_waiting","message":"approval prompt detected","label":"builder-1","pane_id":"%2","role":"Builder","status":"approval_waiting","data":{"task_id":"task-246"}}
+{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","data":{"task_id":"task-246","hypothesis":"result summary should appear in digest","confidence":0.88,"observation_pack_ref":"observations/task-246.json","consultation_ref":"consultations/task-246.json","verification_result":{"outcome":"PASS"}}}
+{"timestamp":"2026-04-23T12:00:03+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","data":{"task_id":"task-246","verdict":"ALLOW"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load digest inputs");
+
+    let digest = snapshot.digest_projection();
+
+    assert_eq!(digest.summary.item_count, 1);
+    assert_eq!(digest.summary.dirty_items, 1);
+    assert_eq!(digest.summary.review_failed, 1);
+    assert_eq!(digest.summary.actionable_items, 1);
+    assert_eq!(digest.items[0].run_id, "task:task-246");
+    assert_eq!(digest.items[0].task_id, "task-246");
+    assert_eq!(digest.items[0].task, "Build evidence digest");
+    assert_eq!(digest.items[0].label, "builder-1");
+    assert_eq!(digest.items[0].pane_id, "%2");
+    assert_eq!(digest.items[0].role, "Builder");
+    assert_eq!(digest.items[0].provider_target, "codex:gpt-5.4");
+    assert_eq!(digest.items[0].task_state, "blocked");
+    assert_eq!(digest.items[0].review_state, "FAIL");
+    assert_eq!(digest.items[0].next_action, "approval_waiting");
+    assert_eq!(digest.items[0].branch, "worktree-builder-1");
+    assert_eq!(digest.items[0].worktree, ".worktrees/builder-1");
+    assert_eq!(digest.items[0].head_short, "abc1234");
+    assert_eq!(digest.items[0].changed_file_count, 1);
+    assert_eq!(
+        digest.items[0].changed_files,
+        vec!["scripts/winsmux-core.ps1".to_string()]
+    );
+    assert_eq!(digest.items[0].action_item_count, 3);
+    assert_eq!(digest.items[0].last_event, "operator.review_failed");
+    assert_eq!(digest.items[0].verification_outcome, "PASS");
+    assert_eq!(digest.items[0].security_blocked, "ALLOW");
+    assert_eq!(
+        digest.items[0].hypothesis,
+        "result summary should appear in digest"
+    );
+    assert_eq!(digest.items[0].confidence, Some(0.88));
+    assert_eq!(
+        digest.items[0].observation_pack_ref,
+        "observations/task-246.json"
+    );
+    assert_eq!(
+        digest.items[0].consultation_ref,
+        "consultations/task-246.json"
+    );
+}
+
+#[test]
+fn ledger_contract_sorts_digest_projection_by_latest_event_time() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  older:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-older
+    task_state: in_progress
+    last_event_at: 2026-04-23T12:00:00+09:00
+  newer:
+    pane_id: "%3"
+    role: Builder
+    task_id: task-newer
+    task_state: in_progress
+    last_event_at: 2026-04-23T12:00:02+09:00
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should load digest ordering inputs");
+
+    let digest = snapshot.digest_projection();
+
+    assert_eq!(digest.items[0].run_id, "task:task-newer");
+    assert_eq!(digest.items[1].run_id, "task:task-older");
+}
+
+#[test]
+fn ledger_contract_groups_digest_projection_by_run() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    label: builder-1
+    task_id: task-shared
+    task: Shared run
+    task_state: in_progress
+    branch: worktree-shared
+    head_sha: abc1234def5678
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event_at: 2026-04-23T12:00:01+09:00
+  reviewer-1:
+    pane_id: "%3"
+    role: Reviewer
+    label: reviewer-1
+    task_id: task-shared
+    task: Shared run
+    task_state: in_progress
+    branch: worktree-shared
+    head_sha: abc1234def5678
+    changed_file_count: 2
+    changed_files: '["core/src/ledger.rs","scripts/winsmux-core.ps1"]'
+    last_event_at: 2026-04-23T12:00:02+09:00
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:03+09:00","session":"winsmux-orchestra","event":"operator.commit_ready","message":"commit is ready","branch":"worktree-shared","data":{}}
+{"timestamp":"2026-04-23T12:00:04+09:00","session":"winsmux-orchestra","event":"pane.approval_waiting","message":"approval prompt detected","head_sha":"abc1234def5678","status":"approval_waiting","data":{}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load grouped digest inputs");
+
+    let digest = snapshot.digest_projection();
+
+    assert_eq!(digest.summary.item_count, 1);
+    assert_eq!(digest.items[0].run_id, "task:task-shared");
+    assert_eq!(digest.items[0].changed_file_count, 3);
+    assert_eq!(
+        digest.items[0].changed_files,
+        vec![
+            "scripts/winsmux-core.ps1".to_string(),
+            "core/src/ledger.rs".to_string()
+        ]
+    );
+    assert_eq!(digest.items[0].action_item_count, 2);
+    assert_eq!(digest.items[0].next_action, "approval_waiting");
+}
+
+#[test]
+fn ledger_contract_gates_digest_verification_and_security_events_by_kind() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-guarded
+    task_state: in_progress
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"operator.review_requested","message":"review requested","data":{"task_id":"task-guarded","verification_result":{"outcome":"FAIL"},"verdict":"BLOCK"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load gated digest inputs");
+
+    let digest = snapshot.digest_projection();
+
+    assert_eq!(digest.items[0].verification_outcome, "");
+    assert_eq!(digest.items[0].security_blocked, "");
+}
+
+#[test]
+fn ledger_contract_applies_digest_events_by_timestamp_and_overrides_worktree() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-sorted
+    task_state: in_progress
+    launch_dir: .worktrees/stale
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:03+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"new verification","data":{"task_id":"task-sorted","worktree":".worktrees/fresh","verification_result":{"outcome":"PASS"}}}
+{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pipeline.verify.fail","message":"old verification","data":{"task_id":"task-sorted","worktree":".worktrees/old","verification_result":{"outcome":"FAIL"}}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load timestamped digest inputs");
+
+    let digest = snapshot.digest_projection();
+
+    assert_eq!(digest.items[0].worktree, ".worktrees/fresh");
+    assert_eq!(digest.items[0].verification_outcome, "PASS");
+}
+
+#[test]
 fn ledger_contract_derives_board_worktree_from_legacy_path_fields() {
     let manifest = r#"
 version: 1

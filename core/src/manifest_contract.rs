@@ -254,6 +254,8 @@ pub struct NormalizedManifestPane {
     pub worktree: String,
     pub head_sha: String,
     pub changed_file_count: usize,
+    pub changed_files: Vec<String>,
+    pub provider_target: String,
     pub last_event: String,
     pub last_event_at: String,
 }
@@ -356,6 +358,8 @@ fn normalize_manifest_pane(
         ),
         head_sha: pane.head_sha.clone(),
         changed_file_count: pane.changed_file_count.value().unwrap_or(0),
+        changed_files: pane.changed_files.values(),
+        provider_target: pane.provider_target.clone(),
         last_event: pane.last_event.clone(),
         last_event_at: pane.last_event_at.clone(),
     }
