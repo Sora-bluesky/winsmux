@@ -25,6 +25,7 @@ mod terminal_engine;
 mod manifest_contract;
 mod event_contract;
 mod ledger;
+mod operator_cli;
 mod client;
 mod app;
 mod ssh_input;
@@ -230,6 +231,12 @@ fn run_main() -> io::Result<()> {
         "list-commands" | "lscm" => {
             print_commands();
             return Ok(());
+        }
+        "board" => {
+            return operator_cli::run_board_command(&cmd_args[1..]);
+        }
+        "status" => {
+            return operator_cli::run_status_command(&cmd_args[1..]);
         }
         _ => {}
     }

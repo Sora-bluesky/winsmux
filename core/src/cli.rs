@@ -126,6 +126,10 @@ CONFIGURATION COMMANDS:
     show-hooks              Show all defined hooks
     list-commands, lscm     List all available commands
 
+OPERATOR COMMANDS:
+    board --json            Print pane, task, review, and git board JSON
+    status --json           Print session and pane status JSON
+
 LAYOUT COMMANDS:
     select-layout, selectl  Apply a layout preset
                             Presets: even-horizontal, even-vertical,
@@ -383,6 +387,7 @@ pub fn print_version() {
 fn commands_text() -> &'static str {
     r#"Available commands:
   attach-session (attach)   - Attach to a session
+  board                     - Print operator board JSON
   bind-key (bind)           - Bind a key to a command
   break-pane                - Break a pane into a new window
   capture-pane              - Capture the contents of a pane
@@ -451,6 +456,7 @@ fn commands_text() -> &'static str {
   source-file (source)      - Execute commands from a file
   split-window (splitw)     - Split a window into panes
   start-server (warmup)     - Pre-spawn a warm server for instant session creation
+  status                    - Print operator status JSON
   suspend-client (suspendc) - Suspend the client
   swap-pane (swapp)         - Swap two panes
   swap-window (swapw)       - Swap two windows
