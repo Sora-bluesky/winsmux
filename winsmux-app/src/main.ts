@@ -4879,7 +4879,7 @@ function setEditorSurface(open: boolean) {
 }
 
 function isNarrowLayout() {
-  return window.matchMedia("(max-width: 1180px)").matches;
+  return window.matchMedia("(max-width: 1366px)").matches;
 }
 
 function setSidebarOpen(open: boolean, options?: { preserveWidePreference?: boolean }) {
