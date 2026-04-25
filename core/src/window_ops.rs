@@ -1153,7 +1153,22 @@ pub fn break_pane_to_window(app: &mut AppState) {
     }
 }
 
-pub fn respawn_active_pane(app: &mut AppState, pty_system_ref: Option<&dyn portable_pty::PtySystem>) -> io::Result<()> {
+pub fn respawn_active_pane(app: &mut AppState, pty_system_ref: Option<&dyn portable_pty::PtySystem>, start_dir: Option<&str>) -> io::Result<()> {
+    let window_idx = app.active_idx;
+    let pane_path = app.windows[window_idx].active_path.clone();
+    respawn_pane_at_path(app, pty_system_ref, window_idx, pane_path, start_dir)
+}
+
+pub fn respawn_pane_by_id(app: &mut AppState, pty_system_ref: Option<&dyn portable_pty::PtySystem>, pane_id: usize, start_dir: Option<&str>) -> io::Result<()> {
+    for (window_idx, window) in app.windows.iter().enumerate() {
+        if let Some(pane_path) = crate::tree::find_path_by_id(&window.root, pane_id) {
+            return respawn_pane_at_path(app, pty_system_ref, window_idx, pane_path, start_dir);
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::InvalidInput, format!("can't find pane: {pane_id}")))
+}
+
+fn respawn_pane_at_path(app: &mut AppState, pty_system_ref: Option<&dyn portable_pty::PtySystem>, window_idx: usize, pane_path: Vec<usize>, start_dir: Option<&str>) -> io::Result<()> {
     // Reuse provided PTY system or create one as fallback
     let owned_pty;
     let pty_system: &dyn portable_pty::PtySystem = if let Some(ps) = pty_system_ref {
@@ -1166,17 +1181,20 @@ pub fn respawn_active_pane(app: &mut AppState, pty_system_ref: Option<&dyn porta
     // Must happen before the mutable borrow of app.windows below.
     let expanded_shell = crate::format::expand_format(&app.default_shell, &app);
 
-    let win = &mut app.windows[app.active_idx];
-    let Some(pane) = active_pane_mut(&mut win.root, &win.active_path) else { return Ok(()); };
-    let pane_id = pane.id;
-    
-    let size = PtySize { rows: pane.last_rows, cols: pane.last_cols, pixel_width: 0, pixel_height: 0 };
+    let (pane_id, size) = {
+        let win = &mut app.windows[window_idx];
+        let Some(pane) = active_pane_mut(&mut win.root, &pane_path) else { return Ok(()); };
+        (pane.id, PtySize { rows: pane.last_rows, cols: pane.last_cols, pixel_width: 0, pixel_height: 0 })
+    };
     let pair = pty_system.openpty(size).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("openpty error: {e}")))?;
     let mut shell_cmd = if !expanded_shell.is_empty() {
         build_default_shell(&expanded_shell, app.env_shim, app.allow_predictions)
     } else {
         detect_shell()
     };
+    if let Some(dir) = start_dir.filter(|value| !value.trim().is_empty()) {
+        shell_cmd.cwd(std::path::Path::new(dir));
+    }
     set_tmux_env(&mut shell_cmd, pane_id, app.control_port, app.socket_name.as_deref(), &app.session_name, app.claude_code_fix_tty, app.claude_code_force_interactive);
     crate::pane::apply_user_environment(&mut shell_cmd, &app.environment);
     let child = pair.slave.spawn_command(shell_cmd).map_err(|e| io::Error::new(io::ErrorKind::Other, format!("spawn shell error: {e}")))?;
@@ -1196,6 +1214,8 @@ pub fn respawn_active_pane(app: &mut AppState, pty_system_ref: Option<&dyn porta
     
     let output_ring = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::new()));
     crate::pane::spawn_reader_thread(reader, term_reader, dv_writer, cs_writer, bell_writer, output_ring.clone());
+    let win = &mut app.windows[window_idx];
+    let Some(pane) = active_pane_mut(&mut win.root, &pane_path) else { return Ok(()); };
     pane.output_ring = output_ring;
     
     let mut pty_writer = pair.master.take_writer().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("take writer error: {e}")))?;

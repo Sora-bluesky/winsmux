@@ -137,6 +137,7 @@ OPERATOR COMMANDS:
     review-approve          Record PASS for the pending review request
     review-fail             Record FAIL for the pending review request
     review-reset            Clear review state for the current branch
+    restart                 Restart a managed pane using manifest context
     rebind-worktree         Update a Builder/Worker pane to use a new worktree path
 
 LAYOUT COMMANDS:

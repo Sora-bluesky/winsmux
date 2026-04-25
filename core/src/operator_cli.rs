@@ -223,6 +223,27 @@ pub fn run_review_fail_command(args: &[&String]) -> io::Result<()> {
     )
 }
 
+pub fn run_restart_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("restart"));
+        return Ok(());
+    }
+    let options = parse_options("restart", args, 1)?;
+    if options.json {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("restart"),
+        ));
+    }
+
+    let target = options.positionals[0].clone();
+    let plan = build_restart_plan(&options.project_dir, &target)?;
+    invoke_restart_plan(&plan)?;
+    let _ = update_restart_manifest_metadata(&options.project_dir, &plan);
+    println!("restarted {} ({})", plan.pane_id, plan.label);
+    Ok(())
+}
+
 pub fn run_rebind_worktree_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
         println!("{}", usage_for("rebind-worktree"));
@@ -394,6 +415,7 @@ fn usage_for(command: &str) -> &'static str {
         "review-request" => "usage: winsmux review-request [--project-dir <path>]",
         "review-approve" => "usage: winsmux review-approve [--project-dir <path>]",
         "review-fail" => "usage: winsmux review-fail [--project-dir <path>]",
+        "restart" => "usage: winsmux restart <target> [--project-dir <path>]",
         "rebind-worktree" => {
             "usage: winsmux rebind-worktree <target> <new-worktree-path> [--project-dir <path>]"
         }
@@ -628,6 +650,20 @@ struct RebindManifestContext {
     label: String,
     pane_id: String,
     role: String,
+}
+
+#[derive(Clone)]
+struct RestartPlan {
+    label: String,
+    pane_id: String,
+    role: String,
+    session_name: String,
+    launch_dir: String,
+    git_worktree_dir: String,
+    agent: String,
+    model: String,
+    capability_adapter: String,
+    launch_command: String,
 }
 
 fn current_review_pane_context(project_dir: &Path) -> io::Result<ReviewPaneContext> {
@@ -867,11 +903,497 @@ fn manifest_session_name(manifest: &serde_yaml::Value) -> io::Result<String> {
     Ok(session_name)
 }
 
-fn ensure_live_pane_target(session_name: &str, pane_id: &str) -> io::Result<()> {
-    let winsmux_bin = env::var_os("WINSMUX_BIN")
+fn build_restart_plan(project_dir: &Path, target: &str) -> io::Result<RestartPlan> {
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let raw = fs::read_to_string(&manifest_path)?;
+    let manifest = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid manifest: {}: {err}", manifest_path.display()),
+        )
+    })?;
+    let session_name = manifest_session_name(&manifest)?;
+    let project_root = manifest_project_dir(&manifest).unwrap_or_else(|| project_dir.to_path_buf());
+    let session_git_worktree_dir = manifest_session_git_worktree_dir(&manifest);
+    let context = resolve_restart_manifest_context(
+        &manifest,
+        target,
+        &manifest_path,
+        &project_root,
+        session_git_worktree_dir.as_deref(),
+    )?;
+    ensure_live_pane_target(&session_name, &context.pane_id)?;
+
+    let (agent, model, capability_adapter) = resolve_restart_provider(project_dir, &context);
+    let launch_command = build_provider_launch_command(
+        &agent,
+        &model,
+        &capability_adapter,
+        &context.launch_dir,
+        &context.git_worktree_dir,
+    )?;
+    Ok(RestartPlan {
+        label: context.label,
+        pane_id: context.pane_id,
+        role: context.role,
+        session_name,
+        launch_dir: context.launch_dir,
+        git_worktree_dir: context.git_worktree_dir,
+        agent,
+        model,
+        capability_adapter,
+        launch_command,
+    })
+}
+
+fn manifest_project_dir(manifest: &serde_yaml::Value) -> Option<PathBuf> {
+    manifest
+        .get("session")
+        .and_then(|session| session.get("project_dir"))
+        .and_then(serde_yaml::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+}
+
+fn manifest_session_git_worktree_dir(manifest: &serde_yaml::Value) -> Option<String> {
+    manifest
+        .get("session")
+        .and_then(|session| session.get("git_worktree_dir"))
+        .and_then(serde_yaml::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn resolve_restart_manifest_context(
+    manifest: &serde_yaml::Value,
+    target: &str,
+    manifest_path: &Path,
+    project_root: &Path,
+    session_git_worktree_dir: Option<&str>,
+) -> io::Result<RestartPlan> {
+    let Some(context) =
+        find_restart_manifest_context(manifest, target, project_root, session_git_worktree_dir)
+    else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "Pane {target} was not found in manifest: {}",
+                manifest_path.display()
+            ),
+        ));
+    };
+    Ok(context)
+}
+
+fn find_restart_manifest_context(
+    manifest: &serde_yaml::Value,
+    target: &str,
+    project_root: &Path,
+    session_git_worktree_dir: Option<&str>,
+) -> Option<RestartPlan> {
+    let panes = manifest.get("panes")?;
+    match panes {
+        serde_yaml::Value::Mapping(map) => map.iter().find_map(|(key, pane)| {
+            let label = key.as_str().unwrap_or_default();
+            restart_context_from_value(label, target, pane, project_root, session_git_worktree_dir)
+        }),
+        serde_yaml::Value::Sequence(items) => items.iter().find_map(|pane| {
+            restart_context_from_value("", target, pane, project_root, session_git_worktree_dir)
+        }),
+        _ => None,
+    }
+}
+
+fn restart_context_from_value(
+    fallback_label: &str,
+    target: &str,
+    pane: &serde_yaml::Value,
+    project_root: &Path,
+    session_git_worktree_dir: Option<&str>,
+) -> Option<RestartPlan> {
+    let map = pane.as_mapping()?;
+    let pane_id = manifest_string(map, "pane_id");
+    let label = first_non_empty(&manifest_string(map, "label"), fallback_label);
+    if pane_id != target && label != target {
+        return None;
+    }
+    let role = canonical_manifest_role(&manifest_string(map, "role"), &label)?;
+    let uses_worktree = matches!(role.as_str(), "Builder" | "Worker");
+    let builder_worktree_path = if uses_worktree {
+        manifest_string(map, "builder_worktree_path")
+    } else {
+        String::new()
+    };
+    let mut launch_dir = manifest_string(map, "launch_dir");
+    if launch_dir.trim().is_empty() && !builder_worktree_path.trim().is_empty() {
+        launch_dir = builder_worktree_path;
+    }
+    if launch_dir.trim().is_empty() {
+        launch_dir = project_root.to_string_lossy().to_string();
+    }
+
+    let mut git_worktree_dir = if uses_worktree {
+        manifest_string(map, "worktree_git_dir")
+    } else {
+        String::new()
+    };
+    if git_worktree_dir.trim().is_empty() {
+        git_worktree_dir = session_git_worktree_dir.unwrap_or_default().to_string();
+    }
+    if uses_worktree || git_worktree_dir.trim().is_empty() {
+        git_worktree_dir = pane_git_worktree_dir(Path::new(&launch_dir));
+    }
+
+    Some(RestartPlan {
+        label,
+        pane_id,
+        role,
+        session_name: String::new(),
+        launch_dir,
+        git_worktree_dir,
+        agent: String::new(),
+        model: String::new(),
+        capability_adapter: String::new(),
+        launch_command: String::new(),
+    })
+}
+
+fn pane_git_worktree_dir(project_dir: &Path) -> String {
+    let dot_git = project_dir.join(".git");
+    if dot_git.is_file() {
+        if let Ok(raw) = fs::read_to_string(&dot_git) {
+            if let Some(rest) = raw.trim().strip_prefix("gitdir:") {
+                let value = rest.trim();
+                let path = PathBuf::from(value);
+                return if path.is_absolute() {
+                    path.to_string_lossy().to_string()
+                } else {
+                    project_dir.join(path).to_string_lossy().to_string()
+                };
+            }
+        }
+    }
+    if dot_git.is_dir() {
+        return dot_git.to_string_lossy().to_string();
+    }
+    project_dir.to_string_lossy().to_string()
+}
+
+fn resolve_restart_provider(project_dir: &Path, context: &RestartPlan) -> (String, String, String) {
+    if let Some((agent, model, adapter)) = provider_registry_entry(project_dir, &context.label) {
+        return (agent, model, adapter);
+    }
+    let (agent, model) =
+        split_provider_target(&manifest_provider_target(project_dir, &context.pane_id));
+    let agent = if agent.trim().is_empty() {
+        "codex".to_string()
+    } else {
+        agent
+    };
+    let model = if model.trim().is_empty() {
+        "gpt-5.4".to_string()
+    } else {
+        model
+    };
+    let adapter = manifest_capability_adapter(project_dir, &context.pane_id)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| provider_adapter_from_agent(&agent));
+    (agent, model, adapter)
+}
+
+fn provider_registry_entry(project_dir: &Path, label: &str) -> Option<(String, String, String)> {
+    let path = project_dir.join(".winsmux").join("provider-registry.json");
+    let raw = fs::read_to_string(path).ok()?;
+    let registry = serde_json::from_str::<Value>(&raw).ok()?;
+    let entry = registry.get("slots")?.get(label)?;
+    let agent = entry.get("agent").and_then(Value::as_str)?.to_string();
+    let model = entry
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("gpt-5.4")
+        .to_string();
+    let adapter = provider_adapter_from_agent(&agent);
+    Some((agent, model, adapter))
+}
+
+fn manifest_provider_target(project_dir: &Path, pane_id: &str) -> String {
+    manifest_pane_field(project_dir, pane_id, "provider_target").unwrap_or_default()
+}
+
+fn manifest_capability_adapter(project_dir: &Path, pane_id: &str) -> Option<String> {
+    manifest_pane_field(project_dir, pane_id, "capability_adapter")
+}
+
+fn manifest_pane_field(project_dir: &Path, pane_id: &str, field: &str) -> Option<String> {
+    let path = project_dir.join(".winsmux").join("manifest.yaml");
+    let raw = fs::read_to_string(path).ok()?;
+    let manifest = serde_yaml::from_str::<serde_yaml::Value>(&raw).ok()?;
+    let panes = manifest.get("panes")?;
+    match panes {
+        serde_yaml::Value::Mapping(map) => map.values().find_map(|pane| {
+            let map = pane.as_mapping()?;
+            (manifest_string(map, "pane_id") == pane_id)
+                .then(|| manifest_string(map, field))
+                .filter(|value| !value.trim().is_empty())
+        }),
+        serde_yaml::Value::Sequence(items) => items.iter().find_map(|pane| {
+            let map = pane.as_mapping()?;
+            (manifest_string(map, "pane_id") == pane_id)
+                .then(|| manifest_string(map, field))
+                .filter(|value| !value.trim().is_empty())
+        }),
+        _ => None,
+    }
+}
+
+fn split_provider_target(provider_target: &str) -> (String, String) {
+    let trimmed = provider_target.trim();
+    if let Some((agent, model)) = trimmed.split_once(':') {
+        return (agent.trim().to_string(), model.trim().to_string());
+    }
+    (trimmed.to_string(), String::new())
+}
+
+fn provider_adapter_from_agent(agent: &str) -> String {
+    let lowered = agent.trim().to_ascii_lowercase();
+    if lowered.starts_with("claude") {
+        "claude".to_string()
+    } else {
+        "codex".to_string()
+    }
+}
+
+fn build_provider_launch_command(
+    agent: &str,
+    model: &str,
+    capability_adapter: &str,
+    launch_dir: &str,
+    git_worktree_dir: &str,
+) -> io::Result<String> {
+    match capability_adapter.trim().to_ascii_lowercase().as_str() {
+        "codex" | "" => Ok(format!(
+            "{} -c {} --sandbox danger-full-access -C {} --add-dir {}",
+            shell_literal(agent),
+            shell_literal(&format!("model={model}")),
+            shell_literal(launch_dir),
+            shell_literal(git_worktree_dir)
+        )),
+        "claude" => {
+            let mut parts = vec![shell_literal(agent)];
+            if !model.trim().is_empty() {
+                parts.push("--model".to_string());
+                parts.push(shell_literal(model));
+            }
+            parts.push("--permission-mode".to_string());
+            parts.push("bypassPermissions".to_string());
+            Ok(parts.join(" "))
+        }
+        adapter => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Unsupported provider adapter '{adapter}' for restart"),
+        )),
+    }
+}
+
+fn shell_literal(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | ':' | '/' | '\\'))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn provider_target_with_model(agent: &str, model: &str) -> String {
+    if model.trim().is_empty() {
+        agent.to_string()
+    } else {
+        format!("{}:{}", agent.trim(), model.trim())
+    }
+}
+
+fn invoke_restart_plan(plan: &RestartPlan) -> io::Result<()> {
+    run_winsmux_command(&[
+        "respawn-pane",
+        "-k",
+        "-t",
+        &plan.pane_id,
+        "-c",
+        &plan.launch_dir,
+    ])?;
+    wait_for_shell_prompt(&plan.pane_id)?;
+    run_winsmux_command(&["send-keys", "-t", &plan.pane_id, "-l", "--", &plan.launch_command])?;
+    run_winsmux_command(&["send-keys", "-t", &plan.pane_id, "Enter"])?;
+    wait_for_agent_prompt(&plan.pane_id, &restart_readiness_agent(plan))?;
+    Ok(())
+}
+
+fn restart_readiness_agent(plan: &RestartPlan) -> String {
+    let adapter = readiness_agent_name(&plan.capability_adapter);
+    if !adapter.is_empty() {
+        return adapter;
+    }
+    let agent = readiness_agent_name(&plan.agent);
+    if agent.is_empty() {
+        "codex".to_string()
+    } else {
+        agent
+    }
+}
+
+fn readiness_agent_name(value: &str) -> String {
+    let lowered = value.trim().to_ascii_lowercase();
+    for name in ["codex", "claude", "gemini"] {
+        if lowered == name
+            || lowered.starts_with(&format!("{name}:"))
+            || lowered.starts_with(&format!("{name}-"))
+            || lowered.starts_with(&format!("{name}_"))
+            || lowered.starts_with(&format!("{name}/"))
+        {
+            return name.to_string();
+        }
+    }
+    String::new()
+}
+
+fn wait_for_shell_prompt(pane_id: &str) -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline {
+        let text = capture_pane_tail(pane_id)?;
+        if text.lines().any(|line| line.trim().starts_with("PS ")) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("timed out waiting for shell prompt in {pane_id}"),
+    ))
+}
+
+fn wait_for_agent_prompt(pane_id: &str, agent: &str) -> io::Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline {
+        let text = capture_pane_tail(pane_id)?;
+        if agent_ready_prompt(&text, agent) {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_secs(2));
+    }
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("timed out waiting for {agent} prompt after restart in {pane_id}"),
+    ))
+}
+
+fn capture_pane_tail(pane_id: &str) -> io::Result<String> {
+    let output = winsmux_command_output(&["capture-pane", "-t", pane_id, "-p", "-J", "-S", "-50"])?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+}
+
+fn agent_ready_prompt(text: &str, agent: &str) -> bool {
+    let recent: Vec<&str> = text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .rev()
+        .take(8)
+        .collect();
+    recent.into_iter().any(|line| {
+        let line = line.trim();
+        match agent {
+            "claude" => {
+                line.eq_ignore_ascii_case("Welcome to Claude Code!")
+                    || line.eq_ignore_ascii_case("Welcome to Claude Code")
+                    || line.starts_with("/help for help, /status for your current setup")
+                    || line.starts_with("?  for shortcuts")
+            }
+            "gemini" => {
+                line.to_ascii_lowercase().starts_with("type your message")
+                    || line.to_ascii_lowercase().starts_with("using:")
+                    || line.to_ascii_lowercase().starts_with("gemini-")
+            }
+            _ => line == ">" || line == "›" || line == "▌" || line == "❯" || line.starts_with('>'),
+        }
+    })
+}
+
+fn run_winsmux_command(args: &[&str]) -> io::Result<()> {
+    let output = winsmux_command_output(args)?;
+    if !output.status.success() {
+        return Err(winsmux_command_error(args, &output));
+    }
+    Ok(())
+}
+
+fn winsmux_command_output(args: &[&str]) -> io::Result<std::process::Output> {
+    let winsmux_bin = winsmux_bin_path();
+    Command::new(&winsmux_bin).args(args).output().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("failed to run {}: {err}", winsmux_bin.display()),
+        )
+    })
+}
+
+fn winsmux_command_error(args: &[&str], output: &std::process::Output) -> io::Error {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        output.status.to_string()
+    };
+    io::Error::new(
+        io::ErrorKind::Other,
+        format!("winsmux {} failed: {detail}", args.join(" ")),
+    )
+}
+
+fn winsmux_bin_path() -> PathBuf {
+    env::var_os("WINSMUX_BIN")
         .map(PathBuf::from)
         .or_else(|| env::current_exe().ok())
-        .unwrap_or_else(|| PathBuf::from("winsmux"));
+        .unwrap_or_else(|| PathBuf::from("winsmux"))
+}
+
+fn update_restart_manifest_metadata(project_dir: &Path, plan: &RestartPlan) -> io::Result<bool> {
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    with_file_lock(&manifest_path, || {
+        let raw = fs::read_to_string(&manifest_path)?;
+        let mut manifest = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid manifest: {}: {err}", manifest_path.display()),
+            )
+        })?;
+        let provider_target = provider_target_with_model(&plan.agent, &plan.model);
+        let updated = update_manifest_pane_restart_fields(
+            &mut manifest,
+            &plan.pane_id,
+            &[
+                ("provider_target", provider_target.as_str()),
+                ("capability_adapter", plan.capability_adapter.as_str()),
+            ],
+        );
+        if !updated {
+            return Ok(false);
+        }
+        let content = serde_yaml::to_string(&manifest).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to serialize manifest: {err}"),
+            )
+        })?;
+        write_text_file_locked(&manifest_path, &content)?;
+        Ok(true)
+    })
+}
+
+fn ensure_live_pane_target(session_name: &str, pane_id: &str) -> io::Result<()> {
+    let winsmux_bin = winsmux_bin_path();
     let output = Command::new(&winsmux_bin)
         .args(["-t", session_name, "list-panes", "-a", "-F", "#{pane_id}"])
         .output()
@@ -1529,6 +2051,46 @@ fn update_manifest_pane_if_matches(
     let role = manifest_string(map, "role");
     let canonical_role = canonical_manifest_role(&role, label);
     if !matches!(canonical_role.as_deref(), Some("Reviewer" | "Worker")) {
+        return false;
+    }
+    for (name, value) in fields {
+        map.insert(
+            serde_yaml::Value::String((*name).to_string()),
+            serde_yaml::Value::String((*value).to_string()),
+        );
+    }
+    true
+}
+
+fn update_manifest_pane_restart_fields(
+    manifest: &mut serde_yaml::Value,
+    pane_id: &str,
+    fields: &[(&str, &str)],
+) -> bool {
+    let Some(panes) = manifest.get_mut("panes") else {
+        return false;
+    };
+
+    match panes {
+        serde_yaml::Value::Mapping(map) => map
+            .values_mut()
+            .any(|pane| update_manifest_pane_by_id(pane, pane_id, fields)),
+        serde_yaml::Value::Sequence(items) => items
+            .iter_mut()
+            .any(|pane| update_manifest_pane_by_id(pane, pane_id, fields)),
+        _ => false,
+    }
+}
+
+fn update_manifest_pane_by_id(
+    pane: &mut serde_yaml::Value,
+    pane_id: &str,
+    fields: &[(&str, &str)],
+) -> bool {
+    let serde_yaml::Value::Mapping(map) = pane else {
+        return false;
+    };
+    if manifest_string(map, "pane_id") != pane_id {
         return false;
     }
     for (name, value) in fields {
