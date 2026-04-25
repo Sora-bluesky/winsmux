@@ -352,6 +352,194 @@ fn operator_cli_promote_tactic_rejects_unknown_kind() {
 }
 
 #[test]
+fn operator_cli_consult_result_records_packet_event_and_manifest() {
+    let project_dir = make_temp_project_dir("consult-result");
+    write_manifest(&project_dir);
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .expect("test should read manifest")
+        .replace("    role: Builder\n", "    role: Worker\n");
+    fs::write(&manifest_path, manifest).expect("test should write manifest");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "consult-result",
+            "final",
+            "--message",
+            "Ship the Rust command",
+            "--confidence",
+            "0.82",
+            "--next-test",
+            "cargo test --manifest-path core/Cargo.toml --test operator_cli",
+            "--risk",
+            "manifest update could drift",
+            "--json",
+        ])
+        .current_dir(&project_dir)
+        .env("WINSMUX_PANE_ID", "%2")
+        .env("WINSMUX_ROLE", "Worker")
+        .env("WINSMUX_ROLE_MAP", r#"{"%2":"Worker"}"#)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
+    assert_eq!(json["run_id"], "operator:session-1");
+    assert_eq!(json["task_id"], "TASK-266");
+    assert_eq!(json["pane_id"], "%2");
+    assert_eq!(json["slot"], "builder-1");
+    assert_eq!(json["kind"], "consult_result");
+    assert_eq!(json["mode"], "final");
+    assert_eq!(json["recommendation"], "Ship the Rust command");
+    assert_eq!(json["confidence"], 0.82);
+    assert_eq!(
+        json["next_test"],
+        "cargo test --manifest-path core/Cargo.toml --test operator_cli"
+    );
+    assert_eq!(json["risks"][0], "manifest update could drift");
+    let consultation_ref = json["consultation_ref"]
+        .as_str()
+        .expect("consultation_ref should be a string");
+    assert!(consultation_ref.starts_with(".winsmux/consultations/consult-result-"));
+
+    let packet_path =
+        project_dir.join(consultation_ref.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let packet: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(packet_path).expect("packet should be readable"))
+            .expect("packet should be JSON");
+    assert_eq!(packet["packet_type"], "consultation_packet");
+    assert_eq!(packet["kind"], "consult_result");
+    assert_eq!(packet["mode"], "final");
+    assert_eq!(packet["recommendation"], "Ship the Rust command");
+    assert_eq!(packet["next_test"], json["next_test"]);
+    assert_eq!(packet["risks"][0], "manifest update could drift");
+
+    let events = fs::read_to_string(project_dir.join(".winsmux").join("events.jsonl"))
+        .expect("events should be readable");
+    let last_event: serde_json::Value = serde_json::from_str(
+        events
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .last()
+            .expect("events should contain a consultation result"),
+    )
+    .expect("event should be JSON");
+    assert_eq!(last_event["event"], "pane.consult_result");
+    assert_eq!(last_event["message"], "Ship the Rust command");
+    assert_eq!(last_event["data"]["result"], "Ship the Rust command");
+    assert_eq!(last_event["data"]["confidence"], 0.82);
+    assert_eq!(last_event["data"]["next_action"], json["next_test"]);
+    assert_eq!(last_event["data"]["consultation_ref"], consultation_ref);
+
+    let builder = read_manifest_pane(&project_dir, "builder-1");
+    assert_eq!(builder["last_event"], "consult.result");
+    assert!(builder["last_event_at"].as_str().is_some());
+}
+
+#[test]
+fn operator_cli_consult_result_accepts_run_override() {
+    let project_dir = make_temp_project_dir("consult-result-run");
+    write_manifest(&project_dir);
+
+    let json = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "consult-result",
+            "reconcile",
+            "--message",
+            "Use the existing review state",
+            "--target-slot",
+            "reviewer-1",
+            "--run-id",
+            "task:TASK-266",
+            "--json",
+        ])
+        .current_dir(&project_dir)
+        .env("WINSMUX_PANE_ID", "%2")
+        .env("WINSMUX_ROLE", "Builder")
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        json.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+    let result: serde_json::Value =
+        serde_json::from_slice(&json.stdout).expect("stdout should be JSON");
+    assert_eq!(result["run_id"], "task:TASK-266");
+    assert_eq!(result["mode"], "reconcile");
+    assert_eq!(result["target_slot"], "reviewer-1");
+    assert_eq!(result["recommendation"], "Use the existing review state");
+    assert!(result["confidence"].is_null());
+
+    let consultation_ref = result["consultation_ref"]
+        .as_str()
+        .expect("consultation_ref should be a string");
+    let packet_path =
+        project_dir.join(consultation_ref.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let packet: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(packet_path).expect("packet should be readable"))
+            .expect("packet should be JSON");
+    assert_eq!(packet["confidence"], 0.0);
+    assert_eq!(packet["next_test"], "");
+    assert_eq!(
+        packet["risks"]
+            .as_array()
+            .expect("risks should be an array")
+            .len(),
+        0
+    );
+
+    let explain = run_json(&project_dir, &["explain", "task:TASK-266", "--json"]);
+    assert_eq!(
+        explain["consultation_packet"]["recommendation"],
+        "Use the existing review state"
+    );
+    assert_eq!(explain["consultation_packet"]["confidence"], 0.0);
+    assert_eq!(explain["consultation_packet"]["next_test"], "");
+    assert_eq!(
+        explain["consultation_packet"]["risks"]
+            .as_array()
+            .expect("risks should be an array")
+            .len(),
+        0
+    );
+}
+
+#[test]
+fn operator_cli_consult_result_rejects_invalid_input() {
+    let project_dir = make_temp_project_dir("consult-result-invalid");
+    write_manifest(&project_dir);
+
+    let bad_mode = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["consult-result", "later", "--message", "nope"])
+        .current_dir(&project_dir)
+        .env("WINSMUX_PANE_ID", "%2")
+        .env("WINSMUX_ROLE", "Builder")
+        .output()
+        .expect("winsmux command should run");
+    assert!(!bad_mode.status.success());
+    assert!(String::from_utf8_lossy(&bad_mode.stderr).contains("Unsupported consult mode"));
+
+    let missing_message = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["consult-result", "final"])
+        .current_dir(&project_dir)
+        .env("WINSMUX_PANE_ID", "%2")
+        .env("WINSMUX_ROLE", "Builder")
+        .output()
+        .expect("winsmux command should run");
+    assert!(!missing_message.status.success());
+    assert!(
+        String::from_utf8_lossy(&missing_message.stderr).contains("consult message is required")
+    );
+}
+
+#[test]
 fn operator_cli_accepts_project_dir_argument() {
     let project_dir = make_temp_project_dir("project-dir");
     write_manifest(&project_dir);

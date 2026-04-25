@@ -262,6 +262,44 @@ pub fn run_promote_tactic_command(args: &[&String]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn run_consult_result_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("consult-result"));
+        return Ok(());
+    }
+    let options = parse_consult_result_options(args)?;
+    assert_consult_role_permission("consult-result")?;
+
+    let timestamp = generated_at();
+    let context = consultation_command_context(&options.project_dir, &options.run_id)?;
+    let packet = consultation_result_packet(&context, &options, &timestamp);
+    let artifact = write_consultation_packet(&options.project_dir, &packet)?;
+    let event = consultation_result_event(&context, &options, &artifact.reference, &timestamp);
+    append_event_record(&options.project_dir, &event)?;
+    let _ = mark_current_review_pane_last_event(&options.project_dir, "consult.result", &timestamp);
+
+    if options.json {
+        return write_json(&json!({
+            "run_id": context.run_id,
+            "task_id": context.task_id,
+            "pane_id": context.pane_id,
+            "slot": context.slot,
+            "kind": "consult_result",
+            "mode": options.mode,
+            "target_slot": options.target_slot,
+            "recommendation": options.message,
+            "confidence": options.confidence,
+            "next_test": options.next_test,
+            "risks": options.risks,
+            "consultation_ref": artifact.reference,
+            "generated_at": timestamp,
+        }));
+    }
+
+    println!("consult result recorded for {}", context.run_id);
+    Ok(())
+}
+
 pub fn run_poll_events_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
         println!("{}", usage_for("poll-events"));
@@ -472,6 +510,18 @@ struct PromoteTacticOptions {
     kind: String,
 }
 
+struct ConsultResultOptions {
+    json: bool,
+    project_dir: PathBuf,
+    mode: String,
+    message: String,
+    target_slot: String,
+    confidence: Option<f64>,
+    run_id: String,
+    next_test: String,
+    risks: Vec<String>,
+}
+
 fn parse_options(
     command: &str,
     args: &[&String],
@@ -644,6 +694,158 @@ fn parse_promote_tactic_options(args: &[&String]) -> io::Result<PromoteTacticOpt
     })
 }
 
+fn parse_consult_result_options(args: &[&String]) -> io::Result<ConsultResultOptions> {
+    let mut json = false;
+    let mut project_dir = None;
+    let mut positionals = Vec::new();
+    let mut message = String::new();
+    let mut message_parts = Vec::new();
+    let mut target_slot = String::new();
+    let mut confidence = None;
+    let mut run_id = String::new();
+    let mut next_test = String::new();
+    let mut risks = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = args[index].as_str();
+        match arg {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--project-dir" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "missing value after --project-dir",
+                    ));
+                };
+                project_dir = Some(PathBuf::from(value.to_string()));
+                index += 2;
+            }
+            "--message" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--message requires a value",
+                    ));
+                };
+                message = value.to_string();
+                index += 2;
+            }
+            "--target-slot" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--target-slot requires a value",
+                    ));
+                };
+                target_slot = value.to_string();
+                index += 2;
+            }
+            "--confidence" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--confidence requires a value",
+                    ));
+                };
+                confidence = Some(value.parse::<f64>().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Invalid confidence value: {value}"),
+                    )
+                })?);
+                index += 2;
+            }
+            "--run-id" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--run-id requires a value",
+                    ));
+                };
+                run_id = value.to_string();
+                index += 2;
+            }
+            "--next-test" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--next-test requires a value",
+                    ));
+                };
+                next_test = value.to_string();
+                index += 2;
+            }
+            "--risk" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--risk requires a value",
+                    ));
+                };
+                if !value.trim().is_empty() {
+                    risks.push(value.to_string());
+                }
+                index += 2;
+            }
+            value if value.starts_with('-') => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown argument for winsmux consult-result: {value}"),
+                ));
+            }
+            value => {
+                if positionals.is_empty() {
+                    positionals.push(value.to_string());
+                } else if !value.trim().is_empty() {
+                    message_parts.push(value.to_string());
+                }
+                index += 1;
+            }
+        }
+    }
+
+    if positionals.len() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("consult-result"),
+        ));
+    }
+
+    let mode = positionals[0].trim().to_ascii_lowercase();
+    if !matches!(mode.as_str(), "early" | "stuck" | "reconcile" | "final") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Unsupported consult mode: {}", positionals[0]),
+        ));
+    }
+
+    if message.trim().is_empty() && !message_parts.is_empty() {
+        message = message_parts.join(" ");
+    }
+    if message.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "consult message is required",
+        ));
+    }
+
+    Ok(ConsultResultOptions {
+        json,
+        project_dir: project_dir.unwrap_or(env::current_dir()?),
+        mode,
+        message,
+        target_slot,
+        confidence,
+        run_id,
+        next_test,
+        risks,
+    })
+}
+
 fn parse_rebind_worktree_options(args: &[&String]) -> io::Result<ParsedOptions> {
     let mut project_dir = None;
     let mut positionals = Vec::new();
@@ -722,6 +924,9 @@ fn usage_for(command: &str) -> &'static str {
         }
         "promote-tactic" => {
             "usage: winsmux promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>] [--json] [--project-dir <path>]"
+        }
+        "consult-result" => {
+            "usage: winsmux consult-result <early|stuck|reconcile|final> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json] [--project-dir <path>]"
         }
         "poll-events" => "usage: winsmux poll-events [cursor] [--project-dir <path>]",
         "review-reset" => "usage: winsmux review-reset [--project-dir <path>]",
@@ -883,6 +1088,43 @@ fn assert_review_role_permission(command_name: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn assert_consult_role_permission(command_name: &str) -> io::Result<()> {
+    let role = current_canonical_role()?;
+    if !matches!(
+        role.as_str(),
+        "Operator" | "Builder" | "Worker" | "Researcher" | "Reviewer"
+    ) {
+        return Err(review_permission_error(command_name));
+    }
+
+    let role_map = role_map_from_env()?;
+    if role_map.is_empty() {
+        return Ok(());
+    }
+
+    let pane_id = env::var("WINSMUX_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "WINSMUX_PANE_ID not set"))?;
+    let Some(mapped_role) = role_map
+        .get(&pane_id)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+    else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("WINSMUX_ROLE_MAP missing entry for pane {pane_id}"),
+        ));
+    };
+    if mapped_role != role {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("WINSMUX_ROLE mismatch for pane {pane_id}: expected {mapped_role}, got {role}"),
+        ));
+    }
+    Ok(())
+}
+
 fn current_canonical_role() -> io::Result<String> {
     let raw = env::var("WINSMUX_ROLE")
         .ok()
@@ -959,6 +1201,20 @@ struct ReviewPaneContext {
 }
 
 #[derive(Clone)]
+struct ConsultationContext {
+    session_name: String,
+    label: String,
+    pane_id: String,
+    role: String,
+    task_id: String,
+    branch: String,
+    head_sha: String,
+    run_id: String,
+    slot: String,
+    worktree: String,
+}
+
+#[derive(Clone)]
 struct RebindManifestContext {
     label: String,
     pane_id: String,
@@ -1001,6 +1257,149 @@ fn current_review_pane_context(project_dir: &Path) -> io::Result<ReviewPaneConte
         ));
     };
     Ok(context)
+}
+
+fn consultation_command_context(
+    project_dir: &Path,
+    run_id_override: &str,
+) -> io::Result<ConsultationContext> {
+    if !run_id_override.trim().is_empty() {
+        let snapshot = load_snapshot(project_dir)?;
+        let projection = snapshot
+            .explain_projection(run_id_override)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("run not found: {run_id_override}"),
+                )
+            })?;
+        let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+        let manifest = load_manifest_yaml(&manifest_path)?;
+        let session_name = manifest_session_name(&manifest).unwrap_or_default();
+        return Ok(ConsultationContext {
+            session_name,
+            label: projection.run.primary_label.clone(),
+            pane_id: projection.run.primary_pane_id.clone(),
+            role: projection.run.primary_role.clone(),
+            task_id: projection.run.task_id.clone(),
+            branch: projection.run.branch.clone(),
+            head_sha: projection.run.head_sha.clone(),
+            run_id: projection.run.run_id.clone(),
+            slot: projection.run.primary_label.clone(),
+            worktree: projection.run.worktree.clone(),
+        });
+    }
+
+    let pane_id = env::var("WINSMUX_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "WINSMUX_PANE_ID not set"))?;
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let manifest = load_manifest_yaml(&manifest_path)?;
+    let Some(context) = find_consultation_context(&manifest, &pane_id, project_dir) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("pane {pane_id} is not registered in .winsmux/manifest.yaml"),
+        ));
+    };
+    Ok(context)
+}
+
+fn load_manifest_yaml(manifest_path: &Path) -> io::Result<serde_yaml::Value> {
+    let raw = fs::read_to_string(manifest_path)?;
+    serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid manifest: {}: {err}", manifest_path.display()),
+        )
+    })
+}
+
+fn find_consultation_context(
+    manifest: &serde_yaml::Value,
+    pane_id: &str,
+    project_dir: &Path,
+) -> Option<ConsultationContext> {
+    let panes = manifest.get("panes")?;
+    match panes {
+        serde_yaml::Value::Mapping(map) => map.iter().find_map(|(key, pane)| {
+            let label = key.as_str().unwrap_or_default();
+            consultation_context_from_value(manifest, label, pane_id, pane, project_dir)
+        }),
+        serde_yaml::Value::Sequence(items) => items.iter().find_map(|pane| {
+            consultation_context_from_value(manifest, "", pane_id, pane, project_dir)
+        }),
+        _ => None,
+    }
+}
+
+fn consultation_context_from_value(
+    manifest: &serde_yaml::Value,
+    fallback_label: &str,
+    pane_id: &str,
+    pane: &serde_yaml::Value,
+    project_dir: &Path,
+) -> Option<ConsultationContext> {
+    let map = pane.as_mapping()?;
+    let actual = manifest_string(map, "pane_id");
+    if actual != pane_id {
+        return None;
+    }
+    let label = first_non_empty(&manifest_string(map, "label"), fallback_label);
+    let role = canonical_manifest_role(&manifest_string(map, "role"), &label).unwrap_or_default();
+    let task_id = manifest_string(map, "task_id");
+    let mut run_id = manifest_string(map, "parent_run_id");
+    if run_id.trim().is_empty() && !task_id.trim().is_empty() {
+        run_id = format!("task:{task_id}");
+    }
+    if run_id.trim().is_empty() && task_id.trim().is_empty() {
+        return None;
+    }
+
+    let branch = {
+        let manifest_branch = manifest_string(map, "branch");
+        if manifest_branch.trim().is_empty() {
+            current_git_branch(project_dir).unwrap_or_default()
+        } else {
+            manifest_branch
+        }
+    };
+    let head_sha = {
+        let manifest_head = manifest_string(map, "head_sha");
+        if manifest_head.trim().is_empty() {
+            current_git_head(project_dir).unwrap_or_default()
+        } else {
+            manifest_head
+        }
+    };
+    let worktree_path = first_non_empty(
+        &first_non_empty(
+            &first_non_empty(
+                &manifest_string(map, "worktree_git_dir"),
+                &manifest_string(map, "git_worktree_dir"),
+            ),
+            &manifest_string(map, "builder_worktree_path"),
+        ),
+        &manifest_string(map, "launch_dir"),
+    );
+    let worktree = if worktree_path.trim().is_empty() {
+        String::new()
+    } else {
+        artifact_reference(project_dir, Path::new(&worktree_path))
+    };
+
+    Some(ConsultationContext {
+        session_name: manifest_session_name(manifest).unwrap_or_default(),
+        label: label.clone(),
+        pane_id: actual,
+        role,
+        task_id,
+        branch,
+        head_sha,
+        run_id,
+        slot: label,
+        worktree,
+    })
 }
 
 fn find_review_pane_context(
@@ -2890,6 +3289,168 @@ fn write_playbook_candidate(project_dir: &Path, candidate: &Value) -> io::Result
         reference: artifact_reference(project_dir, &path),
         path: path.display().to_string(),
     })
+}
+
+fn consultation_result_packet(
+    context: &ConsultationContext,
+    options: &ConsultResultOptions,
+    timestamp: &str,
+) -> Value {
+    let mut packet = Map::new();
+    packet.insert("packet_type".to_string(), json!("consultation_packet"));
+    packet.insert("generated_at".to_string(), json!(timestamp));
+    packet.insert("run_id".to_string(), json!(context.run_id));
+    packet.insert("task_id".to_string(), json!(context.task_id));
+    packet.insert("pane_id".to_string(), json!(context.pane_id));
+    packet.insert("slot".to_string(), json!(context.slot));
+    packet.insert("kind".to_string(), json!("consult_result"));
+    packet.insert("mode".to_string(), json!(options.mode));
+    packet.insert("target_slot".to_string(), json!(options.target_slot));
+    packet.insert("branch".to_string(), json!(context.branch));
+    packet.insert("head_sha".to_string(), json!(context.head_sha));
+    packet.insert("worktree".to_string(), json!(context.worktree));
+    packet.insert("recommendation".to_string(), json!(options.message));
+    packet.insert(
+        "confidence".to_string(),
+        json!(options.confidence.unwrap_or_default()),
+    );
+    packet.insert("next_test".to_string(), json!(options.next_test));
+    packet.insert("risks".to_string(), json!(options.risks));
+    Value::Object(packet)
+}
+
+fn consultation_result_event(
+    context: &ConsultationContext,
+    options: &ConsultResultOptions,
+    consultation_ref: &str,
+    timestamp: &str,
+) -> Value {
+    let mut data = Map::new();
+    data.insert("task_id".to_string(), json!(context.task_id));
+    data.insert("run_id".to_string(), json!(context.run_id));
+    data.insert("slot".to_string(), json!(context.slot));
+    data.insert("branch".to_string(), json!(context.branch));
+    data.insert("worktree".to_string(), json!(context.worktree));
+    data.insert("consultation_ref".to_string(), json!(consultation_ref));
+    data.insert("result".to_string(), json!(options.message));
+    if let Some(confidence) = options.confidence {
+        data.insert("confidence".to_string(), json!(confidence));
+    }
+    if !options.next_test.trim().is_empty() {
+        data.insert("next_action".to_string(), json!(options.next_test));
+    }
+
+    json!({
+        "timestamp": timestamp,
+        "session": context.session_name,
+        "event": "pane.consult_result",
+        "message": options.message,
+        "label": context.label,
+        "pane_id": context.pane_id,
+        "role": context.role,
+        "branch": context.branch,
+        "head_sha": context.head_sha,
+        "data": Value::Object(data),
+    })
+}
+
+fn write_consultation_packet(project_dir: &Path, packet: &Value) -> io::Result<WrittenArtifact> {
+    let dir = project_dir.join(".winsmux").join("consultations");
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("consult-result-{}.json", unique_artifact_id()));
+    let content = serde_json::to_string_pretty(packet).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize consultation packet: {err}"),
+        )
+    })?;
+    write_text_file_with_lock(&path, &format!("{content}\n"))?;
+    Ok(WrittenArtifact {
+        reference: artifact_reference(project_dir, &path),
+        path: path.display().to_string(),
+    })
+}
+
+fn append_event_record(project_dir: &Path, event: &Value) -> io::Result<()> {
+    let path = project_dir.join(".winsmux").join("events.jsonl");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let line = serde_json::to_string(event).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize event record: {err}"),
+        )
+    })?;
+    with_file_lock(&path, || {
+        let mut content = if path.exists() {
+            fs::read_to_string(&path)?
+        } else {
+            String::new()
+        };
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        content.push_str(&line);
+        content.push('\n');
+        write_text_file_locked(&path, &content)
+    })
+}
+
+fn mark_current_review_pane_last_event(
+    project_dir: &Path,
+    last_event: &str,
+    timestamp: &str,
+) -> io::Result<bool> {
+    let pane_id = env::var("WINSMUX_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "WINSMUX_PANE_ID not set"))?;
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let raw = fs::read_to_string(&manifest_path)?;
+    let mut manifest = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid manifest: {}: {err}", manifest_path.display()),
+        )
+    })?;
+    let updated = update_manifest_review_capable_pane_fields(
+        &mut manifest,
+        &pane_id,
+        &[("last_event", last_event), ("last_event_at", timestamp)],
+    );
+    if !updated {
+        return Ok(false);
+    }
+    let content = serde_yaml::to_string(&manifest).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize manifest: {err}"),
+        )
+    })?;
+    write_text_file_with_lock(&manifest_path, &content)?;
+    Ok(true)
+}
+
+fn update_manifest_review_capable_pane_fields(
+    manifest: &mut serde_yaml::Value,
+    pane_id: &str,
+    fields: &[(&str, &str)],
+) -> bool {
+    let Some(panes) = manifest.get_mut("panes") else {
+        return false;
+    };
+
+    match panes {
+        serde_yaml::Value::Mapping(map) => map.iter_mut().any(|(key, pane)| {
+            let label = key.as_str().unwrap_or_default();
+            update_manifest_pane_if_matches(label, pane, pane_id, fields)
+        }),
+        serde_yaml::Value::Sequence(items) => items
+            .iter_mut()
+            .any(|pane| update_manifest_pane_if_matches("", pane, pane_id, fields)),
+        _ => false,
+    }
 }
 
 fn artifact_reference(project_dir: &Path, path: &Path) -> String {
