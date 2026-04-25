@@ -320,6 +320,26 @@ pub fn run_consult_request_command(args: &[&String]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn run_consult_error_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("consult-error"));
+        return Ok(());
+    }
+    let options = parse_consult_error_options(args)?;
+    assert_consult_role_permission("consult-error")?;
+
+    let timestamp = generated_at();
+    let context = consultation_command_context(&options.project_dir, "")?;
+    let packet = consultation_error_packet(&context, &options, &timestamp);
+    let artifact = write_consultation_packet(&options.project_dir, "consult-error", &packet)?;
+    let event = consultation_error_event(&context, &options, &artifact.reference, &timestamp);
+    append_event_record(&options.project_dir, &event)?;
+    let _ = mark_current_review_pane_last_event(&options.project_dir, "consult.error", &timestamp);
+
+    println!("consult error recorded for {}", context.run_id);
+    Ok(())
+}
+
 pub fn run_poll_events_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
         println!("{}", usage_for("poll-events"));
@@ -874,6 +894,17 @@ fn parse_consult_result_options(args: &[&String]) -> io::Result<ConsultResultOpt
 }
 
 fn parse_consult_request_options(args: &[&String]) -> io::Result<ConsultRequestOptions> {
+    parse_consult_simple_options("consult-request", args)
+}
+
+fn parse_consult_error_options(args: &[&String]) -> io::Result<ConsultRequestOptions> {
+    parse_consult_simple_options("consult-error", args)
+}
+
+fn parse_consult_simple_options(
+    command: &str,
+    args: &[&String],
+) -> io::Result<ConsultRequestOptions> {
     let mut project_dir = None;
     let mut positionals = Vec::new();
     let mut message = String::new();
@@ -914,10 +945,55 @@ fn parse_consult_request_options(args: &[&String]) -> io::Result<ConsultRequestO
                 target_slot = value.to_string();
                 index += 2;
             }
+            "--run-id" => {
+                let Some(_) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--run-id requires a value",
+                    ));
+                };
+                index += 2;
+            }
+            "--confidence" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--confidence requires a value",
+                    ));
+                };
+                value.parse::<f64>().map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Invalid confidence value: {value}"),
+                    )
+                })?;
+                index += 2;
+            }
+            "--next-test" => {
+                let Some(_) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--next-test requires a value",
+                    ));
+                };
+                index += 2;
+            }
+            "--risk" => {
+                let Some(_) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--risk requires a value",
+                    ));
+                };
+                index += 2;
+            }
+            "--json" => {
+                index += 1;
+            }
             value if value.starts_with('-') => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("unknown argument for winsmux consult-request: {value}"),
+                    format!("unknown argument for winsmux {command}: {value}"),
                 ));
             }
             value => {
@@ -934,7 +1010,7 @@ fn parse_consult_request_options(args: &[&String]) -> io::Result<ConsultRequestO
     if positionals.len() != 1 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            usage_for("consult-request"),
+            usage_for(command),
         ));
     }
 
@@ -1048,6 +1124,9 @@ fn usage_for(command: &str) -> &'static str {
         }
         "consult-result" => {
             "usage: winsmux consult-result <early|stuck|reconcile|final> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json] [--project-dir <path>]"
+        }
+        "consult-error" => {
+            "usage: winsmux consult-error <early|stuck|reconcile|final> [--message <text>] [--target-slot <slot>] [--project-dir <path>]"
         }
         "poll-events" => "usage: winsmux poll-events [cursor] [--project-dir <path>]",
         "review-reset" => "usage: winsmux review-reset [--project-dir <path>]",
@@ -3462,6 +3541,28 @@ fn consultation_request_packet(
     Value::Object(packet)
 }
 
+fn consultation_error_packet(
+    context: &ConsultationContext,
+    options: &ConsultRequestOptions,
+    timestamp: &str,
+) -> Value {
+    let mut packet = Map::new();
+    packet.insert("packet_type".to_string(), json!("consultation_packet"));
+    packet.insert("generated_at".to_string(), json!(timestamp));
+    packet.insert("run_id".to_string(), json!(context.run_id));
+    packet.insert("task_id".to_string(), json!(context.task_id));
+    packet.insert("pane_id".to_string(), json!(context.pane_id));
+    packet.insert("slot".to_string(), json!(context.slot));
+    packet.insert("kind".to_string(), json!("consult_error"));
+    packet.insert("mode".to_string(), json!(options.mode));
+    packet.insert("target_slot".to_string(), json!(options.target_slot));
+    packet.insert("branch".to_string(), json!(context.branch));
+    packet.insert("head_sha".to_string(), json!(context.head_sha));
+    packet.insert("worktree".to_string(), json!(context.worktree));
+    packet.insert("error".to_string(), json!(options.message));
+    Value::Object(packet)
+}
+
 fn consultation_result_event(
     context: &ConsultationContext,
     options: &ConsultResultOptions,
@@ -3515,6 +3616,34 @@ fn consultation_request_event(
         "timestamp": timestamp,
         "session": context.session_name,
         "event": "pane.consult_request",
+        "message": options.message,
+        "label": context.label,
+        "pane_id": context.pane_id,
+        "role": context.role,
+        "branch": context.branch,
+        "head_sha": context.head_sha,
+        "data": Value::Object(data),
+    })
+}
+
+fn consultation_error_event(
+    context: &ConsultationContext,
+    options: &ConsultRequestOptions,
+    consultation_ref: &str,
+    timestamp: &str,
+) -> Value {
+    let mut data = Map::new();
+    data.insert("task_id".to_string(), json!(context.task_id));
+    data.insert("run_id".to_string(), json!(context.run_id));
+    data.insert("slot".to_string(), json!(context.slot));
+    data.insert("branch".to_string(), json!(context.branch));
+    data.insert("worktree".to_string(), json!(context.worktree));
+    data.insert("consultation_ref".to_string(), json!(consultation_ref));
+
+    json!({
+        "timestamp": timestamp,
+        "session": context.session_name,
+        "event": "pane.consult_error",
         "message": options.message,
         "label": context.label,
         "pane_id": context.pane_id,

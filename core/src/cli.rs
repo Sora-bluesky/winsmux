@@ -137,6 +137,7 @@ OPERATOR COMMANDS:
     promote-tactic          Export a reusable tactic candidate from a run
     consult-request         Record a consultation request packet and event
     consult-result          Record a consultation result packet and event
+    consult-error           Record a consultation error packet and event
     poll-events             Return new monitor events from .winsmux/events.jsonl
     review-request          Record a pending review request for the current branch
     review-approve          Record PASS for the pending review request
