@@ -249,6 +249,7 @@ fn run_main() -> io::Result<()> {
         "promote-tactic" => return operator_cli::run_promote_tactic_command(&cmd_args[1..]),
         "consult-request" => return operator_cli::run_consult_request_command(&cmd_args[1..]),
         "consult-result" => return operator_cli::run_consult_result_command(&cmd_args[1..]),
+        "consult-error" => return operator_cli::run_consult_error_command(&cmd_args[1..]),
         "poll-events" => return operator_cli::run_poll_events_command(&cmd_args[1..]),
         "review-request" => return operator_cli::run_review_request_command(&cmd_args[1..]),
         "review-approve" => return operator_cli::run_review_approve_command(&cmd_args[1..]),
