@@ -5,7 +5,7 @@ use std::{
     process::Command,
     sync::atomic::{AtomicU32, Ordering},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -151,7 +151,10 @@ pub fn run_compare_runs_command(args: &[&String]) -> io::Result<()> {
         io::Error::new(io::ErrorKind::NotFound, format!("run not found: {left_id}"))
     })?;
     let right = snapshot.explain_projection(&right_id).ok_or_else(|| {
-        io::Error::new(io::ErrorKind::NotFound, format!("run not found: {right_id}"))
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("run not found: {right_id}"),
+        )
     })?;
     let payload = compare_runs_payload(&left, &right);
     if options.json {
@@ -184,7 +187,10 @@ pub fn run_compare_runs_command(args: &[&String]) -> io::Result<()> {
             .as_str()
             .unwrap_or_default()
     );
-    let differences = payload["differences"].as_array().cloned().unwrap_or_default();
+    let differences = payload["differences"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     if differences.is_empty() {
         println!("Differences: (none)");
     } else {
@@ -198,6 +204,61 @@ pub fn run_compare_runs_command(args: &[&String]) -> io::Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+pub fn run_promote_tactic_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("promote-tactic"));
+        return Ok(());
+    }
+    let options = parse_promote_tactic_options(args)?;
+    let run_id = options.positionals[0].clone();
+    if !matches!(
+        options.kind.as_str(),
+        "playbook" | "prewarm" | "verification"
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Unsupported promote kind: {}", options.kind),
+        ));
+    }
+
+    let snapshot = load_snapshot(&options.project_dir)?;
+    let projection = snapshot.explain_projection(&run_id).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, format!("run not found: {run_id}"))
+    })?;
+    if !run_recommendable(&projection.run) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("run is not promotable: {run_id}"),
+        ));
+    }
+
+    let consultation_packet = read_artifact_json(
+        &projection.run.experiment_packet.consultation_ref,
+        &options.project_dir,
+        &[".winsmux", "consultations"],
+        &run_id,
+    );
+    let candidate = promote_tactic_candidate(&projection, &consultation_packet, &options);
+    let artifact = write_playbook_candidate(&options.project_dir, &candidate)?;
+    let result = json!({
+        "generated_at": generated_at(),
+        "run_id": run_id,
+        "candidate_ref": artifact.reference,
+        "candidate_path": artifact.path,
+        "candidate": candidate,
+    });
+
+    if options.json {
+        return write_json(&result);
+    }
+    println!(
+        "promoted tactic from {} -> {}",
+        result["run_id"].as_str().unwrap_or_default(),
+        result["candidate_ref"].as_str().unwrap_or_default()
+    );
     Ok(())
 }
 
@@ -403,6 +464,14 @@ struct ParsedOptions {
     positionals: Vec<String>,
 }
 
+struct PromoteTacticOptions {
+    json: bool,
+    project_dir: PathBuf,
+    positionals: Vec<String>,
+    title: String,
+    kind: String,
+}
+
 fn parse_options(
     command: &str,
     args: &[&String],
@@ -501,6 +570,80 @@ fn parse_poll_events_options(args: &[&String]) -> io::Result<ParsedOptions> {
     })
 }
 
+fn parse_promote_tactic_options(args: &[&String]) -> io::Result<PromoteTacticOptions> {
+    let mut json = false;
+    let mut project_dir = None;
+    let mut positionals = Vec::new();
+    let mut title = String::new();
+    let mut kind = "playbook".to_string();
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = args[index].as_str();
+        match arg {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--project-dir" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "missing value after --project-dir",
+                    ));
+                };
+                project_dir = Some(PathBuf::from(value.to_string()));
+                index += 2;
+            }
+            "--title" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--title requires a value",
+                    ));
+                };
+                title = value.to_string();
+                index += 2;
+            }
+            "--kind" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--kind requires a value",
+                    ));
+                };
+                kind = value.to_string();
+                index += 2;
+            }
+            value if value.starts_with('-') => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown argument for winsmux promote-tactic: {value}"),
+                ));
+            }
+            value => {
+                positionals.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+
+    if positionals.len() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("promote-tactic").to_string(),
+        ));
+    }
+
+    Ok(PromoteTacticOptions {
+        json,
+        project_dir: project_dir.unwrap_or(env::current_dir()?),
+        positionals,
+        title,
+        kind,
+    })
+}
+
 fn parse_rebind_worktree_options(args: &[&String]) -> io::Result<ParsedOptions> {
     let mut project_dir = None;
     let mut positionals = Vec::new();
@@ -576,6 +719,9 @@ fn usage_for(command: &str) -> &'static str {
         "explain" => "usage: winsmux explain <run_id> --json [--project-dir <path>]",
         "compare-runs" => {
             "usage: winsmux compare-runs <left_run_id> <right_run_id> [--json] [--project-dir <path>]"
+        }
+        "promote-tactic" => {
+            "usage: winsmux promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>] [--json] [--project-dir <path>]"
         }
         "poll-events" => "usage: winsmux poll-events [cursor] [--project-dir <path>]",
         "review-reset" => "usage: winsmux review-reset [--project-dir <path>]",
@@ -1390,7 +1536,14 @@ fn invoke_restart_plan(plan: &RestartPlan) -> io::Result<()> {
         &plan.launch_dir,
     ])?;
     wait_for_shell_prompt(&plan.pane_id)?;
-    run_winsmux_command(&["send-keys", "-t", &plan.pane_id, "-l", "--", &plan.launch_command])?;
+    run_winsmux_command(&[
+        "send-keys",
+        "-t",
+        &plan.pane_id,
+        "-l",
+        "--",
+        &plan.launch_command,
+    ])?;
     run_winsmux_command(&["send-keys", "-t", &plan.pane_id, "Enter"])?;
     wait_for_agent_prompt(&plan.pane_id, &restart_readiness_agent(plan))?;
     Ok(())
@@ -1456,7 +1609,9 @@ fn wait_for_agent_prompt(pane_id: &str, agent: &str) -> io::Result<()> {
 
 fn capture_pane_tail(pane_id: &str) -> io::Result<String> {
     let output = winsmux_command_output(&["capture-pane", "-t", pane_id, "-p", "-J", "-S", "-50"])?;
-    Ok(String::from_utf8_lossy(&output.stdout).trim_end().to_string())
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .trim_end()
+        .to_string())
 }
 
 fn agent_ready_prompt(text: &str, agent: &str) -> bool {
@@ -1495,12 +1650,15 @@ fn run_winsmux_command(args: &[&str]) -> io::Result<()> {
 
 fn winsmux_command_output(args: &[&str]) -> io::Result<std::process::Output> {
     let winsmux_bin = winsmux_bin_path();
-    Command::new(&winsmux_bin).args(args).output().map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("failed to run {}: {err}", winsmux_bin.display()),
-        )
-    })
+    Command::new(&winsmux_bin)
+        .args(args)
+        .output()
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!("failed to run {}: {err}", winsmux_bin.display()),
+            )
+        })
 }
 
 fn winsmux_command_error(args: &[&str], output: &std::process::Output) -> io::Error {
@@ -2555,7 +2713,12 @@ fn compare_runs_payload(
     let reconcile_consult = differences.iter().any(|difference| {
         difference["field"]
             .as_str()
-            .map(|field| matches!(field, "branch" | "worktree" | "env_fingerprint" | "command_hash" | "result"))
+            .map(|field| {
+                matches!(
+                    field,
+                    "branch" | "worktree" | "env_fingerprint" | "command_hash" | "result"
+                )
+            })
             .unwrap_or(false)
     }) || !(left_recommendable && right_recommendable);
     let next_action = if left.evidence_digest.next_action == right.evidence_digest.next_action {
@@ -2620,6 +2783,129 @@ fn run_recommendable(run: &crate::ledger::LedgerExplainRun) -> bool {
             .as_str(),
         "ALLOW" | "PASS"
     )
+}
+
+struct WrittenArtifact {
+    path: String,
+    reference: String,
+}
+
+fn promote_tactic_candidate(
+    projection: &crate::ledger::LedgerExplainProjection,
+    consultation_packet: &Value,
+    options: &PromoteTacticOptions,
+) -> Value {
+    let run = &projection.run;
+    let experiment = &run.experiment_packet;
+    let recommendation = json_string_field(consultation_packet, "recommendation");
+    let title = if !options.title.trim().is_empty() {
+        options.title.clone()
+    } else if !recommendation.trim().is_empty() {
+        recommendation.clone()
+    } else if !experiment.result.trim().is_empty() {
+        experiment.result.clone()
+    } else if !run.task.trim().is_empty() {
+        run.task.clone()
+    } else {
+        format!("Tactic from {}", run.run_id)
+    };
+    let summary = if !recommendation.trim().is_empty() {
+        recommendation
+    } else {
+        experiment.result.clone()
+    };
+
+    json!({
+        "run_id": run.run_id,
+        "task_id": run.task_id,
+        "pane_id": run.primary_pane_id,
+        "slot": experiment.slot,
+        "kind": options.kind,
+        "title": title,
+        "summary": summary,
+        "hypothesis": experiment.hypothesis,
+        "next_action": projection.evidence_digest.next_action,
+        "confidence": experiment.confidence,
+        "branch": run.branch,
+        "head_sha": run.head_sha,
+        "worktree": experiment.worktree,
+        "env_fingerprint": experiment.env_fingerprint,
+        "command_hash": experiment.command_hash,
+        "changed_files": projection.evidence_digest.changed_files,
+        "observation_pack_ref": experiment.observation_pack_ref,
+        "consultation_ref": experiment.consultation_ref,
+        "verification_result": run.verification_result,
+        "security_verdict": run.security_verdict,
+        "action_item_count": run.action_items.len(),
+        "action_item_kinds": action_item_kinds(&run.action_items),
+        "reuse_conditions": reuse_conditions(run),
+        "packet_type": "playbook_candidate",
+        "generated_at": generated_at(),
+    })
+}
+
+fn action_item_kinds(items: &[crate::ledger::LedgerExplainActionItem]) -> Vec<String> {
+    let mut values = Vec::new();
+    for item in items {
+        if !item.kind.trim().is_empty() && !values.contains(&item.kind) {
+            values.push(item.kind.clone());
+        }
+    }
+    values
+}
+
+fn reuse_conditions(run: &crate::ledger::LedgerExplainRun) -> Vec<String> {
+    let mut values = Vec::new();
+    if !run.branch.trim().is_empty() {
+        values.push(format!("branch={}", run.branch));
+    }
+    if !run.experiment_packet.env_fingerprint.trim().is_empty() {
+        values.push(format!(
+            "env_fingerprint={}",
+            run.experiment_packet.env_fingerprint
+        ));
+    }
+    if !run.experiment_packet.command_hash.trim().is_empty() {
+        values.push(format!(
+            "command_hash={}",
+            run.experiment_packet.command_hash
+        ));
+    }
+    values
+}
+
+fn write_playbook_candidate(project_dir: &Path, candidate: &Value) -> io::Result<WrittenArtifact> {
+    let dir = project_dir.join(".winsmux").join("playbook-candidates");
+    fs::create_dir_all(&dir)?;
+    let file_name = format!("playbook-candidate-{}.json", unique_artifact_id());
+    let path = dir.join(file_name);
+    let content = serde_json::to_string_pretty(candidate).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize playbook candidate: {err}"),
+        )
+    })?;
+    write_text_file_with_lock(&path, &content)?;
+    Ok(WrittenArtifact {
+        reference: artifact_reference(project_dir, &path),
+        path: path.display().to_string(),
+    })
+}
+
+fn artifact_reference(project_dir: &Path, path: &Path) -> String {
+    path.strip_prefix(project_dir)
+        .ok()
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|| path.display().to_string().replace('\\', "/"))
+}
+
+fn unique_artifact_id() -> String {
+    let counter = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{nanos:x}{:08x}{counter:08x}", std::process::id())
 }
 
 fn json_string_field(value: &Value, key: &str) -> String {

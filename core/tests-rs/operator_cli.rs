@@ -110,7 +110,13 @@ fn operator_cli_poll_events_returns_events_after_cursor() {
     let json = run_json(&project_dir, &["poll-events", "1"]);
 
     assert_eq!(json["cursor"], 2);
-    assert_eq!(json["events"].as_array().expect("events should be array").len(), 1);
+    assert_eq!(
+        json["events"]
+            .as_array()
+            .expect("events should be array")
+            .len(),
+        1
+    );
     assert_eq!(json["events"][0]["event"], "operator.commit_ready");
     assert_eq!(json["events"][0]["pane_id"], "%2");
 }
@@ -229,6 +235,120 @@ fn operator_cli_compare_runs_uses_powershell_rounding() {
     );
 
     assert_eq!(json["confidence_delta"], 0.1234);
+}
+
+#[test]
+fn operator_cli_promote_tactic_writes_playbook_candidate() {
+    let project_dir = make_temp_project_dir("promote-tactic");
+    write_compare_runs_fixture(&project_dir);
+
+    let json = run_json(
+        &project_dir,
+        &[
+            "promote-tactic",
+            "task:task-a",
+            "--title",
+            "Deterministic build command",
+            "--json",
+        ],
+    );
+
+    assert_eq!(json["run_id"], "task:task-a");
+    assert!(json["candidate_ref"]
+        .as_str()
+        .expect("candidate ref should be a string")
+        .starts_with(".winsmux/playbook-candidates/playbook-candidate-"));
+    let candidate_path = json["candidate_path"]
+        .as_str()
+        .expect("candidate path should be a string");
+    assert!(std::path::Path::new(candidate_path).is_file());
+    let candidate_file =
+        fs::read_to_string(candidate_path).expect("candidate file should be readable");
+    let candidate_json: serde_json::Value =
+        serde_json::from_str(&candidate_file).expect("candidate file should be JSON");
+    assert_eq!(candidate_json["packet_type"], "playbook_candidate");
+    assert_eq!(candidate_json["kind"], "playbook");
+    assert!(candidate_json["generated_at"].as_str().is_some());
+    assert_eq!(candidate_json["title"], "Deterministic build command");
+    assert_eq!(candidate_json["summary"], "prefer cache command");
+    assert_eq!(json["candidate"]["packet_type"], "playbook_candidate");
+    assert_eq!(json["candidate"]["kind"], "playbook");
+    assert_eq!(json["candidate"]["title"], "Deterministic build command");
+    assert_eq!(json["candidate"]["summary"], "prefer cache command");
+    assert_eq!(json["candidate"]["hypothesis"], "cache command is stable");
+    assert_eq!(
+        json["candidate"]["changed_files"][0],
+        "core/src/operator_cli.rs"
+    );
+    assert_eq!(
+        json["candidate"]["observation_pack_ref"],
+        ".winsmux/observation-packs/task-a.json"
+    );
+    assert_eq!(
+        json["candidate"]["consultation_ref"],
+        ".winsmux/consultations/task-a.json"
+    );
+}
+
+#[test]
+fn operator_cli_promote_tactic_rejects_unhealthy_run() {
+    let project_dir = make_temp_project_dir("promote-tactic-unhealthy");
+    write_compare_runs_fixture(&project_dir);
+    let events_path = project_dir.join(".winsmux").join("events.jsonl");
+    let events = fs::read_to_string(&events_path)
+        .expect("test should read events")
+        .replace("\"outcome\":\"PASS\"", "\"outcome\":\"FAIL\"");
+    fs::write(events_path, events).expect("test should write events");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["promote-tactic", "task:task-a"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("run is not promotable: task:task-a"));
+}
+
+#[test]
+fn operator_cli_promote_tactic_rejects_missing_security_clearance() {
+    let project_dir = make_temp_project_dir("promote-tactic-no-security");
+    write_compare_runs_fixture(&project_dir);
+    let events_path = project_dir.join(".winsmux").join("events.jsonl");
+    let events = fs::read_to_string(&events_path)
+        .expect("test should read events")
+        .lines()
+        .filter(|line| !line.contains("\"event\":\"pipeline.security.allowed\""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(events_path, events).expect("test should write events");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["promote-tactic", "task:task-a"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("run is not promotable: task:task-a"));
+}
+
+#[test]
+fn operator_cli_promote_tactic_rejects_unknown_kind() {
+    let project_dir = make_temp_project_dir("promote-tactic-kind");
+    write_compare_runs_fixture(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["promote-tactic", "task:task-a", "--kind", "unknown"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Unsupported promote kind: unknown"));
 }
 
 #[test]
@@ -1156,7 +1276,10 @@ fn operator_cli_restart_dispatches_launch_plan_and_updates_manifest() {
     let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
     let manifest = fs::read_to_string(&manifest_path)
         .expect("test should read manifest")
-        .replace("    provider_target: codex:gpt-5.4\n", "    provider_target: codex:gpt 5.4;unsafe\n");
+        .replace(
+            "    provider_target: codex:gpt-5.4\n",
+            "    provider_target: codex:gpt 5.4;unsafe\n",
+        );
     fs::write(&manifest_path, manifest).expect("test should write manifest");
     let (winsmux_bin, log_path) =
         write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2", "%3"]);
@@ -1184,7 +1307,10 @@ fn operator_cli_restart_dispatches_launch_plan_and_updates_manifest() {
     assert!(log.contains("send-keys -t \"%2\" -l -- \"codex -c 'model=gpt 5.4;unsafe'"));
     assert!(log.contains("send-keys -t \"%2\" Enter"));
     let builder = read_manifest_pane(&project_dir, "builder-1");
-    assert_eq!(builder["provider_target"].as_str(), Some("codex:gpt 5.4;unsafe"));
+    assert_eq!(
+        builder["provider_target"].as_str(),
+        Some("codex:gpt 5.4;unsafe")
+    );
     assert_eq!(builder["capability_adapter"].as_str(), Some("codex"));
 }
 
@@ -1463,6 +1589,30 @@ panes:
 "#,
     )
     .expect("test should write events");
+    fs::create_dir_all(winsmux_dir.join("observation-packs"))
+        .expect("test should create observation pack directory");
+    fs::create_dir_all(winsmux_dir.join("consultations"))
+        .expect("test should create consultation directory");
+    fs::write(
+        winsmux_dir.join("observation-packs").join("task-a.json"),
+        r#"{"packet_type":"observation_pack","run_id":"task:task-a","summary":"captured cache command"}"#,
+    )
+    .expect("test should write observation pack");
+    fs::write(
+        winsmux_dir.join("consultations").join("task-a.json"),
+        r#"{"packet_type":"consultation_packet","run_id":"task:task-a","recommendation":"prefer cache command"}"#,
+    )
+    .expect("test should write consultation packet");
+    fs::write(
+        winsmux_dir.join("observation-packs").join("task-b.json"),
+        r#"{"packet_type":"observation_pack","run_id":"task:task-b","summary":"captured rebuild command"}"#,
+    )
+    .expect("test should write observation pack");
+    fs::write(
+        winsmux_dir.join("consultations").join("task-b.json"),
+        r#"{"packet_type":"consultation_packet","run_id":"task:task-b","recommendation":"prefer rebuild command"}"#,
+    )
+    .expect("test should write consultation packet");
 }
 
 fn write_manifest(project_dir: &std::path::Path) {
