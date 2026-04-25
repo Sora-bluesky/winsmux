@@ -245,6 +245,7 @@ fn run_main() -> io::Result<()> {
         "digest" => return operator_cli::run_digest_command(&cmd_args[1..]),
         "runs" => return operator_cli::run_runs_command(&cmd_args[1..]),
         "explain" => return operator_cli::run_explain_command(&cmd_args[1..]),
+        "review-reset" => return operator_cli::run_review_reset_command(&cmd_args[1..]),
         // kill-server MUST be handled early before any potential fall-through
         "kill-server" => {
             let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();

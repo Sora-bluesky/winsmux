@@ -171,6 +171,131 @@ fn operator_cli_rejects_unknown_and_extra_arguments() {
         stderr.contains("usage: winsmux explain"),
         "unexpected stderr: {stderr}"
     );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["review-reset", "--json"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("usage: winsmux review-reset"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn operator_cli_review_reset_clears_current_branch_and_manifest_pane() {
+    let project_dir = make_temp_project_dir("review-reset");
+    write_manifest(&project_dir);
+    init_git_branch(
+        &project_dir,
+        "codex/task266-rust-operator-readmodels-20260424",
+    );
+    write_review_state(
+        &project_dir,
+        r#"{
+  "codex/task266-rust-operator-readmodels-20260424": {
+    "status": "PASS",
+    "branch": "codex/task266-rust-operator-readmodels-20260424",
+    "head_sha": "abc123"
+  },
+  "other-branch": {
+    "status": "PENDING",
+    "branch": "other-branch",
+    "head_sha": "def456"
+  }
+}"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("review-reset")
+        .env("WINSMUX_PANE_ID", "%3")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("review PASS cleared for codex/task266-rust-operator-readmodels-20260424"),
+        "unexpected stdout: {stdout}"
+    );
+
+    let state_path = project_dir.join(".winsmux").join("review-state.json");
+    let state: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("review state should remain"))
+            .expect("review state should be JSON");
+    assert!(state
+        .get("codex/task266-rust-operator-readmodels-20260424")
+        .is_none());
+    assert!(state.get("other-branch").is_some());
+
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let manifest: serde_yaml::Value =
+        serde_yaml::from_slice(&fs::read(&manifest_path).expect("manifest should exist"))
+            .expect("manifest should be YAML");
+    let panes = manifest["panes"]
+        .as_mapping()
+        .expect("panes should be a map");
+    let builder = panes
+        .get(&serde_yaml::Value::String("builder-1".to_string()))
+        .expect("builder-1 should exist");
+    assert_eq!(builder["review_state"].as_str(), Some("pending"));
+    assert_eq!(
+        builder["branch"].as_str(),
+        Some("codex/task266-rust-operator-readmodels-20260424")
+    );
+    assert_eq!(builder["head_sha"].as_str(), Some("abc123"));
+    let reviewer = panes
+        .get(&serde_yaml::Value::String("reviewer-1".to_string()))
+        .expect("reviewer-1 should exist");
+    assert_eq!(reviewer["review_state"].as_str(), Some(""));
+    assert_eq!(reviewer["branch"].as_str(), Some(""));
+    assert_eq!(reviewer["head_sha"].as_str(), Some(""));
+    assert_eq!(reviewer["last_event"].as_str(), Some("review.reset"));
+}
+
+#[test]
+fn operator_cli_review_reset_removes_empty_review_state_file() {
+    let project_dir = make_temp_project_dir("review-reset-empty");
+    write_manifest(&project_dir);
+    init_git_branch(
+        &project_dir,
+        "codex/task266-rust-operator-readmodels-20260424",
+    );
+    write_review_state(
+        &project_dir,
+        r#"{
+  "codex/task266-rust-operator-readmodels-20260424": {
+    "status": "PASS",
+    "branch": "codex/task266-rust-operator-readmodels-20260424",
+    "head_sha": "abc123"
+  }
+}"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("review-reset")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!project_dir
+        .join(".winsmux")
+        .join("review-state.json")
+        .exists());
 }
 
 fn run_json(project_dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
@@ -270,6 +395,26 @@ panes:
 "#,
     )
     .expect("test should write events");
+}
+
+fn write_review_state(project_dir: &std::path::Path, content: &str) {
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(winsmux_dir.join("review-state.json"), content)
+        .expect("test should write review state");
+}
+
+fn init_git_branch(project_dir: &std::path::Path, branch: &str) {
+    let init = Command::new("git")
+        .args(["init", "-b", branch])
+        .current_dir(project_dir)
+        .output()
+        .expect("git init should run");
+    assert!(
+        init.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
 }
 
 fn make_temp_project_dir(name: &str) -> std::path::PathBuf {
