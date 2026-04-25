@@ -4,15 +4,22 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU32, Ordering},
+    thread,
+    time::{Duration, Instant},
 };
 
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use crate::ledger::LedgerSnapshot;
 
 static REVIEW_REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
+static ATOMIC_WRITE_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+const FILE_LOCK_TIMEOUT: Duration = Duration::from_millis(120_000);
+const FILE_LOCK_STALE_AFTER: Duration = Duration::from_secs(60);
+const FILE_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 pub fn is_operator_status_invocation(args: &[&String]) -> bool {
     args.iter()
@@ -216,6 +223,40 @@ pub fn run_review_fail_command(args: &[&String]) -> io::Result<()> {
     )
 }
 
+pub fn run_rebind_worktree_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("rebind-worktree"));
+        return Ok(());
+    }
+    let options = parse_rebind_worktree_options(args)?;
+    let target = options.positionals[0].clone();
+    let new_worktree_path = options.positionals[1..].join(" ").trim().to_string();
+    if new_worktree_path.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "new worktree path must not be empty",
+        ));
+    }
+
+    let requested_path = PathBuf::from(&new_worktree_path);
+    if !requested_path.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("worktree path not found: {new_worktree_path}"),
+        ));
+    }
+
+    let resolved_worktree_path = resolved_display_path(&requested_path)?;
+    let manifest_path = options.project_dir.join(".winsmux").join("manifest.yaml");
+    let context =
+        update_rebind_manifest_with_lock(&manifest_path, &target, &resolved_worktree_path)?;
+    println!(
+        "rebound {} ({}) to {}",
+        context.pane_id, context.label, resolved_worktree_path
+    );
+    Ok(())
+}
+
 struct ParsedOptions {
     json: bool,
     project_dir: PathBuf,
@@ -276,6 +317,57 @@ fn parse_options(
     })
 }
 
+fn parse_rebind_worktree_options(args: &[&String]) -> io::Result<ParsedOptions> {
+    let mut project_dir = None;
+    let mut positionals = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = args[index].as_str();
+        match arg {
+            "--project-dir" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "missing value after --project-dir",
+                    ));
+                };
+                project_dir = Some(PathBuf::from(value.to_string()));
+                index += 2;
+            }
+            "--json" => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    usage_for("rebind-worktree"),
+                ));
+            }
+            value if value.starts_with('-') => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown argument for winsmux rebind-worktree: {value}"),
+                ));
+            }
+            value => {
+                positionals.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+
+    if positionals.len() < 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("rebind-worktree"),
+        ));
+    }
+
+    Ok(ParsedOptions {
+        json: false,
+        project_dir: project_dir.unwrap_or(env::current_dir()?),
+        positionals,
+    })
+}
+
 fn should_print_help(args: &[&String]) -> bool {
     args.iter().any(|arg| *arg == "-h" || *arg == "--help")
 }
@@ -302,6 +394,9 @@ fn usage_for(command: &str) -> &'static str {
         "review-request" => "usage: winsmux review-request [--project-dir <path>]",
         "review-approve" => "usage: winsmux review-approve [--project-dir <path>]",
         "review-fail" => "usage: winsmux review-fail [--project-dir <path>]",
+        "rebind-worktree" => {
+            "usage: winsmux rebind-worktree <target> <new-worktree-path> [--project-dir <path>]"
+        }
         _ => "usage: winsmux <command> --json [--project-dir <path>]",
     }
 }
@@ -528,6 +623,13 @@ struct ReviewPaneContext {
     role: String,
 }
 
+#[derive(Clone)]
+struct RebindManifestContext {
+    label: String,
+    pane_id: String,
+    role: String,
+}
+
 fn current_review_pane_context(project_dir: &Path) -> io::Result<ReviewPaneContext> {
     let pane_id = env::var("WINSMUX_PANE_ID")
         .ok()
@@ -633,6 +735,435 @@ fn first_non_empty(first: &str, second: &str) -> String {
     } else {
         first.to_string()
     }
+}
+
+fn resolve_rebind_manifest_context(
+    manifest: &serde_yaml::Value,
+    target: &str,
+    manifest_path: &Path,
+) -> io::Result<RebindManifestContext> {
+    let Some(context) = find_rebind_manifest_context(manifest, target) else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "Pane {target} was not found in manifest: {}",
+                manifest_path.display()
+            ),
+        ));
+    };
+    Ok(context)
+}
+
+fn update_rebind_manifest_with_lock(
+    manifest_path: &Path,
+    target: &str,
+    resolved_worktree_path: &str,
+) -> io::Result<RebindManifestContext> {
+    with_file_lock(manifest_path, || {
+        let raw = fs::read_to_string(manifest_path)?;
+        let mut manifest = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid manifest: {}: {err}", manifest_path.display()),
+            )
+        })?;
+        let session_name = manifest_session_name(&manifest)?;
+        let context = resolve_rebind_manifest_context(&manifest, target, manifest_path)?;
+        if !matches!(context.role.as_str(), "Builder" | "Worker") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "rebind-worktree is only supported for Builder/Worker panes: {} ({})",
+                    context.pane_id, context.label
+                ),
+            ));
+        }
+        ensure_live_pane_target(&session_name, &context.pane_id)?;
+
+        if !update_manifest_pane_paths(
+            &mut manifest,
+            &context.pane_id,
+            resolved_worktree_path,
+            resolved_worktree_path,
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "Pane {} was not found in manifest: {}",
+                    context.pane_id,
+                    manifest_path.display()
+                ),
+            ));
+        }
+
+        let content = serde_yaml::to_string(&manifest).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to serialize manifest: {err}"),
+            )
+        })?;
+        write_text_file_locked(manifest_path, &content)?;
+        Ok(context)
+    })
+}
+
+fn find_rebind_manifest_context(
+    manifest: &serde_yaml::Value,
+    target: &str,
+) -> Option<RebindManifestContext> {
+    let panes = manifest.get("panes")?;
+    match panes {
+        serde_yaml::Value::Mapping(map) => map.iter().find_map(|(key, pane)| {
+            let label = key.as_str().unwrap_or_default();
+            rebind_context_from_value(label, target, pane)
+        }),
+        serde_yaml::Value::Sequence(items) => items
+            .iter()
+            .filter_map(|pane| rebind_context_from_value("", target, pane))
+            .next(),
+        _ => None,
+    }
+}
+
+fn rebind_context_from_value(
+    fallback_label: &str,
+    target: &str,
+    pane: &serde_yaml::Value,
+) -> Option<RebindManifestContext> {
+    let map = pane.as_mapping()?;
+    let pane_id = manifest_string(map, "pane_id");
+    let label = first_non_empty(&manifest_string(map, "label"), fallback_label);
+    if pane_id != target && label != target {
+        return None;
+    }
+    let role = manifest_string(map, "role");
+    Some(RebindManifestContext {
+        label,
+        pane_id,
+        role: canonical_manifest_role(&role, fallback_label).unwrap_or_default(),
+    })
+}
+
+fn resolved_display_path(path: &Path) -> io::Result<String> {
+    let resolved = fs::canonicalize(path)?;
+    let display = resolved.to_string_lossy().to_string();
+    Ok(strip_windows_extended_path_prefix(&display))
+}
+
+fn manifest_session_name(manifest: &serde_yaml::Value) -> io::Result<String> {
+    let session_name = manifest
+        .get("session")
+        .and_then(|session| session.get("name"))
+        .and_then(serde_yaml::Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if session_name.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "manifest session.name must not be empty",
+        ));
+    }
+    Ok(session_name)
+}
+
+fn ensure_live_pane_target(session_name: &str, pane_id: &str) -> io::Result<()> {
+    let winsmux_bin = env::var_os("WINSMUX_BIN")
+        .map(PathBuf::from)
+        .or_else(|| env::current_exe().ok())
+        .unwrap_or_else(|| PathBuf::from("winsmux"));
+    let output = Command::new(&winsmux_bin)
+        .args(["-t", session_name, "list-panes", "-a", "-F", "#{pane_id}"])
+        .output()
+        .map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "failed to validate live panes with {}: {err}",
+                    winsmux_bin.display()
+                ),
+            )
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            output.status.to_string()
+        } else {
+            stderr
+        };
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("failed to validate live panes: {detail}"),
+        ));
+    }
+    let found = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .any(|line| line == pane_id);
+    if !found {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid target: {pane_id}"),
+        ));
+    }
+    Ok(())
+}
+
+struct FileLock {
+    path: PathBuf,
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn write_text_file_with_lock(path: &Path, content: &str) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    with_file_lock(path, || write_text_file_locked(path, content))
+}
+
+fn with_file_lock<T>(path: &Path, action: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    let _lock = acquire_file_lock(path)?;
+    action()
+}
+
+fn write_text_file_locked(path: &Path, content: &str) -> io::Result<()> {
+    let tmp_path = temp_write_path(path);
+    fs::write(&tmp_path, content)?;
+    match replace_file_with_temp(&tmp_path, path) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = fs::remove_file(&tmp_path);
+            Err(err)
+        }
+    }
+}
+
+#[cfg(windows)]
+fn replace_file_with_temp(tmp_path: &Path, path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    fn wide(value: &Path) -> Vec<u16> {
+        value
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    let tmp = wide(tmp_path);
+    let target = wide(path);
+    let result = unsafe {
+        MoveFileExW(
+            tmp.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file_with_temp(tmp_path: &Path, path: &Path) -> io::Result<()> {
+    fs::rename(tmp_path, path)
+}
+
+fn acquire_file_lock(path: &Path) -> io::Result<FileLock> {
+    let lock_path = lock_path_for(path);
+    let start = Instant::now();
+    loop {
+        match fs::create_dir(&lock_path) {
+            Ok(()) => {
+                let owner = json!({
+                    "pid": std::process::id(),
+                    "started_at": generated_at(),
+                    "path": path.display().to_string(),
+                });
+                let mut owner = owner;
+                if let Some(process_started_at) = current_process_started_at() {
+                    owner["process_started_at"] = json!(process_started_at);
+                }
+                let owner_json = serde_json::to_string_pretty(&owner).unwrap_or_default();
+                let _ = fs::write(lock_path.join("owner.json"), owner_json);
+                return Ok(FileLock { path: lock_path });
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
+                remove_stale_lock(&lock_path);
+                if start.elapsed() >= FILE_LOCK_TIMEOUT {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!("timed out waiting for file lock: {}", lock_path.display()),
+                    ));
+                }
+                thread::sleep(FILE_LOCK_RETRY_DELAY);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+#[cfg(windows)]
+fn current_process_started_at() -> Option<String> {
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    let handle = unsafe { GetCurrentProcess() };
+    process_started_at_for_handle(handle)
+}
+
+#[cfg(not(windows))]
+fn current_process_started_at() -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
+fn process_started_at_for_pid(pid: u32) -> Option<String> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+    let started_at = process_started_at_for_handle(handle);
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+    started_at
+}
+
+#[cfg(windows)]
+fn process_started_at_for_handle(handle: windows_sys::Win32::Foundation::HANDLE) -> Option<String> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetProcessTimes;
+
+    let mut created = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut exited = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut kernel = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let mut user = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let ok = unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) };
+    if ok == 0 {
+        return None;
+    }
+    filetime_to_rfc3339(created)
+}
+
+#[cfg(windows)]
+fn filetime_to_rfc3339(value: windows_sys::Win32::Foundation::FILETIME) -> Option<String> {
+    let ticks = ((value.dwHighDateTime as u64) << 32) | (value.dwLowDateTime as u64);
+    let unix_ticks = ticks.checked_sub(116_444_736_000_000_000)?;
+    let secs = (unix_ticks / 10_000_000) as i64;
+    let nanos = ((unix_ticks % 10_000_000) * 100) as u32;
+    DateTime::<Utc>::from_timestamp(secs, nanos)
+        .map(|timestamp| timestamp.to_rfc3339_opts(SecondsFormat::Secs, true))
+}
+
+fn remove_stale_lock(lock_path: &Path) {
+    let owner_path = lock_path.join("owner.json");
+    if owner_path.is_file() {
+        match fs::read_to_string(&owner_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        {
+            Some(owner) => {
+                if let Some(pid) = owner.get("pid").and_then(Value::as_u64) {
+                    let expected = owner
+                        .get("process_started_at")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.trim().is_empty());
+                    if process_lock_is_stale(pid as u32, expected) {
+                        let _ = fs::remove_dir_all(lock_path);
+                    }
+                    return;
+                }
+                if owner.get("started_at").and_then(Value::as_str).is_some() {
+                    return;
+                }
+                let _ = fs::remove_dir_all(lock_path);
+                return;
+            }
+            None => {}
+        }
+    }
+
+    let Ok(metadata) = fs::metadata(lock_path) else {
+        return;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return;
+    };
+    let Ok(age) = modified.elapsed() else {
+        return;
+    };
+    if age >= FILE_LOCK_STALE_AFTER {
+        let _ = fs::remove_dir_all(lock_path);
+    }
+}
+
+#[cfg(windows)]
+fn process_lock_is_stale(pid: u32, expected_started_at: Option<&str>) -> bool {
+    let Some(actual_started_at) = process_started_at_for_pid(pid) else {
+        return true;
+    };
+    let Some(expected_started_at) = expected_started_at else {
+        return false;
+    };
+    let Ok(expected) = DateTime::parse_from_rfc3339(expected_started_at) else {
+        return true;
+    };
+    let Ok(actual) = DateTime::parse_from_rfc3339(&actual_started_at) else {
+        return true;
+    };
+    (actual - expected).num_seconds().abs() > 1
+}
+
+#[cfg(not(windows))]
+fn process_lock_is_stale(_pid: u32, _expected_started_at: Option<&str>) -> bool {
+    false
+}
+
+fn lock_path_for(path: &Path) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(".lock");
+    PathBuf::from(value)
+}
+
+fn temp_write_path(path: &Path) -> PathBuf {
+    let counter = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut value = path.as_os_str().to_os_string();
+    value.push(format!(".tmp-{}-{counter}", std::process::id()));
+    PathBuf::from(value)
+}
+
+fn strip_windows_extended_path_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        return rest.to_string();
+    }
+    path.to_string()
 }
 
 fn review_request_record(
@@ -915,7 +1446,7 @@ fn mark_current_pane_review_requested(
             format!("failed to serialize manifest: {err}"),
         )
     })?;
-    fs::write(manifest_path, content)?;
+    write_text_file_with_lock(&manifest_path, &content)?;
     Ok(true)
 }
 
@@ -957,7 +1488,7 @@ fn mark_current_pane_review_result(
             format!("failed to serialize manifest: {err}"),
         )
     })?;
-    fs::write(manifest_path, content)?;
+    write_text_file_with_lock(&manifest_path, &content)?;
     Ok(true)
 }
 
@@ -1009,6 +1540,71 @@ fn update_manifest_pane_if_matches(
     true
 }
 
+fn update_manifest_pane_paths(
+    manifest: &mut serde_yaml::Value,
+    pane_id: &str,
+    launch_dir: &str,
+    builder_worktree_path: &str,
+) -> bool {
+    let Some(panes) = manifest.get_mut("panes") else {
+        return false;
+    };
+
+    match panes {
+        serde_yaml::Value::Mapping(map) => map.iter_mut().any(|(key, pane)| {
+            let label = key.as_str().unwrap_or_default();
+            update_manifest_pane_paths_if_matches(
+                label,
+                pane,
+                pane_id,
+                launch_dir,
+                builder_worktree_path,
+            )
+        }),
+        serde_yaml::Value::Sequence(items) => items.iter_mut().any(|pane| {
+            update_manifest_pane_paths_if_matches(
+                "",
+                pane,
+                pane_id,
+                launch_dir,
+                builder_worktree_path,
+            )
+        }),
+        _ => false,
+    }
+}
+
+fn update_manifest_pane_paths_if_matches(
+    label: &str,
+    pane: &mut serde_yaml::Value,
+    pane_id: &str,
+    launch_dir: &str,
+    builder_worktree_path: &str,
+) -> bool {
+    let serde_yaml::Value::Mapping(map) = pane else {
+        return false;
+    };
+    let actual = manifest_string(map, "pane_id");
+    if actual != pane_id {
+        return false;
+    }
+    let role = manifest_string(map, "role");
+    let canonical_role = canonical_manifest_role(&role, label);
+    if !matches!(canonical_role.as_deref(), Some("Builder" | "Worker")) {
+        return false;
+    }
+    for (name, value) in [
+        ("launch_dir", launch_dir),
+        ("builder_worktree_path", builder_worktree_path),
+    ] {
+        map.insert(
+            serde_yaml::Value::String(name.to_string()),
+            serde_yaml::Value::String(value.to_string()),
+        );
+    }
+    true
+}
+
 fn clear_current_pane_review_manifest_state(project_dir: &Path) -> io::Result<bool> {
     let pane_id = match env::var("WINSMUX_PANE_ID") {
         Ok(value) if !value.trim().is_empty() => value,
@@ -1035,7 +1631,7 @@ fn clear_current_pane_review_manifest_state(project_dir: &Path) -> io::Result<bo
             format!("failed to serialize manifest: {err}"),
         )
     })?;
-    fs::write(manifest_path, content)?;
+    write_text_file_with_lock(&manifest_path, &content)?;
     Ok(true)
 }
 

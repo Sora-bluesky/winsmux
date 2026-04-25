@@ -807,6 +807,141 @@ fn operator_cli_review_reset_removes_empty_review_state_file() {
         .exists());
 }
 
+#[test]
+fn operator_cli_rebind_worktree_updates_builder_paths() {
+    let project_dir = make_temp_project_dir("rebind-worktree");
+    write_manifest(&project_dir);
+    let new_worktree = project_dir.join(".worktrees").join("builder-9");
+    fs::create_dir_all(&new_worktree).expect("test should create new worktree");
+    let winsmux_bin =
+        write_fake_winsmux_list_panes(&project_dir, Some("winsmux-orchestra"), &["%2", "%3"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "rebind-worktree",
+            "builder-1",
+            new_worktree.to_str().expect("temp path should be utf-8"),
+        ])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected_path = std::fs::canonicalize(&new_worktree)
+        .expect("test should canonicalize path")
+        .to_string_lossy()
+        .to_string();
+    let expected_path = strip_windows_extended_path_prefix(&expected_path);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!("rebound %2 (builder-1) to {expected_path}")),
+        "unexpected stdout: {stdout}"
+    );
+
+    let builder = read_manifest_pane(&project_dir, "builder-1");
+    assert_eq!(builder["launch_dir"].as_str(), Some(expected_path.as_str()));
+    assert_eq!(
+        builder["builder_worktree_path"].as_str(),
+        Some(expected_path.as_str())
+    );
+    assert!(!project_dir
+        .join(".winsmux")
+        .join("manifest.yaml.lock")
+        .exists());
+}
+
+#[test]
+fn operator_cli_rebind_worktree_rejects_reviewer_and_missing_path() {
+    let project_dir = make_temp_project_dir("rebind-worktree-reject");
+    write_manifest(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["rebind-worktree", "reviewer-1", "."])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("rebind-worktree is only supported for Builder/Worker panes"),
+        "unexpected stderr: {stderr}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["rebind-worktree", "builder-1", "missing-worktree"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("worktree path not found: missing-worktree"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn operator_cli_rebind_worktree_rejects_stale_manifest_target() {
+    let project_dir = make_temp_project_dir("rebind-worktree-stale");
+    write_manifest(&project_dir);
+    let new_worktree = project_dir.join(".worktrees").join("builder-9");
+    fs::create_dir_all(&new_worktree).expect("test should create new worktree");
+    let winsmux_bin =
+        write_fake_winsmux_list_panes(&project_dir, Some("winsmux-orchestra"), &["%3"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "rebind-worktree",
+            "builder-1",
+            new_worktree.to_str().expect("temp path should be utf-8"),
+        ])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid target: %2"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn operator_cli_rebind_worktree_validates_target_in_manifest_session() {
+    let project_dir = make_temp_project_dir("rebind-worktree-session");
+    write_manifest(&project_dir);
+    let new_worktree = project_dir.join(".worktrees").join("builder-9");
+    fs::create_dir_all(&new_worktree).expect("test should create new worktree");
+    let winsmux_bin = write_fake_winsmux_list_panes(&project_dir, Some("other-session"), &["%2"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "rebind-worktree",
+            "builder-1",
+            new_worktree.to_str().expect("temp path should be utf-8"),
+        ])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid target: %2"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
 fn run_review_request_and_read_id(project_dir: &std::path::Path) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
         .arg("review-request")
@@ -851,6 +986,74 @@ fn read_manifest_pane(project_dir: &std::path::Path, label: &str) -> serde_yaml:
         .get(serde_yaml::Value::String(label.to_string()))
         .expect("pane should exist")
         .clone()
+}
+
+fn strip_windows_extended_path_prefix(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        return rest.to_string();
+    }
+    path.to_string()
+}
+
+fn write_fake_winsmux_list_panes(
+    project_dir: &std::path::Path,
+    expected_session: Option<&str>,
+    pane_ids: &[&str],
+) -> std::path::PathBuf {
+    let fake_dir = project_dir.join(".test-bin");
+    fs::create_dir_all(&fake_dir).expect("test should create fake bin dir");
+    #[cfg(windows)]
+    {
+        let fake_path = fake_dir.join("winsmux-fake.cmd");
+        let mut body = String::from("@echo off\r\n");
+        if let Some(session) = expected_session {
+            body.push_str("if not \"%1\"==\"-t\" exit /b 0\r\n");
+            body.push_str("if not \"%2\"==\"");
+            body.push_str(session);
+            body.push_str("\" exit /b 0\r\n");
+        }
+        body.push_str("if \"%3\"==\"list-panes\" (\r\n");
+        for pane_id in pane_ids {
+            body.push_str("  echo ");
+            body.push_str(&pane_id.replace('%', "%%"));
+            body.push_str("\r\n");
+        }
+        body.push_str("  exit /b 0\r\n)\r\nexit /b 1\r\n");
+        fs::write(&fake_path, body).expect("test should write fake winsmux");
+        fake_path
+    }
+    #[cfg(not(windows))]
+    {
+        let fake_path = fake_dir.join("winsmux-fake");
+        let mut body = String::from("#!/bin/sh\n");
+        if let Some(session) = expected_session {
+            body.push_str("if [ \"$1\" != \"-t\" ] || [ \"$2\" != '");
+            body.push_str(session);
+            body.push_str("' ]; then\n  exit 0\nfi\n");
+        }
+        body.push_str("if [ \"$3\" = \"list-panes\" ]; then\n");
+        for pane_id in pane_ids {
+            body.push_str("  printf '%s\\n' '");
+            body.push_str(pane_id);
+            body.push_str("'\n");
+        }
+        body.push_str("  exit 0\nfi\nexit 1\n");
+        fs::write(&fake_path, body).expect("test should write fake winsmux");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&fake_path)
+                .expect("test should read fake winsmux metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&fake_path, permissions)
+                .expect("test should make fake winsmux executable");
+        }
+        fake_path
+    }
 }
 
 fn run_json(project_dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
