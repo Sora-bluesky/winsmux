@@ -135,6 +135,7 @@ OPERATOR COMMANDS:
     explain <run_id> --json Print one run explanation JSON
     compare-runs            Compare two runs and surface evidence deltas
     promote-tactic          Export a reusable tactic candidate from a run
+    consult-request         Record a consultation request packet and event
     consult-result          Record a consultation result packet and event
     poll-events             Return new monitor events from .winsmux/events.jsonl
     review-request          Record a pending review request for the current branch
