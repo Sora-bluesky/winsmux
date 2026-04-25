@@ -162,7 +162,7 @@ pub fn run_review_request_command(args: &[&String]) -> io::Result<()> {
             usage_for("review-request"),
         ));
     }
-    assert_review_request_role_permission()?;
+    assert_review_role_permission("review-request")?;
 
     let branch = current_git_branch(&options.project_dir)?;
     let head_sha = current_git_head(&options.project_dir)?;
@@ -192,6 +192,28 @@ pub fn run_review_request_command(args: &[&String]) -> io::Result<()> {
     let _ = mark_current_pane_review_requested(&options.project_dir, &context, &branch, &head_sha);
     println!("review request recorded for {branch}");
     Ok(())
+}
+
+pub fn run_review_approve_command(args: &[&String]) -> io::Result<()> {
+    record_review_result(
+        args,
+        "review-approve",
+        "PASS",
+        "approved_at",
+        "approved_via",
+        "pass",
+    )
+}
+
+pub fn run_review_fail_command(args: &[&String]) -> io::Result<()> {
+    record_review_result(
+        args,
+        "review-fail",
+        "FAIL",
+        "failed_at",
+        "failed_via",
+        "fail",
+    )
 }
 
 struct ParsedOptions {
@@ -278,6 +300,8 @@ fn usage_for(command: &str) -> &'static str {
         "explain" => "usage: winsmux explain <run_id> --json [--project-dir <path>]",
         "review-reset" => "usage: winsmux review-reset [--project-dir <path>]",
         "review-request" => "usage: winsmux review-request [--project-dir <path>]",
+        "review-approve" => "usage: winsmux review-approve [--project-dir <path>]",
+        "review-fail" => "usage: winsmux review-fail [--project-dir <path>]",
         _ => "usage: winsmux <command> --json [--project-dir <path>]",
     }
 }
@@ -395,10 +419,10 @@ fn save_review_state(project_dir: &Path, state: Map<String, Value>) -> io::Resul
     fs::write(path, format!("{content}\n"))
 }
 
-fn assert_review_request_role_permission() -> io::Result<()> {
+fn assert_review_role_permission(command_name: &str) -> io::Result<()> {
     let role = current_canonical_role()?;
     if !matches!(role.as_str(), "Reviewer" | "Worker") {
-        return Err(review_request_permission_error());
+        return Err(review_permission_error(command_name));
     }
 
     let role_map = role_map_from_env()?;
@@ -490,10 +514,10 @@ fn canonical_role(role: &str) -> Option<String> {
     }
 }
 
-fn review_request_permission_error() -> io::Error {
+fn review_permission_error(command_name: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
-        "review-request is not permitted for the current role",
+        format!("{command_name} is not permitted for the current role"),
     )
 }
 
@@ -668,6 +692,193 @@ fn review_contract_record() -> Value {
     })
 }
 
+fn record_review_result(
+    args: &[&String],
+    command_name: &str,
+    status: &str,
+    timestamp_key: &str,
+    via_key: &str,
+    manifest_state: &str,
+) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for(command_name));
+        return Ok(());
+    }
+    let options = parse_options(command_name, args, 0)?;
+    if options.json {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for(command_name),
+        ));
+    }
+    assert_review_role_permission(command_name)?;
+
+    let branch = current_git_branch(&options.project_dir)?;
+    let head_sha = current_git_head(&options.project_dir)?;
+    let context = current_review_pane_context(&options.project_dir)?;
+    let mut state = load_review_state(&options.project_dir)?;
+    let request = pending_review_request(&state, &branch, &head_sha, &context)?;
+    let timestamp = generated_at();
+    let reviewer = review_result_reviewer(&context);
+    let evidence =
+        review_result_evidence(&request, timestamp_key, via_key, command_name, &timestamp);
+    let request_branch = request_string(&request, "branch");
+    let request_head_sha = request_string(&request, "head_sha");
+
+    state.insert(
+        branch.clone(),
+        json!({
+            "status": status,
+            "branch": request_branch,
+            "head_sha": request_head_sha,
+            "request": request,
+            "reviewer": reviewer,
+            "updatedAt": timestamp,
+            "evidence": evidence,
+        }),
+    );
+    save_review_state(&options.project_dir, state)?;
+    let _ = mark_current_pane_review_result(
+        &options.project_dir,
+        &context,
+        &branch,
+        &head_sha,
+        manifest_state,
+    );
+    println!("review {status} recorded for {branch}");
+    Ok(())
+}
+
+fn pending_review_request(
+    state: &Map<String, Value>,
+    branch: &str,
+    head_sha: &str,
+    context: &ReviewPaneContext,
+) -> io::Result<Value> {
+    let Some(entry) = state.get(branch) else {
+        return Err(pending_review_request_missing(branch));
+    };
+    let status = entry
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let Some(request) = entry.get("request").cloned() else {
+        return Err(pending_review_request_missing(branch));
+    };
+    if status != "PENDING" || !request.is_object() {
+        return Err(pending_review_request_missing(branch));
+    }
+    if !review_contract_present(&request) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("pending review request for {branch} is missing review_contract. Re-run: winsmux review-request"),
+        ));
+    }
+
+    let request_pane_id = review_request_target_value(&request, "pane_id");
+    if request_pane_id != context.pane_id {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "pending review request for {branch} is assigned to {request_pane_id}, not {}",
+                context.pane_id
+            ),
+        ));
+    }
+
+    let request_branch = request_string(&request, "branch");
+    if request_branch != branch {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "pending review request branch mismatch: expected {request_branch}, got {branch}"
+            ),
+        ));
+    }
+
+    let request_head_sha = request_string(&request, "head_sha");
+    if request_head_sha != head_sha {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "pending review request head mismatch: expected {request_head_sha}, got {head_sha}"
+            ),
+        ));
+    }
+
+    Ok(request)
+}
+
+fn pending_review_request_missing(branch: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("review request pending for {branch} was not found. Run: winsmux review-request"),
+    )
+}
+
+fn review_contract_present(request: &Value) -> bool {
+    let Some(contract) = request.get("review_contract").and_then(Value::as_object) else {
+        return false;
+    };
+    match contract.get("required_scope") {
+        Some(Value::Array(items)) => !items.is_empty(),
+        Some(Value::String(value)) => !value.trim().is_empty(),
+        Some(Value::Null) | None => false,
+        Some(_) => true,
+    }
+}
+
+fn review_request_target_value(request: &Value, name: &str) -> String {
+    let primary = format!("target_review_{name}");
+    let legacy = format!("target_reviewer_{name}");
+    let primary_value = request_string(request, &primary);
+    if primary_value.trim().is_empty() {
+        request_string(request, &legacy)
+    } else {
+        primary_value
+    }
+}
+
+fn request_string(request: &Value, name: &str) -> String {
+    request
+        .get(name)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn review_result_reviewer(context: &ReviewPaneContext) -> Value {
+    json!({
+        "pane_id": context.pane_id,
+        "label": context.label,
+        "role": context.role,
+        "agent_name": env::var("WINSMUX_AGENT_NAME").unwrap_or_default(),
+    })
+}
+
+fn review_result_evidence(
+    request: &Value,
+    timestamp_key: &str,
+    via_key: &str,
+    command_name: &str,
+    timestamp: &str,
+) -> Value {
+    let mut evidence = Map::new();
+    evidence.insert(timestamp_key.to_string(), json!(timestamp));
+    evidence.insert(
+        via_key.to_string(),
+        json!(format!("winsmux {command_name}")),
+    );
+    evidence.insert(
+        "review_contract_snapshot".to_string(),
+        request
+            .get("review_contract")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    Value::Object(evidence)
+}
+
 fn mark_current_pane_review_requested(
     project_dir: &Path,
     context: &ReviewPaneContext,
@@ -692,6 +903,48 @@ fn mark_current_pane_review_requested(
             ("branch", branch),
             ("head_sha", head_sha),
             ("last_event", "review.requested"),
+            ("last_event_at", &timestamp),
+        ],
+    );
+    if !updated {
+        return Ok(false);
+    }
+    let content = serde_yaml::to_string(&manifest).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize manifest: {err}"),
+        )
+    })?;
+    fs::write(manifest_path, content)?;
+    Ok(true)
+}
+
+fn mark_current_pane_review_result(
+    project_dir: &Path,
+    context: &ReviewPaneContext,
+    branch: &str,
+    head_sha: &str,
+    review_state: &str,
+) -> io::Result<bool> {
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let raw = fs::read_to_string(&manifest_path)?;
+    let mut manifest = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid manifest: {}: {err}", manifest_path.display()),
+        )
+    })?;
+    let timestamp = generated_at();
+    let last_event = format!("review.{review_state}");
+    let updated = update_manifest_pane_fields(
+        &mut manifest,
+        &context.pane_id,
+        &[
+            ("review_state", review_state),
+            ("task_owner", "Operator"),
+            ("branch", branch),
+            ("head_sha", head_sha),
+            ("last_event", &last_event),
             ("last_event_at", &timestamp),
         ],
     );
