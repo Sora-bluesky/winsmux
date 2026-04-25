@@ -137,6 +137,61 @@ pub fn run_explain_command(args: &[&String]) -> io::Result<()> {
     write_json(&payload)
 }
 
+pub fn run_poll_events_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("poll-events"));
+        return Ok(());
+    }
+    let options = parse_poll_events_options(args)?;
+    if options.json {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("poll-events"),
+        ));
+    }
+
+    let mut cursor = 0usize;
+    if let Some(raw_cursor) = options.positionals.first() {
+        let parsed = raw_cursor
+            .parse::<i32>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, usage_for("poll-events")))?;
+        if parsed > 0 {
+            cursor = parsed as usize;
+        }
+    }
+
+    let events_path = options.project_dir.join(".winsmux").join("events.jsonl");
+    let mut response = json!({
+        "cursor": 0,
+        "events": [],
+    });
+    if !events_path.is_file() {
+        return write_json(&response);
+    }
+
+    let raw = fs::read_to_string(&events_path)
+        .map_err(|err| io::Error::new(err.kind(), format!("failed to read event log: {}", err)))?;
+    let lines: Vec<&str> = raw.lines().filter(|line| !line.trim().is_empty()).collect();
+    if cursor > lines.len() {
+        cursor = lines.len();
+    }
+
+    let mut events = Vec::new();
+    for (index, line) in lines.iter().enumerate().skip(cursor) {
+        let event = serde_json::from_str::<Value>(line).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to parse event log line {}: {}", index + 1, err),
+            )
+        })?;
+        events.push(event);
+    }
+
+    response["cursor"] = json!(lines.len());
+    response["events"] = Value::Array(events);
+    write_json(&response)
+}
+
 pub fn run_review_reset_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
         println!("usage: winsmux review-reset [--project-dir <path>]");
@@ -338,6 +393,50 @@ fn parse_options(
     })
 }
 
+fn parse_poll_events_options(args: &[&String]) -> io::Result<ParsedOptions> {
+    let mut json = false;
+    let mut project_dir = None;
+    let mut positionals = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = args[index].as_str();
+        match arg {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--project-dir" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "missing value after --project-dir",
+                    ));
+                };
+                project_dir = Some(PathBuf::from(value.to_string()));
+                index += 2;
+            }
+            value => {
+                positionals.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+
+    if positionals.len() > 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("poll-events"),
+        ));
+    }
+
+    Ok(ParsedOptions {
+        json,
+        project_dir: project_dir.unwrap_or(env::current_dir()?),
+        positionals,
+    })
+}
+
 fn parse_rebind_worktree_options(args: &[&String]) -> io::Result<ParsedOptions> {
     let mut project_dir = None;
     let mut positionals = Vec::new();
@@ -411,6 +510,7 @@ fn usage_for(command: &str) -> &'static str {
         "digest" => "usage: winsmux digest --json [--project-dir <path>]",
         "runs" => "usage: winsmux runs --json [--project-dir <path>]",
         "explain" => "usage: winsmux explain <run_id> --json [--project-dir <path>]",
+        "poll-events" => "usage: winsmux poll-events [cursor] [--project-dir <path>]",
         "review-reset" => "usage: winsmux review-reset [--project-dir <path>]",
         "review-request" => "usage: winsmux review-request [--project-dir <path>]",
         "review-approve" => "usage: winsmux review-approve [--project-dir <path>]",
