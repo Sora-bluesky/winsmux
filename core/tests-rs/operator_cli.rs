@@ -162,6 +162,76 @@ fn operator_cli_poll_events_handles_missing_file_and_cursor_bounds() {
 }
 
 #[test]
+fn operator_cli_compare_runs_json_reports_evidence_delta() {
+    let project_dir = make_temp_project_dir("compare-runs");
+    write_compare_runs_fixture(&project_dir);
+
+    let json = run_json(
+        &project_dir,
+        &["compare-runs", "task:task-a", "task:task-b", "--json"],
+    );
+
+    assert_eq!(json["left"]["run_id"], "task:task-a");
+    assert_eq!(json["right"]["run_id"], "task:task-b");
+    assert_eq!(json["confidence_delta"], 0.25);
+    assert_eq!(json["shared_changed_files"][0], "core/src/operator_cli.rs");
+    assert_eq!(json["right_only_changed_files"][0], "core/src/main.rs");
+    assert_eq!(json["recommend"]["winning_run_id"], "task:task-a");
+    assert_eq!(json["recommend"]["reconcile_consult"], true);
+    let fields: Vec<_> = json["differences"]
+        .as_array()
+        .expect("differences should be array")
+        .iter()
+        .filter_map(|difference| difference["field"].as_str())
+        .collect();
+    assert!(fields.contains(&"result"));
+    assert!(fields.contains(&"confidence"));
+    assert!(fields.contains(&"changed_files"));
+}
+
+#[test]
+fn operator_cli_compare_runs_text_reports_differences() {
+    let project_dir = make_temp_project_dir("compare-runs-text");
+    write_compare_runs_fixture(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["compare-runs", "task:task-a", "task:task-b"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Compare: task:task-a vs task:task-b"));
+    assert!(stdout.contains("Differences:"));
+    assert!(stdout.contains("- result: left=cache hit right=rebuild clean"));
+    assert!(stdout.contains("- changed_files: left=core/src/operator_cli.rs right=core/src/operator_cli.rs, core/src/main.rs"));
+}
+
+#[test]
+fn operator_cli_compare_runs_uses_powershell_rounding() {
+    let project_dir = make_temp_project_dir("compare-runs-rounding");
+    write_compare_runs_fixture(&project_dir);
+    let events_path = project_dir.join(".winsmux").join("events.jsonl");
+    let events = fs::read_to_string(&events_path)
+        .expect("test should read events")
+        .replace("\"confidence\":0.85", "\"confidence\":0.12345")
+        .replace("\"confidence\":0.6", "\"confidence\":0.0");
+    fs::write(events_path, events).expect("test should write events");
+
+    let json = run_json(
+        &project_dir,
+        &["compare-runs", "task:task-a", "task:task-b", "--json"],
+    );
+
+    assert_eq!(json["confidence_delta"], 0.1234);
+}
+
+#[test]
 fn operator_cli_accepts_project_dir_argument() {
     let project_dir = make_temp_project_dir("project-dir");
     write_manifest(&project_dir);
@@ -319,6 +389,19 @@ fn operator_cli_rejects_unknown_and_extra_arguments() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("usage: winsmux poll-events"),
+        "unexpected stderr: {stderr}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["compare-runs", "task:a"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("usage: winsmux compare-runs"),
         "unexpected stderr: {stderr}"
     );
 
@@ -1328,6 +1411,58 @@ fn run_json_with_cwd(cwd: impl AsRef<std::path::Path>, args: &[&str]) -> serde_j
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("stdout should be JSON")
+}
+
+fn write_compare_runs_fixture(project_dir: &std::path::Path) {
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(
+        winsmux_dir.join("manifest.yaml"),
+        r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-a
+    task: Compare run A
+    task_state: completed
+    review_state: PASS
+    branch: branch-a
+    head_sha: aaaabbbbccccdddd
+    changed_file_count: 1
+    changed_files: '["core/src/operator_cli.rs"]'
+    last_event: pane.consult_result
+    last_event_at: 2026-04-24T12:00:00+09:00
+  builder-2:
+    pane_id: "%3"
+    role: Worker
+    task_id: task-b
+    task: Compare run B
+    task_state: completed
+    review_state: PASS
+    branch: branch-b
+    head_sha: eeeeffff11112222
+    changed_file_count: 2
+    changed_files: '["core/src/operator_cli.rs","core/src/main.rs"]'
+    last_event: pane.consult_result
+    last_event_at: 2026-04-24T12:01:00+09:00
+"#,
+    )
+    .expect("test should write manifest");
+    fs::write(
+        winsmux_dir.join("events.jsonl"),
+        r#"{"timestamp":"2026-04-24T12:00:00+09:00","session":"winsmux-orchestra","event":"pane.consult_result","message":"consultation completed","label":"builder-1","pane_id":"%2","role":"Builder","branch":"branch-a","head_sha":"aaaabbbbccccdddd","data":{"task_id":"task-a","run_id":"task:task-a","slot":"builder-1","hypothesis":"cache command is stable","result":"cache hit","confidence":0.85,"next_action":"promote tactic","observation_pack_ref":".winsmux/observation-packs/task-a.json","consultation_ref":".winsmux/consultations/task-a.json","worktree":".worktrees/a","env_fingerprint":"env-a","command_hash":"cmd-a"}}
+{"timestamp":"2026-04-24T12:00:10+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","label":"builder-1","pane_id":"%2","role":"Builder","branch":"branch-a","head_sha":"aaaabbbbccccdddd","data":{"task_id":"task-a","run_id":"task:task-a","verification_result":{"outcome":"PASS","summary":"cache hit confirmed"}}}
+{"timestamp":"2026-04-24T12:00:20+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","label":"builder-1","pane_id":"%2","role":"Builder","branch":"branch-a","head_sha":"aaaabbbbccccdddd","data":{"task_id":"task-a","run_id":"task:task-a","verdict":"ALLOW","reason":"verified safe"}}
+{"timestamp":"2026-04-24T12:01:00+09:00","session":"winsmux-orchestra","event":"pane.consult_result","message":"consultation completed","label":"builder-2","pane_id":"%3","role":"Worker","branch":"branch-b","head_sha":"eeeeffff11112222","data":{"task_id":"task-b","run_id":"task:task-b","slot":"builder-2","hypothesis":"rebuild command is stable","result":"rebuild clean","confidence":0.6,"next_action":"promote tactic","observation_pack_ref":".winsmux/observation-packs/task-b.json","consultation_ref":".winsmux/consultations/task-b.json","worktree":".worktrees/b","env_fingerprint":"env-b","command_hash":"cmd-b"}}
+{"timestamp":"2026-04-24T12:01:10+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","label":"builder-2","pane_id":"%3","role":"Worker","branch":"branch-b","head_sha":"eeeeffff11112222","data":{"task_id":"task-b","run_id":"task:task-b","verification_result":{"outcome":"PASS","summary":"rebuild confirmed"}}}
+{"timestamp":"2026-04-24T12:01:20+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","label":"builder-2","pane_id":"%3","role":"Worker","branch":"branch-b","head_sha":"eeeeffff11112222","data":{"task_id":"task-b","run_id":"task:task-b","verdict":"ALLOW","reason":"verified safe"}}
+"#,
+    )
+    .expect("test should write events");
 }
 
 fn write_manifest(project_dir: &std::path::Path) {
