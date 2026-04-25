@@ -103,6 +103,65 @@ fn operator_cli_inbox_digest_runs_and_explain_use_ledger_projections() {
 }
 
 #[test]
+fn operator_cli_poll_events_returns_events_after_cursor() {
+    let project_dir = make_temp_project_dir("poll-events");
+    write_manifest(&project_dir);
+
+    let json = run_json(&project_dir, &["poll-events", "1"]);
+
+    assert_eq!(json["cursor"], 2);
+    assert_eq!(json["events"].as_array().expect("events should be array").len(), 1);
+    assert_eq!(json["events"][0]["event"], "operator.commit_ready");
+    assert_eq!(json["events"][0]["pane_id"], "%2");
+}
+
+#[test]
+fn operator_cli_poll_events_handles_missing_file_and_cursor_bounds() {
+    let project_dir = make_temp_project_dir("poll-events-empty");
+    fs::create_dir_all(project_dir.join(".winsmux")).expect("test should create .winsmux");
+
+    let missing = run_json(&project_dir, &["poll-events"]);
+    assert_eq!(missing["cursor"], 0);
+    assert_eq!(
+        missing["events"]
+            .as_array()
+            .expect("events should be array")
+            .len(),
+        0
+    );
+
+    fs::write(
+        project_dir.join(".winsmux").join("events.jsonl"),
+        r#"
+{"timestamp":"2026-04-24T12:00:01+09:00","event":"one"}
+
+{"timestamp":"2026-04-24T12:00:02+09:00","event":"two"}
+"#,
+    )
+    .expect("test should write events");
+
+    let past_end = run_json(&project_dir, &["poll-events", "99"]);
+    assert_eq!(past_end["cursor"], 2);
+    assert_eq!(
+        past_end["events"]
+            .as_array()
+            .expect("events should be array")
+            .len(),
+        0
+    );
+
+    let negative = run_json(&project_dir, &["poll-events", "-1"]);
+    assert_eq!(negative["cursor"], 2);
+    assert_eq!(
+        negative["events"]
+            .as_array()
+            .expect("events should be array")
+            .len(),
+        2
+    );
+}
+
+#[test]
 fn operator_cli_accepts_project_dir_argument() {
     let project_dir = make_temp_project_dir("project-dir");
     write_manifest(&project_dir);
@@ -221,6 +280,45 @@ fn operator_cli_rejects_unknown_and_extra_arguments() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("usage: winsmux restart"),
+        "unexpected stderr: {stderr}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["poll-events", "1", "extra"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("usage: winsmux poll-events"),
+        "unexpected stderr: {stderr}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["poll-events", "not-a-number"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("usage: winsmux poll-events"),
+        "unexpected stderr: {stderr}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["poll-events", "2147483648"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("usage: winsmux poll-events"),
         "unexpected stderr: {stderr}"
     );
 
