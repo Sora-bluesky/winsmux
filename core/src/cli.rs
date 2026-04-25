@@ -133,6 +133,7 @@ OPERATOR COMMANDS:
     digest --json           Print high-signal run digest JSON
     runs --json             Print run-oriented evidence JSON
     explain <run_id> --json Print one run explanation JSON
+    review-request          Record a pending review request for the current branch
     review-reset            Clear review state for the current branch
 
 LAYOUT COMMANDS:

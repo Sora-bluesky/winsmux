@@ -3,6 +3,7 @@ use std::{
     io::{self, Write},
     path::{Path, PathBuf},
     process::Command,
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use chrono::{SecondsFormat, Utc};
@@ -10,6 +11,8 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use crate::ledger::LedgerSnapshot;
+
+static REVIEW_REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
 pub fn is_operator_status_invocation(args: &[&String]) -> bool {
     args.iter()
@@ -147,6 +150,50 @@ pub fn run_review_reset_command(args: &[&String]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn run_review_request_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("usage: winsmux review-request [--project-dir <path>]");
+        return Ok(());
+    }
+    let options = parse_options("review-request", args, 0)?;
+    if options.json {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("review-request"),
+        ));
+    }
+    assert_review_request_role_permission()?;
+
+    let branch = current_git_branch(&options.project_dir)?;
+    let head_sha = current_git_head(&options.project_dir)?;
+    let context = current_review_pane_context(&options.project_dir)?;
+    let timestamp = generated_at();
+    let request = review_request_record(&branch, &head_sha, &context, &timestamp);
+    let reviewer = json!({
+        "pane_id": context.pane_id,
+        "label": context.label,
+        "role": context.role,
+        "agent_name": env::var("WINSMUX_AGENT_NAME").unwrap_or_default(),
+    });
+
+    let mut state = load_review_state(&options.project_dir)?;
+    state.insert(
+        branch.clone(),
+        json!({
+            "status": "PENDING",
+            "branch": branch,
+            "head_sha": head_sha,
+            "request": request,
+            "reviewer": reviewer,
+            "updatedAt": timestamp,
+        }),
+    );
+    save_review_state(&options.project_dir, state)?;
+    let _ = mark_current_pane_review_requested(&options.project_dir, &context, &branch, &head_sha);
+    println!("review request recorded for {branch}");
+    Ok(())
+}
+
 struct ParsedOptions {
     json: bool,
     project_dir: PathBuf,
@@ -230,6 +277,7 @@ fn usage_for(command: &str) -> &'static str {
         "runs" => "usage: winsmux runs --json [--project-dir <path>]",
         "explain" => "usage: winsmux explain <run_id> --json [--project-dir <path>]",
         "review-reset" => "usage: winsmux review-reset [--project-dir <path>]",
+        "review-request" => "usage: winsmux review-request [--project-dir <path>]",
         _ => "usage: winsmux <command> --json [--project-dir <path>]",
     }
 }
@@ -277,32 +325,67 @@ fn git_output_line(project_dir: &Path, args: &[&str]) -> io::Result<Option<Strin
     Ok((!value.is_empty()).then_some(value))
 }
 
+fn current_git_head(project_dir: &Path) -> io::Result<String> {
+    if let Some(head) = git_output_line(project_dir, &["rev-parse", "HEAD"])? {
+        return Ok(head);
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+            "unable to determine current git HEAD in {}",
+            project_dir.display()
+        ),
+    ))
+}
+
 fn clear_review_state_record(project_dir: &Path, branch: &str) -> io::Result<()> {
-    let path = project_dir.join(".winsmux").join("review-state.json");
+    let path = review_state_path(project_dir);
     if !path.exists() {
         return Ok(());
+    }
+
+    let mut state = load_review_state(project_dir)?;
+    state.remove(branch);
+    save_review_state(project_dir, state)
+}
+
+fn review_state_path(project_dir: &Path) -> PathBuf {
+    project_dir.join(".winsmux").join("review-state.json")
+}
+
+fn load_review_state(project_dir: &Path) -> io::Result<Map<String, Value>> {
+    let path = review_state_path(project_dir);
+    if !path.exists() {
+        return Ok(Map::new());
     }
 
     let raw = fs::read_to_string(&path)?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        fs::remove_file(&path)?;
-        return Ok(());
+        return Ok(Map::new());
     }
 
-    let mut state = serde_json::from_str::<Map<String, Value>>(trimmed).map_err(|_| {
+    serde_json::from_str::<Map<String, Value>>(trimmed).map_err(|_| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("invalid review state: {}", path.display()),
         )
-    })?;
-    state.remove(branch);
+    })
+}
 
+fn save_review_state(project_dir: &Path, state: Map<String, Value>) -> io::Result<()> {
+    let path = review_state_path(project_dir);
     if state.is_empty() {
-        fs::remove_file(&path)?;
+        if path.exists() {
+            fs::remove_file(&path)?;
+        }
         return Ok(());
     }
 
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let content = serde_json::to_string_pretty(&state).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -310,6 +393,367 @@ fn clear_review_state_record(project_dir: &Path, branch: &str) -> io::Result<()>
         )
     })?;
     fs::write(path, format!("{content}\n"))
+}
+
+fn assert_review_request_role_permission() -> io::Result<()> {
+    let role = current_canonical_role()?;
+    if !matches!(role.as_str(), "Reviewer" | "Worker") {
+        return Err(review_request_permission_error());
+    }
+
+    let role_map = role_map_from_env()?;
+    if role_map.is_empty() {
+        return Ok(());
+    }
+
+    let pane_id = env::var("WINSMUX_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "WINSMUX_PANE_ID not set"))?;
+    let Some(mapped_role) = role_map
+        .get(&pane_id)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+    else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("WINSMUX_ROLE_MAP missing entry for pane {pane_id}"),
+        ));
+    };
+    if mapped_role != role {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("WINSMUX_ROLE mismatch for pane {pane_id}: expected {mapped_role}, got {role}"),
+        ));
+    }
+    Ok(())
+}
+
+fn current_canonical_role() -> io::Result<String> {
+    let raw = env::var("WINSMUX_ROLE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "WINSMUX_ROLE not set"))?;
+    canonical_role(&raw).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Invalid WINSMUX_ROLE: {raw}"),
+        )
+    })
+}
+
+fn role_map_from_env() -> io::Result<Map<String, Value>> {
+    let raw = env::var("WINSMUX_ROLE_MAP").unwrap_or_default();
+    if raw.trim().is_empty() {
+        return Ok(Map::new());
+    }
+    let parsed = serde_json::from_str::<Value>(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Invalid WINSMUX_ROLE_MAP JSON: {err}"),
+        )
+    })?;
+    let Some(raw_map) = parsed.as_object() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid WINSMUX_ROLE_MAP JSON: expected object",
+        ));
+    };
+
+    let mut role_map = Map::new();
+    for (pane_id, role) in raw_map {
+        let Some(role_name) = role.as_str() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Invalid WINSMUX_ROLE_MAP role for pane {pane_id}: {role}"),
+            ));
+        };
+        let Some(canonical) = canonical_role(role_name) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Invalid WINSMUX_ROLE_MAP role for pane {pane_id}: {role_name}"),
+            ));
+        };
+        role_map.insert(pane_id.clone(), Value::String(canonical));
+    }
+    Ok(role_map)
+}
+
+fn canonical_role(role: &str) -> Option<String> {
+    match role.trim().to_ascii_lowercase().as_str() {
+        "operator" => Some("Operator".to_string()),
+        "worker" => Some("Worker".to_string()),
+        "builder" => Some("Builder".to_string()),
+        "researcher" => Some("Researcher".to_string()),
+        "reviewer" => Some("Reviewer".to_string()),
+        _ => None,
+    }
+}
+
+fn review_request_permission_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "review-request is not permitted for the current role",
+    )
+}
+
+#[derive(Clone)]
+struct ReviewPaneContext {
+    label: String,
+    pane_id: String,
+    role: String,
+}
+
+fn current_review_pane_context(project_dir: &Path) -> io::Result<ReviewPaneContext> {
+    let pane_id = env::var("WINSMUX_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "WINSMUX_PANE_ID not set"))?;
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let raw = fs::read_to_string(&manifest_path)?;
+    let manifest = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid manifest: {}: {err}", manifest_path.display()),
+        )
+    })?;
+    let Some(context) = find_review_pane_context(&manifest, &pane_id) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "pane {pane_id} is not registered as a review-capable pane in .winsmux/manifest.yaml"
+            ),
+        ));
+    };
+    Ok(context)
+}
+
+fn find_review_pane_context(
+    manifest: &serde_yaml::Value,
+    pane_id: &str,
+) -> Option<ReviewPaneContext> {
+    let panes = manifest.get("panes")?;
+    match panes {
+        serde_yaml::Value::Mapping(map) => map.iter().find_map(|(key, pane)| {
+            let label = key.as_str().unwrap_or_default();
+            review_pane_context_from_value(label, pane_id, pane)
+        }),
+        serde_yaml::Value::Sequence(items) => items
+            .iter()
+            .filter_map(|pane| review_pane_context_from_value("", pane_id, pane))
+            .next(),
+        _ => None,
+    }
+}
+
+fn review_pane_context_from_value(
+    fallback_label: &str,
+    pane_id: &str,
+    pane: &serde_yaml::Value,
+) -> Option<ReviewPaneContext> {
+    let map = pane.as_mapping()?;
+    let actual = manifest_string(map, "pane_id");
+    if actual != pane_id {
+        return None;
+    }
+    let role = manifest_string(map, "role");
+    let canonical_role = canonical_manifest_role(&role, fallback_label);
+    if !matches!(canonical_role.as_deref(), Some("Reviewer" | "Worker")) {
+        return None;
+    }
+    let label = first_non_empty(&manifest_string(map, "label"), fallback_label);
+    Some(ReviewPaneContext {
+        label,
+        pane_id: actual,
+        role: canonical_role.unwrap_or_default(),
+    })
+}
+
+fn canonical_manifest_role(role: &str, label: &str) -> Option<String> {
+    let candidate = if role.trim().is_empty() {
+        label.trim()
+    } else {
+        role.trim()
+    };
+    let lowered = candidate.to_ascii_lowercase();
+    for (prefix, canonical) in [
+        ("worker", "Worker"),
+        ("builder", "Builder"),
+        ("researcher", "Researcher"),
+        ("reviewer", "Reviewer"),
+        ("operator", "Operator"),
+    ] {
+        if lowered == prefix
+            || lowered.starts_with(&format!("{prefix}-"))
+            || lowered.starts_with(&format!("{prefix}_"))
+            || lowered.starts_with(&format!("{prefix}:"))
+            || lowered.starts_with(&format!("{prefix}/"))
+            || lowered.starts_with(&format!("{prefix} "))
+        {
+            return Some(canonical.to_string());
+        }
+    }
+    Some("Operator".to_string())
+}
+
+fn manifest_string(map: &serde_yaml::Mapping, key: &str) -> String {
+    map.get(serde_yaml::Value::String(key.to_string()))
+        .and_then(serde_yaml::Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn first_non_empty(first: &str, second: &str) -> String {
+    if first.trim().is_empty() {
+        second.to_string()
+    } else {
+        first.to_string()
+    }
+}
+
+fn review_request_record(
+    branch: &str,
+    head_sha: &str,
+    context: &ReviewPaneContext,
+    timestamp: &str,
+) -> Value {
+    json!({
+        "id": review_request_id(),
+        "branch": branch,
+        "head_sha": head_sha,
+        "target_review_pane_id": context.pane_id,
+        "target_review_label": context.label,
+        "target_review_role": context.role,
+        "target_reviewer_pane_id": context.pane_id,
+        "target_reviewer_label": context.label,
+        "target_reviewer_role": context.role,
+        "review_contract": review_contract_record(),
+        "dispatched_at": timestamp,
+    })
+}
+
+fn review_request_id() -> String {
+    let now = Utc::now();
+    format!(
+        "review-{}-{}",
+        now.format("%Y%m%d%H%M%S"),
+        review_request_suffix(now)
+    )
+}
+
+fn review_request_suffix(now: chrono::DateTime<Utc>) -> String {
+    let nanos = now.timestamp_nanos_opt().unwrap_or_default() as u64;
+    let counter = REVIEW_REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed) as u64;
+    let mixed = nanos ^ ((std::process::id() as u64) << 16) ^ counter;
+    format!("{:08x}", mixed & 0xffff_ffff)
+}
+
+fn review_contract_record() -> Value {
+    json!({
+        "version": 1,
+        "source_task": "TASK-210",
+        "issue_ref": "#315",
+        "style": "utility_first",
+        "required_scope": [
+            "design_impact",
+            "replacement_coverage",
+            "orphaned_artifacts"
+        ],
+        "checklist_labels": [
+            "design impact",
+            "replacement coverage",
+            "orphaned artifacts"
+        ],
+        "rationale": "Review requests must audit downstream design impact, replacement coverage, and orphaned artifacts as part of the runtime contract."
+    })
+}
+
+fn mark_current_pane_review_requested(
+    project_dir: &Path,
+    context: &ReviewPaneContext,
+    branch: &str,
+    head_sha: &str,
+) -> io::Result<bool> {
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let raw = fs::read_to_string(&manifest_path)?;
+    let mut manifest = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid manifest: {}: {err}", manifest_path.display()),
+        )
+    })?;
+    let timestamp = generated_at();
+    let updated = update_manifest_pane_fields(
+        &mut manifest,
+        &context.pane_id,
+        &[
+            ("review_state", "pending"),
+            ("task_owner", &context.role),
+            ("branch", branch),
+            ("head_sha", head_sha),
+            ("last_event", "review.requested"),
+            ("last_event_at", &timestamp),
+        ],
+    );
+    if !updated {
+        return Ok(false);
+    }
+    let content = serde_yaml::to_string(&manifest).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize manifest: {err}"),
+        )
+    })?;
+    fs::write(manifest_path, content)?;
+    Ok(true)
+}
+
+fn update_manifest_pane_fields(
+    manifest: &mut serde_yaml::Value,
+    pane_id: &str,
+    fields: &[(&str, &str)],
+) -> bool {
+    let Some(panes) = manifest.get_mut("panes") else {
+        return false;
+    };
+
+    match panes {
+        serde_yaml::Value::Mapping(map) => map.iter_mut().any(|(key, pane)| {
+            let label = key.as_str().unwrap_or_default();
+            update_manifest_pane_if_matches(label, pane, pane_id, fields)
+        }),
+        serde_yaml::Value::Sequence(items) => items
+            .iter_mut()
+            .any(|pane| update_manifest_pane_if_matches("", pane, pane_id, fields)),
+        _ => false,
+    }
+}
+
+fn update_manifest_pane_if_matches(
+    label: &str,
+    pane: &mut serde_yaml::Value,
+    pane_id: &str,
+    fields: &[(&str, &str)],
+) -> bool {
+    let serde_yaml::Value::Mapping(map) = pane else {
+        return false;
+    };
+    let actual = manifest_string(map, "pane_id");
+    if actual != pane_id {
+        return false;
+    }
+    let role = manifest_string(map, "role");
+    let canonical_role = canonical_manifest_role(&role, label);
+    if !matches!(canonical_role.as_deref(), Some("Reviewer" | "Worker")) {
+        return false;
+    }
+    for (name, value) in fields {
+        map.insert(
+            serde_yaml::Value::String((*name).to_string()),
+            serde_yaml::Value::String((*value).to_string()),
+        );
+    }
+    true
 }
 
 fn clear_current_pane_review_manifest_state(project_dir: &Path) -> io::Result<bool> {
