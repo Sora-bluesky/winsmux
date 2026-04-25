@@ -273,7 +273,7 @@ pub fn run_consult_result_command(args: &[&String]) -> io::Result<()> {
     let timestamp = generated_at();
     let context = consultation_command_context(&options.project_dir, &options.run_id)?;
     let packet = consultation_result_packet(&context, &options, &timestamp);
-    let artifact = write_consultation_packet(&options.project_dir, &packet)?;
+    let artifact = write_consultation_packet(&options.project_dir, "consult-result", &packet)?;
     let event = consultation_result_event(&context, &options, &artifact.reference, &timestamp);
     append_event_record(&options.project_dir, &event)?;
     let _ = mark_current_review_pane_last_event(&options.project_dir, "consult.result", &timestamp);
@@ -297,6 +297,26 @@ pub fn run_consult_result_command(args: &[&String]) -> io::Result<()> {
     }
 
     println!("consult result recorded for {}", context.run_id);
+    Ok(())
+}
+
+pub fn run_consult_request_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("consult-request"));
+        return Ok(());
+    }
+    let options = parse_consult_request_options(args)?;
+    assert_consult_role_permission("consult-request")?;
+
+    let timestamp = generated_at();
+    let context = consultation_command_context(&options.project_dir, "")?;
+    let packet = consultation_request_packet(&context, &options, &timestamp);
+    let artifact = write_consultation_packet(&options.project_dir, "consult-request", &packet)?;
+    let event = consultation_request_event(&context, &options, &artifact.reference, &timestamp);
+    append_event_record(&options.project_dir, &event)?;
+    let _ = mark_current_review_pane_last_event(&options.project_dir, "consult.request", &timestamp);
+
+    println!("consult request recorded for {}", context.run_id);
     Ok(())
 }
 
@@ -520,6 +540,13 @@ struct ConsultResultOptions {
     run_id: String,
     next_test: String,
     risks: Vec<String>,
+}
+
+struct ConsultRequestOptions {
+    project_dir: PathBuf,
+    mode: String,
+    message: String,
+    target_slot: String,
 }
 
 fn parse_options(
@@ -846,6 +873,97 @@ fn parse_consult_result_options(args: &[&String]) -> io::Result<ConsultResultOpt
     })
 }
 
+fn parse_consult_request_options(args: &[&String]) -> io::Result<ConsultRequestOptions> {
+    let mut project_dir = None;
+    let mut positionals = Vec::new();
+    let mut message = String::new();
+    let mut message_parts = Vec::new();
+    let mut target_slot = String::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = args[index].as_str();
+        match arg {
+            "--project-dir" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "missing value after --project-dir",
+                    ));
+                };
+                project_dir = Some(PathBuf::from(value.to_string()));
+                index += 2;
+            }
+            "--message" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--message requires a value",
+                    ));
+                };
+                message = value.to_string();
+                index += 2;
+            }
+            "--target-slot" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--target-slot requires a value",
+                    ));
+                };
+                target_slot = value.to_string();
+                index += 2;
+            }
+            value if value.starts_with('-') => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown argument for winsmux consult-request: {value}"),
+                ));
+            }
+            value => {
+                if positionals.is_empty() {
+                    positionals.push(value.to_string());
+                } else if !value.trim().is_empty() {
+                    message_parts.push(value.to_string());
+                }
+                index += 1;
+            }
+        }
+    }
+
+    if positionals.len() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("consult-request"),
+        ));
+    }
+
+    let mode = positionals[0].trim().to_ascii_lowercase();
+    if !matches!(mode.as_str(), "early" | "stuck" | "reconcile" | "final") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Unsupported consult mode: {}", positionals[0]),
+        ));
+    }
+
+    if message.trim().is_empty() && !message_parts.is_empty() {
+        message = message_parts.join(" ");
+    }
+    if message.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "consult message is required",
+        ));
+    }
+
+    Ok(ConsultRequestOptions {
+        project_dir: project_dir.unwrap_or(env::current_dir()?),
+        mode,
+        message,
+        target_slot,
+    })
+}
+
 fn parse_rebind_worktree_options(args: &[&String]) -> io::Result<ParsedOptions> {
     let mut project_dir = None;
     let mut positionals = Vec::new();
@@ -924,6 +1042,9 @@ fn usage_for(command: &str) -> &'static str {
         }
         "promote-tactic" => {
             "usage: winsmux promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>] [--json] [--project-dir <path>]"
+        }
+        "consult-request" => {
+            "usage: winsmux consult-request <early|stuck|reconcile|final> [--message <text>] [--target-slot <slot>] [--project-dir <path>]"
         }
         "consult-result" => {
             "usage: winsmux consult-result <early|stuck|reconcile|final> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json] [--project-dir <path>]"
@@ -3319,6 +3440,28 @@ fn consultation_result_packet(
     Value::Object(packet)
 }
 
+fn consultation_request_packet(
+    context: &ConsultationContext,
+    options: &ConsultRequestOptions,
+    timestamp: &str,
+) -> Value {
+    let mut packet = Map::new();
+    packet.insert("packet_type".to_string(), json!("consultation_packet"));
+    packet.insert("generated_at".to_string(), json!(timestamp));
+    packet.insert("run_id".to_string(), json!(context.run_id));
+    packet.insert("task_id".to_string(), json!(context.task_id));
+    packet.insert("pane_id".to_string(), json!(context.pane_id));
+    packet.insert("slot".to_string(), json!(context.slot));
+    packet.insert("kind".to_string(), json!("consult_request"));
+    packet.insert("mode".to_string(), json!(options.mode));
+    packet.insert("target_slot".to_string(), json!(options.target_slot));
+    packet.insert("branch".to_string(), json!(context.branch));
+    packet.insert("head_sha".to_string(), json!(context.head_sha));
+    packet.insert("worktree".to_string(), json!(context.worktree));
+    packet.insert("request".to_string(), json!(options.message));
+    Value::Object(packet)
+}
+
 fn consultation_result_event(
     context: &ConsultationContext,
     options: &ConsultResultOptions,
@@ -3354,10 +3497,42 @@ fn consultation_result_event(
     })
 }
 
-fn write_consultation_packet(project_dir: &Path, packet: &Value) -> io::Result<WrittenArtifact> {
+fn consultation_request_event(
+    context: &ConsultationContext,
+    options: &ConsultRequestOptions,
+    consultation_ref: &str,
+    timestamp: &str,
+) -> Value {
+    let mut data = Map::new();
+    data.insert("task_id".to_string(), json!(context.task_id));
+    data.insert("run_id".to_string(), json!(context.run_id));
+    data.insert("slot".to_string(), json!(context.slot));
+    data.insert("branch".to_string(), json!(context.branch));
+    data.insert("worktree".to_string(), json!(context.worktree));
+    data.insert("consultation_ref".to_string(), json!(consultation_ref));
+
+    json!({
+        "timestamp": timestamp,
+        "session": context.session_name,
+        "event": "pane.consult_request",
+        "message": options.message,
+        "label": context.label,
+        "pane_id": context.pane_id,
+        "role": context.role,
+        "branch": context.branch,
+        "head_sha": context.head_sha,
+        "data": Value::Object(data),
+    })
+}
+
+fn write_consultation_packet(
+    project_dir: &Path,
+    file_prefix: &str,
+    packet: &Value,
+) -> io::Result<WrittenArtifact> {
     let dir = project_dir.join(".winsmux").join("consultations");
     fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("consult-result-{}.json", unique_artifact_id()));
+    let path = dir.join(format!("{}-{}.json", file_prefix, unique_artifact_id()));
     let content = serde_json::to_string_pretty(packet).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
