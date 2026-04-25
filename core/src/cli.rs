@@ -133,6 +133,7 @@ OPERATOR COMMANDS:
     digest --json           Print high-signal run digest JSON
     runs --json             Print run-oriented evidence JSON
     explain <run_id> --json Print one run explanation JSON
+    compare-runs            Compare two runs and surface evidence deltas
     poll-events             Return new monitor events from .winsmux/events.jsonl
     review-request          Record a pending review request for the current branch
     review-approve          Record PASS for the pending review request

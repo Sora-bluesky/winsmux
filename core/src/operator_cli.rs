@@ -137,6 +137,70 @@ pub fn run_explain_command(args: &[&String]) -> io::Result<()> {
     write_json(&payload)
 }
 
+pub fn run_compare_runs_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("compare-runs"));
+        return Ok(());
+    }
+    let options = parse_options("compare-runs", args, 2)?;
+
+    let snapshot = load_snapshot(&options.project_dir)?;
+    let left_id = options.positionals[0].clone();
+    let right_id = options.positionals[1].clone();
+    let left = snapshot.explain_projection(&left_id).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, format!("run not found: {left_id}"))
+    })?;
+    let right = snapshot.explain_projection(&right_id).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, format!("run not found: {right_id}"))
+    })?;
+    let payload = compare_runs_payload(&left, &right);
+    if options.json {
+        return write_json(&payload);
+    }
+
+    println!(
+        "Compare: {} vs {}",
+        payload["left"]["run_id"].as_str().unwrap_or_default(),
+        payload["right"]["run_id"].as_str().unwrap_or_default()
+    );
+    println!(
+        "Shared changed files: {}",
+        payload["shared_changed_files"]
+            .as_array()
+            .map(|items| items.len())
+            .unwrap_or(0)
+    );
+    if !payload["confidence_delta"].is_null() {
+        println!("Confidence delta: {}", payload["confidence_delta"]);
+    }
+    if let Some(winner) = payload["recommend"]["winning_run_id"].as_str() {
+        if !winner.is_empty() {
+            println!("Winning run: {winner}");
+        }
+    }
+    println!(
+        "Next action: {}",
+        payload["recommend"]["next_action"]
+            .as_str()
+            .unwrap_or_default()
+    );
+    let differences = payload["differences"].as_array().cloned().unwrap_or_default();
+    if differences.is_empty() {
+        println!("Differences: (none)");
+    } else {
+        println!("Differences:");
+        for difference in differences {
+            println!(
+                "- {}: left={} right={}",
+                difference["field"].as_str().unwrap_or_default(),
+                compare_display_value(&difference["left"]),
+                compare_display_value(&difference["right"])
+            );
+        }
+    }
+    Ok(())
+}
+
 pub fn run_poll_events_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
         println!("{}", usage_for("poll-events"));
@@ -510,6 +574,9 @@ fn usage_for(command: &str) -> &'static str {
         "digest" => "usage: winsmux digest --json [--project-dir <path>]",
         "runs" => "usage: winsmux runs --json [--project-dir <path>]",
         "explain" => "usage: winsmux explain <run_id> --json [--project-dir <path>]",
+        "compare-runs" => {
+            "usage: winsmux compare-runs <left_run_id> <right_run_id> [--json] [--project-dir <path>]"
+        }
         "poll-events" => "usage: winsmux poll-events [cursor] [--project-dir <path>]",
         "review-reset" => "usage: winsmux review-reset [--project-dir <path>]",
         "review-request" => "usage: winsmux review-request [--project-dir <path>]",
@@ -2365,6 +2432,240 @@ fn load_snapshot(project_dir: &Path) -> io::Result<LedgerSnapshot> {
             format!("failed to load winsmux ledger: {err}"),
         )
     })
+}
+
+fn compare_runs_payload(
+    left: &crate::ledger::LedgerExplainProjection,
+    right: &crate::ledger::LedgerExplainProjection,
+) -> Value {
+    let left_changed = left.evidence_digest.changed_files.clone();
+    let right_changed = right.evidence_digest.changed_files.clone();
+    let shared_changed: Vec<String> = left_changed
+        .iter()
+        .filter(|path| right_changed.contains(path))
+        .cloned()
+        .collect();
+    let left_only: Vec<String> = left_changed
+        .iter()
+        .filter(|path| !right_changed.contains(path))
+        .cloned()
+        .collect();
+    let right_only: Vec<String> = right_changed
+        .iter()
+        .filter(|path| !left_changed.contains(path))
+        .cloned()
+        .collect();
+
+    let confidence_delta = match (
+        left.run.experiment_packet.confidence,
+        right.run.experiment_packet.confidence,
+    ) {
+        (Some(left_confidence), Some(right_confidence)) => {
+            Some(round_half_to_even(left_confidence - right_confidence, 4))
+        }
+        _ => None,
+    };
+
+    let mut differences = Vec::new();
+    for (field, left_value, right_value) in [
+        ("branch", left.run.branch.clone(), right.run.branch.clone()),
+        (
+            "worktree",
+            left.run.experiment_packet.worktree.clone(),
+            right.run.experiment_packet.worktree.clone(),
+        ),
+        (
+            "slot",
+            left.run.experiment_packet.slot.clone(),
+            right.run.experiment_packet.slot.clone(),
+        ),
+        (
+            "task_state",
+            left.run.task_state.clone(),
+            right.run.task_state.clone(),
+        ),
+        (
+            "review_state",
+            left.run.review_state.clone(),
+            right.run.review_state.clone(),
+        ),
+        ("state", left.run.state.clone(), right.run.state.clone()),
+        (
+            "next_action",
+            left.evidence_digest.next_action.clone(),
+            right.evidence_digest.next_action.clone(),
+        ),
+        (
+            "hypothesis",
+            left.run.experiment_packet.hypothesis.clone(),
+            right.run.experiment_packet.hypothesis.clone(),
+        ),
+        (
+            "result",
+            left.run.experiment_packet.result.clone(),
+            right.run.experiment_packet.result.clone(),
+        ),
+        (
+            "env_fingerprint",
+            left.run.experiment_packet.env_fingerprint.clone(),
+            right.run.experiment_packet.env_fingerprint.clone(),
+        ),
+        (
+            "command_hash",
+            left.run.experiment_packet.command_hash.clone(),
+            right.run.experiment_packet.command_hash.clone(),
+        ),
+    ] {
+        if left_value != right_value {
+            differences.push(json!({
+                "field": field,
+                "left": left_value,
+                "right": right_value,
+            }));
+        }
+    }
+    if !left_only.is_empty() || !right_only.is_empty() {
+        differences.push(json!({
+            "field": "changed_files",
+            "left": left_changed,
+            "right": right_changed,
+        }));
+    }
+    if let Some(delta) = confidence_delta {
+        if delta != 0.0 {
+            differences.push(json!({
+                "field": "confidence",
+                "left": left.run.experiment_packet.confidence,
+                "right": right.run.experiment_packet.confidence,
+            }));
+        }
+    }
+
+    let left_recommendable = run_recommendable(&left.run);
+    let right_recommendable = run_recommendable(&right.run);
+    let winning_run_id = if left_recommendable && right_recommendable {
+        match confidence_delta {
+            Some(delta) if delta > 0.0 => left.run.run_id.clone(),
+            Some(delta) if delta < 0.0 => right.run.run_id.clone(),
+            _ => String::new(),
+        }
+    } else {
+        String::new()
+    };
+    let reconcile_consult = differences.iter().any(|difference| {
+        difference["field"]
+            .as_str()
+            .map(|field| matches!(field, "branch" | "worktree" | "env_fingerprint" | "command_hash" | "result"))
+            .unwrap_or(false)
+    }) || !(left_recommendable && right_recommendable);
+    let next_action = if left.evidence_digest.next_action == right.evidence_digest.next_action {
+        left.evidence_digest.next_action.clone()
+    } else {
+        "reconcile_consult".to_string()
+    };
+
+    json!({
+        "generated_at": generated_at(),
+        "left": compare_run_side(left, left_recommendable),
+        "right": compare_run_side(right, right_recommendable),
+        "shared_changed_files": shared_changed,
+        "left_only_changed_files": left_only,
+        "right_only_changed_files": right_only,
+        "confidence_delta": confidence_delta,
+        "differences": differences,
+        "recommend": {
+            "winning_run_id": winning_run_id,
+            "reconcile_consult": reconcile_consult,
+            "next_action": next_action,
+        },
+    })
+}
+
+fn compare_run_side(
+    projection: &crate::ledger::LedgerExplainProjection,
+    recommendable: bool,
+) -> Value {
+    json!({
+        "run_id": projection.run.run_id,
+        "label": projection.run.primary_label,
+        "branch": projection.run.branch,
+        "task_state": projection.run.task_state,
+        "review_state": projection.run.review_state,
+        "state": projection.run.state,
+        "next_action": projection.evidence_digest.next_action,
+        "confidence": projection.run.experiment_packet.confidence,
+        "changed_files": projection.evidence_digest.changed_files,
+        "observation_pack_ref": projection.run.experiment_packet.observation_pack_ref,
+        "consultation_ref": projection.run.experiment_packet.consultation_ref,
+        "recommendable": recommendable,
+    })
+}
+
+fn run_recommendable(run: &crate::ledger::LedgerExplainRun) -> bool {
+    if !matches!(
+        run.task_state.as_str(),
+        "completed" | "task_completed" | "commit_ready" | "done"
+    ) {
+        return false;
+    }
+    if !run.review_state.trim().is_empty() && !run.review_state.eq_ignore_ascii_case("PASS") {
+        return false;
+    }
+    if json_string_field(&run.verification_result, "outcome").to_ascii_uppercase() != "PASS" {
+        return false;
+    }
+    matches!(
+        json_string_or_field(&run.security_verdict, "verdict")
+            .to_ascii_uppercase()
+            .as_str(),
+        "ALLOW" | "PASS"
+    )
+}
+
+fn json_string_field(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn json_string_or_field(value: &Value, key: &str) -> String {
+    value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| json_string_field(value, key))
+}
+
+fn round_half_to_even(value: f64, digits: i32) -> f64 {
+    let factor = 10_f64.powi(digits);
+    let scaled = value * factor;
+    let truncated = scaled.trunc();
+    let fraction = scaled - truncated;
+    let rounded = if fraction.abs() == 0.5 {
+        if (truncated as i64).abs() % 2 == 0 {
+            truncated
+        } else {
+            truncated + fraction.signum()
+        }
+    } else {
+        scaled.round()
+    };
+    rounded / factor
+}
+
+fn compare_display_value(value: &Value) -> String {
+    if let Some(values) = value.as_array() {
+        return values
+            .iter()
+            .map(compare_display_value)
+            .collect::<Vec<_>>()
+            .join(", ");
+    }
+    if let Some(text) = value.as_str() {
+        return text.to_string();
+    }
+    value.to_string()
 }
 
 fn runs_payload(snapshot: &LedgerSnapshot, project_dir: &Path) -> Value {
