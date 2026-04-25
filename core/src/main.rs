@@ -249,6 +249,7 @@ fn run_main() -> io::Result<()> {
         "review-approve" => return operator_cli::run_review_approve_command(&cmd_args[1..]),
         "review-fail" => return operator_cli::run_review_fail_command(&cmd_args[1..]),
         "review-reset" => return operator_cli::run_review_reset_command(&cmd_args[1..]),
+        "rebind-worktree" => return operator_cli::run_rebind_worktree_command(&cmd_args[1..]),
         // kill-server MUST be handled early before any potential fall-through
         "kill-server" => {
             let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
