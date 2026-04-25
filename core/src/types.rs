@@ -907,7 +907,7 @@ pub enum CtrlReq {
     DisplayPaneSelect(usize),
     BreakPane,
     JoinPane(usize),
-    RespawnPane,
+    RespawnPane { pane_id: Option<usize>, start_dir: Option<String> },
     BindKey(String, String, String, bool),  // table, key, command, repeat
     UnbindKey(String),
     ListKeys(mpsc::Sender<String>),

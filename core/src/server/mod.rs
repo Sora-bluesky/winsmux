@@ -35,6 +35,7 @@ use crate::window_ops::{toggle_zoom, remote_mouse_down, remote_mouse_drag, remot
     remote_mouse_button, remote_mouse_motion, remote_scroll_up, remote_scroll_down,
     swap_pane, break_pane_to_window, unzoom_if_zoomed, resize_pane_vertical,
     resize_pane_horizontal, resize_pane_absolute, rotate_panes, respawn_active_pane,
+    respawn_pane_by_id,
     handle_pane_mouse, handle_pane_scroll, handle_split_set_sizes, handle_split_resize_done};
 use crate::config::{load_config, parse_key_string, format_key_binding, normalize_key_for_binding,
     parse_config_content};
@@ -2342,8 +2343,12 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                         }
                     }
                 }
-                CtrlReq::RespawnPane => {
-                    respawn_active_pane(&mut app, Some(&*pty_system))?;
+                CtrlReq::RespawnPane { pane_id, start_dir } => {
+                    if let Some(pane_id) = pane_id {
+                        respawn_pane_by_id(&mut app, Some(&*pty_system), pane_id, start_dir.as_deref())?;
+                    } else {
+                        respawn_active_pane(&mut app, Some(&*pty_system), start_dir.as_deref())?;
+                    }
                     hook_event = Some("after-respawn-pane");
                 }
                 CtrlReq::BindKey(table_name, key, command, repeat) => {
@@ -3228,7 +3233,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                 }
                 CtrlReq::RespawnWindow => {
                     // Kill all panes in the active window and respawn	
-                    respawn_active_pane(&mut app, Some(&*pty_system))?;
+                    respawn_active_pane(&mut app, Some(&*pty_system), None)?;
                     state_dirty = true;
                 }
                 CtrlReq::PopupInput(data) => {

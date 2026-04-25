@@ -1083,7 +1083,14 @@ match cmd {
             let _ = tx.send(CtrlReq::JoinPane(wid));
         }
     }
-    "respawn-pane" | "respawnp" => { let _ = tx.send(CtrlReq::RespawnPane); }
+    "respawn-pane" | "respawnp" => {
+        let start_dir = args
+            .windows(2)
+            .find(|window| window[0] == "-c")
+            .map(|window| window[1].trim_matches('"').to_string());
+        let pane_id = if pane_is_id { target_pane } else { None };
+        let _ = tx.send(CtrlReq::RespawnPane { pane_id, start_dir });
+    }
     "session-info" => {
         let (rtx, rrx) = mpsc::channel::<String>();
         let _ = tx.send(CtrlReq::SessionInfo(rtx));
@@ -2310,7 +2317,12 @@ fn dispatch_control_command(
             true
         }
         "respawn-pane" | "respawnp" => {
-            let _ = tx.send(CtrlReq::RespawnPane);
+            let start_dir = args
+                .windows(2)
+                .find(|window| window[0] == "-c")
+                .map(|window| window[1].trim_matches('"').to_string());
+            let pane_id = if pane_is_id { target_pane } else { None };
+            let _ = tx.send(CtrlReq::RespawnPane { pane_id, start_dir });
             let _ = resp_tx.send(String::new());
             true
         }

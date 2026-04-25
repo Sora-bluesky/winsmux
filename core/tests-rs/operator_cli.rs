@@ -198,6 +198,32 @@ fn operator_cli_rejects_unknown_and_extra_arguments() {
         "unexpected stderr: {stderr}"
     );
 
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["restart", "--json"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("usage: winsmux restart"),
+        "unexpected stderr: {stderr}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["restart", "builder-1", "extra"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("usage: winsmux restart"),
+        "unexpected stderr: {stderr}"
+    );
+
     for command in ["review-approve", "review-fail"] {
         let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
             .args([command, "--json"])
@@ -942,6 +968,67 @@ fn operator_cli_rebind_worktree_validates_target_in_manifest_session() {
     );
 }
 
+#[test]
+fn operator_cli_restart_dispatches_launch_plan_and_updates_manifest() {
+    let project_dir = make_temp_project_dir("restart");
+    write_manifest(&project_dir);
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .expect("test should read manifest")
+        .replace("    provider_target: codex:gpt-5.4\n", "    provider_target: codex:gpt 5.4;unsafe\n");
+    fs::write(&manifest_path, manifest).expect("test should write manifest");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2", "%3"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["restart", "builder-1"])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("restarted %2 (builder-1)"),
+        "unexpected stdout: {stdout}"
+    );
+
+    let log = fs::read_to_string(&log_path).expect("fake winsmux log should exist");
+    assert!(log.contains("respawn-pane -k -t \"%2\" -c"));
+    assert!(log.contains("send-keys -t \"%2\" -l -- \"codex -c 'model=gpt 5.4;unsafe'"));
+    assert!(log.contains("send-keys -t \"%2\" Enter"));
+    let builder = read_manifest_pane(&project_dir, "builder-1");
+    assert_eq!(builder["provider_target"].as_str(), Some("codex:gpt 5.4;unsafe"));
+    assert_eq!(builder["capability_adapter"].as_str(), Some("codex"));
+}
+
+#[test]
+fn operator_cli_restart_rejects_stale_manifest_target() {
+    let project_dir = make_temp_project_dir("restart-stale");
+    write_manifest(&project_dir);
+    let (winsmux_bin, _log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%3"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["restart", "builder-1"])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid target: %2"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
 fn run_review_request_and_read_id(project_dir: &std::path::Path) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
         .arg("review-request")
@@ -1053,6 +1140,76 @@ fn write_fake_winsmux_list_panes(
                 .expect("test should make fake winsmux executable");
         }
         fake_path
+    }
+}
+
+fn write_fake_winsmux_restart(
+    project_dir: &std::path::Path,
+    expected_session: Option<&str>,
+    pane_ids: &[&str],
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let fake_dir = project_dir.join(".test-bin");
+    fs::create_dir_all(&fake_dir).expect("test should create fake bin dir");
+    let log_path = fake_dir.join("winsmux-restart.log");
+    #[cfg(windows)]
+    {
+        let fake_path = fake_dir.join("winsmux-restart-fake.cmd");
+        let mut body = String::from("@echo off\r\n");
+        body.push_str("echo %*>>\"");
+        body.push_str(&log_path.to_string_lossy());
+        body.push_str("\"\r\n");
+        if let Some(session) = expected_session {
+            body.push_str("if \"%1\"==\"-t\" if not \"%2\"==\"");
+            body.push_str(session);
+            body.push_str("\" exit /b 0\r\n");
+        }
+        body.push_str("if \"%3\"==\"list-panes\" (\r\n");
+        for pane_id in pane_ids {
+            body.push_str("  echo ");
+            body.push_str(&pane_id.replace('%', "%%"));
+            body.push_str("\r\n");
+        }
+        body.push_str("  exit /b 0\r\n)\r\n");
+        body.push_str(
+            "if \"%1\"==\"capture-pane\" (\r\n  echo PS C:\\repo^>\r\n  echo ^>\r\n  exit /b 0\r\n)\r\n",
+        );
+        body.push_str("exit /b 0\r\n");
+        fs::write(&fake_path, body).expect("test should write fake winsmux");
+        (fake_path, log_path)
+    }
+    #[cfg(not(windows))]
+    {
+        let fake_path = fake_dir.join("winsmux-restart-fake");
+        let mut body = String::from("#!/bin/sh\n");
+        body.push_str("printf '%s\\n' \"$*\" >> '");
+        body.push_str(&log_path.to_string_lossy());
+        body.push_str("'\n");
+        if let Some(session) = expected_session {
+            body.push_str("if [ \"$1\" = \"-t\" ] && [ \"$2\" != '");
+            body.push_str(session);
+            body.push_str("' ]; then\n  exit 0\nfi\n");
+        }
+        body.push_str("if [ \"$3\" = \"list-panes\" ]; then\n");
+        for pane_id in pane_ids {
+            body.push_str("  printf '%s\\n' '");
+            body.push_str(pane_id);
+            body.push_str("'\n");
+        }
+        body.push_str("  exit 0\nfi\n");
+        body.push_str("if [ \"$1\" = \"capture-pane\" ]; then\n  printf '%s\\n' 'PS /repo>' '>'\n  exit 0\nfi\n");
+        body.push_str("exit 0\n");
+        fs::write(&fake_path, body).expect("test should write fake winsmux");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&fake_path)
+                .expect("test should read fake winsmux metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&fake_path, permissions)
+                .expect("test should make fake winsmux executable");
+        }
+        (fake_path, log_path)
     }
 }
 

@@ -908,7 +908,7 @@ pub fn execute_command_string(app: &mut AppState, cmd: &str) -> io::Result<()> {
             if let Some(port) = app.control_port {
                 let _ = send_control_to_port(port, "respawn-pane\n", &app.session_key);
             } else {
-                crate::window_ops::respawn_active_pane(app, None)?;
+                crate::window_ops::respawn_active_pane(app, None, None)?;
             }
         }
         "toggle-sync" => {
