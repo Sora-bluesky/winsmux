@@ -246,6 +246,8 @@ fn run_main() -> io::Result<()> {
         "runs" => return operator_cli::run_runs_command(&cmd_args[1..]),
         "explain" => return operator_cli::run_explain_command(&cmd_args[1..]),
         "review-request" => return operator_cli::run_review_request_command(&cmd_args[1..]),
+        "review-approve" => return operator_cli::run_review_approve_command(&cmd_args[1..]),
+        "review-fail" => return operator_cli::run_review_fail_command(&cmd_args[1..]),
         "review-reset" => return operator_cli::run_review_reset_command(&cmd_args[1..]),
         // kill-server MUST be handled early before any potential fall-through
         "kill-server" => {
