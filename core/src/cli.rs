@@ -130,7 +130,7 @@ OPERATOR COMMANDS:
     status --json           Print session, pane, and board summary JSON
     board --json            Print pane, task, review, and git board JSON
     inbox                   Print actionable approval and review items
-    digest --json           Print high-signal run digest JSON
+    digest                  Print high-signal run digest
     desktop-summary         Print desktop summary projection JSON or counts
     provider-capabilities   Inspect the provider capability registry contract
     provider-switch         Record or clear a runtime provider reassignment

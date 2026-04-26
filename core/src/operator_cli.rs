@@ -83,14 +83,18 @@ pub fn run_inbox_command(args: &[&String]) -> io::Result<()> {
 
 pub fn run_digest_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
-        println!("usage: winsmux digest --json [--project-dir <path>]");
+        println!("usage: winsmux digest [--json] [--project-dir <path>]");
         return Ok(());
     }
     let options = parse_options("digest", args, 0)?;
-    require_json("digest", &options)?;
 
     let snapshot = load_snapshot(&options.project_dir)?;
-    write_enveloped_json(&options.project_dir, snapshot.digest_projection())
+    let payload = enveloped_payload(&options.project_dir, snapshot.digest_projection())?;
+    if options.json {
+        write_json(&payload)
+    } else {
+        print_digest_text(&payload)
+    }
 }
 
 pub fn run_desktop_summary_command(args: &[&String]) -> io::Result<()> {
@@ -2832,7 +2836,7 @@ fn usage_for(command: &str) -> &'static str {
         "status" => "usage: winsmux status --json [--project-dir <path>]",
         "board" => "usage: winsmux board [--json] [--project-dir <path>]",
         "inbox" => "usage: winsmux inbox [--json] [--project-dir <path>]",
-        "digest" => "usage: winsmux digest --json [--project-dir <path>]",
+        "digest" => "usage: winsmux digest [--json] [--project-dir <path>]",
         "desktop-summary" => "usage: winsmux desktop-summary [--json] [--stream] [--project-dir <path>]",
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
@@ -6057,6 +6061,63 @@ fn print_inbox_table(payload: &Value) -> io::Result<()> {
         ];
         println!("{}", text_table_value_row(&values, &columns));
     }
+    Ok(())
+}
+
+fn print_digest_text(payload: &Value) -> io::Result<()> {
+    let items = payload
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if items.is_empty() {
+        println!("(no digest items)");
+        return Ok(());
+    }
+
+    for item in items {
+        println!("Run: {}", json_string_field(&item, "run_id"));
+        println!(
+            "Primary: {} ({})",
+            json_string_field(&item, "label"),
+            json_string_field(&item, "pane_id")
+        );
+        let task = json_string_field(&item, "task");
+        if !task.trim().is_empty() {
+            println!("Task: {task}");
+        }
+        println!(
+            "State: {} / {}",
+            json_string_field(&item, "task_state"),
+            json_string_field(&item, "review_state")
+        );
+        println!("Next: {}", json_string_field(&item, "next_action"));
+        let branch = json_string_field(&item, "branch");
+        if !branch.trim().is_empty() {
+            println!("Git: {} @ {}", branch, json_string_field(&item, "head_short"));
+        }
+
+        let changed_file_count = item
+            .get("changed_file_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if changed_file_count > 0 {
+            println!("Changed files ({changed_file_count}):");
+            for changed_file in item
+                .get("changed_files")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+            {
+                println!("- {changed_file}");
+            }
+        } else {
+            println!("Changed files: (none)");
+        }
+        println!();
+    }
+
     Ok(())
 }
 
