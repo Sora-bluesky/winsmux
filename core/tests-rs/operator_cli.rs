@@ -147,6 +147,31 @@ fn operator_cli_explain_text_reads_live_winsmux_manifest() {
 }
 
 #[test]
+fn operator_cli_inbox_text_reads_live_winsmux_manifest() {
+    let project_dir = make_temp_project_dir("inbox-text");
+    write_manifest(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("inbox")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Kind"));
+    assert!(stdout.contains("Message"));
+    assert!(stdout.contains("review_pending"));
+    assert!(stdout.contains("builder-1"));
+    assert!(stdout.contains("pending"));
+    assert!(!stdout.trim_start().starts_with('{'));
+}
+
+#[test]
 fn operator_cli_inbox_digest_runs_and_explain_use_ledger_projections() {
     let project_dir = make_temp_project_dir("read-models");
     write_manifest(&project_dir);
@@ -2042,7 +2067,7 @@ fn operator_cli_read_models_require_json_flag() {
     let project_dir = make_temp_project_dir("requires-json");
     write_manifest(&project_dir);
 
-    for command in ["inbox", "digest"] {
+    for command in ["digest"] {
         let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
             .arg(command)
             .current_dir(&project_dir)
@@ -2086,6 +2111,19 @@ fn operator_cli_rejects_unknown_and_extra_arguments() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("usage: winsmux explain"),
+        "unexpected stderr: {stderr}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["inbox", "extra"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("usage: winsmux inbox [--json]"),
         "unexpected stderr: {stderr}"
     );
 

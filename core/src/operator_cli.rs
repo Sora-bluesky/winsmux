@@ -67,14 +67,18 @@ pub fn run_board_command(args: &[&String]) -> io::Result<()> {
 
 pub fn run_inbox_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
-        println!("usage: winsmux inbox --json [--project-dir <path>]");
+        println!("usage: winsmux inbox [--json] [--project-dir <path>]");
         return Ok(());
     }
     let options = parse_options("inbox", args, 0)?;
-    require_json("inbox", &options)?;
 
     let snapshot = load_snapshot(&options.project_dir)?;
-    write_enveloped_json(&options.project_dir, snapshot.inbox_projection())
+    let payload = enveloped_payload(&options.project_dir, snapshot.inbox_projection())?;
+    if options.json {
+        write_json(&payload)
+    } else {
+        print_inbox_table(&payload)
+    }
 }
 
 pub fn run_digest_command(args: &[&String]) -> io::Result<()> {
@@ -2827,7 +2831,7 @@ fn usage_for(command: &str) -> &'static str {
     match command {
         "status" => "usage: winsmux status --json [--project-dir <path>]",
         "board" => "usage: winsmux board [--json] [--project-dir <path>]",
-        "inbox" => "usage: winsmux inbox --json [--project-dir <path>]",
+        "inbox" => "usage: winsmux inbox [--json] [--project-dir <path>]",
         "digest" => "usage: winsmux digest --json [--project-dir <path>]",
         "desktop-summary" => "usage: winsmux desktop-summary [--json] [--stream] [--project-dir <path>]",
         "provider-capabilities" => {
@@ -6011,6 +6015,45 @@ fn print_board_table(payload: &Value) -> io::Result<()> {
             changed,
             json_string_field(&pane, "branch"),
             short_head_sha(&json_string_field(&pane, "head_sha")),
+        ];
+        println!("{}", text_table_value_row(&values, &columns));
+    }
+    Ok(())
+}
+
+fn print_inbox_table(payload: &Value) -> io::Result<()> {
+    let items = payload
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if items.is_empty() {
+        println!("(no inbox items)");
+        return Ok(());
+    }
+
+    let columns = [
+        ("Kind", 16usize),
+        ("Label", 14usize),
+        ("PaneId", 8usize),
+        ("Role", 10usize),
+        ("TaskState", 14usize),
+        ("Review", 10usize),
+        ("Branch", 24usize),
+        ("Message", 40usize),
+    ];
+    println!("{}", text_table_row(&columns));
+    println!("{}", text_table_separator(&columns));
+    for item in items {
+        let values = [
+            json_string_field(&item, "kind"),
+            json_string_field(&item, "label"),
+            json_string_field(&item, "pane_id"),
+            json_string_field(&item, "role"),
+            json_string_field(&item, "task_state"),
+            json_string_field(&item, "review_state"),
+            json_string_field(&item, "branch"),
+            json_string_field(&item, "message"),
         ];
         println!("{}", text_table_value_row(&values, &columns));
     }
