@@ -264,6 +264,149 @@ fn operator_cli_desktop_summary_stream_accepts_top_level_run_fields() {
 }
 
 #[test]
+fn operator_cli_provider_capabilities_json_reads_registry() {
+    let project_dir = make_temp_project_dir("provider-capabilities-json");
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(
+        winsmux_dir.join("provider-capabilities.json"),
+        r#"{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "auth_modes": ["local_interactive"],
+      "supports_subagents": true
+    },
+    "claude": {
+      "adapter": "claude",
+      "command": "claude",
+      "prompt_transports": ["file"],
+      "supports_parallel_runs": true
+    }
+  }
+}"#,
+    )
+    .expect("test should write provider registry");
+
+    let registry = run_json(&project_dir, &["provider-capabilities", "--json"]);
+
+    assert_eq!(registry["version"], 1);
+    let registry_path = registry["registry_path"]
+        .as_str()
+        .expect("registry path should be present");
+    assert!(
+        registry_path.ends_with(".winsmux\\provider-capabilities.json")
+            || registry_path.ends_with(".winsmux/provider-capabilities.json")
+    );
+    assert_eq!(registry["providers"]["codex"]["adapter"], "codex");
+    assert_eq!(
+        registry["providers"]["codex"]["prompt_transports"][2],
+        "stdin"
+    );
+    assert_eq!(registry["providers"]["claude"]["supports_parallel_runs"], true);
+}
+
+#[test]
+fn operator_cli_provider_capabilities_json_reads_single_provider_case_insensitive() {
+    let project_dir = make_temp_project_dir("provider-capabilities-single");
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(
+        winsmux_dir.join("provider-capabilities.json"),
+        r#"{"version":1,"providers":{"Codex":{"adapter":" codex ","command":" codex ","prompt_transports":["ARGV"],"auth_modes":["LOCAL_INTERACTIVE"],"supports_file_edit":true}}}"#,
+    )
+    .expect("test should write provider registry");
+
+    let provider = run_json(&project_dir, &["provider-capabilities", "codex", "--json"]);
+
+    assert_eq!(provider["provider_id"], "codex");
+    assert_eq!(provider["capabilities"]["adapter"], "codex");
+    assert_eq!(provider["capabilities"]["command"], "codex");
+    assert_eq!(provider["capabilities"]["prompt_transports"][0], "argv");
+    assert_eq!(provider["capabilities"]["auth_modes"][0], "local_interactive");
+    assert_eq!(provider["capabilities"]["supports_file_edit"], true);
+}
+
+#[test]
+fn operator_cli_provider_capabilities_missing_provider_fails() {
+    let project_dir = make_temp_project_dir("provider-capabilities-missing");
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(
+        winsmux_dir.join("provider-capabilities.json"),
+        r#"{"version":1,"providers":{"codex":{"adapter":"codex","command":"codex","prompt_transports":["argv"]}}}"#,
+    )
+    .expect("test should write provider registry");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["provider-capabilities", "gemini", "--json"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success(), "missing provider should fail");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("provider capability 'gemini' was not found."),
+        "stderr should explain missing provider"
+    );
+}
+
+#[test]
+fn operator_cli_provider_capabilities_rejects_invalid_registry_contract() {
+    let project_dir = make_temp_project_dir("provider-capabilities-invalid");
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(
+        winsmux_dir.join("provider-capabilities.json"),
+        r#"{"version":1,"providers":{"codex":{"adapter":"codex","prompt_transports":["pipe"]}}}"#,
+    )
+    .expect("test should write provider registry");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["provider-capabilities", "--json"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success(), "invalid registry should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Invalid provider capability prompt transport 'pipe'.")
+            || stderr.contains("Missing provider capability field 'command'."),
+        "stderr should explain invalid registry contract: {stderr}"
+    );
+}
+
+#[test]
+fn operator_cli_provider_capabilities_rejects_blank_required_field() {
+    let project_dir = make_temp_project_dir("provider-capabilities-blank-required");
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(
+        winsmux_dir.join("provider-capabilities.json"),
+        r#"{"version":1,"providers":{"codex":{"adapter":"codex","command":"   ","prompt_transports":["argv"]}}}"#,
+    )
+    .expect("test should write provider registry");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["provider-capabilities", "--json"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success(), "blank command should fail");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Missing provider capability field 'command'."),
+        "stderr should explain missing normalized command"
+    );
+}
+
+#[test]
 fn operator_cli_signal_writes_temp_signal_file() {
     let project_dir = make_temp_project_dir("signal-command");
     let tmp_dir = project_dir.join("tmp");

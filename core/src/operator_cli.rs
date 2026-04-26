@@ -116,6 +116,62 @@ pub fn run_desktop_summary_command(args: &[&String]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn run_provider_capabilities_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]");
+        return Ok(());
+    }
+
+    let options = parse_provider_capabilities_options(args)?;
+    let registry_path = provider_capability_registry_path(&options.project_dir);
+    let registry = read_provider_capability_registry(&registry_path)?;
+
+    if let Some(provider_id) = options.provider_id.as_deref() {
+        let Some(capabilities) = find_provider_capability(&registry, provider_id) else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("provider capability '{provider_id}' was not found."),
+            ));
+        };
+        let payload = json!({
+            "provider_id": provider_id,
+            "capabilities": capabilities,
+            "registry_path": registry_path.display().to_string(),
+        });
+        if options.json {
+            return write_json(&payload);
+        }
+
+        println!("provider capability {provider_id}");
+        if let Some(entries) = capabilities.as_object() {
+            for (key, value) in entries {
+                println!("  {key}: {}", provider_capability_value_text(value));
+            }
+        }
+        return Ok(());
+    }
+
+    let payload = json!({
+        "version": registry.version,
+        "registry_path": registry_path.display().to_string(),
+        "providers": registry.providers,
+    });
+    if options.json {
+        return write_json(&payload);
+    }
+
+    if registry.providers.is_empty() {
+        println!("provider capabilities: none");
+        return Ok(());
+    }
+
+    println!("provider capabilities");
+    for provider_id in registry.providers.keys() {
+        println!("  {provider_id}");
+    }
+    Ok(())
+}
+
 pub fn run_signal_command(args: &[&String]) -> io::Result<()> {
     if args.len() != 1 {
         return Err(io::Error::new(
@@ -197,6 +253,313 @@ fn signal_dir_path() -> PathBuf {
 
 fn signal_file_path(channel: &str) -> PathBuf {
     signal_dir_path().join(format!("{channel}.signal"))
+}
+
+#[derive(Debug)]
+struct ProviderCapabilitiesOptions {
+    project_dir: PathBuf,
+    provider_id: Option<String>,
+    json: bool,
+}
+
+#[derive(Debug)]
+struct ProviderCapabilityRegistry {
+    version: u64,
+    providers: Map<String, Value>,
+}
+
+fn parse_provider_capabilities_options(args: &[&String]) -> io::Result<ProviderCapabilitiesOptions> {
+    let mut project_dir = env::current_dir()?;
+    let mut provider_id: Option<String> = None;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--project-dir" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        usage_for("provider-capabilities"),
+                    ));
+                };
+                project_dir = PathBuf::from(value.as_str());
+                index += 2;
+            }
+            value => {
+                if provider_id.is_none() {
+                    provider_id = Some(value.to_string());
+                    index += 1;
+                    continue;
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    usage_for("provider-capabilities"),
+                ));
+            }
+        }
+    }
+
+    Ok(ProviderCapabilitiesOptions {
+        project_dir,
+        provider_id,
+        json,
+    })
+}
+
+fn provider_capability_registry_path(project_dir: &Path) -> PathBuf {
+    project_dir.join(".winsmux").join("provider-capabilities.json")
+}
+
+fn read_provider_capability_registry(path: &Path) -> io::Result<ProviderCapabilityRegistry> {
+    if !path.exists() {
+        return Ok(ProviderCapabilityRegistry {
+            version: 1,
+            providers: Map::new(),
+        });
+    }
+
+    let raw = fs::read_to_string(path)?;
+    if raw.trim().is_empty() {
+        return Ok(ProviderCapabilityRegistry {
+            version: 1,
+            providers: Map::new(),
+        });
+    }
+
+    let parsed: Value = serde_json::from_str(&raw).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Invalid provider capability registry JSON at '{}'.",
+                path.display()
+            ),
+        )
+    })?;
+    let Some(root) = parsed.as_object() else {
+        return Err(invalid_provider_capability_registry(path));
+    };
+
+    let version = match root.get("version") {
+        Some(Value::Number(number)) => number.as_u64().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Invalid provider capability registry version at '{}'.",
+                    path.display()
+                ),
+            )
+        })?,
+        Some(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Invalid provider capability registry version at '{}'.",
+                    path.display()
+                ),
+            ))
+        }
+        None => 1,
+    };
+    if version != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Unsupported provider capability registry version '{version}'. Supported versions: 1."
+            ),
+        ));
+    }
+
+    let raw_providers = match root.get("providers") {
+        Some(Value::Object(providers)) => providers.clone(),
+        Some(Value::Null) | None => Map::new(),
+        Some(_) => return Err(invalid_provider_capability_registry(path)),
+    };
+
+    let mut providers = Map::new();
+    for (provider_id, capabilities) in &raw_providers {
+        if provider_id.trim().is_empty() {
+            return Err(invalid_provider_capability_registry(path));
+        }
+        providers.insert(
+            provider_id.clone(),
+            normalize_provider_capability_entry(path, provider_id, capabilities)?,
+        );
+    }
+
+    Ok(ProviderCapabilityRegistry { version, providers })
+}
+
+fn normalize_provider_capability_entry(
+    path: &Path,
+    provider_id: &str,
+    value: &Value,
+) -> io::Result<Value> {
+    let Some(entry) = value.as_object() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Invalid provider capability entry '{provider_id}' at '{}'.",
+                path.display()
+            ),
+        ));
+    };
+    if entry.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Invalid provider capability entry '{provider_id}' at '{}'.",
+                path.display()
+            ),
+        ));
+    }
+
+    let mut normalized = Map::new();
+    let string_fields = ["adapter", "display_name", "command"];
+    let transport_fields = ["prompt_transports"];
+    let string_array_fields = ["auth_modes", "local_interactive_oauth_modes"];
+    let bool_fields = [
+        "supports_parallel_runs",
+        "supports_interrupt",
+        "supports_structured_result",
+        "supports_file_edit",
+        "supports_subagents",
+        "supports_verification",
+        "supports_consultation",
+    ];
+
+    for (field, field_value) in entry {
+        let name = field.as_str();
+        if !string_fields.contains(&name)
+            && !transport_fields.contains(&name)
+            && !string_array_fields.contains(&name)
+            && !bool_fields.contains(&name)
+        {
+            return Err(invalid_provider_capability_field(name));
+        }
+
+        if string_fields.contains(&name) {
+            let Some(text) = field_value.as_str() else {
+                return Err(invalid_provider_capability_field(name));
+            };
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                normalized.insert(field.clone(), Value::String(trimmed.to_string()));
+            }
+            continue;
+        }
+
+        if transport_fields.contains(&name) {
+            let Some(items) = field_value.as_array() else {
+                return Err(invalid_provider_capability_field(name));
+            };
+            if items.is_empty() {
+                return Err(invalid_provider_capability_field(name));
+            }
+            let mut normalized_items = Vec::new();
+            for item in items {
+                let Some(transport) = item.as_str() else {
+                    return Err(invalid_provider_capability_field(name));
+                };
+                let normalized_transport = transport.trim().to_ascii_lowercase();
+                if normalized_transport.is_empty()
+                    || !matches!(normalized_transport.as_str(), "argv" | "file" | "stdin")
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Invalid provider capability prompt transport '{transport}'."),
+                    ));
+                }
+                normalized_items.push(Value::String(normalized_transport));
+            }
+            normalized.insert(field.clone(), Value::Array(normalized_items));
+            continue;
+        }
+
+        if string_array_fields.contains(&name) {
+            let Some(items) = field_value.as_array() else {
+                return Err(invalid_provider_capability_field(name));
+            };
+            let mut normalized_items = Vec::new();
+            for item in items {
+                let Some(text) = item.as_str() else {
+                    return Err(invalid_provider_capability_field(name));
+                };
+                let normalized_text = text.trim().to_ascii_lowercase();
+                if normalized_text.is_empty() {
+                    return Err(invalid_provider_capability_field(name));
+                }
+                normalized_items.push(Value::String(normalized_text));
+            }
+            normalized.insert(field.clone(), Value::Array(normalized_items));
+            continue;
+        }
+
+        if bool_fields.contains(&name) {
+            if !field_value.is_boolean() {
+                return Err(invalid_provider_capability_field(name));
+            }
+            normalized.insert(field.clone(), field_value.clone());
+        }
+    }
+
+    for required in ["adapter", "command", "prompt_transports"] {
+        if !normalized.contains_key(required) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Missing provider capability field '{required}'."),
+            ));
+        }
+    }
+
+    Ok(Value::Object(normalized))
+}
+
+fn invalid_provider_capability_field(field: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("Invalid provider capability field '{field}'."),
+    )
+}
+
+fn invalid_provider_capability_registry(path: &Path) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "Invalid provider capability registry JSON at '{}'.",
+            path.display()
+        ),
+    )
+}
+
+fn find_provider_capability<'a>(
+    registry: &'a ProviderCapabilityRegistry,
+    provider_id: &str,
+) -> Option<&'a Value> {
+    registry
+        .providers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(provider_id))
+        .map(|(_, value)| value)
+}
+
+fn provider_capability_value_text(value: &Value) -> String {
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .map(provider_capability_value_text)
+            .collect::<Vec<_>>()
+            .join(","),
+        Value::String(text) => text.clone(),
+        Value::Bool(flag) => flag.to_string(),
+        Value::Number(number) => number.to_string(),
+        Value::Null => String::new(),
+        Value::Object(_) => value.to_string(),
+    }
 }
 
 pub fn run_runs_command(args: &[&String]) -> io::Result<()> {
@@ -1275,6 +1638,9 @@ fn usage_for(command: &str) -> &'static str {
         "inbox" => "usage: winsmux inbox --json [--project-dir <path>]",
         "digest" => "usage: winsmux digest --json [--project-dir <path>]",
         "desktop-summary" => "usage: winsmux desktop-summary [--json] [--stream] [--project-dir <path>]",
+        "provider-capabilities" => {
+            "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
+        }
         "signal" => "usage: winsmux signal <channel>",
         "wait" => "usage: winsmux wait <channel> [timeout_seconds]",
         "runs" => "usage: winsmux runs --json [--project-dir <path>]",

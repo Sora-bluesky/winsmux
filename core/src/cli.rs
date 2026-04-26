@@ -132,6 +132,7 @@ OPERATOR COMMANDS:
     inbox --json            Print actionable approval and review items JSON
     digest --json           Print high-signal run digest JSON
     desktop-summary         Print desktop summary projection JSON or counts
+    provider-capabilities   Inspect the provider capability registry contract
     signal <channel>        Send a file-backed orchestration signal
     wait <channel> [secs]   Wait for a file-backed orchestration signal
     runs --json             Print run-oriented evidence JSON
