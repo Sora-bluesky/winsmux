@@ -407,6 +407,482 @@ fn operator_cli_provider_capabilities_rejects_blank_required_field() {
 }
 
 #[test]
+fn operator_cli_provider_switch_writes_registry_entry() {
+    let project_dir = make_temp_project_dir("provider-switch-write");
+    write_provider_switch_fixture(&project_dir);
+
+    let result = run_json(
+        &project_dir,
+        &[
+            "provider-switch",
+            "worker-1",
+            "--agent",
+            "claude",
+            "--model",
+            "opus",
+            "--prompt-transport",
+            "file",
+            "--auth-mode",
+            "claude-pro-max-oauth",
+            "--reason",
+            "operator requested provider switch",
+            "--json",
+        ],
+    );
+
+    assert_eq!(result["slot_id"], "worker-1");
+    assert_eq!(result["agent"], "claude");
+    assert_eq!(result["model"], "opus");
+    assert_eq!(result["prompt_transport"], "file");
+    assert_eq!(result["auth_mode"], "claude-pro-max-oauth");
+    assert_eq!(result["auth_policy"], "local_interactive_only");
+    assert_eq!(result["source"], "registry");
+    assert_eq!(result["capability_adapter"], "claude");
+    assert_eq!(result["capability_command"], "claude");
+    assert_eq!(result["supports_file_edit"], true);
+    assert_eq!(result["supports_subagents"], false);
+    assert_eq!(result["supports_consultation"], true);
+    assert_eq!(result["restart_requested"], false);
+    assert_eq!(result["restarted"], false);
+
+    let registry = read_json_file(&project_dir.join(".winsmux").join("provider-registry.json"));
+    assert_eq!(registry["slots"]["worker-1"]["agent"], "claude");
+    assert_eq!(registry["slots"]["worker-1"]["model"], "opus");
+    assert_eq!(registry["slots"]["worker-1"]["prompt_transport"], "file");
+    assert_eq!(
+        registry["slots"]["worker-1"]["reason"],
+        "operator requested provider switch"
+    );
+}
+
+#[test]
+fn operator_cli_provider_switch_rejects_blocked_auth_before_write() {
+    let project_dir = make_temp_project_dir("provider-switch-block-auth");
+    write_provider_switch_fixture(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--agent",
+            "claude",
+            "--model",
+            "opus",
+            "--prompt-transport",
+            "file",
+            "--auth-mode",
+            "token-broker",
+            "--json",
+        ])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("must not broker OAuth"),
+        "stderr should explain blocked auth mode"
+    );
+    assert!(!project_dir
+        .join(".winsmux")
+        .join("provider-registry.json")
+        .exists());
+}
+
+#[test]
+fn operator_cli_provider_switch_validates_candidate_before_write() {
+    let project_dir = make_temp_project_dir("provider-switch-candidate-before-write");
+    write_provider_switch_fixture(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--agent",
+            "claude",
+            "--json",
+        ])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Provider capability 'claude' does not support prompt_transport 'argv'"),
+        "stderr should explain inherited transport mismatch"
+    );
+    assert!(!project_dir
+        .join(".winsmux")
+        .join("provider-registry.json")
+        .exists());
+}
+
+#[test]
+fn operator_cli_provider_switch_replaces_case_variant_registry_key() {
+    let project_dir = make_temp_project_dir("provider-switch-case-key");
+    write_provider_switch_fixture(&project_dir);
+
+    let _ = run_json(
+        &project_dir,
+        &[
+            "provider-switch",
+            "WORKER-1",
+            "--model",
+            "gpt-5.5",
+            "--json",
+        ],
+    );
+    let result = run_json(
+        &project_dir,
+        &[
+            "provider-switch",
+            "worker-1",
+            "--model",
+            "gpt-5.4",
+            "--json",
+        ],
+    );
+
+    assert_eq!(result["slot_id"], "worker-1");
+    assert_eq!(result["model"], "gpt-5.4");
+    let registry = read_json_file(&project_dir.join(".winsmux").join("provider-registry.json"));
+    let slots = registry["slots"].as_object().expect("slots should be a map");
+    assert_eq!(slots.len(), 1);
+    assert!(slots.get("WORKER-1").is_none());
+    assert_eq!(registry["slots"]["worker-1"]["model"], "gpt-5.4");
+}
+
+#[test]
+fn operator_cli_provider_switch_clear_validates_fallback_before_write() {
+    let project_dir = make_temp_project_dir("provider-switch-clear-invalid-fallback");
+    write_provider_switch_fixture(&project_dir);
+    let settings = fs::read_to_string(project_dir.join(".winsmux.yaml"))
+        .expect("test should read settings")
+        .replace("agent: codex\n", "agent: claude\n")
+        .replace("    agent: codex\n", "    agent: claude\n");
+    fs::write(project_dir.join(".winsmux.yaml"), settings).expect("test should write settings");
+    fs::write(
+        project_dir.join(".winsmux").join("provider-registry.json"),
+        r#"{"version":1,"slots":{"worker-1":{"agent":"claude","model":"opus","prompt_transport":"file","updated_at_utc":"2026-04-26T00:00:00Z"}}}"#,
+    )
+    .expect("test should write provider registry");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["provider-switch", "worker-1", "--clear", "--json"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Provider capability 'claude' does not support prompt_transport 'argv'"),
+        "stderr should explain invalid fallback"
+    );
+    let registry = read_json_file(&project_dir.join(".winsmux").join("provider-registry.json"));
+    assert_eq!(registry["slots"]["worker-1"]["agent"], "claude");
+    assert_eq!(registry["slots"]["worker-1"]["prompt_transport"], "file");
+}
+
+#[test]
+fn operator_cli_provider_switch_clears_override() {
+    let project_dir = make_temp_project_dir("provider-switch-clear");
+    write_provider_switch_fixture(&project_dir);
+
+    let _ = run_json(
+        &project_dir,
+        &[
+            "provider-switch",
+            "worker-1",
+            "--agent",
+            "claude",
+            "--model",
+            "opus",
+            "--prompt-transport",
+            "file",
+            "--json",
+        ],
+    );
+    let result = run_json(
+        &project_dir,
+        &["provider-switch", "worker-1", "--clear", "--json"],
+    );
+
+    assert_eq!(result["slot_id"], "worker-1");
+    assert_eq!(result["agent"], "codex");
+    assert_eq!(result["model"], "gpt-5.4");
+    assert_eq!(result["prompt_transport"], "argv");
+    assert_eq!(result["source"], "slot");
+    assert_eq!(result["capability_adapter"], "codex");
+    assert_eq!(result["supports_parallel_runs"], true);
+    assert_eq!(result["supports_verification"], true);
+    assert_eq!(result["supports_consultation"], false);
+    assert_eq!(result["clear_requested"], true);
+    assert_eq!(result["cleared"], true);
+
+    let registry = read_json_file(&project_dir.join(".winsmux").join("provider-registry.json"));
+    assert!(registry["slots"]["worker-1"].is_null());
+}
+
+#[test]
+fn operator_cli_provider_switch_accepts_default_managed_slots() {
+    let project_dir = make_temp_project_dir("provider-switch-default-slots");
+    write_provider_switch_fixture(&project_dir);
+    fs::write(
+        project_dir.join(".winsmux.yaml"),
+        r#"
+agent: codex
+model: gpt-5.4
+prompt-transport: argv
+worker-count: 2
+external-operator: true
+"#,
+    )
+    .expect("test should write settings without explicit slots");
+
+    let result = run_json(
+        &project_dir,
+        &["provider-switch", "worker-2", "--model", "gpt-5.5", "--json"],
+    );
+
+    assert_eq!(result["slot_id"], "worker-2");
+    assert_eq!(result["agent"], "codex");
+    assert_eq!(result["model"], "gpt-5.5");
+    assert_eq!(result["source"], "registry");
+}
+
+#[test]
+fn operator_cli_provider_switch_rejects_restart_stale_target_before_write() {
+    let project_dir = make_temp_project_dir("provider-switch-restart-stale");
+    write_provider_switch_fixture(&project_dir);
+    fs::write(
+        project_dir.join(".winsmux").join("manifest.yaml"),
+        format!(
+            r#"
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%stale"
+    role: Builder
+    launch_dir: {}
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write manifest");
+    let winsmux_bin =
+        write_fake_winsmux_list_panes(&project_dir, Some("winsmux-orchestra"), &["%live"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--agent",
+            "claude",
+            "--model",
+            "opus",
+            "--restart",
+            "--json",
+        ])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("invalid target: %stale"),
+        "stderr should explain stale pane target"
+    );
+    assert!(!project_dir
+        .join(".winsmux")
+        .join("provider-registry.json")
+        .exists());
+}
+
+#[test]
+fn operator_cli_provider_switch_restart_uses_new_provider_adapter() {
+    let project_dir = make_temp_project_dir("provider-switch-restart-adapter");
+    write_provider_switch_fixture(&project_dir);
+    fs::write(
+        project_dir.join(".winsmux").join("manifest.yaml"),
+        format!(
+            r#"
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Builder
+    launch_dir: {}
+    capability_adapter: codex
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write manifest");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2"]);
+
+    let result = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--agent",
+            "claude",
+            "--model",
+            "opus",
+            "--prompt-transport",
+            "file",
+            "--restart",
+            "--json",
+        ])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        result.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&result.stdout).expect("stdout should be JSON");
+    assert_eq!(payload["restarted"], true);
+    assert_eq!(payload["restart_pane_id"], "%2");
+    let log = fs::read_to_string(&log_path).expect("fake winsmux log should exist");
+    assert!(log.contains("send-keys -t \"%2\" -l -- \"claude --model opus"));
+    assert!(!log.contains("codex -c"));
+}
+
+#[test]
+fn operator_cli_provider_switch_clear_restart_uses_configured_provider() {
+    let project_dir = make_temp_project_dir("provider-switch-clear-restart-adapter");
+    write_provider_switch_fixture(&project_dir);
+    fs::write(
+        project_dir.join(".winsmux").join("provider-registry.json"),
+        r#"{"version":1,"slots":{"worker-1":{"agent":"claude","model":"opus","prompt_transport":"file","updated_at_utc":"2026-04-26T00:00:00Z"}}}"#,
+    )
+    .expect("test should write provider registry");
+    fs::write(
+        project_dir.join(".winsmux").join("manifest.yaml"),
+        format!(
+            r#"
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Builder
+    launch_dir: {}
+    provider_target: claude:opus
+    capability_adapter: claude
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write manifest");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2"]);
+
+    let result = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--clear",
+            "--restart",
+            "--json",
+        ])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        result.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&result.stdout).expect("stdout should be JSON");
+    assert_eq!(payload["agent"], "codex");
+    assert_eq!(payload["source"], "slot");
+    assert_eq!(payload["restarted"], true);
+    let log = fs::read_to_string(&log_path).expect("fake winsmux log should exist");
+    assert!(log.contains("send-keys -t \"%2\" -l -- \"codex -c 'model=gpt-5.4'"));
+    assert!(!log.contains("claude --model opus"));
+}
+
+#[test]
+fn operator_cli_provider_switch_restart_merges_partial_override_with_slot() {
+    let project_dir = make_temp_project_dir("provider-switch-partial-restart");
+    write_provider_switch_fixture(&project_dir);
+    let settings = fs::read_to_string(project_dir.join(".winsmux.yaml"))
+        .expect("test should read settings")
+        .replace("    agent: codex\n", "    agent: claude\n")
+        .replace("    prompt-transport: argv\n", "    prompt-transport: file\n");
+    fs::write(project_dir.join(".winsmux.yaml"), settings).expect("test should write settings");
+    fs::write(
+        project_dir.join(".winsmux").join("manifest.yaml"),
+        format!(
+            r#"
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Builder
+    launch_dir: {}
+    capability_adapter: codex
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write manifest");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2"]);
+
+    let result = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--model",
+            "opus",
+            "--restart",
+            "--json",
+        ])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        result.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&result.stdout).expect("stdout should be JSON");
+    assert_eq!(payload["agent"], "claude");
+    assert_eq!(payload["model"], "opus");
+    assert_eq!(payload["source"], "registry");
+    let log = fs::read_to_string(&log_path).expect("fake winsmux log should exist");
+    assert!(log.contains("send-keys -t \"%2\" -l -- \"claude --model opus"));
+    assert!(!log.contains("codex -c"));
+}
+
+#[test]
 fn operator_cli_conflict_preflight_json_reports_clean_result() {
     let project_dir = make_temp_project_dir("conflict-preflight-clean");
     init_conflict_preflight_repo(&project_dir);
@@ -2589,9 +3065,7 @@ fn write_fake_winsmux_restart(
             body.push_str("\r\n");
         }
         body.push_str("  exit /b 0\r\n)\r\n");
-        body.push_str(
-            "if \"%1\"==\"capture-pane\" (\r\n  echo PS C:\\repo^>\r\n  echo ^>\r\n  exit /b 0\r\n)\r\n",
-        );
+        body.push_str("if \"%1\"==\"capture-pane\" (\r\n  echo PS C:\\repo^>\r\n  echo ^>\r\n  echo Welcome to Claude Code!\r\n  exit /b 0\r\n)\r\n");
         body.push_str("exit /b 0\r\n");
         fs::write(&fake_path, body).expect("test should write fake winsmux");
         (fake_path, log_path)
@@ -2615,7 +3089,7 @@ fn write_fake_winsmux_restart(
             body.push_str("'\n");
         }
         body.push_str("  exit 0\nfi\n");
-        body.push_str("if [ \"$1\" = \"capture-pane\" ]; then\n  printf '%s\\n' 'PS /repo>' '>'\n  exit 0\nfi\n");
+        body.push_str("if [ \"$1\" = \"capture-pane\" ]; then\n  printf '%s\\n' 'PS /repo>' '>' 'Welcome to Claude Code!'\n  exit 0\nfi\n");
         body.push_str("exit 0\n");
         fs::write(&fake_path, body).expect("test should write fake winsmux");
         #[cfg(unix)]
@@ -2634,6 +3108,68 @@ fn write_fake_winsmux_restart(
 
 fn run_json(project_dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
     run_json_with_cwd(project_dir, args)
+}
+
+fn read_json_file(path: &std::path::Path) -> serde_json::Value {
+    let raw = fs::read_to_string(path).expect("test should read JSON file");
+    serde_json::from_str(&raw).expect("test file should contain JSON")
+}
+
+fn write_provider_switch_fixture(project_dir: &std::path::Path) {
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(
+        project_dir.join(".winsmux.yaml"),
+        r#"
+agent: codex
+model: gpt-5.4
+prompt-transport: argv
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    agent: codex
+    model: gpt-5.4
+    prompt-transport: argv
+"#,
+    )
+    .expect("test should write settings");
+    fs::write(
+        winsmux_dir.join("provider-capabilities.json"),
+        r#"{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex",
+      "prompt_transports": ["argv", "file", "stdin"],
+      "auth_modes": ["api-key", "codex-chatgpt-local"],
+      "local_interactive_oauth_modes": ["codex-chatgpt-local"],
+      "supports_parallel_runs": true,
+      "supports_interrupt": true,
+      "supports_structured_result": true,
+      "supports_file_edit": true,
+      "supports_subagents": true,
+      "supports_verification": true,
+      "supports_consultation": false
+    },
+    "claude": {
+      "adapter": "claude",
+      "command": "claude",
+      "prompt_transports": ["file"],
+      "auth_modes": ["api-key", "claude-pro-max-oauth"],
+      "local_interactive_oauth_modes": ["claude-pro-max-oauth"],
+      "supports_parallel_runs": false,
+      "supports_interrupt": true,
+      "supports_structured_result": false,
+      "supports_file_edit": true,
+      "supports_subagents": false,
+      "supports_verification": true,
+      "supports_consultation": true
+    }
+  }
+}"#,
+    )
+    .expect("test should write provider capabilities");
 }
 
 fn run_json_with_cwd(cwd: impl AsRef<std::path::Path>, args: &[&str]) -> serde_json::Value {

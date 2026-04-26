@@ -133,6 +133,7 @@ OPERATOR COMMANDS:
     digest --json           Print high-signal run digest JSON
     desktop-summary         Print desktop summary projection JSON or counts
     provider-capabilities   Inspect the provider capability registry contract
+    provider-switch         Record or clear a runtime provider reassignment
     signal <channel>        Send a file-backed orchestration signal
     wait <channel> [secs]   Wait for a file-backed orchestration signal
     runs --json             Print run-oriented evidence JSON
