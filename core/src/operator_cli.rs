@@ -132,15 +132,71 @@ pub fn run_signal_command(args: &[&String]) -> io::Result<()> {
         ));
     }
 
-    let temp_root = env::var_os("TEMP")
-        .map(PathBuf::from)
-        .unwrap_or_else(env::temp_dir);
-    let signal_dir = temp_root.join("winsmux").join("signals");
+    let signal_dir = signal_dir_path();
     fs::create_dir_all(&signal_dir)?;
-    let signal_file = signal_dir.join(format!("{channel}.signal"));
+    let signal_file = signal_file_path(channel);
     fs::write(signal_file, generated_at())?;
     println!("sent signal: {channel}");
     Ok(())
+}
+
+pub fn run_wait_command(args: &[&String]) -> io::Result<()> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("wait"),
+        ));
+    }
+
+    let channel = args[0].trim();
+    if channel.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("wait"),
+        ));
+    }
+
+    let timeout_secs = match args.get(1) {
+        Some(raw) => raw
+            .parse::<u64>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, usage_for("wait")))?,
+        None => 120,
+    };
+    let signal_dir = signal_dir_path();
+    fs::create_dir_all(&signal_dir)?;
+    let signal_file = signal_file_path(channel);
+    if signal_file.exists() {
+        fs::remove_file(&signal_file)?;
+        println!("received signal: {channel}");
+        return Ok(());
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    while Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(100));
+        if signal_file.exists() {
+            fs::remove_file(&signal_file)?;
+            println!("received signal: {channel}");
+            return Ok(());
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("timeout waiting for signal: {channel} ({timeout_secs}s)"),
+    ))
+}
+
+fn signal_dir_path() -> PathBuf {
+    env::var_os("TEMP")
+        .map(PathBuf::from)
+        .unwrap_or_else(env::temp_dir)
+        .join("winsmux")
+        .join("signals")
+}
+
+fn signal_file_path(channel: &str) -> PathBuf {
+    signal_dir_path().join(format!("{channel}.signal"))
 }
 
 pub fn run_runs_command(args: &[&String]) -> io::Result<()> {
@@ -1220,6 +1276,7 @@ fn usage_for(command: &str) -> &'static str {
         "digest" => "usage: winsmux digest --json [--project-dir <path>]",
         "desktop-summary" => "usage: winsmux desktop-summary [--json] [--stream] [--project-dir <path>]",
         "signal" => "usage: winsmux signal <channel>",
+        "wait" => "usage: winsmux wait <channel> [timeout_seconds]",
         "runs" => "usage: winsmux runs --json [--project-dir <path>]",
         "explain" => "usage: winsmux explain <run_id> --json [--project-dir <path>]",
         "compare-runs" => {

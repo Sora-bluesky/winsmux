@@ -182,7 +182,7 @@ fn run_main() -> io::Result<()> {
     // -L is only stripped BEFORE the subcommand (global socket namespace flag);
     // after the subcommand, -L is kept (e.g. select-pane -L, resize-pane -L).
     let cmd_args: Vec<&String> = {
-        let mut result = Vec::new();
+        let mut result: Vec<&String> = Vec::new();
         let mut i = 1; // skip binary name
         let mut found_subcommand = false;
         while i < args.len() {
@@ -204,8 +204,13 @@ fn run_main() -> io::Result<()> {
                     // fall through to push the subcommand name
                 }
             } else {
-                // After subcommand: strip only -t (and its value)
-                if args[i] == "-t" && i + 1 < args.len() {
+                // After subcommand: strip only -t (and its value), except
+                // commands that intentionally treat the first argument as a
+                // literal channel name.
+                if result.first().map(|s| s.as_str()) != Some("wait")
+                    && args[i] == "-t"
+                    && i + 1 < args.len()
+                {
                     i += 2;
                     continue;
                 }
@@ -245,6 +250,13 @@ fn run_main() -> io::Result<()> {
         "digest" => return operator_cli::run_digest_command(&cmd_args[1..]),
         "desktop-summary" => return operator_cli::run_desktop_summary_command(&cmd_args[1..]),
         "signal" => return operator_cli::run_signal_command(&cmd_args[1..]),
+        "wait" if !matches!(
+            cmd_args.get(1).map(|arg| arg.as_str()),
+            Some("-S" | "-L" | "-U")
+        ) =>
+        {
+            return operator_cli::run_wait_command(&cmd_args[1..])
+        }
         "runs" => return operator_cli::run_runs_command(&cmd_args[1..]),
         "explain" => return operator_cli::run_explain_command(&cmd_args[1..]),
         "compare-runs" => return operator_cli::run_compare_runs_command(&cmd_args[1..]),
