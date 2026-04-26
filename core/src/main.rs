@@ -250,6 +250,7 @@ fn run_main() -> io::Result<()> {
         "digest" => return operator_cli::run_digest_command(&cmd_args[1..]),
         "desktop-summary" => return operator_cli::run_desktop_summary_command(&cmd_args[1..]),
         "provider-capabilities" => return operator_cli::run_provider_capabilities_command(&cmd_args[1..]),
+        "provider-switch" => return operator_cli::run_provider_switch_command(&cmd_args[1..]),
         "signal" => return operator_cli::run_signal_command(&cmd_args[1..]),
         "wait" if !matches!(
             cmd_args.get(1).map(|arg| arg.as_str()),

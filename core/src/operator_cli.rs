@@ -172,6 +172,116 @@ pub fn run_provider_capabilities_command(args: &[&String]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn run_provider_switch_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("provider-switch"));
+        return Ok(());
+    }
+
+    let options = parse_provider_switch_options(args)?;
+    let settings = read_bridge_settings(&options.project_dir)?;
+    if !settings.has_slot(&options.slot_id) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "provider-switch target slot '{}' is not present in agent_slots.",
+                options.slot_id
+            ),
+        ));
+    }
+    if options.clear
+        && (options.agent.is_some()
+            || options.model.is_some()
+            || options.prompt_transport.is_some()
+            || options.auth_mode.is_some())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "provider-switch --clear cannot be combined with --agent, --model, --prompt-transport, or --auth-mode.",
+        ));
+    }
+
+    let restart_pane_id = if options.restart {
+        Some(validate_provider_switch_restart_target(&options.project_dir, &options.slot_id)?)
+    } else {
+        None
+    };
+
+    if !options.clear {
+        validate_provider_switch_candidate(&options.project_dir, &settings, &options)?;
+    }
+
+    let registry_path = provider_registry_path(&options.project_dir);
+    let (updated_at_utc, reason, cleared) = if options.clear {
+        validate_provider_switch_clear_candidate(&options.project_dir, &settings, &options.slot_id)?;
+        let result = remove_provider_registry_entry(&registry_path, &options.slot_id)?;
+        (result.updated_at_utc, String::new(), result.removed)
+    } else {
+        let entry = ProviderRegistryEntry::new(&options)?;
+        let updated_at_utc = entry.updated_at_utc.clone();
+        let reason = entry.reason.clone().unwrap_or_default();
+        write_provider_registry_entry(&registry_path, &options.slot_id, entry)?;
+        (updated_at_utc, reason, false)
+    };
+
+    let effective = resolve_slot_agent_config(&options.project_dir, &settings, &options.slot_id)?;
+    let mut restarted = false;
+    let mut restart_pane_id_output = String::new();
+    if let Some(pane_id) = restart_pane_id {
+        let plan = build_restart_plan(&options.project_dir, &pane_id)?;
+        invoke_restart_plan(&plan)?;
+        let _ = update_restart_manifest_metadata(&options.project_dir, &plan);
+        restarted = true;
+        restart_pane_id_output = plan.pane_id;
+    }
+
+    let payload = json!({
+        "slot_id": options.slot_id,
+        "agent": effective.agent,
+        "model": effective.model,
+        "prompt_transport": effective.prompt_transport,
+        "auth_mode": effective.auth_mode,
+        "auth_policy": effective.auth_policy,
+        "source": effective.source,
+        "capability_adapter": effective.capability_adapter,
+        "capability_command": effective.capability_command,
+        "supports_parallel_runs": effective.supports_parallel_runs,
+        "supports_interrupt": effective.supports_interrupt,
+        "supports_structured_result": effective.supports_structured_result,
+        "supports_file_edit": effective.supports_file_edit,
+        "supports_subagents": effective.supports_subagents,
+        "supports_verification": effective.supports_verification,
+        "supports_consultation": effective.supports_consultation,
+        "registry_path": registry_path.display().to_string(),
+        "updated_at_utc": updated_at_utc,
+        "reason": reason,
+        "clear_requested": options.clear,
+        "cleared": cleared,
+        "restart_requested": options.restart,
+        "restarted": restarted,
+        "restart_pane_id": restart_pane_id_output,
+    });
+
+    if options.json {
+        return write_json(&payload);
+    }
+
+    let action = if options.clear {
+        "provider switch cleared"
+    } else {
+        "provider switched"
+    };
+    println!(
+        "{action} for {}: {} / {} ({}, {})",
+        payload["slot_id"].as_str().unwrap_or_default(),
+        payload["agent"].as_str().unwrap_or_default(),
+        payload["model"].as_str().unwrap_or_default(),
+        payload["prompt_transport"].as_str().unwrap_or_default(),
+        payload["auth_policy"].as_str().unwrap_or_default()
+    );
+    Ok(())
+}
+
 pub fn run_signal_command(args: &[&String]) -> io::Result<()> {
     if args.len() != 1 {
         return Err(io::Error::new(
@@ -268,6 +378,82 @@ struct ProviderCapabilityRegistry {
     providers: Map<String, Value>,
 }
 
+#[derive(Debug)]
+struct ProviderSwitchOptions {
+    project_dir: PathBuf,
+    slot_id: String,
+    agent: Option<String>,
+    model: Option<String>,
+    prompt_transport: Option<String>,
+    auth_mode: Option<String>,
+    reason: Option<String>,
+    restart: bool,
+    clear: bool,
+    json: bool,
+}
+
+#[derive(Clone, Debug)]
+struct BridgeSettings {
+    agent: String,
+    model: String,
+    prompt_transport: String,
+    auth_mode: String,
+    worker_role: ProviderRoleConfig,
+    agent_slots: Vec<ProviderSlotConfig>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ProviderRoleConfig {
+    agent: Option<String>,
+    model: Option<String>,
+    prompt_transport: Option<String>,
+    auth_mode: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ProviderSlotConfig {
+    slot_id: String,
+    agent: Option<String>,
+    model: Option<String>,
+    prompt_transport: Option<String>,
+    auth_mode: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ProviderRegistryEntry {
+    agent: Option<String>,
+    model: Option<String>,
+    prompt_transport: Option<String>,
+    auth_mode: Option<String>,
+    updated_at_utc: String,
+    reason: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct SlotAgentConfig {
+    agent: String,
+    model: String,
+    prompt_transport: String,
+    auth_mode: String,
+    auth_policy: String,
+    source: String,
+    capability_adapter: String,
+    capability_command: String,
+    supports_parallel_runs: bool,
+    supports_interrupt: bool,
+    supports_structured_result: bool,
+    supports_file_edit: bool,
+    supports_subagents: bool,
+    supports_verification: bool,
+    supports_consultation: bool,
+}
+
+#[derive(Debug)]
+struct ProviderRegistryRemoveResult {
+    removed: bool,
+    updated_at_utc: String,
+}
+
 fn parse_provider_capabilities_options(args: &[&String]) -> io::Result<ProviderCapabilitiesOptions> {
     let mut project_dir = env::current_dir()?;
     let mut provider_id: Option<String> = None;
@@ -309,6 +495,128 @@ fn parse_provider_capabilities_options(args: &[&String]) -> io::Result<ProviderC
         provider_id,
         json,
     })
+}
+
+fn parse_provider_switch_options(args: &[&String]) -> io::Result<ProviderSwitchOptions> {
+    if args.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("provider-switch"),
+        ));
+    }
+
+    let mut project_dir = env::current_dir()?;
+    let mut slot_id: Option<String> = None;
+    let mut agent = None;
+    let mut model = None;
+    let mut prompt_transport = None;
+    let mut auth_mode = None;
+    let mut reason = None;
+    let mut restart = false;
+    let mut clear = false;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--agent" => {
+                agent = Some(required_option_value(args, index, "--agent")?);
+                index += 2;
+            }
+            "--model" => {
+                model = Some(required_option_value(args, index, "--model")?);
+                index += 2;
+            }
+            "--prompt-transport" => {
+                let value = required_option_value(args, index, "--prompt-transport")?;
+                let normalized = value.trim().to_ascii_lowercase();
+                if !matches!(normalized.as_str(), "argv" | "file" | "stdin") {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Invalid provider registry prompt_transport '{value}'."),
+                    ));
+                }
+                prompt_transport = Some(normalized);
+                index += 2;
+            }
+            "--auth-mode" => {
+                auth_mode = Some(required_option_value(args, index, "--auth-mode")?);
+                index += 2;
+            }
+            "--reason" => {
+                reason = Some(required_option_value(args, index, "--reason")?);
+                index += 2;
+            }
+            "--project-dir" => {
+                project_dir = PathBuf::from(required_option_value(args, index, "--project-dir")?);
+                index += 2;
+            }
+            "--restart" => {
+                restart = true;
+                index += 1;
+            }
+            "--clear" => {
+                clear = true;
+                index += 1;
+            }
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            value if value.starts_with('-') => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    usage_for("provider-switch"),
+                ));
+            }
+            value => {
+                if slot_id.is_some() || value.trim().is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        usage_for("provider-switch"),
+                    ));
+                }
+                slot_id = Some(value.to_string());
+                index += 1;
+            }
+        }
+    }
+
+    let Some(slot_id) = slot_id else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("provider-switch"),
+        ));
+    };
+
+    Ok(ProviderSwitchOptions {
+        project_dir,
+        slot_id,
+        agent: trim_optional(agent),
+        model: trim_optional(model),
+        prompt_transport,
+        auth_mode: trim_optional(auth_mode),
+        reason: trim_optional(reason),
+        restart,
+        clear,
+        json,
+    })
+}
+
+fn required_option_value(args: &[&String], index: usize, flag: &str) -> io::Result<String> {
+    let Some(value) = args.get(index + 1) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{flag} requires a value"),
+        ));
+    };
+    Ok(value.to_string())
+}
+
+fn trim_optional(value: Option<String>) -> Option<String> {
+    value
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty())
 }
 
 fn provider_capability_registry_path(project_dir: &Path) -> PathBuf {
@@ -560,6 +868,748 @@ fn provider_capability_value_text(value: &Value) -> String {
         Value::Null => String::new(),
         Value::Object(_) => value.to_string(),
     }
+}
+
+impl BridgeSettings {
+    fn has_slot(&self, slot_id: &str) -> bool {
+        self.agent_slots
+            .iter()
+            .any(|slot| slot.slot_id.eq_ignore_ascii_case(slot_id))
+    }
+
+    fn slot(&self, slot_id: &str) -> Option<&ProviderSlotConfig> {
+        self.agent_slots
+            .iter()
+            .find(|slot| slot.slot_id.eq_ignore_ascii_case(slot_id))
+    }
+}
+
+impl ProviderRegistryEntry {
+    fn new(options: &ProviderSwitchOptions) -> io::Result<Self> {
+        if options.agent.is_none()
+            && options.model.is_none()
+            && options.prompt_transport.is_none()
+            && options.auth_mode.is_none()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Provider registry entry requires agent, model, prompt_transport, or auth_mode.",
+            ));
+        }
+        Ok(Self {
+            agent: options.agent.clone(),
+            model: options.model.clone(),
+            prompt_transport: options.prompt_transport.clone(),
+            auth_mode: options.auth_mode.clone(),
+            updated_at_utc: generated_at(),
+            reason: options.reason.clone(),
+        })
+    }
+
+    fn from_value(slot_id: &str, value: &Value, path: &Path) -> io::Result<Self> {
+        let Some(map) = value.as_object() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid provider registry slot '{slot_id}' at '{}'.", path.display()),
+            ));
+        };
+        let agent = provider_registry_optional_string(map, "agent")?;
+        let model = provider_registry_optional_string(map, "model")?;
+        let prompt_transport = provider_registry_optional_string(map, "prompt_transport")?;
+        let auth_mode = provider_registry_optional_string(map, "auth_mode")?;
+        let updated_at_utc =
+            provider_registry_optional_string(map, "updated_at_utc")?.unwrap_or_default();
+        let reason = provider_registry_optional_string(map, "reason")?;
+        if let Some(transport) = prompt_transport.as_deref() {
+            if !matches!(transport, "argv" | "file" | "stdin") {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Invalid provider registry prompt_transport '{transport}'."),
+                ));
+            }
+        }
+        if agent.is_none() && model.is_none() && prompt_transport.is_none() && auth_mode.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid provider registry slot '{slot_id}' at '{}'.", path.display()),
+            ));
+        }
+        Ok(Self {
+            agent,
+            model,
+            prompt_transport,
+            auth_mode,
+            updated_at_utc,
+            reason,
+        })
+    }
+
+    fn to_value(&self) -> Value {
+        let mut map = Map::new();
+        if let Some(value) = self.agent.as_deref() {
+            map.insert("agent".to_string(), Value::String(value.to_string()));
+        }
+        if let Some(value) = self.model.as_deref() {
+            map.insert("model".to_string(), Value::String(value.to_string()));
+        }
+        if let Some(value) = self.prompt_transport.as_deref() {
+            map.insert(
+                "prompt_transport".to_string(),
+                Value::String(value.to_string()),
+            );
+        }
+        if let Some(value) = self.auth_mode.as_deref() {
+            map.insert("auth_mode".to_string(), Value::String(value.to_string()));
+        }
+        map.insert(
+            "updated_at_utc".to_string(),
+            Value::String(self.updated_at_utc.clone()),
+        );
+        if let Some(value) = self.reason.as_deref() {
+            map.insert("reason".to_string(), Value::String(value.to_string()));
+        }
+        Value::Object(map)
+    }
+}
+
+fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
+    let path = project_dir.join(".winsmux.yaml");
+    let mut settings = BridgeSettings {
+        agent: "codex".to_string(),
+        model: "gpt-5.4".to_string(),
+        prompt_transport: "argv".to_string(),
+        auth_mode: String::new(),
+        worker_role: ProviderRoleConfig::default(),
+        agent_slots: Vec::new(),
+    };
+    if !path.exists() {
+        return Ok(settings);
+    }
+
+    let raw = fs::read_to_string(&path)?;
+    if raw.trim().is_empty() {
+        return Ok(settings);
+    }
+    let root = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid settings: {}: {err}", path.display()),
+        )
+    })?;
+
+    settings.agent = yaml_string(&root, "agent").unwrap_or(settings.agent);
+    settings.model = yaml_string(&root, "model").unwrap_or(settings.model);
+    settings.prompt_transport = yaml_string(&root, "prompt_transport")
+        .or_else(|| yaml_string(&root, "prompt-transport"))
+        .unwrap_or(settings.prompt_transport);
+    settings.auth_mode = yaml_string(&root, "auth_mode")
+        .or_else(|| yaml_string(&root, "auth-mode"))
+        .unwrap_or_default();
+    settings.worker_role = yaml_role_config(&root, "Worker")
+        .or_else(|| yaml_role_config(&root, "worker"))
+        .unwrap_or_default();
+    settings.agent_slots = yaml_agent_slots(&root)?;
+    let external_operator = yaml_bool(&root, "external_operator")
+        .or_else(|| yaml_bool(&root, "external-operator"))
+        .unwrap_or(true);
+    let legacy_role_layout = yaml_bool(&root, "legacy_role_layout")
+        .or_else(|| yaml_bool(&root, "legacy-role-layout"))
+        .unwrap_or(false);
+    let worker_count = yaml_u64(&root, "worker_count")
+        .or_else(|| yaml_u64(&root, "worker-count"))
+        .unwrap_or(6);
+    if settings.agent_slots.is_empty() && external_operator && !legacy_role_layout {
+        for index in 1..=worker_count {
+            settings.agent_slots.push(ProviderSlotConfig {
+                slot_id: format!("worker-{index}"),
+                agent: Some(settings.agent.clone()),
+                model: Some(settings.model.clone()),
+                prompt_transport: Some(settings.prompt_transport.clone()),
+                auth_mode: (!settings.auth_mode.trim().is_empty())
+                    .then(|| settings.auth_mode.clone()),
+            });
+        }
+    }
+    Ok(settings)
+}
+
+fn yaml_agent_slots(root: &serde_yaml::Value) -> io::Result<Vec<ProviderSlotConfig>> {
+    let Some(slots) = yaml_get(root, "agent_slots").or_else(|| yaml_get(root, "agent-slots"))
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = slots.as_sequence() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid agent_slots configuration: every slot entry must include at least slot_id.",
+        ));
+    };
+    let mut result = Vec::new();
+    for item in items {
+        let slot_id = yaml_string(item, "slot_id")
+            .or_else(|| yaml_string(item, "slot-id"))
+            .unwrap_or_default();
+        if slot_id.trim().is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid agent_slots configuration: every slot entry must include at least slot_id.",
+            ));
+        }
+        result.push(ProviderSlotConfig {
+            slot_id,
+            agent: yaml_string(item, "agent"),
+            model: yaml_string(item, "model"),
+            prompt_transport: yaml_string(item, "prompt_transport")
+                .or_else(|| yaml_string(item, "prompt-transport")),
+            auth_mode: yaml_string(item, "auth_mode").or_else(|| yaml_string(item, "auth-mode")),
+        });
+    }
+    Ok(result)
+}
+
+fn yaml_role_config(root: &serde_yaml::Value, role: &str) -> Option<ProviderRoleConfig> {
+    let roles = yaml_get(root, "roles")?;
+    let role_value = yaml_get(roles, role)?;
+    Some(ProviderRoleConfig {
+        agent: yaml_string(role_value, "agent"),
+        model: yaml_string(role_value, "model"),
+        prompt_transport: yaml_string(role_value, "prompt_transport")
+            .or_else(|| yaml_string(role_value, "prompt-transport")),
+        auth_mode: yaml_string(role_value, "auth_mode")
+            .or_else(|| yaml_string(role_value, "auth-mode")),
+    })
+}
+
+fn yaml_get<'a>(value: &'a serde_yaml::Value, key: &str) -> Option<&'a serde_yaml::Value> {
+    let map = value.as_mapping()?;
+    let yaml_key = serde_yaml::Value::String(key.to_string());
+    map.get(&yaml_key)
+}
+
+fn yaml_string(value: &serde_yaml::Value, key: &str) -> Option<String> {
+    yaml_get(value, key)
+        .and_then(serde_yaml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn yaml_bool(value: &serde_yaml::Value, key: &str) -> Option<bool> {
+    yaml_get(value, key).and_then(|item| {
+        item.as_bool().or_else(|| {
+            item.as_str()
+                .map(str::trim)
+                .and_then(|text| match text.to_ascii_lowercase().as_str() {
+                    "true" => Some(true),
+                    "false" => Some(false),
+                    _ => None,
+                })
+        })
+    })
+}
+
+fn yaml_u64(value: &serde_yaml::Value, key: &str) -> Option<u64> {
+    yaml_get(value, key).and_then(|item| {
+        item.as_u64().or_else(|| {
+            item.as_str()
+                .map(str::trim)
+                .and_then(|text| text.parse::<u64>().ok())
+        })
+    })
+}
+
+fn resolve_slot_agent_config(
+    project_dir: &Path,
+    settings: &BridgeSettings,
+    slot_id: &str,
+) -> io::Result<SlotAgentConfig> {
+    resolve_slot_agent_config_inner(project_dir, settings, slot_id, true)
+}
+
+fn resolve_slot_agent_config_without_registry(
+    project_dir: &Path,
+    settings: &BridgeSettings,
+    slot_id: &str,
+) -> io::Result<SlotAgentConfig> {
+    resolve_slot_agent_config_inner(project_dir, settings, slot_id, false)
+}
+
+fn resolve_slot_agent_config_inner(
+    project_dir: &Path,
+    settings: &BridgeSettings,
+    slot_id: &str,
+    include_registry: bool,
+) -> io::Result<SlotAgentConfig> {
+    let mut agent = settings.agent.clone();
+    let mut model = settings.model.clone();
+    let mut prompt_transport = settings.prompt_transport.clone();
+    let mut auth_mode = settings.auth_mode.clone();
+    let mut source = "role".to_string();
+
+    apply_role_config(
+        &mut agent,
+        &mut model,
+        &mut prompt_transport,
+        &mut auth_mode,
+        &settings.worker_role,
+        &mut source,
+    );
+    if let Some(slot) = settings.slot(slot_id) {
+        if let Some(value) = slot.agent.as_deref() {
+            agent = value.to_string();
+            source = "slot".to_string();
+        }
+        if let Some(value) = slot.model.as_deref() {
+            model = value.to_string();
+            source = "slot".to_string();
+        }
+        if let Some(value) = slot.prompt_transport.as_deref() {
+            prompt_transport = value.to_string();
+            source = "slot".to_string();
+        }
+        if let Some(value) = slot.auth_mode.as_deref() {
+            auth_mode = value.to_string();
+            source = "slot".to_string();
+        }
+    }
+
+    if include_registry {
+        if let Some(entry) = provider_registry_entry_full(project_dir, slot_id)? {
+        if let Some(value) = entry.agent {
+            agent = value;
+        }
+        if let Some(value) = entry.model {
+            model = value;
+        }
+        if let Some(value) = entry.prompt_transport {
+            prompt_transport = value;
+        }
+        if let Some(value) = entry.auth_mode {
+            auth_mode = value;
+        }
+        source = "registry".to_string();
+        }
+    }
+
+    assert_provider_prompt_transport(project_dir, &agent, &prompt_transport)?;
+    assert_provider_auth_mode(project_dir, &agent, &auth_mode)?;
+    let capability = resolve_provider_capability(project_dir, &agent)?;
+    Ok(SlotAgentConfig {
+        auth_policy: provider_auth_policy(capability.as_ref(), &auth_mode),
+        capability_adapter: capability_string(capability.as_ref(), "adapter"),
+        capability_command: capability_string(capability.as_ref(), "command"),
+        supports_parallel_runs: capability_bool(capability.as_ref(), "supports_parallel_runs"),
+        supports_interrupt: capability_bool(capability.as_ref(), "supports_interrupt"),
+        supports_structured_result: capability_bool(
+            capability.as_ref(),
+            "supports_structured_result",
+        ),
+        supports_file_edit: capability_bool(capability.as_ref(), "supports_file_edit"),
+        supports_subagents: capability_bool(capability.as_ref(), "supports_subagents"),
+        supports_verification: capability_bool(capability.as_ref(), "supports_verification"),
+        supports_consultation: capability_bool(capability.as_ref(), "supports_consultation"),
+        agent,
+        model,
+        prompt_transport,
+        auth_mode,
+        source,
+    })
+}
+
+fn apply_role_config(
+    agent: &mut String,
+    model: &mut String,
+    prompt_transport: &mut String,
+    auth_mode: &mut String,
+    config: &ProviderRoleConfig,
+    source: &mut String,
+) {
+    if let Some(value) = config.agent.as_deref() {
+        *agent = value.to_string();
+        *source = "role".to_string();
+    }
+    if let Some(value) = config.model.as_deref() {
+        *model = value.to_string();
+        *source = "role".to_string();
+    }
+    if let Some(value) = config.prompt_transport.as_deref() {
+        *prompt_transport = value.to_string();
+        *source = "role".to_string();
+    }
+    if let Some(value) = config.auth_mode.as_deref() {
+        *auth_mode = value.to_string();
+        *source = "role".to_string();
+    }
+}
+
+fn validate_provider_switch_candidate(
+    project_dir: &Path,
+    settings: &BridgeSettings,
+    options: &ProviderSwitchOptions,
+) -> io::Result<()> {
+    let mut current = resolve_slot_agent_config(project_dir, settings, &options.slot_id)?;
+    if let Some(value) = options.agent.as_deref() {
+        current.agent = value.to_string();
+    }
+    if let Some(value) = options.model.as_deref() {
+        current.model = value.to_string();
+    }
+    if let Some(value) = options.prompt_transport.as_deref() {
+        current.prompt_transport = value.to_string();
+    }
+    if let Some(value) = options.auth_mode.as_deref() {
+        current.auth_mode = value.to_string();
+    }
+    assert_provider_prompt_transport(project_dir, &current.agent, &current.prompt_transport)?;
+    assert_provider_auth_mode(project_dir, &current.agent, &current.auth_mode)?;
+    Ok(())
+}
+
+fn validate_provider_switch_clear_candidate(
+    project_dir: &Path,
+    settings: &BridgeSettings,
+    slot_id: &str,
+) -> io::Result<()> {
+    let _ = resolve_slot_agent_config_without_registry(project_dir, settings, slot_id)?;
+    Ok(())
+}
+
+fn provider_registry_path(project_dir: &Path) -> PathBuf {
+    project_dir.join(".winsmux").join("provider-registry.json")
+}
+
+fn read_provider_registry(path: &Path) -> io::Result<Map<String, Value>> {
+    if !path.exists() {
+        let mut root = Map::new();
+        root.insert("version".to_string(), Value::from(1));
+        root.insert("slots".to_string(), Value::Object(Map::new()));
+        return Ok(root);
+    }
+    let raw = fs::read_to_string(path)?;
+    if raw.trim().is_empty() {
+        let mut root = Map::new();
+        root.insert("version".to_string(), Value::from(1));
+        root.insert("slots".to_string(), Value::Object(Map::new()));
+        return Ok(root);
+    }
+    let parsed: Value = serde_json::from_str(&raw).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid provider registry JSON at '{}'.", path.display()),
+        )
+    })?;
+    let Some(root) = parsed.as_object() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid provider registry JSON at '{}'.", path.display()),
+        ));
+    };
+    match root.get("version") {
+        Some(Value::Number(number)) if number.as_u64() == Some(1) => {}
+        Some(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Unsupported provider registry version. Supported versions: 1.",
+            ))
+        }
+        None => {}
+    }
+    Ok(root.clone())
+}
+
+fn provider_registry_entry_full(
+    project_dir: &Path,
+    slot_id: &str,
+) -> io::Result<Option<ProviderRegistryEntry>> {
+    let path = provider_registry_path(project_dir);
+    let root = read_provider_registry(&path)?;
+    let Some(slots) = root.get("slots").and_then(Value::as_object) else {
+        return Ok(None);
+    };
+    for (candidate, value) in slots {
+        if candidate.eq_ignore_ascii_case(slot_id) {
+            return Ok(Some(ProviderRegistryEntry::from_value(candidate, value, &path)?));
+        }
+    }
+    Ok(None)
+}
+
+fn write_provider_registry_entry(
+    path: &Path,
+    slot_id: &str,
+    entry: ProviderRegistryEntry,
+) -> io::Result<()> {
+    let mut root = read_provider_registry(path)?;
+    let slots = ensure_provider_registry_slots(&mut root)?;
+    let matched: Vec<String> = slots
+        .keys()
+        .filter(|candidate| candidate.eq_ignore_ascii_case(slot_id))
+        .cloned()
+        .collect();
+    for key in matched {
+        slots.remove(&key);
+    }
+    slots.insert(slot_id.to_string(), entry.to_value());
+    write_provider_registry(path, root)
+}
+
+fn remove_provider_registry_entry(
+    path: &Path,
+    slot_id: &str,
+) -> io::Result<ProviderRegistryRemoveResult> {
+    let mut root = read_provider_registry(path)?;
+    let slots = ensure_provider_registry_slots(&mut root)?;
+    let matched = slots
+        .keys()
+        .find(|candidate| candidate.eq_ignore_ascii_case(slot_id))
+        .cloned();
+    let removed = if let Some(key) = matched {
+        slots.remove(&key).is_some()
+    } else {
+        false
+    };
+    let updated_at_utc = generated_at();
+    write_provider_registry(path, root)?;
+    Ok(ProviderRegistryRemoveResult {
+        removed,
+        updated_at_utc,
+    })
+}
+
+fn ensure_provider_registry_slots(root: &mut Map<String, Value>) -> io::Result<&mut Map<String, Value>> {
+    if !root.contains_key("version") {
+        root.insert("version".to_string(), Value::from(1));
+    }
+    if !root.contains_key("slots") {
+        root.insert("slots".to_string(), Value::Object(Map::new()));
+    }
+    root.get_mut("slots")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid provider registry slots.",
+            )
+        })
+}
+
+fn write_provider_registry(path: &Path, root: Map<String, Value>) -> io::Result<()> {
+    let content = serde_json::to_string_pretty(&Value::Object(root)).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize provider registry: {err}"),
+        )
+    })?;
+    write_text_file_with_lock(path, &(content + "\n"))
+}
+
+fn provider_registry_optional_string(
+    map: &Map<String, Value>,
+    key: &str,
+) -> io::Result<Option<String>> {
+    let Some(value) = map.get(key) else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let Some(text) = value.as_str() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid provider registry field '{key}'."),
+        ));
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        if matches!(key, "agent" | "model" | "prompt_transport" | "auth_mode") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid provider registry field '{key}'."),
+            ));
+        }
+        return Ok(None);
+    }
+    let normalized = if key == "prompt_transport" {
+        trimmed.to_ascii_lowercase()
+    } else {
+        trimmed.to_string()
+    };
+    Ok(Some(normalized))
+}
+
+fn resolve_provider_capability(project_dir: &Path, provider_id: &str) -> io::Result<Option<Value>> {
+    let path = provider_capability_registry_path(project_dir);
+    let registry = read_provider_capability_registry(&path)?;
+    if registry.providers.is_empty() {
+        return Ok(None);
+    }
+    find_provider_capability(&registry, provider_id)
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Provider capability '{provider_id}' was not found."),
+            )
+        })
+}
+
+fn assert_provider_prompt_transport(
+    project_dir: &Path,
+    provider_id: &str,
+    prompt_transport: &str,
+) -> io::Result<()> {
+    if provider_id.trim().is_empty() || prompt_transport.trim().is_empty() {
+        return Ok(());
+    }
+    let Some(capability) = resolve_provider_capability(project_dir, provider_id)? else {
+        return Ok(());
+    };
+    let Some(transports) = capability.get("prompt_transports").and_then(Value::as_array) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Provider capability '{provider_id}' does not declare prompt_transports."),
+        ));
+    };
+    let requested = prompt_transport.trim().to_ascii_lowercase();
+    let supported: Vec<String> = transports
+        .iter()
+        .filter_map(Value::as_str)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect();
+    if !supported.iter().any(|value| value == &requested) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Provider capability '{provider_id}' does not support prompt_transport '{requested}'. Supported values: {}.",
+                supported.join(", ")
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn assert_provider_auth_mode(
+    project_dir: &Path,
+    provider_id: &str,
+    auth_mode: &str,
+) -> io::Result<()> {
+    if auth_mode.trim().is_empty() {
+        return Ok(());
+    }
+    let requested = auth_mode.trim().to_ascii_lowercase();
+    if blocked_provider_auth_mode(&requested) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Provider auth_mode '{requested}' is not allowed. winsmux must not broker OAuth, receive callback URLs, extract provider tokens, or share provider tokens across panes."),
+        ));
+    }
+    let Some(capability) = resolve_provider_capability(project_dir, provider_id)? else {
+        return Ok(());
+    };
+    let Some(auth_modes) = capability.get("auth_modes").and_then(Value::as_array) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Provider capability '{provider_id}' does not declare auth_modes."),
+        ));
+    };
+    let supported: Vec<String> = auth_modes
+        .iter()
+        .filter_map(Value::as_str)
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect();
+    if !supported.iter().any(|value| value == &requested) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Provider capability '{provider_id}' does not support auth_mode '{requested}'. Supported values: {}.",
+                supported.join(", ")
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn blocked_provider_auth_mode(auth_mode: &str) -> bool {
+    matches!(
+        auth_mode.trim().to_ascii_lowercase().as_str(),
+        "oauth-broker"
+            | "token-broker"
+            | "callback-url"
+            | "callback-url-receiver"
+            | "shared-token"
+            | "provider-api-proxy"
+    )
+}
+
+fn provider_auth_policy(capability: Option<&Value>, auth_mode: &str) -> String {
+    if auth_mode.trim().is_empty() {
+        return "unspecified".to_string();
+    }
+    let normalized = auth_mode.trim().to_ascii_lowercase();
+    let local_modes: Vec<String> = capability
+        .and_then(|item| item.get("local_interactive_oauth_modes"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|value| value.trim().to_ascii_lowercase())
+                .collect()
+        })
+        .unwrap_or_default();
+    if local_modes.iter().any(|mode| mode == &normalized)
+        || normalized.ends_with("oauth")
+        || normalized.ends_with("chatgpt-local")
+    {
+        "local_interactive_only".to_string()
+    } else {
+        "standard".to_string()
+    }
+}
+
+fn capability_string(capability: Option<&Value>, key: &str) -> String {
+    capability
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn capability_bool(capability: Option<&Value>, key: &str) -> bool {
+    capability
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn validate_provider_switch_restart_target(project_dir: &Path, slot_id: &str) -> io::Result<String> {
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let raw = fs::read_to_string(&manifest_path)?;
+    let manifest = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid manifest: {}: {err}", manifest_path.display()),
+        )
+    })?;
+    let session_name = manifest_session_name(&manifest)?;
+    let project_root = manifest_project_dir(&manifest).unwrap_or_else(|| project_dir.to_path_buf());
+    let session_git_worktree_dir = manifest_session_git_worktree_dir(&manifest);
+    let context = resolve_restart_manifest_context(
+        &manifest,
+        slot_id,
+        &manifest_path,
+        &project_root,
+        session_git_worktree_dir.as_deref(),
+    )
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("provider-switch --restart target slot '{slot_id}' is not present in the orchestra manifest."),
+        )
+    })?;
+    ensure_live_pane_target(&session_name, &context.pane_id)?;
+    Ok(context.pane_id)
 }
 
 pub fn run_runs_command(args: &[&String]) -> io::Result<()> {
@@ -1774,6 +2824,9 @@ fn usage_for(command: &str) -> &'static str {
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
         }
+        "provider-switch" => {
+            "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json] [--project-dir <path>]"
+        }
         "signal" => "usage: winsmux signal <channel>",
         "wait" => "usage: winsmux wait <channel> [timeout_seconds]",
         "runs" => "usage: winsmux runs --json [--project-dir <path>]",
@@ -2663,40 +3716,31 @@ fn pane_git_worktree_dir(project_dir: &Path) -> String {
 }
 
 fn resolve_restart_provider(project_dir: &Path, context: &RestartPlan) -> (String, String, String) {
-    if let Some((agent, model, adapter)) = provider_registry_entry(project_dir, &context.label) {
-        return (agent, model, adapter);
-    }
-    let (agent, model) =
+    let (mut agent, mut model) =
         split_provider_target(&manifest_provider_target(project_dir, &context.pane_id));
-    let agent = if agent.trim().is_empty() {
-        "codex".to_string()
-    } else {
-        agent
-    };
-    let model = if model.trim().is_empty() {
-        "gpt-5.4".to_string()
-    } else {
-        model
-    };
+    if let Ok(settings) = read_bridge_settings(project_dir) {
+        if settings.has_slot(&context.label) {
+            if let Ok(effective) = resolve_slot_agent_config(project_dir, &settings, &context.label)
+            {
+                let adapter = if effective.capability_adapter.trim().is_empty() {
+                    provider_adapter_from_agent(&effective.agent)
+                } else {
+                    effective.capability_adapter
+                };
+                return (effective.agent, effective.model, adapter);
+            }
+        }
+    }
+    if agent.trim().is_empty() {
+        agent = "codex".to_string();
+    }
+    if model.trim().is_empty() {
+        model = "gpt-5.4".to_string();
+    }
     let adapter = manifest_capability_adapter(project_dir, &context.pane_id)
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| provider_adapter_from_agent(&agent));
     (agent, model, adapter)
-}
-
-fn provider_registry_entry(project_dir: &Path, label: &str) -> Option<(String, String, String)> {
-    let path = project_dir.join(".winsmux").join("provider-registry.json");
-    let raw = fs::read_to_string(path).ok()?;
-    let registry = serde_json::from_str::<Value>(&raw).ok()?;
-    let entry = registry.get("slots")?.get(label)?;
-    let agent = entry.get("agent").and_then(Value::as_str)?.to_string();
-    let model = entry
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or("gpt-5.4")
-        .to_string();
-    let adapter = provider_adapter_from_agent(&agent);
-    Some((agent, model, adapter))
 }
 
 fn manifest_provider_target(project_dir: &Path, pane_id: &str) -> String {
