@@ -119,6 +119,34 @@ fn operator_cli_runs_text_reads_live_winsmux_manifest() {
 }
 
 #[test]
+fn operator_cli_explain_text_reads_live_winsmux_manifest() {
+    let project_dir = make_temp_project_dir("explain-text");
+    write_manifest(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["explain", "task:TASK-266"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Run: task:TASK-266"));
+    assert!(stdout.contains("Task: Add Rust operator read models"));
+    assert!(stdout.contains("Primary: builder-1 (%2)"));
+    assert!(stdout.contains("Next: commit_ready"));
+    assert!(stdout.contains("Changed files:"));
+    assert!(stdout.contains("- core/src/main.rs"));
+    assert!(stdout.contains("Recent events:"));
+    assert!(stdout.contains("operator.commit_ready"));
+    assert!(!stdout.trim_start().starts_with('{'));
+}
+
+#[test]
 fn operator_cli_inbox_digest_runs_and_explain_use_ledger_projections() {
     let project_dir = make_temp_project_dir("read-models");
     write_manifest(&project_dir);
