@@ -93,6 +93,32 @@ fn operator_cli_board_text_reads_live_winsmux_manifest() {
 }
 
 #[test]
+fn operator_cli_runs_text_reads_live_winsmux_manifest() {
+    let project_dir = make_temp_project_dir("runs-text");
+    write_manifest(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("runs")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("RunId"));
+    assert!(stdout.contains("ActionItems"));
+    assert!(stdout.contains("task:TASK-266"));
+    assert!(stdout.contains("builder-1"));
+    assert!(stdout.contains("Add Rust operator read models"));
+    assert!(stdout.contains("pending"));
+    assert!(!stdout.trim_start().starts_with('{'));
+}
+
+#[test]
 fn operator_cli_inbox_digest_runs_and_explain_use_ledger_projections() {
     let project_dir = make_temp_project_dir("read-models");
     write_manifest(&project_dir);
@@ -1988,7 +2014,7 @@ fn operator_cli_read_models_require_json_flag() {
     let project_dir = make_temp_project_dir("requires-json");
     write_manifest(&project_dir);
 
-    for command in ["inbox", "digest", "runs"] {
+    for command in ["inbox", "digest"] {
         let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
             .arg(command)
             .current_dir(&project_dir)
@@ -2032,6 +2058,19 @@ fn operator_cli_rejects_unknown_and_extra_arguments() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("usage: winsmux explain"),
+        "unexpected stderr: {stderr}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["runs", "extra"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("usage: winsmux runs [--json]"),
         "unexpected stderr: {stderr}"
     );
 

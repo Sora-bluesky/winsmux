@@ -1617,15 +1617,18 @@ fn validate_provider_switch_restart_target(project_dir: &Path, slot_id: &str) ->
 
 pub fn run_runs_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
-        println!("usage: winsmux runs --json [--project-dir <path>]");
+        println!("usage: winsmux runs [--json] [--project-dir <path>]");
         return Ok(());
     }
     let options = parse_options("runs", args, 0)?;
-    require_json("runs", &options)?;
 
     let snapshot = load_snapshot(&options.project_dir)?;
     let payload = runs_payload(&snapshot, &options.project_dir);
-    write_json(&payload)
+    if options.json {
+        write_json(&payload)
+    } else {
+        print_runs_table(&payload)
+    }
 }
 
 pub fn run_explain_command(args: &[&String]) -> io::Result<()> {
@@ -2832,7 +2835,7 @@ fn usage_for(command: &str) -> &'static str {
         }
         "signal" => "usage: winsmux signal <channel>",
         "wait" => "usage: winsmux wait <channel> [timeout_seconds]",
-        "runs" => "usage: winsmux runs --json [--project-dir <path>]",
+        "runs" => "usage: winsmux runs [--json] [--project-dir <path>]",
         "explain" => "usage: winsmux explain <run_id> --json [--project-dir <path>]",
         "compare-runs" => {
             "usage: winsmux compare-runs <left_run_id> <right_run_id> [--json] [--project-dir <path>]"
@@ -5986,8 +5989,8 @@ fn print_board_table(payload: &Value) -> io::Result<()> {
         ("Branch", 24usize),
         ("Head", 8usize),
     ];
-    println!("{}", board_table_row(&columns));
-    println!("{}", board_table_separator(&columns));
+    println!("{}", text_table_row(&columns));
+    println!("{}", text_table_separator(&columns));
     for pane in panes {
         let changed = pane
             .get("changed_file_count")
@@ -6006,22 +6009,68 @@ fn print_board_table(payload: &Value) -> io::Result<()> {
             json_string_field(&pane, "branch"),
             short_head_sha(&json_string_field(&pane, "head_sha")),
         ];
-        println!("{}", board_table_value_row(&values, &columns));
+        println!("{}", text_table_value_row(&values, &columns));
     }
     Ok(())
 }
 
-fn board_table_row(columns: &[(&str, usize)]) -> String {
+fn print_runs_table(payload: &Value) -> io::Result<()> {
+    let runs = payload
+        .get("runs")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if runs.is_empty() {
+        println!("(no runs)");
+        return Ok(());
+    }
+
+    let columns = [
+        ("RunId", 18usize),
+        ("Label", 14usize),
+        ("Task", 30usize),
+        ("TaskState", 14usize),
+        ("Review", 10usize),
+        ("State", 12usize),
+        ("Branch", 24usize),
+        ("Head", 8usize),
+        ("ActionItems", 11usize),
+    ];
+    println!("{}", text_table_row(&columns));
+    println!("{}", text_table_separator(&columns));
+    for run in runs {
+        let action_items = run
+            .get("action_items")
+            .and_then(Value::as_array)
+            .map(|items| items.len().to_string())
+            .unwrap_or_else(|| "0".to_string());
+        let values = [
+            json_string_field(&run, "run_id"),
+            json_string_field(&run, "primary_label"),
+            json_string_field(&run, "task"),
+            json_string_field(&run, "task_state"),
+            json_string_field(&run, "review_state"),
+            json_string_field(&run, "state"),
+            json_string_field(&run, "branch"),
+            short_head_sha(&json_string_field(&run, "head_sha")),
+            action_items,
+        ];
+        println!("{}", text_table_value_row(&values, &columns));
+    }
+    Ok(())
+}
+
+fn text_table_row(columns: &[(&str, usize)]) -> String {
     columns
         .iter()
-        .map(|(label, width)| board_table_cell(label, *width))
+        .map(|(label, width)| text_table_cell(label, *width))
         .collect::<Vec<_>>()
         .join("  ")
         .trim_end()
         .to_string()
 }
 
-fn board_table_separator(columns: &[(&str, usize)]) -> String {
+fn text_table_separator(columns: &[(&str, usize)]) -> String {
     columns
         .iter()
         .map(|(_, width)| "-".repeat(*width))
@@ -6029,18 +6078,18 @@ fn board_table_separator(columns: &[(&str, usize)]) -> String {
         .join("  ")
 }
 
-fn board_table_value_row(values: &[String], columns: &[(&str, usize)]) -> String {
+fn text_table_value_row(values: &[String], columns: &[(&str, usize)]) -> String {
     values
         .iter()
         .zip(columns.iter())
-        .map(|(value, (_, width))| board_table_cell(value, *width))
+        .map(|(value, (_, width))| text_table_cell(value, *width))
         .collect::<Vec<_>>()
         .join("  ")
         .trim_end()
         .to_string()
 }
 
-fn board_table_cell(value: &str, width: usize) -> String {
+fn text_table_cell(value: &str, width: usize) -> String {
     let mut text: String = value.chars().take(width).collect();
     let count = text.chars().count();
     if count < width {
