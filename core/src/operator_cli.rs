@@ -1747,11 +1747,19 @@ fn run_conflict_preflight(args: &[&String], compare_alias: bool) -> io::Result<(
 }
 
 pub fn run_compare_runs_command(args: &[&String]) -> io::Result<()> {
+    run_compare_runs_with_usage("compare-runs", args)
+}
+
+pub fn run_compare_runs_public_command(args: &[&String]) -> io::Result<()> {
+    run_compare_runs_with_usage("compare runs", args)
+}
+
+fn run_compare_runs_with_usage(command_name: &str, args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
-        println!("{}", usage_for("compare-runs"));
+        println!("{}", usage_for(command_name));
         return Ok(());
     }
-    let options = parse_options("compare-runs", args, 2)?;
+    let options = parse_options(command_name, args, 2)?;
 
     let snapshot = load_snapshot(&options.project_dir)?;
     let left_id = options.positionals[0].clone();
@@ -2850,6 +2858,9 @@ fn usage_for(command: &str) -> &'static str {
         "explain" => "usage: winsmux explain <run_id> [--json] [--project-dir <path>]",
         "compare-runs" => {
             "usage: winsmux compare-runs <left_run_id> <right_run_id> [--json] [--project-dir <path>]"
+        }
+        "compare runs" => {
+            "usage: winsmux compare runs <left_run_id> <right_run_id> [--json] [--project-dir <path>]"
         }
         "conflict-preflight" => {
             "usage: winsmux conflict-preflight <left_ref> <right_ref> [--json]"
