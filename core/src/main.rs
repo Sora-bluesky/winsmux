@@ -262,6 +262,9 @@ fn run_main() -> io::Result<()> {
         "runs" => return operator_cli::run_runs_command(&cmd_args[1..]),
         "explain" => return operator_cli::run_explain_command(&cmd_args[1..]),
         "compare-runs" => return operator_cli::run_compare_runs_command(&cmd_args[1..]),
+        "compare" if matches!(cmd_args.get(1).map(|arg| arg.as_str()), Some("runs")) => {
+            return operator_cli::run_compare_runs_public_command(&cmd_args[2..])
+        }
         "compare" if matches!(cmd_args.get(1).map(|arg| arg.as_str()), Some("preflight")) => {
             return operator_cli::run_compare_preflight_command(&cmd_args[2..])
         }

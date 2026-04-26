@@ -1444,6 +1444,51 @@ fn operator_cli_compare_runs_json_reports_evidence_delta() {
 }
 
 #[test]
+fn operator_cli_compare_runs_public_alias_reports_evidence_delta() {
+    let project_dir = make_temp_project_dir("compare-runs-alias");
+    write_compare_runs_fixture(&project_dir);
+
+    let json = run_json(
+        &project_dir,
+        &["compare", "runs", "task:task-a", "task:task-b", "--json"],
+    );
+
+    assert_eq!(json["left"]["run_id"], "task:task-a");
+    assert_eq!(json["right"]["run_id"], "task:task-b");
+    assert_eq!(json["confidence_delta"], 0.25);
+    assert_eq!(json["recommend"]["winning_run_id"], "task:task-a");
+}
+
+#[test]
+fn operator_cli_compare_runs_public_alias_reports_public_usage() {
+    let project_dir = make_temp_project_dir("compare-runs-alias-usage");
+    write_compare_runs_fixture(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["compare", "runs", "--help"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("usage: winsmux compare runs"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["compare", "runs", "task:task-a"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("usage: winsmux compare runs"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
 fn operator_cli_compare_runs_text_reports_differences() {
     let project_dir = make_temp_project_dir("compare-runs-text");
     write_compare_runs_fixture(&project_dir);
