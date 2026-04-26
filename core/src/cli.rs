@@ -138,6 +138,8 @@ OPERATOR COMMANDS:
     runs --json             Print run-oriented evidence JSON
     explain <run_id> --json Print one run explanation JSON
     compare-runs            Compare two runs and surface evidence deltas
+    compare preflight       Run git merge-tree preflight before compare UI
+    conflict-preflight      Run git merge-tree preflight before compare UI
     promote-tactic          Export a reusable tactic candidate from a run
     consult-request         Record a consultation request packet and event
     consult-result          Record a consultation result packet and event

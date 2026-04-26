@@ -407,6 +407,142 @@ fn operator_cli_provider_capabilities_rejects_blank_required_field() {
 }
 
 #[test]
+fn operator_cli_conflict_preflight_json_reports_clean_result() {
+    let project_dir = make_temp_project_dir("conflict-preflight-clean");
+    init_conflict_preflight_repo(&project_dir);
+    write_git_file(&project_dir, "left.txt", "left\n");
+    run_git(&project_dir, &["add", "left.txt"]);
+    run_git(&project_dir, &["commit", "-m", "left change"]);
+    run_git(&project_dir, &["branch", "left"]);
+    run_git(&project_dir, &["checkout", "base"]);
+    write_git_file(&project_dir, "right.txt", "right\n");
+    run_git(&project_dir, &["add", "right.txt"]);
+    run_git(&project_dir, &["commit", "-m", "right change"]);
+    run_git(&project_dir, &["branch", "right"]);
+
+    let json = run_json(&project_dir, &["conflict-preflight", "left", "right", "--json"]);
+
+    assert_eq!(json["command"], "conflict-preflight");
+    assert_eq!(json["status"], "clean");
+    assert_eq!(json["reason"], "");
+    assert_eq!(json["conflict_detected"], false);
+    assert_eq!(json["left_ref"], "left");
+    assert_eq!(json["right_ref"], "right");
+    assert_eq!(json["merge_tree_exit_code"], 0);
+    assert_eq!(json["overlap_paths"].as_array().unwrap().len(), 0);
+    assert_eq!(json["left_only_paths"][0], "left.txt");
+    assert_eq!(json["right_only_paths"][0], "right.txt");
+}
+
+#[test]
+fn operator_cli_compare_preflight_json_uses_public_command_name() {
+    let project_dir = make_temp_project_dir("compare-preflight-clean");
+    init_conflict_preflight_repo(&project_dir);
+    write_git_file(&project_dir, "left.txt", "left\n");
+    run_git(&project_dir, &["add", "left.txt"]);
+    run_git(&project_dir, &["commit", "-m", "left change"]);
+    run_git(&project_dir, &["branch", "left"]);
+    run_git(&project_dir, &["checkout", "base"]);
+    write_git_file(&project_dir, "right.txt", "right\n");
+    run_git(&project_dir, &["add", "right.txt"]);
+    run_git(&project_dir, &["commit", "-m", "right change"]);
+    run_git(&project_dir, &["branch", "right"]);
+
+    let json = run_json(
+        &project_dir,
+        &["compare", "preflight", "left", "right", "--json"],
+    );
+
+    assert_eq!(json["command"], "compare preflight");
+    assert_eq!(json["status"], "clean");
+    assert_eq!(
+        json["next_action"],
+        "Safe to continue to compare UI or follow-up review."
+    );
+}
+
+#[test]
+fn operator_cli_compare_preflight_invalid_usage_reports_public_command() {
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["compare", "preflight", "left-only"])
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success(), "invalid usage should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("usage: winsmux compare preflight <left_ref> <right_ref> [--json]"),
+        "stderr should show public usage: {stderr}"
+    );
+    assert!(
+        !stderr.contains("conflict-preflight"),
+        "public usage should not mention compatibility command: {stderr}"
+    );
+}
+
+#[test]
+fn operator_cli_conflict_preflight_json_reports_conflict() {
+    let project_dir = make_temp_project_dir("conflict-preflight-conflict");
+    init_conflict_preflight_repo(&project_dir);
+    write_git_file(&project_dir, "shared.txt", "left\n");
+    run_git(&project_dir, &["add", "shared.txt"]);
+    run_git(&project_dir, &["commit", "-m", "left change"]);
+    run_git(&project_dir, &["branch", "left"]);
+    run_git(&project_dir, &["checkout", "base"]);
+    write_git_file(&project_dir, "shared.txt", "right\n");
+    run_git(&project_dir, &["add", "shared.txt"]);
+    run_git(&project_dir, &["commit", "-m", "right change"]);
+    run_git(&project_dir, &["branch", "right"]);
+
+    let json = run_json(&project_dir, &["conflict-preflight", "left", "right", "--json"]);
+
+    assert_eq!(json["status"], "conflict");
+    assert_eq!(json["reason"], "merge_conflict");
+    assert_eq!(json["conflict_detected"], true);
+    assert_eq!(json["merge_tree_exit_code"], 1);
+    assert_eq!(json["overlap_paths"][0], "shared.txt");
+}
+
+#[test]
+fn operator_cli_conflict_preflight_json_reports_no_merge_base() {
+    let project_dir = make_temp_project_dir("conflict-preflight-no-merge-base");
+    init_conflict_preflight_repo(&project_dir);
+    write_git_file(&project_dir, "left.txt", "left\n");
+    run_git(&project_dir, &["add", "left.txt"]);
+    run_git(&project_dir, &["commit", "-m", "left change"]);
+    run_git(&project_dir, &["branch", "left"]);
+    run_git(&project_dir, &["checkout", "--orphan", "unrelated"]);
+    run_git(&project_dir, &["rm", "-rf", "."]);
+    write_git_file(&project_dir, "unrelated.txt", "unrelated\n");
+    run_git(&project_dir, &["add", "unrelated.txt"]);
+    run_git(&project_dir, &["commit", "-m", "unrelated change"]);
+
+    let json = run_json(
+        &project_dir,
+        &["conflict-preflight", "left", "unrelated", "--json"],
+    );
+
+    assert_eq!(json["status"], "blocked");
+    assert_eq!(json["reason"], "no_merge_base");
+    assert_eq!(json["merge_tree_exit_code"], serde_json::Value::Null);
+    assert_eq!(json["conflict_detected"], false);
+    assert_eq!(
+        json["next_action"],
+        "Choose related refs with a shared merge base and rerun winsmux conflict-preflight."
+    );
+
+    let alias_json = run_json(
+        &project_dir,
+        &["compare", "preflight", "left", "unrelated", "--json"],
+    );
+    assert_eq!(alias_json["command"], "compare preflight");
+    assert_eq!(
+        alias_json["next_action"],
+        "Choose related refs with a shared merge base and rerun winsmux compare preflight."
+    );
+}
+
+#[test]
 fn operator_cli_signal_writes_temp_signal_file() {
     let project_dir = make_temp_project_dir("signal-command");
     let tmp_dir = project_dir.join("tmp");
@@ -2513,6 +2649,35 @@ fn run_json_with_cwd(cwd: impl AsRef<std::path::Path>, args: &[&str]) -> serde_j
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("stdout should be JSON")
+}
+
+fn init_conflict_preflight_repo(project_dir: &std::path::Path) {
+    run_git(project_dir, &["init"]);
+    run_git(project_dir, &["config", "user.email", "winsmux-test@example.com"]);
+    run_git(project_dir, &["config", "user.name", "winsmux test"]);
+    write_git_file(project_dir, "base.txt", "base\n");
+    run_git(project_dir, &["add", "base.txt"]);
+    run_git(project_dir, &["commit", "-m", "base"]);
+    run_git(project_dir, &["branch", "base"]);
+}
+
+fn write_git_file(project_dir: &std::path::Path, name: &str, text: &str) {
+    fs::write(project_dir.join(name), text).expect("test should write git file");
+}
+
+fn run_git(project_dir: &std::path::Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(project_dir)
+        .output()
+        .expect("git should run");
+    assert!(
+        output.status.success(),
+        "git {:?} failed\nstdout:\n{}\nstderr:\n{}",
+        args,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 fn write_compare_runs_fixture(project_dir: &std::path::Path) {
