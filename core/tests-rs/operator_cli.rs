@@ -67,6 +67,32 @@ fn operator_cli_board_json_reads_live_winsmux_manifest() {
 }
 
 #[test]
+fn operator_cli_board_text_reads_live_winsmux_manifest() {
+    let project_dir = make_temp_project_dir("board-text");
+    write_manifest(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("board")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Label"));
+    assert!(stdout.contains("TaskState"));
+    assert!(stdout.contains("builder-1"));
+    assert!(stdout.contains("reviewer-1"));
+    assert!(stdout.contains("in_progress"));
+    assert!(stdout.contains("pending"));
+    assert!(!stdout.trim_start().starts_with('{'));
+}
+
+#[test]
 fn operator_cli_inbox_digest_runs_and_explain_use_ledger_projections() {
     let project_dir = make_temp_project_dir("read-models");
     write_manifest(&project_dir);
@@ -1962,7 +1988,7 @@ fn operator_cli_read_models_require_json_flag() {
     let project_dir = make_temp_project_dir("requires-json");
     write_manifest(&project_dir);
 
-    for command in ["board", "inbox", "digest", "runs"] {
+    for command in ["inbox", "digest", "runs"] {
         let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
             .arg(command)
             .current_dir(&project_dir)
