@@ -614,6 +614,71 @@ pub fn run_explain_command(args: &[&String]) -> io::Result<()> {
     write_json(&payload)
 }
 
+pub fn run_conflict_preflight_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("conflict-preflight"));
+        return Ok(());
+    }
+
+    run_conflict_preflight(args, false)
+}
+
+pub fn run_compare_preflight_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("compare-preflight"));
+        return Ok(());
+    }
+
+    run_conflict_preflight(args, true)
+}
+
+fn run_conflict_preflight(args: &[&String], compare_alias: bool) -> io::Result<()> {
+    let usage_key = if compare_alias {
+        "compare-preflight"
+    } else {
+        "conflict-preflight"
+    };
+    let options = parse_conflict_preflight_options(args, usage_key)?;
+    let mut payload =
+        conflict_preflight_payload(&env::current_dir()?, &options.left_ref, &options.right_ref)?;
+    if compare_alias {
+        payload.command = "compare preflight".to_string();
+        payload.next_action = payload.next_action.replace(
+            "winsmux conflict-preflight",
+            "winsmux compare preflight",
+        );
+    }
+    if options.json {
+        return write_json(&payload);
+    }
+
+    let label = if compare_alias {
+        "compare preflight"
+    } else {
+        "conflict preflight"
+    };
+    println!("{label}: {}", payload.status);
+    println!(
+        "left: {} ({})",
+        payload.left_ref,
+        short_head_sha(&payload.left_sha)
+    );
+    println!(
+        "right: {} ({})",
+        payload.right_ref,
+        short_head_sha(&payload.right_sha)
+    );
+    if !payload.merge_base.trim().is_empty() {
+        println!("merge-base: {}", short_head_sha(&payload.merge_base));
+    }
+    println!("overlap paths: {}", payload.overlap_paths.len());
+    for path in &payload.overlap_paths {
+        println!("- {path}");
+    }
+    println!("next: {}", payload.next_action);
+    Ok(())
+}
+
 pub fn run_compare_runs_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
         println!("{}", usage_for("compare-runs"));
@@ -1033,6 +1098,36 @@ struct PromoteTacticOptions {
     kind: String,
 }
 
+struct ConflictPreflightOptions {
+    json: bool,
+    left_ref: String,
+    right_ref: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ConflictPreflightPayload {
+    command: String,
+    status: String,
+    reason: String,
+    project_dir: String,
+    left_ref: String,
+    right_ref: String,
+    left_sha: String,
+    right_sha: String,
+    merge_base: String,
+    merge_tree_exit_code: Option<i32>,
+    conflict_detected: bool,
+    overlap_paths: Vec<String>,
+    left_only_paths: Vec<String>,
+    right_only_paths: Vec<String>,
+    next_action: String,
+}
+
+struct GitProbeResult {
+    exit_code: i32,
+    output: String,
+}
+
 struct ConsultResultOptions {
     json: bool,
     project_dir: PathBuf,
@@ -1264,6 +1359,44 @@ fn parse_promote_tactic_options(args: &[&String]) -> io::Result<PromoteTacticOpt
         positionals,
         title,
         kind,
+    })
+}
+
+fn parse_conflict_preflight_options(
+    args: &[&String],
+    usage_key: &'static str,
+) -> io::Result<ConflictPreflightOptions> {
+    let mut json = false;
+    let mut refs = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            value if !value.trim().is_empty() => {
+                refs.push(value.to_string());
+                index += 1;
+            }
+            _ => {
+                index += 1;
+            }
+        }
+    }
+
+    if refs.len() != 2 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for(usage_key).to_string(),
+        ));
+    }
+
+    Ok(ConflictPreflightOptions {
+        json,
+        left_ref: refs[0].clone(),
+        right_ref: refs[1].clone(),
     })
 }
 
@@ -1647,6 +1780,12 @@ fn usage_for(command: &str) -> &'static str {
         "explain" => "usage: winsmux explain <run_id> --json [--project-dir <path>]",
         "compare-runs" => {
             "usage: winsmux compare-runs <left_run_id> <right_run_id> [--json] [--project-dir <path>]"
+        }
+        "conflict-preflight" => {
+            "usage: winsmux conflict-preflight <left_ref> <right_ref> [--json]"
+        }
+        "compare-preflight" => {
+            "usage: winsmux compare preflight <left_ref> <right_ref> [--json]"
         }
         "promote-tactic" => {
             "usage: winsmux promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>] [--json] [--project-dir <path>]"
@@ -3873,6 +4012,154 @@ fn compare_runs_payload(
             "next_action": next_action,
         },
     })
+}
+
+fn conflict_preflight_payload(
+    project_dir: &Path,
+    left_ref: &str,
+    right_ref: &str,
+) -> io::Result<ConflictPreflightPayload> {
+    let repo_root = resolve_conflict_preflight_repo_root(project_dir)?;
+    let left_sha = resolve_conflict_commit(&repo_root, left_ref)?;
+    let right_sha = resolve_conflict_commit(&repo_root, right_ref)?;
+    let merge_base_result = git_probe(&repo_root, &["merge-base", left_ref, right_ref])?;
+    if merge_base_result.exit_code != 0 || merge_base_result.output.trim().is_empty() {
+        return Ok(ConflictPreflightPayload {
+            command: "conflict-preflight".to_string(),
+            status: "blocked".to_string(),
+            reason: "no_merge_base".to_string(),
+            project_dir: repo_root.display().to_string(),
+            left_ref: left_ref.to_string(),
+            right_ref: right_ref.to_string(),
+            left_sha,
+            right_sha,
+            merge_base: String::new(),
+            merge_tree_exit_code: None,
+            conflict_detected: false,
+            overlap_paths: Vec::new(),
+            left_only_paths: Vec::new(),
+            right_only_paths: Vec::new(),
+            next_action:
+                "Choose related refs with a shared merge base and rerun winsmux conflict-preflight."
+                    .to_string(),
+        });
+    }
+
+    let merge_base = merge_base_result.output;
+    let left_paths = conflict_path_array(
+        &git_probe(&repo_root, &["diff", "--name-only", &merge_base, left_ref])?.output,
+    );
+    let right_paths = conflict_path_array(
+        &git_probe(&repo_root, &["diff", "--name-only", &merge_base, right_ref])?.output,
+    );
+    let overlap_paths: Vec<String> = left_paths
+        .iter()
+        .filter(|path| right_paths.contains(path))
+        .cloned()
+        .collect();
+    let left_only_paths: Vec<String> = left_paths
+        .iter()
+        .filter(|path| !right_paths.contains(path))
+        .cloned()
+        .collect();
+    let right_only_paths: Vec<String> = right_paths
+        .iter()
+        .filter(|path| !left_paths.contains(path))
+        .cloned()
+        .collect();
+    let merge_tree_result = git_probe(
+        &repo_root,
+        &["merge-tree", "--write-tree", "--quiet", left_ref, right_ref],
+    )?;
+    let (status, reason, conflict_detected, next_action) = match merge_tree_result.exit_code {
+        0 => (
+            "clean",
+            "",
+            false,
+            "Safe to continue to compare UI or follow-up review.",
+        ),
+        1 => (
+            "conflict",
+            "merge_conflict",
+            true,
+            "Inspect overlap paths before compare or merge.",
+        ),
+        _ => (
+            "blocked",
+            "merge_tree_failed",
+            false,
+            "Inspect git merge-tree output and rerun winsmux conflict-preflight.",
+        ),
+    };
+
+    Ok(ConflictPreflightPayload {
+        command: "conflict-preflight".to_string(),
+        status: status.to_string(),
+        reason: reason.to_string(),
+        project_dir: repo_root.display().to_string(),
+        left_ref: left_ref.to_string(),
+        right_ref: right_ref.to_string(),
+        left_sha,
+        right_sha,
+        merge_base,
+        merge_tree_exit_code: Some(merge_tree_result.exit_code),
+        conflict_detected,
+        overlap_paths,
+        left_only_paths,
+        right_only_paths,
+        next_action: next_action.to_string(),
+    })
+}
+
+fn resolve_conflict_preflight_repo_root(project_dir: &Path) -> io::Result<PathBuf> {
+    if !project_dir.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("project directory not found: {}", project_dir.display()),
+        ));
+    }
+    let result = git_probe(project_dir, &["rev-parse", "--show-toplevel"])?;
+    if result.exit_code != 0 || result.output.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "git repository root could not be resolved from: {}",
+                project_dir.display()
+            ),
+        ));
+    }
+    Ok(PathBuf::from(result.output))
+}
+
+fn resolve_conflict_commit(project_dir: &Path, git_ref: &str) -> io::Result<String> {
+    let rev = format!("{git_ref}^{{commit}}");
+    let result = git_probe(project_dir, &["rev-parse", "--verify", &rev])?;
+    if result.exit_code != 0 || result.output.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("git ref could not be resolved: {git_ref}"),
+        ));
+    }
+    Ok(result.output)
+}
+
+fn git_probe(project_dir: &Path, args: &[&str]) -> io::Result<GitProbeResult> {
+    let output = Command::new("git").args(args).current_dir(project_dir).output()?;
+    let mut text = String::new();
+    text.push_str(&String::from_utf8_lossy(&output.stdout));
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    Ok(GitProbeResult {
+        exit_code: output.status.code().unwrap_or(1),
+        output: text.trim().to_string(),
+    })
+}
+
+fn conflict_path_array(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn compare_run_side(

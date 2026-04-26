@@ -261,6 +261,12 @@ fn run_main() -> io::Result<()> {
         "runs" => return operator_cli::run_runs_command(&cmd_args[1..]),
         "explain" => return operator_cli::run_explain_command(&cmd_args[1..]),
         "compare-runs" => return operator_cli::run_compare_runs_command(&cmd_args[1..]),
+        "compare" if matches!(cmd_args.get(1).map(|arg| arg.as_str()), Some("preflight")) => {
+            return operator_cli::run_compare_preflight_command(&cmd_args[2..])
+        }
+        "conflict-preflight" => {
+            return operator_cli::run_conflict_preflight_command(&cmd_args[1..])
+        }
         "promote-tactic" => return operator_cli::run_promote_tactic_command(&cmd_args[1..]),
         "consult-request" => return operator_cli::run_consult_request_command(&cmd_args[1..]),
         "consult-result" => return operator_cli::run_consult_result_command(&cmd_args[1..]),
