@@ -139,6 +139,7 @@ OPERATOR COMMANDS:
     runs                    Print run-oriented evidence
     explain <run_id>        Print one run explanation
     compare-runs            Compare two runs and surface evidence deltas
+    compare promote         Export a reusable tactic candidate from a run
     compare preflight       Run git merge-tree preflight before compare UI
     conflict-preflight      Run git merge-tree preflight before compare UI
     promote-tactic          Export a reusable tactic candidate from a run

@@ -1584,6 +1584,63 @@ fn operator_cli_promote_tactic_writes_playbook_candidate() {
 }
 
 #[test]
+fn operator_cli_compare_promote_alias_writes_playbook_candidate() {
+    let project_dir = make_temp_project_dir("compare-promote-alias");
+    write_compare_runs_fixture(&project_dir);
+
+    let json = run_json(
+        &project_dir,
+        &[
+            "compare",
+            "promote",
+            "task:task-a",
+            "--title",
+            "Deterministic build command",
+            "--json",
+        ],
+    );
+
+    assert_eq!(json["run_id"], "task:task-a");
+    assert!(json["candidate_ref"]
+        .as_str()
+        .expect("candidate ref should be a string")
+        .starts_with(".winsmux/playbook-candidates/playbook-candidate-"));
+    assert_eq!(json["candidate"]["packet_type"], "playbook_candidate");
+    assert_eq!(json["candidate"]["kind"], "playbook");
+    assert_eq!(json["candidate"]["title"], "Deterministic build command");
+    assert_eq!(json["candidate"]["summary"], "prefer cache command");
+}
+
+#[test]
+fn operator_cli_compare_promote_alias_reports_public_usage() {
+    let project_dir = make_temp_project_dir("compare-promote-alias-usage");
+    write_compare_runs_fixture(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["compare", "promote", "--help"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("usage: winsmux compare promote"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["compare", "promote"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("usage: winsmux compare promote"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
 fn operator_cli_promote_tactic_rejects_unhealthy_run() {
     let project_dir = make_temp_project_dir("promote-tactic-unhealthy");
     write_compare_runs_fixture(&project_dir);
