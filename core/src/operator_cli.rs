@@ -1633,11 +1633,10 @@ pub fn run_runs_command(args: &[&String]) -> io::Result<()> {
 
 pub fn run_explain_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
-        println!("usage: winsmux explain <run_id> --json [--project-dir <path>]");
+        println!("usage: winsmux explain <run_id> [--json] [--project-dir <path>]");
         return Ok(());
     }
     let options = parse_options("explain", args, 1)?;
-    require_json("explain", &options)?;
 
     let run_id = options.positionals[0].clone();
     let snapshot = load_snapshot(&options.project_dir)?;
@@ -1667,7 +1666,11 @@ pub fn run_explain_command(args: &[&String]) -> io::Result<()> {
         "review_state": Value::Null,
         "recent_events": projection.recent_events,
     });
-    write_json(&payload)
+    if options.json {
+        write_json(&payload)
+    } else {
+        print_explain_text(&payload)
+    }
 }
 
 pub fn run_conflict_preflight_command(args: &[&String]) -> io::Result<()> {
@@ -2836,7 +2839,7 @@ fn usage_for(command: &str) -> &'static str {
         "signal" => "usage: winsmux signal <channel>",
         "wait" => "usage: winsmux wait <channel> [timeout_seconds]",
         "runs" => "usage: winsmux runs [--json] [--project-dir <path>]",
-        "explain" => "usage: winsmux explain <run_id> --json [--project-dir <path>]",
+        "explain" => "usage: winsmux explain <run_id> [--json] [--project-dir <path>]",
         "compare-runs" => {
             "usage: winsmux compare-runs <left_run_id> <right_run_id> [--json] [--project-dir <path>]"
         }
@@ -6057,6 +6060,90 @@ fn print_runs_table(payload: &Value) -> io::Result<()> {
         ];
         println!("{}", text_table_value_row(&values, &columns));
     }
+    Ok(())
+}
+
+fn print_explain_text(payload: &Value) -> io::Result<()> {
+    let null = Value::Null;
+    let run = payload.get("run").unwrap_or(&null);
+    let explanation = payload.get("explanation").unwrap_or(&null);
+    let evidence_digest = payload.get("evidence_digest").unwrap_or(&null);
+
+    println!("Run: {}", json_string_field(run, "run_id"));
+    println!("Task: {}", json_string_field(explanation, "summary"));
+    println!(
+        "Primary: {} ({})",
+        json_string_field(run, "primary_label"),
+        json_string_field(run, "primary_pane_id")
+    );
+    println!(
+        "State: {} / {} / {}",
+        json_string_field(run, "state"),
+        json_string_field(run, "task_state"),
+        json_string_field(run, "review_state")
+    );
+    println!("Next: {}", json_string_field(evidence_digest, "next_action"));
+
+    let branch = json_string_field(run, "branch");
+    if !branch.trim().is_empty() {
+        println!("Branch: {branch}");
+    }
+    let head_sha = json_string_field(run, "head_sha");
+    if !head_sha.trim().is_empty() {
+        println!("Head: {head_sha}");
+    }
+
+    let changed_file_count = evidence_digest
+        .get("changed_file_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if changed_file_count > 0 {
+        println!("Changed files:");
+        for changed_file in evidence_digest
+            .get("changed_files")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            println!("- {changed_file}");
+        }
+    }
+
+    let reasons: Vec<_> = explanation
+        .get("reasons")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if !reasons.is_empty() {
+        println!("Reasons:");
+        for reason in reasons {
+            println!("- {reason}");
+        }
+    }
+
+    let recent_events: Vec<_> = payload
+        .get("recent_events")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(10)
+        .collect();
+    if !recent_events.is_empty() {
+        println!("Recent events:");
+        for event_record in recent_events {
+            println!(
+                "- [{}] {} {}: {}",
+                json_string_field(event_record, "timestamp"),
+                json_string_field(event_record, "event"),
+                json_string_field(event_record, "label"),
+                json_string_field(event_record, "message")
+            );
+        }
+    }
+
     Ok(())
 }
 
