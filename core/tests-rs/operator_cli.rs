@@ -264,6 +264,65 @@ fn operator_cli_desktop_summary_stream_accepts_top_level_run_fields() {
 }
 
 #[test]
+fn operator_cli_signal_writes_temp_signal_file() {
+    let project_dir = make_temp_project_dir("signal-command");
+    let tmp_dir = project_dir.join("tmp");
+    let temp_dir = project_dir.join("temp");
+    fs::create_dir_all(&tmp_dir).expect("test should create tmp dir");
+    fs::create_dir_all(&temp_dir).expect("test should create temp dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["signal", "desktop-ready"])
+        .env("TMP", &tmp_dir)
+        .env("TEMP", &temp_dir)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "sent signal: desktop-ready"
+    );
+    let signal_file = temp_dir
+        .join("winsmux")
+        .join("signals")
+        .join("desktop-ready.signal");
+    let signal = fs::read_to_string(signal_file).expect("signal file should exist");
+    assert!(signal.contains('T'));
+}
+
+#[test]
+fn operator_cli_signal_treats_leading_dash_as_channel() {
+    let project_dir = make_temp_project_dir("signal-leading-dash");
+    let temp_dir = project_dir.join("temp");
+    fs::create_dir_all(&temp_dir).expect("test should create temp dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["signal", "--json"])
+        .env("TEMP", &temp_dir)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "sent signal: --json"
+    );
+    let signal_file = temp_dir.join("winsmux").join("signals").join("--json.signal");
+    assert!(signal_file.exists(), "leading-dash channel should be literal");
+}
+
+#[test]
 fn operator_cli_poll_events_returns_events_after_cursor() {
     let project_dir = make_temp_project_dir("poll-events");
     write_manifest(&project_dir);

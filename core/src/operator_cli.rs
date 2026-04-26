@@ -116,6 +116,33 @@ pub fn run_desktop_summary_command(args: &[&String]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn run_signal_command(args: &[&String]) -> io::Result<()> {
+    if args.len() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("signal"),
+        ));
+    }
+
+    let channel = args[0].trim();
+    if channel.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("signal"),
+        ));
+    }
+
+    let temp_root = env::var_os("TEMP")
+        .map(PathBuf::from)
+        .unwrap_or_else(env::temp_dir);
+    let signal_dir = temp_root.join("winsmux").join("signals");
+    fs::create_dir_all(&signal_dir)?;
+    let signal_file = signal_dir.join(format!("{channel}.signal"));
+    fs::write(signal_file, generated_at())?;
+    println!("sent signal: {channel}");
+    Ok(())
+}
+
 pub fn run_runs_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
         println!("usage: winsmux runs --json [--project-dir <path>]");
@@ -1192,6 +1219,7 @@ fn usage_for(command: &str) -> &'static str {
         "inbox" => "usage: winsmux inbox --json [--project-dir <path>]",
         "digest" => "usage: winsmux digest --json [--project-dir <path>]",
         "desktop-summary" => "usage: winsmux desktop-summary [--json] [--stream] [--project-dir <path>]",
+        "signal" => "usage: winsmux signal <channel>",
         "runs" => "usage: winsmux runs --json [--project-dir <path>]",
         "explain" => "usage: winsmux explain <run_id> --json [--project-dir <path>]",
         "compare-runs" => {

@@ -132,6 +132,7 @@ OPERATOR COMMANDS:
     inbox --json            Print actionable approval and review items JSON
     digest --json           Print high-signal run digest JSON
     desktop-summary         Print desktop summary projection JSON or counts
+    signal <channel>        Send a file-backed orchestration signal
     runs --json             Print run-oriented evidence JSON
     explain <run_id> --json Print one run explanation JSON
     compare-runs            Compare two runs and surface evidence deltas

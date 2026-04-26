@@ -244,6 +244,7 @@ fn run_main() -> io::Result<()> {
         "inbox" => return operator_cli::run_inbox_command(&cmd_args[1..]),
         "digest" => return operator_cli::run_digest_command(&cmd_args[1..]),
         "desktop-summary" => return operator_cli::run_desktop_summary_command(&cmd_args[1..]),
+        "signal" => return operator_cli::run_signal_command(&cmd_args[1..]),
         "runs" => return operator_cli::run_runs_command(&cmd_args[1..]),
         "explain" => return operator_cli::run_explain_command(&cmd_args[1..]),
         "compare-runs" => return operator_cli::run_compare_runs_command(&cmd_args[1..]),
