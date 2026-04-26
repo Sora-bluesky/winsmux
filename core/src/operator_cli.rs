@@ -52,14 +52,17 @@ pub fn run_status_command(args: &[&String]) -> io::Result<()> {
 
 pub fn run_board_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
-        println!("usage: winsmux board --json [--project-dir <path>]");
+        println!("usage: winsmux board [--json] [--project-dir <path>]");
         return Ok(());
     }
     let options = parse_options("board", args, 0)?;
-    require_json("board", &options)?;
 
     let snapshot = load_snapshot(&options.project_dir)?;
-    write_enveloped_json(&options.project_dir, snapshot.board_projection())
+    let payload = enveloped_payload(&options.project_dir, snapshot.board_projection())?;
+    if options.json {
+        return write_json(&payload);
+    }
+    print_board_table(&payload)
 }
 
 pub fn run_inbox_command(args: &[&String]) -> io::Result<()> {
@@ -2817,7 +2820,7 @@ fn require_json(command: &str, options: &ParsedOptions) -> io::Result<()> {
 fn usage_for(command: &str) -> &'static str {
     match command {
         "status" => "usage: winsmux status --json [--project-dir <path>]",
-        "board" => "usage: winsmux board --json [--project-dir <path>]",
+        "board" => "usage: winsmux board [--json] [--project-dir <path>]",
         "inbox" => "usage: winsmux inbox --json [--project-dir <path>]",
         "digest" => "usage: winsmux digest --json [--project-dir <path>]",
         "desktop-summary" => "usage: winsmux desktop-summary [--json] [--stream] [--project-dir <path>]",
@@ -5958,6 +5961,92 @@ fn desktop_board_payload(snapshot: &LedgerSnapshot, project_dir: &Path) -> Value
         "summary": snapshot.board_summary(),
         "panes": panes,
     })
+}
+
+fn print_board_table(payload: &Value) -> io::Result<()> {
+    let panes = payload
+        .get("panes")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if panes.is_empty() {
+        println!("(no panes)");
+        return Ok(());
+    }
+
+    let columns = [
+        ("Label", 14usize),
+        ("Role", 10usize),
+        ("PaneId", 8usize),
+        ("State", 12usize),
+        ("Tokens", 8usize),
+        ("TaskState", 14usize),
+        ("Review", 10usize),
+        ("Changed", 8usize),
+        ("Branch", 24usize),
+        ("Head", 8usize),
+    ];
+    println!("{}", board_table_row(&columns));
+    println!("{}", board_table_separator(&columns));
+    for pane in panes {
+        let changed = pane
+            .get("changed_file_count")
+            .and_then(Value::as_u64)
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let values = [
+            json_string_field(&pane, "label"),
+            json_string_field(&pane, "role"),
+            json_string_field(&pane, "pane_id"),
+            json_string_field(&pane, "state"),
+            json_string_field(&pane, "tokens_remaining"),
+            json_string_field(&pane, "task_state"),
+            json_string_field(&pane, "review_state"),
+            changed,
+            json_string_field(&pane, "branch"),
+            short_head_sha(&json_string_field(&pane, "head_sha")),
+        ];
+        println!("{}", board_table_value_row(&values, &columns));
+    }
+    Ok(())
+}
+
+fn board_table_row(columns: &[(&str, usize)]) -> String {
+    columns
+        .iter()
+        .map(|(label, width)| board_table_cell(label, *width))
+        .collect::<Vec<_>>()
+        .join("  ")
+        .trim_end()
+        .to_string()
+}
+
+fn board_table_separator(columns: &[(&str, usize)]) -> String {
+    columns
+        .iter()
+        .map(|(_, width)| "-".repeat(*width))
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
+fn board_table_value_row(values: &[String], columns: &[(&str, usize)]) -> String {
+    values
+        .iter()
+        .zip(columns.iter())
+        .map(|(value, (_, width))| board_table_cell(value, *width))
+        .collect::<Vec<_>>()
+        .join("  ")
+        .trim_end()
+        .to_string()
+}
+
+fn board_table_cell(value: &str, width: usize) -> String {
+    let mut text: String = value.chars().take(width).collect();
+    let count = text.chars().count();
+    if count < width {
+        text.push_str(&" ".repeat(width - count));
+    }
+    text
 }
 
 fn desktop_run_projection(snapshot: &LedgerSnapshot, item: &LedgerDigestItem) -> Value {
