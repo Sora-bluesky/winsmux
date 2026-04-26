@@ -323,6 +323,146 @@ fn operator_cli_signal_treats_leading_dash_as_channel() {
 }
 
 #[test]
+fn operator_cli_wait_consumes_temp_signal_file() {
+    let project_dir = make_temp_project_dir("wait-command");
+    let temp_dir = project_dir.join("temp");
+    let signal_dir = temp_dir.join("winsmux").join("signals");
+    fs::create_dir_all(&signal_dir).expect("test should create signal dir");
+    let signal_file = signal_dir.join("desktop-ready.signal");
+    fs::write(&signal_file, "ready").expect("test should write signal file");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["wait", "desktop-ready", "0"])
+        .env("TEMP", &temp_dir)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "received signal: desktop-ready"
+    );
+    assert!(!signal_file.exists(), "wait should remove consumed signal");
+}
+
+#[test]
+fn operator_cli_wait_treats_leading_dash_as_channel() {
+    let project_dir = make_temp_project_dir("wait-leading-dash");
+    let temp_dir = project_dir.join("temp");
+    let signal_dir = temp_dir.join("winsmux").join("signals");
+    fs::create_dir_all(&signal_dir).expect("test should create signal dir");
+    let signal_file = signal_dir.join("--json.signal");
+    fs::write(&signal_file, "ready").expect("test should write signal file");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["wait", "--json", "0"])
+        .env("TEMP", &temp_dir)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "received signal: --json"
+    );
+    assert!(!signal_file.exists(), "leading-dash channel should be literal");
+}
+
+#[test]
+fn operator_cli_wait_treats_dash_t_as_channel() {
+    let project_dir = make_temp_project_dir("wait-dash-t");
+    let temp_dir = project_dir.join("temp");
+    let signal_dir = temp_dir.join("winsmux").join("signals");
+    fs::create_dir_all(&signal_dir).expect("test should create signal dir");
+    let signal_file = signal_dir.join("-t.signal");
+    fs::write(&signal_file, "ready").expect("test should write signal file");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["wait", "-t", "0"])
+        .env("TEMP", &temp_dir)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "received signal: -t");
+    assert!(!signal_file.exists(), "-t channel should be literal");
+}
+
+#[test]
+fn operator_cli_wait_signal_option_preserves_tmux_alias() {
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["wait", "-S", "compat-channel"])
+        .output()
+        .expect("winsmux command should run");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no server running") || output.status.success(),
+        "wait -S should route to the tmux-compatible wait path: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Unknown command"),
+        "wait -S must not fall through to unknown command"
+    );
+}
+
+#[test]
+fn operator_cli_wait_timeout_creates_signal_dir() {
+    let project_dir = make_temp_project_dir("wait-creates-dir");
+    let temp_dir = project_dir.join("temp");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["wait", "missing", "0"])
+        .env("TEMP", &temp_dir)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success(), "wait should fail on timeout");
+    assert!(
+        temp_dir.join("winsmux").join("signals").exists(),
+        "wait should establish the shared signal directory"
+    );
+}
+
+#[test]
+fn operator_cli_wait_times_out_without_signal() {
+    let project_dir = make_temp_project_dir("wait-timeout");
+    let temp_dir = project_dir.join("temp");
+    fs::create_dir_all(&temp_dir).expect("test should create temp dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["wait", "missing", "0"])
+        .env("TEMP", &temp_dir)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success(), "wait should fail on timeout");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("timeout waiting for signal: missing (0s)"),
+        "stderr should explain timeout: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn operator_cli_poll_events_returns_events_after_cursor() {
     let project_dir = make_temp_project_dir("poll-events");
     write_manifest(&project_dir);

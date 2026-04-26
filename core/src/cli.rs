@@ -133,6 +133,7 @@ OPERATOR COMMANDS:
     digest --json           Print high-signal run digest JSON
     desktop-summary         Print desktop summary projection JSON or counts
     signal <channel>        Send a file-backed orchestration signal
+    wait <channel> [secs]   Wait for a file-backed orchestration signal
     runs --json             Print run-oriented evidence JSON
     explain <run_id> --json Print one run explanation JSON
     compare-runs            Compare two runs and surface evidence deltas
@@ -163,7 +164,7 @@ DISPLAY COMMANDS:
     clock-mode              Display a big clock
     run-shell, run          Run a shell command
     if-shell, if            Conditional command execution
-    wait-for, wait          Wait for / signal a named channel
+    wait-for                Wait for / signal a named channel
 
 MISC:
     help                    Show this help message
@@ -479,7 +480,7 @@ fn commands_text() -> &'static str {
   switch-client (switchc)   - Switch to another session
   unbind-key (unbind)       - Unbind a key
   unlink-window (unlinkw)   - Unlink a window
-  wait-for (wait)           - Wait for a signal
+  wait-for                  - Wait for a signal
   zoom-pane (zoom)          - Toggle pane zoom
 "#
 }
