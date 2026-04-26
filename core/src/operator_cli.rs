@@ -1825,11 +1825,19 @@ fn run_compare_runs_with_usage(command_name: &str, args: &[&String]) -> io::Resu
 }
 
 pub fn run_promote_tactic_command(args: &[&String]) -> io::Result<()> {
+    run_promote_tactic_with_usage("promote-tactic", args)
+}
+
+pub fn run_compare_promote_command(args: &[&String]) -> io::Result<()> {
+    run_promote_tactic_with_usage("compare promote", args)
+}
+
+fn run_promote_tactic_with_usage(command_name: &'static str, args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
-        println!("{}", usage_for("promote-tactic"));
+        println!("{}", usage_for(command_name));
         return Ok(());
     }
-    let options = parse_promote_tactic_options(args)?;
+    let options = parse_promote_tactic_options(command_name, args)?;
     let run_id = options.positionals[0].clone();
     if !matches!(
         options.kind.as_str(),
@@ -2363,7 +2371,10 @@ fn parse_poll_events_options(args: &[&String]) -> io::Result<ParsedOptions> {
     })
 }
 
-fn parse_promote_tactic_options(args: &[&String]) -> io::Result<PromoteTacticOptions> {
+fn parse_promote_tactic_options(
+    command_name: &'static str,
+    args: &[&String],
+) -> io::Result<PromoteTacticOptions> {
     let mut json = false;
     let mut project_dir = None;
     let mut positionals = Vec::new();
@@ -2411,7 +2422,7 @@ fn parse_promote_tactic_options(args: &[&String]) -> io::Result<PromoteTacticOpt
             value if value.starts_with('-') => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("unknown argument for winsmux promote-tactic: {value}"),
+                    format!("unknown argument for winsmux {command_name}: {value}"),
                 ));
             }
             value => {
@@ -2424,7 +2435,7 @@ fn parse_promote_tactic_options(args: &[&String]) -> io::Result<PromoteTacticOpt
     if positionals.len() != 1 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            usage_for("promote-tactic").to_string(),
+            usage_for(command_name).to_string(),
         ));
     }
 
@@ -2867,6 +2878,9 @@ fn usage_for(command: &str) -> &'static str {
         }
         "compare-preflight" => {
             "usage: winsmux compare preflight <left_ref> <right_ref> [--json]"
+        }
+        "compare promote" => {
+            "usage: winsmux compare promote <run_id> [--title <text>] [--kind <playbook|prewarm|verification>] [--json] [--project-dir <path>]"
         }
         "promote-tactic" => {
             "usage: winsmux promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>] [--json] [--project-dir <path>]"

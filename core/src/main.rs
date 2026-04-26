@@ -268,6 +268,9 @@ fn run_main() -> io::Result<()> {
         "compare" if matches!(cmd_args.get(1).map(|arg| arg.as_str()), Some("preflight")) => {
             return operator_cli::run_compare_preflight_command(&cmd_args[2..])
         }
+        "compare" if matches!(cmd_args.get(1).map(|arg| arg.as_str()), Some("promote")) => {
+            return operator_cli::run_compare_promote_command(&cmd_args[2..])
+        }
         "conflict-preflight" => {
             return operator_cli::run_conflict_preflight_command(&cmd_args[1..])
         }
