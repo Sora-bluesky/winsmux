@@ -1641,10 +1641,10 @@ pub fn run_runs_command(args: &[&String]) -> io::Result<()> {
 
 pub fn run_explain_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
-        println!("usage: winsmux explain <run_id> [--json] [--project-dir <path>]");
+        println!("{}", usage_for("explain"));
         return Ok(());
     }
-    let options = parse_options("explain", args, 1)?;
+    let options = parse_explain_options(args)?;
 
     let run_id = options.positionals[0].clone();
     let snapshot = load_snapshot(&options.project_dir)?;
@@ -1674,6 +1674,14 @@ pub fn run_explain_command(args: &[&String]) -> io::Result<()> {
         "review_state": Value::Null,
         "recent_events": projection.recent_events,
     });
+    if options.follow {
+        if options.json {
+            write_json(&payload)?;
+        } else {
+            print_explain_follow_header(&payload)?;
+        }
+        return stream_explain_follow(&options.project_dir, payload, options.json);
+    }
     if options.json {
         write_json(&payload)
     } else {
@@ -2173,6 +2181,13 @@ struct DesktopSummaryOptions {
     project_dir: PathBuf,
 }
 
+struct ExplainOptions {
+    json: bool,
+    follow: bool,
+    project_dir: PathBuf,
+    positionals: Vec<String>,
+}
+
 struct PromoteTacticOptions {
     json: bool,
     project_dir: PathBuf,
@@ -2279,6 +2294,62 @@ fn parse_options(
 
     Ok(ParsedOptions {
         json,
+        project_dir: project_dir.unwrap_or(env::current_dir()?),
+        positionals,
+    })
+}
+
+fn parse_explain_options(args: &[&String]) -> io::Result<ExplainOptions> {
+    let mut json = false;
+    let mut follow = false;
+    let mut project_dir = None;
+    let mut positionals = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = args[index].as_str();
+        match arg {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--follow" => {
+                follow = true;
+                index += 1;
+            }
+            "--project-dir" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "missing value after --project-dir",
+                    ));
+                };
+                project_dir = Some(PathBuf::from(value.to_string()));
+                index += 2;
+            }
+            value if value.starts_with('-') => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown argument for winsmux explain: {value}"),
+                ));
+            }
+            value => {
+                positionals.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+
+    if positionals.len() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("explain").to_string(),
+        ));
+    }
+
+    Ok(ExplainOptions {
+        json,
+        follow,
         project_dir: project_dir.unwrap_or(env::current_dir()?),
         positionals,
     })
@@ -2866,7 +2937,7 @@ fn usage_for(command: &str) -> &'static str {
         "signal" => "usage: winsmux signal <channel>",
         "wait" => "usage: winsmux wait <channel> [timeout_seconds]",
         "runs" => "usage: winsmux runs [--json] [--project-dir <path>]",
-        "explain" => "usage: winsmux explain <run_id> [--json] [--project-dir <path>]",
+        "explain" => "usage: winsmux explain <run_id> [--json] [--follow] [--project-dir <path>]",
         "compare-runs" => {
             "usage: winsmux compare-runs <left_run_id> <right_run_id> [--json] [--project-dir <path>]"
         }
@@ -6274,6 +6345,167 @@ fn print_explain_text(payload: &Value) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+fn print_explain_follow_header(payload: &Value) -> io::Result<()> {
+    let null = Value::Null;
+    let run = payload.get("run").unwrap_or(&null);
+    let explanation = payload.get("explanation").unwrap_or(&null);
+
+    println!("Run: {}", json_string_field(run, "run_id"));
+    println!("Task: {}", json_string_field(explanation, "summary"));
+    println!(
+        "State: {} / {} / {}",
+        json_string_field(run, "state"),
+        json_string_field(run, "task_state"),
+        json_string_field(run, "review_state")
+    );
+    let branch = json_string_field(run, "branch");
+    if !branch.trim().is_empty() {
+        println!("Branch: {branch}");
+    }
+    let head_sha = json_string_field(run, "head_sha");
+    if !head_sha.trim().is_empty() {
+        println!("Head: {head_sha}");
+    }
+    io::stdout().flush()
+}
+
+fn stream_explain_follow(project_dir: &Path, payload: Value, json_output: bool) -> io::Result<()> {
+    let run = payload.get("run").cloned().unwrap_or(Value::Null);
+    let mut cursor = read_desktop_summary_events(project_dir)?.len();
+    loop {
+        let events = read_desktop_summary_events(project_dir)?;
+        if events.len() < cursor {
+            cursor = 0;
+        }
+        for event in events.iter().skip(cursor) {
+            if !run_matches_event_value(&run, event) {
+                continue;
+            }
+            let item = explain_follow_item(event);
+            if json_output {
+                write_json(&item)?;
+            } else {
+                print_explain_follow_item(&item)?;
+            }
+        }
+        cursor = events.len();
+        thread::sleep(Duration::from_secs(2));
+    }
+}
+
+fn print_explain_follow_item(item: &Value) -> io::Result<()> {
+    println!(
+        "[{}] {} {}: {}",
+        json_string_field(item, "timestamp"),
+        json_string_field(item, "event"),
+        json_string_field(item, "label"),
+        json_string_field(item, "message")
+    );
+    io::stdout().flush()
+}
+
+fn explain_follow_item(event: &EventRecord) -> Value {
+    let data = event.data.as_object();
+    json!({
+        "timestamp": event.timestamp.as_str(),
+        "event": event.event.as_str(),
+        "status": event.status.as_str(),
+        "message": event.message.as_str(),
+        "label": event.label.as_str(),
+        "pane_id": event.pane_id.as_str(),
+        "role": event.role.as_str(),
+        "task_id": first_non_empty(&event.task_id, &event_data_string(data, "task_id")),
+        "branch": first_non_empty(&event.branch, &event_data_string(data, "branch")),
+        "head_sha": first_non_empty(&event.head_sha, &event_data_string(data, "head_sha")),
+        "source": event.source.as_str(),
+        "hypothesis": event_data_string(data, "hypothesis"),
+        "test_plan": event_data_string_array(data, "test_plan"),
+        "result": event_data_string(data, "result"),
+        "confidence": data.and_then(|map| map.get("confidence")).cloned().unwrap_or(Value::Null),
+        "next_action": event_data_string(data, "next_action"),
+        "observation_pack_ref": event_data_string(data, "observation_pack_ref"),
+        "consultation_ref": event_data_string(data, "consultation_ref"),
+        "run_id": first_non_empty(&event.run_id, &event_data_string(data, "run_id")),
+        "slot": event_data_string(data, "slot"),
+        "worktree": event_data_string(data, "worktree"),
+        "env_fingerprint": event_data_string(data, "env_fingerprint"),
+        "command_hash": event_data_string(data, "command_hash"),
+    })
+}
+
+fn run_matches_event_value(run: &Value, event: &EventRecord) -> bool {
+    let data = event.data.as_object();
+    let event_run_id = first_non_empty(&event.run_id, &event_data_string(data, "run_id"));
+    if !event_run_id.trim().is_empty() {
+        return event_run_id == json_string_field(run, "run_id");
+    }
+
+    let event_task_id = first_non_empty(&event.task_id, &event_data_string(data, "task_id"));
+    let run_task_id = json_string_field(run, "task_id");
+    if !event_task_id.trim().is_empty() && !run_task_id.trim().is_empty() {
+        return event_task_id == run_task_id;
+    }
+
+    if !event.pane_id.trim().is_empty() && json_string_array_contains(run, "pane_ids", &event.pane_id)
+    {
+        return true;
+    }
+
+    if !event.label.trim().is_empty() && json_string_array_contains(run, "labels", &event.label) {
+        return true;
+    }
+
+    let event_branch = first_non_empty(&event.branch, &event_data_string(data, "branch"));
+    if !event_branch.trim().is_empty() && event_branch == json_string_field(run, "branch") {
+        return true;
+    }
+
+    let event_head_sha = first_non_empty(&event.head_sha, &event_data_string(data, "head_sha"));
+    !event_head_sha.trim().is_empty() && event_head_sha == json_string_field(run, "head_sha")
+}
+
+fn event_data_string(data: Option<&Map<String, Value>>, key: &str) -> String {
+    data.and_then(|map| map.get(key))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn event_data_string_array(data: Option<&Map<String, Value>>, key: &str) -> Vec<String> {
+    let Some(value) = data.and_then(|map| map.get(key)) else {
+        return Vec::new();
+    };
+
+    match value {
+        Value::String(text) => trimmed_string_vec(text.split('|')),
+        Value::Array(items) => trimmed_string_vec(items.iter().map(value_to_display_string)),
+        Value::Null => Vec::new(),
+        other => trimmed_string_vec([value_to_display_string(other)]),
+    }
+}
+
+fn trimmed_string_vec<S: AsRef<str>>(values: impl IntoIterator<Item = S>) -> Vec<String> {
+    values
+        .into_iter()
+        .map(|value| value.as_ref().trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
+
+fn value_to_display_string(value: &Value) -> String {
+    value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string())
+}
+
+fn json_string_array_contains(value: &Value, key: &str, needle: &str) -> bool {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .any(|item| item == needle)
 }
 
 fn text_table_row(columns: &[(&str, usize)]) -> String {

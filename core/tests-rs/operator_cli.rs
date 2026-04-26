@@ -147,6 +147,87 @@ fn operator_cli_explain_text_reads_live_winsmux_manifest() {
 }
 
 #[test]
+fn operator_cli_explain_follow_reports_matching_events() {
+    let project_dir = make_temp_project_dir("explain-follow");
+    write_manifest(&project_dir);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["explain", "task:TASK-266", "--follow", "--json"])
+        .current_dir(&project_dir)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("winsmux follow command should start");
+    let stdout = child.stdout.take().expect("child should expose stdout");
+    let _child = ChildKillGuard(child);
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            let _ = sender.send(line);
+        }
+    });
+
+    let initial_line = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("follow should print the initial explain payload");
+    let initial: serde_json::Value =
+        serde_json::from_str(initial_line.trim()).expect("initial output should be json");
+    assert_eq!(initial["run"]["run_id"], "task:TASK-266");
+
+    let line = wait_for_stream_line(&receiver, |attempt| {
+        let mut events = fs::OpenOptions::new()
+            .append(true)
+            .open(project_dir.join(".winsmux").join("events.jsonl"))
+            .expect("test should open events file");
+        use std::io::Write as _;
+        writeln!(
+            events,
+            r#"{{"timestamp":"2026-04-24T12:10:{:02}+09:00","session":"winsmux-orchestra","event":"operator.followup","message":"new evidence arrived","role":"Builder","branch":"codex/task266-rust-operator-readmodels-20260424","data":{{"next_action":"review","test_plan":"run focused test | inspect logs"}}}}"#,
+            attempt + 1
+        )
+        .expect("test should append follow event");
+        events.flush().expect("test should flush events");
+    });
+    let item: serde_json::Value =
+        serde_json::from_str(line.trim()).expect("follow output should be json");
+
+    assert_eq!(item["event"], "operator.followup");
+    assert_eq!(item["message"], "new evidence arrived");
+    assert_eq!(item["branch"], "codex/task266-rust-operator-readmodels-20260424");
+    assert_eq!(item["test_plan"][0], "run focused test");
+    assert_eq!(item["test_plan"][1], "inspect logs");
+    assert_eq!(item["next_action"], "review");
+}
+
+#[test]
+fn operator_cli_explain_follow_usage_includes_follow_flag() {
+    let project_dir = make_temp_project_dir("explain-follow-usage");
+    write_manifest(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["explain", "--help"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("usage: winsmux explain <run_id> [--json] [--follow]"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("explain")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("usage: winsmux explain <run_id> [--json] [--follow]"));
+}
+
+#[test]
 fn operator_cli_inbox_text_reads_live_winsmux_manifest() {
     let project_dir = make_temp_project_dir("inbox-text");
     write_manifest(&project_dir);
