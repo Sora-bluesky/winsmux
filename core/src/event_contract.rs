@@ -25,6 +25,10 @@ pub struct EventRecord {
     #[serde(default, deserialize_with = "deserialize_event_string")]
     pub branch: String,
     #[serde(default, deserialize_with = "deserialize_event_string")]
+    pub run_id: String,
+    #[serde(default, deserialize_with = "deserialize_event_string")]
+    pub task_id: String,
+    #[serde(default, deserialize_with = "deserialize_event_string")]
     pub head_sha: String,
     #[serde(default, deserialize_with = "deserialize_event_data")]
     pub data: Value,

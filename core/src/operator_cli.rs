@@ -12,7 +12,8 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
-use crate::ledger::LedgerSnapshot;
+use crate::event_contract::{parse_event_jsonl, EventRecord};
+use crate::ledger::{LedgerDigestItem, LedgerSnapshot};
 
 static REVIEW_REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 static ATOMIC_WRITE_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -83,6 +84,36 @@ pub fn run_digest_command(args: &[&String]) -> io::Result<()> {
 
     let snapshot = load_snapshot(&options.project_dir)?;
     write_enveloped_json(&options.project_dir, snapshot.digest_projection())
+}
+
+pub fn run_desktop_summary_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("usage: winsmux desktop-summary [--json] [--stream] [--project-dir <path>]");
+        return Ok(());
+    }
+    let options = parse_desktop_summary_options(args)?;
+
+    if options.stream {
+        return stream_desktop_summary(&options);
+    }
+
+    let snapshot = load_snapshot(&options.project_dir)?;
+    let payload = desktop_summary_payload(&snapshot, &options.project_dir)?;
+    if options.json {
+        return write_json(&payload);
+    }
+
+    let board_count = payload["board"]["summary"]["pane_count"].as_u64().unwrap_or(0);
+    let inbox_count = payload["inbox"]["summary"]["item_count"].as_u64().unwrap_or(0);
+    let digest_count = payload["digest"]["summary"]["item_count"].as_u64().unwrap_or(0);
+    let projection_count = payload["run_projections"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    println!(
+        "Desktop summary: {board_count} panes, {inbox_count} inbox items, {digest_count} digest items, {projection_count} projections"
+    );
+    Ok(())
 }
 
 pub fn run_runs_command(args: &[&String]) -> io::Result<()> {
@@ -542,6 +573,12 @@ struct ParsedOptions {
     positionals: Vec<String>,
 }
 
+struct DesktopSummaryOptions {
+    json: bool,
+    stream: bool,
+    project_dir: PathBuf,
+}
+
 struct PromoteTacticOptions {
     json: bool,
     project_dir: PathBuf,
@@ -620,6 +657,49 @@ fn parse_options(
         json,
         project_dir: project_dir.unwrap_or(env::current_dir()?),
         positionals,
+    })
+}
+
+fn parse_desktop_summary_options(args: &[&String]) -> io::Result<DesktopSummaryOptions> {
+    let mut json = false;
+    let mut stream = false;
+    let mut project_dir = None;
+    let mut index = 0;
+
+    while index < args.len() {
+        let arg = args[index].as_str();
+        match arg {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--stream" => {
+                stream = true;
+                index += 1;
+            }
+            "--project-dir" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "missing value after --project-dir",
+                    ));
+                };
+                project_dir = Some(PathBuf::from(value.to_string()));
+                index += 2;
+            }
+            value => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown argument for winsmux desktop-summary: {value}"),
+                ));
+            }
+        }
+    }
+
+    Ok(DesktopSummaryOptions {
+        json,
+        stream,
+        project_dir: project_dir.unwrap_or(env::current_dir()?),
     })
 }
 
@@ -1111,6 +1191,7 @@ fn usage_for(command: &str) -> &'static str {
         "board" => "usage: winsmux board --json [--project-dir <path>]",
         "inbox" => "usage: winsmux inbox --json [--project-dir <path>]",
         "digest" => "usage: winsmux digest --json [--project-dir <path>]",
+        "desktop-summary" => "usage: winsmux desktop-summary [--json] [--stream] [--project-dir <path>]",
         "runs" => "usage: winsmux runs --json [--project-dir <path>]",
         "explain" => "usage: winsmux explain <run_id> --json [--project-dir <path>]",
         "compare-runs" => {
@@ -4024,6 +4105,295 @@ fn runs_payload(snapshot: &LedgerSnapshot, project_dir: &Path) -> Value {
     })
 }
 
+fn desktop_summary_payload(snapshot: &LedgerSnapshot, project_dir: &Path) -> io::Result<Value> {
+    let board = desktop_board_payload(snapshot, project_dir);
+    let inbox = enveloped_payload(project_dir, snapshot.inbox_projection())?;
+    let digest = snapshot.digest_projection();
+    let run_projections: Vec<_> = digest
+        .items
+        .iter()
+        .map(|item| desktop_run_projection(snapshot, item))
+        .collect();
+    let digest = enveloped_payload(project_dir, digest)?;
+
+    Ok(json!({
+        "generated_at": generated_at(),
+        "project_dir": project_dir_string(project_dir),
+        "board": board,
+        "inbox": inbox,
+        "digest": digest,
+        "run_projections": run_projections,
+    }))
+}
+
+fn desktop_board_payload(snapshot: &LedgerSnapshot, project_dir: &Path) -> Value {
+    let mut panes = snapshot.pane_read_models();
+    panes.sort_by(|left, right| left.label.cmp(&right.label));
+    let panes: Vec<_> = panes
+        .into_iter()
+        .map(|pane| {
+            json!({
+                "label": pane.label,
+                "role": pane.role,
+                "pane_id": pane.pane_id,
+                "state": pane.state,
+                "tokens_remaining": pane.tokens_remaining,
+                "task_id": pane.task_id,
+                "task": pane.task,
+                "task_state": pane.task_state,
+                "task_owner": pane.task_owner,
+                "review_state": pane.review_state,
+                "branch": pane.branch,
+                "worktree": pane.worktree,
+                "head_sha": pane.head_sha,
+                "changed_file_count": pane.changed_file_count,
+                "changed_files": pane.changed_files,
+                "last_event": pane.last_event,
+                "last_event_at": pane.last_event_at,
+                "parent_run_id": pane.parent_run_id,
+                "goal": pane.goal,
+                "task_type": pane.task_type,
+                "priority": pane.priority,
+                "blocking": pane.blocking,
+                "write_scope": pane.write_scope,
+                "read_scope": pane.read_scope,
+                "constraints": pane.constraints,
+                "expected_output": pane.expected_output,
+                "verification_plan": pane.verification_plan,
+                "review_required": pane.review_required,
+                "provider_target": pane.provider_target,
+                "agent_role": pane.agent_role,
+                "timeout_policy": pane.timeout_policy,
+                "handoff_refs": pane.handoff_refs,
+                "security_policy": pane.security_policy,
+            })
+        })
+        .collect();
+
+    json!({
+        "generated_at": generated_at(),
+        "project_dir": project_dir_string(project_dir),
+        "summary": snapshot.board_summary(),
+        "panes": panes,
+    })
+}
+
+fn desktop_run_projection(snapshot: &LedgerSnapshot, item: &LedgerDigestItem) -> Value {
+    let explain = snapshot.explain_projection(&item.run_id);
+    let run = explain.as_ref().map(|projection| &projection.run);
+    let explanation = explain.as_ref().map(|projection| &projection.explanation);
+    let evidence_digest = explain
+        .as_ref()
+        .map(|projection| &projection.evidence_digest);
+
+    let branch = run
+        .filter(|run| !run.branch.trim().is_empty())
+        .map(|run| run.branch.clone())
+        .unwrap_or_else(|| item.branch.clone());
+    let run_worktree = run.map(|run| run.worktree.clone()).unwrap_or_default();
+    let experiment_worktree = run
+        .map(|run| run.experiment_packet.worktree.clone())
+        .unwrap_or_default();
+    let worktree = first_non_empty_owned([
+        run_worktree,
+        experiment_worktree,
+        item.worktree.clone(),
+    ]);
+    let head_sha = run
+        .filter(|run| !run.head_sha.trim().is_empty())
+        .map(|run| run.head_sha.clone())
+        .unwrap_or_else(|| item.head_sha.clone());
+    let head_short = if !head_sha.trim().is_empty() {
+        short_head_sha(&head_sha)
+    } else {
+        item.head_short.clone()
+    };
+    let changed_files = evidence_digest
+        .filter(|digest| !digest.changed_files.is_empty())
+        .map(|digest| digest.changed_files.clone())
+        .unwrap_or_else(|| item.changed_files.clone());
+    let summary = explanation
+        .filter(|explanation| !explanation.summary.trim().is_empty())
+        .map(|explanation| explanation.summary.clone())
+        .unwrap_or_else(|| {
+            first_non_empty_owned([
+                item.task.clone(),
+                format!("Projected from {}", item.run_id),
+                "Projected run".to_string(),
+            ])
+        });
+
+    json!({
+        "run_id": item.run_id,
+        "pane_id": item.pane_id,
+        "label": item.label,
+        "branch": branch,
+        "worktree": worktree,
+        "head_sha": head_sha,
+        "head_short": head_short,
+        "provider_target": item.provider_target,
+        "task": item.task,
+        "task_state": run
+            .filter(|run| !run.task_state.trim().is_empty())
+            .map(|run| run.task_state.clone())
+            .unwrap_or_else(|| item.task_state.clone()),
+        "review_state": run
+            .filter(|run| !run.review_state.trim().is_empty())
+            .map(|run| run.review_state.clone())
+            .unwrap_or_else(|| item.review_state.clone()),
+        "verification_outcome": evidence_digest
+            .filter(|digest| !digest.verification_outcome.trim().is_empty())
+            .map(|digest| digest.verification_outcome.clone())
+            .unwrap_or_else(|| item.verification_outcome.clone()),
+        "security_blocked": evidence_digest
+            .filter(|digest| !digest.security_blocked.trim().is_empty())
+            .map(|digest| digest.security_blocked.clone())
+            .unwrap_or_else(|| item.security_blocked.clone()),
+        "changed_files": changed_files,
+        "next_action": explanation
+            .filter(|explanation| !explanation.next_action.trim().is_empty())
+            .map(|explanation| explanation.next_action.clone())
+            .unwrap_or_else(|| item.next_action.clone()),
+        "summary": summary,
+        "reasons": explanation
+            .map(|explanation| explanation.reasons.clone())
+            .unwrap_or_default(),
+        "hypothesis": item.hypothesis,
+        "confidence": item.confidence,
+        "observation_pack_ref": item.observation_pack_ref,
+        "consultation_ref": item.consultation_ref,
+    })
+}
+
+fn first_non_empty_owned<const N: usize>(values: [String; N]) -> String {
+    values
+        .into_iter()
+        .find(|value| !value.trim().is_empty())
+        .unwrap_or_default()
+}
+
+fn short_head_sha(head_sha: &str) -> String {
+    if head_sha.chars().count() <= 7 {
+        head_sha.to_string()
+    } else {
+        head_sha.chars().take(7).collect()
+    }
+}
+
+fn stream_desktop_summary(options: &DesktopSummaryOptions) -> io::Result<()> {
+    let mut cursor = read_desktop_summary_events(&options.project_dir)?.len();
+    loop {
+        let events = read_desktop_summary_events(&options.project_dir)?;
+        if events.len() < cursor {
+            cursor = 0;
+        }
+        for event in events.iter().skip(cursor) {
+            let Some(item) = desktop_summary_refresh_item(event) else {
+                continue;
+            };
+            if options.json {
+                write_json(&item)?;
+            } else {
+                println!("{}", desktop_summary_refresh_text(&item));
+            }
+        }
+        cursor = events.len();
+        thread::sleep(Duration::from_secs(2));
+    }
+}
+
+fn read_desktop_summary_events(project_dir: &Path) -> io::Result<Vec<EventRecord>> {
+    let events_path = project_dir.join(".winsmux").join("events.jsonl");
+    if !events_path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(&events_path)?;
+    parse_event_jsonl(&content).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to parse desktop-summary events: {err}"),
+        )
+    })
+}
+
+fn desktop_summary_refresh_item(event: &EventRecord) -> Option<Value> {
+    let reason = first_non_empty_owned([event.event.clone(), event.status.clone()]);
+    if reason.trim().is_empty() {
+        return None;
+    }
+
+    let mut item = Map::new();
+    item.insert("source".to_string(), json!("summary"));
+    item.insert("reason".to_string(), json!(reason));
+    if !event.timestamp.trim().is_empty() {
+        item.insert("timestamp".to_string(), json!(event.timestamp));
+    }
+    if !event.pane_id.trim().is_empty() {
+        item.insert("pane_id".to_string(), json!(event.pane_id));
+    }
+    let run_id = desktop_summary_refresh_run_id(event);
+    if !run_id.trim().is_empty() {
+        item.insert("run_id".to_string(), json!(run_id));
+    }
+
+    Some(Value::Object(item))
+}
+
+fn desktop_summary_refresh_run_id(event: &EventRecord) -> String {
+    let run_id = json_field_string(&event.data, "run_id");
+    if !run_id.trim().is_empty() {
+        return run_id;
+    }
+    if !event.run_id.trim().is_empty() {
+        return event.run_id.clone();
+    }
+    let task_id = json_field_string(&event.data, "task_id");
+    if !task_id.trim().is_empty() {
+        return format!("task:{task_id}");
+    }
+    if !event.task_id.trim().is_empty() {
+        return format!("task:{}", event.task_id);
+    }
+    let branch = first_non_empty_owned([event.branch.clone(), json_field_string(&event.data, "branch")]);
+    if !branch.trim().is_empty() {
+        return format!("branch:{branch}");
+    }
+    String::new()
+}
+
+fn desktop_summary_refresh_text(item: &Value) -> String {
+    let timestamp = item
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(generated_at);
+    let reason = item
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut details = Vec::new();
+    if let Some(pane_id) = item.get("pane_id").and_then(Value::as_str) {
+        details.push(format!("pane={pane_id}"));
+    }
+    if let Some(run_id) = item.get("run_id").and_then(Value::as_str) {
+        details.push(format!("run={run_id}"));
+    }
+    if details.is_empty() {
+        format!("[{timestamp}] summary {reason}")
+    } else {
+        format!("[{timestamp}] summary {reason} {}", details.join(" "))
+    }
+}
+
+fn json_field_string(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
 fn json_string_eq(value: &Value, key: &str, expected: &str) -> bool {
     value
         .get(key)
@@ -4086,6 +4456,11 @@ fn read_artifact_json(
 }
 
 fn write_enveloped_json<T: Serialize>(project_dir: &Path, value: T) -> io::Result<()> {
+    let payload = enveloped_payload(project_dir, value)?;
+    write_json(&payload)
+}
+
+fn enveloped_payload<T: Serialize>(project_dir: &Path, value: T) -> io::Result<Value> {
     let value = serde_json::to_value(value).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
@@ -4099,7 +4474,7 @@ fn write_enveloped_json<T: Serialize>(project_dir: &Path, value: T) -> io::Resul
         "panes": value.get("panes").cloned().unwrap_or(Value::Null),
         "items": value.get("items").cloned().unwrap_or(Value::Null),
     });
-    write_json(&strip_null_fields(payload))
+    Ok(strip_null_fields(payload))
 }
 
 fn strip_null_fields(value: Value) -> Value {

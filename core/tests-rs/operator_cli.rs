@@ -1,6 +1,30 @@
 use std::fs;
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::io::{BufRead, BufReader};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+struct ChildKillGuard(Child);
+
+impl Drop for ChildKillGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn wait_for_stream_line(
+    receiver: &mpsc::Receiver<String>,
+    mut append_event: impl FnMut(usize),
+) -> String {
+    for attempt in 0..20 {
+        append_event(attempt);
+        if let Ok(line) = receiver.recv_timeout(Duration::from_millis(250)) {
+            return line;
+        }
+    }
+    panic!("stream should emit one refresh item");
+}
 
 #[test]
 fn operator_cli_status_json_reads_live_winsmux_manifest() {
@@ -61,6 +85,36 @@ fn operator_cli_inbox_digest_runs_and_explain_use_ledger_projections() {
     assert_eq!(digest["items"][0]["run_id"], "task:TASK-266");
     assert_eq!(digest["items"][0]["review_state"], "pending");
 
+    let desktop_summary = run_json(&project_dir, &["desktop-summary", "--json"]);
+    assert!(desktop_summary["generated_at"].as_str().is_some());
+    assert!(desktop_summary["board"]["generated_at"].as_str().is_some());
+    assert!(desktop_summary["inbox"]["project_dir"].as_str().is_some());
+    assert!(desktop_summary["digest"]["generated_at"].as_str().is_some());
+    assert_eq!(desktop_summary["board"]["summary"]["pane_count"], 2);
+    assert!(desktop_summary["board"]["panes"][0]
+        .get("tokens_remaining")
+        .is_some());
+    assert!(desktop_summary["board"]["panes"][0]
+        .get("task_owner")
+        .is_some());
+    assert!(desktop_summary["board"]["panes"][0]
+        .get("event_count")
+        .is_none());
+    assert_eq!(desktop_summary["inbox"]["summary"]["item_count"], 2);
+    assert_eq!(desktop_summary["digest"]["summary"]["item_count"], 2);
+    assert_eq!(
+        desktop_summary["run_projections"][0]["run_id"],
+        "task:TASK-266"
+    );
+    assert_eq!(
+        desktop_summary["run_projections"][0]["summary"],
+        "Add Rust operator read models"
+    );
+    assert_eq!(
+        desktop_summary["run_projections"][0]["next_action"],
+        "commit_ready"
+    );
+
     let runs = run_json(&project_dir, &["runs", "--json"]);
     assert_eq!(runs["summary"]["run_count"], 2);
     assert_eq!(runs["summary"]["review_pending"], 1);
@@ -100,6 +154,113 @@ fn operator_cli_inbox_digest_runs_and_explain_use_ledger_projections() {
         "keep read-only"
     );
     assert_eq!(explain["explanation"]["next_action"], "commit_ready");
+}
+
+#[test]
+fn operator_cli_desktop_summary_text_reports_counts() {
+    let project_dir = make_temp_project_dir("desktop-summary-text");
+    write_manifest(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["desktop-summary"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(
+        "Desktop summary: 2 panes, 2 inbox items, 2 digest items, 2 projections"
+    ));
+}
+
+#[test]
+fn operator_cli_desktop_summary_stream_reports_refresh_events() {
+    let project_dir = make_temp_project_dir("desktop-summary-stream");
+    write_manifest(&project_dir);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["desktop-summary", "--stream", "--json"])
+        .current_dir(&project_dir)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("winsmux stream command should start");
+    let stdout = child.stdout.take().expect("child should expose stdout");
+    let _child = ChildKillGuard(child);
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = sender.send(line);
+    });
+
+    let line = wait_for_stream_line(&receiver, |attempt| {
+        let mut events = fs::OpenOptions::new()
+            .append(true)
+            .open(project_dir.join(".winsmux").join("events.jsonl"))
+            .expect("test should open events file");
+        use std::io::Write as _;
+        writeln!(
+            events,
+            r#"{{"timestamp":"2026-04-24T12:00:{:02}+09:00","session":"winsmux-orchestra","event":"operator.followup","pane_id":"%2","data":{{"task_id":"TASK-999"}}}}"#,
+            attempt + 3
+        )
+        .expect("test should append event");
+        events.flush().expect("test should flush events");
+    });
+    let item: serde_json::Value =
+        serde_json::from_str(line.trim()).expect("stream output should be json");
+
+    assert_eq!(item["source"], "summary");
+    assert_eq!(item["reason"], "operator.followup");
+    assert_eq!(item["pane_id"], "%2");
+    assert_eq!(item["run_id"], "task:TASK-999");
+}
+
+#[test]
+fn operator_cli_desktop_summary_stream_accepts_top_level_run_fields() {
+    let project_dir = make_temp_project_dir("desktop-summary-stream-top-level");
+    write_manifest(&project_dir);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["desktop-summary", "--stream", "--json"])
+        .current_dir(&project_dir)
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("winsmux stream command should start");
+    let stdout = child.stdout.take().expect("child should expose stdout");
+    let _child = ChildKillGuard(child);
+    let (sender, receiver) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = sender.send(line);
+    });
+
+    let line = wait_for_stream_line(&receiver, |attempt| {
+        let mut events = fs::OpenOptions::new()
+            .append(true)
+            .open(project_dir.join(".winsmux").join("events.jsonl"))
+            .expect("test should open events file");
+        use std::io::Write as _;
+        writeln!(
+            events,
+            r#"{{"timestamp":"2026-04-24T12:00:{:02}+09:00","session":"winsmux-orchestra","event":"operator.followup","pane_id":"%2","run_id":"manual:1","task_id":"TASK-999","data":{{}}}}"#,
+            attempt + 3
+        )
+        .expect("test should append event");
+        events.flush().expect("test should flush events");
+    });
+    let item: serde_json::Value =
+        serde_json::from_str(line.trim()).expect("stream output should be json");
+
+    assert_eq!(item["source"], "summary");
+    assert_eq!(item["reason"], "operator.followup");
+    assert_eq!(item["run_id"], "manual:1");
 }
 
 #[test]
