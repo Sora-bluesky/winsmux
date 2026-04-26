@@ -172,6 +172,34 @@ fn operator_cli_inbox_text_reads_live_winsmux_manifest() {
 }
 
 #[test]
+fn operator_cli_digest_text_reads_live_winsmux_manifest() {
+    let project_dir = make_temp_project_dir("digest-text");
+    write_manifest(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("digest")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Run: task:TASK-266"));
+    assert!(stdout.contains("Primary: builder-1 (%2)"));
+    assert!(stdout.contains("Task: Add Rust operator read models"));
+    assert!(stdout.contains("State: in_progress / pending"));
+    assert!(stdout.contains("Next: commit_ready"));
+    assert!(stdout.contains("Git: codex/task266-rust-operator-readmodels-20260424 @ abc123"));
+    assert!(stdout.contains("Changed files (2):"));
+    assert!(stdout.contains("- core/src/operator_cli.rs"));
+    assert!(!stdout.trim_start().starts_with('{'));
+}
+
+#[test]
 fn operator_cli_inbox_digest_runs_and_explain_use_ledger_projections() {
     let project_dir = make_temp_project_dir("read-models");
     write_manifest(&project_dir);
@@ -2063,27 +2091,6 @@ fn operator_cli_accepts_project_dir_argument() {
 }
 
 #[test]
-fn operator_cli_read_models_require_json_flag() {
-    let project_dir = make_temp_project_dir("requires-json");
-    write_manifest(&project_dir);
-
-    for command in ["digest"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
-            .arg(command)
-            .current_dir(&project_dir)
-            .output()
-            .expect("winsmux command should run");
-
-        assert!(!output.status.success());
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("currently supports only --json"),
-            "unexpected stderr for {command}: {stderr}"
-        );
-    }
-}
-
-#[test]
 fn operator_cli_rejects_unknown_and_extra_arguments() {
     let project_dir = make_temp_project_dir("invalid-args");
     write_manifest(&project_dir);
@@ -2124,6 +2131,19 @@ fn operator_cli_rejects_unknown_and_extra_arguments() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("usage: winsmux inbox [--json]"),
+        "unexpected stderr: {stderr}"
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["digest", "extra"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("usage: winsmux digest [--json]"),
         "unexpected stderr: {stderr}"
     );
 
