@@ -131,6 +131,7 @@ OPERATOR COMMANDS:
     board --json            Print pane, task, review, and git board JSON
     inbox --json            Print actionable approval and review items JSON
     digest --json           Print high-signal run digest JSON
+    desktop-summary         Print desktop summary projection JSON or counts
     runs --json             Print run-oriented evidence JSON
     explain <run_id> --json Print one run explanation JSON
     compare-runs            Compare two runs and surface evidence deltas
