@@ -151,6 +151,27 @@
     "action_item_count": 2,
     "last_event": "operator.review_requested",
     "last_event_at": "__LAST_EVENT_AT__",
+    "verification_verdict_summary": {
+      "kind": "verification",
+      "verdict": "",
+      "summary": "",
+      "event": "",
+      "timestamp": "__TIMESTAMP__"
+    },
+    "security_verdict_summary": {
+      "kind": "security",
+      "verdict": "",
+      "summary": "",
+      "event": "",
+      "timestamp": "__TIMESTAMP__"
+    },
+    "monitoring_verdict_summary": {
+      "kind": "monitoring",
+      "verdict": "",
+      "summary": "",
+      "event": "",
+      "timestamp": "__TIMESTAMP__"
+    },
     "verification_outcome": "",
     "security_blocked": "",
     "hypothesis": "",
