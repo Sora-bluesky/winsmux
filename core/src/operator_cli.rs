@@ -2092,6 +2092,53 @@ pub fn run_review_request_command(args: &[&String]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn run_dispatch_review_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("dispatch-review"));
+        return Ok(());
+    }
+    if !args.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("dispatch-review"),
+        ));
+    }
+    assert_dispatch_review_role_permission("dispatch-review")?;
+
+    let project_dir = env::current_dir()?;
+    let branch = current_git_branch(&project_dir)?;
+    let head_sha = current_git_head(&project_dir)?;
+    let context = preferred_review_pane_context(&project_dir)?;
+    let short_head = short_head_sha(&head_sha);
+    println!(
+        "Dispatching review to {} [{}] for branch {} ({})",
+        context.label, context.pane_id, branch, short_head
+    );
+
+    send_review_request_to_pane(&context.pane_id)?;
+    println!(
+        "review-request sent to {}. Waiting for PENDING state...",
+        context.label
+    );
+
+    if !wait_for_pending_review_state(&project_dir, &branch, &head_sha)? {
+        return Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "review-request was not recorded after {} attempts. Check review pane {}.",
+                dispatch_review_poll_attempts(),
+                context.pane_id
+            ),
+        ));
+    }
+
+    println!(
+        "PENDING confirmed. {} pane will run review-approve or review-fail. Monitor review-state.json for result.",
+        context.role
+    );
+    Ok(())
+}
+
 pub fn run_review_approve_command(args: &[&String]) -> io::Result<()> {
     record_review_result(
         args,
@@ -2966,6 +3013,7 @@ fn usage_for(command: &str) -> &'static str {
             "usage: winsmux consult-error <early|stuck|reconcile|final> [--message <text>] [--target-slot <slot>] [--project-dir <path>]"
         }
         "poll-events" => "usage: winsmux poll-events [cursor] [--project-dir <path>]",
+        "dispatch-review" => "usage: winsmux dispatch-review",
         "review-reset" => "usage: winsmux review-reset [--project-dir <path>]",
         "review-request" => "usage: winsmux review-request [--project-dir <path>]",
         "review-approve" => "usage: winsmux review-approve [--project-dir <path>]",
@@ -3162,6 +3210,40 @@ fn assert_consult_role_permission(command_name: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn assert_dispatch_review_role_permission(command_name: &str) -> io::Result<()> {
+    let role = current_canonical_role()?;
+    if role != "Operator" {
+        return Err(review_permission_error(command_name));
+    }
+
+    let role_map = role_map_from_env()?;
+    if role_map.is_empty() {
+        return Ok(());
+    }
+
+    let pane_id = env::var("WINSMUX_PANE_ID")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "WINSMUX_PANE_ID not set"))?;
+    let Some(mapped_role) = role_map
+        .get(&pane_id)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+    else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("WINSMUX_ROLE_MAP missing entry for pane {pane_id}"),
+        ));
+    };
+    if mapped_role != role {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("WINSMUX_ROLE mismatch for pane {pane_id}: expected {mapped_role}, got {role}"),
+        ));
+    }
+    Ok(())
+}
+
 fn current_canonical_role() -> io::Result<String> {
     let raw = env::var("WINSMUX_ROLE")
         .ok()
@@ -3294,6 +3376,17 @@ fn current_review_pane_context(project_dir: &Path) -> io::Result<ReviewPaneConte
         ));
     };
     Ok(context)
+}
+
+fn preferred_review_pane_context(project_dir: &Path) -> io::Result<ReviewPaneContext> {
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let manifest = load_manifest_yaml(&manifest_path)?;
+    find_preferred_review_pane_context(&manifest).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "No review-capable pane found in manifest.",
+        )
+    })
 }
 
 fn consultation_command_context(
@@ -3457,6 +3550,40 @@ fn find_review_pane_context(
     }
 }
 
+fn find_preferred_review_pane_context(manifest: &serde_yaml::Value) -> Option<ReviewPaneContext> {
+    let contexts = review_pane_contexts(manifest);
+    for preferred_role in ["Reviewer", "Worker"] {
+        if let Some(context) = contexts
+            .iter()
+            .find(|context| context.role == preferred_role)
+            .cloned()
+        {
+            return Some(context);
+        }
+    }
+    None
+}
+
+fn review_pane_contexts(manifest: &serde_yaml::Value) -> Vec<ReviewPaneContext> {
+    let Some(panes) = manifest.get("panes") else {
+        return Vec::new();
+    };
+    match panes {
+        serde_yaml::Value::Mapping(map) => map
+            .iter()
+            .filter_map(|(key, pane)| {
+                let label = key.as_str().unwrap_or_default();
+                review_pane_context_from_value(label, "", pane)
+            })
+            .collect(),
+        serde_yaml::Value::Sequence(items) => items
+            .iter()
+            .filter_map(|pane| review_pane_context_from_value("", "", pane))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn review_pane_context_from_value(
     fallback_label: &str,
     pane_id: &str,
@@ -3464,7 +3591,10 @@ fn review_pane_context_from_value(
 ) -> Option<ReviewPaneContext> {
     let map = pane.as_mapping()?;
     let actual = manifest_string(map, "pane_id");
-    if actual != pane_id {
+    if actual.trim().is_empty() {
+        return None;
+    }
+    if !pane_id.is_empty() && actual != pane_id {
         return None;
     }
     let role = manifest_string(map, "role");
@@ -3478,6 +3608,89 @@ fn review_pane_context_from_value(
         pane_id: actual,
         role: canonical_role.unwrap_or_default(),
     })
+}
+
+fn send_review_request_to_pane(pane_id: &str) -> io::Result<()> {
+    let command_text = "winsmux review-request";
+    let pre_send_text = capture_pane_tail(pane_id)?;
+    run_winsmux_command(&["send-keys", "-t", pane_id, "-l", "--", command_text])?;
+    thread::sleep(Duration::from_millis(300));
+    let typed_text = capture_pane_tail(pane_id)?;
+    if typed_text == pre_send_text {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("pane buffer did not change after typing review request into {pane_id}"),
+        ));
+    }
+    if !typed_text.contains(command_text) {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("typed review request was not observed in {pane_id}"),
+        ));
+    }
+    run_winsmux_command(&["send-keys", "-t", pane_id, "Enter"])
+}
+
+fn wait_for_pending_review_state(
+    project_dir: &Path,
+    branch: &str,
+    head_sha: &str,
+) -> io::Result<bool> {
+    let attempts = dispatch_review_poll_attempts();
+    for attempt in 0..=attempts {
+        let state = load_review_state(project_dir)?;
+        if review_state_is_pending_for_head(&state, branch, head_sha) {
+            return Ok(true);
+        }
+        if attempt < attempts {
+            thread::sleep(dispatch_review_poll_delay());
+        }
+    }
+    Ok(false)
+}
+
+fn dispatch_review_poll_attempts() -> usize {
+    env::var("WINSMUX_DISPATCH_REVIEW_POLL_ATTEMPTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(10)
+}
+
+fn dispatch_review_poll_delay() -> Duration {
+    env::var("WINSMUX_DISPATCH_REVIEW_POLL_INTERVAL_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_secs(3))
+}
+
+fn review_state_is_pending_for_head(
+    state: &Map<String, Value>,
+    branch: &str,
+    head_sha: &str,
+) -> bool {
+    let Some(record) = state.get(branch) else {
+        return false;
+    };
+    let status_matches = record
+        .get("status")
+        .and_then(Value::as_str)
+        .map(|status| status == "PENDING")
+        .unwrap_or(false);
+    if !status_matches {
+        return false;
+    }
+    let record_head = record
+        .get("head_sha")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            record
+                .get("request")
+                .and_then(|request| request.get("head_sha"))
+                .and_then(Value::as_str)
+        })
+        .unwrap_or_default();
+    record_head == head_sha
 }
 
 fn canonical_manifest_role(role: &str, label: &str) -> Option<String> {

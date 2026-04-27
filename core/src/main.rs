@@ -279,6 +279,7 @@ fn run_main() -> io::Result<()> {
         "consult-result" => return operator_cli::run_consult_result_command(&cmd_args[1..]),
         "consult-error" => return operator_cli::run_consult_error_command(&cmd_args[1..]),
         "poll-events" => return operator_cli::run_poll_events_command(&cmd_args[1..]),
+        "dispatch-review" => return operator_cli::run_dispatch_review_command(&cmd_args[1..]),
         "review-request" => return operator_cli::run_review_request_command(&cmd_args[1..]),
         "review-approve" => return operator_cli::run_review_approve_command(&cmd_args[1..]),
         "review-fail" => return operator_cli::run_review_fail_command(&cmd_args[1..]),
