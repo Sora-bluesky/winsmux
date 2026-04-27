@@ -46,10 +46,10 @@ function New-GuardResult {
     param(
         [Parameter(Mandatory = $true)][bool]$Ok,
         [Parameter(Mandatory = $true)][string]$Reason,
-        [Parameter(Mandatory = $true)][string]$WorktreeRoot,
-        [Parameter(Mandatory = $true)][string]$RepoRoot,
-        [Parameter(Mandatory = $true)][string]$GitDir,
-        [Parameter(Mandatory = $true)][string]$CommonGitDir
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$WorktreeRoot,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$RepoRoot,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$GitDir,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$CommonGitDir
     )
 
     [PSCustomObject]@{

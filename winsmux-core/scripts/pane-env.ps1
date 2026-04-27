@@ -133,6 +133,53 @@ function Resolve-WinsmuxGovernanceMode {
     return $resolved
 }
 
+function New-WinsmuxGovernanceCostUnit {
+    param(
+        [Parameter(Mandatory = $true)][string]$Kind,
+        [string]$Mode = '',
+        [string]$Task = '',
+        [string]$RunId = '',
+        [string]$Stage = '',
+        [string]$Role = '',
+        [string]$Target = '',
+        [int]$Attempt = 0,
+        [string]$Source = 'winsmux'
+    )
+
+    $normalizedKind = $Kind.Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($normalizedKind)) {
+        throw 'governance cost unit kind is required'
+    }
+
+    $normalizedMode = $Mode.Trim().ToLowerInvariant()
+    $normalizedStage = $Stage.Trim().ToLowerInvariant()
+    $safeParts = @(
+        'governance',
+        $normalizedKind,
+        $normalizedMode,
+        $normalizedStage,
+        ([string]$Task).Trim(),
+        ([string]$RunId).Trim(),
+        ([string]$Target).Trim(),
+        [string]$Attempt
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+
+    [PSCustomObject]@{
+        unit_id   = ($safeParts -join ':')
+        unit_type = 'governance_invocation'
+        kind      = $normalizedKind
+        mode      = $normalizedMode
+        stage     = $normalizedStage
+        task      = [string]$Task
+        run_id    = [string]$RunId
+        role      = [string]$Role
+        target    = [string]$Target
+        attempt   = $Attempt
+        source    = [string]$Source
+        quantity  = 1
+    }
+}
+
 function Get-WinsmuxEnvironmentVariableNames {
     return @(
         'WINSMUX_ORCHESTRA_SESSION',
