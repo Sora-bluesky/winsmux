@@ -293,6 +293,406 @@ pub struct LedgerExplainRecentEvent {
     pub security_verdict: Value,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LedgerStatusPayload {
+    pub generated_at: String,
+    pub project_dir: String,
+    pub session: LedgerStatusSession,
+    pub summary: LedgerBoardSummary,
+    pub panes: Vec<LedgerPaneReadModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LedgerStatusSession {
+    pub name: String,
+    pub pane_count: usize,
+    pub event_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LedgerBoardPayload {
+    pub generated_at: String,
+    pub project_dir: String,
+    pub summary: LedgerBoardSummary,
+    pub panes: Vec<LedgerBoardPane>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LedgerInboxPayload {
+    pub generated_at: String,
+    pub project_dir: String,
+    pub summary: LedgerInboxSummary,
+    pub items: Vec<LedgerInboxItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LedgerDigestPayload {
+    pub generated_at: String,
+    pub project_dir: String,
+    pub summary: LedgerDigestSummary,
+    pub items: Vec<LedgerDigestItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LedgerRunsPayload {
+    pub generated_at: String,
+    pub project_dir: String,
+    pub summary: LedgerRunsSummary,
+    pub runs: Vec<LedgerRunProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LedgerRunsSummary {
+    pub run_count: usize,
+    pub blocked_runs: usize,
+    pub review_pending: usize,
+    pub dirty_runs: usize,
+    pub action_item_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LedgerRunProjection {
+    pub run_id: String,
+    pub task_id: String,
+    pub task: String,
+    pub task_state: String,
+    pub review_state: String,
+    pub branch: String,
+    pub worktree: String,
+    pub head_sha: String,
+    pub primary_label: String,
+    pub primary_pane_id: String,
+    pub primary_role: String,
+    pub state: String,
+    pub tokens_remaining: String,
+    pub last_event: String,
+    pub last_event_at: String,
+    pub pane_count: usize,
+    pub changed_file_count: usize,
+    pub labels: Vec<String>,
+    pub pane_ids: Vec<String>,
+    pub roles: Vec<String>,
+    pub changed_files: Vec<String>,
+    pub action_items: Vec<LedgerExplainActionItem>,
+    pub parent_run_id: String,
+    pub goal: String,
+    pub task_type: String,
+    pub priority: String,
+    pub blocking: bool,
+    pub write_scope: Vec<String>,
+    pub read_scope: Vec<String>,
+    pub constraints: Vec<String>,
+    pub expected_output: String,
+    pub verification_plan: Vec<String>,
+    pub review_required: bool,
+    pub provider_target: String,
+    pub agent_role: String,
+    pub timeout_policy: String,
+    pub handoff_refs: Vec<String>,
+    pub experiment_packet: Option<LedgerExplainExperimentPacket>,
+    pub security_policy: Value,
+    pub security_verdict: Value,
+    pub verification_contract: Value,
+    pub verification_result: Value,
+    pub run_packet: Option<LedgerRunPacket>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LedgerRunPacket {
+    pub run_id: String,
+    pub task_id: String,
+    pub parent_run_id: String,
+    pub goal: String,
+    pub task: String,
+    pub task_type: String,
+    pub priority: String,
+    pub blocking: bool,
+    pub write_scope: Vec<String>,
+    pub read_scope: Vec<String>,
+    pub constraints: Vec<String>,
+    pub expected_output: String,
+    pub verification_plan: Vec<String>,
+    pub review_required: bool,
+    pub provider_target: String,
+    pub agent_role: String,
+    pub timeout_policy: String,
+    pub handoff_refs: Vec<String>,
+    pub branch: String,
+    pub head_sha: String,
+    pub primary_label: String,
+    pub primary_pane_id: String,
+    pub primary_role: String,
+    pub labels: Vec<String>,
+    pub pane_ids: Vec<String>,
+    pub roles: Vec<String>,
+    pub changed_files: Vec<String>,
+    pub security_policy: Value,
+    pub security_verdict: Value,
+    pub verification_contract: Value,
+    pub verification_result: Value,
+    pub last_event: String,
+    pub last_event_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LedgerExplainPayload {
+    pub generated_at: String,
+    pub project_dir: String,
+    pub run: LedgerExplainRun,
+    pub observation_pack: Value,
+    pub consultation_packet: Value,
+    pub evidence_digest: LedgerDigestItem,
+    pub explanation: LedgerExplainExplanation,
+    pub review_state: Value,
+    pub recent_events: Vec<LedgerExplainRecentEvent>,
+}
+
+impl LedgerStatusPayload {
+    pub fn from_snapshot(
+        generated_at: String,
+        project_dir: String,
+        snapshot: &LedgerSnapshot,
+    ) -> Self {
+        Self {
+            generated_at,
+            project_dir,
+            session: LedgerStatusSession {
+                name: snapshot.session_name().to_string(),
+                pane_count: snapshot.pane_count(),
+                event_count: snapshot.event_count(),
+            },
+            summary: snapshot.board_summary(),
+            panes: snapshot.pane_read_models(),
+        }
+    }
+}
+
+impl LedgerBoardPayload {
+    pub fn from_projection(
+        generated_at: String,
+        project_dir: String,
+        projection: LedgerBoardProjection,
+    ) -> Self {
+        Self {
+            generated_at,
+            project_dir,
+            summary: projection.summary,
+            panes: projection.panes,
+        }
+    }
+}
+
+impl LedgerInboxPayload {
+    pub fn from_projection(
+        generated_at: String,
+        project_dir: String,
+        projection: LedgerInboxProjection,
+    ) -> Self {
+        Self {
+            generated_at,
+            project_dir,
+            summary: projection.summary,
+            items: projection.items,
+        }
+    }
+}
+
+impl LedgerDigestPayload {
+    pub fn from_projection(
+        generated_at: String,
+        project_dir: String,
+        projection: LedgerDigestProjection,
+    ) -> Self {
+        Self {
+            generated_at,
+            project_dir,
+            summary: projection.summary,
+            items: projection.items,
+        }
+    }
+}
+
+impl LedgerRunsPayload {
+    pub fn from_snapshot(
+        generated_at: String,
+        project_dir: String,
+        snapshot: &LedgerSnapshot,
+    ) -> Self {
+        let runs: Vec<LedgerRunProjection> = snapshot
+            .digest_projection()
+            .items
+            .into_iter()
+            .map(|item| {
+                let explain = snapshot.explain_projection(&item.run_id);
+                LedgerRunProjection::from_digest_item(
+                    item,
+                    explain.as_ref().map(|projection| &projection.run),
+                )
+            })
+            .collect();
+        let summary = LedgerRunsSummary {
+            run_count: runs.len(),
+            blocked_runs: runs
+                .iter()
+                .filter(|run| run.task_state.eq_ignore_ascii_case("blocked"))
+                .count(),
+            review_pending: runs
+                .iter()
+                .filter(|run| run.review_state.eq_ignore_ascii_case("pending"))
+                .count(),
+            dirty_runs: runs.iter().filter(|run| run.changed_file_count > 0).count(),
+            action_item_count: runs.iter().map(|run| run.action_items.len()).sum(),
+        };
+        Self {
+            generated_at,
+            project_dir,
+            summary,
+            runs,
+        }
+    }
+}
+
+impl LedgerRunProjection {
+    fn from_digest_item(item: LedgerDigestItem, run: Option<&LedgerExplainRun>) -> Self {
+        let primary_label = item.label.clone();
+        let primary_pane_id = item.pane_id.clone();
+        let primary_role = item.role.clone();
+
+        Self {
+            run_id: item.run_id,
+            task_id: item.task_id,
+            task: item.task,
+            task_state: item.task_state,
+            review_state: item.review_state,
+            branch: item.branch,
+            worktree: item.worktree,
+            head_sha: item.head_sha,
+            primary_label: primary_label.clone(),
+            primary_pane_id: primary_pane_id.clone(),
+            primary_role: primary_role.clone(),
+            state: run.map(|run| run.state.clone()).unwrap_or_default(),
+            tokens_remaining: run
+                .map(|run| run.tokens_remaining.clone())
+                .unwrap_or_default(),
+            last_event: item.last_event,
+            last_event_at: item.last_event_at,
+            pane_count: run.map(|run| run.pane_count).unwrap_or(1),
+            changed_file_count: item.changed_file_count,
+            labels: run
+                .map(|run| run.labels.clone())
+                .unwrap_or_else(|| vec![primary_label]),
+            pane_ids: run
+                .map(|run| run.pane_ids.clone())
+                .unwrap_or_else(|| vec![primary_pane_id]),
+            roles: run
+                .map(|run| run.roles.clone())
+                .unwrap_or_else(|| vec![primary_role.clone()]),
+            changed_files: item.changed_files,
+            action_items: run.map(|run| run.action_items.clone()).unwrap_or_default(),
+            parent_run_id: run.map(|run| run.parent_run_id.clone()).unwrap_or_default(),
+            goal: run.map(|run| run.goal.clone()).unwrap_or_default(),
+            task_type: run.map(|run| run.task_type.clone()).unwrap_or_default(),
+            priority: run.map(|run| run.priority.clone()).unwrap_or_default(),
+            blocking: run.map(|run| run.blocking).unwrap_or(false),
+            write_scope: run.map(|run| run.write_scope.clone()).unwrap_or_default(),
+            read_scope: run.map(|run| run.read_scope.clone()).unwrap_or_default(),
+            constraints: run.map(|run| run.constraints.clone()).unwrap_or_default(),
+            expected_output: run
+                .map(|run| run.expected_output.clone())
+                .unwrap_or_default(),
+            verification_plan: run
+                .map(|run| run.verification_plan.clone())
+                .unwrap_or_default(),
+            review_required: run.map(|run| run.review_required).unwrap_or(false),
+            provider_target: item.provider_target,
+            agent_role: run
+                .map(|run| run.agent_role.clone())
+                .unwrap_or(primary_role),
+            timeout_policy: run
+                .map(|run| run.timeout_policy.clone())
+                .unwrap_or_default(),
+            handoff_refs: run.map(|run| run.handoff_refs.clone()).unwrap_or_default(),
+            experiment_packet: run.map(|run| run.experiment_packet.clone()),
+            security_policy: run
+                .map(|run| run.security_policy.clone())
+                .unwrap_or(Value::Null),
+            security_verdict: run
+                .map(|run| run.security_verdict.clone())
+                .unwrap_or(Value::Null),
+            verification_contract: run
+                .map(|run| run.verification_contract.clone())
+                .unwrap_or(Value::Null),
+            verification_result: run
+                .map(|run| run.verification_result.clone())
+                .unwrap_or(Value::Null),
+            run_packet: run.map(LedgerRunPacket::from_explain_run),
+        }
+    }
+}
+
+impl LedgerRunPacket {
+    fn from_explain_run(run: &LedgerExplainRun) -> Self {
+        Self {
+            run_id: run.run_id.clone(),
+            task_id: run.task_id.clone(),
+            parent_run_id: run.parent_run_id.clone(),
+            goal: run.goal.clone(),
+            task: run.task.clone(),
+            task_type: run.task_type.clone(),
+            priority: run.priority.clone(),
+            blocking: run.blocking,
+            write_scope: run.write_scope.clone(),
+            read_scope: run.read_scope.clone(),
+            constraints: run.constraints.clone(),
+            expected_output: run.expected_output.clone(),
+            verification_plan: run.verification_plan.clone(),
+            review_required: run.review_required,
+            provider_target: run.provider_target.clone(),
+            agent_role: run.agent_role.clone(),
+            timeout_policy: run.timeout_policy.clone(),
+            handoff_refs: run.handoff_refs.clone(),
+            branch: run.branch.clone(),
+            head_sha: run.head_sha.clone(),
+            primary_label: run.primary_label.clone(),
+            primary_pane_id: run.primary_pane_id.clone(),
+            primary_role: run.primary_role.clone(),
+            labels: run.labels.clone(),
+            pane_ids: run.pane_ids.clone(),
+            roles: run.roles.clone(),
+            changed_files: run.changed_files.clone(),
+            security_policy: run.security_policy.clone(),
+            security_verdict: run.security_verdict.clone(),
+            verification_contract: run.verification_contract.clone(),
+            verification_result: run.verification_result.clone(),
+            last_event: run.last_event.clone(),
+            last_event_at: run.last_event_at.clone(),
+        }
+    }
+}
+
+impl LedgerExplainPayload {
+    pub fn from_projection(
+        generated_at: String,
+        project_dir: String,
+        projection: LedgerExplainProjection,
+        observation_pack: Value,
+        consultation_packet: Value,
+        review_state: Value,
+    ) -> Self {
+        Self {
+            generated_at,
+            project_dir,
+            run: projection.run,
+            observation_pack,
+            consultation_packet,
+            evidence_digest: projection.evidence_digest,
+            explanation: projection.explanation,
+            review_state,
+            recent_events: projection.recent_events,
+        }
+    }
+}
+
 impl LedgerSnapshot {
     pub fn from_project_dir(project_dir: impl AsRef<Path>) -> Result<Self, String> {
         let winsmux_dir = project_dir.as_ref().join(".winsmux");

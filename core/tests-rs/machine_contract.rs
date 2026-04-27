@@ -52,6 +52,27 @@ fn machine_contract_exposes_projection_surfaces_in_stable_order() {
         catalog.projection_surfaces[5].command,
         "explain <run_id> --json"
     );
+    assert_eq!(
+        catalog
+            .projection_surfaces
+            .iter()
+            .map(|surface| surface.rust_type)
+            .collect::<Vec<_>>(),
+        vec![
+            "LedgerStatusPayload",
+            "LedgerBoardPayload",
+            "LedgerInboxPayload",
+            "LedgerDigestPayload",
+            "LedgerRunsPayload",
+            "LedgerExplainPayload",
+            "PollEventsPayload",
+            "ReviewRequestDispatchPayload",
+            "ReviewStateRecord",
+            "ReviewStateRecord",
+            "ReviewStateRecord",
+            "ReviewResetPayload",
+        ]
+    );
 }
 
 #[test]
@@ -203,6 +224,10 @@ fn machine_contract_serializes_to_json() {
         "budget_monthly_cents"
     );
     assert_eq!(value["projection_surfaces"][6]["name"], "poll-events");
+    assert_eq!(
+        value["projection_surfaces"][4]["rust_type"],
+        "LedgerRunsPayload"
+    );
     assert_eq!(value["review_state_file"]["states"][2], "FAIL");
     assert_eq!(value["event_taxonomy"][7]["group"], "security");
     assert_eq!(
