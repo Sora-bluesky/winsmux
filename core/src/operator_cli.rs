@@ -13,7 +13,10 @@ use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use crate::event_contract::{parse_event_jsonl, EventRecord};
-use crate::ledger::{LedgerDigestItem, LedgerSnapshot};
+use crate::ledger::{
+    LedgerBoardPayload, LedgerDigestItem, LedgerDigestPayload, LedgerExplainPayload,
+    LedgerInboxPayload, LedgerRunsPayload, LedgerSnapshot, LedgerStatusPayload,
+};
 
 static REVIEW_REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 static ATOMIC_WRITE_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -36,18 +39,12 @@ pub fn run_status_command(args: &[&String]) -> io::Result<()> {
     require_json("status", &options)?;
 
     let snapshot = load_snapshot(&options.project_dir)?;
-    let status = json!({
-        "generated_at": generated_at(),
-        "project_dir": project_dir_string(&options.project_dir),
-        "session": {
-            "name": snapshot.session_name(),
-            "pane_count": snapshot.pane_count(),
-            "event_count": snapshot.event_count(),
-        },
-        "summary": snapshot.board_summary(),
-        "panes": snapshot.pane_read_models(),
-    });
-    write_json(&status)
+    let payload = LedgerStatusPayload::from_snapshot(
+        generated_at(),
+        project_dir_string(&options.project_dir),
+        &snapshot,
+    );
+    write_json(&payload)
 }
 
 pub fn run_board_command(args: &[&String]) -> io::Result<()> {
@@ -58,10 +55,15 @@ pub fn run_board_command(args: &[&String]) -> io::Result<()> {
     let options = parse_options("board", args, 0)?;
 
     let snapshot = load_snapshot(&options.project_dir)?;
-    let payload = enveloped_payload(&options.project_dir, snapshot.board_projection())?;
+    let payload = LedgerBoardPayload::from_projection(
+        generated_at(),
+        project_dir_string(&options.project_dir),
+        snapshot.board_projection(),
+    );
     if options.json {
         return write_json(&payload);
     }
+    let payload = payload_to_value(&payload)?;
     print_board_table(&payload)
 }
 
@@ -73,10 +75,15 @@ pub fn run_inbox_command(args: &[&String]) -> io::Result<()> {
     let options = parse_options("inbox", args, 0)?;
 
     let snapshot = load_snapshot(&options.project_dir)?;
-    let payload = enveloped_payload(&options.project_dir, snapshot.inbox_projection())?;
+    let payload = LedgerInboxPayload::from_projection(
+        generated_at(),
+        project_dir_string(&options.project_dir),
+        snapshot.inbox_projection(),
+    );
     if options.json {
         write_json(&payload)
     } else {
+        let payload = payload_to_value(&payload)?;
         print_inbox_table(&payload)
     }
 }
@@ -89,10 +96,15 @@ pub fn run_digest_command(args: &[&String]) -> io::Result<()> {
     let options = parse_options("digest", args, 0)?;
 
     let snapshot = load_snapshot(&options.project_dir)?;
-    let payload = enveloped_payload(&options.project_dir, snapshot.digest_projection())?;
+    let payload = LedgerDigestPayload::from_projection(
+        generated_at(),
+        project_dir_string(&options.project_dir),
+        snapshot.digest_projection(),
+    );
     if options.json {
         write_json(&payload)
     } else {
+        let payload = payload_to_value(&payload)?;
         print_digest_text(&payload)
     }
 }
@@ -1631,10 +1643,15 @@ pub fn run_runs_command(args: &[&String]) -> io::Result<()> {
     let options = parse_options("runs", args, 0)?;
 
     let snapshot = load_snapshot(&options.project_dir)?;
-    let payload = runs_payload(&snapshot, &options.project_dir);
+    let payload = LedgerRunsPayload::from_snapshot(
+        generated_at(),
+        project_dir_string(&options.project_dir),
+        &snapshot,
+    );
     if options.json {
         write_json(&payload)
     } else {
+        let payload = payload_to_value(&payload)?;
         print_runs_table(&payload)
     }
 }
@@ -1663,28 +1680,28 @@ pub fn run_explain_command(args: &[&String]) -> io::Result<()> {
         &[".winsmux", "consultations"],
         &run_id,
     );
-    let payload = json!({
-        "generated_at": generated_at(),
-        "project_dir": project_dir_string(&options.project_dir),
-        "run": projection.run,
-        "observation_pack": observation_pack,
-        "consultation_packet": consultation_packet,
-        "evidence_digest": projection.evidence_digest,
-        "explanation": projection.explanation,
-        "review_state": Value::Null,
-        "recent_events": projection.recent_events,
-    });
+    let payload = LedgerExplainPayload::from_projection(
+        generated_at(),
+        project_dir_string(&options.project_dir),
+        projection,
+        observation_pack,
+        consultation_packet,
+        Value::Null,
+    );
     if options.follow {
         if options.json {
             write_json(&payload)?;
         } else {
-            print_explain_follow_header(&payload)?;
+            let payload_value = payload_to_value(&payload)?;
+            print_explain_follow_header(&payload_value)?;
         }
+        let payload = payload_to_value(&payload)?;
         return stream_explain_follow(&options.project_dir, payload, options.json);
     }
     if options.json {
         write_json(&payload)
     } else {
+        let payload = payload_to_value(&payload)?;
         print_explain_text(&payload)
     }
 }
@@ -6008,211 +6025,6 @@ fn compare_display_value(value: &Value) -> String {
     value.to_string()
 }
 
-fn runs_payload(snapshot: &LedgerSnapshot, project_dir: &Path) -> Value {
-    let runs: Vec<Value> = snapshot
-        .digest_projection()
-        .items
-        .into_iter()
-        .map(|item| {
-            let explain = snapshot.explain_projection(&item.run_id);
-            let run = explain.as_ref().map(|projection| &projection.run);
-            let action_items = run
-                .map(|run| json!(run.action_items))
-                .unwrap_or_else(|| json!([]));
-            let experiment_packet = run
-                .map(|run| json!(run.experiment_packet))
-                .unwrap_or(Value::Null);
-            let security_policy = run
-                .map(|run| run.security_policy.clone())
-                .unwrap_or(Value::Null);
-            let security_verdict = run
-                .map(|run| run.security_verdict.clone())
-                .unwrap_or(Value::Null);
-            let verification_contract = run
-                .map(|run| run.verification_contract.clone())
-                .unwrap_or(Value::Null);
-            let verification_result = run
-                .map(|run| run.verification_result.clone())
-                .unwrap_or(Value::Null);
-            let run_packet = run
-                .map(|run| {
-                    json!({
-                        "run_id": run.run_id,
-                        "task_id": run.task_id,
-                        "parent_run_id": run.parent_run_id,
-                        "goal": run.goal,
-                        "task": run.task,
-                        "task_type": run.task_type,
-                        "priority": run.priority,
-                        "blocking": run.blocking,
-                        "write_scope": run.write_scope,
-                        "read_scope": run.read_scope,
-                        "constraints": run.constraints,
-                        "expected_output": run.expected_output,
-                        "verification_plan": run.verification_plan,
-                        "review_required": run.review_required,
-                        "provider_target": run.provider_target,
-                        "agent_role": run.agent_role,
-                        "timeout_policy": run.timeout_policy,
-                        "handoff_refs": run.handoff_refs,
-                        "branch": run.branch,
-                        "head_sha": run.head_sha,
-                        "primary_label": run.primary_label,
-                        "primary_pane_id": run.primary_pane_id,
-                        "primary_role": run.primary_role,
-                        "labels": run.labels,
-                        "pane_ids": run.pane_ids,
-                        "roles": run.roles,
-                        "changed_files": run.changed_files,
-                        "security_policy": run.security_policy,
-                        "security_verdict": run.security_verdict,
-                        "verification_contract": run.verification_contract,
-                        "verification_result": run.verification_result,
-                        "last_event": run.last_event,
-                        "last_event_at": run.last_event_at,
-                    })
-                })
-                .unwrap_or(Value::Null);
-
-            let mut value = Map::new();
-            value.insert("run_id".into(), json!(item.run_id));
-            value.insert("task_id".into(), json!(item.task_id));
-            value.insert("task".into(), json!(item.task));
-            value.insert("task_state".into(), json!(item.task_state));
-            value.insert("review_state".into(), json!(item.review_state));
-            value.insert("branch".into(), json!(item.branch));
-            value.insert("worktree".into(), json!(item.worktree));
-            value.insert("head_sha".into(), json!(item.head_sha));
-            value.insert("primary_label".into(), json!(item.label));
-            value.insert("primary_pane_id".into(), json!(item.pane_id));
-            value.insert("primary_role".into(), json!(item.role));
-            value.insert(
-                "state".into(),
-                json!(run.map(|run| run.state.clone()).unwrap_or_default()),
-            );
-            value.insert(
-                "tokens_remaining".into(),
-                json!(run
-                    .map(|run| run.tokens_remaining.clone())
-                    .unwrap_or_default()),
-            );
-            value.insert("last_event".into(), json!(item.last_event));
-            value.insert("last_event_at".into(), json!(item.last_event_at));
-            value.insert(
-                "pane_count".into(),
-                json!(run.map(|run| run.pane_count).unwrap_or(1)),
-            );
-            value.insert("changed_file_count".into(), json!(item.changed_file_count));
-            value.insert(
-                "labels".into(),
-                run.map(|run| json!(run.labels))
-                    .unwrap_or_else(|| json!([item.label])),
-            );
-            value.insert(
-                "pane_ids".into(),
-                run.map(|run| json!(run.pane_ids))
-                    .unwrap_or_else(|| json!([item.pane_id])),
-            );
-            value.insert(
-                "roles".into(),
-                run.map(|run| json!(run.roles))
-                    .unwrap_or_else(|| json!([item.role])),
-            );
-            value.insert("changed_files".into(), json!(item.changed_files));
-            value.insert("action_items".into(), action_items);
-            value.insert(
-                "parent_run_id".into(),
-                json!(run.map(|run| run.parent_run_id.clone()).unwrap_or_default()),
-            );
-            value.insert(
-                "goal".into(),
-                json!(run.map(|run| run.goal.clone()).unwrap_or_default()),
-            );
-            value.insert(
-                "task_type".into(),
-                json!(run.map(|run| run.task_type.clone()).unwrap_or_default()),
-            );
-            value.insert(
-                "priority".into(),
-                json!(run.map(|run| run.priority.clone()).unwrap_or_default()),
-            );
-            value.insert(
-                "blocking".into(),
-                json!(run.map(|run| run.blocking).unwrap_or(false)),
-            );
-            value.insert(
-                "write_scope".into(),
-                run.map(|run| json!(run.write_scope))
-                    .unwrap_or_else(|| json!([])),
-            );
-            value.insert(
-                "read_scope".into(),
-                run.map(|run| json!(run.read_scope))
-                    .unwrap_or_else(|| json!([])),
-            );
-            value.insert(
-                "constraints".into(),
-                run.map(|run| json!(run.constraints))
-                    .unwrap_or_else(|| json!([])),
-            );
-            value.insert(
-                "expected_output".into(),
-                json!(run
-                    .map(|run| run.expected_output.clone())
-                    .unwrap_or_default()),
-            );
-            value.insert(
-                "verification_plan".into(),
-                run.map(|run| json!(run.verification_plan))
-                    .unwrap_or_else(|| json!([])),
-            );
-            value.insert(
-                "review_required".into(),
-                json!(run.map(|run| run.review_required).unwrap_or(false)),
-            );
-            value.insert("provider_target".into(), json!(item.provider_target));
-            value.insert(
-                "agent_role".into(),
-                json!(run.map(|run| run.agent_role.clone()).unwrap_or(item.role)),
-            );
-            value.insert(
-                "timeout_policy".into(),
-                json!(run
-                    .map(|run| run.timeout_policy.clone())
-                    .unwrap_or_default()),
-            );
-            value.insert(
-                "handoff_refs".into(),
-                run.map(|run| json!(run.handoff_refs))
-                    .unwrap_or_else(|| json!([])),
-            );
-            value.insert("experiment_packet".into(), experiment_packet);
-            value.insert("security_policy".into(), security_policy);
-            value.insert("security_verdict".into(), security_verdict);
-            value.insert("verification_contract".into(), verification_contract);
-            value.insert("verification_result".into(), verification_result);
-            value.insert("run_packet".into(), run_packet);
-            Value::Object(value)
-        })
-        .collect();
-
-    json!({
-        "generated_at": generated_at(),
-        "project_dir": project_dir_string(project_dir),
-        "summary": {
-            "run_count": runs.len(),
-            "blocked_runs": runs.iter().filter(|run| json_string_eq(run, "task_state", "blocked")).count(),
-            "review_pending": runs.iter().filter(|run| json_string_eq(run, "review_state", "pending")).count(),
-            "dirty_runs": runs.iter().filter(|run| run["changed_file_count"].as_u64().unwrap_or(0) > 0).count(),
-            "action_item_count": runs
-                .iter()
-                .map(|run| run["action_items"].as_array().map(|items| items.len()).unwrap_or(0))
-                .sum::<usize>(),
-        },
-        "runs": runs,
-    })
-}
-
 fn desktop_summary_payload(snapshot: &LedgerSnapshot, project_dir: &Path) -> io::Result<Value> {
     let board = desktop_board_payload(snapshot, project_dir);
     let inbox = enveloped_payload(project_dir, snapshot.inbox_projection())?;
@@ -6975,14 +6787,6 @@ fn json_field_string(value: &Value, key: &str) -> String {
         .to_string()
 }
 
-fn json_string_eq(value: &Value, key: &str, expected: &str) -> bool {
-    value
-        .get(key)
-        .and_then(Value::as_str)
-        .map(|actual| actual.eq_ignore_ascii_case(expected))
-        .unwrap_or(false)
-}
-
 fn read_artifact_json(
     reference: &str,
     project_dir: &Path,
@@ -7039,6 +6843,15 @@ fn read_artifact_json(
 fn write_enveloped_json<T: Serialize>(project_dir: &Path, value: T) -> io::Result<()> {
     let payload = enveloped_payload(project_dir, value)?;
     write_json(&payload)
+}
+
+fn payload_to_value<T: Serialize>(value: &T) -> io::Result<Value> {
+    serde_json::to_value(value).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize Rust operator projection: {err}"),
+        )
+    })
 }
 
 fn enveloped_payload<T: Serialize>(project_dir: &Path, value: T) -> io::Result<Value> {

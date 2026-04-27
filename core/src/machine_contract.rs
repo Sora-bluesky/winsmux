@@ -25,6 +25,7 @@ pub struct ProjectionSurfaceContract<'a> {
     pub name: &'a str,
     pub command: &'a str,
     pub shape: &'a str,
+    pub rust_type: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -204,61 +205,73 @@ const PROJECTION_SURFACES: &[ProjectionSurfaceContract<'static>] = &[
         name: "status",
         command: "status --json",
         shape: "session summary plus pane read models",
+        rust_type: "LedgerStatusPayload",
     },
     ProjectionSurfaceContract {
         name: "board",
         command: "board --json",
         shape: "ordered pane board projection",
+        rust_type: "LedgerBoardPayload",
     },
     ProjectionSurfaceContract {
         name: "inbox",
         command: "inbox --json",
         shape: "actionable inbox items",
+        rust_type: "LedgerInboxPayload",
     },
     ProjectionSurfaceContract {
         name: "digest",
         command: "digest --json",
         shape: "run evidence digest",
+        rust_type: "LedgerDigestPayload",
     },
     ProjectionSurfaceContract {
         name: "runs",
         command: "runs --json",
         shape: "run catalog projection",
+        rust_type: "LedgerRunsPayload",
     },
     ProjectionSurfaceContract {
         name: "explain",
         command: "explain <run_id> --json",
         shape: "single run explanation with recent events",
+        rust_type: "LedgerExplainPayload",
     },
     ProjectionSurfaceContract {
         name: "poll-events",
         command: "poll-events --json",
         shape: "event stream items",
+        rust_type: "PollEventsPayload",
     },
     ProjectionSurfaceContract {
         name: "dispatch-review",
         command: "dispatch-review --json",
         shape: "review request dispatch status",
+        rust_type: "ReviewRequestDispatchPayload",
     },
     ProjectionSurfaceContract {
         name: "review-request",
         command: "review-request --json",
         shape: "pending review-state record",
+        rust_type: "ReviewStateRecord",
     },
     ProjectionSurfaceContract {
         name: "review-approve",
         command: "review-approve --json",
         shape: "approved review-state record",
+        rust_type: "ReviewStateRecord",
     },
     ProjectionSurfaceContract {
         name: "review-fail",
         command: "review-fail --json",
         shape: "failed review-state record",
+        rust_type: "ReviewStateRecord",
     },
     ProjectionSurfaceContract {
         name: "review-reset",
         command: "review-reset --json",
         shape: "review-state cleanup status",
+        rust_type: "ReviewResetPayload",
     },
 ];
 

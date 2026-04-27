@@ -11,6 +11,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde_json::{json, Value};
+
 const MANIFEST_FIXTURE: &str = include_str!("../../tests/fixtures/rust-parity/manifest.yaml");
 const EVENTS_FIXTURE: &str = include_str!("../../tests/fixtures/rust-parity/events.jsonl");
 
@@ -507,6 +509,91 @@ fn ledger_contract_serializes_projection_surfaces_to_json() {
     assert!(digest["items"].is_array());
     assert_eq!(explain["run"]["run_id"], "task:task-256");
     assert!(explain["recent_events"].is_array());
+}
+
+#[test]
+fn ledger_contract_serializes_typed_cli_payload_roots() {
+    let snapshot =
+        ledger::LedgerSnapshot::from_manifest_and_events(MANIFEST_FIXTURE, EVENTS_FIXTURE)
+            .expect("ledger snapshot should load frozen fixtures");
+
+    let status = serde_json::to_value(ledger::LedgerStatusPayload::from_snapshot(
+        "2026-04-27T00:00:00Z".to_string(),
+        "C:\\repo".to_string(),
+        &snapshot,
+    ))
+    .expect("status payload should serialize to JSON");
+    assert_root_keys(
+        &status,
+        &["generated_at", "panes", "project_dir", "session", "summary"],
+    );
+    assert_eq!(status["session"]["name"], "winsmux-orchestra");
+
+    let board = serde_json::to_value(ledger::LedgerBoardPayload::from_projection(
+        "2026-04-27T00:00:00Z".to_string(),
+        "C:\\repo".to_string(),
+        snapshot.board_projection(),
+    ))
+    .expect("board payload should serialize to JSON");
+    assert_root_keys(&board, &["generated_at", "panes", "project_dir", "summary"]);
+    assert_eq!(board["panes"][0]["label"], "builder-1");
+
+    let inbox = serde_json::to_value(ledger::LedgerInboxPayload::from_projection(
+        "2026-04-27T00:00:00Z".to_string(),
+        "C:\\repo".to_string(),
+        snapshot.inbox_projection(),
+    ))
+    .expect("inbox payload should serialize to JSON");
+    assert_root_keys(&inbox, &["generated_at", "items", "project_dir", "summary"]);
+
+    let digest = serde_json::to_value(ledger::LedgerDigestPayload::from_projection(
+        "2026-04-27T00:00:00Z".to_string(),
+        "C:\\repo".to_string(),
+        snapshot.digest_projection(),
+    ))
+    .expect("digest payload should serialize to JSON");
+    assert_root_keys(
+        &digest,
+        &["generated_at", "items", "project_dir", "summary"],
+    );
+
+    let runs = serde_json::to_value(ledger::LedgerRunsPayload::from_snapshot(
+        "2026-04-27T00:00:00Z".to_string(),
+        "C:\\repo".to_string(),
+        &snapshot,
+    ))
+    .expect("runs payload should serialize to JSON");
+    assert_root_keys(&runs, &["generated_at", "project_dir", "runs", "summary"]);
+    assert_eq!(runs["summary"]["run_count"], 2);
+    assert!(runs["runs"][0]["run_packet"].is_object());
+
+    let explain_projection = snapshot
+        .explain_projection("task:task-256")
+        .expect("fixture explain projection should exist");
+    let explain = serde_json::to_value(ledger::LedgerExplainPayload::from_projection(
+        "2026-04-27T00:00:00Z".to_string(),
+        "C:\\repo".to_string(),
+        explain_projection,
+        json!({"summary": "ok"}),
+        json!({"recommendation": "ok"}),
+        Value::Null,
+    ))
+    .expect("explain payload should serialize to JSON");
+    assert_root_keys(
+        &explain,
+        &[
+            "consultation_packet",
+            "evidence_digest",
+            "explanation",
+            "generated_at",
+            "observation_pack",
+            "project_dir",
+            "recent_events",
+            "review_state",
+            "run",
+        ],
+    );
+    assert_eq!(explain["run"]["run_id"], "task:task-256");
 }
 
 #[test]
@@ -1091,4 +1178,15 @@ impl Drop for TempProject {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+fn assert_root_keys(value: &Value, expected: &[&str]) {
+    let mut keys = value
+        .as_object()
+        .expect("value should be an object")
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    assert_eq!(keys, expected);
 }
