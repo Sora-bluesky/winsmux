@@ -1302,6 +1302,43 @@ function Get-ConsultationCommandContext {
     }
 }
 
+function Test-ConsultationGovernanceCostUnitExists {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$UnitId
+    )
+
+    foreach ($record in @(Get-BridgeEventRecords -ProjectDir $ProjectDir)) {
+        $data = $record['data']
+        if ($null -eq $data) {
+            continue
+        }
+        $units = @()
+        if ($data -is [hashtable]) {
+            if ($data.ContainsKey('governance_cost_units')) {
+                $units = @($data['governance_cost_units'])
+            }
+        } else {
+            $property = $data.PSObject.Properties['governance_cost_units']
+            if ($null -ne $property) {
+                $units = @($property.Value)
+            }
+        }
+        foreach ($unit in $units) {
+            $candidate = ''
+            if ($unit -is [hashtable] -and $unit.ContainsKey('unit_id')) {
+                $candidate = [string]$unit['unit_id']
+            } elseif ($null -ne $unit.unit_id) {
+                $candidate = [string]$unit.unit_id
+            }
+            if ($candidate -eq $UnitId) {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
 function Write-ConsultationCommandRecord {
     param(
         [Parameter(Mandatory = $true)][string]$Kind,
@@ -1349,6 +1386,21 @@ function Write-ConsultationCommandRecord {
         default { Stop-WithError "Unsupported consultation command kind: $Kind" }
     }
 
+    $costTarget = [string]$TargetSlot
+    if ([string]::IsNullOrWhiteSpace($costTarget)) {
+        $costTarget = [string]$context.Slot
+    }
+    $costUnit = New-WinsmuxGovernanceCostUnit -Kind 'consult' -Mode $Mode -Task ([string]$context.TaskId) -RunId ([string]$context.RunId) -Stage ("consult_{0}" -f $Mode) -Role ([string]$context.Role) -Target $costTarget -Source 'consult-command'
+    $hasExistingCostUnit = Test-ConsultationGovernanceCostUnitExists -ProjectDir $ProjectDir -UnitId ([string]$costUnit.unit_id)
+    if ($Kind -eq 'consult_request') {
+        $packet['governance_cost_units'] = @($costUnit)
+    } else {
+        $packet['cost_unit_refs'] = @([string]$costUnit.unit_id)
+        if (-not $hasExistingCostUnit) {
+            $packet['governance_cost_units'] = @($costUnit)
+        }
+    }
+
     $artifact = New-ConsultationPacketFile -ProjectDir $ProjectDir -ConsultationPacket $packet
 
     $eventData = [ordered]@{
@@ -1358,6 +1410,14 @@ function Write-ConsultationCommandRecord {
         branch           = [string]$context.Branch
         worktree         = [string]$context.Worktree
         consultation_ref = [string]$artifact.reference
+    }
+    if ($Kind -eq 'consult_request') {
+        $eventData['governance_cost_units'] = @($costUnit)
+    } else {
+        $eventData['cost_unit_refs'] = @([string]$costUnit.unit_id)
+        if (-not $hasExistingCostUnit) {
+            $eventData['governance_cost_units'] = @($costUnit)
+        }
     }
 
     if ($Kind -eq 'consult_result') {
@@ -1404,6 +1464,7 @@ function Write-ConsultationCommandRecord {
             next_test        = [string]$NextTest
             risks            = @($Risks)
             consultation_ref = [string]$artifact.reference
+            cost_unit_refs   = @([string]$costUnit.unit_id)
             generated_at     = $timestamp
         } | ConvertTo-Json -Compress -Depth 8 | Write-Output
         return

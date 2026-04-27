@@ -1982,6 +1982,11 @@ pub fn run_consult_result_command(args: &[&String]) -> io::Result<()> {
             "next_test": options.next_test,
             "risks": options.risks,
             "consultation_ref": artifact.reference,
+            "cost_unit_refs": consultation_governance_cost_unit_refs(
+                &context,
+                &options.mode,
+                &options.target_slot,
+            ),
             "generated_at": timestamp,
         }));
     }
@@ -5744,6 +5749,10 @@ fn consultation_result_packet(
     timestamp: &str,
 ) -> Value {
     let mut packet = Map::new();
+    let (cost_unit_ref, cost_unit) =
+        consultation_governance_cost_unit(context, &options.mode, &options.target_slot);
+    let has_existing_cost_unit =
+        governance_cost_unit_exists(&options.project_dir, &cost_unit_ref);
     packet.insert("packet_type".to_string(), json!("consultation_packet"));
     packet.insert("generated_at".to_string(), json!(timestamp));
     packet.insert("run_id".to_string(), json!(context.run_id));
@@ -5763,6 +5772,10 @@ fn consultation_result_packet(
     );
     packet.insert("next_test".to_string(), json!(options.next_test));
     packet.insert("risks".to_string(), json!(options.risks));
+    packet.insert("cost_unit_refs".to_string(), json!([cost_unit_ref]));
+    if !has_existing_cost_unit {
+        packet.insert("governance_cost_units".to_string(), json!([cost_unit]));
+    }
     Value::Object(packet)
 }
 
@@ -5772,6 +5785,8 @@ fn consultation_request_packet(
     timestamp: &str,
 ) -> Value {
     let mut packet = Map::new();
+    let (_, cost_unit) =
+        consultation_governance_cost_unit(context, &options.mode, &options.target_slot);
     packet.insert("packet_type".to_string(), json!("consultation_packet"));
     packet.insert("generated_at".to_string(), json!(timestamp));
     packet.insert("run_id".to_string(), json!(context.run_id));
@@ -5785,6 +5800,7 @@ fn consultation_request_packet(
     packet.insert("head_sha".to_string(), json!(context.head_sha));
     packet.insert("worktree".to_string(), json!(context.worktree));
     packet.insert("request".to_string(), json!(options.message));
+    packet.insert("governance_cost_units".to_string(), json!([cost_unit]));
     Value::Object(packet)
 }
 
@@ -5794,6 +5810,10 @@ fn consultation_error_packet(
     timestamp: &str,
 ) -> Value {
     let mut packet = Map::new();
+    let (cost_unit_ref, cost_unit) =
+        consultation_governance_cost_unit(context, &options.mode, &options.target_slot);
+    let has_existing_cost_unit =
+        governance_cost_unit_exists(&options.project_dir, &cost_unit_ref);
     packet.insert("packet_type".to_string(), json!("consultation_packet"));
     packet.insert("generated_at".to_string(), json!(timestamp));
     packet.insert("run_id".to_string(), json!(context.run_id));
@@ -5807,7 +5827,79 @@ fn consultation_error_packet(
     packet.insert("head_sha".to_string(), json!(context.head_sha));
     packet.insert("worktree".to_string(), json!(context.worktree));
     packet.insert("error".to_string(), json!(options.message));
+    packet.insert("cost_unit_refs".to_string(), json!([cost_unit_ref]));
+    if !has_existing_cost_unit {
+        packet.insert("governance_cost_units".to_string(), json!([cost_unit]));
+    }
     Value::Object(packet)
+}
+
+fn consultation_governance_cost_unit_refs(
+    context: &ConsultationContext,
+    mode: &str,
+    target_slot: &str,
+) -> Vec<String> {
+    let (unit_id, _) = consultation_governance_cost_unit(context, mode, target_slot);
+    vec![unit_id]
+}
+
+fn consultation_governance_cost_unit(
+    context: &ConsultationContext,
+    mode: &str,
+    target_slot: &str,
+) -> (String, Value) {
+    let normalized_mode = mode.trim().to_ascii_lowercase();
+    let stage = format!("consult_{normalized_mode}");
+    let effective_target = if target_slot.trim().is_empty() {
+        context.slot.trim()
+    } else {
+        target_slot.trim()
+    };
+    let parts = [
+        "governance",
+        "consult",
+        normalized_mode.as_str(),
+        stage.as_str(),
+        context.task_id.as_str(),
+        context.run_id.as_str(),
+        effective_target,
+        "0",
+    ];
+    let unit_id = parts
+        .iter()
+        .filter_map(|part| {
+            let trimmed = part.trim();
+            (!trimmed.is_empty()).then_some(trimmed)
+        })
+        .collect::<Vec<_>>()
+        .join(":");
+
+    (
+        unit_id.clone(),
+        json!({
+            "unit_id": unit_id,
+            "unit_type": "governance_invocation",
+            "kind": "consult",
+            "mode": normalized_mode,
+            "stage": stage,
+            "task": context.task_id,
+            "run_id": context.run_id,
+            "role": context.role,
+            "target": effective_target,
+            "attempt": 0,
+            "source": "consult-command",
+            "quantity": 1,
+        }),
+    )
+}
+
+fn governance_cost_unit_exists(project_dir: &Path, unit_id: &str) -> bool {
+    let events_path = project_dir.join(".winsmux").join("events.jsonl");
+    let Ok(raw) = fs::read_to_string(events_path) else {
+        return false;
+    };
+    raw.lines()
+        .any(|line| line.contains("\"governance_cost_units\"") && line.contains(unit_id))
 }
 
 fn consultation_result_event(
@@ -5823,6 +5915,14 @@ fn consultation_result_event(
     data.insert("branch".to_string(), json!(context.branch));
     data.insert("worktree".to_string(), json!(context.worktree));
     data.insert("consultation_ref".to_string(), json!(consultation_ref));
+    let (cost_unit_ref, cost_unit) =
+        consultation_governance_cost_unit(context, &options.mode, &options.target_slot);
+    let has_existing_cost_unit =
+        governance_cost_unit_exists(&options.project_dir, &cost_unit_ref);
+    data.insert("cost_unit_refs".to_string(), json!([cost_unit_ref]));
+    if !has_existing_cost_unit {
+        data.insert("governance_cost_units".to_string(), json!([cost_unit]));
+    }
     data.insert("result".to_string(), json!(options.message));
     if let Some(confidence) = options.confidence {
         data.insert("confidence".to_string(), json!(confidence));
@@ -5858,6 +5958,9 @@ fn consultation_request_event(
     data.insert("branch".to_string(), json!(context.branch));
     data.insert("worktree".to_string(), json!(context.worktree));
     data.insert("consultation_ref".to_string(), json!(consultation_ref));
+    let (_, cost_unit) =
+        consultation_governance_cost_unit(context, &options.mode, &options.target_slot);
+    data.insert("governance_cost_units".to_string(), json!([cost_unit]));
 
     json!({
         "timestamp": timestamp,
@@ -5886,6 +5989,14 @@ fn consultation_error_event(
     data.insert("branch".to_string(), json!(context.branch));
     data.insert("worktree".to_string(), json!(context.worktree));
     data.insert("consultation_ref".to_string(), json!(consultation_ref));
+    let (cost_unit_ref, cost_unit) =
+        consultation_governance_cost_unit(context, &options.mode, &options.target_slot);
+    let has_existing_cost_unit =
+        governance_cost_unit_exists(&options.project_dir, &cost_unit_ref);
+    data.insert("cost_unit_refs".to_string(), json!([cost_unit_ref]));
+    if !has_existing_cost_unit {
+        data.insert("governance_cost_units".to_string(), json!([cost_unit]));
+    }
 
     json!({
         "timestamp": timestamp,

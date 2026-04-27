@@ -21,11 +21,15 @@ Set-StrictMode -Version Latest
 
 $script:TeamPipelineBridgeScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\scripts\winsmux-core.ps1'))
 $script:TeamPipelineLoggerScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'logger.ps1'))
+$script:TeamPipelinePaneEnvScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot 'pane-env.ps1'))
 $script:TeamPipelineDangerousApprovalPattern = '(?im)(rm\s+-rf|Remove-Item\s+.+-Recurse.+-Force|git\s+push\s+--force|git\s+reset\s+--hard|DROP\s+TABLE|DELETE\s+FROM)'
 
 . (Join-Path $PSScriptRoot 'manifest.ps1')
 if (Test-Path $script:TeamPipelineLoggerScript -PathType Leaf) {
     . $script:TeamPipelineLoggerScript
+}
+if (Test-Path $script:TeamPipelinePaneEnvScript -PathType Leaf) {
+    . $script:TeamPipelinePaneEnvScript
 }
 
 function Get-TeamPipelineValue {
@@ -1287,6 +1291,7 @@ function Invoke-TeamPipelineConsultStage {
 
     $consultRole = Get-TeamPipelineConsultRole -TargetLabel $TargetLabel -BuilderLabel $BuilderLabel -ResearcherLabel $ResearcherLabel -ReviewerLabel $ReviewerLabel
     $prompt = New-TeamPipelineConsultPrompt -Mode $Mode -Task $Task -PlanSummary $PlanSummary -BuildSummary $BuildSummary -VerificationSummary $VerificationSummary -BuilderLabel $BuilderLabel -BuilderWorktreePath $BuilderWorktreePath
+    $costUnit = New-WinsmuxGovernanceCostUnit -Kind 'consult' -Mode $Mode -Task $Task -Stage ("CONSULT_{0}" -f $Mode.ToUpperInvariant()) -Role $consultRole -Target $TargetLabel -Attempt $Attempt -Source 'team-pipeline'
     $eventData = [ordered]@{
         mode                 = $Mode
         attempt              = $Attempt
@@ -1294,6 +1299,7 @@ function Invoke-TeamPipelineConsultStage {
         builder              = $BuilderLabel
         builder_worktree_path = $BuilderWorktreePath
         verify_summary       = $VerificationSummary
+        governance_cost_units = @($costUnit)
     }
 
     $dispatchResult = Invoke-TeamPipelineGuardedSend -StageName ("CONSULT_{0}" -f $Mode.ToUpperInvariant()) -Target $TargetLabel -Prompt $prompt -ProjectDir $ProjectDir -SessionName $SessionName -Role $consultRole -Task $Task -Attempt $Attempt
@@ -1312,6 +1318,7 @@ function Invoke-TeamPipelineConsultStage {
         summary               = $stage.Summary
         builder               = $BuilderLabel
         builder_worktree_path = $BuilderWorktreePath
+        cost_unit_refs        = @([string]$costUnit.unit_id)
     }) | Out-Null
 
     return $stage
@@ -1486,10 +1493,13 @@ function Invoke-TeamPipeline {
             $verifyRole = 'Researcher'
         }
 
+        $verifyCostUnit = New-WinsmuxGovernanceCostUnit -Kind 'verify' -Mode 'review' -Task $Task -Stage 'VERIFY' -Role $verifyRole -Target $targets.VerifyTarget -Attempt $attemptIndex -Source 'team-pipeline'
+        $verifyCostUnitDispatched = $false
         $verifyDispatchResult = Invoke-TeamPipelineGuardedSend -StageName 'VERIFY' -Target $targets.VerifyTarget -Prompt $verifyPrompt -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role $verifyRole -Task $Task -Attempt $attemptIndex
         if ($null -ne $verifyDispatchResult) {
             $verifyStage = $verifyDispatchResult
         } else {
+            $verifyCostUnitDispatched = $true
             Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.review.dispatched' -Message "Auto-dispatched review to $($targets.VerifyTarget) after builder completion." -Role $verifyRole -Target $targets.VerifyTarget -Data ([ordered]@{
                 attempt              = $attemptIndex
                 task                 = $Task
@@ -1497,6 +1507,7 @@ function Invoke-TeamPipeline {
                 builder_worktree_path = $builderContext.BuilderWorktreePath
                 verify_role          = $verifyRole
                 summary              = $buildNotification.Summary
+                governance_cost_units = @($verifyCostUnit)
             }) | Out-Null
             $verifyStage = Wait-TeamPipelineStage -Target $targets.VerifyTarget -StageName 'VERIFY' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role $verifyRole -Task $Task -Attempt $attemptIndex
         }
@@ -1512,7 +1523,7 @@ function Invoke-TeamPipeline {
             'FAIL' { 'pipeline.verify.fail' }
             default { 'pipeline.verify.partial' }
         }
-        Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event $verifyEventName -Message "Verification returned $($attempt.VerifyPacket.verdict) on $($targets.VerifyTarget)." -Role $verifyRole -Target $targets.VerifyTarget -Data ([ordered]@{
+        $verifyEventData = [ordered]@{
             attempt           = $attemptIndex
             task              = $Task
             verifier          = $targets.VerifyTarget
@@ -1525,7 +1536,11 @@ function Invoke-TeamPipeline {
             style             = $attempt.VerifyPacket.style
             verification_contract = $attempt.VerifyPacket.verification_contract
             verification_result = $attempt.VerifyPacket.verification_result
-        }) | Out-Null
+        }
+        if ($verifyCostUnitDispatched) {
+            $verifyEventData['cost_unit_refs'] = @([string]$verifyCostUnit.unit_id)
+        }
+        Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event $verifyEventName -Message "Verification returned $($attempt.VerifyPacket.verdict) on $($targets.VerifyTarget)." -Role $verifyRole -Target $targets.VerifyTarget -Data $verifyEventData | Out-Null
         $result.Attempts += [PSCustomObject]$attempt
 
         switch ($verifyStage.Status) {

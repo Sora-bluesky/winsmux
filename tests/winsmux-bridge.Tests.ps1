@@ -1740,6 +1740,8 @@ NEXT_ACTION: rerun focused verification
         $result.FinalStatus | Should -Be 'VERIFY_BLOCKED'
         @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.review.dispatched' }).Count | Should -Be 0
         @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.security.blocked' }).Count | Should -BeGreaterThan 0
+        $verifyResult = @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.verify.partial' })[0]
+        $verifyResult.Data.Contains('cost_unit_refs') | Should -BeFalse
     }
 
     It 'selects sensible planning and verification targets from the available roles' {
@@ -1958,6 +1960,22 @@ NEXT_ACTION: rerun focused verification
         @($script:teamPipelineBridgeCalls | Where-Object { $_[0] -eq 'send' -and $_[1] -eq 'reviewer' }).Count | Should -Be 3
         @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.dispatched' }).Count | Should -Be 2
         @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.completed' }).Count | Should -Be 2
+        @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.review.dispatched' }).Count | Should -Be 1
+
+        $consultDispatch = @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.dispatched' })[0]
+        $consultDispatch.Data.governance_cost_units[0].unit_type | Should -Be 'governance_invocation'
+        $consultDispatch.Data.governance_cost_units[0].kind | Should -Be 'consult'
+        $consultDispatch.Data.governance_cost_units[0].mode | Should -Be 'early'
+
+        $consultComplete = @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.completed' })[0]
+        $consultComplete.Data.cost_unit_refs[0] | Should -Be $consultDispatch.Data.governance_cost_units[0].unit_id
+
+        $verifyDispatch = @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.review.dispatched' })[0]
+        $verifyDispatch.Data.governance_cost_units[0].unit_type | Should -Be 'governance_invocation'
+        $verifyDispatch.Data.governance_cost_units[0].kind | Should -Be 'verify'
+
+        $verifyResult = @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.verify.pass' })[0]
+        $verifyResult.Data.cost_unit_refs[0] | Should -Be $verifyDispatch.Data.governance_cost_units[0].unit_id
     }
 
     It 'inserts a stuck consult before returning blocked execution' {
@@ -2130,6 +2148,17 @@ hook_profile: ci
         $clean.AllowedVariableNames | Should -Contain 'WINSMUX_GOVERNANCE_MODE'
         $clean.Environment.WINSMUX_ROLE | Should -Be 'Worker'
         $clean.Environment.WINSMUX_PANE_ID | Should -Be '%4'
+    }
+
+    It 'creates a normalized governance cost unit' {
+        $unit = New-WinsmuxGovernanceCostUnit -Kind 'Consult' -Mode 'Final' -Task 'TASK-310' -RunId 'task:310' -Stage 'CONSULT_FINAL' -Role 'Reviewer' -Target 'reviewer' -Attempt 1 -Source 'test'
+
+        $unit.unit_type | Should -Be 'governance_invocation'
+        $unit.kind | Should -Be 'consult'
+        $unit.mode | Should -Be 'final'
+        $unit.stage | Should -Be 'consult_final'
+        $unit.quantity | Should -Be 1
+        $unit.unit_id | Should -Match 'TASK-310'
     }
 }
 
@@ -12400,12 +12429,16 @@ panes:
         $events[0].event | Should -Be 'pane.consult_request'
         $events[0].data.consultation_ref | Should -BeLike '.winsmux/consultations/consult-request-*.json'
         $events[0].data.run_id | Should -Be 'task:task-301'
+        $events[0].data.governance_cost_units[0].unit_type | Should -Be 'governance_invocation'
+        $events[0].data.governance_cost_units[0].kind | Should -Be 'consult'
+        $events[0].data.governance_cost_units[0].mode | Should -Be 'early'
 
         $packet = Read-WinsmuxArtifactJson -Reference ([string]$events[0].data.consultation_ref) -ProjectDir $script:consultTempRoot -ExpectedDirectoryPath (Get-ConsultationDirectory -ProjectDir $script:consultTempRoot) -ExpectedRunId 'task:task-301'
         $packet.kind | Should -Be 'consult_request'
         $packet.mode | Should -Be 'early'
         $packet.target_slot | Should -Be 'slot-review-1'
         $packet.request | Should -Be 'sanity-check the current hypothesis'
+        $packet.governance_cost_units[0].unit_id | Should -Be $events[0].data.governance_cost_units[0].unit_id
     }
 
     It 'records a consult result with summary projection fields' {
@@ -12420,6 +12453,9 @@ panes:
         $events[0].data.result | Should -Be 'keep deterministic build command'
         $events[0].data.confidence | Should -Be 0.8
         $events[0].data.next_action | Should -Be 'rerun build'
+        $events[0].data.cost_unit_refs[0] | Should -Match 'governance:consult:final'
+        $events[0].data.cost_unit_refs[0] | Should -Match 'builder-1'
+        $events[0].data.governance_cost_units[0].unit_id | Should -Be $events[0].data.cost_unit_refs[0]
 
         $packet = Read-WinsmuxArtifactJson -Reference ([string]$events[0].data.consultation_ref) -ProjectDir $script:consultTempRoot -ExpectedDirectoryPath (Get-ConsultationDirectory -ProjectDir $script:consultTempRoot) -ExpectedRunId 'task:task-301'
         $packet.kind | Should -Be 'consult_result'
@@ -12428,6 +12464,25 @@ panes:
         $packet.next_test | Should -Be 'rerun build'
         $packet.confidence | Should -Be 0.8
         $packet.risks | Should -Be @('cache mismatch')
+        $packet.cost_unit_refs[0] | Should -Be $events[0].data.cost_unit_refs[0]
+        $packet.governance_cost_units[0].unit_id | Should -Be $events[0].data.cost_unit_refs[0]
+    }
+
+    It 'ignores prior events without governance cost units when recording a consult result' {
+        Write-BridgeEventRecord -ProjectDir $script:consultTempRoot -EventRecord ([ordered]@{
+            timestamp = '2026-04-27T09:00:00.0000000+09:00'
+            event     = 'pane.completed'
+            message   = 'completed before consult'
+            data      = [ordered]@{ task = 'task-301' }
+        }) | Out-Null
+
+        $output = Write-ConsultationCommandRecord -Kind 'consult_result' -Mode 'final' -Message 'safe with old events' -ProjectDir $script:consultTempRoot
+
+        $output | Should -Match 'consult result recorded for task:task-301'
+        $events = @(Get-BridgeEventRecords -ProjectDir $script:consultTempRoot)
+        $events.Count | Should -Be 2
+        $events[-1].data.cost_unit_refs[0] | Should -Match 'governance:consult:final'
+        $events[-1].data.governance_cost_units[0].unit_id | Should -Be $events[-1].data.cost_unit_refs[0]
     }
 
     It 'accepts run override and json output for consult result' {
@@ -12445,6 +12500,7 @@ panes:
         $result.recommendation | Should -Be 'pick builder-1'
         $result.next_test | Should -Be 'promote tactic'
         $result.consultation_ref | Should -BeLike '.winsmux/consultations/consult-result-*.json'
+        $result.cost_unit_refs[0] | Should -Match 'governance:consult:final'
     }
 
     It 'fails closed for unsupported consult mode' {

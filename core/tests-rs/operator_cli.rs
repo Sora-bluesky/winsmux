@@ -195,7 +195,10 @@ fn operator_cli_explain_follow_reports_matching_events() {
 
     assert_eq!(item["event"], "operator.followup");
     assert_eq!(item["message"], "new evidence arrived");
-    assert_eq!(item["branch"], "codex/task266-rust-operator-readmodels-20260424");
+    assert_eq!(
+        item["branch"],
+        "codex/task266-rust-operator-readmodels-20260424"
+    );
     assert_eq!(item["test_plan"][0], "run focused test");
     assert_eq!(item["test_plan"][1], "inspect logs");
     assert_eq!(item["next_action"], "review");
@@ -387,9 +390,9 @@ fn operator_cli_desktop_summary_text_reports_counts() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(
-        "Desktop summary: 2 panes, 2 inbox items, 2 digest items, 2 projections"
-    ));
+    assert!(
+        stdout.contains("Desktop summary: 2 panes, 2 inbox items, 2 digest items, 2 projections")
+    );
 }
 
 #[test]
@@ -520,7 +523,10 @@ fn operator_cli_provider_capabilities_json_reads_registry() {
         registry["providers"]["codex"]["prompt_transports"][2],
         "stdin"
     );
-    assert_eq!(registry["providers"]["claude"]["supports_parallel_runs"], true);
+    assert_eq!(
+        registry["providers"]["claude"]["supports_parallel_runs"],
+        true
+    );
 }
 
 #[test]
@@ -533,15 +539,15 @@ fn operator_cli_machine_contract_json_exposes_hook_facing_catalog() {
     assert_eq!(json["roles"][0]["canonical"], "operator");
     assert_eq!(json["roles"][1]["canonical"], "worker");
     assert_eq!(json["projection_surfaces"][1]["name"], "board");
-    assert_eq!(
-        json["projection_surfaces"][1]["command"],
-        "board --json"
-    );
+    assert_eq!(json["projection_surfaces"][1]["command"], "board --json");
     assert_eq!(
         json["projection_surfaces"][4]["rust_type"],
         "LedgerRunsPayload"
     );
-    assert_eq!(json["review_state_file"]["path"], ".winsmux/review-state.json");
+    assert_eq!(
+        json["review_state_file"]["path"],
+        ".winsmux/review-state.json"
+    );
     assert_eq!(json["event_taxonomy"][7]["group"], "security");
     assert_eq!(
         json["event_taxonomy"][7]["events"][3],
@@ -564,10 +570,8 @@ fn operator_cli_machine_contract_requires_json() {
         .expect("winsmux command should run");
 
     assert!(!output.status.success(), "machine-contract should fail");
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("winsmux machine-contract currently supports only --json")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("winsmux machine-contract currently supports only --json"));
 }
 
 #[test]
@@ -585,10 +589,8 @@ fn operator_cli_machine_contract_rejects_project_dir() {
         !output.status.success(),
         "machine-contract should reject project-dir"
     );
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("unknown argument for winsmux machine-contract: --project-dir")
-    );
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("unknown argument for winsmux machine-contract: --project-dir"));
 }
 
 #[test]
@@ -608,7 +610,10 @@ fn operator_cli_provider_capabilities_json_reads_single_provider_case_insensitiv
     assert_eq!(provider["capabilities"]["adapter"], "codex");
     assert_eq!(provider["capabilities"]["command"], "codex");
     assert_eq!(provider["capabilities"]["prompt_transports"][0], "argv");
-    assert_eq!(provider["capabilities"]["auth_modes"][0], "local_interactive");
+    assert_eq!(
+        provider["capabilities"]["auth_modes"][0],
+        "local_interactive"
+    );
     assert_eq!(provider["capabilities"]["supports_file_edit"], true);
 }
 
@@ -777,13 +782,7 @@ fn operator_cli_provider_switch_validates_candidate_before_write() {
     write_provider_switch_fixture(&project_dir);
 
     let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
-        .args([
-            "provider-switch",
-            "worker-1",
-            "--agent",
-            "claude",
-            "--json",
-        ])
+        .args(["provider-switch", "worker-1", "--agent", "claude", "--json"])
         .current_dir(&project_dir)
         .output()
         .expect("winsmux command should run");
@@ -829,7 +828,9 @@ fn operator_cli_provider_switch_replaces_case_variant_registry_key() {
     assert_eq!(result["slot_id"], "worker-1");
     assert_eq!(result["model"], "gpt-5.4");
     let registry = read_json_file(&project_dir.join(".winsmux").join("provider-registry.json"));
-    let slots = registry["slots"].as_object().expect("slots should be a map");
+    let slots = registry["slots"]
+        .as_object()
+        .expect("slots should be a map");
     assert_eq!(slots.len(), 1);
     assert!(slots.get("WORKER-1").is_none());
     assert_eq!(registry["slots"]["worker-1"]["model"], "gpt-5.4");
@@ -925,7 +926,13 @@ external-operator: true
 
     let result = run_json(
         &project_dir,
-        &["provider-switch", "worker-2", "--model", "gpt-5.5", "--json"],
+        &[
+            "provider-switch",
+            "worker-2",
+            "--model",
+            "gpt-5.5",
+            "--json",
+        ],
     );
 
     assert_eq!(result["slot_id"], "worker-2");
@@ -1111,7 +1118,10 @@ fn operator_cli_provider_switch_restart_merges_partial_override_with_slot() {
     let settings = fs::read_to_string(project_dir.join(".winsmux.yaml"))
         .expect("test should read settings")
         .replace("    agent: codex\n", "    agent: claude\n")
-        .replace("    prompt-transport: argv\n", "    prompt-transport: file\n");
+        .replace(
+            "    prompt-transport: argv\n",
+            "    prompt-transport: file\n",
+        );
     fs::write(project_dir.join(".winsmux.yaml"), settings).expect("test should write settings");
     fs::write(
         project_dir.join(".winsmux").join("manifest.yaml"),
@@ -1178,7 +1188,10 @@ fn operator_cli_conflict_preflight_json_reports_clean_result() {
     run_git(&project_dir, &["commit", "-m", "right change"]);
     run_git(&project_dir, &["branch", "right"]);
 
-    let json = run_json(&project_dir, &["conflict-preflight", "left", "right", "--json"]);
+    let json = run_json(
+        &project_dir,
+        &["conflict-preflight", "left", "right", "--json"],
+    );
 
     assert_eq!(json["command"], "conflict-preflight");
     assert_eq!(json["status"], "clean");
@@ -1252,7 +1265,10 @@ fn operator_cli_conflict_preflight_json_reports_conflict() {
     run_git(&project_dir, &["commit", "-m", "right change"]);
     run_git(&project_dir, &["branch", "right"]);
 
-    let json = run_json(&project_dir, &["conflict-preflight", "left", "right", "--json"]);
+    let json = run_json(
+        &project_dir,
+        &["conflict-preflight", "left", "right", "--json"],
+    );
 
     assert_eq!(json["status"], "conflict");
     assert_eq!(json["reason"], "merge_conflict");
@@ -1355,8 +1371,14 @@ fn operator_cli_signal_treats_leading_dash_as_channel() {
         String::from_utf8_lossy(&output.stdout).trim(),
         "sent signal: --json"
     );
-    let signal_file = temp_dir.join("winsmux").join("signals").join("--json.signal");
-    assert!(signal_file.exists(), "leading-dash channel should be literal");
+    let signal_file = temp_dir
+        .join("winsmux")
+        .join("signals")
+        .join("--json.signal");
+    assert!(
+        signal_file.exists(),
+        "leading-dash channel should be literal"
+    );
 }
 
 #[test]
@@ -1412,7 +1434,10 @@ fn operator_cli_wait_treats_leading_dash_as_channel() {
         String::from_utf8_lossy(&output.stdout).trim(),
         "received signal: --json"
     );
-    assert!(!signal_file.exists(), "leading-dash channel should be literal");
+    assert!(
+        !signal_file.exists(),
+        "leading-dash channel should be literal"
+    );
 }
 
 #[test]
@@ -1436,7 +1461,10 @@ fn operator_cli_wait_treats_dash_t_as_channel() {
         "winsmux command failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "received signal: -t");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "received signal: -t"
+    );
     assert!(!signal_file.exists(), "-t channel should be literal");
 }
 
@@ -1866,8 +1894,6 @@ fn operator_cli_consult_error_records_packet_event_and_manifest() {
             "stuck",
             "--message",
             "Reviewer context is missing",
-            "--target-slot",
-            "reviewer-1",
         ])
         .current_dir(&project_dir)
         .env("WINSMUX_PANE_ID", "%2")
@@ -1910,8 +1936,28 @@ fn operator_cli_consult_error_records_packet_event_and_manifest() {
     assert_eq!(packet["kind"], "consult_error");
     assert_eq!(packet["mode"], "stuck");
     assert_eq!(packet["error"], "Reviewer context is missing");
+    assert!(packet["cost_unit_refs"][0]
+        .as_str()
+        .expect("cost unit ref should be a string")
+        .starts_with("governance:consult:stuck"));
+    assert!(packet["cost_unit_refs"][0]
+        .as_str()
+        .expect("cost unit ref should be a string")
+        .contains("builder-1"));
+    assert_eq!(
+        packet["governance_cost_units"][0]["unit_id"],
+        packet["cost_unit_refs"][0]
+    );
     assert!(packet.get("recommendation").is_none());
     assert!(last_event["data"].get("result").is_none());
+    assert_eq!(
+        last_event["data"]["cost_unit_refs"],
+        packet["cost_unit_refs"]
+    );
+    assert_eq!(
+        last_event["data"]["governance_cost_units"][0]["unit_id"],
+        packet["cost_unit_refs"][0]
+    );
 
     let builder = read_manifest_pane(&project_dir, "builder-1");
     assert_eq!(builder["last_event"], "consult.error");
@@ -1978,8 +2024,18 @@ fn operator_cli_consult_request_records_packet_event_and_manifest() {
     assert_eq!(packet["mode"], "early");
     assert_eq!(packet["request"], "Please review the Rust port");
     assert!(packet.get("recommendation").is_none());
+    assert_eq!(
+        packet["governance_cost_units"][0]["unit_type"],
+        "governance_invocation"
+    );
+    assert_eq!(packet["governance_cost_units"][0]["kind"], "consult");
+    assert_eq!(packet["governance_cost_units"][0]["mode"], "early");
 
     assert_eq!(last_event["data"]["consultation_ref"], consultation_ref);
+    assert_eq!(
+        last_event["data"]["governance_cost_units"][0]["unit_id"],
+        packet["governance_cost_units"][0]["unit_id"]
+    );
     assert!(last_event["data"].get("result").is_none());
 
     let builder = read_manifest_pane(&project_dir, "builder-1");
@@ -2038,6 +2094,14 @@ fn operator_cli_consult_result_records_packet_event_and_manifest() {
         "cargo test --manifest-path core/Cargo.toml --test operator_cli"
     );
     assert_eq!(json["risks"][0], "manifest update could drift");
+    assert!(json["cost_unit_refs"][0]
+        .as_str()
+        .expect("cost unit ref should be a string")
+        .starts_with("governance:consult:final"));
+    assert!(json["cost_unit_refs"][0]
+        .as_str()
+        .expect("cost unit ref should be a string")
+        .contains("builder-1"));
     let consultation_ref = json["consultation_ref"]
         .as_str()
         .expect("consultation_ref should be a string");
@@ -2054,6 +2118,11 @@ fn operator_cli_consult_result_records_packet_event_and_manifest() {
     assert_eq!(packet["recommendation"], "Ship the Rust command");
     assert_eq!(packet["next_test"], json["next_test"]);
     assert_eq!(packet["risks"][0], "manifest update could drift");
+    assert_eq!(packet["cost_unit_refs"], json["cost_unit_refs"]);
+    assert_eq!(
+        packet["governance_cost_units"][0]["unit_id"],
+        json["cost_unit_refs"][0]
+    );
 
     let events = fs::read_to_string(project_dir.join(".winsmux").join("events.jsonl"))
         .expect("events should be readable");
@@ -2067,10 +2136,15 @@ fn operator_cli_consult_result_records_packet_event_and_manifest() {
     .expect("event should be JSON");
     assert_eq!(last_event["event"], "pane.consult_result");
     assert_eq!(last_event["message"], "Ship the Rust command");
+    assert_eq!(
+        last_event["data"]["governance_cost_units"][0]["unit_id"],
+        json["cost_unit_refs"][0]
+    );
     assert_eq!(last_event["data"]["result"], "Ship the Rust command");
     assert_eq!(last_event["data"]["confidence"], 0.82);
     assert_eq!(last_event["data"]["next_action"], json["next_test"]);
     assert_eq!(last_event["data"]["consultation_ref"], consultation_ref);
+    assert_eq!(last_event["data"]["cost_unit_refs"], json["cost_unit_refs"]);
 
     let builder = read_manifest_pane(&project_dir, "builder-1");
     assert_eq!(builder["last_event"], "consult.result");
@@ -2112,6 +2186,10 @@ fn operator_cli_consult_result_accepts_run_override() {
     assert_eq!(result["target_slot"], "reviewer-1");
     assert_eq!(result["recommendation"], "Use the existing review state");
     assert!(result["confidence"].is_null());
+    assert!(result["cost_unit_refs"][0]
+        .as_str()
+        .expect("cost unit ref should be a string")
+        .starts_with("governance:consult:reconcile"));
 
     let consultation_ref = result["consultation_ref"]
         .as_str()
@@ -2225,10 +2303,8 @@ fn operator_cli_consult_request_rejects_invalid_input() {
         .output()
         .expect("winsmux command should run");
     assert!(!unknown_option.status.success());
-    assert!(
-        String::from_utf8_lossy(&unknown_option.stderr)
-            .contains("unknown argument for winsmux consult-request")
-    );
+    assert!(String::from_utf8_lossy(&unknown_option.stderr)
+        .contains("unknown argument for winsmux consult-request"));
 
     let bad_confidence = Command::new(env!("CARGO_BIN_EXE_winsmux"))
         .args(["consult-request", "early", "--confidence", "nope"])
@@ -2239,8 +2315,7 @@ fn operator_cli_consult_request_rejects_invalid_input() {
         .expect("winsmux command should run");
     assert!(!bad_confidence.status.success());
     assert!(
-        String::from_utf8_lossy(&bad_confidence.stderr)
-            .contains("Invalid confidence value: nope")
+        String::from_utf8_lossy(&bad_confidence.stderr).contains("Invalid confidence value: nope")
     );
 }
 
@@ -2294,10 +2369,8 @@ fn operator_cli_consult_error_rejects_invalid_input() {
         .output()
         .expect("winsmux command should run");
     assert!(!unknown_option.status.success());
-    assert!(
-        String::from_utf8_lossy(&unknown_option.stderr)
-            .contains("unknown argument for winsmux consult-error")
-    );
+    assert!(String::from_utf8_lossy(&unknown_option.stderr)
+        .contains("unknown argument for winsmux consult-error"));
 
     let bad_confidence = Command::new(env!("CARGO_BIN_EXE_winsmux"))
         .args(["consult-error", "early", "--confidence", "nope"])
@@ -2308,8 +2381,7 @@ fn operator_cli_consult_error_rejects_invalid_input() {
         .expect("winsmux command should run");
     assert!(!bad_confidence.status.success());
     assert!(
-        String::from_utf8_lossy(&bad_confidence.stderr)
-            .contains("Invalid confidence value: nope")
+        String::from_utf8_lossy(&bad_confidence.stderr).contains("Invalid confidence value: nope")
     );
 
     let missing_run_id = Command::new(env!("CARGO_BIN_EXE_winsmux"))
@@ -3781,7 +3853,10 @@ fn run_json_with_cwd(cwd: impl AsRef<std::path::Path>, args: &[&str]) -> serde_j
 
 fn init_conflict_preflight_repo(project_dir: &std::path::Path) {
     run_git(project_dir, &["init"]);
-    run_git(project_dir, &["config", "user.email", "winsmux-test@example.com"]);
+    run_git(
+        project_dir,
+        &["config", "user.email", "winsmux-test@example.com"],
+    );
     run_git(project_dir, &["config", "user.name", "winsmux test"]);
     write_git_file(project_dir, "base.txt", "base\n");
     run_git(project_dir, &["add", "base.txt"]);
