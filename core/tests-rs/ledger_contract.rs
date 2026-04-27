@@ -37,6 +37,141 @@ fn ledger_contract_loads_frozen_manifest_and_events() {
 }
 
 #[test]
+fn ledger_contract_computes_evidence_chain_for_legacy_events() {
+    let snapshot =
+        ledger::LedgerSnapshot::from_manifest_and_events(MANIFEST_FIXTURE, EVENTS_FIXTURE)
+            .expect("ledger snapshot should load frozen fixtures");
+
+    let chain = snapshot.evidence_chain_projection();
+
+    assert_eq!(chain.summary.entry_count, 5);
+    assert_eq!(chain.summary.recorded_count, 0);
+    assert_eq!(chain.summary.integrity_status, "partial");
+    assert_eq!(chain.summary.root_hash.len(), 64);
+    assert_eq!(chain.entries[0].previous_hash, "");
+    assert_eq!(chain.entries[1].previous_hash, chain.entries[0].chain_hash);
+    assert!(chain
+        .entries
+        .iter()
+        .all(|entry| entry.integrity_status == "unrecorded"));
+}
+
+#[test]
+fn ledger_contract_verifies_recorded_evidence_chain() {
+    let first = json!({
+        "timestamp": "2026-04-27T12:00:00+09:00",
+        "session": "winsmux-orchestra",
+        "event": "pane.consult_request",
+        "message": "first event",
+        "data": {"task_id": "task-chain"}
+    });
+    let first = ledger::attach_evidence_chain_to_event("", &first)
+        .expect("first event should receive evidence chain fields");
+    let first_line = serde_json::to_string(&first).expect("first event should serialize");
+    let second = json!({
+        "timestamp": "2026-04-27T12:00:01+09:00",
+        "session": "winsmux-orchestra",
+        "event": "pane.consult_result",
+        "message": "second-event-message",
+        "data": {"task_id": "task-chain"}
+    });
+    let second = ledger::attach_evidence_chain_to_event(&format!("{first_line}\n"), &second)
+        .expect("second event should receive evidence chain fields");
+    let second_line = serde_json::to_string(&second).expect("second event should serialize");
+    let events = format!("{first_line}\n{second_line}\n");
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(MANIFEST_FIXTURE, &events)
+        .expect("recorded evidence chain should load");
+    let chain = snapshot.evidence_chain_projection();
+
+    assert_eq!(chain.summary.entry_count, 2);
+    assert_eq!(chain.summary.recorded_count, 2);
+    assert_eq!(chain.summary.verified_count, 2);
+    assert_eq!(chain.summary.tamper_detected_count, 0);
+    assert_eq!(chain.summary.integrity_status, "verified");
+    assert_eq!(chain.entries[1].previous_hash, chain.entries[0].chain_hash);
+}
+
+#[test]
+fn ledger_contract_detects_recorded_evidence_chain_tampering() {
+    let first = json!({
+        "timestamp": "2026-04-27T12:00:00+09:00",
+        "session": "winsmux-orchestra",
+        "event": "pane.consult_request",
+        "message": "first event",
+        "data": {"task_id": "task-chain"}
+    });
+    let first = ledger::attach_evidence_chain_to_event("", &first)
+        .expect("first event should receive evidence chain fields");
+    let first_line = serde_json::to_string(&first).expect("first event should serialize");
+    let second = json!({
+        "timestamp": "2026-04-27T12:00:01+09:00",
+        "session": "winsmux-orchestra",
+        "event": "pane.consult_result",
+        "message": "second-event-message",
+        "data": {"task_id": "task-chain"}
+    });
+    let second = ledger::attach_evidence_chain_to_event(&format!("{first_line}\n"), &second)
+        .expect("second event should receive evidence chain fields");
+    let second_line = serde_json::to_string(&second).expect("second event should serialize");
+    let events = format!("{first_line}\n{second_line}\n")
+        .replace("second-event-message", "tampered-event-message");
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(MANIFEST_FIXTURE, &events)
+        .expect("tampered evidence chain should still load for reporting");
+    let chain = snapshot.evidence_chain_projection();
+
+    assert_eq!(chain.summary.entry_count, 2);
+    assert_eq!(chain.summary.recorded_count, 2);
+    assert_eq!(chain.summary.verified_count, 1);
+    assert_eq!(chain.summary.tamper_detected_count, 1);
+    assert_eq!(chain.summary.integrity_status, "tamper_detected");
+    assert_eq!(chain.entries[1].integrity_status, "tamper_detected");
+}
+
+#[test]
+fn ledger_contract_detects_recorded_event_hash_tampering() {
+    let event = json!({
+        "timestamp": "2026-04-27T12:00:00+09:00",
+        "session": "winsmux-orchestra",
+        "event": "pane.consult_request",
+        "message": "first event",
+        "data": {"task_id": "task-chain"}
+    });
+    let mut event = ledger::attach_evidence_chain_to_event("", &event)
+        .expect("event should receive evidence chain fields");
+    event["data"]["evidence_chain"]["event_hash"] = Value::String("0".repeat(64));
+    let event_line = serde_json::to_string(&event).expect("event should serialize");
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(MANIFEST_FIXTURE, &event_line)
+        .expect("tampered evidence chain should still load for reporting");
+    let chain = snapshot.evidence_chain_projection();
+
+    assert_eq!(chain.summary.entry_count, 1);
+    assert_eq!(chain.summary.recorded_count, 1);
+    assert_eq!(chain.summary.verified_count, 0);
+    assert_eq!(chain.summary.tamper_detected_count, 1);
+    assert_eq!(chain.summary.integrity_status, "tamper_detected");
+    assert_eq!(chain.entries[0].integrity_status, "tamper_detected");
+}
+
+#[test]
+fn ledger_contract_hashes_equivalent_json_key_order_consistently() {
+    let event_a = r#"{"timestamp":"2026-04-27T12:00:00+09:00","session":"winsmux-orchestra","event":"pane.consult_request","message":"same event","data":{"zeta":"last","alpha":"first"}}"#;
+    let event_b = r#"{"data":{"alpha":"first","zeta":"last"},"message":"same event","event":"pane.consult_request","session":"winsmux-orchestra","timestamp":"2026-04-27T12:00:00+09:00"}"#;
+
+    let snapshot_a = ledger::LedgerSnapshot::from_manifest_and_events(MANIFEST_FIXTURE, event_a)
+        .expect("first key order should load");
+    let snapshot_b = ledger::LedgerSnapshot::from_manifest_and_events(MANIFEST_FIXTURE, event_b)
+        .expect("second key order should load");
+    let chain_a = snapshot_a.evidence_chain_projection();
+    let chain_b = snapshot_b.evidence_chain_projection();
+
+    assert_eq!(chain_a.entries[0].event_hash, chain_b.entries[0].event_hash);
+    assert_eq!(chain_a.entries[0].chain_hash, chain_b.entries[0].chain_hash);
+}
+
+#[test]
 fn ledger_contract_exposes_ordered_pane_read_models() {
     let snapshot =
         ledger::LedgerSnapshot::from_manifest_and_events(MANIFEST_FIXTURE, EVENTS_FIXTURE)
@@ -525,9 +660,18 @@ fn ledger_contract_serializes_typed_cli_payload_roots() {
     .expect("status payload should serialize to JSON");
     assert_root_keys(
         &status,
-        &["generated_at", "panes", "project_dir", "session", "summary"],
+        &[
+            "evidence_chain",
+            "generated_at",
+            "panes",
+            "project_dir",
+            "session",
+            "summary",
+        ],
     );
     assert_eq!(status["session"]["name"], "winsmux-orchestra");
+    assert_eq!(status["evidence_chain"]["entry_count"], 5);
+    assert_eq!(status["evidence_chain"]["integrity_status"], "partial");
 
     let board = serde_json::to_value(ledger::LedgerBoardPayload::from_projection(
         "2026-04-27T00:00:00Z".to_string(),

@@ -2,6 +2,7 @@ use crate::event_contract::{parse_event_jsonl, EventRecord};
 use crate::manifest_contract::{NormalizedManifestPane, WinsmuxManifest};
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -10,8 +11,39 @@ use std::path::Path;
 pub struct LedgerSnapshot {
     manifest: WinsmuxManifest,
     events: Vec<EventRecord>,
+    evidence_chain: LedgerEvidenceChainProjection,
     panes: Vec<NormalizedManifestPane>,
     panes_by_id: HashMap<String, NormalizedManifestPane>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LedgerEvidenceChainProjection {
+    pub summary: LedgerEvidenceChainSummary,
+    pub entries: Vec<LedgerEvidenceChainEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LedgerEvidenceChainSummary {
+    pub entry_count: usize,
+    pub recorded_count: usize,
+    pub verified_count: usize,
+    pub tamper_detected_count: usize,
+    pub root_hash: String,
+    pub integrity_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LedgerEvidenceChainEntry {
+    pub index: usize,
+    pub timestamp: String,
+    pub event: String,
+    pub previous_hash: String,
+    pub event_hash: String,
+    pub chain_hash: String,
+    pub recorded_previous_hash: String,
+    pub recorded_event_hash: String,
+    pub recorded_chain_hash: String,
+    pub integrity_status: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -310,6 +342,7 @@ pub struct LedgerStatusPayload {
     pub generated_at: String,
     pub project_dir: String,
     pub session: LedgerStatusSession,
+    pub evidence_chain: LedgerEvidenceChainSummary,
     pub summary: LedgerBoardSummary,
     pub panes: Vec<LedgerPaneReadModel>,
 }
@@ -476,6 +509,7 @@ impl LedgerStatusPayload {
                 pane_count: snapshot.pane_count(),
                 event_count: snapshot.event_count(),
             },
+            evidence_chain: snapshot.evidence_chain.summary.clone(),
             summary: snapshot.board_summary(),
             panes: snapshot.pane_read_models(),
         }
@@ -769,12 +803,14 @@ impl LedgerSnapshot {
         manifest.validate()?;
 
         let events = parse_event_jsonl(events_jsonl)?;
+        let evidence_chain = build_evidence_chain(events_jsonl, &events)?;
         let panes = manifest.normalized_panes_with_project_dir(project_dir);
         let panes_by_id = index_panes_by_id(&panes)?;
 
         let snapshot = Self {
             manifest,
             events,
+            evidence_chain,
             panes,
             panes_by_id,
         };
@@ -792,6 +828,10 @@ impl LedgerSnapshot {
 
     pub fn event_count(&self) -> usize {
         self.events.len()
+    }
+
+    pub fn evidence_chain_projection(&self) -> LedgerEvidenceChainProjection {
+        self.evidence_chain.clone()
     }
 
     pub fn pane_labels(&self) -> Vec<String> {
@@ -1217,6 +1257,40 @@ impl LedgerSnapshot {
 
         Ok(())
     }
+}
+
+pub fn attach_evidence_chain_to_event(
+    existing_events_jsonl: &str,
+    event: &Value,
+) -> Result<Value, String> {
+    let existing_records = parse_event_jsonl(existing_events_jsonl)?;
+    let existing_chain = build_evidence_chain(existing_events_jsonl, &existing_records)?;
+    let previous_hash = existing_chain.summary.root_hash;
+    let event_hash = evidence_event_hash(event)?;
+    let chain_hash = evidence_chain_hash(&previous_hash, &event_hash);
+
+    let mut event = event.clone();
+    let Some(event_object) = event.as_object_mut() else {
+        return Err("event record must be a JSON object".to_string());
+    };
+
+    let data = event_object
+        .entry("data".to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let Some(data_object) = data.as_object_mut() else {
+        return Err("event.data must be an object".to_string());
+    };
+
+    data_object.insert(
+        "evidence_chain".to_string(),
+        serde_json::json!({
+            "previous_hash": previous_hash,
+            "event_hash": event_hash,
+            "chain_hash": chain_hash,
+        }),
+    );
+
+    Ok(event)
 }
 
 #[derive(Debug, Clone)]
@@ -1782,6 +1856,145 @@ fn first_non_empty(primary: &str, fallback: &str) -> String {
     }
 }
 
+fn build_evidence_chain(
+    events_jsonl: &str,
+    events: &[EventRecord],
+) -> Result<LedgerEvidenceChainProjection, String> {
+    let mut entries = Vec::new();
+    let mut previous_hash = String::new();
+
+    for (index, line) in events_jsonl
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .enumerate()
+    {
+        let event_value: Value = serde_json::from_str(line)
+            .map_err(|err| format!("failed to parse event line {}: {}", index + 1, err))?;
+        let event = events
+            .get(index)
+            .ok_or_else(|| format!("event line {} did not produce a typed record", index + 1))?;
+        let event_hash = evidence_event_hash(&event_value)?;
+        let chain_hash = evidence_chain_hash(&previous_hash, &event_hash);
+        let recorded_previous_hash = evidence_chain_field(&event_value, "previous_hash");
+        let recorded_event_hash = evidence_chain_field(&event_value, "event_hash");
+        let recorded_chain_hash = evidence_chain_field(&event_value, "chain_hash");
+        let integrity_status = evidence_integrity_status(
+            &previous_hash,
+            &event_hash,
+            &chain_hash,
+            &recorded_previous_hash,
+            &recorded_event_hash,
+            &recorded_chain_hash,
+        );
+
+        entries.push(LedgerEvidenceChainEntry {
+            index,
+            timestamp: event.timestamp.clone(),
+            event: event.event.clone(),
+            previous_hash: previous_hash.clone(),
+            event_hash,
+            chain_hash: chain_hash.clone(),
+            recorded_previous_hash,
+            recorded_event_hash,
+            recorded_chain_hash,
+            integrity_status,
+        });
+        previous_hash = chain_hash;
+    }
+
+    let recorded_count = entries
+        .iter()
+        .filter(|entry| {
+            !entry.recorded_previous_hash.trim().is_empty()
+                || !entry.recorded_event_hash.trim().is_empty()
+                || !entry.recorded_chain_hash.trim().is_empty()
+        })
+        .count();
+    let verified_count = entries
+        .iter()
+        .filter(|entry| entry.integrity_status == "verified")
+        .count();
+    let tamper_detected_count = entries
+        .iter()
+        .filter(|entry| entry.integrity_status == "tamper_detected")
+        .count();
+    let integrity_status = if tamper_detected_count > 0 {
+        "tamper_detected"
+    } else if recorded_count == entries.len() && !entries.is_empty() {
+        "verified"
+    } else {
+        "partial"
+    }
+    .to_string();
+
+    Ok(LedgerEvidenceChainProjection {
+        summary: LedgerEvidenceChainSummary {
+            entry_count: entries.len(),
+            recorded_count,
+            verified_count,
+            tamper_detected_count,
+            root_hash: previous_hash,
+            integrity_status,
+        },
+        entries,
+    })
+}
+
+fn evidence_event_hash(event: &Value) -> Result<String, String> {
+    let mut event = event.clone();
+    if let Some(data) = event.get_mut("data").and_then(Value::as_object_mut) {
+        data.remove("evidence_chain");
+    }
+    let canonical = serde_json::to_string(&event)
+        .map_err(|err| format!("failed to serialize event for evidence hash: {err}"))?;
+    Ok(sha256_hex(canonical.as_bytes()))
+}
+
+fn evidence_chain_hash(previous_hash: &str, event_hash: &str) -> String {
+    let payload = format!("{previous_hash}\n{event_hash}");
+    sha256_hex(payload.as_bytes())
+}
+
+fn evidence_chain_field(event: &Value, field: &str) -> String {
+    event
+        .get("data")
+        .and_then(|data| data.get("evidence_chain"))
+        .and_then(|chain| chain.get(field))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn evidence_integrity_status(
+    previous_hash: &str,
+    event_hash: &str,
+    chain_hash: &str,
+    recorded_previous_hash: &str,
+    recorded_event_hash: &str,
+    recorded_chain_hash: &str,
+) -> String {
+    if recorded_previous_hash.trim().is_empty()
+        && recorded_event_hash.trim().is_empty()
+        && recorded_chain_hash.trim().is_empty()
+    {
+        return "unrecorded".to_string();
+    }
+
+    if recorded_previous_hash == previous_hash
+        && recorded_event_hash == event_hash
+        && recorded_chain_hash == chain_hash
+    {
+        return "verified".to_string();
+    }
+
+    "tamper_detected".to_string()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn unique_sorted<'a, I>(values: I) -> Vec<String>
 where
     I: IntoIterator<Item = &'a str>,
@@ -1974,8 +2187,7 @@ fn verdict_summary_from_event(kind: &str, event: &EventRecord) -> Option<LedgerV
         "security" => first_non_empty_string(vec![
             event_data_nested_string(&event.data, "security_verdict", "summary")
                 .unwrap_or_default(),
-            event_data_nested_string(&event.data, "security_verdict", "reason")
-                .unwrap_or_default(),
+            event_data_nested_string(&event.data, "security_verdict", "reason").unwrap_or_default(),
             event_data_value_string(&event.data, "summary"),
             event_data_value_string(&event.data, "reason"),
             event.message.clone(),

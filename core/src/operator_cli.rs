@@ -14,8 +14,9 @@ use serde_json::{json, Map, Value};
 
 use crate::event_contract::{parse_event_jsonl, EventRecord};
 use crate::ledger::{
-    LedgerBoardPayload, LedgerDigestItem, LedgerDigestPayload, LedgerExplainPayload,
-    LedgerInboxPayload, LedgerRunsPayload, LedgerSnapshot, LedgerStatusPayload,
+    attach_evidence_chain_to_event, LedgerBoardPayload, LedgerDigestItem, LedgerDigestPayload,
+    LedgerExplainPayload, LedgerInboxPayload, LedgerRunsPayload, LedgerSnapshot,
+    LedgerStatusPayload,
 };
 use crate::machine_contract::machine_contract_catalog;
 
@@ -5926,18 +5927,24 @@ fn append_event_record(project_dir: &Path, event: &Value) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let line = serde_json::to_string(event).map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("failed to serialize event record: {err}"),
-        )
-    })?;
     with_file_lock(&path, || {
         let mut content = if path.exists() {
             fs::read_to_string(&path)?
         } else {
             String::new()
         };
+        let event = attach_evidence_chain_to_event(&content, event).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to attach evidence chain: {err}"),
+            )
+        })?;
+        let line = serde_json::to_string(&event).map_err(|err| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to serialize event record: {err}"),
+            )
+        })?;
         if !content.is_empty() && !content.ends_with('\n') {
             content.push('\n');
         }
