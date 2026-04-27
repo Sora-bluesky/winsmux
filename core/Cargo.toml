@@ -30,6 +30,10 @@ name = "event_contract"
 path = "tests-rs/event_contract.rs"
 
 [[test]]
+name = "machine_contract"
+path = "tests-rs/machine_contract.rs"
+
+[[test]]
 name = "ledger_contract"
 path = "tests-rs/ledger_contract.rs"
 
