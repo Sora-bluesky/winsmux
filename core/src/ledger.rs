@@ -151,12 +151,24 @@ pub struct LedgerDigestItem {
     pub action_item_count: usize,
     pub last_event: String,
     pub last_event_at: String,
+    pub verification_verdict_summary: LedgerVerdictSummary,
+    pub security_verdict_summary: LedgerVerdictSummary,
+    pub monitoring_verdict_summary: LedgerVerdictSummary,
     pub verification_outcome: String,
     pub security_blocked: String,
     pub hypothesis: String,
     pub confidence: Option<f64>,
     pub observation_pack_ref: String,
     pub consultation_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LedgerVerdictSummary {
+    pub kind: String,
+    pub verdict: String,
+    pub summary: String,
+    pub event: String,
+    pub timestamp: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -385,6 +397,9 @@ pub struct LedgerRunProjection {
     pub expected_output: String,
     pub verification_plan: Vec<String>,
     pub review_required: bool,
+    pub verification_verdict_summary: LedgerVerdictSummary,
+    pub security_verdict_summary: LedgerVerdictSummary,
+    pub monitoring_verdict_summary: LedgerVerdictSummary,
     pub provider_target: String,
     pub agent_role: String,
     pub timeout_policy: String,
@@ -557,6 +572,9 @@ impl LedgerRunProjection {
         let primary_label = item.label.clone();
         let primary_pane_id = item.pane_id.clone();
         let primary_role = item.role.clone();
+        let verification_verdict_summary = item.verification_verdict_summary.clone();
+        let security_verdict_summary = item.security_verdict_summary.clone();
+        let monitoring_verdict_summary = item.monitoring_verdict_summary.clone();
 
         Self {
             run_id: item.run_id,
@@ -604,6 +622,9 @@ impl LedgerRunProjection {
                 .map(|run| run.verification_plan.clone())
                 .unwrap_or_default(),
             review_required: run.map(|run| run.review_required).unwrap_or(false),
+            verification_verdict_summary,
+            security_verdict_summary,
+            monitoring_verdict_summary,
             provider_target: item.provider_target,
             agent_role: run
                 .map(|run| run.agent_role.clone())
@@ -1231,6 +1252,9 @@ impl LedgerDigestRun {
                 action_item_count: 0,
                 last_event: pane.last_event.clone(),
                 last_event_at: pane.last_event_at.clone(),
+                verification_verdict_summary: empty_verdict_summary("verification"),
+                security_verdict_summary: empty_verdict_summary("security"),
+                monitoring_verdict_summary: empty_verdict_summary("monitoring"),
                 verification_outcome: String::new(),
                 security_blocked: String::new(),
                 hypothesis: String::new(),
@@ -1328,15 +1352,20 @@ impl LedgerDigestRun {
             self.item.confidence = Some(confidence);
         }
         if is_verification_event(&event.event) {
-            if let Some(outcome) =
-                event_data_nested_string(&event.data, "verification_result", "outcome")
-            {
-                self.item.verification_outcome = outcome;
+            if let Some(summary) = verdict_summary_from_event("verification", event) {
+                self.item.verification_outcome = summary.verdict.clone();
+                self.item.verification_verdict_summary = summary;
             }
         }
         if is_security_event(&event.event) {
-            if let Some(verdict) = event_data_string_option(&event.data, "verdict") {
-                self.item.security_blocked = verdict;
+            if let Some(summary) = verdict_summary_from_event("security", event) {
+                self.item.security_blocked = summary.verdict.clone();
+                self.item.security_verdict_summary = summary;
+            }
+        }
+        if is_monitoring_event(&event.event) {
+            if let Some(summary) = verdict_summary_from_event("monitoring", event) {
+                self.item.monitoring_verdict_summary = summary;
             }
         }
     }
@@ -1876,6 +1905,10 @@ fn event_data_string_option(data: &Value, key: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
+fn event_data_value_string(data: &Value, key: &str) -> String {
+    event_data_string_option(data, key).unwrap_or_default()
+}
+
 fn event_data_nested_string(data: &Value, object_key: &str, value_key: &str) -> Option<String> {
     data.as_object()
         .and_then(|map| map.get(object_key))
@@ -1896,6 +1929,115 @@ fn event_data_f64(data: &Value, key: &str) -> Option<f64> {
         })
 }
 
+fn empty_verdict_summary(kind: &str) -> LedgerVerdictSummary {
+    LedgerVerdictSummary {
+        kind: kind.to_string(),
+        verdict: String::new(),
+        summary: String::new(),
+        event: String::new(),
+        timestamp: String::new(),
+    }
+}
+
+fn verdict_summary_from_event(kind: &str, event: &EventRecord) -> Option<LedgerVerdictSummary> {
+    let verdict = match kind {
+        "verification" => first_non_empty_string(vec![
+            event_data_nested_string(&event.data, "verification_result", "outcome")
+                .unwrap_or_default(),
+            event_data_value_string(&event.data, "verification_result"),
+            event_data_value_string(&event.data, "outcome"),
+            verification_event_default_verdict(&event.event).to_string(),
+            event_status_verification_verdict(&event.status),
+        ]),
+        "security" => first_non_empty_string(vec![
+            event_data_nested_string(&event.data, "security_verdict", "verdict")
+                .unwrap_or_default(),
+            event_data_value_string(&event.data, "security_verdict"),
+            event_data_value_string(&event.data, "verdict"),
+            security_event_default_verdict(&event.event).to_string(),
+            event_status_security_verdict(&event.status),
+        ]),
+        "monitoring" => first_non_empty_string(vec![
+            event_data_value_string(&event.data, "verdict"),
+            event_data_value_string(&event.data, "status"),
+            event.status.clone(),
+        ]),
+        _ => String::new(),
+    };
+    let summary = match kind {
+        "verification" => first_non_empty_string(vec![
+            event_data_nested_string(&event.data, "verification_result", "summary")
+                .unwrap_or_default(),
+            event_data_value_string(&event.data, "summary"),
+            event.message.clone(),
+        ]),
+        "security" => first_non_empty_string(vec![
+            event_data_nested_string(&event.data, "security_verdict", "summary")
+                .unwrap_or_default(),
+            event_data_nested_string(&event.data, "security_verdict", "reason")
+                .unwrap_or_default(),
+            event_data_value_string(&event.data, "summary"),
+            event_data_value_string(&event.data, "reason"),
+            event.message.clone(),
+        ]),
+        "monitoring" => first_non_empty_string(vec![
+            event_data_value_string(&event.data, "summary"),
+            event.message.clone(),
+        ]),
+        _ => String::new(),
+    };
+
+    if verdict.trim().is_empty() && summary.trim().is_empty() {
+        return None;
+    }
+
+    Some(LedgerVerdictSummary {
+        kind: kind.to_string(),
+        verdict,
+        summary,
+        event: event.event.clone(),
+        timestamp: event.timestamp.clone(),
+    })
+}
+
+fn first_non_empty_string(values: Vec<String>) -> String {
+    values
+        .into_iter()
+        .find(|value| !value.trim().is_empty())
+        .unwrap_or_default()
+}
+
+fn verification_event_default_verdict(event_name: &str) -> &'static str {
+    match event_name {
+        "pipeline.verify.pass" => "PASS",
+        "pipeline.verify.fail" => "FAIL",
+        "pipeline.verify.partial" => "PARTIAL",
+        _ => "",
+    }
+}
+
+fn event_status_verification_verdict(status: &str) -> String {
+    match status {
+        "PASS" | "FAIL" | "PARTIAL" => status.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn security_event_default_verdict(event_name: &str) -> &'static str {
+    match event_name {
+        "pipeline.security.allowed" | "security.policy.allowed" => "ALLOW",
+        "pipeline.security.blocked" | "security.policy.blocked" => "BLOCK",
+        _ => "",
+    }
+}
+
+fn event_status_security_verdict(status: &str) -> String {
+    match status {
+        "ALLOW" | "BLOCK" => status.to_string(),
+        _ => String::new(),
+    }
+}
+
 fn is_verification_event(event_name: &str) -> bool {
     matches!(
         event_name,
@@ -1911,6 +2053,10 @@ fn is_security_event(event_name: &str) -> bool {
             | "pipeline.security.allowed"
             | "security.policy.allowed"
     )
+}
+
+fn is_monitoring_event(event_name: &str) -> bool {
+    matches!(event_name, "monitor.status")
 }
 
 fn event_branch(event: &EventRecord) -> String {

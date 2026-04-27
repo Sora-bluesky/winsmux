@@ -704,6 +704,209 @@ panes:
 
     assert_eq!(digest.items[0].verification_outcome, "");
     assert_eq!(digest.items[0].security_blocked, "");
+    let digest_json =
+        serde_json::to_value(&digest).expect("guarded digest should serialize verdict summaries");
+    assert_eq!(
+        digest_json["items"][0]["verification_verdict_summary"],
+        json!({
+            "kind": "verification",
+            "verdict": "",
+            "summary": "",
+            "event": "",
+            "timestamp": ""
+        })
+    );
+    assert_eq!(
+        digest_json["items"][0]["security_verdict_summary"],
+        json!({
+            "kind": "security",
+            "verdict": "",
+            "summary": "",
+            "event": "",
+            "timestamp": ""
+        })
+    );
+    assert_eq!(
+        digest_json["items"][0]["monitoring_verdict_summary"],
+        json!({
+            "kind": "monitoring",
+            "verdict": "",
+            "summary": "",
+            "event": "",
+            "timestamp": ""
+        })
+    );
+}
+
+#[test]
+fn ledger_contract_exposes_typed_verdict_summaries_in_digest_and_runs() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-verdicts
+    task: Integrate typed verdicts
+    task_state: in_progress
+    review_state: PENDING
+    branch: worktree-verdicts
+    head_sha: abc1234def5678
+    launch_dir: .worktrees/verdicts
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pipeline.verify.fail","message":"verification failed","status":"blocked","data":{"task_id":"task-verdicts","verification_result":{"outcome":"FAIL","summary":"cargo test failed"}}}
+{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pipeline.security.blocked","message":"security blocked","status":"blocked","data":{"task_id":"task-verdicts","security_verdict":{"verdict":"BLOCK","summary":"destructive git command blocked"}}}
+{"timestamp":"2026-04-23T12:00:03+09:00","session":"winsmux-orchestra","event":"monitor.status","message":"approval prompt detected","status":"approval_waiting","data":{"task_id":"task-verdicts","summary":"waiting for operator approval"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load verdict summary inputs");
+
+    let digest = snapshot.digest_projection();
+
+    assert_eq!(digest.items[0].verification_outcome, "FAIL");
+    assert_eq!(digest.items[0].security_blocked, "BLOCK");
+    assert_eq!(
+        digest.items[0].verification_verdict_summary.kind,
+        "verification"
+    );
+    assert_eq!(digest.items[0].verification_verdict_summary.verdict, "FAIL");
+    assert_eq!(
+        digest.items[0].verification_verdict_summary.summary,
+        "cargo test failed"
+    );
+    assert_eq!(
+        digest.items[0].verification_verdict_summary.event,
+        "pipeline.verify.fail"
+    );
+    assert_eq!(digest.items[0].security_verdict_summary.kind, "security");
+    assert_eq!(digest.items[0].security_verdict_summary.verdict, "BLOCK");
+    assert_eq!(
+        digest.items[0].security_verdict_summary.summary,
+        "destructive git command blocked"
+    );
+    assert_eq!(
+        digest.items[0].monitoring_verdict_summary.kind,
+        "monitoring"
+    );
+    assert_eq!(
+        digest.items[0].monitoring_verdict_summary.verdict,
+        "approval_waiting"
+    );
+    assert_eq!(
+        digest.items[0].monitoring_verdict_summary.summary,
+        "waiting for operator approval"
+    );
+    let digest_json =
+        serde_json::to_value(&digest).expect("digest should serialize typed verdict summaries");
+    assert_eq!(
+        digest_json["items"][0]["verification_verdict_summary"]["verdict"],
+        "FAIL"
+    );
+    assert_eq!(
+        digest_json["items"][0]["security_verdict_summary"]["summary"],
+        "destructive git command blocked"
+    );
+    assert_eq!(
+        digest_json["items"][0]["monitoring_verdict_summary"]["timestamp"],
+        "2026-04-23T12:00:03+09:00"
+    );
+
+    let runs = ledger::LedgerRunsPayload::from_snapshot(
+        "2026-04-27T00:00:00Z".to_string(),
+        "C:\\repo".to_string(),
+        &snapshot,
+    );
+
+    assert_eq!(runs.runs[0].verification_verdict_summary.verdict, "FAIL");
+    assert_eq!(runs.runs[0].security_verdict_summary.verdict, "BLOCK");
+    assert_eq!(
+        runs.runs[0].monitoring_verdict_summary.verdict,
+        "approval_waiting"
+    );
+    let runs_json =
+        serde_json::to_value(&runs).expect("runs should serialize typed verdict summaries");
+    assert_eq!(
+        runs_json["runs"][0]["verification_verdict_summary"]["summary"],
+        "cargo test failed"
+    );
+
+    let explain = snapshot
+        .explain_projection("task:task-verdicts")
+        .expect("verdict explain projection should exist");
+    let explain_json =
+        serde_json::to_value(&explain).expect("explain should serialize typed verdict summaries");
+    assert_eq!(
+        explain_json["evidence_digest"]["security_verdict_summary"]["verdict"],
+        "BLOCK"
+    );
+    assert_eq!(
+        explain_json["evidence_digest"]["verification_outcome"],
+        "FAIL"
+    );
+    assert_eq!(explain_json["evidence_digest"]["security_blocked"], "BLOCK");
+}
+
+#[test]
+fn ledger_contract_prefers_known_verdict_defaults_before_generic_status() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-default-verdicts
+    task_state: in_progress
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pipeline.verify.fail","message":"verification failed","status":"blocked","data":{"task_id":"task-default-verdicts"}}
+{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pipeline.security.blocked","message":"security blocked","status":"blocked","data":{"task_id":"task-default-verdicts","reason":"command matched destructive git policy"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load default verdict inputs");
+
+    let digest = snapshot.digest_projection();
+
+    assert_eq!(digest.items[0].verification_outcome, "FAIL");
+    assert_eq!(digest.items[0].security_blocked, "BLOCK");
+    assert_eq!(digest.items[0].verification_verdict_summary.verdict, "FAIL");
+    assert_eq!(digest.items[0].security_verdict_summary.verdict, "BLOCK");
+    assert_eq!(
+        digest.items[0].security_verdict_summary.summary,
+        "command matched destructive git policy"
+    );
+}
+
+#[test]
+fn ledger_contract_uses_nested_security_reason_as_summary() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-nested-reason
+    task_state: in_progress
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pipeline.security.blocked","message":"security blocked","data":{"task_id":"task-nested-reason","security_verdict":{"verdict":"BLOCK","reason":"nested reason should be preserved"}}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load nested security reason inputs");
+
+    let digest = snapshot.digest_projection();
+
+    assert_eq!(digest.items[0].security_blocked, "BLOCK");
+    assert_eq!(
+        digest.items[0].security_verdict_summary.summary,
+        "nested reason should be preserved"
+    );
 }
 
 #[test]
