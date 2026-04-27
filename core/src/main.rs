@@ -25,6 +25,7 @@ mod terminal_engine;
 mod manifest_contract;
 mod event_contract;
 mod ledger;
+mod machine_contract;
 mod operator_cli;
 mod client;
 mod app;
@@ -250,6 +251,7 @@ fn run_main() -> io::Result<()> {
         "digest" => return operator_cli::run_digest_command(&cmd_args[1..]),
         "desktop-summary" => return operator_cli::run_desktop_summary_command(&cmd_args[1..]),
         "provider-capabilities" => return operator_cli::run_provider_capabilities_command(&cmd_args[1..]),
+        "machine-contract" => return operator_cli::run_machine_contract_command(&cmd_args[1..]),
         "provider-switch" => return operator_cli::run_provider_switch_command(&cmd_args[1..]),
         "signal" => return operator_cli::run_signal_command(&cmd_args[1..]),
         "wait" if !matches!(

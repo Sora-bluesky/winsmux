@@ -192,8 +192,45 @@ fn machine_contract_exposes_event_taxonomy_groups() {
         .expect("verification taxonomy should exist");
     assert_eq!(
         verification.events,
-        ["pipeline.verify.pass", "pipeline.verify.fail"]
+        [
+            "pipeline.verify.pass",
+            "pipeline.verify.fail",
+            "pipeline.verify.partial"
+        ]
     );
+
+    let pane_lifecycle = catalog
+        .event_taxonomy
+        .iter()
+        .find(|group| group.group == "pane_lifecycle")
+        .expect("pane lifecycle taxonomy should exist");
+    assert!(pane_lifecycle.events.contains(&"approval_waiting"));
+    assert!(pane_lifecycle.events.contains(&"monitor.status"));
+    assert!(pane_lifecycle.events.contains(&"pane.approval_waiting"));
+    assert!(pane_lifecycle.events.contains(&"pane.bootstrap_invalid"));
+    assert!(pane_lifecycle.events.contains(&"pane.crashed"));
+
+    let consultation = catalog
+        .event_taxonomy
+        .iter()
+        .find(|group| group.group == "consultation")
+        .expect("consultation taxonomy should exist");
+    assert!(consultation.events.contains(&"pane.consult_error"));
+
+    let security = catalog
+        .event_taxonomy
+        .iter()
+        .find(|group| group.group == "security")
+        .expect("security taxonomy should exist");
+    assert!(security.events.contains(&"security.policy.allowed"));
+    assert!(security.events.contains(&"security.policy.blocked"));
+
+    let operator_actions = catalog
+        .event_taxonomy
+        .iter()
+        .find(|group| group.group == "operator_actions")
+        .expect("operator actions taxonomy should exist");
+    assert!(operator_actions.events.contains(&"operator.blocked"));
 
     let heartbeat = catalog
         .event_taxonomy

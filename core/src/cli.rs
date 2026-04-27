@@ -133,6 +133,7 @@ OPERATOR COMMANDS:
     digest                  Print high-signal run digest
     desktop-summary         Print desktop summary projection JSON or counts
     provider-capabilities   Inspect the provider capability registry contract
+    machine-contract        Print the hook and agent machine contract JSON
     provider-switch         Record or clear a runtime provider reassignment
     signal <channel>        Send a file-backed orchestration signal
     wait <channel> [secs]   Wait for a file-backed orchestration signal
@@ -441,6 +442,7 @@ fn commands_text() -> &'static str {
   list-buffers (lsb)        - List paste buffers
   list-clients (lsc)        - List connected clients
   list-commands (lscm)      - List commands
+  machine-contract          - Print the hook and agent machine contract JSON
   list-keys (lsk)           - List key bindings
   list-panes (lsp)          - List panes in a window
   list-sessions (ls)        - List sessions
@@ -586,6 +588,7 @@ mod tests {
         let text = help_text("winsmux");
         assert!(text.contains("winsmux reads config on startup from the first compatible file found:"));
         assert!(text.contains("winsmux launches PowerShell 7 (pwsh) by default."));
+        assert!(text.contains("machine-contract        Print the hook and agent machine contract JSON"));
         assert!(text.contains("winsmux preserves compatibility aliases 'psmux', 'pmux', and 'tmux' where supported."));
         assert!(text.contains("For more information: https://github.com/Sora-bluesky/winsmux"));
         assert!(!text.contains("psmux reads config on startup from the first file found:"));
@@ -596,6 +599,7 @@ mod tests {
     fn commands_text_uses_winsmux_server_wording() {
         let text = commands_text();
         assert!(text.contains("kill-server               - Kill the winsmux server"));
+        assert!(text.contains("machine-contract          - Print the hook and agent machine contract JSON"));
         assert!(!text.contains("Kill the psmux server"));
     }
 }

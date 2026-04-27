@@ -294,9 +294,13 @@ const EVENT_TAXONOMY: &[EventTaxonomyGroup<'static>] = &[
     EventTaxonomyGroup {
         group: "pane_lifecycle",
         events: &[
+            "approval_waiting",
+            "monitor.status",
             "pane.started",
             "pane.idle",
+            "pane.approval_waiting",
             "pane.completed",
+            "pane.bootstrap_invalid",
             "pane.crashed",
             "pane.hung",
             "pane.stalled",
@@ -307,6 +311,7 @@ const EVENT_TAXONOMY: &[EventTaxonomyGroup<'static>] = &[
         events: &[
             "operator.review_requested",
             "operator.review_failed",
+            "operator.blocked",
             "operator.commit_ready",
             "operator.followup",
             "operator.state_transition",
@@ -314,7 +319,11 @@ const EVENT_TAXONOMY: &[EventTaxonomyGroup<'static>] = &[
     },
     EventTaxonomyGroup {
         group: "consultation",
-        events: &["pane.consult_request", "pane.consult_result"],
+        events: &[
+            "pane.consult_request",
+            "pane.consult_result",
+            "pane.consult_error",
+        ],
     },
     EventTaxonomyGroup {
         group: "agent_heartbeat",
@@ -343,11 +352,20 @@ const EVENT_TAXONOMY: &[EventTaxonomyGroup<'static>] = &[
     },
     EventTaxonomyGroup {
         group: "verification",
-        events: &["pipeline.verify.pass", "pipeline.verify.fail"],
+        events: &[
+            "pipeline.verify.pass",
+            "pipeline.verify.fail",
+            "pipeline.verify.partial",
+        ],
     },
     EventTaxonomyGroup {
         group: "security",
-        events: &["pipeline.security.allowed", "pipeline.security.blocked"],
+        events: &[
+            "pipeline.security.allowed",
+            "pipeline.security.blocked",
+            "security.policy.allowed",
+            "security.policy.blocked",
+        ],
     },
 ];
 
