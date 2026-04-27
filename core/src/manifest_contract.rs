@@ -98,6 +98,22 @@ pub struct ManifestPane {
     #[serde(default, deserialize_with = "deserialize_manifest_string")]
     pub task_owner: String,
     #[serde(default, deserialize_with = "deserialize_manifest_string")]
+    pub agent_id: String,
+    #[serde(default, deserialize_with = "deserialize_manifest_string")]
+    pub title: String,
+    #[serde(default, deserialize_with = "deserialize_manifest_string")]
+    pub reports_to: String,
+    #[serde(default)]
+    pub capabilities: ManifestStringList,
+    #[serde(default)]
+    pub budget_monthly_cents: ManifestU64,
+    #[serde(default)]
+    pub spent_monthly_cents: ManifestU64,
+    #[serde(default)]
+    pub cost_soft_limit_pct: ManifestOptionalU32,
+    #[serde(default)]
+    pub cost_hard_limit_pct: ManifestOptionalU32,
+    #[serde(default, deserialize_with = "deserialize_manifest_string")]
     pub review_state: String,
     #[serde(default, deserialize_with = "deserialize_manifest_string")]
     pub priority: String,
@@ -191,6 +207,26 @@ pub enum ManifestUsize {
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(untagged)]
+pub enum ManifestU64 {
+    Number(u64),
+    String(String),
+    Null,
+    #[default]
+    Empty,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(untagged)]
+pub enum ManifestOptionalU32 {
+    Number(u32),
+    String(String),
+    Null,
+    #[default]
+    Empty,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(untagged)]
 pub enum ManifestBool {
     Bool(bool),
     String(String),
@@ -218,6 +254,60 @@ impl ManifestUsize {
             Self::Number(value) => Some(*value),
             Self::String(value) => value.trim().parse().ok(),
             Self::Empty => Some(0),
+        }
+    }
+}
+
+impl ManifestU64 {
+    pub fn value(&self) -> Option<u64> {
+        match self {
+            Self::Number(value) => Some(*value),
+            Self::String(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    trimmed.parse().ok()
+                }
+            }
+            Self::Null | Self::Empty => None,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::Number(_) | Self::Null | Self::Empty => true,
+            Self::String(value) => {
+                let trimmed = value.trim();
+                trimmed.is_empty() || trimmed.parse::<u64>().is_ok()
+            }
+        }
+    }
+}
+
+impl ManifestOptionalU32 {
+    pub fn value(&self) -> Option<u32> {
+        match self {
+            Self::Number(value) => Some(*value),
+            Self::String(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    trimmed.parse().ok()
+                }
+            }
+            Self::Null | Self::Empty => None,
+        }
+    }
+
+    pub fn is_valid(&self) -> bool {
+        match self {
+            Self::Number(_) | Self::Null | Self::Empty => true,
+            Self::String(value) => {
+                let trimmed = value.trim();
+                trimmed.is_empty() || trimmed.parse::<u32>().is_ok()
+            }
         }
     }
 }
@@ -253,6 +343,14 @@ pub struct NormalizedManifestPane {
     pub task_type: String,
     pub task_state: String,
     pub task_owner: String,
+    pub agent_id: String,
+    pub title: String,
+    pub reports_to: String,
+    pub capabilities: Vec<String>,
+    pub budget_monthly_cents: Option<u64>,
+    pub spent_monthly_cents: Option<u64>,
+    pub cost_soft_limit_pct: Option<u32>,
+    pub cost_hard_limit_pct: Option<u32>,
     pub review_state: String,
     pub priority: String,
     pub blocking: bool,
@@ -365,6 +463,14 @@ fn normalize_manifest_pane(
         task_type: pane.task_type.clone(),
         task_state: pane.task_state.clone(),
         task_owner: pane.task_owner.clone(),
+        agent_id: pane.agent_id.clone(),
+        title: pane.title.clone(),
+        reports_to: pane.reports_to.clone(),
+        capabilities: pane.capabilities.values(),
+        budget_monthly_cents: pane.budget_monthly_cents.value(),
+        spent_monthly_cents: pane.spent_monthly_cents.value(),
+        cost_soft_limit_pct: pane.cost_soft_limit_pct.value(),
+        cost_hard_limit_pct: pane.cost_hard_limit_pct.value(),
         review_state: pane.review_state.clone(),
         priority: pane.priority.clone(),
         blocking: pane.blocking.value().unwrap_or(false),
@@ -599,6 +705,43 @@ fn validate_pane(label: &str, pane: &ManifestPane) -> Result<(), String> {
             "manifest pane '{label}' last_event requires last_event_at"
         ));
     }
+    if !pane.budget_monthly_cents.is_valid() {
+        return Err(format!(
+            "manifest pane '{label}' budget_monthly_cents must be numeric"
+        ));
+    }
+    if !pane.spent_monthly_cents.is_valid() {
+        return Err(format!(
+            "manifest pane '{label}' spent_monthly_cents must be numeric"
+        ));
+    }
+    if !pane.cost_soft_limit_pct.is_valid() {
+        return Err(format!(
+            "manifest pane '{label}' cost_soft_limit_pct must be numeric"
+        ));
+    }
+    if !pane.cost_hard_limit_pct.is_valid() {
+        return Err(format!(
+            "manifest pane '{label}' cost_hard_limit_pct must be numeric"
+        ));
+    }
+    let soft_limit = pane.cost_soft_limit_pct.value();
+    let hard_limit = pane.cost_hard_limit_pct.value();
+    if matches!(soft_limit, Some(value) if value > 100) {
+        return Err(format!(
+            "manifest pane '{label}' cost_soft_limit_pct must be between 0 and 100"
+        ));
+    }
+    if matches!(hard_limit, Some(value) if value > 100) {
+        return Err(format!(
+            "manifest pane '{label}' cost_hard_limit_pct must be between 0 and 100"
+        ));
+    }
+    if matches!((soft_limit, hard_limit), (Some(soft), Some(hard)) if hard < soft) {
+        return Err(format!(
+            "manifest pane '{label}' cost_hard_limit_pct must be greater than or equal to cost_soft_limit_pct"
+        ));
+    }
     let has_planning = !pane.goal.trim().is_empty()
         || !pane.task_type.trim().is_empty()
         || !pane.priority.trim().is_empty()
@@ -790,6 +933,135 @@ panes:
         let panes = manifest.panes_with_labels();
         assert_eq!(panes[0].1.blocking.value(), Some(true));
         assert_eq!(panes[0].1.review_required.value(), Some(true));
+    }
+
+    #[test]
+    fn manifest_accepts_agent_organization_fields() {
+        let manifest = WinsmuxManifest::from_yaml(
+            r#"
+version: 1
+session:
+  project_dir: C:\repo
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    agent_id: builder-1
+    title: Implementation Owner
+    reports_to: operator
+    capabilities:
+      - edit
+      - test
+    budget_monthly_cents: "2500"
+    spent_monthly_cents: 475
+    cost_soft_limit_pct: "70"
+    cost_hard_limit_pct: 90
+"#,
+        )
+        .unwrap();
+        manifest.validate().unwrap();
+
+        let pane = &manifest.normalized_panes()[0];
+        assert_eq!(pane.agent_id, "builder-1");
+        assert_eq!(pane.title, "Implementation Owner");
+        assert_eq!(pane.reports_to, "operator");
+        assert_eq!(pane.capabilities, ["edit", "test"]);
+        assert_eq!(pane.budget_monthly_cents, Some(2500));
+        assert_eq!(pane.spent_monthly_cents, Some(475));
+        assert_eq!(pane.cost_soft_limit_pct, Some(70));
+        assert_eq!(pane.cost_hard_limit_pct, Some(90));
+    }
+
+    #[test]
+    fn manifest_rejects_non_numeric_budget_fields() {
+        let manifest = WinsmuxManifest::from_yaml(
+            r#"
+version: 1
+session:
+  project_dir: C:\repo
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    budget_monthly_cents: many
+"#,
+        )
+        .unwrap();
+
+        let err = manifest.validate().unwrap_err();
+
+        assert!(err.contains("budget_monthly_cents must be numeric"));
+    }
+
+    #[test]
+    fn manifest_accepts_null_budget_fields() {
+        let manifest = WinsmuxManifest::from_yaml(
+            r#"
+version: 1
+session:
+  project_dir: C:\repo
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    budget_monthly_cents: null
+    spent_monthly_cents: null
+    cost_soft_limit_pct: null
+    cost_hard_limit_pct: null
+"#,
+        )
+        .unwrap();
+        manifest.validate().unwrap();
+
+        let pane = &manifest.normalized_panes()[0];
+        assert_eq!(pane.budget_monthly_cents, None);
+        assert_eq!(pane.spent_monthly_cents, None);
+        assert_eq!(pane.cost_soft_limit_pct, None);
+        assert_eq!(pane.cost_hard_limit_pct, None);
+    }
+
+    #[test]
+    fn manifest_rejects_out_of_range_cost_limit_pct() {
+        let manifest = WinsmuxManifest::from_yaml(
+            r#"
+version: 1
+session:
+  project_dir: C:\repo
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    cost_soft_limit_pct: 101
+"#,
+        )
+        .unwrap();
+
+        let err = manifest.validate().unwrap_err();
+
+        assert!(err.contains("cost_soft_limit_pct must be between 0 and 100"));
+    }
+
+    #[test]
+    fn manifest_rejects_cost_hard_limit_below_soft_limit() {
+        let manifest = WinsmuxManifest::from_yaml(
+            r#"
+version: 1
+session:
+  project_dir: C:\repo
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    cost_soft_limit_pct: 80
+    cost_hard_limit_pct: 70
+"#,
+        )
+        .unwrap();
+
+        let err = manifest.validate().unwrap_err();
+
+        assert!(err
+            .contains("cost_hard_limit_pct must be greater than or equal to cost_soft_limit_pct"));
     }
 
     #[test]
