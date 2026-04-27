@@ -55,6 +55,7 @@ tests/*
 !tests/Integration.WorktreeHook.Tests.ps1
 !tests/Integration.PaneMonitorHook.Tests.ps1
 !tests/BuilderWorktree.Tests.ps1
+!tests/codex-subagent-worktree-guard.Tests.ps1
 !tests/PublicSurfacePolicy.Tests.ps1
 !tests/HarnessContract.Tests.ps1
 !tests/NpmReleasePackage.Tests.ps1

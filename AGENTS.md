@@ -399,3 +399,17 @@ Codex must follow these rules when review or audit agents are slow:
      - or a ready-for-review PR state.
 9. While milestone-based review is active, every interim slice must still pass local validation and manual diff review before commit/push.
 10. Record the switch to milestone-based review in `.claude/local/operator-handoff.md` and link the tracking issue when one exists.
+
+## Codex Subagent Worktree Gate
+
+Codex direct subagents must not perform implementation work in the shared operator checkout.
+
+Before spawning any write-capable Codex subagent for implementation, tests, or refactoring:
+
+1. Create or choose a dedicated `git worktree` for that subagent.
+2. Run `pwsh -NoProfile -File scripts/codex-subagent-worktree-guard.ps1 -WorktreePath <path>`.
+3. Only spawn the subagent after the guard reports a dedicated worktree.
+4. In the subagent prompt, explicitly tell the agent to `cd` to that worktree before reading or editing files.
+5. If the guard fails, do not spawn the subagent for write-capable work. Use the main operator checkout only for local operator actions, review, merge, planning, and release bookkeeping.
+
+Read-only review or analysis in the operator checkout is allowed only when no files will be edited. If the task may write files, the dedicated worktree guard is mandatory.
