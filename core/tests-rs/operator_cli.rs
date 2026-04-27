@@ -2566,6 +2566,134 @@ fn operator_cli_review_request_records_pending_state_and_manifest_pane() {
 }
 
 #[test]
+fn operator_cli_dispatch_review_sends_review_request_to_preferred_pane() {
+    let project_dir = make_temp_project_dir("dispatch-review");
+    write_manifest(&project_dir);
+    init_git_branch(
+        &project_dir,
+        "codex/task266-rust-operator-readmodels-20260424",
+    );
+    set_git_head(
+        &project_dir,
+        "codex/task266-rust-operator-readmodels-20260424",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    write_review_state(
+        &project_dir,
+        r#"{
+  "codex/task266-rust-operator-readmodels-20260424": {
+    "status": "PENDING",
+    "branch": "codex/task266-rust-operator-readmodels-20260424",
+    "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+}"#,
+    );
+    let (winsmux_bin, log_path) = write_fake_winsmux_dispatch_review(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("dispatch-review")
+        .env("WINSMUX_BIN", winsmux_bin)
+        .env("WINSMUX_PANE_ID", "%1")
+        .env("WINSMUX_ROLE", "Operator")
+        .env("WINSMUX_ROLE_MAP", r#"{"%1":"Operator"}"#)
+        .env("WINSMUX_DISPATCH_REVIEW_POLL_ATTEMPTS", "0")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Dispatching review to reviewer-1 [%3]"),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("PENDING confirmed. Reviewer pane will run review-approve or review-fail."),
+        "unexpected stdout: {stdout}"
+    );
+
+    let log = fs::read_to_string(log_path).expect("test should read fake winsmux log");
+    assert!(
+        log.contains("send-keys") && log.contains("%3") && log.contains("winsmux review-request"),
+        "unexpected fake winsmux log: {log}"
+    );
+    assert!(
+        log.contains("send-keys") && log.contains("%3") && log.contains("Enter"),
+        "unexpected fake winsmux log: {log}"
+    );
+}
+
+#[test]
+fn operator_cli_dispatch_review_rejects_stale_pending_review_state() {
+    let project_dir = make_temp_project_dir("dispatch-review-stale");
+    write_manifest(&project_dir);
+    init_git_branch(
+        &project_dir,
+        "codex/task266-rust-operator-readmodels-20260424",
+    );
+    set_git_head(
+        &project_dir,
+        "codex/task266-rust-operator-readmodels-20260424",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    );
+    write_review_state(
+        &project_dir,
+        r#"{
+  "codex/task266-rust-operator-readmodels-20260424": {
+    "status": "PENDING",
+    "branch": "codex/task266-rust-operator-readmodels-20260424",
+    "head_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  }
+}"#,
+    );
+    let (winsmux_bin, _log_path) = write_fake_winsmux_dispatch_review(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("dispatch-review")
+        .env("WINSMUX_BIN", winsmux_bin)
+        .env("WINSMUX_PANE_ID", "%1")
+        .env("WINSMUX_ROLE", "Operator")
+        .env("WINSMUX_ROLE_MAP", r#"{"%1":"Operator"}"#)
+        .env("WINSMUX_DISPATCH_REVIEW_POLL_ATTEMPTS", "0")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("review-request was not recorded after 0 attempts"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn operator_cli_dispatch_review_rejects_non_operator_role() {
+    let project_dir = make_temp_project_dir("dispatch-review-role");
+    write_manifest(&project_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("dispatch-review")
+        .env("WINSMUX_PANE_ID", "%2")
+        .env("WINSMUX_ROLE", "Worker")
+        .env("WINSMUX_ROLE_MAP", r#"{"%2":"Worker"}"#)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("dispatch-review is not permitted for the current role"),
+        "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
 fn operator_cli_review_request_rejects_non_review_capable_pane() {
     let project_dir = make_temp_project_dir("review-request-builder");
     write_manifest(&project_dir);
@@ -3312,6 +3440,68 @@ fn strip_windows_extended_path_prefix(path: &str) -> String {
         return rest.to_string();
     }
     path.to_string()
+}
+
+fn write_fake_winsmux_dispatch_review(
+    project_dir: &std::path::Path,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    let fake_dir = project_dir.join(".test-bin");
+    fs::create_dir_all(&fake_dir).expect("test should create fake bin dir");
+    let log_path = fake_dir.join("winsmux-dispatch-review.log");
+    #[cfg(windows)]
+    {
+        let fake_path = fake_dir.join("winsmux-dispatch-review-fake.cmd");
+        let mut body = String::from("@echo off\r\n");
+        body.push_str("echo %*>>\"");
+        body.push_str(&log_path.to_string_lossy());
+        body.push_str("\"\r\n");
+        body.push_str("if \"%1\"==\"capture-pane\" (\r\n");
+        body.push_str("  findstr /c:\"winsmux review-request\" \"");
+        body.push_str(&log_path.to_string_lossy());
+        body.push_str("\" >nul 2>nul\r\n");
+        body.push_str("  if errorlevel 1 (\r\n");
+        body.push_str("    echo PS C:\\repo^>\r\n");
+        body.push_str("  ) else (\r\n");
+        body.push_str("    echo PS C:\\repo^> winsmux review-request\r\n");
+        body.push_str("  )\r\n");
+        body.push_str("  exit /b 0\r\n)\r\n");
+        body.push_str("if \"%1\"==\"send-keys\" exit /b 0\r\n");
+        body.push_str("exit /b 1\r\n");
+        fs::write(&fake_path, body).expect("test should write fake winsmux");
+        (fake_path, log_path)
+    }
+    #[cfg(not(windows))]
+    {
+        let fake_path = fake_dir.join("winsmux-dispatch-review-fake");
+        let mut body = String::from("#!/bin/sh\n");
+        body.push_str("printf '%s\\n' \"$*\" >> '");
+        body.push_str(&log_path.to_string_lossy());
+        body.push_str("'\n");
+        body.push_str("if [ \"$1\" = \"capture-pane\" ]; then\n");
+        body.push_str("  if grep -q 'winsmux review-request' '");
+        body.push_str(&log_path.to_string_lossy());
+        body.push_str("'; then\n");
+        body.push_str("    printf '%s\\n' 'PS /repo> winsmux review-request'\n");
+        body.push_str("  else\n");
+        body.push_str("    printf '%s\\n' 'PS /repo>'\n");
+        body.push_str("  fi\n");
+        body.push_str("  exit 0\n");
+        body.push_str("fi\n");
+        body.push_str("if [ \"$1\" = \"send-keys\" ]; then\n  exit 0\nfi\n");
+        body.push_str("exit 1\n");
+        fs::write(&fake_path, body).expect("test should write fake winsmux");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(&fake_path)
+                .expect("test should read fake winsmux metadata")
+                .permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&fake_path, permissions)
+                .expect("test should make fake winsmux executable");
+        }
+        (fake_path, log_path)
+    }
 }
 
 fn write_fake_winsmux_list_panes(

@@ -147,6 +147,7 @@ OPERATOR COMMANDS:
     consult-result          Record a consultation result packet and event
     consult-error           Record a consultation error packet and event
     poll-events             Return new monitor events from .winsmux/events.jsonl
+    dispatch-review         Send review-request to a review-capable pane
     review-request          Record a pending review request for the current branch
     review-approve          Record PASS for the pending review request
     review-fail             Record FAIL for the pending review request
