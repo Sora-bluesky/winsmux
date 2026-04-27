@@ -34,7 +34,7 @@ function script:ConvertTo-GoldenCorpusJson {
     )
     $normalized = [Regex]::Replace(
         $normalized,
-        '"timestamp"\s*:\s*"[^"]+"',
+        '"timestamp"\s*:\s*"[^"]*"',
         '"timestamp": "__TIMESTAMP__"'
     )
     $normalized = [Regex]::Replace(
@@ -73,7 +73,9 @@ function script:Assert-GoldenCorpusFixture {
 
     Test-Path -LiteralPath $fullFixturePath | Should -Be $true
     $expected = (Get-Content -Raw -Path $fullFixturePath -Encoding UTF8).TrimEnd("`r", "`n")
-    $actual.TrimEnd("`r", "`n") | Should -Be $expected
+    $expected = $expected -replace "`r`n", "`n"
+    $actual = $actual.TrimEnd("`r", "`n") -replace "`r`n", "`n"
+    $actual | Should -Be $expected
 }
 
 Describe 'Assert-Role' {

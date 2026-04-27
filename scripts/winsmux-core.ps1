@@ -6042,6 +6042,18 @@ function Get-RunNextAction {
     return [string]$Run.task_state
 }
 
+function New-EmptyVerdictSummary {
+    param([Parameter(Mandatory = $true)][string]$Kind)
+
+    return [ordered]@{
+        kind      = $Kind
+        verdict   = ''
+        summary   = ''
+        event     = ''
+        timestamp = ''
+    }
+}
+
 function ConvertTo-EvidenceDigestItem {
     param([Parameter(Mandatory = $true)]$Run)
 
@@ -6067,6 +6079,9 @@ function ConvertTo-EvidenceDigestItem {
         action_item_count  = @($Run.action_items).Count
         last_event         = [string]$Run.last_event
         last_event_at      = [string]$Run.last_event_at
+        verification_verdict_summary = New-EmptyVerdictSummary -Kind 'verification'
+        security_verdict_summary = New-EmptyVerdictSummary -Kind 'security'
+        monitoring_verdict_summary = New-EmptyVerdictSummary -Kind 'monitoring'
         verification_outcome = if ($null -ne $Run.verification_result) { [string]$Run.verification_result.outcome } else { '' }
         security_blocked   = if ($null -ne $Run.security_verdict) { [string]$Run.security_verdict.verdict } else { '' }
         hypothesis         = if ($null -ne $experimentPacket) { [string]$experimentPacket.hypothesis } else { '' }
@@ -6215,6 +6230,9 @@ function New-DesktopRunProjection {
         review_state         = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.review_state)) { [string]$run.review_state } else { [string]$DigestItem.review_state }
         verification_outcome = if ($null -ne $evidenceDigest -and -not [string]::IsNullOrWhiteSpace([string]$evidenceDigest.verification_outcome)) { [string]$evidenceDigest.verification_outcome } else { [string]$DigestItem.verification_outcome }
         security_blocked     = if ($null -ne $evidenceDigest -and -not [string]::IsNullOrWhiteSpace([string]$evidenceDigest.security_blocked)) { [string]$evidenceDigest.security_blocked } else { [string]$DigestItem.security_blocked }
+        verification_verdict_summary = if ($null -ne $evidenceDigest -and $null -ne $evidenceDigest.verification_verdict_summary) { $evidenceDigest.verification_verdict_summary } else { $DigestItem.verification_verdict_summary }
+        security_verdict_summary     = if ($null -ne $evidenceDigest -and $null -ne $evidenceDigest.security_verdict_summary) { $evidenceDigest.security_verdict_summary } else { $DigestItem.security_verdict_summary }
+        monitoring_verdict_summary   = if ($null -ne $evidenceDigest -and $null -ne $evidenceDigest.monitoring_verdict_summary) { $evidenceDigest.monitoring_verdict_summary } else { $DigestItem.monitoring_verdict_summary }
         changed_files        = @($changedFiles)
         next_action          = if ($null -ne $explanation -and -not [string]::IsNullOrWhiteSpace([string]$explanation.next_action)) { [string]$explanation.next_action } else { [string]$DigestItem.next_action }
         summary              = $summary
