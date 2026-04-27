@@ -8152,6 +8152,21 @@ function Invoke-ProviderCapabilities {
     }
 }
 
+function Invoke-MachineContract {
+    $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
+    if ($tokens.Count -ne 1 -or [string]$tokens[0] -ne '--json') {
+        Stop-WithError "usage: winsmux machine-contract --json"
+    }
+
+    $output = Invoke-WinsmuxRaw -Arguments @('machine-contract', '--json')
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
+        exit $nativeExitCode
+    }
+
+    $output | Write-Output
+}
+
 function Invoke-ProviderSwitch {
     $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
     if ($tokens.Count -lt 1) {
@@ -8348,6 +8363,7 @@ Commands:
   consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json]  Record a consultation result packet/event
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
   provider-capabilities [provider] [--json]  Inspect the provider capability registry contract
+  machine-contract --json  Print the hook and agent machine contract JSON
   provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]  Record or clear a runtime provider reassignment for a managed slot
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
@@ -8974,6 +8990,7 @@ switch ($Command) {
     'consult-error'   { Invoke-ConsultError }
     'launcher'        { Invoke-Launcher }
     'provider-capabilities' { Invoke-ProviderCapabilities }
+    'machine-contract' { Invoke-MachineContract }
     'provider-switch' { Invoke-ProviderSwitch }
     'rebind-worktree' { Invoke-RebindWorktree }
     ''                { Show-Usage }

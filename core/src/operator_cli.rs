@@ -17,6 +17,7 @@ use crate::ledger::{
     LedgerBoardPayload, LedgerDigestItem, LedgerDigestPayload, LedgerExplainPayload,
     LedgerInboxPayload, LedgerRunsPayload, LedgerSnapshot, LedgerStatusPayload,
 };
+use crate::machine_contract::machine_contract_catalog;
 
 static REVIEW_REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 static ATOMIC_WRITE_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -193,6 +194,44 @@ pub fn run_provider_capabilities_command(args: &[&String]) -> io::Result<()> {
         println!("  {provider_id}");
     }
     Ok(())
+}
+
+pub fn run_machine_contract_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("machine-contract"));
+        return Ok(());
+    }
+
+    let json = parse_machine_contract_options(args)?;
+    if !json {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "winsmux machine-contract currently supports only --json in the Rust CLI.",
+        ));
+    }
+    write_json(&machine_contract_catalog())
+}
+
+fn parse_machine_contract_options(args: &[&String]) -> io::Result<bool> {
+    let mut json = false;
+    for arg in args {
+        match arg.as_str() {
+            "--json" => json = true,
+            value if value.starts_with('-') => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown argument for winsmux machine-contract: {value}"),
+                ));
+            }
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    usage_for("machine-contract").to_string(),
+                ));
+            }
+        }
+    }
+    Ok(json)
 }
 
 pub fn run_provider_switch_command(args: &[&String]) -> io::Result<()> {
@@ -2995,6 +3034,7 @@ fn usage_for(command: &str) -> &'static str {
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
         }
+        "machine-contract" => "usage: winsmux machine-contract --json",
         "provider-switch" => {
             "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json] [--project-dir <path>]"
         }

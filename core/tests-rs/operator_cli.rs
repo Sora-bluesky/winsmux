@@ -524,6 +524,74 @@ fn operator_cli_provider_capabilities_json_reads_registry() {
 }
 
 #[test]
+fn operator_cli_machine_contract_json_exposes_hook_facing_catalog() {
+    let project_dir = make_temp_project_dir("machine-contract");
+
+    let json = run_json(&project_dir, &["machine-contract", "--json"]);
+
+    assert_eq!(json["version"], "0.24.2");
+    assert_eq!(json["roles"][0]["canonical"], "operator");
+    assert_eq!(json["roles"][1]["canonical"], "worker");
+    assert_eq!(json["projection_surfaces"][1]["name"], "board");
+    assert_eq!(
+        json["projection_surfaces"][1]["command"],
+        "board --json"
+    );
+    assert_eq!(
+        json["projection_surfaces"][4]["rust_type"],
+        "LedgerRunsPayload"
+    );
+    assert_eq!(json["review_state_file"]["path"], ".winsmux/review-state.json");
+    assert_eq!(json["event_taxonomy"][7]["group"], "security");
+    assert_eq!(
+        json["event_taxonomy"][7]["events"][3],
+        "security.policy.blocked"
+    );
+    assert_eq!(
+        json["verdict_fields"][1]["field"],
+        "verification_result.outcome"
+    );
+}
+
+#[test]
+fn operator_cli_machine_contract_requires_json() {
+    let project_dir = make_temp_project_dir("machine-contract-requires-json");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("machine-contract")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success(), "machine-contract should fail");
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("winsmux machine-contract currently supports only --json")
+    );
+}
+
+#[test]
+fn operator_cli_machine_contract_rejects_project_dir() {
+    let project_dir = make_temp_project_dir("machine-contract-rejects-project-dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["machine-contract", "--json", "--project-dir"])
+        .arg(project_dir.as_os_str())
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        !output.status.success(),
+        "machine-contract should reject project-dir"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("unknown argument for winsmux machine-contract: --project-dir")
+    );
+}
+
+#[test]
 fn operator_cli_provider_capabilities_json_reads_single_provider_case_insensitive() {
     let project_dir = make_temp_project_dir("provider-capabilities-single");
     let winsmux_dir = project_dir.join(".winsmux");
