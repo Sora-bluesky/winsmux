@@ -143,6 +143,19 @@ Diff budget:
 It is the machine-readable gate for deciding whether a PowerShell script is still runtime-owned
 or has become bootstrap, setup, compatibility, security, release, or planning glue.
 
+## Inputs for `TASK-283`
+
+`TASK-283` should use `winsmux rust-canary --json` as the machine-readable release gate for
+the Rust default-on canary phase.
+
+Canary requirements:
+
+- `WINSMUX_BACKEND` unset must report `runtime.backend = cli`.
+- `WINSMUX_BACKEND=tauri` or `WINSMUX_BACKEND=desktop` must report `runtime.backend = tauri`.
+- Any other `WINSMUX_BACKEND` value must fail before release validation continues.
+- The payload must list the blocking conditions that prevent the default-on release gate.
+- The canary remains a gate and observation surface; it must not silently change runtime ownership without the shadow cutover gate.
+
 ## Inputs for `TASK-407`
 
 `TASK-407` should classify Pester files before deleting or rewriting them.

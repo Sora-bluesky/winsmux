@@ -255,6 +255,7 @@ fn run_main() -> io::Result<()> {
         "desktop-summary" => return operator_cli::run_desktop_summary_command(&cmd_args[1..]),
         "provider-capabilities" => return operator_cli::run_provider_capabilities_command(&cmd_args[1..]),
         "machine-contract" => return operator_cli::run_machine_contract_command(&cmd_args[1..]),
+        "rust-canary" => return operator_cli::run_rust_canary_command(&cmd_args[1..]),
         "provider-switch" => return operator_cli::run_provider_switch_command(&cmd_args[1..]),
         "signal" => return operator_cli::run_signal_command(&cmd_args[1..]),
         "wait" if !matches!(

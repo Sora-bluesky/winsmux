@@ -19,6 +19,7 @@ use crate::ledger::{
     LedgerStatusPayload,
 };
 use crate::machine_contract::machine_contract_catalog;
+use crate::types::VERSION;
 
 static REVIEW_REQUEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 static ATOMIC_WRITE_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -211,6 +212,98 @@ pub fn run_machine_contract_command(args: &[&String]) -> io::Result<()> {
         ));
     }
     write_json(&machine_contract_catalog())
+}
+
+pub fn run_rust_canary_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("rust-canary"));
+        return Ok(());
+    }
+
+    let options = parse_options("rust-canary", args, 0)?;
+    let backend = rust_canary_backend()?;
+    let backend_name = backend.backend;
+    let backend_source = backend.source;
+    let tauri_backend_candidate = backend_name == "tauri";
+    let payload = json!({
+        "contract_version": 1,
+        "task_id": "TASK-283",
+        "target_version": "v0.24.5",
+        "generated_at": generated_at(),
+        "project_dir": project_dir_string(&options.project_dir),
+        "product_version": VERSION,
+        "phase": "default-on-canary",
+        "runtime": {
+            "rust_cli_available": true,
+            "backend_env": "WINSMUX_BACKEND",
+            "backend": backend_name,
+            "backend_source": backend_source,
+            "tauri_backend_candidate": tauri_backend_candidate,
+        },
+        "required_gates": [
+            "local_rust_cli_tests",
+            "tauri_backend_smoke",
+            "shadow_cutover_gate",
+            "versioned_manual_checklist",
+            "public_surface_audit",
+            "release_ci"
+        ],
+        "blocking_conditions": [
+            "invalid_WINSMUX_BACKEND",
+            "shadow_cutover_difference",
+            "tauri_backend_smoke_failure",
+            "release_ci_failure",
+            "public_surface_drift"
+        ],
+        "depends_on": ["TASK-270", "TASK-272", "TASK-273", "TASK-274", "TASK-296"],
+        "next_action": "Run canary validation with WINSMUX_BACKEND=tauri before v0.24.5 release.",
+    });
+
+    if options.json {
+        return write_json(&payload);
+    }
+
+    println!(
+        "Rust canary: {} backend for v0.24.5 (version {})",
+        payload["runtime"]["backend"].as_str().unwrap_or("unknown"),
+        VERSION
+    );
+    println!("{}", payload["next_action"].as_str().unwrap_or(""));
+    Ok(())
+}
+
+struct RustCanaryBackend {
+    backend: String,
+    source: String,
+}
+
+fn rust_canary_backend() -> io::Result<RustCanaryBackend> {
+    let Ok(raw_backend) = env::var("WINSMUX_BACKEND") else {
+        return Ok(RustCanaryBackend {
+            backend: "cli".to_string(),
+            source: "default".to_string(),
+        });
+    };
+
+    let normalized = raw_backend.trim().to_lowercase();
+    match normalized.as_str() {
+        "" => Ok(RustCanaryBackend {
+            backend: "cli".to_string(),
+            source: "default".to_string(),
+        }),
+        "cli" | "winsmux" => Ok(RustCanaryBackend {
+            backend: "cli".to_string(),
+            source: "WINSMUX_BACKEND".to_string(),
+        }),
+        "tauri" | "desktop" => Ok(RustCanaryBackend {
+            backend: "tauri".to_string(),
+            source: "WINSMUX_BACKEND".to_string(),
+        }),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("WINSMUX_BACKEND must be cli or tauri, got '{raw_backend}'"),
+        )),
+    }
 }
 
 fn parse_machine_contract_options(args: &[&String]) -> io::Result<bool> {
@@ -3041,6 +3134,7 @@ fn usage_for(command: &str) -> &'static str {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
         }
         "machine-contract" => "usage: winsmux machine-contract --json",
+        "rust-canary" => "usage: winsmux rust-canary [--json] [--project-dir <path>]",
         "provider-switch" => {
             "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json] [--project-dir <path>]"
         }

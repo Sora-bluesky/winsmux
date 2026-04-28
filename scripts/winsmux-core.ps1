@@ -8375,6 +8375,29 @@ function Invoke-MachineContract {
     $output | Write-Output
 }
 
+function Invoke-RustCanary {
+    $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
+    $rustArgs = @('rust-canary')
+    foreach ($token in $tokens) {
+        switch ($token) {
+            '--json' {
+                $rustArgs += '--json'
+            }
+            default {
+                Stop-WithError "usage: winsmux rust-canary [--json]"
+            }
+        }
+    }
+
+    $output = Invoke-WinsmuxRaw -Arguments $rustArgs
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
+        exit $nativeExitCode
+    }
+
+    $output | Write-Output
+}
+
 function Invoke-ProviderSwitch {
     $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
     if ($tokens.Count -lt 1) {
@@ -8572,6 +8595,7 @@ Commands:
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
   provider-capabilities [provider] [--json]  Inspect the provider capability registry contract
   machine-contract --json  Print the hook and agent machine contract JSON
+  rust-canary [--json]  Print the Rust default-on canary gate JSON
   provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]  Record or clear a runtime provider reassignment for a managed slot
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
@@ -9266,6 +9290,7 @@ switch ($Command) {
     'launcher'        { Invoke-Launcher }
     'provider-capabilities' { Invoke-ProviderCapabilities }
     'machine-contract' { Invoke-MachineContract }
+    'rust-canary' { Invoke-RustCanary }
     'provider-switch' { Invoke-ProviderSwitch }
     'rebind-worktree' { Invoke-RebindWorktree }
     ''                { Show-Usage }

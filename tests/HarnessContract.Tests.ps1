@@ -271,6 +271,13 @@ tasks:
         $bridge | Should -Match 'powershell-deescalation\.ps1'
     }
 
+    It 'documents and dispatches the Rust canary command' {
+        $bridge = Get-Content -LiteralPath $script:WinsmuxCorePath -Raw -Encoding UTF8
+        $bridge | Should -Match 'rust-canary \[--json\]'
+        $bridge | Should -Match "'rust-canary'\s+\{"
+        $bridge | Should -Match 'Invoke-WinsmuxRaw -Arguments \$rustArgs'
+    }
+
     BeforeEach {
         Remove-TestSettingsLocal
     }
