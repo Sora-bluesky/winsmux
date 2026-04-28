@@ -453,6 +453,71 @@ tasks:
         }
     }
 
+    It 'resets SessionEnd state when Windows denies atomic session replacement' {
+        if (-not $IsWindows) {
+            Set-ItResult -Skipped -Because 'Windows rename EPERM fallback is Windows-specific.'
+            return
+        }
+
+        $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-session-end-eperm-" + [guid]::NewGuid().ToString('N'))
+        try {
+            $hooksDir = Join-Path $fixtureRoot '.claude\hooks'
+            $libDir = Join-Path $hooksDir 'lib'
+            $logsDir = Join-Path $fixtureRoot '.claude\logs'
+            $shieldDir = Join-Path $fixtureRoot '.shield-harness'
+
+            New-Item -ItemType Directory -Path $libDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $logsDir -Force | Out-Null
+            New-Item -ItemType Directory -Path $shieldDir -Force | Out-Null
+
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\sh-session-end.js') -Destination (Join-Path $hooksDir 'sh-session-end-real.js') -Force
+            Copy-Item -LiteralPath (Join-Path $script:RepoRoot '.claude\hooks\lib\sh-utils.js') -Destination (Join-Path $libDir 'sh-utils.js') -Force
+
+            Write-TestFileWithCmd -Path (Join-Path $hooksDir 'sh-session-end.js') -Content @"
+#!/usr/bin/env node
+"use strict";
+
+const fs = require("fs");
+const originalRenameSync = fs.renameSync;
+
+fs.renameSync = function renameSyncWithSandboxEperm(from, to) {
+  if (String(to).endsWith(".shield-harness\\session.json")) {
+    const error = new Error("EPERM: operation not permitted, rename");
+    error.code = "EPERM";
+    throw error;
+  }
+
+  return originalRenameSync.apply(this, arguments);
+};
+
+require("./sh-session-end-real.js");
+"@
+
+            Write-TestFileWithCmd -Path (Join-Path $shieldDir 'session.json') -Content '{"retry_count":2,"stop_hook_active":true}'
+
+            $result = Invoke-NodeHookJson -RepoRoot $fixtureRoot -HookRelativePath '.claude\hooks\sh-session-end.js' -Payload ([ordered]@{
+                session_id      = 'session-end-eperm-test'
+                hook_event_name = 'SessionEnd'
+            })
+
+            $result.ExitCode | Should -Be 0
+            $result.StdErr | Should -Be ''
+            $result.Json | Should -Be $null
+
+            $session = Get-Content -LiteralPath (Join-Path $shieldDir 'session.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+            $session.retry_count | Should -Be 0
+            $session.stop_hook_active | Should -BeFalse
+            $session.session_end | Should -Not -BeNullOrEmpty
+
+            $tmpFiles = Get-ChildItem -LiteralPath $shieldDir -Filter 'session.json.*.tmp'
+            $tmpFiles | Should -BeNullOrEmpty
+        } finally {
+            if (Test-Path -LiteralPath $fixtureRoot) {
+                Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
+            }
+        }
+    }
+
     It 'injects winsmux resume context from manifest and backlog during SessionStart' {
         $fixture = New-SessionStartFixture
         try {

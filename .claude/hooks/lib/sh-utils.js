@@ -159,8 +159,46 @@ function writeSession(data) {
 
   const tmpFile = `${SESSION_FILE}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmpFile, JSON.stringify(sessionData, null, 2) + "\n", "utf8");
-  fs.renameSync(tmpFile, SESSION_FILE);
+  replaceFile(tmpFile, SESSION_FILE);
   return sessionData;
+}
+
+function replaceFile(tmpFile, targetFile) {
+  try {
+    fs.renameSync(tmpFile, targetFile);
+    return;
+  } catch (error) {
+    if (!isWindowsSandboxRenameError(error)) {
+      removeTmpFile(tmpFile);
+      throw error;
+    }
+  }
+
+  try {
+    fs.copyFileSync(tmpFile, targetFile);
+    fs.unlinkSync(tmpFile);
+  } catch (fallbackError) {
+    removeTmpFile(tmpFile);
+    throw fallbackError;
+  }
+}
+
+function isWindowsSandboxRenameError(error) {
+  return (
+    process.platform === "win32" &&
+    error &&
+    (error.code === "EPERM" || error.code === "EACCES")
+  );
+}
+
+function removeTmpFile(tmpFile) {
+  try {
+    if (fs.existsSync(tmpFile)) {
+      fs.unlinkSync(tmpFile);
+    }
+  } catch {
+    // Best-effort cleanup only.
+  }
 }
 
 function getPreviousEvidenceHash() {
