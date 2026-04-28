@@ -30,6 +30,7 @@ $whitelistPatterns = @(
     'docs/authentication-support.md',
     'docs/authentication-support.ja.md',
     'docs/repo-surface-policy.md',
+    'docs/project/powershell-adapter-inventory.md',
     'docs/project/rust-schema-freeze-inventory.md',
     'docs/project/upstream-reevaluation-gate.md',
     'docs/project/upstream-snapshot-baseline.md',
