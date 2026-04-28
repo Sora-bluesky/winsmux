@@ -25,6 +25,7 @@ mod terminal_engine;
 mod manifest_contract;
 mod event_contract;
 mod ledger;
+mod search_ledger;
 mod machine_contract;
 mod operator_cli;
 mod client;
@@ -280,6 +281,7 @@ fn run_main() -> io::Result<()> {
         "consult-request" => return operator_cli::run_consult_request_command(&cmd_args[1..]),
         "consult-result" => return operator_cli::run_consult_result_command(&cmd_args[1..]),
         "consult-error" => return operator_cli::run_consult_error_command(&cmd_args[1..]),
+        "search-ledger" => return search_ledger::run_search_ledger_command(&cmd_args[1..]),
         "poll-events" => return operator_cli::run_poll_events_command(&cmd_args[1..]),
         "dispatch-review" => return operator_cli::run_dispatch_review_command(&cmd_args[1..]),
         "review-request" => return operator_cli::run_review_request_command(&cmd_args[1..]),

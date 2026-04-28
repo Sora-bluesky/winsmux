@@ -40,6 +40,7 @@ fn machine_contract_exposes_projection_surfaces_in_stable_order() {
             "digest",
             "runs",
             "explain",
+            "search-ledger",
             "poll-events",
             "dispatch-review",
             "review-request",
@@ -65,6 +66,7 @@ fn machine_contract_exposes_projection_surfaces_in_stable_order() {
             "LedgerDigestPayload",
             "LedgerRunsPayload",
             "LedgerExplainPayload",
+            "SearchLedgerPayload",
             "PollEventsPayload",
             "ReviewRequestDispatchPayload",
             "ReviewStateRecord",
@@ -260,7 +262,8 @@ fn machine_contract_serializes_to_json() {
         value["organization"]["manifest_fields"][4]["field"],
         "budget_monthly_cents"
     );
-    assert_eq!(value["projection_surfaces"][6]["name"], "poll-events");
+    assert_eq!(value["projection_surfaces"][6]["name"], "search-ledger");
+    assert_eq!(value["projection_surfaces"][7]["name"], "poll-events");
     assert_eq!(
         value["projection_surfaces"][4]["rust_type"],
         "LedgerRunsPayload"

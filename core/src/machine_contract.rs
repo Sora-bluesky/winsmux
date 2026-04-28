@@ -238,6 +238,12 @@ const PROJECTION_SURFACES: &[ProjectionSurfaceContract<'static>] = &[
         rust_type: "LedgerExplainPayload",
     },
     ProjectionSurfaceContract {
+        name: "search-ledger",
+        command: "search-ledger <search|timeline|detail> --json",
+        shape: "SQLite FTS5 search, timeline, and detail projection over events.jsonl",
+        rust_type: "SearchLedgerPayload",
+    },
+    ProjectionSurfaceContract {
         name: "poll-events",
         command: "poll-events --json",
         shape: "event stream items",

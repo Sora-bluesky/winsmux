@@ -147,6 +147,7 @@ OPERATOR COMMANDS:
     consult-request         Record a consultation request packet and event
     consult-result          Record a consultation result packet and event
     consult-error           Record a consultation error packet and event
+    search-ledger           Search .winsmux/events.jsonl via SQLite FTS5
     poll-events             Return new monitor events from .winsmux/events.jsonl
     dispatch-review         Send review-request to a review-capable pane
     review-request          Record a pending review request for the current branch
@@ -466,6 +467,7 @@ fn commands_text() -> &'static str {
   rotate-window (rotatew)   - Rotate panes in a window
   run-shell (run)           - Run a shell command
   save-buffer (saveb)       - Save buffer to file
+  search-ledger             - Search .winsmux/events.jsonl via SQLite FTS5
   select-layout (selectl)   - Apply a layout preset
   select-pane (selectp)     - Select a pane
   select-window (selectw)   - Select a window
