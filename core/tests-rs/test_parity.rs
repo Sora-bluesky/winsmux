@@ -56,6 +56,9 @@ struct RustParityBoardPane {
     label: String,
     pane_id: String,
     task_state: String,
+    phase: String,
+    activity: String,
+    detail: String,
     changed_file_count: usize,
     last_event_at: String,
 }
@@ -86,6 +89,9 @@ struct RustParityInboxItem {
     task: String,
     task_state: String,
     review_state: String,
+    phase: String,
+    activity: String,
+    detail: String,
     branch: String,
     head_sha: String,
     changed_file_count: usize,
@@ -119,6 +125,9 @@ struct RustParityDigestItem {
     pane_id: String,
     task_state: String,
     review_state: String,
+    phase: String,
+    activity: String,
+    detail: String,
     next_action: String,
     branch: String,
     changed_file_count: usize,
@@ -149,6 +158,9 @@ struct RustParityExplainRun {
     state: String,
     task_state: String,
     review_state: String,
+    phase: String,
+    activity: String,
+    detail: String,
     branch: String,
     head_sha: String,
     worktree: String,
@@ -212,6 +224,9 @@ struct RustParityExplainCurrentState {
     state: String,
     task_state: String,
     review_state: String,
+    phase: String,
+    activity: String,
+    detail: String,
     last_event: String,
 }
 
@@ -335,6 +350,9 @@ fn rust_parity_board_fixture_deserializes() {
         .expect("board fixture should contain builder-1");
     assert_eq!(builder_pane.pane_id, "%2");
     assert_eq!(builder_pane.task_state, "in_progress");
+    assert_eq!(builder_pane.phase, "review");
+    assert_eq!(builder_pane.activity, "waiting_for_input");
+    assert_eq!(builder_pane.detail, "review_pending");
     assert_eq!(builder_pane.changed_file_count, 2);
     assert_eq!(builder_pane.last_event_at, "__LAST_EVENT_AT__");
 }
@@ -365,6 +383,9 @@ fn rust_parity_inbox_fixture_deserializes() {
     assert_eq!(blocked_item.task, "Fix blocker");
     assert_eq!(blocked_item.task_state, "blocked");
     assert_eq!(blocked_item.review_state, "");
+    assert_eq!(blocked_item.phase, "build");
+    assert_eq!(blocked_item.activity, "blocked");
+    assert_eq!(blocked_item.detail, "task_blocked");
     assert_eq!(blocked_item.branch, "worktree-worker-1");
     assert_eq!(blocked_item.head_sha, "def5678abc1234");
     assert_eq!(blocked_item.changed_file_count, 0);
@@ -394,6 +415,9 @@ fn rust_parity_digest_fixture_deserializes() {
     assert_eq!(fixture.items[0].pane_id, "%2");
     assert_eq!(fixture.items[0].task_state, "blocked");
     assert_eq!(fixture.items[0].review_state, "FAIL");
+    assert_eq!(fixture.items[0].phase, "review");
+    assert_eq!(fixture.items[0].activity, "blocked");
+    assert_eq!(fixture.items[0].detail, "review_failed");
     assert_eq!(fixture.items[0].next_action, "review_failed");
     assert_eq!(fixture.items[0].branch, "worktree-builder-1");
     assert_eq!(fixture.items[0].changed_file_count, 1);
@@ -444,6 +468,9 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.run.state, "idle");
     assert_eq!(fixture.run.task_state, "in_progress");
     assert_eq!(fixture.run.review_state, "PENDING");
+    assert_eq!(fixture.run.phase, "review");
+    assert_eq!(fixture.run.activity, "waiting_for_input");
+    assert_eq!(fixture.run.detail, "review_pending");
     assert_eq!(fixture.run.branch, "worktree-builder-1");
     assert_eq!(fixture.run.head_sha, "abc1234def5678");
     assert_eq!(fixture.run.worktree, ".worktrees/builder-1");
@@ -519,6 +546,12 @@ fn rust_parity_explain_fixture_deserializes() {
     assert_eq!(fixture.explanation.current_state.state, "idle");
     assert_eq!(fixture.explanation.current_state.task_state, "in_progress");
     assert_eq!(fixture.explanation.current_state.review_state, "PENDING");
+    assert_eq!(fixture.explanation.current_state.phase, "review");
+    assert_eq!(
+        fixture.explanation.current_state.activity,
+        "waiting_for_input"
+    );
+    assert_eq!(fixture.explanation.current_state.detail, "review_pending");
     assert_eq!(
         fixture.explanation.current_state.last_event,
         "operator.review_requested"

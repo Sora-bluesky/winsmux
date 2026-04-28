@@ -7647,6 +7647,9 @@ Invoke-Board -BoardTarget '--json'
         $result.summary.pane_count | Should -Be 1
         $result.panes[0].label | Should -Be 'builder-1'
         $result.panes[0].task_state | Should -Be 'in_progress'
+        $result.panes[0].phase | Should -Be 'review'
+        $result.panes[0].activity | Should -Be 'waiting_for_input'
+        $result.panes[0].detail | Should -Be 'review_pending'
     }
 }
 
@@ -7805,6 +7808,16 @@ panes:
                 role      = 'Operator'
                 status    = 'commit_ready'
                 head_sha  = 'abc1234def5678'
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T11:08:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.completed'
+                message   = '作業が完了した。'
+                label     = 'builder-2'
+                pane_id   = '%3'
+                role      = 'Builder'
+                status    = 'in_progress'
             } | ConvertTo-Json -Compress)
         ) | Set-Content -Path $script:inboxEventsPath -Encoding UTF8
 
@@ -7819,13 +7832,22 @@ panes:
         $result = (Invoke-Inbox -InboxTarget '--json' | Out-String | ConvertFrom-Json -AsHashtable)
 
         $result.project_dir | Should -Be $script:inboxTempRoot
-        $result.summary.item_count | Should -Be 3
+        $result.summary.item_count | Should -Be 4
         $result.summary.by_kind.review_pending | Should -Be 1
         $result.summary.by_kind.approval_waiting | Should -Be 1
         $result.summary.by_kind.commit_ready | Should -Be 1
+        $result.summary.by_kind.task_completed | Should -Be 1
         @($result.items | ForEach-Object { $_.kind }) | Should -Contain 'review_pending'
         @($result.items | ForEach-Object { $_.kind }) | Should -Contain 'approval_waiting'
         @($result.items | ForEach-Object { $_.kind }) | Should -Contain 'commit_ready'
+        @($result.items | ForEach-Object { $_.kind }) | Should -Contain 'task_completed'
+        ($result.items | Where-Object { $_.kind -eq 'review_pending' } | Select-Object -First 1).phase | Should -Be 'review'
+        ($result.items | Where-Object { $_.kind -eq 'review_pending' } | Select-Object -First 1).activity | Should -Be 'waiting_for_input'
+        ($result.items | Where-Object { $_.kind -eq 'commit_ready' } | Select-Object -First 1).phase | Should -Be 'package'
+        ($result.items | Where-Object { $_.kind -eq 'commit_ready' } | Select-Object -First 1).activity | Should -Be 'completed'
+        ($result.items | Where-Object { $_.kind -eq 'task_completed' } | Select-Object -First 1).phase | Should -Be 'package'
+        ($result.items | Where-Object { $_.kind -eq 'task_completed' } | Select-Object -First 1).activity | Should -Be 'completed'
+        ($result.items | Where-Object { $_.kind -eq 'task_completed' } | Select-Object -First 1).detail | Should -Be 'task_completed'
     }
 
     It 'supports winsmux inbox --json through the top-level CLI entrypoint' {
@@ -8291,6 +8313,12 @@ panes:
         $result.runs[0].verification_contract.mode | Should -Be 'adversarial_verify'
         $result.runs[0].verification_result.outcome | Should -Be 'PARTIAL'
         $result.runs[0].run_packet.verification_result.outcome | Should -Be 'PARTIAL'
+        $result.runs[0].phase | Should -Be 'review'
+        $result.runs[0].activity | Should -Be 'waiting_for_input'
+        $result.runs[0].detail | Should -Be 'review_pending'
+        $result.runs[0].run_packet.phase | Should -Be 'review'
+        $result.runs[0].run_packet.activity | Should -Be 'waiting_for_input'
+        $result.runs[0].run_packet.detail | Should -Be 'review_pending'
         $result.runs[0].plan.goal | Should -Be 'Ship run contract primitives'
         $result.runs[0].plan.verification_plan | Should -Be @('Invoke-Pester tests/winsmux-bridge.Tests.ps1', 'verify runs --json contract')
         $result.runs[0].plan_checkpoints.Count | Should -Be 6
@@ -9347,6 +9375,9 @@ panes:
         $result.run.experiment_packet.command_hash | Should -Be 'cmd:def456'
         $result.run.verification_contract.mode | Should -Be 'adversarial_verify'
         $result.run.verification_result.outcome | Should -Be 'PARTIAL'
+        $result.run.phase | Should -Be 'review'
+        $result.run.activity | Should -Be 'waiting_for_input'
+        $result.run.detail | Should -Be 'review_pending'
         $result.run.plan.goal | Should -Be 'Ship run contract primitives'
         $result.run.plan.verification_plan | Should -Be @('Invoke-Pester tests/winsmux-bridge.Tests.ps1', 'verify explain --json contract')
         $result.run.plan_checkpoints.Count | Should -Be 3
@@ -9373,8 +9404,14 @@ panes:
         $result.Contains('consultation_summary') | Should -BeFalse
         $result.evidence_digest.run_id | Should -Be 'task:task-256'
         $result.evidence_digest.next_action | Should -Be 'approval_waiting'
+        $result.evidence_digest.phase | Should -Be 'review'
+        $result.evidence_digest.activity | Should -Be 'waiting_for_input'
+        $result.evidence_digest.detail | Should -Be 'review_pending'
         $result.evidence_digest.changed_files | Should -Be @('scripts/winsmux-core.ps1')
         $result.explanation.current_state.review_state | Should -Be 'PENDING'
+        $result.explanation.current_state.phase | Should -Be 'review'
+        $result.explanation.current_state.activity | Should -Be 'waiting_for_input'
+        $result.explanation.current_state.detail | Should -Be 'review_pending'
         $result.explanation.reasons | Should -Contain 'task_state=in_progress'
         $result.explanation.reasons | Should -Contain 'review_state=PENDING'
         $result.explanation.reasons | Should -Contain 'verify=PARTIAL'

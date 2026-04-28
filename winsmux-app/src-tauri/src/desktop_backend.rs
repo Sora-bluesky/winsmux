@@ -55,6 +55,12 @@ pub struct DesktopInboxItem {
     pub task: String,
     pub task_state: String,
     pub review_state: String,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub activity: String,
+    #[serde(default)]
+    pub detail: String,
     pub branch: String,
     pub head_sha: String,
     pub changed_file_count: usize,
@@ -87,6 +93,12 @@ pub struct DesktopBoardPane {
     pub task: String,
     pub task_state: String,
     pub review_state: String,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub activity: String,
+    #[serde(default)]
+    pub detail: String,
     pub branch: String,
     pub worktree: String,
     pub head_sha: String,
@@ -105,6 +117,12 @@ pub struct DesktopDigestItem {
     pub provider_target: String,
     pub task_state: String,
     pub review_state: String,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub activity: String,
+    #[serde(default)]
+    pub detail: String,
     pub next_action: String,
     pub branch: String,
     pub worktree: String,
@@ -162,6 +180,12 @@ pub struct DesktopRunProjection {
     pub task: String,
     pub task_state: String,
     pub review_state: String,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub activity: String,
+    #[serde(default)]
+    pub detail: String,
     pub verification_outcome: String,
     pub security_blocked: String,
     pub changed_files: Vec<String>,
@@ -300,6 +324,12 @@ pub struct DesktopExplainRun {
     pub state: String,
     pub task_state: String,
     pub review_state: String,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub activity: String,
+    #[serde(default)]
+    pub detail: String,
     pub branch: String,
     pub worktree: String,
     pub head_sha: String,
@@ -366,6 +396,12 @@ pub struct DesktopExplainCurrentState {
     pub state: String,
     pub task_state: String,
     pub review_state: String,
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub activity: String,
+    #[serde(default)]
+    pub detail: String,
     pub last_event: String,
 }
 
