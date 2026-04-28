@@ -48,7 +48,8 @@ use crate::platform::enable_virtual_terminal_processing;
 use crate::cli::{print_help, print_version, print_commands};
 use crate::session::{cleanup_stale_port_files, read_session_key, send_control,
     send_control_with_response, resolve_last_session_name, resolve_default_session_name,
-    kill_remaining_server_processes};
+    kill_remaining_server_processes, request_server_shutdown,
+    cleanup_warm_server_for_socket};
 use crate::rendering::apply_cursor_style;
 use crate::client::run_remote;
 use crate::ssh_input::{send_mouse_enable, InputSource};
@@ -328,32 +329,11 @@ fn run_main() -> io::Result<()> {
             // Send kill-server to all sessions in parallel via threads
             let handles: Vec<std::thread::JoinHandle<()>> = targets.into_iter().map(|(path, port, sess_key)| {
                 std::thread::spawn(move || {
-                    let addr = format!("127.0.0.1:{}", port);
-                    if let Ok(mut stream) = std::net::TcpStream::connect_timeout(
-                        &addr.parse().unwrap(),
-                        Duration::from_millis(500),
-                    ) {
-                        let _ = stream.set_nodelay(true);
-                        let _ = write!(stream, "AUTH {}\n", sess_key);
-                        let _ = stream.flush();
-                        let _ = std::io::Write::write_all(&mut stream, b"kill-server\n");
-                        let _ = stream.flush();
-                        let _ = stream.shutdown(std::net::Shutdown::Write);
-                        // Wait for server to exit (EOF = done)
-                        let _ = stream.set_read_timeout(Some(Duration::from_millis(2000)));
-                        let mut buf = [0u8; 64];
-                        loop {
-                            match std::io::Read::read(&mut stream, &mut buf) {
-                                Ok(0) => break,
-                                Err(_) => break,
-                                Ok(_) => continue,
-                            }
-                        }
+                    if request_server_shutdown(port, &sess_key) {
+                        let _ = std::fs::remove_file(&path);
+                        let key_path = path.with_extension("key");
+                        let _ = std::fs::remove_file(&key_path);
                     }
-                    // Remove port/key files regardless
-                    let _ = std::fs::remove_file(&path);
-                    let key_path = path.with_extension("key");
-                    let _ = std::fs::remove_file(&key_path);
                 })
             }).collect();
             // Wait for all threads to complete
@@ -363,6 +343,9 @@ fn run_main() -> io::Result<()> {
                 let _ = std::fs::remove_file(path);
                 let key_path = path.with_extension("key");
                 let _ = std::fs::remove_file(&key_path);
+            }
+            if l_socket_name.is_some() {
+                cleanup_warm_server_for_socket(l_socket_name.as_deref());
             }
             // Brief wait then verify no processes remain; if any do, force-kill them.
             // Only do the nuclear fallback when not using -L namespace filtering.

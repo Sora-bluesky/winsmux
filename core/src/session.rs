@@ -1,11 +1,107 @@
 use std::io::{self, Write};
 use std::time::Duration;
 use std::env;
+use std::path::Path;
 
 /// Returns true if this port-file base name belongs to a warm (standby) server.
 /// Warm sessions should be hidden from user-facing lists and never auto-attached.
 pub fn is_warm_session(base: &str) -> bool {
     base == "__warm__" || base.ends_with("____warm__")
+}
+
+/// Return the port/key file base for the standby warm server.
+pub fn warm_session_base(socket_name: Option<&str>) -> String {
+    if let Some(socket_name) = socket_name {
+        format!("{socket_name}____warm__")
+    } else {
+        "__warm__".to_string()
+    }
+}
+
+fn psmux_dir() -> Option<std::path::PathBuf> {
+    let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).ok()?;
+    Some(Path::new(&home).join(".psmux"))
+}
+
+fn port_is_open(port: u16, timeout: Duration) -> bool {
+    let addr = format!("127.0.0.1:{port}");
+    let Ok(sock_addr) = addr.parse() else {
+        return false;
+    };
+    std::net::TcpStream::connect_timeout(&sock_addr, timeout).is_ok()
+}
+
+fn wait_for_port_close(port: u16, deadline: Duration) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < deadline {
+        if !port_is_open(port, Duration::from_millis(50)) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    !port_is_open(port, Duration::from_millis(50))
+}
+
+/// Ask a server to shut down and wait until its TCP port is closed.
+pub fn request_server_shutdown(port: u16, session_key: &str) -> bool {
+    let addr = format!("127.0.0.1:{port}");
+    let Ok(sock_addr) = addr.parse() else {
+        return false;
+    };
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(
+        &sock_addr,
+        Duration::from_millis(500),
+    ) else {
+        return true;
+    };
+
+    let _ = stream.set_nodelay(true);
+    let _ = write!(stream, "AUTH {}\n", session_key);
+    let _ = stream.flush();
+    let _ = stream.write_all(b"kill-server\n");
+    let _ = stream.flush();
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(2000)));
+
+    let mut buf = [0u8; 64];
+    loop {
+        match std::io::Read::read(&mut stream, &mut buf) {
+            Ok(0) => break,
+            Err(_) => break,
+            Ok(_) => continue,
+        }
+    }
+
+    wait_for_port_close(port, Duration::from_millis(3000))
+}
+
+/// Clean up the standby warm server for a namespace after `kill-server`.
+pub fn cleanup_warm_server_for_socket(socket_name: Option<&str>) {
+    let Some(dir) = psmux_dir() else {
+        return;
+    };
+    cleanup_warm_server_for_socket_in_dir(&dir, socket_name);
+}
+
+fn cleanup_warm_server_for_socket_in_dir(psmux_dir: &Path, socket_name: Option<&str>) {
+    let warm_base = warm_session_base(socket_name);
+    let port_path = psmux_dir.join(format!("{warm_base}.port"));
+    let key_path = psmux_dir.join(format!("{warm_base}.key"));
+
+    let mut can_remove = true;
+    if let Ok(port_str) = std::fs::read_to_string(&port_path) {
+        if let Ok(port) = port_str.trim().parse::<u16>() {
+            let session_key = std::fs::read_to_string(&key_path)
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            can_remove = request_server_shutdown(port, &session_key);
+        }
+    }
+
+    if can_remove {
+        let _ = std::fs::remove_file(&port_path);
+        let _ = std::fs::remove_file(&key_path);
+    }
 }
 
 /// Find the next available numeric session name (tmux-compatible).
@@ -473,4 +569,49 @@ pub fn kill_remaining_server_processes() {
     let _ = std::process::Command::new("pkill")
         .args(&["-f", "psmux|pmux"])
         .status();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn warm_session_base_matches_namespace_encoding() {
+        assert_eq!(warm_session_base(None), "__warm__");
+        assert_eq!(warm_session_base(Some("preview")), "preview____warm__");
+    }
+
+    #[test]
+    fn cleanup_warm_server_for_socket_removes_only_matching_warm_files() {
+        let dir = make_temp_psmux_dir("warm-cleanup");
+        std::fs::write(dir.join("preview____warm__.port"), "not-a-port")
+            .expect("test should write warm port file");
+        std::fs::write(dir.join("preview____warm__.key"), "secret")
+            .expect("test should write warm key file");
+        std::fs::write(dir.join("preview__0.port"), "12345")
+            .expect("test should write normal port file");
+        std::fs::write(dir.join("other____warm__.port"), "12346")
+            .expect("test should write other warm port file");
+
+        cleanup_warm_server_for_socket_in_dir(&dir, Some("preview"));
+
+        assert!(!dir.join("preview____warm__.port").exists());
+        assert!(!dir.join("preview____warm__.key").exists());
+        assert!(dir.join("preview__0.port").exists());
+        assert!(dir.join("other____warm__.port").exists());
+    }
+
+    fn make_temp_psmux_dir(name: &str) -> std::path::PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "winsmux-{name}-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("test should create temp dir");
+        path
+    }
 }
