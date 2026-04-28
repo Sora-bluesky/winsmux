@@ -272,6 +272,63 @@ pub fn run_rust_canary_command(args: &[&String]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("manual-checklist"));
+        return Ok(());
+    }
+
+    let options = parse_options("manual-checklist", args, 0)?;
+    let payload = json!({
+        "contract_version": 1,
+        "task_id": "TASK-316",
+        "target_version": "v0.24.5",
+        "generated_at": generated_at(),
+        "project_dir": project_dir_string(&options.project_dir),
+        "product_version": VERSION,
+        "document": {
+            "path": "docs/internal/winsmux-manual-checklist-by-version.md",
+            "source": "winsmux-core/scripts/sync-internal-docs.ps1",
+            "tracked": false,
+        },
+        "required_result_values": ["未", "合格", "不合格", "保留"],
+        "release_gates": [
+            "version_by_version_results_recorded",
+            "no_critical_unchecked_items",
+            "pre_v1_fixups_taskified",
+            "reusable_screen_recording_candidates_recorded",
+            "task_220_can_reference_results"
+        ],
+        "v0_24_5_focus": [
+            "legacy_alias_sunset",
+            "rust_default_on_canary",
+            "windows_install_guidance",
+            "release_ci",
+            "public_surface_gate"
+        ],
+        "blocking_conditions": [
+            "missing_manual_checklist_document",
+            "unchecked_critical_item",
+            "failed_result_without_followup_task",
+            "blocked_result_without_owner",
+            "public_surface_drift"
+        ],
+        "next_action": "Record v0.24.5 manual validation results before the v0.24.5 release and feed any failed or blocked item back into backlog."
+    });
+
+    if options.json {
+        return write_json(&payload);
+    }
+
+    println!(
+        "Manual checklist: {} for {}",
+        payload["document"]["path"].as_str().unwrap_or("unknown"),
+        payload["target_version"].as_str().unwrap_or("unknown")
+    );
+    println!("{}", payload["next_action"].as_str().unwrap_or(""));
+    Ok(())
+}
+
 struct RustCanaryBackend {
     backend: String,
     source: String,
@@ -3135,6 +3192,9 @@ fn usage_for(command: &str) -> &'static str {
         }
         "machine-contract" => "usage: winsmux machine-contract --json",
         "rust-canary" => "usage: winsmux rust-canary [--json] [--project-dir <path>]",
+        "manual-checklist" => {
+            "usage: winsmux manual-checklist [--json] [--project-dir <path>]"
+        }
         "provider-switch" => {
             "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json] [--project-dir <path>]"
         }
