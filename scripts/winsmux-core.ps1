@@ -8470,6 +8470,7 @@ promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>
   orchestra-smoke [--json] [--auto-start] [--project-dir <path>]  Report structured startup contract + UI attach state (use --auto-start to start if needed)
   orchestra-attach [--json] [--project-dir <path>]  Launch a visible attach window for an existing orchestra session
   harness-check [--json] [--project-dir <path>]  Validate hook/settings/attach contracts before external-operator startup
+  shadow-cutover-gate --expected <path> --actual <path> [--surface <name>] [--json]  Compare PowerShell/Rust shadow outputs before cutover
   vault set <key> [value]   Store a credential securely (DPAPI)
   vault get <key>           Retrieve a stored credential
   vault inject <pane>       Inject all credentials as env vars into a pane
@@ -9017,6 +9018,55 @@ switch ($Command) {
             }
         }
         & pwsh -NoProfile -File $checkScript @checkArgs
+    }
+    'shadow-cutover-gate' {
+        $gateScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\shadow-cutover-gate.ps1'))
+        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
+        $expectedPath = ''
+        $actualPath = ''
+        $surface = 'unspecified'
+        $asJson = $false
+        for ($index = 0; $index -lt $remaining.Count; $index++) {
+            switch ($remaining[$index]) {
+                '--expected' {
+                    if ($index + 1 -ge $remaining.Count) {
+                        Stop-WithError "usage: winsmux shadow-cutover-gate --expected <path> --actual <path> [--surface <name>] [--json]"
+                    }
+                    $expectedPath = $remaining[$index + 1]
+                    $index++
+                }
+                '--actual' {
+                    if ($index + 1 -ge $remaining.Count) {
+                        Stop-WithError "usage: winsmux shadow-cutover-gate --expected <path> --actual <path> [--surface <name>] [--json]"
+                    }
+                    $actualPath = $remaining[$index + 1]
+                    $index++
+                }
+                '--surface' {
+                    if ($index + 1 -ge $remaining.Count) {
+                        Stop-WithError "usage: winsmux shadow-cutover-gate --expected <path> --actual <path> [--surface <name>] [--json]"
+                    }
+                    $surface = $remaining[$index + 1]
+                    $index++
+                }
+                '--json' {
+                    $asJson = $true
+                }
+                default {
+                    Stop-WithError "usage: winsmux shadow-cutover-gate --expected <path> --actual <path> [--surface <name>] [--json]"
+                }
+            }
+        }
+
+        if ([string]::IsNullOrWhiteSpace($expectedPath) -or [string]::IsNullOrWhiteSpace($actualPath)) {
+            Stop-WithError "usage: winsmux shadow-cutover-gate --expected <path> --actual <path> [--surface <name>] [--json]"
+        }
+
+        $gateArgs = @('-ExpectedPath', $expectedPath, '-ActualPath', $actualPath, '-Surface', $surface)
+        if ($asJson) {
+            $gateArgs += '-AsJson'
+        }
+        & pwsh -NoProfile -File $gateScript @gateArgs
     }
     'vault'           {
         switch ($Target) {

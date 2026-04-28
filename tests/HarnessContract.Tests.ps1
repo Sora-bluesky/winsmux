@@ -4,6 +4,7 @@ Describe 'harness-check contract' {
     BeforeAll {
         $script:RepoRoot = Split-Path -Parent $PSScriptRoot
         $script:HarnessCheckPath = Join-Path $script:RepoRoot 'winsmux-core\scripts\harness-check.ps1'
+        $script:ShadowCutoverGatePath = Join-Path $script:RepoRoot 'winsmux-core\scripts\shadow-cutover-gate.ps1'
         $script:WinsmuxCorePath = Join-Path $script:RepoRoot 'scripts\winsmux-core.ps1'
         $script:SettingsLocalPath = Join-Path $script:RepoRoot '.claude\settings.local.json'
 
@@ -201,6 +202,53 @@ tasks:
                 BacklogPath = $backlogPath
             }
         }
+    }
+
+    It 'passes shadow cutover gate when only human-readable text changes' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-shadow-gate-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $expectedPath = Join-Path $tempRoot 'expected.json'
+            $actualPath = Join-Path $tempRoot 'actual.json'
+            Write-TestFileWithCmd -Path $expectedPath -Content '{"operator_contract":{"operator_state":"ready","can_dispatch":true,"requires_startup":false,"operator_message":"ready","next_action":"dispatch"}}'
+            Write-TestFileWithCmd -Path $actualPath -Content '{"operator_contract":{"operator_state":"ready","can_dispatch":true,"requires_startup":false,"operator_message":"ready now","next_action":"continue dispatch"}}'
+
+            $output = & $script:PwshPath -NoProfile -File $script:ShadowCutoverGatePath -ExpectedPath $expectedPath -ActualPath $actualPath -Surface orchestra-smoke -AsJson
+            $LASTEXITCODE | Should -Be 0
+            $json = $output | ConvertFrom-Json
+            $json.passed | Should -BeTrue
+            $json.summary.allowed_differences | Should -Be 2
+            $json.summary.blocking_differences | Should -Be 0
+        } finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'fails shadow cutover gate when a machine-readable field changes' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-shadow-gate-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
+        try {
+            $expectedPath = Join-Path $tempRoot 'expected.json'
+            $actualPath = Join-Path $tempRoot 'actual.json'
+            Write-TestFileWithCmd -Path $expectedPath -Content '{"operator_contract":{"operator_state":"ready","can_dispatch":true,"requires_startup":false}}'
+            Write-TestFileWithCmd -Path $actualPath -Content '{"operator_contract":{"operator_state":"ready","can_dispatch":false,"requires_startup":false}}'
+
+            $output = & $script:PwshPath -NoProfile -File $script:ShadowCutoverGatePath -ExpectedPath $expectedPath -ActualPath $actualPath -Surface orchestra-smoke -AsJson
+            $LASTEXITCODE | Should -Be 1
+            $json = $output | ConvertFrom-Json
+            $json.passed | Should -BeFalse
+            $json.summary.blocking_differences | Should -Be 1
+            $json.differences[0].path | Should -Be '$.operator_contract.can_dispatch'
+        } finally {
+            Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'documents and dispatches the shadow cutover gate command' {
+        $bridge = Get-Content -LiteralPath $script:WinsmuxCorePath -Raw -Encoding UTF8
+        $bridge | Should -Match 'shadow-cutover-gate --expected <path> --actual <path> \[--surface <name>\] \[--json\]'
+        $bridge | Should -Match "'shadow-cutover-gate'\s+\{"
+        $bridge | Should -Match 'shadow-cutover-gate\.ps1'
     }
 
     BeforeEach {
