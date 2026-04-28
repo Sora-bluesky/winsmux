@@ -92,7 +92,54 @@
     "security_policy": null,
     "security_verdict": null,
     "verification_contract": null,
-    "verification_result": null
+    "verification_result": null,
+    "plan": {
+      "goal": "Ship run contract primitives",
+      "task_type": "implementation",
+      "priority": "P0",
+      "write_scope": [
+        "scripts/winsmux-core.ps1",
+        "tests/winsmux-bridge.Tests.ps1"
+      ],
+      "read_scope": [
+        "winsmux-core/scripts/pane-status.ps1"
+      ],
+      "constraints": [
+        "preserve existing board schema"
+      ],
+      "expected_output": "Stable explain JSON",
+      "verification_plan": [
+        "Invoke-Pester tests/winsmux-bridge.Tests.ps1",
+        "verify explain --json contract"
+      ],
+      "review_required": true
+    },
+    "plan_checkpoints": [
+      {
+        "id": "event:1",
+        "name": "operator.review_requested",
+        "status": "waiting",
+        "at": "2026-04-10T12:01:00+09:00",
+        "event": "operator.review_requested",
+        "outcome": "",
+        "message": "review requested"
+      }
+    ],
+    "outcome": {
+      "status": "in_progress",
+      "reason": "consult before work",
+      "confidence": 0.66,
+      "source_event": "operator.review_requested"
+    },
+    "draft_pr_gate": {
+      "kind": "human_judgement",
+      "target": "draft_pr",
+      "state": "required",
+      "trigger": "review_state",
+      "draft_pr_url": "",
+      "auto_merge_allowed": false,
+      "merge_requires_human": true
+    }
   },
   "observation_pack": {
     "run_id": "task:task-256",
