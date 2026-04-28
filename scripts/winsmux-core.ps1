@@ -5398,6 +5398,216 @@ function Get-SecurityVerdictFromEventRecords {
     }
 }
 
+function ConvertTo-RunCheckpointStatus {
+    param(
+        [string]$EventName,
+        [string]$Status = '',
+        [AllowNull()]$Data = $null
+    )
+
+    if ($EventName -in @('pipeline.verify.pass', 'pipeline.security.allowed', 'security.policy.allowed', 'operator.draft_pr.created')) {
+        return 'completed'
+    }
+    if ($EventName -in @('pipeline.verify.fail', 'pipeline.security.blocked', 'security.policy.blocked', 'operator.review_failed')) {
+        return 'blocked'
+    }
+    if ($EventName -in @('pipeline.verify.partial', 'operator.review_requested', 'pane.approval_waiting')) {
+        return 'waiting'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Status)) {
+        return [string]$Status
+    }
+    if ($null -ne $Data -and $Data -is [System.Collections.IDictionary] -and $Data.Contains('verification_result')) {
+        $verificationResult = $Data['verification_result']
+        if ($verificationResult -is [System.Collections.IDictionary] -and $verificationResult.Contains('outcome')) {
+            $outcome = ([string]$verificationResult['outcome']).ToUpperInvariant()
+            if ($outcome -eq 'PASS') { return 'completed' }
+            if ($outcome -eq 'FAIL') { return 'blocked' }
+            if ($outcome -eq 'PARTIAL') { return 'waiting' }
+        }
+    }
+
+    return 'recorded'
+}
+
+function ConvertTo-RunEventTimestampText {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return ''
+    }
+    if ($Value -is [datetime]) {
+        return $Value.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($Value -is [datetimeoffset]) {
+        return $Value.UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    }
+
+    return [string]$Value
+}
+
+function Get-RunEventTimestampSortKey {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return ''
+    }
+    if ($Value -is [datetime]) {
+        return $Value.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    }
+    if ($Value -is [datetimeoffset]) {
+        return $Value.UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    }
+
+    $parsed = [datetimeoffset]::MinValue
+    if ([datetimeoffset]::TryParse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) {
+        return $parsed.UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+    }
+
+    return [string]$Value
+}
+
+function Get-RunPlanCheckpointsFromEventRecords {
+    param([object[]]$EventRecords = @())
+
+    $checkpoints = [System.Collections.Generic.List[object]]::new()
+    $checkpointEvents = @(
+        'operator.review_requested',
+        'operator.review_failed',
+        'pane.approval_waiting',
+        'pipeline.verify.pass',
+        'pipeline.verify.fail',
+        'pipeline.verify.partial',
+        'pipeline.security.allowed',
+        'pipeline.security.blocked',
+        'security.policy.allowed',
+        'security.policy.blocked',
+        'operator.draft_pr.created'
+    )
+
+    foreach ($eventRecord in @($EventRecords | Sort-Object @{ Expression = { Get-RunEventTimestampSortKey -Value $_['timestamp'] } }, @{ Expression = { [int]$_.line_number } })) {
+        $eventName = [string]$eventRecord['event']
+        if ($eventName -notin $checkpointEvents) {
+            continue
+        }
+
+        $data = $null
+        if ($eventRecord.Contains('data')) {
+            $data = $eventRecord['data']
+        }
+
+        $outcome = ''
+        if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('verification_result')) {
+            $verificationResult = $data['verification_result']
+            if ($verificationResult -is [System.Collections.IDictionary] -and $verificationResult.Contains('outcome')) {
+                $outcome = [string]$verificationResult['outcome']
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace($outcome) -and $null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('result')) {
+            $outcome = [string]$data['result']
+        }
+
+        $lineNumber = [int]$eventRecord['line_number']
+        $checkpoints.Add([ordered]@{
+            id       = if ($lineNumber -gt 0) { "event:$lineNumber" } else { "event:$($checkpoints.Count + 1)" }
+            name     = $eventName
+            status   = ConvertTo-RunCheckpointStatus -EventName $eventName -Status ([string]$eventRecord['status']) -Data $data
+            at       = ConvertTo-RunEventTimestampText -Value $eventRecord['timestamp']
+            event    = $eventName
+            outcome  = $outcome
+            message  = [string]$eventRecord['message']
+        }) | Out-Null
+    }
+
+    return @($checkpoints)
+}
+
+function New-RunPlanContract {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    return [ordered]@{
+        goal              = [string]$Run.goal
+        task_type         = [string]$Run.task_type
+        priority          = [string]$Run.priority
+        write_scope       = @($Run.write_scope)
+        read_scope        = @($Run.read_scope)
+        constraints       = @($Run.constraints)
+        expected_output   = [string]$Run.expected_output
+        verification_plan = @($Run.verification_plan)
+        review_required   = [bool]$Run.review_required
+    }
+}
+
+function New-RunOutcomeContract {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $status = ''
+    if ([string]$Run.review_state -in @('FAIL', 'FAILED')) {
+        $status = 'failed'
+    } elseif ([string]$Run.review_state -eq 'PASS' -or [string]$Run.task_state -in @('completed', 'task_completed', 'commit_ready', 'done')) {
+        $status = 'completed'
+    } elseif ([string]$Run.task_state -eq 'blocked') {
+        $status = 'blocked'
+    } elseif ([string]$Run.task_state -eq 'in_progress') {
+        $status = 'in_progress'
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$Run.task_state)) {
+        $status = [string]$Run.task_state
+    }
+
+    $reason = ''
+    if ($null -ne $Run.verification_result -and -not [string]::IsNullOrWhiteSpace([string]$Run.verification_result.summary)) {
+        $reason = [string]$Run.verification_result.summary
+    } elseif ($null -ne $Run.experiment_packet -and -not [string]::IsNullOrWhiteSpace([string]$Run.experiment_packet.result)) {
+        $reason = [string]$Run.experiment_packet.result
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$Run.last_event)) {
+        $reason = [string]$Run.last_event
+    }
+
+    $confidence = $null
+    if ($null -ne $Run.experiment_packet -and $Run.experiment_packet.Contains('confidence')) {
+        $confidence = $Run.experiment_packet.confidence
+    }
+
+    return [ordered]@{
+        status      = $status
+        reason      = $reason
+        confidence  = $confidence
+        source_event = [string]$Run.last_event
+    }
+}
+
+function New-RunDraftPrGate {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [object[]]$EventRecords = @()
+    )
+
+    $draftPrEvent = @($EventRecords | Where-Object { [string]($_['event']) -eq 'operator.draft_pr.created' } | Sort-Object @{ Expression = { Get-RunEventTimestampSortKey -Value $_['timestamp'] }; Descending = $true }, @{ Expression = { [int]($_['line_number']) }; Descending = $true } | Select-Object -First 1)
+    $state = 'required'
+    $trigger = 'review_state'
+    $draftPrUrl = ''
+    if (@($draftPrEvent).Count -gt 0) {
+        $state = 'passed'
+        $trigger = 'operator.draft_pr.created'
+        $data = $draftPrEvent[0]['data']
+        if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('draft_pr_url')) {
+            $draftPrUrl = [string]$data['draft_pr_url']
+        }
+    } elseif ([string]$Run.review_state -in @('FAIL', 'FAILED')) {
+        $state = 'blocked'
+    }
+
+    return [ordered]@{
+        kind                 = 'human_judgement'
+        target               = 'draft_pr'
+        state                = $state
+        trigger              = $trigger
+        draft_pr_url         = $draftPrUrl
+        auto_merge_allowed   = $false
+        merge_requires_human = $true
+    }
+}
+
 function New-RunPacketFromRun {
     param([Parameter(Mandatory = $true)]$Run)
 
@@ -5433,6 +5643,10 @@ function New-RunPacketFromRun {
         security_verdict  = $Run.security_verdict
         verification_contract = $Run.verification_contract
         verification_result   = $Run.verification_result
+        plan              = $Run.plan
+        plan_checkpoints  = @($Run.plan_checkpoints)
+        outcome           = $Run.outcome
+        draft_pr_gate     = $Run.draft_pr_gate
         last_event        = [string]$Run.last_event
         last_event_at     = [string]$Run.last_event_at
     }
@@ -5505,6 +5719,10 @@ function New-RunResultPacket {
         verification_result   = $Run.verification_result
         security_policy       = $Run.security_policy
         security_verdict      = $Run.security_verdict
+        plan                  = $Run.plan
+        plan_checkpoints      = @($Run.plan_checkpoints)
+        outcome               = $Run.outcome
+        draft_pr_gate         = $Run.draft_pr_gate
         recent_events         = @($RecentEvents)
     }
 }
@@ -5749,6 +5967,10 @@ function Get-RunsPayload {
                 security_verdict   = $null
                 verification_contract = $null
                 verification_result   = $null
+                plan                  = $null
+                plan_checkpoints      = @()
+                outcome               = $null
+                draft_pr_gate         = $null
             }
         }
 
@@ -5894,12 +6116,16 @@ function Get-RunsPayload {
             if ($null -ne $securityVerdict) {
                 $run.security_verdict = $securityVerdict
             }
+            $run.plan_checkpoints = @(Get-RunPlanCheckpointsFromEventRecords -EventRecords $matchingEvents)
         }
     }
 
     $runs = @(
         foreach ($runId in @($runsById.Keys)) {
             $run = $runsById[$runId]
+            $run.plan = New-RunPlanContract -Run $run
+            $run.outcome = New-RunOutcomeContract -Run $run
+            $run.draft_pr_gate = New-RunDraftPrGate -Run $run -EventRecords @($eventRecords | Where-Object { Test-RunMatchesEventRecord -Run $run -EventRecord $_ })
             [ordered]@{
                 run_id             = [string]$run.run_id
                 task_id            = [string]$run.task_id
@@ -5943,6 +6169,10 @@ function Get-RunsPayload {
                 security_verdict   = $run.security_verdict
                 verification_contract = $run.verification_contract
                 verification_result   = $run.verification_result
+                plan                  = $run.plan
+                plan_checkpoints      = @($run.plan_checkpoints)
+                outcome               = $run.outcome
+                draft_pr_gate         = $run.draft_pr_gate
             }
         }
     )

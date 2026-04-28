@@ -8138,6 +8138,22 @@ panes:
         $result.runs[0].verification_contract.mode | Should -Be 'adversarial_verify'
         $result.runs[0].verification_result.outcome | Should -Be 'PARTIAL'
         $result.runs[0].run_packet.verification_result.outcome | Should -Be 'PARTIAL'
+        $result.runs[0].plan.goal | Should -Be 'Ship run contract primitives'
+        $result.runs[0].plan.verification_plan | Should -Be @('Invoke-Pester tests/winsmux-bridge.Tests.ps1', 'verify runs --json contract')
+        $result.runs[0].plan_checkpoints.Count | Should -Be 2
+        @($result.runs[0].plan_checkpoints | ForEach-Object { $_.name }) | Should -Be @('pane.approval_waiting', 'pipeline.verify.partial')
+        $result.runs[0].plan_checkpoints[0].at.ToString('o') | Should -Be '2026-04-10T03:01:00.0000000Z'
+        $result.runs[0].outcome.status | Should -Be 'in_progress'
+        $result.runs[0].outcome.reason | Should -Be 'rerun focused verification'
+        $result.runs[0].outcome.confidence | Should -Be 0.72
+        $result.runs[0].draft_pr_gate.kind | Should -Be 'human_judgement'
+        $result.runs[0].draft_pr_gate.target | Should -Be 'draft_pr'
+        $result.runs[0].draft_pr_gate.state | Should -Be 'required'
+        $result.runs[0].draft_pr_gate.auto_merge_allowed | Should -Be $false
+        $result.runs[0].run_packet.plan.goal | Should -Be 'Ship run contract primitives'
+        $result.runs[0].run_packet.plan_checkpoints.Count | Should -Be 2
+        $result.runs[0].run_packet.outcome.status | Should -Be 'in_progress'
+        $result.runs[0].run_packet.draft_pr_gate.merge_requires_human | Should -Be $true
         $result.runs[0].Contains('observation_pack') | Should -Be $false
         $result.runs[0].Contains('consultation_packet') | Should -Be $false
     }
@@ -9128,6 +9144,18 @@ panes:
         $result.run.experiment_packet.command_hash | Should -Be 'cmd:def456'
         $result.run.verification_contract.mode | Should -Be 'adversarial_verify'
         $result.run.verification_result.outcome | Should -Be 'PARTIAL'
+        $result.run.plan.goal | Should -Be 'Ship run contract primitives'
+        $result.run.plan.verification_plan | Should -Be @('Invoke-Pester tests/winsmux-bridge.Tests.ps1', 'verify explain --json contract')
+        $result.run.plan_checkpoints.Count | Should -Be 3
+        @($result.run.plan_checkpoints | ForEach-Object { $_.name }) | Should -Be @('operator.review_requested', 'pipeline.verify.partial', 'pane.approval_waiting')
+        $result.run.plan_checkpoints[0].at.ToString('o') | Should -Be '2026-04-10T03:01:00.0000000Z'
+        $result.run.outcome.status | Should -Be 'in_progress'
+        $result.run.outcome.reason | Should -Be 'rerun focused verification'
+        $result.run.outcome.confidence | Should -Be 0.66
+        $result.run.draft_pr_gate.kind | Should -Be 'human_judgement'
+        $result.run.draft_pr_gate.target | Should -Be 'draft_pr'
+        $result.run.draft_pr_gate.state | Should -Be 'required'
+        $result.run.draft_pr_gate.merge_requires_human | Should -Be $true
         $result.observation_pack.failing_command | Should -Be 'Invoke-Pester tests/winsmux-bridge.Tests.ps1'
         $result.observation_pack.changed_files | Should -Contain 'scripts/winsmux-core.ps1'
         $result.consultation_packet.kind | Should -Be 'consult_result'
