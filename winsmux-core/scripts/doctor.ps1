@@ -94,6 +94,17 @@ function Get-DoctorGitCommandPath {
     return $command.Source
 }
 
+function Get-DoctorNormalizedProcessName {
+    param([AllowNull()][string]$Name)
+
+    $normalized = ([string]$Name).Trim().ToLowerInvariant()
+    if ($normalized.EndsWith('.exe')) {
+        $normalized = $normalized.Substring(0, $normalized.Length - 4)
+    }
+
+    return $normalized
+}
+
 function Test-BasicYamlContent {
     param([Parameter(Mandatory = $true)][string]$Content)
 
@@ -384,11 +395,7 @@ function Test-ZombieProcessesCheck {
             continue
         }
 
-        $name = ([string]$process.Name).Trim().ToLowerInvariant()
-        if ($name.EndsWith('.exe')) {
-            $name = $name.Substring(0, $name.Length - 4)
-        }
-
+        $name = Get-DoctorNormalizedProcessName -Name $process.Name
         if ($name -notin @('codex', 'pwsh', 'powershell')) {
             continue
         }
@@ -422,6 +429,60 @@ function Test-ZombieProcessesCheck {
     }
 
     return New-DoctorResult -Status pass -Label 'Zombie processes' -Detail '0 found'
+}
+
+function Get-DoctorPowerShellProcessWarnThreshold {
+    $threshold = 100
+    $rawValue = [string]$env:WINSMUX_DOCTOR_POWERSHELL_PROCESS_WARN_THRESHOLD
+    if ([string]::IsNullOrWhiteSpace($rawValue)) {
+        return $threshold
+    }
+
+    try {
+        $parsed = [int]$rawValue
+        if ($parsed -gt 0) {
+            return $parsed
+        }
+    } catch {
+        return $threshold
+    }
+
+    return $threshold
+}
+
+function New-PowerShellProcessPressureResult {
+    param(
+        [Parameter(Mandatory = $true)]$Snapshot,
+        [Parameter(Mandatory = $true)]$ProtectedIds,
+        [Parameter(Mandatory = $true)][int]$WarnThreshold
+    )
+
+    $count = 0
+    foreach ($process in $Snapshot.Processes) {
+        $processId = [int]$process.ProcessId
+        if ($ProtectedIds.Contains($processId)) {
+            continue
+        }
+
+        $name = Get-DoctorNormalizedProcessName -Name $process.Name
+        if ($name -in @('pwsh', 'powershell')) {
+            $count++
+        }
+    }
+
+    if ($count -ge $WarnThreshold) {
+        return New-DoctorResult -Status warn -Label 'PowerShell process pressure' -Detail "$count found; close unneeded pwsh.exe or powershell.exe sessions before starting more winsmux panes"
+    }
+
+    return New-DoctorResult -Status pass -Label 'PowerShell process pressure' -Detail "$count found"
+}
+
+function Test-PowerShellProcessPressureCheck {
+    $snapshot = Get-DoctorProcessSnapshot
+    $protectedIds = Get-DoctorAncestorProcessIds -Snapshot $snapshot -ProcessId $PID
+    $warnThreshold = Get-DoctorPowerShellProcessWarnThreshold
+
+    return New-PowerShellProcessPressureResult -Snapshot $snapshot -ProtectedIds $protectedIds -WarnThreshold $warnThreshold
 }
 
 function Test-BridgeConfigCheck {
@@ -497,7 +558,13 @@ function Write-DoctorResult {
     Write-Output ("[{0}] {1}: {2}" -f $status, $Result.Label, $Result.Detail)
 }
 
-if (-not $script:__winsmux_doctor_functions_only) {
+$functionsOnlyVariable = Get-Variable -Name __winsmux_doctor_functions_only -Scope Script -ErrorAction SilentlyContinue
+$functionsOnly = $false
+if ($null -ne $functionsOnlyVariable) {
+    $functionsOnly = [bool]$functionsOnlyVariable.Value
+}
+
+if (-not $functionsOnly) {
     $results = @(
         Test-VersionFileCheck
         Test-HookFilesCheck
@@ -507,6 +574,7 @@ if (-not $script:__winsmux_doctor_functions_only) {
         Test-StaleWorktreesCheck
         Test-WorkerGitDriftCheck
         Test-ZombieProcessesCheck
+        Test-PowerShellProcessPressureCheck
         Test-BridgeConfigCheck
         Test-BridgeConfigMetadataCheck
         Test-HookProfileCheck
