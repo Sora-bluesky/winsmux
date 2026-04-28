@@ -239,6 +239,9 @@ fn ledger_contract_exposes_board_projection_in_manifest_order() {
     assert_eq!(board.panes[0].task, "Implement run ledger");
     assert_eq!(board.panes[0].task_state, "in_progress");
     assert_eq!(board.panes[0].review_state, "PENDING");
+    assert_eq!(board.panes[0].phase, "review");
+    assert_eq!(board.panes[0].activity, "waiting_for_input");
+    assert_eq!(board.panes[0].detail, "review_pending");
     assert_eq!(board.panes[0].branch, "worktree-builder-1");
     assert_eq!(board.panes[0].worktree, ".worktrees/builder-1");
     assert_eq!(board.panes[0].head_sha, "abc1234def5678");
@@ -299,6 +302,9 @@ panes:
     assert_eq!(inbox.items[0].role, "Worker");
     assert_eq!(inbox.items[0].task_id, "task-999");
     assert_eq!(inbox.items[0].task, "Fix blocker");
+    assert_eq!(inbox.items[0].phase, "build");
+    assert_eq!(inbox.items[0].activity, "blocked");
+    assert_eq!(inbox.items[0].detail, "task_blocked");
     assert_eq!(inbox.items[0].source, "manifest");
     assert_eq!(inbox.items[1].kind, "review_pending");
     assert_eq!(inbox.items[1].event, "review.requested");
@@ -308,6 +314,9 @@ panes:
     assert_eq!(inbox.items[2].task_id, "task-245");
     assert_eq!(inbox.items[2].source, "events");
     assert_eq!(inbox.items[3].kind, "commit_ready");
+    assert_eq!(inbox.items[3].phase, "package");
+    assert_eq!(inbox.items[3].activity, "completed");
+    assert_eq!(inbox.items[3].detail, "commit_ready");
     assert_eq!(inbox.items[3].head_sha, "abc1234def5678");
 }
 
@@ -379,6 +388,14 @@ panes:
     assert_eq!(inbox.summary.by_kind["hung"], 1);
     assert_eq!(inbox.summary.by_kind["blocked"], 1);
     assert_eq!(inbox.summary.by_kind["stalled"], 1);
+    let task_completed = inbox
+        .items
+        .iter()
+        .find(|item| item.kind == "task_completed")
+        .expect("task_completed inbox item should exist");
+    assert_eq!(task_completed.phase, "package");
+    assert_eq!(task_completed.activity, "completed");
+    assert_eq!(task_completed.detail, "task_completed");
 }
 
 #[test]
@@ -453,6 +470,9 @@ panes:
     assert_eq!(digest.items[0].provider_target, "codex:gpt-5.4");
     assert_eq!(digest.items[0].task_state, "blocked");
     assert_eq!(digest.items[0].review_state, "FAIL");
+    assert_eq!(digest.items[0].phase, "review");
+    assert_eq!(digest.items[0].activity, "blocked");
+    assert_eq!(digest.items[0].detail, "review_failed");
     assert_eq!(digest.items[0].next_action, "approval_waiting");
     assert_eq!(digest.items[0].branch, "worktree-builder-1");
     assert_eq!(digest.items[0].worktree, ".worktrees/builder-1");

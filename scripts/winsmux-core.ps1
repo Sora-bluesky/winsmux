@@ -4768,6 +4768,70 @@ function Get-BoardStateCounts {
     return $counts
 }
 
+function New-RunStateModel {
+    param(
+        [string]$State = '',
+        [string]$TaskState = '',
+        [string]$ReviewState = '',
+        [string]$EventKind = '',
+        [string]$LastEvent = ''
+    )
+
+    $stateText = ([string]$State).ToLowerInvariant()
+    $taskText = ([string]$TaskState).ToLowerInvariant()
+    $reviewText = ([string]$ReviewState).ToUpperInvariant()
+    $kindText = ([string]$EventKind).ToLowerInvariant()
+    $eventText = ([string]$LastEvent).ToLowerInvariant()
+
+    $phase = 'build'
+    $activity = 'running'
+    $detail = 'in_progress'
+
+    if ($kindText -in @('commit_ready', 'task_completed') -or $taskText -in @('completed', 'task_completed', 'done', 'commit_ready')) {
+        $phase = 'package'
+        $activity = 'completed'
+        $detail = if (-not [string]::IsNullOrWhiteSpace($kindText)) { $kindText } else { 'task_completed' }
+    } elseif ($reviewText -in @('FAIL', 'FAILED') -or $kindText -in @('review_failed')) {
+        $phase = 'review'
+        $activity = 'blocked'
+        $detail = 'review_failed'
+    } elseif ($reviewText -eq 'PENDING' -or $kindText -in @('review_pending', 'review_requested')) {
+        $phase = 'review'
+        $activity = 'waiting_for_input'
+        $detail = if ($kindText -eq 'review_requested') { 'review_requested' } else { 'review_pending' }
+    } elseif ($reviewText -eq 'PASS') {
+        $phase = 'package'
+        $activity = 'waiting_for_input'
+        $detail = 'draft_pr_required'
+    } elseif ($taskText -eq 'blocked' -or $kindText -in @('blocked', 'task_blocked') -or $eventText -like '*blocked*') {
+        $phase = 'build'
+        $activity = 'blocked'
+        $detail = if (-not [string]::IsNullOrWhiteSpace($kindText)) { $kindText } else { 'task_blocked' }
+    } elseif ($stateText -in @('offline', 'crashed', 'hung', 'bootstrap_invalid') -or $kindText -in @('crashed', 'hung', 'bootstrap_invalid')) {
+        $phase = 'build'
+        $activity = 'offline'
+        $detail = if (-not [string]::IsNullOrWhiteSpace($kindText)) { $kindText } else { $stateText }
+    } elseif ($taskText -eq 'backlog' -or $kindText -eq 'dispatch_needed' -or $stateText -eq 'idle') {
+        $phase = 'brainstorm'
+        $activity = 'waiting_for_input'
+        $detail = if (-not [string]::IsNullOrWhiteSpace($kindText)) { $kindText } elseif (-not [string]::IsNullOrWhiteSpace($taskText)) { $taskText } else { 'idle' }
+    } elseif (-not [string]::IsNullOrWhiteSpace($taskText)) {
+        $phase = 'build'
+        $activity = 'running'
+        $detail = $taskText
+    } elseif (-not [string]::IsNullOrWhiteSpace($stateText)) {
+        $phase = 'build'
+        $activity = if ($stateText -eq 'busy') { 'running' } else { 'waiting_for_input' }
+        $detail = $stateText
+    }
+
+    return [ordered]@{
+        phase    = $phase
+        activity = $activity
+        detail   = $detail
+    }
+}
+
 function Get-BoardPayload {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
@@ -4787,6 +4851,7 @@ function Get-BoardPayload {
 
     $panes = @(
         $records | ForEach-Object {
+            $stateModel = New-RunStateModel -State ([string]$_.State) -TaskState ([string]$_.TaskState) -ReviewState ([string]$_.ReviewState) -LastEvent ([string]$_.LastEvent)
             [ordered]@{
                 label              = $_.Label
                 role               = $_.Role
@@ -4798,6 +4863,9 @@ function Get-BoardPayload {
                 task_state         = $_.TaskState
                 task_owner         = $_.TaskOwner
                 review_state       = $_.ReviewState
+                phase              = $stateModel.phase
+                activity           = $stateModel.activity
+                detail             = $stateModel.detail
                 branch             = $_.Branch
                 worktree           = if ($null -ne $_.PSObject.Properties['Worktree']) { [string]$_.Worktree } else { '' }
                 head_sha           = $_.HeadSha
@@ -4980,6 +5048,9 @@ function New-InboxItem {
         [string]$Task = '',
         [string]$TaskState = '',
         [string]$ReviewState = '',
+        [string]$Phase = '',
+        [string]$Activity = '',
+        [string]$Detail = '',
         [string]$Branch = '',
         [string]$HeadSha = '',
         [string]$Event = '',
@@ -4987,6 +5058,11 @@ function New-InboxItem {
         [string]$Source = '',
         [int]$ChangedFileCount = 0
     )
+
+    $stateModel = New-RunStateModel -TaskState $TaskState -ReviewState $ReviewState -EventKind $Kind -LastEvent $Event
+    if ([string]::IsNullOrWhiteSpace($Phase)) { $Phase = [string]$stateModel.phase }
+    if ([string]::IsNullOrWhiteSpace($Activity)) { $Activity = [string]$stateModel.activity }
+    if ([string]::IsNullOrWhiteSpace($Detail)) { $Detail = [string]$stateModel.detail }
 
     return [ordered]@{
         kind               = $Kind
@@ -4999,6 +5075,9 @@ function New-InboxItem {
         task               = $Task
         task_state         = $TaskState
         review_state       = $ReviewState
+        phase              = $Phase
+        activity           = $Activity
+        detail             = $Detail
         branch             = $Branch
         head_sha           = $HeadSha
         changed_file_count = $ChangedFileCount
@@ -5809,6 +5888,9 @@ function New-RunPacketFromRun {
         task_type         = [string]$Run.task_type
         priority          = [string]$Run.priority
         blocking          = [bool]$Run.blocking
+        phase             = [string]$Run.phase
+        activity          = [string]$Run.activity
+        detail            = [string]$Run.detail
         write_scope       = @($Run.write_scope)
         read_scope        = @($Run.read_scope)
         constraints       = @($Run.constraints)
@@ -5892,6 +5974,9 @@ function New-RunResultPacket {
         run_id                = [string]$Run.run_id
         status                = $status
         summary               = $summary
+        phase                 = [string]$Run.phase
+        activity              = [string]$Run.activity
+        detail                = [string]$Run.detail
         artifacts             = @()
         changed_files         = @($EvidenceDigest.changed_files)
         head_sha              = [string]$EvidenceDigest.head_sha
@@ -6318,12 +6403,17 @@ function Get-RunsPayload {
             $run.plan = New-RunPlanContract -Run $run
             $run.outcome = New-RunOutcomeContract -Run $run
             $run.draft_pr_gate = New-RunDraftPrGate -Run $run -EventRecords @($eventRecords | Where-Object { Test-RunMatchesEventRecord -Run $run -EventRecord $_ })
+            $nextAction = Get-RunNextAction -Run $run
+            $stateModel = New-RunStateModel -State ([string]$run.state) -TaskState ([string]$run.task_state) -ReviewState ([string]$run.review_state) -EventKind $nextAction -LastEvent ([string]$run.last_event)
             [ordered]@{
                 run_id             = [string]$run.run_id
                 task_id            = [string]$run.task_id
                 task               = [string]$run.task
                 task_state         = [string]$run.task_state
                 review_state       = [string]$run.review_state
+                phase              = $stateModel.phase
+                activity           = $stateModel.activity
+                detail             = $stateModel.detail
                 branch             = [string]$run.branch
                 worktree           = [string]$run.worktree
                 head_sha           = [string]$run.head_sha
@@ -6688,6 +6778,8 @@ function ConvertTo-EvidenceDigestItem {
     param([Parameter(Mandatory = $true)]$Run)
 
     $experimentPacket = $Run.experiment_packet
+    $nextAction = Get-RunNextAction -Run $Run
+    $stateModel = New-RunStateModel -State ([string]$Run.state) -TaskState ([string]$Run.task_state) -ReviewState ([string]$Run.review_state) -EventKind $nextAction -LastEvent ([string]$Run.last_event)
 
     return [ordered]@{
         run_id             = [string]$Run.run_id
@@ -6699,7 +6791,10 @@ function ConvertTo-EvidenceDigestItem {
         provider_target    = [string]$Run.provider_target
         task_state         = [string]$Run.task_state
         review_state       = [string]$Run.review_state
-        next_action        = Get-RunNextAction -Run $Run
+        phase              = $stateModel.phase
+        activity           = $stateModel.activity
+        detail             = $stateModel.detail
+        next_action        = $nextAction
         branch             = [string]$Run.branch
         worktree           = if ($null -ne $experimentPacket -and -not [string]::IsNullOrWhiteSpace([string]$experimentPacket.worktree)) { [string]$experimentPacket.worktree } else { [string]$Run.worktree }
         head_sha           = [string]$Run.head_sha
@@ -6858,6 +6953,9 @@ function New-DesktopRunProjection {
         task                 = $task
         task_state           = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.task_state)) { [string]$run.task_state } else { [string]$DigestItem.task_state }
         review_state         = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.review_state)) { [string]$run.review_state } else { [string]$DigestItem.review_state }
+        phase                = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.phase)) { [string]$run.phase } else { [string]$DigestItem.phase }
+        activity             = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.activity)) { [string]$run.activity } else { [string]$DigestItem.activity }
+        detail               = if ($null -ne $run -and -not [string]::IsNullOrWhiteSpace([string]$run.detail)) { [string]$run.detail } else { [string]$DigestItem.detail }
         verification_outcome = if ($null -ne $evidenceDigest -and -not [string]::IsNullOrWhiteSpace([string]$evidenceDigest.verification_outcome)) { [string]$evidenceDigest.verification_outcome } else { [string]$DigestItem.verification_outcome }
         security_blocked     = if ($null -ne $evidenceDigest -and -not [string]::IsNullOrWhiteSpace([string]$evidenceDigest.security_blocked)) { [string]$evidenceDigest.security_blocked } else { [string]$DigestItem.security_blocked }
         verification_verdict_summary = if ($null -ne $evidenceDigest -and $null -ne $evidenceDigest.verification_verdict_summary) { $evidenceDigest.verification_verdict_summary } else { $DigestItem.verification_verdict_summary }
@@ -7067,6 +7165,9 @@ function Get-ExplainPayload {
                 state        = [string]$run.state
                 task_state   = [string]$run.task_state
                 review_state = [string]$run.review_state
+                phase        = [string]$run.phase
+                activity     = [string]$run.activity
+                detail       = [string]$run.detail
                 last_event   = [string]$run.last_event
             }
         }

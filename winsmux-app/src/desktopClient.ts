@@ -68,6 +68,9 @@ export interface DesktopBoardPane {
   task: string;
   task_state: string;
   review_state: string;
+  phase: string;
+  activity: string;
+  detail: string;
   branch: string;
   worktree: string;
   head_sha: string;
@@ -91,6 +94,9 @@ export interface DesktopInboxItem {
   task: string;
   task_state: string;
   review_state: string;
+  phase: string;
+  activity: string;
+  detail: string;
   branch: string;
   head_sha: string;
   changed_file_count: number;
@@ -117,6 +123,9 @@ export interface DesktopDigestItem {
   provider_target: string;
   task_state: string;
   review_state: string;
+  phase: string;
+  activity: string;
+  detail: string;
   next_action: string;
   branch: string;
   worktree: string;
@@ -147,6 +156,9 @@ export interface DesktopRunProjection {
   task: string;
   task_state: string;
   review_state: string;
+  phase: string;
+  activity: string;
+  detail: string;
   verification_outcome: string;
   security_blocked: string;
   changed_files: string[];
@@ -192,6 +204,9 @@ export interface DesktopExplainPayload {
     state: string;
     task_state: string;
     review_state: string;
+    phase: string;
+    activity: string;
+    detail: string;
     branch: string;
     worktree: string;
     head_sha: string;
@@ -252,6 +267,9 @@ export interface DesktopExplainPayload {
       state: string;
       task_state: string;
       review_state: string;
+      phase: string;
+      activity: string;
+      detail: string;
       last_event: string;
     };
   };

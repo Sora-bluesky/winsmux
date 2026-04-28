@@ -61,6 +61,9 @@ pub struct LedgerPaneReadModel {
     pub task_state: String,
     pub task_owner: String,
     pub review_state: String,
+    pub phase: String,
+    pub activity: String,
+    pub detail: String,
     pub priority: String,
     pub blocking: bool,
     pub branch: String,
@@ -108,6 +111,9 @@ pub struct LedgerBoardPane {
     pub task: String,
     pub task_state: String,
     pub review_state: String,
+    pub phase: String,
+    pub activity: String,
+    pub detail: String,
     pub branch: String,
     pub worktree: String,
     pub head_sha: String,
@@ -139,6 +145,9 @@ pub struct LedgerInboxItem {
     pub task: String,
     pub task_state: String,
     pub review_state: String,
+    pub phase: String,
+    pub activity: String,
+    pub detail: String,
     pub branch: String,
     pub head_sha: String,
     pub changed_file_count: usize,
@@ -173,6 +182,9 @@ pub struct LedgerDigestItem {
     pub provider_target: String,
     pub task_state: String,
     pub review_state: String,
+    pub phase: String,
+    pub activity: String,
+    pub detail: String,
     pub next_action: String,
     pub branch: String,
     pub worktree: String,
@@ -230,6 +242,9 @@ pub struct LedgerExplainRun {
     pub state: String,
     pub task_state: String,
     pub review_state: String,
+    pub phase: String,
+    pub activity: String,
+    pub detail: String,
     pub branch: String,
     pub head_sha: String,
     pub worktree: String,
@@ -276,6 +291,9 @@ pub struct LedgerExplainCurrentState {
     pub state: String,
     pub task_state: String,
     pub review_state: String,
+    pub phase: String,
+    pub activity: String,
+    pub detail: String,
     pub last_event: String,
 }
 
@@ -402,6 +420,9 @@ pub struct LedgerRunProjection {
     pub task: String,
     pub task_state: String,
     pub review_state: String,
+    pub phase: String,
+    pub activity: String,
+    pub detail: String,
     pub branch: String,
     pub worktree: String,
     pub head_sha: String,
@@ -455,6 +476,9 @@ pub struct LedgerRunPacket {
     pub task_type: String,
     pub priority: String,
     pub blocking: bool,
+    pub phase: String,
+    pub activity: String,
+    pub detail: String,
     pub write_scope: Vec<String>,
     pub read_scope: Vec<String>,
     pub constraints: Vec<String>,
@@ -616,6 +640,9 @@ impl LedgerRunProjection {
             task: item.task,
             task_state: item.task_state,
             review_state: item.review_state,
+            phase: item.phase,
+            activity: item.activity,
+            detail: item.detail,
             branch: item.branch,
             worktree: item.worktree,
             head_sha: item.head_sha,
@@ -696,6 +723,9 @@ impl LedgerRunPacket {
             task_type: run.task_type.clone(),
             priority: run.priority.clone(),
             blocking: run.blocking,
+            phase: run.phase.clone(),
+            activity: run.activity.clone(),
+            detail: run.detail.clone(),
             write_scope: run.write_scope.clone(),
             read_scope: run.read_scope.clone(),
             constraints: run.constraints.clone(),
@@ -870,6 +900,13 @@ impl LedgerSnapshot {
             .iter()
             .map(|pane| {
                 let event_count = self.events_for_pane(&pane.pane_id).len();
+                let (phase, activity, detail) = run_state_model(
+                    &pane.state,
+                    &pane.task_state,
+                    &pane.review_state,
+                    "",
+                    &pane.last_event,
+                );
                 LedgerPaneReadModel {
                     label: pane.label.clone(),
                     pane_id: pane.pane_id.clone(),
@@ -884,6 +921,9 @@ impl LedgerSnapshot {
                     task_state: pane.task_state.clone(),
                     task_owner: pane.task_owner.clone(),
                     review_state: pane.review_state.clone(),
+                    phase,
+                    activity,
+                    detail,
                     priority: pane.priority.clone(),
                     blocking: pane.blocking,
                     branch: pane.branch.clone(),
@@ -960,6 +1000,9 @@ impl LedgerSnapshot {
                 task: pane.task,
                 task_state: pane.task_state,
                 review_state: pane.review_state,
+                phase: pane.phase,
+                activity: pane.activity,
+                detail: pane.detail,
                 branch: pane.branch,
                 worktree: pane.worktree,
                 head_sha: pane.head_sha,
@@ -1180,6 +1223,9 @@ impl LedgerSnapshot {
             state: primary_pane.state.clone(),
             task_state: evidence_digest.task_state.clone(),
             review_state: evidence_digest.review_state.clone(),
+            phase: evidence_digest.phase.clone(),
+            activity: evidence_digest.activity.clone(),
+            detail: evidence_digest.detail.clone(),
             branch: evidence_digest.branch.clone(),
             head_sha: evidence_digest.head_sha.clone(),
             worktree: evidence_digest.worktree.clone(),
@@ -1316,6 +1362,9 @@ impl LedgerDigestRun {
                 provider_target: pane.provider_target.clone(),
                 task_state: pane.task_state.clone(),
                 review_state: pane.review_state.clone(),
+                phase: pane.phase.clone(),
+                activity: pane.activity.clone(),
+                detail: pane.detail.clone(),
                 next_action: String::new(),
                 branch: pane.branch.clone(),
                 worktree: pane.worktree.clone(),
@@ -1359,6 +1408,9 @@ impl LedgerDigestRun {
         set_if_empty(&mut self.item.provider_target, &pane.provider_target);
         set_if_empty(&mut self.item.task_state, &pane.task_state);
         set_if_empty(&mut self.item.review_state, &pane.review_state);
+        set_if_empty(&mut self.item.phase, &pane.phase);
+        set_if_empty(&mut self.item.activity, &pane.activity);
+        set_if_empty(&mut self.item.detail, &pane.detail);
         set_if_empty(&mut self.item.branch, &pane.branch);
         set_if_empty(&mut self.item.worktree, &pane.worktree);
         set_if_empty(&mut self.item.head_sha, &pane.head_sha);
@@ -1450,6 +1502,16 @@ impl LedgerDigestRun {
             &self.item.review_state,
             &self.item.task_state,
         );
+        let (phase, activity, detail) = run_state_model(
+            "",
+            &self.item.task_state,
+            &self.item.review_state,
+            &self.item.next_action,
+            &self.item.last_event,
+        );
+        self.item.phase = phase;
+        self.item.activity = activity;
+        self.item.detail = detail;
         self.item.action_item_count = self.action_items.len();
         self.item
     }
@@ -1457,6 +1519,13 @@ impl LedgerDigestRun {
 
 impl LedgerInboxItem {
     fn from_manifest_pane(kind: &str, message: String, pane: &LedgerPaneReadModel) -> Self {
+        let (phase, activity, detail) = run_state_model(
+            &pane.state,
+            &pane.task_state,
+            &pane.review_state,
+            kind,
+            &pane.last_event,
+        );
         Self {
             kind: kind.to_string(),
             priority: inbox_priority(kind),
@@ -1468,6 +1537,9 @@ impl LedgerInboxItem {
             task: pane.task.clone(),
             task_state: pane.task_state.clone(),
             review_state: pane.review_state.clone(),
+            phase,
+            activity,
+            detail,
             branch: pane.branch.clone(),
             head_sha: pane.head_sha.clone(),
             changed_file_count: pane.changed_file_count,
@@ -1504,6 +1576,7 @@ impl LedgerInboxItem {
         } else {
             status
         };
+        let (phase, activity, detail) = run_state_model("", "", "", kind, &event_label);
 
         Some(Self {
             kind: kind.to_string(),
@@ -1516,6 +1589,9 @@ impl LedgerInboxItem {
             task: String::new(),
             task_state: String::new(),
             review_state: String::new(),
+            phase,
+            activity,
+            detail,
             branch,
             head_sha,
             changed_file_count: 0,
@@ -1571,6 +1647,97 @@ fn run_next_action(
     }
 
     task_state.to_string()
+}
+
+fn run_state_model(
+    state: &str,
+    task_state: &str,
+    review_state: &str,
+    event_kind: &str,
+    last_event: &str,
+) -> (String, String, String) {
+    let state_text = state.to_ascii_lowercase();
+    let task_text = task_state.to_ascii_lowercase();
+    let review_text = review_state.to_ascii_uppercase();
+    let kind_text = event_kind.to_ascii_lowercase();
+    let event_text = last_event.to_ascii_lowercase();
+
+    if matches!(kind_text.as_str(), "commit_ready" | "task_completed")
+        || matches!(
+            task_text.as_str(),
+            "completed" | "task_completed" | "done" | "commit_ready"
+        )
+    {
+        let detail = if kind_text.is_empty() {
+            "task_completed"
+        } else {
+            kind_text.as_str()
+        };
+        return ("package".into(), "completed".into(), detail.into());
+    }
+    if matches!(review_text.as_str(), "FAIL" | "FAILED") || kind_text == "review_failed" {
+        return ("review".into(), "blocked".into(), "review_failed".into());
+    }
+    if review_text == "PENDING" || matches!(kind_text.as_str(), "review_pending" | "review_requested")
+    {
+        let detail = if kind_text == "review_requested" {
+            "review_requested"
+        } else {
+            "review_pending"
+        };
+        return ("review".into(), "waiting_for_input".into(), detail.into());
+    }
+    if review_text == "PASS" {
+        return (
+            "package".into(),
+            "waiting_for_input".into(),
+            "draft_pr_required".into(),
+        );
+    }
+    if task_text == "blocked"
+        || matches!(kind_text.as_str(), "blocked" | "task_blocked")
+        || event_text.contains("blocked")
+    {
+        let detail = if kind_text.is_empty() {
+            "task_blocked"
+        } else {
+            kind_text.as_str()
+        };
+        return ("build".into(), "blocked".into(), detail.into());
+    }
+    if matches!(state_text.as_str(), "offline" | "crashed" | "hung" | "bootstrap_invalid")
+        || matches!(kind_text.as_str(), "crashed" | "hung" | "bootstrap_invalid")
+    {
+        let detail = if kind_text.is_empty() {
+            state_text.as_str()
+        } else {
+            kind_text.as_str()
+        };
+        return ("build".into(), "offline".into(), detail.into());
+    }
+    if task_text == "backlog" || kind_text == "dispatch_needed" || state_text == "idle" {
+        let detail = if !kind_text.is_empty() {
+            kind_text.as_str()
+        } else if !task_text.is_empty() {
+            task_text.as_str()
+        } else {
+            "idle"
+        };
+        return ("brainstorm".into(), "waiting_for_input".into(), detail.into());
+    }
+    if !task_text.is_empty() {
+        return ("build".into(), "running".into(), task_text);
+    }
+    if !state_text.is_empty() {
+        let activity = if state_text == "busy" {
+            "running"
+        } else {
+            "waiting_for_input"
+        };
+        return ("build".into(), activity.into(), state_text);
+    }
+
+    ("build".into(), "running".into(), "in_progress".into())
 }
 
 fn pane_matches_digest_item(pane: &LedgerPaneReadModel, item: &LedgerDigestItem) -> bool {
@@ -1779,6 +1946,9 @@ fn explain_explanation(
             state: run.state.clone(),
             task_state: run.task_state.clone(),
             review_state: run.review_state.clone(),
+            phase: run.phase.clone(),
+            activity: run.activity.clone(),
+            detail: run.detail.clone(),
             last_event: run.last_event.clone(),
         },
     }

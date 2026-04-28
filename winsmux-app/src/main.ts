@@ -2318,6 +2318,16 @@ function getFooterOperatorStatus(projection: DesktopRunProjection | undefined) {
     };
   }
 
+  if (projection.activity === "blocked") {
+    return { label: projection.detail || "Blocked", tone: "danger" as SurfaceTone };
+  }
+  if (projection.activity === "completed") {
+    return { label: projection.detail || "Completed", tone: "success" as SurfaceTone };
+  }
+  if (projection.activity === "waiting_for_input") {
+    return { label: projection.detail || projection.phase || "Waiting", tone: "warning" as SurfaceTone };
+  }
+
   const taskState = (projection.task_state || "").toLowerCase();
   if (taskState === "blocked") {
     return { label: "Blocked", tone: "danger" as SurfaceTone };
@@ -2341,7 +2351,7 @@ function getFooterOperatorStatus(projection: DesktopRunProjection | undefined) {
     };
   }
   return {
-    label: projection.task_state || "Tracking",
+    label: projection.detail || projection.activity || projection.task_state || "Tracking",
     tone: "info" as SurfaceTone,
   };
 }
@@ -3186,12 +3196,13 @@ function renderRunSummary() {
             <div class="run-summary-title">${projection.run_id}</div>
           </div>
           <div class="run-summary-status" data-tone="${statusTone}">
-            ${projection.review_state || "ready"}
+            ${projection.detail || projection.activity || projection.review_state || "ready"}
           </div>
         </div>
         <div class="run-summary-meta-row">
           <span class="run-summary-pill">${projection.label || projection.pane_id || "summary-stream"}</span>
           <span class="run-summary-pill">${projection.branch || "no branch"}</span>
+          <span class="run-summary-pill">${projection.phase || "no phase"}</span>
           <span class="run-summary-pill">${projection.changed_files.length} changed</span>
           <span class="run-summary-pill">${projection.next_action || "no next action"}</span>
           <span class="run-summary-pill">${verification}</span>
@@ -3392,9 +3403,15 @@ async function openExplainForSelectedRun() {
     if (
       payload.explanation.current_state.state ||
       payload.explanation.current_state.task_state ||
-      payload.explanation.current_state.review_state
+      payload.explanation.current_state.review_state ||
+      payload.explanation.current_state.phase ||
+      payload.explanation.current_state.activity ||
+      payload.explanation.current_state.detail
     ) {
       const currentStateParts = [
+        payload.explanation.current_state.phase,
+        payload.explanation.current_state.activity,
+        payload.explanation.current_state.detail,
         payload.explanation.current_state.state,
         payload.explanation.current_state.task_state,
         payload.explanation.current_state.review_state,
