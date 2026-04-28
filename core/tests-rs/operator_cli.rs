@@ -2790,6 +2790,14 @@ fn operator_cli_review_request_records_pending_state_and_manifest_pane() {
         record["request"]["review_contract"]["required_scope"][0],
         "design_impact"
     );
+    assert_eq!(
+        record["request"]["review_contract"]["required_scope"][3],
+        "pathspec_completeness"
+    );
+    assert_eq!(
+        record["request"]["review_contract"]["pathspec_policy"]["include_definition_hosts"],
+        true
+    );
     assert!(record["request"]["dispatched_at"].as_str().is_some());
     assert_eq!(record["reviewer"]["agent_name"], "codex");
     assert!(record["updatedAt"].as_str().is_some());

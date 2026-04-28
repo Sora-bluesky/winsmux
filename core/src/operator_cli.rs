@@ -4916,14 +4916,22 @@ fn review_contract_record() -> Value {
         "required_scope": [
             "design_impact",
             "replacement_coverage",
-            "orphaned_artifacts"
+            "orphaned_artifacts",
+            "pathspec_completeness"
         ],
         "checklist_labels": [
             "design impact",
             "replacement coverage",
-            "orphaned artifacts"
+            "orphaned artifacts",
+            "pathspec completeness"
         ],
-        "rationale": "Review requests must audit downstream design impact, replacement coverage, and orphaned artifacts as part of the runtime contract."
+        "pathspec_policy": {
+            "source_task": "TASK-395",
+            "issue_ref": "#593",
+            "include_definition_hosts": true,
+            "incomplete_scope_is_review_gap": true
+        },
+        "rationale": "Review requests must audit downstream design impact, replacement coverage, orphaned artifacts, and pathspec completeness as part of the runtime contract."
     })
 }
 

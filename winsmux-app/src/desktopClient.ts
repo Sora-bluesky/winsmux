@@ -361,7 +361,15 @@ export interface DesktopReviewContract {
   style: string;
   required_scope: string[];
   checklist_labels: string[];
+  pathspec_policy?: DesktopReviewPathspecPolicy | null;
   rationale: string;
+}
+
+export interface DesktopReviewPathspecPolicy {
+  source_task: string;
+  issue_ref: string;
+  include_definition_hosts: boolean;
+  incomplete_scope_is_review_gap: boolean;
 }
 
 export interface DesktopEditorFilePayload {

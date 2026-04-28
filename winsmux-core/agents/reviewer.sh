@@ -46,6 +46,22 @@ shell_quote() {
   printf '%q' "$1"
 }
 
+shell_quote_words() {
+  local value="$1"
+  local word
+  local first=1
+  # shellcheck disable=SC2206
+  local words=( $value )
+
+  for word in "${words[@]}"; do
+    if [[ "$first" -eq 0 ]]; then
+      printf ' '
+    fi
+    shell_quote "$word"
+    first=0
+  done
+}
+
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   usage
   exit 0
@@ -59,9 +75,17 @@ task="$(read_task "$@")" || {
 require_single_line_env "WORKTREE" "${WORKTREE:-}"
 diff_base="${DIFF_BASE:-HEAD}"
 require_single_line_env "DIFF_BASE" "$diff_base"
+diff_pathspec="${DIFF_PATHSPEC:-}"
+if [[ -n "$diff_pathspec" ]]; then
+  require_single_line_env "DIFF_PATHSPEC" "$diff_pathspec"
+fi
 
 worktree_display="$(shell_quote "$WORKTREE")"
 diff_base_display="$(shell_quote "$diff_base")"
+diff_pathspec_display=""
+if [[ -n "$diff_pathspec" ]]; then
+  diff_pathspec_display="$(shell_quote_words "$diff_pathspec")"
+fi
 
 cat <<'PROMPT'
 Review the latest builder result without editing code.
@@ -77,10 +101,16 @@ cat <<'PROMPT'
 Required review steps:
 PROMPT
 printf '%s\n' "- Start by running: cd $worktree_display"
-printf '%s\n' "- Inspect the current diff with: git diff $diff_base_display"
+if [[ -n "$diff_pathspec_display" ]]; then
+  printf '%s\n' "- Inspect the current diff with: git diff $diff_base_display -- $diff_pathspec_display"
+else
+  printf '%s\n' "- Inspect the current diff with: git diff $diff_base_display"
+fi
 cat <<'PROMPT'
 - Review for correctness, regressions, missing verification, and security issues.
 - Call out any credential exposure, injection risks, auth or authz mistakes, path handling issues, or unsafe shell usage.
+- If the review uses a narrowed pathspec, verify that files defining called functions are also visible in the review scope.
+- Treat a missing definition-host file as incomplete review scope, not as proof that the function is undefined.
 - Explicitly evaluate design impact, not just local diff correctness:
   - What downstream behavior, workflow, or monitoring capability does this change disable or alter?
   - Was any removed or changed capability replaced elsewhere, or does it create a blind spot?
