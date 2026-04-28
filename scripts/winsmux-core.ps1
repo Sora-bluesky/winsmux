@@ -117,6 +117,109 @@ function Invoke-WinsmuxRaw {
     return & winsmux @Arguments
 }
 
+function Resolve-TerminalBackend {
+    $rawBackend = [string]$env:WINSMUX_BACKEND
+    if ([string]::IsNullOrWhiteSpace($rawBackend)) {
+        return 'cli'
+    }
+
+    switch ($rawBackend.Trim().ToLowerInvariant()) {
+        { $_ -in @('cli', 'winsmux') } { return 'cli' }
+        { $_ -in @('tauri', 'desktop') } { return 'tauri' }
+        default {
+            Stop-WithError "WINSMUX_BACKEND must be cli or tauri, got '$rawBackend'"
+        }
+    }
+}
+
+function New-TerminalJsonRpcPayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$Method,
+        [Parameter(Mandatory = $true)]$Params
+    )
+
+    return ([ordered]@{
+        jsonrpc = '2.0'
+        id      = "terminal-$([guid]::NewGuid().ToString('N'))"
+        method  = $Method
+        params   = $Params
+    } | ConvertTo-Json -Depth 100 -Compress)
+}
+
+function Invoke-TerminalJsonRpc {
+    param(
+        [Parameter(Mandatory = $true)][string]$Method,
+        [Parameter(Mandatory = $true)]$Params
+    )
+
+    $payload = New-TerminalJsonRpcPayload -Method $Method -Params $Params
+    $responseText = Invoke-ControlRpcPipeExchange -Payload $payload
+    try {
+        $response = $responseText | ConvertFrom-Json -Depth 100 -ErrorAction Stop
+    } catch {
+        Stop-WithError "terminal Tauri request $Method returned invalid JSON: $($_.Exception.Message)"
+    }
+
+    $propertyNames = @($response.PSObject.Properties.Name)
+    if ($propertyNames -contains 'error') {
+        $message = [string]$response.error.message
+        if ([string]::IsNullOrWhiteSpace($message)) {
+            $message = 'unknown error'
+        }
+        Stop-WithError "terminal Tauri request $Method failed: $message"
+    }
+
+    if ($propertyNames -contains 'result') {
+        return $response.result
+    }
+
+    return $null
+}
+
+function Invoke-TerminalCapture {
+    param([Parameter(Mandatory = $true)][string]$PaneId, [int]$Lines = 50)
+
+    if ((Resolve-TerminalBackend) -eq 'tauri') {
+        $result = Invoke-TerminalJsonRpc -Method 'pty.capture' -Params ([ordered]@{
+            paneId = $PaneId
+            lines  = $Lines
+        })
+        if ($null -eq $result) {
+            return ''
+        }
+        return [string]$result.output
+    }
+
+    $output = Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', "-$Lines")
+    return ($output | Out-String).TrimEnd()
+}
+
+function Invoke-TerminalWrite {
+    param(
+        [Parameter(Mandatory = $true)][string]$Target,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text
+    )
+
+    if ((Resolve-TerminalBackend) -eq 'tauri') {
+        $null = Invoke-TerminalJsonRpc -Method 'pty.write' -Params ([ordered]@{
+            paneId = $Target
+            data   = $Text
+        })
+        return [ordered]@{
+            ExitCode = 0
+            Output   = ''
+            Target   = $Target
+        }
+    }
+
+    $output = Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $Target, '-l', '--', $Text) 2>&1
+    return [ordered]@{
+        ExitCode = $LASTEXITCODE
+        Output   = ($output | Out-String).Trim()
+        Target   = $Target
+    }
+}
+
 function Write-ClmSafeTextFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -1828,6 +1931,22 @@ function Invoke-WinsmuxSendKeys {
         [switch]$Literal
     )
 
+    if ((Resolve-TerminalBackend) -eq 'tauri') {
+        if ($Literal) {
+            return Invoke-TerminalWrite -Target $Target -Text ($Keys -join '')
+        }
+
+        if ($Keys.Count -eq 1 -and $Keys[0] -eq 'Enter') {
+            return Invoke-TerminalWrite -Target $Target -Text "`r"
+        }
+
+        return [ordered]@{
+            ExitCode = 1
+            Output   = 'Tauri terminal backend supports only literal text and Enter for send-keys.'
+            Target   = $Target
+        }
+    }
+
     $arguments = @('send-keys', '-t', $Target)
     if ($Literal) {
         $arguments += '-l'
@@ -1849,6 +1968,10 @@ function Invoke-WinsmuxSendPaste {
         [Parameter(Mandatory = $true)][string]$Target,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text
     )
+
+    if ((Resolve-TerminalBackend) -eq 'tauri') {
+        return Invoke-TerminalWrite -Target $Target -Text $Text
+    }
 
     $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Text))
     $arguments = @('send-paste', '-t', $Target, $encoded)
@@ -1911,7 +2034,12 @@ function Send-TextToPane {
     )
 
     $resolvedPromptTransport = Resolve-SupportedPromptTransport -PromptTransport $PromptTransport
-    $targetCandidates = @(Get-PaneTargetCandidates -PaneId $PaneId)
+    $terminalBackend = Resolve-TerminalBackend
+    $targetCandidates = if ($terminalBackend -eq 'tauri') {
+        @($PaneId)
+    } else {
+        @(Get-PaneTargetCandidates -PaneId $PaneId)
+    }
     $attemptFailures = [System.Collections.Generic.List[string]]::new()
 
     foreach ($sendTarget in $targetCandidates) {
@@ -2406,8 +2534,7 @@ function Get-PaneRuntimeMap {
 function Get-PaneSnapshotText {
     param([string]$PaneId, [int]$Lines = 50)
 
-    $output = Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', "-$Lines")
-    return ($output | Out-String).TrimEnd()
+    return Invoke-TerminalCapture -PaneId $PaneId -Lines $Lines
 }
 
 # --- Helper: Focus Policy Stack ---
@@ -2893,7 +3020,9 @@ function Invoke-Send {
     $text = Normalize-DispatchText -Text ($messageParts -join ' ')
     $projectDir = (Get-Location).Path
     $paneId = Resolve-Target $Target
-    $paneId = Confirm-Target $paneId
+    if ((Resolve-TerminalBackend) -eq 'cli') {
+        $paneId = Confirm-Target $paneId
+    }
     $context = $null
     $agentConfig = [ordered]@{
         Agent           = 'codex'

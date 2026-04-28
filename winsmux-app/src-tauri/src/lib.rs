@@ -120,8 +120,12 @@ async fn pty_resize(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Re
 }
 
 #[tauri::command]
-async fn pty_capture(app: AppHandle, pane_id: String) -> Result<serde_json::Value, String> {
-    capture_pty(&app, &pane_id)
+async fn pty_capture(
+    app: AppHandle,
+    pane_id: String,
+    lines: Option<u16>,
+) -> Result<serde_json::Value, String> {
+    capture_pty(&app, &pane_id, lines)
 }
 
 #[tauri::command]
@@ -337,7 +341,28 @@ fn resize_pty(app: &AppHandle, pane_id: &str, cols: u16, rows: u16) -> Result<()
     Ok(())
 }
 
-fn capture_pty(app: &AppHandle, pane_id: &str) -> Result<serde_json::Value, String> {
+fn limit_pty_capture_output(output: &str, lines: Option<u16>) -> String {
+    let Some(lines) = lines else {
+        return output.to_string();
+    };
+    if lines == 0 {
+        return String::new();
+    }
+
+    let mut tail = output
+        .lines()
+        .rev()
+        .take(lines as usize)
+        .collect::<Vec<_>>();
+    tail.reverse();
+    tail.join("\n")
+}
+
+fn capture_pty(
+    app: &AppHandle,
+    pane_id: &str,
+    lines: Option<u16>,
+) -> Result<serde_json::Value, String> {
     let manager = app.state::<PtyManager>();
     let panes = manager.panes.lock().map_err(|e| e.to_string())?;
     let pty = panes
@@ -348,6 +373,7 @@ fn capture_pty(app: &AppHandle, pane_id: &str) -> Result<serde_json::Value, Stri
         .lock()
         .map_err(|e| e.to_string())?
         .clone();
+    let output = limit_pty_capture_output(&output, lines);
     Ok(serde_json::json!({
         "paneId": pane_id,
         "output": output
@@ -454,7 +480,7 @@ impl PtyCommandTransport for TauriPtyTransport {
                 resize_pty(&self.app, pane_id, *cols, *rows)?;
                 Ok(serde_json::json!({ "paneId": pane_id }))
             }
-            PtyCommand::Capture { pane_id } => capture_pty(&self.app, pane_id),
+            PtyCommand::Capture { pane_id, lines } => capture_pty(&self.app, pane_id, *lines),
             PtyCommand::Respawn { pane_id } => {
                 respawn_pty(&self.app, pane_id)?;
                 Ok(serde_json::json!({ "paneId": pane_id }))
@@ -481,6 +507,13 @@ mod tests {
         assert!(history.is_char_boundary(0));
         assert!(history.ends_with('あ'));
     }
+
+    #[test]
+    fn limit_pty_capture_output_returns_recent_lines() {
+        let output = limit_pty_capture_output("one\ntwo\nthree\nfour\n", Some(2));
+
+        assert_eq!(output, "three\nfour");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -496,8 +529,11 @@ pub fn run() {
             stop_requested: Arc::new(AtomicBool::new(false)),
         })
         .setup(|app| {
-            start_control_pipe_server();
-            start_desktop_summary_refresh_streams(&app.handle().clone());
+            let app_handle = app.handle().clone();
+            start_control_pipe_server(Arc::new(TauriPtyTransport {
+                app: app_handle.clone(),
+            }));
+            start_desktop_summary_refresh_streams(&app_handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
