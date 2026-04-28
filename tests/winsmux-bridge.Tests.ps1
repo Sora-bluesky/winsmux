@@ -6023,6 +6023,60 @@ Describe 'doctor bridge config metadata check' {
         $result.Detail | Should -Match 'branch is main'
         $result.Detail | Should -Match 'Operator shell'
     }
+
+    It 'warns when too many background PowerShell processes remain' {
+        $protectedIds = [System.Collections.Generic.HashSet[int]]::new()
+        $protectedIds.Add(1001) | Out-Null
+        $snapshot = [pscustomobject]@{
+            Processes = @(
+                [pscustomobject]@{ ProcessId = 1001; ParentProcessId = 0; Name = 'pwsh.exe'; CommandLine = 'pwsh -NoProfile' }
+                [pscustomobject]@{ ProcessId = 1002; ParentProcessId = 0; Name = 'pwsh.exe'; CommandLine = 'pwsh -NoProfile -Command secret-value' }
+                [pscustomobject]@{ ProcessId = 1003; ParentProcessId = 0; Name = 'powershell.exe'; CommandLine = 'powershell -NoProfile' }
+                [pscustomobject]@{ ProcessId = 1004; ParentProcessId = 0; Name = 'cmd.exe'; CommandLine = 'cmd /c echo ignored' }
+            )
+            ById = @{}
+            SupportsCommandLine = $true
+        }
+
+        $result = New-PowerShellProcessPressureResult -Snapshot $snapshot -ProtectedIds $protectedIds -WarnThreshold 2
+
+        $result.Status | Should -Be 'warn'
+        $result.Label | Should -Be 'PowerShell process pressure'
+        $result.Detail | Should -Be '2 found; close unneeded pwsh.exe or powershell.exe sessions before starting more winsmux panes'
+        $result.Detail | Should -Not -Match 'secret-value'
+        $result.Detail | Should -Not -Match '1002'
+    }
+
+    It 'passes when background PowerShell process count stays below the warning threshold' {
+        $protectedIds = [System.Collections.Generic.HashSet[int]]::new()
+        $snapshot = [pscustomobject]@{
+            Processes = @(
+                [pscustomobject]@{ ProcessId = 1101; ParentProcessId = 0; Name = 'pwsh'; CommandLine = '' }
+                [pscustomobject]@{ ProcessId = 1102; ParentProcessId = 0; Name = 'codex.exe'; CommandLine = '' }
+            )
+            ById = @{}
+            SupportsCommandLine = $true
+        }
+
+        $result = New-PowerShellProcessPressureResult -Snapshot $snapshot -ProtectedIds $protectedIds -WarnThreshold 2
+
+        $result.Status | Should -Be 'pass'
+        $result.Label | Should -Be 'PowerShell process pressure'
+        $result.Detail | Should -Be '1 found'
+    }
+
+    It 'uses the environment override for the PowerShell process warning threshold' {
+        $originalValue = $env:WINSMUX_DOCTOR_POWERSHELL_PROCESS_WARN_THRESHOLD
+        try {
+            $env:WINSMUX_DOCTOR_POWERSHELL_PROCESS_WARN_THRESHOLD = '7'
+            Get-DoctorPowerShellProcessWarnThreshold | Should -Be 7
+
+            $env:WINSMUX_DOCTOR_POWERSHELL_PROCESS_WARN_THRESHOLD = 'invalid'
+            Get-DoctorPowerShellProcessWarnThreshold | Should -Be 100
+        } finally {
+            $env:WINSMUX_DOCTOR_POWERSHELL_PROCESS_WARN_THRESHOLD = $originalValue
+        }
+    }
 }
 
 Describe 'worker isolation diagnostics' {
