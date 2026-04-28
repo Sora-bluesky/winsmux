@@ -58,6 +58,7 @@ tests/*
 !tests/BuilderWorktree.Tests.ps1
 !tests/codex-subagent-worktree-guard.Tests.ps1
 !tests/PublicSurfacePolicy.Tests.ps1
+!tests/GitHubWritePreflight.Tests.ps1
 !tests/HarnessContract.Tests.ps1
 !tests/NpmReleasePackage.Tests.ps1
 !tests/VersionSurface.Tests.ps1
