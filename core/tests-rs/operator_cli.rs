@@ -599,6 +599,63 @@ fn operator_cli_machine_contract_rejects_project_dir() {
 }
 
 #[test]
+fn operator_cli_rust_canary_json_reports_default_cli_gate() {
+    let project_dir = make_temp_project_dir("rust-canary-default");
+
+    let json = run_json(&project_dir, &["rust-canary", "--json"]);
+
+    assert_eq!(json["contract_version"], 1);
+    assert_eq!(json["task_id"], "TASK-283");
+    assert_eq!(json["target_version"], "v0.24.5");
+    assert_eq!(json["phase"], "default-on-canary");
+    assert_eq!(json["runtime"]["rust_cli_available"], true);
+    assert_eq!(json["runtime"]["backend"], "cli");
+    assert_eq!(json["runtime"]["backend_source"], "default");
+    assert_eq!(json["runtime"]["tauri_backend_candidate"], false);
+    assert_eq!(json["required_gates"][2], "shadow_cutover_gate");
+    assert_eq!(json["blocking_conditions"][0], "invalid_WINSMUX_BACKEND");
+}
+
+#[test]
+fn operator_cli_rust_canary_json_reports_tauri_candidate() {
+    let project_dir = make_temp_project_dir("rust-canary-tauri");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["rust-canary", "--json"])
+        .env("WINSMUX_BACKEND", "desktop")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
+    assert_eq!(json["runtime"]["backend"], "tauri");
+    assert_eq!(json["runtime"]["backend_source"], "WINSMUX_BACKEND");
+    assert_eq!(json["runtime"]["tauri_backend_candidate"], true);
+}
+
+#[test]
+fn operator_cli_rust_canary_rejects_invalid_backend() {
+    let project_dir = make_temp_project_dir("rust-canary-invalid");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["rust-canary", "--json"])
+        .env("WINSMUX_BACKEND", "remote")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success(), "rust-canary should fail");
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("WINSMUX_BACKEND must be cli or tauri"));
+}
+
+#[test]
 fn operator_cli_provider_capabilities_json_reads_single_provider_case_insensitive() {
     let project_dir = make_temp_project_dir("provider-capabilities-single");
     let winsmux_dir = project_dir.join(".winsmux");
