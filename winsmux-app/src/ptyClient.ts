@@ -61,6 +61,24 @@ function normalizePtyError(action: string, error: unknown) {
   return new Error(`${action} failed: ${String(error)}`);
 }
 
+export function normalizePtyOutputEventPayload(payload: PtyOutputEvent | string): PtyOutputEvent {
+  if (typeof payload === "string") {
+    try {
+      return normalizePtyOutputEventPayload(JSON.parse(payload) as PtyOutputEvent);
+    } catch {
+      return {
+        pane_id: "",
+        data: payload,
+      };
+    }
+  }
+
+  return {
+    pane_id: typeof payload?.pane_id === "string" ? payload.pane_id : "",
+    data: typeof payload?.data === "string" ? payload.data : "",
+  };
+}
+
 export function createTauriPtyCommandTransport(
   invokeCommand: typeof invoke = invoke,
 ): PtyCommandTransport {
@@ -172,14 +190,7 @@ export async function subscribeToPtyOutput(
     return async () => {};
   }
 
-  return listen<string>("pty-output", (event) => {
-    try {
-      onOutput(JSON.parse(event.payload) as PtyOutputEvent);
-    } catch {
-      onOutput({
-        pane_id: "",
-        data: event.payload,
-      });
-    }
+  return listen<PtyOutputEvent | string>("pty-output", (event) => {
+    onOutput(normalizePtyOutputEventPayload(event.payload));
   });
 }
