@@ -1017,6 +1017,8 @@ Reply with:
 - scope
 - likely files
 - tests or checks to run
+- decomposition: 1-4 concrete subtasks the operator can assign or track
+- dispatch hints: which worker role should own each subtask and why
 
 End with exactly one line:
 STATUS: PLAN_READY
@@ -1324,6 +1326,52 @@ function Invoke-TeamPipelineConsultStage {
     return $stage
 }
 
+function New-TeamPipelineManagedLoopData {
+    param(
+        [Parameter(Mandatory = $true)][string]$Task,
+        [Parameter(Mandatory = $true)][ValidateSet('decompose', 'dispatch', 'collect', 'escalate')][string]$Stage,
+        [string]$State = '',
+        [string]$BuilderLabel = '',
+        [string]$ResearcherLabel = '',
+        [string]$ReviewerLabel = '',
+        [string]$TargetLabel = '',
+        [string]$Summary = '',
+        [string]$Reason = '',
+        [int]$Attempt = 0
+    )
+
+    $data = [ordered]@{
+        task                 = $Task
+        stage                = $Stage
+        state                = $State
+        upper_operator       = 'claude_code'
+        aggregation_point    = 'claude_code_operator'
+        worker_topology      = 'operator_managed_panes'
+        peer_to_peer_allowed = $false
+        builder              = $BuilderLabel
+        researcher           = $ResearcherLabel
+        reviewer             = $ReviewerLabel
+        target               = $TargetLabel
+        summary              = $Summary
+        reason               = $Reason
+    }
+    if ($Attempt -gt 0) {
+        $data['attempt'] = $Attempt
+    }
+
+    return $data
+}
+
+function Get-TeamPipelineEscalationTarget {
+    param([string]$ConsultTarget = '')
+
+    if ([string]::IsNullOrWhiteSpace($ConsultTarget)) {
+        return 'claude_code_operator'
+    }
+
+    return $ConsultTarget
+}
+
 function Invoke-TeamPipeline {
     param(
         [Parameter(Mandatory = $true)][string]$Task,
@@ -1409,6 +1457,7 @@ function Invoke-TeamPipeline {
         }
 
         $planSummary = $planStage.Summary
+        Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.decompose.completed' -Message 'Claude Code operator decomposed the task for managed pane assignment.' -Role 'Operator' -Target $targets.PlanTarget -Data (New-TeamPipelineManagedLoopData -Task $Task -Stage 'decompose' -State 'completed' -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -TargetLabel $targets.PlanTarget -Summary $planSummary) | Out-Null
     }
 
     if (-not [string]::IsNullOrWhiteSpace($consultTarget)) {
@@ -1434,6 +1483,7 @@ function Invoke-TeamPipeline {
             New-TeamPipelineFixPrompt -Task $Task -PlanSummary $planSummary -VerificationSummary $previousVerify
         }
 
+        Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.dispatch.assigned' -Message "Claude Code operator assigned attempt $attemptIndex to $Builder." -Role 'Operator' -Target $Builder -Data (New-TeamPipelineManagedLoopData -Task $Task -Stage 'dispatch' -State 'assigned' -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -TargetLabel $Builder -Summary "Attempt $attemptIndex assigned to $Builder." -Attempt $attemptIndex) | Out-Null
         $buildDispatchResult = Invoke-TeamPipelineGuardedSend -StageName 'EXEC' -Target $Builder -Prompt $buildPrompt -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Role 'Builder' -Task $Task -Attempt $attemptIndex
         if ($null -ne $buildDispatchResult) {
             $buildStage = $buildDispatchResult
@@ -1447,12 +1497,14 @@ function Invoke-TeamPipeline {
             if ($null -ne $buildSecurityVerdict) {
                 $result.SecurityVerdicts += $buildSecurityVerdict
             }
+            $escalationTarget = Get-TeamPipelineEscalationTarget -ConsultTarget $consultTarget
             if (-not [string]::IsNullOrWhiteSpace($consultTarget)) {
                 $attempt.StuckConsult = Invoke-TeamPipelineConsultStage -Mode 'stuck' -Task $Task -BuilderLabel $Builder -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -TargetLabel $consultTarget -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -BuildSummary $buildStage.Summary -VerificationSummary '' -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -Attempt $attemptIndex
                 if ($null -ne $attempt.StuckConsult) {
                     $result.StuckConsults += $attempt.StuckConsult
                 }
             }
+            Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.escalate.required' -Message "Claude Code operator escalation required after blocked execution attempt $attemptIndex." -Role 'Operator' -Target $escalationTarget -Data (New-TeamPipelineManagedLoopData -Task $Task -Stage 'escalate' -State 'required' -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -TargetLabel $escalationTarget -Summary $buildStage.Summary -Reason 'EXEC_BLOCKED' -Attempt $attemptIndex) | Out-Null
             $result.Attempts += [PSCustomObject]$attempt
             $result.FinalStatus = 'EXEC_BLOCKED'
             return [PSCustomObject]$result
@@ -1468,6 +1520,7 @@ function Invoke-TeamPipeline {
             verify_target        = $targets.VerifyTarget
             summary              = $buildNotification.Summary
         }) | Out-Null
+        Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.collect.completed' -Message "Claude Code operator collected builder result for attempt $attemptIndex." -Role 'Operator' -Target $Builder -Data (New-TeamPipelineManagedLoopData -Task $Task -Stage 'collect' -State 'builder_result_collected' -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -TargetLabel $Builder -Summary $buildNotification.Summary -Attempt $attemptIndex) | Out-Null
 
         if ([string]::IsNullOrWhiteSpace($targets.VerifyTarget)) {
             if (-not [string]::IsNullOrWhiteSpace($consultTarget)) {
@@ -1553,16 +1606,20 @@ function Invoke-TeamPipeline {
                 return [PSCustomObject]$result
             }
             'BLOCKED' {
+                $escalationTarget = Get-TeamPipelineEscalationTarget -ConsultTarget $consultTarget
                 if (-not [string]::IsNullOrWhiteSpace($consultTarget)) {
                     $attempt.StuckConsult = Invoke-TeamPipelineConsultStage -Mode 'stuck' -Task $Task -BuilderLabel $Builder -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -TargetLabel $consultTarget -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -BuilderWorktreePath $builderContext.BuilderWorktreePath -PlanSummary $planSummary -BuildSummary $buildStage.Summary -VerificationSummary $verifyStage.Summary -TimeoutSeconds $StageTimeoutSeconds -PollIntervalSeconds $PollIntervalSeconds -Attempt $attemptIndex
                     if ($null -ne $attempt.StuckConsult) {
                         $result.StuckConsults += $attempt.StuckConsult
                     }
                 }
+                Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.escalate.required' -Message "Claude Code operator escalation required after blocked verification attempt $attemptIndex." -Role 'Operator' -Target $escalationTarget -Data (New-TeamPipelineManagedLoopData -Task $Task -Stage 'escalate' -State 'required' -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -TargetLabel $escalationTarget -Summary $verifyStage.Summary -Reason 'VERIFY_BLOCKED' -Attempt $attemptIndex) | Out-Null
                 $result.FinalStatus = 'VERIFY_BLOCKED'
                 return [PSCustomObject]$result
             }
             'VERIFY_PARTIAL' {
+                $escalationTarget = Get-TeamPipelineEscalationTarget -ConsultTarget $consultTarget
+                Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.escalate.required' -Message "Claude Code operator escalation required after partial verification attempt $attemptIndex." -Role 'Operator' -Target $escalationTarget -Data (New-TeamPipelineManagedLoopData -Task $Task -Stage 'escalate' -State 'required' -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -TargetLabel $escalationTarget -Summary $verifyStage.Summary -Reason 'VERIFY_PARTIAL' -Attempt $attemptIndex) | Out-Null
                 $result.FinalStatus = 'VERIFY_PARTIAL'
                 return [PSCustomObject]$result
             }
@@ -1576,6 +1633,8 @@ function Invoke-TeamPipeline {
     }
 
     $result.FinalStatus = 'VERIFY_FAIL'
+    $escalationTarget = Get-TeamPipelineEscalationTarget -ConsultTarget $consultTarget
+    Write-TeamPipelineEvent -ProjectDir $builderContext.ProjectDir -SessionName $sessionName -Event 'pipeline.escalate.required' -Message 'Claude Code operator escalation required after verification fixes were exhausted.' -Role 'Operator' -Target $escalationTarget -Data (New-TeamPipelineManagedLoopData -Task $Task -Stage 'escalate' -State 'required' -BuilderLabel $Builder -ResearcherLabel $Researcher -ReviewerLabel $Reviewer -TargetLabel $escalationTarget -Summary 'Verification failed after all fix attempts.' -Reason 'VERIFY_FAIL' -Attempt $attemptLimit) | Out-Null
     return [PSCustomObject]$result
 }
 

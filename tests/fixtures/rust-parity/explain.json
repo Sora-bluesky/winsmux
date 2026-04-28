@@ -125,6 +125,7 @@
         "message": "review requested"
       }
     ],
+    "managed_loop": null,
     "outcome": {
       "status": "in_progress",
       "reason": "consult before work",

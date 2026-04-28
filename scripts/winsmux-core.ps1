@@ -5405,13 +5405,13 @@ function ConvertTo-RunCheckpointStatus {
         [AllowNull()]$Data = $null
     )
 
-    if ($EventName -in @('pipeline.verify.pass', 'pipeline.security.allowed', 'security.policy.allowed', 'operator.draft_pr.created')) {
+    if ($EventName -in @('pipeline.verify.pass', 'pipeline.security.allowed', 'security.policy.allowed', 'operator.draft_pr.created', 'pipeline.decompose.completed', 'pipeline.dispatch.assigned', 'pipeline.collect.completed')) {
         return 'completed'
     }
     if ($EventName -in @('pipeline.verify.fail', 'pipeline.security.blocked', 'security.policy.blocked', 'operator.review_failed')) {
         return 'blocked'
     }
-    if ($EventName -in @('pipeline.verify.partial', 'operator.review_requested', 'pane.approval_waiting')) {
+    if ($EventName -in @('pipeline.verify.partial', 'operator.review_requested', 'pane.approval_waiting', 'pipeline.escalate.required')) {
         return 'waiting'
     }
     if (-not [string]::IsNullOrWhiteSpace($Status)) {
@@ -5482,7 +5482,11 @@ function Get-RunPlanCheckpointsFromEventRecords {
         'pipeline.security.blocked',
         'security.policy.allowed',
         'security.policy.blocked',
-        'operator.draft_pr.created'
+        'operator.draft_pr.created',
+        'pipeline.decompose.completed',
+        'pipeline.dispatch.assigned',
+        'pipeline.collect.completed',
+        'pipeline.escalate.required'
     )
 
     foreach ($eventRecord in @($EventRecords | Sort-Object @{ Expression = { Get-RunEventTimestampSortKey -Value $_['timestamp'] } }, @{ Expression = { [int]$_.line_number } })) {
@@ -5520,6 +5524,82 @@ function Get-RunPlanCheckpointsFromEventRecords {
     }
 
     return @($checkpoints)
+}
+
+function Get-ManagedLoopContractFromEventRecords {
+    param([object[]]$EventRecords = @())
+
+    $contract = [ordered]@{
+        upper_operator       = 'claude_code'
+        aggregation_point    = 'claude_code_operator'
+        worker_topology      = 'operator_managed_panes'
+        peer_to_peer_allowed = $false
+        decompose_state      = 'not_recorded'
+        assignment_state     = 'not_recorded'
+        collection_state     = 'not_recorded'
+        escalation_state     = 'none'
+        escalation_reason    = ''
+        stages               = @()
+    }
+    $stageRecords = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($eventRecord in @($EventRecords | Sort-Object @{ Expression = { Get-RunEventTimestampSortKey -Value $_['timestamp'] } }, @{ Expression = { [int]$_.line_number } })) {
+        $eventName = [string]$eventRecord['event']
+        if ($eventName -notin @('pipeline.decompose.completed', 'pipeline.dispatch.assigned', 'pipeline.collect.completed', 'pipeline.escalate.required')) {
+            continue
+        }
+
+        $data = $null
+        if ($eventRecord.Contains('data')) {
+            $data = $eventRecord['data']
+        }
+        if ($null -eq $data -or $data -isnot [System.Collections.IDictionary]) {
+            $data = [ordered]@{}
+        }
+
+        $stage = if ($data.Contains('stage')) { [string]$data['stage'] } else { $eventName }
+        $state = if ($data.Contains('state')) { [string]$data['state'] } else { ConvertTo-RunCheckpointStatus -EventName $eventName -Status ([string]$eventRecord['status']) -Data $data }
+        if ($data.Contains('upper_operator') -and -not [string]::IsNullOrWhiteSpace([string]$data['upper_operator'])) {
+            $contract['upper_operator'] = [string]$data['upper_operator']
+        }
+        if ($data.Contains('aggregation_point') -and -not [string]::IsNullOrWhiteSpace([string]$data['aggregation_point'])) {
+            $contract['aggregation_point'] = [string]$data['aggregation_point']
+        }
+        if ($data.Contains('worker_topology') -and -not [string]::IsNullOrWhiteSpace([string]$data['worker_topology'])) {
+            $contract['worker_topology'] = [string]$data['worker_topology']
+        }
+        if ($data.Contains('peer_to_peer_allowed')) {
+            $contract['peer_to_peer_allowed'] = [bool]$data['peer_to_peer_allowed']
+        }
+
+        switch ($eventName) {
+            'pipeline.decompose.completed' { $contract['decompose_state'] = $state }
+            'pipeline.dispatch.assigned' { $contract['assignment_state'] = $state }
+            'pipeline.collect.completed' { $contract['collection_state'] = $state }
+            'pipeline.escalate.required' {
+                $contract['escalation_state'] = $state
+                if ($data.Contains('reason')) {
+                    $contract['escalation_reason'] = [string]$data['reason']
+                }
+            }
+        }
+
+        $stageRecords.Add([ordered]@{
+            stage   = $stage
+            state   = $state
+            event   = $eventName
+            target  = if ($data.Contains('target')) { [string]$data['target'] } else { [string]$eventRecord['label'] }
+            at      = ConvertTo-RunEventTimestampText -Value $eventRecord['timestamp']
+            summary = if ($data.Contains('summary')) { [string]$data['summary'] } else { [string]$eventRecord['message'] }
+        }) | Out-Null
+    }
+
+    if ($stageRecords.Count -eq 0) {
+        return $null
+    }
+
+    $contract['stages'] = @($stageRecords)
+    return $contract
 }
 
 function New-RunPlanContract {
@@ -5645,6 +5725,7 @@ function New-RunPacketFromRun {
         verification_result   = $Run.verification_result
         plan              = $Run.plan
         plan_checkpoints  = @($Run.plan_checkpoints)
+        managed_loop      = $Run.managed_loop
         outcome           = $Run.outcome
         draft_pr_gate     = $Run.draft_pr_gate
         last_event        = [string]$Run.last_event
@@ -5969,6 +6050,7 @@ function Get-RunsPayload {
                 verification_result   = $null
                 plan                  = $null
                 plan_checkpoints      = @()
+                managed_loop          = $null
                 outcome               = $null
                 draft_pr_gate         = $null
             }
@@ -6117,6 +6199,7 @@ function Get-RunsPayload {
                 $run.security_verdict = $securityVerdict
             }
             $run.plan_checkpoints = @(Get-RunPlanCheckpointsFromEventRecords -EventRecords $matchingEvents)
+            $run.managed_loop = Get-ManagedLoopContractFromEventRecords -EventRecords $matchingEvents
         }
     }
 
@@ -6171,6 +6254,7 @@ function Get-RunsPayload {
                 verification_result   = $run.verification_result
                 plan                  = $run.plan
                 plan_checkpoints      = @($run.plan_checkpoints)
+                managed_loop          = $run.managed_loop
                 outcome               = $run.outcome
                 draft_pr_gate         = $run.draft_pr_gate
             }
