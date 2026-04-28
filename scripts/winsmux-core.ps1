@@ -8471,6 +8471,7 @@ promote-tactic <run_id> [--title <text>] [--kind <playbook|prewarm|verification>
   orchestra-attach [--json] [--project-dir <path>]  Launch a visible attach window for an existing orchestra session
   harness-check [--json] [--project-dir <path>]  Validate hook/settings/attach contracts before external-operator startup
   shadow-cutover-gate --expected <path> --actual <path> [--surface <name>] [--json]  Compare PowerShell/Rust shadow outputs before cutover
+  powershell-deescalation [--json]  Print the PowerShell shrink contract for runtime cutover
   vault set <key> [value]   Store a credential securely (DPAPI)
   vault get <key>           Retrieve a stored credential
   vault inject <pane>       Inject all credentials as env vars into a pane
@@ -9067,6 +9068,22 @@ switch ($Command) {
             $gateArgs += '-AsJson'
         }
         & pwsh -NoProfile -File $gateScript @gateArgs
+    }
+    'powershell-deescalation' {
+        $contractScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\powershell-deescalation.ps1'))
+        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
+        $contractArgs = @()
+        foreach ($argument in $remaining) {
+            switch ($argument) {
+                '--json' {
+                    $contractArgs += '-AsJson'
+                }
+                default {
+                    Stop-WithError "usage: winsmux powershell-deescalation [--json]"
+                }
+            }
+        }
+        & pwsh -NoProfile -File $contractScript @contractArgs
     }
     'vault'           {
         switch ($Target) {

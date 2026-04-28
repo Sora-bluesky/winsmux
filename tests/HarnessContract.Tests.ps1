@@ -5,6 +5,7 @@ Describe 'harness-check contract' {
         $script:RepoRoot = Split-Path -Parent $PSScriptRoot
         $script:HarnessCheckPath = Join-Path $script:RepoRoot 'winsmux-core\scripts\harness-check.ps1'
         $script:ShadowCutoverGatePath = Join-Path $script:RepoRoot 'winsmux-core\scripts\shadow-cutover-gate.ps1'
+        $script:PowerShellDeescalationPath = Join-Path $script:RepoRoot 'winsmux-core\scripts\powershell-deescalation.ps1'
         $script:WinsmuxCorePath = Join-Path $script:RepoRoot 'scripts\winsmux-core.ps1'
         $script:SettingsLocalPath = Join-Path $script:RepoRoot '.claude\settings.local.json'
 
@@ -249,6 +250,25 @@ tasks:
         $bridge | Should -Match 'shadow-cutover-gate --expected <path> --actual <path> \[--surface <name>\] \[--json\]'
         $bridge | Should -Match "'shadow-cutover-gate'\s+\{"
         $bridge | Should -Match 'shadow-cutover-gate\.ps1'
+    }
+
+    It 'reports the PowerShell de-escalation contract as JSON' {
+        $output = & $script:PwshPath -NoProfile -File $script:PowerShellDeescalationPath -AsJson
+        $LASTEXITCODE | Should -Be 0
+        $json = $output | ConvertFrom-Json
+        $json.contract_version | Should -Be 1
+        $json.allowed_roles | Should -Contain 'bootstrap'
+        $json.allowed_roles | Should -Contain 'compatibility_launcher'
+        $json.gates.shadow_gate_required | Should -BeTrue
+        $json.gates.delete_without_shadow_gate | Should -BeFalse
+        $json.shrink_order[0] | Should -Be 'typed_state_and_projection_contracts'
+    }
+
+    It 'documents and dispatches the PowerShell de-escalation contract command' {
+        $bridge = Get-Content -LiteralPath $script:WinsmuxCorePath -Raw -Encoding UTF8
+        $bridge | Should -Match 'powershell-deescalation \[--json\]'
+        $bridge | Should -Match "'powershell-deescalation'\s+\{"
+        $bridge | Should -Match 'powershell-deescalation\.ps1'
     }
 
     BeforeEach {
