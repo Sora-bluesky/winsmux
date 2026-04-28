@@ -110,51 +110,6 @@ When updating planning:
 6. Treat missing Japanese roadmap titles as a sync gate failure, not as acceptable drift.
 7. Treat stale internal planning docs under `docs/internal/` as a sync failure when backlog-driven sections no longer match the external planning source of truth.
 
-## Rust Learning Note Gate
-
-When local operator handoff work includes Rust, Cargo, Tauri, or Rust-adjacent commands used in winsmux development, Codex must also update the beginner-friendly learning note resolved from one of these sources:
-
-- `WINSMUX_LEARNING_ROOT\Rust learning note\00 Index.md`
-- `%LOCALAPPDATA%\winsmux\learning-root.txt` marker + `Rust learning note\00 Index.md`
-- compatibility fallback:
-  - `WINSMUX_LEARNING_ROOT\Rust learning note.md`
-  - `%LOCALAPPDATA%\winsmux\learning-root.txt` marker + `Rust learning note.md`
-  - `WINSMUX_LEARNING_ROOT\Rust Commands - winsmux.md`
-  - `%LOCALAPPDATA%\winsmux\learning-root.txt` marker + `Rust Commands - winsmux.md`
-
-Rules:
-
-1. Keep the note outside the repository. Never commit files under the external `Learning` path.
-2. Update the note during handoff in the same session that used the command, not later.
-3. Prefer `Rust learning note/00 Index.md` as the canonical entry page for new updates. Use `Rust learning note.md` or `Rust Commands - winsmux.md` only as backward-compatibility fallbacks.
-4. Every Rust-adjacent session note update must preserve these three fields for each command or concept entry:
-   - the command or concept itself,
-   - one concrete example from winsmux work,
-   - the corresponding Rust Book chapter or nearest beginner-facing Rust concept.
-5. Explain each command in beginner-friendly Japanese:
-   - what it does,
-   - when to use it,
-   - one concrete example from winsmux work.
-6. Prefer updating existing entries over adding duplicates.
-7. Keep the note structure readable in Obsidian sidebar form.
-   - Maintain `Rust learning note/00 Index.md` as the entry page.
-   - Prefer Rust Book-aligned chapter titles under `Rust learning note/` (for example `4. 所有権を理解する`, `11. 自動テストを書く`, `21.4. 付録D：便利な開発ツール`).
-   - Keep helper files such as templates outside the main TOC by using a non-book prefix like `_`.
-   - Update the index note when a new chapter note is added.
-8. If the session did not use or discuss Rust-adjacent commands, no learning-note update is required.
-9. Keep the external Rust learning note at the same Japanese readability bar as `README.ja.md`.
-   - Write for a beginner who does not know the project internals.
-   - Prefer short paragraphs, explicit subjects, and concrete verbs.
-   - Do not mix maintainer shorthand, untranslated workflow jargon, and English noun chains into the body text.
-   - When a section needs both concept and procedure, split them instead of compressing them into one paragraph.
-10. Treat the external Rust learning note as user-facing Japanese, not as maintainer scratch notes.
-    - Keep local paths, private planning roots, and operator-only rituals out of the note body unless they are strictly required for the concrete example.
-    - If a repo-specific example is needed, explain the purpose of the command before naming the file or module.
-    - Preserve the “what it does / when to use it / winsmux example / Rust Book link” structure when revising existing entries.
-11. Japanese updates to the external Rust learning note require an `Opus` review result in the same session.
-    - The review must check readability, mixed-language drift, and whether the note still reads at the same level as `README.ja.md`.
-    - If `Opus` is unavailable, stop before treating the learning-note update as complete and record the blocker in `.claude/local/operator-handoff.md`.
-
 ## Private Maintainer Skill Gate
 
 Internal maintainer skill packs must not be tracked in the public repository.
@@ -172,17 +127,11 @@ When a maintainer-only workflow needs private skills:
 
 When editing or reviewing Rust, Cargo, or Tauri code in this repository:
 
-1. Use the private maintainer Rust guard skill from the resolved private skills root.
-2. Public repo files under `.agents/**` must stay public-safe only.
+1. Public repo files under `.agents/**` must stay public-safe only.
    - They may document the boundary, but they must not contain maintainer-only skill bodies.
-3. For merge-critical or ecosystem-sensitive Rust/Tauri slices, run one explorer-style subagent using the private Rust ecosystem radar skill before the final review or merge decision.
-   - Typical triggers:
-     - Windows subprocess / path / current-dir logic
-     - Cargo workspace or bootstrap behavior
-     - security-sensitive dependency or registry changes
-     - Tauri runtime / desktop backend contract changes
-4. If the radar pass finds material drift, record the date and takeaway in `.claude/local/operator-handoff.md`.
-5. If the radar pass finds no material drift, that is still a valid result; record it briefly when the slice is merge-critical.
+2. If private maintainer skills are available, Codex may use them as an optional local quality aid.
+3. Missing private maintainer skills are not a public-repo blocker.
+4. Do not write private skill names, bodies, local paths, or local review rituals into tracked repository files.
 
 ## Orchestra Startup Gate
 

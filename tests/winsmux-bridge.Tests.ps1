@@ -4476,7 +4476,7 @@ Describe 'orchestra-start server bootstrap' {
         Mock Ensure-OrchestraAttachProfile {
             [PSCustomObject][ordered]@{
                 ProfileName  = 'winsmux orchestra attach'
-                FragmentPath = 'C:\Users\komei\AppData\Local\Microsoft\Windows Terminal\Fragments\winsmux\winsmux-orchestra-attach.json'
+                FragmentPath = 'C:\Users\Example\AppData\Local\Microsoft\Windows Terminal\Fragments\winsmux\winsmux-orchestra-attach.json'
                 Commandline  = '"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -NoExit -File "C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1"'
             }
         }
@@ -4661,7 +4661,7 @@ Describe 'orchestra-start server bootstrap' {
         Mock Ensure-OrchestraAttachProfile {
             [PSCustomObject][ordered]@{
                 ProfileName  = 'winsmux orchestra attach'
-                FragmentPath = 'C:\Users\komei\AppData\Local\Microsoft\Windows Terminal\Fragments\winsmux\winsmux-orchestra-attach.json'
+                FragmentPath = 'C:\Users\Example\AppData\Local\Microsoft\Windows Terminal\Fragments\winsmux\winsmux-orchestra-attach.json'
                 Commandline  = '"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -NoExit -File "C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1"'
             }
         }
@@ -4734,7 +4734,7 @@ Describe 'orchestra-start server bootstrap' {
         Mock Ensure-OrchestraAttachProfile {
             [PSCustomObject][ordered]@{
                 ProfileName  = 'winsmux orchestra attach'
-                FragmentPath = 'C:\Users\komei\AppData\Local\Microsoft\Windows Terminal\Fragments\winsmux\winsmux-orchestra-attach.json'
+                FragmentPath = 'C:\Users\Example\AppData\Local\Microsoft\Windows Terminal\Fragments\winsmux\winsmux-orchestra-attach.json'
                 Commandline  = '"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -NoExit -File "C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1"'
             }
         }
@@ -4889,7 +4889,7 @@ Describe 'orchestra-start server bootstrap' {
         Mock Ensure-OrchestraAttachProfile {
             [PSCustomObject][ordered]@{
                 ProfileName  = 'winsmux orchestra attach'
-                FragmentPath = 'C:\Users\komei\AppData\Local\Microsoft\Windows Terminal\Fragments\winsmux\winsmux-orchestra-attach.json'
+                FragmentPath = 'C:\Users\Example\AppData\Local\Microsoft\Windows Terminal\Fragments\winsmux\winsmux-orchestra-attach.json'
                 Commandline  = '"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -NoExit -File "C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1"'
             }
         }
@@ -5171,7 +5171,7 @@ Describe 'orchestra-start server bootstrap' {
         function Invoke-Winsmux {
             param([string[]]$Arguments, [switch]$CaptureOutput)
             if ($Arguments[0] -eq 'display-message') {
-                return 'C:\Users\komei\Documents\Projects\apps\winsmux'
+                return 'C:\Users\Example\Documents\Projects\apps\winsmux'
             }
 
             if ($Arguments[0] -eq 'capture-pane') {
@@ -5189,8 +5189,8 @@ Describe 'orchestra-start server bootstrap' {
             -PaneId '%8' `
             -Label 'worker-6' `
             -ExpectedRole 'Worker' `
-            -ExpectedLaunchDir 'C:\Users\komei\Documents\Projects\apps\winsmux\.worktrees\builder-6' `
-            -ExpectedWorktreePath 'C:\Users\komei\Documents\Projects\apps\winsmux\.worktrees\builder-6')
+            -ExpectedLaunchDir 'C:\Users\Example\Documents\Projects\apps\winsmux\.worktrees\builder-6' `
+            -ExpectedWorktreePath 'C:\Users\Example\Documents\Projects\apps\winsmux\.worktrees\builder-6')
 
         $failures.Count | Should -Be 0
     }
@@ -5199,15 +5199,15 @@ Describe 'orchestra-start server bootstrap' {
         $markerPath = Join-Path $TestDrive 'worker-6.ready.json'
         @'
 {
-  "launch_dir": "C:\\Users\\komei\\Documents\\Projects\\apps\\winsmux\\.worktrees\\builder-6",
-  "current_dir": "C:\\Users\\komei\\Documents\\Projects\\apps\\winsmux\\.worktrees\\builder-6"
+  "launch_dir": "C:\\Users\\Example\\Documents\\Projects\\apps\\winsmux\\.worktrees\\builder-6",
+  "current_dir": "C:\\Users\\Example\\Documents\\Projects\\apps\\winsmux\\.worktrees\\builder-6"
 }
 '@ | Set-Content -LiteralPath $markerPath -Encoding UTF8
 
         function Invoke-Winsmux {
             param([string[]]$Arguments, [switch]$CaptureOutput)
             if ($Arguments[0] -eq 'display-message') {
-                return 'C:\Users\komei\Documents\Projects\apps\winsmux'
+                return 'C:\Users\Example\Documents\Projects\apps\winsmux'
             }
 
             if ($Arguments[0] -eq 'capture-pane') {
@@ -5221,8 +5221,8 @@ Describe 'orchestra-start server bootstrap' {
             -PaneId '%8' `
             -Label 'worker-6' `
             -ExpectedRole 'Worker' `
-            -ExpectedLaunchDir 'C:\Users\komei\Documents\Projects\apps\winsmux\.worktrees\builder-6' `
-            -ExpectedWorktreePath 'C:\Users\komei\Documents\Projects\apps\winsmux\.worktrees\builder-6' `
+            -ExpectedLaunchDir 'C:\Users\Example\Documents\Projects\apps\winsmux\.worktrees\builder-6' `
+            -ExpectedWorktreePath 'C:\Users\Example\Documents\Projects\apps\winsmux\.worktrees\builder-6' `
             -BootstrapMarkerPath $markerPath)
 
         $failures.Count | Should -Be 0
@@ -5237,7 +5237,7 @@ Describe 'orchestra-start server bootstrap' {
                 return [PSCustomObject]@{ Source = 'C:\Program Files\PowerShell\7\pwsh.exe' }
             }
             if ($Name -eq 'winsmux') {
-                return [PSCustomObject]@{ Source = 'C:\Users\komei\.local\bin\winsmux.exe' }
+                return [PSCustomObject]@{ Source = 'C:\Users\Example\.local\bin\winsmux.exe' }
             }
 
             throw "unexpected command lookup: $Name"
