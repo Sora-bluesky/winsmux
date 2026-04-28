@@ -11038,7 +11038,7 @@ Describe 'winsmux orchestra-smoke command' {
         $attachFailed.next_action | Should -Match 'attached-client confirmation'
     }
 
-    It 'classifies worker isolation drift without requiring startup rerun' {
+    It 'keeps worker isolation drift inside the blocked operator_state contract' {
         $workerDrift = Invoke-TestOrchestraOperatorContract `
             -SmokeOk $false `
             -SessionReady $true `
@@ -11050,9 +11050,10 @@ Describe 'winsmux orchestra-smoke command' {
             -ExpectedPaneCount 6 `
             -SmokeErrors @('worker isolation drift: worker-1: branch is main; expected worktree-worker-1')
 
-        $workerDrift.operator_state | Should -Be 'blocked-worker-isolation'
+        $workerDrift.operator_state | Should -Be 'blocked'
         $workerDrift.can_dispatch | Should -Be $false
         $workerDrift.requires_startup | Should -Be $false
+        $workerDrift.smoke_errors[0] | Should -Match 'worker isolation drift'
         $workerDrift.operator_message | Should -Match 'startup is already session-ready'
         $workerDrift.next_action | Should -Match 'Operator shell'
     }
