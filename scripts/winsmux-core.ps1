@@ -5437,10 +5437,10 @@ function ConvertTo-RunEventTimestampText {
         return ''
     }
     if ($Value -is [datetime]) {
-        return $Value.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+        return $Value.ToUniversalTime().ToString('o', [Globalization.CultureInfo]::InvariantCulture)
     }
     if ($Value -is [datetimeoffset]) {
-        return $Value.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+        return $Value.UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
     }
 
     return [string]$Value

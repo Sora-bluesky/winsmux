@@ -8142,7 +8142,7 @@ panes:
         $result.runs[0].plan.verification_plan | Should -Be @('Invoke-Pester tests/winsmux-bridge.Tests.ps1', 'verify runs --json contract')
         $result.runs[0].plan_checkpoints.Count | Should -Be 2
         @($result.runs[0].plan_checkpoints | ForEach-Object { $_.name }) | Should -Be @('pane.approval_waiting', 'pipeline.verify.partial')
-        $result.runs[0].plan_checkpoints[0].at.ToString('o') | Should -Be '2026-04-10T12:01:00.0000000+09:00'
+        $result.runs[0].plan_checkpoints[0].at.ToString('o') | Should -Be '2026-04-10T03:01:00.0000000Z'
         $result.runs[0].outcome.status | Should -Be 'in_progress'
         $result.runs[0].outcome.reason | Should -Be 'rerun focused verification'
         $result.runs[0].outcome.confidence | Should -Be 0.72
@@ -9148,7 +9148,7 @@ panes:
         $result.run.plan.verification_plan | Should -Be @('Invoke-Pester tests/winsmux-bridge.Tests.ps1', 'verify explain --json contract')
         $result.run.plan_checkpoints.Count | Should -Be 3
         @($result.run.plan_checkpoints | ForEach-Object { $_.name }) | Should -Be @('operator.review_requested', 'pipeline.verify.partial', 'pane.approval_waiting')
-        $result.run.plan_checkpoints[0].at.ToString('o') | Should -Be '2026-04-10T12:01:00.0000000+09:00'
+        $result.run.plan_checkpoints[0].at.ToString('o') | Should -Be '2026-04-10T03:01:00.0000000Z'
         $result.run.outcome.status | Should -Be 'in_progress'
         $result.run.outcome.reason | Should -Be 'rerun focused verification'
         $result.run.outcome.confidence | Should -Be 0.66
