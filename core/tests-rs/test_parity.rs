@@ -627,7 +627,8 @@ fn rust_parity_review_state_fixture_deserializes() {
         vec![
             "design_impact".to_string(),
             "replacement_coverage".to_string(),
-            "orphaned_artifacts".to_string()
+            "orphaned_artifacts".to_string(),
+            "pathspec_completeness".to_string()
         ]
     );
     assert_eq!(
@@ -635,7 +636,8 @@ fn rust_parity_review_state_fixture_deserializes() {
         vec![
             "design impact".to_string(),
             "replacement coverage".to_string(),
-            "orphaned artifacts".to_string()
+            "orphaned artifacts".to_string(),
+            "pathspec completeness".to_string()
         ]
     );
     assert!(record

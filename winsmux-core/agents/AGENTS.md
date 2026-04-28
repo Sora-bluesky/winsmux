@@ -14,7 +14,9 @@ This directory contains bash wrappers that generate fixed user prompts for winsm
   - Guardrails: requires `WORKTREE`, tells the agent to `cd` into it, review `git diff`, explicitly check for security issues, and always audit downstream design impact / replacement coverage / orphaned artifacts.
   - Completion markers: `REVIEW_PASS` or `REVIEW_FAIL`
   - Optional env var: `DIFF_BASE` to override the diff target. Defaults to `HEAD`.
+  - Optional env var: `DIFF_PATHSPEC` to narrow the diff target. When a dispatcher uses it, the pathspec must include files that define functions called by the scoped files.
   - Safety contract for `DIFF_BASE`: it must be a trusted, single-line Git diff target such as `HEAD`, `HEAD~1`, or `origin/main...HEAD`. Do not pass shell fragments, command substitutions, or newline-delimited content. The script renders `DIFF_BASE` as shell-escaped display text only.
+  - Safety contract for `DIFF_PATHSPEC`: it must be trusted, single-line pathspec text. Do not pass shell fragments, command substitutions, or newline-delimited content. Prefer a generated review manifest when multiple paths are needed.
 
 - `researcher.sh`
   - Purpose: emit a Researcher prompt for codebase or task investigation.
@@ -33,6 +35,12 @@ Reviewer:
 
 ```bash
 WORKTREE=/path/to/worktree DIFF_BASE=HEAD ./reviewer.sh "Review TASK-140"
+```
+
+Reviewer with narrowed diff:
+
+```bash
+WORKTREE=/path/to/worktree DIFF_BASE=origin/main...HEAD DIFF_PATHSPEC='scripts/foo.ps1 winsmux-core/scripts/settings.ps1' ./reviewer.sh "Review TASK-140"
 ```
 
 Researcher:

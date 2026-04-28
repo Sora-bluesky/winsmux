@@ -223,10 +223,10 @@
         @{
             Order = 90
             Version = 'v0.24.6'
-            TaskIds = @()
+            TaskIds = @('TASK-393', 'TASK-394', 'TASK-395', 'TASK-409')
             Focus = 'ultrareview 指摘の吸収'
             Example = 'v1.0.0 前にバグや再発を独立枠で確認'
-            Memo = '指摘が出た時点で TASK を追加'
+            Memo = 'Claude Code ultrareview と Codex 追加レビューの指摘を吸収'
         }
         @{
             Order = 100

@@ -1607,6 +1607,7 @@ function New-ReviewContractRecord {
         'design_impact'
         'replacement_coverage'
         'orphaned_artifacts'
+        'pathspec_completeness'
     )
 
     return [ordered]@{
@@ -1619,8 +1620,15 @@ function New-ReviewContractRecord {
             'design impact'
             'replacement coverage'
             'orphaned artifacts'
+            'pathspec completeness'
         )
-        rationale         = 'Review requests must audit downstream design impact, replacement coverage, and orphaned artifacts as part of the runtime contract.'
+        pathspec_policy   = [ordered]@{
+            source_task                    = 'TASK-395'
+            issue_ref                      = '#593'
+            include_definition_hosts       = $true
+            incomplete_scope_is_review_gap = $true
+        }
+        rationale         = 'Review requests must audit downstream design impact, replacement coverage, orphaned artifacts, and pathspec completeness as part of the runtime contract.'
     }
 }
 

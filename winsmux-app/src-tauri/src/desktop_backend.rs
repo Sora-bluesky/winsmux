@@ -497,7 +497,17 @@ pub struct DesktopReviewContract {
     pub style: String,
     pub required_scope: Vec<String>,
     pub checklist_labels: Vec<String>,
+    #[serde(default)]
+    pub pathspec_policy: Option<DesktopReviewPathspecPolicy>,
     pub rationale: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopReviewPathspecPolicy {
+    pub source_task: String,
+    pub issue_ref: String,
+    pub include_definition_hosts: bool,
+    pub incomplete_scope_is_review_gap: bool,
 }
 
 #[derive(Deserialize)]
@@ -3701,9 +3711,18 @@ mod tests {
             vec![
                 "design_impact".to_string(),
                 "replacement_coverage".to_string(),
-                "orphaned_artifacts".to_string()
+                "orphaned_artifacts".to_string(),
+                "pathspec_completeness".to_string()
             ]
         );
+        let pathspec_policy = record
+            .request
+            .review_contract
+            .pathspec_policy
+            .as_ref()
+            .expect("pathspec policy should be present");
+        assert_eq!(pathspec_policy.source_task, "TASK-395");
+        assert!(pathspec_policy.include_definition_hosts);
     }
 
     #[test]
