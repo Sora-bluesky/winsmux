@@ -2,7 +2,7 @@
 // Transport: stdio (newline-delimited JSON-RPC 2.0)
 "use strict";
 
-const { execSync } = require("child_process");
+const { execFileSync } = require("child_process");
 const path = require("path");
 
 const BRIDGE_SCRIPT = resolveBridgeScript();
@@ -54,6 +54,18 @@ const TOOLS = [
     },
   },
   {
+    name: "winsmux_assign",
+    description: "Dry-run provider, role, model-tier, approval, and sandbox assignment for a TASK id",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "TASK id, for example TASK-405" },
+        text: { type: "string", description: "Optional extra task context" },
+      },
+      required: ["task"],
+    },
+  },
+  {
     name: "winsmux_health",
     description: "Health check all panes",
     inputSchema: { type: "object", properties: {}, required: [] },
@@ -92,15 +104,9 @@ function resolveBridgeScript() {
 }
 
 function invokeBridge(args) {
-  const escaped = args.map((a) => {
-    const s = String(a);
-    if (s === "") return '""';
-    if (/\s/.test(s)) return '"' + s.replace(/"/g, '\\"') + '"';
-    return s;
-  });
-  const cmd = `pwsh -NoProfile -File "${BRIDGE_SCRIPT}" ${escaped.join(" ")}`;
+  const bridgeArgs = ["-NoProfile", "-File", BRIDGE_SCRIPT, ...args.map((a) => String(a))];
   try {
-    const stdout = execSync(cmd, {
+    const stdout = execFileSync("pwsh", bridgeArgs, {
       encoding: "utf8",
       timeout: 30000,
       windowsHide: true,
@@ -132,6 +138,13 @@ function handleToolCall(name, args) {
 
     case "winsmux_dispatch":
       return invokeBridge(["dispatch-route", args.text]);
+
+    case "winsmux_assign": {
+      if (!/^TASK-\d+$/.test(String(args.task || ""))) {
+        return { success: false, output: "winsmux_assign requires a TASK id such as TASK-405." };
+      }
+      return invokeBridge(["assign", "--task", args.task, "--json", ...(args.text ? ["--text", args.text] : [])]);
+    }
 
     case "winsmux_health":
       return invokeBridge(["health-check"]);

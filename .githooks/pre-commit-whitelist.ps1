@@ -47,6 +47,7 @@ $whitelistPatterns = @(
     '.gitattributes',
     'tests/PublicSurfacePolicy.Tests.ps1',
     'tests/GitHubWritePreflight.Tests.ps1',
+    'tests/McpServerContract.Tests.ps1',
     'tests/codex-subagent-worktree-guard.Tests.ps1',
     'tests/HarnessContract.Tests.ps1',
     'tests/NpmReleasePackage.Tests.ps1',

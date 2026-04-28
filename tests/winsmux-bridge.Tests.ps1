@@ -10474,6 +10474,69 @@ Describe 'winsmux provider-capabilities command' {
     }
 }
 
+Describe 'winsmux assign command' {
+    BeforeAll {
+        $script:winsmuxAssignRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxAssignRawContent = Get-Content -Raw -Path $script:winsmuxAssignRawPath -Encoding UTF8
+    }
+
+    BeforeEach {
+        $script:winsmuxAssignTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-assign-tests-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $script:winsmuxAssignTempRoot 'tasks') -Force | Out-Null
+@'
+tasks:
+  - id: TASK-405
+    title: "Operator judgment memory and dynamic AI team assignment policy for Claude Code runs (#676)"
+    status: backlog
+    priority: P0
+    target_version: "v0.24.8"
+    repo: winsmux
+    labels: [enhancement, orchestration, multi-vendor, model-policy, security, release-blocker]
+    notes: >
+      Add a policy layer that chooses provider, role, model, effort, approval policy,
+      sandbox mode, and context budget from TASK, Issue, and PR content.
+      Do not store provider tokens. Keep Claude Code as the upper operator.
+'@ | Set-Content -Path (Join-Path $script:winsmuxAssignTempRoot 'tasks\backlog.yaml') -Encoding UTF8
+    }
+
+    AfterEach {
+        if ($script:winsmuxAssignTempRoot -and (Test-Path $script:winsmuxAssignTempRoot)) {
+            Remove-Item -Path $script:winsmuxAssignTempRoot -Recurse -Force
+        }
+    }
+
+    It 'documents assign and returns a dry-run JSON assignment without token storage' {
+        $script:winsmuxAssignRawContent | Should -Match 'assign --task <TASK-ID> \[--json\] \[--text <text>\]'
+        $script:winsmuxAssignRawContent | Should -Match "'assign'\s*\{"
+
+        Push-Location $script:winsmuxAssignTempRoot
+        try {
+            $env:WINSMUX_BACKLOG_PATH = Join-Path $script:winsmuxAssignTempRoot 'tasks\backlog.yaml'
+            $output = & pwsh -NoProfile -File $script:winsmuxAssignRawPath assign --task TASK-405 --json
+        } finally {
+            $env:WINSMUX_BACKLOG_PATH = $null
+            Pop-Location
+        }
+
+        $payload = $output | ConvertFrom-Json
+        $payload.dry_run | Should -BeTrue
+        $payload.task_id | Should -Be 'TASK-405'
+        $payload.upper_operator.product | Should -Be 'Claude Code'
+        $payload.upper_operator.owns_final_judgment | Should -BeTrue
+        $payload.assignment.selected.capability_tier | Should -Be 'deep_review'
+        $payload.assignment.selected.model | Should -Be 'alias:opus'
+        $payload.assignment.selected.model_resolution | Should -Be 'alias:opus'
+        $payload.assignment.selected.model_reasoning_effort | Should -Be 'high'
+        $payload.assignment.selected.model_reasoning_summary | Should -Be 'none'
+        $payload.assignment.selected.approvals_reviewer | Should -Be 'operator'
+        $payload.assignment.approval_policy | Should -Be 'operator_review_required'
+        $payload.security.stores_provider_tokens | Should -BeFalse
+        $payload.security.brokers_oauth | Should -BeFalse
+        $payload.generated_outputs | Should -Contain 'provider_capability_catalog.generated.json'
+        $payload.generated_outputs | Should -Contain 'model_resolution_report.json'
+    }
+}
+
 Describe 'winsmux launcher command' {
     BeforeAll {
         $script:winsmuxLauncherRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'

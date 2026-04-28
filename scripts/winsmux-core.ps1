@@ -8637,6 +8637,7 @@ Commands:
   machine-contract --json  Print the hook and agent machine contract JSON
   rust-canary [--json]  Print the Rust default-on canary gate JSON
   manual-checklist [--json]  Print the versioned manual validation checklist gate
+  assign --task <TASK-ID> [--json] [--text <text>]  Dry-run provider, role, model-tier, approval, and sandbox assignment
   provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]  Record or clear a runtime provider reassignment for a managed slot
   github-preflight [--repo <owner/name>] [--json] [--connector-available] [--require-gh]  Select the GitHub write path before merge/release automation
   locks                     List active file locks
@@ -9361,6 +9362,38 @@ switch ($Command) {
     'machine-contract' { Invoke-MachineContract }
     'rust-canary' { Invoke-RustCanary }
     'manual-checklist' { Invoke-ManualChecklist }
+    'assign' {
+        $assignScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\assignment-policy.ps1'))
+        $assignArgs = @()
+        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
+        for ($index = 0; $index -lt $remaining.Count; $index++) {
+            switch ($remaining[$index]) {
+                '--task' {
+                    if ($index + 1 -ge $remaining.Count) {
+                        Stop-WithError "usage: winsmux assign --task <TASK-ID> [--json] [--text <text>]"
+                    }
+                    $assignArgs += @('-TaskId', $remaining[$index + 1])
+                    $index++
+                }
+                '--text' {
+                    if ($index + 1 -ge $remaining.Count) {
+                        Stop-WithError "usage: winsmux assign --task <TASK-ID> [--json] [--text <text>]"
+                    }
+                    $assignArgs += @('-Text', $remaining[$index + 1])
+                    $index++
+                }
+                '--json' { $assignArgs += '-Json' }
+                default {
+                    Stop-WithError "usage: winsmux assign --task <TASK-ID> [--json] [--text <text>]"
+                }
+            }
+        }
+        & pwsh -NoProfile -File $assignScript @assignArgs
+        $assignExitCode = Get-SafeLastExitCode
+        if ($null -ne $assignExitCode -and $assignExitCode -ne 0) {
+            exit $assignExitCode
+        }
+    }
     'provider-switch' { Invoke-ProviderSwitch }
     'rebind-worktree' { Invoke-RebindWorktree }
     ''                { Show-Usage }
