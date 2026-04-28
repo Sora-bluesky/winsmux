@@ -10,6 +10,8 @@ This document classifies PowerShell and hook entrypoints before the `v0.24.4` ru
 - Treat startup, attach, state, watchdog, and rollback as separate responsibilities.
 - Do not remove a script only because repo-wide references are low. First prove it is outside public docs, hooks, install output, and operator startup paths.
 - `TASK-282` should introduce measured dual-run comparison before `TASK-270` removes or thins runtime scripts.
+- `TASK-296` starts the legacy alias sunset as a warning-only gate: `psmux`, `pmux`, and `tmux` aliases still run in `v0.24.5`, but new docs and scripts must use `winsmux`, and the alias contract must be removed before `v1.0.0`.
+- `TASK-407` expands the PowerShell reduction plan to the legacy Pester suites. The goal is to keep release-blocking coverage while moving core runtime behavior checks to Rust tests or typed fixtures before `v1.0.0`.
 
 ## Classification rules
 
@@ -141,6 +143,24 @@ Diff budget:
 It is the machine-readable gate for deciding whether a PowerShell script is still runtime-owned
 or has become bootstrap, setup, compatibility, security, release, or planning glue.
 
+## Inputs for `TASK-407`
+
+`TASK-407` should classify Pester files before deleting or rewriting them.
+
+Minimum classification buckets:
+
+- `keep-smoke`: Windows setup, installer, compatibility alias, git-guard, public-surface, and release smoke tests that are still best exercised through PowerShell.
+- `migrate-rust`: core runtime behavior currently covered by Pester but now owned by Rust modules, CLI commands, or typed fixtures.
+- `archive-reference`: historical upstream compatibility cases that should be preserved as fixtures or documentation, not executed in every release gate.
+- `delete-after-coverage`: duplicated or obsolete tests that can be removed only after an equivalent Rust or smoke check exists.
+
+Coverage rule:
+
+- Do not delete a Pester test only to reduce the language ratio.
+- First identify the user or release contract it protects.
+- Then move the contract to Rust tests, typed fixtures, or a thinner Pester smoke check.
+- Record the expected PowerShell share after each batch so language-ratio progress is measurable.
+
 ## Acceptance checklist
 
 - Every PowerShell or hook entrypoint is classified.
@@ -148,3 +168,4 @@ or has become bootstrap, setup, compatibility, security, release, or planning gl
 - No deletion is approved without `TASK-282`.
 - Startup, attach, state, watchdog, and rollback remain separate responsibilities.
 - The inventory gives `TASK-270` a safe shrink order.
+- Legacy Pester cleanup is tracked through `TASK-407`, not hidden inside runtime script deletion.

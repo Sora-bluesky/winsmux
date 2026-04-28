@@ -115,6 +115,9 @@ winsmux compare promote <run_id>
 
 `winsmux conflict-preflight` remains available as a compatibility command behind `winsmux compare preflight`.
 
+Legacy binary aliases `psmux`, `pmux`, and `tmux` are in `v0.24.5` warning-only sunset mode.
+Use `winsmux` for new scripts and docs. The legacy alias contract will be removed before `v1.0.0`.
+
 ## Authentication Support
 
 | Tool | Authentication mode | winsmux support |

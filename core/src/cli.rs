@@ -8,6 +8,34 @@ fn canonical_program_name_for_display(name: &str) -> String {
     }
 }
 
+fn normalized_executable_name(name: &str) -> String {
+    name.to_lowercase().replace(".exe", "")
+}
+
+pub fn legacy_alias_warning_for_program(name: &str) -> Option<String> {
+    let normalized = normalized_executable_name(name);
+    if !matches!(normalized.as_str(), "psmux" | "pmux" | "tmux") {
+        return None;
+    }
+
+    Some(format!(
+        "winsmux: compatibility alias '{normalized}' is deprecated; use 'winsmux' instead. v0.24.5 keeps this alias as warning-only, and the legacy alias contract will be removed before v1.0.0."
+    ))
+}
+
+pub fn warn_if_legacy_alias_invocation() {
+    let Some(executable_name) = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.file_stem().map(|stem| stem.to_string_lossy().to_string()))
+    else {
+        return;
+    };
+
+    if let Some(message) = legacy_alias_warning_for_program(&executable_name) {
+        eprintln!("{message}");
+    }
+}
+
 pub fn get_program_name() -> String {
     std::env::current_exe()
         .ok()
@@ -396,6 +424,7 @@ EXAMPLES:
     {prog} source-file ~/.psmux.conf Reload config
 
 NOTE: winsmux preserves compatibility aliases 'psmux', 'pmux', and 'tmux' where supported.
+These aliases are in v0.24.5 warning-only sunset mode and will be removed before v1.0.0.
 
 For more information: https://github.com/Sora-bluesky/winsmux
 "#, prog = prog, ver = VERSION)
@@ -575,7 +604,10 @@ pub fn parse_target(target: &str) -> ParsedTarget {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_program_name_for_display, commands_text, help_text};
+    use super::{
+        canonical_program_name_for_display, commands_text, help_text,
+        legacy_alias_warning_for_program,
+    };
 
     #[test]
     fn canonical_program_name_prefers_winsmux_for_legacy_aliases() {
@@ -592,9 +624,22 @@ mod tests {
         assert!(text.contains("winsmux launches PowerShell 7 (pwsh) by default."));
         assert!(text.contains("machine-contract        Print the hook and agent machine contract JSON"));
         assert!(text.contains("winsmux preserves compatibility aliases 'psmux', 'pmux', and 'tmux' where supported."));
+        assert!(text.contains("v0.24.5 warning-only sunset mode"));
         assert!(text.contains("For more information: https://github.com/Sora-bluesky/winsmux"));
         assert!(!text.contains("psmux reads config on startup from the first file found:"));
         assert!(!text.contains("psmux launches PowerShell 7 (pwsh) by default."));
+    }
+
+    #[test]
+    fn legacy_alias_warning_is_only_for_compatibility_aliases() {
+        let warning = legacy_alias_warning_for_program("psmux.exe").expect("warning");
+
+        assert!(warning.contains("compatibility alias 'psmux' is deprecated"));
+        assert!(warning.contains("use 'winsmux' instead"));
+        assert!(warning.contains("v0.24.5 keeps this alias as warning-only"));
+        assert!(warning.contains("removed before v1.0.0"));
+        assert!(legacy_alias_warning_for_program("winsmux").is_none());
+        assert!(legacy_alias_warning_for_program("custom").is_none());
     }
 
     #[test]

@@ -64,6 +64,8 @@ fn main() {
 }
 
 fn run_main() -> io::Result<()> {
+    cli::warn_if_legacy_alias_invocation();
+
     let args: Vec<String> = env::args().collect();
     
     // Clean up any stale port files at startup

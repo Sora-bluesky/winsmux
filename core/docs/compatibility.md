@@ -21,6 +21,19 @@ winsmux is the most tmux-compatible terminal multiplexer on Windows.
 
 **Your existing `.tmux.conf` works.** winsmux reads it automatically. Just install and go.
 
+## Legacy Alias Sunset
+
+`v0.24.5` is the warning-only sunset phase for the legacy binary aliases
+`psmux`, `pmux`, and `tmux`.
+
+- Use `winsmux` for new scripts, docs, and operator workflows.
+- Legacy aliases still run during `v0.24.5`, but they print a deprecation warning to stderr.
+- The legacy alias contract will be removed before `v1.0.0`.
+
+This alias sunset does not remove tmux-compatible configuration support. Compatibility for
+`.tmux.conf`, tmux-style targets, and tmux-style commands remains documented on this page unless
+a later release note says otherwise.
+
 ## Comparison
 
 | | winsmux | Windows Terminal tabs | WSL + tmux |
