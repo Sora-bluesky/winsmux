@@ -1963,7 +1963,17 @@ NEXT_ACTION: rerun focused verification
         @($script:teamPipelineBridgeCalls | Where-Object { $_[0] -eq 'send' -and $_[1] -eq 'reviewer' }).Count | Should -Be 3
         @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.dispatched' }).Count | Should -Be 2
         @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.completed' }).Count | Should -Be 2
+        @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.decompose.completed' }).Count | Should -Be 1
+        @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.dispatch.assigned' }).Count | Should -Be 1
+        @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.collect.completed' }).Count | Should -Be 1
         @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.review.dispatched' }).Count | Should -Be 1
+
+        $managedDispatch = @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.dispatch.assigned' })[0]
+        $managedDispatch.Role | Should -Be 'Operator'
+        $managedDispatch.Data.upper_operator | Should -Be 'claude_code'
+        $managedDispatch.Data.aggregation_point | Should -Be 'claude_code_operator'
+        $managedDispatch.Data.peer_to_peer_allowed | Should -Be $false
+        $managedDispatch.Data.state | Should -Be 'assigned'
 
         $consultDispatch = @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.dispatched' })[0]
         $consultDispatch.Data.governance_cost_units[0].unit_type | Should -Be 'governance_invocation'
@@ -2030,6 +2040,56 @@ NEXT_ACTION: rerun focused verification
         $result.StuckConsults[0].Status | Should -Be 'CONSULT_DONE'
         @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.dispatched' }).Count | Should -Be 2
         @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.consult.completed' }).Count | Should -Be 2
+        @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.escalate.required' }).Count | Should -Be 1
+
+        $escalation = @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.escalate.required' })[0]
+        $escalation.Role | Should -Be 'Operator'
+        $escalation.Data.state | Should -Be 'required'
+        $escalation.Data.reason | Should -Be 'EXEC_BLOCKED'
+        $escalation.Data.peer_to_peer_allowed | Should -Be $false
+    }
+
+    It 'keeps escalation target visible when no consult pane is configured' {
+        $manifest = [PSCustomObject]@{
+            Session = [PSCustomObject]@{
+                name        = 'winsmux-orchestra'
+                project_dir = 'C:\repo'
+            }
+            Panes = [ordered]@{
+                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\repo\.worktrees\builder-1' }
+                'reviewer'  = [PSCustomObject]@{ pane_id = '%4'; role = 'Reviewer'; launch_dir = 'C:\repo'; supports_structured_result = 'true'; supports_verification = 'true'; supports_consultation = 'false' }
+            }
+        }
+
+        $script:teamPipelineEvents = @()
+
+        Mock Read-TeamPipelineManifest { $manifest }
+        Mock Invoke-TeamPipelineBridge { [PSCustomObject]@{ ExitCode = 0; Output = '' } }
+        Mock Wait-TeamPipelineStage {
+            param([string]$Target, [string]$StageName)
+            switch ($StageName) {
+                'EXEC'   { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'EXEC_DONE'; Summary = 'build summary'; Transcript = '' } }
+                'VERIFY' { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'VERIFY_PARTIAL'; Summary = 'needs operator decision'; Transcript = '' } }
+                default  { throw "Unexpected stage $StageName" }
+            }
+        }
+        Mock Write-TeamPipelineEvent {
+            param($ProjectDir, $SessionName, $Event, $Message, $Role, $PaneId, $Target, $Data)
+            $script:teamPipelineEvents += [PSCustomObject]@{
+                Event  = $Event
+                Role   = $Role
+                Target = $Target
+                Data   = $Data
+            }
+        }
+
+        $result = Invoke-TeamPipeline -Task 'Investigate cache drift' -Builder 'builder-1' -SkipPlan
+
+        $result.FinalStatus | Should -Be 'VERIFY_PARTIAL'
+        $escalation = @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.escalate.required' })[0]
+        $escalation.Target | Should -Be 'claude_code_operator'
+        $escalation.Data.target | Should -Be 'claude_code_operator'
+        $escalation.Data.peer_to_peer_allowed | Should -Be $false
     }
 }
 
@@ -8067,6 +8127,75 @@ panes:
             }
         } | ConvertTo-Json -Compress),
         ([ordered]@{
+            timestamp = '2026-04-10T12:01:30+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'pipeline.decompose.completed'
+            message   = 'operator decomposed task'
+            label     = 'researcher-1'
+            pane_id   = ''
+            role      = 'Operator'
+            branch    = 'worktree-builder-1'
+            head_sha  = 'abc1234def5678'
+            data      = [ordered]@{
+                task_id              = 'task-256'
+                run_id               = 'task:task-256'
+                stage                = 'decompose'
+                state                = 'completed'
+                upper_operator       = 'claude_code'
+                aggregation_point    = 'claude_code_operator'
+                worker_topology      = 'operator_managed_panes'
+                peer_to_peer_allowed = $false
+                target               = 'researcher-1'
+                summary              = 'split implementation and verification'
+            }
+        } | ConvertTo-Json -Compress),
+        ([ordered]@{
+            timestamp = '2026-04-10T12:01:40+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'pipeline.dispatch.assigned'
+            message   = 'operator assigned builder'
+            label     = 'builder-1'
+            pane_id   = ''
+            role      = 'Operator'
+            branch    = 'worktree-builder-1'
+            head_sha  = 'abc1234def5678'
+            data      = [ordered]@{
+                task_id              = 'task-256'
+                run_id               = 'task:task-256'
+                stage                = 'dispatch'
+                state                = 'assigned'
+                upper_operator       = 'claude_code'
+                aggregation_point    = 'claude_code_operator'
+                worker_topology      = 'operator_managed_panes'
+                peer_to_peer_allowed = $false
+                target               = 'builder-1'
+                summary              = 'builder owns implementation'
+            }
+        } | ConvertTo-Json -Compress),
+        ([ordered]@{
+            timestamp = '2026-04-10T12:01:50+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'pipeline.collect.completed'
+            message   = 'operator collected builder result'
+            label     = 'builder-1'
+            pane_id   = ''
+            role      = 'Operator'
+            branch    = 'worktree-builder-1'
+            head_sha  = 'abc1234def5678'
+            data      = [ordered]@{
+                task_id              = 'task-256'
+                run_id               = 'task:task-256'
+                stage                = 'collect'
+                state                = 'builder_result_collected'
+                upper_operator       = 'claude_code'
+                aggregation_point    = 'claude_code_operator'
+                worker_topology      = 'operator_managed_panes'
+                peer_to_peer_allowed = $false
+                target               = 'builder-1'
+                summary              = 'builder result is ready for review'
+            }
+        } | ConvertTo-Json -Compress),
+        ([ordered]@{
             timestamp = '2026-04-10T12:02:00+09:00'
             session   = 'winsmux-orchestra'
             event     = 'pipeline.verify.partial'
@@ -8087,6 +8216,30 @@ panes:
                     summary = 'rerun focused verification'
                     next_action = 'rerun_verify'
                 }
+            }
+        } | ConvertTo-Json -Compress),
+        ([ordered]@{
+            timestamp = '2026-04-10T12:03:00+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'pipeline.escalate.required'
+            message   = 'operator escalation required'
+            label     = 'reviewer-1'
+            pane_id   = ''
+            role      = 'Operator'
+            branch    = 'worktree-builder-1'
+            head_sha  = 'abc1234def5678'
+            data      = [ordered]@{
+                task_id              = 'task-256'
+                run_id               = 'task:task-256'
+                stage                = 'escalate'
+                state                = 'required'
+                reason               = 'VERIFY_PARTIAL'
+                upper_operator       = 'claude_code'
+                aggregation_point    = 'claude_code_operator'
+                worker_topology      = 'operator_managed_panes'
+                peer_to_peer_allowed = $false
+                target               = 'reviewer-1'
+                summary              = 'verification needs an operator decision'
             }
         } | ConvertTo-Json -Compress)
         ) | Set-Content -Path $script:runsEventsPath -Encoding UTF8
@@ -8140,9 +8293,18 @@ panes:
         $result.runs[0].run_packet.verification_result.outcome | Should -Be 'PARTIAL'
         $result.runs[0].plan.goal | Should -Be 'Ship run contract primitives'
         $result.runs[0].plan.verification_plan | Should -Be @('Invoke-Pester tests/winsmux-bridge.Tests.ps1', 'verify runs --json contract')
-        $result.runs[0].plan_checkpoints.Count | Should -Be 2
-        @($result.runs[0].plan_checkpoints | ForEach-Object { $_.name }) | Should -Be @('pane.approval_waiting', 'pipeline.verify.partial')
+        $result.runs[0].plan_checkpoints.Count | Should -Be 6
+        @($result.runs[0].plan_checkpoints | ForEach-Object { $_.name }) | Should -Be @('pane.approval_waiting', 'pipeline.decompose.completed', 'pipeline.dispatch.assigned', 'pipeline.collect.completed', 'pipeline.verify.partial', 'pipeline.escalate.required')
         $result.runs[0].plan_checkpoints[0].at.ToString('o') | Should -Be '2026-04-10T03:01:00.0000000Z'
+        $result.runs[0].managed_loop.upper_operator | Should -Be 'claude_code'
+        $result.runs[0].managed_loop.aggregation_point | Should -Be 'claude_code_operator'
+        $result.runs[0].managed_loop.peer_to_peer_allowed | Should -Be $false
+        $result.runs[0].managed_loop.decompose_state | Should -Be 'completed'
+        $result.runs[0].managed_loop.assignment_state | Should -Be 'assigned'
+        $result.runs[0].managed_loop.collection_state | Should -Be 'builder_result_collected'
+        $result.runs[0].managed_loop.escalation_state | Should -Be 'required'
+        $result.runs[0].managed_loop.escalation_reason | Should -Be 'VERIFY_PARTIAL'
+        $result.runs[0].managed_loop.stages.Count | Should -Be 4
         $result.runs[0].outcome.status | Should -Be 'in_progress'
         $result.runs[0].outcome.reason | Should -Be 'rerun focused verification'
         $result.runs[0].outcome.confidence | Should -Be 0.72
@@ -8151,7 +8313,9 @@ panes:
         $result.runs[0].draft_pr_gate.state | Should -Be 'required'
         $result.runs[0].draft_pr_gate.auto_merge_allowed | Should -Be $false
         $result.runs[0].run_packet.plan.goal | Should -Be 'Ship run contract primitives'
-        $result.runs[0].run_packet.plan_checkpoints.Count | Should -Be 2
+        $result.runs[0].run_packet.plan_checkpoints.Count | Should -Be 6
+        $result.runs[0].run_packet.managed_loop.peer_to_peer_allowed | Should -Be $false
+        $result.runs[0].run_packet.managed_loop.assignment_state | Should -Be 'assigned'
         $result.runs[0].run_packet.outcome.status | Should -Be 'in_progress'
         $result.runs[0].run_packet.draft_pr_gate.merge_requires_human | Should -Be $true
         $result.runs[0].Contains('observation_pack') | Should -Be $false
