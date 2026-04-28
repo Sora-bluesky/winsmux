@@ -175,7 +175,7 @@ function Get-OrchestraOperatorContract {
             $uiWarning = $true
         }
     } elseif ($workerIsolationOnly -and $SessionReady -and $PaneCount -ge $ExpectedPaneCount) {
-        $state = 'blocked-worker-isolation'
+        $state = 'blocked'
         $message = 'Worker isolation drift blocks dispatch, but orchestra startup is already session-ready.'
         $canDispatch = $false
         $requiresStartup = $false
