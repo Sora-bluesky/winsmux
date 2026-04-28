@@ -5055,6 +5055,7 @@ function Get-InboxActionableEventKind {
         'operator.review_failed'    { return 'review_failed' }
         'operator.blocked'          { return 'blocked' }
         'operator.commit_ready'     { return 'commit_ready' }
+        'operator.draft_pr.required' { return 'blocked' }
         'pipeline.security.blocked'  { return 'blocked' }
         'security.policy.blocked'    { return 'blocked' }
         default                      { return '' }
@@ -5408,7 +5409,7 @@ function ConvertTo-RunCheckpointStatus {
     if ($EventName -in @('pipeline.verify.pass', 'pipeline.security.allowed', 'security.policy.allowed', 'operator.draft_pr.created', 'pipeline.decompose.completed', 'pipeline.dispatch.assigned', 'pipeline.collect.completed')) {
         return 'completed'
     }
-    if ($EventName -in @('pipeline.verify.fail', 'pipeline.security.blocked', 'security.policy.blocked', 'operator.review_failed')) {
+    if ($EventName -in @('pipeline.verify.fail', 'pipeline.security.blocked', 'security.policy.blocked', 'operator.review_failed', 'operator.draft_pr.required')) {
         return 'blocked'
     }
     if ($EventName -in @('pipeline.verify.partial', 'operator.review_requested', 'pane.approval_waiting', 'pipeline.escalate.required')) {
@@ -5483,6 +5484,7 @@ function Get-RunPlanCheckpointsFromEventRecords {
         'security.policy.allowed',
         'security.policy.blocked',
         'operator.draft_pr.created',
+        'operator.draft_pr.required',
         'pipeline.decompose.completed',
         'pipeline.dispatch.assigned',
         'pipeline.collect.completed',
@@ -5656,6 +5658,108 @@ function New-RunOutcomeContract {
     }
 }
 
+function Get-RunContractField {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+    if ($InputObject -is [System.Collections.IDictionary]) {
+        if ($InputObject.Contains($Name)) {
+            return $InputObject[$Name]
+        }
+        return $null
+    }
+
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -ne $property) {
+        return $property.Value
+    }
+
+    return $null
+}
+
+function New-RunDraftPrHandoffPackage {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [string]$DraftPrUrl = ''
+    )
+
+    $verificationOutcome = [string](Get-RunContractField -InputObject $Run.verification_result -Name 'outcome')
+    $verificationSummary = [string](Get-RunContractField -InputObject $Run.verification_result -Name 'summary')
+    $verificationNextAction = [string](Get-RunContractField -InputObject $Run.verification_result -Name 'next_action')
+    $securityVerdict = [string](Get-RunContractField -InputObject $Run.security_verdict -Name 'verdict')
+    $securityReason = [string](Get-RunContractField -InputObject $Run.security_verdict -Name 'reason')
+    $reviewState = [string]$Run.review_state
+    $reviewRequired = [bool]$Run.review_required
+    $blockedReasons = [System.Collections.Generic.List[string]]::new()
+    $remainingRisks = [System.Collections.Generic.List[string]]::new()
+
+    $hasVerificationEvidence = -not [string]::IsNullOrWhiteSpace($verificationOutcome)
+    if (-not $hasVerificationEvidence) {
+        $blockedReasons.Add('verification evidence is missing') | Out-Null
+        $remainingRisks.Add('verification evidence is missing') | Out-Null
+    }
+    if ($reviewRequired -and $reviewState -notin @('PASS', 'FAIL', 'FAILED')) {
+        $blockedReasons.Add("review state is unresolved: $reviewState") | Out-Null
+        $remainingRisks.Add("review state is unresolved: $reviewState") | Out-Null
+    }
+    if ($reviewState -in @('FAIL', 'FAILED')) {
+        $blockedReasons.Add("review failed: $reviewState") | Out-Null
+        $remainingRisks.Add("review failed: $reviewState") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($verificationOutcome) -and $verificationOutcome -ne 'PASS') {
+        $remainingRisks.Add("verification outcome is $verificationOutcome") | Out-Null
+    }
+    if ($securityVerdict -eq 'BLOCK') {
+        $reasonText = if (-not [string]::IsNullOrWhiteSpace($securityReason)) { $securityReason } else { 'security policy blocked the run' }
+        $blockedReasons.Add($reasonText) | Out-Null
+        $remainingRisks.Add($reasonText) | Out-Null
+    }
+
+    $summary = if (-not [string]::IsNullOrWhiteSpace($verificationSummary)) {
+        $verificationSummary
+    } elseif ($null -ne $Run.experiment_packet -and -not [string]::IsNullOrWhiteSpace([string]$Run.experiment_packet.result)) {
+        [string]$Run.experiment_packet.result
+    } elseif (-not [string]::IsNullOrWhiteSpace([string]$Run.task)) {
+        [string]$Run.task
+    } else {
+        [string]$Run.goal
+    }
+
+    $suggestedNextAction = if (@($blockedReasons).Count -gt 0) {
+        'resolve blocked reasons before creating or merging a draft PR'
+    } elseif ([string]::IsNullOrWhiteSpace($DraftPrUrl)) {
+        'create a draft PR and request human review'
+    } else {
+        'human reviewer must decide whether to merge'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($verificationNextAction) -and @($blockedReasons).Count -gt 0) {
+        $suggestedNextAction = $verificationNextAction
+    }
+
+    return [ordered]@{
+        summary                  = $summary
+        validation               = [ordered]@{
+            evidence_complete  = $hasVerificationEvidence
+            outcome            = $verificationOutcome
+            summary            = $verificationSummary
+            next_action        = $verificationNextAction
+            verification_plan  = @($Run.verification_plan)
+            changed_files      = @($Run.changed_files)
+        }
+        remaining_risks          = @($remainingRisks)
+        suggested_next_action    = $suggestedNextAction
+        blocked_reasons          = @($blockedReasons)
+        package_complete         = (@($blockedReasons).Count -eq 0)
+        human_judgement_required = $true
+        automatic_merge_allowed  = $false
+    }
+}
+
 function New-RunDraftPrGate {
     param(
         [Parameter(Mandatory = $true)]$Run,
@@ -5667,14 +5771,18 @@ function New-RunDraftPrGate {
     $trigger = 'review_state'
     $draftPrUrl = ''
     if (@($draftPrEvent).Count -gt 0) {
-        $state = 'passed'
         $trigger = 'operator.draft_pr.created'
         $data = $draftPrEvent[0]['data']
         if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('draft_pr_url')) {
             $draftPrUrl = [string]$data['draft_pr_url']
         }
-    } elseif ([string]$Run.review_state -in @('FAIL', 'FAILED')) {
+    }
+
+    $handoffPackage = New-RunDraftPrHandoffPackage -Run $Run -DraftPrUrl $draftPrUrl
+    if (@($handoffPackage.blocked_reasons).Count -gt 0) {
         $state = 'blocked'
+    } elseif (@($draftPrEvent).Count -gt 0) {
+        $state = 'passed'
     }
 
     return [ordered]@{
@@ -5685,6 +5793,7 @@ function New-RunDraftPrGate {
         draft_pr_url         = $draftPrUrl
         auto_merge_allowed   = $false
         merge_requires_human = $true
+        handoff_package      = $handoffPackage
     }
 }
 

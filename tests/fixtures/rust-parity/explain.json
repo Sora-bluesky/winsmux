@@ -135,11 +135,39 @@
     "draft_pr_gate": {
       "kind": "human_judgement",
       "target": "draft_pr",
-      "state": "required",
+      "state": "blocked",
       "trigger": "review_state",
       "draft_pr_url": "",
       "auto_merge_allowed": false,
-      "merge_requires_human": true
+      "merge_requires_human": true,
+      "handoff_package": {
+        "summary": "consult before work",
+        "validation": {
+          "evidence_complete": false,
+          "outcome": "",
+          "summary": "",
+          "next_action": "",
+          "verification_plan": [
+            "Invoke-Pester tests/winsmux-bridge.Tests.ps1",
+            "verify explain --json contract"
+          ],
+          "changed_files": [
+            "scripts/winsmux-core.ps1"
+          ]
+        },
+        "remaining_risks": [
+          "verification evidence is missing",
+          "review state is unresolved: PENDING"
+        ],
+        "suggested_next_action": "resolve blocked reasons before creating or merging a draft PR",
+        "blocked_reasons": [
+          "verification evidence is missing",
+          "review state is unresolved: PENDING"
+        ],
+        "package_complete": false,
+        "human_judgement_required": true,
+        "automatic_merge_allowed": false
+      }
     }
   },
   "observation_pack": {

@@ -8310,16 +8310,55 @@ panes:
         $result.runs[0].outcome.confidence | Should -Be 0.72
         $result.runs[0].draft_pr_gate.kind | Should -Be 'human_judgement'
         $result.runs[0].draft_pr_gate.target | Should -Be 'draft_pr'
-        $result.runs[0].draft_pr_gate.state | Should -Be 'required'
+        $result.runs[0].draft_pr_gate.state | Should -Be 'blocked'
         $result.runs[0].draft_pr_gate.auto_merge_allowed | Should -Be $false
+        $result.runs[0].draft_pr_gate.handoff_package.summary | Should -Be 'rerun focused verification'
+        $result.runs[0].draft_pr_gate.handoff_package.validation.outcome | Should -Be 'PARTIAL'
+        $result.runs[0].draft_pr_gate.handoff_package.remaining_risks | Should -Contain 'verification outcome is PARTIAL'
+        $result.runs[0].draft_pr_gate.handoff_package.blocked_reasons | Should -Contain 'review state is unresolved: PENDING'
+        $result.runs[0].draft_pr_gate.handoff_package.package_complete | Should -Be $false
+        $result.runs[0].draft_pr_gate.handoff_package.automatic_merge_allowed | Should -Be $false
         $result.runs[0].run_packet.plan.goal | Should -Be 'Ship run contract primitives'
         $result.runs[0].run_packet.plan_checkpoints.Count | Should -Be 6
         $result.runs[0].run_packet.managed_loop.peer_to_peer_allowed | Should -Be $false
         $result.runs[0].run_packet.managed_loop.assignment_state | Should -Be 'assigned'
         $result.runs[0].run_packet.outcome.status | Should -Be 'in_progress'
         $result.runs[0].run_packet.draft_pr_gate.merge_requires_human | Should -Be $true
+        $result.runs[0].run_packet.draft_pr_gate.handoff_package.suggested_next_action | Should -Be 'rerun_verify'
         $result.runs[0].Contains('observation_pack') | Should -Be $false
         $result.runs[0].Contains('consultation_packet') | Should -Be $false
+    }
+
+    It 'blocks draft PR gate when draft PR evidence exists without verification evidence' {
+        $run = [ordered]@{
+            review_state      = 'PASS'
+            review_required   = $true
+            verification_plan = @('Invoke-Pester')
+            changed_files     = @('scripts/winsmux-core.ps1')
+            task              = 'Create draft package'
+            goal              = 'Create draft package'
+            verification_result = $null
+            security_verdict  = $null
+            experiment_packet = $null
+        }
+        $events = @(
+            [ordered]@{
+                timestamp   = '2026-04-10T12:04:00+09:00'
+                line_number = 1
+                event       = 'operator.draft_pr.created'
+                data        = [ordered]@{ draft_pr_url = 'https://github.com/Sora-bluesky/winsmux/pull/999' }
+            }
+        )
+
+        $gate = New-RunDraftPrGate -Run $run -EventRecords $events
+
+        $gate.state | Should -Be 'blocked'
+        $gate.draft_pr_url | Should -Be 'https://github.com/Sora-bluesky/winsmux/pull/999'
+        $gate.auto_merge_allowed | Should -Be $false
+        $gate.merge_requires_human | Should -Be $true
+        $gate.handoff_package.validation.evidence_complete | Should -Be $false
+        $gate.handoff_package.blocked_reasons | Should -Contain 'verification evidence is missing'
+        $gate.handoff_package.suggested_next_action | Should -Be 'resolve blocked reasons before creating or merging a draft PR'
     }
 
     It 'supports winsmux runs --json through the top-level CLI entrypoint' {
@@ -9318,8 +9357,12 @@ panes:
         $result.run.outcome.confidence | Should -Be 0.66
         $result.run.draft_pr_gate.kind | Should -Be 'human_judgement'
         $result.run.draft_pr_gate.target | Should -Be 'draft_pr'
-        $result.run.draft_pr_gate.state | Should -Be 'required'
+        $result.run.draft_pr_gate.state | Should -Be 'blocked'
         $result.run.draft_pr_gate.merge_requires_human | Should -Be $true
+        $result.run.draft_pr_gate.handoff_package.summary | Should -Be 'rerun focused verification'
+        $result.run.draft_pr_gate.handoff_package.remaining_risks | Should -Contain 'verification outcome is PARTIAL'
+        $result.run.draft_pr_gate.handoff_package.blocked_reasons | Should -Contain 'review state is unresolved: PENDING'
+        $result.run.draft_pr_gate.handoff_package.automatic_merge_allowed | Should -Be $false
         $result.observation_pack.failing_command | Should -Be 'Invoke-Pester tests/winsmux-bridge.Tests.ps1'
         $result.observation_pack.changed_files | Should -Contain 'scripts/winsmux-core.ps1'
         $result.consultation_packet.kind | Should -Be 'consult_result'
@@ -13212,6 +13255,79 @@ panes:
         }
         Should -Invoke Approve-OperatorPollPane -Times 1 -Exactly -ParameterFilter {
             $PaneId -eq '%4'
+        }
+    }
+
+    It 'stops at the draft PR gate after review passed' {
+        Mock Send-OperatorTelegramNotification { }
+
+        $result = Invoke-OperatorStateMachine `
+            -CurrentState 'review_passed' `
+            -CycleSummary @{ completions = 0 } `
+            -ProjectDir $script:operatorPollTempRoot `
+            -SessionName 'winsmux-orchestra' `
+            -ManifestPath $script:operatorPollManifestPath
+
+        $result.State | Should -Be 'blocked_draft_pr_required'
+        $result.CommitReadySha | Should -Be ''
+
+        $eventsPath = Join-Path $script:operatorPollManifestDir 'events.jsonl'
+        $events = @(Get-Content -Path $eventsPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json -AsHashtable })
+        @($events | ForEach-Object { $_['event'] }) | Should -Contain 'operator.draft_pr.required'
+        $draftEvent = @($events | Where-Object { $_['event'] -eq 'operator.draft_pr.required' })[0]
+        $draftEvent['status'] | Should -Be 'blocked_draft_pr_required'
+        $draftEvent['data']['human_merge_required'] | Should -Be $true
+        $draftEvent['data']['auto_merge_allowed'] | Should -Be $false
+        @($events | ForEach-Object { $_['event'] }) | Should -Not -Contain 'operator.commit_ready'
+
+        Should -Invoke Send-OperatorTelegramNotification -Times 1 -Exactly -ParameterFilter {
+            $Event -eq 'operator.draft_pr.required'
+        }
+    }
+
+    It 'ignores draft PR events without a matching head sha' {
+        $eventsPath = Join-Path $script:operatorPollManifestDir 'events.jsonl'
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-12T10:00:00+09:00'
+                event     = 'operator.draft_pr.created'
+                head_sha  = ''
+                data      = [ordered]@{ target = 'draft_pr'; draft_pr_url = 'https://github.com/Sora-bluesky/winsmux/pull/900' }
+            } | ConvertTo-Json -Compress -Depth 10),
+            ([ordered]@{
+                timestamp = '2026-04-12T10:01:00+09:00'
+                event     = 'operator.draft_pr.created'
+                head_sha  = 'old-sha'
+                data      = [ordered]@{ target = 'draft_pr'; draft_pr_url = 'https://github.com/Sora-bluesky/winsmux/pull/901' }
+            } | ConvertTo-Json -Compress -Depth 10)
+        ) | Set-Content -Path $eventsPath -Encoding UTF8
+
+        Test-OperatorDraftPrCreated -ProjectDir $script:operatorPollTempRoot -HeadSha 'current-sha' | Should -Be $false
+    }
+
+    It 'resumes from the draft PR gate when matching draft PR evidence appears' {
+        Mock git { 'abc123' }
+        Mock Send-OperatorTelegramNotification { }
+
+        $eventsPath = Join-Path $script:operatorPollManifestDir 'events.jsonl'
+        ([ordered]@{
+            timestamp = '2026-04-12T10:02:00+09:00'
+            event     = 'operator.draft_pr.created'
+            head_sha  = 'abc123'
+            data      = [ordered]@{ target = 'draft_pr'; draft_pr_url = 'https://github.com/Sora-bluesky/winsmux/pull/902' }
+        } | ConvertTo-Json -Compress -Depth 10) | Set-Content -Path $eventsPath -Encoding UTF8
+
+        $result = Invoke-OperatorStateMachine `
+            -CurrentState 'blocked_draft_pr_required' `
+            -CycleSummary @{ completions = 0 } `
+            -ProjectDir $script:operatorPollTempRoot `
+            -SessionName 'winsmux-orchestra' `
+            -ManifestPath $script:operatorPollManifestPath
+
+        $result.State | Should -Be 'commit_ready'
+        $result.CommitReadySha | Should -Be 'abc123'
+        Should -Invoke Send-OperatorTelegramNotification -Times 1 -Exactly -ParameterFilter {
+            $Event -eq 'operator.commit_ready' -and $HeadSha -eq 'abc123'
         }
     }
 }
