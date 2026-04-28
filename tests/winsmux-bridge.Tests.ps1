@@ -5375,6 +5375,34 @@ Describe 'orchestra-start server bootstrap' {
         $script:stoppedProcessIds | Should -Be @(101, 202, 303)
     }
 
+    It 'treats legacy commander_poll_pid as the operator poll process during manifest cleanup' {
+        Mock Get-WinsmuxManifest {
+            [PSCustomObject]@{
+                session = [PSCustomObject]@{
+                    startup_token      = 'token-123'
+                    commander_poll_pid = '101'
+                }
+            }
+        }
+
+        $script:stoppedProcessIds = @()
+        Mock Get-ProcessSnapshot {
+            [PSCustomObject]@{
+                ById = @{
+                    101 = [PSCustomObject]@{ ProcessId = 101; ParentProcessId = 1; CommandLine = 'pwsh operator-poll.ps1 C:\repo\.winsmux\manifest.yaml -StartupToken token-123 winsmux-orchestra C:\repo\scripts\winsmux-core.ps1'; Name = 'pwsh.exe' }
+                }
+            }
+        }
+        Mock Stop-Process { $script:stoppedProcessIds += $Id }
+
+        $result = Stop-OrchestraBackgroundProcessesFromManifest -ProjectDir 'C:\repo' -GitWorktreeDir 'C:\repo\.git' -BridgeScript 'C:\repo\scripts\winsmux-core.ps1' -SessionName 'winsmux-orchestra'
+
+        @($result.Stopped).Count | Should -Be 1
+        $result.Stopped[0].label | Should -Be 'operator_poll_pid'
+        @($result.Errors).Count | Should -Be 0
+        $script:stoppedProcessIds | Should -Be @(101)
+    }
+
     It 'skips targeted background cleanup when the manifest has no startup token' {
         Mock Get-WinsmuxManifest {
             [PSCustomObject]@{

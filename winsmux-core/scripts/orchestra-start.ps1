@@ -1194,7 +1194,7 @@ function Stop-OrchestraBackgroundProcessesFromManifest {
     }
 
     $pidMap = [ordered]@{}
-    foreach ($propertyName in @('operator_poll_pid', 'watchdog_pid', 'server_watchdog_pid')) {
+    foreach ($propertyName in @('operator_poll_pid', 'commander_poll_pid', 'watchdog_pid', 'server_watchdog_pid')) {
         $rawPid = $null
         if ($manifest.session -is [System.Collections.IDictionary]) {
             if ($manifest.session.Contains($propertyName)) {
@@ -1211,7 +1211,7 @@ function Stop-OrchestraBackgroundProcessesFromManifest {
 
         $resolvedPidKey = [string]$resolvedPid
         if (-not $pidMap.Contains($resolvedPidKey)) {
-            $pidMap[$resolvedPidKey] = $propertyName
+            $pidMap[$resolvedPidKey] = if ($propertyName -eq 'commander_poll_pid') { 'operator_poll_pid' } else { $propertyName }
         }
     }
 
