@@ -137,6 +137,10 @@ Diff budget:
 4. Update docs after the replacement path exists.
 5. Delete scripts last, and only when public docs, hooks, installer, and startup paths no longer reference them.
 
+`winsmux powershell-deescalation --json` exposes this shrink contract to operators and tests.
+It is the machine-readable gate for deciding whether a PowerShell script is still runtime-owned
+or has become bootstrap, setup, compatibility, security, release, or planning glue.
+
 ## Acceptance checklist
 
 - Every PowerShell or hook entrypoint is classified.
