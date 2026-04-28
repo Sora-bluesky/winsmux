@@ -537,6 +537,7 @@ function Test-OperatorTelegramNotificationEnabled {
         'operator.review_passed',
         'operator.review_failed',
         'operator.blocked',
+        'operator.draft_pr.required',
         'operator.commit_ready',
         'operator.commit_done'
     )
@@ -852,6 +853,94 @@ function Get-OperatorPollPreferredReviewPane {
     return $null
 }
 
+function Test-OperatorDraftPrCreated {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [string]$HeadSha = ''
+    )
+
+    if ([string]::IsNullOrWhiteSpace($HeadSha)) {
+        return $false
+    }
+
+    $eventsPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'events.jsonl'
+    if (-not (Test-Path $eventsPath -PathType Leaf)) {
+        return $false
+    }
+
+    foreach ($line in @(Get-Content -Path $eventsPath -Encoding UTF8)) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        try {
+            $record = $line | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+        } catch {
+            continue
+        }
+
+        if ([string]$record['event'] -ne 'operator.draft_pr.created') {
+            continue
+        }
+
+        $recordHeadSha = [string]$record['head_sha']
+        $data = $null
+        if ($record.Contains('data')) {
+            $data = $record['data']
+        }
+        if ([string]::IsNullOrWhiteSpace($recordHeadSha) -and $null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('head_sha')) {
+            $recordHeadSha = [string]$data['head_sha']
+        }
+
+        if ([string]::IsNullOrWhiteSpace($recordHeadSha)) {
+            continue
+        }
+
+        if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('target')) {
+            if ([string]$data['target'] -ne 'draft_pr') {
+                continue
+            }
+        }
+
+        if ($recordHeadSha -eq $HeadSha) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Write-OperatorDraftPrRequiredEvent {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [string]$HeadSha = ''
+    )
+
+    $eventsPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'events.jsonl'
+    $record = [ordered]@{
+        timestamp   = (Get-Date).ToString('o')
+        session     = $SessionName
+        event       = 'operator.draft_pr.required'
+        message     = 'Draft PR is required before this autonomous run can proceed.'
+        label       = ''
+        pane_id     = ''
+        role        = 'Operator'
+        status      = 'blocked_draft_pr_required'
+        exit_reason = ''
+        head_sha    = $HeadSha
+        data        = [ordered]@{
+            target                = 'draft_pr'
+            reason                = 'draft_pr_required'
+            human_merge_required  = $true
+            auto_merge_allowed    = $false
+            suggested_next_action = 'create a draft PR and request human review'
+        }
+    }
+
+    Write-WinsmuxTextFile -Path $eventsPath -Content ($record | ConvertTo-Json -Compress -Depth 10) -Append
+}
+
 function Invoke-OperatorStateMachine {
     param(
         [Parameter(Mandatory = $true)][string]$CurrentState,
@@ -941,10 +1030,17 @@ function Invoke-OperatorStateMachine {
         }
         'review_passed' {
             $headSha = (git -C $ProjectDir rev-parse HEAD 2>$null)
-            $nextCommitReadySha = $headSha
-            Send-OperatorTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
-                -Event 'operator.commit_ready' -Message "コミット準備完了。" -HeadSha $headSha
-            $nextState = 'commit_ready'
+            if (Test-OperatorDraftPrCreated -ProjectDir $ProjectDir -HeadSha $headSha) {
+                $nextCommitReadySha = $headSha
+                Send-OperatorTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                    -Event 'operator.commit_ready' -Message "コミット準備完了。" -HeadSha $headSha
+                $nextState = 'commit_ready'
+            } else {
+                Write-OperatorDraftPrRequiredEvent -ProjectDir $ProjectDir -SessionName $SessionName -HeadSha $headSha
+                Send-OperatorTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                    -Event 'operator.draft_pr.required' -Message "draft PR 作成と人間の判断が必要です。自動 merge は許可されません。" -HeadSha $headSha
+                $nextState = 'blocked_draft_pr_required'
+            }
         }
         'commit_ready' {
             $currentSha = (git -C $ProjectDir rev-parse HEAD 2>$null)
@@ -965,6 +1061,15 @@ function Invoke-OperatorStateMachine {
                     $nextState = 'waiting_for_review'
                 }
             } catch { }
+        }
+        'blocked_draft_pr_required' {
+            $headSha = (git -C $ProjectDir rev-parse HEAD 2>$null)
+            if (Test-OperatorDraftPrCreated -ProjectDir $ProjectDir -HeadSha $headSha) {
+                $nextCommitReadySha = $headSha
+                Send-OperatorTelegramNotification -ProjectDir $ProjectDir -SessionName $SessionName `
+                    -Event 'operator.commit_ready' -Message "コミット準備完了。" -HeadSha $headSha
+                $nextState = 'commit_ready'
+            }
         }
         'blocked_bootstrap_invalid' { }
     }
