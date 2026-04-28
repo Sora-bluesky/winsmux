@@ -544,6 +544,11 @@ fn operator_cli_machine_contract_json_exposes_hook_facing_catalog() {
         json["projection_surfaces"][4]["rust_type"],
         "LedgerRunsPayload"
     );
+    assert_eq!(json["projection_surfaces"][6]["name"], "search-ledger");
+    assert_eq!(
+        json["projection_surfaces"][6]["command"],
+        "search-ledger <search|timeline|detail> --json"
+    );
     assert_eq!(
         json["review_state_file"]["path"],
         ".winsmux/review-state.json"

@@ -45,6 +45,10 @@ path = "tests-rs/fixture_comparison.rs"
 name = "operator_cli"
 path = "tests-rs/operator_cli.rs"
 
+[[test]]
+name = "search_ledger_contract"
+path = "tests-rs/search_ledger_contract.rs"
+
 # Windows only
 [target.'cfg(not(windows))'.dependencies]
 [target.'cfg(windows)'.dependencies]
@@ -86,3 +90,4 @@ serde_yaml = "0.9"
 sha2 = "0.10"
 regex = "1"
 glob = "0.3"
+rusqlite = { version = "0.32", features = ["bundled"] }
