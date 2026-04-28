@@ -101,4 +101,25 @@ Describe 'winsmux version surface' {
         $thirdPartyNotices | Should -Match 'MIT-derived `psmux` compatibility surface'
         $coreLicense | Should -Match 'MIT License'
     }
+
+    It 'documents the legacy alias sunset consistently' {
+        $readme = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.md') -Raw -Encoding UTF8
+        $readmeJa = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'README.ja.md') -Raw -Encoding UTF8
+        $compatibility = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'core\docs\compatibility.md') -Raw -Encoding UTF8
+        $thirdPartyNotices = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'THIRD_PARTY_NOTICES.md') -Raw -Encoding UTF8
+        $inventory = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\project\powershell-adapter-inventory.md') -Raw -Encoding UTF8
+
+        foreach ($content in @($readme, $readmeJa, $compatibility, $thirdPartyNotices, $inventory)) {
+            $content | Should -Match 'v0\.24\.5'
+            $content | Should -Match 'v1\.0\.0'
+            $content | Should -Match 'psmux'
+            $content | Should -Match 'pmux'
+            $content | Should -Match 'tmux'
+            $content | Should -Match 'winsmux'
+        }
+
+        $compatibility | Should -Match 'warning-only sunset phase'
+        $compatibility | Should -Match 'does not remove tmux-compatible configuration support'
+        $thirdPartyNotices | Should -Match 'warning-only sunset mode'
+    }
 }

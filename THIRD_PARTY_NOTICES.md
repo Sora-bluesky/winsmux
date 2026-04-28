@@ -11,6 +11,9 @@ This repository may reuse selected UI/UX assets and implementation patterns from
 ### winsmux usage policy
 
 winsmux currently retains selected legacy compatibility surfaces that still expose or reference `psmux`, `pmux`, or `tmux` names through the MIT-licensed core upstream.
+As of `v0.24.5`, legacy binary aliases are in warning-only sunset mode:
+they still run, but operators should migrate scripts and docs to `winsmux`.
+The legacy alias contract will be removed before `v1.0.0`.
 
 This includes:
 
