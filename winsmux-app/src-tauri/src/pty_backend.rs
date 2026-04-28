@@ -55,6 +55,7 @@ pub enum PtyCommand {
     },
     Capture {
         pane_id: String,
+        lines: Option<u16>,
     },
     Respawn {
         pane_id: String,
@@ -120,6 +121,7 @@ fn parse_command(method: &str, params: Option<&Value>) -> Result<PtyCommand, Par
         }),
         "pty.capture" => Ok(PtyCommand::Capture {
             pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
+            lines: get_optional_u16_param(params, &["lines"])?,
         }),
         "pty.respawn" => Ok(PtyCommand::Respawn {
             pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
@@ -168,6 +170,29 @@ fn get_required_u16_param(params: Option<&Value>, keys: &[&str]) -> Result<u16, 
     }
 
     Err(ParseError::InvalidParams(invalid_params(keys)))
+}
+
+fn get_optional_u16_param(
+    params: Option<&Value>,
+    keys: &[&str],
+) -> Result<Option<u16>, ParseError> {
+    let Some(object) = params.and_then(Value::as_object) else {
+        return Ok(None);
+    };
+
+    for key in keys {
+        if let Some(raw) = object.get(*key).and_then(Value::as_u64) {
+            let value = u16::try_from(raw).map_err(|_| {
+                ParseError::InvalidParams(format!(
+                    "Invalid params field {}: expected 0-65535",
+                    keys.join(" or ")
+                ))
+            })?;
+            return Ok(Some(value));
+        }
+    }
+
+    Ok(None)
 }
 
 fn invalid_params(keys: &[&str]) -> String {
@@ -268,7 +293,8 @@ mod tests {
                 id: serde_json::json!("req-capture"),
                 method: "pty.capture".to_string(),
                 params: Some(serde_json::json!({
-                    "paneId": "pane-1"
+                    "paneId": "pane-1",
+                    "lines": 25
                 })),
             },
         );
@@ -285,7 +311,8 @@ mod tests {
         assert_eq!(
             transport.commands.borrow().as_slice(),
             [PtyCommand::Capture {
-                pane_id: "pane-1".to_string()
+                pane_id: "pane-1".to_string(),
+                lines: Some(25)
             }]
         );
     }

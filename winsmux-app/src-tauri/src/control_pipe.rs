@@ -1,7 +1,9 @@
 use crate::desktop_backend::{
     handle_desktop_json_rpc, DesktopCommandTransport, DesktopJsonRpcRequest, PwshScriptTransport,
 };
+use crate::pty_backend::{handle_pty_json_rpc, PtyCommandTransport, PtyJsonRpcRequest};
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 pub const WINSMUX_CONTROL_PIPE_NAME: &str = r"\\.\pipe\winsmux-control";
 
@@ -10,7 +12,7 @@ const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
 const JSON_RPC_INVALID_PARAMS: i32 = -32602;
 const JSON_RPC_INTERNAL_ERROR: i32 = -32603;
 
-const CONTROL_PIPE_METHODS: &[&str] = &[
+const DESKTOP_CONTROL_PIPE_METHODS: &[&str] = &[
     "desktop.control_plane.contract",
     "desktop.summary.snapshot",
     "desktop.run.explain",
@@ -20,7 +22,8 @@ const CONTROL_PIPE_METHODS: &[&str] = &[
 ];
 
 pub fn handle_control_pipe_payload(
-    transport: &dyn DesktopCommandTransport,
+    desktop_transport: &dyn DesktopCommandTransport,
+    pty_transport: &dyn PtyCommandTransport,
     payload: &[u8],
     project_dir: Option<String>,
 ) -> Vec<u8> {
@@ -45,13 +48,6 @@ pub fn handle_control_pipe_payload(
             );
         }
     };
-    if !CONTROL_PIPE_METHODS.contains(&method) {
-        return serialize_control_pipe_error(
-            request_id,
-            JSON_RPC_METHOD_NOT_FOUND,
-            format!("Control pipe method is not exposed: {method}"),
-        );
-    }
     if has_project_dir_override(&request_value) {
         return serialize_control_pipe_error(
             request_id,
@@ -60,25 +56,66 @@ pub fn handle_control_pipe_payload(
         );
     }
 
-    let request = match serde_json::from_value::<DesktopJsonRpcRequest>(request_value) {
-        Ok(value) => value,
-        Err(err) => {
-            return serialize_control_pipe_error(
-                Value::Null,
-                JSON_RPC_PARSE_ERROR,
-                format!("Invalid JSON-RPC request: {err}"),
-            );
-        }
-    };
+    if DESKTOP_CONTROL_PIPE_METHODS.contains(&method) {
+        let request = match serde_json::from_value::<DesktopJsonRpcRequest>(request_value) {
+            Ok(value) => value,
+            Err(err) => {
+                return serialize_control_pipe_error(
+                    Value::Null,
+                    JSON_RPC_PARSE_ERROR,
+                    format!("Invalid JSON-RPC request: {err}"),
+                );
+            }
+        };
 
-    match serde_json::to_vec(&handle_desktop_json_rpc(transport, request, project_dir)) {
-        Ok(value) => value,
-        Err(err) => serialize_control_pipe_error(
-            Value::Null,
-            JSON_RPC_INTERNAL_ERROR,
-            format!("Failed to serialize JSON-RPC response: {err}"),
-        ),
+        return match serde_json::to_vec(&handle_desktop_json_rpc(
+            desktop_transport,
+            request,
+            project_dir,
+        )) {
+            Ok(value) => value,
+            Err(err) => serialize_control_pipe_error(
+                Value::Null,
+                JSON_RPC_INTERNAL_ERROR,
+                format!("Failed to serialize JSON-RPC response: {err}"),
+            ),
+        };
     }
+
+    if is_pty_control_pipe_method(method) {
+        let request = match serde_json::from_value::<PtyJsonRpcRequest>(request_value) {
+            Ok(value) => value,
+            Err(err) => {
+                return serialize_control_pipe_error(
+                    Value::Null,
+                    JSON_RPC_PARSE_ERROR,
+                    format!("Invalid JSON-RPC request: {err}"),
+                );
+            }
+        };
+
+        return match serde_json::to_vec(&handle_pty_json_rpc(pty_transport, request)) {
+            Ok(value) => value,
+            Err(err) => serialize_control_pipe_error(
+                Value::Null,
+                JSON_RPC_INTERNAL_ERROR,
+                format!("Failed to serialize JSON-RPC response: {err}"),
+            ),
+        };
+    }
+
+    serialize_control_pipe_error(
+        request_id,
+        JSON_RPC_METHOD_NOT_FOUND,
+        format!("Control pipe method is not exposed: {method}"),
+    )
+}
+
+fn is_pty_control_pipe_method(method: &str) -> bool {
+    matches!(
+        method,
+        "pty.spawn" | "pty.write" | "pty.resize" | "pty.capture" | "pty.respawn" | "pty.close"
+    )
 }
 
 fn has_project_dir_override(request_value: &Value) -> bool {
@@ -105,19 +142,19 @@ fn serialize_control_pipe_error(id: Value, code: i32, message: String) -> Vec<u8
 }
 
 #[cfg(windows)]
-pub fn start_control_pipe_server() {
+pub fn start_control_pipe_server(pty_transport: Arc<dyn PtyCommandTransport + Send + Sync>) {
     std::thread::spawn(move || loop {
-        if let Err(err) = serve_one_control_pipe_client() {
+        if let Err(err) = serve_one_control_pipe_client(pty_transport.as_ref()) {
             eprintln!("winsmux control pipe error: {err}");
         }
     });
 }
 
 #[cfg(not(windows))]
-pub fn start_control_pipe_server() {}
+pub fn start_control_pipe_server(_pty_transport: Arc<dyn PtyCommandTransport + Send + Sync>) {}
 
 #[cfg(windows)]
-fn serve_one_control_pipe_client() -> Result<(), String> {
+fn serve_one_control_pipe_client(pty_transport: &dyn PtyCommandTransport) -> Result<(), String> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
     use std::ptr::null_mut;
@@ -193,7 +230,7 @@ fn serve_one_control_pipe_client() -> Result<(), String> {
     }
     buffer.truncate(bytes_read as usize);
 
-    let response = handle_control_pipe_payload(&PwshScriptTransport, &buffer, None);
+    let response = handle_control_pipe_payload(&PwshScriptTransport, pty_transport, &buffer, None);
     let mut bytes_written = 0u32;
     let write_ok = unsafe {
         WriteFile(
@@ -228,11 +265,13 @@ fn serve_one_control_pipe_client() -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::desktop_backend::{DesktopCommand, DesktopCommandTransport};
+    use crate::pty_backend::PtyCommand;
     use serde_json::json;
+    use std::sync::Mutex;
 
-    struct StubTransport;
+    struct StubDesktopTransport;
 
-    impl DesktopCommandTransport for StubTransport {
+    impl DesktopCommandTransport for StubDesktopTransport {
         fn request_json(&self, command: &DesktopCommand) -> Result<Value, String> {
             match command {
                 DesktopCommand::SummarySnapshot { .. } => Ok(json!({
@@ -273,10 +312,40 @@ mod tests {
         }
     }
 
+    struct StubPtyTransport {
+        commands: Mutex<Vec<PtyCommand>>,
+    }
+
+    impl StubPtyTransport {
+        fn new() -> Self {
+            Self {
+                commands: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl PtyCommandTransport for StubPtyTransport {
+        fn execute(&self, command: &PtyCommand) -> Result<Value, String> {
+            self.commands
+                .lock()
+                .expect("commands lock")
+                .push(command.clone());
+            match command {
+                PtyCommand::Capture { pane_id, .. } => Ok(json!({
+                    "paneId": pane_id,
+                    "output": "ready"
+                })),
+                _ => Ok(json!({ "ok": true })),
+            }
+        }
+    }
+
     #[test]
     fn control_pipe_routes_json_rpc_to_desktop_handler() {
         let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.control_plane.contract"}"#;
-        let response = handle_control_pipe_payload(&StubTransport, payload, None);
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
         let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
 
         assert_eq!(value["jsonrpc"], "2.0");
@@ -289,7 +358,9 @@ mod tests {
 
     #[test]
     fn control_pipe_rejects_invalid_json() {
-        let response = handle_control_pipe_payload(&StubTransport, b"{", None);
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, b"{", None);
         let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
 
         assert_eq!(value["jsonrpc"], "2.0");
@@ -308,7 +379,9 @@ mod tests {
     #[test]
     fn control_pipe_rejects_project_dir_override() {
         let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.summary.snapshot","params":{"projectDir":"C:/other"}}"#;
-        let response = handle_control_pipe_payload(&StubTransport, payload, None);
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
         let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
 
         assert_eq!(value["id"], 1);
@@ -316,9 +389,54 @@ mod tests {
     }
 
     #[test]
+    fn control_pipe_routes_pty_methods_to_pty_handler() {
+        let payload =
+            br#"{"jsonrpc":"2.0","id":1,"method":"pty.capture","params":{"paneId":"pane-1"}}"#;
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
+        let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+
+        assert_eq!(value["jsonrpc"], "2.0");
+        assert_eq!(value["id"], 1);
+        assert_eq!(value["result"]["paneId"], "pane-1");
+        assert_eq!(value["result"]["output"], "ready");
+        assert_eq!(
+            pty_transport
+                .commands
+                .lock()
+                .expect("commands lock")
+                .as_slice(),
+            [PtyCommand::Capture {
+                pane_id: "pane-1".to_string(),
+                lines: None
+            }]
+        );
+    }
+
+    #[test]
+    fn control_pipe_rejects_project_dir_override_for_pty_methods() {
+        let payload = br#"{"jsonrpc":"2.0","id":1,"method":"pty.capture","params":{"paneId":"pane-1","projectDir":"C:/other"}}"#;
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
+        let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+
+        assert_eq!(value["id"], 1);
+        assert_eq!(value["error"]["code"], JSON_RPC_INVALID_PARAMS);
+        assert!(pty_transport
+            .commands
+            .lock()
+            .expect("commands lock")
+            .is_empty());
+    }
+
+    #[test]
     fn control_pipe_blocks_editor_read() {
         let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.editor.read","params":{"path":"README.md"}}"#;
-        let response = handle_control_pipe_payload(&StubTransport, payload, None);
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
         let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
 
         assert_eq!(value["id"], 1);

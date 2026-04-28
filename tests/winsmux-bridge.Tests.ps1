@@ -12923,6 +12923,118 @@ Describe 'winsmux control-rpc command' {
     }
 }
 
+Describe 'winsmux terminal backend switch' {
+    BeforeAll {
+        $bridgePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $null = . $bridgePath version
+    }
+
+    BeforeEach {
+        $script:previousWinsmuxBackend = $env:WINSMUX_BACKEND
+        Remove-Item Env:\WINSMUX_BACKEND -ErrorAction SilentlyContinue
+        $script:terminalRpcPayloads = [System.Collections.Generic.List[string]]::new()
+    }
+
+    AfterEach {
+        if ($null -eq $script:previousWinsmuxBackend) {
+            Remove-Item Env:\WINSMUX_BACKEND -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_BACKEND = $script:previousWinsmuxBackend
+        }
+    }
+
+    It 'defaults terminal operations to the CLI backend and accepts Tauri aliases' {
+        Resolve-TerminalBackend | Should -Be 'cli'
+
+        $env:WINSMUX_BACKEND = 'desktop'
+        Resolve-TerminalBackend | Should -Be 'tauri'
+
+        $env:WINSMUX_BACKEND = 'winsmux'
+        Resolve-TerminalBackend | Should -Be 'cli'
+    }
+
+    It 'rejects unsupported terminal backend values' {
+        $env:WINSMUX_BACKEND = 'remote'
+
+        { Resolve-TerminalBackend } | Should -Throw "*WINSMUX_BACKEND must be cli or tauri*"
+    }
+
+    It 'captures pane text through the Tauri pty JSON-RPC path' {
+        Mock Invoke-ControlRpcPipeExchange {
+            param([string]$Payload)
+            $script:terminalRpcPayloads.Add($Payload) | Out-Null
+            return '{"jsonrpc":"2.0","id":"terminal-test","result":{"paneId":"pane-1","output":"ready"}}'
+        }
+
+        $env:WINSMUX_BACKEND = 'tauri'
+        $output = Get-PaneSnapshotText -PaneId 'pane-1' -Lines 25
+
+        $output | Should -Be 'ready'
+        Should -Invoke Invoke-ControlRpcPipeExchange -Times 1 -Exactly
+        $request = $script:terminalRpcPayloads[0] | ConvertFrom-Json
+        $request.method | Should -Be 'pty.capture'
+        $request.params.paneId | Should -Be 'pane-1'
+        $request.params.lines | Should -Be 25
+    }
+
+    It 'writes literal text and Enter through the Tauri pty JSON-RPC path' {
+        Mock Invoke-ControlRpcPipeExchange {
+            param([string]$Payload)
+            $script:terminalRpcPayloads.Add($Payload) | Out-Null
+            return '{"jsonrpc":"2.0","id":"terminal-test","result":{"paneId":"pane-1"}}'
+        }
+
+        $env:WINSMUX_BACKEND = 'tauri'
+        $literal = Invoke-WinsmuxSendKeys -Target 'pane-1' -Keys @('echo test') -Literal
+        $enter = Invoke-WinsmuxSendKeys -Target 'pane-1' -Keys @('Enter')
+
+        $literal.ExitCode | Should -Be 0
+        $enter.ExitCode | Should -Be 0
+        Should -Invoke Invoke-ControlRpcPipeExchange -Times 2 -Exactly
+        $literalRequest = $script:terminalRpcPayloads[0] | ConvertFrom-Json
+        $enterRequest = $script:terminalRpcPayloads[1] | ConvertFrom-Json
+        $literalRequest.method | Should -Be 'pty.write'
+        $literalRequest.params.data | Should -Be 'echo test'
+        $enterRequest.method | Should -Be 'pty.write'
+        $enterRequest.params.data | Should -Be "`r"
+    }
+
+    It 'sends text through one Tauri pane target without CLI fallback resolution' {
+        Mock Start-Sleep { }
+        Mock Save-Watermark { }
+        Mock Set-ReadMark { }
+        Mock Invoke-WinsmuxRaw { throw "CLI backend should not be called: $($Arguments -join ' ')" }
+        Mock Invoke-ControlRpcPipeExchange {
+            param([string]$Payload)
+            $script:terminalRpcPayloads.Add($Payload) | Out-Null
+            $request = $Payload | ConvertFrom-Json
+            if ($request.method -eq 'pty.write') {
+                if ($request.params.data -eq "`r") {
+                    $script:terminalPaneText = "> echo test`nresult"
+                } else {
+                    $script:terminalPaneText = "> $($request.params.data)"
+                }
+                return '{"jsonrpc":"2.0","id":"terminal-test","result":{"paneId":"pane-1"}}'
+            }
+
+            $escaped = ([string]$script:terminalPaneText | ConvertTo-Json -Compress)
+            return '{"jsonrpc":"2.0","id":"terminal-test","result":{"paneId":"pane-1","output":' + $escaped + '}}'
+        }
+
+        $env:WINSMUX_BACKEND = 'tauri'
+        $script:terminalPaneText = '> '
+        $result = Send-TextToPane -PaneId 'pane-1' -CommandText 'echo test'
+
+        $result | Should -Be 'sent to pane-1 via pane-1'
+        $writes = @($script:terminalRpcPayloads |
+            ForEach-Object { $_ | ConvertFrom-Json } |
+            Where-Object { $_.method -eq 'pty.write' })
+        $writes.Count | Should -Be 2
+        $writes[0].params.data | Should -Be 'echo test'
+        $writes[1].params.data | Should -Be "`r"
+    }
+}
+
 Describe 'winsmux send fallback' {
     BeforeAll {
         $bridgePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
