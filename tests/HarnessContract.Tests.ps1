@@ -278,6 +278,14 @@ tasks:
         $bridge | Should -Match 'Invoke-WinsmuxRaw -Arguments \$rustArgs'
     }
 
+    It 'documents and dispatches the manual checklist command' {
+        $bridge = Get-Content -LiteralPath $script:WinsmuxCorePath -Raw -Encoding UTF8
+        $bridge | Should -Match 'manual-checklist \[--json\]'
+        $bridge | Should -Match "'manual-checklist'\s+\{"
+        $bridge | Should -Match 'manual-checklist'
+        $bridge | Should -Match 'Invoke-WinsmuxRaw -Arguments \$rustArgs'
+    }
+
     BeforeEach {
         Remove-TestSettingsLocal
     }

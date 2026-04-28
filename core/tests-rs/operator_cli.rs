@@ -656,6 +656,56 @@ fn operator_cli_rust_canary_rejects_invalid_backend() {
 }
 
 #[test]
+fn operator_cli_manual_checklist_json_reports_release_gate() {
+    let project_dir = make_temp_project_dir("manual-checklist");
+
+    let json = run_json(&project_dir, &["manual-checklist", "--json"]);
+
+    assert_eq!(json["contract_version"], 1);
+    assert_eq!(json["task_id"], "TASK-316");
+    assert_eq!(json["target_version"], "v0.24.5");
+    assert_eq!(
+        json["document"]["path"],
+        "docs/internal/winsmux-manual-checklist-by-version.md"
+    );
+    assert_eq!(json["document"]["tracked"], false);
+    assert_eq!(json["required_result_values"][0], "未");
+    assert_eq!(json["required_result_values"][1], "合格");
+    assert_eq!(json["required_result_values"][2], "不合格");
+    assert_eq!(json["required_result_values"][3], "保留");
+    assert_eq!(
+        json["release_gates"][0],
+        "version_by_version_results_recorded"
+    );
+    assert_eq!(json["v0_24_5_focus"][0], "legacy_alias_sunset");
+    assert_eq!(
+        json["blocking_conditions"][0],
+        "missing_manual_checklist_document"
+    );
+}
+
+#[test]
+fn operator_cli_manual_checklist_text_reports_next_action() {
+    let project_dir = make_temp_project_dir("manual-checklist-text");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("manual-checklist")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Manual checklist: docs/internal/winsmux-manual-checklist-by-version.md"));
+    assert!(stdout.contains("Record v0.24.5 manual validation results"));
+    assert!(!stdout.trim_start().starts_with('{'));
+}
+
+#[test]
 fn operator_cli_provider_capabilities_json_reads_single_provider_case_insensitive() {
     let project_dir = make_temp_project_dir("provider-capabilities-single");
     let winsmux_dir = project_dir.join(".winsmux");
