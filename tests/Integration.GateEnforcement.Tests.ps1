@@ -1528,10 +1528,10 @@ EOF
         $reviewState.'feature/review-gate'.request.target_reviewer_pane_id | Should -Be '%4'
         $reviewState.'feature/review-gate'.request.review_contract.source_task | Should -Be 'TASK-210'
         $reviewState.'feature/review-gate'.request.review_contract.style | Should -Be 'utility_first'
-        $reviewState.'feature/review-gate'.request.review_contract.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
+        $reviewState.'feature/review-gate'.request.review_contract.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts', 'pathspec_completeness')
         $reviewState.'feature/review-gate'.evidence.approved_at | Should -Not -BeNullOrEmpty
         $reviewState.'feature/review-gate'.evidence.approved_via | Should -Be 'winsmux review-approve'
-        $reviewState.'feature/review-gate'.evidence.review_contract_snapshot.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
+        $reviewState.'feature/review-gate'.evidence.review_contract_snapshot.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts', 'pathspec_completeness')
 
         $result = & $script:InvokeOrchestraGate -RepoRoot $fixture.RepoRoot -ToolName 'Bash' -ToolInput @{
             command = 'git commit -m "feat: approved"'
@@ -1693,6 +1693,6 @@ EOF
         $reviewState.'feature/review-gate'.status | Should -Be 'FAIL'
         $reviewState.'feature/review-gate'.evidence.failed_at | Should -Not -BeNullOrEmpty
         $reviewState.'feature/review-gate'.evidence.failed_via | Should -Be 'winsmux review-fail'
-        $reviewState.'feature/review-gate'.evidence.review_contract_snapshot.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
+        $reviewState.'feature/review-gate'.evidence.review_contract_snapshot.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts', 'pathspec_completeness')
     }
 }

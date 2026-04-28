@@ -9016,7 +9016,8 @@ panes:
         "required_scope": [
           "design_impact",
           "replacement_coverage",
-          "orphaned_artifacts"
+          "orphaned_artifacts",
+          "pathspec_completeness"
         ]
       },
       "dispatched_at": "__TIMESTAMP__"
@@ -9088,11 +9089,11 @@ panes:
         $result.explanation.reasons | Should -Contain 'task_state=in_progress'
         $result.explanation.reasons | Should -Contain 'review_state=PENDING'
         $result.explanation.reasons | Should -Contain 'verify=PARTIAL'
-        $result.explanation.reasons | Should -Contain 'review_contract=design_impact,replacement_coverage,orphaned_artifacts'
+        $result.explanation.reasons | Should -Contain 'review_contract=design_impact,replacement_coverage,orphaned_artifacts,pathspec_completeness'
         $result.review_state.status | Should -Be 'PENDING'
         $result.review_state.request.review_contract.style | Should -Be 'utility_first'
         $result.review_state.request.review_contract.source_task | Should -Be 'TASK-210'
-        $result.review_state.request.review_contract.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts')
+        $result.review_state.request.review_contract.required_scope | Should -Be @('design_impact', 'replacement_coverage', 'orphaned_artifacts', 'pathspec_completeness')
         $result.run.Contains('run_packet') | Should -BeFalse
         $result.Contains('run_packet') | Should -Be $false
         $result.Contains('result_packet') | Should -Be $false
@@ -9164,7 +9165,8 @@ panes:
         "required_scope": [
           "design_impact",
           "replacement_coverage",
-          "orphaned_artifacts"
+          "orphaned_artifacts",
+          "pathspec_completeness"
         ]
       }
     },
@@ -9242,7 +9244,8 @@ panes:
         "required_scope": [
           "design_impact",
           "replacement_coverage",
-          "orphaned_artifacts"
+          "orphaned_artifacts",
+          "pathspec_completeness"
         ]
       }
     },
@@ -9262,7 +9265,8 @@ panes:
         "required_scope": [
           "design_impact",
           "replacement_coverage",
-          "orphaned_artifacts"
+          "orphaned_artifacts",
+          "pathspec_completeness"
         ]
       }
     }
