@@ -128,6 +128,14 @@ if ($DoRelease) {
         Write-Error "GitHub CLI (gh) is required for release. Install: winget install GitHub.cli"
         exit 1
     }
+
+    $githubPreflightScript = Join-Path $Root 'winsmux-core\scripts\github-write-preflight.ps1'
+    if (Test-Path -LiteralPath $githubPreflightScript -PathType Leaf) {
+        & pwsh -NoProfile -File $githubPreflightScript -Repository 'Sora-bluesky/winsmux' -RequireGh
+        if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+        }
+    }
 }
 
 # --- Release requires clean working tree ---

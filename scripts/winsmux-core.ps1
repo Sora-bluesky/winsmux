@@ -3486,6 +3486,15 @@ function Invoke-Verify {
         Stop-WithError "gh CLI not found. Install GitHub CLI before running verify."
     }
 
+    $githubPreflightScript = Join-Path $repoRoot 'winsmux-core\scripts\github-write-preflight.ps1'
+    if (Test-Path -LiteralPath $githubPreflightScript -PathType Leaf) {
+        & pwsh -NoProfile -File $githubPreflightScript -Repository 'Sora-bluesky/winsmux' -RequireGh
+        $preflightExitCode = Get-SafeLastExitCode
+        if ($null -ne $preflightExitCode -and $preflightExitCode -ne 0) {
+            exit $preflightExitCode
+        }
+    }
+
     if (-not (Test-Path -LiteralPath $testsDir -PathType Container)) {
         Stop-WithError "tests directory not found: $testsDir"
     }
@@ -8629,6 +8638,7 @@ Commands:
   rust-canary [--json]  Print the Rust default-on canary gate JSON
   manual-checklist [--json]  Print the versioned manual validation checklist gate
   provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]  Record or clear a runtime provider reassignment for a managed slot
+  github-preflight [--repo <owner/name>] [--json] [--connector-available] [--require-gh]  Select the GitHub write path before merge/release automation
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
   wait <channel> [timeout]  Block until signal received (replaces polling)
@@ -9055,6 +9065,33 @@ switch ($Command) {
     'lock'            { Invoke-Lock }
     'unlock'          { Invoke-Unlock }
     'locks'           { Invoke-Locks }
+    'github-preflight' {
+        $preflightScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\github-write-preflight.ps1'))
+        $preflightArgs = @()
+        $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })
+        for ($index = 0; $index -lt $remaining.Count; $index++) {
+            switch ($remaining[$index]) {
+                '--repo' {
+                    if ($index + 1 -ge $remaining.Count) {
+                        Stop-WithError "usage: winsmux github-preflight [--repo <owner/name>] [--json] [--connector-available] [--require-gh]"
+                    }
+                    $preflightArgs += @('-Repository', $remaining[$index + 1])
+                    $index++
+                }
+                '--json' { $preflightArgs += '-Json' }
+                '--connector-available' { $preflightArgs += '-ConnectorAvailable' }
+                '--require-gh' { $preflightArgs += '-RequireGh' }
+                default {
+                    Stop-WithError "usage: winsmux github-preflight [--repo <owner/name>] [--json] [--connector-available] [--require-gh]"
+                }
+            }
+        }
+        & pwsh -NoProfile -File $preflightScript @preflightArgs
+        $preflightExitCode = Get-SafeLastExitCode
+        if ($null -ne $preflightExitCode -and $preflightExitCode -ne 0) {
+            exit $preflightExitCode
+        }
+    }
     'verify'          { Invoke-Verify }
     'dispatch-task'   { Invoke-DispatchTask }
     'dispatch-route'  {
