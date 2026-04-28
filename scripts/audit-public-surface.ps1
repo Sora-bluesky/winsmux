@@ -60,6 +60,20 @@ function Test-IsMaintainerPathScanSurface {
     return Test-IsTrackedTextSurface -Path $Path
 }
 
+function Test-IsMaintainerIdentityScanSurface {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $normalized = $Path.Replace('\', '/')
+    if ($normalized -in @(
+        'docs/repo-surface-policy.md',
+        'scripts/audit-public-surface.ps1',
+        'scripts/git-guard.ps1'
+    )) {
+        return $false
+    }
+    return Test-IsTrackedTextSurface -Path $Path
+}
+
 $failures = New-Object System.Collections.Generic.List[string]
 
 $trackedIgnored = @(
@@ -106,6 +120,20 @@ foreach ($file in ($trackedFiles | Where-Object { Test-IsMaintainerPathScanSurfa
     foreach ($pattern in $personalPathPatterns) {
         if ($content -match [Regex]::Escape($pattern)) {
             $failures.Add("tracked text surface contains maintainer-local path pattern '$pattern': $file")
+        }
+    }
+}
+
+$personalIdentityPatterns = @(
+    ('C:\Users\' + 'komei'),
+    'iCloudDrive',
+    'MainVault'
+)
+foreach ($file in ($trackedFiles | Where-Object { Test-IsMaintainerIdentityScanSurface -Path $_ })) {
+    $content = Get-Content -LiteralPath $file -Raw -ErrorAction Stop
+    foreach ($pattern in $personalIdentityPatterns) {
+        if ($content -match [Regex]::Escape($pattern)) {
+            $failures.Add("tracked text surface contains maintainer-local identity pattern '$pattern': $file")
         }
     }
 }
