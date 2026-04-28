@@ -706,3 +706,21 @@ exit /b 0
         $json.passed | Should -Be $true
     }
 }
+
+Describe 'desktop PTY event payload contract' {
+    BeforeAll {
+        $script:RepoRoot = Split-Path -Parent $PSScriptRoot
+        $script:PtyClientPath = Join-Path $script:RepoRoot 'winsmux-app\src\ptyClient.ts'
+    }
+
+    It 'accepts object and string pty-output event payloads' {
+        $client = Get-Content -LiteralPath $script:PtyClientPath -Raw -Encoding UTF8
+
+        $client | Should -Match 'function normalizePtyOutputEventPayload'
+        $client | Should -Match 'listen<PtyOutputEvent \| string>\("pty-output"'
+        $client | Should -Not -Match 'listen<string>\("pty-output"'
+        $client | Should -Match 'normalizePtyOutputEventPayload\(event\.payload\)'
+        $client | Should -Match 'typeof payload === "string"'
+        $client | Should -Match 'typeof payload\?\.data === "string"'
+    }
+}
