@@ -323,6 +323,7 @@ const CLI_COMMANDS: &[(&str, &str, &str)] = &[
     ("digest",            "",         "Print run digest JSON"),
     ("runs",              "",         "Print run-oriented evidence JSON"),
     ("explain",           "",         "Print one run explanation JSON"),
+    ("skills",            "",         "Print agent-readable command skill contracts"),
     // Misc
     ("confirm-before",    "confirm",  "Confirm before running command"),
     ("if-shell",          "if",       "Conditional command execution"),

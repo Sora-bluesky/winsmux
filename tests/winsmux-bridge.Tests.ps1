@@ -11298,6 +11298,37 @@ Describe 'winsmux guard command' {
     }
 }
 
+Describe 'winsmux skills command' {
+    BeforeAll {
+        $script:winsmuxSkillsCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxSkillsCoreRawContent = Get-Content -Raw -Path $script:winsmuxSkillsCoreRawPath -Encoding UTF8
+        . $script:winsmuxSkillsCoreRawPath 'version' *> $null
+    }
+
+    It 'documents skills in usage and delegates to the Rust skills catalog' {
+        $script:winsmuxSkillsCoreRawContent | Should -Match 'skills \[--json\]'
+        $script:winsmuxSkillsCoreRawContent | Should -Match "'skills'\s*\{ Invoke-Skills \}"
+
+        Mock Invoke-WinsmuxRaw {
+            param([string[]]$Arguments)
+            $script:skillsArgs = @($Arguments)
+            return '{"packet_type":"progressive_skills_catalog","private_skill_bodies_allowed":false,"skills":[{"id":"compare-and-promote","required_evidence":["comparison_evidence","playbook_template_contract"],"private_skill_body_stored":false}]}'
+        }
+
+        $output = Invoke-Skills -SkillsTarget '--json'
+        $json = $output | ConvertFrom-Json
+        $script:skillsArgs | Should -Be @('skills', '--json')
+        $json.packet_type | Should -Be 'progressive_skills_catalog'
+        $json.private_skill_bodies_allowed | Should -Be $false
+        $json.skills[0].required_evidence | Should -Contain 'playbook_template_contract'
+        $json.skills[0].private_skill_body_stored | Should -Be $false
+    }
+
+    It 'rejects unknown skills arguments' {
+        { Invoke-Skills -SkillsTarget '--private' } | Should -Throw '*usage: winsmux skills [--json]*'
+    }
+}
+
 Describe 'winsmux assign command' {
     BeforeAll {
         $script:winsmuxAssignRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'

@@ -161,6 +161,7 @@ OPERATOR COMMANDS:
     digest                  Print high-signal run digest
     desktop-summary         Print desktop summary projection JSON or counts
     provider-capabilities   Inspect the provider capability registry contract
+    skills                  Print agent-readable command skill contracts
     machine-contract        Print the hook and agent machine contract JSON
     rust-canary             Print the Rust default-on canary gate JSON
     manual-checklist        Print the versioned manual validation checklist gate
