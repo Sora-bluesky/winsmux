@@ -9903,6 +9903,34 @@ function Invoke-MachineContract {
     $output | Write-Output
 }
 
+function Invoke-Skills {
+    param(
+        [AllowNull()][string]$SkillsTarget = $Target,
+        [AllowNull()][string[]]$SkillsRest = $Rest
+    )
+
+    $tokens = @(@($SkillsTarget) + @($SkillsRest) | Where-Object { $_ })
+    $rustArgs = @('skills')
+    foreach ($token in $tokens) {
+        switch ($token) {
+            '--json' {
+                $rustArgs += '--json'
+            }
+            default {
+                Stop-WithError "usage: winsmux skills [--json]"
+            }
+        }
+    }
+
+    $output = Invoke-WinsmuxRaw -Arguments $rustArgs
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
+        exit $nativeExitCode
+    }
+
+    $output | Write-Output
+}
+
 function Invoke-RustCanary {
     $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
     $rustArgs = @('rust-canary')
@@ -10196,6 +10224,7 @@ Commands:
   consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json]  Record a consultation result packet/event
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
   provider-capabilities [provider] [--json]  Inspect the provider capability registry contract
+  skills [--json]  Print agent-readable command skill contracts
   machine-contract --json  Print the hook and agent machine contract JSON
   rust-canary [--json]  Print the Rust default-on canary gate JSON
   manual-checklist [--json]  Print the versioned manual validation checklist gate
@@ -10923,6 +10952,7 @@ switch ($Command) {
     'consult-error'   { Invoke-ConsultError }
     'launcher'        { Invoke-Launcher }
     'provider-capabilities' { Invoke-ProviderCapabilities }
+    'skills' { Invoke-Skills }
     'machine-contract' { Invoke-MachineContract }
     'rust-canary' { Invoke-RustCanary }
     'manual-checklist' { Invoke-ManualChecklist }

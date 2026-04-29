@@ -279,6 +279,7 @@ pub(crate) const TMUX_COMMANDS: &[&str] = &[
     "show-messages (showmsgs)", "show-options (show)",
     "show-prompt-history (showphist)", "show-window-options (showw)",
     "source-file (source)",
+    "skills",
     "split-window (splitw)", "start-server (start)",
     "suspend-client (suspendc)", "swap-pane (swapp)",
     "swap-window (swapw)", "switch-client (switchc)",

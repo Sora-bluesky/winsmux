@@ -199,6 +199,94 @@ pub fn run_provider_capabilities_command(args: &[&String]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn run_skills_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("skills"));
+        return Ok(());
+    }
+    let json = parse_json_only_options("skills", args)?;
+    let payload = progressive_skills_catalog();
+    if json {
+        return write_json(&payload);
+    }
+
+    println!("Progressive skills catalog");
+    for skill in payload["skills"].as_array().into_iter().flatten() {
+        println!(
+            "- {}: {}",
+            skill["id"].as_str().unwrap_or_default(),
+            skill["purpose"].as_str().unwrap_or_default()
+        );
+        if let Some(commands) = skill["commands"].as_array() {
+            let command_text = commands
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !command_text.trim().is_empty() {
+                println!("  commands: {command_text}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn progressive_skills_catalog() -> Value {
+    json!({
+        "contract_version": 1,
+        "packet_type": "progressive_skills_catalog",
+        "command": "skills",
+        "generated_at": generated_at(),
+        "private_skill_bodies_allowed": false,
+        "freeform_body_stored": false,
+        "private_guidance_stored": false,
+        "local_reference_paths_stored": false,
+        "operator_judgement_boundary": "operator keeps final task split, merge, release, and human-escalation decisions",
+        "skills": [
+            {
+                "id": "run-read-models",
+                "purpose": "inspect current runs before assigning follow-up work",
+                "commands": ["runs --json", "explain <run_id> --json"],
+                "required_evidence": ["context_contract", "knowledge_layer", "run_insights"],
+                "review_role": "operator",
+                "operator_judgement_boundary": "use read models as evidence, not as automatic merge permission",
+                "public_contract_only": true,
+                "private_skill_body_stored": false
+            },
+            {
+                "id": "compare-and-promote",
+                "purpose": "compare two runs and export a reusable follow-up input",
+                "commands": ["compare runs <left_run_id> <right_run_id> --json", "compare promote <run_id> --json"],
+                "required_evidence": ["comparison_evidence", "playbook_template_contract", "security_verdict"],
+                "review_role": "reviewer",
+                "operator_judgement_boundary": "operator chooses whether the exported candidate should become work",
+                "public_contract_only": true,
+                "private_skill_body_stored": false
+            },
+            {
+                "id": "guarded-release",
+                "purpose": "check release gates before tag or merge automation",
+                "commands": ["guard --json", "manual-checklist --json", "legacy-compat-gate --json"],
+                "required_evidence": ["git_guard", "public_surface_audit", "manual_validation"],
+                "review_role": "tester",
+                "operator_judgement_boundary": "operator resolves failed gates before publishing",
+                "public_contract_only": true,
+                "private_skill_body_stored": false
+            },
+            {
+                "id": "provider-routing",
+                "purpose": "inspect provider capability and dry-run assignment decisions",
+                "commands": ["provider-capabilities --json", "assign --task <TASK-ID> --json"],
+                "required_evidence": ["provider_capability", "task_policy", "approval_policy"],
+                "review_role": "operator",
+                "operator_judgement_boundary": "operator may override routing when task risk or budget requires it",
+                "public_contract_only": true,
+                "private_skill_body_stored": false
+            }
+        ]
+    })
+}
+
 pub fn run_machine_contract_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
         println!("{}", usage_for("machine-contract"));
@@ -692,6 +780,10 @@ fn rust_canary_backend() -> io::Result<RustCanaryBackend> {
 }
 
 fn parse_machine_contract_options(args: &[&String]) -> io::Result<bool> {
+    parse_json_only_options("machine-contract", args)
+}
+
+fn parse_json_only_options(command: &str, args: &[&String]) -> io::Result<bool> {
     let mut json = false;
     for arg in args {
         match arg.as_str() {
@@ -699,13 +791,13 @@ fn parse_machine_contract_options(args: &[&String]) -> io::Result<bool> {
             value if value.starts_with('-') => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("unknown argument for winsmux machine-contract: {value}"),
+                    format!("unknown argument for winsmux {command}: {value}"),
                 ));
             }
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    usage_for("machine-contract").to_string(),
+                    usage_for(command).to_string(),
                 ));
             }
         }
@@ -3518,6 +3610,7 @@ fn usage_for(command: &str) -> &'static str {
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
         }
+        "skills" => "usage: winsmux skills [--json]",
         "machine-contract" => "usage: winsmux machine-contract --json",
         "rust-canary" => "usage: winsmux rust-canary [--json] [--project-dir <path>]",
         "manual-checklist" => {

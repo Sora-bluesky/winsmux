@@ -565,6 +565,62 @@ fn operator_cli_machine_contract_json_exposes_hook_facing_catalog() {
 }
 
 #[test]
+fn operator_cli_skills_json_exposes_agent_readable_contracts() {
+    let project_dir = make_temp_project_dir("skills-json");
+
+    let json = run_json(&project_dir, &["skills", "--json"]);
+
+    assert_eq!(json["packet_type"], "progressive_skills_catalog");
+    assert_eq!(json["private_skill_bodies_allowed"], false);
+    assert_eq!(json["freeform_body_stored"], false);
+    assert_eq!(json["skills"][0]["id"], "run-read-models");
+    assert_eq!(json["skills"][0]["commands"][0], "runs --json");
+    assert_eq!(
+        json["skills"][1]["required_evidence"][1],
+        "playbook_template_contract"
+    );
+    assert_eq!(json["skills"][1]["private_skill_body_stored"], false);
+    assert_eq!(json["skills"][2]["review_role"], "tester");
+}
+
+#[test]
+fn operator_cli_skills_help_and_command_lists_are_discoverable() {
+    let project_dir = make_temp_project_dir("skills-help");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["skills", "--help"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("usage: winsmux skills"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("--help")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+    assert!(output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("skills"));
+}
+
+#[test]
+fn operator_cli_skills_rejects_project_dir() {
+    let project_dir = make_temp_project_dir("skills-rejects-project-dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["skills", "--json", "--project-dir"])
+        .arg(project_dir.as_os_str())
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success(), "skills should reject project-dir");
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("unknown argument for winsmux skills: --project-dir"));
+}
+
+#[test]
 fn operator_cli_machine_contract_requires_json() {
     let project_dir = make_temp_project_dir("machine-contract-requires-json");
 
