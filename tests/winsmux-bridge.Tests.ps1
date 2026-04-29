@@ -1618,6 +1618,12 @@ NEXT_ACTION: rerun focused verification
         $result.checks[0].status | Should -Be 'PASS'
         $result.next_action | Should -Be 'rerun focused verification'
         $result.adversarial | Should -Be $true
+
+        $envelope = New-TeamPipelineVerificationEvidenceEnvelope -VerificationResult $result
+        $envelope.context_pack_id | Should -BeNullOrEmpty
+        $envelope.context_pressure | Should -BeNullOrEmpty
+        $envelope.context_pack_id | Should -Be $null
+        $envelope.context_pressure | Should -Be $null
     }
 
     It 'detects approval prompts and blocks dangerous confirmations' {
@@ -1939,7 +1945,27 @@ NEXT_ACTION: rerun focused verification
                 'PLAN'          { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'PLAN_DONE'; Summary = 'plan summary'; Transcript = '' } }
                 'CONSULT_EARLY' { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'CONSULT_DONE'; Summary = 'early consult summary'; Transcript = '' } }
                 'EXEC'          { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'EXEC_DONE'; Summary = 'build summary'; Transcript = '' } }
-                'VERIFY'        { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'VERIFY_PASS'; Summary = 'verify summary'; Transcript = '' } }
+                'VERIFY'        {
+                    return [PSCustomObject]@{
+                        Stage = $StageName
+                        Target = $Target
+                        Status = 'VERIFY_PASS'
+                        Summary = @'
+SUMMARY: verify summary
+STATUS: VERIFY_PASS
+CHECK: build|PASS|npm run build
+CHECK: test|PASS|Invoke-Pester tests/winsmux-bridge.Tests.ps1
+CHECK: browser|SKIP|not a UI change
+CONTEXT_BUDGET: 120000
+CONTEXT_ESTIMATE: 42000
+CONTEXT_PACK_ID: ctx-pipeline
+TOOL_OUTPUT_PRUNED_COUNT: 2
+CONTEXT_PRESSURE: medium
+NEXT_ACTION: ready_for_done
+'@
+                        Transcript = ''
+                    }
+                }
                 'CONSULT_FINAL' { return [PSCustomObject]@{ Stage = $StageName; Target = $Target; Status = 'CONSULT_DONE'; Summary = 'final consult summary'; Transcript = '' } }
                 default         { throw "Unexpected stage $StageName" }
             }
@@ -1989,6 +2015,14 @@ NEXT_ACTION: rerun focused verification
 
         $verifyResult = @($script:teamPipelineEvents | Where-Object { $_.Event -eq 'pipeline.verify.pass' })[0]
         $verifyResult.Data.cost_unit_refs[0] | Should -Be $verifyDispatch.Data.governance_cost_units[0].unit_id
+        $verifyResult.Data.verification_evidence.build.outcome | Should -Be 'PASS'
+        $verifyResult.Data.verification_evidence.test.detail | Should -Be 'Invoke-Pester tests/winsmux-bridge.Tests.ps1'
+        $verifyResult.Data.verification_evidence.browser.outcome | Should -Be 'SKIP'
+        $verifyResult.Data.verification_evidence.context_budget | Should -Be 120000
+        $verifyResult.Data.verification_evidence.context_estimate | Should -Be 42000
+        $verifyResult.Data.verification_evidence.context_pack_id | Should -Be 'ctx-pipeline'
+        $verifyResult.Data.verification_evidence.tool_output_pruned_count | Should -Be 2
+        $verifyResult.Data.verification_evidence.context_pressure | Should -Be 'medium'
     }
 
     It 'inserts a stuck consult before returning blocked execution' {
@@ -9543,14 +9577,24 @@ panes:
                     run_id  = 'task:task-256'
                     verification_contract = [ordered]@{
                         mode = 'adversarial_verify'
+                        build = [ordered]@{ command = 'npm run build'; outcome = 'PASS' }
+                        test = [ordered]@{ command = 'Invoke-Pester tests/winsmux-bridge.Tests.ps1'; outcome = 'PARTIAL' }
+                        context_budget = 120000
+                        context_estimate = 42000
+                        context_pack_id = 'ctx-task-256'
+                        tool_output_pruned_count = 2
+                        context_pressure = 'medium'
                     }
                     verification_result = [ordered]@{
                         outcome = 'PARTIAL'
                         summary = 'rerun focused verification'
                         next_action = 'rerun_verify'
+                        browser = [ordered]@{ required = $false; outcome = 'SKIPPED' }
+                        screenshot = [ordered]@{ required = $false; artifact_ref = '' }
+                        recording = [ordered]@{ required = $false; artifact_ref = '' }
                     }
                 }
-            } | ConvertTo-Json -Compress),
+            } | ConvertTo-Json -Compress -Depth 8),
             ([ordered]@{
             timestamp = '2026-04-10T12:02:15+09:00'
             session   = 'winsmux-orchestra'
@@ -9671,6 +9715,14 @@ panes:
         $result.run.experiment_packet.command_hash | Should -Be 'cmd:def456'
         $result.run.verification_contract.mode | Should -Be 'adversarial_verify'
         $result.run.verification_result.outcome | Should -Be 'PARTIAL'
+        $result.run.verification_evidence.build.command | Should -Be 'npm run build'
+        $result.run.verification_evidence.test.outcome | Should -Be 'PARTIAL'
+        $result.run.verification_evidence.browser.outcome | Should -Be 'SKIPPED'
+        $result.run.verification_evidence.context_budget | Should -Be 120000
+        $result.run.verification_evidence.context_estimate | Should -Be 42000
+        $result.run.verification_evidence.context_pack_id | Should -Be 'ctx-task-256'
+        $result.run.verification_evidence.tool_output_pruned_count | Should -Be 2
+        $result.run.verification_evidence.context_pressure | Should -Be 'medium'
         $result.run.tdd_gate.required | Should -Be $true
         $result.run.tdd_gate.state | Should -Be 'passed'
         $result.run.tdd_gate.red_event | Should -Be 'pipeline.tdd.red'

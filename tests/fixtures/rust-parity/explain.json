@@ -96,6 +96,7 @@
     "security_verdict": null,
     "verification_contract": null,
     "verification_result": null,
+    "verification_evidence": null,
     "tdd_gate": {
       "policy": "test_first_required",
       "required": true,

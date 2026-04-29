@@ -275,6 +275,7 @@ pub struct LedgerExplainRun {
     pub security_verdict: Value,
     pub verification_contract: Value,
     pub verification_result: Value,
+    pub verification_evidence: Value,
     pub tdd_gate: Value,
     pub outcome: Value,
     pub phase_gate: Value,
@@ -467,6 +468,7 @@ pub struct LedgerRunProjection {
     pub security_verdict: Value,
     pub verification_contract: Value,
     pub verification_result: Value,
+    pub verification_evidence: Value,
     pub tdd_gate: Value,
     pub outcome: Value,
     pub phase_gate: Value,
@@ -510,6 +512,7 @@ pub struct LedgerRunPacket {
     pub security_verdict: Value,
     pub verification_contract: Value,
     pub verification_result: Value,
+    pub verification_evidence: Value,
     pub tdd_gate: Value,
     pub outcome: Value,
     pub phase_gate: Value,
@@ -719,6 +722,9 @@ impl LedgerRunProjection {
             verification_result: run
                 .map(|run| run.verification_result.clone())
                 .unwrap_or(Value::Null),
+            verification_evidence: run
+                .map(|run| run.verification_evidence.clone())
+                .unwrap_or(Value::Null),
             tdd_gate: run.map(|run| run.tdd_gate.clone()).unwrap_or(Value::Null),
             outcome: run.map(|run| run.outcome.clone()).unwrap_or(Value::Null),
             phase_gate: run.map(|run| run.phase_gate.clone()).unwrap_or(Value::Null),
@@ -767,6 +773,7 @@ impl LedgerRunPacket {
             security_verdict: run.security_verdict.clone(),
             verification_contract: run.verification_contract.clone(),
             verification_result: run.verification_result.clone(),
+            verification_evidence: run.verification_evidence.clone(),
             tdd_gate: run.tdd_gate.clone(),
             outcome: run.outcome.clone(),
             phase_gate: run.phase_gate.clone(),
@@ -1220,6 +1227,7 @@ impl LedgerSnapshot {
             first_event_value(&recent_events, |event| event.verification_contract.clone());
         let verification_result =
             first_event_value(&recent_events, |event| event.verification_result.clone());
+        let verification_evidence = verification_evidence_from_event_records(&recent_event_records);
 
         let mut labels = unique_sorted(panes.iter().map(|pane| pane.label.as_str()));
         let mut pane_ids = unique_sorted(panes.iter().map(|pane| pane.pane_id.as_str()));
@@ -1279,6 +1287,7 @@ impl LedgerSnapshot {
             security_verdict,
             verification_contract,
             verification_result,
+            verification_evidence,
             tdd_gate: Value::Null,
             outcome: Value::Null,
             phase_gate: Value::Null,
@@ -2513,6 +2522,50 @@ fn event_data_value(data: &Value, key: &str) -> Value {
         .and_then(|map| map.get(key))
         .cloned()
         .unwrap_or(Value::Null)
+}
+
+fn verification_evidence_from_event_records(events: &[(usize, &EventRecord)]) -> Value {
+    events
+        .iter()
+        .filter(|(_, event)| is_verification_event(&event.event))
+        .map(|(_, event)| verification_evidence_value(&event.data))
+        .find(|value| !value.is_null())
+        .unwrap_or(Value::Null)
+}
+
+fn verification_evidence_value(data: &Value) -> Value {
+    if !data.is_object() {
+        return Value::Null;
+    }
+
+    json!({
+        "build": verification_evidence_field(data, "build"),
+        "test": verification_evidence_field(data, "test"),
+        "browser": verification_evidence_field(data, "browser"),
+        "screenshot": verification_evidence_field(data, "screenshot"),
+        "recording": verification_evidence_field(data, "recording"),
+        "context_budget": verification_evidence_field(data, "context_budget"),
+        "context_estimate": verification_evidence_field(data, "context_estimate"),
+        "context_pack_id": verification_evidence_field(data, "context_pack_id"),
+        "tool_output_pruned_count": verification_evidence_field(data, "tool_output_pruned_count"),
+        "context_pressure": verification_evidence_field(data, "context_pressure"),
+    })
+}
+
+fn verification_evidence_field(data: &Value, key: &str) -> Value {
+    for container_name in ["verification_evidence", "verification_result", "verification_contract"] {
+        let nested = data
+            .as_object()
+            .and_then(|map| map.get(container_name))
+            .and_then(|container| container.as_object())
+            .and_then(|container| container.get(key))
+            .cloned();
+        if let Some(value) = nested {
+            return value;
+        }
+    }
+
+    event_data_value(data, key)
 }
 
 fn event_data_string_list_option(data: &Value, key: &str) -> Option<Vec<String>> {
