@@ -6395,8 +6395,204 @@ function Get-RunContractField {
     return $null
 }
 
+function ConvertTo-RunStringArray {
+    param([AllowNull()]$Value = $null)
+
+    if ($null -eq $Value) {
+        return @()
+    }
+    if ($Value -is [string]) {
+        return @(
+            $Value -split '\|' |
+                ForEach-Object { [string]$_ } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        return @(
+            foreach ($item in $Value) {
+                $text = [string]$item
+                if (-not [string]::IsNullOrWhiteSpace($text)) {
+                    $text
+                }
+            }
+        )
+    }
+
+    $textValue = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($textValue)) {
+        return @()
+    }
+    return @($textValue)
+}
+
+function Add-RunUniqueString {
+    param(
+        [Parameter(Mandatory = $true)]$List,
+        [AllowNull()]$Value = $null
+    )
+
+    $text = [string]$Value
+    if (-not [string]::IsNullOrWhiteSpace($text) -and -not $List.Contains($text)) {
+        $List.Add($text) | Out-Null
+    }
+}
+
+function Test-RunDurableRef {
+    param(
+        [AllowNull()]$Value = $null,
+        [string[]]$Prefixes = @()
+    )
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $false
+    }
+    $text = $text.Trim()
+    if (
+        $text.Length -gt 256 -or
+        $text.Contains("`n") -or
+        $text.Contains("`r") -or
+        $text.Contains('\') -or
+        $text.Contains(' ') -or
+        $text.StartsWith('%') -or
+        $text.StartsWith('~') -or
+        $text.StartsWith('/') -or
+        ($text.Length -ge 2 -and $text[1] -eq ':')
+    ) {
+        return $false
+    }
+
+    foreach ($prefix in @($Prefixes)) {
+        if ($text.StartsWith($prefix, [System.StringComparison]::Ordinal)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Add-RunDurableRef {
+    param(
+        [Parameter(Mandatory = $true)]$List,
+        [AllowNull()]$Value = $null,
+        [string[]]$Prefixes = @()
+    )
+
+    if (Test-RunDurableRef -Value $Value -Prefixes $Prefixes) {
+        Add-RunUniqueString -List $List -Value ([string]$Value).Trim()
+    }
+}
+
+function Add-RunContractRefs {
+    param(
+        [Parameter(Mandatory = $true)]$List,
+        [AllowNull()]$Data = $null,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string[]]$Prefixes = @()
+    )
+
+    foreach ($item in @(ConvertTo-RunStringArray -Value (Get-RunContractField -InputObject $Data -Name $Name))) {
+        Add-RunDurableRef -List $List -Value $item -Prefixes $Prefixes
+    }
+}
+
+function Get-RunPublicContextRefPrefixes {
+    return @(
+        'ADR-',
+        'AGENTS.md',
+        'README',
+        'docs/',
+        'guidance:',
+        'context:',
+        'context-packs/',
+        'knowledge:',
+        'knowledge/',
+        'evidence:',
+        'rationale:'
+    )
+}
+
+function Get-RunContractRefList {
+    param(
+        [AllowNull()]$Data = $null,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string[]]$Prefixes = @()
+    )
+
+    $refs = [System.Collections.Generic.List[string]]::new()
+    Add-RunContractRefs -List $refs -Data $Data -Name $Name -Prefixes $Prefixes
+    return @($refs)
+}
+
+function New-RunTeamMemoryContract {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [object[]]$EventRecords = @()
+    )
+
+    $teamMemoryRefs = [System.Collections.Generic.List[string]]::new()
+    $evidenceNoteRefs = [System.Collections.Generic.List[string]]::new()
+    $sourceRefs = [System.Collections.Generic.List[string]]::new()
+    $mailboxEventCount = 0
+    $eventIndex = 0
+
+    foreach ($eventRecord in @($EventRecords)) {
+        $eventIndex += 1
+        $data = Get-RunContractField -InputObject $eventRecord -Name 'data'
+        if ($null -eq $data) {
+            $data = [ordered]@{}
+        }
+        $eventName = [string](Get-RunContractField -InputObject $eventRecord -Name 'event')
+        $eventSource = [string](Get-RunContractField -InputObject $eventRecord -Name 'source')
+        $dataSource = [string](Get-RunContractField -InputObject $data -Name 'source')
+        $isMailboxEvent = (
+            $eventSource -eq 'mailbox' -or
+            $dataSource -eq 'mailbox' -or
+            $eventName.ToLowerInvariant().Contains('mailbox')
+        )
+
+        if ($isMailboxEvent) {
+            $mailboxEventCount += 1
+        }
+
+        $beforeRefCount = $teamMemoryRefs.Count
+        Add-RunContractRefs -List $teamMemoryRefs -Data $data -Name 'team_memory_refs' -Prefixes @('team-memory:')
+        Add-RunDurableRef -List $teamMemoryRefs -Value (Get-RunContractField -InputObject $data -Name 'team_memory_ref') -Prefixes @('team-memory:')
+        Add-RunContractRefs -List $evidenceNoteRefs -Data $data -Name 'evidence_note_refs' -Prefixes @('evidence-note:')
+        Add-RunDurableRef -List $evidenceNoteRefs -Value (Get-RunContractField -InputObject $data -Name 'evidence_note_ref') -Prefixes @('evidence-note:')
+
+        if ($isMailboxEvent -and $teamMemoryRefs.Count -eq $beforeRefCount) {
+            Add-RunUniqueString -List $teamMemoryRefs -Value ("team-memory:{0}:event-{1}" -f ([string]$Run.run_id), $eventIndex)
+        }
+
+        Add-RunDurableRef -List $sourceRefs -Value (Get-RunContractField -InputObject $data -Name 'observation_pack_ref') -Prefixes @('observation:', 'observations/', 'observation-packs/')
+        Add-RunDurableRef -List $sourceRefs -Value (Get-RunContractField -InputObject $data -Name 'consultation_ref') -Prefixes @('consultation:', 'consultations/')
+        Add-RunDurableRef -List $sourceRefs -Value (Get-RunContractField -InputObject $data -Name 'context_pack_ref') -Prefixes @('context:', 'context-packs/')
+        Add-RunDurableRef -List $sourceRefs -Value (Get-RunContractField -InputObject $data -Name 'knowledge_pack_ref') -Prefixes @('knowledge:', 'knowledge/')
+    }
+
+    return [ordered]@{
+        contract_version             = 1
+        packet_type                  = 'team_memory_contract'
+        scope                        = 'run'
+        run_id                       = [string]$Run.run_id
+        task_id                      = [string]$Run.task_id
+        team_memory_refs             = @($teamMemoryRefs | Sort-Object -Unique)
+        evidence_note_refs           = @($evidenceNoteRefs | Sort-Object -Unique)
+        source_refs                  = @($sourceRefs | Sort-Object -Unique)
+        mailbox_event_count          = [int]$mailboxEventCount
+        freeform_body_stored         = $false
+        private_memory_body_stored   = $false
+        local_reference_paths_stored = $false
+    }
+}
+
 function New-RunContextContract {
-    param([AllowNull()]$VerificationEvidence = $null)
+    param(
+        [AllowNull()]$VerificationEvidence = $null,
+        [string[]]$TeamMemoryRefs = @()
+    )
 
     $requestedMode = [string](Get-RunContractField -InputObject $VerificationEvidence -Name 'context_mode')
     $forkReason = [string](Get-RunContractField -InputObject $VerificationEvidence -Name 'context_fork_reason')
@@ -6421,7 +6617,7 @@ function New-RunContextContract {
         semantic_context             = [ordered]@{
             context_pack_id           = Get-RunContractField -InputObject $VerificationEvidence -Name 'semantic_context_pack_id'
             context_pack_ref          = Get-RunContractField -InputObject $VerificationEvidence -Name 'semantic_context_pack_ref'
-            source_refs               = Get-RunContractField -InputObject $VerificationEvidence -Name 'source_refs'
+            source_refs               = Get-RunContractRefList -Data $VerificationEvidence -Name 'source_refs' -Prefixes (Get-RunPublicContextRefPrefixes)
             hard_constraints          = Get-RunContractField -InputObject $VerificationEvidence -Name 'hard_constraints'
             safety_rules              = Get-RunContractField -InputObject $VerificationEvidence -Name 'safety_rules'
             performance_budget        = Get-RunContractField -InputObject $VerificationEvidence -Name 'performance_budget'
@@ -6434,12 +6630,13 @@ function New-RunContextContract {
             packet_type               = 'knowledge_layer_contract'
             knowledge_pack_id         = Get-RunContractField -InputObject $VerificationEvidence -Name 'knowledge_pack_id'
             knowledge_pack_ref        = Get-RunContractField -InputObject $VerificationEvidence -Name 'knowledge_pack_ref'
-            source_refs               = Get-RunContractField -InputObject $VerificationEvidence -Name 'knowledge_source_refs'
-            operating_guidance_refs   = Get-RunContractField -InputObject $VerificationEvidence -Name 'operating_guidance_refs'
+            source_refs               = Get-RunContractRefList -Data $VerificationEvidence -Name 'knowledge_source_refs' -Prefixes (Get-RunPublicContextRefPrefixes)
+            operating_guidance_refs   = Get-RunContractRefList -Data $VerificationEvidence -Name 'operating_guidance_refs' -Prefixes (Get-RunPublicContextRefPrefixes)
             hard_constraints          = Get-RunContractField -InputObject $VerificationEvidence -Name 'knowledge_hard_constraints'
             capability_contract       = Get-RunContractField -InputObject $VerificationEvidence -Name 'capability_contract'
-            evidence_refs             = Get-RunContractField -InputObject $VerificationEvidence -Name 'evidence_refs'
-            rationale_refs            = Get-RunContractField -InputObject $VerificationEvidence -Name 'rationale_refs'
+            evidence_refs             = Get-RunContractRefList -Data $VerificationEvidence -Name 'evidence_refs' -Prefixes (Get-RunPublicContextRefPrefixes)
+            rationale_refs            = Get-RunContractRefList -Data $VerificationEvidence -Name 'rationale_refs' -Prefixes (Get-RunPublicContextRefPrefixes)
+            team_memory_refs          = @($TeamMemoryRefs | Sort-Object -Unique)
             freeform_body_stored      = $false
             private_guidance_stored   = $false
             local_reference_paths_stored = $false
@@ -6739,6 +6936,7 @@ function New-RunPacketFromRun {
         verification_result   = $Run.verification_result
         verification_evidence = $Run.verification_evidence
         context_contract      = $Run.context_contract
+        team_memory           = $Run.team_memory
         run_insights          = $Run.run_insights
         tdd_gate              = $Run.tdd_gate
         verification_envelope = $Run.verification_envelope
@@ -6824,6 +7022,7 @@ function New-RunResultPacket {
         verification_result   = $Run.verification_result
         verification_evidence = $Run.verification_evidence
         context_contract      = $Run.context_contract
+        team_memory           = $Run.team_memory
         run_insights          = $Run.run_insights
         tdd_gate              = $Run.tdd_gate
         verification_envelope = $Run.verification_envelope
@@ -7090,6 +7289,7 @@ function Get-RunsPayload {
                 verification_result   = $null
                 verification_evidence = $null
                 context_contract      = $null
+                team_memory           = $null
                 run_insights          = $null
                 plan                  = $null
                 plan_checkpoints      = @()
@@ -7259,7 +7459,8 @@ function Get-RunsPayload {
             $run.draft_pr_gate = New-RunDraftPrGate -Run $run -EventRecords $runEvents
             $run.tdd_gate = New-RunTddGateContract -Run $run -EventRecords $runEvents
             $run.phase_gate = New-RunPhaseGateContract -Run $run -EventRecords $runEvents
-            $run.context_contract = New-RunContextContract -VerificationEvidence $run.verification_evidence
+            $run.team_memory = New-RunTeamMemoryContract -Run $run -EventRecords $runEvents
+            $run.context_contract = New-RunContextContract -VerificationEvidence $run.verification_evidence -TeamMemoryRefs @($run.team_memory.team_memory_refs)
             $run.audit_chain = New-RunAuditChainContract -Run $run -EventRecords $runEvents
             $run.verification_envelope = New-RunVerificationEnvelope -Run $run
             $run.outcome = New-RunOutcomeContract -Run $run
@@ -7314,6 +7515,7 @@ function Get-RunsPayload {
                 verification_result   = $run.verification_result
                 verification_evidence = $run.verification_evidence
                 context_contract      = $run.context_contract
+                team_memory           = $run.team_memory
                 run_insights          = $run.run_insights
                 tdd_gate              = $run.tdd_gate
                 verification_envelope = $run.verification_envelope
@@ -7453,6 +7655,7 @@ function New-RunPlaybookTemplate {
             tester   = 'verify unit integration cli and contract coverage'
         }
         required_evidence         = @($requiredEvidence)
+        team_memory_refs          = @(ConvertTo-RunStringArray -Value (Get-RunContractField -InputObject $Run.team_memory -Name 'team_memory_refs') | Sort-Object -Unique)
         handoff_refs              = @($Run.handoff_refs)
         execution_backend         = 'operator_managed'
         backend_profile_required  = $false
@@ -7468,6 +7671,14 @@ function New-CompareReconcilePlaybookTemplate {
         [Parameter(Mandatory = $true)]$RightRun
     )
 
+    $teamMemoryRefs = [System.Collections.Generic.List[string]]::new()
+    foreach ($item in @(ConvertTo-RunStringArray -Value (Get-RunContractField -InputObject $LeftRun.team_memory -Name 'team_memory_refs'))) {
+        Add-RunUniqueString -List $teamMemoryRefs -Value $item
+    }
+    foreach ($item in @(ConvertTo-RunStringArray -Value (Get-RunContractField -InputObject $RightRun.team_memory -Name 'team_memory_refs'))) {
+        Add-RunUniqueString -List $teamMemoryRefs -Value $item
+    }
+
     return [ordered]@{
         contract_version          = 1
         packet_type               = 'playbook_template_contract'
@@ -7482,6 +7693,7 @@ function New-CompareReconcilePlaybookTemplate {
         }
         required_evidence         = @('overlap_paths', 'reconcile_consult', 'human_decision')
         compare_run_ids           = @([string]$LeftRun.run_id, [string]$RightRun.run_id)
+        team_memory_refs          = @($teamMemoryRefs | Sort-Object -Unique)
         execution_backend         = 'operator_managed'
         backend_profile_required  = $false
         freeform_body_stored      = $false

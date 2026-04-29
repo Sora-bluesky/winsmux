@@ -6486,6 +6486,7 @@ fn playbook_template_contract(
             "tester": "verify unit integration cli and contract coverage",
         },
         "required_evidence": playbook_required_evidence(resolved_flow),
+        "team_memory_refs": crate::ledger::value_string_list(&run.team_memory, "team_memory_refs"),
         "handoff_refs": run.handoff_refs,
         "execution_backend": "operator_managed",
         "backend_profile_required": false,
@@ -6513,12 +6514,27 @@ fn compare_reconcile_playbook_template(
         },
         "required_evidence": playbook_required_evidence("conflict_resolution"),
         "compare_run_ids": [left_run.run_id, right_run.run_id],
+        "team_memory_refs": compare_team_memory_refs(left_run, right_run),
         "execution_backend": "operator_managed",
         "backend_profile_required": false,
         "freeform_body_stored": false,
         "private_guidance_stored": false,
         "local_reference_paths_stored": false,
     })
+}
+
+fn compare_team_memory_refs(
+    left_run: &crate::ledger::LedgerExplainRun,
+    right_run: &crate::ledger::LedgerExplainRun,
+) -> Vec<String> {
+    let mut refs = crate::ledger::value_string_list(&left_run.team_memory, "team_memory_refs");
+    for item in crate::ledger::value_string_list(&right_run.team_memory, "team_memory_refs") {
+        if !refs.iter().any(|existing| existing == &item) {
+            refs.push(item);
+        }
+    }
+    refs.sort();
+    refs
 }
 
 struct WrittenArtifact {

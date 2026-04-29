@@ -132,6 +132,7 @@
         "capability_contract": null,
         "evidence_refs": null,
         "rationale_refs": null,
+        "team_memory_refs": [],
         "freeform_body_stored": false,
         "private_guidance_stored": false,
         "local_reference_paths_stored": false
@@ -143,6 +144,20 @@
         "evidence_only": true,
         "raw_tool_output_stored": false
       }
+    },
+    "team_memory": {
+      "contract_version": 1,
+      "packet_type": "team_memory_contract",
+      "scope": "run",
+      "run_id": "task:task-256",
+      "task_id": "task-256",
+      "team_memory_refs": [],
+      "evidence_note_refs": [],
+      "source_refs": [],
+      "mailbox_event_count": 0,
+      "freeform_body_stored": false,
+      "private_memory_body_stored": false,
+      "local_reference_paths_stored": false
     },
     "run_insights": {
       "packet_type": "run_insights",
@@ -254,6 +269,7 @@
             "capability_contract": null,
             "evidence_refs": null,
             "rationale_refs": null,
+            "team_memory_refs": [],
             "freeform_body_stored": false,
             "private_guidance_stored": false,
             "local_reference_paths_stored": false
@@ -402,6 +418,7 @@
           "capability_contract": null,
           "evidence_refs": null,
           "rationale_refs": null,
+          "team_memory_refs": [],
           "freeform_body_stored": false,
           "private_guidance_stored": false,
           "local_reference_paths_stored": false
@@ -462,6 +479,7 @@
               "capability_contract": null,
               "evidence_refs": null,
               "rationale_refs": null,
+              "team_memory_refs": [],
               "freeform_body_stored": false,
               "private_guidance_stored": false,
               "local_reference_paths_stored": false
@@ -610,6 +628,7 @@
             "capability_contract": null,
             "evidence_refs": null,
             "rationale_refs": null,
+            "team_memory_refs": [],
             "freeform_body_stored": false,
             "private_guidance_stored": false,
             "local_reference_paths_stored": false

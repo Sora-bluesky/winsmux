@@ -8183,6 +8183,41 @@ panes:
             }
         } | ConvertTo-Json -Compress -Depth 8),
         ([ordered]@{
+            timestamp = '2026-04-10T12:01:15+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'operator.mailbox.message_received'
+            message   = 'team memory reference captured'
+            label     = 'operator'
+            pane_id   = ''
+            role      = 'Operator'
+            source    = 'mailbox'
+            data      = [ordered]@{
+                task_id            = 'task-256'
+                run_id             = 'task:task-256'
+                source             = 'mailbox'
+                team_memory_refs   = @('team-memory:task-256:operator-standard', 'C:\Users\Example\private.md', 'private note body')
+                evidence_note_refs = @('evidence-note:task-256:operator-standard', '%LOCALAPPDATA%\winsmux\private.md')
+                message_body       = 'operator direction body must not be exposed'
+            }
+        } | ConvertTo-Json -Compress -Depth 8),
+        ([ordered]@{
+            timestamp = '2026-04-10T12:01:20+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'operator.mailbox.message_received'
+            message   = 'mailbox event without explicit ref'
+            label     = 'operator'
+            pane_id   = ''
+            role      = 'Operator'
+            source    = 'mailbox'
+            data      = [ordered]@{
+                task_id          = 'task-256'
+                run_id           = 'task:task-256'
+                source           = 'mailbox'
+                team_memory_refs = @('C:\Users\Example\private-2.md')
+                message_body     = 'fallback should expose only durable ref'
+            }
+        } | ConvertTo-Json -Compress -Depth 8),
+        ([ordered]@{
             timestamp = '2026-04-10T12:01:30+09:00'
             session   = 'winsmux-orchestra'
             event     = 'pipeline.decompose.completed'
@@ -8291,19 +8326,19 @@ panes:
                     context_mode = 'isolated'
                     semantic_context_pack_id = 'sem-runs'
                     semantic_context_pack_ref = 'context-packs/sem-runs.json'
-                    source_refs = @('ADR-001', 'docs/operator-model.md#context')
+                        source_refs = @('ADR-001', 'docs/operator-model.md#context', 'C:\Users\Example\private.md', 'private note body')
                     hard_constraints = @('do not store prompt bodies')
                     safety_rules = @('keep local paths out')
                     performance_budget = [ordered]@{ max_context_tokens = 42000 }
                     rationale = 'keep worker context scoped'
                     knowledge_pack_id = 'know-runs'
                     knowledge_pack_ref = 'knowledge/know-runs.json'
-                    knowledge_source_refs = @('AGENTS.md#Git-Guard-Gate', 'docs/operator-model.md#knowledge')
+                        knowledge_source_refs = @('AGENTS.md#Git-Guard-Gate', 'docs/operator-model.md#knowledge', '%LOCALAPPDATA%\winsmux\private.md', 'private guidance body')
                     operating_guidance_refs = @('guidance:git-guard', 'guidance:review-before-merge')
                     knowledge_hard_constraints = @('never bypass git-guard')
                     capability_contract = [ordered]@{ can_edit = $true; can_merge = $false }
-                    evidence_refs = @('evidence:run-ledger')
-                    rationale_refs = @('ADR-knowledge-layer')
+                        evidence_refs = @('evidence:run-ledger', 'C:\Users\Example\evidence.md', 'pasted evidence body')
+                        rationale_refs = @('ADR-knowledge-layer', '%LOCALAPPDATA%\winsmux\rationale.md', 'pasted rationale body')
                 }
                 attempt = 2
                 verification_result = [ordered]@{
@@ -8392,6 +8427,8 @@ panes:
         $result.runs[0].context_contract.tool_output_pruned_count | Should -Be 3
         $result.runs[0].context_contract.semantic_context.context_pack_id | Should -Be 'sem-runs'
         $result.runs[0].context_contract.semantic_context.source_refs | Should -Be @('ADR-001', 'docs/operator-model.md#context')
+        ($result.runs[0].context_contract.semantic_context.source_refs -join '|') | Should -Not -Match 'Users'
+        ($result.runs[0].context_contract.semantic_context.source_refs -join '|') | Should -Not -Match 'private note'
         $result.runs[0].context_contract.semantic_context.hard_constraints | Should -Be @('do not store prompt bodies')
         $result.runs[0].context_contract.semantic_context.adr_body_stored | Should -Be $false
         $result.runs[0].context_contract.semantic_context.persona_prompt_stored | Should -Be $false
@@ -8400,12 +8437,20 @@ panes:
         $result.runs[0].context_contract.knowledge_layer.knowledge_pack_id | Should -Be 'know-runs'
         $result.runs[0].context_contract.knowledge_layer.knowledge_pack_ref | Should -Be 'knowledge/know-runs.json'
         $result.runs[0].context_contract.knowledge_layer.source_refs | Should -Be @('AGENTS.md#Git-Guard-Gate', 'docs/operator-model.md#knowledge')
+        ($result.runs[0].context_contract.knowledge_layer.source_refs -join '|') | Should -Not -Match 'LOCALAPPDATA'
+        ($result.runs[0].context_contract.knowledge_layer.source_refs -join '|') | Should -Not -Match 'private guidance'
         $result.runs[0].context_contract.knowledge_layer.operating_guidance_refs | Should -Be @('guidance:git-guard', 'guidance:review-before-merge')
         $result.runs[0].context_contract.knowledge_layer.hard_constraints | Should -Be @('never bypass git-guard')
         $result.runs[0].context_contract.knowledge_layer.capability_contract.can_edit | Should -Be $true
         $result.runs[0].context_contract.knowledge_layer.capability_contract.can_merge | Should -Be $false
         $result.runs[0].context_contract.knowledge_layer.evidence_refs | Should -Be @('evidence:run-ledger')
+        ($result.runs[0].context_contract.knowledge_layer.evidence_refs -join '|') | Should -Not -Match 'Users'
+        ($result.runs[0].context_contract.knowledge_layer.evidence_refs -join '|') | Should -Not -Match 'pasted evidence'
         $result.runs[0].context_contract.knowledge_layer.rationale_refs | Should -Be @('ADR-knowledge-layer')
+        ($result.runs[0].context_contract.knowledge_layer.rationale_refs -join '|') | Should -Not -Match 'LOCALAPPDATA'
+        ($result.runs[0].context_contract.knowledge_layer.rationale_refs -join '|') | Should -Not -Match 'pasted rationale'
+        $result.runs[0].context_contract.knowledge_layer.team_memory_refs | Should -Contain 'team-memory:task-256:operator-standard'
+        $result.runs[0].context_contract.knowledge_layer.team_memory_refs | Should -Contain 'team-memory:task:task-256:event-3'
         $result.runs[0].context_contract.knowledge_layer.freeform_body_stored | Should -Be $false
         $result.runs[0].context_contract.knowledge_layer.private_guidance_stored | Should -Be $false
         $result.runs[0].context_contract.knowledge_layer.local_reference_paths_stored | Should -Be $false
@@ -8413,11 +8458,25 @@ panes:
         $result.runs[0].context_contract.knowledge_layer.PSObject.Properties.Name | Should -Not -Contain 'private_guidance'
         $result.runs[0].context_contract.prompt_body_stored | Should -Be $false
         $result.runs[0].context_contract.private_memory_stored | Should -Be $false
+        $result.runs[0].team_memory.packet_type | Should -Be 'team_memory_contract'
+        $result.runs[0].team_memory.team_memory_refs | Should -Contain 'team-memory:task-256:operator-standard'
+        $result.runs[0].team_memory.team_memory_refs | Should -Contain 'team-memory:task:task-256:event-3'
+        $result.runs[0].team_memory.evidence_note_refs | Should -Be @('evidence-note:task-256:operator-standard')
+        $result.runs[0].team_memory.mailbox_event_count | Should -Be 2
+        $result.runs[0].team_memory.freeform_body_stored | Should -Be $false
+        $result.runs[0].team_memory.private_memory_body_stored | Should -Be $false
+        $result.runs[0].team_memory.local_reference_paths_stored | Should -Be $false
+        $result.runs[0].team_memory.PSObject.Properties.Name | Should -Not -Contain 'message_body'
+        $result.runs[0].team_memory.PSObject.Properties.Name | Should -Not -Contain 'private_memory_body'
+        ($result.runs[0].team_memory.team_memory_refs -join '|') | Should -Not -Match 'Users'
+        ($result.runs[0].team_memory.team_memory_refs -join '|') | Should -Not -Match 'private note'
         $result.runs[0].run_insights.retry_count | Should -Be 1
         $result.runs[0].run_insights.drift_signals | Should -Be @('drift_detected')
         $result.runs[0].run_insights.unhealthy_session_size | Should -Be $true
         $result.runs[0].run_insights.next_improvements | Should -Contain 'split the next run into a smaller scope'
         $result.runs[0].run_packet.context_contract.context_pack_id | Should -Be 'ctx-runs'
+        $result.runs[0].run_packet.team_memory.team_memory_refs | Should -Contain 'team-memory:task-256:operator-standard'
+        $result.runs[0].run_packet.team_memory.team_memory_refs | Should -Contain 'team-memory:task:task-256:event-3'
         $result.runs[0].run_packet.run_insights.retry_count | Should -Be 1
         $result.runs[0].tdd_gate.required | Should -Be $true
         $result.runs[0].tdd_gate.state | Should -Be 'passed'
@@ -9629,6 +9688,41 @@ panes:
                 }
             } | ConvertTo-Json -Compress),
             ([ordered]@{
+                timestamp = '2026-04-10T12:01:30+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'operator.mailbox.message_received'
+                message   = 'team memory reference captured'
+                label     = 'operator'
+                pane_id   = ''
+                role      = 'Operator'
+                source    = 'mailbox'
+                data      = [ordered]@{
+                    task_id            = 'task-256'
+                    run_id             = 'task:task-256'
+                    source             = 'mailbox'
+                    team_memory_refs   = @('team-memory:task-256:operator-standard', 'C:\Users\Example\private.md', 'private note body')
+                    evidence_note_refs = @('evidence-note:task-256:operator-standard', '%LOCALAPPDATA%\winsmux\private.md')
+                    message_body       = 'operator direction body must not be exposed'
+                }
+            } | ConvertTo-Json -Compress -Depth 8),
+            ([ordered]@{
+                timestamp = '2026-04-10T12:01:40+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'operator.mailbox.message_received'
+                message   = 'mailbox event without explicit ref'
+                label     = 'operator'
+                pane_id   = ''
+                role      = 'Operator'
+                source    = 'mailbox'
+                data      = [ordered]@{
+                    task_id          = 'task-256'
+                    run_id           = 'task:task-256'
+                    source           = 'mailbox'
+                    team_memory_refs = @('C:\Users\Example\private-2.md')
+                    message_body     = 'fallback should expose only durable ref'
+                }
+            } | ConvertTo-Json -Compress -Depth 8),
+            ([ordered]@{
                 timestamp = '2026-04-10T12:02:00+09:00'
                 session   = 'winsmux-orchestra'
                 event     = 'pipeline.verify.partial'
@@ -9654,19 +9748,19 @@ panes:
                         context_mode = 'isolated'
                         semantic_context_pack_id = 'sem-task-256'
                         semantic_context_pack_ref = 'context-packs/sem-task-256.json'
-                        source_refs = @('ADR-001', 'docs/operator-model.md#context')
+                        source_refs = @('ADR-001', 'docs/operator-model.md#context', 'C:\Users\Example\private.md', 'private note body')
                         hard_constraints = @('do not store prompt bodies')
                         safety_rules = @('keep local paths out')
                         performance_budget = [ordered]@{ max_context_tokens = 42000 }
                         rationale = 'keep worker context scoped'
                         knowledge_pack_id = 'know-task-256'
                         knowledge_pack_ref = 'knowledge/know-task-256.json'
-                        knowledge_source_refs = @('AGENTS.md#Git-Guard-Gate', 'docs/operator-model.md#knowledge')
+                        knowledge_source_refs = @('AGENTS.md#Git-Guard-Gate', 'docs/operator-model.md#knowledge', '%LOCALAPPDATA%\winsmux\private.md', 'private guidance body')
                         operating_guidance_refs = @('guidance:git-guard', 'guidance:review-before-merge')
                         knowledge_hard_constraints = @('never bypass git-guard')
                         capability_contract = [ordered]@{ can_edit = $true; can_merge = $false }
-                        evidence_refs = @('evidence:task-256')
-                        rationale_refs = @('ADR-knowledge-layer')
+                        evidence_refs = @('evidence:task-256', 'C:\Users\Example\evidence.md', 'pasted evidence body')
+                        rationale_refs = @('ADR-knowledge-layer', '%LOCALAPPDATA%\winsmux\rationale.md', 'pasted rationale body')
                     }
                     attempt = 2
                     verification_result = [ordered]@{
@@ -9844,6 +9938,8 @@ panes:
         $result.run.context_contract.context_mode | Should -Be 'isolated'
         $result.run.context_contract.semantic_context.context_pack_id | Should -Be 'sem-task-256'
         $result.run.context_contract.semantic_context.source_refs | Should -Be @('ADR-001', 'docs/operator-model.md#context')
+        ($result.run.context_contract.semantic_context.source_refs -join '|') | Should -Not -Match 'Users'
+        ($result.run.context_contract.semantic_context.source_refs -join '|') | Should -Not -Match 'private note'
         $result.run.context_contract.semantic_context.hard_constraints | Should -Be @('do not store prompt bodies')
         $result.run.context_contract.semantic_context.performance_budget.max_context_tokens | Should -Be 42000
         $result.run.context_contract.semantic_context.adr_body_stored | Should -Be $false
@@ -9853,12 +9949,20 @@ panes:
         $result.run.context_contract.knowledge_layer.knowledge_pack_id | Should -Be 'know-task-256'
         $result.run.context_contract.knowledge_layer.knowledge_pack_ref | Should -Be 'knowledge/know-task-256.json'
         $result.run.context_contract.knowledge_layer.source_refs | Should -Be @('AGENTS.md#Git-Guard-Gate', 'docs/operator-model.md#knowledge')
+        ($result.run.context_contract.knowledge_layer.source_refs -join '|') | Should -Not -Match 'LOCALAPPDATA'
+        ($result.run.context_contract.knowledge_layer.source_refs -join '|') | Should -Not -Match 'private guidance'
         $result.run.context_contract.knowledge_layer.operating_guidance_refs | Should -Be @('guidance:git-guard', 'guidance:review-before-merge')
         $result.run.context_contract.knowledge_layer.hard_constraints | Should -Be @('never bypass git-guard')
         $result.run.context_contract.knowledge_layer.capability_contract.can_edit | Should -Be $true
         $result.run.context_contract.knowledge_layer.capability_contract.can_merge | Should -Be $false
         $result.run.context_contract.knowledge_layer.evidence_refs | Should -Be @('evidence:task-256')
+        ($result.run.context_contract.knowledge_layer.evidence_refs -join '|') | Should -Not -Match 'Users'
+        ($result.run.context_contract.knowledge_layer.evidence_refs -join '|') | Should -Not -Match 'pasted evidence'
         $result.run.context_contract.knowledge_layer.rationale_refs | Should -Be @('ADR-knowledge-layer')
+        ($result.run.context_contract.knowledge_layer.rationale_refs -join '|') | Should -Not -Match 'LOCALAPPDATA'
+        ($result.run.context_contract.knowledge_layer.rationale_refs -join '|') | Should -Not -Match 'pasted rationale'
+        $result.run.context_contract.knowledge_layer.team_memory_refs | Should -Contain 'team-memory:task-256:operator-standard'
+        $result.run.context_contract.knowledge_layer.team_memory_refs | Should -Contain 'team-memory:task:task-256:event-3'
         $result.run.context_contract.knowledge_layer.freeform_body_stored | Should -Be $false
         $result.run.context_contract.knowledge_layer.private_guidance_stored | Should -Be $false
         $result.run.context_contract.knowledge_layer.local_reference_paths_stored | Should -Be $false
@@ -9868,6 +9972,18 @@ panes:
         $result.run.context_contract.prompt_body_stored | Should -Be $false
         $result.run.context_contract.private_memory_stored | Should -Be $false
         $result.run.context_contract.local_reference_paths_stored | Should -Be $false
+        $result.run.team_memory.packet_type | Should -Be 'team_memory_contract'
+        $result.run.team_memory.team_memory_refs | Should -Contain 'team-memory:task-256:operator-standard'
+        $result.run.team_memory.team_memory_refs | Should -Contain 'team-memory:task:task-256:event-3'
+        $result.run.team_memory.evidence_note_refs | Should -Be @('evidence-note:task-256:operator-standard')
+        $result.run.team_memory.mailbox_event_count | Should -Be 2
+        $result.run.team_memory.freeform_body_stored | Should -Be $false
+        $result.run.team_memory.private_memory_body_stored | Should -Be $false
+        $result.run.team_memory.local_reference_paths_stored | Should -Be $false
+        $result.run.team_memory.PSObject.Properties.Name | Should -Not -Contain 'message_body'
+        $result.run.team_memory.PSObject.Properties.Name | Should -Not -Contain 'private_memory_body'
+        ($result.run.team_memory.team_memory_refs -join '|') | Should -Not -Match 'Users'
+        ($result.run.team_memory.team_memory_refs -join '|') | Should -Not -Match 'private note'
         $result.run.run_insights.retry_count | Should -Be 1
         $result.run.run_insights.drift_signals | Should -Be @('drift_detected')
         $result.run.run_insights.intervention_count | Should -BeGreaterThan 0
@@ -9943,8 +10059,9 @@ panes:
         $result.run.Contains('run_packet') | Should -BeFalse
         $result.Contains('run_packet') | Should -Be $false
         $result.Contains('result_packet') | Should -Be $false
-        $result.recent_events.Count | Should -Be 5
+        $result.recent_events.Count | Should -Be 7
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'operator.review_requested'
+        @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'operator.mailbox.message_received'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.verify.partial'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.security.allowed'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.tdd.red'
@@ -12889,6 +13006,24 @@ panes:
                 }
             } | ConvertTo-Json -Compress),
             ([ordered]@{
+                timestamp = '2026-04-12T10:00:30+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'operator.mailbox.message_received'
+                message   = 'compare winner memory reference captured'
+                label     = 'operator'
+                pane_id   = ''
+                role      = 'Operator'
+                source    = 'mailbox'
+                branch    = 'worktree-builder-a'
+                head_sha  = 'aaaabbbbccccdddd'
+                data      = [ordered]@{
+                    task_id          = 'task-compare-a'
+                    run_id           = 'task:task-compare-a'
+                    source           = 'mailbox'
+                    team_memory_refs = @('team-memory:task-compare-a:operator-standard')
+                }
+            } | ConvertTo-Json -Compress -Depth 8),
+            ([ordered]@{
                 timestamp = '2026-04-12T10:05:00+09:00'
                 session   = 'winsmux-orchestra'
                 event     = 'pane.consult_result'
@@ -13012,6 +13147,7 @@ panes:
         $result.recommend.playbook_template.flow | Should -Be 'compare_winner_follow_up'
         $result.recommend.playbook_template.source_run_id | Should -Be 'task:task-compare-a'
         $result.recommend.playbook_template.required_evidence | Should -Be @('winning_run', 'comparison_evidence', 'promotion_candidate')
+        $result.recommend.playbook_template.team_memory_refs | Should -Contain 'team-memory:task-compare-a:operator-standard'
         $result.recommend.playbook_template.execution_backend | Should -Be 'operator_managed'
         $result.recommend.playbook_template.backend_profile_required | Should -Be $false
         $result.recommend.playbook_template.freeform_body_stored | Should -Be $false
@@ -13220,6 +13356,7 @@ panes:
         $result.recommend.playbook_template.flow | Should -Be 'conflict_resolution'
         $result.recommend.playbook_template.compare_run_ids | Should -Be @('task:task-compare-a', 'task:task-compare-b')
         $result.recommend.playbook_template.required_evidence | Should -Be @('overlap_paths', 'reconcile_consult', 'human_decision')
+        $result.recommend.playbook_template.team_memory_refs | Should -Contain 'team-memory:task-compare-a:operator-standard'
         $result.recommend.playbook_template.freeform_body_stored | Should -Be $false
     }
 
@@ -13238,9 +13375,10 @@ panes:
         $result.candidate.observation_pack_ref | Should -Be $script:compareObsA.reference
         $result.candidate.consultation_ref | Should -Be $script:compareConsultA.reference
         $result.candidate.playbook_template.packet_type | Should -Be 'playbook_template_contract'
-        $result.candidate.playbook_template.flow | Should -Be 'review'
+        $result.candidate.playbook_template.flow | Should -Be 'bugfix'
         $result.candidate.playbook_template.role_policy.reviewer | Should -Be 'return findings first with evidence references'
-        $result.candidate.playbook_template.required_evidence | Should -Be @('findings', 'review_decision', 'evidence_refs')
+        $result.candidate.playbook_template.required_evidence | Should -Be @('reproduction', 'fix', 'regression_test')
+        $result.candidate.playbook_template.team_memory_refs | Should -Contain 'team-memory:task-compare-a:operator-standard'
         $result.candidate.playbook_template.execution_backend | Should -Be 'operator_managed'
         $result.candidate.playbook_template.backend_profile_required | Should -Be $false
         $result.candidate.playbook_template.freeform_body_stored | Should -Be $false

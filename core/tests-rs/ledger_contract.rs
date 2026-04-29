@@ -608,13 +608,31 @@ panes:
 {"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed after drift retry","data":{"task_id":"task-256","attempt":2,"verification_contract":{"command":"cargo test","build":{"command":"cargo build","outcome":"PASS"},"test":{"command":"cargo test","outcome":"PASS"},"context_budget":120000,"context_estimate":42000,"context_pack_id":"ctx-task-256","context_pack_version":"1","tool_output_pruned_count":2,"context_pressure":"medium","context_mode":"isolated","semantic_context_pack_id":"sem-task-256","semantic_context_pack_ref":"context-packs/sem-task-256.json","source_refs":["ADR-001","docs/operator-model.md#context"],"hard_constraints":["do not store prompt bodies"],"safety_rules":["keep local paths out"],"performance_budget":{"max_context_tokens":42000},"rationale":"keep worker context scoped","knowledge_pack_id":"know-task-256","knowledge_pack_ref":"knowledge/know-task-256.json","knowledge_source_refs":["AGENTS.md#Git-Guard-Gate","docs/operator-model.md#knowledge"],"operating_guidance_refs":["guidance:git-guard","guidance:review-before-merge"],"knowledge_hard_constraints":["never bypass git-guard"],"capability_contract":{"can_edit":true,"can_merge":false},"evidence_refs":["evidence:task-256"],"rationale_refs":["ADR-knowledge-layer"]},"verification_result":{"outcome":"PASS","browser":{"required":false,"outcome":"SKIPPED"},"screenshot":{"required":false,"artifact_ref":""},"recording":{"required":false,"artifact_ref":""}}}}
 {"timestamp":"2026-04-23T12:00:03+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","data":{"task_id":"task-256","verdict":"ALLOW"}}
 {"timestamp":"2026-04-23T12:00:04+09:00","session":"winsmux-orchestra","event":"pane.consult_result","message":"experiment result","label":"builder-1","pane_id":"%2","role":"Builder","data":{"task_id":"task-256","hypothesis":"projection can explain the run","test_plan":["load manifest","match events"],"result":"explain payload built","confidence":0.66,"next_action":"approval_waiting","observation_pack_ref":"observations/task-256.json","consultation_ref":"consultations/task-256.json","run_id":"task:task-256","slot":"builder-1","worktree":".worktrees/builder-1","env_fingerprint":"env-123","command_hash":"cmd-456","observation_pack":{"summary":"ok"},"consultation_packet":{"review":"ok"}}}
+{"timestamp":"2026-04-23T12:00:04.500+09:00","session":"winsmux-orchestra","event":"operator.mailbox.message_received","message":"team memory reference captured","source":"mailbox","data":{"task_id":"task-256","run_id":"task:task-256","source":"mailbox","team_memory_refs":["team-memory:task-256:operator-standard","C:\\Users\\Example\\private.md","private note body"],"evidence_note_refs":["evidence-note:task-256:operator-standard","%LOCALAPPDATA%\\winsmux\\private.md"],"message_body":"operator direction body must not be exposed"}}
+{"timestamp":"2026-04-23T12:00:04.600+09:00","session":"winsmux-orchestra","event":"operator.mailbox.message_received","message":"mailbox event without explicit ref","source":"mailbox","data":{"task_id":"task-256","run_id":"task:task-256","source":"mailbox","team_memory_refs":["C:\\Users\\Example\\private-2.md"],"message_body":"fallback should expose only durable ref"}}
 {"timestamp":"2026-04-23T12:00:05+09:00","session":"winsmux-orchestra","event":"pane.consult_request","message":"new action only","label":"builder-1","pane_id":"%2","role":"Builder","data":{"task_id":"task-256","next_action":"review_requested"}}
 {"timestamp":"2026-04-23T12:00:06+09:00","session":"winsmux-orchestra","event":"pane.completed","message":"reviewer finished","label":"reviewer-1","pane_id":"%3","role":"Reviewer","data":{}}
 {"timestamp":"2026-04-23T12:00:07+09:00","session":"winsmux-orchestra","event":"pipeline.verify.fail","message":"other task failed","data":{"task_id":"task-other","branch":"worktree-builder-1","verification_result":{"outcome":"FAIL"}}}
 {"timestamp":"2026-04-23T12:00:08+09:00","session":"winsmux-orchestra","event":"operator.commit_ready","message":"other task ready","data":{"task_id":"task-other","branch":"worktree-other"}}
 "#;
+    let events = events.replace(
+        r#""source_refs":["ADR-001","docs/operator-model.md#context"]"#,
+        r#""source_refs":["ADR-001","docs/operator-model.md#context","C:\\Users\\Example\\private.md","private note body"]"#,
+    );
+    let events = events.replace(
+        r#""knowledge_source_refs":["AGENTS.md#Git-Guard-Gate","docs/operator-model.md#knowledge"]"#,
+        r#""knowledge_source_refs":["AGENTS.md#Git-Guard-Gate","docs/operator-model.md#knowledge","%LOCALAPPDATA%\\winsmux\\private.md","private guidance body"]"#,
+    );
+    let events = events.replace(
+        r#""evidence_refs":["evidence:task-256"]"#,
+        r#""evidence_refs":["evidence:task-256","C:\\Users\\Example\\evidence.md","pasted evidence body"]"#,
+    );
+    let events = events.replace(
+        r#""rationale_refs":["ADR-knowledge-layer"]"#,
+        r#""rationale_refs":["ADR-knowledge-layer","%LOCALAPPDATA%\\winsmux\\rationale.md","pasted rationale body"]"#,
+    );
 
-    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, &events)
         .expect("ledger snapshot should load explain inputs");
 
     let explain = snapshot
@@ -668,7 +686,10 @@ panes:
         "git reset --hard"
     );
     assert_eq!(explain.run.verification_result["outcome"], "PASS");
-    assert_eq!(explain.run.verification_evidence["build"]["command"], "cargo build");
+    assert_eq!(
+        explain.run.verification_evidence["build"]["command"],
+        "cargo build"
+    );
     assert_eq!(explain.run.verification_evidence["test"]["outcome"], "PASS");
     assert_eq!(
         explain.run.verification_evidence["browser"]["outcome"],
@@ -705,12 +726,22 @@ panes:
         explain.run.context_contract["semantic_context"]["source_refs"][0],
         "ADR-001"
     );
+    let semantic_source_refs = explain.run.context_contract["semantic_context"]["source_refs"]
+        .as_array()
+        .expect("semantic source refs should be an array");
+    assert!(!semantic_source_refs
+        .iter()
+        .any(|item| item.as_str().unwrap_or_default().contains("Users")));
+    assert!(!semantic_source_refs
+        .iter()
+        .any(|item| item.as_str().unwrap_or_default().contains("private note")));
     assert_eq!(
         explain.run.context_contract["semantic_context"]["hard_constraints"][0],
         "do not store prompt bodies"
     );
     assert_eq!(
-        explain.run.context_contract["semantic_context"]["performance_budget"]["max_context_tokens"],
+        explain.run.context_contract["semantic_context"]["performance_budget"]
+            ["max_context_tokens"],
         42000
     );
     assert_eq!(
@@ -741,6 +772,15 @@ panes:
         explain.run.context_contract["knowledge_layer"]["source_refs"][0],
         "AGENTS.md#Git-Guard-Gate"
     );
+    let knowledge_source_refs = explain.run.context_contract["knowledge_layer"]["source_refs"]
+        .as_array()
+        .expect("knowledge source refs should be an array");
+    assert!(!knowledge_source_refs
+        .iter()
+        .any(|item| item.as_str().unwrap_or_default().contains("LOCALAPPDATA")));
+    assert!(!knowledge_source_refs
+        .iter()
+        .any(|item| item.as_str().unwrap_or_default().contains("private guidance")));
     assert_eq!(
         explain.run.context_contract["knowledge_layer"]["operating_guidance_refs"][0],
         "guidance:git-guard"
@@ -757,9 +797,35 @@ panes:
         explain.run.context_contract["knowledge_layer"]["evidence_refs"][0],
         "evidence:task-256"
     );
+    let evidence_refs = explain.run.context_contract["knowledge_layer"]["evidence_refs"]
+        .as_array()
+        .expect("evidence refs should be an array");
+    assert!(!evidence_refs
+        .iter()
+        .any(|item| item.as_str().unwrap_or_default().contains("Users")));
+    assert!(!evidence_refs
+        .iter()
+        .any(|item| item.as_str().unwrap_or_default().contains("pasted evidence")));
     assert_eq!(
         explain.run.context_contract["knowledge_layer"]["rationale_refs"][0],
         "ADR-knowledge-layer"
+    );
+    let rationale_refs = explain.run.context_contract["knowledge_layer"]["rationale_refs"]
+        .as_array()
+        .expect("rationale refs should be an array");
+    assert!(!rationale_refs
+        .iter()
+        .any(|item| item.as_str().unwrap_or_default().contains("LOCALAPPDATA")));
+    assert!(!rationale_refs
+        .iter()
+        .any(|item| item.as_str().unwrap_or_default().contains("pasted rationale")));
+    assert_eq!(
+        explain.run.context_contract["knowledge_layer"]["team_memory_refs"][0],
+        "team-memory:task-256:operator-standard"
+    );
+    assert_eq!(
+        explain.run.context_contract["knowledge_layer"]["team_memory_refs"][1],
+        "team-memory:task:task-256:event-6"
     );
     assert_eq!(
         explain.run.context_contract["knowledge_layer"]["freeform_body_stored"],
@@ -782,6 +848,40 @@ panes:
         explain.run.context_contract["local_reference_paths_stored"],
         false
     );
+    assert_eq!(
+        explain.run.team_memory["packet_type"],
+        "team_memory_contract"
+    );
+    assert_eq!(
+        explain.run.team_memory["team_memory_refs"][0],
+        "team-memory:task-256:operator-standard"
+    );
+    assert_eq!(
+        explain.run.team_memory["team_memory_refs"][1],
+        "team-memory:task:task-256:event-6"
+    );
+    assert_eq!(
+        explain.run.team_memory["evidence_note_refs"][0],
+        "evidence-note:task-256:operator-standard"
+    );
+    assert_eq!(explain.run.team_memory["mailbox_event_count"], 2);
+    assert_eq!(explain.run.team_memory["freeform_body_stored"], false);
+    assert_eq!(explain.run.team_memory["private_memory_body_stored"], false);
+    assert_eq!(
+        explain.run.team_memory["local_reference_paths_stored"],
+        false
+    );
+    assert!(explain.run.team_memory["message_body"].is_null());
+    assert!(explain.run.team_memory["private_memory_body"].is_null());
+    let team_memory_refs = explain.run.team_memory["team_memory_refs"]
+        .as_array()
+        .expect("team memory refs should be an array");
+    assert!(!team_memory_refs
+        .iter()
+        .any(|item| item.as_str().unwrap_or_default().contains("Users")));
+    assert!(!team_memory_refs
+        .iter()
+        .any(|item| item.as_str().unwrap_or_default().contains("private note")));
     assert_eq!(explain.run.run_insights["retry_count"], 1);
     assert_eq!(
         explain.run.run_insights["drift_signals"][0],
@@ -850,11 +950,13 @@ panes:
         explain.run.verification_envelope["dynamic_gates"]["phase"]["stop_stage"],
         "test"
     );
-    assert!(explain.run.verification_envelope["release_decision"]["blocked_reasons"]
-        .as_array()
-        .expect("blocked reasons should be an array")
-        .iter()
-        .any(|reason| reason == "draft PR gate is blocked"));
+    assert!(
+        explain.run.verification_envelope["release_decision"]["blocked_reasons"]
+            .as_array()
+            .expect("blocked reasons should be an array")
+            .iter()
+            .any(|reason| reason == "draft PR gate is blocked")
+    );
     assert!(explain.run.audit_chain["events"]
         .as_array()
         .expect("audit chain events should be an array")
@@ -939,7 +1041,10 @@ panes:
 
     assert_eq!(explain.run.tdd_gate["required"], true);
     assert_eq!(explain.run.tdd_gate["state"], "blocked");
-    assert_eq!(explain.run.phase_gate["stop_reason"], "tdd_evidence_missing");
+    assert_eq!(
+        explain.run.phase_gate["stop_reason"],
+        "tdd_evidence_missing"
+    );
     assert_eq!(explain.run.outcome["status"], "blocked");
 }
 
@@ -1019,7 +1124,10 @@ panes:
     assert_eq!(explain.run.tdd_gate["required"], true);
     assert_eq!(explain.run.tdd_gate["state"], "blocked");
     assert_eq!(explain.run.tdd_gate["exception_event"], "");
-    assert_eq!(explain.run.phase_gate["stop_reason"], "tdd_evidence_missing");
+    assert_eq!(
+        explain.run.phase_gate["stop_reason"],
+        "tdd_evidence_missing"
+    );
 }
 
 #[test]
@@ -1139,6 +1247,8 @@ fn ledger_contract_serializes_typed_cli_payload_roots() {
             && run["run_packet"]["verification_envelope"]["packet_type"] == "verification_envelope"
             && run["run_insights"]["packet_type"] == "run_insights"
             && run["run_packet"]["run_insights"]["packet_type"] == "run_insights"
+            && run["team_memory"]["packet_type"] == "team_memory_contract"
+            && run["run_packet"]["team_memory"]["packet_type"] == "team_memory_contract"
     }));
 
     let explain_projection = snapshot
@@ -1226,7 +1336,9 @@ panes:
     let reasons = explain.run.verification_envelope["release_decision"]["blocked_reasons"]
         .as_array()
         .expect("blocked reasons should be an array");
-    assert!(reasons.iter().any(|reason| reason == "draft PR gate is required"));
+    assert!(reasons
+        .iter()
+        .any(|reason| reason == "draft PR gate is required"));
     assert!(reasons
         .iter()
         .any(|reason| reason == "phase gate stopped at package: needs_user_decision"));

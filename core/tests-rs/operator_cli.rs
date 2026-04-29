@@ -707,8 +707,9 @@ fn operator_cli_rust_canary_rejects_invalid_backend() {
         .expect("winsmux command should run");
 
     assert!(!output.status.success(), "rust-canary should fail");
-    assert!(String::from_utf8_lossy(&output.stderr)
-        .contains("WINSMUX_BACKEND must be cli or tauri"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("WINSMUX_BACKEND must be cli or tauri")
+    );
 }
 
 #[test]
@@ -756,7 +757,9 @@ fn operator_cli_manual_checklist_text_reports_next_action() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Manual checklist: docs/internal/winsmux-manual-checklist-by-version.md"));
+    assert!(
+        stdout.contains("Manual checklist: docs/internal/winsmux-manual-checklist-by-version.md")
+    );
     assert!(stdout.contains("Record v0.24.5 manual validation results"));
     assert!(!stdout.trim_start().starts_with('{'));
 }
@@ -922,17 +925,24 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
     fs::create_dir_all(project_dir.join("scripts")).expect("test should create scripts dir");
     fs::write(project_dir.join("scripts").join("git-guard.ps1"), "")
         .expect("test should write git-guard script");
-    fs::write(project_dir.join("scripts").join("audit-public-surface.ps1"), "")
-        .expect("test should write public surface audit script");
+    fs::write(
+        project_dir.join("scripts").join("audit-public-surface.ps1"),
+        "",
+    )
+    .expect("test should write public surface audit script");
     fs::write(project_dir.join("scripts").join("gitleaks-history.ps1"), "")
         .expect("test should write gitleaks script");
     fs::write(
-        project_dir.join("scripts").join("gitleaks-history-baseline.txt"),
+        project_dir
+            .join("scripts")
+            .join("gitleaks-history-baseline.txt"),
         "abc123\n",
     )
     .expect("test should write gitleaks baseline");
     fs::write(
-        project_dir.join("scripts").join("generate-release-notes.ps1"),
+        project_dir
+            .join("scripts")
+            .join("generate-release-notes.ps1"),
         "",
     )
     .expect("test should write release notes script");
@@ -2010,6 +2020,10 @@ fn operator_cli_compare_runs_json_reports_evidence_delta() {
         "winning_run"
     );
     assert_eq!(
+        json["recommend"]["playbook_template"]["team_memory_refs"][0],
+        "team-memory:task-a:operator-standard"
+    );
+    assert_eq!(
         json["recommend"]["playbook_template"]["freeform_body_stored"],
         false
     );
@@ -2164,6 +2178,10 @@ fn operator_cli_compare_runs_emits_conflict_resolution_playbook_when_no_winner()
         json["recommend"]["playbook_template"]["required_evidence"][0],
         "overlap_paths"
     );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["team_memory_refs"][0],
+        "team-memory:task-a:operator-standard"
+    );
 }
 
 #[test]
@@ -2227,6 +2245,10 @@ fn operator_cli_promote_tactic_writes_playbook_candidate() {
         "reproduction"
     );
     assert_eq!(
+        json["candidate"]["playbook_template"]["team_memory_refs"][0],
+        "team-memory:task-a:operator-standard"
+    );
+    assert_eq!(
         json["candidate"]["playbook_template"]["execution_backend"],
         "operator_managed"
     );
@@ -2234,9 +2256,7 @@ fn operator_cli_promote_tactic_writes_playbook_candidate() {
         json["candidate"]["playbook_template"]["freeform_body_stored"],
         false
     );
-    assert!(
-        json["candidate"]["playbook_template"]["freeform_body"].is_null()
-    );
+    assert!(json["candidate"]["playbook_template"]["freeform_body"].is_null());
 }
 
 #[test]
@@ -2298,13 +2318,13 @@ fn operator_cli_promote_tactic_review_next_action_uses_review_playbook() {
     let events_path = project_dir.join(".winsmux").join("events.jsonl");
     let events = fs::read_to_string(&events_path)
         .expect("test should read events")
-        .replace("\"next_action\":\"promote tactic\"", "\"next_action\":\"review findings\"");
+        .replace(
+            "\"next_action\":\"promote tactic\"",
+            "\"next_action\":\"review findings\"",
+        );
     fs::write(events_path, events).expect("test should write events");
 
-    let json = run_json(
-        &project_dir,
-        &["promote-tactic", "task:task-a", "--json"],
-    );
+    let json = run_json(&project_dir, &["promote-tactic", "task:task-a", "--json"]);
 
     assert_eq!(json["candidate"]["playbook_template"]["flow"], "review");
     assert_eq!(
@@ -4457,7 +4477,8 @@ panes:
     .expect("test should write manifest");
     fs::write(
         winsmux_dir.join("events.jsonl"),
-        r#"{"timestamp":"2026-04-24T12:00:00+09:00","session":"winsmux-orchestra","event":"pane.consult_result","message":"consultation completed","label":"builder-1","pane_id":"%2","role":"Builder","branch":"branch-a","head_sha":"aaaabbbbccccdddd","data":{"task_id":"task-a","run_id":"task:task-a","slot":"builder-1","hypothesis":"cache command is stable","result":"cache hit","confidence":0.85,"next_action":"promote tactic","observation_pack_ref":".winsmux/observation-packs/task-a.json","consultation_ref":".winsmux/consultations/task-a.json","worktree":".worktrees/a","env_fingerprint":"env-a","command_hash":"cmd-a"}}
+r#"{"timestamp":"2026-04-24T12:00:00+09:00","session":"winsmux-orchestra","event":"pane.consult_result","message":"consultation completed","label":"builder-1","pane_id":"%2","role":"Builder","branch":"branch-a","head_sha":"aaaabbbbccccdddd","data":{"task_id":"task-a","run_id":"task:task-a","slot":"builder-1","hypothesis":"cache command is stable","result":"cache hit","confidence":0.85,"next_action":"promote tactic","observation_pack_ref":".winsmux/observation-packs/task-a.json","consultation_ref":".winsmux/consultations/task-a.json","worktree":".worktrees/a","env_fingerprint":"env-a","command_hash":"cmd-a"}}
+{"timestamp":"2026-04-24T12:00:05+09:00","session":"winsmux-orchestra","event":"operator.mailbox.message_received","message":"team memory captured","source":"mailbox","data":{"task_id":"task-a","run_id":"task:task-a","source":"mailbox","team_memory_refs":["team-memory:task-a:operator-standard"]}}
 {"timestamp":"2026-04-24T12:00:10+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","label":"builder-1","pane_id":"%2","role":"Builder","branch":"branch-a","head_sha":"aaaabbbbccccdddd","data":{"task_id":"task-a","run_id":"task:task-a","verification_result":{"outcome":"PASS","summary":"cache hit confirmed"}}}
 {"timestamp":"2026-04-24T12:00:20+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","label":"builder-1","pane_id":"%2","role":"Builder","branch":"branch-a","head_sha":"aaaabbbbccccdddd","data":{"task_id":"task-a","run_id":"task:task-a","verdict":"ALLOW","reason":"verified safe"}}
 {"timestamp":"2026-04-24T12:01:00+09:00","session":"winsmux-orchestra","event":"pane.consult_result","message":"consultation completed","label":"builder-2","pane_id":"%3","role":"Worker","branch":"branch-b","head_sha":"eeeeffff11112222","data":{"task_id":"task-b","run_id":"task:task-b","slot":"builder-2","hypothesis":"rebuild command is stable","result":"rebuild clean","confidence":0.6,"next_action":"promote tactic","observation_pack_ref":".winsmux/observation-packs/task-b.json","consultation_ref":".winsmux/consultations/task-b.json","worktree":".worktrees/b","env_fingerprint":"env-b","command_hash":"cmd-b"}}
