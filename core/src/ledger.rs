@@ -3010,6 +3010,14 @@ fn verification_evidence_value(data: &Value) -> Value {
         "safety_rules": verification_evidence_field(data, "safety_rules"),
         "performance_budget": verification_evidence_field(data, "performance_budget"),
         "rationale": verification_evidence_field(data, "rationale"),
+        "knowledge_pack_id": verification_evidence_field(data, "knowledge_pack_id"),
+        "knowledge_pack_ref": verification_evidence_field(data, "knowledge_pack_ref"),
+        "knowledge_source_refs": verification_evidence_field(data, "knowledge_source_refs"),
+        "operating_guidance_refs": verification_evidence_field(data, "operating_guidance_refs"),
+        "knowledge_hard_constraints": verification_evidence_field(data, "knowledge_hard_constraints"),
+        "capability_contract": verification_evidence_field(data, "capability_contract"),
+        "evidence_refs": verification_evidence_field(data, "evidence_refs"),
+        "rationale_refs": verification_evidence_field(data, "rationale_refs"),
     })
 }
 
@@ -3052,6 +3060,20 @@ fn context_contract_value(verification_evidence: &Value) -> Value {
             "adr_body_stored": false,
             "persona_prompt_stored": false,
             "private_source_body_stored": false
+        },
+        "knowledge_layer": {
+            "packet_type": "knowledge_layer_contract",
+            "knowledge_pack_id": value_field(verification_evidence, "knowledge_pack_id"),
+            "knowledge_pack_ref": value_field(verification_evidence, "knowledge_pack_ref"),
+            "source_refs": value_field(verification_evidence, "knowledge_source_refs"),
+            "operating_guidance_refs": value_field(verification_evidence, "operating_guidance_refs"),
+            "hard_constraints": value_field(verification_evidence, "knowledge_hard_constraints"),
+            "capability_contract": value_field(verification_evidence, "capability_contract"),
+            "evidence_refs": value_field(verification_evidence, "evidence_refs"),
+            "rationale_refs": value_field(verification_evidence, "rationale_refs"),
+            "freeform_body_stored": false,
+            "private_guidance_stored": false,
+            "local_reference_paths_stored": false
         },
         "prompt_body_stored": false,
         "private_memory_stored": false,

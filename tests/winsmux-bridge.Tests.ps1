@@ -8296,6 +8296,14 @@ panes:
                     safety_rules = @('keep local paths out')
                     performance_budget = [ordered]@{ max_context_tokens = 42000 }
                     rationale = 'keep worker context scoped'
+                    knowledge_pack_id = 'know-runs'
+                    knowledge_pack_ref = 'knowledge/know-runs.json'
+                    knowledge_source_refs = @('AGENTS.md#Git-Guard-Gate', 'docs/operator-model.md#knowledge')
+                    operating_guidance_refs = @('guidance:git-guard', 'guidance:review-before-merge')
+                    knowledge_hard_constraints = @('never bypass git-guard')
+                    capability_contract = [ordered]@{ can_edit = $true; can_merge = $false }
+                    evidence_refs = @('evidence:run-ledger')
+                    rationale_refs = @('ADR-knowledge-layer')
                 }
                 attempt = 2
                 verification_result = [ordered]@{
@@ -8388,6 +8396,21 @@ panes:
         $result.runs[0].context_contract.semantic_context.adr_body_stored | Should -Be $false
         $result.runs[0].context_contract.semantic_context.persona_prompt_stored | Should -Be $false
         $result.runs[0].context_contract.semantic_context.private_source_body_stored | Should -Be $false
+        $result.runs[0].context_contract.knowledge_layer.packet_type | Should -Be 'knowledge_layer_contract'
+        $result.runs[0].context_contract.knowledge_layer.knowledge_pack_id | Should -Be 'know-runs'
+        $result.runs[0].context_contract.knowledge_layer.knowledge_pack_ref | Should -Be 'knowledge/know-runs.json'
+        $result.runs[0].context_contract.knowledge_layer.source_refs | Should -Be @('AGENTS.md#Git-Guard-Gate', 'docs/operator-model.md#knowledge')
+        $result.runs[0].context_contract.knowledge_layer.operating_guidance_refs | Should -Be @('guidance:git-guard', 'guidance:review-before-merge')
+        $result.runs[0].context_contract.knowledge_layer.hard_constraints | Should -Be @('never bypass git-guard')
+        $result.runs[0].context_contract.knowledge_layer.capability_contract.can_edit | Should -Be $true
+        $result.runs[0].context_contract.knowledge_layer.capability_contract.can_merge | Should -Be $false
+        $result.runs[0].context_contract.knowledge_layer.evidence_refs | Should -Be @('evidence:run-ledger')
+        $result.runs[0].context_contract.knowledge_layer.rationale_refs | Should -Be @('ADR-knowledge-layer')
+        $result.runs[0].context_contract.knowledge_layer.freeform_body_stored | Should -Be $false
+        $result.runs[0].context_contract.knowledge_layer.private_guidance_stored | Should -Be $false
+        $result.runs[0].context_contract.knowledge_layer.local_reference_paths_stored | Should -Be $false
+        $result.runs[0].context_contract.knowledge_layer.PSObject.Properties.Name | Should -Not -Contain 'freeform_body'
+        $result.runs[0].context_contract.knowledge_layer.PSObject.Properties.Name | Should -Not -Contain 'private_guidance'
         $result.runs[0].context_contract.prompt_body_stored | Should -Be $false
         $result.runs[0].context_contract.private_memory_stored | Should -Be $false
         $result.runs[0].run_insights.retry_count | Should -Be 1
@@ -9636,6 +9659,14 @@ panes:
                         safety_rules = @('keep local paths out')
                         performance_budget = [ordered]@{ max_context_tokens = 42000 }
                         rationale = 'keep worker context scoped'
+                        knowledge_pack_id = 'know-task-256'
+                        knowledge_pack_ref = 'knowledge/know-task-256.json'
+                        knowledge_source_refs = @('AGENTS.md#Git-Guard-Gate', 'docs/operator-model.md#knowledge')
+                        operating_guidance_refs = @('guidance:git-guard', 'guidance:review-before-merge')
+                        knowledge_hard_constraints = @('never bypass git-guard')
+                        capability_contract = [ordered]@{ can_edit = $true; can_merge = $false }
+                        evidence_refs = @('evidence:task-256')
+                        rationale_refs = @('ADR-knowledge-layer')
                     }
                     attempt = 2
                     verification_result = [ordered]@{
@@ -9818,6 +9849,21 @@ panes:
         $result.run.context_contract.semantic_context.adr_body_stored | Should -Be $false
         $result.run.context_contract.semantic_context.persona_prompt_stored | Should -Be $false
         $result.run.context_contract.semantic_context.private_source_body_stored | Should -Be $false
+        $result.run.context_contract.knowledge_layer.packet_type | Should -Be 'knowledge_layer_contract'
+        $result.run.context_contract.knowledge_layer.knowledge_pack_id | Should -Be 'know-task-256'
+        $result.run.context_contract.knowledge_layer.knowledge_pack_ref | Should -Be 'knowledge/know-task-256.json'
+        $result.run.context_contract.knowledge_layer.source_refs | Should -Be @('AGENTS.md#Git-Guard-Gate', 'docs/operator-model.md#knowledge')
+        $result.run.context_contract.knowledge_layer.operating_guidance_refs | Should -Be @('guidance:git-guard', 'guidance:review-before-merge')
+        $result.run.context_contract.knowledge_layer.hard_constraints | Should -Be @('never bypass git-guard')
+        $result.run.context_contract.knowledge_layer.capability_contract.can_edit | Should -Be $true
+        $result.run.context_contract.knowledge_layer.capability_contract.can_merge | Should -Be $false
+        $result.run.context_contract.knowledge_layer.evidence_refs | Should -Be @('evidence:task-256')
+        $result.run.context_contract.knowledge_layer.rationale_refs | Should -Be @('ADR-knowledge-layer')
+        $result.run.context_contract.knowledge_layer.freeform_body_stored | Should -Be $false
+        $result.run.context_contract.knowledge_layer.private_guidance_stored | Should -Be $false
+        $result.run.context_contract.knowledge_layer.local_reference_paths_stored | Should -Be $false
+        $result.run.context_contract.knowledge_layer.PSObject.Properties.Name | Should -Not -Contain 'freeform_body'
+        $result.run.context_contract.knowledge_layer.PSObject.Properties.Name | Should -Not -Contain 'private_guidance'
         $result.run.context_contract.fork_allowed | Should -Be $false
         $result.run.context_contract.prompt_body_stored | Should -Be $false
         $result.run.context_contract.private_memory_stored | Should -Be $false
