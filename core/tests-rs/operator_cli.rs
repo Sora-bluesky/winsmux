@@ -1941,6 +1941,22 @@ fn operator_cli_compare_runs_json_reports_evidence_delta() {
     assert_eq!(json["right_only_changed_files"][0], "core/src/main.rs");
     assert_eq!(json["recommend"]["winning_run_id"], "task:task-a");
     assert_eq!(json["recommend"]["reconcile_consult"], true);
+    assert_eq!(
+        json["recommend"]["playbook_template"]["packet_type"],
+        "playbook_template_contract"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["flow"],
+        "compare_winner_follow_up"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["required_evidence"][0],
+        "winning_run"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["freeform_body_stored"],
+        false
+    );
     let fields: Vec<_> = json["differences"]
         .as_array()
         .expect("differences should be array")
@@ -1950,6 +1966,31 @@ fn operator_cli_compare_runs_json_reports_evidence_delta() {
     assert!(fields.contains(&"result"));
     assert!(fields.contains(&"confidence"));
     assert!(fields.contains(&"changed_files"));
+}
+
+#[test]
+fn operator_cli_compare_runs_preserves_follow_up_playbook_for_ci_paths() {
+    let project_dir = make_temp_project_dir("compare-runs-ci-path-playbook");
+    write_compare_runs_fixture(&project_dir);
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let manifest = fs::read_to_string(&manifest_path).expect("test should read manifest");
+    let manifest = manifest.replace("core/src/operator_cli.rs", ".github/workflows/ci.yml");
+    fs::write(manifest_path, manifest).expect("test should write manifest");
+
+    let json = run_json(
+        &project_dir,
+        &["compare-runs", "task:task-a", "task:task-b", "--json"],
+    );
+
+    assert_eq!(json["recommend"]["winning_run_id"], "task:task-a");
+    assert_eq!(
+        json["recommend"]["playbook_template"]["flow"],
+        "compare_winner_follow_up"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["template_refs"][0],
+        "playbook:compare_winner_follow_up"
+    );
 }
 
 #[test]
@@ -2040,6 +2081,36 @@ fn operator_cli_compare_runs_uses_powershell_rounding() {
 }
 
 #[test]
+fn operator_cli_compare_runs_emits_conflict_resolution_playbook_when_no_winner() {
+    let project_dir = make_temp_project_dir("compare-runs-conflict-playbook");
+    write_compare_runs_fixture(&project_dir);
+    let events_path = project_dir.join(".winsmux").join("events.jsonl");
+    let events = fs::read_to_string(&events_path)
+        .expect("test should read events")
+        .replace("\"outcome\":\"PASS\"", "\"outcome\":\"FAIL\"");
+    fs::write(events_path, events).expect("test should write events");
+
+    let json = run_json(
+        &project_dir,
+        &["compare-runs", "task:task-a", "task:task-b", "--json"],
+    );
+
+    assert_eq!(json["recommend"]["winning_run_id"], "");
+    assert_eq!(
+        json["recommend"]["playbook_template"]["flow"],
+        "conflict_resolution"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["compare_run_ids"][0],
+        "task:task-a"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["required_evidence"][0],
+        "overlap_paths"
+    );
+}
+
+#[test]
 fn operator_cli_promote_tactic_writes_playbook_candidate() {
     let project_dir = make_temp_project_dir("promote-tactic");
     write_compare_runs_fixture(&project_dir);
@@ -2090,6 +2161,26 @@ fn operator_cli_promote_tactic_writes_playbook_candidate() {
         json["candidate"]["consultation_ref"],
         ".winsmux/consultations/task-a.json"
     );
+    assert_eq!(
+        json["candidate"]["playbook_template"]["packet_type"],
+        "playbook_template_contract"
+    );
+    assert_eq!(json["candidate"]["playbook_template"]["flow"], "bugfix");
+    assert_eq!(
+        json["candidate"]["playbook_template"]["required_evidence"][0],
+        "reproduction"
+    );
+    assert_eq!(
+        json["candidate"]["playbook_template"]["execution_backend"],
+        "operator_managed"
+    );
+    assert_eq!(
+        json["candidate"]["playbook_template"]["freeform_body_stored"],
+        false
+    );
+    assert!(
+        json["candidate"]["playbook_template"]["freeform_body"].is_null()
+    );
 }
 
 #[test]
@@ -2118,6 +2209,52 @@ fn operator_cli_compare_promote_alias_writes_playbook_candidate() {
     assert_eq!(json["candidate"]["kind"], "playbook");
     assert_eq!(json["candidate"]["title"], "Deterministic build command");
     assert_eq!(json["candidate"]["summary"], "prefer cache command");
+}
+
+#[test]
+fn operator_cli_promote_tactic_verification_kind_uses_ci_playbook() {
+    let project_dir = make_temp_project_dir("promote-tactic-verification-playbook");
+    write_compare_runs_fixture(&project_dir);
+
+    let json = run_json(
+        &project_dir,
+        &[
+            "promote-tactic",
+            "task:task-a",
+            "--kind",
+            "verification",
+            "--json",
+        ],
+    );
+
+    assert_eq!(json["candidate"]["kind"], "verification");
+    assert_eq!(json["candidate"]["playbook_template"]["flow"], "ci");
+    assert_eq!(
+        json["candidate"]["playbook_template"]["required_evidence"][0],
+        "workflow_status"
+    );
+}
+
+#[test]
+fn operator_cli_promote_tactic_review_next_action_uses_review_playbook() {
+    let project_dir = make_temp_project_dir("promote-tactic-review-playbook");
+    write_compare_runs_fixture(&project_dir);
+    let events_path = project_dir.join(".winsmux").join("events.jsonl");
+    let events = fs::read_to_string(&events_path)
+        .expect("test should read events")
+        .replace("\"next_action\":\"promote tactic\"", "\"next_action\":\"review findings\"");
+    fs::write(events_path, events).expect("test should write events");
+
+    let json = run_json(
+        &project_dir,
+        &["promote-tactic", "task:task-a", "--json"],
+    );
+
+    assert_eq!(json["candidate"]["playbook_template"]["flow"], "review");
+    assert_eq!(
+        json["candidate"]["playbook_template"]["required_evidence"][0],
+        "findings"
+    );
 }
 
 #[test]

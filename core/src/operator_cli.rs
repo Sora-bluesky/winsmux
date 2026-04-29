@@ -5918,6 +5918,27 @@ fn compare_runs_payload(
             })
             .unwrap_or(false)
     }) || !(left_recommendable && right_recommendable);
+    let playbook_template = if !winning_run_id.trim().is_empty() {
+        if winning_run_id == left.run.run_id {
+            playbook_template_contract(
+                &left.run,
+                &left.evidence_digest,
+                "compare_winner_follow_up",
+                "compare_runs",
+            )
+        } else {
+            playbook_template_contract(
+                &right.run,
+                &right.evidence_digest,
+                "compare_winner_follow_up",
+                "compare_runs",
+            )
+        }
+    } else if reconcile_consult {
+        compare_reconcile_playbook_template(&left.run, &right.run)
+    } else {
+        Value::Null
+    };
     let next_action = if left.evidence_digest.next_action == right.evidence_digest.next_action {
         left.evidence_digest.next_action.clone()
     } else {
@@ -5937,6 +5958,7 @@ fn compare_runs_payload(
             "winning_run_id": winning_run_id,
             "reconcile_consult": reconcile_consult,
             "next_action": next_action,
+            "playbook_template": playbook_template,
         },
     })
 }
@@ -6276,6 +6298,136 @@ fn run_recommendable(run: &crate::ledger::LedgerExplainRun) -> bool {
     )
 }
 
+fn run_playbook_flow(
+    run: &crate::ledger::LedgerExplainRun,
+    evidence_digest: &crate::ledger::LedgerDigestItem,
+    fallback: &str,
+) -> &'static str {
+    match fallback {
+        "ci" => return "ci",
+        "review" => return "review",
+        "ui" => return "ui",
+        "compare_winner_follow_up" => return "compare_winner_follow_up",
+        "conflict_resolution" => return "conflict_resolution",
+        _ => {}
+    }
+
+    let has_ci_path = evidence_digest.changed_files.iter().any(|path| {
+        path.starts_with(".github/")
+            || path.ends_with(".yml")
+            || path.ends_with(".yaml")
+            || path == "package.json"
+            || path == "package-lock.json"
+    });
+    if has_ci_path {
+        return "ci";
+    }
+    let next_action = format!(
+        "{} {}",
+        evidence_digest.next_action, run.experiment_packet.next_action
+    )
+    .to_ascii_lowercase();
+    if matches!(
+        run.review_state.as_str(),
+        "PENDING" | "FAIL" | "FAILED"
+    ) || next_action.contains("review")
+    {
+        return "review";
+    }
+    let has_ui_path = evidence_digest.changed_files.iter().any(|path| {
+        path.ends_with(".css")
+            || path.ends_with(".tsx")
+            || path.ends_with(".jsx")
+            || path.ends_with(".html")
+            || path.contains("ui")
+            || path.contains("desktop")
+            || path.contains("viewport")
+    });
+    if has_ui_path {
+        return "ui";
+    }
+    match fallback {
+        "ci" => "ci",
+        "review" => "review",
+        "ui" => "ui",
+        "compare_winner_follow_up" => "compare_winner_follow_up",
+        "conflict_resolution" => "conflict_resolution",
+        _ => "bugfix",
+    }
+}
+
+fn playbook_required_evidence(flow: &str) -> Vec<&'static str> {
+    match flow {
+        "ci" => vec!["workflow_status", "build_log", "rerun_evidence"],
+        "review" => vec!["findings", "review_decision", "evidence_refs"],
+        "ui" => vec![
+            "screenshot_or_manual_check",
+            "interaction_check",
+            "viewport_check",
+        ],
+        "compare_winner_follow_up" => {
+            vec!["winning_run", "comparison_evidence", "promotion_candidate"]
+        }
+        "conflict_resolution" => vec!["overlap_paths", "reconcile_consult", "human_decision"],
+        _ => vec!["reproduction", "fix", "regression_test"],
+    }
+}
+
+fn playbook_template_contract(
+    run: &crate::ledger::LedgerExplainRun,
+    evidence_digest: &crate::ledger::LedgerDigestItem,
+    flow: &str,
+    source: &str,
+) -> Value {
+    let resolved_flow = run_playbook_flow(run, evidence_digest, flow);
+    json!({
+        "contract_version": 1,
+        "packet_type": "playbook_template_contract",
+        "source": source,
+        "source_run_id": run.run_id,
+        "flow": resolved_flow,
+        "template_refs": [format!("playbook:{resolved_flow}")],
+        "role_policy": {
+            "builder": "implement smallest verified change",
+            "reviewer": "return findings first with evidence references",
+            "tester": "verify unit integration cli and contract coverage",
+        },
+        "required_evidence": playbook_required_evidence(resolved_flow),
+        "handoff_refs": run.handoff_refs,
+        "execution_backend": "operator_managed",
+        "backend_profile_required": false,
+        "freeform_body_stored": false,
+        "private_guidance_stored": false,
+        "local_reference_paths_stored": false,
+    })
+}
+
+fn compare_reconcile_playbook_template(
+    left_run: &crate::ledger::LedgerExplainRun,
+    right_run: &crate::ledger::LedgerExplainRun,
+) -> Value {
+    json!({
+        "contract_version": 1,
+        "packet_type": "playbook_template_contract",
+        "source": "compare_runs",
+        "source_run_id": "",
+        "flow": "conflict_resolution",
+        "template_refs": ["playbook:conflict_resolution"],
+        "role_policy": {
+            "builder": "prepare minimal conflict evidence",
+            "reviewer": "compare behavior and safety risks",
+            "tester": "verify both branches before choosing",
+        },
+        "required_evidence": playbook_required_evidence("conflict_resolution"),
+        "compare_run_ids": [left_run.run_id, right_run.run_id],
+        "execution_backend": "operator_managed",
+        "backend_profile_required": false,
+        "freeform_body_stored": false,
+        "private_guidance_stored": false,
+        "local_reference_paths_stored": false,
+    })
+}
+
 struct WrittenArtifact {
     path: String,
     reference: String,
@@ -6305,6 +6457,11 @@ fn promote_tactic_candidate(
     } else {
         experiment.result.clone()
     };
+    let playbook_flow = if options.kind == "verification" {
+        "ci"
+    } else {
+        ""
+    };
 
     json!({
         "run_id": run.run_id,
@@ -6327,6 +6484,7 @@ fn promote_tactic_candidate(
         "consultation_ref": experiment.consultation_ref,
         "verification_result": run.verification_result,
         "security_verdict": run.security_verdict,
+        "playbook_template": playbook_template_contract(run, &projection.evidence_digest, playbook_flow, "promote_tactic"),
         "action_item_count": run.action_items.len(),
         "action_item_kinds": action_item_kinds(&run.action_items),
         "reuse_conditions": reuse_conditions(run),

@@ -12977,6 +12977,16 @@ panes:
         $result.right_only_changed_files | Should -Be @('tests/winsmux-bridge.Tests.ps1')
         $result.recommend.winning_run_id | Should -Be 'task:task-compare-a'
         $result.recommend.reconcile_consult | Should -Be $true
+        $result.recommend.playbook_template.packet_type | Should -Be 'playbook_template_contract'
+        $result.recommend.playbook_template.flow | Should -Be 'compare_winner_follow_up'
+        $result.recommend.playbook_template.source_run_id | Should -Be 'task:task-compare-a'
+        $result.recommend.playbook_template.required_evidence | Should -Be @('winning_run', 'comparison_evidence', 'promotion_candidate')
+        $result.recommend.playbook_template.execution_backend | Should -Be 'operator_managed'
+        $result.recommend.playbook_template.backend_profile_required | Should -Be $false
+        $result.recommend.playbook_template.freeform_body_stored | Should -Be $false
+        $result.recommend.playbook_template.private_guidance_stored | Should -Be $false
+        $result.recommend.playbook_template.PSObject.Properties.Name | Should -Not -Contain 'freeform_body'
+        $result.recommend.playbook_template.PSObject.Properties.Name | Should -Not -Contain 'private_guidance'
         @($result.differences | ForEach-Object { $_.field }) | Should -Contain 'result'
         @($result.differences | ForEach-Object { $_.field }) | Should -Contain 'confidence'
         @($result.differences | ForEach-Object { $_.field }) | Should -Contain 'changed_files'
@@ -13176,6 +13186,10 @@ panes:
         $result.right.recommendable | Should -Be $false
         $result.recommend.winning_run_id | Should -Be ''
         $result.recommend.reconcile_consult | Should -Be $true
+        $result.recommend.playbook_template.flow | Should -Be 'conflict_resolution'
+        $result.recommend.playbook_template.compare_run_ids | Should -Be @('task:task-compare-a', 'task:task-compare-b')
+        $result.recommend.playbook_template.required_evidence | Should -Be @('overlap_paths', 'reconcile_consult', 'human_decision')
+        $result.recommend.playbook_template.freeform_body_stored | Should -Be $false
     }
 
     It 'exports a playbook candidate from a run and writes a file-backed artifact' {
@@ -13192,6 +13206,16 @@ panes:
         $result.candidate.changed_files | Should -Be @('scripts/winsmux-core.ps1')
         $result.candidate.observation_pack_ref | Should -Be $script:compareObsA.reference
         $result.candidate.consultation_ref | Should -Be $script:compareConsultA.reference
+        $result.candidate.playbook_template.packet_type | Should -Be 'playbook_template_contract'
+        $result.candidate.playbook_template.flow | Should -Be 'review'
+        $result.candidate.playbook_template.role_policy.reviewer | Should -Be 'return findings first with evidence references'
+        $result.candidate.playbook_template.required_evidence | Should -Be @('findings', 'review_decision', 'evidence_refs')
+        $result.candidate.playbook_template.execution_backend | Should -Be 'operator_managed'
+        $result.candidate.playbook_template.backend_profile_required | Should -Be $false
+        $result.candidate.playbook_template.freeform_body_stored | Should -Be $false
+        $result.candidate.playbook_template.private_guidance_stored | Should -Be $false
+        $result.candidate.playbook_template.PSObject.Properties.Name | Should -Not -Contain 'freeform_body'
+        $result.candidate.playbook_template.PSObject.Properties.Name | Should -Not -Contain 'private_guidance'
     }
 
     It 'fails closed for unsupported promote kind' {

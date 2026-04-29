@@ -7391,6 +7391,105 @@ function Test-RunPromotable {
     return (Test-RunRecommendable -Run $Run)
 }
 
+function Get-RunPlaybookFlow {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [AllowNull()]$EvidenceDigest = $null,
+        [string]$Fallback = 'bugfix'
+    )
+
+    $nextAction = [string](Get-RunContractField -InputObject $EvidenceDigest -Name 'next_action')
+    $reviewState = [string](Get-RunContractField -InputObject $Run -Name 'review_state')
+    $changedFiles = @(
+        foreach ($changedFile in @($Run.changed_files)) {
+            [string]$changedFile
+        }
+    )
+
+    if ($changedFiles | Where-Object { $_ -match '^\.github/' -or $_ -match '\.ya?ml$' -or $_ -match 'package(-lock)?\.json$' }) {
+        return 'ci'
+    }
+    if ($reviewState -in @('PENDING', 'FAIL', 'FAILED') -or $nextAction -match 'review') {
+        return 'review'
+    }
+    if ($changedFiles | Where-Object { $_ -match '\.(css|tsx|jsx|html)$' -or $_ -match 'ui|desktop|viewport' }) {
+        return 'ui'
+    }
+
+    return $Fallback
+}
+
+function New-RunPlaybookTemplate {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [AllowNull()]$EvidenceDigest = $null,
+        [string]$Flow = '',
+        [string]$Source = 'run'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Flow)) {
+        $Flow = Get-RunPlaybookFlow -Run $Run -EvidenceDigest $EvidenceDigest
+    }
+
+    $requiredEvidence = switch ($Flow) {
+        'ci' { @('workflow_status', 'build_log', 'rerun_evidence') }
+        'review' { @('findings', 'review_decision', 'evidence_refs') }
+        'ui' { @('screenshot_or_manual_check', 'interaction_check', 'viewport_check') }
+        'compare_winner_follow_up' { @('winning_run', 'comparison_evidence', 'promotion_candidate') }
+        'conflict_resolution' { @('overlap_paths', 'reconcile_consult', 'human_decision') }
+        default { @('reproduction', 'fix', 'regression_test') }
+    }
+
+    return [ordered]@{
+        contract_version          = 1
+        packet_type               = 'playbook_template_contract'
+        source                    = [string]$Source
+        source_run_id             = [string]$Run.run_id
+        flow                      = [string]$Flow
+        template_refs             = @("playbook:$Flow")
+        role_policy               = [ordered]@{
+            builder  = 'implement smallest verified change'
+            reviewer = 'return findings first with evidence references'
+            tester   = 'verify unit integration cli and contract coverage'
+        }
+        required_evidence         = @($requiredEvidence)
+        handoff_refs              = @($Run.handoff_refs)
+        execution_backend         = 'operator_managed'
+        backend_profile_required  = $false
+        freeform_body_stored      = $false
+        private_guidance_stored   = $false
+        local_reference_paths_stored = $false
+    }
+}
+
+function New-CompareReconcilePlaybookTemplate {
+    param(
+        [Parameter(Mandatory = $true)]$LeftRun,
+        [Parameter(Mandatory = $true)]$RightRun
+    )
+
+    return [ordered]@{
+        contract_version          = 1
+        packet_type               = 'playbook_template_contract'
+        source                    = 'compare_runs'
+        source_run_id             = ''
+        flow                      = 'conflict_resolution'
+        template_refs             = @('playbook:conflict_resolution')
+        role_policy               = [ordered]@{
+            builder  = 'prepare minimal conflict evidence'
+            reviewer = 'compare behavior and safety risks'
+            tester   = 'verify both branches before choosing'
+        }
+        required_evidence         = @('overlap_paths', 'reconcile_consult', 'human_decision')
+        compare_run_ids           = @([string]$LeftRun.run_id, [string]$RightRun.run_id)
+        execution_backend         = 'operator_managed'
+        backend_profile_required  = $false
+        freeform_body_stored      = $false
+        private_guidance_stored   = $false
+        local_reference_paths_stored = $false
+    }
+}
+
 function ConvertTo-CompareRunsPayload {
     param(
         [Parameter(Mandatory = $true)]$LeftPayload,
@@ -7482,6 +7581,21 @@ function ConvertTo-CompareRunsPayload {
         }
     }
 
+    $reconcileConsult = [bool](
+        @($differences | Where-Object { $_.field -in @('branch', 'worktree', 'env_fingerprint', 'command_hash', 'result') }).Count -gt 0 -or
+        -not ($leftRecommendable -and $rightRecommendable)
+    )
+    $recommendedPlaybook = $null
+    if (-not [string]::IsNullOrWhiteSpace($winningRunId)) {
+        if ($winningRunId -eq [string]$leftRun.run_id) {
+            $recommendedPlaybook = New-RunPlaybookTemplate -Run $leftRun -EvidenceDigest $leftEvidence -Flow 'compare_winner_follow_up' -Source 'compare_runs'
+        } else {
+            $recommendedPlaybook = New-RunPlaybookTemplate -Run $rightRun -EvidenceDigest $rightEvidence -Flow 'compare_winner_follow_up' -Source 'compare_runs'
+        }
+    } elseif ($reconcileConsult) {
+        $recommendedPlaybook = New-CompareReconcilePlaybookTemplate -LeftRun $leftRun -RightRun $rightRun
+    }
+
     return [ordered]@{
         generated_at = (Get-Date).ToString('o')
         left = [ordered]@{
@@ -7519,11 +7633,9 @@ function ConvertTo-CompareRunsPayload {
         differences = @($differences)
         recommend = [ordered]@{
             winning_run_id = $winningRunId
-            reconcile_consult = [bool](
-                @($differences | Where-Object { $_.field -in @('branch', 'worktree', 'env_fingerprint', 'command_hash', 'result') }).Count -gt 0 -or
-                -not ($leftRecommendable -and $rightRecommendable)
-            )
+            reconcile_consult = $reconcileConsult
             next_action = if ([string]$leftEvidence.next_action -eq [string]$rightEvidence.next_action) { [string]$leftEvidence.next_action } else { 'reconcile_consult' }
+            playbook_template = $recommendedPlaybook
         }
     }
 }
@@ -7552,6 +7664,10 @@ function Get-PromoteTacticPayload {
             $Title = "Tactic from $([string]$run.run_id)"
         }
     }
+    $playbookFlow = ''
+    if ([string]$Kind -eq 'verification') {
+        $playbookFlow = 'ci'
+    }
 
     return [ordered]@{
         run_id               = [string]$run.run_id
@@ -7575,6 +7691,7 @@ function Get-PromoteTacticPayload {
         verification_result  = $run.verification_result
         verification_evidence = $run.verification_evidence
         security_verdict     = $run.security_verdict
+        playbook_template    = New-RunPlaybookTemplate -Run $run -EvidenceDigest $evidenceDigest -Flow $playbookFlow -Source 'promote_tactic'
         action_item_count    = @($run.action_items).Count
         action_item_kinds    = @($run.action_items | ForEach-Object { [string]$_.kind } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)
         reuse_conditions     = @(
