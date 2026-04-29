@@ -605,7 +605,7 @@ panes:
     head_sha: abc1234def5678
 "#;
     let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pane.approval_waiting","message":"approval prompt detected","label":"builder-1","pane_id":"%2","role":"Builder","status":"approval_waiting","data":{"task_id":"task-256"}}
-{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","data":{"task_id":"task-256","verification_contract":{"command":"cargo test","build":{"command":"cargo build","outcome":"PASS"},"test":{"command":"cargo test","outcome":"PASS"},"context_budget":120000,"context_estimate":42000,"context_pack_id":"ctx-task-256","context_pack_version":"1","tool_output_pruned_count":2,"context_pressure":"medium","context_mode":"isolated","semantic_context_pack_id":"sem-task-256","semantic_context_pack_ref":"context-packs/sem-task-256.json","source_refs":["ADR-001","docs/operator-model.md#context"],"hard_constraints":["do not store prompt bodies"],"safety_rules":["keep local paths out"],"performance_budget":{"max_context_tokens":42000},"rationale":"keep worker context scoped"},"verification_result":{"outcome":"PASS","browser":{"required":false,"outcome":"SKIPPED"},"screenshot":{"required":false,"artifact_ref":""},"recording":{"required":false,"artifact_ref":""}}}}
+{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed after drift retry","data":{"task_id":"task-256","attempt":2,"verification_contract":{"command":"cargo test","build":{"command":"cargo build","outcome":"PASS"},"test":{"command":"cargo test","outcome":"PASS"},"context_budget":120000,"context_estimate":42000,"context_pack_id":"ctx-task-256","context_pack_version":"1","tool_output_pruned_count":2,"context_pressure":"medium","context_mode":"isolated","semantic_context_pack_id":"sem-task-256","semantic_context_pack_ref":"context-packs/sem-task-256.json","source_refs":["ADR-001","docs/operator-model.md#context"],"hard_constraints":["do not store prompt bodies"],"safety_rules":["keep local paths out"],"performance_budget":{"max_context_tokens":42000},"rationale":"keep worker context scoped"},"verification_result":{"outcome":"PASS","browser":{"required":false,"outcome":"SKIPPED"},"screenshot":{"required":false,"artifact_ref":""},"recording":{"required":false,"artifact_ref":""}}}}
 {"timestamp":"2026-04-23T12:00:03+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","data":{"task_id":"task-256","verdict":"ALLOW"}}
 {"timestamp":"2026-04-23T12:00:04+09:00","session":"winsmux-orchestra","event":"pane.consult_result","message":"experiment result","label":"builder-1","pane_id":"%2","role":"Builder","data":{"task_id":"task-256","hypothesis":"projection can explain the run","test_plan":["load manifest","match events"],"result":"explain payload built","confidence":0.66,"next_action":"approval_waiting","observation_pack_ref":"observations/task-256.json","consultation_ref":"consultations/task-256.json","run_id":"task:task-256","slot":"builder-1","worktree":".worktrees/builder-1","env_fingerprint":"env-123","command_hash":"cmd-456","observation_pack":{"summary":"ok"},"consultation_packet":{"review":"ok"}}}
 {"timestamp":"2026-04-23T12:00:05+09:00","session":"winsmux-orchestra","event":"pane.consult_request","message":"new action only","label":"builder-1","pane_id":"%2","role":"Builder","data":{"task_id":"task-256","next_action":"review_requested"}}
@@ -731,6 +731,21 @@ panes:
     assert_eq!(
         explain.run.context_contract["local_reference_paths_stored"],
         false
+    );
+    assert_eq!(explain.run.run_insights["retry_count"], 1);
+    assert_eq!(
+        explain.run.run_insights["drift_signals"][0],
+        "drift_detected"
+    );
+    assert!(
+        explain.run.run_insights["intervention_count"]
+            .as_u64()
+            .expect("intervention count should be numeric")
+            >= 1
+    );
+    assert_eq!(
+        explain.run.run_insights["next_improvements"][0],
+        "reduce retry loop before the next run"
     );
     assert_eq!(explain.run.audit_chain["chain_id"], "task:task-256");
     assert_eq!(
@@ -1072,6 +1087,8 @@ fn ledger_contract_serializes_typed_cli_payload_roots() {
     assert!(runs["runs"].as_array().unwrap().iter().any(|run| {
         run["verification_envelope"]["packet_type"] == "verification_envelope"
             && run["run_packet"]["verification_envelope"]["packet_type"] == "verification_envelope"
+            && run["run_insights"]["packet_type"] == "run_insights"
+            && run["run_packet"]["run_insights"]["packet_type"] == "run_insights"
     }));
 
     let explain_projection = snapshot
@@ -1101,6 +1118,10 @@ fn ledger_contract_serializes_typed_cli_payload_roots() {
         ],
     );
     assert_eq!(explain["run"]["run_id"], "task:task-256");
+    assert_eq!(
+        explain["run"]["run_insights"]["packet_type"],
+        "run_insights"
+    );
 }
 
 #[test]

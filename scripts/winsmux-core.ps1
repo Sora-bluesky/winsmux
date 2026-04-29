@@ -6248,6 +6248,121 @@ function New-RunPhaseGateContract {
     }
 }
 
+function Add-RunInsightText {
+    param(
+        [Parameter(Mandatory = $true)]$List,
+        [AllowNull()]$Value
+    )
+
+    $text = ([string]$Value).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($text) -and -not $List.Contains($text)) {
+        $List.Add($text) | Out-Null
+    }
+}
+
+function Get-RunEventAttempt {
+    param([Parameter(Mandatory = $true)]$EventRecord)
+
+    $data = if ($EventRecord.Contains('data')) { $EventRecord['data'] } else { $null }
+    if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('attempt')) {
+        $attempt = 0
+        if ([int]::TryParse(([string]$data['attempt']), [ref]$attempt)) {
+            return $attempt
+        }
+    }
+
+    return 0
+}
+
+function New-RunInsightsContract {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [AllowEmptyCollection()]
+        [object[]]$EventRecords = @()
+    )
+
+    $driftSignals = [System.Collections.Generic.List[string]]::new()
+    $blockedReasons = [System.Collections.Generic.List[string]]::new()
+    $nextImprovements = [System.Collections.Generic.List[string]]::new()
+
+    $retryCount = 0
+    $interventionCount = @($Run.action_items).Count
+
+    foreach ($eventRecord in @($EventRecords)) {
+        $eventText = ("{0} {1} {2}" -f [string]$eventRecord['event'], [string]$eventRecord['message'], [string]$eventRecord['status']).ToLowerInvariant()
+        $nextAction = ''
+        $data = if ($eventRecord.Contains('data')) { $eventRecord['data'] } else { $null }
+        if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('next_action')) {
+            $nextAction = [string]$data['next_action']
+        }
+        $retryText = ("{0} {1}" -f $eventText, $nextAction).ToLowerInvariant()
+        if ($retryText.Contains('retry') -or $retryText.Contains('rerun') -or (Get-RunEventAttempt -EventRecord $eventRecord) -gt 1) {
+            $retryCount++
+        }
+
+        if ($eventText.Contains('drift')) {
+            Add-RunInsightText -List $driftSignals -Value 'drift_detected'
+        }
+        if ($eventText.Contains('stale')) {
+            Add-RunInsightText -List $driftSignals -Value 'stale_state'
+        }
+        if ($eventText.Contains('mismatch')) {
+            Add-RunInsightText -List $driftSignals -Value 'state_mismatch'
+        }
+        if ($eventText.Contains('approval') -or $eventText.Contains('review_requested') -or $eventText.Contains('question') -or $eventText.Contains('user')) {
+            $interventionCount++
+        }
+    }
+
+    Add-RunInsightText -List $blockedReasons -Value (Get-RunContractField -InputObject $Run.phase_gate -Name 'stop_reason')
+    if ([string](Get-RunContractField -InputObject $Run.draft_pr_gate -Name 'state') -eq 'blocked') {
+        Add-RunInsightText -List $blockedReasons -Value 'draft_pr_gate_blocked'
+    }
+    if ([string](Get-RunContractField -InputObject $Run.tdd_gate -Name 'state') -eq 'blocked') {
+        Add-RunInsightText -List $blockedReasons -Value 'tdd_gate_blocked'
+    }
+    if (([string](Get-RunContractField -InputObject $Run.verification_result -Name 'outcome')).ToUpperInvariant() -eq 'FAIL') {
+        Add-RunInsightText -List $blockedReasons -Value 'verification_failed'
+    }
+    if (([string](Get-RunContractField -InputObject $Run.security_verdict -Name 'verdict')).ToUpperInvariant() -eq 'BLOCK') {
+        Add-RunInsightText -List $blockedReasons -Value 'security_blocked'
+    }
+
+    $contextPressure = ([string](Get-RunContractField -InputObject $Run.verification_evidence -Name 'context_pressure')).ToLowerInvariant()
+    $unhealthySessionSize = (
+        [int]$Run.pane_count -gt 8 -or
+        [int]$Run.changed_file_count -gt 20 -or
+        $contextPressure -in @('high', 'critical', 'exhausted')
+    )
+
+    if ($retryCount -gt 0) {
+        Add-RunInsightText -List $nextImprovements -Value 'reduce retry loop before the next run'
+    }
+    if ($driftSignals.Count -gt 0) {
+        Add-RunInsightText -List $nextImprovements -Value 'refresh session state before continuing'
+    }
+    if ($interventionCount -gt 0) {
+        Add-RunInsightText -List $nextImprovements -Value 'capture operator decisions as reusable guidance'
+    }
+    if ($unhealthySessionSize) {
+        Add-RunInsightText -List $nextImprovements -Value 'split the next run into a smaller scope'
+    }
+    if ($blockedReasons.Count -gt 0) {
+        Add-RunInsightText -List $nextImprovements -Value 'resolve blocked reasons before release'
+    }
+
+    return [ordered]@{
+        packet_type            = 'run_insights'
+        scope                  = 'run'
+        retry_count            = $retryCount
+        drift_signals          = @($driftSignals)
+        intervention_count     = $interventionCount
+        unhealthy_session_size = [bool]$unhealthySessionSize
+        blocked_reasons        = @($blockedReasons)
+        next_improvements      = @($nextImprovements)
+    }
+}
+
 function Get-RunContractField {
     param(
         [AllowNull()]$InputObject,
@@ -6602,6 +6717,7 @@ function New-RunPacketFromRun {
         verification_result   = $Run.verification_result
         verification_evidence = $Run.verification_evidence
         context_contract      = $Run.context_contract
+        run_insights          = $Run.run_insights
         tdd_gate              = $Run.tdd_gate
         verification_envelope = $Run.verification_envelope
         plan              = $Run.plan
@@ -6686,6 +6802,7 @@ function New-RunResultPacket {
         verification_result   = $Run.verification_result
         verification_evidence = $Run.verification_evidence
         context_contract      = $Run.context_contract
+        run_insights          = $Run.run_insights
         tdd_gate              = $Run.tdd_gate
         verification_envelope = $Run.verification_envelope
         security_policy       = $Run.security_policy
@@ -6951,6 +7068,7 @@ function Get-RunsPayload {
                 verification_result   = $null
                 verification_evidence = $null
                 context_contract      = $null
+                run_insights          = $null
                 plan                  = $null
                 plan_checkpoints      = @()
                 managed_loop          = $null
@@ -7123,6 +7241,7 @@ function Get-RunsPayload {
             $run.audit_chain = New-RunAuditChainContract -Run $run -EventRecords $runEvents
             $run.verification_envelope = New-RunVerificationEnvelope -Run $run
             $run.outcome = New-RunOutcomeContract -Run $run
+            $run.run_insights = New-RunInsightsContract -Run $run -EventRecords $runEvents
             $nextAction = Get-RunNextAction -Run $run
             $stateModel = New-RunStateModel -State ([string]$run.state) -TaskState ([string]$run.task_state) -ReviewState ([string]$run.review_state) -EventKind $nextAction -LastEvent ([string]$run.last_event)
             [ordered]@{
@@ -7173,6 +7292,7 @@ function Get-RunsPayload {
                 verification_result   = $run.verification_result
                 verification_evidence = $run.verification_evidence
                 context_contract      = $run.context_contract
+                run_insights          = $run.run_insights
                 tdd_gate              = $run.tdd_gate
                 verification_envelope = $run.verification_envelope
                 plan                  = $run.plan
