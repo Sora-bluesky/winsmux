@@ -2217,6 +2217,7 @@ fn run_phase_gate_value(
                 "",
             );
             stop_reason = "needs_user_decision".to_string();
+            stop_stage = "package".to_string();
         }
     } else if run.review_state == "PENDING" {
         set_run_phase_stage(
@@ -2229,6 +2230,7 @@ fn run_phase_gate_value(
     } else if matches!(run.review_state.as_str(), "FAIL" | "FAILED") {
         set_run_phase_stage(&mut stages, "review", "blocked", "review_failed", "");
         stop_reason = "review_failed".to_string();
+        stop_stage = "review".to_string();
     }
 
     if matches!(
@@ -2239,12 +2241,14 @@ fn run_phase_gate_value(
         set_run_phase_stage(&mut stages, "package", "completed", &run.task_state, "");
         if matches!(run.task_state.as_str(), "commit_ready" | "done") {
             stop_reason.clear();
+            stop_stage.clear();
         }
     }
 
     if value_field_string(&run.tdd_gate, "state") == "blocked" {
         set_run_phase_stage(&mut stages, "test", "blocked", "tdd_evidence_missing", "");
         stop_reason = "tdd_evidence_missing".to_string();
+        stop_stage = "test".to_string();
     }
 
     let current_stage = stages
@@ -2272,6 +2276,7 @@ fn run_phase_gate_value(
         "stages": stage_values,
         "stop_required": stop_required,
         "stop_reason": stop_reason,
+        "stop_stage": stop_stage,
         "auto_continue_allowed": !stop_required,
         "requires_human_decision": matches!(stop_reason.as_str(), "needs_user_decision" | "draft_pr"),
     })

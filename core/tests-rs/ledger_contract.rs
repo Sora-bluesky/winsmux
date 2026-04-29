@@ -729,6 +729,10 @@ panes:
         explain.run.verification_envelope["dynamic_gates"]["phase"]["stop_reason"],
         "needs_user_decision"
     );
+    assert_eq!(
+        explain.run.verification_envelope["dynamic_gates"]["phase"]["stop_stage"],
+        "package"
+    );
     assert!(explain.run.verification_envelope["release_decision"]["blocked_reasons"]
         .as_array()
         .expect("blocked reasons should be an array")
@@ -1100,10 +1104,34 @@ panes:
         .as_array()
         .expect("blocked reasons should be an array");
     assert!(reasons.iter().any(|reason| reason == "draft PR gate is required"));
-    assert!(reasons.iter().any(|reason| reason
-        .as_str()
-        .expect("blocked reason should be a string")
-        .starts_with("phase gate stopped at ")));
+    assert!(reasons
+        .iter()
+        .any(|reason| reason == "phase gate stopped at package: needs_user_decision"));
+
+    let runs = serde_json::to_value(ledger::LedgerRunsPayload::from_snapshot(
+        "2026-04-27T00:00:00Z".to_string(),
+        "C:\\repo".to_string(),
+        &snapshot,
+    ))
+    .expect("runs payload should serialize");
+    let gated_run = runs["runs"]
+        .as_array()
+        .expect("runs should be an array")
+        .iter()
+        .find(|run| run["run_id"] == "task:task-approved-no-pr")
+        .expect("gated run should be present");
+    assert_eq!(
+        gated_run["verification_envelope"]["release_decision"]["status"],
+        "blocked"
+    );
+    assert_eq!(
+        gated_run["run_packet"]["verification_envelope"]["release_decision"]["status"],
+        "blocked"
+    );
+    assert_eq!(
+        gated_run["verification_envelope"]["dynamic_gates"]["phase"]["stop_stage"],
+        "package"
+    );
 }
 
 #[test]

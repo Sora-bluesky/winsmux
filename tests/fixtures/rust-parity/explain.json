@@ -236,6 +236,7 @@
           ],
           "stop_required": false,
           "stop_reason": "",
+          "stop_stage": "",
           "auto_continue_allowed": true,
           "requires_human_decision": false
         },
@@ -474,6 +475,7 @@
       ],
       "stop_required": false,
       "stop_reason": "",
+      "stop_stage": "",
       "auto_continue_allowed": true,
       "requires_human_decision": false
     },

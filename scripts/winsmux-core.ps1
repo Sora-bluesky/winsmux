@@ -6231,6 +6231,7 @@ function New-RunPhaseGateContract {
         stages                  = $stages
         stop_required           = -not [string]::IsNullOrWhiteSpace($stopReason)
         stop_reason             = $stopReason
+        stop_stage              = $stopStage
         auto_continue_allowed   = [string]::IsNullOrWhiteSpace($stopReason)
         requires_human_decision = $stopReason -in @('needs_user_decision', 'draft_pr')
     }
