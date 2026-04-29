@@ -160,6 +160,10 @@ Canary requirements:
 
 `TASK-407` should classify Pester files before deleting or rewriting them.
 
+The release-sized plan is tracked in `docs/project/pester-suite-reduction-plan.md`.
+The machine-readable inventory is `docs/project/pester-suite-inventory.json`.
+Validate it with `scripts/validate-pester-reduction-plan.ps1`.
+
 Minimum classification buckets:
 
 - `keep-smoke`: Windows setup, installer, compatibility alias, git-guard, public-surface, and release smoke tests that are still best exercised through PowerShell.

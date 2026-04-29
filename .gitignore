@@ -24,6 +24,8 @@ docs/project/
 !docs/project/
 docs/project/*
 !docs/project/README.md
+!docs/project/pester-suite-inventory.json
+!docs/project/pester-suite-reduction-plan.md
 !docs/project/powershell-adapter-inventory.md
 !docs/project/rust-schema-freeze-inventory.md
 !docs/project/upstream-reevaluation-gate.md
