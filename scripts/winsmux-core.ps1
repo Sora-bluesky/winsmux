@@ -4791,6 +4791,10 @@ function New-RunStateModel {
         $phase = 'package'
         $activity = 'completed'
         $detail = if (-not [string]::IsNullOrWhiteSpace($kindText)) { $kindText } else { 'task_completed' }
+    } elseif ($kindText -eq 'needs_user_decision' -or $kindText -eq 'draft_pr_required' -or $eventText -eq 'operator.draft_pr.required') {
+        $phase = 'package'
+        $activity = 'waiting_for_input'
+        $detail = 'needs_user_decision'
     } elseif ($reviewText -in @('FAIL', 'FAILED') -or $kindText -in @('review_failed')) {
         $phase = 'review'
         $activity = 'blocked'
@@ -4802,7 +4806,7 @@ function New-RunStateModel {
     } elseif ($reviewText -eq 'PASS') {
         $phase = 'package'
         $activity = 'waiting_for_input'
-        $detail = 'draft_pr_required'
+        $detail = 'needs_user_decision'
     } elseif ($taskText -eq 'blocked' -or $kindText -in @('blocked', 'task_blocked') -or $eventText -like '*blocked*') {
         $phase = 'build'
         $activity = 'blocked'
@@ -5028,6 +5032,7 @@ function Get-InboxPriority {
         'hung'             { return 0 }
         'stalled'          { return 0 }
         'approval_waiting' { return 1 }
+        'needs_user_decision' { return 1 }
         'review_requested' { return 1 }
         'review_pending'   { return 1 }
         'dispatch_needed'  { return 2 }
@@ -5134,7 +5139,7 @@ function Get-InboxActionableEventKind {
         'operator.review_failed'    { return 'review_failed' }
         'operator.blocked'          { return 'blocked' }
         'operator.commit_ready'     { return 'commit_ready' }
-        'operator.draft_pr.required' { return 'blocked' }
+        'operator.draft_pr.required' { return 'needs_user_decision' }
         'pipeline.security.blocked'  { return 'blocked' }
         'security.policy.blocked'    { return 'blocked' }
         default                      { return '' }
@@ -5488,8 +5493,11 @@ function ConvertTo-RunCheckpointStatus {
     if ($EventName -in @('pipeline.verify.pass', 'pipeline.security.allowed', 'security.policy.allowed', 'operator.draft_pr.created', 'pipeline.decompose.completed', 'pipeline.dispatch.assigned', 'pipeline.collect.completed')) {
         return 'completed'
     }
-    if ($EventName -in @('pipeline.verify.fail', 'pipeline.security.blocked', 'security.policy.blocked', 'operator.review_failed', 'operator.draft_pr.required')) {
+    if ($EventName -in @('pipeline.verify.fail', 'pipeline.security.blocked', 'security.policy.blocked', 'operator.review_failed')) {
         return 'blocked'
+    }
+    if ($EventName -eq 'operator.draft_pr.required') {
+        return 'needs_user_decision'
     }
     if ($EventName -in @('pipeline.verify.partial', 'operator.review_requested', 'pane.approval_waiting', 'pipeline.escalate.required')) {
         return 'waiting'
@@ -5702,9 +5710,18 @@ function New-RunPlanContract {
 function New-RunOutcomeContract {
     param([Parameter(Mandatory = $true)]$Run)
 
+    $phaseGate = Get-RunContractField -InputObject $Run -Name 'phase_gate'
+    $draftPrGate = Get-RunContractField -InputObject $Run -Name 'draft_pr_gate'
+    $phaseGateStopReason = [string](Get-RunContractField -InputObject $phaseGate -Name 'stop_reason')
+    $draftPrGateState = [string](Get-RunContractField -InputObject $draftPrGate -Name 'state')
+
     $status = ''
     if ([string]$Run.review_state -in @('FAIL', 'FAILED')) {
         $status = 'failed'
+    } elseif ($phaseGateStopReason -eq 'needs_user_decision') {
+        $status = 'needs_user_decision'
+    } elseif ([string]$Run.review_state -eq 'PASS' -and $draftPrGateState -ne 'passed') {
+        $status = 'needs_user_decision'
     } elseif ([string]$Run.review_state -eq 'PASS' -or [string]$Run.task_state -in @('completed', 'task_completed', 'commit_ready', 'done')) {
         $status = 'completed'
     } elseif ([string]$Run.task_state -eq 'blocked') {
@@ -5734,6 +5751,152 @@ function New-RunOutcomeContract {
         reason      = $reason
         confidence  = $confidence
         source_event = [string]$Run.last_event
+    }
+}
+
+function Set-RunPhaseGateStage {
+    param(
+        [Parameter(Mandatory = $true)]$StagesByName,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Status,
+        [string]$Reason = '',
+        [string]$Event = ''
+    )
+
+    if (-not $StagesByName.Contains($Name)) {
+        return
+    }
+
+    $stage = $StagesByName[$Name]
+    $stage.status = $Status
+    if (-not [string]::IsNullOrWhiteSpace($Reason)) {
+        $stage.reason = $Reason
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Event)) {
+        $stage.event = $Event
+    }
+}
+
+function New-RunPhaseGateContract {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [object[]]$EventRecords = @()
+    )
+
+    $stageOrder = @('plan', 'build', 'test', 'review', 'package')
+    $stagesByName = [ordered]@{}
+    foreach ($stageName in $stageOrder) {
+        $stagesByName[$stageName] = [ordered]@{
+            stage  = $stageName
+            status = 'pending'
+            reason = ''
+            event  = ''
+        }
+    }
+
+    $runGoal = [string](Get-RunContractField -InputObject $Run -Name 'goal')
+    $runTaskState = [string](Get-RunContractField -InputObject $Run -Name 'task_state')
+    $runReviewState = [string](Get-RunContractField -InputObject $Run -Name 'review_state')
+    $runVerificationPlanRaw = Get-RunContractField -InputObject $Run -Name 'verification_plan'
+    $runVerificationPlan = if ($null -eq $runVerificationPlanRaw -or [string]::IsNullOrWhiteSpace([string]$runVerificationPlanRaw)) { @() } else { @($runVerificationPlanRaw) }
+
+    if (-not [string]::IsNullOrWhiteSpace($runGoal) -or @($runVerificationPlan).Count -gt 0) {
+        Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'plan' -Status 'completed' -Reason 'run_plan_recorded'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($runTaskState)) {
+        Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'build' -Status 'in_progress' -Reason $runTaskState
+    }
+
+    $stopReason = ''
+    $stopStage = ''
+    $currentStage = 'plan'
+    $runHeadSha = [string](Get-RunContractField -InputObject $Run -Name 'head_sha')
+    foreach ($eventRecord in @($EventRecords | Sort-Object @{ Expression = { Get-RunEventTimestampSortKey -Value $_['timestamp'] } }, @{ Expression = { [int]$_.line_number } })) {
+        $eventName = [string]$eventRecord['event']
+        switch ($eventName) {
+            'pipeline.decompose.completed' { Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'plan' -Status 'completed' -Reason 'decomposed' -Event $eventName }
+            'pipeline.dispatch.assigned' { Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'build' -Status 'in_progress' -Reason 'assigned' -Event $eventName }
+            'pipeline.collect.completed' { Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'build' -Status 'completed' -Reason 'collected' -Event $eventName }
+            'pipeline.verify.pass' {
+                Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'test' -Status 'completed' -Reason 'verification_passed' -Event $eventName
+                if ($stopStage -eq 'test') {
+                    $stopReason = ''
+                    $stopStage = ''
+                }
+            }
+            'pipeline.verify.fail' { Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'test' -Status 'blocked' -Reason 'verification_failed' -Event $eventName; $stopReason = 'verification_failed'; $stopStage = 'test' }
+            'pipeline.verify.partial' { Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'test' -Status 'waiting_for_input' -Reason 'verification_partial' -Event $eventName; $stopReason = 'needs_user_decision'; $stopStage = 'test' }
+            'operator.review_requested' { Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'review' -Status 'waiting_for_input' -Reason 'review_requested' -Event $eventName }
+            'operator.review_failed' { Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'review' -Status 'blocked' -Reason 'review_failed' -Event $eventName; $stopReason = 'review_failed'; $stopStage = 'review' }
+            'pipeline.escalate.required' { Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'review' -Status 'waiting_for_input' -Reason 'needs_user_decision' -Event $eventName; $stopReason = 'needs_user_decision'; $stopStage = 'review' }
+            'operator.draft_pr.required' { Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'package' -Status 'waiting_for_input' -Reason 'needs_user_decision' -Event $eventName; $stopReason = 'needs_user_decision'; $stopStage = 'package' }
+            'operator.draft_pr.created' {
+                $draftPrEventMatchesHead = $true
+                if (-not [string]::IsNullOrWhiteSpace($runHeadSha)) {
+                    $eventHeadSha = [string]$eventRecord['head_sha']
+                    $eventData = $eventRecord['data']
+                    if ([string]::IsNullOrWhiteSpace($eventHeadSha) -and $null -ne $eventData -and $eventData -is [System.Collections.IDictionary] -and $eventData.Contains('head_sha')) {
+                        $eventHeadSha = [string]$eventData['head_sha']
+                    }
+                    $draftPrEventMatchesHead = (-not [string]::IsNullOrWhiteSpace($eventHeadSha) -and $eventHeadSha -eq $runHeadSha)
+                }
+                if ($draftPrEventMatchesHead) {
+                    Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'package' -Status 'waiting_for_input' -Reason 'draft_pr' -Event $eventName
+                    $stopReason = 'draft_pr'
+                    $stopStage = 'package'
+                }
+            }
+            'operator.commit_ready' { Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'package' -Status 'completed' -Reason 'commit_ready' -Event $eventName; $stopReason = ''; $stopStage = '' }
+        }
+    }
+
+    if ($runReviewState -eq 'PASS') {
+        Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'review' -Status 'completed' -Reason 'review_passed'
+        if ($stopStage -eq 'review') {
+            $stopReason = ''
+            $stopStage = ''
+        }
+        $draftPrGate = Get-RunContractField -InputObject $Run -Name 'draft_pr_gate'
+        $draftPrGateState = [string](Get-RunContractField -InputObject $draftPrGate -Name 'state')
+        if (-not [string]::IsNullOrWhiteSpace($draftPrGateState) -and $draftPrGateState -ne 'passed') {
+            Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'package' -Status 'waiting_for_input' -Reason 'needs_user_decision'
+            $stopReason = 'needs_user_decision'
+            $stopStage = 'package'
+        }
+    } elseif ($runReviewState -eq 'PENDING') {
+        Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'review' -Status 'waiting_for_input' -Reason 'review_pending'
+    } elseif ($runReviewState -in @('FAIL', 'FAILED')) {
+        Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'review' -Status 'blocked' -Reason 'review_failed'
+        $stopReason = 'review_failed'
+        $stopStage = 'review'
+    }
+
+    if ($runTaskState -in @('completed', 'task_completed', 'commit_ready', 'done')) {
+        Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'build' -Status 'completed' -Reason $runTaskState
+        Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'package' -Status 'completed' -Reason $runTaskState
+        if ($runTaskState -in @('commit_ready', 'done')) {
+            $stopReason = ''
+            $stopStage = ''
+        }
+    }
+
+    $stages = @($stageOrder | ForEach-Object { $stagesByName[$_] })
+    for ($i = $stageOrder.Count - 1; $i -ge 0; $i--) {
+        $candidate = $stagesByName[$stageOrder[$i]]
+        if ([string]$candidate.status -ne 'pending') {
+            $currentStage = [string]$candidate.stage
+            break
+        }
+    }
+
+    return [ordered]@{
+        order                   = $stageOrder
+        current_stage           = $currentStage
+        stages                  = $stages
+        stop_required           = -not [string]::IsNullOrWhiteSpace($stopReason)
+        stop_reason             = $stopReason
+        auto_continue_allowed   = [string]::IsNullOrWhiteSpace($stopReason)
+        requires_human_decision = $stopReason -in @('needs_user_decision', 'draft_pr')
     }
 }
 
@@ -5845,7 +6008,21 @@ function New-RunDraftPrGate {
         [object[]]$EventRecords = @()
     )
 
-    $draftPrEvent = @($EventRecords | Where-Object { [string]($_['event']) -eq 'operator.draft_pr.created' } | Sort-Object @{ Expression = { Get-RunEventTimestampSortKey -Value $_['timestamp'] }; Descending = $true }, @{ Expression = { [int]($_['line_number']) }; Descending = $true } | Select-Object -First 1)
+    $runHeadSha = [string](Get-RunContractField -InputObject $Run -Name 'head_sha')
+    $draftPrEvent = @($EventRecords | Where-Object {
+        if ([string]($_['event']) -ne 'operator.draft_pr.created') {
+            return $false
+        }
+        if ([string]::IsNullOrWhiteSpace($runHeadSha)) {
+            return $true
+        }
+        $eventHeadSha = [string]$_['head_sha']
+        $eventData = $_['data']
+        if ([string]::IsNullOrWhiteSpace($eventHeadSha) -and $null -ne $eventData -and $eventData -is [System.Collections.IDictionary] -and $eventData.Contains('head_sha')) {
+            $eventHeadSha = [string]$eventData['head_sha']
+        }
+        return (-not [string]::IsNullOrWhiteSpace($eventHeadSha) -and $eventHeadSha -eq $runHeadSha)
+    } | Sort-Object @{ Expression = { Get-RunEventTimestampSortKey -Value $_['timestamp'] }; Descending = $true }, @{ Expression = { [int]($_['line_number']) }; Descending = $true } | Select-Object -First 1)
     $state = 'required'
     $trigger = 'review_state'
     $draftPrUrl = ''
@@ -5918,6 +6095,7 @@ function New-RunPacketFromRun {
         plan_checkpoints  = @($Run.plan_checkpoints)
         managed_loop      = $Run.managed_loop
         outcome           = $Run.outcome
+        phase_gate        = $Run.phase_gate
         draft_pr_gate     = $Run.draft_pr_gate
         last_event        = [string]$Run.last_event
         last_event_at     = [string]$Run.last_event_at
@@ -5997,6 +6175,7 @@ function New-RunResultPacket {
         plan                  = $Run.plan
         plan_checkpoints      = @($Run.plan_checkpoints)
         outcome               = $Run.outcome
+        phase_gate            = $Run.phase_gate
         draft_pr_gate         = $Run.draft_pr_gate
         recent_events         = @($RecentEvents)
     }
@@ -6400,9 +6579,11 @@ function Get-RunsPayload {
     $runs = @(
         foreach ($runId in @($runsById.Keys)) {
             $run = $runsById[$runId]
+            $runEvents = @($eventRecords | Where-Object { Test-RunMatchesEventRecord -Run $run -EventRecord $_ })
             $run.plan = New-RunPlanContract -Run $run
+            $run.draft_pr_gate = New-RunDraftPrGate -Run $run -EventRecords $runEvents
+            $run.phase_gate = New-RunPhaseGateContract -Run $run -EventRecords $runEvents
             $run.outcome = New-RunOutcomeContract -Run $run
-            $run.draft_pr_gate = New-RunDraftPrGate -Run $run -EventRecords @($eventRecords | Where-Object { Test-RunMatchesEventRecord -Run $run -EventRecord $_ })
             $nextAction = Get-RunNextAction -Run $run
             $stateModel = New-RunStateModel -State ([string]$run.state) -TaskState ([string]$run.task_state) -ReviewState ([string]$run.review_state) -EventKind $nextAction -LastEvent ([string]$run.last_event)
             [ordered]@{
@@ -6455,6 +6636,7 @@ function Get-RunsPayload {
                 plan_checkpoints      = @($run.plan_checkpoints)
                 managed_loop          = $run.managed_loop
                 outcome               = $run.outcome
+                phase_gate            = $run.phase_gate
                 draft_pr_gate         = $run.draft_pr_gate
             }
         }
@@ -6738,6 +6920,7 @@ function Get-RunNextAction {
         'review_failed',
         'task_blocked',
         'blocked',
+        'needs_user_decision',
         'commit_ready',
         'task_completed',
         'review_pending',

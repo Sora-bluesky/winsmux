@@ -135,6 +135,52 @@
       "confidence": 0.66,
       "source_event": "operator.review_requested"
     },
+    "phase_gate": {
+      "order": [
+        "plan",
+        "build",
+        "test",
+        "review",
+        "package"
+      ],
+      "current_stage": "review",
+      "stages": [
+        {
+          "stage": "plan",
+          "status": "completed",
+          "reason": "run_plan_recorded",
+          "event": ""
+        },
+        {
+          "stage": "build",
+          "status": "in_progress",
+          "reason": "in_progress",
+          "event": ""
+        },
+        {
+          "stage": "test",
+          "status": "pending",
+          "reason": "",
+          "event": ""
+        },
+        {
+          "stage": "review",
+          "status": "waiting_for_input",
+          "reason": "review_pending",
+          "event": "operator.review_requested"
+        },
+        {
+          "stage": "package",
+          "status": "pending",
+          "reason": "",
+          "event": ""
+        }
+      ],
+      "stop_required": false,
+      "stop_reason": "",
+      "auto_continue_allowed": true,
+      "requires_human_decision": false
+    },
     "draft_pr_gate": {
       "kind": "human_judgement",
       "target": "draft_pr",

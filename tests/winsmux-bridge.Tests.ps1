@@ -8333,7 +8333,15 @@ panes:
         $result.runs[0].managed_loop.escalation_state | Should -Be 'required'
         $result.runs[0].managed_loop.escalation_reason | Should -Be 'VERIFY_PARTIAL'
         $result.runs[0].managed_loop.stages.Count | Should -Be 4
-        $result.runs[0].outcome.status | Should -Be 'in_progress'
+        $result.runs[0].phase_gate.order | Should -Be @('plan', 'build', 'test', 'review', 'package')
+        $result.runs[0].phase_gate.current_stage | Should -Be 'review'
+        $result.runs[0].phase_gate.stop_required | Should -Be $true
+        $result.runs[0].phase_gate.stop_reason | Should -Be 'needs_user_decision'
+        $result.runs[0].phase_gate.auto_continue_allowed | Should -Be $false
+        $result.runs[0].phase_gate.requires_human_decision | Should -Be $true
+        ($result.runs[0].phase_gate.stages | Where-Object { $_.stage -eq 'test' } | Select-Object -First 1).status | Should -Be 'waiting_for_input'
+        ($result.runs[0].phase_gate.stages | Where-Object { $_.stage -eq 'review' } | Select-Object -First 1).reason | Should -Be 'review_pending'
+        $result.runs[0].outcome.status | Should -Be 'needs_user_decision'
         $result.runs[0].outcome.reason | Should -Be 'rerun focused verification'
         $result.runs[0].outcome.confidence | Should -Be 0.72
         $result.runs[0].draft_pr_gate.kind | Should -Be 'human_judgement'
@@ -8350,7 +8358,8 @@ panes:
         $result.runs[0].run_packet.plan_checkpoints.Count | Should -Be 6
         $result.runs[0].run_packet.managed_loop.peer_to_peer_allowed | Should -Be $false
         $result.runs[0].run_packet.managed_loop.assignment_state | Should -Be 'assigned'
-        $result.runs[0].run_packet.outcome.status | Should -Be 'in_progress'
+        $result.runs[0].run_packet.phase_gate.stop_reason | Should -Be 'needs_user_decision'
+        $result.runs[0].run_packet.outcome.status | Should -Be 'needs_user_decision'
         $result.runs[0].run_packet.draft_pr_gate.merge_requires_human | Should -Be $true
         $result.runs[0].run_packet.draft_pr_gate.handoff_package.suggested_next_action | Should -Be 'rerun_verify'
         $result.runs[0].Contains('observation_pack') | Should -Be $false
@@ -8387,6 +8396,146 @@ panes:
         $gate.handoff_package.validation.evidence_complete | Should -Be $false
         $gate.handoff_package.blocked_reasons | Should -Contain 'verification evidence is missing'
         $gate.handoff_package.suggested_next_action | Should -Be 'resolve blocked reasons before creating or merging a draft PR'
+    }
+
+    It 'exposes needs-user-decision as a phase-gated stop before package completion' {
+        $run = [PSCustomObject]@{
+            goal              = 'Ship guarded package'
+            task_state        = 'in_progress'
+            review_state      = 'PASS'
+            verification_plan = @('Invoke-Pester')
+            review_required   = $true
+            changed_files     = @('scripts/winsmux-core.ps1')
+            task              = 'Create guarded package'
+            last_event        = 'operator.draft_pr.required'
+            verification_result = [ordered]@{ outcome = 'PASS'; summary = 'verification passed' }
+            security_verdict  = [ordered]@{ verdict = 'ALLOW'; reason = '' }
+            experiment_packet = $null
+        }
+        $events = @(
+            [ordered]@{ timestamp = '2026-04-10T12:01:00+09:00'; line_number = 1; event = 'pipeline.decompose.completed'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-04-10T12:02:00+09:00'; line_number = 2; event = 'pipeline.collect.completed'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-04-10T12:03:00+09:00'; line_number = 3; event = 'pipeline.verify.pass'; data = [ordered]@{ verification_result = [ordered]@{ outcome = 'PASS' } } },
+            [ordered]@{ timestamp = '2026-04-10T12:04:00+09:00'; line_number = 4; event = 'operator.draft_pr.required'; data = [ordered]@{} }
+        )
+
+        $run | Add-Member -NotePropertyName draft_pr_gate -NotePropertyValue (New-RunDraftPrGate -Run $run -EventRecords $events)
+        $run | Add-Member -NotePropertyName phase_gate -NotePropertyValue (New-RunPhaseGateContract -Run $run -EventRecords $events)
+        $outcome = New-RunOutcomeContract -Run $run
+
+        $run.phase_gate.current_stage | Should -Be 'package'
+        $run.phase_gate.stop_required | Should -Be $true
+        $run.phase_gate.stop_reason | Should -Be 'needs_user_decision'
+        $run.phase_gate.auto_continue_allowed | Should -Be $false
+        ($run.phase_gate.stages | Where-Object { $_.stage -eq 'package' } | Select-Object -First 1).status | Should -Be 'waiting_for_input'
+        ($run.phase_gate.stages | Where-Object { $_.stage -eq 'package' } | Select-Object -First 1).reason | Should -Be 'needs_user_decision'
+        $outcome.status | Should -Be 'needs_user_decision'
+        (Get-InboxActionableEventKind -EventRecord ([ordered]@{ event = 'operator.draft_pr.required'; status = 'blocked_draft_pr_required' })) | Should -Be 'needs_user_decision'
+        $stateModel = New-RunStateModel -EventKind 'needs_user_decision' -LastEvent 'operator.draft_pr.required'
+        $stateModel.phase | Should -Be 'package'
+        $stateModel.activity | Should -Be 'waiting_for_input'
+        $stateModel.detail | Should -Be 'needs_user_decision'
+        $passStateModel = New-RunStateModel -ReviewState 'PASS'
+        $passStateModel.phase | Should -Be 'package'
+        $passStateModel.activity | Should -Be 'waiting_for_input'
+        $passStateModel.detail | Should -Be 'needs_user_decision'
+    }
+
+    It 'clears stale verification stops when later verification passes' {
+        $run = [PSCustomObject]@{
+            goal              = 'Recover guarded package'
+            task_state        = 'in_progress'
+            review_state      = 'PENDING'
+            verification_plan = @('Invoke-Pester')
+            review_required   = $true
+        }
+        $events = @(
+            [ordered]@{ timestamp = '2026-04-10T12:01:00+09:00'; line_number = 1; event = 'pipeline.verify.partial'; data = [ordered]@{} },
+            [ordered]@{ timestamp = '2026-04-10T12:02:00+09:00'; line_number = 2; event = 'pipeline.verify.pass'; data = [ordered]@{ verification_result = [ordered]@{ outcome = 'PASS' } } }
+        )
+
+        $phaseGate = New-RunPhaseGateContract -Run $run -EventRecords $events
+
+        $phaseGate.stop_required | Should -Be $false
+        $phaseGate.stop_reason | Should -Be ''
+        ($phaseGate.stages | Where-Object { $_.stage -eq 'test' } | Select-Object -First 1).status | Should -Be 'completed'
+    }
+
+    It 'ignores stale draft PR evidence that does not match the run head sha' {
+        $run = [PSCustomObject]@{
+            head_sha          = 'current-sha'
+            review_state      = 'PASS'
+            review_required   = $true
+            verification_plan = @('Invoke-Pester')
+            changed_files     = @('scripts/winsmux-core.ps1')
+            task              = 'Create draft package'
+            goal              = 'Create draft package'
+            verification_result = [ordered]@{ outcome = 'PASS'; summary = 'verification passed' }
+            security_verdict  = [ordered]@{ verdict = 'ALLOW'; reason = '' }
+            experiment_packet = $null
+        }
+        $events = @(
+            [ordered]@{
+                timestamp   = '2026-04-10T12:04:00+09:00'
+                line_number = 1
+                event       = 'operator.draft_pr.created'
+                head_sha    = ''
+                data        = [ordered]@{ draft_pr_url = 'https://github.com/Sora-bluesky/winsmux/pull/999' }
+            },
+            [ordered]@{
+                timestamp   = '2026-04-10T12:05:00+09:00'
+                line_number = 2
+                event       = 'operator.draft_pr.created'
+                head_sha    = 'old-sha'
+                data        = [ordered]@{ draft_pr_url = 'https://github.com/Sora-bluesky/winsmux/pull/998' }
+            }
+        )
+
+        $gate = New-RunDraftPrGate -Run $run -EventRecords $events
+        $run | Add-Member -NotePropertyName draft_pr_gate -NotePropertyValue $gate
+        $phaseGate = New-RunPhaseGateContract -Run $run -EventRecords $events
+
+        $gate.state | Should -Be 'required'
+        $gate.draft_pr_url | Should -Be ''
+        $phaseGate.stop_required | Should -Be $true
+        $phaseGate.stop_reason | Should -Be 'needs_user_decision'
+        ($phaseGate.stages | Where-Object { $_.stage -eq 'package' } | Select-Object -First 1).reason | Should -Be 'needs_user_decision'
+    }
+
+    It 'uses the newest same-timestamp draft PR evidence for the run head sha' {
+        $run = [PSCustomObject]@{
+            head_sha            = 'current-sha'
+            review_state        = 'PASS'
+            review_required     = $true
+            verification_plan   = @('Invoke-Pester')
+            changed_files       = @('scripts/winsmux-core.ps1')
+            task                = 'Create draft package'
+            goal                = 'Create draft package'
+            verification_result = [ordered]@{ outcome = 'PASS'; summary = 'verification passed' }
+            security_verdict    = [ordered]@{ verdict = 'ALLOW'; reason = '' }
+            experiment_packet   = $null
+        }
+        $events = @(
+            [ordered]@{
+                timestamp   = '2026-04-10T12:04:00+09:00'
+                line_number = 1
+                event       = 'operator.draft_pr.created'
+                head_sha    = 'current-sha'
+                data        = [ordered]@{ draft_pr_url = 'https://github.com/Sora-bluesky/winsmux/pull/997' }
+            },
+            [ordered]@{
+                timestamp   = '2026-04-10T12:04:00+09:00'
+                line_number = 2
+                event       = 'operator.draft_pr.created'
+                head_sha    = 'current-sha'
+                data        = [ordered]@{ draft_pr_url = 'https://github.com/Sora-bluesky/winsmux/pull/998' }
+            }
+        )
+
+        $gate = New-RunDraftPrGate -Run $run -EventRecords $events
+
+        $gate.state | Should -Be 'passed'
+        $gate.draft_pr_url | Should -Be 'https://github.com/Sora-bluesky/winsmux/pull/998'
     }
 
     It 'supports winsmux runs --json through the top-level CLI entrypoint' {
@@ -9383,7 +9532,12 @@ panes:
         $result.run.plan_checkpoints.Count | Should -Be 3
         @($result.run.plan_checkpoints | ForEach-Object { $_.name }) | Should -Be @('operator.review_requested', 'pipeline.verify.partial', 'pane.approval_waiting')
         $result.run.plan_checkpoints[0].at.ToString('o') | Should -Be '2026-04-10T03:01:00.0000000Z'
-        $result.run.outcome.status | Should -Be 'in_progress'
+        $result.run.phase_gate.order | Should -Be @('plan', 'build', 'test', 'review', 'package')
+        $result.run.phase_gate.current_stage | Should -Be 'review'
+        $result.run.phase_gate.stop_required | Should -Be $true
+        $result.run.phase_gate.stop_reason | Should -Be 'needs_user_decision'
+        $result.run.phase_gate.auto_continue_allowed | Should -Be $false
+        $result.run.outcome.status | Should -Be 'needs_user_decision'
         $result.run.outcome.reason | Should -Be 'rerun focused verification'
         $result.run.outcome.confidence | Should -Be 0.66
         $result.run.draft_pr_gate.kind | Should -Be 'human_judgement'
