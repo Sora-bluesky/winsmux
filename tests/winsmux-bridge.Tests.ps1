@@ -8482,6 +8482,15 @@ panes:
         $result.runs[0].child_launch_contract.worktree | Should -Be '.worktrees/builder-1'
         $result.runs[0].child_launch_contract.launch_dir | Should -Be '.worktrees/builder-1'
         $result.runs[0].child_launch_contract.session_type | Should -Be 'managed_worktree'
+        $result.runs[0].child_launch_contract.structured_handoff.packet_type | Should -Be 'structured_handoff_contract'
+        $result.runs[0].child_launch_contract.structured_handoff.mode | Should -Be 'plan_document_pipe'
+        $result.runs[0].child_launch_contract.structured_handoff.plan_ref | Should -Be 'plan.md'
+        $result.runs[0].child_launch_contract.structured_handoff.plan_body_stored | Should -Be $false
+        $result.runs[0].child_launch_contract.structured_handoff.target_role | Should -Be 'Builder'
+        $result.runs[0].child_launch_contract.structured_handoff.target_role_intent | Should -Be 'worker'
+        $result.runs[0].child_launch_contract.structured_handoff.target_agent_kind | Should -Be 'codex'
+        $result.runs[0].child_launch_contract.structured_handoff.independent_verification | Should -Be $true
+        $result.runs[0].child_launch_contract.structured_handoff.freeform_prompt_body_stored | Should -Be $false
         $result.runs[0].child_launch_contract.startup_command_ref | Should -Be 'managed-pane-launch'
         $result.runs[0].child_launch_contract.startup_command_stored | Should -Be $false
         $result.runs[0].child_launch_contract.project_root_stored | Should -Be $false
@@ -8504,6 +8513,7 @@ panes:
         $result.runs[0].run_packet.team_memory.team_memory_refs | Should -Contain 'team-memory:task:task-256:event-3'
         $result.runs[0].run_packet.run_insights.retry_count | Should -Be 1
         $result.runs[0].run_packet.child_launch_contract.packet_type | Should -Be 'child_launch_contract'
+        $result.runs[0].run_packet.child_launch_contract.structured_handoff.plan_ref | Should -Be 'plan.md'
         $result.runs[0].run_packet.child_launch_contract.operator_controls_merge | Should -Be $true
         $result.runs[0].run_packet.checkpoint_package.assigned_worktree | Should -Be '.worktrees/builder-1'
         $result.runs[0].run_packet.checkpoint_package.operator_git_required | Should -Be $true

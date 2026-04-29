@@ -920,6 +920,42 @@ panes:
         "managed_worktree"
     );
     assert_eq!(
+        explain.run.child_launch_contract["structured_handoff"]["packet_type"],
+        "structured_handoff_contract"
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["structured_handoff"]["mode"],
+        "plan_document_pipe"
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["structured_handoff"]["plan_ref"],
+        "plan.md"
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["structured_handoff"]["plan_body_stored"],
+        false
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["structured_handoff"]["target_role"],
+        "Builder"
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["structured_handoff"]["target_role_intent"],
+        "builder"
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["structured_handoff"]["target_agent_kind"],
+        "codex"
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["structured_handoff"]["independent_verification"],
+        true
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["structured_handoff"]["freeform_prompt_body_stored"],
+        false
+    );
+    assert_eq!(
         explain.run.child_launch_contract["startup_command_stored"],
         false
     );
