@@ -277,6 +277,7 @@ pub struct LedgerExplainRun {
     pub verification_contract: Value,
     pub verification_result: Value,
     pub verification_evidence: Value,
+    pub context_contract: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
     pub audit_chain: Value,
@@ -472,6 +473,7 @@ pub struct LedgerRunProjection {
     pub verification_contract: Value,
     pub verification_result: Value,
     pub verification_evidence: Value,
+    pub context_contract: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
     pub audit_chain: Value,
@@ -518,6 +520,7 @@ pub struct LedgerRunPacket {
     pub verification_contract: Value,
     pub verification_result: Value,
     pub verification_evidence: Value,
+    pub context_contract: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
     pub audit_chain: Value,
@@ -732,6 +735,9 @@ impl LedgerRunProjection {
             verification_evidence: run
                 .map(|run| run.verification_evidence.clone())
                 .unwrap_or(Value::Null),
+            context_contract: run
+                .map(|run| run.context_contract.clone())
+                .unwrap_or(Value::Null),
             tdd_gate: run.map(|run| run.tdd_gate.clone()).unwrap_or(Value::Null),
             verification_envelope: run
                 .map(|run| run.verification_envelope.clone())
@@ -787,6 +793,7 @@ impl LedgerRunPacket {
             verification_contract: run.verification_contract.clone(),
             verification_result: run.verification_result.clone(),
             verification_evidence: run.verification_evidence.clone(),
+            context_contract: run.context_contract.clone(),
             tdd_gate: run.tdd_gate.clone(),
             verification_envelope: run.verification_envelope.clone(),
             audit_chain: run.audit_chain.clone(),
@@ -1303,6 +1310,7 @@ impl LedgerSnapshot {
             verification_contract,
             verification_result,
             verification_evidence,
+            context_contract: Value::Null,
             tdd_gate: Value::Null,
             verification_envelope: Value::Null,
             audit_chain: Value::Null,
@@ -1314,6 +1322,7 @@ impl LedgerSnapshot {
         run.draft_pr_gate = run_draft_pr_gate_value(&run, &recent_event_records);
         run.tdd_gate = run_tdd_gate_value(&run, &recent_event_records);
         run.phase_gate = run_phase_gate_value(&run, &recent_event_records, &run.draft_pr_gate);
+        run.context_contract = context_contract_value(&run.verification_evidence);
         run.audit_chain = run_audit_chain_value(&run, &recent_event_records);
         run.verification_envelope = run_verification_envelope_value(&run);
         run.outcome = run_outcome_value(&run, &run.phase_gate, &run.draft_pr_gate);
@@ -2505,6 +2514,7 @@ fn run_audit_chain_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)
             "branch": run.branch,
             "head_sha": run.head_sha,
             "changed_files": run.changed_files,
+            "context_contract": run.context_contract,
         },
         "actor": {
             "label": run.primary_label,
@@ -2707,6 +2717,7 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
             "review_required": run.review_required,
             "required_fields": [
                 "verification_evidence",
+                "context_contract",
                 "security_verdict",
                 "audit_chain",
                 "draft_pr_gate",
@@ -2726,6 +2737,7 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
                 "blocked": security_verdict == "BLOCK"
             },
             "approval": approval,
+            "context": run.context_contract,
             "draft_pr": run.draft_pr_gate,
             "phase": run.phase_gate,
             "audit": {
@@ -2741,6 +2753,7 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
             "automatic_merge_allowed": false
         },
         "verification_evidence": run.verification_evidence,
+        "context_contract": run.context_contract,
         "security_verdict": run.security_verdict,
         "audit_chain": run.audit_chain,
     })
@@ -2813,6 +2826,14 @@ fn value_field_string(value: &Value, key: &str) -> String {
         .to_string()
 }
 
+fn value_field(value: &Value, key: &str) -> Value {
+    value
+        .as_object()
+        .and_then(|map| map.get(key))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
 fn push_reason(reasons: &mut Vec<String>, key: &str, value: &str) {
     if !value.trim().is_empty() {
         let separator = if key == "action" { ":" } else { "=" };
@@ -2850,13 +2871,58 @@ fn verification_evidence_value(data: &Value) -> Value {
         "context_budget": verification_evidence_field(data, "context_budget"),
         "context_estimate": verification_evidence_field(data, "context_estimate"),
         "context_pack_id": verification_evidence_field(data, "context_pack_id"),
+        "context_pack_version": verification_evidence_field(data, "context_pack_version"),
         "tool_output_pruned_count": verification_evidence_field(data, "tool_output_pruned_count"),
         "context_pressure": verification_evidence_field(data, "context_pressure"),
+        "context_mode": verification_evidence_field(data, "context_mode"),
+        "context_fork_reason": verification_evidence_field(data, "context_fork_reason"),
+    })
+}
+
+fn context_contract_value(verification_evidence: &Value) -> Value {
+    let requested_mode = value_field_string(verification_evidence, "context_mode");
+    let fork_reason = value_field_string(verification_evidence, "context_fork_reason");
+    let context_mode =
+        if requested_mode.eq_ignore_ascii_case("fork") && !fork_reason.trim().is_empty() {
+            "fork"
+        } else {
+            "isolated"
+        };
+    let fork_reason_value = if context_mode == "fork" {
+        Value::String(fork_reason)
+    } else {
+        Value::Null
+    };
+
+    json!({
+        "contract_version": 1,
+        "packet_type": "context_budget_contract",
+        "scope": "run",
+        "context_pack_id": value_field(verification_evidence, "context_pack_id"),
+        "context_pack_version": value_field(verification_evidence, "context_pack_version"),
+        "context_budget": value_field(verification_evidence, "context_budget"),
+        "context_estimate": value_field(verification_evidence, "context_estimate"),
+        "context_pressure": value_field(verification_evidence, "context_pressure"),
+        "tool_output_pruned_count": value_field(verification_evidence, "tool_output_pruned_count"),
+        "context_mode": context_mode,
+        "fork_reason": fork_reason_value,
+        "fork_allowed": context_mode == "fork",
+        "prompt_body_stored": false,
+        "private_memory_stored": false,
+        "local_reference_paths_stored": false,
+        "tool_output_pruning": {
+            "evidence_only": true,
+            "raw_tool_output_stored": false
+        }
     })
 }
 
 fn verification_evidence_field(data: &Value, key: &str) -> Value {
-    for container_name in ["verification_evidence", "verification_result", "verification_contract"] {
+    for container_name in [
+        "verification_evidence",
+        "verification_result",
+        "verification_contract",
+    ] {
         let nested = data
             .as_object()
             .and_then(|map| map.get(container_name))

@@ -97,6 +97,27 @@
     "verification_contract": null,
     "verification_result": null,
     "verification_evidence": null,
+    "context_contract": {
+      "contract_version": 1,
+      "packet_type": "context_budget_contract",
+      "scope": "run",
+      "context_pack_id": null,
+      "context_pack_version": null,
+      "context_budget": null,
+      "context_estimate": null,
+      "context_pressure": null,
+      "tool_output_pruned_count": null,
+      "context_mode": "isolated",
+      "fork_reason": null,
+      "fork_allowed": false,
+      "prompt_body_stored": false,
+      "private_memory_stored": false,
+      "local_reference_paths_stored": false,
+      "tool_output_pruning": {
+        "evidence_only": true,
+        "raw_tool_output_stored": false
+      }
+    },
     "tdd_gate": {
       "policy": "test_first_required",
       "required": true,
@@ -124,6 +145,7 @@
         "review_required": true,
         "required_fields": [
           "verification_evidence",
+          "context_contract",
           "security_verdict",
           "audit_chain",
           "draft_pr_gate",
@@ -155,6 +177,27 @@
           "decided_event": "",
           "human_judgement_required": true,
           "automatic_merge_allowed": false
+        },
+        "context": {
+          "contract_version": 1,
+          "packet_type": "context_budget_contract",
+          "scope": "run",
+          "context_pack_id": null,
+          "context_pack_version": null,
+          "context_budget": null,
+          "context_estimate": null,
+          "context_pressure": null,
+          "tool_output_pruned_count": null,
+          "context_mode": "isolated",
+          "fork_reason": null,
+          "fork_allowed": false,
+          "prompt_body_stored": false,
+          "private_memory_stored": false,
+          "local_reference_paths_stored": false,
+          "tool_output_pruning": {
+            "evidence_only": true,
+            "raw_tool_output_stored": false
+          }
         },
         "draft_pr": {
           "kind": "human_judgement",
@@ -257,6 +300,27 @@
         "automatic_merge_allowed": false
       },
       "verification_evidence": null,
+      "context_contract": {
+        "contract_version": 1,
+        "packet_type": "context_budget_contract",
+        "scope": "run",
+        "context_pack_id": null,
+        "context_pack_version": null,
+        "context_budget": null,
+        "context_estimate": null,
+        "context_pressure": null,
+        "tool_output_pruned_count": null,
+        "context_mode": "isolated",
+        "fork_reason": null,
+        "fork_allowed": false,
+        "prompt_body_stored": false,
+        "private_memory_stored": false,
+        "local_reference_paths_stored": false,
+        "tool_output_pruning": {
+          "evidence_only": true,
+          "raw_tool_output_stored": false
+        }
+      },
       "security_verdict": null,
       "audit_chain": {
         "chain_id": "task:task-256",
@@ -269,7 +333,28 @@
           "head_sha": "abc1234def5678",
           "changed_files": [
             "scripts/winsmux-core.ps1"
-          ]
+          ],
+          "context_contract": {
+            "contract_version": 1,
+            "packet_type": "context_budget_contract",
+            "scope": "run",
+            "context_pack_id": null,
+            "context_pack_version": null,
+            "context_budget": null,
+            "context_estimate": null,
+            "context_pressure": null,
+            "tool_output_pruned_count": null,
+            "context_mode": "isolated",
+            "fork_reason": null,
+            "fork_allowed": false,
+            "prompt_body_stored": false,
+            "private_memory_stored": false,
+            "local_reference_paths_stored": false,
+            "tool_output_pruning": {
+              "evidence_only": true,
+              "raw_tool_output_stored": false
+            }
+          }
         },
         "actor": {
           "label": "builder-1",
@@ -370,7 +455,28 @@
         "head_sha": "abc1234def5678",
         "changed_files": [
           "scripts/winsmux-core.ps1"
-        ]
+        ],
+        "context_contract": {
+          "contract_version": 1,
+          "packet_type": "context_budget_contract",
+          "scope": "run",
+          "context_pack_id": null,
+          "context_pack_version": null,
+          "context_budget": null,
+          "context_estimate": null,
+          "context_pressure": null,
+          "tool_output_pruned_count": null,
+          "context_mode": "isolated",
+          "fork_reason": null,
+          "fork_allowed": false,
+          "prompt_body_stored": false,
+          "private_memory_stored": false,
+          "local_reference_paths_stored": false,
+          "tool_output_pruning": {
+            "evidence_only": true,
+            "raw_tool_output_stored": false
+          }
+        }
       },
       "actor": {
         "label": "builder-1",

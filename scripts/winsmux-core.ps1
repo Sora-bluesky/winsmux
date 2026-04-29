@@ -5448,7 +5448,7 @@ function Get-VerificationSnapshotFromEventRecords {
     $snapshot = Get-LatestRunEventDataSnapshot `
         -EventRecords $EventRecords `
         -EventNames @('pipeline.verify.pass', 'pipeline.verify.fail', 'pipeline.verify.partial') `
-        -DataFields @('verification_contract', 'verification_result', 'verification_evidence', 'build', 'test', 'browser', 'screenshot', 'recording', 'context_budget', 'context_estimate', 'context_pack_id', 'tool_output_pruned_count', 'context_pressure')
+        -DataFields @('verification_contract', 'verification_result', 'verification_evidence', 'build', 'test', 'browser', 'screenshot', 'recording', 'context_budget', 'context_estimate', 'context_pack_id', 'context_pack_version', 'tool_output_pruned_count', 'context_pressure', 'context_mode', 'context_fork_reason')
     if ($null -eq $snapshot) {
         return $null
     }
@@ -5502,8 +5502,11 @@ function New-VerificationEvidenceEnvelope {
         context_budget           = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_budget'
         context_estimate         = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_estimate'
         context_pack_id          = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_pack_id'
+        context_pack_version     = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_pack_version'
         tool_output_pruned_count = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'tool_output_pruned_count'
         context_pressure         = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_pressure'
+        context_mode             = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_mode'
+        context_fork_reason      = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_fork_reason'
     }
 }
 
@@ -5864,6 +5867,7 @@ function New-RunAuditChainContract {
             branch        = [string]$Run.branch
             head_sha      = [string]$Run.head_sha
             changed_files = @($Run.changed_files)
+            context_contract = $Run.context_contract
         }
         actor    = [ordered]@{
             label           = [string]$Run.primary_label
@@ -6261,6 +6265,39 @@ function Get-RunContractField {
     return $null
 }
 
+function New-RunContextContract {
+    param([AllowNull()]$VerificationEvidence = $null)
+
+    $requestedMode = [string](Get-RunContractField -InputObject $VerificationEvidence -Name 'context_mode')
+    $forkReason = [string](Get-RunContractField -InputObject $VerificationEvidence -Name 'context_fork_reason')
+    $contextMode = 'isolated'
+    if ($requestedMode -eq 'fork' -and -not [string]::IsNullOrWhiteSpace($forkReason)) {
+        $contextMode = 'fork'
+    }
+
+    return [ordered]@{
+        contract_version             = 1
+        packet_type                  = 'context_budget_contract'
+        scope                        = 'run'
+        context_pack_id              = Get-RunContractField -InputObject $VerificationEvidence -Name 'context_pack_id'
+        context_pack_version         = Get-RunContractField -InputObject $VerificationEvidence -Name 'context_pack_version'
+        context_budget               = Get-RunContractField -InputObject $VerificationEvidence -Name 'context_budget'
+        context_estimate             = Get-RunContractField -InputObject $VerificationEvidence -Name 'context_estimate'
+        context_pressure             = Get-RunContractField -InputObject $VerificationEvidence -Name 'context_pressure'
+        tool_output_pruned_count     = Get-RunContractField -InputObject $VerificationEvidence -Name 'tool_output_pruned_count'
+        context_mode                 = $contextMode
+        fork_reason                  = if ($contextMode -eq 'fork') { $forkReason } else { $null }
+        fork_allowed                 = ($contextMode -eq 'fork')
+        prompt_body_stored           = $false
+        private_memory_stored        = $false
+        local_reference_paths_stored = $false
+        tool_output_pruning          = [ordered]@{
+            evidence_only          = $true
+            raw_tool_output_stored = $false
+        }
+    }
+}
+
 function New-RunDraftPrHandoffPackage {
     param(
         [Parameter(Mandatory = $true)]$Run,
@@ -6418,7 +6455,7 @@ function New-RunVerificationEnvelope {
             verification_plan = @($Run.verification_plan)
             changed_files     = @($Run.changed_files)
             review_required   = [bool]$Run.review_required
-            required_fields   = @('verification_evidence', 'security_verdict', 'audit_chain', 'draft_pr_gate', 'phase_gate')
+            required_fields   = @('verification_evidence', 'context_contract', 'security_verdict', 'audit_chain', 'draft_pr_gate', 'phase_gate')
         }
         dynamic_gates        = [ordered]@{
             verification = [ordered]@{
@@ -6433,6 +6470,7 @@ function New-RunVerificationEnvelope {
                 blocked = ($securityVerdict -eq 'BLOCK')
             }
             approval     = $approval
+            context      = $Run.context_contract
             draft_pr     = $Run.draft_pr_gate
             phase        = $Run.phase_gate
             audit        = [ordered]@{
@@ -6448,6 +6486,7 @@ function New-RunVerificationEnvelope {
             automatic_merge_allowed  = $false
         }
         verification_evidence = $Run.verification_evidence
+        context_contract      = $Run.context_contract
         security_verdict      = $Run.security_verdict
         audit_chain           = $Run.audit_chain
     }
@@ -6543,6 +6582,7 @@ function New-RunPacketFromRun {
         verification_contract = $Run.verification_contract
         verification_result   = $Run.verification_result
         verification_evidence = $Run.verification_evidence
+        context_contract      = $Run.context_contract
         tdd_gate              = $Run.tdd_gate
         verification_envelope = $Run.verification_envelope
         plan              = $Run.plan
@@ -6626,6 +6666,7 @@ function New-RunResultPacket {
         verification_contract = $Run.verification_contract
         verification_result   = $Run.verification_result
         verification_evidence = $Run.verification_evidence
+        context_contract      = $Run.context_contract
         tdd_gate              = $Run.tdd_gate
         verification_envelope = $Run.verification_envelope
         security_policy       = $Run.security_policy
@@ -6890,6 +6931,7 @@ function Get-RunsPayload {
                 verification_contract = $null
                 verification_result   = $null
                 verification_evidence = $null
+                context_contract      = $null
                 plan                  = $null
                 plan_checkpoints      = @()
                 managed_loop          = $null
@@ -7058,6 +7100,7 @@ function Get-RunsPayload {
             $run.draft_pr_gate = New-RunDraftPrGate -Run $run -EventRecords $runEvents
             $run.tdd_gate = New-RunTddGateContract -Run $run -EventRecords $runEvents
             $run.phase_gate = New-RunPhaseGateContract -Run $run -EventRecords $runEvents
+            $run.context_contract = New-RunContextContract -VerificationEvidence $run.verification_evidence
             $run.audit_chain = New-RunAuditChainContract -Run $run -EventRecords $runEvents
             $run.verification_envelope = New-RunVerificationEnvelope -Run $run
             $run.outcome = New-RunOutcomeContract -Run $run
@@ -7110,6 +7153,7 @@ function Get-RunsPayload {
                 verification_contract = $run.verification_contract
                 verification_result   = $run.verification_result
                 verification_evidence = $run.verification_evidence
+                context_contract      = $run.context_contract
                 tdd_gate              = $run.tdd_gate
                 verification_envelope = $run.verification_envelope
                 plan                  = $run.plan
