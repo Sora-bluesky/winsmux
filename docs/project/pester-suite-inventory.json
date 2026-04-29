@@ -1,0 +1,164 @@
+{
+  "task": "TASK-407",
+  "version": 1,
+  "description": "Machine-readable classification for reducing tracked Pester coverage without deleting tests before replacement coverage exists.",
+  "allowed_buckets": [
+    "keep-smoke",
+    "migrate-rust",
+    "archive-reference",
+    "delete-after-coverage"
+  ],
+  "batch_targets": [
+    {
+      "id": "407-a",
+      "scope": "current tests/ Pester files",
+      "expected_active_powershell_share": "about 60% of current active tests/ Pester files remain after equivalent Rust or typed fixture coverage lands"
+    },
+    {
+      "id": "407-b",
+      "scope": "legacy core/tests issue, feature, and PR reference cases",
+      "expected_active_powershell_share": "legacy reference coverage is moved out of routine release validation"
+    },
+    {
+      "id": "407-c",
+      "scope": "diagnostic, benchmark, stress, and batch runner scripts",
+      "expected_active_powershell_share": "routine release validation keeps only PowerShell smoke tests for PowerShell-owned contracts"
+    }
+  ],
+  "entries": [
+    {
+      "bucket": "keep-smoke",
+      "owner": "public surface and release gate",
+      "contract": "Public docs, version, npm package, GitHub write safety, harness, MCP, worktree, and subagent guard contracts still exercised through PowerShell.",
+      "target": "keep until a same-contract non-PowerShell gate exists",
+      "batch": "407-a",
+      "paths": [
+        "tests/PublicSurfacePolicy.Tests.ps1",
+        "tests/VersionSurface.Tests.ps1",
+        "tests/NpmReleasePackage.Tests.ps1",
+        "tests/GitHubWritePreflight.Tests.ps1",
+        "tests/HarnessContract.Tests.ps1",
+        "tests/McpServerContract.Tests.ps1",
+        "tests/BuilderWorktree.Tests.ps1",
+        "tests/codex-subagent-worktree-guard.Tests.ps1"
+      ]
+    },
+    {
+      "bucket": "migrate-rust",
+      "owner": "typed runtime and CLI contracts",
+      "contract": "Runtime bridge, vault injection, orchestra preflight, pane border, integration gate, multi-agent, pane monitor hook, and worktree hook behavior should be asserted by Rust tests, typed fixtures, or CLI contract tests.",
+      "target": "migrate before thinning or deleting the Pester files",
+      "batch": "407-a",
+      "paths": [
+        "tests/winsmux-bridge.Tests.ps1",
+        "tests/Runtime.VaultInject.Tests.ps1",
+        "tests/OrchestraPreflight.Tests.ps1",
+        "tests/PaneBorder.Tests.ps1",
+        "tests/Integration.GateEnforcement.Tests.ps1",
+        "tests/Integration.MultiAgent.Tests.ps1",
+        "tests/Integration.PaneMonitorHook.Tests.ps1",
+        "tests/Integration.WorktreeHook.Tests.ps1"
+      ]
+    },
+    {
+      "bucket": "migrate-rust",
+      "owner": "typed core runtime contracts",
+      "contract": "Legacy core runtime behavior that maps to CLI, config, session, pane, layout, compatibility, parity, or new-feature contracts.",
+      "target": "move assertions to Rust tests or typed fixtures before removing these scripts from routine runs",
+      "batch": "407-b",
+      "globs": [
+        "core/tests/test_cli_handlers.ps1",
+        "core/tests/test_config*.ps1",
+        "core/tests/test_session*.ps1",
+        "core/tests/test_newsession_flags.ps1",
+        "core/tests/test_pane*.ps1",
+        "core/tests/test_layout_engine.ps1",
+        "core/tests/test_tmux_compat.ps1",
+        "core/tests/test_parity.ps1",
+        "core/tests/test_named_session_parity.ps1",
+        "core/tests/test_new*_features.ps1"
+      ]
+    },
+    {
+      "bucket": "archive-reference",
+      "owner": "upstream compatibility reference",
+      "contract": "Historical issue, PR, feature, copy-mode, mouse, overlay, theme, key, cursor, shell, formatting, plugin, and WSL cases are useful references but should not all run in every release gate.",
+      "target": "preserve as fixtures or documented examples before removing from routine release validation",
+      "batch": "407-b",
+      "globs": [
+        "core/tests/test_issue*.ps1",
+        "core/tests/test_issues_*.ps1",
+        "core/tests/test_pr*.ps1",
+        "core/tests/test_features*.ps1",
+        "core/tests/test_copy_mode*.ps1",
+        "core/tests/test_mouse*.ps1",
+        "core/tests/test_overlay*.ps1",
+        "core/tests/test_theme*.ps1",
+        "core/tests/test_alt_key.ps1",
+        "core/tests/test_bind*.ps1",
+        "core/tests/test_capture_pane.ps1",
+        "core/tests/test_cjk_paste_split.ps1",
+        "core/tests/test_claude*.ps1",
+        "core/tests/test_conpty_mouse.ps1",
+        "core/tests/test_control_mode.ps1",
+        "core/tests/test_cross_shell_backslash.ps1",
+        "core/tests/test_cursor*.ps1",
+        "core/tests/test_default_*.ps1",
+        "core/tests/test_env_shim.ps1",
+        "core/tests/test_f_flag_config.ps1",
+        "core/tests/test_format*.ps1",
+        "core/tests/test_keybinding_options.ps1",
+        "core/tests/test_kill*.ps1",
+        "core/tests/test_nsis_installer.ps1",
+        "core/tests/test_osc7_pane_path.ps1",
+        "core/tests/test_plugins_themes.ps1",
+        "core/tests/test_real_plugins.ps1",
+        "core/tests/test_round9.ps1",
+        "core/tests/test_run_shell.ps1",
+        "core/tests/test_squelch_visibility.ps1",
+        "core/tests/test_split*.ps1",
+        "core/tests/test_tab_spacing.ps1",
+        "core/tests/test_target_focus_stability.ps1",
+        "core/tests/test_tui_exit_cleanup.ps1",
+        "core/tests/test_vim_nav_keys.ps1",
+        "core/tests/test_warm*.ps1",
+        "core/tests/test_window*.ps1",
+        "core/tests/test_wsl*.ps1",
+        "core/tests/test_zoom_resize.ps1"
+      ]
+    },
+    {
+      "bucket": "delete-after-coverage",
+      "owner": "legacy diagnostics and local runners",
+      "contract": "Batch runners, diagnostics, destructive checks, benchmarks, stress checks, broad aggregate tests, debug checks, and local performance probes need replacement evidence before deletion.",
+      "target": "delete only after an equivalent smoke check, fixture, or explicit no-longer-supported decision exists",
+      "batch": "407-c",
+      "globs": [
+        "core/tests/_run_batch3.ps1",
+        "core/tests/run_all_tests.ps1",
+        "core/tests/run_fmt_test.ps1",
+        "core/tests/battle_test.ps1",
+        "core/tests/bench*.ps1",
+        "core/tests/destructive_test.ps1",
+        "core/tests/diag*.ps1",
+        "core/tests/disable_processed_input.ps1",
+        "core/tests/mouse_diag.ps1",
+        "core/tests/test_advanced.ps1",
+        "core/tests/test_all.ps1",
+        "core/tests/test_bell_activity_silence.ps1",
+        "core/tests/test_bug*.ps1",
+        "core/tests/test_debug_focus.ps1",
+        "core/tests/test_e2e_latency.ps1",
+        "core/tests/test_extreme_perf.ps1",
+        "core/tests/test_github_issues*.ps1",
+        "core/tests/test_install_speed.ps1",
+        "core/tests/test_perf*.ps1",
+        "core/tests/test_pty_stability.ps1",
+        "core/tests/test_showw_sendkeys_p.ps1",
+        "core/tests/test_startup*_bench.ps1",
+        "core/tests/test_startup_perf.ps1",
+        "core/tests/test_stress*.ps1"
+      ]
+    }
+  ]
+}
