@@ -174,6 +174,31 @@
         "resolve blocked reasons before release"
       ]
     },
+    "child_launch_contract": {
+      "contract_version": 1,
+      "packet_type": "child_launch_contract",
+      "scope": "operator_managed_child_run",
+      "run_id": "task:task-256",
+      "task_id": "task-256",
+      "parent_run_id": "operator:session-1",
+      "role": "Builder",
+      "role_intent": "worker",
+      "agent_kind": "codex",
+      "provider_target": "codex:gpt-5.4",
+      "project_ref": "current_project",
+      "project_root_stored": false,
+      "worktree": ".worktrees/builder-1",
+      "launch_dir": ".worktrees/builder-1",
+      "session_type": "managed_worktree",
+      "startup_command_ref": "managed-pane-launch",
+      "startup_command_stored": false,
+      "operator_controls_merge": true,
+      "peer_to_peer_allowed": false,
+      "child_git_write_allowed": false,
+      "local_reference_paths_stored": false,
+      "freeform_command_stored": false,
+      "private_content_stored": false
+    },
     "checkpoint_package": {
       "contract_version": 1,
       "packet_type": "checkpoint_package",
