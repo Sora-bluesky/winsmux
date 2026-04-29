@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, HashMap},
     env, fs,
     io::{self, Write},
     path::{Path, PathBuf},
@@ -329,6 +330,28 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn run_legacy_compat_gate_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("legacy-compat-gate"));
+        return Ok(());
+    }
+
+    let options = parse_options("legacy-compat-gate", args, 0)?;
+    let report = legacy_compat_gate_report(&options.project_dir)?;
+    if options.json {
+        return write_json(&report);
+    }
+
+    println!(
+        "Legacy compatibility gate: {} files covered; {} removal candidates; {} unclassified.",
+        report["summary"]["matched_file_count"].as_u64().unwrap_or(0),
+        report["summary"]["removal_candidate_files"].as_u64().unwrap_or(0),
+        report["summary"]["unclassified_count"].as_u64().unwrap_or(0)
+    );
+    println!("{}", report["next_action"].as_str().unwrap_or(""));
+    Ok(())
+}
+
 pub fn run_guard_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
         println!("{}", usage_for("guard"));
@@ -348,6 +371,242 @@ pub fn run_guard_command(args: &[&String]) -> io::Result<()> {
     );
     println!("{}", payload["summary"]["next_action"].as_str().unwrap_or(""));
     Ok(())
+}
+
+fn legacy_compat_gate_report(project_dir: &Path) -> io::Result<Value> {
+    let inventory_relative_path = "docs/project/legacy-compat-surface-inventory.json";
+    let inventory_path = project_dir.join(inventory_relative_path);
+    let inventory_raw = fs::read_to_string(&inventory_path).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "failed to read legacy compatibility inventory at {}: {err}",
+                inventory_path.display()
+            ),
+        )
+    })?;
+    let inventory: Value = serde_json::from_str(&inventory_raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to parse legacy compatibility inventory: {err}"),
+        )
+    })?;
+
+    let task = inventory
+        .get("task")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if task != "TASK-408" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "legacy compatibility inventory task must be TASK-408",
+        ));
+    }
+
+    let terms = inventory
+        .get("terms")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|term| term.to_ascii_lowercase())
+        .filter(|term| !term.trim().is_empty())
+        .collect::<Vec<_>>();
+    if terms.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "legacy compatibility inventory must include terms",
+        ));
+    }
+
+    let allowed_classes = inventory
+        .get("allowed_classes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if allowed_classes.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "legacy compatibility inventory must include allowed_classes",
+        ));
+    }
+
+    let tracked_files = git_repository_files(project_dir)?;
+    let mut coverage: HashMap<String, String> = HashMap::new();
+    let mut inventory_entry_count = 0usize;
+    let entries = inventory
+        .get("entries")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "legacy compatibility inventory must include entries",
+            )
+        })?;
+
+    for entry in entries {
+        inventory_entry_count += 1;
+        let class = entry.get("class").and_then(Value::as_str).unwrap_or_default();
+        if !allowed_classes.iter().any(|allowed| allowed == class) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unknown legacy compatibility class: {class}"),
+            ));
+        }
+        for required in ["owner", "surface", "reason", "target"] {
+            if entry
+                .get(required)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("legacy compatibility inventory entry is missing {required}"),
+                ));
+            }
+        }
+
+        for path in entry
+            .get("paths")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let normalized = normalize_repo_path(path);
+            if !tracked_files.iter().any(|file| file == &normalized) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("legacy compatibility inventory path is not a repository file: {normalized}"),
+                ));
+            }
+            coverage.insert(normalized, class.to_string());
+        }
+
+        for glob in entry
+            .get("globs")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let normalized = normalize_repo_path(glob);
+            let pattern = glob::Pattern::new(&normalized).map_err(|err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid legacy compatibility inventory glob {normalized}: {err}"),
+                )
+            })?;
+            let matches = tracked_files
+                .iter()
+                .filter(|file| pattern.matches(file))
+                .cloned()
+                .collect::<Vec<_>>();
+            if matches.is_empty() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("legacy compatibility inventory glob matched no files: {normalized}"),
+                ));
+            }
+            for matched in matches {
+                coverage.insert(matched, class.to_string());
+            }
+        }
+    }
+
+    let matched_files = compatibility_surface_files(project_dir, &tracked_files, &terms);
+    let mut class_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for class in &allowed_classes {
+        class_counts.insert(class.clone(), 0);
+    }
+    let mut unclassified = Vec::new();
+    for file in &matched_files {
+        if let Some(class) = coverage.get(file) {
+            *class_counts.entry(class.clone()).or_insert(0) += 1;
+        } else {
+            unclassified.push(file.clone());
+        }
+    }
+
+    let passed = unclassified.is_empty();
+    Ok(json!({
+        "contract_version": 1,
+        "task_id": "TASK-408",
+        "target_version": inventory.get("target_version").cloned().unwrap_or_else(|| json!("v1.0.0")),
+        "generated_at": generated_at(),
+        "project_dir": project_dir_string(project_dir),
+        "product_version": VERSION,
+        "inventory": {
+            "path": inventory_relative_path,
+            "terms": terms,
+            "entry_count": inventory_entry_count,
+        },
+        "summary": {
+            "passed": passed,
+            "matched_file_count": matched_files.len(),
+            "intentional_shim_files": class_counts.get("intentional-shim").copied().unwrap_or(0),
+            "removal_candidate_files": class_counts.get("removal-candidate").copied().unwrap_or(0),
+            "unclassified_count": unclassified.len(),
+        },
+        "class_counts": class_counts,
+        "unclassified_files": unclassified,
+        "blocking_conditions": [
+            "unclassified_legacy_compat_surface",
+            "unknown_inventory_class",
+            "missing_inventory_owner_or_target",
+            "inventory_path_or_glob_without_file",
+            "private_local_reference_in_inventory"
+        ],
+        "next_action": "Before v1.0.0, remove or replace removal-candidate alias surfaces while keeping intentional tmux-compatible product behavior covered."
+    }))
+}
+
+fn git_repository_files(project_dir: &Path) -> io::Result<Vec<String>> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project_dir)
+        .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+        .output()?;
+    if !output.status.success() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "failed to list repository files: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(normalize_repo_path)
+        .filter(|line| !line.trim().is_empty())
+        .collect())
+}
+
+fn compatibility_surface_files(project_dir: &Path, files: &[String], terms: &[String]) -> Vec<String> {
+    let mut matched = Vec::new();
+    for file in files {
+        let path = project_dir.join(file);
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
+        };
+        let lowered = content.to_ascii_lowercase();
+        if terms.iter().any(|term| lowered.contains(term)) {
+            matched.push(file.clone());
+        }
+    }
+    matched.sort();
+    matched.dedup();
+    matched
+}
+
+fn normalize_repo_path(path: impl AsRef<str>) -> String {
+    path.as_ref().replace('\\', "/")
 }
 
 struct RustCanaryBackend {
@@ -3215,6 +3474,9 @@ fn usage_for(command: &str) -> &'static str {
         "rust-canary" => "usage: winsmux rust-canary [--json] [--project-dir <path>]",
         "manual-checklist" => {
             "usage: winsmux manual-checklist [--json] [--project-dir <path>]"
+        }
+        "legacy-compat-gate" => {
+            "usage: winsmux legacy-compat-gate [--json] [--project-dir <path>]"
         }
         "guard" => "usage: winsmux guard [--json] [--project-dir <path>]",
         "provider-switch" => {

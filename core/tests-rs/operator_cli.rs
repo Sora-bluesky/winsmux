@@ -706,6 +706,58 @@ fn operator_cli_manual_checklist_text_reports_next_action() {
 }
 
 #[test]
+fn operator_cli_legacy_compat_gate_json_reports_inventory() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("core manifest should have a repository parent")
+        .to_path_buf();
+
+    let json = run_json_with_cwd(&repo_root, &["legacy-compat-gate", "--json"]);
+
+    assert_eq!(json["contract_version"], 1);
+    assert_eq!(json["task_id"], "TASK-408");
+    assert_eq!(json["target_version"], "v1.0.0");
+    assert_eq!(
+        json["inventory"]["path"],
+        "docs/project/legacy-compat-surface-inventory.json"
+    );
+    assert_eq!(json["inventory"]["terms"][0], "psmux");
+    assert_eq!(json["summary"]["passed"], true);
+    assert!(json["summary"]["matched_file_count"].as_u64().unwrap() > 0);
+    assert!(json["summary"]["intentional_shim_files"].as_u64().unwrap() > 0);
+    assert!(json["summary"]["removal_candidate_files"].as_u64().unwrap() > 0);
+    assert_eq!(json["summary"]["unclassified_count"], 0);
+    assert_eq!(
+        json["blocking_conditions"][0],
+        "unclassified_legacy_compat_surface"
+    );
+}
+
+#[test]
+fn operator_cli_legacy_compat_gate_text_reports_next_action() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("core manifest should have a repository parent")
+        .to_path_buf();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("legacy-compat-gate")
+        .current_dir(&repo_root)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Legacy compatibility gate:"));
+    assert!(stdout.contains("Before v1.0.0"));
+    assert!(!stdout.trim_start().starts_with('{'));
+}
+
+#[test]
 fn operator_cli_guard_json_reports_release_guard_baseline() {
     let project_dir = make_temp_project_dir("guard-json");
     fs::create_dir_all(project_dir.join("scripts")).expect("test should create scripts dir");

@@ -1,0 +1,150 @@
+{
+  "task": "TASK-408",
+  "version": 1,
+  "description": "Machine-readable inventory for legacy psmux, pmux, and tmux compatibility surfaces before the v1.0.0 alias removal gate.",
+  "terms": [
+    "psmux",
+    "pmux",
+    "tmux"
+  ],
+  "allowed_classes": [
+    "intentional-shim",
+    "removal-candidate"
+  ],
+  "target_version": "v1.0.0",
+  "entries": [
+    {
+      "class": "intentional-shim",
+      "owner": "operator startup safety",
+      "surface": "legacy probe denial rules and tests",
+      "reason": "These references block old psmux startup probes and keep operators on winsmux startup checks.",
+      "target": "keep until alias removal is complete, then narrow the denied examples if obsolete",
+      "paths": [
+        ".claude/CLAUDE.md",
+        ".claude/hooks/sh-orchestra-gate.js",
+        ".claude/rules/dispatch.md",
+        "scripts/audit-public-surface.ps1",
+        "tests/Integration.GateEnforcement.Tests.ps1",
+        "tests/PublicSurfacePolicy.Tests.ps1",
+        "tests/VersionSurface.Tests.ps1",
+        "tests/winsmux-bridge.Tests.ps1"
+      ]
+    },
+    {
+      "class": "intentional-shim",
+      "owner": "public compatibility documentation",
+      "surface": "documented tmux-compatible product behavior",
+      "reason": "tmux-compatible commands, configuration, targets, pane environment variables, and control mode remain supported product behavior after binary alias removal.",
+      "target": "keep unless a future product decision removes tmux-compatible behavior itself",
+      "paths": [
+        "README.md",
+        "README.ja.md",
+        "THIRD_PARTY_NOTICES.md",
+        "core/docs/claude-code.md",
+        "core/docs/compatibility.md",
+        "core/docs/configuration.md",
+        "core/docs/control-mode.md",
+        "core/docs/faq.md",
+        "core/docs/features.md",
+        "core/docs/keybindings.md",
+        "core/docs/multi-shell.md",
+        "core/docs/plugins.md",
+        "core/docs/scripting.md",
+        "core/docs/warm-sessions.md",
+        "docs/pane-border-guide.md",
+        "packages/winsmux/README.md",
+        "winsmux-core/README.md"
+      ]
+    },
+    {
+      "class": "intentional-shim",
+      "owner": "runtime compatibility",
+      "surface": "tmux-compatible runtime implementation",
+      "reason": "The core runtime still implements tmux-compatible command, target, format, control-mode, and environment behavior.",
+      "target": "keep while tmux-compatible runtime behavior remains part of the product",
+      "globs": [
+        "core/src/*.rs",
+        "core/src/server/*.rs",
+        "core/tests-rs/*.rs",
+        "core/crates/vt100-winsmux/**",
+        "core/crates/portable-pty-winsmux/**"
+      ]
+    },
+    {
+      "class": "intentional-shim",
+      "owner": "runtime state compatibility",
+      "surface": "existing .psmux state and setup lookup paths",
+      "reason": "Existing installs still use .psmux state and compatibility lookup paths during the sunset window.",
+      "target": "replace only after migration or explicit no-migration decision exists",
+      "paths": [
+        ".winsmux.conf",
+        "tests/OrchestraPreflight.Tests.ps1",
+        "winsmux-core/scripts/operator-poll.ps1",
+        "winsmux-core/scripts/orchestra-preflight.ps1",
+        "winsmux-core/scripts/settings.ps1",
+        "winsmux-core/scripts/setup-wizard.ps1"
+      ]
+    },
+    {
+      "class": "intentional-shim",
+      "owner": "operator bridge compatibility",
+      "surface": "bridge commands and monitor fallbacks",
+      "reason": "The bridge exposes the legacy compatibility gate and still reads legacy review or role fields while current operator state can contain them.",
+      "target": "keep until operator state readers no longer need legacy field fallbacks and the gate is retired",
+      "paths": [
+        "scripts/winsmux-core.ps1",
+        "winsmux-core/scripts/agent-monitor.ps1"
+      ]
+    },
+    {
+      "class": "removal-candidate",
+      "owner": "legacy binary alias sunset",
+      "surface": "legacy package, installer, and binary alias names",
+      "reason": "These surfaces publish or install psmux, pmux, or tmux binary names and must be removed or replaced before v1.0.0.",
+      "target": "remove aliases or replace outputs with winsmux-only names before v1.0.0",
+      "paths": [
+        "core/Cargo.toml",
+        "core/.github/ASSETS.md",
+        "core/.github/social-card.svg",
+        "core/.github/workflows/release.yml",
+        "core/.gitignore",
+        "core/scripts/build.ps1",
+        "core/scripts/install.ps1",
+        "core/scripts/pmux-title.ps1",
+        "core/scripts/pmux-title.sh",
+        "core/scripts/publish-choco.ps1",
+        "core/scripts/test_scroll_inject.ps1",
+        "core/scripts/uninstall.ps1",
+        "winsmux-core/psmux-bridge.ps1",
+        "winsmux-core/scripts/powershell-deescalation.ps1"
+      ]
+    },
+    {
+      "class": "removal-candidate",
+      "owner": "legacy Pester reference cleanup",
+      "surface": "legacy upstream compatibility tests and diagnostics",
+      "reason": "TASK-407 keeps these as migration or reference material; they should not silently remain as active release blockers after replacement coverage exists.",
+      "target": "migrate, archive, or delete according to TASK-407 before v1.0.0",
+      "globs": [
+        "core/tests/*.ps1",
+        "core/tests/*.py",
+        "core/tests/*.sh",
+        "docs/project/pester-suite-inventory.json",
+        "docs/project/pester-suite-reduction-plan.md"
+      ]
+    },
+    {
+      "class": "intentional-shim",
+      "owner": "TASK-408 gate",
+      "surface": "compatibility inventory and validator",
+      "reason": "The gate must name the legacy terms it detects so future changes cannot add unclassified compatibility surfaces.",
+      "target": "keep until the v1.0.0 alias removal gate is complete",
+      "paths": [
+        "docs/project/legacy-compat-surface-inventory.json",
+        "docs/project/legacy-compat-surface-inventory.md",
+        "docs/project/powershell-adapter-inventory.md",
+        "scripts/validate-legacy-compat-inventory.ps1"
+      ]
+    }
+  ]
+}
