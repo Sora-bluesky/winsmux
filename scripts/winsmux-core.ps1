@@ -5802,7 +5802,7 @@ function New-RunAuditChainEventRecord {
             pane_id = [string]$EventRecord['pane_id']
             role    = [string]$EventRecord['role']
         }
-        what     = if ($data.Contains('action')) { [string]$data['action'] } else { [string]$EventRecord['event'] }
+        what     = if ($data.Contains('action') -and -not [string]::IsNullOrWhiteSpace([string]$data['action'])) { [string]$data['action'] } else { [string]$EventRecord['event'] }
         task_id  = if ($data.Contains('task_id')) { [string]$data['task_id'] } else { '' }
         run_id   = if ($data.Contains('run_id')) { [string]$data['run_id'] } else { '' }
         branch   = if ($data.Contains('branch')) { [string]$data['branch'] } else { [string]$EventRecord['branch'] }
@@ -6529,12 +6529,14 @@ function Test-RunMatchesEventRecord {
         [Parameter(Mandatory = $true)]$EventRecord
     )
 
+    $runId = [string]$Run.run_id
     $runTaskId = [string]$Run.task_id
     $runBranch = [string]$Run.branch
     $runHeadSha = [string]$Run.head_sha
     $runLabels = @($Run.labels)
     $runPaneIds = @($Run.pane_ids)
 
+    $eventRunId = ''
     $eventTaskId = ''
     $eventBranch = [string]$EventRecord['branch']
     $eventHeadSha = [string]$EventRecord['head_sha']
@@ -6542,25 +6544,28 @@ function Test-RunMatchesEventRecord {
     $eventPaneId = [string]$EventRecord['pane_id']
 
     $data = $null
+    if ($EventRecord.Contains('run_id')) { $eventRunId = [string]$EventRecord['run_id'] }
+    if ($EventRecord.Contains('task_id')) { $eventTaskId = [string]$EventRecord['task_id'] }
     if ($EventRecord.Contains('data')) {
         $data = $EventRecord['data']
     }
 
     if ($null -ne $data -and $data -is [System.Collections.IDictionary]) {
+        if ($data.Contains('run_id')) { $eventRunId = [string]$data['run_id'] }
         if ($data.Contains('task_id')) { $eventTaskId = [string]$data['task_id'] }
         if ([string]::IsNullOrWhiteSpace($eventBranch) -and $data.Contains('branch')) { $eventBranch = [string]$data['branch'] }
         if ([string]::IsNullOrWhiteSpace($eventHeadSha) -and $data.Contains('head_sha')) { $eventHeadSha = [string]$data['head_sha'] }
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($runTaskId) -and $runTaskId -eq $eventTaskId) {
-        return $true
+    if (-not [string]::IsNullOrWhiteSpace($eventRunId)) {
+        return (-not [string]::IsNullOrWhiteSpace($runId) -and $runId -eq $eventRunId)
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($runBranch) -and $runBranch -eq $eventBranch) {
-        return $true
+    if (-not [string]::IsNullOrWhiteSpace($eventTaskId)) {
+        return (-not [string]::IsNullOrWhiteSpace($runTaskId) -and $runTaskId -eq $eventTaskId)
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($runHeadSha) -and $runHeadSha -eq $eventHeadSha) {
+    if (-not [string]::IsNullOrWhiteSpace($eventPaneId) -and $runPaneIds -contains $eventPaneId) {
         return $true
     }
 
@@ -6568,7 +6573,11 @@ function Test-RunMatchesEventRecord {
         return $true
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($eventPaneId) -and $runPaneIds -contains $eventPaneId) {
+    if (-not [string]::IsNullOrWhiteSpace($runBranch) -and -not [string]::IsNullOrWhiteSpace($eventBranch) -and $runBranch -eq $eventBranch) {
+        return $true
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($runHeadSha) -and -not [string]::IsNullOrWhiteSpace($eventHeadSha) -and $runHeadSha -eq $eventHeadSha) {
         return $true
     }
 

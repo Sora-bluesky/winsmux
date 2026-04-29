@@ -9596,6 +9596,37 @@ panes:
                 }
             } | ConvertTo-Json -Compress -Depth 8),
             ([ordered]@{
+                timestamp = '2026-04-10T12:02:05+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pipeline.security.allowed'
+                message   = 'security check passed'
+                label     = 'reviewer-1'
+                pane_id   = '%3'
+                role      = 'Reviewer'
+                branch    = 'worktree-builder-1'
+                head_sha  = 'abc1234def5678'
+                data      = [ordered]@{
+                    task_id = 'task-256'
+                    run_id  = 'task:task-256'
+                    action  = ''
+                }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-10T12:02:10+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pipeline.verify.fail'
+                message   = 'unrelated task local note should stay out'
+                label     = 'reviewer-1'
+                pane_id   = '%3'
+                role      = 'Reviewer'
+                branch    = 'worktree-builder-1'
+                head_sha  = 'abc1234def5678'
+                data      = [ordered]@{
+                    task_id = 'task-other'
+                    run_id  = 'task:task-other'
+                }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
             timestamp = '2026-04-10T12:02:15+09:00'
             session   = 'winsmux-orchestra'
             event     = 'pipeline.tdd.red'
@@ -9736,14 +9767,17 @@ panes:
         $result.run.audit_chain.approval.requested_reviewer_label | Should -Be 'reviewer-1'
         @($result.run.audit_chain.events | ForEach-Object { $_.event }) | Should -Contain 'operator.review_requested'
         @($result.run.audit_chain.events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.verify.partial'
+        @($result.run.audit_chain.events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.security.allowed'
         @($result.run.audit_chain.events | ForEach-Object { $_.event }) | Should -Contain 'pane.approval_waiting'
+        @($result.run.audit_chain.events | ForEach-Object { $_.message }) | Should -Not -Contain 'unrelated task local note should stay out'
+        ($result.run.audit_chain.events | Where-Object { $_.event -eq 'pipeline.security.allowed' } | Select-Object -First 1).what | Should -Be 'pipeline.security.allowed'
         $result.run.phase | Should -Be 'review'
         $result.run.activity | Should -Be 'waiting_for_input'
         $result.run.detail | Should -Be 'review_pending'
         $result.run.plan.goal | Should -Be 'Ship run contract primitives'
         $result.run.plan.verification_plan | Should -Be @('Invoke-Pester tests/winsmux-bridge.Tests.ps1', 'verify explain --json contract')
-        $result.run.plan_checkpoints.Count | Should -Be 3
-        @($result.run.plan_checkpoints | ForEach-Object { $_.name }) | Should -Be @('operator.review_requested', 'pipeline.verify.partial', 'pane.approval_waiting')
+        $result.run.plan_checkpoints.Count | Should -Be 4
+        @($result.run.plan_checkpoints | ForEach-Object { $_.name }) | Should -Be @('operator.review_requested', 'pipeline.verify.partial', 'pipeline.security.allowed', 'pane.approval_waiting')
         $result.run.plan_checkpoints[0].at.ToString('o') | Should -Be '2026-04-10T03:01:00.0000000Z'
         $result.run.phase_gate.order | Should -Be @('plan', 'build', 'test', 'review', 'package')
         $result.run.phase_gate.current_stage | Should -Be 'review'
@@ -9790,11 +9824,13 @@ panes:
         $result.run.Contains('run_packet') | Should -BeFalse
         $result.Contains('run_packet') | Should -Be $false
         $result.Contains('result_packet') | Should -Be $false
-        $result.recent_events.Count | Should -Be 4
+        $result.recent_events.Count | Should -Be 5
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'operator.review_requested'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.verify.partial'
+        @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.security.allowed'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.tdd.red'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pane.approval_waiting'
+        @($result.recent_events | ForEach-Object { $_.message }) | Should -Not -Contain 'unrelated task local note should stay out'
         ($result.recent_events | Where-Object { $_.event -eq 'operator.review_requested' } | Select-Object -First 1).hypothesis | Should -Be 'experiment packet should flow into explain'
         ($result.recent_events | Where-Object { $_.event -eq 'operator.review_requested' } | Select-Object -First 1).observation_pack.changed_files | Should -Contain 'scripts/winsmux-core.ps1'
         ($result.recent_events | Where-Object { $_.event -eq 'operator.review_requested' } | Select-Object -First 1).observation_pack.packet_type | Should -Be 'observation_pack'
