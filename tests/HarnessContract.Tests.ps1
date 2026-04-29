@@ -286,6 +286,14 @@ tasks:
         $bridge | Should -Match 'Invoke-WinsmuxRaw -Arguments \$rustArgs'
     }
 
+    It 'documents and dispatches the legacy compatibility gate command' {
+        $bridge = Get-Content -LiteralPath $script:WinsmuxCorePath -Raw -Encoding UTF8
+        $bridge | Should -Match 'legacy-compat-gate \[--json\]'
+        $bridge | Should -Match "'legacy-compat-gate'\s+\{"
+        $bridge | Should -Match 'legacy-compat-gate'
+        $bridge | Should -Match 'Invoke-WinsmuxRaw -Arguments \$rustArgs'
+    }
+
     BeforeEach {
         Remove-TestSettingsLocal
     }

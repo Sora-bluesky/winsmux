@@ -258,6 +258,7 @@ fn run_main() -> io::Result<()> {
         "machine-contract" => return operator_cli::run_machine_contract_command(&cmd_args[1..]),
         "rust-canary" => return operator_cli::run_rust_canary_command(&cmd_args[1..]),
         "manual-checklist" => return operator_cli::run_manual_checklist_command(&cmd_args[1..]),
+        "legacy-compat-gate" => return operator_cli::run_legacy_compat_gate_command(&cmd_args[1..]),
         "guard" => return operator_cli::run_guard_command(&cmd_args[1..]),
         "provider-switch" => return operator_cli::run_provider_switch_command(&cmd_args[1..]),
         "signal" => return operator_cli::run_signal_command(&cmd_args[1..]),

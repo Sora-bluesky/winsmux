@@ -24,6 +24,8 @@ docs/project/
 !docs/project/
 docs/project/*
 !docs/project/README.md
+!docs/project/legacy-compat-surface-inventory.json
+!docs/project/legacy-compat-surface-inventory.md
 !docs/project/pester-suite-inventory.json
 !docs/project/pester-suite-reduction-plan.md
 !docs/project/powershell-adapter-inventory.md

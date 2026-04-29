@@ -9627,6 +9627,29 @@ function Invoke-ManualChecklist {
     $output | Write-Output
 }
 
+function Invoke-LegacyCompatGate {
+    $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
+    $rustArgs = @('legacy-compat-gate')
+    foreach ($token in $tokens) {
+        switch ($token) {
+            '--json' {
+                $rustArgs += '--json'
+            }
+            default {
+                Stop-WithError "usage: winsmux legacy-compat-gate [--json]"
+            }
+        }
+    }
+
+    $output = Invoke-WinsmuxRaw -Arguments $rustArgs
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
+        exit $nativeExitCode
+    }
+
+    $output | Write-Output
+}
+
 function Invoke-Guard {
     param(
         [AllowNull()][string]$GuardTarget = $Target,
@@ -9854,6 +9877,7 @@ Commands:
   machine-contract --json  Print the hook and agent machine contract JSON
   rust-canary [--json]  Print the Rust default-on canary gate JSON
   manual-checklist [--json]  Print the versioned manual validation checklist gate
+  legacy-compat-gate [--json]  Print the legacy compatibility removal inventory gate
   guard [--json]  Print the public security and release guard baseline
   assign --task <TASK-ID> [--json] [--text <text>]  Dry-run provider, role, model-tier, approval, and sandbox assignment
   provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]  Record or clear a runtime provider reassignment for a managed slot
@@ -10580,6 +10604,7 @@ switch ($Command) {
     'machine-contract' { Invoke-MachineContract }
     'rust-canary' { Invoke-RustCanary }
     'manual-checklist' { Invoke-ManualChecklist }
+    'legacy-compat-gate' { Invoke-LegacyCompatGate }
     'guard' { Invoke-Guard }
     'assign' {
         $assignScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\assignment-policy.ps1'))

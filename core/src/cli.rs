@@ -164,6 +164,7 @@ OPERATOR COMMANDS:
     machine-contract        Print the hook and agent machine contract JSON
     rust-canary             Print the Rust default-on canary gate JSON
     manual-checklist        Print the versioned manual validation checklist gate
+    legacy-compat-gate      Print the legacy compatibility removal inventory gate
     provider-switch         Record or clear a runtime provider reassignment
     signal <channel>        Send a file-backed orchestration signal
     wait <channel> [secs]   Wait for a file-backed orchestration signal
@@ -477,6 +478,7 @@ fn commands_text() -> &'static str {
   machine-contract          - Print the hook and agent machine contract JSON
   rust-canary               - Print the Rust default-on canary gate JSON
   manual-checklist          - Print the versioned manual validation checklist gate
+  legacy-compat-gate        - Print the legacy compatibility removal inventory gate
   list-keys (lsk)           - List key bindings
   list-panes (lsp)          - List panes in a window
   list-sessions (ls)        - List sessions
@@ -629,6 +631,7 @@ mod tests {
         assert!(text.contains("machine-contract        Print the hook and agent machine contract JSON"));
         assert!(text.contains("rust-canary             Print the Rust default-on canary gate JSON"));
         assert!(text.contains("manual-checklist        Print the versioned manual validation checklist gate"));
+        assert!(text.contains("legacy-compat-gate      Print the legacy compatibility removal inventory gate"));
         assert!(text.contains("winsmux preserves compatibility aliases 'psmux', 'pmux', and 'tmux' where supported."));
         assert!(text.contains("v0.24.5 warning-only sunset mode"));
         assert!(text.contains("For more information: https://github.com/Sora-bluesky/winsmux"));
@@ -655,6 +658,7 @@ mod tests {
         assert!(text.contains("machine-contract          - Print the hook and agent machine contract JSON"));
         assert!(text.contains("rust-canary               - Print the Rust default-on canary gate JSON"));
         assert!(text.contains("manual-checklist          - Print the versioned manual validation checklist gate"));
+        assert!(text.contains("legacy-compat-gate        - Print the legacy compatibility removal inventory gate"));
         assert!(!text.contains("Kill the psmux server"));
     }
 }
