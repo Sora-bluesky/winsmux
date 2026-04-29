@@ -8181,7 +8181,7 @@ panes:
                 env_fingerprint      = 'env:abc123'
                 command_hash         = 'cmd:def456'
             }
-        } | ConvertTo-Json -Compress),
+        } | ConvertTo-Json -Compress -Depth 8),
         ([ordered]@{
             timestamp = '2026-04-10T12:01:30+09:00'
             session   = 'winsmux-orchestra'
@@ -8289,6 +8289,13 @@ panes:
                     tool_output_pruned_count = 3
                     context_pressure = 'high'
                     context_mode = 'isolated'
+                    semantic_context_pack_id = 'sem-runs'
+                    semantic_context_pack_ref = 'context-packs/sem-runs.json'
+                    source_refs = @('ADR-001', 'docs/operator-model.md#context')
+                    hard_constraints = @('do not store prompt bodies')
+                    safety_rules = @('keep local paths out')
+                    performance_budget = [ordered]@{ max_context_tokens = 42000 }
+                    rationale = 'keep worker context scoped'
                 }
                 verification_result = [ordered]@{
                     outcome = 'PARTIAL'
@@ -8296,7 +8303,7 @@ panes:
                     next_action = 'rerun_verify'
                 }
             }
-        } | ConvertTo-Json -Compress),
+        } | ConvertTo-Json -Compress -Depth 8),
         ([ordered]@{
             timestamp = '2026-04-10T12:03:00+09:00'
             session   = 'winsmux-orchestra'
@@ -8374,6 +8381,12 @@ panes:
         $result.runs[0].context_contract.context_pressure | Should -Be 'high'
         $result.runs[0].context_contract.context_mode | Should -Be 'isolated'
         $result.runs[0].context_contract.tool_output_pruned_count | Should -Be 3
+        $result.runs[0].context_contract.semantic_context.context_pack_id | Should -Be 'sem-runs'
+        $result.runs[0].context_contract.semantic_context.source_refs | Should -Be @('ADR-001', 'docs/operator-model.md#context')
+        $result.runs[0].context_contract.semantic_context.hard_constraints | Should -Be @('do not store prompt bodies')
+        $result.runs[0].context_contract.semantic_context.adr_body_stored | Should -Be $false
+        $result.runs[0].context_contract.semantic_context.persona_prompt_stored | Should -Be $false
+        $result.runs[0].context_contract.semantic_context.private_source_body_stored | Should -Be $false
         $result.runs[0].context_contract.prompt_body_stored | Should -Be $false
         $result.runs[0].context_contract.private_memory_stored | Should -Be $false
         $result.runs[0].run_packet.context_contract.context_pack_id | Should -Be 'ctx-runs'
@@ -9600,6 +9613,13 @@ panes:
                         tool_output_pruned_count = 2
                         context_pressure = 'medium'
                         context_mode = 'isolated'
+                        semantic_context_pack_id = 'sem-task-256'
+                        semantic_context_pack_ref = 'context-packs/sem-task-256.json'
+                        source_refs = @('ADR-001', 'docs/operator-model.md#context')
+                        hard_constraints = @('do not store prompt bodies')
+                        safety_rules = @('keep local paths out')
+                        performance_budget = [ordered]@{ max_context_tokens = 42000 }
+                        rationale = 'keep worker context scoped'
                     }
                     verification_result = [ordered]@{
                         outcome = 'PARTIAL'
@@ -9774,6 +9794,13 @@ panes:
         $result.run.context_contract.packet_type | Should -Be 'context_budget_contract'
         $result.run.context_contract.context_pack_id | Should -Be 'ctx-task-256'
         $result.run.context_contract.context_mode | Should -Be 'isolated'
+        $result.run.context_contract.semantic_context.context_pack_id | Should -Be 'sem-task-256'
+        $result.run.context_contract.semantic_context.source_refs | Should -Be @('ADR-001', 'docs/operator-model.md#context')
+        $result.run.context_contract.semantic_context.hard_constraints | Should -Be @('do not store prompt bodies')
+        $result.run.context_contract.semantic_context.performance_budget.max_context_tokens | Should -Be 42000
+        $result.run.context_contract.semantic_context.adr_body_stored | Should -Be $false
+        $result.run.context_contract.semantic_context.persona_prompt_stored | Should -Be $false
+        $result.run.context_contract.semantic_context.private_source_body_stored | Should -Be $false
         $result.run.context_contract.fork_allowed | Should -Be $false
         $result.run.context_contract.prompt_body_stored | Should -Be $false
         $result.run.context_contract.private_memory_stored | Should -Be $false
