@@ -9726,6 +9726,17 @@ panes:
         $result.run.tdd_gate.required | Should -Be $true
         $result.run.tdd_gate.state | Should -Be 'passed'
         $result.run.tdd_gate.red_event | Should -Be 'pipeline.tdd.red'
+        $result.run.audit_chain.chain_id | Should -Be 'task:task-256'
+        $result.run.audit_chain.subject.task_id | Should -Be 'task-256'
+        $result.run.audit_chain.subject.changed_files | Should -Be @('scripts/winsmux-core.ps1')
+        $result.run.audit_chain.actor.label | Should -Be 'builder-1'
+        $result.run.audit_chain.approval.required | Should -Be $true
+        $result.run.audit_chain.approval.state | Should -Be 'pending'
+        $result.run.audit_chain.approval.requested_at.ToString('o') | Should -Be '2026-04-10T03:01:00.0000000Z'
+        $result.run.audit_chain.approval.requested_reviewer_label | Should -Be 'reviewer-1'
+        @($result.run.audit_chain.events | ForEach-Object { $_.event }) | Should -Contain 'operator.review_requested'
+        @($result.run.audit_chain.events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.verify.partial'
+        @($result.run.audit_chain.events | ForEach-Object { $_.event }) | Should -Contain 'pane.approval_waiting'
         $result.run.phase | Should -Be 'review'
         $result.run.activity | Should -Be 'waiting_for_input'
         $result.run.detail | Should -Be 'review_pending'

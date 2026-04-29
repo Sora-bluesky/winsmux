@@ -688,6 +688,22 @@ panes:
         explain.run.verification_evidence["context_pressure"],
         "medium"
     );
+    assert_eq!(explain.run.audit_chain["chain_id"], "task:task-256");
+    assert_eq!(
+        explain.run.audit_chain["subject"]["changed_files"][0],
+        "scripts/winsmux-core.ps1"
+    );
+    assert_eq!(explain.run.audit_chain["actor"]["label"], "builder-1");
+    assert_eq!(explain.run.audit_chain["approval"]["required"], true);
+    assert_eq!(explain.run.audit_chain["approval"]["state"], "pending");
+    assert_eq!(explain.run.audit_chain["approval"]["requested_at"], "");
+    assert!(explain.run.audit_chain["events"]
+        .as_array()
+        .expect("audit chain events should be an array")
+        .iter()
+        .any(|event| event["event"] == "pane.approval_waiting"
+            && event["at"] == "2026-04-23T03:00:01Z"
+            && event["who"]["label"] == "builder-1"));
     assert_eq!(explain.run.security_verdict, "ALLOW");
 }
 

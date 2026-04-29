@@ -140,6 +140,73 @@
       }
     ],
     "managed_loop": null,
+    "audit_chain": {
+      "chain_id": "task:task-256",
+      "subject": {
+        "task_id": "task-256",
+        "task": "Implement run ledger",
+        "task_type": "implementation",
+        "priority": "P0",
+        "branch": "worktree-builder-1",
+        "head_sha": "abc1234def5678",
+        "changed_files": [
+          "scripts/winsmux-core.ps1"
+        ]
+      },
+      "actor": {
+        "label": "builder-1",
+        "pane_id": "%2",
+        "role": "Builder",
+        "provider_target": "codex:gpt-5.4",
+        "agent_role": "worker"
+      },
+      "approval": {
+        "required": true,
+        "state": "pending",
+        "verdict": "PENDING",
+        "requested_at": "2026-04-10T03:01:00Z",
+        "requested_event": "operator.review_requested",
+        "requested_reviewer_label": "reviewer-1",
+        "requested_reviewer_pane": "%3",
+        "requested_reviewer_role": "Reviewer",
+        "decided_at": "",
+        "decided_event": "",
+        "human_judgement_required": true,
+        "automatic_merge_allowed": false
+      },
+      "events": [
+        {
+          "at": "2026-04-10T03:01:00Z",
+          "event": "operator.review_requested",
+          "who": {
+            "label": "reviewer-1",
+            "pane_id": "%3",
+            "role": "Reviewer"
+          },
+          "what": "operator.review_requested",
+          "task_id": "task-256",
+          "run_id": "",
+          "branch": "worktree-builder-1",
+          "head_sha": "abc1234def5678",
+          "message": "review requested"
+        },
+        {
+          "at": "2026-04-10T03:03:00Z",
+          "event": "pipeline.tdd.red",
+          "who": {
+            "label": "operator",
+            "pane_id": "",
+            "role": "Operator"
+          },
+          "what": "pipeline.tdd.red",
+          "task_id": "task-256",
+          "run_id": "task:task-256",
+          "branch": "worktree-builder-1",
+          "head_sha": "abc1234def5678",
+          "message": "test failed before implementation"
+        }
+      ]
+    },
     "outcome": {
       "status": "in_progress",
       "reason": "consult before work",

@@ -1,5 +1,6 @@
 use crate::event_contract::{parse_event_jsonl, EventRecord};
 use crate::manifest_contract::{NormalizedManifestPane, WinsmuxManifest};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -277,6 +278,7 @@ pub struct LedgerExplainRun {
     pub verification_result: Value,
     pub verification_evidence: Value,
     pub tdd_gate: Value,
+    pub audit_chain: Value,
     pub outcome: Value,
     pub phase_gate: Value,
     pub draft_pr_gate: Value,
@@ -470,6 +472,7 @@ pub struct LedgerRunProjection {
     pub verification_result: Value,
     pub verification_evidence: Value,
     pub tdd_gate: Value,
+    pub audit_chain: Value,
     pub outcome: Value,
     pub phase_gate: Value,
     pub draft_pr_gate: Value,
@@ -514,6 +517,7 @@ pub struct LedgerRunPacket {
     pub verification_result: Value,
     pub verification_evidence: Value,
     pub tdd_gate: Value,
+    pub audit_chain: Value,
     pub outcome: Value,
     pub phase_gate: Value,
     pub draft_pr_gate: Value,
@@ -726,6 +730,9 @@ impl LedgerRunProjection {
                 .map(|run| run.verification_evidence.clone())
                 .unwrap_or(Value::Null),
             tdd_gate: run.map(|run| run.tdd_gate.clone()).unwrap_or(Value::Null),
+            audit_chain: run
+                .map(|run| run.audit_chain.clone())
+                .unwrap_or(Value::Null),
             outcome: run.map(|run| run.outcome.clone()).unwrap_or(Value::Null),
             phase_gate: run.map(|run| run.phase_gate.clone()).unwrap_or(Value::Null),
             draft_pr_gate: run
@@ -775,6 +782,7 @@ impl LedgerRunPacket {
             verification_result: run.verification_result.clone(),
             verification_evidence: run.verification_evidence.clone(),
             tdd_gate: run.tdd_gate.clone(),
+            audit_chain: run.audit_chain.clone(),
             outcome: run.outcome.clone(),
             phase_gate: run.phase_gate.clone(),
             draft_pr_gate: run.draft_pr_gate.clone(),
@@ -1289,6 +1297,7 @@ impl LedgerSnapshot {
             verification_result,
             verification_evidence,
             tdd_gate: Value::Null,
+            audit_chain: Value::Null,
             outcome: Value::Null,
             phase_gate: Value::Null,
             draft_pr_gate: Value::Null,
@@ -1297,6 +1306,7 @@ impl LedgerSnapshot {
         run.draft_pr_gate = run_draft_pr_gate_value(&run, &recent_event_records);
         run.tdd_gate = run_tdd_gate_value(&run, &recent_event_records);
         run.phase_gate = run_phase_gate_value(&run, &recent_event_records, &run.draft_pr_gate);
+        run.audit_chain = run_audit_chain_value(&run, &recent_event_records);
         run.outcome = run_outcome_value(&run, &run.phase_gate, &run.draft_pr_gate);
         let explanation = explain_explanation(&run, &evidence_digest);
 
@@ -2451,6 +2461,161 @@ fn run_draft_pr_handoff_package_value(run: &LedgerExplainRun, draft_pr_url: &str
         "human_judgement_required": true,
         "automatic_merge_allowed": false,
     })
+}
+
+fn run_audit_chain_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) -> Value {
+    let mut ordered_events = events.to_vec();
+    ordered_events.sort_by(|(left_index, left), (right_index, right)| {
+        left.timestamp
+            .cmp(&right.timestamp)
+            .then_with(|| left_index.cmp(right_index))
+    });
+    let review_request = ordered_events
+        .iter()
+        .map(|(_, event)| *event)
+        .find(|event| event.event == "operator.review_requested");
+    let decision_event = run_audit_chain_decision_event(run, &ordered_events);
+    let chain_events: Vec<_> = ordered_events
+        .iter()
+        .filter(|(_, event)| is_audit_chain_event(&event.event))
+        .map(|(_, event)| audit_chain_event_value(event))
+        .collect();
+
+    json!({
+        "chain_id": run.run_id,
+        "subject": {
+            "task_id": run.task_id,
+            "task": run.task,
+            "task_type": run.task_type,
+            "priority": run.priority,
+            "branch": run.branch,
+            "head_sha": run.head_sha,
+            "changed_files": run.changed_files,
+        },
+        "actor": {
+            "label": run.primary_label,
+            "pane_id": run.primary_pane_id,
+            "role": run.primary_role,
+            "provider_target": run.provider_target,
+            "agent_role": if run.agent_role.trim().is_empty() {
+                run.primary_role.clone()
+            } else {
+                run.agent_role.clone()
+            },
+        },
+        "approval": {
+            "required": run.review_required,
+            "state": audit_chain_approval_state(&run.review_state, run.review_required),
+            "verdict": run.review_state,
+            "requested_at": review_request.map(|event| event_timestamp_text(&event.timestamp)).unwrap_or_default(),
+            "requested_event": review_request.map(|event| event.event.clone()).unwrap_or_default(),
+            "requested_reviewer_label": review_request.map(|event| event.label.clone()).unwrap_or_default(),
+            "requested_reviewer_pane": review_request.map(|event| event.pane_id.clone()).unwrap_or_default(),
+            "requested_reviewer_role": review_request.map(|event| event.role.clone()).unwrap_or_default(),
+            "decided_at": decision_event.map(|event| event_timestamp_text(&event.timestamp)).unwrap_or_default(),
+            "decided_event": decision_event.map(|event| event.event.clone()).unwrap_or_default(),
+            "human_judgement_required": run.review_required,
+            "automatic_merge_allowed": false,
+        },
+        "events": chain_events,
+    })
+}
+
+fn audit_chain_approval_state(review_state: &str, review_required: bool) -> &'static str {
+    if review_state.eq_ignore_ascii_case("PASS") {
+        "approved"
+    } else if review_state.eq_ignore_ascii_case("FAIL")
+        || review_state.eq_ignore_ascii_case("FAILED")
+    {
+        "failed"
+    } else if review_state.eq_ignore_ascii_case("PENDING") {
+        "pending"
+    } else if review_required {
+        "missing"
+    } else {
+        "not_required"
+    }
+}
+
+fn run_audit_chain_decision_event<'a>(
+    run: &LedgerExplainRun,
+    events: &'a [(usize, &EventRecord)],
+) -> Option<&'a EventRecord> {
+    let decision_events: &[&str] = if run.review_state.eq_ignore_ascii_case("PASS") {
+        &["operator.review_passed", "review.pass"]
+    } else if run.review_state.eq_ignore_ascii_case("FAIL")
+        || run.review_state.eq_ignore_ascii_case("FAILED")
+    {
+        &["operator.review_failed", "review.fail"]
+    } else {
+        &[]
+    };
+    if decision_events.is_empty() {
+        return None;
+    }
+
+    events
+        .iter()
+        .map(|(_, event)| *event)
+        .find(|event| decision_events.contains(&event.event.as_str()))
+}
+
+fn is_audit_chain_event(event: &str) -> bool {
+    matches!(
+        event,
+        "operator.review_requested"
+            | "operator.review_passed"
+            | "operator.review_failed"
+            | "review.pass"
+            | "review.fail"
+            | "pane.approval_waiting"
+            | "pipeline.tdd.red"
+            | "pipeline.tdd.exception"
+            | "pipeline.verify.pass"
+            | "pipeline.verify.fail"
+            | "pipeline.verify.partial"
+            | "pipeline.security.allowed"
+            | "pipeline.security.blocked"
+            | "security.policy.allowed"
+            | "security.policy.blocked"
+            | "operator.draft_pr.created"
+            | "operator.draft_pr.required"
+    )
+}
+
+fn audit_chain_event_value(event: &EventRecord) -> Value {
+    let action = event_data_string(&event.data, "action");
+    let what = if action.trim().is_empty() {
+        event.event.clone()
+    } else {
+        action
+    };
+
+    json!({
+        "at": event_timestamp_text(&event.timestamp),
+        "event": event.event,
+        "who": {
+            "label": event.label,
+            "pane_id": event.pane_id,
+            "role": event.role,
+        },
+        "what": what,
+        "task_id": event_data_string(&event.data, "task_id"),
+        "run_id": event_data_string(&event.data, "run_id"),
+        "branch": event_branch(event),
+        "head_sha": event_head_sha(event),
+        "message": event.message,
+    })
+}
+
+fn event_timestamp_text(timestamp: &str) -> String {
+    DateTime::parse_from_rfc3339(timestamp)
+        .map(|value| {
+            value
+                .with_timezone(&Utc)
+                .to_rfc3339_opts(SecondsFormat::Secs, true)
+        })
+        .unwrap_or_else(|_| timestamp.to_string())
 }
 
 fn run_outcome_value(run: &LedgerExplainRun, phase_gate: &Value, draft_pr_gate: &Value) -> Value {
