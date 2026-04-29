@@ -2638,6 +2638,9 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
         .and_then(Value::as_array)
         .map(Vec::len)
         .unwrap_or(0);
+    let draft_pr_gate_state = value_field_string(&run.draft_pr_gate, "state");
+    let phase_gate_stop_reason = value_field_string(&run.phase_gate, "stop_reason");
+    let phase_gate_stop_stage = value_field_string(&run.phase_gate, "stop_stage");
     let evidence_complete = !verification_outcome.trim().is_empty()
         && !run.verification_evidence.is_null()
         && !run.audit_chain.is_null();
@@ -2661,10 +2664,27 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
             first_non_empty(&approval_state, &run.review_state)
         ));
     }
+    if !draft_pr_gate_state.trim().is_empty() && draft_pr_gate_state != "passed" {
+        blocked_reasons.push(format!("draft PR gate is {draft_pr_gate_state}"));
+    }
+    if !phase_gate_stop_reason.trim().is_empty() {
+        let stage = if phase_gate_stop_stage.trim().is_empty() {
+            "unknown"
+        } else {
+            phase_gate_stop_stage.as_str()
+        };
+        blocked_reasons.push(format!(
+            "phase gate stopped at {stage}: {phase_gate_stop_reason}"
+        ));
+    }
+
+    let human_judgement_required = run.review_required
+        || !draft_pr_gate_state.trim().is_empty() && draft_pr_gate_state != "passed"
+        || phase_gate_stop_reason == "needs_user_decision";
 
     let status = if !blocked_reasons.is_empty() {
         "blocked"
-    } else if run.review_required {
+    } else if human_judgement_required {
         "approved"
     } else {
         "ready"
@@ -2701,6 +2721,8 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
                 "blocked": security_verdict == "BLOCK"
             },
             "approval": approval,
+            "draft_pr": run.draft_pr_gate,
+            "phase": run.phase_gate,
             "audit": {
                 "chain_id": value_field_string(&run.audit_chain, "chain_id"),
                 "event_count": audit_events,
@@ -2710,7 +2732,7 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
         "release_decision": {
             "status": status,
             "blocked_reasons": blocked_reasons,
-            "human_judgement_required": run.review_required,
+            "human_judgement_required": human_judgement_required,
             "automatic_merge_allowed": false
         },
         "verification_evidence": run.verification_evidence,

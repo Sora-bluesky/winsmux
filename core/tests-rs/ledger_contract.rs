@@ -721,6 +721,19 @@ panes:
         explain.run.verification_envelope["release_decision"]["status"],
         "blocked"
     );
+    assert_eq!(
+        explain.run.verification_envelope["dynamic_gates"]["draft_pr"]["state"],
+        "blocked"
+    );
+    assert_eq!(
+        explain.run.verification_envelope["dynamic_gates"]["phase"]["stop_reason"],
+        "needs_user_decision"
+    );
+    assert!(explain.run.verification_envelope["release_decision"]["blocked_reasons"]
+        .as_array()
+        .expect("blocked reasons should be an array")
+        .iter()
+        .any(|reason| reason == "draft PR gate is blocked"));
     assert!(explain.run.audit_chain["events"]
         .as_array()
         .expect("audit chain events should be an array")
@@ -1000,6 +1013,10 @@ fn ledger_contract_serializes_typed_cli_payload_roots() {
     assert_root_keys(&runs, &["generated_at", "project_dir", "runs", "summary"]);
     assert_eq!(runs["summary"]["run_count"], 2);
     assert!(runs["runs"][0]["run_packet"].is_object());
+    assert!(runs["runs"].as_array().unwrap().iter().any(|run| {
+        run["verification_envelope"]["packet_type"] == "verification_envelope"
+            && run["run_packet"]["verification_envelope"]["packet_type"] == "verification_envelope"
+    }));
 
     let explain_projection = snapshot
         .explain_projection("task:task-256")
@@ -1028,6 +1045,65 @@ fn ledger_contract_serializes_typed_cli_payload_roots() {
         ],
     );
     assert_eq!(explain["run"]["run_id"], "task:task-256");
+}
+
+#[test]
+fn ledger_contract_blocks_verification_envelope_when_draft_pr_or_phase_gate_waits() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-approved-no-pr
+    task: Implement guarded change
+    task_state: completed
+    review_state: PASS
+    branch: worktree-approved-no-pr
+    head_sha: abc1234def5678
+    review_required: true
+    verification_plan: ["cargo test"]
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","status":"completed","data":{"task_id":"task-approved-no-pr","verification_result":{"outcome":"PASS","summary":"tests passed"}}}
+{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","status":"ALLOW","data":{"task_id":"task-approved-no-pr","security_verdict":{"verdict":"ALLOW","reason":"policy passed"}}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load gated envelope inputs");
+    let explain = snapshot
+        .explain_projection("task:task-approved-no-pr")
+        .expect("approved run should still explain");
+
+    assert_eq!(
+        explain.run.verification_envelope["dynamic_gates"]["verification"]["outcome"],
+        "PASS"
+    );
+    assert_eq!(
+        explain.run.verification_envelope["dynamic_gates"]["approval"]["state"],
+        "approved"
+    );
+    assert_eq!(
+        explain.run.verification_envelope["dynamic_gates"]["draft_pr"]["state"],
+        "required"
+    );
+    assert_eq!(
+        explain.run.verification_envelope["dynamic_gates"]["phase"]["stop_reason"],
+        "needs_user_decision"
+    );
+    assert_eq!(
+        explain.run.verification_envelope["release_decision"]["status"],
+        "blocked"
+    );
+    let reasons = explain.run.verification_envelope["release_decision"]["blocked_reasons"]
+        .as_array()
+        .expect("blocked reasons should be an array");
+    assert!(reasons.iter().any(|reason| reason == "draft PR gate is required"));
+    assert!(reasons.iter().any(|reason| reason
+        .as_str()
+        .expect("blocked reason should be a string")
+        .starts_with("phase gate stopped at ")));
 }
 
 #[test]

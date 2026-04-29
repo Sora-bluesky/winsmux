@@ -6359,6 +6359,9 @@ function New-RunVerificationEnvelope {
     if ($null -ne $Run.audit_chain -and $null -ne $Run.audit_chain.events) {
         $auditEventCount = @($Run.audit_chain.events).Count
     }
+    $draftPrGateState = [string](Get-RunContractField -InputObject $Run.draft_pr_gate -Name 'state')
+    $phaseGateStopReason = [string](Get-RunContractField -InputObject $Run.phase_gate -Name 'stop_reason')
+    $phaseGateStopStage = [string](Get-RunContractField -InputObject $Run.phase_gate -Name 'stop_stage')
 
     $evidenceComplete = (
         -not [string]::IsNullOrWhiteSpace($verificationOutcome) -and
@@ -6382,10 +6385,23 @@ function New-RunVerificationEnvelope {
         $stateText = if (-not [string]::IsNullOrWhiteSpace($approvalState)) { $approvalState } else { [string]$Run.review_state }
         $blockedReasons.Add("approval state is unresolved: $stateText") | Out-Null
     }
+    if (-not [string]::IsNullOrWhiteSpace($draftPrGateState) -and $draftPrGateState -ne 'passed') {
+        $blockedReasons.Add("draft PR gate is $draftPrGateState") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($phaseGateStopReason)) {
+        $stageText = if (-not [string]::IsNullOrWhiteSpace($phaseGateStopStage)) { $phaseGateStopStage } else { 'unknown' }
+        $blockedReasons.Add("phase gate stopped at ${stageText}: $phaseGateStopReason") | Out-Null
+    }
+
+    $humanJudgementRequired = (
+        [bool]$Run.review_required -or
+        (-not [string]::IsNullOrWhiteSpace($draftPrGateState) -and $draftPrGateState -ne 'passed') -or
+        $phaseGateStopReason -eq 'needs_user_decision'
+    )
 
     $status = if (@($blockedReasons).Count -gt 0) {
         'blocked'
-    } elseif ([bool]$Run.review_required) {
+    } elseif ($humanJudgementRequired) {
         'approved'
     } else {
         'ready'
@@ -6416,6 +6432,8 @@ function New-RunVerificationEnvelope {
                 blocked = ($securityVerdict -eq 'BLOCK')
             }
             approval     = $approval
+            draft_pr     = $Run.draft_pr_gate
+            phase        = $Run.phase_gate
             audit        = [ordered]@{
                 chain_id    = $auditChainId
                 event_count = $auditEventCount
@@ -6425,7 +6443,7 @@ function New-RunVerificationEnvelope {
         release_decision     = [ordered]@{
             status                   = $status
             blocked_reasons          = @($blockedReasons)
-            human_judgement_required = [bool]$Run.review_required
+            human_judgement_required = $humanJudgementRequired
             automatic_merge_allowed  = $false
         }
         verification_evidence = $Run.verification_evidence
