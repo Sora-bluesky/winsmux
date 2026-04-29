@@ -7060,6 +7060,20 @@ function New-RunChildLaunchContract {
         worktree                     = $worktreeRef
         launch_dir                   = $worktreeRef
         session_type                 = $sessionType
+        structured_handoff           = [ordered]@{
+            packet_type                  = 'structured_handoff_contract'
+            mode                         = 'plan_document_pipe'
+            plan_ref                     = 'plan.md'
+            plan_body_stored             = $false
+            source_role                  = 'operator'
+            target_role                  = $role
+            target_role_intent           = $roleIntent
+            target_agent_kind            = $agentKind
+            review_role                  = 'Reviewer'
+            independent_verification     = $true
+            freeform_prompt_body_stored  = $false
+            local_reference_paths_stored = $false
+        }
         startup_command_ref          = 'managed-pane-launch'
         startup_command_stored       = $false
         operator_controls_merge      = $true
