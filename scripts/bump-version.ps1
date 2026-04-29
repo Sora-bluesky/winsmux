@@ -389,15 +389,41 @@ try {
     $prNumber = if ($prUrl -match '/(\d+)$') { $Matches[1] } else { $prUrl }
     $bridgeScript = Join-Path $PSScriptRoot "winsmux-core.ps1"
     & pwsh $bridgeScript verify $prNumber
-    Write-Host "[release] PR merged (verified)"
+    $verifyExitCode = $LASTEXITCODE
+    if ($verifyExitCode -ne 0) {
+        throw "verify failed for PR #$prNumber with exit code $verifyExitCode. Refusing to tag or create GitHub Release."
+    }
+
+    $prJson = gh pr view $prNumber --json state,mergeCommit
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to read PR #$prNumber after verify. Refusing to tag or create GitHub Release."
+    }
+    $prState = $prJson | ConvertFrom-Json -Depth 20
+    $releaseCommit = [string]$prState.mergeCommit.oid
+    if ($prState.state -ne 'MERGED' -or [string]::IsNullOrWhiteSpace($releaseCommit)) {
+        throw "PR #$prNumber is not merged after verify. Refusing to tag or create GitHub Release."
+    }
+    Write-Host "[release] PR merged (verified): $releaseCommit"
 
     # Switch back to main and pull
     git checkout main
-    git pull origin main --rebase
+    git pull --ff-only origin main
+    $mainHead = (git rev-parse HEAD).Trim()
+    if ($mainHead -ne $releaseCommit) {
+        throw "main HEAD $mainHead does not match release PR merge commit $releaseCommit. Refusing to tag or create GitHub Release."
+    }
     Write-Host "[release] Main updated"
 
     # Tag the merge commit and push
-    git tag "v$Version"
+    $existingTag = (git tag --list "v$Version" | Out-String).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($existingTag)) {
+        throw "Tag v$Version already exists. Refusing to overwrite a release tag."
+    }
+    $remoteTag = (git ls-remote --tags origin "refs/tags/v$Version" | Out-String).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($remoteTag)) {
+        throw "Remote tag v$Version already exists. Refusing to overwrite a release tag."
+    }
+    git tag "v$Version" $releaseCommit
     git push origin "v$Version"
     Write-Host "[release] Tagged v$Version"
 
