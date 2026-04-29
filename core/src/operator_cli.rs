@@ -6018,6 +6018,7 @@ fn compare_runs_payload(
                 &left.evidence_digest,
                 "compare_winner_follow_up",
                 "compare_runs",
+                &[&left.run, &right.run],
             )
         } else {
             playbook_template_contract(
@@ -6025,6 +6026,7 @@ fn compare_runs_payload(
                 &right.evidence_digest,
                 "compare_winner_follow_up",
                 "compare_runs",
+                &[&left.run, &right.run],
             )
         }
     } else if reconcile_consult {
@@ -6471,8 +6473,10 @@ fn playbook_template_contract(
     evidence_digest: &crate::ledger::LedgerDigestItem,
     flow: &str,
     source: &str,
+    diversity_runs: &[&crate::ledger::LedgerExplainRun],
 ) -> Value {
     let resolved_flow = run_playbook_flow(run, evidence_digest, flow);
+    let diversity_policy = diversity_policy_contract(diversity_runs);
     json!({
         "contract_version": 1,
         "packet_type": "playbook_template_contract",
@@ -6490,6 +6494,7 @@ fn playbook_template_contract(
         "handoff_refs": run.handoff_refs,
         "execution_backend": "operator_managed",
         "backend_profile_required": false,
+        "diversity_policy": diversity_policy,
         "freeform_body_stored": false,
         "private_guidance_stored": false,
         "local_reference_paths_stored": false,
@@ -6500,6 +6505,7 @@ fn compare_reconcile_playbook_template(
     left_run: &crate::ledger::LedgerExplainRun,
     right_run: &crate::ledger::LedgerExplainRun,
 ) -> Value {
+    let diversity_policy = diversity_policy_contract(&[left_run, right_run]);
     json!({
         "contract_version": 1,
         "packet_type": "playbook_template_contract",
@@ -6517,10 +6523,109 @@ fn compare_reconcile_playbook_template(
         "team_memory_refs": compare_team_memory_refs(left_run, right_run),
         "execution_backend": "operator_managed",
         "backend_profile_required": false,
+        "diversity_policy": diversity_policy,
         "freeform_body_stored": false,
         "private_guidance_stored": false,
         "local_reference_paths_stored": false,
     })
+}
+
+fn diversity_policy_contract(runs: &[&crate::ledger::LedgerExplainRun]) -> Value {
+    let provider_keys: Vec<String> = runs
+        .iter()
+        .filter_map(|run| {
+            let (provider, _) = split_provider_target(&run.provider_target);
+            (!provider.trim().is_empty()).then_some(provider)
+        })
+        .collect();
+    let model_keys: Vec<String> = runs
+        .iter()
+        .filter_map(|run| {
+            let (_, model) = split_provider_target(&run.provider_target);
+            (!model.trim().is_empty()).then_some(model)
+        })
+        .collect();
+    let provider_metadata_partial = provider_keys.len() != runs.len();
+    let model_metadata_partial = model_keys.len() != runs.len();
+    let harness_keys: Vec<String> = runs
+        .iter()
+        .map(|_| "operator_managed".to_string())
+        .collect();
+
+    json!({
+        "contract_version": 1,
+        "packet_type": "diversity_policy_contract",
+        "scope": if runs.len() > 1 { "run_set" } else { "single_run" },
+        "metadata_policy": {
+            "stored_metadata": ["fixed_categories", "count_buckets", "capability_flags"],
+            "provider_neutral": true,
+            "raw_provider_ids_stored": false,
+            "raw_model_names_stored": false,
+            "raw_model_prompts_stored": false,
+            "private_prompt_bodies_stored": false,
+            "local_reference_paths_stored": false,
+            "external_repository_names_stored": false,
+        },
+        "fixed_categories": {
+            "mix": [
+                "unknown",
+                "single_provider",
+                "mixed_provider",
+                "single_model",
+                "mixed_model",
+                "single_harness",
+                "mixed_harness",
+            ],
+            "count_bucket": ["none", "one", "two_or_more", "unknown"],
+            "harness": ["operator_managed"],
+        },
+        "projection": {
+            "run_count_bucket": count_bucket(runs.len()),
+            "provider_mix": mix_category(&provider_keys, "provider", provider_metadata_partial),
+            "model_mix": mix_category(&model_keys, "model", model_metadata_partial),
+            "harness_mix": mix_category(&harness_keys, "harness", false),
+            "provider_count_bucket": unique_count_bucket(&provider_keys, provider_metadata_partial),
+            "model_count_bucket": unique_count_bucket(&model_keys, model_metadata_partial),
+            "harness_count_bucket": unique_count_bucket(&harness_keys, false),
+        },
+    })
+}
+
+fn mix_category(values: &[String], subject: &str, metadata_partial: bool) -> String {
+    if metadata_partial {
+        return "unknown".to_string();
+    }
+    match unique_normalized_count(values) {
+        0 => "unknown".to_string(),
+        1 => format!("single_{subject}"),
+        _ => format!("mixed_{subject}"),
+    }
+}
+
+fn unique_count_bucket(values: &[String], metadata_partial: bool) -> &'static str {
+    if metadata_partial {
+        return "unknown";
+    }
+    count_bucket(unique_normalized_count(values))
+}
+
+fn count_bucket(count: usize) -> &'static str {
+    match count {
+        0 => "none",
+        1 => "one",
+        _ => "two_or_more",
+    }
+}
+
+fn unique_normalized_count(values: &[String]) -> usize {
+    let mut unique = Vec::new();
+    for value in values {
+        let normalized = value.trim().to_ascii_lowercase();
+        if !normalized.is_empty() && !unique.contains(&normalized) {
+            unique.push(normalized);
+        }
+    }
+    unique.len()
 }
 
 fn compare_team_memory_refs(
@@ -6593,7 +6698,13 @@ fn promote_tactic_candidate(
         "consultation_ref": experiment.consultation_ref,
         "verification_result": run.verification_result,
         "security_verdict": run.security_verdict,
-        "playbook_template": playbook_template_contract(run, &projection.evidence_digest, playbook_flow, "promote_tactic"),
+        "playbook_template": playbook_template_contract(
+            run,
+            &projection.evidence_digest,
+            playbook_flow,
+            "promote_tactic",
+            &[run],
+        ),
         "action_item_count": run.action_items.len(),
         "action_item_kinds": action_item_kinds(&run.action_items),
         "reuse_conditions": reuse_conditions(run),
