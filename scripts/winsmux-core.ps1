@@ -5448,7 +5448,7 @@ function Get-VerificationSnapshotFromEventRecords {
     $snapshot = Get-LatestRunEventDataSnapshot `
         -EventRecords $EventRecords `
         -EventNames @('pipeline.verify.pass', 'pipeline.verify.fail', 'pipeline.verify.partial') `
-        -DataFields @('verification_contract', 'verification_result')
+        -DataFields @('verification_contract', 'verification_result', 'verification_evidence', 'build', 'test', 'browser', 'screenshot', 'recording', 'context_budget', 'context_estimate', 'context_pack_id', 'tool_output_pruned_count', 'context_pressure')
     if ($null -eq $snapshot) {
         return $null
     }
@@ -5456,6 +5456,54 @@ function Get-VerificationSnapshotFromEventRecords {
     return [ordered]@{
         verification_contract = if ($snapshot.Contains('verification_contract')) { $snapshot['verification_contract'] } else { $null }
         verification_result   = if ($snapshot.Contains('verification_result')) { $snapshot['verification_result'] } else { $null }
+        verification_evidence = New-VerificationEvidenceEnvelope -Snapshot $snapshot
+    }
+}
+
+function Get-VerificationEvidenceField {
+    param(
+        [AllowNull()]$Snapshot = $null,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $Snapshot -or -not ($Snapshot -is [System.Collections.IDictionary])) {
+        return $null
+    }
+
+    foreach ($containerName in @('verification_evidence', 'verification_result', 'verification_contract')) {
+        if ($Snapshot.Contains($containerName)) {
+            $container = $Snapshot[$containerName]
+            if ($container -is [System.Collections.IDictionary] -and $container.Contains($Name)) {
+                return $container[$Name]
+            }
+        }
+    }
+
+    if ($Snapshot.Contains($Name)) {
+        return $Snapshot[$Name]
+    }
+
+    return $null
+}
+
+function New-VerificationEvidenceEnvelope {
+    param([AllowNull()]$Snapshot = $null)
+
+    if ($null -eq $Snapshot -or -not ($Snapshot -is [System.Collections.IDictionary])) {
+        return $null
+    }
+
+    return [ordered]@{
+        build                    = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'build'
+        test                     = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'test'
+        browser                  = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'browser'
+        screenshot               = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'screenshot'
+        recording                = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'recording'
+        context_budget           = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_budget'
+        context_estimate         = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_estimate'
+        context_pack_id          = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_pack_id'
+        tool_output_pruned_count = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'tool_output_pruned_count'
+        context_pressure         = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_pressure'
     }
 }
 
@@ -6228,6 +6276,7 @@ function New-RunPacketFromRun {
         security_verdict  = $Run.security_verdict
         verification_contract = $Run.verification_contract
         verification_result   = $Run.verification_result
+        verification_evidence = $Run.verification_evidence
         tdd_gate              = $Run.tdd_gate
         plan              = $Run.plan
         plan_checkpoints  = @($Run.plan_checkpoints)
@@ -6308,6 +6357,7 @@ function New-RunResultPacket {
         review_contract       = $reviewContract
         verification_contract = $Run.verification_contract
         verification_result   = $Run.verification_result
+        verification_evidence = $Run.verification_evidence
         tdd_gate              = $Run.tdd_gate
         security_policy       = $Run.security_policy
         security_verdict      = $Run.security_verdict
@@ -6560,6 +6610,7 @@ function Get-RunsPayload {
                 security_verdict   = $null
                 verification_contract = $null
                 verification_result   = $null
+                verification_evidence = $null
                 plan                  = $null
                 plan_checkpoints      = @()
                 managed_loop          = $null
@@ -6705,6 +6756,7 @@ function Get-RunsPayload {
             if ($null -ne $verificationSnapshot) {
                 $run.verification_contract = $verificationSnapshot.verification_contract
                 $run.verification_result = $verificationSnapshot.verification_result
+                $run.verification_evidence = $verificationSnapshot.verification_evidence
             }
 
             $securityVerdict = Get-SecurityVerdictFromEventRecords -EventRecords $matchingEvents
@@ -6773,6 +6825,7 @@ function Get-RunsPayload {
                 security_verdict   = $run.security_verdict
                 verification_contract = $run.verification_contract
                 verification_result   = $run.verification_result
+                verification_evidence = $run.verification_evidence
                 tdd_gate              = $run.tdd_gate
                 plan                  = $run.plan
                 plan_checkpoints      = @($run.plan_checkpoints)
@@ -7029,6 +7082,7 @@ function Get-PromoteTacticPayload {
         observation_pack_ref = if ($null -ne $experimentPacket) { [string]$experimentPacket.observation_pack_ref } else { '' }
         consultation_ref     = if ($null -ne $experimentPacket) { [string]$experimentPacket.consultation_ref } else { '' }
         verification_result  = $run.verification_result
+        verification_evidence = $run.verification_evidence
         security_verdict     = $run.security_verdict
         action_item_count    = @($run.action_items).Count
         action_item_kinds    = @($run.action_items | ForEach-Object { [string]$_.kind } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique)

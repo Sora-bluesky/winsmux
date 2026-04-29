@@ -537,6 +537,36 @@ function Get-TeamPipelineVerificationResultFromOutput {
         $nextAction = $nextActionMatches[$nextActionMatches.Count - 1].Groups[1].Value.Trim()
     }
 
+    $contextBudget = $null
+    $contextBudgetMatches = [regex]::Matches($Text, '(?im)^\s*CONTEXT_BUDGET:\s*(\d+)\s*$')
+    if ($contextBudgetMatches.Count -gt 0) {
+        $contextBudget = [int64]$contextBudgetMatches[$contextBudgetMatches.Count - 1].Groups[1].Value
+    }
+
+    $contextEstimate = $null
+    $contextEstimateMatches = [regex]::Matches($Text, '(?im)^\s*CONTEXT_ESTIMATE:\s*(\d+)\s*$')
+    if ($contextEstimateMatches.Count -gt 0) {
+        $contextEstimate = [int64]$contextEstimateMatches[$contextEstimateMatches.Count - 1].Groups[1].Value
+    }
+
+    $contextPackId = $null
+    $contextPackMatches = [regex]::Matches($Text, '(?im)^\s*CONTEXT_PACK_ID:\s*(.+?)\s*$')
+    if ($contextPackMatches.Count -gt 0) {
+        $contextPackId = $contextPackMatches[$contextPackMatches.Count - 1].Groups[1].Value.Trim()
+    }
+
+    $toolOutputPrunedCount = $null
+    $toolOutputPrunedMatches = [regex]::Matches($Text, '(?im)^\s*TOOL_OUTPUT_PRUNED_COUNT:\s*(\d+)\s*$')
+    if ($toolOutputPrunedMatches.Count -gt 0) {
+        $toolOutputPrunedCount = [int64]$toolOutputPrunedMatches[$toolOutputPrunedMatches.Count - 1].Groups[1].Value
+    }
+
+    $contextPressure = $null
+    $contextPressureMatches = [regex]::Matches($Text, '(?im)^\s*CONTEXT_PRESSURE:\s*(.+?)\s*$')
+    if ($contextPressureMatches.Count -gt 0) {
+        $contextPressure = $contextPressureMatches[$contextPressureMatches.Count - 1].Groups[1].Value.Trim()
+    }
+
     $outcome = switch ($status) {
         'VERIFY_PASS' { 'PASS' }
         'VERIFY_FAIL' { 'FAIL' }
@@ -551,6 +581,76 @@ function Get-TeamPipelineVerificationResultFromOutput {
         checks      = @($checks)
         next_action = $nextAction
         adversarial = $true
+        context_budget = $contextBudget
+        context_estimate = $contextEstimate
+        context_pack_id = $contextPackId
+        tool_output_pruned_count = $toolOutputPrunedCount
+        context_pressure = $contextPressure
+    }
+}
+
+function Get-TeamPipelineVerificationSurface {
+    param(
+        [AllowNull()]$VerificationResult = $null,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $VerificationResult) {
+        return $null
+    }
+
+    $checks = @(Get-TeamPipelineVerificationResultField -VerificationResult $VerificationResult -Name 'checks')
+    $matches = @($checks | Where-Object {
+            $checkName = if ($_ -is [System.Collections.IDictionary] -and $_.Contains('name')) { [string]$_['name'] } else { [string]$_.name }
+            $checkName.Trim().ToLowerInvariant() -eq $Name
+        })
+    if ($matches.Count -lt 1) {
+        return $null
+    }
+    $match = $matches[0]
+
+    $matchName = if ($match -is [System.Collections.IDictionary] -and $match.Contains('name')) { [string]$match['name'] } else { [string]$match.name }
+    $matchStatus = if ($match -is [System.Collections.IDictionary] -and $match.Contains('status')) { [string]$match['status'] } else { [string]$match.status }
+    $matchDetail = if ($match -is [System.Collections.IDictionary] -and $match.Contains('detail')) { [string]$match['detail'] } else { [string]$match.detail }
+
+    return [PSCustomObject][ordered]@{
+        name = $matchName
+        outcome = $matchStatus
+        detail = $matchDetail
+    }
+}
+
+function Get-TeamPipelineVerificationResultField {
+    param(
+        [AllowNull()]$VerificationResult = $null,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $VerificationResult) {
+        return $null
+    }
+
+    if ($VerificationResult -is [System.Collections.IDictionary] -and $VerificationResult.Contains($Name)) {
+        return $VerificationResult[$Name]
+    }
+
+    return $VerificationResult.$Name
+}
+
+function New-TeamPipelineVerificationEvidenceEnvelope {
+    param([AllowNull()]$VerificationResult = $null)
+
+    return [ordered]@{
+        build                    = Get-TeamPipelineVerificationSurface -VerificationResult $VerificationResult -Name 'build'
+        test                     = Get-TeamPipelineVerificationSurface -VerificationResult $VerificationResult -Name 'test'
+        browser                  = Get-TeamPipelineVerificationSurface -VerificationResult $VerificationResult -Name 'browser'
+        screenshot               = Get-TeamPipelineVerificationSurface -VerificationResult $VerificationResult -Name 'screenshot'
+        recording                = Get-TeamPipelineVerificationSurface -VerificationResult $VerificationResult -Name 'recording'
+        context_budget           = Get-TeamPipelineVerificationResultField -VerificationResult $VerificationResult -Name 'context_budget'
+        context_estimate         = Get-TeamPipelineVerificationResultField -VerificationResult $VerificationResult -Name 'context_estimate'
+        context_pack_id          = Get-TeamPipelineVerificationResultField -VerificationResult $VerificationResult -Name 'context_pack_id'
+        tool_output_pruned_count = Get-TeamPipelineVerificationResultField -VerificationResult $VerificationResult -Name 'tool_output_pruned_count'
+        context_pressure         = Get-TeamPipelineVerificationResultField -VerificationResult $VerificationResult -Name 'context_pressure'
     }
 }
 
@@ -562,6 +662,8 @@ function New-TeamPipelineVerificationContract {
         style            = 'utility_first'
         allowed_outcomes = @('PASS', 'FAIL', 'PARTIAL')
         required_fields  = @('summary', 'checks', 'next_action')
+        evidence_surfaces = @('build', 'test', 'browser', 'screenshot', 'recording')
+        context_fields    = @('context_budget', 'context_estimate', 'context_pack_id', 'tool_output_pruned_count', 'context_pressure')
         rationale        = 'Verification specialists must return concise structured evidence instead of decorative prose.'
     }
 }
@@ -877,11 +979,13 @@ function New-TeamPipelineVerificationPacket {
     }
     $changedPaths = Get-TeamPipelineChangedPaths -BuilderWorktreePath $BuilderWorktreePath
     $policy = Get-TeamPipelineRunPolicy -StageName 'VERIFY'
+    $verificationEvidence = New-TeamPipelineVerificationEvidenceEnvelope -VerificationResult $verificationResult
 
     return [PSCustomObject]@{
         packet_type        = 'verification_packet'
         verification_contract = [PSCustomObject](New-TeamPipelineVerificationContract)
         verification_result = if ($null -ne $verificationResult) { [PSCustomObject]$verificationResult } else { $null }
+        verification_evidence = [PSCustomObject]$verificationEvidence
         style              = 'utility_first'
         task               = $Task
         verifier           = $VerifierLabel
@@ -1589,6 +1693,7 @@ function Invoke-TeamPipeline {
             style             = $attempt.VerifyPacket.style
             verification_contract = $attempt.VerifyPacket.verification_contract
             verification_result = $attempt.VerifyPacket.verification_result
+            verification_evidence = $attempt.VerifyPacket.verification_evidence
         }
         if ($verifyCostUnitDispatched) {
             $verifyEventData['cost_unit_refs'] = @([string]$verifyCostUnit.unit_id)
