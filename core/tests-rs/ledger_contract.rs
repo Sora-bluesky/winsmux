@@ -778,9 +778,10 @@ panes:
     assert!(!knowledge_source_refs
         .iter()
         .any(|item| item.as_str().unwrap_or_default().contains("LOCALAPPDATA")));
-    assert!(!knowledge_source_refs
-        .iter()
-        .any(|item| item.as_str().unwrap_or_default().contains("private guidance")));
+    assert!(!knowledge_source_refs.iter().any(|item| item
+        .as_str()
+        .unwrap_or_default()
+        .contains("private guidance")));
     assert_eq!(
         explain.run.context_contract["knowledge_layer"]["operating_guidance_refs"][0],
         "guidance:git-guard"
@@ -803,9 +804,10 @@ panes:
     assert!(!evidence_refs
         .iter()
         .any(|item| item.as_str().unwrap_or_default().contains("Users")));
-    assert!(!evidence_refs
-        .iter()
-        .any(|item| item.as_str().unwrap_or_default().contains("pasted evidence")));
+    assert!(!evidence_refs.iter().any(|item| item
+        .as_str()
+        .unwrap_or_default()
+        .contains("pasted evidence")));
     assert_eq!(
         explain.run.context_contract["knowledge_layer"]["rationale_refs"][0],
         "ADR-knowledge-layer"
@@ -816,9 +818,10 @@ panes:
     assert!(!rationale_refs
         .iter()
         .any(|item| item.as_str().unwrap_or_default().contains("LOCALAPPDATA")));
-    assert!(!rationale_refs
-        .iter()
-        .any(|item| item.as_str().unwrap_or_default().contains("pasted rationale")));
+    assert!(!rationale_refs.iter().any(|item| item
+        .as_str()
+        .unwrap_or_default()
+        .contains("pasted rationale")));
     assert_eq!(
         explain.run.context_contract["knowledge_layer"]["team_memory_refs"][0],
         "team-memory:task-256:operator-standard"
@@ -896,6 +899,38 @@ panes:
     assert_eq!(
         explain.run.run_insights["next_improvements"][0],
         "reduce retry loop before the next run"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["packet_type"],
+        "checkpoint_package"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["assigned_worktree"],
+        ".worktrees/builder-1"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["session_type"],
+        "managed_worktree"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["changed_files"][0],
+        "scripts/winsmux-core.ps1"
+    );
+    let checkpoint_text = explain.run.checkpoint_package.to_string();
+    assert!(!checkpoint_text.contains("Users"));
+    assert!(!checkpoint_text.contains("private next action"));
+    assert_eq!(
+        explain.run.checkpoint_package["verification"]["outcome"],
+        "PASS"
+    );
+    assert_eq!(explain.run.checkpoint_package["project_root_stored"], false);
+    assert_eq!(
+        explain.run.checkpoint_package["local_reference_paths_stored"],
+        false
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["worker_git_write_allowed"],
+        false
     );
     assert_eq!(explain.run.audit_chain["chain_id"], "task:task-256");
     assert_eq!(
@@ -1247,6 +1282,8 @@ fn ledger_contract_serializes_typed_cli_payload_roots() {
             && run["run_packet"]["verification_envelope"]["packet_type"] == "verification_envelope"
             && run["run_insights"]["packet_type"] == "run_insights"
             && run["run_packet"]["run_insights"]["packet_type"] == "run_insights"
+            && run["checkpoint_package"]["packet_type"] == "checkpoint_package"
+            && run["run_packet"]["checkpoint_package"]["packet_type"] == "checkpoint_package"
             && run["team_memory"]["packet_type"] == "team_memory_contract"
             && run["run_packet"]["team_memory"]["packet_type"] == "team_memory_contract"
     }));
@@ -1281,6 +1318,22 @@ fn ledger_contract_serializes_typed_cli_payload_roots() {
     assert_eq!(
         explain["run"]["run_insights"]["packet_type"],
         "run_insights"
+    );
+}
+
+#[test]
+fn ledger_contract_scrubs_checkpoint_package_public_refs() {
+    assert_eq!(
+        ledger::public_worktree_ref(r"C:\Users\Example\repo\.worktrees\builder-1"),
+        ".worktrees/builder-1"
+    );
+    assert_eq!(
+        ledger::public_changed_files(&[
+            r"C:\Users\Example\repo\secret.txt".to_string(),
+            "scripts/winsmux-core.ps1".to_string(),
+            "../private.md".to_string(),
+        ]),
+        vec!["scripts/winsmux-core.ps1".to_string()]
     );
 }
 

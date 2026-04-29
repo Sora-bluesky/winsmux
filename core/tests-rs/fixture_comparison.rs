@@ -245,6 +245,7 @@ const EXPLAIN_RUN_KEYS: &[&str] = &[
     "context_contract",
     "team_memory",
     "run_insights",
+    "checkpoint_package",
     "tdd_gate",
     "verification_envelope",
     "audit_chain",

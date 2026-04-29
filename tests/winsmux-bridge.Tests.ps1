@@ -8474,10 +8474,22 @@ panes:
         $result.runs[0].run_insights.drift_signals | Should -Be @('drift_detected')
         $result.runs[0].run_insights.unhealthy_session_size | Should -Be $true
         $result.runs[0].run_insights.next_improvements | Should -Contain 'split the next run into a smaller scope'
+        $result.runs[0].checkpoint_package.packet_type | Should -Be 'checkpoint_package'
+        $result.runs[0].checkpoint_package.assigned_worktree | Should -Be '.worktrees/builder-1'
+        $result.runs[0].checkpoint_package.session_type | Should -Be 'managed_worktree'
+        $result.runs[0].checkpoint_package.changed_files | Should -Be @('scripts/winsmux-core.ps1')
+        $result.runs[0].checkpoint_package.verification.outcome | Should -Be 'PARTIAL'
+        ($result.runs[0].checkpoint_package | ConvertTo-Json -Depth 8) | Should -Not -Match 'Users'
+        ($result.runs[0].checkpoint_package | ConvertTo-Json -Depth 8) | Should -Not -Match 'private next action'
+        $result.runs[0].checkpoint_package.project_root_stored | Should -Be $false
+        $result.runs[0].checkpoint_package.local_reference_paths_stored | Should -Be $false
+        $result.runs[0].checkpoint_package.worker_git_write_allowed | Should -Be $false
         $result.runs[0].run_packet.context_contract.context_pack_id | Should -Be 'ctx-runs'
         $result.runs[0].run_packet.team_memory.team_memory_refs | Should -Contain 'team-memory:task-256:operator-standard'
         $result.runs[0].run_packet.team_memory.team_memory_refs | Should -Contain 'team-memory:task:task-256:event-3'
         $result.runs[0].run_packet.run_insights.retry_count | Should -Be 1
+        $result.runs[0].run_packet.checkpoint_package.assigned_worktree | Should -Be '.worktrees/builder-1'
+        $result.runs[0].run_packet.checkpoint_package.operator_git_required | Should -Be $true
         $result.runs[0].tdd_gate.required | Should -Be $true
         $result.runs[0].tdd_gate.state | Should -Be 'passed'
         $result.runs[0].tdd_gate.red_event | Should -Be 'pipeline.tdd.red'
@@ -8565,6 +8577,36 @@ panes:
         $gate.handoff_package.validation.evidence_complete | Should -Be $false
         $gate.handoff_package.blocked_reasons | Should -Contain 'verification evidence is missing'
         $gate.handoff_package.suggested_next_action | Should -Be 'resolve blocked reasons before creating or merging a draft PR'
+    }
+
+    It 'scrubs checkpoint package path and body fields' {
+        $run = [PSCustomObject]@{
+            run_id              = 'task:task-999'
+            task_id             = 'task-999'
+            worktree            = 'C:\Users\Example\repo\.worktrees\builder-1'
+            experiment_packet   = $null
+            branch              = 'worktree-builder-1'
+            head_sha            = 'abc123'
+            task_state          = 'in_progress'
+            review_state        = 'PENDING'
+            changed_files       = @('C:\Users\Example\repo\secret.txt', 'scripts/winsmux-core.ps1', '..\private.md')
+            verification_plan   = @('Invoke-Pester')
+            verification_result = [ordered]@{
+                outcome     = 'PARTIAL'
+                summary     = 'C:\Users\Example must not leak'
+                next_action = 'private next action'
+            }
+        }
+
+        $package = New-RunCheckpointPackage -Run $run
+
+        $package.assigned_worktree | Should -Be '.worktrees/builder-1'
+        $package.changed_files | Should -Be @('scripts/winsmux-core.ps1')
+        $package.changed_file_count | Should -Be 1
+        $package.verification.outcome | Should -Be 'PARTIAL'
+        ($package | ConvertTo-Json -Depth 8) | Should -Not -Match 'Users'
+        ($package | ConvertTo-Json -Depth 8) | Should -Not -Match 'private next action'
+        $package.worker_git_write_allowed | Should -Be $false
     }
 
     It 'exposes needs-user-decision as a phase-gated stop before package completion' {
