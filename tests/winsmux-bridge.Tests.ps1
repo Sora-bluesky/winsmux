@@ -11150,6 +11150,35 @@ Describe 'winsmux provider-capabilities command' {
     }
 }
 
+Describe 'winsmux guard command' {
+    BeforeAll {
+        $script:winsmuxGuardCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxGuardCoreRawContent = Get-Content -Raw -Path $script:winsmuxGuardCoreRawPath -Encoding UTF8
+        . $script:winsmuxGuardCoreRawPath 'version' *> $null
+    }
+
+    It 'documents guard in usage and delegates to the Rust guard report' {
+        $script:winsmuxGuardCoreRawContent | Should -Match 'guard \[--json\]'
+        $script:winsmuxGuardCoreRawContent | Should -Match "'guard'\s*\{ Invoke-Guard \}"
+
+        Mock Invoke-WinsmuxRaw {
+            param([string[]]$Arguments)
+            $script:guardArgs = @($Arguments)
+            return '{"command":"guard","task_ids":["TASK-383","TASK-384"]}'
+        }
+
+        $output = Invoke-Guard -GuardTarget '--json'
+        $json = $output | ConvertFrom-Json
+        $script:guardArgs | Should -Be @('guard', '--json')
+        $json.command | Should -Be 'guard'
+        @($json.task_ids) | Should -Be @('TASK-383', 'TASK-384')
+    }
+
+    It 'rejects unknown guard arguments' {
+        { Invoke-Guard -GuardTarget '--private' } | Should -Throw '*usage: winsmux guard [--json]*'
+    }
+}
+
 Describe 'winsmux assign command' {
     BeforeAll {
         $script:winsmuxAssignRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'

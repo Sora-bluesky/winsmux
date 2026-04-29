@@ -9507,6 +9507,34 @@ function Invoke-ManualChecklist {
     $output | Write-Output
 }
 
+function Invoke-Guard {
+    param(
+        [AllowNull()][string]$GuardTarget = $Target,
+        [AllowNull()][string[]]$GuardRest = $Rest
+    )
+
+    $tokens = @(@($GuardTarget) + @($GuardRest) | Where-Object { $_ })
+    $rustArgs = @('guard')
+    foreach ($token in $tokens) {
+        switch ($token) {
+            '--json' {
+                $rustArgs += '--json'
+            }
+            default {
+                Stop-WithError "usage: winsmux guard [--json]"
+            }
+        }
+    }
+
+    $output = Invoke-WinsmuxRaw -Arguments $rustArgs
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
+        exit $nativeExitCode
+    }
+
+    $output | Write-Output
+}
+
 function Invoke-ProviderSwitch {
     $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
     if ($tokens.Count -lt 1) {
@@ -9706,6 +9734,7 @@ Commands:
   machine-contract --json  Print the hook and agent machine contract JSON
   rust-canary [--json]  Print the Rust default-on canary gate JSON
   manual-checklist [--json]  Print the versioned manual validation checklist gate
+  guard [--json]  Print the public security and release guard baseline
   assign --task <TASK-ID> [--json] [--text <text>]  Dry-run provider, role, model-tier, approval, and sandbox assignment
   provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]  Record or clear a runtime provider reassignment for a managed slot
   github-preflight [--repo <owner/name>] [--json] [--connector-available] [--require-gh]  Select the GitHub write path before merge/release automation
@@ -10431,6 +10460,7 @@ switch ($Command) {
     'machine-contract' { Invoke-MachineContract }
     'rust-canary' { Invoke-RustCanary }
     'manual-checklist' { Invoke-ManualChecklist }
+    'guard' { Invoke-Guard }
     'assign' {
         $assignScript = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\assignment-policy.ps1'))
         $assignArgs = @()

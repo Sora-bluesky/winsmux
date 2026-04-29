@@ -706,6 +706,70 @@ fn operator_cli_manual_checklist_text_reports_next_action() {
 }
 
 #[test]
+fn operator_cli_guard_json_reports_release_guard_baseline() {
+    let project_dir = make_temp_project_dir("guard-json");
+    fs::create_dir_all(project_dir.join("scripts")).expect("test should create scripts dir");
+    fs::write(project_dir.join("scripts").join("git-guard.ps1"), "")
+        .expect("test should write git-guard script");
+    fs::write(project_dir.join("scripts").join("audit-public-surface.ps1"), "")
+        .expect("test should write public surface audit script");
+    fs::write(project_dir.join("scripts").join("gitleaks-history.ps1"), "")
+        .expect("test should write gitleaks script");
+    fs::write(
+        project_dir.join("scripts").join("gitleaks-history-baseline.txt"),
+        "abc123\n",
+    )
+    .expect("test should write gitleaks baseline");
+    fs::write(
+        project_dir.join("scripts").join("generate-release-notes.ps1"),
+        "",
+    )
+    .expect("test should write release notes script");
+
+    let json = run_json(&project_dir, &["guard", "--json"]);
+
+    assert_eq!(json["command"], "guard");
+    assert_eq!(json["task_ids"][0], "TASK-383");
+    assert_eq!(json["task_ids"][1], "TASK-384");
+    assert_eq!(json["target_version"], "v0.24.10");
+    assert_eq!(json["summary"]["required_check_count"], 5);
+    assert_eq!(json["summary"]["available_check_count"], 5);
+    assert_eq!(
+        json["observed_state"]["gitleaks_baseline_file"],
+        "scripts/gitleaks-history-baseline.txt"
+    );
+    assert_eq!(
+        json["evidence_contract"]["required_fields"][2],
+        "audit_chain"
+    );
+    assert_eq!(
+        json["public_safety"]["public_release_notes_language"],
+        "English"
+    );
+}
+
+#[test]
+fn operator_cli_guard_text_summarizes_contract() {
+    let project_dir = make_temp_project_dir("guard-text");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("guard")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Guard baseline: 5 checks for v0.24.10"));
+    assert!(stdout.contains("Run the listed guard commands before release tagging"));
+    assert!(!stdout.trim_start().starts_with('{'));
+}
+
+#[test]
 fn operator_cli_provider_capabilities_json_reads_single_provider_case_insensitive() {
     let project_dir = make_temp_project_dir("provider-capabilities-single");
     let winsmux_dir = project_dir.join(".winsmux");
