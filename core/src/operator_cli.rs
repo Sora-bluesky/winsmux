@@ -338,7 +338,15 @@ pub fn run_legacy_compat_gate_command(args: &[&String]) -> io::Result<()> {
 
     let options = parse_options("legacy-compat-gate", args, 0)?;
     let report = legacy_compat_gate_report(&options.project_dir)?;
+    let passed = report["summary"]["passed"].as_bool().unwrap_or(false);
     if options.json {
+        if !passed {
+            write_json(&report)?;
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "legacy compatibility gate failed",
+            ));
+        }
         return write_json(&report);
     }
 
@@ -349,6 +357,12 @@ pub fn run_legacy_compat_gate_command(args: &[&String]) -> io::Result<()> {
         report["summary"]["unclassified_count"].as_u64().unwrap_or(0)
     );
     println!("{}", report["next_action"].as_str().unwrap_or(""));
+    if !passed {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "legacy compatibility gate failed",
+        ));
+    }
     Ok(())
 }
 
@@ -520,6 +534,10 @@ fn legacy_compat_gate_report(project_dir: &Path) -> io::Result<Value> {
     }
 
     let matched_files = compatibility_surface_files(project_dir, &tracked_files, &terms);
+    let private_reference_files = legacy_compat_private_reference_files(project_dir, &[
+        inventory_relative_path,
+        "docs/project/legacy-compat-surface-inventory.md",
+    ]);
     let mut class_counts: BTreeMap<String, usize> = BTreeMap::new();
     for class in &allowed_classes {
         class_counts.insert(class.clone(), 0);
@@ -533,7 +551,7 @@ fn legacy_compat_gate_report(project_dir: &Path) -> io::Result<Value> {
         }
     }
 
-    let passed = unclassified.is_empty();
+    let passed = unclassified.is_empty() && private_reference_files.is_empty();
     Ok(json!({
         "contract_version": 1,
         "task_id": "TASK-408",
@@ -552,9 +570,11 @@ fn legacy_compat_gate_report(project_dir: &Path) -> io::Result<Value> {
             "intentional_shim_files": class_counts.get("intentional-shim").copied().unwrap_or(0),
             "removal_candidate_files": class_counts.get("removal-candidate").copied().unwrap_or(0),
             "unclassified_count": unclassified.len(),
+            "private_reference_count": private_reference_files.len(),
         },
         "class_counts": class_counts,
         "unclassified_files": unclassified,
+        "private_reference_files": private_reference_files,
         "blocking_conditions": [
             "unclassified_legacy_compat_surface",
             "unknown_inventory_class",
@@ -598,6 +618,34 @@ fn compatibility_surface_files(project_dir: &Path, files: &[String], terms: &[St
         let lowered = content.to_ascii_lowercase();
         if terms.iter().any(|term| lowered.contains(term)) {
             matched.push(file.clone());
+        }
+    }
+    matched.sort();
+    matched.dedup();
+    matched
+}
+
+fn legacy_compat_private_reference_files(project_dir: &Path, files: &[&str]) -> Vec<String> {
+    const FORBIDDEN_PATTERNS: &[&str] = &[
+        "C:\\Users\\",
+        "C:\\\\Users\\\\",
+        "/Users/",
+        ".claude/local",
+        "WINSMUX_PRIVATE_SKILLS_ROOT",
+        "private-skills-root",
+    ];
+
+    let mut matched = Vec::new();
+    for file in files {
+        let path = project_dir.join(file);
+        let Ok(content) = fs::read_to_string(path) else {
+            continue;
+        };
+        if FORBIDDEN_PATTERNS
+            .iter()
+            .any(|pattern| content.contains(pattern))
+        {
+            matched.push((*file).to_string());
         }
     }
     matched.sort();

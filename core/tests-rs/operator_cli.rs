@@ -727,10 +727,113 @@ fn operator_cli_legacy_compat_gate_json_reports_inventory() {
     assert!(json["summary"]["intentional_shim_files"].as_u64().unwrap() > 0);
     assert!(json["summary"]["removal_candidate_files"].as_u64().unwrap() > 0);
     assert_eq!(json["summary"]["unclassified_count"], 0);
+    assert_eq!(json["summary"]["private_reference_count"], 0);
     assert_eq!(
         json["blocking_conditions"][0],
         "unclassified_legacy_compat_surface"
     );
+}
+
+#[test]
+fn operator_cli_legacy_compat_gate_rejects_private_inventory_reference() {
+    let project_dir = make_temp_project_dir("legacy-compat-private-reference");
+    run_git(&project_dir, &["init"]);
+    fs::create_dir_all(project_dir.join("docs/project"))
+        .expect("test should create docs project directory");
+    fs::write(
+        project_dir.join("docs/project/legacy-compat-surface-inventory.json"),
+        r#"{
+  "task": "TASK-408",
+  "version": 1,
+  "terms": ["psmux"],
+  "allowed_classes": ["intentional-shim", "removal-candidate"],
+  "target_version": "v1.0.0",
+  "entries": [
+    {
+      "class": "intentional-shim",
+      "owner": "test",
+      "surface": "test",
+      "reason": "test",
+      "target": "test",
+      "paths": ["docs/project/legacy-compat-surface-inventory.json"]
+    }
+  ],
+  "example": "C:\\Users\\example"
+}
+"#,
+    )
+    .expect("test should write inventory");
+    fs::write(
+        project_dir.join("docs/project/legacy-compat-surface-inventory.md"),
+        "# Legacy Compatibility Surface Inventory\n",
+    )
+    .expect("test should write inventory docs");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["legacy-compat-gate", "--json"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should contain JSON");
+    assert_eq!(json["summary"]["passed"], false);
+    assert_eq!(json["summary"]["private_reference_count"], 1);
+    assert_eq!(
+        json["private_reference_files"][0],
+        "docs/project/legacy-compat-surface-inventory.json"
+    );
+}
+
+#[test]
+fn operator_cli_legacy_compat_gate_rejects_unclassified_reference() {
+    let project_dir = make_temp_project_dir("legacy-compat-unclassified");
+    run_git(&project_dir, &["init"]);
+    fs::create_dir_all(project_dir.join("docs/project"))
+        .expect("test should create docs project directory");
+    fs::write(
+        project_dir.join("docs/project/legacy-compat-surface-inventory.json"),
+        r#"{
+  "task": "TASK-408",
+  "version": 1,
+  "terms": ["psmux"],
+  "allowed_classes": ["intentional-shim", "removal-candidate"],
+  "target_version": "v1.0.0",
+  "entries": [
+    {
+      "class": "intentional-shim",
+      "owner": "test",
+      "surface": "test",
+      "reason": "test",
+      "target": "test",
+      "paths": ["docs/project/legacy-compat-surface-inventory.json"]
+    }
+  ]
+}
+"#,
+    )
+    .expect("test should write inventory");
+    fs::write(
+        project_dir.join("docs/project/legacy-compat-surface-inventory.md"),
+        "# Legacy Compatibility Surface Inventory\n",
+    )
+    .expect("test should write inventory docs");
+    fs::write(project_dir.join("untracked.txt"), "new psmux reference\n")
+        .expect("test should write untracked compatibility reference");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["legacy-compat-gate", "--json"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should contain JSON");
+    assert_eq!(json["summary"]["passed"], false);
+    assert_eq!(json["summary"]["unclassified_count"], 1);
+    assert_eq!(json["unclassified_files"][0], "untracked.txt");
 }
 
 #[test]
