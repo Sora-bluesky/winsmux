@@ -729,8 +729,9 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
     let json = run_json(&project_dir, &["guard", "--json"]);
 
     assert_eq!(json["command"], "guard");
-    assert_eq!(json["task_ids"][0], "TASK-383");
-    assert_eq!(json["task_ids"][1], "TASK-384");
+    assert_eq!(json["task_ids"][0], "TASK-362");
+    assert_eq!(json["task_ids"][1], "TASK-383");
+    assert_eq!(json["task_ids"][2], "TASK-384");
     assert_eq!(json["target_version"], "v0.24.10");
     assert_eq!(json["summary"]["required_check_count"], 5);
     assert_eq!(json["summary"]["available_check_count"], 5);
@@ -739,7 +740,7 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
         "scripts/gitleaks-history-baseline.txt"
     );
     assert_eq!(
-        json["evidence_contract"]["required_fields"][2],
+        json["evidence_contract"]["required_fields"][3],
         "audit_chain"
     );
     assert_eq!(

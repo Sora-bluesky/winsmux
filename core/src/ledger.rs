@@ -278,6 +278,7 @@ pub struct LedgerExplainRun {
     pub verification_result: Value,
     pub verification_evidence: Value,
     pub tdd_gate: Value,
+    pub verification_envelope: Value,
     pub audit_chain: Value,
     pub outcome: Value,
     pub phase_gate: Value,
@@ -472,6 +473,7 @@ pub struct LedgerRunProjection {
     pub verification_result: Value,
     pub verification_evidence: Value,
     pub tdd_gate: Value,
+    pub verification_envelope: Value,
     pub audit_chain: Value,
     pub outcome: Value,
     pub phase_gate: Value,
@@ -517,6 +519,7 @@ pub struct LedgerRunPacket {
     pub verification_result: Value,
     pub verification_evidence: Value,
     pub tdd_gate: Value,
+    pub verification_envelope: Value,
     pub audit_chain: Value,
     pub outcome: Value,
     pub phase_gate: Value,
@@ -730,6 +733,9 @@ impl LedgerRunProjection {
                 .map(|run| run.verification_evidence.clone())
                 .unwrap_or(Value::Null),
             tdd_gate: run.map(|run| run.tdd_gate.clone()).unwrap_or(Value::Null),
+            verification_envelope: run
+                .map(|run| run.verification_envelope.clone())
+                .unwrap_or(Value::Null),
             audit_chain: run
                 .map(|run| run.audit_chain.clone())
                 .unwrap_or(Value::Null),
@@ -782,6 +788,7 @@ impl LedgerRunPacket {
             verification_result: run.verification_result.clone(),
             verification_evidence: run.verification_evidence.clone(),
             tdd_gate: run.tdd_gate.clone(),
+            verification_envelope: run.verification_envelope.clone(),
             audit_chain: run.audit_chain.clone(),
             outcome: run.outcome.clone(),
             phase_gate: run.phase_gate.clone(),
@@ -1297,6 +1304,7 @@ impl LedgerSnapshot {
             verification_result,
             verification_evidence,
             tdd_gate: Value::Null,
+            verification_envelope: Value::Null,
             audit_chain: Value::Null,
             outcome: Value::Null,
             phase_gate: Value::Null,
@@ -1307,6 +1315,7 @@ impl LedgerSnapshot {
         run.tdd_gate = run_tdd_gate_value(&run, &recent_event_records);
         run.phase_gate = run_phase_gate_value(&run, &recent_event_records, &run.draft_pr_gate);
         run.audit_chain = run_audit_chain_value(&run, &recent_event_records);
+        run.verification_envelope = run_verification_envelope_value(&run);
         run.outcome = run_outcome_value(&run, &run.phase_gate, &run.draft_pr_gate);
         let explanation = explain_explanation(&run, &evidence_digest);
 
@@ -2605,6 +2614,108 @@ fn audit_chain_event_value(event: &EventRecord) -> Value {
         "branch": event_branch(event),
         "head_sha": event_head_sha(event),
         "message": event.message,
+    })
+}
+
+fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
+    let verification_outcome = value_field_string(&run.verification_result, "outcome");
+    let verification_summary = value_field_string(&run.verification_result, "summary");
+    let verification_next_action = value_field_string(&run.verification_result, "next_action");
+    let security_verdict = first_non_empty(
+        &value_field_string(&run.security_verdict, "verdict"),
+        run.security_verdict.as_str().unwrap_or_default(),
+    );
+    let security_reason = value_field_string(&run.security_verdict, "reason");
+    let approval = run
+        .audit_chain
+        .get("approval")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let approval_state = value_field_string(&approval, "state");
+    let audit_events = run
+        .audit_chain
+        .get("events")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    let evidence_complete = !verification_outcome.trim().is_empty()
+        && !run.verification_evidence.is_null()
+        && !run.audit_chain.is_null();
+
+    let mut blocked_reasons = Vec::new();
+    if verification_outcome.trim().is_empty() {
+        blocked_reasons.push("verification evidence is missing".to_string());
+    } else if verification_outcome != "PASS" {
+        blocked_reasons.push(format!("verification outcome is {verification_outcome}"));
+    }
+    if security_verdict == "BLOCK" {
+        blocked_reasons.push(if security_reason.trim().is_empty() {
+            "security policy blocked the run".to_string()
+        } else {
+            security_reason.clone()
+        });
+    }
+    if run.review_required && approval_state != "approved" {
+        blocked_reasons.push(format!(
+            "approval state is unresolved: {}",
+            first_non_empty(&approval_state, &run.review_state)
+        ));
+    }
+
+    let status = if !blocked_reasons.is_empty() {
+        "blocked"
+    } else if run.review_required {
+        "approved"
+    } else {
+        "ready"
+    };
+
+    json!({
+        "contract_version": 1,
+        "packet_type": "verification_envelope",
+        "scope": "release_run",
+        "run_id": run.run_id,
+        "task_id": run.task_id,
+        "static_gates": {
+            "verification_plan": run.verification_plan,
+            "changed_files": run.changed_files,
+            "review_required": run.review_required,
+            "required_fields": [
+                "verification_evidence",
+                "security_verdict",
+                "audit_chain",
+                "draft_pr_gate",
+                "phase_gate"
+            ]
+        },
+        "dynamic_gates": {
+            "verification": {
+                "outcome": verification_outcome,
+                "summary": verification_summary,
+                "next_action": verification_next_action,
+                "evidence_complete": evidence_complete
+            },
+            "security": {
+                "verdict": security_verdict,
+                "reason": security_reason,
+                "blocked": security_verdict == "BLOCK"
+            },
+            "approval": approval,
+            "audit": {
+                "chain_id": value_field_string(&run.audit_chain, "chain_id"),
+                "event_count": audit_events,
+                "last_event": run.last_event
+            }
+        },
+        "release_decision": {
+            "status": status,
+            "blocked_reasons": blocked_reasons,
+            "human_judgement_required": run.review_required,
+            "automatic_merge_allowed": false
+        },
+        "verification_evidence": run.verification_evidence,
+        "security_verdict": run.security_verdict,
+        "audit_chain": run.audit_chain,
     })
 }
 

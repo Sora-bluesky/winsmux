@@ -11164,14 +11164,14 @@ Describe 'winsmux guard command' {
         Mock Invoke-WinsmuxRaw {
             param([string[]]$Arguments)
             $script:guardArgs = @($Arguments)
-            return '{"command":"guard","task_ids":["TASK-383","TASK-384"]}'
+            return '{"command":"guard","task_ids":["TASK-362","TASK-383","TASK-384"]}'
         }
 
         $output = Invoke-Guard -GuardTarget '--json'
         $json = $output | ConvertFrom-Json
         $script:guardArgs | Should -Be @('guard', '--json')
         $json.command | Should -Be 'guard'
-        @($json.task_ids) | Should -Be @('TASK-383', 'TASK-384')
+        @($json.task_ids) | Should -Be @('TASK-362', 'TASK-383', 'TASK-384')
     }
 
     It 'rejects unknown guard arguments' {

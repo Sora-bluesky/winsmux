@@ -697,6 +697,30 @@ panes:
     assert_eq!(explain.run.audit_chain["approval"]["required"], true);
     assert_eq!(explain.run.audit_chain["approval"]["state"], "pending");
     assert_eq!(explain.run.audit_chain["approval"]["requested_at"], "");
+    assert_eq!(
+        explain.run.verification_envelope["packet_type"],
+        "verification_envelope"
+    );
+    assert_eq!(
+        explain.run.verification_envelope["static_gates"]["required_fields"][0],
+        "verification_evidence"
+    );
+    assert_eq!(
+        explain.run.verification_envelope["dynamic_gates"]["verification"]["outcome"],
+        "PASS"
+    );
+    assert_eq!(
+        explain.run.verification_envelope["dynamic_gates"]["security"]["verdict"],
+        "ALLOW"
+    );
+    assert_eq!(
+        explain.run.verification_envelope["dynamic_gates"]["approval"]["state"],
+        "pending"
+    );
+    assert_eq!(
+        explain.run.verification_envelope["release_decision"]["status"],
+        "blocked"
+    );
     assert!(explain.run.audit_chain["events"]
         .as_array()
         .expect("audit chain events should be an array")

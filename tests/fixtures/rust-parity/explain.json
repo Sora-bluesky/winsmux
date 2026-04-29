@@ -107,6 +107,140 @@
       "red_event": "pipeline.tdd.red",
       "exception_event": ""
     },
+    "verification_envelope": {
+      "contract_version": 1,
+      "packet_type": "verification_envelope",
+      "scope": "release_run",
+      "run_id": "task:task-256",
+      "task_id": "task-256",
+      "static_gates": {
+        "verification_plan": [
+          "Invoke-Pester tests/winsmux-bridge.Tests.ps1",
+          "verify explain --json contract"
+        ],
+        "changed_files": [
+          "scripts/winsmux-core.ps1"
+        ],
+        "review_required": true,
+        "required_fields": [
+          "verification_evidence",
+          "security_verdict",
+          "audit_chain",
+          "draft_pr_gate",
+          "phase_gate"
+        ]
+      },
+      "dynamic_gates": {
+        "verification": {
+          "outcome": "",
+          "summary": "",
+          "next_action": "",
+          "evidence_complete": false
+        },
+        "security": {
+          "verdict": "",
+          "reason": "",
+          "blocked": false
+        },
+        "approval": {
+          "required": true,
+          "state": "pending",
+          "verdict": "PENDING",
+          "requested_at": "2026-04-10T03:01:00Z",
+          "requested_event": "operator.review_requested",
+          "requested_reviewer_label": "reviewer-1",
+          "requested_reviewer_pane": "%3",
+          "requested_reviewer_role": "Reviewer",
+          "decided_at": "",
+          "decided_event": "",
+          "human_judgement_required": true,
+          "automatic_merge_allowed": false
+        },
+        "audit": {
+          "chain_id": "task:task-256",
+          "event_count": 2,
+          "last_event": "operator.review_requested"
+        }
+      },
+      "release_decision": {
+        "status": "blocked",
+        "blocked_reasons": [
+          "verification evidence is missing",
+          "approval state is unresolved: pending"
+        ],
+        "human_judgement_required": true,
+        "automatic_merge_allowed": false
+      },
+      "verification_evidence": null,
+      "security_verdict": null,
+      "audit_chain": {
+        "chain_id": "task:task-256",
+        "subject": {
+          "task_id": "task-256",
+          "task": "Implement run ledger",
+          "task_type": "implementation",
+          "priority": "P0",
+          "branch": "worktree-builder-1",
+          "head_sha": "abc1234def5678",
+          "changed_files": [
+            "scripts/winsmux-core.ps1"
+          ]
+        },
+        "actor": {
+          "label": "builder-1",
+          "pane_id": "%2",
+          "role": "Builder",
+          "provider_target": "codex:gpt-5.4",
+          "agent_role": "worker"
+        },
+        "approval": {
+          "required": true,
+          "state": "pending",
+          "verdict": "PENDING",
+          "requested_at": "2026-04-10T03:01:00Z",
+          "requested_event": "operator.review_requested",
+          "requested_reviewer_label": "reviewer-1",
+          "requested_reviewer_pane": "%3",
+          "requested_reviewer_role": "Reviewer",
+          "decided_at": "",
+          "decided_event": "",
+          "human_judgement_required": true,
+          "automatic_merge_allowed": false
+        },
+        "events": [
+          {
+            "at": "2026-04-10T03:01:00Z",
+            "event": "operator.review_requested",
+            "who": {
+              "label": "reviewer-1",
+              "pane_id": "%3",
+              "role": "Reviewer"
+            },
+            "what": "operator.review_requested",
+            "task_id": "task-256",
+            "run_id": "",
+            "branch": "worktree-builder-1",
+            "head_sha": "abc1234def5678",
+            "message": "review requested"
+          },
+          {
+            "at": "2026-04-10T03:03:00Z",
+            "event": "pipeline.tdd.red",
+            "who": {
+              "label": "operator",
+              "pane_id": "",
+              "role": "Operator"
+            },
+            "what": "pipeline.tdd.red",
+            "task_id": "task-256",
+            "run_id": "task:task-256",
+            "branch": "worktree-builder-1",
+            "head_sha": "abc1234def5678",
+            "message": "test failed before implementation"
+          }
+        ]
+      }
+    },
     "plan": {
       "goal": "Ship run contract primitives",
       "task_type": "implementation",
