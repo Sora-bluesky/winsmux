@@ -5739,6 +5739,157 @@ function Get-ManagedLoopContractFromEventRecords {
     return $contract
 }
 
+function ConvertTo-RunAuditChainApprovalState {
+    param(
+        [string]$ReviewState = '',
+        [bool]$ReviewRequired = $false
+    )
+
+    $normalized = ([string]$ReviewState).ToUpperInvariant()
+    if ($normalized -eq 'PASS') { return 'approved' }
+    if ($normalized -in @('FAIL', 'FAILED')) { return 'failed' }
+    if ($normalized -eq 'PENDING') { return 'pending' }
+    if ($ReviewRequired) { return 'missing' }
+    return 'not_required'
+}
+
+function Get-RunAuditChainDecisionEvent {
+    param(
+        [object[]]$EventRecords = @(),
+        [string]$ReviewState = ''
+    )
+
+    $decisionEvents = if (([string]$ReviewState).ToUpperInvariant() -eq 'PASS') {
+        @('operator.review_passed', 'review.pass')
+    } elseif (([string]$ReviewState).ToUpperInvariant() -in @('FAIL', 'FAILED')) {
+        @('operator.review_failed', 'review.fail')
+    } else {
+        @()
+    }
+
+    if (@($decisionEvents).Count -eq 0) {
+        return $null
+    }
+
+    $matches = @(
+        $EventRecords |
+            Where-Object { [string]$_['event'] -in $decisionEvents } |
+            Sort-Object @{ Expression = { Get-RunEventTimestampSortKey -Value $_['timestamp'] } }, @{ Expression = { [int]$_['line_number'] } } |
+            Select-Object -First 1
+    )
+    if ($matches.Count -gt 0) {
+        return $matches[0]
+    }
+    return $null
+}
+
+function New-RunAuditChainEventRecord {
+    param([Parameter(Mandatory = $true)]$EventRecord)
+
+    $data = $null
+    if ($EventRecord.Contains('data')) {
+        $data = $EventRecord['data']
+    }
+    if ($null -eq $data -or $data -isnot [System.Collections.IDictionary]) {
+        $data = [ordered]@{}
+    }
+
+    return [ordered]@{
+        at       = ConvertTo-RunEventTimestampText -Value $EventRecord['timestamp']
+        event    = [string]$EventRecord['event']
+        who      = [ordered]@{
+            label   = [string]$EventRecord['label']
+            pane_id = [string]$EventRecord['pane_id']
+            role    = [string]$EventRecord['role']
+        }
+        what     = if ($data.Contains('action') -and -not [string]::IsNullOrWhiteSpace([string]$data['action'])) { [string]$data['action'] } else { [string]$EventRecord['event'] }
+        task_id  = if ($data.Contains('task_id')) { [string]$data['task_id'] } else { '' }
+        run_id   = if ($data.Contains('run_id')) { [string]$data['run_id'] } else { '' }
+        branch   = if ($data.Contains('branch')) { [string]$data['branch'] } else { [string]$EventRecord['branch'] }
+        head_sha = if ($data.Contains('head_sha')) { [string]$data['head_sha'] } else { [string]$EventRecord['head_sha'] }
+        message  = [string]$EventRecord['message']
+    }
+}
+
+function New-RunAuditChainContract {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [object[]]$EventRecords = @()
+    )
+
+    $orderedEvents = @(
+        $EventRecords |
+            Sort-Object @{ Expression = { Get-RunEventTimestampSortKey -Value $_['timestamp'] } }, @{ Expression = { [int]$_['line_number'] } }
+    )
+    $reviewRequests = @(
+        $orderedEvents |
+            Where-Object { [string]$_['event'] -eq 'operator.review_requested' } |
+            Select-Object -First 1
+    )
+    $reviewRequest = if ($reviewRequests.Count -gt 0) { $reviewRequests[0] } else { $null }
+    $decisionEvent = Get-RunAuditChainDecisionEvent -EventRecords $orderedEvents -ReviewState ([string]$Run.review_state)
+    $chainEvents = @(
+        $orderedEvents |
+            Where-Object {
+                [string]$_['event'] -in @(
+                    'operator.review_requested',
+                    'operator.review_passed',
+                    'operator.review_failed',
+                    'review.pass',
+                    'review.fail',
+                    'pane.approval_waiting',
+                    'pipeline.tdd.red',
+                    'pipeline.tdd.exception',
+                    'pipeline.verify.pass',
+                    'pipeline.verify.fail',
+                    'pipeline.verify.partial',
+                    'pipeline.security.allowed',
+                    'pipeline.security.blocked',
+                    'security.policy.allowed',
+                    'security.policy.blocked',
+                    'operator.draft_pr.created',
+                    'operator.draft_pr.required'
+                )
+            } |
+            ForEach-Object { New-RunAuditChainEventRecord -EventRecord $_ }
+    )
+
+    return [ordered]@{
+        chain_id = [string]$Run.run_id
+        subject  = [ordered]@{
+            task_id       = [string]$Run.task_id
+            task          = [string]$Run.task
+            task_type     = [string]$Run.task_type
+            priority      = [string]$Run.priority
+            branch        = [string]$Run.branch
+            head_sha      = [string]$Run.head_sha
+            changed_files = @($Run.changed_files)
+        }
+        actor    = [ordered]@{
+            label           = [string]$Run.primary_label
+            pane_id         = [string]$Run.primary_pane_id
+            role            = [string]$Run.primary_role
+            provider_target = [string]$Run.provider_target
+            agent_role      = if (-not [string]::IsNullOrWhiteSpace([string]$Run.agent_role)) { [string]$Run.agent_role } else { [string]$Run.primary_role }
+        }
+        approval = [ordered]@{
+            required                 = [bool]$Run.review_required
+            state                    = ConvertTo-RunAuditChainApprovalState -ReviewState ([string]$Run.review_state) -ReviewRequired ([bool]$Run.review_required)
+            verdict                  = [string]$Run.review_state
+            requested_at             = if ($null -ne $reviewRequest) { ConvertTo-RunEventTimestampText -Value $reviewRequest['timestamp'] } else { '' }
+            requested_event          = if ($null -ne $reviewRequest) { [string]$reviewRequest['event'] } else { '' }
+            requested_reviewer_label = if ($null -ne $reviewRequest) { [string]$reviewRequest['label'] } else { '' }
+            requested_reviewer_pane  = if ($null -ne $reviewRequest) { [string]$reviewRequest['pane_id'] } else { '' }
+            requested_reviewer_role  = if ($null -ne $reviewRequest) { [string]$reviewRequest['role'] } else { '' }
+            decided_at               = if ($null -ne $decisionEvent) { ConvertTo-RunEventTimestampText -Value $decisionEvent['timestamp'] } else { '' }
+            decided_event            = if ($null -ne $decisionEvent) { [string]$decisionEvent['event'] } else { '' }
+            human_judgement_required = [bool]$Run.review_required
+            automatic_merge_allowed  = $false
+        }
+        events   = @($chainEvents)
+    }
+}
+
 function New-RunPlanContract {
     param([Parameter(Mandatory = $true)]$Run)
 
@@ -6281,6 +6432,7 @@ function New-RunPacketFromRun {
         plan              = $Run.plan
         plan_checkpoints  = @($Run.plan_checkpoints)
         managed_loop      = $Run.managed_loop
+        audit_chain       = $Run.audit_chain
         outcome           = $Run.outcome
         phase_gate        = $Run.phase_gate
         draft_pr_gate     = $Run.draft_pr_gate
@@ -6363,6 +6515,7 @@ function New-RunResultPacket {
         security_verdict      = $Run.security_verdict
         plan                  = $Run.plan
         plan_checkpoints      = @($Run.plan_checkpoints)
+        audit_chain           = $Run.audit_chain
         outcome               = $Run.outcome
         phase_gate            = $Run.phase_gate
         draft_pr_gate         = $Run.draft_pr_gate
@@ -6376,12 +6529,14 @@ function Test-RunMatchesEventRecord {
         [Parameter(Mandatory = $true)]$EventRecord
     )
 
+    $runId = [string]$Run.run_id
     $runTaskId = [string]$Run.task_id
     $runBranch = [string]$Run.branch
     $runHeadSha = [string]$Run.head_sha
     $runLabels = @($Run.labels)
     $runPaneIds = @($Run.pane_ids)
 
+    $eventRunId = ''
     $eventTaskId = ''
     $eventBranch = [string]$EventRecord['branch']
     $eventHeadSha = [string]$EventRecord['head_sha']
@@ -6389,25 +6544,28 @@ function Test-RunMatchesEventRecord {
     $eventPaneId = [string]$EventRecord['pane_id']
 
     $data = $null
+    if ($EventRecord.Contains('run_id')) { $eventRunId = [string]$EventRecord['run_id'] }
+    if ($EventRecord.Contains('task_id')) { $eventTaskId = [string]$EventRecord['task_id'] }
     if ($EventRecord.Contains('data')) {
         $data = $EventRecord['data']
     }
 
     if ($null -ne $data -and $data -is [System.Collections.IDictionary]) {
+        if ($data.Contains('run_id')) { $eventRunId = [string]$data['run_id'] }
         if ($data.Contains('task_id')) { $eventTaskId = [string]$data['task_id'] }
         if ([string]::IsNullOrWhiteSpace($eventBranch) -and $data.Contains('branch')) { $eventBranch = [string]$data['branch'] }
         if ([string]::IsNullOrWhiteSpace($eventHeadSha) -and $data.Contains('head_sha')) { $eventHeadSha = [string]$data['head_sha'] }
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($runTaskId) -and $runTaskId -eq $eventTaskId) {
-        return $true
+    if (-not [string]::IsNullOrWhiteSpace($eventRunId)) {
+        return (-not [string]::IsNullOrWhiteSpace($runId) -and $runId -eq $eventRunId)
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($runBranch) -and $runBranch -eq $eventBranch) {
-        return $true
+    if (-not [string]::IsNullOrWhiteSpace($eventTaskId)) {
+        return (-not [string]::IsNullOrWhiteSpace($runTaskId) -and $runTaskId -eq $eventTaskId)
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($runHeadSha) -and $runHeadSha -eq $eventHeadSha) {
+    if (-not [string]::IsNullOrWhiteSpace($eventPaneId) -and $runPaneIds -contains $eventPaneId) {
         return $true
     }
 
@@ -6415,7 +6573,11 @@ function Test-RunMatchesEventRecord {
         return $true
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($eventPaneId) -and $runPaneIds -contains $eventPaneId) {
+    if (-not [string]::IsNullOrWhiteSpace($runBranch) -and -not [string]::IsNullOrWhiteSpace($eventBranch) -and $runBranch -eq $eventBranch) {
+        return $true
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($runHeadSha) -and -not [string]::IsNullOrWhiteSpace($eventHeadSha) -and $runHeadSha -eq $eventHeadSha) {
         return $true
     }
 
@@ -6614,6 +6776,7 @@ function Get-RunsPayload {
                 plan                  = $null
                 plan_checkpoints      = @()
                 managed_loop          = $null
+                audit_chain           = $null
                 outcome               = $null
                 draft_pr_gate         = $null
                 tdd_gate              = $null
@@ -6765,6 +6928,7 @@ function Get-RunsPayload {
             }
             $run.plan_checkpoints = @(Get-RunPlanCheckpointsFromEventRecords -EventRecords $matchingEvents)
             $run.managed_loop = Get-ManagedLoopContractFromEventRecords -EventRecords $matchingEvents
+            $run.audit_chain = New-RunAuditChainContract -Run $run -EventRecords $matchingEvents
         }
     }
 
@@ -6776,6 +6940,7 @@ function Get-RunsPayload {
             $run.draft_pr_gate = New-RunDraftPrGate -Run $run -EventRecords $runEvents
             $run.tdd_gate = New-RunTddGateContract -Run $run -EventRecords $runEvents
             $run.phase_gate = New-RunPhaseGateContract -Run $run -EventRecords $runEvents
+            $run.audit_chain = New-RunAuditChainContract -Run $run -EventRecords $runEvents
             $run.outcome = New-RunOutcomeContract -Run $run
             $nextAction = Get-RunNextAction -Run $run
             $stateModel = New-RunStateModel -State ([string]$run.state) -TaskState ([string]$run.task_state) -ReviewState ([string]$run.review_state) -EventKind $nextAction -LastEvent ([string]$run.last_event)
@@ -6830,6 +6995,7 @@ function Get-RunsPayload {
                 plan                  = $run.plan
                 plan_checkpoints      = @($run.plan_checkpoints)
                 managed_loop          = $run.managed_loop
+                audit_chain           = $run.audit_chain
                 outcome               = $run.outcome
                 phase_gate            = $run.phase_gate
                 draft_pr_gate         = $run.draft_pr_gate

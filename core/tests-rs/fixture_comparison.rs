@@ -243,6 +243,7 @@ const EXPLAIN_RUN_KEYS: &[&str] = &[
     "verification_result",
     "verification_evidence",
     "tdd_gate",
+    "audit_chain",
     "outcome",
     "phase_gate",
     "draft_pr_gate",
