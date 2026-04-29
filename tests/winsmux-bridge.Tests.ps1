@@ -8780,6 +8780,16 @@ Set-Location '__RUNS_TEMP_ROOT__'
         $result.summary.run_count | Should -Be 1
         $result.runs[0].run_id | Should -Be 'task:task-256'
         $result.runs[0].experiment_packet | Should -Be $null
+        $result.runs[0].run_insights.retry_count | Should -Be 0
+        @($result.runs[0].run_insights.drift_signals).Count | Should -Be 0
+        $result.runs[0].run_insights.intervention_count | Should -Be 1
+        $result.runs[0].run_insights.unhealthy_session_size | Should -Be $false
+        $result.runs[0].run_insights.blocked_reasons | Should -Contain 'tdd_evidence_missing'
+        $result.runs[0].run_insights.blocked_reasons | Should -Contain 'draft_pr_gate_blocked'
+        $result.runs[0].run_insights.blocked_reasons | Should -Contain 'tdd_gate_blocked'
+        $result.runs[0].run_insights.next_improvements | Should -Contain 'capture operator decisions as reusable guidance'
+        $result.runs[0].run_insights.next_improvements | Should -Contain 'resolve blocked reasons before release'
+        $result.runs[0].run_packet.run_insights.retry_count | Should -Be 0
     }
 
     It 'keeps experiment packets scoped to strong run keys when multiple runs share a branch' {

@@ -6277,7 +6277,8 @@ function Get-RunEventAttempt {
 function New-RunInsightsContract {
     param(
         [Parameter(Mandatory = $true)]$Run,
-        [Parameter(Mandatory = $true)][object[]]$EventRecords
+        [AllowEmptyCollection()]
+        [object[]]$EventRecords = @()
     )
 
     $driftSignals = [System.Collections.Generic.List[string]]::new()
