@@ -901,6 +901,44 @@ panes:
         "reduce retry loop before the next run"
     );
     assert_eq!(
+        explain.run.child_launch_contract["packet_type"],
+        "child_launch_contract"
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["scope"],
+        "operator_managed_child_run"
+    );
+    assert_eq!(explain.run.child_launch_contract["role"], "Builder");
+    assert_eq!(explain.run.child_launch_contract["role_intent"], "builder");
+    assert_eq!(explain.run.child_launch_contract["agent_kind"], "codex");
+    assert_eq!(
+        explain.run.child_launch_contract["worktree"],
+        ".worktrees/builder-1"
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["session_type"],
+        "managed_worktree"
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["startup_command_stored"],
+        false
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["project_root_stored"],
+        false
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["operator_controls_merge"],
+        true
+    );
+    assert_eq!(
+        explain.run.child_launch_contract["peer_to_peer_allowed"],
+        false
+    );
+    let launch_contract_text = explain.run.child_launch_contract.to_string();
+    assert!(!launch_contract_text.contains("Users"));
+    assert!(!launch_contract_text.contains("private next action"));
+    assert_eq!(
         explain.run.checkpoint_package["packet_type"],
         "checkpoint_package"
     );
@@ -1282,6 +1320,8 @@ fn ledger_contract_serializes_typed_cli_payload_roots() {
             && run["run_packet"]["verification_envelope"]["packet_type"] == "verification_envelope"
             && run["run_insights"]["packet_type"] == "run_insights"
             && run["run_packet"]["run_insights"]["packet_type"] == "run_insights"
+            && run["child_launch_contract"]["packet_type"] == "child_launch_contract"
+            && run["run_packet"]["child_launch_contract"]["packet_type"] == "child_launch_contract"
             && run["checkpoint_package"]["packet_type"] == "checkpoint_package"
             && run["run_packet"]["checkpoint_package"]["packet_type"] == "checkpoint_package"
             && run["team_memory"]["packet_type"] == "team_memory_contract"

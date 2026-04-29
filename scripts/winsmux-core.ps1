@@ -7011,6 +7011,66 @@ function New-RunCheckpointPackage {
     }
 }
 
+function New-RunChildLaunchContract {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $rawWorktree = [string]$Run.worktree
+    if ([string]::IsNullOrWhiteSpace($rawWorktree) -and $null -ne $Run.experiment_packet) {
+        $rawWorktree = [string](Get-RunContractField -InputObject $Run.experiment_packet -Name 'worktree')
+    }
+    $worktreeRef = ConvertTo-RunPublicWorktreeRef -Worktree $rawWorktree
+    $sessionType = 'unknown'
+    if ($worktreeRef.StartsWith('.worktrees/')) {
+        $sessionType = 'managed_worktree'
+    } elseif (-not [string]::IsNullOrWhiteSpace($worktreeRef)) {
+        $sessionType = 'shared_checkout'
+    }
+
+    $providerTarget = [string]$Run.provider_target
+    $agentKind = 'unknown'
+    if (-not [string]::IsNullOrWhiteSpace($providerTarget)) {
+        $agentKind = $providerTarget.Trim().Split(':')[0].Trim().ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($agentKind)) {
+            $agentKind = 'unknown'
+        }
+    }
+
+    $role = [string]$Run.primary_role
+    if ([string]::IsNullOrWhiteSpace($role)) {
+        $role = [string]$Run.agent_role
+    }
+    $roleIntent = [string]$Run.agent_role
+    if ([string]::IsNullOrWhiteSpace($roleIntent)) {
+        $roleIntent = $role
+    }
+
+    return [ordered]@{
+        contract_version             = 1
+        packet_type                  = 'child_launch_contract'
+        scope                        = 'operator_managed_child_run'
+        run_id                       = [string]$Run.run_id
+        task_id                      = [string]$Run.task_id
+        parent_run_id                = [string]$Run.parent_run_id
+        role                         = $role
+        role_intent                  = $roleIntent
+        agent_kind                   = $agentKind
+        provider_target              = $providerTarget
+        project_ref                  = 'current_project'
+        project_root_stored          = $false
+        worktree                     = $worktreeRef
+        launch_dir                   = $worktreeRef
+        session_type                 = $sessionType
+        startup_command_ref          = 'managed-pane-launch'
+        startup_command_stored       = $false
+        operator_controls_merge      = $true
+        peer_to_peer_allowed         = $false
+        child_git_write_allowed      = $false
+        local_reference_paths_stored = $false
+        freeform_command_stored      = $false
+        private_content_stored       = $false
+    }
+}
+
 function New-RunPacketFromRun {
     param([Parameter(Mandatory = $true)]$Run)
 
@@ -7053,6 +7113,7 @@ function New-RunPacketFromRun {
         context_contract      = $Run.context_contract
         team_memory           = $Run.team_memory
         run_insights          = $Run.run_insights
+        child_launch_contract = $Run.child_launch_contract
         checkpoint_package    = $Run.checkpoint_package
         tdd_gate              = $Run.tdd_gate
         verification_envelope = $Run.verification_envelope
@@ -7408,6 +7469,7 @@ function Get-RunsPayload {
                 context_contract      = $null
                 team_memory           = $null
                 run_insights          = $null
+                child_launch_contract = $null
                 checkpoint_package    = $null
                 plan                  = $null
                 plan_checkpoints      = @()
@@ -7583,6 +7645,7 @@ function Get-RunsPayload {
             $run.verification_envelope = New-RunVerificationEnvelope -Run $run
             $run.outcome = New-RunOutcomeContract -Run $run
             $run.run_insights = New-RunInsightsContract -Run $run -EventRecords $runEvents
+            $run.child_launch_contract = New-RunChildLaunchContract -Run $run
             $run.checkpoint_package = New-RunCheckpointPackage -Run $run
             $nextAction = Get-RunNextAction -Run $run
             $stateModel = New-RunStateModel -State ([string]$run.state) -TaskState ([string]$run.task_state) -ReviewState ([string]$run.review_state) -EventKind $nextAction -LastEvent ([string]$run.last_event)
@@ -7636,6 +7699,7 @@ function Get-RunsPayload {
                 context_contract      = $run.context_contract
                 team_memory           = $run.team_memory
                 run_insights          = $run.run_insights
+                child_launch_contract = $run.child_launch_contract
                 checkpoint_package    = $run.checkpoint_package
                 tdd_gate              = $run.tdd_gate
                 verification_envelope = $run.verification_envelope

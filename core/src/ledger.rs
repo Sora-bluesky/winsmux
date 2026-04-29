@@ -280,6 +280,7 @@ pub struct LedgerExplainRun {
     pub context_contract: Value,
     pub team_memory: Value,
     pub run_insights: Value,
+    pub child_launch_contract: Value,
     pub checkpoint_package: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
@@ -479,6 +480,7 @@ pub struct LedgerRunProjection {
     pub context_contract: Value,
     pub team_memory: Value,
     pub run_insights: Value,
+    pub child_launch_contract: Value,
     pub checkpoint_package: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
@@ -529,6 +531,7 @@ pub struct LedgerRunPacket {
     pub context_contract: Value,
     pub team_memory: Value,
     pub run_insights: Value,
+    pub child_launch_contract: Value,
     pub checkpoint_package: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
@@ -753,6 +756,9 @@ impl LedgerRunProjection {
             run_insights: run
                 .map(|run| run.run_insights.clone())
                 .unwrap_or(Value::Null),
+            child_launch_contract: run
+                .map(|run| run.child_launch_contract.clone())
+                .unwrap_or(Value::Null),
             checkpoint_package: run
                 .map(|run| run.checkpoint_package.clone())
                 .unwrap_or(Value::Null),
@@ -814,6 +820,7 @@ impl LedgerRunPacket {
             context_contract: run.context_contract.clone(),
             team_memory: run.team_memory.clone(),
             run_insights: run.run_insights.clone(),
+            child_launch_contract: run.child_launch_contract.clone(),
             checkpoint_package: run.checkpoint_package.clone(),
             tdd_gate: run.tdd_gate.clone(),
             verification_envelope: run.verification_envelope.clone(),
@@ -1334,6 +1341,7 @@ impl LedgerSnapshot {
             context_contract: Value::Null,
             team_memory: Value::Null,
             run_insights: Value::Null,
+            child_launch_contract: Value::Null,
             checkpoint_package: Value::Null,
             tdd_gate: Value::Null,
             verification_envelope: Value::Null,
@@ -1354,6 +1362,7 @@ impl LedgerSnapshot {
         run.verification_envelope = run_verification_envelope_value(&run);
         run.outcome = run_outcome_value(&run, &run.phase_gate, &run.draft_pr_gate);
         run.run_insights = run_insights_value(&run, &recent_event_records);
+        run.child_launch_contract = run_child_launch_contract_value(&run);
         run.checkpoint_package = run_checkpoint_package_value(&run);
         let explanation = explain_explanation(&run, &evidence_digest);
 
@@ -3790,6 +3799,59 @@ fn run_checkpoint_package_value(run: &LedgerExplainRun) -> Value {
         "worker_git_write_allowed": false,
         "local_reference_paths_stored": false,
         "freeform_body_stored": false,
+        "private_content_stored": false,
+    })
+}
+
+fn run_child_launch_contract_value(run: &LedgerExplainRun) -> Value {
+    let worktree_ref = public_worktree_ref(&first_non_empty(
+        &run.worktree,
+        &run.experiment_packet.worktree,
+    ));
+    let session_type = if worktree_ref.starts_with(".worktrees/") {
+        "managed_worktree"
+    } else if worktree_ref.trim().is_empty() {
+        "unknown"
+    } else {
+        "shared_checkout"
+    };
+    let provider_target = run.provider_target.trim();
+    let provider_kind = provider_target
+        .split_once(':')
+        .map(|(kind, _)| kind)
+        .unwrap_or(provider_target)
+        .trim();
+    let agent_kind = if provider_kind.is_empty() {
+        "unknown".to_string()
+    } else {
+        provider_kind.to_ascii_lowercase()
+    };
+    let role = first_non_empty(&run.primary_role, &run.agent_role);
+    let role_intent = first_non_empty(&run.agent_role, &role);
+
+    json!({
+        "contract_version": 1,
+        "packet_type": "child_launch_contract",
+        "scope": "operator_managed_child_run",
+        "run_id": run.run_id,
+        "task_id": run.task_id,
+        "parent_run_id": run.parent_run_id,
+        "role": role,
+        "role_intent": role_intent,
+        "agent_kind": agent_kind,
+        "provider_target": run.provider_target,
+        "project_ref": "current_project",
+        "project_root_stored": false,
+        "worktree": worktree_ref,
+        "launch_dir": worktree_ref,
+        "session_type": session_type,
+        "startup_command_ref": "managed-pane-launch",
+        "startup_command_stored": false,
+        "operator_controls_merge": true,
+        "peer_to_peer_allowed": false,
+        "child_git_write_allowed": false,
+        "local_reference_paths_stored": false,
+        "freeform_command_stored": false,
         "private_content_stored": false,
     })
 }

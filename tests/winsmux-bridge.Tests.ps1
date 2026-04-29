@@ -8474,6 +8474,21 @@ panes:
         $result.runs[0].run_insights.drift_signals | Should -Be @('drift_detected')
         $result.runs[0].run_insights.unhealthy_session_size | Should -Be $true
         $result.runs[0].run_insights.next_improvements | Should -Contain 'split the next run into a smaller scope'
+        $result.runs[0].child_launch_contract.packet_type | Should -Be 'child_launch_contract'
+        $result.runs[0].child_launch_contract.scope | Should -Be 'operator_managed_child_run'
+        $result.runs[0].child_launch_contract.role | Should -Be 'Builder'
+        $result.runs[0].child_launch_contract.role_intent | Should -Be 'worker'
+        $result.runs[0].child_launch_contract.agent_kind | Should -Be 'codex'
+        $result.runs[0].child_launch_contract.worktree | Should -Be '.worktrees/builder-1'
+        $result.runs[0].child_launch_contract.launch_dir | Should -Be '.worktrees/builder-1'
+        $result.runs[0].child_launch_contract.session_type | Should -Be 'managed_worktree'
+        $result.runs[0].child_launch_contract.startup_command_ref | Should -Be 'managed-pane-launch'
+        $result.runs[0].child_launch_contract.startup_command_stored | Should -Be $false
+        $result.runs[0].child_launch_contract.project_root_stored | Should -Be $false
+        $result.runs[0].child_launch_contract.operator_controls_merge | Should -Be $true
+        $result.runs[0].child_launch_contract.peer_to_peer_allowed | Should -Be $false
+        ($result.runs[0].child_launch_contract | ConvertTo-Json -Depth 8) | Should -Not -Match 'Users'
+        ($result.runs[0].child_launch_contract | ConvertTo-Json -Depth 8) | Should -Not -Match 'private next action'
         $result.runs[0].checkpoint_package.packet_type | Should -Be 'checkpoint_package'
         $result.runs[0].checkpoint_package.assigned_worktree | Should -Be '.worktrees/builder-1'
         $result.runs[0].checkpoint_package.session_type | Should -Be 'managed_worktree'
@@ -8488,6 +8503,8 @@ panes:
         $result.runs[0].run_packet.team_memory.team_memory_refs | Should -Contain 'team-memory:task-256:operator-standard'
         $result.runs[0].run_packet.team_memory.team_memory_refs | Should -Contain 'team-memory:task:task-256:event-3'
         $result.runs[0].run_packet.run_insights.retry_count | Should -Be 1
+        $result.runs[0].run_packet.child_launch_contract.packet_type | Should -Be 'child_launch_contract'
+        $result.runs[0].run_packet.child_launch_contract.operator_controls_merge | Should -Be $true
         $result.runs[0].run_packet.checkpoint_package.assigned_worktree | Should -Be '.worktrees/builder-1'
         $result.runs[0].run_packet.checkpoint_package.operator_git_required | Should -Be $true
         $result.runs[0].tdd_gate.required | Should -Be $true
