@@ -711,6 +711,124 @@ panes:
 }
 
 #[test]
+fn ledger_contract_blocks_core_logic_run_without_tdd_evidence() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-tdd
+    parent_run_id: operator:session-1
+    goal: Fix core behavior
+    task: Fix core behavior
+    task_type: bugfix
+    priority: P0
+    task_state: in_progress
+    review_state: PENDING
+    review_required: true
+    branch: worktree-builder-1
+    head_sha: current-sha
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    verification_plan: '["cargo test"]'
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","data":{"task_id":"task-tdd","verification_result":{"outcome":"PASS","summary":"verification passed"}}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load missing TDD evidence fixture");
+    let explain = snapshot
+        .explain_projection("task:task-tdd")
+        .expect("TDD run should have explain projection");
+
+    assert_eq!(explain.run.tdd_gate["required"], true);
+    assert_eq!(explain.run.tdd_gate["state"], "blocked");
+    assert_eq!(explain.run.phase_gate["stop_reason"], "tdd_evidence_missing");
+    assert_eq!(explain.run.outcome["status"], "blocked");
+}
+
+#[test]
+fn ledger_contract_passes_core_logic_run_with_red_tdd_evidence() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-tdd
+    parent_run_id: operator:session-1
+    goal: Fix core behavior
+    task: Fix core behavior
+    task_type: bugfix
+    priority: P0
+    task_state: in_progress
+    review_state: PENDING
+    review_required: true
+    branch: worktree-builder-1
+    head_sha: current-sha
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    verification_plan: '["cargo test"]'
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:00+09:00","session":"winsmux-orchestra","event":"pipeline.tdd.red","message":"red test","data":{"task_id":"task-tdd","tdd_phase":"red"}}
+{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","data":{"task_id":"task-tdd","verification_result":{"outcome":"PASS","summary":"verification passed"}}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load red TDD evidence fixture");
+    let explain = snapshot
+        .explain_projection("task:task-tdd")
+        .expect("TDD run should have explain projection");
+
+    assert_eq!(explain.run.tdd_gate["required"], true);
+    assert_eq!(explain.run.tdd_gate["state"], "passed");
+    assert_eq!(explain.run.tdd_gate["red_event"], "pipeline.tdd.red");
+    assert_eq!(explain.run.phase_gate["stop_required"], false);
+}
+
+#[test]
+fn ledger_contract_blocks_tdd_exception_without_reason() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-tdd
+    parent_run_id: operator:session-1
+    goal: Fix core behavior
+    task: Fix core behavior
+    task_type: BugFix
+    priority: P0
+    task_state: in_progress
+    review_state: PENDING
+    review_required: true
+    branch: worktree-builder-1
+    head_sha: current-sha
+    changed_files: '["Scripts\\\\Winsmux-Core.ps1"]'
+    verification_plan: '["cargo test"]'
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:00+09:00","session":"winsmux-orchestra","event":"pipeline.tdd.exception","message":"empty exception","data":{"task_id":"task-tdd"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load empty TDD exception fixture");
+    let explain = snapshot
+        .explain_projection("task:task-tdd")
+        .expect("TDD run should have explain projection");
+
+    assert_eq!(explain.run.tdd_gate["required"], true);
+    assert_eq!(explain.run.tdd_gate["state"], "blocked");
+    assert_eq!(explain.run.tdd_gate["exception_event"], "");
+    assert_eq!(explain.run.phase_gate["stop_reason"], "tdd_evidence_missing");
+}
+
+#[test]
 fn ledger_contract_returns_none_for_unknown_explain_run() {
     let manifest = r#"
 version: 1
