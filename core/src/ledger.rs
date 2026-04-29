@@ -2876,6 +2876,13 @@ fn verification_evidence_value(data: &Value) -> Value {
         "context_pressure": verification_evidence_field(data, "context_pressure"),
         "context_mode": verification_evidence_field(data, "context_mode"),
         "context_fork_reason": verification_evidence_field(data, "context_fork_reason"),
+        "semantic_context_pack_id": verification_evidence_field(data, "semantic_context_pack_id"),
+        "semantic_context_pack_ref": verification_evidence_field(data, "semantic_context_pack_ref"),
+        "source_refs": verification_evidence_field(data, "source_refs"),
+        "hard_constraints": verification_evidence_field(data, "hard_constraints"),
+        "safety_rules": verification_evidence_field(data, "safety_rules"),
+        "performance_budget": verification_evidence_field(data, "performance_budget"),
+        "rationale": verification_evidence_field(data, "rationale"),
     })
 }
 
@@ -2907,6 +2914,18 @@ fn context_contract_value(verification_evidence: &Value) -> Value {
         "context_mode": context_mode,
         "fork_reason": fork_reason_value,
         "fork_allowed": context_mode == "fork",
+        "semantic_context": {
+            "context_pack_id": value_field(verification_evidence, "semantic_context_pack_id"),
+            "context_pack_ref": value_field(verification_evidence, "semantic_context_pack_ref"),
+            "source_refs": value_field(verification_evidence, "source_refs"),
+            "hard_constraints": value_field(verification_evidence, "hard_constraints"),
+            "safety_rules": value_field(verification_evidence, "safety_rules"),
+            "performance_budget": value_field(verification_evidence, "performance_budget"),
+            "rationale": value_field(verification_evidence, "rationale"),
+            "adr_body_stored": false,
+            "persona_prompt_stored": false,
+            "private_source_body_stored": false
+        },
         "prompt_body_stored": false,
         "private_memory_stored": false,
         "local_reference_paths_stored": false,

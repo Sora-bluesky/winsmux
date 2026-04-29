@@ -5448,7 +5448,7 @@ function Get-VerificationSnapshotFromEventRecords {
     $snapshot = Get-LatestRunEventDataSnapshot `
         -EventRecords $EventRecords `
         -EventNames @('pipeline.verify.pass', 'pipeline.verify.fail', 'pipeline.verify.partial') `
-        -DataFields @('verification_contract', 'verification_result', 'verification_evidence', 'build', 'test', 'browser', 'screenshot', 'recording', 'context_budget', 'context_estimate', 'context_pack_id', 'context_pack_version', 'tool_output_pruned_count', 'context_pressure', 'context_mode', 'context_fork_reason')
+        -DataFields @('verification_contract', 'verification_result', 'verification_evidence', 'build', 'test', 'browser', 'screenshot', 'recording', 'context_budget', 'context_estimate', 'context_pack_id', 'context_pack_version', 'tool_output_pruned_count', 'context_pressure', 'context_mode', 'context_fork_reason', 'semantic_context_pack_id', 'semantic_context_pack_ref', 'source_refs', 'hard_constraints', 'safety_rules', 'performance_budget', 'rationale')
     if ($null -eq $snapshot) {
         return $null
     }
@@ -5507,6 +5507,13 @@ function New-VerificationEvidenceEnvelope {
         context_pressure         = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_pressure'
         context_mode             = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_mode'
         context_fork_reason      = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'context_fork_reason'
+        semantic_context_pack_id  = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'semantic_context_pack_id'
+        semantic_context_pack_ref = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'semantic_context_pack_ref'
+        source_refs               = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'source_refs'
+        hard_constraints          = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'hard_constraints'
+        safety_rules              = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'safety_rules'
+        performance_budget        = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'performance_budget'
+        rationale                 = Get-VerificationEvidenceField -Snapshot $Snapshot -Name 'rationale'
     }
 }
 
@@ -6288,6 +6295,18 @@ function New-RunContextContract {
         context_mode                 = $contextMode
         fork_reason                  = if ($contextMode -eq 'fork') { $forkReason } else { $null }
         fork_allowed                 = ($contextMode -eq 'fork')
+        semantic_context             = [ordered]@{
+            context_pack_id           = Get-RunContractField -InputObject $VerificationEvidence -Name 'semantic_context_pack_id'
+            context_pack_ref          = Get-RunContractField -InputObject $VerificationEvidence -Name 'semantic_context_pack_ref'
+            source_refs               = Get-RunContractField -InputObject $VerificationEvidence -Name 'source_refs'
+            hard_constraints          = Get-RunContractField -InputObject $VerificationEvidence -Name 'hard_constraints'
+            safety_rules              = Get-RunContractField -InputObject $VerificationEvidence -Name 'safety_rules'
+            performance_budget        = Get-RunContractField -InputObject $VerificationEvidence -Name 'performance_budget'
+            rationale                 = Get-RunContractField -InputObject $VerificationEvidence -Name 'rationale'
+            adr_body_stored           = $false
+            persona_prompt_stored     = $false
+            private_source_body_stored = $false
+        }
         prompt_body_stored           = $false
         private_memory_stored        = $false
         local_reference_paths_stored = $false
