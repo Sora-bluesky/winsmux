@@ -5839,7 +5839,7 @@ fn guard_report_payload(project_dir: &Path) -> Value {
     json!({
         "contract_version": 1,
         "command": "guard",
-        "task_ids": ["TASK-383", "TASK-384"],
+        "task_ids": ["TASK-362", "TASK-383", "TASK-384"],
         "target_version": "v0.24.10",
         "generated_at": generated_at(),
         "project_dir": project_dir_string(project_dir),
@@ -5862,6 +5862,7 @@ fn guard_report_payload(project_dir: &Path) -> Value {
         "evidence_contract": {
             "run_surfaces": ["winsmux runs --json", "winsmux digest --json", "winsmux explain <run_id> --json"],
             "required_fields": [
+                "verification_envelope",
                 "verification_evidence",
                 "security_verdict",
                 "audit_chain",
@@ -5875,7 +5876,19 @@ fn guard_report_payload(project_dir: &Path) -> Value {
                 "pipeline.verify.fail",
                 "pipeline.security.allowed",
                 "pipeline.security.blocked"
-            ]
+            ],
+            "envelope_required_fields": [
+                "contract_version",
+                "packet_type",
+                "scope",
+                "static_gates",
+                "dynamic_gates",
+                "release_decision"
+            ],
+            "release_decision": {
+                "automatic_merge_allowed": false,
+                "human_judgement_required": true
+            }
         },
         "public_safety": {
             "tracked_private_paths_allowed": false,

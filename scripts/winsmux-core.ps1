@@ -6231,6 +6231,7 @@ function New-RunPhaseGateContract {
         stages                  = $stages
         stop_required           = -not [string]::IsNullOrWhiteSpace($stopReason)
         stop_reason             = $stopReason
+        stop_stage              = $stopStage
         auto_continue_allowed   = [string]::IsNullOrWhiteSpace($stopReason)
         requires_human_decision = $stopReason -in @('needs_user_decision', 'draft_pr')
     }
@@ -6338,6 +6339,120 @@ function New-RunDraftPrHandoffPackage {
     }
 }
 
+function New-RunVerificationEnvelope {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $verificationOutcome = [string](Get-RunContractField -InputObject $Run.verification_result -Name 'outcome')
+    $verificationSummary = [string](Get-RunContractField -InputObject $Run.verification_result -Name 'summary')
+    $verificationNextAction = [string](Get-RunContractField -InputObject $Run.verification_result -Name 'next_action')
+    $securityVerdict = [string](Get-RunContractField -InputObject $Run.security_verdict -Name 'verdict')
+    if ([string]::IsNullOrWhiteSpace($securityVerdict) -and $Run.security_verdict -is [string]) {
+        $securityVerdict = [string]$Run.security_verdict
+    }
+    $securityReason = [string](Get-RunContractField -InputObject $Run.security_verdict -Name 'reason')
+    $approval = $null
+    if ($null -ne $Run.audit_chain -and $null -ne $Run.audit_chain.approval) {
+        $approval = $Run.audit_chain.approval
+    }
+    $approvalState = [string](Get-RunContractField -InputObject $approval -Name 'state')
+    $auditChainId = [string](Get-RunContractField -InputObject $Run.audit_chain -Name 'chain_id')
+    $auditEventCount = 0
+    if ($null -ne $Run.audit_chain -and $null -ne $Run.audit_chain.events) {
+        $auditEventCount = @($Run.audit_chain.events).Count
+    }
+    $draftPrGateState = [string](Get-RunContractField -InputObject $Run.draft_pr_gate -Name 'state')
+    $phaseGateStopReason = [string](Get-RunContractField -InputObject $Run.phase_gate -Name 'stop_reason')
+    $phaseGateStopStage = [string](Get-RunContractField -InputObject $Run.phase_gate -Name 'stop_stage')
+
+    $evidenceComplete = (
+        -not [string]::IsNullOrWhiteSpace($verificationOutcome) -and
+        $null -ne $Run.verification_evidence -and
+        $null -ne $Run.audit_chain
+    )
+    $blockedReasons = [System.Collections.Generic.List[string]]::new()
+    if ([string]::IsNullOrWhiteSpace($verificationOutcome)) {
+        $blockedReasons.Add('verification evidence is missing') | Out-Null
+    } elseif ($verificationOutcome -ne 'PASS') {
+        $blockedReasons.Add("verification outcome is $verificationOutcome") | Out-Null
+    }
+    if ($securityVerdict -eq 'BLOCK') {
+        if ([string]::IsNullOrWhiteSpace($securityReason)) {
+            $blockedReasons.Add('security policy blocked the run') | Out-Null
+        } else {
+            $blockedReasons.Add($securityReason) | Out-Null
+        }
+    }
+    if ([bool]$Run.review_required -and $approvalState -ne 'approved') {
+        $stateText = if (-not [string]::IsNullOrWhiteSpace($approvalState)) { $approvalState } else { [string]$Run.review_state }
+        $blockedReasons.Add("approval state is unresolved: $stateText") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($draftPrGateState) -and $draftPrGateState -ne 'passed') {
+        $blockedReasons.Add("draft PR gate is $draftPrGateState") | Out-Null
+    }
+    if (-not [string]::IsNullOrWhiteSpace($phaseGateStopReason)) {
+        $stageText = if (-not [string]::IsNullOrWhiteSpace($phaseGateStopStage)) { $phaseGateStopStage } else { 'unknown' }
+        $blockedReasons.Add("phase gate stopped at ${stageText}: $phaseGateStopReason") | Out-Null
+    }
+
+    $humanJudgementRequired = (
+        [bool]$Run.review_required -or
+        (-not [string]::IsNullOrWhiteSpace($draftPrGateState) -and $draftPrGateState -ne 'passed') -or
+        $phaseGateStopReason -eq 'needs_user_decision'
+    )
+
+    $status = if (@($blockedReasons).Count -gt 0) {
+        'blocked'
+    } elseif ($humanJudgementRequired) {
+        'approved'
+    } else {
+        'ready'
+    }
+
+    return [ordered]@{
+        contract_version     = 1
+        packet_type          = 'verification_envelope'
+        scope                = 'release_run'
+        run_id               = [string]$Run.run_id
+        task_id              = [string]$Run.task_id
+        static_gates         = [ordered]@{
+            verification_plan = @($Run.verification_plan)
+            changed_files     = @($Run.changed_files)
+            review_required   = [bool]$Run.review_required
+            required_fields   = @('verification_evidence', 'security_verdict', 'audit_chain', 'draft_pr_gate', 'phase_gate')
+        }
+        dynamic_gates        = [ordered]@{
+            verification = [ordered]@{
+                outcome           = $verificationOutcome
+                summary           = $verificationSummary
+                next_action       = $verificationNextAction
+                evidence_complete = $evidenceComplete
+            }
+            security     = [ordered]@{
+                verdict = $securityVerdict
+                reason  = $securityReason
+                blocked = ($securityVerdict -eq 'BLOCK')
+            }
+            approval     = $approval
+            draft_pr     = $Run.draft_pr_gate
+            phase        = $Run.phase_gate
+            audit        = [ordered]@{
+                chain_id    = $auditChainId
+                event_count = $auditEventCount
+                last_event  = [string]$Run.last_event
+            }
+        }
+        release_decision     = [ordered]@{
+            status                   = $status
+            blocked_reasons          = @($blockedReasons)
+            human_judgement_required = $humanJudgementRequired
+            automatic_merge_allowed  = $false
+        }
+        verification_evidence = $Run.verification_evidence
+        security_verdict      = $Run.security_verdict
+        audit_chain           = $Run.audit_chain
+    }
+}
+
 function New-RunDraftPrGate {
     param(
         [Parameter(Mandatory = $true)]$Run,
@@ -6429,6 +6544,7 @@ function New-RunPacketFromRun {
         verification_result   = $Run.verification_result
         verification_evidence = $Run.verification_evidence
         tdd_gate              = $Run.tdd_gate
+        verification_envelope = $Run.verification_envelope
         plan              = $Run.plan
         plan_checkpoints  = @($Run.plan_checkpoints)
         managed_loop      = $Run.managed_loop
@@ -6511,6 +6627,7 @@ function New-RunResultPacket {
         verification_result   = $Run.verification_result
         verification_evidence = $Run.verification_evidence
         tdd_gate              = $Run.tdd_gate
+        verification_envelope = $Run.verification_envelope
         security_policy       = $Run.security_policy
         security_verdict      = $Run.security_verdict
         plan                  = $Run.plan
@@ -6780,6 +6897,7 @@ function Get-RunsPayload {
                 outcome               = $null
                 draft_pr_gate         = $null
                 tdd_gate              = $null
+                verification_envelope = $null
             }
         }
 
@@ -6941,6 +7059,7 @@ function Get-RunsPayload {
             $run.tdd_gate = New-RunTddGateContract -Run $run -EventRecords $runEvents
             $run.phase_gate = New-RunPhaseGateContract -Run $run -EventRecords $runEvents
             $run.audit_chain = New-RunAuditChainContract -Run $run -EventRecords $runEvents
+            $run.verification_envelope = New-RunVerificationEnvelope -Run $run
             $run.outcome = New-RunOutcomeContract -Run $run
             $nextAction = Get-RunNextAction -Run $run
             $stateModel = New-RunStateModel -State ([string]$run.state) -TaskState ([string]$run.task_state) -ReviewState ([string]$run.review_state) -EventKind $nextAction -LastEvent ([string]$run.last_event)
@@ -6992,6 +7111,7 @@ function Get-RunsPayload {
                 verification_result   = $run.verification_result
                 verification_evidence = $run.verification_evidence
                 tdd_gate              = $run.tdd_gate
+                verification_envelope = $run.verification_envelope
                 plan                  = $run.plan
                 plan_checkpoints      = @($run.plan_checkpoints)
                 managed_loop          = $run.managed_loop
