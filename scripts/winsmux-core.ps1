@@ -5720,6 +5720,8 @@ function New-RunOutcomeContract {
         $status = 'failed'
     } elseif ($phaseGateStopReason -eq 'needs_user_decision') {
         $status = 'needs_user_decision'
+    } elseif (-not [string]::IsNullOrWhiteSpace($phaseGateStopReason)) {
+        $status = 'blocked'
     } elseif ([string]$Run.review_state -eq 'PASS' -and $draftPrGateState -ne 'passed') {
         $status = 'needs_user_decision'
     } elseif ([string]$Run.review_state -eq 'PASS' -or [string]$Run.task_state -in @('completed', 'task_completed', 'commit_ready', 'done')) {
@@ -5774,6 +5776,133 @@ function Set-RunPhaseGateStage {
     }
     if (-not [string]::IsNullOrWhiteSpace($Event)) {
         $stage.event = $Event
+    }
+}
+
+function Test-RunRequiresTddGate {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $taskType = ([string](Get-RunContractField -InputObject $Run -Name 'task_type')).ToLowerInvariant()
+    if ($taskType -in @('bug', 'bugfix', 'fix', 'defect', 'core_logic', 'core-logic', 'core')) {
+        return $true
+    }
+
+    foreach ($path in @((Get-RunContractField -InputObject $Run -Name 'changed_files'))) {
+        $normalized = ([string]$path).Replace('\', '/')
+        if ($normalized -match '^(core/src/|winsmux-core/scripts/|scripts/winsmux-core\.ps1$)') {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Get-RunTddEventDataValue {
+    param(
+        [AllowNull()]$EventRecord,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $EventRecord) {
+        return ''
+    }
+
+    if ($EventRecord -is [System.Collections.IDictionary] -and $EventRecord.Contains($Name)) {
+        return [string]$EventRecord[$Name]
+    }
+
+    $property = $EventRecord.PSObject.Properties[$Name]
+    if ($null -ne $property) {
+        return [string]$property.Value
+    }
+
+    $data = $null
+    if ($EventRecord -is [System.Collections.IDictionary] -and $EventRecord.Contains('data')) {
+        $data = $EventRecord['data']
+    } else {
+        $dataProperty = $EventRecord.PSObject.Properties['data']
+        if ($null -ne $dataProperty) {
+            $data = $dataProperty.Value
+        }
+    }
+
+    if ($null -ne $data) {
+        if ($data -is [System.Collections.IDictionary] -and $data.Contains($Name)) {
+            return [string]$data[$Name]
+        }
+        $dataProperty = $data.PSObject.Properties[$Name]
+        if ($null -ne $dataProperty) {
+            return [string]$dataProperty.Value
+        }
+    }
+
+    return ''
+}
+
+function New-RunTddGateContract {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [object[]]$EventRecords = @()
+    )
+
+    $required = Test-RunRequiresTddGate -Run $Run
+    $redEvents = @(
+        $EventRecords | Where-Object {
+            $eventName = [string]$_['event']
+            $phase = (Get-RunTddEventDataValue -EventRecord $_ -Name 'tdd_phase').ToLowerInvariant()
+            $testFirst = (Get-RunTddEventDataValue -EventRecord $_ -Name 'test_first').ToLowerInvariant()
+            $eventName -in @('pipeline.tdd.red', 'pipeline.test.red', 'pipeline.test_first.fail', 'pipeline.test_first.failed') -or
+                $phase -eq 'red' -or
+                $testFirst -eq 'true'
+        } | Sort-Object @{ Expression = { Get-RunEventTimestampSortKey -Value $_['timestamp'] } }, @{ Expression = { [int]$_['line_number'] } }
+    )
+    $exceptionEvents = @(
+        $EventRecords | Where-Object {
+            $eventName = [string]$_['event']
+            $reason = Get-RunTddEventDataValue -EventRecord $_ -Name 'reason'
+            $exceptionReason = Get-RunTddEventDataValue -EventRecord $_ -Name 'tdd_exception_reason'
+            ($eventName -eq 'pipeline.tdd.exception' -and (-not [string]::IsNullOrWhiteSpace($exceptionReason) -or -not [string]::IsNullOrWhiteSpace($reason))) -or
+                -not [string]::IsNullOrWhiteSpace($exceptionReason) -or
+                ($eventName -eq 'pipeline.policy.exception' -and -not [string]::IsNullOrWhiteSpace($reason))
+        } | Sort-Object @{ Expression = { Get-RunEventTimestampSortKey -Value $_['timestamp'] } }, @{ Expression = { [int]$_['line_number'] } }
+    )
+
+    $state = 'not_required'
+    $reason = 'not_required'
+    $blockedReasons = @()
+    if ($required) {
+        if (@($redEvents).Count -gt 0) {
+            $state = 'passed'
+            $reason = 'red_test_evidence_recorded'
+        } elseif (@($exceptionEvents).Count -gt 0) {
+            $state = 'waived'
+            $reason = 'exception_recorded'
+        } else {
+            $state = 'blocked'
+            $reason = 'tdd_evidence_missing'
+            $blockedReasons = @('test-first evidence is missing for a bug fix or core logic change')
+        }
+    }
+
+    $redEvent = if (@($redEvents).Count -gt 0) { $redEvents[0] } else { $null }
+    $exceptionEvent = if (@($exceptionEvents).Count -gt 0) { $exceptionEvents[0] } else { $null }
+    $exceptionReason = if ($null -ne $exceptionEvent) {
+        $value = Get-RunTddEventDataValue -EventRecord $exceptionEvent -Name 'tdd_exception_reason'
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            $value = Get-RunTddEventDataValue -EventRecord $exceptionEvent -Name 'reason'
+        }
+        $value
+    } else { '' }
+
+    return [ordered]@{
+        policy             = 'test_first_required'
+        required           = [bool]$required
+        state              = $state
+        reason             = $reason
+        blocked_reasons    = @($blockedReasons)
+        exception_reason   = [string]$exceptionReason
+        red_event          = if ($null -ne $redEvent) { [string]$redEvent['event'] } else { '' }
+        exception_event    = if ($null -ne $exceptionEvent) { [string]$exceptionEvent['event'] } else { '' }
     }
 }
 
@@ -5878,6 +6007,14 @@ function New-RunPhaseGateContract {
             $stopReason = ''
             $stopStage = ''
         }
+    }
+
+    $tddGate = Get-RunContractField -InputObject $Run -Name 'tdd_gate'
+    $tddGateState = [string](Get-RunContractField -InputObject $tddGate -Name 'state')
+    if ($tddGateState -eq 'blocked') {
+        Set-RunPhaseGateStage -StagesByName $stagesByName -Name 'test' -Status 'blocked' -Reason 'tdd_evidence_missing'
+        $stopReason = 'tdd_evidence_missing'
+        $stopStage = 'test'
     }
 
     $stages = @($stageOrder | ForEach-Object { $stagesByName[$_] })
@@ -6091,6 +6228,7 @@ function New-RunPacketFromRun {
         security_verdict  = $Run.security_verdict
         verification_contract = $Run.verification_contract
         verification_result   = $Run.verification_result
+        tdd_gate              = $Run.tdd_gate
         plan              = $Run.plan
         plan_checkpoints  = @($Run.plan_checkpoints)
         managed_loop      = $Run.managed_loop
@@ -6170,6 +6308,7 @@ function New-RunResultPacket {
         review_contract       = $reviewContract
         verification_contract = $Run.verification_contract
         verification_result   = $Run.verification_result
+        tdd_gate              = $Run.tdd_gate
         security_policy       = $Run.security_policy
         security_verdict      = $Run.security_verdict
         plan                  = $Run.plan
@@ -6426,6 +6565,7 @@ function Get-RunsPayload {
                 managed_loop          = $null
                 outcome               = $null
                 draft_pr_gate         = $null
+                tdd_gate              = $null
             }
         }
 
@@ -6582,6 +6722,7 @@ function Get-RunsPayload {
             $runEvents = @($eventRecords | Where-Object { Test-RunMatchesEventRecord -Run $run -EventRecord $_ })
             $run.plan = New-RunPlanContract -Run $run
             $run.draft_pr_gate = New-RunDraftPrGate -Run $run -EventRecords $runEvents
+            $run.tdd_gate = New-RunTddGateContract -Run $run -EventRecords $runEvents
             $run.phase_gate = New-RunPhaseGateContract -Run $run -EventRecords $runEvents
             $run.outcome = New-RunOutcomeContract -Run $run
             $nextAction = Get-RunNextAction -Run $run
@@ -6632,6 +6773,7 @@ function Get-RunsPayload {
                 security_verdict   = $run.security_verdict
                 verification_contract = $run.verification_contract
                 verification_result   = $run.verification_result
+                tdd_gate              = $run.tdd_gate
                 plan                  = $run.plan
                 plan_checkpoints      = @($run.plan_checkpoints)
                 managed_loop          = $run.managed_loop

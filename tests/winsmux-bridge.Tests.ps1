@@ -8195,6 +8195,22 @@ panes:
             }
         } | ConvertTo-Json -Compress),
         ([ordered]@{
+            timestamp = '2026-04-10T12:01:45+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'pipeline.tdd.red'
+            message   = 'test failed before implementation'
+            label     = 'operator'
+            pane_id   = ''
+            role      = 'Operator'
+            branch    = 'worktree-builder-1'
+            head_sha  = 'abc1234def5678'
+            data      = [ordered]@{
+                task_id   = 'task-256'
+                run_id    = 'task:task-256'
+                tdd_phase = 'red'
+            }
+        } | ConvertTo-Json -Compress),
+        ([ordered]@{
             timestamp = '2026-04-10T12:01:50+09:00'
             session   = 'winsmux-orchestra'
             event     = 'pipeline.collect.completed'
@@ -8313,6 +8329,10 @@ panes:
         $result.runs[0].verification_contract.mode | Should -Be 'adversarial_verify'
         $result.runs[0].verification_result.outcome | Should -Be 'PARTIAL'
         $result.runs[0].run_packet.verification_result.outcome | Should -Be 'PARTIAL'
+        $result.runs[0].tdd_gate.required | Should -Be $true
+        $result.runs[0].tdd_gate.state | Should -Be 'passed'
+        $result.runs[0].tdd_gate.red_event | Should -Be 'pipeline.tdd.red'
+        $result.runs[0].run_packet.tdd_gate.state | Should -Be 'passed'
         $result.runs[0].phase | Should -Be 'review'
         $result.runs[0].activity | Should -Be 'waiting_for_input'
         $result.runs[0].detail | Should -Be 'review_pending'
@@ -8459,6 +8479,117 @@ panes:
         $phaseGate.stop_required | Should -Be $false
         $phaseGate.stop_reason | Should -Be ''
         ($phaseGate.stages | Where-Object { $_.stage -eq 'test' } | Select-Object -First 1).status | Should -Be 'completed'
+    }
+
+    It 'blocks core logic runs when test-first evidence is missing' {
+        $run = [PSCustomObject]@{
+            goal              = 'Fix core contract'
+            task_type         = 'bugfix'
+            task_state        = 'in_progress'
+            review_state      = 'PENDING'
+            changed_files     = @('scripts/winsmux-core.ps1')
+            verification_plan = @('Invoke-Pester')
+            review_required   = $true
+            verification_result = $null
+            experiment_packet = $null
+            last_event        = 'pipeline.verify.pass'
+        }
+        $events = @(
+            [ordered]@{ timestamp = '2026-04-10T12:01:00+09:00'; line_number = 1; event = 'pipeline.verify.pass'; data = [ordered]@{ verification_result = [ordered]@{ outcome = 'PASS' } } }
+        )
+
+        $run | Add-Member -NotePropertyName tdd_gate -NotePropertyValue (New-RunTddGateContract -Run $run -EventRecords $events)
+        $phaseGate = New-RunPhaseGateContract -Run $run -EventRecords $events
+        $run | Add-Member -NotePropertyName phase_gate -NotePropertyValue $phaseGate
+        $outcome = New-RunOutcomeContract -Run $run
+
+        $run.tdd_gate.required | Should -Be $true
+        $run.tdd_gate.state | Should -Be 'blocked'
+        $run.tdd_gate.reason | Should -Be 'tdd_evidence_missing'
+        $run.tdd_gate.blocked_reasons | Should -Contain 'test-first evidence is missing for a bug fix or core logic change'
+        $phaseGate.stop_required | Should -Be $true
+        $phaseGate.stop_reason | Should -Be 'tdd_evidence_missing'
+        ($phaseGate.stages | Where-Object { $_.stage -eq 'test' } | Select-Object -First 1).status | Should -Be 'blocked'
+        $outcome.status | Should -Be 'blocked'
+    }
+
+    It 'passes core logic runs when red test evidence exists' {
+        $run = [PSCustomObject]@{
+            goal              = 'Fix core contract'
+            task_type         = 'core_logic'
+            task_state        = 'in_progress'
+            review_state      = 'PENDING'
+            changed_files     = @('scripts/winsmux-core.ps1')
+            verification_plan = @('Invoke-Pester')
+            review_required   = $true
+        }
+        $events = @(
+            [ordered]@{ timestamp = '2026-04-10T12:00:00+09:00'; line_number = 1; event = 'pipeline.tdd.red'; data = [ordered]@{ tdd_phase = 'red' } },
+            [ordered]@{ timestamp = '2026-04-10T12:01:00+09:00'; line_number = 2; event = 'pipeline.verify.pass'; data = [ordered]@{ verification_result = [ordered]@{ outcome = 'PASS' } } }
+        )
+
+        $run | Add-Member -NotePropertyName tdd_gate -NotePropertyValue (New-RunTddGateContract -Run $run -EventRecords $events)
+        $phaseGate = New-RunPhaseGateContract -Run $run -EventRecords $events
+
+        $run.tdd_gate.required | Should -Be $true
+        $run.tdd_gate.state | Should -Be 'passed'
+        $run.tdd_gate.red_event | Should -Be 'pipeline.tdd.red'
+        $phaseGate.stop_required | Should -Be $false
+        ($phaseGate.stages | Where-Object { $_.stage -eq 'test' } | Select-Object -First 1).status | Should -Be 'completed'
+    }
+
+    It 'waives test-first evidence only when an exception reason is recorded' {
+        $run = [PSCustomObject]@{
+            goal              = 'Fix core contract'
+            task_type         = 'bugfix'
+            task_state        = 'in_progress'
+            review_state      = 'PENDING'
+            changed_files     = @('scripts/winsmux-core.ps1')
+            verification_plan = @('Invoke-Pester')
+            review_required   = $true
+        }
+        $events = @(
+            [ordered]@{
+                timestamp   = '2026-04-10T12:00:00+09:00'
+                line_number = 1
+                event       = 'pipeline.tdd.exception'
+                data        = [ordered]@{ tdd_exception_reason = 'legacy behavior has no deterministic fixture yet' }
+            }
+        )
+
+        $gate = New-RunTddGateContract -Run $run -EventRecords $events
+
+        $gate.required | Should -Be $true
+        $gate.state | Should -Be 'waived'
+        $gate.exception_event | Should -Be 'pipeline.tdd.exception'
+        $gate.exception_reason | Should -Be 'legacy behavior has no deterministic fixture yet'
+    }
+
+    It 'blocks test-first exceptions that omit an exception reason' {
+        $run = [PSCustomObject]@{
+            goal              = 'Fix core contract'
+            task_type         = 'BugFix'
+            task_state        = 'in_progress'
+            review_state      = 'PENDING'
+            changed_files     = @('Scripts\Winsmux-Core.ps1')
+            verification_plan = @('Invoke-Pester')
+            review_required   = $true
+        }
+        $events = @(
+            [ordered]@{
+                timestamp   = '2026-04-10T12:00:00+09:00'
+                line_number = 1
+                event       = 'pipeline.tdd.exception'
+                data        = [ordered]@{}
+            }
+        )
+
+        $gate = New-RunTddGateContract -Run $run -EventRecords $events
+
+        $gate.required | Should -Be $true
+        $gate.state | Should -Be 'blocked'
+        $gate.reason | Should -Be 'tdd_evidence_missing'
+        $gate.exception_event | Should -Be ''
     }
 
     It 'ignores stale draft PR evidence that does not match the run head sha' {
@@ -9421,6 +9552,22 @@ panes:
                 }
             } | ConvertTo-Json -Compress),
             ([ordered]@{
+            timestamp = '2026-04-10T12:02:15+09:00'
+            session   = 'winsmux-orchestra'
+            event     = 'pipeline.tdd.red'
+            message   = 'test failed before implementation'
+            label     = 'operator'
+            pane_id   = ''
+            role      = 'Operator'
+                branch    = 'worktree-builder-1'
+                head_sha  = 'abc1234def5678'
+                data      = [ordered]@{
+                    task_id   = 'task-256'
+                    run_id    = 'task:task-256'
+                    tdd_phase = 'red'
+                }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
                 timestamp = '2026-04-10T12:02:30+09:00'
                 session   = 'winsmux-orchestra'
                 event     = 'pane.approval_waiting'
@@ -9524,6 +9671,9 @@ panes:
         $result.run.experiment_packet.command_hash | Should -Be 'cmd:def456'
         $result.run.verification_contract.mode | Should -Be 'adversarial_verify'
         $result.run.verification_result.outcome | Should -Be 'PARTIAL'
+        $result.run.tdd_gate.required | Should -Be $true
+        $result.run.tdd_gate.state | Should -Be 'passed'
+        $result.run.tdd_gate.red_event | Should -Be 'pipeline.tdd.red'
         $result.run.phase | Should -Be 'review'
         $result.run.activity | Should -Be 'waiting_for_input'
         $result.run.detail | Should -Be 'review_pending'
@@ -9577,9 +9727,10 @@ panes:
         $result.run.Contains('run_packet') | Should -BeFalse
         $result.Contains('run_packet') | Should -Be $false
         $result.Contains('result_packet') | Should -Be $false
-        $result.recent_events.Count | Should -Be 3
+        $result.recent_events.Count | Should -Be 4
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'operator.review_requested'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.verify.partial'
+        @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pipeline.tdd.red'
         @($result.recent_events | ForEach-Object { $_.event }) | Should -Contain 'pane.approval_waiting'
         ($result.recent_events | Where-Object { $_.event -eq 'operator.review_requested' } | Select-Object -First 1).hypothesis | Should -Be 'experiment packet should flow into explain'
         ($result.recent_events | Where-Object { $_.event -eq 'operator.review_requested' } | Select-Object -First 1).observation_pack.changed_files | Should -Contain 'scripts/winsmux-core.ps1'
@@ -12284,6 +12435,22 @@ panes:
                         next_action          = 'approval_waiting'
                         observation_pack_ref = $explainObservationPack.reference
                         consultation_ref     = $explainConsultationPacket.reference
+                    }
+                } | ConvertTo-Json -Compress),
+                ([ordered]@{
+                    timestamp = '2026-04-10T12:03:00+09:00'
+                    session   = 'winsmux-orchestra'
+                    event     = 'pipeline.tdd.red'
+                    message   = 'test failed before implementation'
+                    label     = 'operator'
+                    pane_id   = ''
+                    role      = 'Operator'
+                    branch    = 'worktree-builder-1'
+                    head_sha  = 'abc1234def5678'
+                    data      = [ordered]@{
+                        task_id   = 'task-256'
+                        run_id    = 'task:task-256'
+                        tdd_phase = 'red'
                     }
                 } | ConvertTo-Json -Compress)
             ) | Set-Content -Path $eventsPath -Encoding UTF8

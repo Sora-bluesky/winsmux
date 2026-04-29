@@ -531,7 +531,7 @@ fn rust_parity_explain_fixture_deserializes() {
         fixture.run.experiment_packet.consultation_ref,
         ".winsmux/consultations/consult-result-__ID__.json"
     );
-    assert_eq!(fixture.run.experiment_packet.run_id, "");
+    assert_eq!(fixture.run.experiment_packet.run_id, "task:task-256");
     assert_eq!(fixture.run.experiment_packet.slot, "slot-builder-1");
     assert_eq!(fixture.run.experiment_packet.branch, "worktree-builder-1");
     assert_eq!(fixture.run.experiment_packet.worktree, "");

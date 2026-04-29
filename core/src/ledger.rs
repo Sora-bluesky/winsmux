@@ -275,6 +275,7 @@ pub struct LedgerExplainRun {
     pub security_verdict: Value,
     pub verification_contract: Value,
     pub verification_result: Value,
+    pub tdd_gate: Value,
     pub outcome: Value,
     pub phase_gate: Value,
     pub draft_pr_gate: Value,
@@ -466,6 +467,7 @@ pub struct LedgerRunProjection {
     pub security_verdict: Value,
     pub verification_contract: Value,
     pub verification_result: Value,
+    pub tdd_gate: Value,
     pub outcome: Value,
     pub phase_gate: Value,
     pub draft_pr_gate: Value,
@@ -508,6 +510,7 @@ pub struct LedgerRunPacket {
     pub security_verdict: Value,
     pub verification_contract: Value,
     pub verification_result: Value,
+    pub tdd_gate: Value,
     pub outcome: Value,
     pub phase_gate: Value,
     pub draft_pr_gate: Value,
@@ -716,6 +719,7 @@ impl LedgerRunProjection {
             verification_result: run
                 .map(|run| run.verification_result.clone())
                 .unwrap_or(Value::Null),
+            tdd_gate: run.map(|run| run.tdd_gate.clone()).unwrap_or(Value::Null),
             outcome: run.map(|run| run.outcome.clone()).unwrap_or(Value::Null),
             phase_gate: run.map(|run| run.phase_gate.clone()).unwrap_or(Value::Null),
             draft_pr_gate: run
@@ -763,6 +767,7 @@ impl LedgerRunPacket {
             security_verdict: run.security_verdict.clone(),
             verification_contract: run.verification_contract.clone(),
             verification_result: run.verification_result.clone(),
+            tdd_gate: run.tdd_gate.clone(),
             outcome: run.outcome.clone(),
             phase_gate: run.phase_gate.clone(),
             draft_pr_gate: run.draft_pr_gate.clone(),
@@ -1274,12 +1279,14 @@ impl LedgerSnapshot {
             security_verdict,
             verification_contract,
             verification_result,
+            tdd_gate: Value::Null,
             outcome: Value::Null,
             phase_gate: Value::Null,
             draft_pr_gate: Value::Null,
             changed_files: evidence_digest.changed_files.clone(),
         };
         run.draft_pr_gate = run_draft_pr_gate_value(&run, &recent_event_records);
+        run.tdd_gate = run_tdd_gate_value(&run, &recent_event_records);
         run.phase_gate = run_phase_gate_value(&run, &recent_event_records, &run.draft_pr_gate);
         run.outcome = run_outcome_value(&run, &run.phase_gate, &run.draft_pr_gate);
         let explanation = explain_explanation(&run, &evidence_digest);
@@ -2207,6 +2214,11 @@ fn run_phase_gate_value(
         }
     }
 
+    if value_field_string(&run.tdd_gate, "state") == "blocked" {
+        set_run_phase_stage(&mut stages, "test", "blocked", "tdd_evidence_missing", "");
+        stop_reason = "tdd_evidence_missing".to_string();
+    }
+
     let current_stage = stages
         .iter()
         .rev()
@@ -2234,6 +2246,88 @@ fn run_phase_gate_value(
         "stop_reason": stop_reason,
         "auto_continue_allowed": !stop_required,
         "requires_human_decision": matches!(stop_reason.as_str(), "needs_user_decision" | "draft_pr"),
+    })
+}
+
+fn run_requires_tdd_gate(run: &LedgerExplainRun) -> bool {
+    let task_type = run.task_type.to_ascii_lowercase();
+    matches!(
+        task_type.as_str(),
+        "bug" | "bugfix" | "fix" | "defect" | "core_logic" | "core-logic" | "core"
+    ) || run.changed_files.iter().any(|path| {
+        let normalized = path.replace('\\', "/").to_ascii_lowercase();
+        normalized.starts_with("core/src/")
+            || normalized.starts_with("winsmux-core/scripts/")
+            || normalized == "scripts/winsmux-core.ps1"
+    })
+}
+
+fn run_tdd_gate_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) -> Value {
+    let required = run_requires_tdd_gate(run);
+    let mut ordered_events = events.to_vec();
+    ordered_events.sort_by(|(left_index, left), (right_index, right)| {
+        left.timestamp
+            .cmp(&right.timestamp)
+            .then_with(|| left_index.cmp(right_index))
+    });
+
+    let red_event = ordered_events.iter().find(|(_, event)| {
+        matches!(
+            event.event.as_str(),
+            "pipeline.tdd.red"
+                | "pipeline.test.red"
+                | "pipeline.test_first.fail"
+                | "pipeline.test_first.failed"
+        ) || event_data_string(&event.data, "tdd_phase").eq_ignore_ascii_case("red")
+            || event_data_string(&event.data, "test_first").eq_ignore_ascii_case("true")
+    });
+    let exception_event = ordered_events.iter().find(|(_, event)| {
+        let reason = event_data_string(&event.data, "reason");
+        let exception_reason = event_data_string(&event.data, "tdd_exception_reason");
+        (event.event == "pipeline.tdd.exception"
+            && (!exception_reason.trim().is_empty() || !reason.trim().is_empty()))
+            || !exception_reason.trim().is_empty()
+            || (event.event == "pipeline.policy.exception" && !reason.trim().is_empty())
+    });
+
+    let mut state = "not_required";
+    let mut reason = "not_required";
+    let mut blocked_reasons: Vec<&str> = Vec::new();
+    if required {
+        if red_event.is_some() {
+            state = "passed";
+            reason = "red_test_evidence_recorded";
+        } else if exception_event.is_some() {
+            state = "waived";
+            reason = "exception_recorded";
+        } else {
+            state = "blocked";
+            reason = "tdd_evidence_missing";
+            blocked_reasons
+                .push("test-first evidence is missing for a bug fix or core logic change");
+        }
+    }
+
+    let exception_reason = exception_event
+        .map(|(_, event)| {
+            let explicit = event_data_string(&event.data, "tdd_exception_reason");
+            if explicit.trim().is_empty() {
+                event_data_string(&event.data, "reason")
+            } else {
+                explicit
+            }
+        })
+        .unwrap_or_default();
+
+    json!({
+        "policy": "test_first_required",
+        "required": required,
+        "state": state,
+        "reason": reason,
+        "blocked_reasons": blocked_reasons,
+        "exception_reason": exception_reason,
+        "red_event": red_event.map(|(_, event)| event.event.clone()).unwrap_or_default(),
+        "exception_event": exception_event.map(|(_, event)| event.event.clone()).unwrap_or_default(),
     })
 }
 
@@ -2355,9 +2449,11 @@ fn run_outcome_value(run: &LedgerExplainRun, phase_gate: &Value, draft_pr_gate: 
     let draft_pr_gate_state = value_field_string(draft_pr_gate, "state");
     let status = if matches!(run.review_state.as_str(), "FAIL" | "FAILED") {
         "failed".to_string()
-    } else if phase_gate_stop_reason == "needs_user_decision"
-        || (run.review_state == "PASS" && draft_pr_gate_state != "passed")
-    {
+    } else if phase_gate_stop_reason == "needs_user_decision" {
+        "needs_user_decision".to_string()
+    } else if !phase_gate_stop_reason.trim().is_empty() {
+        "blocked".to_string()
+    } else if run.review_state == "PASS" && draft_pr_gate_state != "passed" {
         "needs_user_decision".to_string()
     } else if run.review_state == "PASS"
         || matches!(
