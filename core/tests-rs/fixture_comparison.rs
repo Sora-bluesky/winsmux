@@ -242,6 +242,7 @@ const EXPLAIN_RUN_KEYS: &[&str] = &[
     "verification_contract",
     "verification_result",
     "verification_evidence",
+    "context_contract",
     "tdd_gate",
     "verification_envelope",
     "audit_chain",
