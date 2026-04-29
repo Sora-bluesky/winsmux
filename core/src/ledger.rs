@@ -278,6 +278,7 @@ pub struct LedgerExplainRun {
     pub verification_result: Value,
     pub verification_evidence: Value,
     pub context_contract: Value,
+    pub run_insights: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
     pub audit_chain: Value,
@@ -474,6 +475,7 @@ pub struct LedgerRunProjection {
     pub verification_result: Value,
     pub verification_evidence: Value,
     pub context_contract: Value,
+    pub run_insights: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
     pub audit_chain: Value,
@@ -521,6 +523,7 @@ pub struct LedgerRunPacket {
     pub verification_result: Value,
     pub verification_evidence: Value,
     pub context_contract: Value,
+    pub run_insights: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
     pub audit_chain: Value,
@@ -738,6 +741,9 @@ impl LedgerRunProjection {
             context_contract: run
                 .map(|run| run.context_contract.clone())
                 .unwrap_or(Value::Null),
+            run_insights: run
+                .map(|run| run.run_insights.clone())
+                .unwrap_or(Value::Null),
             tdd_gate: run.map(|run| run.tdd_gate.clone()).unwrap_or(Value::Null),
             verification_envelope: run
                 .map(|run| run.verification_envelope.clone())
@@ -794,6 +800,7 @@ impl LedgerRunPacket {
             verification_result: run.verification_result.clone(),
             verification_evidence: run.verification_evidence.clone(),
             context_contract: run.context_contract.clone(),
+            run_insights: run.run_insights.clone(),
             tdd_gate: run.tdd_gate.clone(),
             verification_envelope: run.verification_envelope.clone(),
             audit_chain: run.audit_chain.clone(),
@@ -1311,6 +1318,7 @@ impl LedgerSnapshot {
             verification_result,
             verification_evidence,
             context_contract: Value::Null,
+            run_insights: Value::Null,
             tdd_gate: Value::Null,
             verification_envelope: Value::Null,
             audit_chain: Value::Null,
@@ -1326,6 +1334,7 @@ impl LedgerSnapshot {
         run.audit_chain = run_audit_chain_value(&run, &recent_event_records);
         run.verification_envelope = run_verification_envelope_value(&run);
         run.outcome = run_outcome_value(&run, &run.phase_gate, &run.draft_pr_gate);
+        run.run_insights = run_insights_value(&run, &recent_event_records);
         let explanation = explain_explanation(&run, &evidence_digest);
 
         Some(LedgerExplainProjection {
@@ -2807,6 +2816,124 @@ fn run_outcome_value(run: &LedgerExplainRun, phase_gate: &Value, draft_pr_gate: 
         "confidence": run.experiment_packet.confidence,
         "source_event": run.last_event,
     })
+}
+
+fn run_insights_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) -> Value {
+    let retry_count = events
+        .iter()
+        .filter(|(_, event)| {
+            let text = format!(
+                "{} {} {} {}",
+                event.event,
+                event.message,
+                event.status,
+                value_field_string(&event.data, "next_action")
+            )
+            .to_lowercase();
+            text.contains("retry")
+                || text.contains("rerun")
+                || event_attempt_value(event) > 1
+        })
+        .count();
+
+    let mut drift_signals = Vec::new();
+    for (_, event) in events {
+        let text = format!("{} {} {}", event.event, event.message, event.status).to_lowercase();
+        if text.contains("drift") {
+            push_unique_text(&mut drift_signals, "drift_detected");
+        }
+        if text.contains("stale") {
+            push_unique_text(&mut drift_signals, "stale_state");
+        }
+        if text.contains("mismatch") {
+            push_unique_text(&mut drift_signals, "state_mismatch");
+        }
+    }
+
+    let intervention_count = run.action_items.len()
+        + events
+            .iter()
+            .filter(|(_, event)| {
+                let text = format!("{} {} {}", event.event, event.message, event.status)
+                    .to_lowercase();
+                text.contains("approval")
+                    || text.contains("review_requested")
+                    || text.contains("question")
+                    || text.contains("user")
+            })
+            .count();
+
+    let mut blocked_reasons = Vec::new();
+    push_unique_text(
+        &mut blocked_reasons,
+        &value_field_string(&run.phase_gate, "stop_reason"),
+    );
+    if value_field_string(&run.draft_pr_gate, "state") == "blocked" {
+        push_unique_text(&mut blocked_reasons, "draft_pr_gate_blocked");
+    }
+    if value_field_string(&run.tdd_gate, "state") == "blocked" {
+        push_unique_text(&mut blocked_reasons, "tdd_gate_blocked");
+    }
+    if value_field_string(&run.verification_result, "outcome").eq_ignore_ascii_case("FAIL") {
+        push_unique_text(&mut blocked_reasons, "verification_failed");
+    }
+    if value_field_string(&run.security_verdict, "verdict").eq_ignore_ascii_case("BLOCK") {
+        push_unique_text(&mut blocked_reasons, "security_blocked");
+    }
+    let context_pressure = value_field_string(&run.verification_evidence, "context_pressure");
+    let unhealthy_session_size = run.pane_count > 8
+        || run.changed_file_count > 20
+        || matches!(
+            context_pressure.to_lowercase().as_str(),
+            "high" | "critical" | "exhausted"
+        );
+
+    let mut next_improvements = Vec::new();
+    if retry_count > 0 {
+        push_unique_text(&mut next_improvements, "reduce retry loop before the next run");
+    }
+    if !drift_signals.is_empty() {
+        push_unique_text(&mut next_improvements, "refresh session state before continuing");
+    }
+    if intervention_count > 0 {
+        push_unique_text(
+            &mut next_improvements,
+            "capture operator decisions as reusable guidance",
+        );
+    }
+    if unhealthy_session_size {
+        push_unique_text(&mut next_improvements, "split the next run into a smaller scope");
+    }
+    if !blocked_reasons.is_empty() {
+        push_unique_text(&mut next_improvements, "resolve blocked reasons before release");
+    }
+
+    json!({
+        "packet_type": "run_insights",
+        "scope": "run",
+        "retry_count": retry_count,
+        "drift_signals": drift_signals,
+        "intervention_count": intervention_count,
+        "unhealthy_session_size": unhealthy_session_size,
+        "blocked_reasons": blocked_reasons,
+        "next_improvements": next_improvements,
+    })
+}
+
+fn event_attempt_value(event: &EventRecord) -> i64 {
+    event
+        .data
+        .as_object()
+        .and_then(|map| map.get("attempt"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+}
+
+fn push_unique_text(values: &mut Vec<String>, value: &str) {
+    let value = value.trim();
+    if !value.is_empty() && !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
 }
 
 fn draft_pr_event_matches_run_head(run: &LedgerExplainRun, event: &EventRecord) -> bool {

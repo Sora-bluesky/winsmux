@@ -130,6 +130,21 @@
         "raw_tool_output_stored": false
       }
     },
+    "run_insights": {
+      "packet_type": "run_insights",
+      "scope": "run",
+      "retry_count": 0,
+      "drift_signals": [],
+      "intervention_count": 3,
+      "unhealthy_session_size": false,
+      "blocked_reasons": [
+        "draft_pr_gate_blocked"
+      ],
+      "next_improvements": [
+        "capture operator decisions as reusable guidance",
+        "resolve blocked reasons before release"
+      ]
+    },
     "tdd_gate": {
       "policy": "test_first_required",
       "required": true,

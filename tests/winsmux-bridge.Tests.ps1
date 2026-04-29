@@ -8271,7 +8271,7 @@ panes:
             timestamp = '2026-04-10T12:02:00+09:00'
             session   = 'winsmux-orchestra'
             event     = 'pipeline.verify.partial'
-            message   = 'verification partially complete'
+            message   = 'verification partially complete after drift retry'
             label     = 'reviewer-1'
             pane_id   = '%3'
             role      = 'Reviewer'
@@ -8297,6 +8297,7 @@ panes:
                     performance_budget = [ordered]@{ max_context_tokens = 42000 }
                     rationale = 'keep worker context scoped'
                 }
+                attempt = 2
                 verification_result = [ordered]@{
                     outcome = 'PARTIAL'
                     summary = 'rerun focused verification'
@@ -8389,7 +8390,12 @@ panes:
         $result.runs[0].context_contract.semantic_context.private_source_body_stored | Should -Be $false
         $result.runs[0].context_contract.prompt_body_stored | Should -Be $false
         $result.runs[0].context_contract.private_memory_stored | Should -Be $false
+        $result.runs[0].run_insights.retry_count | Should -Be 1
+        $result.runs[0].run_insights.drift_signals | Should -Be @('drift_detected')
+        $result.runs[0].run_insights.unhealthy_session_size | Should -Be $true
+        $result.runs[0].run_insights.next_improvements | Should -Contain 'split the next run into a smaller scope'
         $result.runs[0].run_packet.context_contract.context_pack_id | Should -Be 'ctx-runs'
+        $result.runs[0].run_packet.run_insights.retry_count | Should -Be 1
         $result.runs[0].tdd_gate.required | Should -Be $true
         $result.runs[0].tdd_gate.state | Should -Be 'passed'
         $result.runs[0].tdd_gate.red_event | Should -Be 'pipeline.tdd.red'
@@ -9593,7 +9599,7 @@ panes:
                 timestamp = '2026-04-10T12:02:00+09:00'
                 session   = 'winsmux-orchestra'
                 event     = 'pipeline.verify.partial'
-                message   = 'verification partial'
+                message   = 'verification partial with drift retry'
                 label     = 'reviewer-1'
                 pane_id   = '%3'
                 role      = 'Reviewer'
@@ -9621,6 +9627,7 @@ panes:
                         performance_budget = [ordered]@{ max_context_tokens = 42000 }
                         rationale = 'keep worker context scoped'
                     }
+                    attempt = 2
                     verification_result = [ordered]@{
                         outcome = 'PARTIAL'
                         summary = 'rerun focused verification'
@@ -9805,6 +9812,10 @@ panes:
         $result.run.context_contract.prompt_body_stored | Should -Be $false
         $result.run.context_contract.private_memory_stored | Should -Be $false
         $result.run.context_contract.local_reference_paths_stored | Should -Be $false
+        $result.run.run_insights.retry_count | Should -Be 1
+        $result.run.run_insights.drift_signals | Should -Be @('drift_detected')
+        $result.run.run_insights.intervention_count | Should -BeGreaterThan 0
+        $result.run.run_insights.next_improvements | Should -Contain 'reduce retry loop before the next run'
         $result.run.tdd_gate.required | Should -Be $true
         $result.run.tdd_gate.state | Should -Be 'passed'
         $result.run.tdd_gate.red_event | Should -Be 'pipeline.tdd.red'
