@@ -1,7 +1,7 @@
 use crate::event_contract::{parse_event_jsonl, EventRecord};
 use crate::manifest_contract::{NormalizedManifestPane, WinsmuxManifest};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -275,6 +275,9 @@ pub struct LedgerExplainRun {
     pub security_verdict: Value,
     pub verification_contract: Value,
     pub verification_result: Value,
+    pub outcome: Value,
+    pub phase_gate: Value,
+    pub draft_pr_gate: Value,
     pub changed_files: Vec<String>,
 }
 
@@ -463,6 +466,9 @@ pub struct LedgerRunProjection {
     pub security_verdict: Value,
     pub verification_contract: Value,
     pub verification_result: Value,
+    pub outcome: Value,
+    pub phase_gate: Value,
+    pub draft_pr_gate: Value,
     pub run_packet: Option<LedgerRunPacket>,
 }
 
@@ -502,6 +508,9 @@ pub struct LedgerRunPacket {
     pub security_verdict: Value,
     pub verification_contract: Value,
     pub verification_result: Value,
+    pub outcome: Value,
+    pub phase_gate: Value,
+    pub draft_pr_gate: Value,
     pub last_event: String,
     pub last_event_at: String,
 }
@@ -707,6 +716,11 @@ impl LedgerRunProjection {
             verification_result: run
                 .map(|run| run.verification_result.clone())
                 .unwrap_or(Value::Null),
+            outcome: run.map(|run| run.outcome.clone()).unwrap_or(Value::Null),
+            phase_gate: run.map(|run| run.phase_gate.clone()).unwrap_or(Value::Null),
+            draft_pr_gate: run
+                .map(|run| run.draft_pr_gate.clone())
+                .unwrap_or(Value::Null),
             run_packet: run.map(LedgerRunPacket::from_explain_run),
         }
     }
@@ -749,6 +763,9 @@ impl LedgerRunPacket {
             security_verdict: run.security_verdict.clone(),
             verification_contract: run.verification_contract.clone(),
             verification_result: run.verification_result.clone(),
+            outcome: run.outcome.clone(),
+            phase_gate: run.phase_gate.clone(),
+            draft_pr_gate: run.draft_pr_gate.clone(),
             last_event: run.last_event.clone(),
             last_event_at: run.last_event_at.clone(),
         }
@@ -1184,8 +1201,9 @@ impl LedgerSnapshot {
             right
                 .timestamp
                 .cmp(&left.timestamp)
-                .then_with(|| left_index.cmp(right_index))
+                .then_with(|| right_index.cmp(left_index))
         });
+        let recent_event_records = recent_events.clone();
         let recent_events: Vec<_> = recent_events
             .into_iter()
             .map(|(_, event)| explain_recent_event_from_event(event))
@@ -1211,7 +1229,7 @@ impl LedgerSnapshot {
             roles.push(evidence_digest.role.clone());
         }
 
-        let run = LedgerExplainRun {
+        let mut run = LedgerExplainRun {
             run_id: evidence_digest.run_id.clone(),
             task_id: evidence_digest.task_id.clone(),
             parent_run_id: primary_pane.parent_run_id.clone(),
@@ -1256,8 +1274,14 @@ impl LedgerSnapshot {
             security_verdict,
             verification_contract,
             verification_result,
+            outcome: Value::Null,
+            phase_gate: Value::Null,
+            draft_pr_gate: Value::Null,
             changed_files: evidence_digest.changed_files.clone(),
         };
+        run.draft_pr_gate = run_draft_pr_gate_value(&run, &recent_event_records);
+        run.phase_gate = run_phase_gate_value(&run, &recent_event_records, &run.draft_pr_gate);
+        run.outcome = run_outcome_value(&run, &run.phase_gate, &run.draft_pr_gate);
         let explanation = explain_explanation(&run, &evidence_digest);
 
         Some(LedgerExplainProjection {
@@ -1625,6 +1649,7 @@ fn run_next_action(
         "review_failed",
         "task_blocked",
         "blocked",
+        "needs_user_decision",
         "commit_ready",
         "task_completed",
         "review_pending",
@@ -1675,6 +1700,15 @@ fn run_state_model(
         };
         return ("package".into(), "completed".into(), detail.into());
     }
+    if matches!(kind_text.as_str(), "needs_user_decision" | "draft_pr_required")
+        || event_text == "operator.draft_pr.required"
+    {
+        return (
+            "package".into(),
+            "waiting_for_input".into(),
+            "needs_user_decision".into(),
+        );
+    }
     if matches!(review_text.as_str(), "FAIL" | "FAILED") || kind_text == "review_failed" {
         return ("review".into(), "blocked".into(), "review_failed".into());
     }
@@ -1691,7 +1725,7 @@ fn run_state_model(
         return (
             "package".into(),
             "waiting_for_input".into(),
-            "draft_pr_required".into(),
+            "needs_user_decision".into(),
         );
     }
     if task_text == "blocked"
@@ -1954,6 +1988,423 @@ fn explain_explanation(
     }
 }
 
+#[derive(Clone)]
+struct RunPhaseStage {
+    stage: &'static str,
+    status: String,
+    reason: String,
+    event: String,
+}
+
+fn set_run_phase_stage(
+    stages: &mut [RunPhaseStage],
+    name: &str,
+    status: &str,
+    reason: &str,
+    event: &str,
+) {
+    if let Some(stage) = stages.iter_mut().find(|stage| stage.stage == name) {
+        stage.status = status.to_string();
+        if !reason.trim().is_empty() {
+            stage.reason = reason.to_string();
+        }
+        if !event.trim().is_empty() {
+            stage.event = event.to_string();
+        }
+    }
+}
+
+fn run_phase_gate_value(
+    run: &LedgerExplainRun,
+    events: &[(usize, &EventRecord)],
+    draft_pr_gate: &Value,
+) -> Value {
+    let order = vec!["plan", "build", "test", "review", "package"];
+    let mut stages: Vec<_> = order
+        .iter()
+        .map(|stage| RunPhaseStage {
+            stage: *stage,
+            status: "pending".to_string(),
+            reason: String::new(),
+            event: String::new(),
+        })
+        .collect();
+
+    if !run.goal.trim().is_empty() || !run.verification_plan.is_empty() {
+        set_run_phase_stage(&mut stages, "plan", "completed", "run_plan_recorded", "");
+    }
+    if !run.task_state.trim().is_empty() {
+        set_run_phase_stage(&mut stages, "build", "in_progress", &run.task_state, "");
+    }
+
+    let mut stop_reason = String::new();
+    let mut stop_stage = String::new();
+    let mut ordered_events = events.to_vec();
+    ordered_events.sort_by(|(left_index, left), (right_index, right)| {
+        left.timestamp
+            .cmp(&right.timestamp)
+            .then_with(|| left_index.cmp(right_index))
+    });
+
+    for (_, event) in ordered_events {
+        match event.event.as_str() {
+            "pipeline.decompose.completed" => {
+                set_run_phase_stage(&mut stages, "plan", "completed", "decomposed", &event.event)
+            }
+            "pipeline.dispatch.assigned" => set_run_phase_stage(
+                &mut stages,
+                "build",
+                "in_progress",
+                "assigned",
+                &event.event,
+            ),
+            "pipeline.collect.completed" => set_run_phase_stage(
+                &mut stages,
+                "build",
+                "completed",
+                "collected",
+                &event.event,
+            ),
+            "pipeline.verify.pass" => {
+                set_run_phase_stage(
+                    &mut stages,
+                    "test",
+                    "completed",
+                    "verification_passed",
+                    &event.event,
+                );
+                if stop_stage == "test" {
+                    stop_reason.clear();
+                    stop_stage.clear();
+                }
+            }
+            "pipeline.verify.fail" => {
+                set_run_phase_stage(
+                    &mut stages,
+                    "test",
+                    "blocked",
+                    "verification_failed",
+                    &event.event,
+                );
+                stop_reason = "verification_failed".to_string();
+                stop_stage = "test".to_string();
+            }
+            "pipeline.verify.partial" => {
+                set_run_phase_stage(
+                    &mut stages,
+                    "test",
+                    "waiting_for_input",
+                    "verification_partial",
+                    &event.event,
+                );
+                stop_reason = "needs_user_decision".to_string();
+                stop_stage = "test".to_string();
+            }
+            "operator.review_requested" => set_run_phase_stage(
+                &mut stages,
+                "review",
+                "waiting_for_input",
+                "review_requested",
+                &event.event,
+            ),
+            "operator.review_failed" => {
+                set_run_phase_stage(
+                    &mut stages,
+                    "review",
+                    "blocked",
+                    "review_failed",
+                    &event.event,
+                );
+                stop_reason = "review_failed".to_string();
+                stop_stage = "review".to_string();
+            }
+            "pipeline.escalate.required" => {
+                set_run_phase_stage(
+                    &mut stages,
+                    "review",
+                    "waiting_for_input",
+                    "needs_user_decision",
+                    &event.event,
+                );
+                stop_reason = "needs_user_decision".to_string();
+                stop_stage = "review".to_string();
+            }
+            "operator.draft_pr.required" => {
+                set_run_phase_stage(
+                    &mut stages,
+                    "package",
+                    "waiting_for_input",
+                    "needs_user_decision",
+                    &event.event,
+                );
+                stop_reason = "needs_user_decision".to_string();
+                stop_stage = "package".to_string();
+            }
+            "operator.draft_pr.created" if draft_pr_event_matches_run_head(run, event) => {
+                set_run_phase_stage(
+                    &mut stages,
+                    "package",
+                    "waiting_for_input",
+                    "draft_pr",
+                    &event.event,
+                );
+                stop_reason = "draft_pr".to_string();
+                stop_stage = "package".to_string();
+            }
+            "operator.commit_ready" => {
+                set_run_phase_stage(
+                    &mut stages,
+                    "package",
+                    "completed",
+                    "commit_ready",
+                    &event.event,
+                );
+                stop_reason.clear();
+                stop_stage.clear();
+            }
+            _ => {}
+        }
+    }
+
+    if run.review_state == "PASS" {
+        set_run_phase_stage(&mut stages, "review", "completed", "review_passed", "");
+        if stop_stage == "review" {
+            stop_reason.clear();
+            stop_stage.clear();
+        }
+        let draft_pr_gate_state = value_field_string(draft_pr_gate, "state");
+        if !draft_pr_gate_state.trim().is_empty() && draft_pr_gate_state != "passed" {
+            set_run_phase_stage(
+                &mut stages,
+                "package",
+                "waiting_for_input",
+                "needs_user_decision",
+                "",
+            );
+            stop_reason = "needs_user_decision".to_string();
+        }
+    } else if run.review_state == "PENDING" {
+        set_run_phase_stage(
+            &mut stages,
+            "review",
+            "waiting_for_input",
+            "review_pending",
+            "",
+        );
+    } else if matches!(run.review_state.as_str(), "FAIL" | "FAILED") {
+        set_run_phase_stage(&mut stages, "review", "blocked", "review_failed", "");
+        stop_reason = "review_failed".to_string();
+    }
+
+    if matches!(
+        run.task_state.as_str(),
+        "completed" | "task_completed" | "commit_ready" | "done"
+    ) {
+        set_run_phase_stage(&mut stages, "build", "completed", &run.task_state, "");
+        set_run_phase_stage(&mut stages, "package", "completed", &run.task_state, "");
+        if matches!(run.task_state.as_str(), "commit_ready" | "done") {
+            stop_reason.clear();
+        }
+    }
+
+    let current_stage = stages
+        .iter()
+        .rev()
+        .find(|stage| stage.status != "pending")
+        .map(|stage| stage.stage)
+        .unwrap_or("plan");
+    let stage_values: Vec<_> = stages
+        .iter()
+        .map(|stage| {
+            json!({
+                "stage": stage.stage,
+                "status": stage.status,
+                "reason": stage.reason,
+                "event": stage.event,
+            })
+        })
+        .collect();
+    let stop_required = !stop_reason.trim().is_empty();
+
+    json!({
+        "order": order,
+        "current_stage": current_stage,
+        "stages": stage_values,
+        "stop_required": stop_required,
+        "stop_reason": stop_reason,
+        "auto_continue_allowed": !stop_required,
+        "requires_human_decision": matches!(stop_reason.as_str(), "needs_user_decision" | "draft_pr"),
+    })
+}
+
+fn run_draft_pr_gate_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) -> Value {
+    let draft_pr_event = events
+        .iter()
+        .map(|(_, event)| *event)
+        .find(|event| {
+            event.event == "operator.draft_pr.created" && draft_pr_event_matches_run_head(run, event)
+        });
+    let draft_pr_url = draft_pr_event
+        .map(|event| event_data_string(&event.data, "draft_pr_url"))
+        .unwrap_or_default();
+    let trigger = if draft_pr_event.is_some() {
+        "operator.draft_pr.created"
+    } else {
+        "review_state"
+    };
+    let handoff_package = run_draft_pr_handoff_package_value(run, &draft_pr_url);
+    let blocked_count = handoff_package
+        .get("blocked_reasons")
+        .and_then(|value| value.as_array())
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let state = if blocked_count > 0 {
+        "blocked"
+    } else if draft_pr_event.is_some() {
+        "passed"
+    } else {
+        "required"
+    };
+
+    json!({
+        "kind": "human_judgement",
+        "target": "draft_pr",
+        "state": state,
+        "trigger": trigger,
+        "draft_pr_url": draft_pr_url,
+        "auto_merge_allowed": false,
+        "merge_requires_human": true,
+        "handoff_package": handoff_package,
+    })
+}
+
+fn run_draft_pr_handoff_package_value(run: &LedgerExplainRun, draft_pr_url: &str) -> Value {
+    let verification_outcome = value_field_string(&run.verification_result, "outcome");
+    let verification_summary = value_field_string(&run.verification_result, "summary");
+    let verification_next_action = value_field_string(&run.verification_result, "next_action");
+    let security_verdict = value_field_string(&run.security_verdict, "verdict");
+    let security_reason = value_field_string(&run.security_verdict, "reason");
+    let mut blocked_reasons = Vec::new();
+    let mut remaining_risks = Vec::new();
+
+    if verification_outcome.trim().is_empty() {
+        blocked_reasons.push("verification evidence is missing".to_string());
+        remaining_risks.push("verification evidence is missing".to_string());
+    }
+    if run.review_required && !matches!(run.review_state.as_str(), "PASS" | "FAIL" | "FAILED") {
+        let reason = format!("review state is unresolved: {}", run.review_state);
+        blocked_reasons.push(reason.clone());
+        remaining_risks.push(reason);
+    }
+    if matches!(run.review_state.as_str(), "FAIL" | "FAILED") {
+        let reason = format!("review failed: {}", run.review_state);
+        blocked_reasons.push(reason.clone());
+        remaining_risks.push(reason);
+    }
+    if !verification_outcome.trim().is_empty() && verification_outcome != "PASS" {
+        remaining_risks.push(format!("verification outcome is {verification_outcome}"));
+    }
+    if security_verdict == "BLOCK" {
+        let reason = if security_reason.trim().is_empty() {
+            "security policy blocked the run".to_string()
+        } else {
+            security_reason
+        };
+        blocked_reasons.push(reason.clone());
+        remaining_risks.push(reason);
+    }
+
+    let summary = first_non_empty_string(vec![
+        verification_summary.clone(),
+        run.experiment_packet.result.clone(),
+        run.task.clone(),
+        run.goal.clone(),
+    ]);
+    let mut suggested_next_action = if !blocked_reasons.is_empty() {
+        "resolve blocked reasons before creating or merging a draft PR".to_string()
+    } else if draft_pr_url.trim().is_empty() {
+        "create a draft PR and request human review".to_string()
+    } else {
+        "human reviewer must decide whether to merge".to_string()
+    };
+    if !verification_next_action.trim().is_empty() && !blocked_reasons.is_empty() {
+        suggested_next_action = verification_next_action.clone();
+    }
+
+    json!({
+        "summary": summary,
+        "validation": {
+            "evidence_complete": !verification_outcome.trim().is_empty(),
+            "outcome": verification_outcome,
+            "summary": verification_summary,
+            "next_action": verification_next_action,
+            "verification_plan": run.verification_plan.clone(),
+            "changed_files": run.changed_files.clone(),
+        },
+        "remaining_risks": remaining_risks,
+        "suggested_next_action": suggested_next_action,
+        "blocked_reasons": blocked_reasons,
+        "package_complete": blocked_reasons.is_empty(),
+        "human_judgement_required": true,
+        "automatic_merge_allowed": false,
+    })
+}
+
+fn run_outcome_value(run: &LedgerExplainRun, phase_gate: &Value, draft_pr_gate: &Value) -> Value {
+    let phase_gate_stop_reason = value_field_string(phase_gate, "stop_reason");
+    let draft_pr_gate_state = value_field_string(draft_pr_gate, "state");
+    let status = if matches!(run.review_state.as_str(), "FAIL" | "FAILED") {
+        "failed".to_string()
+    } else if phase_gate_stop_reason == "needs_user_decision"
+        || (run.review_state == "PASS" && draft_pr_gate_state != "passed")
+    {
+        "needs_user_decision".to_string()
+    } else if run.review_state == "PASS"
+        || matches!(
+            run.task_state.as_str(),
+            "completed" | "task_completed" | "commit_ready" | "done"
+        )
+    {
+        "completed".to_string()
+    } else if run.task_state == "blocked" {
+        "blocked".to_string()
+    } else if run.task_state == "in_progress" {
+        "in_progress".to_string()
+    } else {
+        run.task_state.clone()
+    };
+
+    let reason = first_non_empty_string(vec![
+        value_field_string(&run.verification_result, "summary"),
+        run.experiment_packet.result.clone(),
+        run.last_event.clone(),
+    ]);
+
+    json!({
+        "status": status,
+        "reason": reason,
+        "confidence": run.experiment_packet.confidence,
+        "source_event": run.last_event,
+    })
+}
+
+fn draft_pr_event_matches_run_head(run: &LedgerExplainRun, event: &EventRecord) -> bool {
+    if run.head_sha.trim().is_empty() {
+        return true;
+    }
+    let event_head_sha = event_head_sha(event);
+    !event_head_sha.trim().is_empty() && event_head_sha == run.head_sha
+}
+
+fn value_field_string(value: &Value, key: &str) -> String {
+    value
+        .as_object()
+        .and_then(|map| map.get(key))
+        .and_then(|value| value.as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
 fn push_reason(reasons: &mut Vec<String>, key: &str, value: &str) {
     if !value.trim().is_empty() {
         let separator = if key == "action" { ":" } else { "=" };
@@ -2210,7 +2661,7 @@ fn inbox_priority(kind: &str) -> usize {
     match kind {
         "blocked" | "task_blocked" | "review_failed" | "bootstrap_invalid" | "crashed" | "hung"
         | "stalled" => 0,
-        "approval_waiting" | "review_requested" | "review_pending" => 1,
+        "approval_waiting" | "needs_user_decision" | "review_requested" | "review_pending" => 1,
         "dispatch_needed" | "task_completed" | "commit_ready" => 2,
         _ => 3,
     }
@@ -2257,6 +2708,7 @@ fn inbox_actionable_event_kind(event: &EventRecord) -> &'static str {
         "operator.review_failed" => "review_failed",
         "operator.blocked" => "blocked",
         "operator.commit_ready" => "commit_ready",
+        "operator.draft_pr.required" => "needs_user_decision",
         "pipeline.security.blocked" => "blocked",
         "security.policy.blocked" => "blocked",
         _ => "",

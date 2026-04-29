@@ -399,6 +399,59 @@ panes:
 }
 
 #[test]
+fn ledger_contract_classifies_draft_pr_required_as_user_decision_stop() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes: {}
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"operator.draft_pr.required","message":"draft PR required","status":"blocked_draft_pr_required","data":{"task_id":"task-guarded"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load draft PR required event");
+
+    let inbox = snapshot.inbox_projection();
+
+    assert_eq!(inbox.summary.item_count, 1);
+    assert_eq!(inbox.summary.by_kind["needs_user_decision"], 1);
+    assert_eq!(inbox.items[0].kind, "needs_user_decision");
+    assert_eq!(inbox.items[0].priority, 1);
+    assert_eq!(inbox.items[0].phase, "package");
+    assert_eq!(inbox.items[0].activity, "waiting_for_input");
+    assert_eq!(inbox.items[0].detail, "needs_user_decision");
+}
+
+#[test]
+fn ledger_contract_classifies_pass_review_as_user_decision_stop() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-pass
+    task_state: in_progress
+    review_state: PASS
+    review_required: true
+    branch: worktree-builder-1
+    head_sha: current-sha
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("ledger snapshot should load PASS review state");
+
+    let board = snapshot.board_projection();
+
+    assert_eq!(board.panes[0].phase, "package");
+    assert_eq!(board.panes[0].activity, "waiting_for_input");
+    assert_eq!(board.panes[0].detail, "needs_user_decision");
+}
+
+#[test]
 fn ledger_contract_filters_inbox_after_latest_event_deduplication() {
     let manifest = r#"
 version: 1
@@ -616,6 +669,45 @@ panes:
     );
     assert_eq!(explain.run.verification_result["outcome"], "PASS");
     assert_eq!(explain.run.security_verdict, "ALLOW");
+}
+
+#[test]
+fn ledger_contract_uses_newest_same_timestamp_draft_pr_evidence() {
+    let manifest = r#"
+version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-draft
+    task: Create draft package
+    task_state: in_progress
+    review_state: PASS
+    review_required: true
+    branch: worktree-builder-1
+    head_sha: current-sha
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    verification_plan: '["Invoke-Pester"]'
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","data":{"task_id":"task-draft","verification_result":{"outcome":"PASS","summary":"verification passed"}}}
+{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","data":{"task_id":"task-draft","verdict":"ALLOW"}}
+{"timestamp":"2026-04-23T12:00:03+09:00","session":"winsmux-orchestra","event":"operator.draft_pr.created","message":"old draft","head_sha":"current-sha","data":{"task_id":"task-draft","draft_pr_url":"https://github.com/Sora-bluesky/winsmux/pull/997"}}
+{"timestamp":"2026-04-23T12:00:03+09:00","session":"winsmux-orchestra","event":"operator.draft_pr.created","message":"new draft","head_sha":"current-sha","data":{"task_id":"task-draft","draft_pr_url":"https://github.com/Sora-bluesky/winsmux/pull/998"}}
+"#;
+
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("ledger snapshot should load same timestamp draft PR evidence");
+    let explain = snapshot
+        .explain_projection("task:task-draft")
+        .expect("draft run should have explain projection");
+
+    assert_eq!(
+        explain.run.draft_pr_gate["draft_pr_url"],
+        "https://github.com/Sora-bluesky/winsmux/pull/998"
+    );
+    assert_eq!(explain.run.draft_pr_gate["state"], "passed");
 }
 
 #[test]
