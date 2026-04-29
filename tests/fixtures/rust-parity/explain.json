@@ -174,6 +174,38 @@
         "resolve blocked reasons before release"
       ]
     },
+    "checkpoint_package": {
+      "contract_version": 1,
+      "packet_type": "checkpoint_package",
+      "scope": "worker_worktree",
+      "run_id": "task:task-256",
+      "task_id": "task-256",
+      "project_ref": "current_project",
+      "project_root_stored": false,
+      "assigned_worktree": ".worktrees/builder-1",
+      "branch": "worktree-builder-1",
+      "head_sha": "abc1234def5678",
+      "session_type": "managed_worktree",
+      "changed_files": [
+        "scripts/winsmux-core.ps1"
+      ],
+      "changed_file_count": 1,
+      "verification": {
+        "outcome": "",
+        "verification_plan": [
+          "Invoke-Pester tests/winsmux-bridge.Tests.ps1",
+          "verify explain --json contract"
+        ],
+        "evidence_complete": false
+      },
+      "rollback_hint": "operator-owned-git-lifecycle",
+      "cleanup_hint": "keep the worker worktree for inspection",
+      "operator_git_required": true,
+      "worker_git_write_allowed": false,
+      "local_reference_paths_stored": false,
+      "freeform_body_stored": false,
+      "private_content_stored": false
+    },
     "tdd_gate": {
       "policy": "test_first_required",
       "required": true,

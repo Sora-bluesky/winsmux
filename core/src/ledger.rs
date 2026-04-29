@@ -280,6 +280,7 @@ pub struct LedgerExplainRun {
     pub context_contract: Value,
     pub team_memory: Value,
     pub run_insights: Value,
+    pub checkpoint_package: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
     pub audit_chain: Value,
@@ -478,6 +479,7 @@ pub struct LedgerRunProjection {
     pub context_contract: Value,
     pub team_memory: Value,
     pub run_insights: Value,
+    pub checkpoint_package: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
     pub audit_chain: Value,
@@ -527,6 +529,7 @@ pub struct LedgerRunPacket {
     pub context_contract: Value,
     pub team_memory: Value,
     pub run_insights: Value,
+    pub checkpoint_package: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
     pub audit_chain: Value,
@@ -750,6 +753,9 @@ impl LedgerRunProjection {
             run_insights: run
                 .map(|run| run.run_insights.clone())
                 .unwrap_or(Value::Null),
+            checkpoint_package: run
+                .map(|run| run.checkpoint_package.clone())
+                .unwrap_or(Value::Null),
             tdd_gate: run.map(|run| run.tdd_gate.clone()).unwrap_or(Value::Null),
             verification_envelope: run
                 .map(|run| run.verification_envelope.clone())
@@ -808,6 +814,7 @@ impl LedgerRunPacket {
             context_contract: run.context_contract.clone(),
             team_memory: run.team_memory.clone(),
             run_insights: run.run_insights.clone(),
+            checkpoint_package: run.checkpoint_package.clone(),
             tdd_gate: run.tdd_gate.clone(),
             verification_envelope: run.verification_envelope.clone(),
             audit_chain: run.audit_chain.clone(),
@@ -1327,6 +1334,7 @@ impl LedgerSnapshot {
             context_contract: Value::Null,
             team_memory: Value::Null,
             run_insights: Value::Null,
+            checkpoint_package: Value::Null,
             tdd_gate: Value::Null,
             verification_envelope: Value::Null,
             audit_chain: Value::Null,
@@ -1346,6 +1354,7 @@ impl LedgerSnapshot {
         run.verification_envelope = run_verification_envelope_value(&run);
         run.outcome = run_outcome_value(&run, &run.phase_gate, &run.draft_pr_gate);
         run.run_insights = run_insights_value(&run, &recent_event_records);
+        run.checkpoint_package = run_checkpoint_package_value(&run);
         let explanation = explain_explanation(&run, &evidence_digest);
 
         Some(LedgerExplainProjection {
@@ -3731,6 +3740,99 @@ fn verdict_summary_from_event(kind: &str, event: &EventRecord) -> Option<LedgerV
         event: event.event.clone(),
         timestamp: event.timestamp.clone(),
     })
+}
+
+fn run_checkpoint_package_value(run: &LedgerExplainRun) -> Value {
+    let worktree_ref = public_worktree_ref(&first_non_empty(
+        &run.worktree,
+        &run.experiment_packet.worktree,
+    ));
+    let changed_files = public_changed_files(&run.changed_files);
+    let session_type = if worktree_ref.starts_with(".worktrees/") {
+        "managed_worktree"
+    } else if worktree_ref.trim().is_empty() {
+        "unknown"
+    } else {
+        "shared_checkout"
+    };
+    let verification_outcome = value_field_string(&run.verification_result, "outcome");
+    let cleanup_required = matches!(
+        run.task_state.as_str(),
+        "completed" | "task_completed" | "commit_ready" | "done"
+    ) || run.review_state.eq_ignore_ascii_case("PASS");
+
+    json!({
+        "contract_version": 1,
+        "packet_type": "checkpoint_package",
+        "scope": "worker_worktree",
+        "run_id": run.run_id,
+        "task_id": run.task_id,
+        "project_ref": "current_project",
+        "project_root_stored": false,
+        "assigned_worktree": worktree_ref,
+        "branch": run.branch,
+        "head_sha": run.head_sha,
+        "session_type": session_type,
+        "changed_files": changed_files,
+        "changed_file_count": changed_files.len(),
+        "verification": {
+            "outcome": verification_outcome,
+            "verification_plan": run.verification_plan,
+            "evidence_complete": !verification_outcome.trim().is_empty()
+        },
+        "rollback_hint": "operator-owned-git-lifecycle",
+        "cleanup_hint": if cleanup_required {
+            "operator may clean the worker worktree after merge or explicit close"
+        } else {
+            "keep the worker worktree for inspection"
+        },
+        "operator_git_required": true,
+        "worker_git_write_allowed": false,
+        "local_reference_paths_stored": false,
+        "freeform_body_stored": false,
+        "private_content_stored": false,
+    })
+}
+
+pub(crate) fn public_worktree_ref(worktree: &str) -> String {
+    let normalized = worktree.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return String::new();
+    }
+
+    if normalized.starts_with(".worktrees/") || normalized.starts_with("worktrees/") {
+        return normalized;
+    }
+
+    if normalized.contains(':') || normalized.starts_with('/') || normalized.starts_with('~') {
+        if let Some(index) = normalized.rfind("/.worktrees/") {
+            normalized[index + 1..].to_string()
+        } else {
+            String::new()
+        }
+    } else {
+        normalized
+    }
+}
+
+pub(crate) fn public_changed_files(changed_files: &[String]) -> Vec<String> {
+    let mut files = Vec::new();
+    for changed_file in changed_files {
+        let normalized = changed_file.trim().replace('\\', "/");
+        if normalized.is_empty()
+            || normalized.contains(':')
+            || normalized.starts_with('/')
+            || normalized.starts_with('~')
+            || normalized.starts_with("..")
+            || normalized.contains("/../")
+        {
+            continue;
+        }
+        if !files.contains(&normalized) {
+            files.push(normalized);
+        }
+    }
+    files
 }
 
 fn first_non_empty_string(values: Vec<String>) -> String {

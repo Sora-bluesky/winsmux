@@ -6911,6 +6911,106 @@ function New-RunDraftPrGate {
     }
 }
 
+function ConvertTo-RunPublicWorktreeRef {
+    param([string]$Worktree = '')
+
+    $normalized = ([string]$Worktree).Trim().Replace('\', '/')
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return ''
+    }
+
+    if ($normalized.StartsWith('.worktrees/') -or $normalized.StartsWith('worktrees/')) {
+        return $normalized
+    }
+
+    if ($normalized -match '^[A-Za-z]:' -or $normalized.StartsWith('/') -or $normalized.StartsWith('~')) {
+        $markerIndex = $normalized.LastIndexOf('/.worktrees/')
+        if ($markerIndex -ge 0) {
+            return $normalized.Substring($markerIndex + 1)
+        }
+
+        return ''
+    }
+
+    return $normalized
+}
+
+function ConvertTo-RunPublicChangedFiles {
+    param([AllowNull()]$ChangedFiles = $null)
+
+    $items = [System.Collections.Generic.List[string]]::new()
+    foreach ($entry in @(ConvertTo-RunStringArray -Value $ChangedFiles)) {
+        $normalized = ([string]$entry).Trim().Replace('\', '/')
+        if (
+            [string]::IsNullOrWhiteSpace($normalized) -or
+            $normalized -match '^[A-Za-z]:' -or
+            $normalized.StartsWith('/') -or
+            $normalized.StartsWith('~') -or
+            $normalized.StartsWith('..') -or
+            $normalized.Contains('/../')
+        ) {
+            continue
+        }
+
+        if (-not $items.Contains($normalized)) {
+            $items.Add($normalized) | Out-Null
+        }
+    }
+
+    return @($items)
+}
+
+function New-RunCheckpointPackage {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $rawWorktree = [string]$Run.worktree
+    if ([string]::IsNullOrWhiteSpace($rawWorktree) -and $null -ne $Run.experiment_packet) {
+        $rawWorktree = [string](Get-RunContractField -InputObject $Run.experiment_packet -Name 'worktree')
+    }
+    $worktreeRef = ConvertTo-RunPublicWorktreeRef -Worktree $rawWorktree
+    $sessionType = 'unknown'
+    if ($worktreeRef.StartsWith('.worktrees/')) {
+        $sessionType = 'managed_worktree'
+    } elseif (-not [string]::IsNullOrWhiteSpace($worktreeRef)) {
+        $sessionType = 'shared_checkout'
+    }
+
+    $verificationOutcome = [string](Get-RunContractField -InputObject $Run.verification_result -Name 'outcome')
+    $changedFiles = @(ConvertTo-RunPublicChangedFiles -ChangedFiles $Run.changed_files)
+    $cleanupRequired = (
+        [string]$Run.task_state -in @('completed', 'task_completed', 'commit_ready', 'done') -or
+        [string]$Run.review_state -eq 'PASS'
+    )
+
+    return [ordered]@{
+        contract_version             = 1
+        packet_type                  = 'checkpoint_package'
+        scope                        = 'worker_worktree'
+        run_id                       = [string]$Run.run_id
+        task_id                      = [string]$Run.task_id
+        project_ref                  = 'current_project'
+        project_root_stored          = $false
+        assigned_worktree            = $worktreeRef
+        branch                       = [string]$Run.branch
+        head_sha                     = [string]$Run.head_sha
+        session_type                 = $sessionType
+        changed_files                = @($changedFiles)
+        changed_file_count           = @($changedFiles).Count
+        verification                 = [ordered]@{
+            outcome           = $verificationOutcome
+            verification_plan = @($Run.verification_plan)
+            evidence_complete = (-not [string]::IsNullOrWhiteSpace($verificationOutcome))
+        }
+        rollback_hint                = 'operator-owned-git-lifecycle'
+        cleanup_hint                 = if ($cleanupRequired) { 'operator may clean the worker worktree after merge or explicit close' } else { 'keep the worker worktree for inspection' }
+        operator_git_required        = $true
+        worker_git_write_allowed     = $false
+        local_reference_paths_stored = $false
+        freeform_body_stored         = $false
+        private_content_stored       = $false
+    }
+}
+
 function New-RunPacketFromRun {
     param([Parameter(Mandatory = $true)]$Run)
 
@@ -6953,6 +7053,7 @@ function New-RunPacketFromRun {
         context_contract      = $Run.context_contract
         team_memory           = $Run.team_memory
         run_insights          = $Run.run_insights
+        checkpoint_package    = $Run.checkpoint_package
         tdd_gate              = $Run.tdd_gate
         verification_envelope = $Run.verification_envelope
         plan              = $Run.plan
@@ -7039,6 +7140,7 @@ function New-RunResultPacket {
         context_contract      = $Run.context_contract
         team_memory           = $Run.team_memory
         run_insights          = $Run.run_insights
+        checkpoint_package    = $Run.checkpoint_package
         tdd_gate              = $Run.tdd_gate
         verification_envelope = $Run.verification_envelope
         security_policy       = $Run.security_policy
@@ -7306,6 +7408,7 @@ function Get-RunsPayload {
                 context_contract      = $null
                 team_memory           = $null
                 run_insights          = $null
+                checkpoint_package    = $null
                 plan                  = $null
                 plan_checkpoints      = @()
                 managed_loop          = $null
@@ -7480,6 +7583,7 @@ function Get-RunsPayload {
             $run.verification_envelope = New-RunVerificationEnvelope -Run $run
             $run.outcome = New-RunOutcomeContract -Run $run
             $run.run_insights = New-RunInsightsContract -Run $run -EventRecords $runEvents
+            $run.checkpoint_package = New-RunCheckpointPackage -Run $run
             $nextAction = Get-RunNextAction -Run $run
             $stateModel = New-RunStateModel -State ([string]$run.state) -TaskState ([string]$run.task_state) -ReviewState ([string]$run.review_state) -EventKind $nextAction -LastEvent ([string]$run.last_event)
             [ordered]@{
@@ -7532,6 +7636,7 @@ function Get-RunsPayload {
                 context_contract      = $run.context_contract
                 team_memory           = $run.team_memory
                 run_insights          = $run.run_insights
+                checkpoint_package    = $run.checkpoint_package
                 tdd_gate              = $run.tdd_gate
                 verification_envelope = $run.verification_envelope
                 plan                  = $run.plan
