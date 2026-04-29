@@ -329,6 +329,27 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn run_guard_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("guard"));
+        return Ok(());
+    }
+
+    let options = parse_options("guard", args, 0)?;
+    let payload = guard_report_payload(&options.project_dir);
+    if options.json {
+        return write_json(&payload);
+    }
+
+    println!(
+        "Guard baseline: {} checks for {}",
+        payload["summary"]["required_check_count"].as_u64().unwrap_or(0),
+        payload["target_version"].as_str().unwrap_or("release")
+    );
+    println!("{}", payload["summary"]["next_action"].as_str().unwrap_or(""));
+    Ok(())
+}
+
 struct RustCanaryBackend {
     backend: String,
     source: String,
@@ -3195,6 +3216,7 @@ fn usage_for(command: &str) -> &'static str {
         "manual-checklist" => {
             "usage: winsmux manual-checklist [--json] [--project-dir <path>]"
         }
+        "guard" => "usage: winsmux guard [--json] [--project-dir <path>]",
         "provider-switch" => {
             "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json] [--project-dir <path>]"
         }
@@ -5747,6 +5769,139 @@ fn git_probe(project_dir: &Path, args: &[&str]) -> io::Result<GitProbeResult> {
         exit_code: output.status.code().unwrap_or(1),
         output: text.trim().to_string(),
     })
+}
+
+fn guard_report_payload(project_dir: &Path) -> Value {
+    let branch = git_output_line(project_dir, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .ok()
+        .flatten()
+        .filter(|value| value != "HEAD")
+        .unwrap_or_default();
+    let head_sha = git_output_line(project_dir, &["rev-parse", "HEAD"])
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let hooks_path = git_output_line(project_dir, &["config", "--get", "core.hooksPath"])
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let baseline_file = project_dir
+        .join("scripts")
+        .join("gitleaks-history-baseline.txt");
+    let baseline_commit = fs::read_to_string(&baseline_file)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default();
+    let required_checks = vec![
+        guard_check(
+            "git_guard_full",
+            "pwsh -NoProfile -File scripts/git-guard.ps1 -Mode full",
+            "scripts/git-guard.ps1",
+            "secret and private surface path guard",
+            file_exists(project_dir, "scripts/git-guard.ps1"),
+        ),
+        guard_check(
+            "public_surface_audit",
+            "pwsh -NoProfile -File scripts/audit-public-surface.ps1",
+            "scripts/audit-public-surface.ps1",
+            "public, contributor, and private surface boundary guard",
+            file_exists(project_dir, "scripts/audit-public-surface.ps1"),
+        ),
+        guard_check(
+            "gitleaks_incremental",
+            "pwsh -NoProfile -File scripts/gitleaks-history.ps1",
+            "scripts/gitleaks-history.ps1",
+            "incremental secret history scan from recorded baseline",
+            file_exists(project_dir, "scripts/gitleaks-history.ps1")
+                && !baseline_commit.trim().is_empty(),
+        ),
+        guard_check(
+            "evidence_envelope",
+            "winsmux runs --json",
+            "run_projection",
+            "verification evidence, security verdict, and audit chain are preserved in run packets",
+            true,
+        ),
+        guard_check(
+            "release_notes_contract",
+            "pwsh -NoProfile -File scripts/generate-release-notes.ps1",
+            "scripts/generate-release-notes.ps1",
+            "English public release notes with traceable issue or PR references",
+            file_exists(project_dir, "scripts/generate-release-notes.ps1"),
+        ),
+    ];
+    let required_check_count = required_checks.len();
+    let available_check_count = required_checks
+        .iter()
+        .filter(|check| check["available"].as_bool().unwrap_or(false))
+        .count();
+
+    json!({
+        "contract_version": 1,
+        "command": "guard",
+        "task_ids": ["TASK-383", "TASK-384"],
+        "target_version": "v0.24.10",
+        "generated_at": generated_at(),
+        "project_dir": project_dir_string(project_dir),
+        "product_version": VERSION,
+        "summary": {
+            "required_check_count": required_check_count,
+            "available_check_count": available_check_count,
+            "blocking_policy": "release automation must stop when any required check fails or evidence is missing",
+            "next_action": "Run the listed guard commands before release tagging or automated merge."
+        },
+        "observed_state": {
+            "branch": branch,
+            "head_sha": head_sha,
+            "hooks_path": hooks_path,
+            "hooks_path_expected": ".githooks",
+            "gitleaks_baseline_file": "scripts/gitleaks-history-baseline.txt",
+            "gitleaks_baseline_commit": baseline_commit
+        },
+        "required_checks": required_checks,
+        "evidence_contract": {
+            "run_surfaces": ["winsmux runs --json", "winsmux digest --json", "winsmux explain <run_id> --json"],
+            "required_fields": [
+                "verification_evidence",
+                "security_verdict",
+                "audit_chain",
+                "draft_pr_gate",
+                "phase_gate"
+            ],
+            "audit_chain_events": [
+                "operator.review_requested",
+                "operator.review_failed",
+                "pipeline.verify.pass",
+                "pipeline.verify.fail",
+                "pipeline.security.allowed",
+                "pipeline.security.blocked"
+            ]
+        },
+        "public_safety": {
+            "tracked_private_paths_allowed": false,
+            "maintainer_local_paths_allowed": false,
+            "private_skill_bodies_allowed": false,
+            "public_release_notes_language": "English"
+        }
+    })
+}
+
+fn guard_check(id: &str, command: &str, source: &str, purpose: &str, available: bool) -> Value {
+    json!({
+        "id": id,
+        "command": command,
+        "source": source,
+        "purpose": purpose,
+        "required": true,
+        "available": available,
+    })
+}
+
+fn file_exists(project_dir: &Path, relative_path: &str) -> bool {
+    relative_path
+        .split('/')
+        .fold(project_dir.to_path_buf(), |path, segment| path.join(segment))
+        .is_file()
 }
 
 fn conflict_path_array(text: &str) -> Vec<String> {
