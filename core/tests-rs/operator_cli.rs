@@ -2027,6 +2027,26 @@ fn operator_cli_compare_runs_json_reports_evidence_delta() {
         json["recommend"]["playbook_template"]["freeform_body_stored"],
         false
     );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["packet_type"],
+        "diversity_policy_contract"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["projection"]["provider_mix"],
+        "mixed_provider"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["projection"]["model_mix"],
+        "mixed_model"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["metadata_policy"]
+            ["raw_model_prompts_stored"],
+        false
+    );
+    assert!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["provider_target"].is_null()
+    );
     let fields: Vec<_> = json["differences"]
         .as_array()
         .expect("differences should be array")
@@ -2151,6 +2171,47 @@ fn operator_cli_compare_runs_uses_powershell_rounding() {
 }
 
 #[test]
+fn operator_cli_compare_runs_marks_partial_provider_metadata_unknown() {
+    let project_dir = make_temp_project_dir("compare-runs-partial-provider");
+    write_compare_runs_fixture(&project_dir);
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .expect("test should read manifest")
+        .replace("    provider_target: claude:opus\n", "");
+    fs::write(&manifest_path, manifest).expect("test should write manifest");
+
+    let json = run_json(
+        &project_dir,
+        &[
+            "compare-runs",
+            "task:task-a",
+            "task:task-b",
+            "--json",
+            "--project-dir",
+            project_dir.to_str().unwrap(),
+        ],
+    );
+
+    assert_eq!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["scope"],
+        "run_set"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["projection"]["provider_mix"],
+        "unknown"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["projection"]
+            ["provider_count_bucket"],
+        "unknown"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["projection"]["model_mix"],
+        "unknown"
+    );
+}
+
+#[test]
 fn operator_cli_compare_runs_emits_conflict_resolution_playbook_when_no_winner() {
     let project_dir = make_temp_project_dir("compare-runs-conflict-playbook");
     write_compare_runs_fixture(&project_dir);
@@ -2182,6 +2243,33 @@ fn operator_cli_compare_runs_emits_conflict_resolution_playbook_when_no_winner()
         json["recommend"]["playbook_template"]["team_memory_refs"][0],
         "team-memory:task-a:operator-standard"
     );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["scope"],
+        "run_set"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["projection"]["provider_mix"],
+        "mixed_provider"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["projection"]["model_mix"],
+        "mixed_model"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["projection"]["harness_mix"],
+        "single_harness"
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["diversity_policy"]["metadata_policy"]
+            ["raw_provider_ids_stored"],
+        false
+    );
+    let diversity_policy_text =
+        json["recommend"]["playbook_template"]["diversity_policy"].to_string();
+    assert!(!diversity_policy_text.contains("codex"));
+    assert!(!diversity_policy_text.contains("claude"));
+    assert!(!diversity_policy_text.contains("gpt-5.4"));
+    assert!(!diversity_policy_text.contains("opus"));
 }
 
 #[test]
@@ -2257,6 +2345,27 @@ fn operator_cli_promote_tactic_writes_playbook_candidate() {
         false
     );
     assert!(json["candidate"]["playbook_template"]["freeform_body"].is_null());
+    assert_eq!(
+        json["candidate"]["playbook_template"]["diversity_policy"]["packet_type"],
+        "diversity_policy_contract"
+    );
+    assert_eq!(
+        json["candidate"]["playbook_template"]["diversity_policy"]["projection"]["provider_mix"],
+        "single_provider"
+    );
+    assert_eq!(
+        json["candidate"]["playbook_template"]["diversity_policy"]["projection"]["model_mix"],
+        "single_model"
+    );
+    assert_eq!(
+        json["candidate"]["playbook_template"]["diversity_policy"]["metadata_policy"]
+            ["private_prompt_bodies_stored"],
+        false
+    );
+    let diversity_policy_text =
+        json["candidate"]["playbook_template"]["diversity_policy"].to_string();
+    assert!(!diversity_policy_text.contains("codex"));
+    assert!(!diversity_policy_text.contains("gpt-5.4"));
 }
 
 #[test]
@@ -4455,6 +4564,7 @@ panes:
     review_state: PASS
     branch: branch-a
     head_sha: aaaabbbbccccdddd
+    provider_target: codex:gpt-5.4
     changed_file_count: 1
     changed_files: '["core/src/operator_cli.rs"]'
     last_event: pane.consult_result
@@ -4468,6 +4578,7 @@ panes:
     review_state: PASS
     branch: branch-b
     head_sha: eeeeffff11112222
+    provider_target: claude:opus
     changed_file_count: 2
     changed_files: '["core/src/operator_cli.rs","core/src/main.rs"]'
     last_event: pane.consult_result
