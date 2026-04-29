@@ -727,11 +727,11 @@ panes:
     );
     assert_eq!(
         explain.run.verification_envelope["dynamic_gates"]["phase"]["stop_reason"],
-        "needs_user_decision"
+        "tdd_evidence_missing"
     );
     assert_eq!(
         explain.run.verification_envelope["dynamic_gates"]["phase"]["stop_stage"],
-        "package"
+        "test"
     );
     assert!(explain.run.verification_envelope["release_decision"]["blocked_reasons"]
         .as_array()
