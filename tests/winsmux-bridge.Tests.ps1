@@ -13265,6 +13265,24 @@ panes:
                 }
             } | ConvertTo-Json -Compress),
             ([ordered]@{
+                timestamp = '2026-04-12T10:00:10+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'operator.mailbox.message_received'
+                message   = 'compare winner memory reference captured'
+                label     = 'operator'
+                pane_id   = ''
+                role      = 'Operator'
+                source    = 'mailbox'
+                branch    = 'worktree-builder-a'
+                head_sha  = 'aaaabbbbccccdddd'
+                data      = [ordered]@{
+                    task_id          = 'task-compare-a'
+                    run_id           = 'task:task-compare-a'
+                    source           = 'mailbox'
+                    team_memory_refs = @('team-memory:task-compare-a:operator-standard')
+                }
+            } | ConvertTo-Json -Compress -Depth 8),
+            ([ordered]@{
                 timestamp = '2026-04-12T10:00:20+09:00'
                 session   = 'winsmux-orchestra'
                 event     = 'pipeline.verify.pass'

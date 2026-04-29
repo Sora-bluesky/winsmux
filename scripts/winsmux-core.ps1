@@ -6525,6 +6525,19 @@ function Get-RunContractRefList {
     return @($refs)
 }
 
+function Get-RunDurableRefList {
+    param(
+        [AllowNull()]$Values = $null,
+        [string[]]$Prefixes = @()
+    )
+
+    $refs = [System.Collections.Generic.List[string]]::new()
+    foreach ($item in @(ConvertTo-RunStringArray -Value $Values)) {
+        Add-RunDurableRef -List $refs -Value $item -Prefixes $Prefixes
+    }
+    return @($refs)
+}
+
 function New-RunTeamMemoryContract {
     param(
         [Parameter(Mandatory = $true)]$Run,
@@ -6601,6 +6614,8 @@ function New-RunContextContract {
         $contextMode = 'fork'
     }
 
+    $safeTeamMemoryRefs = @(Get-RunDurableRefList -Values $TeamMemoryRefs -Prefixes @('team-memory:') | Sort-Object -Unique)
+
     return [ordered]@{
         contract_version             = 1
         packet_type                  = 'context_budget_contract'
@@ -6617,7 +6632,7 @@ function New-RunContextContract {
         semantic_context             = [ordered]@{
             context_pack_id           = Get-RunContractField -InputObject $VerificationEvidence -Name 'semantic_context_pack_id'
             context_pack_ref          = Get-RunContractField -InputObject $VerificationEvidence -Name 'semantic_context_pack_ref'
-            source_refs               = Get-RunContractRefList -Data $VerificationEvidence -Name 'source_refs' -Prefixes (Get-RunPublicContextRefPrefixes)
+            source_refs               = @(Get-RunContractRefList -Data $VerificationEvidence -Name 'source_refs' -Prefixes (Get-RunPublicContextRefPrefixes))
             hard_constraints          = Get-RunContractField -InputObject $VerificationEvidence -Name 'hard_constraints'
             safety_rules              = Get-RunContractField -InputObject $VerificationEvidence -Name 'safety_rules'
             performance_budget        = Get-RunContractField -InputObject $VerificationEvidence -Name 'performance_budget'
@@ -6630,13 +6645,13 @@ function New-RunContextContract {
             packet_type               = 'knowledge_layer_contract'
             knowledge_pack_id         = Get-RunContractField -InputObject $VerificationEvidence -Name 'knowledge_pack_id'
             knowledge_pack_ref        = Get-RunContractField -InputObject $VerificationEvidence -Name 'knowledge_pack_ref'
-            source_refs               = Get-RunContractRefList -Data $VerificationEvidence -Name 'knowledge_source_refs' -Prefixes (Get-RunPublicContextRefPrefixes)
-            operating_guidance_refs   = Get-RunContractRefList -Data $VerificationEvidence -Name 'operating_guidance_refs' -Prefixes (Get-RunPublicContextRefPrefixes)
+            source_refs               = @(Get-RunContractRefList -Data $VerificationEvidence -Name 'knowledge_source_refs' -Prefixes (Get-RunPublicContextRefPrefixes))
+            operating_guidance_refs   = @(Get-RunContractRefList -Data $VerificationEvidence -Name 'operating_guidance_refs' -Prefixes (Get-RunPublicContextRefPrefixes))
             hard_constraints          = Get-RunContractField -InputObject $VerificationEvidence -Name 'knowledge_hard_constraints'
             capability_contract       = Get-RunContractField -InputObject $VerificationEvidence -Name 'capability_contract'
-            evidence_refs             = Get-RunContractRefList -Data $VerificationEvidence -Name 'evidence_refs' -Prefixes (Get-RunPublicContextRefPrefixes)
-            rationale_refs            = Get-RunContractRefList -Data $VerificationEvidence -Name 'rationale_refs' -Prefixes (Get-RunPublicContextRefPrefixes)
-            team_memory_refs          = @($TeamMemoryRefs | Sort-Object -Unique)
+            evidence_refs             = @(Get-RunContractRefList -Data $VerificationEvidence -Name 'evidence_refs' -Prefixes (Get-RunPublicContextRefPrefixes))
+            rationale_refs            = @(Get-RunContractRefList -Data $VerificationEvidence -Name 'rationale_refs' -Prefixes (Get-RunPublicContextRefPrefixes))
+            team_memory_refs          = $safeTeamMemoryRefs
             freeform_body_stored      = $false
             private_guidance_stored   = $false
             local_reference_paths_stored = $false

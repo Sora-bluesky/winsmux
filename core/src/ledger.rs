@@ -3147,6 +3147,15 @@ fn value_field_ref_list(value: &Value, key: &str, prefixes: &[&str]) -> Value {
     Value::Array(refs.into_iter().map(Value::String).collect())
 }
 
+fn string_ref_list_value(values: &[String], prefixes: &[&str]) -> Value {
+    let mut refs = Vec::new();
+    for value in values {
+        push_unique_ref(&mut refs, value, prefixes);
+    }
+    refs.sort();
+    Value::Array(refs.into_iter().map(Value::String).collect())
+}
+
 fn public_context_ref_prefixes() -> &'static [&'static str] {
     &[
         "ADR-",
@@ -3237,6 +3246,7 @@ fn context_contract_value(verification_evidence: &Value, team_memory_refs: &[Str
     } else {
         Value::Null
     };
+    let team_memory_refs_value = string_ref_list_value(team_memory_refs, &["team-memory:"]);
 
     json!({
         "contract_version": 1,
@@ -3273,7 +3283,7 @@ fn context_contract_value(verification_evidence: &Value, team_memory_refs: &[Str
             "capability_contract": value_field(verification_evidence, "capability_contract"),
             "evidence_refs": value_field_ref_list(verification_evidence, "evidence_refs", public_context_ref_prefixes()),
             "rationale_refs": value_field_ref_list(verification_evidence, "rationale_refs", public_context_ref_prefixes()),
-            "team_memory_refs": team_memory_refs,
+            "team_memory_refs": team_memory_refs_value,
             "freeform_body_stored": false,
             "private_guidance_stored": false,
             "local_reference_paths_stored": false
