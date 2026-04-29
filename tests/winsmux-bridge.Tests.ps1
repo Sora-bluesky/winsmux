@@ -8282,6 +8282,13 @@ panes:
                 run_id  = 'task:task-256'
                 verification_contract = [ordered]@{
                     mode = 'adversarial_verify'
+                    context_budget = 120000
+                    context_estimate = 42000
+                    context_pack_id = 'ctx-runs'
+                    context_pack_version = '1'
+                    tool_output_pruned_count = 3
+                    context_pressure = 'high'
+                    context_mode = 'isolated'
                 }
                 verification_result = [ordered]@{
                     outcome = 'PARTIAL'
@@ -8363,6 +8370,13 @@ panes:
         $result.runs[0].verification_contract.mode | Should -Be 'adversarial_verify'
         $result.runs[0].verification_result.outcome | Should -Be 'PARTIAL'
         $result.runs[0].run_packet.verification_result.outcome | Should -Be 'PARTIAL'
+        $result.runs[0].context_contract.context_pack_id | Should -Be 'ctx-runs'
+        $result.runs[0].context_contract.context_pressure | Should -Be 'high'
+        $result.runs[0].context_contract.context_mode | Should -Be 'isolated'
+        $result.runs[0].context_contract.tool_output_pruned_count | Should -Be 3
+        $result.runs[0].context_contract.prompt_body_stored | Should -Be $false
+        $result.runs[0].context_contract.private_memory_stored | Should -Be $false
+        $result.runs[0].run_packet.context_contract.context_pack_id | Should -Be 'ctx-runs'
         $result.runs[0].tdd_gate.required | Should -Be $true
         $result.runs[0].tdd_gate.state | Should -Be 'passed'
         $result.runs[0].tdd_gate.red_event | Should -Be 'pipeline.tdd.red'
@@ -9582,8 +9596,10 @@ panes:
                         context_budget = 120000
                         context_estimate = 42000
                         context_pack_id = 'ctx-task-256'
+                        context_pack_version = '1'
                         tool_output_pruned_count = 2
                         context_pressure = 'medium'
+                        context_mode = 'isolated'
                     }
                     verification_result = [ordered]@{
                         outcome = 'PARTIAL'
@@ -9752,14 +9768,23 @@ panes:
         $result.run.verification_evidence.context_budget | Should -Be 120000
         $result.run.verification_evidence.context_estimate | Should -Be 42000
         $result.run.verification_evidence.context_pack_id | Should -Be 'ctx-task-256'
+        $result.run.verification_evidence.context_pack_version | Should -Be '1'
         $result.run.verification_evidence.tool_output_pruned_count | Should -Be 2
         $result.run.verification_evidence.context_pressure | Should -Be 'medium'
+        $result.run.context_contract.packet_type | Should -Be 'context_budget_contract'
+        $result.run.context_contract.context_pack_id | Should -Be 'ctx-task-256'
+        $result.run.context_contract.context_mode | Should -Be 'isolated'
+        $result.run.context_contract.fork_allowed | Should -Be $false
+        $result.run.context_contract.prompt_body_stored | Should -Be $false
+        $result.run.context_contract.private_memory_stored | Should -Be $false
+        $result.run.context_contract.local_reference_paths_stored | Should -Be $false
         $result.run.tdd_gate.required | Should -Be $true
         $result.run.tdd_gate.state | Should -Be 'passed'
         $result.run.tdd_gate.red_event | Should -Be 'pipeline.tdd.red'
         $result.run.audit_chain.chain_id | Should -Be 'task:task-256'
         $result.run.audit_chain.subject.task_id | Should -Be 'task-256'
         $result.run.audit_chain.subject.changed_files | Should -Be @('scripts/winsmux-core.ps1')
+        $result.run.audit_chain.subject.context_contract.context_mode | Should -Be 'isolated'
         $result.run.audit_chain.actor.label | Should -Be 'builder-1'
         $result.run.audit_chain.approval.required | Should -Be $true
         $result.run.audit_chain.approval.state | Should -Be 'pending'

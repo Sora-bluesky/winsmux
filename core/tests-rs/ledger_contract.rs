@@ -605,7 +605,7 @@ panes:
     head_sha: abc1234def5678
 "#;
     let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pane.approval_waiting","message":"approval prompt detected","label":"builder-1","pane_id":"%2","role":"Builder","status":"approval_waiting","data":{"task_id":"task-256"}}
-{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","data":{"task_id":"task-256","verification_contract":{"command":"cargo test","build":{"command":"cargo build","outcome":"PASS"},"test":{"command":"cargo test","outcome":"PASS"},"context_budget":120000,"context_estimate":42000,"context_pack_id":"ctx-task-256","tool_output_pruned_count":2,"context_pressure":"medium"},"verification_result":{"outcome":"PASS","browser":{"required":false,"outcome":"SKIPPED"},"screenshot":{"required":false,"artifact_ref":""},"recording":{"required":false,"artifact_ref":""}}}}
+{"timestamp":"2026-04-23T12:00:02+09:00","session":"winsmux-orchestra","event":"pipeline.verify.pass","message":"verification passed","data":{"task_id":"task-256","verification_contract":{"command":"cargo test","build":{"command":"cargo build","outcome":"PASS"},"test":{"command":"cargo test","outcome":"PASS"},"context_budget":120000,"context_estimate":42000,"context_pack_id":"ctx-task-256","context_pack_version":"1","tool_output_pruned_count":2,"context_pressure":"medium","context_mode":"isolated"},"verification_result":{"outcome":"PASS","browser":{"required":false,"outcome":"SKIPPED"},"screenshot":{"required":false,"artifact_ref":""},"recording":{"required":false,"artifact_ref":""}}}}
 {"timestamp":"2026-04-23T12:00:03+09:00","session":"winsmux-orchestra","event":"pipeline.security.allowed","message":"security allowed","data":{"task_id":"task-256","verdict":"ALLOW"}}
 {"timestamp":"2026-04-23T12:00:04+09:00","session":"winsmux-orchestra","event":"pane.consult_result","message":"experiment result","label":"builder-1","pane_id":"%2","role":"Builder","data":{"task_id":"task-256","hypothesis":"projection can explain the run","test_plan":["load manifest","match events"],"result":"explain payload built","confidence":0.66,"next_action":"approval_waiting","observation_pack_ref":"observations/task-256.json","consultation_ref":"consultations/task-256.json","run_id":"task:task-256","slot":"builder-1","worktree":".worktrees/builder-1","env_fingerprint":"env-123","command_hash":"cmd-456","observation_pack":{"summary":"ok"},"consultation_packet":{"review":"ok"}}}
 {"timestamp":"2026-04-23T12:00:05+09:00","session":"winsmux-orchestra","event":"pane.consult_request","message":"new action only","label":"builder-1","pane_id":"%2","role":"Builder","data":{"task_id":"task-256","next_action":"review_requested"}}
@@ -688,7 +688,27 @@ panes:
         explain.run.verification_evidence["context_pressure"],
         "medium"
     );
+    assert_eq!(
+        explain.run.context_contract["packet_type"],
+        "context_budget_contract"
+    );
+    assert_eq!(
+        explain.run.context_contract["context_pack_id"],
+        "ctx-task-256"
+    );
+    assert_eq!(explain.run.context_contract["context_mode"], "isolated");
+    assert_eq!(explain.run.context_contract["fork_allowed"], false);
+    assert_eq!(explain.run.context_contract["prompt_body_stored"], false);
+    assert_eq!(explain.run.context_contract["private_memory_stored"], false);
+    assert_eq!(
+        explain.run.context_contract["local_reference_paths_stored"],
+        false
+    );
     assert_eq!(explain.run.audit_chain["chain_id"], "task:task-256");
+    assert_eq!(
+        explain.run.audit_chain["subject"]["context_contract"]["context_pack_id"],
+        "ctx-task-256"
+    );
     assert_eq!(
         explain.run.audit_chain["subject"]["changed_files"][0],
         "scripts/winsmux-core.ps1"
@@ -704,6 +724,10 @@ panes:
     assert_eq!(
         explain.run.verification_envelope["static_gates"]["required_fields"][0],
         "verification_evidence"
+    );
+    assert_eq!(
+        explain.run.verification_envelope["dynamic_gates"]["context"]["context_mode"],
+        "isolated"
     );
     assert_eq!(
         explain.run.verification_envelope["dynamic_gates"]["verification"]["outcome"],
