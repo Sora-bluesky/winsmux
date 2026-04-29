@@ -122,4 +122,29 @@ Describe 'winsmux version surface' {
         $compatibility | Should -Match 'does not remove tmux-compatible configuration support'
         $thirdPartyNotices | Should -Match 'warning-only sunset mode'
     }
+
+    It 'stops the release flow when verify fails before tagging or publishing' {
+        $releaseScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts\bump-version.ps1') -Raw -Encoding UTF8
+
+        $verifyIndex = $releaseScript.IndexOf('& pwsh $bridgeScript verify $prNumber')
+        $exitCheckIndex = $releaseScript.IndexOf('$verifyExitCode = $LASTEXITCODE')
+        $prStateIndex = $releaseScript.IndexOf('gh pr view $prNumber --json state,mergeCommit')
+        $remoteTagIndex = $releaseScript.IndexOf('git ls-remote --tags origin "refs/tags/v$Version"')
+        $tagIndex = $releaseScript.IndexOf('git tag "v$Version" $releaseCommit')
+        $releaseIndex = $releaseScript.IndexOf('gh release create "v$Version"')
+
+        $verifyIndex | Should -BeGreaterThan -1
+        $exitCheckIndex | Should -BeGreaterThan $verifyIndex
+        $prStateIndex | Should -BeGreaterThan $exitCheckIndex
+        $remoteTagIndex | Should -BeGreaterThan $prStateIndex
+        $tagIndex | Should -BeGreaterThan $remoteTagIndex
+        $releaseIndex | Should -BeGreaterThan $tagIndex
+
+        $releaseScript | Should -Match 'verify failed for PR #\$prNumber'
+        $releaseScript | Should -Match 'Refusing to tag or create GitHub Release'
+        $releaseScript | Should -Match '\$prState\.state -ne ''MERGED'''
+        $releaseScript | Should -Match 'main HEAD .* does not match release PR merge commit'
+        $releaseScript | Should -Match 'Tag v\$Version already exists'
+        $releaseScript | Should -Match 'Remote tag v\$Version already exists'
+    }
 }
