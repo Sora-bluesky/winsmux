@@ -278,6 +278,7 @@ pub struct LedgerExplainRun {
     pub verification_result: Value,
     pub verification_evidence: Value,
     pub context_contract: Value,
+    pub team_memory: Value,
     pub run_insights: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
@@ -475,6 +476,7 @@ pub struct LedgerRunProjection {
     pub verification_result: Value,
     pub verification_evidence: Value,
     pub context_contract: Value,
+    pub team_memory: Value,
     pub run_insights: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
@@ -523,6 +525,7 @@ pub struct LedgerRunPacket {
     pub verification_result: Value,
     pub verification_evidence: Value,
     pub context_contract: Value,
+    pub team_memory: Value,
     pub run_insights: Value,
     pub tdd_gate: Value,
     pub verification_envelope: Value,
@@ -741,6 +744,9 @@ impl LedgerRunProjection {
             context_contract: run
                 .map(|run| run.context_contract.clone())
                 .unwrap_or(Value::Null),
+            team_memory: run
+                .map(|run| run.team_memory.clone())
+                .unwrap_or(Value::Null),
             run_insights: run
                 .map(|run| run.run_insights.clone())
                 .unwrap_or(Value::Null),
@@ -800,6 +806,7 @@ impl LedgerRunPacket {
             verification_result: run.verification_result.clone(),
             verification_evidence: run.verification_evidence.clone(),
             context_contract: run.context_contract.clone(),
+            team_memory: run.team_memory.clone(),
             run_insights: run.run_insights.clone(),
             tdd_gate: run.tdd_gate.clone(),
             verification_envelope: run.verification_envelope.clone(),
@@ -1318,6 +1325,7 @@ impl LedgerSnapshot {
             verification_result,
             verification_evidence,
             context_contract: Value::Null,
+            team_memory: Value::Null,
             run_insights: Value::Null,
             tdd_gate: Value::Null,
             verification_envelope: Value::Null,
@@ -1330,7 +1338,10 @@ impl LedgerSnapshot {
         run.draft_pr_gate = run_draft_pr_gate_value(&run, &recent_event_records);
         run.tdd_gate = run_tdd_gate_value(&run, &recent_event_records);
         run.phase_gate = run_phase_gate_value(&run, &recent_event_records, &run.draft_pr_gate);
-        run.context_contract = context_contract_value(&run.verification_evidence);
+        run.team_memory = team_memory_value(&run, &recent_event_records);
+        let team_memory_refs = value_string_list(&run.team_memory, "team_memory_refs");
+        run.context_contract =
+            context_contract_value(&run.verification_evidence, &team_memory_refs);
         run.audit_chain = run_audit_chain_value(&run, &recent_event_records);
         run.verification_envelope = run_verification_envelope_value(&run);
         run.outcome = run_outcome_value(&run, &run.phase_gate, &run.draft_pr_gate);
@@ -1753,8 +1764,10 @@ fn run_state_model(
         };
         return ("package".into(), "completed".into(), detail.into());
     }
-    if matches!(kind_text.as_str(), "needs_user_decision" | "draft_pr_required")
-        || event_text == "operator.draft_pr.required"
+    if matches!(
+        kind_text.as_str(),
+        "needs_user_decision" | "draft_pr_required"
+    ) || event_text == "operator.draft_pr.required"
     {
         return (
             "package".into(),
@@ -1765,7 +1778,8 @@ fn run_state_model(
     if matches!(review_text.as_str(), "FAIL" | "FAILED") || kind_text == "review_failed" {
         return ("review".into(), "blocked".into(), "review_failed".into());
     }
-    if review_text == "PENDING" || matches!(kind_text.as_str(), "review_pending" | "review_requested")
+    if review_text == "PENDING"
+        || matches!(kind_text.as_str(), "review_pending" | "review_requested")
     {
         let detail = if kind_text == "review_requested" {
             "review_requested"
@@ -1792,8 +1806,10 @@ fn run_state_model(
         };
         return ("build".into(), "blocked".into(), detail.into());
     }
-    if matches!(state_text.as_str(), "offline" | "crashed" | "hung" | "bootstrap_invalid")
-        || matches!(kind_text.as_str(), "crashed" | "hung" | "bootstrap_invalid")
+    if matches!(
+        state_text.as_str(),
+        "offline" | "crashed" | "hung" | "bootstrap_invalid"
+    ) || matches!(kind_text.as_str(), "crashed" | "hung" | "bootstrap_invalid")
     {
         let detail = if kind_text.is_empty() {
             state_text.as_str()
@@ -1810,7 +1826,11 @@ fn run_state_model(
         } else {
             "idle"
         };
-        return ("brainstorm".into(), "waiting_for_input".into(), detail.into());
+        return (
+            "brainstorm".into(),
+            "waiting_for_input".into(),
+            detail.into(),
+        );
     }
     if !task_text.is_empty() {
         return ("build".into(), "running".into(), task_text);
@@ -2111,13 +2131,9 @@ fn run_phase_gate_value(
                 "assigned",
                 &event.event,
             ),
-            "pipeline.collect.completed" => set_run_phase_stage(
-                &mut stages,
-                "build",
-                "completed",
-                "collected",
-                &event.event,
-            ),
+            "pipeline.collect.completed" => {
+                set_run_phase_stage(&mut stages, "build", "completed", "collected", &event.event)
+            }
             "pipeline.verify.pass" => {
                 set_run_phase_stage(
                     &mut stages,
@@ -2383,12 +2399,9 @@ fn run_tdd_gate_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) 
 }
 
 fn run_draft_pr_gate_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) -> Value {
-    let draft_pr_event = events
-        .iter()
-        .map(|(_, event)| *event)
-        .find(|event| {
-            event.event == "operator.draft_pr.created" && draft_pr_event_matches_run_head(run, event)
-        });
+    let draft_pr_event = events.iter().map(|(_, event)| *event).find(|event| {
+        event.event == "operator.draft_pr.created" && draft_pr_event_matches_run_head(run, event)
+    });
     let draft_pr_url = draft_pr_event
         .map(|event| event_data_string(&event.data, "draft_pr_url"))
         .unwrap_or_default();
@@ -2830,9 +2843,7 @@ fn run_insights_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) 
                 value_field_string(&event.data, "next_action")
             )
             .to_lowercase();
-            text.contains("retry")
-                || text.contains("rerun")
-                || event_attempt_value(event) > 1
+            text.contains("retry") || text.contains("rerun") || event_attempt_value(event) > 1
         })
         .count();
 
@@ -2854,8 +2865,8 @@ fn run_insights_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) 
         + events
             .iter()
             .filter(|(_, event)| {
-                let text = format!("{} {} {}", event.event, event.message, event.status)
-                    .to_lowercase();
+                let text =
+                    format!("{} {} {}", event.event, event.message, event.status).to_lowercase();
                 text.contains("approval")
                     || text.contains("review_requested")
                     || text.contains("question")
@@ -2890,10 +2901,16 @@ fn run_insights_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) 
 
     let mut next_improvements = Vec::new();
     if retry_count > 0 {
-        push_unique_text(&mut next_improvements, "reduce retry loop before the next run");
+        push_unique_text(
+            &mut next_improvements,
+            "reduce retry loop before the next run",
+        );
     }
     if !drift_signals.is_empty() {
-        push_unique_text(&mut next_improvements, "refresh session state before continuing");
+        push_unique_text(
+            &mut next_improvements,
+            "refresh session state before continuing",
+        );
     }
     if intervention_count > 0 {
         push_unique_text(
@@ -2902,10 +2919,16 @@ fn run_insights_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) 
         );
     }
     if unhealthy_session_size {
-        push_unique_text(&mut next_improvements, "split the next run into a smaller scope");
+        push_unique_text(
+            &mut next_improvements,
+            "split the next run into a smaller scope",
+        );
     }
     if !blocked_reasons.is_empty() {
-        push_unique_text(&mut next_improvements, "resolve blocked reasons before release");
+        push_unique_text(
+            &mut next_improvements,
+            "resolve blocked reasons before release",
+        );
     }
 
     json!({
@@ -2918,6 +2941,136 @@ fn run_insights_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) 
         "blocked_reasons": blocked_reasons,
         "next_improvements": next_improvements,
     })
+}
+
+fn team_memory_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) -> Value {
+    let mut team_memory_refs = Vec::new();
+    let mut evidence_note_refs = Vec::new();
+    let mut source_refs = Vec::new();
+    let mut mailbox_event_count = 0;
+
+    for (index, event) in events {
+        let source = event_data_string(&event.data, "source");
+        let is_mailbox_event = event.source.eq_ignore_ascii_case("mailbox")
+            || source.eq_ignore_ascii_case("mailbox")
+            || event.event.to_lowercase().contains("mailbox");
+
+        if is_mailbox_event {
+            mailbox_event_count += 1;
+        }
+
+        let before_ref_count = team_memory_refs.len();
+        push_event_data_refs(
+            &mut team_memory_refs,
+            &event.data,
+            "team_memory_refs",
+            &["team-memory:"],
+        );
+        push_event_data_ref(
+            &mut team_memory_refs,
+            &event.data,
+            "team_memory_ref",
+            &["team-memory:"],
+        );
+        push_event_data_refs(
+            &mut evidence_note_refs,
+            &event.data,
+            "evidence_note_refs",
+            &["evidence-note:"],
+        );
+        push_event_data_ref(
+            &mut evidence_note_refs,
+            &event.data,
+            "evidence_note_ref",
+            &["evidence-note:"],
+        );
+
+        if is_mailbox_event && team_memory_refs.len() == before_ref_count {
+            let fallback = format!("team-memory:{}:event-{}", run.run_id, index + 1);
+            push_unique_text(&mut team_memory_refs, &fallback);
+        }
+
+        push_event_data_ref(
+            &mut source_refs,
+            &event.data,
+            "observation_pack_ref",
+            &["observation:", "observations/", "observation-packs/"],
+        );
+        push_event_data_ref(
+            &mut source_refs,
+            &event.data,
+            "consultation_ref",
+            &["consultation:", "consultations/"],
+        );
+        push_event_data_ref(
+            &mut source_refs,
+            &event.data,
+            "context_pack_ref",
+            &["context:", "context-packs/"],
+        );
+        push_event_data_ref(
+            &mut source_refs,
+            &event.data,
+            "knowledge_pack_ref",
+            &["knowledge:", "knowledge/"],
+        );
+    }
+
+    team_memory_refs.sort();
+    evidence_note_refs.sort();
+    source_refs.sort();
+
+    json!({
+        "contract_version": 1,
+        "packet_type": "team_memory_contract",
+        "scope": "run",
+        "run_id": run.run_id.clone(),
+        "task_id": run.task_id.clone(),
+        "team_memory_refs": team_memory_refs,
+        "evidence_note_refs": evidence_note_refs,
+        "source_refs": source_refs,
+        "mailbox_event_count": mailbox_event_count,
+        "freeform_body_stored": false,
+        "private_memory_body_stored": false,
+        "local_reference_paths_stored": false
+    })
+}
+
+fn push_event_data_refs(values: &mut Vec<String>, data: &Value, key: &str, prefixes: &[&str]) {
+    if let Some(items) = event_data_string_list_option(data, key) {
+        for item in items {
+            push_unique_ref(values, &item, prefixes);
+        }
+    }
+}
+
+fn push_event_data_ref(values: &mut Vec<String>, data: &Value, key: &str, prefixes: &[&str]) {
+    push_unique_ref(values, &event_data_string(data, key), prefixes);
+}
+
+fn push_unique_ref(values: &mut Vec<String>, value: &str, prefixes: &[&str]) {
+    if durable_ref_allowed(value, prefixes) {
+        push_unique_text(values, value.trim());
+    }
+}
+
+fn durable_ref_allowed(value: &str, prefixes: &[&str]) -> bool {
+    let value = value.trim();
+    if value.is_empty()
+        || value.len() > 256
+        || value.contains('\n')
+        || value.contains('\r')
+        || value.contains('\\')
+        || value.contains(' ')
+        || value.starts_with('%')
+        || value.starts_with('~')
+        || value.starts_with('/')
+    {
+        return false;
+    }
+
+    !matches!(value.as_bytes(), [_, b':', ..])
+        && prefixes.iter().any(|prefix| value.starts_with(prefix))
 }
 
 fn event_attempt_value(event: &EventRecord) -> i64 {
@@ -2959,6 +3112,64 @@ fn value_field(value: &Value, key: &str) -> Value {
         .and_then(|map| map.get(key))
         .cloned()
         .unwrap_or(Value::Null)
+}
+
+pub(crate) fn value_string_list(value: &Value, key: &str) -> Vec<String> {
+    value
+        .as_object()
+        .and_then(|map| map.get(key))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .filter(|item| !item.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn value_field_ref_list(value: &Value, key: &str, prefixes: &[&str]) -> Value {
+    let mut refs = Vec::new();
+    if let Some(field) = value.as_object().and_then(|map| map.get(key)) {
+        if let Some(items) = field.as_array() {
+            for item in items.iter().filter_map(Value::as_str) {
+                push_unique_ref(&mut refs, item, prefixes);
+            }
+        } else if let Some(text) = field.as_str() {
+            for item in text.split('|') {
+                push_unique_ref(&mut refs, item, prefixes);
+            }
+        }
+    }
+
+    Value::Array(refs.into_iter().map(Value::String).collect())
+}
+
+fn string_ref_list_value(values: &[String], prefixes: &[&str]) -> Value {
+    let mut refs = Vec::new();
+    for value in values {
+        push_unique_ref(&mut refs, value, prefixes);
+    }
+    refs.sort();
+    Value::Array(refs.into_iter().map(Value::String).collect())
+}
+
+fn public_context_ref_prefixes() -> &'static [&'static str] {
+    &[
+        "ADR-",
+        "AGENTS.md",
+        "README",
+        "docs/",
+        "guidance:",
+        "context:",
+        "context-packs/",
+        "knowledge:",
+        "knowledge/",
+        "evidence:",
+        "rationale:",
+    ]
 }
 
 fn push_reason(reasons: &mut Vec<String>, key: &str, value: &str) {
@@ -3021,7 +3232,7 @@ fn verification_evidence_value(data: &Value) -> Value {
     })
 }
 
-fn context_contract_value(verification_evidence: &Value) -> Value {
+fn context_contract_value(verification_evidence: &Value, team_memory_refs: &[String]) -> Value {
     let requested_mode = value_field_string(verification_evidence, "context_mode");
     let fork_reason = value_field_string(verification_evidence, "context_fork_reason");
     let context_mode =
@@ -3035,6 +3246,7 @@ fn context_contract_value(verification_evidence: &Value) -> Value {
     } else {
         Value::Null
     };
+    let team_memory_refs_value = string_ref_list_value(team_memory_refs, &["team-memory:"]);
 
     json!({
         "contract_version": 1,
@@ -3052,7 +3264,7 @@ fn context_contract_value(verification_evidence: &Value) -> Value {
         "semantic_context": {
             "context_pack_id": value_field(verification_evidence, "semantic_context_pack_id"),
             "context_pack_ref": value_field(verification_evidence, "semantic_context_pack_ref"),
-            "source_refs": value_field(verification_evidence, "source_refs"),
+            "source_refs": value_field_ref_list(verification_evidence, "source_refs", public_context_ref_prefixes()),
             "hard_constraints": value_field(verification_evidence, "hard_constraints"),
             "safety_rules": value_field(verification_evidence, "safety_rules"),
             "performance_budget": value_field(verification_evidence, "performance_budget"),
@@ -3065,12 +3277,13 @@ fn context_contract_value(verification_evidence: &Value) -> Value {
             "packet_type": "knowledge_layer_contract",
             "knowledge_pack_id": value_field(verification_evidence, "knowledge_pack_id"),
             "knowledge_pack_ref": value_field(verification_evidence, "knowledge_pack_ref"),
-            "source_refs": value_field(verification_evidence, "knowledge_source_refs"),
-            "operating_guidance_refs": value_field(verification_evidence, "operating_guidance_refs"),
+            "source_refs": value_field_ref_list(verification_evidence, "knowledge_source_refs", public_context_ref_prefixes()),
+            "operating_guidance_refs": value_field_ref_list(verification_evidence, "operating_guidance_refs", public_context_ref_prefixes()),
             "hard_constraints": value_field(verification_evidence, "knowledge_hard_constraints"),
             "capability_contract": value_field(verification_evidence, "capability_contract"),
-            "evidence_refs": value_field(verification_evidence, "evidence_refs"),
-            "rationale_refs": value_field(verification_evidence, "rationale_refs"),
+            "evidence_refs": value_field_ref_list(verification_evidence, "evidence_refs", public_context_ref_prefixes()),
+            "rationale_refs": value_field_ref_list(verification_evidence, "rationale_refs", public_context_ref_prefixes()),
+            "team_memory_refs": team_memory_refs_value,
             "freeform_body_stored": false,
             "private_guidance_stored": false,
             "local_reference_paths_stored": false
