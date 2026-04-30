@@ -36,6 +36,7 @@ $whitelistPatterns = @(
     'docs/project/legacy-compat-surface-inventory.md',
     'docs/project/powershell-adapter-inventory.md',
     'docs/project/rust-schema-freeze-inventory.md',
+    'docs/project/local-first-ui-contract.md',
     'docs/project/upstream-reevaluation-gate.md',
     'docs/project/upstream-snapshot-baseline.md',
     '.agents/README.md',
