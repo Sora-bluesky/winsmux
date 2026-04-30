@@ -33,8 +33,17 @@ function Test-IsPublicDoc {
         'README.md',
         'README.ja.md',
         'THIRD_PARTY_NOTICES.md',
+        'docs/README.md',
+        'docs/README.ja.md',
         'docs/operator-model.md',
+        'docs/quickstart.md',
+        'docs/quickstart.ja.md',
+        'docs/installation.md',
+        'docs/installation.ja.md',
+        'docs/customization.md',
+        'docs/customization.ja.md',
         'docs/TROUBLESHOOTING.md',
+        'docs/TROUBLESHOOTING.ja.md',
         'packages/winsmux/README.md'
     )
 }
@@ -94,11 +103,28 @@ $forbiddenTracked = @(
     'HANDOFF.md',
     'docs/HANDOFF.md',
     'docs/handoff.md',
+    'testResults.xml',
     'tasks/roadmap-title-ja.psd1'
 )
 foreach ($path in $forbiddenTracked) {
     if ($trackedFiles -contains $path) {
         $failures.Add("tracked live-ops file must not be committed: $path")
+    }
+}
+
+$forbiddenTrackedPrefixes = @(
+    '.playwright-mcp/'
+)
+foreach ($file in $trackedFiles) {
+    $normalized = $file.Replace('\', '/')
+    foreach ($prefix in $forbiddenTrackedPrefixes) {
+        if ($normalized.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $failures.Add("tracked generated/runtime artifact must not be committed: $file")
+        }
+    }
+
+    if ($normalized -match '[\uE000-\uF8FF]') {
+        $failures.Add("tracked path contains a private-use Unicode character and must be renamed or removed: $file")
     }
 }
 

@@ -10,6 +10,8 @@ Describe 'Public surface policy' {
 
         $readme = Get-Content (Join-Path $repoRoot 'README.md') -Raw
         $readmeJa = Get-Content (Join-Path $repoRoot 'README.ja.md') -Raw
+        $docsIndex = Get-Content (Join-Path $repoRoot 'docs/README.md') -Raw
+        $docsIndexJa = Get-Content (Join-Path $repoRoot 'docs/README.ja.md') -Raw
         $operatorModel = Get-Content (Join-Path $repoRoot 'docs/operator-model.md') -Raw
         $agents = Get-Content (Join-Path $repoRoot 'AGENTS.md') -Raw
         $surfacePolicy = Get-Content (Join-Path $repoRoot 'docs/repo-surface-policy.md') -Raw
@@ -20,6 +22,23 @@ Describe 'Public surface policy' {
         $syncRoadmap = Get-Content (Join-Path $repoRoot 'winsmux-core/scripts/sync-roadmap.ps1') -Raw
         $syncInternalDocs = Get-Content (Join-Path $repoRoot 'winsmux-core/scripts/sync-internal-docs.ps1') -Raw
         $installer = Get-Content (Join-Path $repoRoot 'install.ps1') -Raw
+        $publicDocs = @(
+            $readme,
+            $readmeJa,
+            $docsIndex,
+            $docsIndexJa,
+            $operatorModel,
+            $thirdPartyNotices,
+            (Get-Content (Join-Path $repoRoot 'docs/quickstart.md') -Raw),
+            (Get-Content (Join-Path $repoRoot 'docs/quickstart.ja.md') -Raw),
+            (Get-Content (Join-Path $repoRoot 'docs/installation.md') -Raw),
+            (Get-Content (Join-Path $repoRoot 'docs/installation.ja.md') -Raw),
+            (Get-Content (Join-Path $repoRoot 'docs/customization.md') -Raw),
+            (Get-Content (Join-Path $repoRoot 'docs/customization.ja.md') -Raw),
+            (Get-Content (Join-Path $repoRoot 'docs/TROUBLESHOOTING.md') -Raw),
+            (Get-Content (Join-Path $repoRoot 'docs/TROUBLESHOOTING.ja.md') -Raw),
+            (Get-Content (Join-Path $repoRoot 'packages/winsmux/README.md') -Raw)
+        )
     }
 
     It 'keeps public docs free of contributor/private direct links' {
@@ -33,10 +52,9 @@ Describe 'Public surface policy' {
         )
 
         foreach ($reference in $forbidden) {
-            $readme | Should -Not -Match ([Regex]::Escape($reference))
-            $readmeJa | Should -Not -Match ([Regex]::Escape($reference))
-            $operatorModel | Should -Not -Match ([Regex]::Escape($reference))
-            $thirdPartyNotices | Should -Not -Match ([Regex]::Escape($reference))
+            foreach ($publicDoc in $publicDocs) {
+                $publicDoc | Should -Not -Match ([Regex]::Escape($reference))
+            }
         }
     }
 
@@ -50,6 +68,15 @@ Describe 'Public surface policy' {
         $operatorModel | Should -Not -Match 'Repository-operated'
         $operatorModel | Should -Not -Match 'contributor/runtime'
         $operatorModel | Should -Match 'Repository-specific startup flows are kept in contributor documents'
+
+        $readme | Should -Match 'docs/quickstart\.md'
+        $readme | Should -Match 'docs/installation\.md'
+        $readme | Should -Match 'docs/customization\.md'
+        $readmeJa | Should -Match 'docs/quickstart\.ja\.md'
+        $readmeJa | Should -Match 'docs/installation\.ja\.md'
+        $readmeJa | Should -Match 'docs/customization\.ja\.md'
+        $docsIndex | Should -Match 'quickstart\.md'
+        $docsIndexJa | Should -Match 'quickstart\.ja\.md'
 
         foreach ($entrypoint in @('winsmux init', 'winsmux launch', 'winsmux launcher presets', 'winsmux compare')) {
             $readme | Should -Match ([Regex]::Escape($entrypoint))
@@ -102,6 +129,24 @@ Describe 'Public surface policy' {
         )
 
         @($tracked).Count | Should -Be 0
+    }
+
+    It 'keeps local generated artifacts out of the tracked public surface' {
+        $gitignore | Should -Match '\.playwright-mcp/'
+
+        $trackedArtifacts = @(
+            & git ls-files -- .playwright-mcp testResults.xml 2>$null |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+        @($trackedArtifacts).Count | Should -Be 0
+
+        $privateUsePaths = @(
+            & git ls-files -- 2>$null |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { $_ -match '[\uE000-\uF8FF]' }
+        )
+        @($privateUsePaths).Count | Should -Be 0
     }
 
     It 'uses example fallback for roadmap title localization' {

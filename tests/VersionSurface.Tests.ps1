@@ -158,4 +158,12 @@ Describe 'winsmux version surface' {
         $bridgeScript | Should -Match '-EncodedCommand \$encodedPesterCommand'
         $bridgeScript | Should -Not -Match 'Invoke-Pester -Path \(\$testFiles\.FullName\) -PassThru'
     }
+
+    It 'checks bare PowerShell startup in doctor output' {
+        $doctorScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'winsmux-core\scripts\doctor.ps1') -Raw -Encoding UTF8
+
+        $doctorScript | Should -Match 'PowerShell startup health'
+        $doctorScript | Should -Match '-NoProfile'
+        $doctorScript | Should -Match '\$PSVersionTable\.PSVersion\.ToString\(\)'
+    }
 }

@@ -380,7 +380,7 @@ function Test-ZombieProcessesCheck {
         return New-DoctorResult -Status warn -Label 'Zombie processes' -Detail 'command line inspection unavailable'
     }
 
-    $protectedIds = Get-DoctorAncestorProcessIds -Snapshot $snapshot -ProcessId $PID
+    $protectedIds = @(Get-DoctorAncestorProcessIds -Snapshot $snapshot -ProcessId $PID)
     $markerPaths = @(
         $repoRoot,
         (Join-Path $repoRoot '.worktrees'),
@@ -479,10 +479,49 @@ function New-PowerShellProcessPressureResult {
 
 function Test-PowerShellProcessPressureCheck {
     $snapshot = Get-DoctorProcessSnapshot
-    $protectedIds = Get-DoctorAncestorProcessIds -Snapshot $snapshot -ProcessId $PID
+    $protectedIds = @(Get-DoctorAncestorProcessIds -Snapshot $snapshot -ProcessId $PID)
     $warnThreshold = Get-DoctorPowerShellProcessWarnThreshold
 
     return New-PowerShellProcessPressureResult -Snapshot $snapshot -ProtectedIds $protectedIds -WarnThreshold $warnThreshold
+}
+
+function Test-PowerShellStartupHealthCheck {
+    $command = Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $command) {
+        return New-DoctorResult -Status fail -Label 'PowerShell startup health' -Detail 'pwsh was not found on PATH'
+    }
+
+    $pwshPath = $command.Path
+    if ([string]::IsNullOrWhiteSpace($pwshPath)) {
+        $pwshPath = $command.Source
+    }
+
+    try {
+        $output = & $pwshPath -NoProfile -NoLogo -Command '$PSVersionTable.PSVersion.ToString()' 2>&1
+        $exitCode = $LASTEXITCODE
+    } catch {
+        return New-DoctorResult -Status fail -Label 'PowerShell startup health' -Detail $_.Exception.Message
+    }
+
+    $message = (@($output) | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ }) -join '; '
+    if ($exitCode -ne 0) {
+        if ([string]::IsNullOrWhiteSpace($message)) {
+            $message = "pwsh exited with code $exitCode"
+        } else {
+            $message = "pwsh exited with code $exitCode; $message"
+        }
+        $message = "$message; check Windows Application event log for pwsh.exe initialization errors"
+
+        return New-DoctorResult -Status fail -Label 'PowerShell startup health' -Detail $message
+    }
+
+    if ([string]::IsNullOrWhiteSpace($message)) {
+        $message = $pwshPath
+    } else {
+        $message = "$message ($pwshPath)"
+    }
+
+    return New-DoctorResult -Status pass -Label 'PowerShell startup health' -Detail $message
 }
 
 function Test-BridgeConfigCheck {
@@ -575,6 +614,7 @@ if (-not $functionsOnly) {
         Test-WorkerGitDriftCheck
         Test-ZombieProcessesCheck
         Test-PowerShellProcessPressureCheck
+        Test-PowerShellStartupHealthCheck
         Test-BridgeConfigCheck
         Test-BridgeConfigMetadataCheck
         Test-HookProfileCheck

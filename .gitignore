@@ -39,6 +39,7 @@ docs/ci-checklist*.md
 docs/ROLE-DEFINITIONS.md
 docs/REQUIREMENTS.md
 .references/
+.playwright-mcp/
 .tmp-hook-*
 .review-*
 tasks/
