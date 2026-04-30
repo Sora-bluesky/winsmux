@@ -553,32 +553,42 @@ export function configureDesktopCommandTransport(
   desktopCommandTransport = transport;
 }
 
-export async function getDesktopSummarySnapshot() {
+function buildProjectDirPayload(projectDir?: string | null) {
+  const normalized = projectDir?.trim();
+  return normalized ? { projectDir: normalized } : {};
+}
+
+export async function getDesktopSummarySnapshot(projectDir?: string | null) {
   try {
     return await desktopCommandTransport.request<DesktopSummarySnapshot>(
       "desktop_summary_snapshot",
+      buildProjectDirPayload(projectDir),
     );
   } catch (error) {
     throw normalizeDesktopError("desktop_summary_snapshot", error);
   }
 }
 
-export async function getDesktopRunExplain(runId: string) {
+export async function getDesktopRunExplain(runId: string, projectDir?: string | null) {
   try {
     return await desktopCommandTransport.request<DesktopExplainPayload>(
       "desktop_run_explain",
-      { runId },
+      { runId, ...buildProjectDirPayload(projectDir) },
     );
   } catch (error) {
     throw normalizeDesktopError(`desktop_run_explain(${runId})`, error);
   }
 }
 
-export async function compareDesktopRuns(leftRunId: string, rightRunId: string) {
+export async function compareDesktopRuns(
+  leftRunId: string,
+  rightRunId: string,
+  projectDir?: string | null,
+) {
   try {
     return await desktopCommandTransport.request<DesktopCompareRunsResult>(
       "desktop_run_compare",
-      { leftRunId, rightRunId },
+      { leftRunId, rightRunId, ...buildProjectDirPayload(projectDir) },
     );
   } catch (error) {
     throw normalizeDesktopError(
@@ -588,11 +598,11 @@ export async function compareDesktopRuns(leftRunId: string, rightRunId: string) 
   }
 }
 
-export async function promoteDesktopRunTactic(runId: string) {
+export async function promoteDesktopRunTactic(runId: string, projectDir?: string | null) {
   try {
     return await desktopCommandTransport.request<DesktopPromoteTacticResult>(
       "desktop_run_promote",
-      { runId },
+      { runId, ...buildProjectDirPayload(projectDir) },
     );
   } catch (error) {
     throw normalizeDesktopError(`desktop_run_promote(${runId})`, error);
@@ -605,24 +615,32 @@ export async function pickDesktopRunWinner(
   recommendation: string,
   confidence: number | null,
   nextTest: string,
+  projectDir?: string | null,
 ) {
   try {
+    const projectPayload = buildProjectDirPayload(projectDir);
     return await desktopCommandTransport.request<DesktopPickWinnerResult>(
       "desktop_run_pick_winner",
       confidence === null
-        ? { runId, peerSlot, recommendation, nextTest }
-        : { runId, peerSlot, recommendation, confidence, nextTest },
+        ? { runId, peerSlot, recommendation, nextTest, ...projectPayload }
+        : { runId, peerSlot, recommendation, confidence, nextTest, ...projectPayload },
     );
   } catch (error) {
     throw normalizeDesktopError(`desktop_run_pick_winner(${runId})`, error);
   }
 }
 
-export async function getDesktopEditorFile(path: string, worktree?: string) {
+export async function getDesktopEditorFile(
+  path: string,
+  worktree?: string,
+  projectDir?: string | null,
+) {
   try {
     return await desktopCommandTransport.request<DesktopEditorFilePayload>(
       "desktop_editor_read",
-      worktree ? { path, worktree } : { path },
+      worktree
+        ? { path, worktree, ...buildProjectDirPayload(projectDir) }
+        : { path, ...buildProjectDirPayload(projectDir) },
     );
   } catch (error) {
     const worktreeSuffix = worktree ? `, ${worktree}` : "";

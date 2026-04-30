@@ -4642,7 +4642,7 @@ Describe 'orchestra-start server bootstrap' {
         $result.attach_adapter_trace[0].launch_result | Should -Be 'attach_confirmed'
         $script:startProcessCalls.Count | Should -Be 1
         $script:startProcessCalls[0].FilePath | Should -Be 'C:\Windows\System32\wt.exe'
-        $script:startProcessCalls[0].ArgumentList | Should -Be @('-w', '-1', 'new-window', '-p', 'winsmux orchestra attach')
+        $script:startProcessCalls[0].ArgumentList | Should -Be @('-w', '-1', 'new-window', '-p', '"winsmux orchestra attach"')
     }
 
     It 'returns attach_already_present only when a live visible attach state already exists' {

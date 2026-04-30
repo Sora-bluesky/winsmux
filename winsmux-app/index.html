@@ -16,19 +16,19 @@
           <div class="sidebar-caption">Operator shell</div>
         </div>
         <section class="sidebar-section">
-          <div class="sidebar-section-title"><span class="ui-icon" data-icon="◴" aria-hidden="true"></span>Sessions</div>
+          <div class="sidebar-section-title"><span class="ui-icon" data-icon="◴" aria-hidden="true"></span><span data-i18n="sessions-title">Sessions</span></div>
           <div id="session-list" class="sidebar-list"></div>
         </section>
         <section class="sidebar-section">
-          <div class="sidebar-section-title"><span class="ui-icon" data-icon="▱" aria-hidden="true"></span>Files</div>
+          <div class="sidebar-section-title"><span class="ui-icon" data-icon="▱" aria-hidden="true"></span><span data-i18n="files-title">Files</span></div>
           <div id="explorer-list" class="sidebar-list"></div>
         </section>
         <section class="sidebar-section">
-          <div class="sidebar-section-title"><span class="ui-icon" data-icon="✎" aria-hidden="true"></span>Editors</div>
+          <div class="sidebar-section-title"><span class="ui-icon" data-icon="✎" aria-hidden="true"></span><span data-i18n="editors-title">Editors</span></div>
           <div id="open-editors-list" class="sidebar-list"></div>
         </section>
         <section class="sidebar-section">
-          <div class="sidebar-section-title"><span class="ui-icon" data-icon="⌁" aria-hidden="true"></span>Source</div>
+          <div class="sidebar-section-title"><span class="ui-icon" data-icon="⌁" aria-hidden="true"></span><span data-i18n="source-title">Source</span></div>
           <div id="source-summary-list" class="sidebar-list"></div>
           <div id="source-entry-list" class="sidebar-list"></div>
         </section>
@@ -53,10 +53,10 @@
               type="button"
               aria-controls="command-bar"
               aria-expanded="false"
-              aria-label="Open command bar"
+              aria-label="Open action palette"
             >
-              <span class="ui-icon" data-icon="⌘" aria-hidden="true"></span>
-              <span class="btn-label">Command</span>
+              <span class="ui-icon" data-icon="⌕" aria-hidden="true"></span>
+              <span class="btn-label">Actions</span>
             </button>
             <button
               class="ghost-btn"
@@ -108,7 +108,7 @@
             <div id="conversation-timeline" role="log" aria-live="polite" aria-relevant="additions text"></div>
             <form id="composer" autocomplete="off">
               <label class="sr-only" for="composer-input">Message the Operator</label>
-              <textarea id="composer-input" rows="2" placeholder="Message the Operator... Dispatch, ask, review, or explain"></textarea>
+              <textarea id="composer-input" rows="2" placeholder="Describe a task or ask a question"></textarea>
               <input id="composer-file-input" type="file" hidden multiple />
               <div id="composer-mode-row" aria-label="Composer modes"></div>
               <div id="composer-slash-row" aria-label="Composer slash commands" hidden></div>
@@ -192,41 +192,46 @@
             </div>
           </div>
           <div class="settings-section">
-            <div class="context-label">Profile</div>
-            <div class="context-value">Local environment · GPT-5.4 · High reasoning</div>
+            <div class="context-label" id="settings-profile-label">Profile</div>
+            <div class="context-value" id="settings-profile-value">Local environment · GPT-5.4 · High reasoning</div>
           </div>
           <div class="settings-section">
-            <div class="context-label">Theme</div>
-            <div class="context-value">Public openai/codex TUI-derived typography, semantic color tokens, and shell contrast.</div>
+            <div class="context-label" id="settings-language-label">Language</div>
+            <div class="context-value" id="settings-language-value">Switch the workspace chrome between English and Japanese.</div>
+            <div id="language-options" class="settings-option-row" aria-label="Language options"></div>
+          </div>
+          <div class="settings-section">
+            <div class="context-label" id="settings-theme-label">Theme</div>
+            <div class="context-value" id="settings-theme-value">Public openai/codex TUI-derived typography, semantic color tokens, and shell contrast.</div>
             <div id="theme-options" class="settings-option-row" aria-label="Theme options"></div>
           </div>
           <div class="settings-section">
-            <div class="context-label">Density</div>
-            <div class="context-value">Workspace spacing, composer height, and panel padding.</div>
+            <div class="context-label" id="settings-density-label">Density</div>
+            <div class="context-value" id="settings-density-value">Workspace spacing, composer height, and panel padding.</div>
             <div id="density-options" class="settings-option-row" aria-label="Density options"></div>
           </div>
           <div class="settings-section">
-            <div class="context-label">Wrap</div>
-            <div class="context-value">Conversation, editor, and footer wrapping behavior.</div>
+            <div class="context-label" id="settings-wrap-label">Wrap</div>
+            <div class="context-value" id="settings-wrap-value">Conversation, editor, and footer wrapping behavior.</div>
             <div id="wrap-options" class="settings-option-row" aria-label="Wrap options"></div>
           </div>
           <div class="settings-section">
-            <div class="context-label">Code font</div>
-            <div class="context-value">Used in code preview, terminal panes, and diff details.</div>
+            <div class="context-label" id="settings-code-font-label">Code font</div>
+            <div class="context-value" id="settings-code-font-value">Used in code preview, terminal panes, and diff details.</div>
             <div id="code-font-options" class="settings-option-row" aria-label="Code font options"></div>
           </div>
           <div class="settings-section">
-            <div class="context-label">Display</div>
-            <div class="context-value">Choose how much timeline detail stays visible by default.</div>
+            <div class="context-label" id="settings-display-label">Display</div>
+            <div class="context-value" id="settings-display-value">Choose how much timeline detail stays visible by default.</div>
             <div id="focus-mode-options" class="settings-option-row" aria-label="Display detail options"></div>
           </div>
           <div class="settings-section">
-            <div class="context-label">Workspace</div>
-            <div class="context-value">Sidebar width, context collapse, terminal drawer behavior</div>
+            <div class="context-label" id="settings-workspace-label">Workspace</div>
+            <div class="context-value" id="settings-workspace-value">Sidebar width, context collapse, terminal drawer behavior</div>
           </div>
           <div class="settings-section">
-            <div class="context-label">Input</div>
-            <div class="context-value">Enter sends, Shift+Enter inserts newline, IME composition is protected</div>
+            <div class="context-label" id="settings-input-label">Input</div>
+            <div class="context-value" id="settings-input-value">Enter sends, Shift+Enter inserts newline, IME composition is protected</div>
           </div>
         </section>
 
@@ -236,9 +241,9 @@
             <div id="command-bar-header">
               <div>
                 <div class="timeline-eyebrow">Keyboard-first control</div>
-                <div id="command-bar-title">Command bar</div>
+                <div id="command-bar-title">Action palette</div>
               </div>
-              <div id="command-bar-hint">Ctrl/Cmd+K to open · ↑↓ navigate · Enter execute · Esc close</div>
+              <div id="command-bar-hint">Ctrl+K to open · ↑↓ navigate · Enter execute · Esc close</div>
             </div>
             <label class="sr-only" for="command-bar-input">Search commands</label>
             <input
@@ -248,9 +253,9 @@
               placeholder="Search actions, runs, panels, and operator controls"
             />
             <div id="command-bar-meta">
-              <span>Command palette for dispatch, review, explain, source context, settings, and terminal control.</span>
+              <span>Action palette for dispatch, review, explain, source context, settings, and terminal control.</span>
             </div>
-            <div id="command-bar-results" role="listbox" aria-label="Command results"></div>
+            <div id="command-bar-results" role="listbox" aria-label="Action results"></div>
           </div>
         </section>
       </main>
