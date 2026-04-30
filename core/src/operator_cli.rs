@@ -15,8 +15,8 @@ use serde_json::{json, Map, Value};
 
 use crate::event_contract::{parse_event_jsonl, EventRecord};
 use crate::ledger::{
-    attach_evidence_chain_to_event, LedgerBoardPayload, LedgerDigestItem, LedgerDigestPayload,
-    LedgerExplainPayload, LedgerInboxPayload, LedgerRunsPayload, LedgerSnapshot,
+    attach_evidence_chain_to_event, public_changed_files, LedgerBoardPayload, LedgerDigestItem,
+    LedgerDigestPayload, LedgerExplainPayload, LedgerInboxPayload, LedgerRunsPayload, LedgerSnapshot,
     LedgerStatusPayload,
 };
 use crate::machine_contract::machine_contract_catalog;
@@ -6011,28 +6011,43 @@ fn compare_runs_payload(
             })
             .unwrap_or(false)
     }) || !(left_recommendable && right_recommendable);
-    let playbook_template = if !winning_run_id.trim().is_empty() {
+    let (playbook_template, follow_up_run) = if !winning_run_id.trim().is_empty() {
         if winning_run_id == left.run.run_id {
-            playbook_template_contract(
+            let playbook_template = playbook_template_contract(
                 &left.run,
                 &left.evidence_digest,
                 "compare_winner_follow_up",
                 "compare_runs",
                 &[&left.run, &right.run],
-            )
+            );
+            let follow_up_run = compare_winner_follow_up_run_contract(
+                &left.run,
+                &left.evidence_digest,
+                &playbook_template,
+            );
+            (playbook_template, follow_up_run)
         } else {
-            playbook_template_contract(
+            let playbook_template = playbook_template_contract(
                 &right.run,
                 &right.evidence_digest,
                 "compare_winner_follow_up",
                 "compare_runs",
                 &[&left.run, &right.run],
-            )
+            );
+            let follow_up_run = compare_winner_follow_up_run_contract(
+                &right.run,
+                &right.evidence_digest,
+                &playbook_template,
+            );
+            (playbook_template, follow_up_run)
         }
     } else if reconcile_consult {
-        compare_reconcile_playbook_template(&left.run, &right.run)
+        (
+            compare_reconcile_playbook_template(&left.run, &right.run),
+            Value::Null,
+        )
     } else {
-        Value::Null
+        (Value::Null, Value::Null)
     };
     let next_action = if left.evidence_digest.next_action == right.evidence_digest.next_action {
         left.evidence_digest.next_action.clone()
@@ -6054,6 +6069,7 @@ fn compare_runs_payload(
             "reconcile_consult": reconcile_consult,
             "next_action": next_action,
             "playbook_template": playbook_template,
+            "follow_up_run": follow_up_run,
         },
     })
 }
@@ -6515,10 +6531,62 @@ fn playbook_template_contract(
         "handoff_refs": run.handoff_refs,
         "execution_backend": "operator_managed",
         "backend_profile_required": false,
+        "approval_defaults": managed_follow_up_approval_defaults(),
         "diversity_policy": diversity_policy,
         "freeform_body_stored": false,
         "private_guidance_stored": false,
         "local_reference_paths_stored": false,
+    })
+}
+
+fn managed_follow_up_approval_defaults() -> Value {
+    json!({
+        "contract_version": 1,
+        "packet_type": "managed_follow_up_approval_defaults",
+        "review_required": true,
+        "human_approval_required": true,
+        "auto_merge_allowed": false,
+        "merge_requires_human": true,
+        "operator_controls_merge": true,
+    })
+}
+
+fn compare_winner_follow_up_run_contract(
+    run: &crate::ledger::LedgerExplainRun,
+    evidence_digest: &crate::ledger::LedgerDigestItem,
+    playbook_template: &Value,
+) -> Value {
+    let mut source_evidence_refs = Vec::new();
+    if !run.experiment_packet.observation_pack_ref.trim().is_empty() {
+        source_evidence_refs.push(run.experiment_packet.observation_pack_ref.clone());
+    }
+    if !run.experiment_packet.consultation_ref.trim().is_empty() {
+        source_evidence_refs.push(run.experiment_packet.consultation_ref.clone());
+    }
+
+    json!({
+        "contract_version": 1,
+        "packet_type": "managed_follow_up_run_contract",
+        "source": "compare_runs",
+        "source_run_id": run.run_id,
+        "task_id": run.task_id,
+        "flow": "compare_winner_follow_up",
+        "run_mode": "operator_managed",
+        "playbook_template_ref": "playbook:compare_winner_follow_up",
+        "required_evidence": playbook_template["required_evidence"],
+        "source_evidence_refs": source_evidence_refs,
+        "changed_files": public_changed_files(&evidence_digest.changed_files),
+        "team_memory_refs": playbook_template["team_memory_refs"],
+        "approval_defaults": managed_follow_up_approval_defaults(),
+        "review_required": true,
+        "human_approval_required": true,
+        "auto_merge_allowed": false,
+        "merge_requires_human": true,
+        "operator_controls_merge": true,
+        "next_action": "start managed follow-up run and request human review before merge",
+        "local_reference_paths_stored": false,
+        "freeform_body_stored": false,
+        "private_guidance_stored": false,
     })
 }
 
@@ -6544,6 +6612,7 @@ fn compare_reconcile_playbook_template(
         "team_memory_refs": compare_team_memory_refs(left_run, right_run),
         "execution_backend": "operator_managed",
         "backend_profile_required": false,
+        "approval_defaults": managed_follow_up_approval_defaults(),
         "diversity_policy": diversity_policy,
         "freeform_body_stored": false,
         "private_guidance_stored": false,

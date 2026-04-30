@@ -13307,10 +13307,39 @@ panes:
         $result.recommend.playbook_template.team_memory_refs | Should -Contain 'team-memory:task-compare-a:operator-standard'
         $result.recommend.playbook_template.execution_backend | Should -Be 'operator_managed'
         $result.recommend.playbook_template.backend_profile_required | Should -Be $false
+        $result.recommend.playbook_template.approval_defaults.review_required | Should -Be $true
+        $result.recommend.playbook_template.approval_defaults.human_approval_required | Should -Be $true
+        $result.recommend.playbook_template.approval_defaults.auto_merge_allowed | Should -Be $false
         $result.recommend.playbook_template.freeform_body_stored | Should -Be $false
         $result.recommend.playbook_template.private_guidance_stored | Should -Be $false
         $result.recommend.playbook_template.PSObject.Properties.Name | Should -Not -Contain 'freeform_body'
         $result.recommend.playbook_template.PSObject.Properties.Name | Should -Not -Contain 'private_guidance'
+        $result.recommend.follow_up_run.packet_type | Should -Be 'managed_follow_up_run_contract'
+        $result.recommend.follow_up_run.source_run_id | Should -Be 'task:task-compare-a'
+        $result.recommend.follow_up_run.run_mode | Should -Be 'operator_managed'
+        $result.recommend.follow_up_run.playbook_template_ref | Should -Be 'playbook:compare_winner_follow_up'
+        $result.recommend.follow_up_run.required_evidence | Should -Be @('winning_run', 'comparison_evidence', 'promotion_candidate')
+        $result.recommend.follow_up_run.changed_files | Should -Be @('scripts/winsmux-core.ps1')
+        $unsafeFollowUp = New-CompareWinnerFollowUpRunContract `
+            -Run ([pscustomobject]@{
+                run_id = 'task:task-compare-a'
+                task_id = 'task-compare-a'
+                experiment_packet = [pscustomobject]@{
+                    observation_pack_ref = $script:compareObsA.reference
+                    consultation_ref = $script:compareConsultA.reference
+                }
+            }) `
+            -EvidenceDigest ([pscustomobject]@{ changed_files = @('scripts/winsmux-core.ps1', 'C:\Users\Example\secret.txt', '../private.md') }) `
+            -PlaybookTemplate $result.recommend.playbook_template
+        $unsafeFollowUp.changed_files | Should -Be @('scripts/winsmux-core.ps1')
+        $result.recommend.follow_up_run.source_evidence_refs | Should -Contain $script:compareObsA.reference
+        $result.recommend.follow_up_run.source_evidence_refs | Should -Contain $script:compareConsultA.reference
+        $result.recommend.follow_up_run.team_memory_refs | Should -Contain 'team-memory:task-compare-a:operator-standard'
+        $result.recommend.follow_up_run.review_required | Should -Be $true
+        $result.recommend.follow_up_run.human_approval_required | Should -Be $true
+        $result.recommend.follow_up_run.auto_merge_allowed | Should -Be $false
+        $result.recommend.follow_up_run.merge_requires_human | Should -Be $true
+        $result.recommend.follow_up_run.operator_controls_merge | Should -Be $true
         @($result.differences | ForEach-Object { $_.field }) | Should -Contain 'result'
         @($result.differences | ForEach-Object { $_.field }) | Should -Contain 'confidence'
         @($result.differences | ForEach-Object { $_.field }) | Should -Contain 'changed_files'
@@ -13532,7 +13561,11 @@ panes:
         $result.recommend.playbook_template.compare_run_ids | Should -Be @('task:task-compare-a', 'task:task-compare-b')
         $result.recommend.playbook_template.required_evidence | Should -Be @('overlap_paths', 'reconcile_consult', 'human_decision')
         $result.recommend.playbook_template.team_memory_refs | Should -Contain 'team-memory:task-compare-a:operator-standard'
+        $result.recommend.playbook_template.approval_defaults.review_required | Should -Be $true
+        $result.recommend.playbook_template.approval_defaults.human_approval_required | Should -Be $true
+        $result.recommend.playbook_template.approval_defaults.auto_merge_allowed | Should -Be $false
         $result.recommend.playbook_template.freeform_body_stored | Should -Be $false
+        $result.recommend.follow_up_run | Should -Be $null
     }
 
     It 'exports a playbook candidate from a run and writes a file-backed artifact' {
@@ -13556,6 +13589,10 @@ panes:
         $result.candidate.playbook_template.team_memory_refs | Should -Contain 'team-memory:task-compare-a:operator-standard'
         $result.candidate.playbook_template.execution_backend | Should -Be 'operator_managed'
         $result.candidate.playbook_template.backend_profile_required | Should -Be $false
+        $result.candidate.playbook_template.approval_defaults.review_required | Should -Be $true
+        $result.candidate.playbook_template.approval_defaults.human_approval_required | Should -Be $true
+        $result.candidate.playbook_template.approval_defaults.auto_merge_allowed | Should -Be $false
+        $result.candidate.playbook_template.approval_defaults.merge_requires_human | Should -Be $true
         $result.candidate.playbook_template.freeform_body_stored | Should -Be $false
         $result.candidate.playbook_template.private_guidance_stored | Should -Be $false
         $result.candidate.playbook_template.PSObject.Properties.Name | Should -Not -Contain 'freeform_body'
