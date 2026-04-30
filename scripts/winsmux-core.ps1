@@ -6453,6 +6453,7 @@ function Test-RunDurableRef {
         $text.Length -gt 256 -or
         $text.Contains("`n") -or
         $text.Contains("`r") -or
+        $text.Contains(':/') -or
         $text.Contains('\') -or
         $text.Contains(' ') -or
         $text.StartsWith('%') -or
@@ -6510,6 +6511,15 @@ function Get-RunPublicContextRefPrefixes {
         'knowledge/',
         'evidence:',
         'rationale:'
+    )
+}
+
+function Get-RunPublicContextPackIdPrefixes {
+    return @(
+        'ctx-',
+        'sem-',
+        'context:',
+        'context-packs/'
     )
 }
 
@@ -6977,6 +6987,12 @@ function New-RunCheckpointPackage {
 
     $verificationOutcome = [string](Get-RunContractField -InputObject $Run.verification_result -Name 'outcome')
     $changedFiles = @(ConvertTo-RunPublicChangedFiles -ChangedFiles $Run.changed_files)
+    $contextPackId = [string](Get-RunContractField -InputObject $Run.context_contract -Name 'context_pack_id')
+    $semanticContext = Get-RunContractField -InputObject $Run.context_contract -Name 'semantic_context'
+    $semanticContextPackId = [string](Get-RunContractField -InputObject $semanticContext -Name 'context_pack_id')
+    $contextPackIdPrefixes = Get-RunPublicContextPackIdPrefixes
+    $safeContextPackId = if (Test-RunDurableRef -Value $contextPackId -Prefixes $contextPackIdPrefixes) { $contextPackId.Trim() } else { $null }
+    $safeSemanticContextPackId = if (Test-RunDurableRef -Value $semanticContextPackId -Prefixes $contextPackIdPrefixes) { $semanticContextPackId.Trim() } else { $null }
     $cleanupRequired = (
         [string]$Run.task_state -in @('completed', 'task_completed', 'commit_ready', 'done') -or
         [string]$Run.review_state -eq 'PASS'
@@ -7000,6 +7016,47 @@ function New-RunCheckpointPackage {
             outcome           = $verificationOutcome
             verification_plan = @($Run.verification_plan)
             evidence_complete = (-not [string]::IsNullOrWhiteSpace($verificationOutcome))
+        }
+        end_of_run_snapshot          = [ordered]@{
+            contract_version = 1
+            packet_type      = 'end_of_run_snapshot_manifest'
+            status           = 'partial'
+            capture_policy   = [ordered]@{
+                snapshot_failure_does_not_fail_worker = $true
+                raw_terminal_transcript_stored        = $false
+                untracked_file_names_stored           = $false
+                private_content_stored                = $false
+                local_reference_paths_stored          = $false
+            }
+            repo_diff        = [ordered]@{
+                changed_files      = @($changedFiles)
+                changed_file_count = @($changedFiles).Count
+                untracked_files    = [ordered]@{
+                    state             = 'not_captured'
+                    count_bucket      = 'unknown'
+                    file_names_stored = $false
+                }
+            }
+            terminal         = [ordered]@{
+                state                = 'not_captured'
+                summary_ref          = $null
+                raw_transcript_stored = $false
+            }
+            artifacts        = [ordered]@{
+                artifact_refs = @()
+                summary_refs  = @()
+            }
+            context          = [ordered]@{
+                context_pack_id          = $safeContextPackId
+                semantic_context_pack_id = $safeSemanticContextPackId
+            }
+            hydration        = [ordered]@{
+                project_ref       = 'current_project'
+                assigned_worktree = $worktreeRef
+                session_type      = $sessionType
+                branch            = [string]$Run.branch
+                head_sha          = [string]$Run.head_sha
+            }
         }
         rollback_hint                = 'operator-owned-git-lifecycle'
         cleanup_hint                 = if ($cleanupRequired) { 'operator may clean the worker worktree after merge or explicit close' } else { 'keep the worker worktree for inspection' }
