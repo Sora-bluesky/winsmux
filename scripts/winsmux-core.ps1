@@ -3507,7 +3507,12 @@ function Invoke-Verify {
     }
 
     Write-Output "Running Pester tests from $testsDir"
-    $result = Invoke-Pester -Path ($testFiles.FullName) -PassThru
+    $pesterConfiguration = New-PesterConfiguration
+    $pesterConfiguration.Run.Path = @($testsDir)
+    $pesterConfiguration.Run.PassThru = $true
+    $pesterConfiguration.Run.Exit = $false
+    $pesterConfiguration.Output.Verbosity = 'Detailed'
+    $result = Invoke-Pester -Configuration $pesterConfiguration
 
     if ($null -eq $result) {
         Stop-WithError "Invoke-Pester returned no result."
