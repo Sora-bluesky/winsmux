@@ -1994,6 +1994,13 @@ fn operator_cli_poll_events_handles_missing_file_and_cursor_bounds() {
 fn operator_cli_compare_runs_json_reports_evidence_delta() {
     let project_dir = make_temp_project_dir("compare-runs");
     write_compare_runs_fixture(&project_dir);
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let manifest = fs::read_to_string(&manifest_path).expect("test should read manifest");
+    let manifest = manifest.replace(
+        "    changed_files: '[\"core/src/operator_cli.rs\"]'",
+        "    changed_files: '[\"core/src/operator_cli.rs\",\"C:\\\\Users\\\\Example\\\\secret.txt\",\"../private.md\"]'",
+    );
+    fs::write(&manifest_path, manifest).expect("test should write manifest");
 
     let json = run_json(
         &project_dir,
@@ -2026,6 +2033,67 @@ fn operator_cli_compare_runs_json_reports_evidence_delta() {
     assert_eq!(
         json["recommend"]["playbook_template"]["freeform_body_stored"],
         false
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["approval_defaults"]["review_required"],
+        true
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["approval_defaults"]["human_approval_required"],
+        true
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["approval_defaults"]["auto_merge_allowed"],
+        false
+    );
+    assert_eq!(
+        json["recommend"]["follow_up_run"]["packet_type"],
+        "managed_follow_up_run_contract"
+    );
+    assert_eq!(
+        json["recommend"]["follow_up_run"]["source_run_id"],
+        "task:task-a"
+    );
+    assert_eq!(
+        json["recommend"]["follow_up_run"]["run_mode"],
+        "operator_managed"
+    );
+    assert_eq!(
+        json["recommend"]["follow_up_run"]["playbook_template_ref"],
+        "playbook:compare_winner_follow_up"
+    );
+    assert_eq!(
+        json["recommend"]["follow_up_run"]["required_evidence"][0],
+        "winning_run"
+    );
+    let follow_up_changed_files = json["recommend"]["follow_up_run"]["changed_files"]
+        .as_array()
+        .expect("follow-up changed_files should be an array");
+    assert_eq!(follow_up_changed_files.len(), 1);
+    assert_eq!(follow_up_changed_files[0], "core/src/operator_cli.rs");
+    assert_eq!(
+        json["recommend"]["follow_up_run"]["source_evidence_refs"][0],
+        ".winsmux/observation-packs/task-a.json"
+    );
+    assert_eq!(
+        json["recommend"]["follow_up_run"]["source_evidence_refs"][1],
+        ".winsmux/consultations/task-a.json"
+    );
+    assert_eq!(
+        json["recommend"]["follow_up_run"]["review_required"],
+        true
+    );
+    assert_eq!(
+        json["recommend"]["follow_up_run"]["human_approval_required"],
+        true
+    );
+    assert_eq!(
+        json["recommend"]["follow_up_run"]["auto_merge_allowed"],
+        false
+    );
+    assert_eq!(
+        json["recommend"]["follow_up_run"]["merge_requires_human"],
+        true
     );
     assert_eq!(
         json["recommend"]["playbook_template"]["diversity_policy"]["packet_type"],
@@ -2264,6 +2332,19 @@ fn operator_cli_compare_runs_emits_conflict_resolution_playbook_when_no_winner()
             ["raw_provider_ids_stored"],
         false
     );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["approval_defaults"]["review_required"],
+        true
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["approval_defaults"]["human_approval_required"],
+        true
+    );
+    assert_eq!(
+        json["recommend"]["playbook_template"]["approval_defaults"]["auto_merge_allowed"],
+        false
+    );
+    assert!(json["recommend"]["follow_up_run"].is_null());
     let diversity_policy_text =
         json["recommend"]["playbook_template"]["diversity_policy"].to_string();
     assert!(!diversity_policy_text.contains("codex"));
@@ -2343,6 +2424,22 @@ fn operator_cli_promote_tactic_writes_playbook_candidate() {
     assert_eq!(
         json["candidate"]["playbook_template"]["freeform_body_stored"],
         false
+    );
+    assert_eq!(
+        json["candidate"]["playbook_template"]["approval_defaults"]["review_required"],
+        true
+    );
+    assert_eq!(
+        json["candidate"]["playbook_template"]["approval_defaults"]["human_approval_required"],
+        true
+    );
+    assert_eq!(
+        json["candidate"]["playbook_template"]["approval_defaults"]["auto_merge_allowed"],
+        false
+    );
+    assert_eq!(
+        json["candidate"]["playbook_template"]["approval_defaults"]["merge_requires_human"],
+        true
     );
     assert!(json["candidate"]["playbook_template"]["freeform_body"].is_null());
     assert_eq!(

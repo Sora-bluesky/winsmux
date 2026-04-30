@@ -8062,9 +8062,62 @@ function New-RunPlaybookTemplate {
         handoff_refs              = @($Run.handoff_refs)
         execution_backend         = 'operator_managed'
         backend_profile_required  = $false
+        approval_defaults         = New-ManagedFollowUpApprovalDefaults
         freeform_body_stored      = $false
         private_guidance_stored   = $false
         local_reference_paths_stored = $false
+    }
+}
+
+function New-ManagedFollowUpApprovalDefaults {
+    return [ordered]@{
+        contract_version        = 1
+        packet_type             = 'managed_follow_up_approval_defaults'
+        review_required         = $true
+        human_approval_required = $true
+        auto_merge_allowed      = $false
+        merge_requires_human    = $true
+        operator_controls_merge = $true
+    }
+}
+
+function New-CompareWinnerFollowUpRunContract {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$EvidenceDigest,
+        [Parameter(Mandatory = $true)]$PlaybookTemplate
+    )
+
+    $experimentPacket = Get-RunContractField -InputObject $Run -Name 'experiment_packet'
+    $observationPackRef = [string](Get-RunContractField -InputObject $experimentPacket -Name 'observation_pack_ref')
+    $consultationRef = [string](Get-RunContractField -InputObject $experimentPacket -Name 'consultation_ref')
+
+    return [ordered]@{
+        contract_version             = 1
+        packet_type                  = 'managed_follow_up_run_contract'
+        source                       = 'compare_runs'
+        source_run_id                = [string]$Run.run_id
+        task_id                      = [string]$Run.task_id
+        flow                         = 'compare_winner_follow_up'
+        run_mode                     = 'operator_managed'
+        playbook_template_ref        = 'playbook:compare_winner_follow_up'
+        required_evidence            = @($PlaybookTemplate.required_evidence)
+        source_evidence_refs         = @(
+            if (-not [string]::IsNullOrWhiteSpace($observationPackRef)) { $observationPackRef }
+            if (-not [string]::IsNullOrWhiteSpace($consultationRef)) { $consultationRef }
+        )
+        changed_files                = @(ConvertTo-RunPublicChangedFiles -ChangedFiles $EvidenceDigest.changed_files)
+        team_memory_refs             = @($PlaybookTemplate.team_memory_refs)
+        approval_defaults            = New-ManagedFollowUpApprovalDefaults
+        review_required              = $true
+        human_approval_required      = $true
+        auto_merge_allowed           = $false
+        merge_requires_human         = $true
+        operator_controls_merge      = $true
+        next_action                  = 'start managed follow-up run and request human review before merge'
+        local_reference_paths_stored = $false
+        freeform_body_stored         = $false
+        private_guidance_stored      = $false
     }
 }
 
@@ -8099,6 +8152,7 @@ function New-CompareReconcilePlaybookTemplate {
         team_memory_refs          = @($teamMemoryRefs | Sort-Object -Unique)
         execution_backend         = 'operator_managed'
         backend_profile_required  = $false
+        approval_defaults         = New-ManagedFollowUpApprovalDefaults
         freeform_body_stored      = $false
         private_guidance_stored   = $false
         local_reference_paths_stored = $false
@@ -8201,11 +8255,14 @@ function ConvertTo-CompareRunsPayload {
         -not ($leftRecommendable -and $rightRecommendable)
     )
     $recommendedPlaybook = $null
+    $recommendedFollowUpRun = $null
     if (-not [string]::IsNullOrWhiteSpace($winningRunId)) {
         if ($winningRunId -eq [string]$leftRun.run_id) {
             $recommendedPlaybook = New-RunPlaybookTemplate -Run $leftRun -EvidenceDigest $leftEvidence -Flow 'compare_winner_follow_up' -Source 'compare_runs'
+            $recommendedFollowUpRun = New-CompareWinnerFollowUpRunContract -Run $leftRun -EvidenceDigest $leftEvidence -PlaybookTemplate $recommendedPlaybook
         } else {
             $recommendedPlaybook = New-RunPlaybookTemplate -Run $rightRun -EvidenceDigest $rightEvidence -Flow 'compare_winner_follow_up' -Source 'compare_runs'
+            $recommendedFollowUpRun = New-CompareWinnerFollowUpRunContract -Run $rightRun -EvidenceDigest $rightEvidence -PlaybookTemplate $recommendedPlaybook
         }
     } elseif ($reconcileConsult) {
         $recommendedPlaybook = New-CompareReconcilePlaybookTemplate -LeftRun $leftRun -RightRun $rightRun
@@ -8251,6 +8308,7 @@ function ConvertTo-CompareRunsPayload {
             reconcile_consult = $reconcileConsult
             next_action = if ([string]$leftEvidence.next_action -eq [string]$rightEvidence.next_action) { [string]$leftEvidence.next_action } else { 'reconcile_consult' }
             playbook_template = $recommendedPlaybook
+            follow_up_run = $recommendedFollowUpRun
         }
     }
 }
