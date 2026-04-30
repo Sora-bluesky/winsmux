@@ -1345,6 +1345,62 @@ body[data-popout-surface="1"] #editor-surface {
   gap: 10px;
 }
 
+#handoff-cockpit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.handoff-cockpit-row {
+  border: 1px solid var(--border-muted);
+  border-radius: 14px;
+  background: var(--bg-surface);
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: minmax(76px, auto) minmax(0, 1fr);
+  gap: 3px 10px;
+}
+
+.handoff-cockpit-row[data-tone="success"] {
+  border-color: var(--status-success-border);
+}
+
+.handoff-cockpit-row[data-tone="warning"] {
+  border-color: var(--status-warning-border);
+}
+
+.handoff-cockpit-row[data-tone="danger"] {
+  border-color: var(--status-danger-border);
+}
+
+.handoff-cockpit-row[data-tone="info"] {
+  border-color: var(--status-info-border);
+}
+
+.handoff-cockpit-title {
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.handoff-cockpit-value {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  overflow-wrap: break-word;
+}
+
+.handoff-cockpit-detail {
+  grid-column: 1 / -1;
+  color: var(--text-secondary);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-normal);
+  overflow-wrap: break-word;
+}
+
 .experiment-detail-card {
   border: 1px solid var(--border-muted);
   border-radius: 14px;

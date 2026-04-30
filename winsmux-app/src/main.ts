@@ -183,6 +183,13 @@ interface FooterStatusItem {
   tone?: SurfaceTone;
 }
 
+interface HandoffDecisionItem {
+  label: string;
+  value: string;
+  detail: string;
+  status: "ready" | "waiting" | "blocked" | "missing";
+}
+
 interface ExperimentDetailLine {
   label: string;
   value: string;
@@ -1586,6 +1593,216 @@ function getSelectedRunId() {
   return resolveSelectedRunId();
 }
 
+function normalizeDecisionText(value: string | null | undefined) {
+  return (value || "").trim();
+}
+
+function getDecisionStatusTone(status: HandoffDecisionItem["status"]): SurfaceTone {
+  switch (status) {
+    case "ready":
+      return "success";
+    case "waiting":
+      return "warning";
+    case "blocked":
+      return "danger";
+    case "missing":
+    default:
+      return "info";
+  }
+}
+
+function getReviewDecisionItem(
+  projection: DesktopRunProjection,
+  payload: DesktopExplainPayload | null,
+): HandoffDecisionItem {
+  const reviewState = normalizeDecisionText(projection.review_state || payload?.run.review_state).toUpperCase();
+  const reviewer = payload?.review_state?.reviewer?.label || payload?.review_state?.request?.target_review_label || "";
+  if (reviewState === "PASS") {
+    return {
+      label: "Review",
+      value: "Passed",
+      detail: reviewer ? `Approved by ${reviewer}` : "Review evidence is present.",
+      status: "ready",
+    };
+  }
+  if (reviewState === "FAIL" || reviewState === "FAILED") {
+    return {
+      label: "Review",
+      value: "Failed",
+      detail: reviewer ? `Reviewer ${reviewer} returned a blocking result.` : "Review is blocking this run.",
+      status: "blocked",
+    };
+  }
+  if (reviewState === "PENDING") {
+    return {
+      label: "Review",
+      value: "Pending",
+      detail: reviewer ? `Waiting on ${reviewer}.` : "Review has been requested.",
+      status: "waiting",
+    };
+  }
+  return {
+    label: "Review",
+    value: "Not requested",
+    detail: projection.review_state || "No review state has been recorded.",
+    status: "missing",
+  };
+}
+
+function getVerificationDecisionItem(
+  projection: DesktopRunProjection,
+  payload: DesktopExplainPayload | null,
+): HandoffDecisionItem {
+  const outcome = normalizeDecisionText(projection.verification_outcome || payload?.evidence_digest.verification_outcome).toUpperCase();
+  if (outcome === "PASS") {
+    return {
+      label: "Verification",
+      value: "Passed",
+      detail: "Latest evidence reports a passing verification outcome.",
+      status: "ready",
+    };
+  }
+  if (outcome === "FAIL" || outcome === "FAILED" || outcome === "BLOCK") {
+    return {
+      label: "Verification",
+      value: outcome,
+      detail: "Verification must be resolved before release or merge.",
+      status: "blocked",
+    };
+  }
+  if (outcome === "PARTIAL" || outcome === "WARN" || outcome === "WARNING") {
+    return {
+      label: "Verification",
+      value: outcome,
+      detail: "Partial evidence needs an operator decision.",
+      status: "waiting",
+    };
+  }
+  return {
+    label: "Verification",
+    value: "Missing",
+    detail: "Open Explain or wait for the run to emit verification evidence.",
+    status: "missing",
+  };
+}
+
+function getSecurityDecisionItem(
+  projection: DesktopRunProjection,
+  payload: DesktopExplainPayload | null,
+): HandoffDecisionItem {
+  const securityText = normalizeDecisionText(projection.security_blocked || payload?.evidence_digest.security_blocked).toUpperCase();
+  if (securityText === "BLOCK" || securityText === "BLOCKED" || securityText === "TRUE") {
+    return {
+      label: "Security",
+      value: "Blocked",
+      detail: "Security policy is blocking this run.",
+      status: "blocked",
+    };
+  }
+  if (securityText === "ALLOW" || securityText === "PASS" || securityText === "FALSE") {
+    return {
+      label: "Security",
+      value: "Clear",
+      detail: "No security block is reported for the selected run.",
+      status: "ready",
+    };
+  }
+  return {
+    label: "Security",
+    value: "Unknown",
+    detail: "No security verdict is visible yet.",
+    status: "missing",
+  };
+}
+
+function getOperatorDecisionItem(
+  projection: DesktopRunProjection,
+  payload: DesktopExplainPayload | null,
+): HandoffDecisionItem {
+  const nextAction = normalizeDecisionText(projection.next_action || payload?.explanation.next_action);
+  const lowerNextAction = nextAction.toLowerCase();
+  const reviewState = normalizeDecisionText(projection.review_state || payload?.run.review_state).toUpperCase();
+  if (
+    lowerNextAction.includes("needs_user_decision") ||
+    lowerNextAction.includes("human") ||
+    lowerNextAction.includes("draft_pr") ||
+    lowerNextAction.includes("approve")
+  ) {
+    return {
+      label: "Operator",
+      value: "Decision needed",
+      detail: nextAction,
+      status: "waiting",
+    };
+  }
+  if (projection.activity === "blocked" || lowerNextAction === "blocked") {
+    return {
+      label: "Operator",
+      value: "Blocked",
+      detail: projection.detail || nextAction || "Run is blocked.",
+      status: "blocked",
+    };
+  }
+  if (reviewState === "PASS" && !nextAction) {
+    return {
+      label: "Operator",
+      value: "Ready to package",
+      detail: "Review has passed and no extra decision is visible.",
+      status: "ready",
+    };
+  }
+  return {
+    label: "Operator",
+    value: nextAction || "Monitoring",
+    detail: projection.detail || projection.summary || "No operator decision is visible yet.",
+    status: nextAction ? "waiting" : "missing",
+  };
+}
+
+function renderHandoffCockpit(root: HTMLElement, projection: DesktopRunProjection | null) {
+  root.innerHTML = "";
+  if (!projection) {
+    const empty = document.createElement("div");
+    empty.className = "context-empty-state";
+    empty.innerHTML =
+      `<div class="context-label">No selected run</div>` +
+      `<div class="context-value">A run must be selected before decision gates can be shown.</div>`;
+    root.appendChild(empty);
+    return;
+  }
+
+  const payload = desktopExplainCache.get(projection.run_id) ?? null;
+  const items = [
+    getReviewDecisionItem(projection, payload),
+    getVerificationDecisionItem(projection, payload),
+    getSecurityDecisionItem(projection, payload),
+    getOperatorDecisionItem(projection, payload),
+  ];
+
+  for (const item of items) {
+    const row = document.createElement("div");
+    row.className = "handoff-cockpit-row";
+    row.dataset.tone = getDecisionStatusTone(item.status);
+
+    const title = document.createElement("div");
+    title.className = "handoff-cockpit-title";
+    title.textContent = item.label;
+
+    const value = document.createElement("div");
+    value.className = "handoff-cockpit-value";
+    value.textContent = item.value;
+
+    const detail = document.createElement("div");
+    detail.className = "handoff-cockpit-detail";
+    detail.textContent = item.detail;
+
+    row.appendChild(title);
+    row.appendChild(value);
+    row.appendChild(detail);
+    root.appendChild(row);
+  }
+}
+
 function renderExperimentContext() {
   const overviewRoot = document.getElementById("experiment-overview-cards");
   const detailRoot = document.getElementById("experiment-detail-list");
@@ -2152,10 +2369,11 @@ function renderExperimentContext() {
 
 function renderContextPanel() {
   const sectionRoot = document.getElementById("context-sections");
+  const handoffRoot = document.getElementById("handoff-cockpit-list");
   const previewRoot = document.getElementById("preview-target-list");
   const overviewRoot = document.getElementById("source-overview-cards");
   const fileRoot = document.getElementById("context-file-list");
-  if (!sectionRoot || !previewRoot || !overviewRoot || !fileRoot) {
+  if (!sectionRoot || !handoffRoot || !previewRoot || !overviewRoot || !fileRoot) {
     return;
   }
 
@@ -2179,6 +2397,7 @@ function renderContextPanel() {
     sectionRoot.appendChild(row);
   }
 
+  renderHandoffCockpit(handoffRoot, selectedProjection ?? null);
   renderExperimentContext();
 
   previewRoot.innerHTML = "";
