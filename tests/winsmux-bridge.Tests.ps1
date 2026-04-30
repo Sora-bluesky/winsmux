@@ -8474,6 +8474,16 @@ panes:
         $result.runs[0].run_insights.drift_signals | Should -Be @('drift_detected')
         $result.runs[0].run_insights.unhealthy_session_size | Should -Be $true
         $result.runs[0].run_insights.next_improvements | Should -Contain 'split the next run into a smaller scope'
+        $result.runs[0].architecture_contract.packet_type | Should -Be 'architecture_contract'
+        $result.runs[0].architecture_contract.baseline.max_drift_score | Should -Be 0
+        $result.runs[0].architecture_contract.current.drift_score | Should -Be 1
+        $result.runs[0].architecture_contract.current.drift_signals | Should -Be @('drift_detected')
+        $result.runs[0].architecture_contract.score_regression | Should -Be $true
+        $result.runs[0].architecture_contract.status | Should -Be 'baseline_mismatch'
+        $result.runs[0].architecture_contract.storage_policy.local_reference_paths_stored | Should -Be $false
+        $result.runs[0].verification_envelope.static_gates.required_fields | Should -Contain 'architecture_contract'
+        $result.runs[0].verification_envelope.dynamic_gates.architecture.status | Should -Be 'baseline_mismatch'
+        $result.runs[0].verification_envelope.release_decision.blocked_reasons | Should -Contain 'architecture baseline mismatch requires review'
         $result.runs[0].child_launch_contract.packet_type | Should -Be 'child_launch_contract'
         $result.runs[0].child_launch_contract.scope | Should -Be 'operator_managed_child_run'
         $result.runs[0].child_launch_contract.role | Should -Be 'Builder'
@@ -8521,6 +8531,7 @@ panes:
         $result.runs[0].run_packet.team_memory.team_memory_refs | Should -Contain 'team-memory:task-256:operator-standard'
         $result.runs[0].run_packet.team_memory.team_memory_refs | Should -Contain 'team-memory:task:task-256:event-3'
         $result.runs[0].run_packet.run_insights.retry_count | Should -Be 1
+        $result.runs[0].run_packet.architecture_contract.status | Should -Be 'baseline_mismatch'
         $result.runs[0].run_packet.child_launch_contract.packet_type | Should -Be 'child_launch_contract'
         $result.runs[0].run_packet.child_launch_contract.structured_handoff.plan_ref | Should -Be 'plan.md'
         $result.runs[0].run_packet.child_launch_contract.operator_controls_merge | Should -Be $true
@@ -8569,6 +8580,7 @@ panes:
         $result.runs[0].draft_pr_gate.handoff_package.validation.outcome | Should -Be 'PARTIAL'
         $result.runs[0].draft_pr_gate.handoff_package.remaining_risks | Should -Contain 'verification outcome is PARTIAL'
         $result.runs[0].draft_pr_gate.handoff_package.blocked_reasons | Should -Contain 'review state is unresolved: PENDING'
+        $result.runs[0].draft_pr_gate.handoff_package.blocked_reasons | Should -Contain 'architecture baseline mismatch requires review'
         $result.runs[0].draft_pr_gate.handoff_package.package_complete | Should -Be $false
         $result.runs[0].draft_pr_gate.handoff_package.automatic_merge_allowed | Should -Be $false
         $result.runs[0].run_packet.plan.goal | Should -Be 'Ship run contract primitives'
@@ -8613,6 +8625,58 @@ panes:
         $gate.handoff_package.validation.evidence_complete | Should -Be $false
         $gate.handoff_package.blocked_reasons | Should -Contain 'verification evidence is missing'
         $gate.handoff_package.suggested_next_action | Should -Be 'resolve blocked reasons before creating or merging a draft PR'
+    }
+
+    It 'keeps in-progress outcome when draft PR gate is blocked only for missing evidence' {
+        $run = [ordered]@{
+            task_state            = 'in_progress'
+            review_state          = 'PENDING'
+            last_event            = ''
+            experiment_packet     = $null
+            verification_result   = $null
+            phase_gate            = [ordered]@{ stop_reason = '' }
+            draft_pr_gate         = [ordered]@{ state = 'blocked' }
+            architecture_contract = [ordered]@{
+                score_regression = $false
+                baseline = [ordered]@{ review_required_on_drift = $true }
+            }
+        }
+
+        $outcome = New-RunOutcomeContract -Run $run
+
+        $outcome.status | Should -Be 'in_progress'
+    }
+
+    It 'does not treat benign drift text as architecture mismatch' {
+        $run = [ordered]@{
+            run_id        = 'task:task-drift-ok'
+            task_id       = 'task-drift-ok'
+            action_items  = @()
+            pane_count    = 1
+            changed_file_count = 0
+            phase_gate    = [ordered]@{ stop_reason = '' }
+            draft_pr_gate = [ordered]@{ state = '' }
+            tdd_gate      = [ordered]@{ state = '' }
+            verification_result = [ordered]@{ outcome = 'PASS' }
+            verification_evidence = [ordered]@{}
+            security_verdict    = [ordered]@{ verdict = 'ALLOW' }
+        }
+        $events = @(
+            [ordered]@{
+                event   = 'pipeline.drift_check.pass'
+                message = 'no drift detected; drift check passed'
+                status  = 'completed'
+                data    = [ordered]@{ task_id = 'task-drift-ok' }
+            }
+        )
+
+        $run.run_insights = New-RunInsightsContract -Run $run -EventRecords $events
+        $contract = New-RunArchitectureContract -Run $run
+
+        @($run.run_insights.drift_signals).Count | Should -Be 0
+        $contract.current.drift_score | Should -Be 0
+        $contract.score_regression | Should -Be $false
+        $contract.status | Should -Be 'baseline_match'
     }
 
     It 'scrubs checkpoint package path and body fields' {
@@ -8957,6 +9021,9 @@ Set-Location '__RUNS_TEMP_ROOT__'
         $result.runs[0].run_insights.blocked_reasons | Should -Contain 'tdd_gate_blocked'
         $result.runs[0].run_insights.next_improvements | Should -Contain 'capture operator decisions as reusable guidance'
         $result.runs[0].run_insights.next_improvements | Should -Contain 'resolve blocked reasons before release'
+        $result.runs[0].architecture_contract.current.drift_score | Should -Be 0
+        $result.runs[0].architecture_contract.score_regression | Should -Be $false
+        $result.runs[0].architecture_contract.status | Should -Be 'baseline_match'
         $result.runs[0].run_packet.run_insights.retry_count | Should -Be 0
     }
 
@@ -10074,6 +10141,9 @@ panes:
         $result.run.run_insights.drift_signals | Should -Be @('drift_detected')
         $result.run.run_insights.intervention_count | Should -BeGreaterThan 0
         $result.run.run_insights.next_improvements | Should -Contain 'reduce retry loop before the next run'
+        $result.run.architecture_contract.packet_type | Should -Be 'architecture_contract'
+        $result.run.architecture_contract.current.drift_score | Should -Be 1
+        $result.run.architecture_contract.status | Should -Be 'baseline_mismatch'
         $result.run.tdd_gate.required | Should -Be $true
         $result.run.tdd_gate.state | Should -Be 'passed'
         $result.run.tdd_gate.red_event | Should -Be 'pipeline.tdd.red'
@@ -10115,6 +10185,7 @@ panes:
         $result.run.draft_pr_gate.handoff_package.summary | Should -Be 'rerun focused verification'
         $result.run.draft_pr_gate.handoff_package.remaining_risks | Should -Contain 'verification outcome is PARTIAL'
         $result.run.draft_pr_gate.handoff_package.blocked_reasons | Should -Contain 'review state is unresolved: PENDING'
+        $result.run.draft_pr_gate.handoff_package.blocked_reasons | Should -Contain 'architecture baseline mismatch requires review'
         $result.run.draft_pr_gate.handoff_package.automatic_merge_allowed | Should -Be $false
         $result.observation_pack.failing_command | Should -Be 'Invoke-Pester tests/winsmux-bridge.Tests.ps1'
         $result.observation_pack.changed_files | Should -Contain 'scripts/winsmux-core.ps1'
@@ -13585,6 +13656,92 @@ panes:
                         outcome = 'PASS'
                         summary = 'cache hit confirmed'
                     }
+                }
+            } | ConvertTo-Json -Compress)
+        ) | Set-Content -Path $script:compareEventsPath -Encoding UTF8
+
+        { Invoke-PromoteTactic -PromoteTarget 'task:task-compare-a' } | Should -Throw '*run is not promotable*'
+    }
+
+    It 'rejects promote-tactic when architecture drift has not been reviewed' {
+        @"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $script:compareTempRoot
+panes:
+  builder-1:
+    pane_id: %2
+    role: Builder
+    task_id: task-compare-a
+    task: Compare run A
+    task_state: completed
+    review_state: ''
+    branch: worktree-builder-a
+    head_sha: aaaabbbbccccdddd
+    changed_file_count: 1
+    changed_files: '["scripts/winsmux-core.ps1"]'
+    last_event: pipeline.verify.pass
+    last_event_at: 2026-04-12T10:05:10+09:00
+"@ | Set-Content -Path $script:compareManifestPath -Encoding UTF8
+
+        @(
+            ([ordered]@{
+                timestamp = '2026-04-12T10:00:00+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pane.consult_result'
+                message   = 'architecture drift detected before promotion'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                branch    = 'worktree-builder-a'
+                head_sha  = 'aaaabbbbccccdddd'
+                data      = [ordered]@{
+                    task_id              = 'task-compare-a'
+                    run_id               = 'task:task-compare-a'
+                    slot                 = 'slot-builder-a'
+                    hypothesis           = 'deterministic command fixes cache'
+                    result               = 'cache hit done'
+                    confidence           = 0.85
+                    next_action          = 'promote tactic'
+                    observation_pack_ref = $script:compareObsA.reference
+                    consultation_ref     = $script:compareConsultA.reference
+                }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-12T10:05:10+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pipeline.verify.pass'
+                message   = 'verification passed'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                branch    = 'worktree-builder-a'
+                head_sha  = 'aaaabbbbccccdddd'
+                data      = [ordered]@{
+                    task_id = 'task-compare-a'
+                    run_id  = 'task:task-compare-a'
+                    verification_result = [ordered]@{
+                        outcome = 'PASS'
+                        summary = 'cache hit confirmed'
+                    }
+                }
+            } | ConvertTo-Json -Compress),
+            ([ordered]@{
+                timestamp = '2026-04-12T10:05:20+09:00'
+                session   = 'winsmux-orchestra'
+                event     = 'pipeline.security.allowed'
+                message   = 'security allowed'
+                label     = 'builder-1'
+                pane_id   = '%2'
+                role      = 'Builder'
+                branch    = 'worktree-builder-a'
+                head_sha  = 'aaaabbbbccccdddd'
+                data      = [ordered]@{
+                    task_id = 'task-compare-a'
+                    run_id  = 'task:task-compare-a'
+                    verdict = 'ALLOW'
+                    reason  = 'verified safe'
                 }
             } | ConvertTo-Json -Compress)
         ) | Set-Content -Path $script:compareEventsPath -Encoding UTF8

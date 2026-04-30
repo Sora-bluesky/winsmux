@@ -5932,6 +5932,7 @@ function New-RunOutcomeContract {
     $draftPrGate = Get-RunContractField -InputObject $Run -Name 'draft_pr_gate'
     $phaseGateStopReason = [string](Get-RunContractField -InputObject $phaseGate -Name 'stop_reason')
     $draftPrGateState = [string](Get-RunContractField -InputObject $draftPrGate -Name 'state')
+    $architectureReviewMissing = Test-RunArchitectureReviewMissing -Run $Run
 
     $status = ''
     if ([string]$Run.review_state -in @('FAIL', 'FAILED')) {
@@ -5940,6 +5941,8 @@ function New-RunOutcomeContract {
         $status = 'needs_user_decision'
     } elseif (-not [string]::IsNullOrWhiteSpace($phaseGateStopReason)) {
         $status = 'blocked'
+    } elseif ($architectureReviewMissing) {
+        $status = 'needs_user_decision'
     } elseif ([string]$Run.review_state -eq 'PASS' -and $draftPrGateState -ne 'passed') {
         $status = 'needs_user_decision'
     } elseif ([string]$Run.review_state -eq 'PASS' -or [string]$Run.task_state -in @('completed', 'task_completed', 'commit_ready', 'done')) {
@@ -5972,6 +5975,18 @@ function New-RunOutcomeContract {
         confidence  = $confidence
         source_event = [string]$Run.last_event
     }
+}
+
+function Test-RunArchitectureReviewMissing {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $reviewState = [string](Get-RunContractField -InputObject $Run -Name 'review_state')
+    $architectureContract = Get-RunContractField -InputObject $Run -Name 'architecture_contract'
+    $architectureScoreRegression = [bool](Get-RunContractField -InputObject $architectureContract -Name 'score_regression')
+    $architectureBaseline = Get-RunContractField -InputObject $architectureContract -Name 'baseline'
+    $architectureReviewRequired = [bool](Get-RunContractField -InputObject $architectureBaseline -Name 'review_required_on_drift')
+
+    return ($architectureScoreRegression -and $architectureReviewRequired -and $reviewState -ne 'PASS')
 }
 
 function Set-RunPhaseGateStage {
@@ -6297,7 +6312,8 @@ function New-RunInsightsContract {
     $interventionCount = @($Run.action_items).Count
 
     foreach ($eventRecord in @($EventRecords)) {
-        $eventText = ("{0} {1} {2}" -f [string]$eventRecord['event'], [string]$eventRecord['message'], [string]$eventRecord['status']).ToLowerInvariant()
+        $eventName = [string]$eventRecord['event']
+        $eventText = ("{0} {1} {2}" -f $eventName, [string]$eventRecord['message'], [string]$eventRecord['status']).ToLowerInvariant()
         $nextAction = ''
         $data = if ($eventRecord.Contains('data')) { $eventRecord['data'] } else { $null }
         if ($null -ne $data -and $data -is [System.Collections.IDictionary] -and $data.Contains('next_action')) {
@@ -6308,13 +6324,13 @@ function New-RunInsightsContract {
             $retryCount++
         }
 
-        if ($eventText.Contains('drift')) {
+        if (Test-RunDriftSignalText -EventName $eventName -Text $eventText) {
             Add-RunInsightText -List $driftSignals -Value 'drift_detected'
         }
-        if ($eventText.Contains('stale')) {
+        if (Test-RunStateSignalText -Text $eventText -Keyword 'stale') {
             Add-RunInsightText -List $driftSignals -Value 'stale_state'
         }
-        if ($eventText.Contains('mismatch')) {
+        if (Test-RunStateSignalText -Text $eventText -Keyword 'mismatch') {
             Add-RunInsightText -List $driftSignals -Value 'state_mismatch'
         }
         if ($eventText.Contains('approval') -or $eventText.Contains('review_requested') -or $eventText.Contains('question') -or $eventText.Contains('user')) {
@@ -6368,6 +6384,97 @@ function New-RunInsightsContract {
         unhealthy_session_size = [bool]$unhealthySessionSize
         blocked_reasons        = @($blockedReasons)
         next_improvements      = @($nextImprovements)
+    }
+}
+
+function Test-RunDriftSignalText {
+    param(
+        [string]$EventName = '',
+        [string]$Text = ''
+    )
+
+    $eventNameText = $EventName.ToLowerInvariant()
+    $bodyText = $Text.ToLowerInvariant()
+    if (
+        $bodyText.Contains('no drift') -or
+        $bodyText.Contains('without drift') -or
+        $bodyText.Contains('drift check passed') -or
+        $bodyText.Contains('drift check ok') -or
+        $eventNameText.Contains('drift_check.pass') -or
+        $eventNameText.Contains('drift.pass')
+    ) {
+        return $false
+    }
+    if ($eventNameText.Contains('.drift') -or $eventNameText.Contains('drift.')) {
+        return $true
+    }
+
+    return (
+        $bodyText.Contains('drift detected') -or
+        $bodyText.Contains('drift retry') -or
+        $bodyText.Contains('drift check failed') -or
+        $bodyText.Contains('drifted') -or
+        $bodyText.Contains('drifts from') -or
+        $bodyText.Contains('worker isolation drift')
+    )
+}
+
+function Test-RunStateSignalText {
+    param(
+        [string]$Text = '',
+        [Parameter(Mandatory = $true)][string]$Keyword
+    )
+
+    $bodyText = $Text.ToLowerInvariant()
+    $keywordText = $Keyword.ToLowerInvariant()
+    if (
+        $bodyText.Contains("no $keywordText") -or
+        $bodyText.Contains("without $keywordText") -or
+        $bodyText.Contains("$keywordText check passed") -or
+        $bodyText.Contains("$keywordText check ok") -or
+        $bodyText.Contains("$keywordText resolved")
+    ) {
+        return $false
+    }
+
+    return $bodyText.Contains($keywordText)
+}
+
+function New-RunArchitectureContract {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $driftSignals = @(ConvertTo-RunStringArray -Value (Get-RunContractField -InputObject $Run.run_insights -Name 'drift_signals'))
+    $driftScore = @($driftSignals).Count
+    $maxDriftScore = 0
+    $scoreRegression = ($driftScore -gt $maxDriftScore)
+    $status = if ($scoreRegression) { 'baseline_mismatch' } else { 'baseline_match' }
+
+    return [ordered]@{
+        contract_version = 1
+        packet_type      = 'architecture_contract'
+        scope            = 'run_architecture_baseline'
+        run_id           = [string]$Run.run_id
+        task_id          = [string]$Run.task_id
+        baseline         = [ordered]@{
+            drift_score              = 0
+            max_drift_score          = $maxDriftScore
+            allowed_drift_signals    = @()
+            review_required_on_drift = $true
+        }
+        current          = [ordered]@{
+            drift_score            = $driftScore
+            drift_signals          = @($driftSignals)
+            retry_count            = [int](Get-RunContractField -InputObject $Run.run_insights -Name 'retry_count')
+            intervention_count     = [int](Get-RunContractField -InputObject $Run.run_insights -Name 'intervention_count')
+            unhealthy_session_size = [bool](Get-RunContractField -InputObject $Run.run_insights -Name 'unhealthy_session_size')
+        }
+        score_regression = $scoreRegression
+        status           = $status
+        storage_policy   = [ordered]@{
+            freeform_body_stored         = $false
+            private_content_stored       = $false
+            local_reference_paths_stored = $false
+        }
     }
 }
 
@@ -6713,6 +6820,15 @@ function New-RunDraftPrHandoffPackage {
         $blockedReasons.Add($reasonText) | Out-Null
         $remainingRisks.Add($reasonText) | Out-Null
     }
+    $architectureContract = Get-RunContractField -InputObject $Run -Name 'architecture_contract'
+    $architectureScoreRegression = [bool](Get-RunContractField -InputObject $architectureContract -Name 'score_regression')
+    $architectureBaseline = Get-RunContractField -InputObject $architectureContract -Name 'baseline'
+    $architectureReviewRequired = [bool](Get-RunContractField -InputObject $architectureBaseline -Name 'review_required_on_drift')
+    if ($architectureScoreRegression -and $architectureReviewRequired -and $reviewState -ne 'PASS') {
+        $reasonText = 'architecture baseline mismatch requires review'
+        $blockedReasons.Add($reasonText) | Out-Null
+        $remainingRisks.Add($reasonText) | Out-Null
+    }
 
     $summary = if (-not [string]::IsNullOrWhiteSpace($verificationSummary)) {
         $verificationSummary
@@ -6760,6 +6876,7 @@ function New-RunVerificationEnvelope {
     $verificationOutcome = [string](Get-RunContractField -InputObject $Run.verification_result -Name 'outcome')
     $verificationSummary = [string](Get-RunContractField -InputObject $Run.verification_result -Name 'summary')
     $verificationNextAction = [string](Get-RunContractField -InputObject $Run.verification_result -Name 'next_action')
+    $reviewState = ([string]$Run.review_state).ToUpperInvariant()
     $securityVerdict = [string](Get-RunContractField -InputObject $Run.security_verdict -Name 'verdict')
     if ([string]::IsNullOrWhiteSpace($securityVerdict) -and $Run.security_verdict -is [string]) {
         $securityVerdict = [string]$Run.security_verdict
@@ -6778,6 +6895,10 @@ function New-RunVerificationEnvelope {
     $draftPrGateState = [string](Get-RunContractField -InputObject $Run.draft_pr_gate -Name 'state')
     $phaseGateStopReason = [string](Get-RunContractField -InputObject $Run.phase_gate -Name 'stop_reason')
     $phaseGateStopStage = [string](Get-RunContractField -InputObject $Run.phase_gate -Name 'stop_stage')
+    $architectureContract = Get-RunContractField -InputObject $Run -Name 'architecture_contract'
+    $architectureScoreRegression = [bool](Get-RunContractField -InputObject $architectureContract -Name 'score_regression')
+    $architectureBaseline = Get-RunContractField -InputObject $architectureContract -Name 'baseline'
+    $architectureReviewRequired = [bool](Get-RunContractField -InputObject $architectureBaseline -Name 'review_required_on_drift')
 
     $evidenceComplete = (
         -not [string]::IsNullOrWhiteSpace($verificationOutcome) -and
@@ -6808,11 +6929,16 @@ function New-RunVerificationEnvelope {
         $stageText = if (-not [string]::IsNullOrWhiteSpace($phaseGateStopStage)) { $phaseGateStopStage } else { 'unknown' }
         $blockedReasons.Add("phase gate stopped at ${stageText}: $phaseGateStopReason") | Out-Null
     }
+    $architectureReviewMissing = ($architectureScoreRegression -and $architectureReviewRequired -and $reviewState -ne 'PASS')
+    if ($architectureReviewMissing) {
+        $blockedReasons.Add('architecture baseline mismatch requires review') | Out-Null
+    }
 
     $humanJudgementRequired = (
         [bool]$Run.review_required -or
         (-not [string]::IsNullOrWhiteSpace($draftPrGateState) -and $draftPrGateState -ne 'passed') -or
-        $phaseGateStopReason -eq 'needs_user_decision'
+        $phaseGateStopReason -eq 'needs_user_decision' -or
+        $architectureReviewMissing
     )
 
     $status = if (@($blockedReasons).Count -gt 0) {
@@ -6833,7 +6959,7 @@ function New-RunVerificationEnvelope {
             verification_plan = @($Run.verification_plan)
             changed_files     = @($Run.changed_files)
             review_required   = [bool]$Run.review_required
-            required_fields   = @('verification_evidence', 'context_contract', 'security_verdict', 'audit_chain', 'draft_pr_gate', 'phase_gate')
+            required_fields   = @('verification_evidence', 'context_contract', 'architecture_contract', 'security_verdict', 'audit_chain', 'draft_pr_gate', 'phase_gate')
         }
         dynamic_gates        = [ordered]@{
             verification = [ordered]@{
@@ -6849,6 +6975,7 @@ function New-RunVerificationEnvelope {
             }
             approval     = $approval
             context      = $Run.context_contract
+            architecture = $architectureContract
             draft_pr     = $Run.draft_pr_gate
             phase        = $Run.phase_gate
             audit        = [ordered]@{
@@ -6865,6 +6992,7 @@ function New-RunVerificationEnvelope {
         }
         verification_evidence = $Run.verification_evidence
         context_contract      = $Run.context_contract
+        architecture_contract = $architectureContract
         security_verdict      = $Run.security_verdict
         audit_chain           = $Run.audit_chain
     }
@@ -7145,6 +7273,8 @@ function New-RunChildLaunchContract {
 function New-RunPacketFromRun {
     param([Parameter(Mandatory = $true)]$Run)
 
+    $architectureContract = Get-RunContractField -InputObject $Run -Name 'architecture_contract'
+
     return [ordered]@{
         run_id            = [string]$Run.run_id
         task_id           = [string]$Run.task_id
@@ -7184,6 +7314,7 @@ function New-RunPacketFromRun {
         context_contract      = $Run.context_contract
         team_memory           = $Run.team_memory
         run_insights          = $Run.run_insights
+        architecture_contract = $architectureContract
         child_launch_contract = $Run.child_launch_contract
         checkpoint_package    = $Run.checkpoint_package
         tdd_gate              = $Run.tdd_gate
@@ -7246,6 +7377,8 @@ function New-RunResultPacket {
         }
     }
 
+    $architectureContract = Get-RunContractField -InputObject $Run -Name 'architecture_contract'
+
     return [ordered]@{
         run_id                = [string]$Run.run_id
         status                = $status
@@ -7272,6 +7405,7 @@ function New-RunResultPacket {
         context_contract      = $Run.context_contract
         team_memory           = $Run.team_memory
         run_insights          = $Run.run_insights
+        architecture_contract = $architectureContract
         checkpoint_package    = $Run.checkpoint_package
         tdd_gate              = $Run.tdd_gate
         verification_envelope = $Run.verification_envelope
@@ -7540,6 +7674,7 @@ function Get-RunsPayload {
                 context_contract      = $null
                 team_memory           = $null
                 run_insights          = $null
+                architecture_contract = $null
                 child_launch_contract = $null
                 checkpoint_package    = $null
                 plan                  = $null
@@ -7713,9 +7848,14 @@ function Get-RunsPayload {
             $run.team_memory = New-RunTeamMemoryContract -Run $run -EventRecords $runEvents
             $run.context_contract = New-RunContextContract -VerificationEvidence $run.verification_evidence -TeamMemoryRefs @($run.team_memory.team_memory_refs)
             $run.audit_chain = New-RunAuditChainContract -Run $run -EventRecords $runEvents
+            $run.run_insights = New-RunInsightsContract -Run $run -EventRecords $runEvents
+            $run.architecture_contract = New-RunArchitectureContract -Run $run
+            $run.draft_pr_gate = New-RunDraftPrGate -Run $run -EventRecords $runEvents
+            $run.phase_gate = New-RunPhaseGateContract -Run $run -EventRecords $runEvents
+            $run.run_insights = New-RunInsightsContract -Run $run -EventRecords $runEvents
+            $run.architecture_contract = New-RunArchitectureContract -Run $run
             $run.verification_envelope = New-RunVerificationEnvelope -Run $run
             $run.outcome = New-RunOutcomeContract -Run $run
-            $run.run_insights = New-RunInsightsContract -Run $run -EventRecords $runEvents
             $run.child_launch_contract = New-RunChildLaunchContract -Run $run
             $run.checkpoint_package = New-RunCheckpointPackage -Run $run
             $nextAction = Get-RunNextAction -Run $run
@@ -7770,6 +7910,7 @@ function Get-RunsPayload {
                 context_contract      = $run.context_contract
                 team_memory           = $run.team_memory
                 run_insights          = $run.run_insights
+                architecture_contract = $run.architecture_contract
                 child_launch_contract = $run.child_launch_contract
                 checkpoint_package    = $run.checkpoint_package
                 tdd_gate              = $run.tdd_gate
@@ -7836,6 +7977,13 @@ function Test-RunRecommendable {
         return $false
     }
     if ($securityVerdict -notin @('ALLOW', 'PASS')) {
+        return $false
+    }
+    $architectureContract = Get-RunContractField -InputObject $Run -Name 'architecture_contract'
+    $architectureScoreRegression = [bool](Get-RunContractField -InputObject $architectureContract -Name 'score_regression')
+    $architectureBaseline = Get-RunContractField -InputObject $architectureContract -Name 'baseline'
+    $architectureReviewRequired = [bool](Get-RunContractField -InputObject $architectureBaseline -Name 'review_required_on_drift')
+    if ($architectureScoreRegression -and $architectureReviewRequired -and $reviewState -ne 'PASS') {
         return $false
     }
 

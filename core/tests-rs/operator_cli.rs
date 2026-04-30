@@ -2517,6 +2517,32 @@ fn operator_cli_promote_tactic_rejects_missing_security_clearance() {
 }
 
 #[test]
+fn operator_cli_promote_tactic_rejects_unreviewed_architecture_drift() {
+    let project_dir = make_temp_project_dir("promote-tactic-architecture-drift");
+    write_compare_runs_fixture(&project_dir);
+    let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
+    let manifest = fs::read_to_string(&manifest_path)
+        .expect("test should read manifest")
+        .replacen("    review_state: PASS", "    review_state: ", 1);
+    fs::write(manifest_path, manifest).expect("test should write manifest");
+    let events_path = project_dir.join(".winsmux").join("events.jsonl");
+    let events = fs::read_to_string(&events_path)
+        .expect("test should read events")
+        .replace("verification passed", "architecture drift detected after verification");
+    fs::write(events_path, events).expect("test should write events");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["promote-tactic", "task:task-a"])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("run is not promotable: task:task-a"));
+}
+
+#[test]
 fn operator_cli_promote_tactic_rejects_unknown_kind() {
     let project_dir = make_temp_project_dir("promote-tactic-kind");
     write_compare_runs_fixture(&project_dir);

@@ -6385,12 +6385,33 @@ fn run_recommendable(run: &crate::ledger::LedgerExplainRun) -> bool {
     if json_string_field(&run.verification_result, "outcome").to_ascii_uppercase() != "PASS" {
         return false;
     }
-    matches!(
+    if !matches!(
         json_string_or_field(&run.security_verdict, "verdict")
             .to_ascii_uppercase()
             .as_str(),
         "ALLOW" | "PASS"
-    )
+    ) {
+        return false;
+    }
+    let architecture_score_regression = run
+        .architecture_contract
+        .get("score_regression")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let architecture_review_required = run
+        .architecture_contract
+        .get("baseline")
+        .and_then(|baseline| baseline.get("review_required_on_drift"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if architecture_score_regression
+        && architecture_review_required
+        && !run.review_state.eq_ignore_ascii_case("PASS")
+    {
+        return false;
+    }
+
+    true
 }
 
 fn run_playbook_flow(
