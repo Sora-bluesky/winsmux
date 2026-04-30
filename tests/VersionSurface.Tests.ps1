@@ -147,4 +147,15 @@ Describe 'winsmux version surface' {
         $releaseScript | Should -Match 'Tag v\$Version already exists'
         $releaseScript | Should -Match 'Remote tag v\$Version already exists'
     }
+
+    It 'runs verify with the same Pester discovery boundary as CI' {
+        $bridgeScript = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'scripts\winsmux-core.ps1') -Raw -Encoding UTF8
+
+        $bridgeScript | Should -Match 'New-PesterConfiguration'
+        $bridgeScript | Should -Match '\$config\.Run\.Path = @\("tests/"\)'
+        $bridgeScript | Should -Match '\$config\.Run\.Exit = \$true'
+        $bridgeScript | Should -Match 'Invoke-Pester -Configuration \$config'
+        $bridgeScript | Should -Match '-EncodedCommand \$encodedPesterCommand'
+        $bridgeScript | Should -Not -Match 'Invoke-Pester -Path \(\$testFiles\.FullName\) -PassThru'
+    }
 }

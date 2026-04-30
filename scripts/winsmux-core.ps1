@@ -6,7 +6,7 @@ param(
 )
 
 # --- Config ---
-$VERSION = "0.24.13"
+$VERSION = "0.24.14"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -3482,6 +3482,10 @@ function Invoke-Verify {
         Stop-WithError "Invoke-Pester not found. Install/import Pester before running verify."
     }
 
+    if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) {
+        Stop-WithError "pwsh not found. Install PowerShell 7 before running verify."
+    }
+
     if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
         Stop-WithError "gh CLI not found. Install GitHub CLI before running verify."
     }
@@ -3507,46 +3511,24 @@ function Invoke-Verify {
     }
 
     Write-Output "Running Pester tests from $testsDir"
-    $result = Invoke-Pester -Path ($testFiles.FullName) -PassThru
-
-    if ($null -eq $result) {
-        Stop-WithError "Invoke-Pester returned no result."
+    $pesterCommand = @'
+$config = New-PesterConfiguration
+$config.Run.Path = @("tests/")
+$config.Run.Exit = $true
+$config.Output.Verbosity = "Detailed"
+Invoke-Pester -Configuration $config
+'@
+    $encodedPesterCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($pesterCommand))
+    Push-Location $repoRoot
+    try {
+        & pwsh -NoProfile -EncodedCommand $encodedPesterCommand
+        $pesterExitCode = Get-SafeLastExitCode
+    } finally {
+        Pop-Location
     }
 
-    $failedTests = @()
-    if ($result.PSObject.Properties.Name -contains 'Failed' -and $result.Failed) {
-        $failedTests = @($result.Failed)
-    } elseif ($result.PSObject.Properties.Name -contains 'TestResult' -and $result.TestResult) {
-        $failedTests = @($result.TestResult | Where-Object { -not $_.Passed })
-    }
-
-    $failedCount = 0
-    if ($result.PSObject.Properties.Name -contains 'FailedCount') {
-        $failedCount = [int]$result.FailedCount
-    } elseif ($failedTests) {
-        $failedCount = $failedTests.Count
-    }
-
-    if ($failedCount -gt 0) {
-        Write-Error "Pester verify failed. Failed tests:"
-        foreach ($failedTest in $failedTests) {
-            $failedName = $null
-            foreach ($propertyName in 'ExpandedPath','Path','Name') {
-                if ($failedTest.PSObject.Properties.Name -contains $propertyName) {
-                    $failedName = $failedTest.$propertyName
-                    if (-not [string]::IsNullOrWhiteSpace($failedName)) {
-                        break
-                    }
-                }
-            }
-
-            if ([string]::IsNullOrWhiteSpace($failedName)) {
-                $failedName = ($failedTest | Out-String).Trim()
-            }
-
-            Write-Error " - $failedName"
-        }
-        exit 1
+    if ($null -ne $pesterExitCode -and $pesterExitCode -ne 0) {
+        Stop-WithError "Pester verify failed with exit code $pesterExitCode."
     }
 
     Write-Output "Pester PASS. Merging PR #$prNumber"
