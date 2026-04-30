@@ -174,6 +174,33 @@
         "resolve blocked reasons before release"
       ]
     },
+    "architecture_contract": {
+      "contract_version": 1,
+      "packet_type": "architecture_contract",
+      "scope": "run_architecture_baseline",
+      "run_id": "task:task-256",
+      "task_id": "task-256",
+      "baseline": {
+        "drift_score": 0,
+        "max_drift_score": 0,
+        "allowed_drift_signals": [],
+        "review_required_on_drift": true
+      },
+      "current": {
+        "drift_score": 0,
+        "drift_signals": [],
+        "retry_count": 0,
+        "intervention_count": 3,
+        "unhealthy_session_size": false
+      },
+      "score_regression": false,
+      "status": "baseline_match",
+      "storage_policy": {
+        "freeform_body_stored": false,
+        "private_content_stored": false,
+        "local_reference_paths_stored": false
+      }
+    },
     "child_launch_contract": {
       "contract_version": 1,
       "packet_type": "child_launch_contract",
@@ -316,6 +343,7 @@
         "required_fields": [
           "verification_evidence",
           "context_contract",
+          "architecture_contract",
           "security_verdict",
           "audit_chain",
           "draft_pr_gate",
@@ -394,6 +422,33 @@
           "tool_output_pruning": {
             "evidence_only": true,
             "raw_tool_output_stored": false
+          }
+        },
+        "architecture": {
+          "contract_version": 1,
+          "packet_type": "architecture_contract",
+          "scope": "run_architecture_baseline",
+          "run_id": "task:task-256",
+          "task_id": "task-256",
+          "baseline": {
+            "drift_score": 0,
+            "max_drift_score": 0,
+            "allowed_drift_signals": [],
+            "review_required_on_drift": true
+          },
+          "current": {
+            "drift_score": 0,
+            "drift_signals": [],
+            "retry_count": 0,
+            "intervention_count": 3,
+            "unhealthy_session_size": false
+          },
+          "score_regression": false,
+          "status": "baseline_match",
+          "storage_policy": {
+            "freeform_body_stored": false,
+            "private_content_stored": false,
+            "local_reference_paths_stored": false
           }
         },
         "draft_pr": {
@@ -543,6 +598,33 @@
         "tool_output_pruning": {
           "evidence_only": true,
           "raw_tool_output_stored": false
+        }
+      },
+      "architecture_contract": {
+        "contract_version": 1,
+        "packet_type": "architecture_contract",
+        "scope": "run_architecture_baseline",
+        "run_id": "task:task-256",
+        "task_id": "task-256",
+        "baseline": {
+          "drift_score": 0,
+          "max_drift_score": 0,
+          "allowed_drift_signals": [],
+          "review_required_on_drift": true
+        },
+        "current": {
+          "drift_score": 0,
+          "drift_signals": [],
+          "retry_count": 0,
+          "intervention_count": 3,
+          "unhealthy_session_size": false
+        },
+        "score_regression": false,
+        "status": "baseline_match",
+        "storage_policy": {
+          "freeform_body_stored": false,
+          "private_content_stored": false,
+          "local_reference_paths_stored": false
         }
       },
       "security_verdict": null,

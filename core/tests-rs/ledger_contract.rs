@@ -928,6 +928,31 @@ panes:
         "reduce retry loop before the next run"
     );
     assert_eq!(
+        explain.run.architecture_contract["packet_type"],
+        "architecture_contract"
+    );
+    assert_eq!(
+        explain.run.architecture_contract["baseline"]["max_drift_score"],
+        0
+    );
+    assert_eq!(
+        explain.run.architecture_contract["current"]["drift_score"],
+        1
+    );
+    assert_eq!(
+        explain.run.architecture_contract["current"]["drift_signals"][0],
+        "drift_detected"
+    );
+    assert_eq!(explain.run.architecture_contract["score_regression"], true);
+    assert_eq!(
+        explain.run.architecture_contract["status"],
+        "baseline_mismatch"
+    );
+    assert_eq!(
+        explain.run.architecture_contract["storage_policy"]["local_reference_paths_stored"],
+        false
+    );
+    assert_eq!(
         explain.run.child_launch_contract["packet_type"],
         "child_launch_contract"
     );
@@ -1093,9 +1118,18 @@ panes:
         explain.run.verification_envelope["static_gates"]["required_fields"][0],
         "verification_evidence"
     );
+    assert!(explain.run.verification_envelope["static_gates"]["required_fields"]
+        .as_array()
+        .expect("required fields should be an array")
+        .iter()
+        .any(|item| item.as_str().unwrap_or_default() == "architecture_contract"));
     assert_eq!(
         explain.run.verification_envelope["dynamic_gates"]["context"]["context_mode"],
         "isolated"
+    );
+    assert_eq!(
+        explain.run.verification_envelope["dynamic_gates"]["architecture"]["status"],
+        "baseline_mismatch"
     );
     assert_eq!(
         explain.run.verification_envelope["dynamic_gates"]["verification"]["outcome"],
@@ -1132,6 +1166,16 @@ panes:
             .iter()
             .any(|reason| reason == "draft PR gate is blocked")
     );
+    assert!(explain.run.verification_envelope["release_decision"]["blocked_reasons"]
+        .as_array()
+        .expect("blocked reasons should be an array")
+        .iter()
+        .any(|reason| reason == "architecture baseline mismatch requires review"));
+    assert!(explain.run.draft_pr_gate["handoff_package"]["blocked_reasons"]
+        .as_array()
+        .expect("draft PR blocked reasons should be an array")
+        .iter()
+        .any(|reason| reason == "architecture baseline mismatch requires review"));
     assert!(explain.run.audit_chain["events"]
         .as_array()
         .expect("audit chain events should be an array")
@@ -1140,6 +1184,78 @@ panes:
             && event["at"] == "2026-04-23T03:00:01Z"
             && event["who"]["label"] == "builder-1"));
     assert_eq!(explain.run.security_verdict, "ALLOW");
+}
+
+#[test]
+fn ledger_contract_keeps_in_progress_outcome_when_draft_gate_only_lacks_evidence() {
+    let manifest = r#"version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-in-progress
+    task: Continue implementation
+    task_state: in_progress
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+"#;
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, "")
+        .expect("in-progress snapshot should load");
+    let explain = snapshot
+        .explain_projection("task:task-in-progress")
+        .expect("in-progress run should explain");
+
+    assert_eq!(explain.run.draft_pr_gate["state"], "blocked");
+    assert_eq!(
+        explain.run.draft_pr_gate["handoff_package"]["blocked_reasons"][0],
+        "verification evidence is missing"
+    );
+    assert_eq!(
+        explain.run.architecture_contract["status"],
+        "baseline_match"
+    );
+    assert_eq!(explain.run.outcome["status"], "in_progress");
+}
+
+#[test]
+fn ledger_contract_does_not_treat_benign_drift_text_as_architecture_mismatch() {
+    let manifest = r#"version: 1
+session:
+  name: winsmux-orchestra
+panes:
+  builder-1:
+    pane_id: "%2"
+    role: Builder
+    task_id: task-drift-ok
+    task: Check architecture state
+    task_state: in_progress
+    review_state: PENDING
+    branch: worktree-builder-1
+    head_sha: abc1234def5678
+"#;
+    let events = r#"{"timestamp":"2026-04-23T12:00:01+09:00","session":"winsmux-orchestra","event":"pipeline.drift_check.pass","message":"no drift detected; drift check passed","data":{"task_id":"task-drift-ok","verification_result":{"outcome":"PASS"}}}
+"#;
+    let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, events)
+        .expect("benign drift text snapshot should load");
+    let explain = snapshot
+        .explain_projection("task:task-drift-ok")
+        .expect("benign drift text run should explain");
+
+    assert!(explain.run.run_insights["drift_signals"]
+        .as_array()
+        .expect("drift signals should be an array")
+        .is_empty());
+    assert_eq!(
+        explain.run.architecture_contract["status"],
+        "baseline_match"
+    );
+    assert_eq!(
+        explain.run.architecture_contract["score_regression"],
+        false
+    );
 }
 
 #[test]
@@ -1422,6 +1538,8 @@ fn ledger_contract_serializes_typed_cli_payload_roots() {
             && run["run_packet"]["verification_envelope"]["packet_type"] == "verification_envelope"
             && run["run_insights"]["packet_type"] == "run_insights"
             && run["run_packet"]["run_insights"]["packet_type"] == "run_insights"
+            && run["architecture_contract"]["packet_type"] == "architecture_contract"
+            && run["run_packet"]["architecture_contract"]["packet_type"] == "architecture_contract"
             && run["child_launch_contract"]["packet_type"] == "child_launch_contract"
             && run["run_packet"]["child_launch_contract"]["packet_type"] == "child_launch_contract"
             && run["checkpoint_package"]["packet_type"] == "checkpoint_package"
@@ -1460,6 +1578,10 @@ fn ledger_contract_serializes_typed_cli_payload_roots() {
     assert_eq!(
         explain["run"]["run_insights"]["packet_type"],
         "run_insights"
+    );
+    assert_eq!(
+        explain["run"]["architecture_contract"]["packet_type"],
+        "architecture_contract"
     );
 }
 

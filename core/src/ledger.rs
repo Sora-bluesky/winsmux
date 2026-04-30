@@ -280,6 +280,7 @@ pub struct LedgerExplainRun {
     pub context_contract: Value,
     pub team_memory: Value,
     pub run_insights: Value,
+    pub architecture_contract: Value,
     pub child_launch_contract: Value,
     pub checkpoint_package: Value,
     pub tdd_gate: Value,
@@ -480,6 +481,7 @@ pub struct LedgerRunProjection {
     pub context_contract: Value,
     pub team_memory: Value,
     pub run_insights: Value,
+    pub architecture_contract: Value,
     pub child_launch_contract: Value,
     pub checkpoint_package: Value,
     pub tdd_gate: Value,
@@ -531,6 +533,7 @@ pub struct LedgerRunPacket {
     pub context_contract: Value,
     pub team_memory: Value,
     pub run_insights: Value,
+    pub architecture_contract: Value,
     pub child_launch_contract: Value,
     pub checkpoint_package: Value,
     pub tdd_gate: Value,
@@ -756,6 +759,9 @@ impl LedgerRunProjection {
             run_insights: run
                 .map(|run| run.run_insights.clone())
                 .unwrap_or(Value::Null),
+            architecture_contract: run
+                .map(|run| run.architecture_contract.clone())
+                .unwrap_or(Value::Null),
             child_launch_contract: run
                 .map(|run| run.child_launch_contract.clone())
                 .unwrap_or(Value::Null),
@@ -820,6 +826,7 @@ impl LedgerRunPacket {
             context_contract: run.context_contract.clone(),
             team_memory: run.team_memory.clone(),
             run_insights: run.run_insights.clone(),
+            architecture_contract: run.architecture_contract.clone(),
             child_launch_contract: run.child_launch_contract.clone(),
             checkpoint_package: run.checkpoint_package.clone(),
             tdd_gate: run.tdd_gate.clone(),
@@ -1341,6 +1348,7 @@ impl LedgerSnapshot {
             context_contract: Value::Null,
             team_memory: Value::Null,
             run_insights: Value::Null,
+            architecture_contract: Value::Null,
             child_launch_contract: Value::Null,
             checkpoint_package: Value::Null,
             tdd_gate: Value::Null,
@@ -1358,10 +1366,15 @@ impl LedgerSnapshot {
         let team_memory_refs = value_string_list(&run.team_memory, "team_memory_refs");
         run.context_contract =
             context_contract_value(&run.verification_evidence, &team_memory_refs);
+        run.run_insights = run_insights_value(&run, &recent_event_records);
+        run.architecture_contract = run_architecture_contract_value(&run);
+        run.draft_pr_gate = run_draft_pr_gate_value(&run, &recent_event_records);
+        run.phase_gate = run_phase_gate_value(&run, &recent_event_records, &run.draft_pr_gate);
+        run.run_insights = run_insights_value(&run, &recent_event_records);
+        run.architecture_contract = run_architecture_contract_value(&run);
         run.audit_chain = run_audit_chain_value(&run, &recent_event_records);
         run.verification_envelope = run_verification_envelope_value(&run);
         run.outcome = run_outcome_value(&run, &run.phase_gate, &run.draft_pr_gate);
-        run.run_insights = run_insights_value(&run, &recent_event_records);
         run.child_launch_contract = run_child_launch_contract_value(&run);
         run.checkpoint_package = run_checkpoint_package_value(&run);
         let explanation = explain_explanation(&run, &evidence_digest);
@@ -2489,6 +2502,25 @@ fn run_draft_pr_handoff_package_value(run: &LedgerExplainRun, draft_pr_url: &str
         blocked_reasons.push(reason.clone());
         remaining_risks.push(reason);
     }
+    let architecture_score_regression = run
+        .architecture_contract
+        .get("score_regression")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let architecture_review_required = run
+        .architecture_contract
+        .get("baseline")
+        .and_then(|baseline| baseline.get("review_required_on_drift"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if architecture_score_regression
+        && architecture_review_required
+        && !run.review_state.eq_ignore_ascii_case("PASS")
+    {
+        let reason = "architecture baseline mismatch requires review".to_string();
+        blocked_reasons.push(reason.clone());
+        remaining_risks.push(reason);
+    }
 
     let summary = first_non_empty_string(vec![
         verification_summary.clone(),
@@ -2696,6 +2728,17 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
     let draft_pr_gate_state = value_field_string(&run.draft_pr_gate, "state");
     let phase_gate_stop_reason = value_field_string(&run.phase_gate, "stop_reason");
     let phase_gate_stop_stage = value_field_string(&run.phase_gate, "stop_stage");
+    let architecture_score_regression = run
+        .architecture_contract
+        .get("score_regression")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let architecture_review_required = run
+        .architecture_contract
+        .get("baseline")
+        .and_then(|baseline| baseline.get("review_required_on_drift"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let evidence_complete = !verification_outcome.trim().is_empty()
         && !run.verification_evidence.is_null()
         && !run.audit_chain.is_null();
@@ -2732,10 +2775,17 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
             "phase gate stopped at {stage}: {phase_gate_stop_reason}"
         ));
     }
+    let architecture_review_missing = architecture_score_regression
+        && architecture_review_required
+        && !run.review_state.eq_ignore_ascii_case("PASS");
+    if architecture_review_missing {
+        blocked_reasons.push("architecture baseline mismatch requires review".to_string());
+    }
 
     let human_judgement_required = run.review_required
         || !draft_pr_gate_state.trim().is_empty() && draft_pr_gate_state != "passed"
-        || phase_gate_stop_reason == "needs_user_decision";
+        || phase_gate_stop_reason == "needs_user_decision"
+        || architecture_review_missing;
 
     let status = if !blocked_reasons.is_empty() {
         "blocked"
@@ -2758,6 +2808,7 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
             "required_fields": [
                 "verification_evidence",
                 "context_contract",
+                "architecture_contract",
                 "security_verdict",
                 "audit_chain",
                 "draft_pr_gate",
@@ -2778,6 +2829,7 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
             },
             "approval": approval,
             "context": run.context_contract,
+            "architecture": run.architecture_contract,
             "draft_pr": run.draft_pr_gate,
             "phase": run.phase_gate,
             "audit": {
@@ -2794,6 +2846,7 @@ fn run_verification_envelope_value(run: &LedgerExplainRun) -> Value {
         },
         "verification_evidence": run.verification_evidence,
         "context_contract": run.context_contract,
+        "architecture_contract": run.architecture_contract,
         "security_verdict": run.security_verdict,
         "audit_chain": run.audit_chain,
     })
@@ -2812,12 +2865,15 @@ fn event_timestamp_text(timestamp: &str) -> String {
 fn run_outcome_value(run: &LedgerExplainRun, phase_gate: &Value, draft_pr_gate: &Value) -> Value {
     let phase_gate_stop_reason = value_field_string(phase_gate, "stop_reason");
     let draft_pr_gate_state = value_field_string(draft_pr_gate, "state");
+    let architecture_review_missing = run_architecture_review_missing(run);
     let status = if matches!(run.review_state.as_str(), "FAIL" | "FAILED") {
         "failed".to_string()
     } else if phase_gate_stop_reason == "needs_user_decision" {
         "needs_user_decision".to_string()
     } else if !phase_gate_stop_reason.trim().is_empty() {
         "blocked".to_string()
+    } else if architecture_review_missing {
+        "needs_user_decision".to_string()
     } else if run.review_state == "PASS" && draft_pr_gate_state != "passed" {
         "needs_user_decision".to_string()
     } else if run.review_state == "PASS"
@@ -2867,14 +2923,15 @@ fn run_insights_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) 
 
     let mut drift_signals = Vec::new();
     for (_, event) in events {
+        let event_name = event.event.to_lowercase();
         let text = format!("{} {} {}", event.event, event.message, event.status).to_lowercase();
-        if text.contains("drift") {
+        if text_has_drift_signal(&event_name, &text) {
             push_unique_text(&mut drift_signals, "drift_detected");
         }
-        if text.contains("stale") {
+        if text_has_state_signal(&text, "stale") {
             push_unique_text(&mut drift_signals, "stale_state");
         }
-        if text.contains("mismatch") {
+        if text_has_state_signal(&text, "mismatch") {
             push_unique_text(&mut drift_signals, "state_mismatch");
         }
     }
@@ -2958,6 +3015,97 @@ fn run_insights_value(run: &LedgerExplainRun, events: &[(usize, &EventRecord)]) 
         "unhealthy_session_size": unhealthy_session_size,
         "blocked_reasons": blocked_reasons,
         "next_improvements": next_improvements,
+    })
+}
+
+fn text_has_drift_signal(event_name: &str, text: &str) -> bool {
+    if text.contains("no drift")
+        || text.contains("without drift")
+        || text.contains("drift check passed")
+        || text.contains("drift check ok")
+        || event_name.contains("drift_check.pass")
+        || event_name.contains("drift.pass")
+    {
+        return false;
+    }
+    if event_name.contains(".drift") || event_name.contains("drift.") {
+        return true;
+    }
+    text.contains("drift detected")
+        || text.contains("drift retry")
+        || text.contains("drift check failed")
+        || text.contains("drifted")
+        || text.contains("drifts from")
+        || text.contains("worker isolation drift")
+}
+
+fn text_has_state_signal(text: &str, keyword: &str) -> bool {
+    if text.contains(&format!("no {keyword}"))
+        || text.contains(&format!("without {keyword}"))
+        || text.contains(&format!("{keyword} check passed"))
+        || text.contains(&format!("{keyword} check ok"))
+        || text.contains(&format!("{keyword} resolved"))
+    {
+        return false;
+    }
+    text.contains(keyword)
+}
+
+fn run_architecture_review_missing(run: &LedgerExplainRun) -> bool {
+    let architecture_score_regression = run
+        .architecture_contract
+        .get("score_regression")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let architecture_review_required = run
+        .architecture_contract
+        .get("baseline")
+        .and_then(|baseline| baseline.get("review_required_on_drift"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    architecture_score_regression
+        && architecture_review_required
+        && !run.review_state.eq_ignore_ascii_case("PASS")
+}
+
+fn run_architecture_contract_value(run: &LedgerExplainRun) -> Value {
+    let drift_signals = value_string_list(&run.run_insights, "drift_signals");
+    let drift_score = drift_signals.len();
+    let max_drift_score = 0usize;
+    let score_regression = drift_score > max_drift_score;
+    let status = if score_regression {
+        "baseline_mismatch"
+    } else {
+        "baseline_match"
+    };
+
+    json!({
+        "contract_version": 1,
+        "packet_type": "architecture_contract",
+        "scope": "run_architecture_baseline",
+        "run_id": run.run_id,
+        "task_id": run.task_id,
+        "baseline": {
+            "drift_score": 0,
+            "max_drift_score": max_drift_score,
+            "allowed_drift_signals": [],
+            "review_required_on_drift": true
+        },
+        "current": {
+            "drift_score": drift_score,
+            "drift_signals": drift_signals,
+            "retry_count": run.run_insights["retry_count"].as_u64().unwrap_or(0),
+            "intervention_count": run.run_insights["intervention_count"].as_u64().unwrap_or(0),
+            "unhealthy_session_size": run.run_insights["unhealthy_session_size"].as_bool().unwrap_or(false)
+        },
+        "score_regression": score_regression,
+        "status": status,
+        "storage_policy": {
+            "freeform_body_stored": false,
+            "private_content_stored": false,
+            "local_reference_paths_stored": false
+        }
     })
 }
 
