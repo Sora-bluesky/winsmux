@@ -18,6 +18,8 @@ You keep local control. `winsmux` starts the panes, lets you read what each agen
 - Lets an operator read, send, interrupt, and check pane health.
 - Keeps worker agents in separate git worktrees when isolation is enabled.
 - Compares recorded runs and highlights shared changed files before you choose a winner.
+- Shows review, verification, architecture, checkpoint, and follow-up evidence for recorded runs.
+- Captures structured end-of-run snapshots without storing raw terminal transcripts or private local paths.
 - Stores selected credentials with Windows DPAPI instead of writing repository `.env` files.
 - Records review and verification evidence for later audit.
 
@@ -31,6 +33,7 @@ It is especially useful when you want to:
 - Keep each worker's file changes separated.
 - See live pane output instead of waiting for a final summary.
 - Require review evidence before accepting changes.
+- Preserve enough structured context to resume or compare runs later.
 - Avoid tying the workflow to one model vendor.
 
 If you only need a terminal multiplexer, see the runtime docs under [`core/docs`](core/docs).

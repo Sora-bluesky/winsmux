@@ -2,3 +2,17 @@
 .githooks/* text eol=lf
 .github/workflows/* text eol=lf
 *.sh text eol=lf
+
+# GitHub Languages should emphasize the primary Rust/Tauri implementation.
+# PowerShell remains supported for installer, generated bundle, orchestration,
+# operational script, and test-harness surfaces.
+.githooks/*.ps1 linguist-detectable=false
+install.ps1 linguist-detectable=false
+scripts/*.ps1 linguist-detectable=false
+scripts/winsmux-core.ps1 linguist-generated=true
+tasks/*.psd1 linguist-detectable=false
+tests/*.ps1 linguist-detectable=false
+winsmux-core/*.ps1 linguist-detectable=false
+winsmux-core/scripts/*.ps1 linguist-detectable=false
+core/scripts/*.ps1 linguist-detectable=false
+core/tests/*.ps1 linguist-detectable=false

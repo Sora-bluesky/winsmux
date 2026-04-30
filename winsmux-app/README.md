@@ -1,7 +1,35 @@
-# Tauri + Vanilla TS
+# winsmux desktop app
 
-This template should help get you started developing with Tauri in vanilla HTML, CSS and Typescript.
+This directory contains the Tauri desktop control plane for `winsmux`.
 
-## Recommended IDE Setup
+The desktop app is not a replacement for the CLI. It presents the same local-first operator contract through a denser UI:
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+- workspace sidebar for sessions, files, and source-control summary
+- conversation shell for the operator-facing run stream
+- context side sheet for run, slot, branch, evidence, and review state
+- decision cockpit for verification, review, security, architecture, and operator-decision gates
+- terminal drawer for raw PTY output and diagnostics
+
+The app must not proxy AI service sign-in. Each pane agent keeps using its own official authentication setup.
+
+## Development
+
+Install dependencies from this directory:
+
+```powershell
+npm ci
+```
+
+Run a development build:
+
+```powershell
+npm run build
+```
+
+Run the viewport harness when changing desktop UI layout:
+
+```powershell
+npm run test:viewport-harness
+```
+
+Tauri commands live under `src-tauri`. Frontend code lives under `src`.
