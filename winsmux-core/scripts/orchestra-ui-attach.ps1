@@ -413,13 +413,19 @@ function Get-OrchestraAttachEntryArgumentList {
     return @('-NoLogo', '-NoExit', '-File', $attachEntryScriptPath)
 }
 
+function ConvertTo-OrchestraQuotedArgument {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+
+    return '"' + ($Value -replace '"', '\"') + '"'
+}
+
 function Start-OrchestraWindowsTerminalVisibleAttach {
     param(
         [Parameter(Mandatory = $true)][string]$TerminalPath,
         [Parameter(Mandatory = $true)][string]$ProfileName
     )
 
-    $process = Start-Process -FilePath $TerminalPath -ArgumentList @('-w', '-1', 'new-window', '-p', $ProfileName) -PassThru
+    $process = Start-Process -FilePath $TerminalPath -ArgumentList @('-w', '-1', 'new-window', '-p', (ConvertTo-OrchestraQuotedArgument -Value $ProfileName)) -PassThru
     return [PSCustomObject][ordered]@{
         HostKind = 'windows-terminal'
         Path     = $TerminalPath

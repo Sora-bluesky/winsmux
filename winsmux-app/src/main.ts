@@ -75,6 +75,8 @@ interface SessionItem {
   name: string;
   meta: string;
   active?: boolean;
+  projectDir?: string | null;
+  action?: "add-project";
 }
 
 interface DetachedSurfaceSessionState {
@@ -82,11 +84,18 @@ interface DetachedSurfaceSessionState {
   meta: string;
 }
 
+interface ProjectSessionEntry {
+  path: string;
+  name: string;
+  lastSeenAt: number;
+}
+
 interface ExplorerItem {
   label: string;
   meta?: string;
   depth: number;
   kind: "folder" | "file";
+  folderKey?: string;
   path?: string;
   worktree?: string;
   open?: boolean;
@@ -205,6 +214,7 @@ type DensityMode = "comfortable" | "compact";
 type WrapMode = "balanced" | "compact";
 type CodeFontMode = "system" | "google-sans-code" | "jetbrains-mono";
 type FocusMode = "standard" | "focused";
+type LanguageMode = "en" | "ja";
 
 interface ThemeState {
   theme: ThemeMode;
@@ -212,6 +222,7 @@ interface ThemeState {
   wrapMode: WrapMode;
   codeFont: CodeFontMode;
   focusMode: FocusMode;
+  language: LanguageMode;
 }
 
 interface ShellPreferenceState extends ThemeState {
@@ -299,10 +310,12 @@ const PREVIEW_FRESHNESS_WINDOW_MS = 30_000;
 const PANE_META_REFRESH_INTERVAL_MS = 30_000;
 let desktopSummarySnapshot: DesktopSummarySnapshot | null = null;
 let desktopSummaryRefreshInFlight: Promise<void> | null = null;
+let desktopSummaryRefreshInFlightProjectKey = "";
 let desktopSummaryRefreshTimeout: number | null = null;
 let desktopSummaryQueuedRunId: string | null = null;
 let desktopSummaryRefreshRequestedVersion = 0;
 let desktopSummaryRefreshRunningVersion = 0;
+let desktopSummaryRefreshSequence = 0;
 let desktopSummaryFallbackRefreshRegistered = false;
 let desktopSummaryLiveRefreshAvailable = false;
 let desktopSummaryLastSuccessfulRefreshAt = 0;
@@ -319,6 +332,7 @@ const desktopEditorFileCache = new Map<string, EditorFile>();
 const desktopEditorLoadingPaths = new Set<string>();
 const desktopEditorLoadErrors = new Map<string, string>();
 const desktopStandaloneEditorTargets = new Map<string, EditorTarget>();
+const collapsedExplorerFolders = new Set<string>();
 const promotingRunIds = new Set<string>();
 const pickingWinnerRunIds = new Set<string>();
 const pendingPromotedRunRefreshIds = new Set<string>();
@@ -334,18 +348,24 @@ const themeState: ThemeState = {
   wrapMode: "balanced",
   codeFont: "system",
   focusMode: "standard",
+  language: "en",
 };
 let settingsDraftState: ThemeState | null = null;
 let preferredWideSidebarOpen = true;
 let preferredWideContextOpen = true;
 const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
 const POPOUT_SURFACE_STORAGE_KEY_PREFIX = "winsmux.popout-surface.";
+const PROJECT_SESSIONS_STORAGE_KEY = "winsmux.project-sessions.v1";
+const ACTIVE_PROJECT_STORAGE_KEY = "winsmux.active-project.v1";
+const MAX_PROJECT_SESSIONS = 8;
+let projectSessionEntries: ProjectSessionEntry[] = readStoredProjectSessions();
+let activeProjectDir: string | null = readStoredActiveProjectDir();
 
 const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: string }> = [
-  { mode: "ask", label: "Ask", placeholder: "Ask the Operator for clarification, status, or guidance" },
-  { mode: "dispatch", label: "Dispatch", placeholder: "Dispatch the next task to the Operator" },
-  { mode: "review", label: "Review", placeholder: "Request review, approval, or audit from the Operator" },
-  { mode: "explain", label: "Explain", placeholder: "Ask the Operator to explain the current run state" },
+  { mode: "ask", label: "Ask", placeholder: "Ask a question or request guidance" },
+  { mode: "dispatch", label: "Dispatch", placeholder: "Describe a task or ask a question" },
+  { mode: "review", label: "Review", placeholder: "Describe what needs review or approval" },
+  { mode: "explain", label: "Explain", placeholder: "Ask for an explanation of the current state" },
 ];
 
 const composerSlashCommands: Array<{
@@ -367,30 +387,35 @@ const timelineFilters: Array<{ filter: TimelineFilter; label: string }> = [
   { filter: "activity", label: "Activity" },
 ];
 
-const themeOptions: Array<{ value: ThemeMode; label: string; description: string }> = [
-  { value: "codex-dark", label: "Codex TUI Dark", description: "Adaptation of public openai/codex TUI typography and contrast." },
-  { value: "graphite-dark", label: "Graphite", description: "Softer shell contrast for long operator sessions." },
+const themeOptions: Array<{ value: ThemeMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
+  { value: "codex-dark", label: "Codex TUI Dark", labelJa: "Codex TUI Dark", description: "Adaptation of public openai/codex TUI typography and contrast.", descriptionJa: "公開されている openai/codex TUI の文字設計とコントラストを参考にした表示。" },
+  { value: "graphite-dark", label: "Graphite", labelJa: "Graphite", description: "Softer shell contrast for long operator sessions.", descriptionJa: "長時間のオペレーター作業向けにコントラストを抑えた表示。" },
 ];
 
-const densityOptions: Array<{ value: DensityMode; label: string; description: string }> = [
-  { value: "comfortable", label: "Comfortable", description: "Default shell spacing for conversation and context." },
-  { value: "compact", label: "Compact", description: "Tighter panel spacing and smaller composer height." },
+const densityOptions: Array<{ value: DensityMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
+  { value: "comfortable", label: "Comfortable", labelJa: "標準", description: "Default shell spacing for conversation and context.", descriptionJa: "会話と文脈パネルを読みやすくする標準の余白。" },
+  { value: "compact", label: "Compact", labelJa: "コンパクト", description: "Tighter panel spacing and smaller composer height.", descriptionJa: "パネル間隔と入力欄を詰めた表示。" },
 ];
 
-const wrapOptions: Array<{ value: WrapMode; label: string; description: string }> = [
-  { value: "balanced", label: "Balanced", description: "Preferred readability for timeline, code, and footer lanes." },
-  { value: "compact", label: "Compact", description: "Denser wrapping for narrow windows and long traces." },
+const wrapOptions: Array<{ value: WrapMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
+  { value: "balanced", label: "Balanced", labelJa: "読みやすさ優先", description: "Preferred readability for timeline, code, and footer lanes.", descriptionJa: "タイムライン、コード、下部ステータスを読みやすく折り返します。" },
+  { value: "compact", label: "Compact", labelJa: "密度優先", description: "Denser wrapping for narrow windows and long traces.", descriptionJa: "狭い画面や長いログで情報量を優先します。" },
 ];
 
-const codeFontOptions: Array<{ value: CodeFontMode; label: string; description: string }> = [
-  { value: "system", label: "System mono", description: "Use the current platform monospace stack." },
-  { value: "google-sans-code", label: "Google Sans Code", description: "Cleaner code reading when installed on Windows." },
-  { value: "jetbrains-mono", label: "JetBrains Mono", description: "Familiar developer font with clear symbols." },
+const codeFontOptions: Array<{ value: CodeFontMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
+  { value: "system", label: "System mono", labelJa: "システム等幅", description: "Use the current platform monospace stack.", descriptionJa: "現在の Windows 環境の等幅フォントを使います。" },
+  { value: "google-sans-code", label: "Google Sans Code", labelJa: "Google Sans Code", description: "Cleaner code reading when installed on Windows.", descriptionJa: "インストール済みの時にコードを読みやすく表示します。" },
+  { value: "jetbrains-mono", label: "JetBrains Mono", labelJa: "JetBrains Mono", description: "Familiar developer font with clear symbols.", descriptionJa: "記号を判別しやすい開発者向けフォントです。" },
 ];
 
-const focusModeOptions: Array<{ value: FocusMode; label: string; description: string }> = [
-  { value: "standard", label: "Standard", description: "Show timeline detail chips on every event." },
-  { value: "focused", label: "Focus", description: "Keep details for selected, review, and attention events." },
+const focusModeOptions: Array<{ value: FocusMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
+  { value: "standard", label: "Standard", labelJa: "標準", description: "Show timeline detail chips on every event.", descriptionJa: "すべての出来事に詳細チップを表示します。" },
+  { value: "focused", label: "Focus", labelJa: "集中", description: "Keep details for selected, review, and attention events.", descriptionJa: "選択中、レビュー、注意が必要な出来事だけ詳細を残します。" },
+];
+
+const languageOptions: Array<{ value: LanguageMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
+  { value: "en", label: "English", labelJa: "English", description: "Use English for the workspace chrome and controls.", descriptionJa: "作業領域と操作部品を英語で表示します。" },
+  { value: "ja", label: "Japanese", labelJa: "日本語", description: "Use Japanese for the main workspace chrome and settings.", descriptionJa: "主要な操作部品と設定を日本語で表示します。" },
 ];
 
 function getCodeFontFamily(mode: CodeFontMode = themeState.codeFont) {
@@ -529,6 +554,144 @@ function closePane(id: string) {
   panes.forEach((pane) => pane.fitAddon.fit());
 }
 
+function normalizeProjectDirInput(value: string | null | undefined) {
+  return (value ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+function getProjectDisplayName(projectDir: string) {
+  const normalized = normalizeProjectDirInput(projectDir);
+  const segments = normalized.split("/").filter(Boolean);
+  return segments[segments.length - 1] || normalized || "winsmux";
+}
+
+function readStoredProjectSessions() {
+  try {
+    const rawValue = window.localStorage.getItem(PROJECT_SESSIONS_STORAGE_KEY);
+    if (!rawValue) {
+      return [];
+    }
+
+    const parsed = JSON.parse(rawValue) as Array<Partial<ProjectSessionEntry>>;
+    return parsed
+      .map((entry) => {
+        const path = normalizeProjectDirInput(entry.path);
+        if (!path) {
+          return null;
+        }
+        return {
+          path,
+          name: entry.name || getProjectDisplayName(path),
+          lastSeenAt: typeof entry.lastSeenAt === "number" ? entry.lastSeenAt : 0,
+        } satisfies ProjectSessionEntry;
+      })
+      .filter((entry): entry is ProjectSessionEntry => Boolean(entry))
+      .slice(0, MAX_PROJECT_SESSIONS);
+  } catch {
+    return [];
+  }
+}
+
+function persistProjectSessions() {
+  try {
+    window.localStorage.setItem(PROJECT_SESSIONS_STORAGE_KEY, JSON.stringify(projectSessionEntries));
+  } catch (error) {
+    console.warn("Failed to persist project sessions", error);
+  }
+}
+
+function readStoredActiveProjectDir() {
+  try {
+    return normalizeProjectDirInput(window.localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY)) || null;
+  } catch {
+    return null;
+  }
+}
+
+function persistActiveProjectDir() {
+  try {
+    if (activeProjectDir) {
+      window.localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, activeProjectDir);
+    } else {
+      window.localStorage.removeItem(ACTIVE_PROJECT_STORAGE_KEY);
+    }
+  } catch (error) {
+    console.warn("Failed to persist active project", error);
+  }
+}
+
+function getActiveProjectDirPayload() {
+  return activeProjectDir ? normalizeProjectDirInput(activeProjectDir) : undefined;
+}
+
+function captureProjectRequestKey() {
+  return normalizeProjectDirInput(getActiveProjectDirPayload()) || "";
+}
+
+function isProjectRequestCurrent(projectKey: string) {
+  return (normalizeProjectDirInput(getActiveProjectDirPayload()) || "") === projectKey;
+}
+
+function rememberProjectSession(projectDir: string) {
+  const path = normalizeProjectDirInput(projectDir);
+  if (!path) {
+    return;
+  }
+
+  projectSessionEntries = [
+    { path, name: getProjectDisplayName(path), lastSeenAt: Date.now() },
+    ...projectSessionEntries.filter((entry) => normalizeProjectDirInput(entry.path) !== path),
+  ].slice(0, MAX_PROJECT_SESSIONS);
+  persistProjectSessions();
+}
+
+function resetDesktopProjectState() {
+  desktopSummarySnapshot = null;
+  selectedRunId = null;
+  selectedEditorKey = "";
+  selectedPreviewUrl = "";
+  activeSourceFilter = "all";
+  activeTimelineFilter = "all";
+  desktopExplainCache.clear();
+  desktopRunCompareCache.clear();
+  promotedRunCandidates.clear();
+  desktopEditorFileCache.clear();
+  desktopEditorLoadingPaths.clear();
+  desktopEditorLoadErrors.clear();
+  desktopStandaloneEditorTargets.clear();
+  collapsedExplorerFolders.clear();
+  promotingRunIds.clear();
+  pickingWinnerRunIds.clear();
+  pendingPromotedRunRefreshIds.clear();
+  comparingRunPairKeys.clear();
+  backendConversation.splice(0, backendConversation.length);
+}
+
+function setActiveProjectDir(projectDir: string | null) {
+  const nextProjectDir = normalizeProjectDirInput(projectDir) || null;
+  if (normalizeProjectDirInput(activeProjectDir) === normalizeProjectDirInput(nextProjectDir)) {
+    return;
+  }
+
+  activeProjectDir = nextProjectDir;
+  if (activeProjectDir) {
+    rememberProjectSession(activeProjectDir);
+  }
+  persistActiveProjectDir();
+  resetDesktopProjectState();
+  renderDesktopSurfaces();
+  requestDesktopSummaryRefresh(undefined, 0);
+}
+
+function promptAndAddProjectSession() {
+  const value = window.prompt(getLanguageText("Project path", "プロジェクトのパス"));
+  const projectDir = normalizeProjectDirInput(value);
+  if (!projectDir) {
+    return;
+  }
+
+  setActiveProjectDir(projectDir);
+}
+
 function renderSessions() {
   const root = document.getElementById("session-list");
   if (!root) {
@@ -541,38 +704,69 @@ function renderSessions() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `sidebar-row ${session.active ? "is-active" : ""}`;
+    if (session.projectDir) {
+      button.title = session.projectDir;
+    }
     button.innerHTML = `<span class="sidebar-row-title">${session.name}</span><span class="sidebar-row-meta">${session.meta}</span>`;
+    if (session.action === "add-project") {
+      button.addEventListener("click", () => {
+        promptAndAddProjectSession();
+      });
+    } else if (session.projectDir !== undefined && !session.active) {
+      button.addEventListener("click", () => {
+        setActiveProjectDir(session.projectDir ?? null);
+      });
+    }
     root.appendChild(button);
   }
 }
 
 function getSessionItems() {
+  const activePath = activeProjectDir ?? desktopSummarySnapshot?.project_dir ?? null;
+  const activeName = activePath ? getProjectDisplayName(activePath) : "winsmux";
   if (!desktopSummarySnapshot) {
-    const items: SessionItem[] = [{ name: "winsmux", meta: "Connecting to desktop summary", active: true }];
+    const items: SessionItem[] = [{
+      name: activeName,
+      meta: getLanguageText("Connecting to desktop summary", "デスクトップ要約へ接続中"),
+      active: true,
+      projectDir: activePath,
+    }];
     if (detachedSurfaceSession) {
       items.push({
         name: detachedSurfaceSession.name,
         meta: detachedSurfaceSession.meta,
       });
     }
+    items.push({
+      name: getLanguageText("Add project", "プロジェクトを追加"),
+      meta: getLanguageText("Paste a local project path", "ローカルプロジェクトのパスを貼り付け"),
+      action: "add-project",
+    });
     return items;
   }
 
   const board = desktopSummarySnapshot.board.summary;
   const inbox = desktopSummarySnapshot.inbox.summary;
-  const digest = desktopSummarySnapshot.digest.summary;
 
-  const items = [
+  const items: SessionItem[] = [
     {
-      name: "winsmux",
+      name: activeName,
       meta: `${board.pane_count} panes · ${inbox.item_count} inbox · ${board.tasks_blocked} blocked`,
       active: true,
+      projectDir: activePath,
     },
-    {
-      name: "summary-stream",
-      meta: `${digest.item_count} runs · ${digest.actionable_items} actionable · ${board.review_pending} review pending`,
-    },
-  ] satisfies SessionItem[];
+  ];
+
+  for (const entry of projectSessionEntries) {
+    if (activePath && normalizeProjectDirInput(entry.path) === normalizeProjectDirInput(activePath)) {
+      continue;
+    }
+    items.push({
+      name: entry.name,
+      meta: entry.path,
+      projectDir: entry.path,
+    });
+  }
 
   if (detachedSurfaceSession) {
     items.push({
@@ -580,6 +774,12 @@ function getSessionItems() {
       meta: detachedSurfaceSession.meta,
     });
   }
+
+  items.push({
+    name: getLanguageText("Add project", "プロジェクトを追加"),
+    meta: getLanguageText("Paste a local project path", "ローカルプロジェクトのパスを貼り付け"),
+    action: "add-project",
+  });
 
   return items;
 }
@@ -865,20 +1065,31 @@ function getExplorerItems() {
   for (const [worktreeKey, group] of Array.from(worktreeGroups.entries()).sort((left, right) =>
     getWorktreeLabel(left[0]).localeCompare(getWorktreeLabel(right[0])),
   )) {
+    const worktreeFolderKey = getExplorerFolderKey(worktreeKey, "");
+    const worktreeOpen = !collapsedExplorerFolders.has(worktreeFolderKey);
     items.push({
       label: getWorktreeLabel(worktreeKey),
       meta: `${group.length} file${group.length === 1 ? "" : "s"}`,
       depth: 0,
       kind: "folder",
-      open: true,
+      folderKey: worktreeFolderKey,
+      open: worktreeOpen,
       worktree: worktreeKey,
     });
+
+    if (!worktreeOpen) {
+      continue;
+    }
 
     for (const target of group) {
       const normalizedPath = target.path.replace(/\\/g, "/");
       const segments = normalizedPath.split("/").filter(Boolean);
       let currentPath = "";
+      let parentCollapsed = false;
       segments.forEach((segment, index) => {
+        if (parentCollapsed) {
+          return;
+        }
         currentPath = currentPath ? `${currentPath}/${segment}` : segment;
         const folderKey = `${worktreeKey}::${currentPath}`;
         const depth = index + 1;
@@ -896,6 +1107,9 @@ function getExplorerItems() {
           return;
         }
 
+        if (collapsedExplorerFolders.has(folderKey)) {
+          parentCollapsed = true;
+        }
         if (seenFolders.has(folderKey)) {
           return;
         }
@@ -905,7 +1119,8 @@ function getExplorerItems() {
           label: segment,
           depth,
           kind: "folder",
-          open: true,
+          folderKey,
+          open: !collapsedExplorerFolders.has(folderKey),
           worktree: target.worktree,
         });
       });
@@ -1010,6 +1225,19 @@ function getWorktreeLabel(worktree: string | undefined) {
   return segments[segments.length - 1] || normalized;
 }
 
+function getExplorerFolderKey(worktree: string | undefined, path: string) {
+  return `${worktree || "."}::${path}`;
+}
+
+function toggleExplorerFolder(folderKey: string) {
+  if (collapsedExplorerFolders.has(folderKey)) {
+    collapsedExplorerFolders.delete(folderKey);
+  } else {
+    collapsedExplorerFolders.add(folderKey);
+  }
+  renderExplorer();
+}
+
 function renderExplorer() {
   const root = document.getElementById("explorer-list");
   if (!root) {
@@ -1022,8 +1250,8 @@ function renderExplorer() {
     const empty = document.createElement("div");
     empty.className = "sidebar-row";
     empty.innerHTML =
-      `<span class="sidebar-row-title">No projected files</span>` +
-      `<span class="sidebar-row-meta">Changed files will appear here after the desktop summary refreshes.</span>`;
+      `<span class="sidebar-row-title">${getLanguageText("No projected files", "投影されたファイルはありません")}</span>` +
+      `<span class="sidebar-row-meta">${getLanguageText("Changed files will appear here after the desktop summary refreshes.", "デスクトップ要約が更新されると、変更ファイルがここに表示されます。")}</span>`;
     root.appendChild(empty);
     return;
   }
@@ -1036,6 +1264,13 @@ function renderExplorer() {
     button.innerHTML =
       `<span class="sidebar-row-title">${item.kind === "folder" ? (item.open ? "▾ " : "▸ ") : "• "}${item.label}</span>` +
       (item.meta ? `<span class="sidebar-row-meta">${item.meta}</span>` : "");
+    if (item.kind === "folder" && item.folderKey) {
+      const folderKey = item.folderKey;
+      button.setAttribute("aria-expanded", item.open ? "true" : "false");
+      button.addEventListener("click", () => {
+        toggleExplorerFolder(folderKey);
+      });
+    }
     if (item.kind === "file" && item.path) {
       const itemPath = item.path;
       const itemWorktree = item.worktree ?? "";
@@ -2512,7 +2747,7 @@ function getFooterNextTone(nextAction: string | undefined): SurfaceTone {
 
 function getFooterSurfaceStatus() {
   if (commandBarOpen) {
-    return "Command";
+    return "Actions";
   }
   if (settingsSheetOpen) {
     return "Settings";
@@ -2650,14 +2885,14 @@ function getFooterContextItem(settingsStatus: string): FooterStatusItem {
 
   return {
     label: "Context",
-    value: "Ctrl/Cmd+K",
+    value: "Ctrl+K",
     tone: "accent",
   };
 }
 
 function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[] } {
   const selectedProjection = getPrimaryRunProjection();
-  const modeLabel = composerModes.find((item) => item.mode === activeComposerMode)?.label ?? activeComposerMode;
+  const modeLabel = getComposerModeLabel(activeComposerMode);
   const inboxCount = desktopSummarySnapshot?.inbox.summary.item_count ?? 0;
   const inboxStatus = desktopSummarySnapshot ? `${inboxCount} inbox` : "Inbox idle";
   const runStatus = selectedProjection?.label || selectedProjection?.run_id || "No run selected";
@@ -2694,6 +2929,7 @@ function cloneThemeState(state: ThemeState): ThemeState {
     wrapMode: state.wrapMode,
     codeFont: state.codeFont,
     focusMode: state.focusMode,
+    language: state.language,
   };
 }
 
@@ -2702,7 +2938,8 @@ function themeStatesEqual(left: ThemeState, right: ThemeState) {
     && left.density === right.density
     && left.wrapMode === right.wrapMode
     && left.codeFont === right.codeFont
-    && left.focusMode === right.focusMode;
+    && left.focusMode === right.focusMode
+    && left.language === right.language;
 }
 
 function readStoredShellPreferences(): ShellPreferenceState | null {
@@ -2718,6 +2955,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
     const wrapMode = wrapOptions.find((item) => item.value === parsed.wrapMode)?.value;
     const codeFont = codeFontOptions.find((item) => item.value === parsed.codeFont)?.value ?? "system";
     const focusMode = focusModeOptions.find((item) => item.value === parsed.focusMode)?.value ?? "standard";
+    const language = languageOptions.find((item) => item.value === parsed.language)?.value ?? "en";
     if (!theme || !density || !wrapMode) {
       return null;
     }
@@ -2732,6 +2970,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       wrapMode,
       codeFont,
       focusMode,
+      language,
       sidebarWidth: Math.max(240, Math.min(380, Math.round(sidebarWidthValue))),
       wideSidebarOpen,
       wideContextOpen,
@@ -2749,6 +2988,7 @@ function persistThemeState() {
       wrapMode: themeState.wrapMode,
       codeFont: themeState.codeFont,
       focusMode: themeState.focusMode,
+      language: themeState.language,
       sidebarWidth,
       wideSidebarOpen: preferredWideSidebarOpen,
       wideContextOpen: preferredWideContextOpen,
@@ -2772,6 +3012,114 @@ function applyShellPreferences() {
   shell.dataset.wrapMode = themeState.wrapMode;
   shell.dataset.codeFont = themeState.codeFont;
   shell.dataset.focusMode = themeState.focusMode;
+  document.documentElement.lang = themeState.language;
+}
+
+function getLanguageText(en: string, ja: string) {
+  return themeState.language === "ja" ? ja : en;
+}
+
+function setElementText(id: string, text: string) {
+  const element = document.getElementById(id);
+  if (element) {
+    element.textContent = text;
+  }
+}
+
+function setSelectorText(selector: string, text: string) {
+  const element = document.querySelector(selector);
+  if (element) {
+    element.textContent = text;
+  }
+}
+
+function setButtonLabel(id: string, text: string, ariaLabel?: string) {
+  const button = document.getElementById(id);
+  if (!button) {
+    return;
+  }
+
+  const label = button.querySelector(".btn-label");
+  if (label) {
+    label.textContent = text;
+  } else {
+    button.textContent = text;
+  }
+  if (ariaLabel) {
+    button.setAttribute("aria-label", ariaLabel);
+  }
+}
+
+function applyLanguageChrome() {
+  const japanese = themeState.language === "ja";
+  document.documentElement.lang = japanese ? "ja" : "en";
+  setElementText("workspace-title", japanese ? "受信箱" : "Inbox");
+  setElementText(
+    "workspace-subtitle",
+    japanese
+      ? "判断、根拠、実行を会話中心に扱うオペレーターシェル。"
+      : "Conversation-first shell for operator judgment, evidence, and action.",
+  );
+  setButtonLabel("settings-btn", japanese ? "設定" : "Settings", japanese ? "設定を開く" : "Open settings");
+  setButtonLabel("open-command-bar-btn", japanese ? "操作" : "Actions", japanese ? "操作パレットを開く" : "Open action palette");
+  setButtonLabel("toggle-sidebar-btn", japanese ? "作業領域" : "Workspace", japanese ? "作業領域サイドバーを切り替える" : "Toggle workspace sidebar");
+  setButtonLabel(
+    "toggle-context-btn",
+    contextPanelOpen ? (japanese ? "隠す" : "Hide") : (japanese ? "文脈" : "Context"),
+    contextPanelOpen ? (japanese ? "文脈パネルを隠す" : "Hide context panel") : (japanese ? "文脈パネルを表示" : "Show context panel"),
+  );
+  setButtonLabel(
+    "toggle-terminal-btn",
+    terminalDrawerOpen ? (japanese ? "隠す" : "Hide") : (japanese ? "端末" : "Terminal"),
+    terminalDrawerOpen ? (japanese ? "端末ドロワーを隠す" : "Hide terminal drawer") : (japanese ? "端末ドロワーを開く" : "Open terminal drawer"),
+  );
+  setElementText("settings-sheet-title", japanese ? "設定" : "Settings");
+  setElementText("close-settings-btn", japanese ? "キャンセル" : "Cancel");
+  setElementText("apply-settings-btn", japanese ? "適用" : "Apply");
+  setElementText("settings-profile-label", japanese ? "プロファイル" : "Profile");
+  setElementText("settings-profile-value", japanese ? "ローカル環境 · GPT-5.4 · 高い推論" : "Local environment · GPT-5.4 · High reasoning");
+  setElementText("settings-language-label", japanese ? "言語" : "Language");
+  setElementText("settings-language-value", japanese ? "作業領域の表示言語を日本語と英語で切り替えます。" : "Switch the workspace chrome between English and Japanese.");
+  setElementText("settings-theme-label", japanese ? "テーマ" : "Theme");
+  setElementText("settings-theme-value", japanese ? "文字、配色、シェルのコントラストを切り替えます。" : "Public openai/codex TUI-derived typography, semantic color tokens, and shell contrast.");
+  setElementText("settings-density-label", japanese ? "密度" : "Density");
+  setElementText("settings-density-value", japanese ? "作業領域、入力欄、パネルの余白を調整します。" : "Workspace spacing, composer height, and panel padding.");
+  setElementText("settings-wrap-label", japanese ? "折り返し" : "Wrap");
+  setElementText("settings-wrap-value", japanese ? "会話、エディター、下部ステータスの折り返しを調整します。" : "Conversation, editor, and footer wrapping behavior.");
+  setElementText("settings-code-font-label", japanese ? "コードフォント" : "Code font");
+  setElementText("settings-code-font-value", japanese ? "コード表示、端末ペイン、差分詳細に使います。" : "Used in code preview, terminal panes, and diff details.");
+  setElementText("settings-display-label", japanese ? "表示" : "Display");
+  setElementText("settings-display-value", japanese ? "タイムラインの詳細を常時どこまで表示するかを選びます。" : "Choose how much timeline detail stays visible by default.");
+  setElementText("settings-workspace-label", japanese ? "作業領域" : "Workspace");
+  setElementText("settings-workspace-value", japanese ? "サイドバー幅、文脈パネル、端末ドロワーの挙動を扱います。" : "Sidebar width, context collapse, terminal drawer behavior");
+  setElementText("settings-input-label", japanese ? "入力" : "Input");
+  setElementText("settings-input-value", japanese ? "Enter で送信、Shift+Enter で改行、IME 変換中の Enter は保護します。" : "Enter sends, Shift+Enter inserts newline, IME composition is protected");
+  setSelectorText(".brand-block .sidebar-caption", japanese ? "オペレーターシェル" : "Operator shell");
+  setSelectorText('[data-i18n="sessions-title"]', japanese ? "セッション" : "Sessions");
+  setSelectorText('[data-i18n="files-title"]', japanese ? "ファイル" : "Files");
+  setSelectorText('[data-i18n="editors-title"]', japanese ? "エディター" : "Editors");
+  setSelectorText('[data-i18n="source-title"]', japanese ? "ソース" : "Source");
+  setSelectorText("#thread-meta span:first-child", japanese ? "winsmux セッション" : "winsmux session");
+  setSelectorText("#thread-meta span:last-child", japanese ? "会話シェル · 要点フィード" : "conversation shell · concise feed");
+  setElementText("timeline-feed-hint", japanese ? "重要な出来事だけを表示します。必要な時に詳細を開きます。" : "Key events only. Details open when needed.");
+  setElementText("ime-hint", japanese ? "IME 対応: Enter で送信、Shift+Enter で改行、変換中の Enter では送信しません。" : "IME-safe: Enter sends, Shift+Enter inserts newline, composing Enter never sends.");
+  setElementText("command-bar-title", japanese ? "操作パレット" : "Action palette");
+  setElementText(
+    "command-bar-hint",
+    japanese ? "Ctrl+K で開く · ↑↓ で移動 · Enter で実行 · Esc で閉じる" : "Ctrl+K to open · ↑↓ navigate · Enter execute · Esc close",
+  );
+
+  const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+  if (composerInput) {
+    const selected = composerModes.find((item) => item.mode === activeComposerMode) ?? composerModes[0];
+    composerInput.placeholder = getComposerModePlaceholder(selected.mode);
+  }
+
+  const attachButton = document.getElementById("attach-btn");
+  if (attachButton) {
+    attachButton.textContent = japanese ? "添付" : "Attach";
+  }
+  setElementText("send-btn", japanese ? "送信" : "Send");
 }
 
 function applyThemeState(nextState: ThemeState) {
@@ -2780,10 +3128,16 @@ function applyThemeState(nextState: ThemeState) {
   themeState.wrapMode = nextState.wrapMode;
   themeState.codeFont = nextState.codeFont;
   themeState.focusMode = nextState.focusMode;
+  themeState.language = nextState.language;
   applyShellPreferences();
+  applyLanguageChrome();
   updateTimelineFeedHint();
   applyCodeFontToPanes();
   renderConversation(getConversationItems());
+  renderComposerModes();
+  renderAttachmentTray();
+  renderCommandBar();
+  renderSettingsControls();
   renderFooterLane();
 }
 
@@ -2797,7 +3151,7 @@ function applyCodeFontToPanes() {
 
 function renderPreferenceOptions<T extends string>(
   rootId: string,
-  options: Array<{ value: T; label: string; description: string }>,
+  options: Array<{ value: T; label: string; description: string; labelJa?: string; descriptionJa?: string }>,
   selected: T,
   onSelect: (value: T) => void,
 ) {
@@ -2807,12 +3161,13 @@ function renderPreferenceOptions<T extends string>(
   }
 
   root.innerHTML = "";
+  const japanese = (settingsDraftState?.language ?? themeState.language) === "ja";
   for (const option of options) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `settings-option-chip ${option.value === selected ? "is-active" : ""}`;
     button.setAttribute("aria-pressed", option.value === selected ? "true" : "false");
-    button.innerHTML = `<span class="settings-option-label">${option.label}</span><span class="settings-option-description">${option.description}</span>`;
+    button.innerHTML = `<span class="settings-option-label">${japanese ? (option.labelJa ?? option.label) : option.label}</span><span class="settings-option-description">${japanese ? (option.descriptionJa ?? option.description) : option.description}</span>`;
     button.addEventListener("click", () => onSelect(option.value));
     root.appendChild(button);
   }
@@ -2862,6 +3217,14 @@ function renderSettingsControls() {
     renderSettingsControls();
   });
 
+  renderPreferenceOptions("language-options", languageOptions, activeState.language, (value) => {
+    if (!settingsDraftState) {
+      settingsDraftState = cloneThemeState(themeState);
+    }
+    settingsDraftState.language = value;
+    renderSettingsControls();
+  });
+
   if (applyButton) {
     const hasChanges = Boolean(settingsDraftState && !themeStatesEqual(settingsDraftState, themeState));
     applyButton.disabled = !hasChanges;
@@ -2888,7 +3251,7 @@ function renderFooterLane() {
     button.innerHTML = item.value
       ? `<span class="footer-pill-label">${item.label}</span><span class="footer-pill-value">${item.value}</span>`
       : `<span class="footer-pill-value">${item.label}</span>`;
-    if (item.label === "Command" || item.value === "Command") {
+    if (item.label === "Actions" || item.value === "Actions") {
       button.addEventListener("click", () => openCommandBar());
     }
     if (item.label === "Settings" || item.value === "Settings") {
@@ -2964,7 +3327,7 @@ function renderComposerSlashCommands() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `slash-chip ${index === selectedComposerSlashIndex ? "is-active" : ""}`;
-    button.innerHTML = `<span class="slash-chip-command">/${item.command}</span><span class="slash-chip-description">${item.label}</span>`;
+    button.innerHTML = `<span class="slash-chip-command">/${item.command}</span><span class="slash-chip-description">${getComposerModeLabel(item.mode)}</span>`;
     button.addEventListener("click", () => {
       applyComposerSlashCommand(item);
     });
@@ -3197,7 +3560,7 @@ function renderComposerModes() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `mode-chip ${item.mode === activeComposerMode ? "is-active" : ""}`;
-    button.textContent = item.label;
+    button.textContent = getComposerModeLabel(item.mode);
     button.setAttribute("aria-pressed", item.mode === activeComposerMode ? "true" : "false");
     button.addEventListener("click", () => {
       setComposerMode(item.mode);
@@ -3207,11 +3570,43 @@ function renderComposerModes() {
 
   const selected = composerModes.find((item) => item.mode === activeComposerMode);
   if (selected) {
-    composerInput.placeholder = selected.placeholder;
+    composerInput.placeholder = getComposerModePlaceholder(selected.mode);
   }
 
   renderComposerSlashCommands();
   renderComposerRemoteReferences();
+}
+
+function getComposerModeLabel(mode: ComposerMode) {
+  if (themeState.language !== "ja") {
+    return composerModes.find((item) => item.mode === mode)?.label ?? mode;
+  }
+  switch (mode) {
+    case "ask":
+      return "質問";
+    case "dispatch":
+      return "依頼";
+    case "review":
+      return "レビュー";
+    case "explain":
+      return "説明";
+  }
+}
+
+function getComposerModePlaceholder(mode: ComposerMode) {
+  if (themeState.language !== "ja") {
+    return composerModes.find((item) => item.mode === mode)?.placeholder ?? "";
+  }
+  switch (mode) {
+    case "ask":
+      return "質問や相談内容を入力してください";
+    case "dispatch":
+      return "タスクを説明するか、質問を入力してください";
+    case "review":
+      return "レビューしてほしい内容を入力してください";
+    case "explain":
+      return "説明してほしい状態やファイルを入力してください";
+  }
 }
 
 function formatAttachmentSize(size: number) {
@@ -3269,7 +3664,10 @@ function renderAttachmentTray() {
   if (pendingAttachments.length === 0) {
     const empty = document.createElement("div");
     empty.className = "attachment-empty-state";
-    empty.textContent = "Paste a screenshot, drop files, or use Attach.";
+    empty.textContent = getLanguageText(
+      "Paste an image, drop files, or use Attach.",
+      "画像を貼り付け、ファイルをドロップ、または添付できます。",
+    );
     tray.appendChild(empty);
     return;
   }
@@ -3327,6 +3725,53 @@ function appendAttachments(files: File[]) {
   pendingAttachments = [...pendingAttachments, ...next];
   exitComposerHistoryToDraft();
   renderAttachmentTray();
+}
+
+function getClipboardAttachmentFiles(data: DataTransfer | null) {
+  if (!data) {
+    return [];
+  }
+
+  const files = [
+    ...Array.from(data.files ?? []),
+    ...Array.from(data.items ?? [])
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file)),
+  ];
+  const seen = new Set<string>();
+  return files.filter((file) => {
+    const key = `${file.name}:${file.type}:${file.size}:${file.lastModified}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+async function readClipboardImageFiles() {
+  if (!navigator.clipboard?.read) {
+    return [];
+  }
+
+  try {
+    const clipboardItems = await navigator.clipboard.read();
+    const files: File[] = [];
+    for (const item of clipboardItems) {
+      const imageType = item.types.find((type) => type.startsWith("image/"));
+      if (!imageType) {
+        continue;
+      }
+      const blob = await item.getType(imageType);
+      const extension = imageType.split("/")[1] || "png";
+      const timestamp = Date.now();
+      files.push(new File([blob], `clipboard-image-${timestamp}-${files.length + 1}.${extension}`, { type: imageType, lastModified: timestamp }));
+    }
+    return files;
+  } catch {
+    return [];
+  }
 }
 
 function getVisibleConversationItems(items: ConversationItem[]) {
@@ -3574,7 +4019,12 @@ async function openExplainForSelectedRun() {
 
   try {
     const previousPayload = desktopExplainCache.get(selectedRunId) ?? null;
-    const payload = await getDesktopRunExplain(selectedRunId);
+    const projectDir = getActiveProjectDirPayload();
+    const projectKey = captureProjectRequestKey();
+    const payload = await getDesktopRunExplain(selectedRunId, projectDir);
+    if (!isProjectRequestCurrent(projectKey)) {
+      return;
+    }
     const observationPack = getObservationPack(payload);
     const consultationSummary = getConsultationSummary(payload);
     desktopExplainCache.set(selectedRunId, payload);
@@ -3733,7 +4183,12 @@ async function promoteSelectedRunTactic(runId: string) {
   renderContextPanel();
 
   try {
-    const result = await promoteDesktopRunTactic(runId);
+    const projectDir = getActiveProjectDirPayload();
+    const projectKey = captureProjectRequestKey();
+    const result = await promoteDesktopRunTactic(runId, projectDir);
+    if (!isProjectRequestCurrent(projectKey)) {
+      return;
+    }
     pendingPromotedRunRefreshIds.add(runId);
     renderContextPanel();
     appendRuntimeConversation({
@@ -3754,7 +4209,10 @@ async function promoteSelectedRunTactic(runId: string) {
     renderConversation(getConversationItems());
     requestDesktopSummaryRefresh(undefined, 0);
     try {
-      const explainPayload = await getDesktopRunExplain(runId);
+      const explainPayload = await getDesktopRunExplain(runId, projectDir);
+      if (!isProjectRequestCurrent(projectKey)) {
+        return;
+      }
       desktopExplainCache.set(runId, explainPayload);
       promotedRunCandidates.set(runId, {
         fingerprint: getExplainPayloadFingerprint(explainPayload),
@@ -3796,7 +4254,12 @@ async function focusRunInContext(runId: string) {
   renderDesktopSurfaces();
 
   try {
-    const explainPayload = await getDesktopRunExplain(runId);
+    const projectDir = getActiveProjectDirPayload();
+    const projectKey = captureProjectRequestKey();
+    const explainPayload = await getDesktopRunExplain(runId, projectDir);
+    if (!isProjectRequestCurrent(projectKey)) {
+      return;
+    }
     desktopExplainCache.set(runId, explainPayload);
   } catch (error) {
     console.warn("Failed to preload explain payload for focused run", error);
@@ -3821,13 +4284,19 @@ async function pickCompareWinner(
   renderContextPanel();
 
   try {
+    const projectDir = getActiveProjectDirPayload();
+    const projectKey = captureProjectRequestKey();
     const result = await pickDesktopRunWinner(
       runId,
       peerSlot,
       recommendation,
       confidence,
       nextTest,
+      projectDir,
     );
+    if (!isProjectRequestCurrent(projectKey)) {
+      return;
+    }
     appendRuntimeConversation({
       type: "operator",
       category: "activity",
@@ -3882,7 +4351,12 @@ async function compareSelectedRunWithPeer(leftRunId: string, rightRunId: string)
   renderContextPanel();
 
   try {
-    const result = await compareDesktopRuns(leftRunId, rightRunId);
+    const projectDir = getActiveProjectDirPayload();
+    const projectKey = captureProjectRequestKey();
+    const result = await compareDesktopRuns(leftRunId, rightRunId, projectDir);
+    if (!isProjectRequestCurrent(projectKey)) {
+      return;
+    }
     const latestLeftFingerprint = getRunProjectionFingerprint(getRunProjectionByRunId(leftRunId));
     const latestRightFingerprint = getRunProjectionFingerprint(getRunProjectionByRunId(rightRunId));
     if (
@@ -4021,7 +4495,7 @@ function getCommandActions(): CommandAction[] {
       label: "Dispatch next task",
       description: "Switch the composer to dispatch mode and focus the operator input.",
       keywords: ["dispatch", "task", "composer", "operator"],
-      shortcut: "Ctrl/Cmd+K",
+      shortcut: "Ctrl+K",
       tone: "focus",
       run: () => {
         setComposerMode("dispatch");
@@ -5160,9 +5634,9 @@ function setTerminalDrawer(open: boolean) {
   }
 
   drawer.hidden = !open;
-  setCompactButtonLabel(button, open ? "Hide" : "Terminal");
+  setCompactButtonLabel(button, open ? getLanguageText("Hide", "隠す") : getLanguageText("Terminal", "端末"));
   button.setAttribute("aria-expanded", open ? "true" : "false");
-  button.setAttribute("aria-label", open ? "Hide terminal drawer" : "Open terminal drawer");
+  button.setAttribute("aria-label", open ? getLanguageText("Hide terminal drawer", "端末ドロワーを隠す") : getLanguageText("Open terminal drawer", "端末ドロワーを開く"));
 
   if (open && panes.size === 0) {
     createPane("main");
@@ -5189,9 +5663,9 @@ function setContextPanel(open: boolean, options?: { preserveWidePreference?: boo
 
   panel.toggleAttribute("hidden", !open);
   body.classList.toggle("context-collapsed", !open);
-  setCompactButtonLabel(button, open ? "Hide" : "Context");
+  setCompactButtonLabel(button, open ? getLanguageText("Hide", "隠す") : getLanguageText("Context", "文脈"));
   button.setAttribute("aria-expanded", open ? "true" : "false");
-  button.setAttribute("aria-label", open ? "Hide context panel" : "Show context panel");
+  button.setAttribute("aria-label", open ? getLanguageText("Hide context panel", "文脈パネルを隠す") : getLanguageText("Show context panel", "文脈パネルを表示"));
 }
 
 function setCompactButtonLabel(button: Element, label: string) {
@@ -5456,7 +5930,12 @@ async function ensureEditorFileLoaded(target: EditorTarget | null) {
   renderOpenEditors();
 
   try {
-    const payload = await getDesktopEditorFile(target.path, target.worktree || undefined);
+    const projectDir = getActiveProjectDirPayload();
+    const projectKey = captureProjectRequestKey();
+    const payload = await getDesktopEditorFile(target.path, target.worktree || undefined, projectDir);
+    if (!isProjectRequestCurrent(projectKey)) {
+      return;
+    }
     desktopEditorFileCache.set(target.key, buildCachedEditorFile(target, payload));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -5745,15 +6224,36 @@ function renderPaneMetadata() {
 }
 
 async function refreshDesktopSummary(forceExplainRunId?: string | null) {
-  if (desktopSummaryRefreshInFlight) {
+  const requestProjectDir = getActiveProjectDirPayload();
+  const requestProjectKey = normalizeProjectDirInput(requestProjectDir) || "";
+  if (desktopSummaryRefreshInFlight && desktopSummaryRefreshInFlightProjectKey === requestProjectKey) {
     return desktopSummaryRefreshInFlight;
   }
 
+  const requestSequence = ++desktopSummaryRefreshSequence;
+  desktopSummaryRefreshInFlightProjectKey = requestProjectKey;
   desktopSummaryRefreshInFlight = (async () => {
   try {
     const previousSnapshot = desktopSummarySnapshot;
     const previousSelectedRunId = selectedRunId;
-    const snapshot = await getDesktopSummarySnapshot();
+    const snapshot = await getDesktopSummarySnapshot(requestProjectDir);
+    const currentProjectKey = normalizeProjectDirInput(getActiveProjectDirPayload()) || "";
+    if (requestSequence !== desktopSummaryRefreshSequence || currentProjectKey !== requestProjectKey) {
+      return;
+    }
+    const snapshotProjectKey = normalizeProjectDirInput(snapshot.project_dir) || "";
+    if (requestProjectKey && snapshotProjectKey && snapshotProjectKey !== requestProjectKey) {
+      console.warn("Ignoring desktop summary for a different project", {
+        requestedProjectDir: requestProjectKey,
+        snapshotProjectDir: snapshotProjectKey,
+      });
+      return;
+    }
+    if (!activeProjectDir) {
+      activeProjectDir = normalizeProjectDirInput(snapshot.project_dir) || null;
+      persistActiveProjectDir();
+    }
+    rememberProjectSession(activeProjectDir ?? snapshot.project_dir);
     const diff = diffDesktopSummarySnapshots(previousSnapshot, snapshot);
     const invalidatedRunIds = new Set([
       ...diff.changedRunIds,
@@ -5792,7 +6292,7 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
       );
     if (selectedRunId && shouldPrefetchExplain) {
       try {
-        const explainPayload = await getDesktopRunExplain(selectedRunId);
+        const explainPayload = await getDesktopRunExplain(selectedRunId, getActiveProjectDirPayload());
         desktopExplainCache.set(selectedRunId, explainPayload);
       } catch (error) {
         console.warn("Failed to prefetch desktop explain payload", error);
@@ -5811,7 +6311,11 @@ async function refreshDesktopSummary(forceExplainRunId?: string | null) {
     } catch (error) {
       console.warn("Failed to load desktop summary snapshot", error);
     } finally {
+      if (requestSequence !== desktopSummaryRefreshSequence) {
+        return;
+      }
       desktopSummaryRefreshInFlight = null;
+      desktopSummaryRefreshInFlightProjectKey = "";
       if (desktopSummaryRefreshRunningVersion < desktopSummaryRefreshRequestedVersion) {
         flushDesktopSummaryRefreshQueue();
       }
@@ -5980,6 +6484,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderSourceEntries();
   renderContextPanel();
   applyShellPreferences();
+  applyLanguageChrome();
   renderSettingsControls();
   renderFooterLane();
   renderTimelineFilters();
@@ -6213,18 +6718,22 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
 
     composerInput.addEventListener("paste", (event) => {
-      const items = Array.from(event.clipboardData?.items ?? []);
-      const attachmentFiles = items
-        .filter((item) => item.kind === "file")
-        .map((item) => item.getAsFile())
-        .filter((file): file is File => Boolean(file));
+      const attachmentFiles = getClipboardAttachmentFiles(event.clipboardData);
 
-      if (attachmentFiles.length === 0) {
+      if (attachmentFiles.length > 0) {
+        event.preventDefault();
+        appendAttachments(attachmentFiles);
+        return;
+      }
+
+      if (event.clipboardData?.types.includes("text/plain")) {
         return;
       }
 
       event.preventDefault();
-      appendAttachments(attachmentFiles);
+      void readClipboardImageFiles().then((files) => {
+        appendAttachments(files);
+      });
     });
 
     composerInput.addEventListener("dragover", (event) => {
@@ -6289,7 +6798,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
 
   window.addEventListener("keydown", (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+    if (event.ctrlKey && event.key.toLowerCase() === "k") {
       event.preventDefault();
       if (commandBarOpen) {
         closeCommandBar();
