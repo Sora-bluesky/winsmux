@@ -8503,6 +8503,15 @@ panes:
         $result.runs[0].checkpoint_package.session_type | Should -Be 'managed_worktree'
         $result.runs[0].checkpoint_package.changed_files | Should -Be @('scripts/winsmux-core.ps1')
         $result.runs[0].checkpoint_package.verification.outcome | Should -Be 'PARTIAL'
+        $result.runs[0].checkpoint_package.end_of_run_snapshot.packet_type | Should -Be 'end_of_run_snapshot_manifest'
+        $result.runs[0].checkpoint_package.end_of_run_snapshot.status | Should -Be 'partial'
+        $result.runs[0].checkpoint_package.end_of_run_snapshot.capture_policy.snapshot_failure_does_not_fail_worker | Should -Be $true
+        $result.runs[0].checkpoint_package.end_of_run_snapshot.repo_diff.changed_files | Should -Be @('scripts/winsmux-core.ps1')
+        $result.runs[0].checkpoint_package.end_of_run_snapshot.repo_diff.untracked_files.file_names_stored | Should -Be $false
+        $result.runs[0].checkpoint_package.end_of_run_snapshot.terminal.raw_transcript_stored | Should -Be $false
+        $result.runs[0].checkpoint_package.end_of_run_snapshot.context.context_pack_id | Should -Be 'ctx-runs'
+        $result.runs[0].checkpoint_package.end_of_run_snapshot.context.semantic_context_pack_id | Should -Be 'sem-runs'
+        $result.runs[0].checkpoint_package.end_of_run_snapshot.hydration.assigned_worktree | Should -Be '.worktrees/builder-1'
         ($result.runs[0].checkpoint_package | ConvertTo-Json -Depth 8) | Should -Not -Match 'Users'
         ($result.runs[0].checkpoint_package | ConvertTo-Json -Depth 8) | Should -Not -Match 'private next action'
         $result.runs[0].checkpoint_package.project_root_stored | Should -Be $false
@@ -8623,6 +8632,12 @@ panes:
                 summary     = 'C:\Users\Example must not leak'
                 next_action = 'private next action'
             }
+            context_contract    = [ordered]@{
+                context_pack_id = 'ctx-C:/Users/Example/context.md'
+                semantic_context = [ordered]@{
+                    context_pack_id = 'sem-C:/Users/Example/semantic.md'
+                }
+            }
         }
 
         $package = New-RunCheckpointPackage -Run $run
@@ -8631,6 +8646,8 @@ panes:
         $package.changed_files | Should -Be @('scripts/winsmux-core.ps1')
         $package.changed_file_count | Should -Be 1
         $package.verification.outcome | Should -Be 'PARTIAL'
+        $package.end_of_run_snapshot.context.context_pack_id | Should -Be $null
+        $package.end_of_run_snapshot.context.semantic_context_pack_id | Should -Be $null
         ($package | ConvertTo-Json -Depth 8) | Should -Not -Match 'Users'
         ($package | ConvertTo-Json -Depth 8) | Should -Not -Match 'private next action'
         $package.worker_git_write_allowed | Should -Be $false

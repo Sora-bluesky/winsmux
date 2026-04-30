@@ -631,6 +631,33 @@ panes:
         r#""rationale_refs":["ADR-knowledge-layer"]"#,
         r#""rationale_refs":["ADR-knowledge-layer","%LOCALAPPDATA%\\winsmux\\rationale.md","pasted rationale body"]"#,
     );
+    let unsafe_context_events = events
+        .replace(
+            r#""context_pack_id":"ctx-task-256""#,
+            r#""context_pack_id":"ctx-C:/Users/Example/context.md""#,
+        )
+        .replace(
+            r#""semantic_context_pack_id":"sem-task-256""#,
+            r#""semantic_context_pack_id":"sem-C:/Users/Example/semantic.md""#,
+        );
+    let unsafe_context_snapshot =
+        ledger::LedgerSnapshot::from_manifest_and_events(manifest, &unsafe_context_events)
+            .expect("ledger snapshot should load explain inputs with unsafe context ids");
+    let unsafe_context_explain = unsafe_context_snapshot
+        .explain_projection("task:task-256")
+        .expect("ledger explain projection should exist for unsafe context ids");
+    assert!(
+        unsafe_context_explain.run.checkpoint_package["end_of_run_snapshot"]["context"]
+            ["context_pack_id"]
+            .is_null()
+    );
+    assert!(
+        unsafe_context_explain.run.checkpoint_package["end_of_run_snapshot"]["context"]
+            ["semantic_context_pack_id"]
+            .is_null()
+    );
+    let unsafe_context_checkpoint_text = unsafe_context_explain.run.checkpoint_package.to_string();
+    assert!(!unsafe_context_checkpoint_text.contains("Users"));
 
     let snapshot = ledger::LedgerSnapshot::from_manifest_and_events(manifest, &events)
         .expect("ledger snapshot should load explain inputs");
@@ -989,6 +1016,45 @@ panes:
     assert_eq!(
         explain.run.checkpoint_package["changed_files"][0],
         "scripts/winsmux-core.ps1"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["end_of_run_snapshot"]["packet_type"],
+        "end_of_run_snapshot_manifest"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["end_of_run_snapshot"]["status"],
+        "partial"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["end_of_run_snapshot"]["capture_policy"]
+            ["snapshot_failure_does_not_fail_worker"],
+        true
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["end_of_run_snapshot"]["repo_diff"]["changed_files"][0],
+        "scripts/winsmux-core.ps1"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["end_of_run_snapshot"]["repo_diff"]["untracked_files"]
+            ["file_names_stored"],
+        false
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["end_of_run_snapshot"]["terminal"]["raw_transcript_stored"],
+        false
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["end_of_run_snapshot"]["context"]["context_pack_id"],
+        "ctx-task-256"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["end_of_run_snapshot"]["context"]
+            ["semantic_context_pack_id"],
+        "sem-task-256"
+    );
+    assert_eq!(
+        explain.run.checkpoint_package["end_of_run_snapshot"]["hydration"]["assigned_worktree"],
+        ".worktrees/builder-1"
     );
     let checkpoint_text = explain.run.checkpoint_package.to_string();
     assert!(!checkpoint_text.contains("Users"));

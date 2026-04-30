@@ -237,6 +237,49 @@
         ],
         "evidence_complete": false
       },
+      "end_of_run_snapshot": {
+        "contract_version": 1,
+        "packet_type": "end_of_run_snapshot_manifest",
+        "status": "partial",
+        "capture_policy": {
+          "snapshot_failure_does_not_fail_worker": true,
+          "raw_terminal_transcript_stored": false,
+          "untracked_file_names_stored": false,
+          "private_content_stored": false,
+          "local_reference_paths_stored": false
+        },
+        "repo_diff": {
+          "changed_files": [
+            "scripts/winsmux-core.ps1"
+          ],
+          "changed_file_count": 1,
+          "untracked_files": {
+            "state": "not_captured",
+            "count_bucket": "unknown",
+            "file_names_stored": false
+          }
+        },
+        "terminal": {
+          "state": "not_captured",
+          "summary_ref": null,
+          "raw_transcript_stored": false
+        },
+        "artifacts": {
+          "artifact_refs": [],
+          "summary_refs": []
+        },
+        "context": {
+          "context_pack_id": null,
+          "semantic_context_pack_id": null
+        },
+        "hydration": {
+          "project_ref": "current_project",
+          "assigned_worktree": ".worktrees/builder-1",
+          "session_type": "managed_worktree",
+          "branch": "worktree-builder-1",
+          "head_sha": "abc1234def5678"
+        }
+      },
       "rollback_hint": "operator-owned-git-lifecycle",
       "cleanup_hint": "keep the worker worktree for inspection",
       "operator_git_required": true,

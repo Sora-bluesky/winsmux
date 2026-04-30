@@ -3078,6 +3078,7 @@ fn durable_ref_allowed(value: &str, prefixes: &[&str]) -> bool {
         || value.len() > 256
         || value.contains('\n')
         || value.contains('\r')
+        || value.contains(":/")
         || value.contains('\\')
         || value.contains(' ')
         || value.starts_with('%')
@@ -3130,6 +3131,15 @@ fn value_field(value: &Value, key: &str) -> Value {
         .and_then(|map| map.get(key))
         .cloned()
         .unwrap_or(Value::Null)
+}
+
+fn value_field_durable_ref(value: &Value, key: &str, prefixes: &[&str]) -> Value {
+    let text = value_field_string(value, key);
+    if durable_ref_allowed(&text, prefixes) {
+        Value::String(text.trim().to_string())
+    } else {
+        Value::Null
+    }
 }
 
 pub(crate) fn value_string_list(value: &Value, key: &str) -> Vec<String> {
@@ -3188,6 +3198,10 @@ fn public_context_ref_prefixes() -> &'static [&'static str] {
         "evidence:",
         "rationale:",
     ]
+}
+
+fn public_context_pack_id_prefixes() -> &'static [&'static str] {
+    &["ctx-", "sem-", "context:", "context-packs/"]
 }
 
 fn push_reason(reasons: &mut Vec<String>, key: &str, value: &str) {
@@ -3765,6 +3779,17 @@ fn run_checkpoint_package_value(run: &LedgerExplainRun) -> Value {
         "shared_checkout"
     };
     let verification_outcome = value_field_string(&run.verification_result, "outcome");
+    let context_pack_id = value_field_durable_ref(
+        &run.context_contract,
+        "context_pack_id",
+        public_context_pack_id_prefixes(),
+    );
+    let semantic_context = value_field(&run.context_contract, "semantic_context");
+    let semantic_context_pack_id = value_field_durable_ref(
+        &semantic_context,
+        "context_pack_id",
+        public_context_pack_id_prefixes(),
+    );
     let cleanup_required = matches!(
         run.task_state.as_str(),
         "completed" | "task_completed" | "commit_ready" | "done"
@@ -3782,12 +3807,53 @@ fn run_checkpoint_package_value(run: &LedgerExplainRun) -> Value {
         "branch": run.branch,
         "head_sha": run.head_sha,
         "session_type": session_type,
-        "changed_files": changed_files,
+        "changed_files": changed_files.clone(),
         "changed_file_count": changed_files.len(),
         "verification": {
             "outcome": verification_outcome,
             "verification_plan": run.verification_plan,
             "evidence_complete": !verification_outcome.trim().is_empty()
+        },
+        "end_of_run_snapshot": {
+            "contract_version": 1,
+            "packet_type": "end_of_run_snapshot_manifest",
+            "status": "partial",
+            "capture_policy": {
+                "snapshot_failure_does_not_fail_worker": true,
+                "raw_terminal_transcript_stored": false,
+                "untracked_file_names_stored": false,
+                "private_content_stored": false,
+                "local_reference_paths_stored": false
+            },
+            "repo_diff": {
+                "changed_files": changed_files.clone(),
+                "changed_file_count": changed_files.len(),
+                "untracked_files": {
+                    "state": "not_captured",
+                    "count_bucket": "unknown",
+                    "file_names_stored": false
+                }
+            },
+            "terminal": {
+                "state": "not_captured",
+                "summary_ref": Value::Null,
+                "raw_transcript_stored": false
+            },
+            "artifacts": {
+                "artifact_refs": [],
+                "summary_refs": []
+            },
+            "context": {
+                "context_pack_id": context_pack_id,
+                "semantic_context_pack_id": semantic_context_pack_id
+            },
+            "hydration": {
+                "project_ref": "current_project",
+                "assigned_worktree": worktree_ref,
+                "session_type": session_type,
+                "branch": run.branch,
+                "head_sha": run.head_sha
+            }
         },
         "rollback_hint": "operator-owned-git-lifecycle",
         "cleanup_hint": if cleanup_required {
