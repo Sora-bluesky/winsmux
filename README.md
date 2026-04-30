@@ -49,46 +49,18 @@ Rust is only needed when you build the runtime from source.
 
 ## Get Started
 
-Install with npm on Windows:
+The fastest path is:
 
 ```powershell
 npm install -g winsmux
-```
-
-Then run the first setup command:
-
-```powershell
 winsmux install --profile full
-```
-
-The npm installer profile controls what is installed.
-`winsmux update` keeps the previously
-recorded profile when no new profile is given.
-The `core` profile does not install orchestration
-scripts.
-Windows Terminal app profiles also follow the selected install profile.
-When profiles change, support scripts that no longer
-belong to the selected profile are removed.
-
-Then create project settings and start the default workspace:
-
-```powershell
 winsmux init
 winsmux launch
 ```
 
-`winsmux init` defaults to managed worker worktrees.
-Use `--workspace-lifecycle` only when you need to state the policy explicitly:
-
-```powershell
-winsmux init --workspace-lifecycle managed-worktree
-```
-
-Inspect launcher presets before starting a compare-oriented run:
-
-```powershell
-winsmux launcher presets --json
-```
+See [Quickstart](docs/quickstart.md) for a guided first run.
+See [Installation](docs/installation.md) for profiles, updates, and uninstall steps.
+See [Customization](docs/customization.md) for launcher presets, worktree policy, slots, credentials, and desktop settings.
 
 ## Main Commands
 
@@ -149,6 +121,10 @@ See [Authentication Support](docs/authentication-support.md) for the full policy
 ## Related Docs
 
 - [Operator model](docs/operator-model.md)
+- [Documentation overview](docs/README.md)
+- [Quickstart](docs/quickstart.md)
+- [Installation](docs/installation.md)
+- [Customization](docs/customization.md)
 - [Authentication support](docs/authentication-support.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Repository surface policy](docs/repo-surface-policy.md)

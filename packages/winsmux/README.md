@@ -14,6 +14,12 @@ npm install -g winsmux
 
 The `winsmux` npm command proxies to the bundled Windows installer flow.
 
+User-facing setup docs:
+
+- https://github.com/Sora-bluesky/winsmux/blob/main/docs/quickstart.md
+- https://github.com/Sora-bluesky/winsmux/blob/main/docs/installation.md
+- https://github.com/Sora-bluesky/winsmux/blob/main/docs/customization.md
+
 ## Public contract
 
 - Windows only

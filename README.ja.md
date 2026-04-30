@@ -49,43 +49,18 @@ Rust は、ランタイムをソースからビルドする時だけ必要です
 
 ## 始め方
 
-Windows では `npm` からインストールします。
+最短手順は次の 4 コマンドです。
 
 ```powershell
 npm install -g winsmux
-```
-
-最初のセットアップでは、次のコマンドを使います。
-
-```powershell
 winsmux install --profile full
-```
-
-`npm` 経由のインストールでは、`--profile` で導入対象を切り分けます。
-`winsmux update` に新しい指定を渡さない場合は、前回記録したプロファイルを使います。
-`core` では、オーケストレーション用のスクリプトを含めません。
-Windows Terminal 側のプロファイルも、選んだインストールプロファイルに合わせて扱います。
-後からインストールプロファイルを変更した場合、インストーラーは対象外になった支援スクリプトを削除します。
-
-次に、プロジェクト設定を作り、既定のワークスペースを起動します。
-
-```powershell
 winsmux init
 winsmux launch
 ```
 
-`winsmux init` の既定値は、ワーカーごとに管理されたワークツリーです。
-通常は指定不要です。方針を明示したい時だけ、次の指定を使います。
-
-```powershell
-winsmux init --workspace-lifecycle managed-worktree
-```
-
-比較向けの実行を始める前に、起動プリセットを確認できます。
-
-```powershell
-winsmux launcher presets --json
-```
+初回の流れは [クイックスタート](docs/quickstart.ja.md) を参照してください。
+プロファイル、更新、アンインストールは [インストール](docs/installation.ja.md) にまとめています。
+起動プリセット、ワークツリー方針、スロット、資格情報、デスクトップ設定は [カスタマイズ](docs/customization.ja.md) を参照してください。
 
 ## 主要コマンド
 
@@ -146,8 +121,12 @@ winsmux skills --json
 ## 関連ドキュメント
 
 - [オペレーターモデル](docs/operator-model.md)（英語のみ）
+- [ドキュメント一覧](docs/README.ja.md)
+- [クイックスタート](docs/quickstart.ja.md)
+- [インストール](docs/installation.ja.md)
+- [カスタマイズ](docs/customization.ja.md)
 - [認証方針](docs/authentication-support.ja.md)
-- [トラブルシューティング](docs/TROUBLESHOOTING.md)
+- [トラブルシューティング](docs/TROUBLESHOOTING.ja.md)
 - [リポジトリの公開面ポリシー](docs/repo-surface-policy.md)（英語のみ）
 - [ランタイム機能](core/docs/features.md)（英語のみ）
 - [ランタイム設定](core/docs/configuration.md)（英語のみ）

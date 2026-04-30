@@ -1,114 +1,127 @@
-# トラブルシューティングガイド
+# Troubleshooting
 
-## 起動時の問題
+Use this guide when winsmux install, launch, panes, credentials, or release checks do not behave as expected.
 
-### "Orchestra already starting (lock exists)"
+## Startup problems
 
-**原因**: 前回の起動が異常終了し、ロックファイルが残っている。
+### `Orchestra already starting (lock exists)`
 
-**解決**:
+Cause: a previous startup ended before removing the lock file.
+
+Fix:
+
 ```powershell
 Remove-Item .winsmux/orchestra.lock -Force
 ```
 
-### エージェントが起動しない（ペインが空）
+Then run:
 
-**原因**: respawn-pane 後のシェル準備が間に合わなかった。
+```powershell
+winsmux launch
+```
 
-**解決**: 再度 `orchestra-start.ps1` を実行。Wait-PaneShellReady が自動リトライする。
+### Empty pane or agent does not start
 
-### Codex が毎コマンド承認を求める
+Cause: the pane shell may not have been ready when the agent was sent its startup command.
 
-**原因**: `~/.codex/config.toml` の `[windows] sandbox = "elevated"`。
+Fix:
 
-**解決**:
+```powershell
+winsmux doctor
+winsmux launch
+```
+
+If only one pane is affected, read the pane before sending another instruction:
+
+```powershell
+winsmux read <pane> 60
+```
+
+The final number for `winsmux read` is the number of tail lines to capture.
+
+### `pwsh.exe` fails with `0xc0000142`
+
+This is Windows status `STATUS_DLL_INIT_FAILED`: Windows could not initialize a DLL required by `pwsh.exe`. If bare PowerShell works but winsmux launch fails, the issue is likely tied to a specific launch path, parent process, profile, environment, or Windows Terminal pane command.
+
+Check bare PowerShell:
+
+```powershell
+where.exe pwsh
+pwsh -NoProfile -NoLogo -Command "Write-Output `$PSVersionTable.PSVersion"
+```
+
+Check winsmux diagnostics:
+
+```powershell
+winsmux doctor
+```
+
+Check recent Windows application errors:
+
+```powershell
+Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddHours(-6)} |
+  Where-Object { $_.Message -match 'pwsh.exe|0xc0000142' -or $_.ProviderName -match 'Application Error|Windows Error Reporting' } |
+  Select-Object -First 20 TimeCreated,ProviderName,Id,LevelDisplayName,Message
+```
+
+If bare PowerShell fails, repair or reinstall PowerShell 7 and reboot Windows. If bare PowerShell works, check the Windows Terminal profile command line and the winsmux pane startup logs.
+
+## Pane and sandbox problems
+
+### Codex asks for approval on every command
+
+Cause: Codex may be configured for an elevated Windows sandbox.
+
+Fix:
+
 ```toml
 [windows]
 sandbox = "unelevated"
 ```
 
-### Codex worktree pane で file write や git 操作が不安定
+### File writes or git commands fail inside a Codex pane
 
-**症状**:
-- worktree pane 内の Codex が `.git/worktrees/*/index.lock` を作れず、`git add` や `git commit` が失敗する
-- PowerShell が `ConstrainedLanguageMode` になり、`Set-Content` / `Out-File` / `[IO.File]::*` が失敗する
+Symptoms:
 
-**原因**:
-- Windows の `unelevated` sandbox では、Codex pane が worktree git metadata と PowerShell file APIs に制約を受ける
+- `git add` or `git commit` fails because `.git/worktrees/*/index.lock` cannot be created.
+- PowerShell is in Constrained Language Mode.
+- `Set-Content`, `Out-File`, or `[IO.File]::*` fails.
 
-**解決**:
-- sandboxed pane では file edit / test / focused verification を続ける
-- `.git/worktrees/*/index.lock` を作れない場合の `git add` / `git commit` / `git push` は通常の shell から実行する
-- pane 内の file write は `apply_patch` か `cmd /c` を使う
-- `Set-Content` / `Out-File` / `[IO.File]::WriteAllText()` は避ける
+Fix:
 
-**補足**:
-- これは issue `#260` の documented workaround
-- `winsmux doctor` がこの limitation を検知したら、sandboxed pane の外で repository-level git writes を実行する
+- keep editing and focused verification inside the pane
+- run repository-level `git add`, `git commit`, and `git push` from a regular shell
+- use `apply_patch` or `cmd /c` for pane-side file writes
 
-### vault key が見つからない
+## Credential problems
 
-**原因**: Windows Credential Manager に登録されていない。
+### Vault key not found
 
-**解決**:
-```powershell
-pwsh scripts/winsmux-core.ps1 vault set KEY value
-# または
-pwsh scripts/winsmux-core.ps1 doctor  # 診断実行
-```
+Cause: the key is not stored in Windows Credential Manager.
 
-## ペインの問題
-
-### ペインが不均等
-
-**原因**: v0.14.0 以前の Split-Equal バグ（修正済み）。
-
-**解決**: `winsmux select-layout tiled` または Orchestra 再起動。
-
-### ロール切替でペインが消える
-
-**原因**: v0.17.0 以前の role switch バグ（修正済み）。
-
-**解決**: Orchestra 再起動。`winsmux role` は respawn-pane -k を使用（修正済み）。
-
-## リリースの問題
-
-### bump-version でファイルがコミットされない
-
-**原因**: gitignore されたファイルの `git add` に `-f` が必要。
-
-**解決**: v0.17.0 以降で修正済み。手動の場合は `git add -f` を使用。
-
-### backlog のタスクが done にならない
-
-**原因**: タスクの status が `backlog` の場合、auto-update はスキップする（wip/review のみ昇格）。
-
-**解決**: 事前にタスクの status を `wip` または `review` に変更してからリリース。
-
-## 診断コマンド
+Fix:
 
 ```powershell
-# 総合診断
-pwsh scripts/winsmux-core.ps1 doctor
-
-# vault 状態確認
-pwsh scripts/winsmux-core.ps1 vault list
-
-# ペイン一覧
-pwsh scripts/winsmux-core.ps1 list
-
-# キュー状態
-pwsh scripts/winsmux-core.ps1 builder-queue list builder-1
-
-# アイドル Builder 確認
-pwsh scripts/winsmux-core.ps1 auto-rebalance
+winsmux vault set <name> <value>
+winsmux vault inject <name> <pane>
 ```
 
-## ログファイル
+winsmux does not extract tokens from other CLIs. See [Authentication support](authentication-support.md).
 
-| ファイル | 内容 |
-|---------|------|
-| `.winsmux/startup-journal.log` | 起動失敗の履歴 |
-| `.claude/logs/evidence-ledger.jsonl` | 全 Hook 操作ログ |
-| `.shield-harness/session.json` | セッション状態 |
-| `.winsmux/manifest.yaml` | Orchestra 現在状態 |
+## Diagnostics
+
+```powershell
+winsmux doctor
+winsmux version
+winsmux list
+winsmux read <pane> 60
+```
+
+The final number for `winsmux read` is the number of tail lines to capture.
+
+Important local logs:
+
+| File | Purpose |
+| ---- | ------- |
+| `.winsmux/startup-journal.log` | startup failures |
+| `.winsmux/manifest.yaml` | current workspace state |
