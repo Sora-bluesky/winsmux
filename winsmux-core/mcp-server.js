@@ -7,7 +7,7 @@ const path = require("path");
 
 const BRIDGE_SCRIPT = resolveBridgeScript();
 const SERVER_NAME = "winsmux-mcp";
-const SERVER_VERSION = "0.24.12";
+const SERVER_VERSION = "0.24.13";
 const PROTOCOL_VERSION = "2024-11-05";
 
 // --- Tool Definitions ---
