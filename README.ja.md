@@ -18,6 +18,8 @@
 - オペレーターがペインを読み、送信し、中断し、状態を確認できます。
 - 分離を有効にすると、ワーカーごとに別々の git ワークツリーを使えます。
 - 記録済みの実行結果を比較し、採用する実行を選ぶ前に両方の実行で変更されたファイルを確認できます。
+- 記録済みの実行について、レビュー、検証、アーキテクチャ、チェックポイント、後続作業の証跡を確認できます。
+- 生の端末ログやローカル環境固有のパスを保存せず、構造化された実行終了時のスナップショットを残せます。
 - 選択した資格情報を Windows DPAPI で保護し、リポジトリに `.env` ファイルを置かずに扱えます。
 - レビューや監査に使う検証証跡を残せます。
 
@@ -31,6 +33,7 @@ Windows PC で複数のコーディングエージェントを動かしつつ、
 - ワーカーごとのファイル変更を分けたい。
 - 最終要約を待たず、実行中のペインを直接見たい。
 - 変更を受け入れる前にレビュー証跡を確認したい。
+- 後から再開または比較できる形で、実行の文脈を残したい。
 - 特定のモデルベンダーに運用を固定したくない。
 
 ターミナルマルチプレクサとしてだけ使いたい場合は、[`core/docs`](core/docs) を参照してください。
@@ -94,6 +97,7 @@ winsmux health-check
 winsmux compare runs <left_run_id> <right_run_id>
 winsmux compare preflight <left_ref> <right_ref>
 winsmux compare promote <run_id>
+winsmux skills --json
 ```
 
 | コマンド | 用途 |
@@ -105,6 +109,7 @@ winsmux compare promote <run_id>
 | `winsmux compare runs` | 2 つの記録済み実行の証跡と信頼度を比較 |
 | `winsmux compare preflight` | マージ前や比較レビュー前に 2 つの参照を確認 |
 | `winsmux compare promote` | 成功した実行結果を、次の実行で使う入力として書き出す |
+| `winsmux skills` | エージェントが読めるコマンド仕様を出力 |
 | `winsmux read` | 操作前にペイン出力を読む |
 | `winsmux send` | ペインへテキストを送る |
 | `winsmux vault set` | 資格情報を Windows DPAPI で保護して保存 |

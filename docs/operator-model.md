@@ -76,6 +76,22 @@ winsmux may learn from public harness structures, checklists, and policy shapes.
 It does not treat a generic persona prompt as a public product capability.
 The durable public contract is slot capability, evidence shape, and operator-owned final judgement.
 
+## 2b. Run context and recovery contracts
+
+Recent winsmux releases treat run context as structured data rather than a copied chat transcript.
+
+The public contract is:
+
+- each run may carry a structured handoff package for the next pane or follow-up run
+- checkpoint packages record changed-file summaries, review state, verification state, and public worktree references
+- end-of-run snapshots record what can be safely resumed without storing raw terminal transcripts, private local paths, or private prompt bodies
+- context budgets describe why a pane received a bounded context packet instead of the full conversation
+- architecture contracts record drift score, baseline status, review requirement, and whether a gate should stop
+- managed follow-up contracts describe the next run candidate after a compare or promote decision
+- diversity policy records describe model or slot tradeoffs without exposing private provider routing details
+
+These contracts are designed for local-first operation. They make later review, comparison, and recovery possible while keeping the operator responsible for the final decision.
+
 ## 3. Pane execution layer
 
 The managed pane layer is where agent CLIs run inside winsmux-controlled panes or slots.
@@ -151,6 +167,7 @@ The Tauri desktop direction follows the same contract:
 - **context side sheet** for run, slot, evidence, branch, and review state
 - **secondary editor surface** for source-level drill-down
 - **terminal drawer** for raw PTY and diagnostics only
+- **decision cockpit** for verification, review, security, architecture, and operator-decision gates
 
 The roadmap groups these desktop surfaces into three UX layers:
 
