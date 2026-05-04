@@ -12,6 +12,7 @@ use std::{
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::event_contract::{parse_event_jsonl, EventRecord};
 use crate::ledger::{
@@ -140,6 +141,26 @@ pub fn run_desktop_summary_command(args: &[&String]) -> io::Result<()> {
     println!(
         "Desktop summary: {board_count} panes, {inbox_count} inbox items, {digest_count} digest items, {projection_count} projections"
     );
+    Ok(())
+}
+
+pub fn run_meta_plan_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("meta-plan"));
+        return Ok(());
+    }
+
+    let options = parse_meta_plan_options(args)?;
+    let run = build_meta_plan_run(&options)?;
+    if options.json {
+        return write_json(&run.payload);
+    }
+
+    println!("Meta-planning run: {}", run.run_id);
+    println!("Roles: {}", run.role_count);
+    println!("Review rounds: {}", run.review_rounds);
+    println!("Integrated plan: {}", run.integrated_plan_ref);
+    println!("Audit log: {}", run.audit_log_ref);
     Ok(())
 }
 
@@ -2860,6 +2881,34 @@ struct DesktopSummaryOptions {
     project_dir: PathBuf,
 }
 
+struct MetaPlanOptions {
+    json: bool,
+    project_dir: PathBuf,
+    task: String,
+    session_name: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct MetaPlanRole {
+    role_id: String,
+    label: String,
+    provider: String,
+    model: String,
+    plan_mode: String,
+    read_only: bool,
+    capabilities: Vec<String>,
+    prompt: String,
+}
+
+struct MetaPlanRun {
+    run_id: String,
+    role_count: usize,
+    review_rounds: u8,
+    integrated_plan_ref: String,
+    audit_log_ref: String,
+    payload: Value,
+}
+
 struct ExplainOptions {
     json: bool,
     follow: bool,
@@ -2976,6 +3025,370 @@ fn parse_options(
         project_dir: project_dir.unwrap_or(env::current_dir()?),
         positionals,
     })
+}
+
+fn parse_meta_plan_options(args: &[&String]) -> io::Result<MetaPlanOptions> {
+    let mut json = false;
+    let mut project_dir = None;
+    let mut task = String::new();
+    let mut session_name = "winsmux-orchestra".to_string();
+    let mut trailing_task_parts = Vec::new();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--project-dir" => {
+                project_dir = Some(PathBuf::from(required_option_value(args, index, "--project-dir")?));
+                index += 2;
+            }
+            "--task" => {
+                task = required_option_value(args, index, "--task")?;
+                index += 2;
+            }
+            "--session" => {
+                session_name = required_option_value(args, index, "--session")?;
+                index += 2;
+            }
+            value if value.starts_with('-') => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown argument for winsmux meta-plan: {value}"),
+                ));
+            }
+            value => {
+                trailing_task_parts.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+
+    if task.trim().is_empty() && !trailing_task_parts.is_empty() {
+        task = trailing_task_parts.join(" ");
+    }
+    if task.trim().is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, usage_for("meta-plan")));
+    }
+    if session_name.trim().is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "--session must not be empty"));
+    }
+
+    Ok(MetaPlanOptions {
+        json,
+        project_dir: project_dir.unwrap_or(env::current_dir()?),
+        task: task.trim().to_string(),
+        session_name: session_name.trim().to_string(),
+    })
+}
+
+fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
+    let roles = default_meta_plan_roles();
+    let run_id = format!("meta-{}", unique_artifact_id());
+    let run_dir = options.project_dir.join(".winsmux").join("meta-plans").join(&run_id);
+    fs::create_dir_all(&run_dir)?;
+
+    let task_hash = sha256_hex(options.task.as_bytes());
+    let task_preview = preview_text(&options.task, 160);
+    let role_ids: Vec<String> = roles.iter().map(|role| role.role_id.clone()).collect();
+    let audit_log_path = meta_plan_audit_log_path(&options.project_dir, &options.session_name);
+    let audit_log_ref = artifact_reference(&options.project_dir, &audit_log_path);
+
+    append_meta_plan_audit_record(
+        &options.project_dir,
+        &options.session_name,
+        "meta_plan_init",
+        "Meta-planning run started.",
+        "operator",
+        json!({
+            "run_id": run_id.clone(),
+            "task_hash": task_hash.clone(),
+            "task_preview": task_preview.clone(),
+            "selected_roles": role_ids,
+            "operator_pane": env::var("WINSMUX_PANE_ID").unwrap_or_default(),
+            "read_only_principle": true,
+        }),
+    )?;
+
+    let mut draft_refs = Vec::new();
+    let mut role_payloads = Vec::new();
+    for role in &roles {
+        append_meta_plan_audit_record(
+            &options.project_dir,
+            &options.session_name,
+            "role_assigned",
+            "Planning role assigned.",
+            &role.role_id,
+            json!({
+                "run_id": run_id.clone(),
+                "role_id": role.role_id.clone(),
+                "label": role.label.clone(),
+                "provider": role.provider.clone(),
+                "model": role.model.clone(),
+                "plan_mode": role.plan_mode.clone(),
+                "read_only": role.read_only,
+                "launch_contract": meta_plan_launch_contract(role),
+            }),
+        )?;
+
+        let draft_path = run_dir.join(format!("{}-draft.md", role.role_id));
+        write_text_file_with_lock(&draft_path, &render_meta_plan_role_draft(&run_id, &options.task, role))?;
+        let draft_ref = artifact_reference(&options.project_dir, &draft_path);
+        draft_refs.push(draft_ref.clone());
+        append_meta_plan_audit_record(
+            &options.project_dir,
+            &options.session_name,
+            "plan_drafted",
+            "Planning draft artifact recorded.",
+            &role.role_id,
+            json!({
+                "run_id": run_id.clone(),
+                "role_id": role.role_id.clone(),
+                "draft_ref": draft_ref.clone(),
+                "confidence": "scaffold",
+                "open_questions": [],
+            }),
+        )?;
+
+        role_payloads.push(json!({
+            "role_id": role.role_id.clone(),
+            "label": role.label.clone(),
+            "provider": role.provider.clone(),
+            "model": role.model.clone(),
+            "plan_mode": role.plan_mode.clone(),
+            "read_only": role.read_only,
+            "capabilities": role.capabilities.clone(),
+            "draft_ref": draft_ref.clone(),
+            "launch_contract": meta_plan_launch_contract(role),
+        }));
+    }
+
+    let review_rounds = 1_u8;
+    let mut review_refs = Vec::new();
+    let mut review_payloads = Vec::new();
+    for reviewer in &roles {
+        for target in &roles {
+            if reviewer.role_id == target.role_id {
+                continue;
+            }
+            let review_path = run_dir.join(format!("{}-reviews-{}-round-1.md", reviewer.role_id, target.role_id));
+            write_text_file_with_lock(&review_path, &render_meta_plan_cross_review(&run_id, reviewer, target))?;
+            let review_ref = artifact_reference(&options.project_dir, &review_path);
+            review_refs.push(review_ref.clone());
+            review_payloads.push(json!({
+                "round": 1,
+                "reviewer_role_id": reviewer.role_id.clone(),
+                "target_role_id": target.role_id.clone(),
+                "review_ref": review_ref.clone(),
+                "blocking": false,
+            }));
+            append_meta_plan_audit_record(
+                &options.project_dir,
+                &options.session_name,
+                "cross_review",
+                "Cross-planning review artifact recorded.",
+                &reviewer.role_id,
+                json!({
+                    "run_id": run_id.clone(),
+                    "round": 1,
+                    "reviewer_role_id": reviewer.role_id.clone(),
+                    "target_role_id": target.role_id.clone(),
+                    "review_ref": review_ref.clone(),
+                    "blocking": false,
+                }),
+            )?;
+        }
+    }
+
+    let integrated_plan_path = run_dir.join("integrated-plan.md");
+    write_text_file_with_lock(
+        &integrated_plan_path,
+        &render_meta_plan_integrated_plan(&run_id, &options.task, &roles, &draft_refs, &review_refs),
+    )?;
+    let integrated_plan_ref = artifact_reference(&options.project_dir, &integrated_plan_path);
+
+    append_meta_plan_audit_record(
+        &options.project_dir,
+        &options.session_name,
+        "plan_merged",
+        "Integrated plan artifact recorded.",
+        "operator",
+        json!({
+            "run_id": run_id.clone(),
+            "integrated_plan_ref": integrated_plan_ref.clone(),
+            "source_draft_refs": draft_refs.clone(),
+            "cross_review_refs": review_refs.clone(),
+            "unresolved_items": [],
+        }),
+    )?;
+    append_meta_plan_audit_record(
+        &options.project_dir,
+        &options.session_name,
+        "exit_plan_mode",
+        "Operator owns the single approval gate for the integrated plan.",
+        "operator",
+        json!({
+            "run_id": run_id.clone(),
+            "integrated_plan_ref": integrated_plan_ref.clone(),
+            "final_gate_state": "operator_approval_required",
+            "worker_plan_mode_exited": false,
+        }),
+    )?;
+
+    let payload = json!({
+        "command": "meta-plan",
+        "contract_version": 1,
+        "run_id": run_id.clone(),
+        "generated_at": generated_at(),
+        "project_dir": project_dir_string(&options.project_dir),
+        "task_hash": task_hash,
+        "task_preview": task_preview,
+        "roles": role_payloads,
+        "review_rounds": review_rounds,
+        "cross_reviews": review_payloads,
+        "integrated_plan_ref": integrated_plan_ref.clone(),
+        "audit_log_ref": audit_log_ref.clone(),
+        "audit_events": ["meta_plan_init", "role_assigned", "plan_drafted", "cross_review", "plan_merged", "exit_plan_mode"],
+        "approval_gate": {
+            "owner": "operator",
+            "single_user_approval": true,
+            "worker_execution_allowed": false
+        }
+    });
+
+    Ok(MetaPlanRun {
+        run_id,
+        role_count: roles.len(),
+        review_rounds,
+        integrated_plan_ref,
+        audit_log_ref,
+        payload,
+    })
+}
+
+fn default_meta_plan_roles() -> Vec<MetaPlanRole> {
+    vec![
+        MetaPlanRole {
+            role_id: "investigator".to_string(),
+            label: "Investigator".to_string(),
+            provider: "claude".to_string(),
+            model: "sonnet".to_string(),
+            plan_mode: "required".to_string(),
+            read_only: true,
+            capabilities: vec!["facts".to_string(), "constraints".to_string()],
+            prompt: "Gather facts, constraints, and unknowns. Do not edit files.".to_string(),
+        },
+        MetaPlanRole {
+            role_id: "verifier".to_string(),
+            label: "Verifier".to_string(),
+            provider: "codex".to_string(),
+            model: "gpt-5.4".to_string(),
+            plan_mode: "read_only_equivalent".to_string(),
+            read_only: true,
+            capabilities: vec!["risk".to_string(), "tests".to_string()],
+            prompt: "Find risks, missing tests, and failure modes. Do not edit files.".to_string(),
+        },
+    ]
+}
+
+fn meta_plan_launch_contract(role: &MetaPlanRole) -> Value {
+    match role.provider.as_str() {
+        "claude" => json!({
+            "provider": role.provider.clone(),
+            "command": "claude",
+            "args": ["--permission-mode", "plan"],
+            "plan_mode_enforced": true,
+            "read_only": role.read_only,
+        }),
+        "codex" => json!({
+            "provider": role.provider.clone(),
+            "command": "codex",
+            "args": ["exec", "--sandbox", "read-only"],
+            "plan_mode_enforced": false,
+            "read_only_equivalent": true,
+            "read_only": role.read_only,
+        }),
+        provider => json!({
+            "provider": provider,
+            "command": provider,
+            "args": [],
+            "plan_mode_enforced": false,
+            "read_only": role.read_only,
+        }),
+    }
+}
+
+fn render_meta_plan_role_draft(run_id: &str, task: &str, role: &MetaPlanRole) -> String {
+    format!("# Meta-Planning Draft: {label}\n\nRun: `{run_id}`\nRole: `{role_id}`\nProvider: `{provider}`\nPlan mode: `{plan_mode}`\nRead-only: `{read_only}`\n\n## Task\n\n{task}\n\n## Responsibility\n\n{prompt}\n\n## Draft Plan\n\n- Confirm facts and constraints for this role.\n- Identify assumptions that must be carried into the integrated plan.\n- Keep all recommendations side-effect-free until operator approval.\n\n## Evidence To Collect\n\n- Existing repository contracts and tests relevant to this role.\n- Gaps, risks, or open questions for the operator to merge.\n", label = &role.label, role_id = &role.role_id, provider = &role.provider, plan_mode = &role.plan_mode, read_only = role.read_only, prompt = &role.prompt)
+}
+
+fn render_meta_plan_cross_review(run_id: &str, reviewer: &MetaPlanRole, target: &MetaPlanRole) -> String {
+    format!("# Cross-Planning Review\n\nRun: `{run_id}`\nReviewer: `{reviewer}`\nTarget: `{target}`\nRound: `1`\n\n## Review Checklist\n\n- Check whether the target plan stays read-only.\n- Check whether missing tests or approval gates are visible.\n- Check whether unresolved questions need operator attention.\n\n## Findings\n\nNo blocking finding is recorded in the scaffold. A live worker review can replace this artifact before operator approval.\n", reviewer = &reviewer.role_id, target = &target.role_id)
+}
+
+fn render_meta_plan_integrated_plan(run_id: &str, task: &str, roles: &[MetaPlanRole], draft_refs: &[String], review_refs: &[String]) -> String {
+    let role_lines = roles.iter().map(|role| format!("- `{}`: {} via `{}`", role.role_id, role.label, role.provider)).collect::<Vec<_>>().join("\n");
+    let draft_lines = draft_refs.iter().map(|reference| format!("- `{reference}`")).collect::<Vec<_>>().join("\n");
+    let review_lines = review_refs.iter().map(|reference| format!("- `{reference}`")).collect::<Vec<_>>().join("\n");
+    format!("# Integrated Meta-Plan\n\nRun: `{run_id}`\n\n## Summary\n\n{task}\n\n## Key Changes\n\n- Run a two-role planning pass before execution.\n- Keep worker output as evidence and keep operator approval as the only approval point.\n\n## Interfaces And Data Flow\n\n{role_lines}\n\nDraft artifacts:\n\n{draft_lines}\n\nCross-review artifacts:\n\n{review_lines}\n\n## Safety And Approval Gates\n\n- Workers remain read-only and do not own execution approval.\n- The operator reviews this integrated plan and triggers the single user approval point.\n- JSONL audit events are written before execution.\n\n## Test Plan\n\n- Validate `winsmux meta-plan --json` output.\n- Validate required audit events and artifact references.\n- Validate that generated role contracts remain read-only.\n\n## Open Questions\n\n- Replace scaffold draft artifacts with live worker responses when panes are available.\n")
+}
+
+fn meta_plan_audit_log_path(project_dir: &Path, session_name: &str) -> PathBuf {
+    let safe_session = if session_name.trim().is_empty() {
+        "winsmux-orchestra".to_string()
+    } else {
+        session_name.chars().map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') { ch } else { '_' }).collect::<String>()
+    };
+    project_dir.join(".winsmux").join("logs").join(format!("{safe_session}.jsonl"))
+}
+
+fn append_meta_plan_audit_record(project_dir: &Path, session_name: &str, event: &str, message: &str, role: &str, data: Value) -> io::Result<()> {
+    let path = meta_plan_audit_log_path(project_dir, session_name);
+    let record = json!({
+        "timestamp": generated_at(),
+        "session": session_name,
+        "event": event,
+        "level": "info",
+        "message": message,
+        "role": role,
+        "pane_id": env::var("WINSMUX_PANE_ID").unwrap_or_default(),
+        "target": "",
+        "data": data,
+    });
+    append_jsonl_record_with_lock(&path, &record)
+}
+
+fn append_jsonl_record_with_lock(path: &Path, value: &Value) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    with_file_lock(path, || {
+        let mut content = if path.exists() { fs::read_to_string(path)? } else { String::new() };
+        if !content.is_empty() && !content.ends_with('\n') {
+            content.push('\n');
+        }
+        let line = serde_json::to_string(value).map_err(|err| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("failed to serialize JSONL record: {err}"))
+        })?;
+        content.push_str(&line);
+        content.push('\n');
+        write_text_file_locked(path, &content)
+    })
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn preview_text(text: &str, max_chars: usize) -> String {
+    let mut preview = text.chars().take(max_chars).collect::<String>();
+    if text.chars().count() > max_chars {
+        preview.push_str("...");
+    }
+    preview
 }
 
 fn parse_explain_options(args: &[&String]) -> io::Result<ExplainOptions> {
@@ -3607,6 +4020,9 @@ fn usage_for(command: &str) -> &'static str {
         "inbox" => "usage: winsmux inbox [--json] [--project-dir <path>]",
         "digest" => "usage: winsmux digest [--json] [--project-dir <path>]",
         "desktop-summary" => "usage: winsmux desktop-summary [--json] [--stream] [--project-dir <path>]",
+        "meta-plan" => {
+            "usage: winsmux meta-plan --task <text> [--json] [--project-dir <path>] [--session <name>]"
+        }
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
         }

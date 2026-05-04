@@ -72,6 +72,7 @@ winsmux health-check
 winsmux compare runs <left_run_id> <right_run_id>
 winsmux compare preflight <left_ref> <right_ref>
 winsmux compare promote <run_id>
+winsmux meta-plan --task "Plan this change" --json
 winsmux skills --json
 ```
 
@@ -84,6 +85,7 @@ winsmux skills --json
 | `winsmux compare runs` | Compare evidence and confidence between two recorded runs |
 | `winsmux compare preflight` | Check two refs before merge or compare review |
 | `winsmux compare promote` | Export a successful run as input for the next run |
+| `winsmux meta-plan` | Draft a read-only multi-role planning packet before execution |
 | `winsmux skills` | Print agent-readable command skill contracts |
 | `winsmux read` | Read a pane before acting |
 | `winsmux send` | Send text to a pane |

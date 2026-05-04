@@ -72,6 +72,7 @@ winsmux health-check
 winsmux compare runs <left_run_id> <right_run_id>
 winsmux compare preflight <left_ref> <right_ref>
 winsmux compare promote <run_id>
+winsmux meta-plan --task "この変更を計画して" --json
 winsmux skills --json
 ```
 
@@ -84,6 +85,7 @@ winsmux skills --json
 | `winsmux compare runs` | 2 つの記録済み実行の証跡と信頼度を比較 |
 | `winsmux compare preflight` | マージ前や比較レビュー前に 2 つの参照を確認 |
 | `winsmux compare promote` | 成功した実行結果を、次の実行で使う入力として書き出す |
+| `winsmux meta-plan` | 実行前に読み取り専用の複数ロール計画を作成 |
 | `winsmux skills` | エージェントが読めるコマンド仕様を出力 |
 | `winsmux read` | 操作前にペイン出力を読む |
 | `winsmux send` | ペインへテキストを送る |

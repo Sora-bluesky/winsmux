@@ -10543,6 +10543,24 @@ function Invoke-ProviderCapabilities {
     }
 }
 
+function Invoke-MetaPlan {
+    param(
+        [AllowNull()][string]$MetaPlanTarget = $Target,
+        [AllowNull()][string[]]$MetaPlanRest = $Rest
+    )
+
+    $tokens = @(@($MetaPlanTarget) + @($MetaPlanRest) | Where-Object { $_ })
+    $rustArgs = @('meta-plan') + $tokens
+
+    $output = Invoke-WinsmuxRaw -Arguments $rustArgs
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
+        exit $nativeExitCode
+    }
+
+    $output | Write-Output
+}
+
 function Invoke-MachineContract {
     $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
     if ($tokens.Count -ne 1 -or [string]$tokens[0] -ne '--json') {
@@ -10878,6 +10896,7 @@ Commands:
   consult-request <mode> [--message <text>] [--target-slot <slot>]  Record a consultation request packet/event
   consult-result <mode> [--message <text>] [--target-slot <slot>] [--confidence <0..1>] [--next-test <text>] [--risk <text>] [--run-id <run_id>] [--json]  Record a consultation result packet/event
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
+  meta-plan --task <text> [--json] [--project-dir <path>] [--session <name>]  Draft a read-only multi-role planning packet
   provider-capabilities [provider] [--json]  Inspect the provider capability registry contract
   skills [--json]  Print agent-readable command skill contracts
   machine-contract --json  Print the hook and agent machine contract JSON
@@ -11606,6 +11625,7 @@ switch ($Command) {
     'consult-result'  { Invoke-ConsultResult }
     'consult-error'   { Invoke-ConsultError }
     'launcher'        { Invoke-Launcher }
+    'meta-plan'       { Invoke-MetaPlan }
     'provider-capabilities' { Invoke-ProviderCapabilities }
     'skills' { Invoke-Skills }
     'machine-contract' { Invoke-MachineContract }
