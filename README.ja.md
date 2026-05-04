@@ -100,12 +100,12 @@ winsmux skills --json
 | ツール | 認証方式 | winsmux での扱い |
 | ------- | ------- | ------- |
 | Claude Code | API key / ドキュメント化された企業向け認証 | 公式に対応 |
-| Claude Code | Pro / Max OAuth | この PC での対話利用のみ |
+| Claude Code | Pro / Max OAuth | 当該 PC での対話利用のみ |
 | Codex CLI | API key | 公式に対応 |
 | Codex CLI | ChatGPT OAuth | この PC での対話利用のみ |
 | Gemini CLI | Gemini API key | 公式に対応 |
 | Gemini CLI | Vertex AI | 公式に対応 |
-| Gemini CLI | Google OAuth | この PC での対話利用のみ |
+| Gemini CLI | Google OAuth | 当該 PC での対話利用のみ |
 
 詳しくは [認証方針](docs/authentication-support.ja.md) を参照してください。
 
