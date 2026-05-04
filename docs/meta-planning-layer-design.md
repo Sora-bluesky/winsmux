@@ -10,6 +10,10 @@ The command writes role draft artifacts, cross-review artifacts, an integrated
 Markdown plan, and JSONL audit events under `.winsmux/`. Workers remain
 read-only, and the operator keeps the single approval gate.
 
+`v0.24.19` adds UTF-8 role YAML loading through `--roles <path>` and supports
+one or two cross-review rounds through `--review-rounds <1|2>`. Role labels and
+prompts may contain Japanese text, while `role_id` remains ASCII for logs.
+
 ## Goal
 
 Add a meta-planning layer above the normal operator execution flow.

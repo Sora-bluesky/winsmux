@@ -73,6 +73,7 @@ winsmux compare runs <left_run_id> <right_run_id>
 winsmux compare preflight <left_ref> <right_ref>
 winsmux compare promote <run_id>
 winsmux meta-plan --task "Plan this change" --json
+winsmux meta-plan --task "Plan this change" --roles .winsmux/meta-plan-roles.yaml --review-rounds 2 --json
 winsmux skills --json
 ```
 

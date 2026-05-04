@@ -190,6 +190,133 @@ fn operator_cli_meta_plan_json_writes_plan_artifacts_and_audit_log() {
 }
 
 #[test]
+fn operator_cli_meta_plan_roles_yaml_preserves_japanese_and_two_review_rounds() {
+    let project_dir = make_temp_project_dir("meta-plan-roles-yaml");
+    let role_file = project_dir.join("roles.yaml");
+    fs::write(
+        &role_file,
+        r#"version: 1
+roles:
+  - role_id: investigator
+    label: "調査役"
+    provider: claude
+    model: sonnet
+    plan_mode: required
+    read_only: true
+    review_rounds: 2
+    capabilities: [facts, constraints]
+    prompt: |
+      日本語コメントを壊さず、事実と制約を集める。
+  - role_id: verifier
+    label: "検証役"
+    provider: codex
+    model: gpt-5.4
+    plan_mode: read_only_equivalent
+    read_only: true
+    review_rounds: 2
+    capabilities: [risk, tests]
+    prompt: |
+      回帰リスクと不足テストを確認する。
+  - role_id: advocate
+    label: "利用者代弁役"
+    provider: codex
+    model: gpt-5.4
+    plan_mode: read_only_equivalent
+    read_only: true
+    review_rounds: 2
+    capabilities: [acceptance]
+    prompt: |
+      利用者の受け入れ条件を整理する。
+"#,
+    )
+    .expect("test should write role YAML");
+
+    let role_file_text = role_file.to_string_lossy().to_string();
+    let json = run_json(
+        &project_dir,
+        &[
+            "meta-plan",
+            "--task",
+            "日本語IME対応のロール計画",
+            "--roles",
+            &role_file_text,
+            "--review-rounds",
+            "2",
+            "--json",
+        ],
+    );
+
+    assert_eq!(json["roles"].as_array().expect("roles should be an array").len(), 3);
+    assert_eq!(json["roles"][0]["label"], "調査役");
+    assert_eq!(json["roles"][2]["label"], "利用者代弁役");
+    assert_eq!(json["review_rounds"], 2);
+    assert!(json["role_source"].as_str().unwrap_or_default().starts_with("yaml:roles.yaml:sha256:"));
+    assert_eq!(json["cross_reviews"].as_array().expect("cross reviews should be an array").len(), 12);
+
+    let draft_ref = json["roles"][0]["draft_ref"]
+        .as_str()
+        .expect("draft ref should be present");
+    let draft_path = project_dir.join(draft_ref.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let draft = fs::read_to_string(draft_path).expect("test should read draft");
+    assert!(draft.contains("日本語コメントを壊さず、事実と制約を集める。"));
+
+    let audit_ref = json["audit_log_ref"]
+        .as_str()
+        .expect("audit log ref should be present");
+    let audit_path = project_dir.join(audit_ref.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let audit_raw = fs::read_to_string(audit_path).expect("test should read audit log");
+    assert_eq!(audit_raw.lines().filter(|line| line.contains("\"event\":\"cross_review\"")).count(), 12);
+}
+
+#[test]
+fn operator_cli_meta_plan_roles_yaml_rejects_mutating_roles() {
+    let project_dir = make_temp_project_dir("meta-plan-roles-yaml-reject");
+    let role_file = project_dir.join("roles.yaml");
+    fs::write(
+        &role_file,
+        r#"version: 1
+roles:
+  - role_id: investigator
+    label: "調査役"
+    provider: claude
+    model: sonnet
+    plan_mode: required
+    read_only: false
+  - role_id: verifier
+    label: "検証役"
+    provider: codex
+    model: gpt-5.4
+    plan_mode: read_only_equivalent
+    read_only: true
+  - role_id: advocate
+    label: "利用者代弁役"
+    provider: codex
+    model: gpt-5.4
+    plan_mode: read_only_equivalent
+    read_only: true
+"#,
+    )
+    .expect("test should write role YAML");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "meta-plan",
+            "--task",
+            "reject mutating role",
+            "--roles",
+            role_file.to_str().expect("path should be utf-8"),
+            "--json",
+        ])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success(), "meta-plan should reject mutating roles");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("must set read_only: true"), "{stderr}");
+}
+
+#[test]
 fn operator_cli_explain_text_reads_live_winsmux_manifest() {
     let project_dir = make_temp_project_dir("explain-text");
     write_manifest(&project_dir);
