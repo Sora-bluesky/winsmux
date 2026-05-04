@@ -166,7 +166,7 @@ roles:
   - role_id: investigator
     label: "Investigator"
     provider: claude
-    model: sonnet
+    model: provider-default
     plan_mode: required
     read_only: true
     review_rounds: 1
@@ -176,7 +176,7 @@ roles:
   - role_id: verifier
     label: "Verifier"
     provider: codex
-    model: gpt-5.4
+    model: provider-default
     plan_mode: read_only_equivalent
     read_only: true
     review_rounds: 1

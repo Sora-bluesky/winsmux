@@ -6,7 +6,7 @@ param(
 )
 
 # --- Config ---
-$VERSION = "0.24.20"
+$VERSION = "0.24.21"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -2268,10 +2268,15 @@ function Get-AgentReadinessRecentLines {
 function Test-AgentReadyPromptLine {
     param(
         [AllowNull()][string]$Line,
-        [string]$Agent = 'codex'
+        [string]$Agent = ''
     )
 
     if ([string]::IsNullOrWhiteSpace($Line)) {
+        return $false
+    }
+
+    $agentName = if ([string]::IsNullOrWhiteSpace($Agent)) { '' } else { $Agent.Trim().ToLowerInvariant() }
+    if ([string]::IsNullOrWhiteSpace($agentName)) {
         return $false
     }
 
@@ -2281,15 +2286,9 @@ function Test-AgentReadyPromptLine {
     }
 
     if (Get-Command Test-AgentPromptText -ErrorAction SilentlyContinue) {
-        if (Test-AgentPromptText -Text $line -Agent $Agent) {
+        if (Test-AgentPromptText -Text $line -Agent $agentName) {
             return $true
         }
-    }
-
-    $agentName = if ([string]::IsNullOrWhiteSpace($Agent)) {
-        'codex'
-    } else {
-        $Agent.Trim().ToLowerInvariant()
     }
 
     switch ($agentName) {
@@ -2330,7 +2329,7 @@ function Test-AgentReadyPromptTrailingLine {
 function Test-AgentRecentReadyPromptTail {
     param(
         [AllowNull()][string]$Text,
-        [string]$Agent = 'codex'
+        [string]$Agent = ''
     )
 
     $recentLines = @(Get-AgentReadinessRecentLines -Text $Text -MaxCount 8)
@@ -2373,13 +2372,12 @@ function ConvertTo-ReadinessAgentName {
 function Test-AgentReadyPromptText {
     param(
         [AllowNull()][string]$Text,
-        [string]$Agent = 'codex'
+        [string]$Agent = ''
     )
 
-    $agentName = if ([string]::IsNullOrWhiteSpace($Agent)) {
-        'codex'
-    } else {
-        $Agent.Trim().ToLowerInvariant()
+    $agentName = if ([string]::IsNullOrWhiteSpace($Agent)) { '' } else { $Agent.Trim().ToLowerInvariant() }
+    if ([string]::IsNullOrWhiteSpace($agentName)) {
+        return $false
     }
 
     if (-not (Test-AgentRecentReadyPromptTail -Text $Text -Agent $agentName)) {
@@ -2406,7 +2404,7 @@ function Test-AgentReadyPromptText {
 function Test-AgentReadyPrompt {
     param(
         [string]$PaneId,
-        [string]$Agent = 'codex'
+        [string]$Agent = ''
     )
 
     $output = & winsmux capture-pane -t $PaneId -p -J -S -50
@@ -2420,7 +2418,7 @@ function Get-PaneReadinessAgent {
         [string]$ProjectDir = (Get-Location).Path
     )
 
-    $fallback = 'codex'
+    $fallback = ''
     if (-not (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue)) {
         return $fallback
     }
@@ -2477,7 +2475,7 @@ function Get-PaneReadinessAgent {
                     return $effectiveAgent
                 }
             } catch {
-                # Fall back to the default adapter when no running-pane metadata is available.
+                # Keep readiness unknown when no provider metadata is available.
             }
         }
 
@@ -3034,7 +3032,7 @@ function Invoke-Send {
     $context = $null
     $agentConfig = [ordered]@{
         Agent           = 'codex'
-        Model           = 'gpt-5.4'
+        Model           = ''
         PromptTransport = 'argv'
     }
     $execMode = $false
@@ -3728,7 +3726,7 @@ function Invoke-Init {
     $force = $false
     $asJson = $false
     $agent = 'codex'
-    $model = 'gpt-5.4'
+    $model = ''
     $workerCount = 6
     $workspaceLifecyclePreset = 'managed-worktree'
     $remaining = @(@($Target) + @($Rest) | Where-Object { $_ })

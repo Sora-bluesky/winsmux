@@ -17,8 +17,8 @@ use sha2::{Digest, Sha256};
 use crate::event_contract::{parse_event_jsonl, EventRecord};
 use crate::ledger::{
     attach_evidence_chain_to_event, public_changed_files, LedgerBoardPayload, LedgerDigestItem,
-    LedgerDigestPayload, LedgerExplainPayload, LedgerInboxPayload, LedgerRunsPayload, LedgerSnapshot,
-    LedgerStatusPayload,
+    LedgerDigestPayload, LedgerExplainPayload, LedgerInboxPayload, LedgerRunsPayload,
+    LedgerSnapshot, LedgerStatusPayload,
 };
 use crate::machine_contract::machine_contract_catalog;
 use crate::types::VERSION;
@@ -131,9 +131,15 @@ pub fn run_desktop_summary_command(args: &[&String]) -> io::Result<()> {
         return write_json(&payload);
     }
 
-    let board_count = payload["board"]["summary"]["pane_count"].as_u64().unwrap_or(0);
-    let inbox_count = payload["inbox"]["summary"]["item_count"].as_u64().unwrap_or(0);
-    let digest_count = payload["digest"]["summary"]["item_count"].as_u64().unwrap_or(0);
+    let board_count = payload["board"]["summary"]["pane_count"]
+        .as_u64()
+        .unwrap_or(0);
+    let inbox_count = payload["inbox"]["summary"]["item_count"]
+        .as_u64()
+        .unwrap_or(0);
+    let digest_count = payload["digest"]["summary"]["item_count"]
+        .as_u64()
+        .unwrap_or(0);
     let projection_count = payload["run_projections"]
         .as_array()
         .map(Vec::len)
@@ -461,9 +467,15 @@ pub fn run_legacy_compat_gate_command(args: &[&String]) -> io::Result<()> {
 
     println!(
         "Legacy compatibility gate: {} files covered; {} removal candidates; {} unclassified.",
-        report["summary"]["matched_file_count"].as_u64().unwrap_or(0),
-        report["summary"]["removal_candidate_files"].as_u64().unwrap_or(0),
-        report["summary"]["unclassified_count"].as_u64().unwrap_or(0)
+        report["summary"]["matched_file_count"]
+            .as_u64()
+            .unwrap_or(0),
+        report["summary"]["removal_candidate_files"]
+            .as_u64()
+            .unwrap_or(0),
+        report["summary"]["unclassified_count"]
+            .as_u64()
+            .unwrap_or(0)
     );
     println!("{}", report["next_action"].as_str().unwrap_or(""));
     if !passed {
@@ -489,10 +501,15 @@ pub fn run_guard_command(args: &[&String]) -> io::Result<()> {
 
     println!(
         "Guard baseline: {} checks for {}",
-        payload["summary"]["required_check_count"].as_u64().unwrap_or(0),
+        payload["summary"]["required_check_count"]
+            .as_u64()
+            .unwrap_or(0),
         payload["target_version"].as_str().unwrap_or("release")
     );
-    println!("{}", payload["summary"]["next_action"].as_str().unwrap_or(""));
+    println!(
+        "{}",
+        payload["summary"]["next_action"].as_str().unwrap_or("")
+    );
     Ok(())
 }
 
@@ -572,7 +589,10 @@ fn legacy_compat_gate_report(project_dir: &Path) -> io::Result<Value> {
 
     for entry in entries {
         inventory_entry_count += 1;
-        let class = entry.get("class").and_then(Value::as_str).unwrap_or_default();
+        let class = entry
+            .get("class")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         if !allowed_classes.iter().any(|allowed| allowed == class) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -643,10 +663,13 @@ fn legacy_compat_gate_report(project_dir: &Path) -> io::Result<Value> {
     }
 
     let matched_files = compatibility_surface_files(project_dir, &tracked_files, &terms);
-    let private_reference_files = legacy_compat_private_reference_files(project_dir, &[
-        inventory_relative_path,
-        "docs/project/legacy-compat-surface-inventory.md",
-    ]);
+    let private_reference_files = legacy_compat_private_reference_files(
+        project_dir,
+        &[
+            inventory_relative_path,
+            "docs/project/legacy-compat-surface-inventory.md",
+        ],
+    );
     let mut class_counts: BTreeMap<String, usize> = BTreeMap::new();
     for class in &allowed_classes {
         class_counts.insert(class.clone(), 0);
@@ -717,7 +740,11 @@ fn git_repository_files(project_dir: &Path) -> io::Result<Vec<String>> {
         .collect())
 }
 
-fn compatibility_surface_files(project_dir: &Path, files: &[String], terms: &[String]) -> Vec<String> {
+fn compatibility_surface_files(
+    project_dir: &Path,
+    files: &[String],
+    terms: &[String],
+) -> Vec<String> {
     let mut matched = Vec::new();
     for file in files {
         let path = project_dir.join(file);
@@ -856,22 +883,46 @@ pub fn run_provider_switch_command(args: &[&String]) -> io::Result<()> {
     }
 
     let restart_pane_id = if options.restart {
-        Some(validate_provider_switch_restart_target(&options.project_dir, &options.slot_id)?)
+        Some(validate_provider_switch_restart_target(
+            &options.project_dir,
+            &options.slot_id,
+        )?)
     } else {
         None
     };
 
-    if !options.clear {
-        validate_provider_switch_candidate(&options.project_dir, &settings, &options)?;
+    let registry_path = provider_registry_path(&options.project_dir);
+    let candidate_entry = if options.clear {
+        None
+    } else {
+        Some(ProviderRegistryEntry::new(&options)?)
+    };
+    if options.clear {
+        validate_provider_switch_clear_candidate(
+            &options.project_dir,
+            &settings,
+            &options.slot_id,
+        )?;
+    } else if let Some(entry) = candidate_entry.as_ref() {
+        validate_provider_switch_candidate(&options.project_dir, &settings, &options, entry)?;
     }
 
-    let registry_path = provider_registry_path(&options.project_dir);
+    let restart_plan = if let Some(pane_id) = restart_pane_id.as_deref() {
+        Some(build_provider_switch_restart_plan(
+            &options.project_dir,
+            &settings,
+            &options.slot_id,
+            pane_id,
+            candidate_entry.as_ref(),
+        )?)
+    } else {
+        None
+    };
     let (updated_at_utc, reason, cleared) = if options.clear {
-        validate_provider_switch_clear_candidate(&options.project_dir, &settings, &options.slot_id)?;
         let result = remove_provider_registry_entry(&registry_path, &options.slot_id)?;
         (result.updated_at_utc, String::new(), result.removed)
     } else {
-        let entry = ProviderRegistryEntry::new(&options)?;
+        let entry = candidate_entry.expect("provider switch candidate entry should exist");
         let updated_at_utc = entry.updated_at_utc.clone();
         let reason = entry.reason.clone().unwrap_or_default();
         write_provider_registry_entry(&registry_path, &options.slot_id, entry)?;
@@ -881,8 +932,7 @@ pub fn run_provider_switch_command(args: &[&String]) -> io::Result<()> {
     let effective = resolve_slot_agent_config(&options.project_dir, &settings, &options.slot_id)?;
     let mut restarted = false;
     let mut restart_pane_id_output = String::new();
-    if let Some(pane_id) = restart_pane_id {
-        let plan = build_restart_plan(&options.project_dir, &pane_id)?;
+    if let Some(plan) = restart_plan {
         invoke_restart_plan(&plan)?;
         let _ = update_restart_manifest_metadata(&options.project_dir, &plan);
         restarted = true;
@@ -1052,6 +1102,8 @@ struct BridgeSettings {
     model: String,
     prompt_transport: String,
     auth_mode: String,
+    agent_explicit: bool,
+    model_explicit: bool,
     worker_role: ProviderRoleConfig,
     agent_slots: Vec<ProviderSlotConfig>,
 }
@@ -1108,7 +1160,9 @@ struct ProviderRegistryRemoveResult {
     updated_at_utc: String,
 }
 
-fn parse_provider_capabilities_options(args: &[&String]) -> io::Result<ProviderCapabilitiesOptions> {
+fn parse_provider_capabilities_options(
+    args: &[&String],
+) -> io::Result<ProviderCapabilitiesOptions> {
     let mut project_dir = env::current_dir()?;
     let mut provider_id: Option<String> = None;
     let mut json = false;
@@ -1274,7 +1328,9 @@ fn trim_optional(value: Option<String>) -> Option<String> {
 }
 
 fn provider_capability_registry_path(project_dir: &Path) -> PathBuf {
-    project_dir.join(".winsmux").join("provider-capabilities.json")
+    project_dir
+        .join(".winsmux")
+        .join("provider-capabilities.json")
 }
 
 fn read_provider_capability_registry(path: &Path) -> io::Result<ProviderCapabilityRegistry> {
@@ -1564,7 +1620,10 @@ impl ProviderRegistryEntry {
         let Some(map) = value.as_object() else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Invalid provider registry slot '{slot_id}' at '{}'.", path.display()),
+                format!(
+                    "Invalid provider registry slot '{slot_id}' at '{}'.",
+                    path.display()
+                ),
             ));
         };
         let agent = provider_registry_optional_string(map, "agent")?;
@@ -1585,7 +1644,10 @@ impl ProviderRegistryEntry {
         if agent.is_none() && model.is_none() && prompt_transport.is_none() && auth_mode.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Invalid provider registry slot '{slot_id}' at '{}'.", path.display()),
+                format!(
+                    "Invalid provider registry slot '{slot_id}' at '{}'.",
+                    path.display()
+                ),
             ));
         }
         Ok(Self {
@@ -1630,9 +1692,11 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
     let path = project_dir.join(".winsmux.yaml");
     let mut settings = BridgeSettings {
         agent: "codex".to_string(),
-        model: "gpt-5.4".to_string(),
+        model: String::new(),
         prompt_transport: "argv".to_string(),
         auth_mode: String::new(),
+        agent_explicit: false,
+        model_explicit: false,
         worker_role: ProviderRoleConfig::default(),
         agent_slots: Vec::new(),
     };
@@ -1651,8 +1715,14 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
         )
     })?;
 
-    settings.agent = yaml_string(&root, "agent").unwrap_or(settings.agent);
-    settings.model = yaml_string(&root, "model").unwrap_or(settings.model);
+    if let Some(value) = yaml_string(&root, "agent") {
+        settings.agent = value;
+        settings.agent_explicit = true;
+    }
+    if let Some(value) = yaml_string(&root, "model") {
+        settings.model = value;
+        settings.model_explicit = true;
+    }
     settings.prompt_transport = yaml_string(&root, "prompt_transport")
         .or_else(|| yaml_string(&root, "prompt-transport"))
         .unwrap_or(settings.prompt_transport);
@@ -1676,8 +1746,8 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
         for index in 1..=worker_count {
             settings.agent_slots.push(ProviderSlotConfig {
                 slot_id: format!("worker-{index}"),
-                agent: Some(settings.agent.clone()),
-                model: Some(settings.model.clone()),
+                agent: settings.agent_explicit.then(|| settings.agent.clone()),
+                model: settings.model_explicit.then(|| settings.model.clone()),
                 prompt_transport: Some(settings.prompt_transport.clone()),
                 auth_mode: (!settings.auth_mode.trim().is_empty())
                     .then(|| settings.auth_mode.clone()),
@@ -1829,22 +1899,105 @@ fn resolve_slot_agent_config_inner(
 
     if include_registry {
         if let Some(entry) = provider_registry_entry_full(project_dir, slot_id)? {
-        if let Some(value) = entry.agent {
-            agent = value;
-        }
-        if let Some(value) = entry.model {
-            model = value;
-        }
-        if let Some(value) = entry.prompt_transport {
-            prompt_transport = value;
-        }
-        if let Some(value) = entry.auth_mode {
-            auth_mode = value;
-        }
-        source = "registry".to_string();
+            if let Some(value) = entry.agent {
+                agent = value;
+            }
+            if let Some(value) = entry.model {
+                model = value;
+            }
+            if let Some(value) = entry.prompt_transport {
+                prompt_transport = value;
+            }
+            if let Some(value) = entry.auth_mode {
+                auth_mode = value;
+            }
+            source = "registry".to_string();
         }
     }
 
+    finalize_slot_agent_config(
+        project_dir,
+        agent,
+        model,
+        prompt_transport,
+        auth_mode,
+        source,
+    )
+}
+
+fn resolve_slot_agent_config_with_registry_replacement(
+    project_dir: &Path,
+    settings: &BridgeSettings,
+    slot_id: &str,
+    registry_entry: Option<&ProviderRegistryEntry>,
+) -> io::Result<SlotAgentConfig> {
+    let mut agent = settings.agent.clone();
+    let mut model = settings.model.clone();
+    let mut prompt_transport = settings.prompt_transport.clone();
+    let mut auth_mode = settings.auth_mode.clone();
+    let mut source = "role".to_string();
+
+    apply_role_config(
+        &mut agent,
+        &mut model,
+        &mut prompt_transport,
+        &mut auth_mode,
+        &settings.worker_role,
+        &mut source,
+    );
+    if let Some(slot) = settings.slot(slot_id) {
+        if let Some(value) = slot.agent.as_deref() {
+            agent = value.to_string();
+            source = "slot".to_string();
+        }
+        if let Some(value) = slot.model.as_deref() {
+            model = value.to_string();
+            source = "slot".to_string();
+        }
+        if let Some(value) = slot.prompt_transport.as_deref() {
+            prompt_transport = value.to_string();
+            source = "slot".to_string();
+        }
+        if let Some(value) = slot.auth_mode.as_deref() {
+            auth_mode = value.to_string();
+            source = "slot".to_string();
+        }
+    }
+
+    if let Some(entry) = registry_entry {
+        if let Some(value) = entry.agent.as_deref() {
+            agent = value.to_string();
+        }
+        if let Some(value) = entry.model.as_deref() {
+            model = value.to_string();
+        }
+        if let Some(value) = entry.prompt_transport.as_deref() {
+            prompt_transport = value.to_string();
+        }
+        if let Some(value) = entry.auth_mode.as_deref() {
+            auth_mode = value.to_string();
+        }
+        source = "registry".to_string();
+    }
+
+    finalize_slot_agent_config(
+        project_dir,
+        agent,
+        model,
+        prompt_transport,
+        auth_mode,
+        source,
+    )
+}
+
+fn finalize_slot_agent_config(
+    project_dir: &Path,
+    agent: String,
+    model: String,
+    prompt_transport: String,
+    auth_mode: String,
+    source: String,
+) -> io::Result<SlotAgentConfig> {
     assert_provider_prompt_transport(project_dir, &agent, &prompt_transport)?;
     assert_provider_auth_mode(project_dir, &agent, &auth_mode)?;
     let capability = resolve_provider_capability(project_dir, &agent)?;
@@ -1900,22 +2053,14 @@ fn validate_provider_switch_candidate(
     project_dir: &Path,
     settings: &BridgeSettings,
     options: &ProviderSwitchOptions,
+    candidate_entry: &ProviderRegistryEntry,
 ) -> io::Result<()> {
-    let mut current = resolve_slot_agent_config(project_dir, settings, &options.slot_id)?;
-    if let Some(value) = options.agent.as_deref() {
-        current.agent = value.to_string();
-    }
-    if let Some(value) = options.model.as_deref() {
-        current.model = value.to_string();
-    }
-    if let Some(value) = options.prompt_transport.as_deref() {
-        current.prompt_transport = value.to_string();
-    }
-    if let Some(value) = options.auth_mode.as_deref() {
-        current.auth_mode = value.to_string();
-    }
-    assert_provider_prompt_transport(project_dir, &current.agent, &current.prompt_transport)?;
-    assert_provider_auth_mode(project_dir, &current.agent, &current.auth_mode)?;
+    let _ = resolve_slot_agent_config_with_registry_replacement(
+        project_dir,
+        settings,
+        &options.slot_id,
+        Some(candidate_entry),
+    )?;
     Ok(())
 }
 
@@ -1982,7 +2127,9 @@ fn provider_registry_entry_full(
     };
     for (candidate, value) in slots {
         if candidate.eq_ignore_ascii_case(slot_id) {
-            return Ok(Some(ProviderRegistryEntry::from_value(candidate, value, &path)?));
+            return Ok(Some(ProviderRegistryEntry::from_value(
+                candidate, value, &path,
+            )?));
         }
     }
     Ok(None)
@@ -2030,7 +2177,9 @@ fn remove_provider_registry_entry(
     })
 }
 
-fn ensure_provider_registry_slots(root: &mut Map<String, Value>) -> io::Result<&mut Map<String, Value>> {
+fn ensure_provider_registry_slots(
+    root: &mut Map<String, Value>,
+) -> io::Result<&mut Map<String, Value>> {
     if !root.contains_key("version") {
         root.insert("version".to_string(), Value::from(1));
     }
@@ -2119,7 +2268,10 @@ fn assert_provider_prompt_transport(
     let Some(capability) = resolve_provider_capability(project_dir, provider_id)? else {
         return Ok(());
     };
-    let Some(transports) = capability.get("prompt_transports").and_then(Value::as_array) else {
+    let Some(transports) = capability
+        .get("prompt_transports")
+        .and_then(Value::as_array)
+    else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("Provider capability '{provider_id}' does not declare prompt_transports."),
@@ -2237,7 +2389,10 @@ fn capability_bool(capability: Option<&Value>, key: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn validate_provider_switch_restart_target(project_dir: &Path, slot_id: &str) -> io::Result<String> {
+fn validate_provider_switch_restart_target(
+    project_dir: &Path,
+    slot_id: &str,
+) -> io::Result<String> {
     let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
     let raw = fs::read_to_string(&manifest_path)?;
     let manifest = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
@@ -2366,10 +2521,9 @@ fn run_conflict_preflight(args: &[&String], compare_alias: bool) -> io::Result<(
         conflict_preflight_payload(&env::current_dir()?, &options.left_ref, &options.right_ref)?;
     if compare_alias {
         payload.command = "compare preflight".to_string();
-        payload.next_action = payload.next_action.replace(
-            "winsmux conflict-preflight",
-            "winsmux compare preflight",
-        );
+        payload.next_action = payload
+            .next_action
+            .replace("winsmux conflict-preflight", "winsmux compare preflight");
     }
     if options.json {
         return write_json(&payload);
@@ -2600,7 +2754,8 @@ pub fn run_consult_request_command(args: &[&String]) -> io::Result<()> {
     let artifact = write_consultation_packet(&options.project_dir, "consult-request", &packet)?;
     let event = consultation_request_event(&context, &options, &artifact.reference, &timestamp);
     append_event_record(&options.project_dir, &event)?;
-    let _ = mark_current_review_pane_last_event(&options.project_dir, "consult.request", &timestamp);
+    let _ =
+        mark_current_review_pane_last_event(&options.project_dir, "consult.request", &timestamp);
 
     println!("consult request recorded for {}", context.run_id);
     Ok(())
@@ -3059,7 +3214,11 @@ fn parse_meta_plan_options(args: &[&String]) -> io::Result<MetaPlanOptions> {
                 index += 1;
             }
             "--project-dir" => {
-                project_dir = Some(PathBuf::from(required_option_value(args, index, "--project-dir")?));
+                project_dir = Some(PathBuf::from(required_option_value(
+                    args,
+                    index,
+                    "--project-dir",
+                )?));
                 index += 2;
             }
             "--task" => {
@@ -3071,16 +3230,24 @@ fn parse_meta_plan_options(args: &[&String]) -> io::Result<MetaPlanOptions> {
                 index += 2;
             }
             "--roles" => {
-                role_file = Some(PathBuf::from(required_option_value(args, index, "--roles")?));
+                role_file = Some(PathBuf::from(required_option_value(
+                    args, index, "--roles",
+                )?));
                 index += 2;
             }
             "--review-rounds" => {
                 let value = required_option_value(args, index, "--review-rounds")?;
                 let parsed = value.parse::<u8>().map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "--review-rounds must be 1 or 2")
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--review-rounds must be 1 or 2",
+                    )
                 })?;
                 if !matches!(parsed, 1 | 2) {
-                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "--review-rounds must be 1 or 2"));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "--review-rounds must be 1 or 2",
+                    ));
                 }
                 review_rounds = Some(parsed);
                 index += 2;
@@ -3102,10 +3269,16 @@ fn parse_meta_plan_options(args: &[&String]) -> io::Result<MetaPlanOptions> {
         task = trailing_task_parts.join(" ");
     }
     if task.trim().is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, usage_for("meta-plan")));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("meta-plan"),
+        ));
     }
     if session_name.trim().is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "--session must not be empty"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--session must not be empty",
+        ));
     }
 
     Ok(MetaPlanOptions {
@@ -3120,9 +3293,21 @@ fn parse_meta_plan_options(args: &[&String]) -> io::Result<MetaPlanOptions> {
 
 fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
     let (roles, role_source) = resolve_meta_plan_roles(options)?;
+    let role_provider_adapters = roles
+        .iter()
+        .map(|role| meta_plan_provider_adapter(&options.project_dir, role))
+        .collect::<io::Result<Vec<_>>>()?;
+    let role_provider_commands = roles
+        .iter()
+        .map(|role| meta_plan_provider_command(&options.project_dir, role))
+        .collect::<io::Result<Vec<_>>>()?;
     let review_rounds = effective_meta_plan_review_rounds(options.review_rounds, &roles);
     let run_id = format!("meta-{}", unique_artifact_id());
-    let run_dir = options.project_dir.join(".winsmux").join("meta-plans").join(&run_id);
+    let run_dir = options
+        .project_dir
+        .join(".winsmux")
+        .join("meta-plans")
+        .join(&run_id);
     fs::create_dir_all(&run_dir)?;
 
     let task_hash = sha256_hex(options.task.as_bytes());
@@ -3148,7 +3333,8 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
             "review_rounds": review_rounds,
             "shield_harness": {
                 "role_definition_policy": "read_only_required",
-                "provider_allowlist": ["claude", "codex"],
+                "provider_selection": "capability_registry_or_builtin_adapter",
+                "selected_providers": roles.iter().map(|role| role.provider.clone()).collect::<Vec<_>>(),
                 "private_prompt_bodies_in_audit": false,
                 "private_prompt_bodies_in_artifacts": false,
             },
@@ -3157,7 +3343,11 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
 
     let mut draft_refs = Vec::new();
     let mut role_payloads = Vec::new();
-    for role in &roles {
+    for ((role, provider_adapter), provider_command) in roles
+        .iter()
+        .zip(role_provider_adapters.iter())
+        .zip(role_provider_commands.iter())
+    {
         let prompt_hash = sha256_hex(role.prompt.as_bytes());
         append_meta_plan_audit_record(
             &options.project_dir,
@@ -3170,17 +3360,21 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
                 "role_id": role.role_id.clone(),
                 "label": role.label.clone(),
                 "provider": role.provider.clone(),
+                "provider_adapter": provider_adapter.clone(),
                 "model": role.model.clone(),
                 "plan_mode": role.plan_mode.clone(),
                 "read_only": role.read_only,
                 "review_rounds": role.review_rounds,
                 "prompt_hash": prompt_hash.clone(),
-                "launch_contract": meta_plan_launch_contract(role),
+                "launch_contract": meta_plan_launch_contract(role, provider_adapter, provider_command),
             }),
         )?;
 
         let draft_path = run_dir.join(format!("{}-draft.md", role.role_id));
-        write_text_file_with_lock(&draft_path, &render_meta_plan_role_draft(&run_id, &task_hash, role, &prompt_hash))?;
+        write_text_file_with_lock(
+            &draft_path,
+            &render_meta_plan_role_draft(&run_id, &task_hash, role, &prompt_hash),
+        )?;
         let draft_ref = artifact_reference(&options.project_dir, &draft_path);
         draft_refs.push(draft_ref.clone());
         append_meta_plan_audit_record(
@@ -3202,6 +3396,7 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
             "role_id": role.role_id.clone(),
             "label": role.label.clone(),
             "provider": role.provider.clone(),
+            "provider_adapter": provider_adapter.clone(),
             "model": role.model.clone(),
             "plan_mode": role.plan_mode.clone(),
             "read_only": role.read_only,
@@ -3209,7 +3404,7 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
             "capabilities": role.capabilities.clone(),
             "prompt_hash": prompt_hash.clone(),
             "draft_ref": draft_ref.clone(),
-            "launch_contract": meta_plan_launch_contract(role),
+            "launch_contract": meta_plan_launch_contract(role, provider_adapter, provider_command),
         }));
     }
 
@@ -3221,8 +3416,14 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
                 if reviewer.role_id == target.role_id {
                     continue;
                 }
-                let review_path = run_dir.join(format!("{}-reviews-{}-round-{}.md", reviewer.role_id, target.role_id, round));
-                write_text_file_with_lock(&review_path, &render_meta_plan_cross_review(&run_id, reviewer, target, round))?;
+                let review_path = run_dir.join(format!(
+                    "{}-reviews-{}-round-{}.md",
+                    reviewer.role_id, target.role_id, round
+                ));
+                write_text_file_with_lock(
+                    &review_path,
+                    &render_meta_plan_cross_review(&run_id, reviewer, target, round),
+                )?;
                 let review_ref = artifact_reference(&options.project_dir, &review_path);
                 review_refs.push(review_ref.clone());
                 review_payloads.push(json!({
@@ -3324,7 +3525,7 @@ fn default_meta_plan_roles() -> Vec<MetaPlanRole> {
             role_id: "investigator".to_string(),
             label: "Investigator".to_string(),
             provider: "claude".to_string(),
-            model: "sonnet".to_string(),
+            model: "provider-default".to_string(),
             plan_mode: "required".to_string(),
             read_only: true,
             review_rounds: 1,
@@ -3335,7 +3536,7 @@ fn default_meta_plan_roles() -> Vec<MetaPlanRole> {
             role_id: "verifier".to_string(),
             label: "Verifier".to_string(),
             provider: "codex".to_string(),
-            model: "gpt-5.4".to_string(),
+            model: "provider-default".to_string(),
             plan_mode: "read_only_equivalent".to_string(),
             read_only: true,
             review_rounds: 1,
@@ -3347,59 +3548,109 @@ fn default_meta_plan_roles() -> Vec<MetaPlanRole> {
 
 fn resolve_meta_plan_roles(options: &MetaPlanOptions) -> io::Result<(Vec<MetaPlanRole>, String)> {
     let Some(role_file) = options.role_file.as_ref() else {
-        return Ok((default_meta_plan_roles(), "default_fixed_mvp".to_string()));
+        return Ok((
+            default_meta_plan_roles(),
+            "default_capability_seed".to_string(),
+        ));
     };
 
     let raw = fs::read_to_string(role_file)?;
     let parsed: MetaPlanRoleFile = serde_yaml::from_str(&raw).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("invalid meta-plan role YAML at '{}': {err}", role_file.display()),
+            format!(
+                "invalid meta-plan role YAML at '{}': {err}",
+                role_file.display()
+            ),
         )
     })?;
     if parsed.version != 1 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "meta-plan role YAML version must be 1"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "meta-plan role YAML version must be 1",
+        ));
     }
     if parsed.roles.len() < 3 {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "--roles must define at least three planning roles"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--roles must define at least three planning roles",
+        ));
     }
 
     for role in &parsed.roles {
-        validate_meta_plan_role(role)?;
+        validate_meta_plan_role(&options.project_dir, role)?;
     }
 
     Ok((parsed.roles, meta_plan_role_source(role_file, &raw)))
 }
 
-fn validate_meta_plan_role(role: &MetaPlanRole) -> io::Result<()> {
+fn validate_meta_plan_role(project_dir: &Path, role: &MetaPlanRole) -> io::Result<()> {
     if role.role_id.trim().is_empty()
-        || !role.role_id.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+        || !role
+            .role_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
     {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, "meta-plan role_id must be non-empty ASCII alphanumeric, '-' or '_'"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "meta-plan role_id must be non-empty ASCII alphanumeric, '-' or '_'",
+        ));
     }
     if role.label.trim().is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' label must not be empty", role.role_id)));
-    }
-    if !matches!(role.provider.as_str(), "claude" | "codex") {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' provider must be claude or codex", role.role_id)));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("meta-plan role '{}' label must not be empty", role.role_id),
+        ));
     }
     if role.model.trim().is_empty() {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' model must not be empty", role.role_id)));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("meta-plan role '{}' model must not be empty", role.role_id),
+        ));
     }
     if !role.read_only {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' must set read_only: true", role.role_id)));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("meta-plan role '{}' must set read_only: true", role.role_id),
+        ));
     }
     if !matches!(role.plan_mode.as_str(), "required" | "read_only_equivalent") {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' plan_mode must be required or read_only_equivalent", role.role_id)));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "meta-plan role '{}' plan_mode must be required or read_only_equivalent",
+                role.role_id
+            ),
+        ));
     }
-    if role.provider == "claude" && role.plan_mode != "required" {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' must use plan_mode: required for Claude Code", role.role_id)));
+    let provider_adapter = meta_plan_provider_adapter(project_dir, role)?;
+    if provider_adapter == "claude" && role.plan_mode != "required" {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' must use plan_mode: required for Claude Code compatible providers", role.role_id)));
     }
-    if role.provider == "codex" && role.plan_mode != "read_only_equivalent" {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' must use plan_mode: read_only_equivalent for Codex CLI", role.role_id)));
+    if provider_adapter != "claude" && role.plan_mode != "read_only_equivalent" {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' must use plan_mode: read_only_equivalent for non-Claude providers", role.role_id)));
     }
     if !matches!(role.review_rounds, 0 | 1 | 2) {
-        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' review_rounds must be omitted, 1, or 2", role.role_id)));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "meta-plan role '{}' review_rounds must be omitted, 1, or 2",
+                role.role_id
+            ),
+        ));
+    }
+    if role
+        .capabilities
+        .iter()
+        .all(|value| value.trim().is_empty())
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "meta-plan role '{}' must declare at least one capability",
+                role.role_id
+            ),
+        ));
     }
     Ok(())
 }
@@ -3416,62 +3667,191 @@ fn effective_meta_plan_review_rounds(requested: Option<u8>, roles: &[MetaPlanRol
 }
 
 fn meta_plan_role_source(path: &Path, raw: &str) -> String {
-    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("roles.yaml");
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("roles.yaml");
     format!("yaml:{name}:sha256:{}", sha256_hex(raw.as_bytes()))
 }
 
-fn meta_plan_launch_contract(role: &MetaPlanRole) -> Value {
-    match role.provider.as_str() {
+fn missing_meta_plan_provider_capability(role: &MetaPlanRole) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        format!(
+            "meta-plan role '{}' provider '{}' must be declared in .winsmux/provider-capabilities.json",
+            role.role_id, role.provider
+        ),
+    )
+}
+
+fn meta_plan_provider_capability(
+    project_dir: &Path,
+    role: &MetaPlanRole,
+) -> io::Result<Option<Value>> {
+    let path = provider_capability_registry_path(project_dir);
+    let registry = read_provider_capability_registry(&path)?;
+    if let Some(capability) = find_provider_capability(&registry, &role.provider) {
+        return Ok(Some(capability.clone()));
+    }
+
+    if matches!(role.provider.as_str(), "claude" | "codex") {
+        return Ok(None);
+    }
+
+    Err(missing_meta_plan_provider_capability(role))
+}
+
+fn meta_plan_provider_adapter(project_dir: &Path, role: &MetaPlanRole) -> io::Result<String> {
+    let Some(capability) = meta_plan_provider_capability(project_dir, role)? else {
+        return Ok(provider_adapter_from_agent(&role.provider));
+    };
+
+    let adapter = capability_string(Some(&capability), "adapter");
+    if adapter.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "meta-plan role '{}' provider '{}' is missing capability adapter",
+                role.role_id, role.provider
+            ),
+        ));
+    }
+    Ok(adapter)
+}
+
+fn meta_plan_provider_command(project_dir: &Path, role: &MetaPlanRole) -> io::Result<String> {
+    let Some(capability) = meta_plan_provider_capability(project_dir, role)? else {
+        return Ok(role.provider.clone());
+    };
+
+    let command = capability_string(Some(&capability), "command");
+    if command.trim().is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "meta-plan role '{}' provider '{}' is missing capability command",
+                role.role_id, role.provider
+            ),
+        ));
+    }
+    Ok(command)
+}
+
+fn meta_plan_launch_contract(
+    role: &MetaPlanRole,
+    provider_adapter: &str,
+    provider_command: &str,
+) -> Value {
+    match provider_adapter {
         "claude" => json!({
             "provider": role.provider.clone(),
-            "command": "claude",
+            "provider_adapter": provider_adapter,
+            "command": provider_command,
+            "model": role.model.clone(),
             "args": ["--permission-mode", "plan"],
             "plan_mode_enforced": true,
             "read_only": role.read_only,
         }),
         "codex" => json!({
             "provider": role.provider.clone(),
-            "command": "codex",
+            "provider_adapter": provider_adapter,
+            "command": provider_command,
+            "model": role.model.clone(),
             "args": ["exec", "--sandbox", "read-only"],
             "plan_mode_enforced": false,
             "read_only_equivalent": true,
             "read_only": role.read_only,
         }),
-        provider => json!({
-            "provider": provider,
-            "command": provider,
+        _ => json!({
+            "provider": role.provider.clone(),
+            "provider_adapter": provider_adapter,
+            "command": provider_command,
+            "model": role.model.clone(),
             "args": [],
             "plan_mode_enforced": false,
+            "read_only_equivalent": true,
             "read_only": role.read_only,
         }),
     }
 }
 
-fn render_meta_plan_role_draft(run_id: &str, task_hash: &str, role: &MetaPlanRole, prompt_hash: &str) -> String {
+fn render_meta_plan_role_draft(
+    run_id: &str,
+    task_hash: &str,
+    role: &MetaPlanRole,
+    prompt_hash: &str,
+) -> String {
     format!("# Meta-Planning Draft: {label}\n\nRun: `{run_id}`\nRole: `{role_id}`\nProvider: `{provider}`\nPlan mode: `{plan_mode}`\nRead-only: `{read_only}`\nTask hash: `{task_hash}`\nRole prompt hash: `{prompt_hash}`\n\n## Task\n\nThe task body is not stored in this artifact. Use the task hash and audit event references to correlate the operator-owned request.\n\n## Responsibility\n\nThe role prompt body is not stored in this artifact by default. Use the prompt hash and role definition source to correlate the role contract.\n\n## Draft Plan\n\n- Confirm facts and constraints for this role.\n- Identify assumptions that must be carried into the integrated plan.\n- Keep all recommendations side-effect-free until operator approval.\n\n## Evidence To Collect\n\n- Existing repository contracts and tests relevant to this role.\n- Gaps, risks, or open questions for the operator to merge.\n", label = &role.label, role_id = &role.role_id, provider = &role.provider, plan_mode = &role.plan_mode, read_only = role.read_only)
 }
 
-fn render_meta_plan_cross_review(run_id: &str, reviewer: &MetaPlanRole, target: &MetaPlanRole, round: u8) -> String {
+fn render_meta_plan_cross_review(
+    run_id: &str,
+    reviewer: &MetaPlanRole,
+    target: &MetaPlanRole,
+    round: u8,
+) -> String {
     format!("# Cross-Planning Review\n\nRun: `{run_id}`\nReviewer: `{reviewer}`\nTarget: `{target}`\nRound: `{round}`\n\n## Review Checklist\n\n- Check whether the target plan stays read-only.\n- Check whether missing tests or approval gates are visible.\n- Check whether unresolved questions need operator attention.\n\n## Findings\n\nNo blocking finding is recorded in the scaffold. A live worker review can replace this artifact before operator approval.\n", reviewer = &reviewer.role_id, target = &target.role_id)
 }
 
-fn render_meta_plan_integrated_plan(run_id: &str, task_hash: &str, roles: &[MetaPlanRole], draft_refs: &[String], review_refs: &[String]) -> String {
-    let role_lines = roles.iter().map(|role| format!("- `{}`: {} via `{}`", role.role_id, role.label, role.provider)).collect::<Vec<_>>().join("\n");
-    let draft_lines = draft_refs.iter().map(|reference| format!("- `{reference}`")).collect::<Vec<_>>().join("\n");
-    let review_lines = review_refs.iter().map(|reference| format!("- `{reference}`")).collect::<Vec<_>>().join("\n");
-    format!("# Integrated Meta-Plan\n\nRun: `{run_id}`\nTask hash: `{task_hash}`\n\n## Summary\n\nThe operator-owned task body is not stored in this scaffold artifact by default. The operator keeps the full request in the interactive approval flow.\n\n## Key Changes\n\n- Run a two-role planning pass before execution.\n- Keep worker output as evidence and keep operator approval as the only approval point.\n\n## Interfaces And Data Flow\n\n{role_lines}\n\nDraft artifacts:\n\n{draft_lines}\n\nCross-review artifacts:\n\n{review_lines}\n\n## Safety And Approval Gates\n\n- Workers remain read-only and do not own execution approval.\n- The operator reviews this integrated plan and triggers the single user approval point.\n- JSONL audit events are written before execution.\n- Private task and role prompt bodies are not retained in generated scaffold artifacts.\n\n## Test Plan\n\n- Validate `winsmux meta-plan --json` output.\n- Validate required audit events and artifact references.\n- Validate that generated role contracts remain read-only.\n- Validate that scaffold artifacts retain hashes instead of private prompt bodies.\n\n## Open Questions\n\n- Replace scaffold draft artifacts with live worker responses when panes are available.\n")
+fn render_meta_plan_integrated_plan(
+    run_id: &str,
+    task_hash: &str,
+    roles: &[MetaPlanRole],
+    draft_refs: &[String],
+    review_refs: &[String],
+) -> String {
+    let role_lines = roles
+        .iter()
+        .map(|role| {
+            format!(
+                "- `{}`: {} via `{}`",
+                role.role_id, role.label, role.provider
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let draft_lines = draft_refs
+        .iter()
+        .map(|reference| format!("- `{reference}`"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let review_lines = review_refs
+        .iter()
+        .map(|reference| format!("- `{reference}`"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("# Integrated Meta-Plan\n\nRun: `{run_id}`\nTask hash: `{task_hash}`\n\n## Summary\n\nThe operator-owned task body is not stored in this scaffold artifact by default. The operator keeps the full request in the interactive approval flow.\n\n## Key Changes\n\n- Run a capability-driven planning pass before execution.\n- Keep worker output as evidence and keep operator approval as the only approval point.\n\n## Interfaces And Data Flow\n\n{role_lines}\n\nDraft artifacts:\n\n{draft_lines}\n\nCross-review artifacts:\n\n{review_lines}\n\n## Safety And Approval Gates\n\n- Workers remain read-only and do not own execution approval.\n- The operator reviews this integrated plan and triggers the single user approval point.\n- JSONL audit events are written before execution.\n- Private task and role prompt bodies are not retained in generated scaffold artifacts.\n\n## Test Plan\n\n- Validate `winsmux meta-plan --json` output.\n- Validate required audit events and artifact references.\n- Validate that generated role contracts remain read-only.\n- Validate that scaffold artifacts retain hashes instead of private prompt bodies.\n\n## Open Questions\n\n- Replace scaffold draft artifacts with live worker responses when panes are available.\n")
 }
 
 fn meta_plan_audit_log_path(project_dir: &Path, session_name: &str) -> PathBuf {
     let safe_session = if session_name.trim().is_empty() {
         "winsmux-orchestra".to_string()
     } else {
-        session_name.chars().map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') { ch } else { '_' }).collect::<String>()
+        session_name
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-') {
+                    ch
+                } else {
+                    '_'
+                }
+            })
+            .collect::<String>()
     };
-    project_dir.join(".winsmux").join("logs").join(format!("{safe_session}.jsonl"))
+    project_dir
+        .join(".winsmux")
+        .join("logs")
+        .join(format!("{safe_session}.jsonl"))
 }
 
-fn append_meta_plan_audit_record(project_dir: &Path, session_name: &str, event: &str, message: &str, role: &str, data: Value) -> io::Result<()> {
+fn append_meta_plan_audit_record(
+    project_dir: &Path,
+    session_name: &str,
+    event: &str,
+    message: &str,
+    role: &str,
+    data: Value,
+) -> io::Result<()> {
     let path = meta_plan_audit_log_path(project_dir, session_name);
     let record = json!({
         "timestamp": generated_at(),
@@ -3492,12 +3872,19 @@ fn append_jsonl_record_with_lock(path: &Path, value: &Value) -> io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     with_file_lock(path, || {
-        let mut content = if path.exists() { fs::read_to_string(path)? } else { String::new() };
+        let mut content = if path.exists() {
+            fs::read_to_string(path)?
+        } else {
+            String::new()
+        };
         if !content.is_empty() && !content.ends_with('\n') {
             content.push('\n');
         }
         let line = serde_json::to_string(value).map_err(|err| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("failed to serialize JSONL record: {err}"))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("failed to serialize JSONL record: {err}"),
+            )
         })?;
         content.push_str(&line);
         content.push('\n');
@@ -5051,6 +5438,14 @@ fn manifest_session_name(manifest: &serde_yaml::Value) -> io::Result<String> {
 }
 
 fn build_restart_plan(project_dir: &Path, target: &str) -> io::Result<RestartPlan> {
+    build_restart_plan_with_provider(project_dir, target, None)
+}
+
+fn build_restart_plan_with_provider(
+    project_dir: &Path,
+    target: &str,
+    provider_override: Option<(String, String, String)>,
+) -> io::Result<RestartPlan> {
     let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
     let raw = fs::read_to_string(&manifest_path)?;
     let manifest = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
@@ -5071,7 +5466,11 @@ fn build_restart_plan(project_dir: &Path, target: &str) -> io::Result<RestartPla
     )?;
     ensure_live_pane_target(&session_name, &context.pane_id)?;
 
-    let (agent, model, capability_adapter) = resolve_restart_provider(project_dir, &context);
+    let (agent, model, capability_adapter) = if let Some(provider) = provider_override {
+        provider
+    } else {
+        resolve_restart_provider(project_dir, &context)?
+    };
     let launch_command = build_provider_launch_command(
         &agent,
         &model,
@@ -5091,6 +5490,39 @@ fn build_restart_plan(project_dir: &Path, target: &str) -> io::Result<RestartPla
         capability_adapter,
         launch_command,
     })
+}
+
+fn build_provider_switch_restart_plan(
+    project_dir: &Path,
+    settings: &BridgeSettings,
+    slot_id: &str,
+    pane_id: &str,
+    registry_entry: Option<&ProviderRegistryEntry>,
+) -> io::Result<RestartPlan> {
+    if !slot_has_explicit_provider_metadata_after_registry_replacement(
+        settings,
+        slot_id,
+        registry_entry,
+    ) {
+        return Err(restart_provider_metadata_missing(slot_id, pane_id));
+    }
+
+    let effective = resolve_slot_agent_config_with_registry_replacement(
+        project_dir,
+        settings,
+        slot_id,
+        registry_entry,
+    )?;
+    let adapter = if effective.capability_adapter.trim().is_empty() {
+        provider_adapter_from_agent(&effective.agent)
+    } else {
+        effective.capability_adapter.clone()
+    };
+    build_restart_plan_with_provider(
+        project_dir,
+        pane_id,
+        Some((effective.agent, effective.model, adapter)),
+    )
 }
 
 fn manifest_project_dir(manifest: &serde_yaml::Value) -> Option<PathBuf> {
@@ -5226,11 +5658,18 @@ fn pane_git_worktree_dir(project_dir: &Path) -> String {
     project_dir.to_string_lossy().to_string()
 }
 
-fn resolve_restart_provider(project_dir: &Path, context: &RestartPlan) -> (String, String, String) {
-    let (mut agent, mut model) =
-        split_provider_target(&manifest_provider_target(project_dir, &context.pane_id));
+fn resolve_restart_provider(
+    project_dir: &Path,
+    context: &RestartPlan,
+) -> io::Result<(String, String, String)> {
+    let manifest_provider_target = manifest_provider_target(project_dir, &context.pane_id);
+    let manifest_capability_adapter =
+        manifest_capability_adapter(project_dir, &context.pane_id).unwrap_or_default();
+    let (agent, model) = split_provider_target(&manifest_provider_target);
     if let Ok(settings) = read_bridge_settings(project_dir) {
-        if settings.has_slot(&context.label) {
+        if settings.has_slot(&context.label)
+            && restart_slot_has_explicit_provider_metadata(project_dir, &settings, &context.label)?
+        {
             if let Ok(effective) = resolve_slot_agent_config(project_dir, &settings, &context.label)
             {
                 let adapter = if effective.capability_adapter.trim().is_empty() {
@@ -5238,20 +5677,77 @@ fn resolve_restart_provider(project_dir: &Path, context: &RestartPlan) -> (Strin
                 } else {
                     effective.capability_adapter
                 };
-                return (effective.agent, effective.model, adapter);
+                return Ok((effective.agent, effective.model, adapter));
             }
         }
     }
-    if agent.trim().is_empty() {
-        agent = "codex".to_string();
+
+    if !agent.trim().is_empty() {
+        let adapter = if !manifest_capability_adapter.trim().is_empty() {
+            manifest_capability_adapter
+        } else {
+            resolve_provider_capability(project_dir, &agent)?
+                .as_ref()
+                .and_then(|capability| capability.get("adapter"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| provider_adapter_from_agent(&agent))
+        };
+        return Ok((agent, model, adapter));
     }
-    if model.trim().is_empty() {
-        model = "gpt-5.4".to_string();
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "restart provider metadata missing for pane '{}' ({}). Set manifest provider_target or an explicit slot provider before restart.",
+            context.pane_id, context.label
+        ),
+    ))
+}
+
+fn restart_slot_has_explicit_provider_metadata(
+    project_dir: &Path,
+    settings: &BridgeSettings,
+    slot_id: &str,
+) -> io::Result<bool> {
+    let registry_entry = provider_registry_entry_full(project_dir, slot_id)?;
+    Ok(
+        slot_has_explicit_provider_metadata_after_registry_replacement(
+            settings,
+            slot_id,
+            registry_entry.as_ref(),
+        ),
+    )
+}
+
+fn slot_has_explicit_provider_metadata_after_registry_replacement(
+    settings: &BridgeSettings,
+    slot_id: &str,
+    registry_entry: Option<&ProviderRegistryEntry>,
+) -> bool {
+    if registry_entry
+        .and_then(|entry| entry.agent.as_ref())
+        .is_some()
+    {
+        return true;
     }
-    let adapter = manifest_capability_adapter(project_dir, &context.pane_id)
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| provider_adapter_from_agent(&agent));
-    (agent, model, adapter)
+    if let Some(slot) = settings.slot(slot_id) {
+        if slot.agent.is_some() {
+            return true;
+        }
+    }
+
+    settings.worker_role.agent.is_some() || settings.agent_explicit
+}
+
+fn restart_provider_metadata_missing(slot_id: &str, pane_id: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!(
+            "restart provider metadata missing for pane '{pane_id}' ({slot_id}). Set an explicit slot provider before restart.",
+        ),
+    )
 }
 
 fn manifest_provider_target(project_dir: &Path, pane_id: &str) -> String {
@@ -5294,10 +5790,14 @@ fn split_provider_target(provider_target: &str) -> (String, String) {
 
 fn provider_adapter_from_agent(agent: &str) -> String {
     let lowered = agent.trim().to_ascii_lowercase();
-    if lowered.starts_with("claude") {
-        "claude".to_string()
-    } else {
+    if lowered.starts_with("codex") {
         "codex".to_string()
+    } else if lowered.starts_with("claude") {
+        "claude".to_string()
+    } else if lowered.starts_with("gemini") {
+        "gemini".to_string()
+    } else {
+        lowered
     }
 }
 
@@ -5309,13 +5809,20 @@ fn build_provider_launch_command(
     git_worktree_dir: &str,
 ) -> io::Result<String> {
     match capability_adapter.trim().to_ascii_lowercase().as_str() {
-        "codex" | "" => Ok(format!(
-            "{} -c {} --sandbox danger-full-access -C {} --add-dir {}",
-            shell_literal(agent),
-            shell_literal(&format!("model={model}")),
-            shell_literal(launch_dir),
-            shell_literal(git_worktree_dir)
-        )),
+        "codex" => {
+            let mut parts = vec![shell_literal(agent)];
+            if !model.trim().is_empty() {
+                parts.push("-c".to_string());
+                parts.push(shell_literal(&format!("model={model}")));
+            }
+            parts.push("--sandbox".to_string());
+            parts.push("danger-full-access".to_string());
+            parts.push("-C".to_string());
+            parts.push(shell_literal(launch_dir));
+            parts.push("--add-dir".to_string());
+            parts.push(shell_literal(git_worktree_dir));
+            Ok(parts.join(" "))
+        }
         "claude" => {
             let mut parts = vec![shell_literal(agent)];
             if !model.trim().is_empty() {
@@ -6747,7 +7254,10 @@ fn resolve_conflict_commit(project_dir: &Path, git_ref: &str) -> io::Result<Stri
 }
 
 fn git_probe(project_dir: &Path, args: &[&str]) -> io::Result<GitProbeResult> {
-    let output = Command::new("git").args(args).current_dir(project_dir).output()?;
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(project_dir)
+        .output()?;
     let mut text = String::new();
     text.push_str(&String::from_utf8_lossy(&output.stdout));
     text.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -6899,7 +7409,9 @@ fn guard_check(id: &str, command: &str, source: &str, purpose: &str, available: 
 fn file_exists(project_dir: &Path, relative_path: &str) -> bool {
     relative_path
         .split('/')
-        .fold(project_dir.to_path_buf(), |path, segment| path.join(segment))
+        .fold(project_dir.to_path_buf(), |path, segment| {
+            path.join(segment)
+        })
         .is_file()
 }
 
@@ -7002,10 +7514,8 @@ fn run_playbook_flow(
         evidence_digest.next_action, run.experiment_packet.next_action
     )
     .to_ascii_lowercase();
-    if matches!(
-        run.review_state.as_str(),
-        "PENDING" | "FAIL" | "FAILED"
-    ) || next_action.contains("review")
+    if matches!(run.review_state.as_str(), "PENDING" | "FAIL" | "FAILED")
+        || next_action.contains("review")
     {
         return "review";
     }
@@ -7402,8 +7912,7 @@ fn consultation_result_packet(
     let mut packet = Map::new();
     let (cost_unit_ref, cost_unit) =
         consultation_governance_cost_unit(context, &options.mode, &options.target_slot);
-    let has_existing_cost_unit =
-        governance_cost_unit_exists(&options.project_dir, &cost_unit_ref);
+    let has_existing_cost_unit = governance_cost_unit_exists(&options.project_dir, &cost_unit_ref);
     packet.insert("packet_type".to_string(), json!("consultation_packet"));
     packet.insert("generated_at".to_string(), json!(timestamp));
     packet.insert("run_id".to_string(), json!(context.run_id));
@@ -7463,8 +7972,7 @@ fn consultation_error_packet(
     let mut packet = Map::new();
     let (cost_unit_ref, cost_unit) =
         consultation_governance_cost_unit(context, &options.mode, &options.target_slot);
-    let has_existing_cost_unit =
-        governance_cost_unit_exists(&options.project_dir, &cost_unit_ref);
+    let has_existing_cost_unit = governance_cost_unit_exists(&options.project_dir, &cost_unit_ref);
     packet.insert("packet_type".to_string(), json!("consultation_packet"));
     packet.insert("generated_at".to_string(), json!(timestamp));
     packet.insert("run_id".to_string(), json!(context.run_id));
@@ -7568,8 +8076,7 @@ fn consultation_result_event(
     data.insert("consultation_ref".to_string(), json!(consultation_ref));
     let (cost_unit_ref, cost_unit) =
         consultation_governance_cost_unit(context, &options.mode, &options.target_slot);
-    let has_existing_cost_unit =
-        governance_cost_unit_exists(&options.project_dir, &cost_unit_ref);
+    let has_existing_cost_unit = governance_cost_unit_exists(&options.project_dir, &cost_unit_ref);
     data.insert("cost_unit_refs".to_string(), json!([cost_unit_ref]));
     if !has_existing_cost_unit {
         data.insert("governance_cost_units".to_string(), json!([cost_unit]));
@@ -7642,8 +8149,7 @@ fn consultation_error_event(
     data.insert("consultation_ref".to_string(), json!(consultation_ref));
     let (cost_unit_ref, cost_unit) =
         consultation_governance_cost_unit(context, &options.mode, &options.target_slot);
-    let has_existing_cost_unit =
-        governance_cost_unit_exists(&options.project_dir, &cost_unit_ref);
+    let has_existing_cost_unit = governance_cost_unit_exists(&options.project_dir, &cost_unit_ref);
     data.insert("cost_unit_refs".to_string(), json!([cost_unit_ref]));
     if !has_existing_cost_unit {
         data.insert("governance_cost_units".to_string(), json!([cost_unit]));
@@ -8024,7 +8530,11 @@ fn print_digest_text(payload: &Value) -> io::Result<()> {
         println!("Next: {}", json_string_field(&item, "next_action"));
         let branch = json_string_field(&item, "branch");
         if !branch.trim().is_empty() {
-            println!("Git: {} @ {}", branch, json_string_field(&item, "head_short"));
+            println!(
+                "Git: {} @ {}",
+                branch,
+                json_string_field(&item, "head_short")
+            );
         }
 
         let changed_file_count = item
@@ -8116,7 +8626,10 @@ fn print_explain_text(payload: &Value) -> io::Result<()> {
         json_string_field(run, "task_state"),
         json_string_field(run, "review_state")
     );
-    println!("Next: {}", json_string_field(evidence_digest, "next_action"));
+    println!(
+        "Next: {}",
+        json_string_field(evidence_digest, "next_action")
+    );
 
     let branch = json_string_field(run, "branch");
     if !branch.trim().is_empty() {
@@ -8282,7 +8795,8 @@ fn run_matches_event_value(run: &Value, event: &EventRecord) -> bool {
         return event_task_id == run_task_id;
     }
 
-    if !event.pane_id.trim().is_empty() && json_string_array_contains(run, "pane_ids", &event.pane_id)
+    if !event.pane_id.trim().is_empty()
+        && json_string_array_contains(run, "pane_ids", &event.pane_id)
     {
         return true;
     }
@@ -8329,7 +8843,10 @@ fn trimmed_string_vec<S: AsRef<str>>(values: impl IntoIterator<Item = S>) -> Vec
 }
 
 fn value_to_display_string(value: &Value) -> String {
-    value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string())
+    value
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn json_string_array_contains(value: &Value, key: &str, needle: &str) -> bool {
@@ -8396,11 +8913,8 @@ fn desktop_run_projection(snapshot: &LedgerSnapshot, item: &LedgerDigestItem) ->
     let experiment_worktree = run
         .map(|run| run.experiment_packet.worktree.clone())
         .unwrap_or_default();
-    let worktree = first_non_empty_owned([
-        run_worktree,
-        experiment_worktree,
-        item.worktree.clone(),
-    ]);
+    let worktree =
+        first_non_empty_owned([run_worktree, experiment_worktree, item.worktree.clone()]);
     let head_sha = run
         .filter(|run| !run.head_sha.trim().is_empty())
         .map(|run| run.head_sha.clone())
@@ -8556,7 +9070,10 @@ fn desktop_summary_refresh_run_id(event: &EventRecord) -> String {
     if !event.task_id.trim().is_empty() {
         return format!("task:{}", event.task_id);
     }
-    let branch = first_non_empty_owned([event.branch.clone(), json_field_string(&event.data, "branch")]);
+    let branch = first_non_empty_owned([
+        event.branch.clone(),
+        json_field_string(&event.data, "branch"),
+    ]);
     if !branch.trim().is_empty() {
         return format!("branch:{branch}");
     }

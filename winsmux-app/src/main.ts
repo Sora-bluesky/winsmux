@@ -432,6 +432,8 @@ let pendingAttachments: ComposerAttachment[] = [];
 let sourceControlCommitMessage = "";
 let operatorPtyStarted = false;
 let operatorPtyStarting: Promise<void> | null = null;
+let operatorRequestActive = false;
+let operatorInterruptInFlight = false;
 let operatorOutputBuffer = "";
 let operatorOutputFlushTimer: number | null = null;
 let voiceRecognition: SpeechRecognitionLike | null = null;
@@ -5146,6 +5148,7 @@ function applyLanguageChrome() {
     attachButton.textContent = japanese ? "添付" : "Attach";
   }
   updateVoiceInputButton();
+  updateOperatorInterruptButton();
   setElementText("send-btn", japanese ? "送信" : "Send");
 
   const sourceControlMessage = document.getElementById("source-control-message") as HTMLTextAreaElement | null;
@@ -5343,7 +5346,16 @@ function getFilteredComposerSlashCommands() {
   }
   const query = composerSlashQuery.toLowerCase();
   if (!query) {
-    return composerSlashCommands;
+    return [
+      ...localComposerSlashCommands,
+      ...winsmuxComposerCommandEntries,
+      ...composerSlashCommands.filter((item) => item.kind !== "mode"),
+    ];
+  }
+  if ("winsmux".startsWith(query) || query.startsWith("winsmux")) {
+    const winsmuxMatches = winsmuxComposerCommandEntries.filter((item) => item.command.toLowerCase().startsWith(query));
+    const slashMatches = composerSlashCommands.filter((item) => item.command.toLowerCase().startsWith(query));
+    return [...winsmuxMatches, ...slashMatches];
   }
   return composerSlashCommands.filter((item) => item.command.toLowerCase().startsWith(query));
 }
@@ -5408,6 +5420,9 @@ function renderComposerSlashCommands() {
       applyComposerSlashCommand(item);
     });
     root.appendChild(button);
+    if (index === selectedComposerSlashIndex) {
+      button.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
   });
 }
 
@@ -7628,6 +7643,26 @@ function stripTerminalControlSequences(value: string) {
     .trim();
 }
 
+function getRecentNonEmptyLines(text: string, maxCount: number) {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  return lines.slice(Math.max(0, lines.length - maxCount));
+}
+
+function isClaudeOperatorReadyText(text: string) {
+  const recentLines = getRecentNonEmptyLines(text, 8);
+  if (recentLines.length === 0) {
+    return false;
+  }
+
+  const tailText = recentLines.join("\n");
+  if (/\b(missing api key|run \/login|unable to connect|failed to connect)\b/i.test(tailText)) {
+    return false;
+  }
+
+  const finalLine = recentLines[recentLines.length - 1]?.trim() ?? "";
+  return /^[>›▌❯]$/.test(finalLine);
+}
+
 function appendOperatorPtyOutput(data: string) {
   operatorOutputBuffer += data;
   if (operatorOutputBuffer.length > 8000) {
@@ -7644,6 +7679,9 @@ function appendOperatorPtyOutput(data: string) {
     operatorOutputBuffer = "";
     if (!body) {
       return;
+    }
+    if (operatorRequestActive && isClaudeOperatorReadyText(body)) {
+      setOperatorRequestActive(false);
     }
     appendRuntimeConversation({
       type: "operator",
@@ -8515,6 +8553,70 @@ function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
   renderConversation(getConversationItems());
 }
 
+function updateOperatorInterruptButton() {
+  const button = document.getElementById("interrupt-operator-btn") as HTMLButtonElement | null;
+  if (!button) {
+    return;
+  }
+
+  const label = operatorInterruptInFlight
+    ? getLanguageText("Stopping operator request", "中断中")
+    : getLanguageText("Stop operator request", "依頼を中断");
+  button.hidden = !operatorRequestActive;
+  button.disabled = operatorInterruptInFlight;
+  button.classList.toggle("is-busy", operatorInterruptInFlight);
+  button.setAttribute("aria-label", label);
+  button.setAttribute("title", label);
+}
+
+function setOperatorRequestActive(active: boolean) {
+  operatorRequestActive = active;
+  updateOperatorInterruptButton();
+}
+
+async function interruptOperatorRequest() {
+  if (!operatorRequestActive || operatorInterruptInFlight) {
+    return;
+  }
+
+  const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  operatorInterruptInFlight = true;
+  updateOperatorInterruptButton();
+  try {
+    await ensureOperatorPtyStarted();
+    await writePtyData(OPERATOR_PTY_ID, "\x03");
+    setOperatorRequestActive(false);
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("Operator request interrupted", "オペレーターへの依頼を中断"),
+      body: getLanguageText(
+        "winsmux sent Ctrl+C to the operator pane.",
+        "winsmux はオペレーターペインへ Ctrl+C を送信しました。",
+      ),
+      tone: "warning",
+    });
+  } catch (error) {
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("Operator interrupt failed", "オペレーターを中断できませんでした"),
+      body: error instanceof Error ? error.message : String(error),
+      tone: "warning",
+    });
+  } finally {
+    operatorInterruptInFlight = false;
+    updateOperatorInterruptButton();
+  }
+
+  renderConversation(getConversationItems());
+  requestDesktopSummaryRefresh(undefined, 500);
+}
+
 function formatComposerMessageForPty(message: string, attachments: ComposerAttachment[]) {
   const trimmedMessage = message.trim();
   const attachmentLines = attachments.map((attachment) => `- ${attachment.name}${attachment.sizeLabel ? ` (${attachment.sizeLabel})` : ""}`);
@@ -8540,13 +8642,16 @@ async function forwardComposerMessageToOperatorPane(
 ) {
   const payload = formatComposerMessageForPty(message, attachments);
   if (!payload.trim()) {
+    setOperatorRequestActive(false);
     return;
   }
 
   try {
     await ensureOperatorPtyStarted();
     await writePtyData(OPERATOR_PTY_ID, encodePtySubmission(payload));
+    setOperatorRequestActive(true);
   } catch (error) {
+    setOperatorRequestActive(false);
     appendRuntimeConversation({
       type: "system",
       category: "attention",
@@ -9669,6 +9774,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   const composerFileInput = document.getElementById("composer-file-input") as HTMLInputElement | null;
   const attachButton = document.getElementById("attach-btn") as HTMLButtonElement | null;
   const voiceInputButton = document.getElementById("voice-input-btn") as HTMLButtonElement | null;
+  const interruptOperatorButton = document.getElementById("interrupt-operator-btn") as HTMLButtonElement | null;
   if (composer && composerInput) {
     voiceInputButton?.addEventListener("click", () => {
       toggleVoiceInput(composerInput);
@@ -9820,6 +9926,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   attachButton?.addEventListener("click", () => {
     composerFileInput?.click();
+  });
+
+  interruptOperatorButton?.addEventListener("click", () => {
+    void interruptOperatorRequest();
   });
 
   composerFileInput?.addEventListener("change", () => {

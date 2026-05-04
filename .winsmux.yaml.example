@@ -4,7 +4,7 @@
 
 # Optional:
 # agent: codex
-# model: gpt-5.4
+# model: <provider-specific-model>
 external-operator: true
 agent-slots:
   - slot-id: worker-1

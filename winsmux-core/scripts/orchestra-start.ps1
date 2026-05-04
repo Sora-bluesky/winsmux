@@ -663,7 +663,7 @@ function New-OrchestraPaneBootstrapPlan {
         [Parameter(Mandatory = $true)][string]$Label,
         [Parameter(Mandatory = $true)][string]$Role,
         [Parameter(Mandatory = $true)][string]$Agent,
-        [Parameter(Mandatory = $true)][string]$Model,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
         [Parameter(Mandatory = $true)][string]$StartupToken,
         [Parameter(Mandatory = $true)][string]$LaunchDir,
         [Parameter(Mandatory = $true)]$CleanPtyEnv,
@@ -785,7 +785,7 @@ function Get-OrchestraPaneBootstrapMarkerPath {
 function Get-AgentLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Agent,
-        [Parameter(Mandatory = $true)][string]$Model,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath,

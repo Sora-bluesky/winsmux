@@ -202,9 +202,18 @@ fn operator_cli_meta_plan_json_writes_plan_artifacts_and_audit_log() {
 
     assert_eq!(json["command"], "meta-plan");
     assert_eq!(json["contract_version"], 1);
-    assert_eq!(json["roles"].as_array().expect("roles should be an array").len(), 2);
+    assert_eq!(
+        json["roles"]
+            .as_array()
+            .expect("roles should be an array")
+            .len(),
+        2
+    );
     assert_eq!(json["roles"][0]["role_id"], "investigator");
-    assert_eq!(json["roles"][0]["launch_contract"]["args"][0], "--permission-mode");
+    assert_eq!(
+        json["roles"][0]["launch_contract"]["args"][0],
+        "--permission-mode"
+    );
     assert_eq!(json["roles"][0]["launch_contract"]["args"][1], "plan");
     assert_eq!(json["roles"][1]["role_id"], "verifier");
     assert_eq!(json["roles"][1]["launch_contract"]["args"][2], "read-only");
@@ -231,7 +240,13 @@ fn operator_cli_meta_plan_json_writes_plan_artifacts_and_audit_log() {
     assert!(draft.contains("Role prompt hash:"));
     assert!(!draft.contains("日本語IME対応を含むメタ計画を作る"));
     assert!(!draft.contains("Gather facts, constraints, and unknowns. Do not edit files."));
-    assert_eq!(json["roles"][0]["prompt_hash"].as_str().expect("prompt hash should be present").len(), 64);
+    assert_eq!(
+        json["roles"][0]["prompt_hash"]
+            .as_str()
+            .expect("prompt hash should be present")
+            .len(),
+        64
+    );
 
     let audit_ref = json["audit_log_ref"]
         .as_str()
@@ -276,7 +291,10 @@ fn operator_cli_meta_plan_json_writes_plan_artifacts_and_audit_log() {
     assert!(events
         .iter()
         .filter(|event| event["event"] == "role_assigned")
-        .all(|event| event["data"]["prompt_hash"].as_str().map(|value| value.len() == 64).unwrap_or(false)));
+        .all(|event| event["data"]["prompt_hash"]
+            .as_str()
+            .map(|value| value.len() == 64)
+            .unwrap_or(false)));
 }
 
 #[test]
@@ -290,7 +308,7 @@ roles:
   - role_id: investigator
     label: "調査役"
     provider: claude
-    model: sonnet
+    model: provider-default
     plan_mode: required
     read_only: true
     review_rounds: 2
@@ -300,7 +318,7 @@ roles:
   - role_id: verifier
     label: "検証役"
     provider: codex
-    model: gpt-5.4
+    model: provider-default
     plan_mode: read_only_equivalent
     read_only: true
     review_rounds: 2
@@ -310,7 +328,7 @@ roles:
   - role_id: advocate
     label: "利用者代弁役"
     provider: codex
-    model: gpt-5.4
+    model: provider-default
     plan_mode: read_only_equivalent
     read_only: true
     review_rounds: 2
@@ -336,12 +354,27 @@ roles:
         ],
     );
 
-    assert_eq!(json["roles"].as_array().expect("roles should be an array").len(), 3);
+    assert_eq!(
+        json["roles"]
+            .as_array()
+            .expect("roles should be an array")
+            .len(),
+        3
+    );
     assert_eq!(json["roles"][0]["label"], "調査役");
     assert_eq!(json["roles"][2]["label"], "利用者代弁役");
     assert_eq!(json["review_rounds"], 2);
-    assert!(json["role_source"].as_str().unwrap_or_default().starts_with("yaml:roles.yaml:sha256:"));
-    assert_eq!(json["cross_reviews"].as_array().expect("cross reviews should be an array").len(), 12);
+    assert!(json["role_source"]
+        .as_str()
+        .unwrap_or_default()
+        .starts_with("yaml:roles.yaml:sha256:"));
+    assert_eq!(
+        json["cross_reviews"]
+            .as_array()
+            .expect("cross reviews should be an array")
+            .len(),
+        12
+    );
 
     let draft_ref = json["roles"][0]["draft_ref"]
         .as_str()
@@ -350,14 +383,185 @@ roles:
     let draft = fs::read_to_string(draft_path).expect("test should read draft");
     assert!(draft.contains("Role prompt hash:"));
     assert!(!draft.contains("日本語コメントを壊さず、事実と制約を集める。"));
-    assert_eq!(json["roles"][0]["prompt_hash"].as_str().expect("prompt hash should be present").len(), 64);
+    assert_eq!(
+        json["roles"][0]["prompt_hash"]
+            .as_str()
+            .expect("prompt hash should be present")
+            .len(),
+        64
+    );
 
     let audit_ref = json["audit_log_ref"]
         .as_str()
         .expect("audit log ref should be present");
     let audit_path = project_dir.join(audit_ref.replace('/', std::path::MAIN_SEPARATOR_STR));
     let audit_raw = fs::read_to_string(audit_path).expect("test should read audit log");
-    assert_eq!(audit_raw.lines().filter(|line| line.contains("\"event\":\"cross_review\"")).count(), 12);
+    assert_eq!(
+        audit_raw
+            .lines()
+            .filter(|line| line.contains("\"event\":\"cross_review\""))
+            .count(),
+        12
+    );
+}
+
+#[test]
+fn operator_cli_meta_plan_roles_yaml_accepts_capability_registry_provider() {
+    let project_dir = make_temp_project_dir("meta-plan-capability-provider");
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(
+        winsmux_dir.join("provider-capabilities.json"),
+        r#"{
+  "version": 1,
+  "providers": {
+    "local-research": {
+      "adapter": "gemini",
+      "command": "gemini-cli",
+      "prompt_transports": ["file"],
+      "supports_file_edit": false,
+      "supports_verification": true
+    }
+  }
+}"#,
+    )
+    .expect("test should write provider capabilities");
+    let role_file = project_dir.join("roles.yaml");
+    fs::write(
+        &role_file,
+        r#"version: 1
+roles:
+  - role_id: investigator
+    label: "調査役"
+    provider: claude
+    model: provider-default
+    plan_mode: required
+    read_only: true
+    capabilities: [facts]
+  - role_id: verifier
+    label: "検証役"
+    provider: codex
+    model: provider-default
+    plan_mode: read_only_equivalent
+    read_only: true
+    capabilities: [tests]
+  - role_id: domain
+    label: "領域専門役"
+    provider: local-research
+    model: provider-default
+    plan_mode: read_only_equivalent
+    read_only: true
+    capabilities: [domain_research]
+"#,
+    )
+    .expect("test should write role YAML");
+
+    let role_file_text = role_file.to_string_lossy().to_string();
+    let json = run_json(
+        &project_dir,
+        &[
+            "meta-plan",
+            "--task",
+            "capability-driven role plan",
+            "--roles",
+            &role_file_text,
+            "--json",
+        ],
+    );
+
+    assert_eq!(
+        json["roles"]
+            .as_array()
+            .expect("roles should be an array")
+            .len(),
+        3
+    );
+    assert_eq!(json["roles"][2]["provider"], "local-research");
+    assert_eq!(json["roles"][2]["provider_adapter"], "gemini");
+    assert_eq!(
+        json["roles"][2]["launch_contract"]["provider_adapter"],
+        "gemini"
+    );
+    assert_eq!(json["roles"][2]["launch_contract"]["command"], "gemini-cli");
+    assert_eq!(
+        json["roles"][2]["launch_contract"]["read_only_equivalent"],
+        true
+    );
+}
+
+#[test]
+fn operator_cli_meta_plan_roles_yaml_uses_capability_registry_for_builtin_provider() {
+    let project_dir = make_temp_project_dir("meta-plan-builtin-capability-provider");
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(
+        winsmux_dir.join("provider-capabilities.json"),
+        r#"{
+  "version": 1,
+  "providers": {
+    "codex": {
+      "adapter": "codex",
+      "command": "codex-nightly",
+      "prompt_transports": ["argv"],
+      "supports_file_edit": true,
+      "supports_verification": true
+    }
+  }
+}"#,
+    )
+    .expect("test should write provider capabilities");
+    let role_file = project_dir.join("roles.yaml");
+    fs::write(
+        &role_file,
+        r#"version: 1
+roles:
+  - role_id: investigator
+    label: "調査役"
+    provider: claude
+    model: provider-default
+    plan_mode: required
+    read_only: true
+    capabilities: [facts]
+  - role_id: verifier
+    label: "検証役"
+    provider: codex
+    model: provider-default
+    plan_mode: read_only_equivalent
+    read_only: true
+    capabilities: [tests]
+  - role_id: advocate
+    label: "利用者代弁役"
+    provider: codex
+    model: provider-default
+    plan_mode: read_only_equivalent
+    read_only: true
+    capabilities: [acceptance]
+"#,
+    )
+    .expect("test should write role YAML");
+
+    let role_file_text = role_file.to_string_lossy().to_string();
+    let json = run_json(
+        &project_dir,
+        &[
+            "meta-plan",
+            "--task",
+            "capability registry should override builtin command",
+            "--roles",
+            &role_file_text,
+            "--json",
+        ],
+    );
+
+    assert_eq!(json["roles"][0]["launch_contract"]["command"], "claude");
+    assert_eq!(
+        json["roles"][1]["launch_contract"]["command"],
+        "codex-nightly"
+    );
+    assert_eq!(
+        json["roles"][2]["launch_contract"]["command"],
+        "codex-nightly"
+    );
 }
 
 #[test]
@@ -371,19 +575,19 @@ roles:
   - role_id: investigator
     label: "調査役"
     provider: claude
-    model: sonnet
+    model: provider-default
     plan_mode: required
     read_only: false
   - role_id: verifier
     label: "検証役"
     provider: codex
-    model: gpt-5.4
+    model: provider-default
     plan_mode: read_only_equivalent
     read_only: true
   - role_id: advocate
     label: "利用者代弁役"
     provider: codex
-    model: gpt-5.4
+    model: provider-default
     plan_mode: read_only_equivalent
     read_only: true
 "#,
@@ -403,7 +607,10 @@ roles:
         .output()
         .expect("winsmux command should run");
 
-    assert!(!output.status.success(), "meta-plan should reject mutating roles");
+    assert!(
+        !output.status.success(),
+        "meta-plan should reject mutating roles"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("must set read_only: true"), "{stderr}");
 }
@@ -2369,10 +2576,7 @@ fn operator_cli_compare_runs_json_reports_evidence_delta() {
         json["recommend"]["follow_up_run"]["source_evidence_refs"][1],
         ".winsmux/consultations/task-a.json"
     );
-    assert_eq!(
-        json["recommend"]["follow_up_run"]["review_required"],
-        true
-    );
+    assert_eq!(json["recommend"]["follow_up_run"]["review_required"], true);
     assert_eq!(
         json["recommend"]["follow_up_run"]["human_approval_required"],
         true
@@ -2915,7 +3119,10 @@ fn operator_cli_promote_tactic_rejects_unreviewed_architecture_drift() {
     let events_path = project_dir.join(".winsmux").join("events.jsonl");
     let events = fs::read_to_string(&events_path)
         .expect("test should read events")
-        .replace("verification passed", "architecture drift detected after verification");
+        .replace(
+            "verification passed",
+            "architecture drift detected after verification",
+        );
     fs::write(events_path, events).expect("test should write events");
 
     let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
@@ -4598,6 +4805,140 @@ fn operator_cli_restart_rejects_stale_manifest_target() {
     assert!(
         stderr.contains("invalid target: %2"),
         "unexpected stderr: {stderr}"
+    );
+}
+
+#[test]
+fn operator_cli_restart_rejects_missing_provider_metadata() {
+    let project_dir = make_temp_project_dir("restart-missing-provider-metadata");
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(
+        project_dir.join(".winsmux.yaml"),
+        r#"
+external-operator: true
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+"#,
+    )
+    .expect("test should write settings");
+    fs::write(
+        winsmux_dir.join("manifest.yaml"),
+        format!(
+            r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Worker
+    launch_dir: {}
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write manifest");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["restart", "worker-1"])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("restart provider metadata missing"),
+        "unexpected stderr: {stderr}"
+    );
+    let log = fs::read_to_string(&log_path).unwrap_or_default();
+    assert!(
+        !log.contains("send-keys"),
+        "restart should not dispatch a fallback command: {log}"
+    );
+    assert!(
+        !winsmux_dir.join("provider-registry.json").exists(),
+        "failed restart validation must not persist a partial provider override"
+    );
+}
+
+#[test]
+fn operator_cli_provider_switch_restart_rejects_partial_override_without_provider() {
+    let project_dir = make_temp_project_dir("provider-switch-restart-missing-provider");
+    let winsmux_dir = project_dir.join(".winsmux");
+    fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
+    fs::write(
+        project_dir.join(".winsmux.yaml"),
+        r#"
+external-operator: true
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+"#,
+    )
+    .expect("test should write settings");
+    fs::write(
+        winsmux_dir.join("manifest.yaml"),
+        format!(
+            r#"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Worker
+    launch_dir: {}
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write manifest");
+    let registry_path = winsmux_dir.join("provider-registry.json");
+    let registry_before = r#"{"version":1,"slots":{"worker-9":{"agent":"claude","model":"opus","prompt_transport":"file","auth_mode":"claude-pro-max-oauth","reason":"keep existing override","updated_at_utc":"2026-04-26T00:00:00Z"}}}"#;
+    fs::write(&registry_path, registry_before).expect("test should write provider registry");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--model",
+            "gpt-5.5",
+            "--restart",
+            "--json",
+        ])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("restart provider metadata missing"),
+        "unexpected stderr: {stderr}"
+    );
+    let log = fs::read_to_string(&log_path).unwrap_or_default();
+    assert!(
+        !log.contains("send-keys"),
+        "restart should not dispatch a fallback command: {log}"
+    );
+    let registry_after =
+        fs::read_to_string(&registry_path).expect("test should read provider registry");
+    assert_eq!(
+        registry_after, registry_before,
+        "failed provider-switch restart validation must not mutate the provider registry"
     );
 }
 

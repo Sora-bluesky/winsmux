@@ -61,7 +61,7 @@ function Test-SetupWizardAgentProvider {
 function Read-DefaultValue {
     param(
         [Parameter(Mandatory = $true)][string]$Prompt,
-        [Parameter(Mandatory = $true)][string]$Default
+        [AllowEmptyString()][string]$Default = ''
     )
 
     $inputValue = Read-Host "$Prompt [$Default]"
@@ -189,7 +189,7 @@ Write-Host 'winsmux CLI detected on PATH.'
 Write-Host ''
 
 $agentCli = Read-AgentCli -Default 'codex'
-$model = Read-DefaultValue -Prompt 'Model' -Default 'gpt-5.4'
+$model = Read-DefaultValue -Prompt 'Model (leave blank to use the provider default)' -Default ''
 $externalOperator = Read-YesNo -Prompt 'Use an external Operator terminal?' -Default $true
 $legacyRoleLayout = $false
 $operators = 0
@@ -219,7 +219,9 @@ if ($externalOperator) {
 $storeVault = Read-YesNo -Prompt 'Store GH_TOKEN in the winsmux vault?' -Default $false
 
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-agent' -OptionValue $agentCli
-Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-model' -OptionValue $model
+if (-not [string]::IsNullOrWhiteSpace($model)) {
+    Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-model' -OptionValue $model
+}
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-external-operator' -OptionValue $(if ($externalOperator) { 'on' } else { 'off' })
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-legacy-role-layout' -OptionValue $(if ($legacyRoleLayout) { 'on' } else { 'off' })
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-operators' -OptionValue $operators.ToString()
@@ -256,7 +258,7 @@ Write-Host ''
 Write-Host 'Saved settings:'
 Write-Host "  winsmux binary:         $winsmuxBin"
 Write-Host "  @bridge-agent:        $agentCli"
-Write-Host "  @bridge-model:        $model"
+Write-Host "  @bridge-model:        $(if ([string]::IsNullOrWhiteSpace($model)) { '(provider default)' } else { $model })"
 Write-Host "  @bridge-external-operator: $externalOperator"
 Write-Host "  @bridge-legacy-role-layout: $legacyRoleLayout"
 Write-Host "  @bridge-operators:   $operators"

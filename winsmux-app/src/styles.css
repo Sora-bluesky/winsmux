@@ -1727,6 +1727,10 @@ body[data-popout-surface="1"] #editor-surface {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  max-height: min(36vh, 360px);
+  overflow-y: auto;
+  align-content: flex-start;
+  padding-right: 4px;
 }
 
 #composer-remote-row {
@@ -1910,7 +1914,7 @@ body[data-popout-surface="1"] #editor-surface {
 
 #composer-actions {
   display: grid;
-  grid-template-columns: auto auto auto;
+  grid-template-columns: auto auto auto auto;
   align-items: center;
   justify-content: end;
   gap: 8px;
@@ -1959,6 +1963,35 @@ body[data-popout-surface="1"] #editor-surface {
   height: 6px;
   border-radius: 999px;
   background: var(--status-danger);
+}
+
+#interrupt-operator-btn[hidden] {
+  display: none;
+}
+
+#interrupt-operator-btn {
+  border-color: rgba(248, 113, 113, 0.6);
+  background: rgba(248, 113, 113, 0.16);
+  color: #fecaca;
+}
+
+#interrupt-operator-btn:hover {
+  background: rgba(248, 113, 113, 0.24);
+  color: #fff;
+}
+
+#interrupt-operator-btn:disabled {
+  cursor: progress;
+  opacity: 0.75;
+}
+
+#interrupt-operator-btn.is-busy .button-icon {
+  opacity: 0.72;
+}
+
+#interrupt-operator-btn .button-icon {
+  fill: currentColor;
+  stroke: none;
 }
 
 #send-btn {
@@ -3279,7 +3312,7 @@ body.is-resizing-workbench {
   #composer-actions {
     width: 100%;
     flex: 0 0 auto;
-    grid-template-columns: auto auto auto;
+    grid-template-columns: auto auto auto auto;
   }
 
   #workspace-footer {
@@ -3456,7 +3489,7 @@ body.is-resizing-workbench {
   }
 
   #composer-actions {
-    grid-template-columns: auto auto auto;
+    grid-template-columns: auto auto auto auto;
   }
 
   #settings-sheet {

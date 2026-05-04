@@ -115,7 +115,7 @@ function Test-CodexSessionText {
 function Get-PaneActualStateFromText {
     param(
         [AllowNull()][string]$Text,
-        [string]$Agent = 'codex'
+        [string]$Agent = ''
     )
 
     if ([string]::IsNullOrWhiteSpace($Text)) {
@@ -165,7 +165,7 @@ function Get-PaneStatusReadinessAgent {
     param([AllowNull()]$Entry)
 
     if ($null -eq $Entry) {
-        return 'codex'
+        return ''
     }
 
     $adapterName = ConvertTo-PaneStatusReadinessAgent ([string]$Entry.CapabilityAdapter)
@@ -178,7 +178,7 @@ function Get-PaneStatusReadinessAgent {
         return $providerName
     }
 
-    return 'codex'
+    return ''
 }
 
 function Get-PaneStatusWorktree {
