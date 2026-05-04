@@ -104,7 +104,7 @@ winsmux vault set <name> <value>
 winsmux vault inject <name> <pane>
 ```
 
-winsmux は他の CLI から token を取り出しません。詳しくは [認証方針](authentication-support.ja.md) を参照してください。
+winsmux は他の CLI からトークンを取り出しません。詳しくは [認証方針](authentication-support.ja.md) を参照してください。
 
 ## 診断コマンド
 

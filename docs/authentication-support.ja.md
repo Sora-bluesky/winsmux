@@ -45,8 +45,8 @@ winsmux の標準の使い方として案内する認証方式です。
 - 許されないこと
   - winsmux がログイン画面を肩代わりする
   - winsmux が認証完了を受け取る URL を受信する
-  - winsmux が認証情報の保存場所から token を取り出す
-  - winsmux が token を他のペインや他のユーザーに共有する
+  - winsmux が認証情報の保存場所からトークンを取り出す
+  - winsmux がトークンを他のペインや他のユーザーに共有する
 
 ### サポート対象外
 
@@ -62,9 +62,9 @@ winsmux は次を行いません。
 
 - OAuth ログインの代行
 - 認証完了を受け取る URL の受信
-- 認証情報の保存場所からの token 抽出
-- token の中継や共有
-- consumer OAuth を複数ペイン運用の共有資格情報として扱うこと
+- 認証情報の保存場所からのトークン抽出
+- トークンの中継や共有
+- 個人向け OAuth（consumer OAuth）を複数ペイン運用の共有資格情報として扱うこと
 
 ## 起動前の確認での扱い
 
@@ -105,6 +105,7 @@ winsmux は次を行いません。
 - dispatch → 実行の振り分け
 - operator docs → オペレーター向け説明
 - credential store → 認証情報の保存場所
+- token → トークン
 - callback URL / localhost redirect → 認証完了を受け取る URL
 - local interactive only → 当該 PC での対話利用のみ
 - fail-closed → 条件を満たさない場合は停止
