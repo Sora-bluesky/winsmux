@@ -47,7 +47,7 @@ class WinsmuxClient:
         return self._call_tool("winsmux_read", args)
 
     def send(self, target: str, text: str) -> str:
-        """Send text to a pane via winsmux-bridge send."""
+        """Send text to a pane via winsmux send."""
         return self._call_tool("winsmux_send", {"target": target, "text": text})
 
     def dispatch(self, text: str) -> str:

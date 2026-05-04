@@ -37,6 +37,7 @@ $whitelistPatterns = @(
     'docs/TROUBLESHOOTING.md',
     'docs/TROUBLESHOOTING.ja.md',
     'docs/operator-model.md',
+    'docs/meta-planning-layer-design.md',
     'docs/authentication-support.md',
     'docs/authentication-support.ja.md',
     'docs/repo-surface-policy.md',

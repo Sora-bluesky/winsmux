@@ -59,7 +59,7 @@ export class WinsmuxClient {
     return this.callTool("winsmux_read", args);
   }
 
-  /** Send text to a pane via winsmux-bridge send. */
+  /** Send text to a pane via winsmux send. */
   async send(target: string, text: string): Promise<string> {
     return this.callTool("winsmux_send", { target, text });
   }
