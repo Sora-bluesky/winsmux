@@ -14,6 +14,11 @@ read-only, and the operator keeps the single approval gate.
 one or two cross-review rounds through `--review-rounds <1|2>`. Role labels and
 prompts may contain Japanese text, while `role_id` remains ASCII for logs.
 
+`v0.24.20` hardens runtime retention. Generated scaffold artifacts keep
+`task_hash` and `prompt_hash` references instead of storing the operator task
+body or role prompt bodies. The operator-owned interactive approval flow remains
+the place where the full request is visible.
+
 ## Goal
 
 Add a meta-planning layer above the normal operator execution flow.

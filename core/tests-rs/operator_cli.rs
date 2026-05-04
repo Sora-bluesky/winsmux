@@ -217,8 +217,21 @@ fn operator_cli_meta_plan_json_writes_plan_artifacts_and_audit_log() {
         .expect("integrated plan ref should be present");
     let plan_path = project_dir.join(plan_ref.replace('/', std::path::MAIN_SEPARATOR_STR));
     let plan = fs::read_to_string(plan_path).expect("test should read integrated plan");
-    assert!(plan.contains("日本語IME対応を含むメタ計画を作る"));
+    assert!(plan.contains("Task hash:"));
+    assert!(!plan.contains("日本語IME対応を含むメタ計画を作る"));
     assert!(plan.contains("## Safety And Approval Gates"));
+    assert!(plan.contains("Private task and role prompt bodies are not retained"));
+
+    let draft_ref = json["roles"][0]["draft_ref"]
+        .as_str()
+        .expect("draft ref should be present");
+    let draft_path = project_dir.join(draft_ref.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let draft = fs::read_to_string(draft_path).expect("test should read draft");
+    assert!(draft.contains("Task hash:"));
+    assert!(draft.contains("Role prompt hash:"));
+    assert!(!draft.contains("日本語IME対応を含むメタ計画を作る"));
+    assert!(!draft.contains("Gather facts, constraints, and unknowns. Do not edit files."));
+    assert_eq!(json["roles"][0]["prompt_hash"].as_str().expect("prompt hash should be present").len(), 64);
 
     let audit_ref = json["audit_log_ref"]
         .as_str()
@@ -252,10 +265,18 @@ fn operator_cli_meta_plan_json_writes_plan_artifacts_and_audit_log() {
         .filter(|event| event["event"] == "role_assigned")
         .count();
     assert_eq!(role_assigned, 2);
+    assert!(events.iter().any(|event| {
+        event["event"] == "meta_plan_init"
+            && event["data"]["shield_harness"]["private_prompt_bodies_in_artifacts"] == false
+    }));
     assert!(events
         .iter()
         .filter(|event| event["event"] == "role_assigned")
         .all(|event| event["data"]["read_only"] == true));
+    assert!(events
+        .iter()
+        .filter(|event| event["event"] == "role_assigned")
+        .all(|event| event["data"]["prompt_hash"].as_str().map(|value| value.len() == 64).unwrap_or(false)));
 }
 
 #[test]
@@ -327,7 +348,9 @@ roles:
         .expect("draft ref should be present");
     let draft_path = project_dir.join(draft_ref.replace('/', std::path::MAIN_SEPARATOR_STR));
     let draft = fs::read_to_string(draft_path).expect("test should read draft");
-    assert!(draft.contains("日本語コメントを壊さず、事実と制約を集める。"));
+    assert!(draft.contains("Role prompt hash:"));
+    assert!(!draft.contains("日本語コメントを壊さず、事実と制約を集める。"));
+    assert_eq!(json["roles"][0]["prompt_hash"].as_str().expect("prompt hash should be present").len(), 64);
 
     let audit_ref = json["audit_log_ref"]
         .as_str()

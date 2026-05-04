@@ -58,7 +58,7 @@ fn search_ledger_suppresses_tagged_credentials_and_redacts_sensitive_fields() {
         search_ledger::SearchLedger::open_in_memory().expect("search ledger should open");
     let events = r#"
 {"timestamp":"2026-04-27T12:00:00+09:00","event":"credential.recorded","message":"token alpha-secret","task_id":"TASK-307","data":{"retention_tags":["credential"],"token":"alpha-secret"}}
-{"timestamp":"2026-04-27T12:01:00+09:00","event":"operator.note","message":"token raw-message keep searchable note","task_id":"TASK-307","data":{"api_key":"plain-secret","privateKey":"raw-private","nested":{"password":"hidden","sshKey":"raw-ssh","authHeader":"raw-auth"},"note":"keep this","output":"neutral-secret-value","stderr":"Bearer raw-bearer"}}
+{"timestamp":"2026-04-27T12:01:00+09:00","event":"operator.note","message":"token raw-message keep searchable note","task_id":"TASK-307","data":{"api_key":"plain-secret","privateKey":"raw-private","nested":{"password":"hidden","sshKey":"raw-ssh","authHeader":"raw-auth"},"note":"keep this","prompt":"full prompt phrase","transcript":"pane transcript phrase","conversation":"conversation body phrase","messages":["message list phrase"],"message_body":"message body phrase","content":"content body phrase","output":"neutral-output-value","stdout":"stdout body phrase","stderr":"Bearer raw-bearer"}}
 "#;
     let indexed = ledger
         .rebuild_from_events_jsonl(events)
@@ -90,8 +90,36 @@ fn search_ledger_suppresses_tagged_credentials_and_redacts_sensitive_fields() {
         .expect("message secret search should run")
         .is_empty());
     assert!(ledger
-        .search("neutral-secret-value", 10)
-        .expect("neutral-key secret search should run")
+        .search("neutral-output-value", 10)
+        .expect("output search should run")
+        .is_empty());
+    assert!(ledger
+        .search("full prompt phrase", 10)
+        .expect("prompt search should run")
+        .is_empty());
+    assert!(ledger
+        .search("pane transcript phrase", 10)
+        .expect("transcript search should run")
+        .is_empty());
+    assert!(ledger
+        .search("conversation body phrase", 10)
+        .expect("conversation search should run")
+        .is_empty());
+    assert!(ledger
+        .search("message list phrase", 10)
+        .expect("messages search should run")
+        .is_empty());
+    assert!(ledger
+        .search("message body phrase", 10)
+        .expect("message body search should run")
+        .is_empty());
+    assert!(ledger
+        .search("content body phrase", 10)
+        .expect("content search should run")
+        .is_empty());
+    assert!(ledger
+        .search("stdout body phrase", 10)
+        .expect("stdout search should run")
         .is_empty());
     assert!(ledger
         .search("raw-bearer", 10)
@@ -109,14 +137,92 @@ fn search_ledger_suppresses_tagged_credentials_and_redacts_sensitive_fields() {
         .expect("detail should exist");
     assert_eq!(hit.entry.message, "[redacted]");
     assert_eq!(detail.detail["message"], "[redacted]");
-    assert_eq!(detail.detail["data"]["api_key"], "[redacted]");
-    assert_eq!(detail.detail["data"]["privateKey"], "[redacted]");
-    assert_eq!(detail.detail["data"]["nested"]["password"], "[redacted]");
-    assert_eq!(detail.detail["data"]["nested"]["sshKey"], "[redacted]");
-    assert_eq!(detail.detail["data"]["nested"]["authHeader"], "[redacted]");
     assert_eq!(detail.detail["data"]["note"], "keep this");
-    assert_eq!(detail.detail["data"]["output"], "[redacted]");
-    assert_eq!(detail.detail["data"]["stderr"], "[redacted]");
+    assert!(detail.detail["data"].get("api_key").is_none());
+    assert!(detail.detail["data"].get("privateKey").is_none());
+    assert!(detail.detail["data"].get("nested").is_none());
+    assert!(detail.detail["data"].get("prompt").is_none());
+    assert!(detail.detail["data"].get("transcript").is_none());
+    assert!(detail.detail["data"].get("conversation").is_none());
+    assert!(detail.detail["data"].get("messages").is_none());
+    assert!(detail.detail["data"].get("message_body").is_none());
+    assert!(detail.detail["data"].get("content").is_none());
+    assert!(detail.detail["data"].get("output").is_none());
+    assert!(detail.detail["data"].get("stdout").is_none());
+    assert!(detail.detail["data"].get("stderr").is_none());
+}
+
+#[test]
+fn search_ledger_rebuild_projects_data_with_default_allowlist() {
+    let mut ledger =
+        search_ledger::SearchLedger::open_in_memory().expect("search ledger should open");
+    let events = r#"
+{"timestamp":"2026-04-27T12:00:00+09:00","event":"operator.note","message":"projection smoke","task_id":"TASK-307","data":{"hypothesis":"allowed hypothesis phrase","result":"allowed result phrase","arbitrary":"dropped arbitrary phrase","prompt_text":"dropped prompt phrase","std_out":"dropped stdout phrase","standard_output":"dropped standard output phrase","message_list":"dropped message list phrase","body_content":"dropped content phrase"}}
+"#;
+    let indexed = ledger
+        .rebuild_from_events_jsonl(events)
+        .expect("events should index");
+
+    assert_eq!(indexed, 1);
+    assert_eq!(
+        ledger
+            .search("allowed hypothesis phrase", 10)
+            .expect("allowed field search should run")
+            .len(),
+        1
+    );
+    assert_eq!(
+        ledger
+            .search("allowed result phrase", 10)
+            .expect("allowed result search should run")
+            .len(),
+        1
+    );
+    assert!(ledger
+        .search("dropped arbitrary phrase", 10)
+        .expect("arbitrary field search should run")
+        .is_empty());
+    assert!(ledger
+        .search("dropped prompt phrase", 10)
+        .expect("prompt text search should run")
+        .is_empty());
+    assert!(ledger
+        .search("dropped stdout phrase", 10)
+        .expect("stdout text search should run")
+        .is_empty());
+    assert!(ledger
+        .search("dropped standard output phrase", 10)
+        .expect("standard output text search should run")
+        .is_empty());
+    assert!(ledger
+        .search("dropped message list phrase", 10)
+        .expect("message list text search should run")
+        .is_empty());
+    assert!(ledger
+        .search("dropped content phrase", 10)
+        .expect("content text search should run")
+        .is_empty());
+
+    let hit = ledger
+        .search("projection smoke", 10)
+        .expect("message search should run")
+        .pop()
+        .expect("message should be searchable");
+    let detail = ledger
+        .detail(hit.entry.id)
+        .expect("detail lookup should run")
+        .expect("detail should exist");
+    assert_eq!(
+        detail.detail["data"]["hypothesis"],
+        "allowed hypothesis phrase"
+    );
+    assert_eq!(detail.detail["data"]["result"], "allowed result phrase");
+    assert!(detail.detail["data"].get("arbitrary").is_none());
+    assert!(detail.detail["data"].get("prompt_text").is_none());
+    assert!(detail.detail["data"].get("std_out").is_none());
+    assert!(detail.detail["data"].get("standard_output").is_none());
+    assert!(detail.detail["data"].get("message_list").is_none());
+    assert!(detail.detail["data"].get("body_content").is_none());
 }
 
 #[test]
