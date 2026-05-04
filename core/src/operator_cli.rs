@@ -10,7 +10,7 @@ use std::{
 };
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -2886,18 +2886,33 @@ struct MetaPlanOptions {
     project_dir: PathBuf,
     task: String,
     session_name: String,
+    role_file: Option<PathBuf>,
+    review_rounds: Option<u8>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct MetaPlanRole {
+    #[serde(alias = "role-id")]
     role_id: String,
     label: String,
     provider: String,
     model: String,
+    #[serde(alias = "plan-mode")]
     plan_mode: String,
+    #[serde(alias = "read-only")]
     read_only: bool,
+    #[serde(default, alias = "review-rounds")]
+    review_rounds: u8,
+    #[serde(default)]
     capabilities: Vec<String>,
+    #[serde(default)]
     prompt: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetaPlanRoleFile {
+    version: u32,
+    roles: Vec<MetaPlanRole>,
 }
 
 struct MetaPlanRun {
@@ -3032,6 +3047,8 @@ fn parse_meta_plan_options(args: &[&String]) -> io::Result<MetaPlanOptions> {
     let mut project_dir = None;
     let mut task = String::new();
     let mut session_name = "winsmux-orchestra".to_string();
+    let mut role_file = None;
+    let mut review_rounds = None;
     let mut trailing_task_parts = Vec::new();
     let mut index = 0;
 
@@ -3051,6 +3068,21 @@ fn parse_meta_plan_options(args: &[&String]) -> io::Result<MetaPlanOptions> {
             }
             "--session" => {
                 session_name = required_option_value(args, index, "--session")?;
+                index += 2;
+            }
+            "--roles" => {
+                role_file = Some(PathBuf::from(required_option_value(args, index, "--roles")?));
+                index += 2;
+            }
+            "--review-rounds" => {
+                let value = required_option_value(args, index, "--review-rounds")?;
+                let parsed = value.parse::<u8>().map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "--review-rounds must be 1 or 2")
+                })?;
+                if !matches!(parsed, 1 | 2) {
+                    return Err(io::Error::new(io::ErrorKind::InvalidInput, "--review-rounds must be 1 or 2"));
+                }
+                review_rounds = Some(parsed);
                 index += 2;
             }
             value if value.starts_with('-') => {
@@ -3081,11 +3113,14 @@ fn parse_meta_plan_options(args: &[&String]) -> io::Result<MetaPlanOptions> {
         project_dir: project_dir.unwrap_or(env::current_dir()?),
         task: task.trim().to_string(),
         session_name: session_name.trim().to_string(),
+        role_file,
+        review_rounds,
     })
 }
 
 fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
-    let roles = default_meta_plan_roles();
+    let (roles, role_source) = resolve_meta_plan_roles(options)?;
+    let review_rounds = effective_meta_plan_review_rounds(options.review_rounds, &roles);
     let run_id = format!("meta-{}", unique_artifact_id());
     let run_dir = options.project_dir.join(".winsmux").join("meta-plans").join(&run_id);
     fs::create_dir_all(&run_dir)?;
@@ -3109,6 +3144,13 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
             "selected_roles": role_ids,
             "operator_pane": env::var("WINSMUX_PANE_ID").unwrap_or_default(),
             "read_only_principle": true,
+            "role_source": role_source.clone(),
+            "review_rounds": review_rounds,
+            "shield_harness": {
+                "role_definition_policy": "read_only_required",
+                "provider_allowlist": ["claude", "codex"],
+                "private_prompt_bodies_in_audit": false,
+            },
         }),
     )?;
 
@@ -3129,6 +3171,7 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
                 "model": role.model.clone(),
                 "plan_mode": role.plan_mode.clone(),
                 "read_only": role.read_only,
+                "review_rounds": role.review_rounds,
                 "launch_contract": meta_plan_launch_contract(role),
             }),
         )?;
@@ -3159,46 +3202,48 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
             "model": role.model.clone(),
             "plan_mode": role.plan_mode.clone(),
             "read_only": role.read_only,
+            "review_rounds": role.review_rounds,
             "capabilities": role.capabilities.clone(),
             "draft_ref": draft_ref.clone(),
             "launch_contract": meta_plan_launch_contract(role),
         }));
     }
 
-    let review_rounds = 1_u8;
     let mut review_refs = Vec::new();
     let mut review_payloads = Vec::new();
-    for reviewer in &roles {
-        for target in &roles {
-            if reviewer.role_id == target.role_id {
-                continue;
-            }
-            let review_path = run_dir.join(format!("{}-reviews-{}-round-1.md", reviewer.role_id, target.role_id));
-            write_text_file_with_lock(&review_path, &render_meta_plan_cross_review(&run_id, reviewer, target))?;
-            let review_ref = artifact_reference(&options.project_dir, &review_path);
-            review_refs.push(review_ref.clone());
-            review_payloads.push(json!({
-                "round": 1,
-                "reviewer_role_id": reviewer.role_id.clone(),
-                "target_role_id": target.role_id.clone(),
-                "review_ref": review_ref.clone(),
-                "blocking": false,
-            }));
-            append_meta_plan_audit_record(
-                &options.project_dir,
-                &options.session_name,
-                "cross_review",
-                "Cross-planning review artifact recorded.",
-                &reviewer.role_id,
-                json!({
-                    "run_id": run_id.clone(),
-                    "round": 1,
+    for round in 1..=review_rounds {
+        for reviewer in &roles {
+            for target in &roles {
+                if reviewer.role_id == target.role_id {
+                    continue;
+                }
+                let review_path = run_dir.join(format!("{}-reviews-{}-round-{}.md", reviewer.role_id, target.role_id, round));
+                write_text_file_with_lock(&review_path, &render_meta_plan_cross_review(&run_id, reviewer, target, round))?;
+                let review_ref = artifact_reference(&options.project_dir, &review_path);
+                review_refs.push(review_ref.clone());
+                review_payloads.push(json!({
+                    "round": round,
                     "reviewer_role_id": reviewer.role_id.clone(),
                     "target_role_id": target.role_id.clone(),
                     "review_ref": review_ref.clone(),
                     "blocking": false,
-                }),
-            )?;
+                }));
+                append_meta_plan_audit_record(
+                    &options.project_dir,
+                    &options.session_name,
+                    "cross_review",
+                    "Cross-planning review artifact recorded.",
+                    &reviewer.role_id,
+                    json!({
+                        "run_id": run_id.clone(),
+                        "round": round,
+                        "reviewer_role_id": reviewer.role_id.clone(),
+                        "target_role_id": target.role_id.clone(),
+                        "review_ref": review_ref.clone(),
+                        "blocking": false,
+                    }),
+                )?;
+            }
         }
     }
 
@@ -3246,6 +3291,7 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
         "task_hash": task_hash,
         "task_preview": task_preview,
         "roles": role_payloads,
+        "role_source": role_source,
         "review_rounds": review_rounds,
         "cross_reviews": review_payloads,
         "integrated_plan_ref": integrated_plan_ref.clone(),
@@ -3277,6 +3323,7 @@ fn default_meta_plan_roles() -> Vec<MetaPlanRole> {
             model: "sonnet".to_string(),
             plan_mode: "required".to_string(),
             read_only: true,
+            review_rounds: 1,
             capabilities: vec!["facts".to_string(), "constraints".to_string()],
             prompt: "Gather facts, constraints, and unknowns. Do not edit files.".to_string(),
         },
@@ -3287,10 +3334,86 @@ fn default_meta_plan_roles() -> Vec<MetaPlanRole> {
             model: "gpt-5.4".to_string(),
             plan_mode: "read_only_equivalent".to_string(),
             read_only: true,
+            review_rounds: 1,
             capabilities: vec!["risk".to_string(), "tests".to_string()],
             prompt: "Find risks, missing tests, and failure modes. Do not edit files.".to_string(),
         },
     ]
+}
+
+fn resolve_meta_plan_roles(options: &MetaPlanOptions) -> io::Result<(Vec<MetaPlanRole>, String)> {
+    let Some(role_file) = options.role_file.as_ref() else {
+        return Ok((default_meta_plan_roles(), "default_fixed_mvp".to_string()));
+    };
+
+    let raw = fs::read_to_string(role_file)?;
+    let parsed: MetaPlanRoleFile = serde_yaml::from_str(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid meta-plan role YAML at '{}': {err}", role_file.display()),
+        )
+    })?;
+    if parsed.version != 1 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "meta-plan role YAML version must be 1"));
+    }
+    if parsed.roles.len() < 3 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "--roles must define at least three planning roles"));
+    }
+
+    for role in &parsed.roles {
+        validate_meta_plan_role(role)?;
+    }
+
+    Ok((parsed.roles, meta_plan_role_source(role_file, &raw)))
+}
+
+fn validate_meta_plan_role(role: &MetaPlanRole) -> io::Result<()> {
+    if role.role_id.trim().is_empty()
+        || !role.role_id.chars().all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "meta-plan role_id must be non-empty ASCII alphanumeric, '-' or '_'"));
+    }
+    if role.label.trim().is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' label must not be empty", role.role_id)));
+    }
+    if !matches!(role.provider.as_str(), "claude" | "codex") {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' provider must be claude or codex", role.role_id)));
+    }
+    if role.model.trim().is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' model must not be empty", role.role_id)));
+    }
+    if !role.read_only {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' must set read_only: true", role.role_id)));
+    }
+    if !matches!(role.plan_mode.as_str(), "required" | "read_only_equivalent") {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' plan_mode must be required or read_only_equivalent", role.role_id)));
+    }
+    if role.provider == "claude" && role.plan_mode != "required" {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' must use plan_mode: required for Claude Code", role.role_id)));
+    }
+    if role.provider == "codex" && role.plan_mode != "read_only_equivalent" {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' must use plan_mode: read_only_equivalent for Codex CLI", role.role_id)));
+    }
+    if !matches!(role.review_rounds, 0 | 1 | 2) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' review_rounds must be omitted, 1, or 2", role.role_id)));
+    }
+    Ok(())
+}
+
+fn effective_meta_plan_review_rounds(requested: Option<u8>, roles: &[MetaPlanRole]) -> u8 {
+    requested.unwrap_or_else(|| {
+        roles
+            .iter()
+            .map(|role| role.review_rounds)
+            .max()
+            .filter(|value| matches!(value, 1 | 2))
+            .unwrap_or(1)
+    })
+}
+
+fn meta_plan_role_source(path: &Path, raw: &str) -> String {
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("roles.yaml");
+    format!("yaml:{name}:sha256:{}", sha256_hex(raw.as_bytes()))
 }
 
 fn meta_plan_launch_contract(role: &MetaPlanRole) -> Value {
@@ -3324,8 +3447,8 @@ fn render_meta_plan_role_draft(run_id: &str, task: &str, role: &MetaPlanRole) ->
     format!("# Meta-Planning Draft: {label}\n\nRun: `{run_id}`\nRole: `{role_id}`\nProvider: `{provider}`\nPlan mode: `{plan_mode}`\nRead-only: `{read_only}`\n\n## Task\n\n{task}\n\n## Responsibility\n\n{prompt}\n\n## Draft Plan\n\n- Confirm facts and constraints for this role.\n- Identify assumptions that must be carried into the integrated plan.\n- Keep all recommendations side-effect-free until operator approval.\n\n## Evidence To Collect\n\n- Existing repository contracts and tests relevant to this role.\n- Gaps, risks, or open questions for the operator to merge.\n", label = &role.label, role_id = &role.role_id, provider = &role.provider, plan_mode = &role.plan_mode, read_only = role.read_only, prompt = &role.prompt)
 }
 
-fn render_meta_plan_cross_review(run_id: &str, reviewer: &MetaPlanRole, target: &MetaPlanRole) -> String {
-    format!("# Cross-Planning Review\n\nRun: `{run_id}`\nReviewer: `{reviewer}`\nTarget: `{target}`\nRound: `1`\n\n## Review Checklist\n\n- Check whether the target plan stays read-only.\n- Check whether missing tests or approval gates are visible.\n- Check whether unresolved questions need operator attention.\n\n## Findings\n\nNo blocking finding is recorded in the scaffold. A live worker review can replace this artifact before operator approval.\n", reviewer = &reviewer.role_id, target = &target.role_id)
+fn render_meta_plan_cross_review(run_id: &str, reviewer: &MetaPlanRole, target: &MetaPlanRole, round: u8) -> String {
+    format!("# Cross-Planning Review\n\nRun: `{run_id}`\nReviewer: `{reviewer}`\nTarget: `{target}`\nRound: `{round}`\n\n## Review Checklist\n\n- Check whether the target plan stays read-only.\n- Check whether missing tests or approval gates are visible.\n- Check whether unresolved questions need operator attention.\n\n## Findings\n\nNo blocking finding is recorded in the scaffold. A live worker review can replace this artifact before operator approval.\n", reviewer = &reviewer.role_id, target = &target.role_id)
 }
 
 fn render_meta_plan_integrated_plan(run_id: &str, task: &str, roles: &[MetaPlanRole], draft_refs: &[String], review_refs: &[String]) -> String {
@@ -4021,7 +4144,7 @@ fn usage_for(command: &str) -> &'static str {
         "digest" => "usage: winsmux digest [--json] [--project-dir <path>]",
         "desktop-summary" => "usage: winsmux desktop-summary [--json] [--stream] [--project-dir <path>]",
         "meta-plan" => {
-            "usage: winsmux meta-plan --task <text> [--json] [--project-dir <path>] [--session <name>]"
+            "usage: winsmux meta-plan --task <text> [--roles <path>] [--review-rounds <1|2>] [--json] [--project-dir <path>] [--session <name>]"
         }
         "provider-capabilities" => {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
