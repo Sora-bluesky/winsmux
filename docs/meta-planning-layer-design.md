@@ -2,8 +2,13 @@
 
 ## Status
 
-Phase 0 design draft. Do not implement runtime behavior from this document until
-the operator reviews and approves the open questions.
+Phase 0 design has been reviewed for implementation. `v0.24.18` adds the
+CLI-only `winsmux meta-plan` entrypoint for the fixed MVP role set:
+`investigator` and `verifier`.
+
+The command writes role draft artifacts, cross-review artifacts, an integrated
+Markdown plan, and JSONL audit events under `.winsmux/`. Workers remain
+read-only, and the operator keeps the single approval gate.
 
 ## Goal
 

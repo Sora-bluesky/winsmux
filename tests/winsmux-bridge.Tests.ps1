@@ -11543,6 +11543,32 @@ Describe 'winsmux provider-capabilities command' {
     }
 }
 
+Describe 'winsmux meta-plan command' {
+    BeforeAll {
+        $script:winsmuxMetaPlanCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:winsmuxMetaPlanCoreRawContent = Get-Content -Raw -Path $script:winsmuxMetaPlanCoreRawPath -Encoding UTF8
+        . $script:winsmuxMetaPlanCoreRawPath 'version' *> $null
+    }
+
+    It 'documents meta-plan in usage and delegates to the Rust meta-plan contract' {
+        $script:winsmuxMetaPlanCoreRawContent | Should -Match 'meta-plan --task <text> \[--json\] \[--project-dir <path>\] \[--session <name>\]'
+        $script:winsmuxMetaPlanCoreRawContent | Should -Match "'meta-plan'\s*\{ Invoke-MetaPlan \}"
+
+        Mock Invoke-WinsmuxRaw {
+            param([string[]]$Arguments)
+            $script:metaPlanArgs = @($Arguments)
+            return '{"command":"meta-plan","roles":[{"role_id":"investigator"},{"role_id":"verifier"}],"audit_events":["meta_plan_init","role_assigned","plan_drafted","cross_review","plan_merged","exit_plan_mode"]}'
+        }
+
+        $output = Invoke-MetaPlan -MetaPlanTarget '--task' -MetaPlanRest @('日本語IME対応', '--json')
+        $json = $output | ConvertFrom-Json
+        $script:metaPlanArgs | Should -Be @('meta-plan', '--task', '日本語IME対応', '--json')
+        $json.command | Should -Be 'meta-plan'
+        @($json.roles.role_id) | Should -Be @('investigator', 'verifier')
+        $json.audit_events | Should -Contain 'exit_plan_mode'
+    }
+}
+
 Describe 'winsmux guard command' {
     BeforeAll {
         $script:winsmuxGuardCoreRawPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'

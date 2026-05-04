@@ -119,6 +119,77 @@ fn operator_cli_runs_text_reads_live_winsmux_manifest() {
 }
 
 #[test]
+fn operator_cli_meta_plan_json_writes_plan_artifacts_and_audit_log() {
+    let project_dir = make_temp_project_dir("meta-plan-json");
+    let json = run_json(
+        &project_dir,
+        &[
+            "meta-plan",
+            "--task",
+            "日本語IME対応を含むメタ計画を作る",
+            "--json",
+        ],
+    );
+
+    assert_eq!(json["command"], "meta-plan");
+    assert_eq!(json["contract_version"], 1);
+    assert_eq!(json["roles"].as_array().expect("roles should be an array").len(), 2);
+    assert_eq!(json["roles"][0]["role_id"], "investigator");
+    assert_eq!(json["roles"][0]["launch_contract"]["args"][0], "--permission-mode");
+    assert_eq!(json["roles"][0]["launch_contract"]["args"][1], "plan");
+    assert_eq!(json["roles"][1]["role_id"], "verifier");
+    assert_eq!(json["roles"][1]["launch_contract"]["args"][2], "read-only");
+    assert_eq!(json["approval_gate"]["single_user_approval"], true);
+    assert_eq!(json["approval_gate"]["worker_execution_allowed"], false);
+    assert_eq!(json["review_rounds"], 1);
+
+    let plan_ref = json["integrated_plan_ref"]
+        .as_str()
+        .expect("integrated plan ref should be present");
+    let plan_path = project_dir.join(plan_ref.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let plan = fs::read_to_string(plan_path).expect("test should read integrated plan");
+    assert!(plan.contains("日本語IME対応を含むメタ計画を作る"));
+    assert!(plan.contains("## Safety And Approval Gates"));
+
+    let audit_ref = json["audit_log_ref"]
+        .as_str()
+        .expect("audit log ref should be present");
+    let audit_path = project_dir.join(audit_ref.replace('/', std::path::MAIN_SEPARATOR_STR));
+    let audit_raw = fs::read_to_string(audit_path).expect("test should read audit log");
+    let events: Vec<serde_json::Value> = audit_raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("audit line should be JSON"))
+        .collect();
+    let event_names: Vec<&str> = events
+        .iter()
+        .filter_map(|event| event["event"].as_str())
+        .collect();
+    for expected in [
+        "meta_plan_init",
+        "role_assigned",
+        "plan_drafted",
+        "cross_review",
+        "plan_merged",
+        "exit_plan_mode",
+    ] {
+        assert!(
+            event_names.contains(&expected),
+            "missing audit event {expected}: {event_names:?}"
+        );
+    }
+    let role_assigned = events
+        .iter()
+        .filter(|event| event["event"] == "role_assigned")
+        .count();
+    assert_eq!(role_assigned, 2);
+    assert!(events
+        .iter()
+        .filter(|event| event["event"] == "role_assigned")
+        .all(|event| event["data"]["read_only"] == true));
+}
+
+#[test]
 fn operator_cli_explain_text_reads_live_winsmux_manifest() {
     let project_dir = make_temp_project_dir("explain-text");
     write_manifest(&project_dir);

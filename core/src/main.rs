@@ -254,6 +254,7 @@ fn run_main() -> io::Result<()> {
         "inbox" => return operator_cli::run_inbox_command(&cmd_args[1..]),
         "digest" => return operator_cli::run_digest_command(&cmd_args[1..]),
         "desktop-summary" => return operator_cli::run_desktop_summary_command(&cmd_args[1..]),
+        "meta-plan" => return operator_cli::run_meta_plan_command(&cmd_args[1..]),
         "provider-capabilities" => return operator_cli::run_provider_capabilities_command(&cmd_args[1..]),
         "skills" => return operator_cli::run_skills_command(&cmd_args[1..]),
         "machine-contract" => return operator_cli::run_machine_contract_command(&cmd_args[1..]),
