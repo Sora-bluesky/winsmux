@@ -5188,7 +5188,7 @@ dependencies = [
 
 [[package]]
 name = "winsmux-app"
-version = "0.24.18"
+version = "0.24.19"
 dependencies = [
  "chrono",
  "portable-pty",
