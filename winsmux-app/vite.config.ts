@@ -1,5 +1,5 @@
 import { defineConfig } from "vite";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -33,8 +33,33 @@ function resolveProjectRelativePath(requestedPath: string) {
   };
 }
 
+function collectGitIgnoredPaths(relativePaths: string[]) {
+  if (relativePaths.length === 0) {
+    return new Set<string>();
+  }
+
+  try {
+    const result = spawnSync("git", ["-C", projectRoot, "check-ignore", "-z", "--stdin"], {
+      input: `${relativePaths.join("\0")}\0`,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    if (result.status !== 0 && result.status !== 1) {
+      return new Set<string>();
+    }
+    return new Set(
+      result.stdout
+        .split("\0")
+        .map((item) => item.replace(/\\/g, "/").replace(/\/+$/, ""))
+        .filter(Boolean),
+    );
+  } catch {
+    return new Set<string>();
+  }
+}
+
 function collectExplorerEntries(root: string, basePath = "") {
-  const entries: Array<{ path: string; kind: "directory" | "file"; has_children?: boolean }> = [];
+  const entries: Array<{ path: string; kind: "directory" | "file"; has_children?: boolean; ignored?: boolean }> = [];
   const baseDir = path.resolve(root, basePath);
   const children = fs.readdirSync(baseDir, { withFileTypes: true })
     .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
@@ -55,7 +80,11 @@ function collectExplorerEntries(root: string, basePath = "") {
     }
   }
 
-  return entries;
+  const ignoredPaths = collectGitIgnoredPaths(entries.map((entry) => entry.path));
+  return entries.map((entry) => ({
+    ...entry,
+    ignored: ignoredPaths.has(entry.path) || ignoredPaths.has(`${entry.path}/`),
+  }));
 }
 
 function serveProjectExplorer(request: { url?: string }, response: { statusCode: number; setHeader: (name: string, value: string) => void; end: (body: string) => void }) {
@@ -115,11 +144,15 @@ function serveProjectFile(request: { url?: string }, response: { statusCode: num
   }
 }
 
-function runGit(args: string[]) {
+function runGitRaw(args: string[]) {
   return execFileSync("git", ["-C", projectRoot, ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
-  }).trim();
+  });
+}
+
+function runGit(args: string[]) {
+  return runGitRaw(args).trim();
 }
 
 function mapGitStatus(code: string) {
@@ -135,47 +168,106 @@ function mapGitStatus(code: string) {
   return "modified";
 }
 
+function mapGitStatusChar(statusChar: string, fallbackCode: string) {
+  const normalized = statusChar && statusChar !== " " ? statusChar : fallbackCode;
+  return mapGitStatus(normalized);
+}
+
 function parseGitStatusPath(rawPath: string) {
   const renameParts = rawPath.split(" -> ");
   return (renameParts[renameParts.length - 1] ?? rawPath).replace(/\\/g, "/");
 }
 
+function collectSourceControlChangeRows(line: string, branch: string) {
+  const code = line.slice(0, 2);
+  const indexStatus = code[0] ?? " ";
+  const worktreeStatus = code[1] ?? " ";
+  const filePath = parseGitStatusPath(line.slice(2).trim());
+  const rows = [];
+  const pushRow = (statusChar: string, staged: boolean) => {
+    const status = mapGitStatusChar(statusChar, code);
+    rows.push({
+      path: filePath,
+      summary: `${status} ${filePath}`,
+      paneLabel: staged ? "index" : "working tree",
+      worktree: ".",
+      status,
+      risk: "low",
+      branch,
+      lines: statusChar.trim() || "M",
+      commitCandidate: true,
+      needsAttention: false,
+      run: staged ? "index" : "working-tree",
+      review: staged ? "staged" : "local",
+      staged,
+    });
+  };
+
+  if (indexStatus !== " " && indexStatus !== "?") {
+    pushRow(indexStatus, true);
+  }
+  if (code === "??" || worktreeStatus !== " ") {
+    pushRow(code === "??" ? "?" : worktreeStatus, false);
+  }
+  if (rows.length === 0 && filePath) {
+    pushRow(code.trim() || "M", false);
+  }
+  return rows;
+}
+
+function parseGitGraphLine(line: string) {
+  const match = /^([\s|*\\/._-]*?)([0-9a-f]{40}\u001f.*)$/i.exec(line);
+  if (!match) {
+    return null;
+  }
+  return {
+    symbols: (match[1] || "* ").replace(/ /g, "\u00a0"),
+    payload: match[2] || line,
+  };
+}
+
 function collectSourceControlSnapshot() {
   const branch = runGit(["rev-parse", "--abbrev-ref", "HEAD"]) || "HEAD";
-  const statusText = runGit(["status", "--short", "--untracked-files=all"]);
+  const statusText = runGitRaw(["status", "--short", "--untracked-files=all"]).trimEnd();
   const changes = statusText
-    ? statusText.split(/\r?\n/).filter(Boolean).map((line) => {
-      const code = line.slice(0, 2);
-      const filePath = parseGitStatusPath(line.slice(2).trim());
-      const status = mapGitStatus(code);
-      return {
-        path: filePath,
-        summary: `${status} ${filePath}`,
-        paneLabel: "working tree",
-        worktree: ".",
-        status,
-        risk: "low",
-        branch,
-        lines: code.trim() || "M",
-        commitCandidate: true,
-        needsAttention: false,
-        run: "working-tree",
-        review: "local",
-      };
-    })
+    ? statusText.split(/\r?\n/).filter(Boolean).flatMap((line) => collectSourceControlChangeRows(line, branch))
     : [];
 
-  const graph = runGit(["log", "--oneline", "--decorate=short", "-30"])
+  const graph = runGitRaw([
+    "log",
+    "--graph",
+    "--pretty=format:%H%x1f%h%x1f%D%x1f%an%x1f%ar%x1f%ad%x1f%s",
+    "--date=format:%Y-%m-%d %H:%M",
+    "-30",
+  ]).trimEnd()
     .split(/\r?\n/)
     .filter(Boolean)
-    .map((line) => {
-      const [sha = "", ...titleParts] = line.split(" ");
-      return {
+    .flatMap((line) => {
+      const parsed = parseGitGraphLine(line);
+      if (!parsed) {
+        return [];
+      }
+      const [
+        sha = "",
+        shortSha = "",
+        refsText = "",
+        author = "",
+        relativeTime = "",
+        committedAt = "",
+        subject = "",
+      ] = parsed.payload.split("\u001f");
+      return [{
         run_id: sha,
-        task: titleParts.join(" "),
+        short_sha: shortSha,
+        graph_symbols: parsed.symbols,
+        task: subject,
         branch,
+        refs: refsText.split(",").map((ref) => ref.trim()).filter(Boolean),
+        author,
+        relative_time: relativeTime,
+        committed_at: committedAt,
         changed_files: [],
-      };
+      }];
     });
 
   return { branch, changes, graph };

@@ -44,13 +44,22 @@
           </svg>
           <span id="activity-source-count" class="activity-badge" hidden>0</span>
         </button>
+        <button id="activity-evidence-btn" class="activity-btn" type="button" aria-label="Evidence" aria-controls="evidence-view" aria-expanded="false" title="Evidence">
+          <svg class="activity-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 3h9l4 4v14H6z" />
+            <path d="M15 3v5h5" />
+            <path d="M9 12h7" />
+            <path d="M9 16h5" />
+          </svg>
+          <span id="activity-evidence-count" class="activity-badge" hidden>0</span>
+        </button>
         <button id="activity-search-btn" class="activity-btn" type="button" aria-label="Search" title="Search">
           <svg class="activity-icon" viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="10.5" cy="10.5" r="5.5" />
             <path d="M15 15l5 5" />
           </svg>
         </button>
-        <button id="activity-context-btn" class="activity-btn" type="button" aria-label="Context" aria-controls="context-panel" aria-expanded="true" title="Context">
+        <button id="activity-context-btn" class="activity-btn" type="button" aria-label="Details" aria-controls="context-panel" aria-expanded="true" title="Details">
           <svg class="activity-icon" viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="12" cy="12" r="8" />
             <path d="M12 4v16" />
@@ -94,9 +103,15 @@
               <span id="source-control-count" class="source-control-count">0</span>
             </span>
             <span class="source-control-title-actions">
-              <button id="source-control-title-commit-btn" type="button" class="source-control-icon-btn" aria-label="Commit all" title="Commit all">✓</button>
-              <button id="source-control-refresh-btn" type="button" class="source-control-icon-btn" aria-label="Refresh source control" title="Refresh">↻</button>
-              <button id="source-control-more-btn" type="button" class="source-control-icon-btn" aria-label="More source control actions" title="More actions">…</button>
+              <button id="source-control-title-commit-btn" type="button" class="source-control-icon-btn" aria-label="Commit all" title="Commit all">
+                <svg class="source-control-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 8.3 6.5 11.6 12.8 4.4" /></svg>
+              </button>
+              <button id="source-control-refresh-btn" type="button" class="source-control-icon-btn" aria-label="Refresh source control" title="Refresh">
+                <svg class="source-control-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 5.5A5 5 0 0 0 4 3.8L2.5 5.2" /><path d="M2.5 2.2v3h3" /><path d="M3.2 10.5A5 5 0 0 0 12 12.2l1.5-1.4" /><path d="M13.5 13.8v-3h-3" /></svg>
+              </button>
+              <button id="source-control-more-btn" type="button" class="source-control-icon-btn" aria-label="More source control actions" aria-haspopup="menu" title="More actions">
+                <svg class="source-control-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.1" /><circle cx="8" cy="8" r="1.1" /><circle cx="12.5" cy="8" r="1.1" /></svg>
+              </button>
             </span>
           </div>
           <textarea id="source-control-message" rows="2" placeholder="Message"></textarea>
@@ -112,18 +127,34 @@
             <span id="source-control-changes-count" class="source-control-count">0</span>
           </div>
           <div id="source-control-changes-list" class="sidebar-list"></div>
+          <div id="source-control-splitter" role="separator" aria-orientation="horizontal" aria-label="Resize source control sections" tabindex="0"></div>
           <div class="sidebar-section-title source-control-subtitle">
             <span class="source-control-group-label">
               <span aria-hidden="true">⌄</span>
               <span id="source-control-graph-title">Graph</span>
             </span>
             <span class="source-control-title-actions">
-              <button id="source-control-graph-fetch-btn" type="button" class="source-control-icon-btn" aria-label="Fetch" title="Fetch">↓</button>
-              <button id="source-control-graph-refresh-btn" type="button" class="source-control-icon-btn" aria-label="Refresh graph" title="Refresh graph">↻</button>
-              <button id="source-control-graph-more-btn" type="button" class="source-control-icon-btn" aria-label="More graph actions" title="More actions">…</button>
+              <button id="source-control-graph-fetch-btn" type="button" class="source-control-icon-btn" aria-label="Fetch" title="Fetch">
+                <svg class="source-control-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v7" /><path d="M4.8 6.8 8 10l3.2-3.2" /><path d="M3 12.5h10" /></svg>
+              </button>
+              <button id="source-control-graph-refresh-btn" type="button" class="source-control-icon-btn" aria-label="Refresh graph" title="Refresh graph">
+                <svg class="source-control-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M12.8 5.5A5 5 0 0 0 4 3.8L2.5 5.2" /><path d="M2.5 2.2v3h3" /><path d="M3.2 10.5A5 5 0 0 0 12 12.2l1.5-1.4" /><path d="M13.5 13.8v-3h-3" /></svg>
+              </button>
+              <button id="source-control-graph-more-btn" type="button" class="source-control-icon-btn" aria-label="More graph actions" aria-haspopup="menu" title="More actions">
+                <svg class="source-control-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="3.5" cy="8" r="1.1" /><circle cx="8" cy="8" r="1.1" /><circle cx="12.5" cy="8" r="1.1" /></svg>
+              </button>
             </span>
           </div>
           <div id="source-control-graph-list" class="sidebar-list"></div>
+        </section>
+        <section id="evidence-view" class="sidebar-section" hidden>
+          <div class="sidebar-section-title evidence-title-row">
+            <span class="source-control-title-main">
+              <span id="evidence-title">Evidence</span>
+              <span id="evidence-count" class="source-control-count">0</span>
+            </span>
+          </div>
+          <div id="evidence-list" class="sidebar-list"></div>
         </section>
         <div id="sidebar-resizer" aria-hidden="true"></div>
       </aside>
@@ -169,7 +200,7 @@
               aria-label="Hide context panel"
             >
               <span class="ui-icon" data-icon="◐" aria-hidden="true"></span>
-              <span class="btn-label">Context</span>
+              <span class="btn-label">Details</span>
             </button>
             <button
               class="ghost-btn"
@@ -188,8 +219,8 @@
         <section id="workspace-body">
           <section id="conversation-panel">
             <div id="thread-meta">
-              <span>winsmux session</span>
-              <span>conversation shell · concise feed</span>
+              <span>Claude Code</span>
+              <span>operator CLI</span>
             </div>
             <div id="timeline-toolbar">
               <div id="timeline-filter-row" aria-label="Timeline filters"></div>
@@ -202,7 +233,7 @@
               <textarea id="composer-input" rows="2" placeholder="Describe a task or ask a question"></textarea>
               <input id="composer-file-input" type="file" hidden multiple />
               <div id="composer-mode-row" aria-label="Composer modes"></div>
-              <div id="composer-slash-row" aria-label="Composer slash commands" hidden></div>
+              <div id="composer-slash-row" aria-label="Composer suggestions" hidden></div>
               <div id="composer-remote-row" aria-label="Composer remote attachments" hidden></div>
               <div id="composer-footer">
                 <div id="attachment-tray" aria-live="polite"></div>
@@ -259,9 +290,9 @@
           </aside>
 
           <aside id="context-panel">
-            <div id="context-panel-title" class="panel-title">Context</div>
+            <div id="context-panel-title" class="panel-title">Details</div>
             <div id="context-sections"></div>
-            <div id="context-decision-title" class="panel-title secondary-title">Decision cockpit</div>
+            <div id="context-decision-title" class="panel-title secondary-title">Decision</div>
             <div id="handoff-cockpit-list"></div>
             <div id="context-experiments-title" class="panel-title secondary-title">Experiments</div>
             <div id="experiment-overview-cards"></div>

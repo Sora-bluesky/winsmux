@@ -492,7 +492,7 @@ prompt-transport: socket
             param($Name, $Default)
 
             switch ($Name) {
-                '@bridge-prompt-transport' { "psmux: no server running on session 'default'" }
+                '@bridge-prompt-transport' { "winsmux: no server running on session 'default'" }
                 default { $null }
             }
         }
@@ -534,7 +534,7 @@ ${retiredExternalKey}: false
             param($Name, $Default)
 
             switch ($Name) {
-                '@bridge-prompt-transport' { "psmux: no server running on session 'default'" }
+                '@bridge-prompt-transport' { "winsmux: no server running on session 'default'" }
                 default { $null }
             }
         }

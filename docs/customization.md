@@ -50,7 +50,7 @@ The desktop app follows the same operator contract as the CLI. It may expose the
 
 Use the desktop app for:
 
-- scanning run evidence and decision gates
+- scanning source-linked run evidence and decision gates
 - comparing recorded work
 - drilling into source-level context
 - keeping terminal diagnostics available without making them the primary surface

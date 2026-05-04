@@ -108,6 +108,7 @@ interface ExplorerItem {
   sourceStatus?: ChangeStatus;
   hasSourceChanges?: boolean;
   iconKind?: ExplorerIconKind;
+  ignored?: boolean;
 }
 
 type ExplorerIconKind =
@@ -148,6 +149,7 @@ interface ProjectExplorerTreeNode {
   path: string;
   kind: "directory" | "file";
   hasChildren?: boolean;
+  ignored?: boolean;
   children: Map<string, ProjectExplorerTreeNode>;
 }
 
@@ -221,12 +223,19 @@ interface SourceChange {
   needsAttention: boolean;
   run: string;
   review: string;
+  staged?: boolean;
 }
 
 interface BrowserSourceGraphItem {
   run_id: string;
+  short_sha?: string;
+  graph_symbols?: string;
   task: string;
   branch: string;
+  refs?: string[];
+  author?: string;
+  relative_time?: string;
+  committed_at?: string;
   changed_files: string[];
 }
 
@@ -241,6 +250,18 @@ interface HandoffDecisionItem {
   value: string;
   detail: string;
   status: "ready" | "waiting" | "blocked" | "missing";
+}
+
+interface EvidenceItem {
+  category: string;
+  title: string;
+  body: string;
+  meta: string;
+  source: string;
+  anchor: string;
+  tone: SurfaceTone;
+  runId?: string;
+  primaryPath?: string;
 }
 
 interface ExperimentDetailLine {
@@ -347,7 +368,7 @@ interface SpeechRecognitionLike {
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 
 type ComposerMode = "ask" | "dispatch" | "review";
-type SidebarMode = "explorer" | "source" | "workspace";
+type SidebarMode = "explorer" | "source" | "evidence" | "workspace";
 
 interface ComposerSlashCommand {
   command: string;
@@ -355,7 +376,7 @@ interface ComposerSlashCommand {
   labelJa: string;
   description: string;
   descriptionJa: string;
-  kind: "mode" | "claude";
+  kind: "mode" | "claude" | "winsmux";
   mode?: ComposerMode;
 }
 
@@ -392,6 +413,8 @@ let detachedSurfacePollTimer: number | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
 let composerSlashOpen = false;
 let composerSlashQuery = "";
+let composerWinsmuxCommandOpen = false;
+let composerWinsmuxCommandQuery = "";
 let selectedComposerSlashIndex = 0;
 let composerHistory: ComposerHistoryEntry[] = [];
 let composerHistoryIndex = -1;
@@ -448,9 +471,11 @@ let projectExplorerLoaded = false;
 let projectExplorerRefreshInFlight: Promise<void> | null = null;
 const projectExplorerLoadedFolderPaths = new Set<string>();
 const projectExplorerFolderLoads = new Map<string, Promise<void>>();
+let explorerContextMenu: HTMLDivElement | null = null;
 let browserSourceChanges: SourceChange[] = [];
 let browserSourceGraphItems: BrowserSourceGraphItem[] = [];
 let browserSourceRefreshInFlight: Promise<void> | null = null;
+let sourceControlChangesHeight = 320;
 const promotingRunIds = new Set<string>();
 const pickingWinnerRunIds = new Set<string>();
 const pendingPromotedRunRefreshIds = new Set<string>();
@@ -611,6 +636,89 @@ const officialClaudeSlashCommandEntries: Array<Omit<ComposerSlashCommand, "kind"
   { command: "vim", label: "Vim", labelJa: "Vim", description: "Legacy editor mode command.", descriptionJa: "旧版の編集モードコマンドです。" },
   { command: "voice", label: "Voice", labelJa: "音声入力", description: "Toggle voice dictation.", descriptionJa: "音声入力を切り替えます。" },
   { command: "web-setup", label: "Web setup", labelJa: "Web 設定", description: "Connect GitHub for web sessions.", descriptionJa: "Web セッション用に GitHub を接続します。" },
+];
+
+const winsmuxComposerCommandEntries: ComposerSlashCommand[] = [
+  {
+    command: "winsmux list",
+    label: "List panes",
+    labelJa: "ペイン一覧",
+    description: "Show the current managed panes.",
+    descriptionJa: "現在の管理ペインを一覧表示します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux read worker-1 30",
+    label: "Read worker output",
+    labelJa: "ワーカー出力を読む",
+    description: "Read the latest lines from a worker pane.",
+    descriptionJa: "ワーカーペインの直近行を読みます。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux send worker-2 \"最新の認証変更をレビューしてください。\"",
+    label: "Send a review request",
+    labelJa: "レビュー依頼を送る",
+    description: "Send an instruction to a worker pane.",
+    descriptionJa: "ワーカーペインへ指示を送ります。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux health-check",
+    label: "Check pane health",
+    labelJa: "ペイン状態を確認",
+    description: "Check whether the managed panes are responsive.",
+    descriptionJa: "管理ペインが応答しているか確認します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux compare runs <left_run_id> <right_run_id>",
+    label: "Compare recorded runs",
+    labelJa: "実行結果を比較",
+    description: "Compare two recorded runs before choosing one.",
+    descriptionJa: "採用前に 2 つの実行結果を比較します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux compare preflight <left_ref> <right_ref>",
+    label: "Compare refs before merge",
+    labelJa: "マージ前に比較",
+    description: "Check two refs before merge or review.",
+    descriptionJa: "マージやレビューの前に 2 つの参照を確認します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux compare promote <run_id>",
+    label: "Promote a run",
+    labelJa: "実行結果を次へ使う",
+    description: "Export a successful run as input for a later run.",
+    descriptionJa: "成功した実行結果を次の入力として書き出します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux meta-plan --task \"この変更を計画して\" --json",
+    label: "Draft a meta-plan",
+    labelJa: "メタ計画を作る",
+    description: "Create a read-only planning packet.",
+    descriptionJa: "読み取り専用の計画パケットを作成します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux meta-plan --task \"この変更を計画して\" --roles .winsmux/meta-plan-roles.yaml --review-rounds 2 --json",
+    label: "Draft a reviewed meta-plan",
+    labelJa: "レビュー付きメタ計画",
+    description: "Create a multi-role plan with cross-review rounds.",
+    descriptionJa: "複数ロールと相互レビュー付きの計画を作成します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux skills --json",
+    label: "List winsmux skills",
+    labelJa: "スキル一覧",
+    description: "List available winsmux skill packs as JSON.",
+    descriptionJa: "利用可能な winsmux スキルを JSON で表示します。",
+    kind: "winsmux",
+  },
 ];
 
 const composerSlashCommands: ComposerSlashCommand[] = [
@@ -1458,6 +1566,7 @@ function normalizeExplorerEntries(entries: DesktopExplorerEntry[]) {
       path: entry.path.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, ""),
       kind: entry.kind === "directory" ? "directory" as const : "file" as const,
       has_children: entry.has_children ?? entry.hasChildren,
+      ignored: Boolean(entry.ignored),
     }))
     .filter((entry) => entry.path.length > 0);
 }
@@ -1487,6 +1596,7 @@ function mergeProjectExplorerEntries(entries: DesktopExplorerEntry[]) {
       ...entry,
       has_children: existing?.has_children || entry.has_children,
       hasChildren: existing?.hasChildren || entry.hasChildren,
+      ignored: existing?.ignored || entry.ignored,
     });
   }
   projectExplorerEntries = Array.from(byPath.values());
@@ -1569,6 +1679,26 @@ function normalizeBrowserSourceChange(change: Partial<SourceChange>): SourceChan
     needsAttention: change.needsAttention ?? false,
     run: change.run || "working-tree",
     review: change.review || "local",
+    staged: Boolean(change.staged),
+  };
+}
+
+function normalizeBrowserSourceGraphItem(item: Partial<BrowserSourceGraphItem>): BrowserSourceGraphItem | null {
+  const runId = `${item.run_id || ""}`.trim();
+  if (!runId) {
+    return null;
+  }
+  return {
+    run_id: runId,
+    short_sha: `${item.short_sha || runId.slice(0, 7)}`.trim(),
+    graph_symbols: `${item.graph_symbols || "* "}`.trimEnd(),
+    task: `${item.task || runId}`.trim(),
+    branch: `${item.branch || ""}`.trim(),
+    refs: Array.isArray(item.refs) ? item.refs.map((ref) => `${ref}`.trim()).filter((ref) => ref) : [],
+    author: `${item.author || ""}`.trim(),
+    relative_time: `${item.relative_time || ""}`.trim(),
+    committed_at: `${item.committed_at || ""}`.trim(),
+    changed_files: Array.isArray(item.changed_files) ? item.changed_files.map((path) => `${path}`.trim()).filter((path) => path) : [],
   };
 }
 
@@ -1595,7 +1725,9 @@ async function refreshBrowserSourceControl() {
       browserSourceChanges = (payload.changes ?? [])
         .map(normalizeBrowserSourceChange)
         .filter((change): change is SourceChange => Boolean(change));
-      browserSourceGraphItems = payload.graph ?? [];
+      browserSourceGraphItems = (payload.graph ?? [])
+        .map(normalizeBrowserSourceGraphItem)
+        .filter((item): item is BrowserSourceGraphItem => Boolean(item));
       renderExplorer();
       renderSourceSummary();
       renderSourceEntries();
@@ -1650,12 +1782,14 @@ function createProjectExplorerTreeNode(
   path: string,
   kind: "directory" | "file",
   hasChildren?: boolean,
+  ignored?: boolean,
 ): ProjectExplorerTreeNode {
   return {
     label,
     path,
     kind,
     hasChildren,
+    ignored,
     children: new Map<string, ProjectExplorerTreeNode>(),
   };
 }
@@ -1676,13 +1810,16 @@ function buildProjectExplorerTree(entries: DesktopExplorerEntry[]) {
       let node = currentChildren.get(childKey);
 
       if (!node) {
-        node = createProjectExplorerTreeNode(segment, currentPath, nodeKind, isFinalSegment ? entry.has_children : true);
+        node = createProjectExplorerTreeNode(segment, currentPath, nodeKind, isFinalSegment ? entry.has_children : true, isFinalSegment ? entry.ignored : false);
         currentChildren.set(childKey, node);
       } else if (nodeKind === "directory") {
         node.kind = "directory";
       }
       if (node.kind === "directory") {
         node.hasChildren = node.hasChildren || !isFinalSegment || entry.has_children;
+      }
+      if (isFinalSegment && entry.ignored) {
+        node.ignored = true;
       }
 
       currentChildren = node.children;
@@ -1715,6 +1852,7 @@ function appendProjectExplorerTreeItems(
         hasChildren,
         worktree: worktreeKey,
         hasSourceChanges: changedFolderKeys.has(folderKey),
+        ignored: node.ignored,
       });
       if (open) {
         appendProjectExplorerTreeItems(
@@ -1742,6 +1880,7 @@ function appendProjectExplorerTreeItems(
       sourceStatus: sourceChange?.status,
       hasSourceChanges: Boolean(sourceChange),
       iconKind: getExplorerFileIconKind(node.path, node.label),
+      ignored: node.ignored,
     });
   }
 }
@@ -1952,12 +2091,17 @@ function getPreferredEditorTargetForSelectedRun(): EditorTarget | null {
 }
 
 function getEditorTargetByKey(key: string): EditorTarget | null {
+  const standaloneTarget = desktopStandaloneEditorTargets.get(key);
+  if (standaloneTarget) {
+    return standaloneTarget;
+  }
+
   const sourceChange = findSourceChangeByKey(key);
   if (sourceChange) {
     return getEditorTargetForSourceChange(sourceChange);
   }
 
-  return desktopStandaloneEditorTargets.get(key) ?? null;
+  return null;
 }
 
 function getPaneSourceFilter(label: string): SourceFilter {
@@ -2121,6 +2265,181 @@ function toggleExplorerFolder(folderKey: string, depth: number, path?: string, w
   renderExplorer();
 }
 
+function closeExplorerContextMenu() {
+  explorerContextMenu?.remove();
+  explorerContextMenu = null;
+}
+
+function getExplorerAbsolutePath(item: ExplorerItem) {
+  const projectDir = getActiveProjectDirPayload()?.replace(/[\\/]+$/, "") ?? "";
+  const relativePath = item.path?.replace(/\//g, "\\") ?? "";
+  if (!projectDir) {
+    return relativePath || item.label;
+  }
+  if (!relativePath) {
+    return projectDir;
+  }
+  return `${projectDir}\\${relativePath}`;
+}
+
+function getExplorerRelativePath(item: ExplorerItem) {
+  return item.path || ".";
+}
+
+function addExplorerContextMenuItem(
+  menu: HTMLElement,
+  label: string,
+  action: () => void | Promise<void>,
+  options?: { shortcut?: string; disabled?: boolean },
+) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "explorer-context-menu-item";
+  button.disabled = Boolean(options?.disabled);
+  const labelElement = document.createElement("span");
+  labelElement.textContent = label;
+  button.appendChild(labelElement);
+  if (options?.shortcut) {
+    const shortcut = document.createElement("span");
+    shortcut.className = "explorer-context-menu-shortcut";
+    shortcut.textContent = options.shortcut;
+    button.appendChild(shortcut);
+  }
+  button.addEventListener("click", async () => {
+    if (button.disabled) {
+      return;
+    }
+    closeExplorerContextMenu();
+    await action();
+  });
+  menu.appendChild(button);
+}
+
+function addExplorerContextMenuSeparator(menu: HTMLElement) {
+  const separator = document.createElement("div");
+  separator.className = "explorer-context-menu-separator";
+  menu.appendChild(separator);
+}
+
+function showExplorerContextMenu(event: MouseEvent, item: ExplorerItem) {
+  event.preventDefault();
+  event.stopPropagation();
+  closeExplorerContextMenu();
+
+  const menu = document.createElement("div");
+  menu.className = "explorer-context-menu";
+  menu.setAttribute("role", "menu");
+  menu.addEventListener("pointerdown", (pointerEvent) => {
+    pointerEvent.stopPropagation();
+  });
+
+  addExplorerContextMenuItem(
+    menu,
+    getLanguageText("Open", "開く"),
+    () => {
+      if (item.kind === "folder" && item.folderKey) {
+        toggleExplorerFolder(item.folderKey, item.depth, item.path, item.worktree);
+        return;
+      }
+      return openEditorPath(item.path, item.worktree ?? "");
+    },
+    { disabled: item.kind === "folder" && item.hasChildren === false },
+  );
+  addExplorerContextMenuItem(
+    menu,
+    getLanguageText("Open to Side", "横に開く"),
+    async () => {
+      await openEditorPath(item.path, item.worktree ?? "");
+      await openEditorSurfacePopout();
+    },
+    { disabled: item.kind !== "file" || !item.path },
+  );
+  addExplorerContextMenuSeparator(menu);
+  addExplorerContextMenuItem(menu, getLanguageText("Copy Path", "パスのコピー"), () => copyTextToClipboard(getExplorerAbsolutePath(item)), { shortcut: "Shift+Alt+C" });
+  addExplorerContextMenuItem(menu, getLanguageText("Copy Relative Path", "相対パスをコピー"), () => copyTextToClipboard(getExplorerRelativePath(item)), { shortcut: "Ctrl+K Ctrl+Shift+C" });
+  addExplorerContextMenuSeparator(menu);
+  addExplorerContextMenuItem(menu, getLanguageText("Rename...", "名前の変更..."), () => undefined, { shortcut: "F2", disabled: true });
+  addExplorerContextMenuItem(menu, getLanguageText("Delete", "削除"), () => undefined, { shortcut: "Del", disabled: true });
+
+  document.body.appendChild(menu);
+  const menuRect = menu.getBoundingClientRect();
+  const left = Math.min(event.clientX, window.innerWidth - menuRect.width - 8);
+  const top = Math.min(event.clientY, window.innerHeight - menuRect.height - 8);
+  menu.style.left = `${Math.max(8, left)}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+  explorerContextMenu = menu;
+
+  window.setTimeout(() => {
+    document.addEventListener("pointerdown", closeExplorerContextMenu, { once: true });
+  }, 0);
+}
+
+function showSourceControlActionsMenu(event: MouseEvent, scope: "changes" | "graph") {
+  event.preventDefault();
+  event.stopPropagation();
+  closeExplorerContextMenu();
+
+  const menu = document.createElement("div");
+  menu.className = "explorer-context-menu source-control-actions-menu";
+  menu.setAttribute("role", "menu");
+  menu.addEventListener("pointerdown", (pointerEvent) => {
+    pointerEvent.stopPropagation();
+  });
+
+  addExplorerContextMenuItem(
+    menu,
+    getLanguageText("Refresh", "更新"),
+    () => {
+      void refreshBrowserSourceControl();
+      requestDesktopSummaryRefresh(undefined, 0);
+    },
+  );
+  if (scope === "changes") {
+    addExplorerContextMenuItem(
+      menu,
+      getLanguageText("Commit all", "すべてコミット"),
+      () => submitSourceControlCommitRequest(),
+      { disabled: sourceControlCommitMessage.trim().length === 0 || getVisibleSourceChanges().length === 0 },
+    );
+    addExplorerContextMenuItem(
+      menu,
+      getLanguageText("Open selected file", "選択中のファイルを開く"),
+      () => openEditorSourceChange(getPrimarySourceChange(getVisibleSourceChanges())),
+      { disabled: getVisibleSourceChanges().length === 0 },
+    );
+  } else {
+    addExplorerContextMenuItem(
+      menu,
+      getLanguageText("Refresh graph", "グラフを更新"),
+      () => {
+        void refreshBrowserSourceControl();
+        requestDesktopSummaryRefresh(undefined, 0);
+      },
+    );
+    addExplorerContextMenuItem(
+      menu,
+      getLanguageText("Show selected run details", "選択中の実行詳細を表示"),
+      () => setContextPanel(true),
+      { disabled: !getSelectedRunId() },
+    );
+  }
+  addExplorerContextMenuSeparator(menu);
+  addExplorerContextMenuItem(menu, getLanguageText("Command palette...", "操作パレット..."), () => openCommandBar(), { shortcut: "Ctrl+K" });
+
+  document.body.appendChild(menu);
+  const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget.getBoundingClientRect() : null;
+  const menuRect = menu.getBoundingClientRect();
+  const left = trigger ? trigger.right - menuRect.width : event.clientX;
+  const top = trigger ? trigger.bottom + 4 : event.clientY;
+  menu.style.left = `${Math.max(8, Math.min(left, window.innerWidth - menuRect.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(top, window.innerHeight - menuRect.height - 8))}px`;
+  explorerContextMenu = menu;
+
+  window.setTimeout(() => {
+    document.addEventListener("pointerdown", closeExplorerContextMenu, { once: true });
+  }, 0);
+}
+
 function renderExplorer() {
   const root = document.getElementById("explorer-list");
   if (!root) {
@@ -2147,6 +2466,7 @@ function renderExplorer() {
     button.type = "button";
     button.className = `sidebar-row sidebar-tree-row is-${item.kind} depth-${item.depth} ${item.active ? "is-active" : ""}`;
     button.classList.toggle("has-source-changes", Boolean(item.hasSourceChanges));
+    button.classList.toggle("is-ignored", Boolean(item.ignored));
     if (item.sourceStatus) {
       button.dataset.sourceStatus = item.sourceStatus;
     }
@@ -2177,9 +2497,14 @@ function renderExplorer() {
       sourceStatus.title = getLanguageText(`Git status: ${getSourceStatusLabel(item.sourceStatus)}`, `Git 状態: ${getSourceStatusLabel(item.sourceStatus)}`);
     }
     button.append(markerElement, iconElement, title, sourceStatus);
-    if (item.meta) {
-      button.title = item.meta;
-    }
+    button.title = [
+      item.path,
+      item.meta,
+      item.ignored ? getLanguageText("Ignored by Git", "Git の無視対象") : "",
+    ].filter(Boolean).join("\n");
+    button.addEventListener("contextmenu", (event) => {
+      showExplorerContextMenu(event, item);
+    });
     if (item.kind === "folder" && item.folderKey && canToggleFolder) {
       const folderKey = item.folderKey;
       button.setAttribute("aria-expanded", item.open ? "true" : "false");
@@ -2210,8 +2535,8 @@ function renderOpenEditors() {
     const empty = document.createElement("div");
     empty.className = "sidebar-row";
     empty.innerHTML =
-      `<span class="sidebar-row-title">${getLanguageText("No changed files", "変更ファイルはありません")}</span>` +
-      `<span class="sidebar-row-meta">${getLanguageText("Connect the backend summary to inspect a real file preview.", "実際のファイル表示にはバックエンド要約の接続が必要です。")}</span>`;
+      `<span class="sidebar-row-title">${getLanguageText("No open editors", "開いているエディタはありません")}</span>` +
+      `<span class="sidebar-row-meta">${getLanguageText("Open a file from Explorer or Source Control.", "エクスプローラーかソース管理からファイルを開いてください。")}</span>`;
     root.appendChild(empty);
     return;
   }
@@ -2339,6 +2664,73 @@ function updateSourceControlCommitButton() {
   }
 }
 
+type SourceControlGraphItem = DesktopRunProjection | BrowserSourceGraphItem;
+
+function getSourceGraphCommit(item: SourceControlGraphItem) {
+  const browserItem = item as BrowserSourceGraphItem;
+  const projectionShortSha = "head_short" in item ? item.head_short : "";
+  const shortSha = (browserItem.short_sha || projectionShortSha || item.run_id.slice(0, 7)).trim();
+  let subject = (item.task || item.run_id).trim();
+  let refs = Array.isArray(browserItem.refs) ? browserItem.refs.filter((ref) => ref) : [];
+  const decoration = /^\(([^)]+)\)\s*(.*)$/.exec(subject);
+  if (decoration) {
+    if (refs.length === 0) {
+      refs = decoration[1].split(",").map((ref) => ref.trim()).filter((ref) => ref);
+    }
+    subject = decoration[2].trim() || subject;
+  }
+  const branchRef = refs.find((ref) => ref.startsWith("HEAD -> "))
+    || refs.find((ref) => !ref.startsWith("origin/") && ref !== "HEAD")
+    || "";
+  const isBrowserGitLogItem = "short_sha" in item || "refs" in item;
+  const branch = branchRef.replace(/^HEAD ->\s*/, "") || (isBrowserGitLogItem ? "" : item.branch || "");
+  return {
+    shortSha,
+    subject,
+    refs,
+    branch,
+    author: browserItem.author || "",
+    relativeTime: browserItem.relative_time || "",
+    committedAt: browserItem.committed_at || "",
+  };
+}
+
+function getSourceGraphMeta(item: SourceControlGraphItem) {
+  const commit = getSourceGraphCommit(item);
+  const parts = [
+    commit.shortSha,
+    commit.author,
+    commit.relativeTime || commit.committedAt,
+    item.changed_files.length > 0 ? getLanguageText(`${item.changed_files.length} changed`, `${item.changed_files.length} 変更`) : "",
+  ].filter((value) => value);
+  return parts.join("  ");
+}
+
+function getSourceGraphSymbols(item: SourceControlGraphItem) {
+  const browserItem = item as BrowserSourceGraphItem;
+  const symbols = `${browserItem.graph_symbols || ""}`.trimEnd();
+  return symbols || "*";
+}
+
+function applySourceControlSplitHeight() {
+  const view = document.getElementById("source-control-view");
+  if (!view) {
+    return;
+  }
+  view.style.setProperty("--source-control-changes-height", `${sourceControlChangesHeight}px`);
+  const splitter = document.getElementById("source-control-splitter");
+  if (splitter) {
+    splitter.setAttribute("aria-valuenow", `${Math.round(sourceControlChangesHeight)}`);
+  }
+}
+
+function clampSourceControlChangesHeight(value: number) {
+  const view = document.getElementById("source-control-view");
+  const viewHeight = view?.getBoundingClientRect().height ?? window.innerHeight;
+  const maxHeight = Math.max(140, viewHeight - 220);
+  return Math.min(Math.max(96, value), maxHeight);
+}
+
 function renderSourceControlView() {
   const changesRoot = document.getElementById("source-control-changes-list");
   const graphRoot = document.getElementById("source-control-graph-list");
@@ -2348,15 +2740,82 @@ function renderSourceControlView() {
   if (!changesRoot || !graphRoot || !count) {
     return;
   }
+  sourceControlChangesHeight = clampSourceControlChangesHeight(sourceControlChangesHeight);
+  applySourceControlSplitHeight();
 
   const changes = getVisibleSourceChanges();
+  const stagedChanges = changes.filter((change) => change.staged);
+  const unstagedChanges = changes.filter((change) => !change.staged);
+  const stagedSectionVisible = stagedChanges.length > 0;
+  const primaryChangeCount = stagedSectionVisible ? stagedChanges.length : changes.length;
   count.textContent = `${changes.length}`;
+  const changesTitle = document.getElementById("source-control-changes-title");
+  if (changesTitle) {
+    changesTitle.textContent = stagedSectionVisible
+      ? getLanguageText("Staged Changes", "ステージされている変更")
+      : getLanguageText("Changes", "変更");
+  }
   if (changesCount) {
-    changesCount.textContent = `${changes.length}`;
+    changesCount.textContent = `${primaryChangeCount}`;
   }
   if (messageInput && messageInput.value !== sourceControlCommitMessage) {
     messageInput.value = sourceControlCommitMessage;
   }
+
+  const appendChangeRow = (change: SourceChange) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `sidebar-row source-control-file-row ${getSourceChangeKey(change) === selectedEditorKey && editorSurfaceOpen ? "is-active" : ""}`;
+    button.dataset.tone = getSourceEntryTone(change);
+    button.classList.toggle("is-staged", Boolean(change.staged));
+    const fileName = change.path.split("/").pop() ?? change.path;
+    const fileDir = change.path.split("/").slice(0, -1).join("\\");
+    const icon = document.createElement("span");
+    icon.className = "sidebar-file-icon";
+    const iconKind = getExplorerFileIconKind(change.path, fileName);
+    icon.dataset.iconKind = iconKind;
+    icon.textContent = getExplorerFileIconLabel(iconKind);
+
+    const fileMain = document.createElement("span");
+    fileMain.className = "source-control-file-main";
+    const filePath = document.createElement("span");
+    filePath.className = "sidebar-row-title source-control-file-path";
+    filePath.textContent = fileName;
+    const fileDirectory = document.createElement("span");
+    fileDirectory.className = "source-control-file-dir";
+    fileDirectory.textContent = fileDir;
+    fileMain.append(filePath, fileDirectory);
+
+    const status = document.createElement("span");
+    status.className = "source-control-status";
+    status.textContent = getSourceStatusLabel(change.status);
+    status.title = [
+      change.staged ? getLanguageText("staged", "ステージ済み") : getLanguageText("changes", "未ステージ"),
+      change.status,
+      change.lines,
+    ].filter((value) => value).join(" · ");
+
+    button.append(icon, fileMain, status);
+    button.addEventListener("click", () => {
+      setSelectedRun(change.run);
+      void openEditorSourceChange(change);
+      renderExplorer();
+    });
+    changesRoot.appendChild(button);
+  };
+
+  const appendInlineChangeHeader = (titleText: string, value: number) => {
+    const header = document.createElement("div");
+    header.className = "source-control-inline-group-title";
+    const label = document.createElement("span");
+    label.className = "source-control-group-label";
+    label.textContent = `⌄ ${titleText}`;
+    const badge = document.createElement("span");
+    badge.className = "source-control-count";
+    badge.textContent = `${value}`;
+    header.append(label, badge);
+    changesRoot.appendChild(header);
+  };
 
   changesRoot.innerHTML = "";
   if (changes.length === 0) {
@@ -2367,41 +2826,21 @@ function renderSourceControlView() {
       `<span class="sidebar-row-meta">${getLanguageText("Desktop summary has not reported source changes.", "デスクトップ要約には変更がありません。")}</span>`;
     changesRoot.appendChild(empty);
   } else {
-    for (const change of changes) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `sidebar-row source-control-file-row ${getSourceChangeKey(change) === selectedEditorKey && editorSurfaceOpen ? "is-active" : ""}`;
-      button.dataset.tone = getSourceEntryTone(change);
-      const fileName = change.path.split("/").pop() ?? change.path;
-      const fileDir = change.path.split("/").slice(0, -1).join("\\");
-      const icon = document.createElement("span");
-      icon.className = "sidebar-file-icon";
-      const iconKind = getExplorerFileIconKind(change.path, fileName);
-      icon.dataset.iconKind = iconKind;
-      icon.textContent = getExplorerFileIconLabel(iconKind);
-
-      const fileMain = document.createElement("span");
-      fileMain.className = "source-control-file-main";
-      const filePath = document.createElement("span");
-      filePath.className = "sidebar-row-title source-control-file-path";
-      filePath.textContent = fileName;
-      const fileDirectory = document.createElement("span");
-      fileDirectory.className = "source-control-file-dir";
-      fileDirectory.textContent = fileDir;
-      fileMain.append(filePath, fileDirectory);
-
-      const status = document.createElement("span");
-      status.className = "source-control-status";
-      status.textContent = getSourceStatusLabel(change.status);
-      status.title = `${change.status}${change.lines ? ` · ${change.lines}` : ""}`;
-
-      button.append(icon, fileMain, status);
-      button.addEventListener("click", () => {
-        setSelectedRun(change.run);
-        void openEditorSourceChange(change);
-        renderExplorer();
-      });
-      changesRoot.appendChild(button);
+    for (const change of stagedSectionVisible ? stagedChanges : changes) {
+      appendChangeRow(change);
+    }
+    if (stagedSectionVisible) {
+      appendInlineChangeHeader(getLanguageText("Changes", "変更"), unstagedChanges.length);
+      if (unstagedChanges.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "source-control-empty-group";
+        empty.textContent = getLanguageText("No unstaged changes", "未ステージの変更はありません");
+        changesRoot.appendChild(empty);
+      } else {
+        for (const change of unstagedChanges) {
+          appendChangeRow(change);
+        }
+      }
     }
   }
 
@@ -2418,22 +2857,278 @@ function renderSourceControlView() {
       `<span class="sidebar-row-meta">${getLanguageText("Connect the desktop summary to show recent runs.", "最近の実行を表示するにはデスクトップ要約を接続してください。")}</span>`;
     graphRoot.appendChild(empty);
   } else {
-    for (const item of graphItems) {
+    graphItems.forEach((item, index) => {
+      const commit = getSourceGraphCommit(item);
       const button = document.createElement("button");
       button.type = "button";
       button.className = `sidebar-row source-control-graph-row ${item.run_id === getSelectedRunId() ? "is-active" : ""}`;
-      button.innerHTML =
-        `<span class="sidebar-row-title">${item.task || item.run_id}</span>` +
-        `<span class="sidebar-row-meta">${item.branch || getLanguageText("no branch", "ブランチなし")} · ${item.changed_files.length} ${getLanguageText("changed", "変更")}</span>`;
+      button.dataset.graphIndex = `${index % 6}`;
+      button.title = [
+        commit.subject,
+        commit.branch ? getLanguageText(`branch: ${commit.branch}`, `ブランチ: ${commit.branch}`) : "",
+        commit.refs.length > 0 ? getLanguageText(`refs: ${commit.refs.join(", ")}`, `参照: ${commit.refs.join(", ")}`) : "",
+        getSourceGraphMeta(item),
+      ].filter((value) => value).join("\n");
+
+      const lane = document.createElement("span");
+      lane.className = "source-control-graph-lanes";
+      lane.textContent = getSourceGraphSymbols(item);
+      lane.title = getLanguageText("Git graph lane", "Git グラフのレーン");
+
+      const content = document.createElement("span");
+      content.className = "source-control-graph-content";
+
+      const titleRow = document.createElement("span");
+      titleRow.className = "source-control-graph-title-row";
+      const title = document.createElement("span");
+      title.className = "sidebar-row-title source-control-graph-subject";
+      title.textContent = commit.subject;
+      titleRow.appendChild(title);
+      if (commit.branch) {
+        const branch = document.createElement("span");
+        branch.className = "source-control-graph-branch";
+        branch.textContent = commit.branch;
+        titleRow.appendChild(branch);
+      }
+
+      const meta = document.createElement("span");
+      meta.className = "sidebar-row-meta source-control-graph-meta";
+      meta.textContent = getSourceGraphMeta(item);
+
+      content.append(titleRow, meta);
+      button.append(lane, content);
       button.addEventListener("click", () => {
         setSelectedRun(item.run_id);
         renderDesktopSurfaces();
       });
       graphRoot.appendChild(button);
-    }
+    });
   }
 
   updateSourceControlCommitButton();
+}
+
+function getEvidenceTone(value: string | null | undefined): SurfaceTone {
+  const normalized = normalizeDecisionText(value).toUpperCase();
+  if (normalized === "PASS" || normalized === "ALLOW" || normalized === "FALSE") {
+    return "success";
+  }
+  if (normalized === "FAIL" || normalized === "FAILED" || normalized === "BLOCK" || normalized === "BLOCKED" || normalized === "TRUE") {
+    return "danger";
+  }
+  if (normalized === "PENDING" || normalized === "PARTIAL" || normalized === "WARN" || normalized === "WARNING") {
+    return "warning";
+  }
+  return "info";
+}
+
+function formatEvidenceTimestamp(value: string | null | undefined) {
+  if (!value) {
+    return "";
+  }
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) {
+    return value;
+  }
+  return new Date(parsed).toLocaleString([], {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function getEvidenceItems(): EvidenceItem[] {
+  const snapshot = desktopSummarySnapshot;
+  if (!snapshot) {
+    return [];
+  }
+
+  const items: EvidenceItem[] = [];
+  const projections = getRunProjections();
+  const verifiedCount = projections.filter((item) => item.verification_outcome).length;
+  const reviewCount = projections.filter((item) => item.review_state).length;
+  const securityCount = projections.filter((item) => item.security_blocked).length;
+  const changedCount = projections.reduce((total, item) => total + item.changed_files.length, 0);
+  const digestBodyParts = [
+    getLanguageText(`${verifiedCount} verification records`, `検証 ${verifiedCount} 件`),
+    getLanguageText(`${reviewCount} review records`, `レビュー ${reviewCount} 件`),
+    getLanguageText(`${securityCount} security records`, `セキュリティ ${securityCount} 件`),
+    getLanguageText(`${changedCount} changed files`, `${changedCount} 件の変更`),
+  ].filter((item) => item);
+  items.push({
+    category: getLanguageText("Digest", "要約"),
+    title: getLanguageText("Evidence digest", "証跡の要約"),
+    body: digestBodyParts.join(" · ") || getLanguageText("No evidence outcome is visible yet.", "証跡の結果はまだ表示されていません。"),
+    meta: getLanguageText(`generated ${formatEvidenceTimestamp(snapshot.generated_at)}`, `${formatEvidenceTimestamp(snapshot.generated_at)} 生成`),
+    source: getLanguageText("source: desktop summary", "出典: デスクトップ要約"),
+    anchor: getLanguageText("all visible run projections", "表示中の実行一覧"),
+    tone: verifiedCount > 0 || reviewCount > 0 || securityCount > 0 ? "info" : "default",
+  });
+
+  for (const payload of Array.from(desktopExplainCache.values())) {
+    const digest = payload.evidence_digest;
+    if (digest.verification_outcome || digest.security_blocked || digest.changed_file_count > 0) {
+      items.push({
+        category: getLanguageText("Run", "実行"),
+        title: payload.run.task || payload.run.run_id,
+        body: [
+          digest.verification_outcome ? getLanguageText(`verification ${digest.verification_outcome}`, `検証 ${digest.verification_outcome}`) : "",
+          digest.security_blocked ? getLanguageText(`security ${digest.security_blocked}`, `セキュリティ ${digest.security_blocked}`) : "",
+          getLanguageText(`${digest.changed_file_count} changed`, `${digest.changed_file_count} 件の変更`),
+        ].filter((item) => item).join(" · "),
+        meta: [payload.run.branch || getLanguageText("no branch", "ブランチなし"), formatEvidenceTimestamp(payload.generated_at)].filter((item) => item).join(" · "),
+        source: getLanguageText("source: explain evidence digest", "出典: 実行説明"),
+        anchor: [payload.run.run_id, payload.run.experiment_packet?.observation_pack_ref].filter((item) => item).join(" · "),
+        tone: getEvidenceTone(digest.verification_outcome || digest.security_blocked),
+        runId: payload.run.run_id,
+        primaryPath: digest.changed_files[0] || payload.run.changed_files[0],
+      });
+    }
+
+    const reviewEvidence = payload.review_state?.evidence ?? null;
+    if (reviewEvidence?.approved_at || reviewEvidence?.failed_at) {
+      const failed = Boolean(reviewEvidence.failed_at);
+      items.push({
+        category: getLanguageText("Review", "レビュー"),
+        title: getLanguageText("Review evidence", "レビュー証跡"),
+        body: failed
+          ? getLanguageText(`Failed via ${reviewEvidence.failed_via || "reviewer"}`, `${reviewEvidence.failed_via || "reviewer"} で失敗`)
+          : getLanguageText(`Approved via ${reviewEvidence.approved_via || "reviewer"}`, `${reviewEvidence.approved_via || "reviewer"} で承認`),
+        meta: [payload.run.run_id, formatEvidenceTimestamp(failed ? reviewEvidence.failed_at : reviewEvidence.approved_at)].filter((item) => item).join(" · "),
+        source: getLanguageText("source: review state", "出典: レビュー状態"),
+        anchor: reviewEvidence.review_contract_snapshot?.source_task || payload.run.task_id || payload.run.run_id,
+        tone: failed ? "danger" : "success",
+        runId: payload.run.run_id,
+      });
+    }
+
+    for (const event of payload.recent_events.slice(0, 5)) {
+      items.push({
+        category: getLanguageText("Event", "イベント"),
+        title: event.event || getLanguageText("Recent event", "最近のイベント"),
+        body: event.message || event.label || getLanguageText("Event recorded.", "イベントが記録されました。"),
+        meta: [payload.run.run_id, formatEvidenceTimestamp(event.timestamp), event.label].filter((item) => item).join(" · "),
+        source: getLanguageText("source: recent event log", "出典: 最近のイベント"),
+        anchor: [event.timestamp, event.event].filter((item) => item).join(" · "),
+        tone: "default",
+        runId: payload.run.run_id,
+      });
+    }
+  }
+
+  for (const projection of projections.slice(0, 12)) {
+    const outcome = projection.verification_outcome || projection.review_state || projection.security_blocked;
+    if (!outcome && projection.changed_files.length === 0 && !projection.observation_pack_ref && !projection.consultation_ref) {
+      continue;
+    }
+    const evidenceRefs = [
+      projection.observation_pack_ref ? getLanguageText("observation", "観測") : "",
+      projection.consultation_ref ? getLanguageText("consultation", "相談") : "",
+    ].filter((item) => item);
+    items.push({
+      category: getLanguageText("Run", "実行"),
+      title: projection.task || projection.run_id,
+      body: [
+        projection.verification_outcome ? getLanguageText(`verification ${projection.verification_outcome}`, `検証 ${projection.verification_outcome}`) : "",
+        projection.review_state ? getLanguageText(`review ${projection.review_state}`, `レビュー ${projection.review_state}`) : "",
+        projection.security_blocked ? getLanguageText(`security ${projection.security_blocked}`, `セキュリティ ${projection.security_blocked}`) : "",
+        projection.changed_files.length > 0 ? getLanguageText(`${projection.changed_files.length} changed`, `${projection.changed_files.length} 件の変更`) : "",
+      ].filter((item) => item).join(" · ") || getLanguageText("Run evidence is available.", "実行の証跡があります。"),
+      meta: [
+        projection.branch || getLanguageText("no branch", "ブランチなし"),
+        projection.head_short,
+        evidenceRefs.join("/"),
+      ].filter((item) => item).join(" · "),
+      source: getLanguageText("source: run projection", "出典: 実行一覧"),
+      anchor: [
+        projection.run_id,
+        projection.observation_pack_ref || projection.consultation_ref,
+      ].filter((item) => item).join(" · "),
+      tone: getEvidenceTone(outcome),
+      runId: projection.run_id,
+      primaryPath: projection.changed_files[0],
+    });
+  }
+
+  return items;
+}
+
+function renderEvidenceView() {
+  const root = document.getElementById("evidence-list");
+  const count = document.getElementById("evidence-count");
+  const badge = document.getElementById("activity-evidence-count");
+  if (!root || !count) {
+    return;
+  }
+
+  const items = getEvidenceItems();
+  count.textContent = `${items.length}`;
+  if (badge) {
+    badge.hidden = items.length === 0;
+    badge.textContent = `${items.length}`;
+  }
+
+  root.innerHTML = "";
+  if (items.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sidebar-row";
+    const title = document.createElement("span");
+    title.className = "sidebar-row-title";
+    title.textContent = getLanguageText("No evidence", "証跡はありません");
+    const meta = document.createElement("span");
+    meta.className = "sidebar-row-meta";
+    meta.textContent = getLanguageText(
+      "Run verification or open an explain payload. Evidence rows link back to the source run when available.",
+      "検証を実行するか、実行説明を開くと証跡が表示されます。証跡行は、利用できる場合は元の実行へ戻れます。",
+    );
+    empty.append(title, meta);
+    root.appendChild(empty);
+    return;
+  }
+
+  for (const item of items) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `sidebar-row evidence-row ${item.runId && item.runId === getSelectedRunId() ? "is-active" : ""}`;
+    button.dataset.tone = item.tone;
+    button.title = [item.source, item.anchor, item.body].filter((value) => value).join("\n");
+
+    const kicker = document.createElement("span");
+    kicker.className = "evidence-row-kicker";
+    const category = document.createElement("span");
+    category.className = "evidence-row-category";
+    category.textContent = item.category;
+    const source = document.createElement("span");
+    source.className = "evidence-row-source";
+    source.textContent = item.source;
+    kicker.append(category, source);
+
+    const title = document.createElement("span");
+    title.className = "sidebar-row-title";
+    title.textContent = item.title;
+    const body = document.createElement("span");
+    body.className = "sidebar-row-meta";
+    body.textContent = item.body;
+    const meta = document.createElement("span");
+    meta.className = "evidence-row-meta";
+    meta.textContent = [item.meta, item.anchor].filter((value) => value).join(" · ");
+    button.append(kicker, title, body, meta);
+
+    button.addEventListener("click", () => {
+      if (item.runId) {
+        setSelectedRun(item.runId);
+        setContextPanel(true);
+        renderDesktopSurfaces();
+      }
+    });
+    button.addEventListener("dblclick", () => {
+      if (item.primaryPath) {
+        void openEditorPath(item.primaryPath);
+      }
+    });
+    root.appendChild(button);
+  }
 }
 
 function submitSourceControlCommitRequest() {
@@ -2822,12 +3517,12 @@ function openPreviewTargetExternally() {
 }
 
 async function copyPreviewTargetUrl() {
-  if (!selectedPreviewUrl || !navigator.clipboard) {
+  if (!selectedPreviewUrl) {
     return;
   }
   const previewUrl = selectedPreviewUrl;
   try {
-    await navigator.clipboard.writeText(previewUrl);
+    await copyTextToClipboard(previewUrl);
     lastPreviewClipboardState = {
       url: previewUrl,
       at: Date.now(),
@@ -2841,6 +3536,26 @@ async function copyPreviewTargetUrl() {
     };
   }
   renderEditorSurface();
+}
+
+async function copyTextToClipboard(value: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const textArea = document.createElement("textarea");
+  textArea.value = value;
+  textArea.setAttribute("readonly", "true");
+  textArea.style.position = "fixed";
+  textArea.style.left = "-9999px";
+  document.body.appendChild(textArea);
+  textArea.select();
+  const copied = document.execCommand("copy");
+  textArea.remove();
+  if (!copied) {
+    throw new Error("Clipboard copy failed");
+  }
 }
 
 async function openEditorSurfacePopout() {
@@ -3684,10 +4399,7 @@ function renderExperimentContext() {
 function renderContextPanel() {
   const sectionRoot = document.getElementById("context-sections");
   const handoffRoot = document.getElementById("handoff-cockpit-list");
-  const previewRoot = document.getElementById("preview-target-list");
-  const overviewRoot = document.getElementById("source-overview-cards");
-  const fileRoot = document.getElementById("context-file-list");
-  if (!sectionRoot || !handoffRoot || !previewRoot || !overviewRoot || !fileRoot) {
+  if (!sectionRoot || !handoffRoot) {
     return;
   }
 
@@ -3713,75 +4425,32 @@ function renderContextPanel() {
 
   renderHandoffCockpit(handoffRoot, selectedProjection ?? null);
   renderExperimentContext();
-
-  previewRoot.innerHTML = "";
-  const previewTargets = getPreviewTargets();
-  if (previewTargets.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "context-empty-state";
-    empty.innerHTML =
-      `<div class="context-label">${getLanguageText("No detected ports", "検出されたポートはありません")}</div>` +
-      `<div class="context-value">${getLanguageText("Run a localhost dev server in the utility terminal to surface a preview target.", "プレビュー対象を表示するには、端末でローカル開発サーバーを起動してください。")}</div>`;
-    previewRoot.appendChild(empty);
-  } else {
-    for (const target of previewTargets) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `context-file-row ${editorSurfaceOpen && editorSurfaceMode === "preview" && selectedPreviewUrl === target.url ? "is-active" : ""}`;
-      button.dataset.tone = "info";
-      const name = document.createElement("span");
-      name.className = "context-file-name";
-      name.textContent = target.url;
-      const metaLine = document.createElement("span");
-      metaLine.className = "context-file-meta";
-      metaLine.textContent = `${getLanguageText("Preview target", "プレビュー対象")} · ${target.portLabel} · ${getLanguageText("Seen", "検出")} ${formatPreviewSeenAt(target.lastSeenAt)}`;
-      const trace = document.createElement("span");
-      trace.className = "context-file-trace";
-      trace.textContent = `${getLanguageText("Detected from", "検出元")} ${target.sourceLabel}`;
-      button.appendChild(name);
-      button.appendChild(metaLine);
-      button.appendChild(trace);
-      button.addEventListener("click", () => {
-        openPreviewTarget(target.url);
-      });
-      previewRoot.appendChild(button);
-    }
-  }
-
-  overviewRoot.innerHTML = "";
-  const overviewCards = [
-    { label: getLanguageText("Selected scope", "選択範囲"), value: getSourceFilterLabel(activeSourceFilter) },
-    { label: getLanguageText("Commit candidates", "コミット候補"), value: `${visibleChanges.filter((item) => item.commitCandidate).length}` },
-    { label: getLanguageText("Needs attention", "要確認"), value: `${visibleChanges.filter((item) => item.needsAttention).length}` },
-    { label: getLanguageText("Active pane", "アクティブなペイン"), value: primaryChange?.paneLabel ?? "n/a" },
-    { label: getLanguageText("Worktree", "ワークツリー"), value: primaryChange?.worktree || getLanguageText("Project root", "プロジェクトルート") },
-  ];
-
-  for (const item of overviewCards) {
-    const card = document.createElement("div");
-    card.className = "source-overview-card";
-    card.innerHTML = `<div class="context-label">${item.label}</div><div class="source-overview-value">${item.value}</div>`;
-    overviewRoot.appendChild(card);
-  }
-
-  fileRoot.innerHTML = "";
-  for (const change of visibleChanges) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `context-file-row ${getSourceChangeKey(change) === selectedEditorKey && editorSurfaceOpen ? "is-active" : ""}`;
-    button.dataset.tone = getSourceEntryTone(change);
-    button.innerHTML =
-      `<span class="context-file-name">${change.path.split("/").pop() ?? change.path}</span>` +
-      `<span class="context-file-meta">${change.summary}</span>` +
-      `<span class="context-file-trace">${change.status} · ${change.lines} · ${change.branch} · ${change.review}${change.worktree ? ` · ${change.worktree}` : ""}</span>`;
-    button.addEventListener("click", () => {
-      setSelectedRun(change.run);
-      void openEditorSourceChange(change);
-    });
-    fileRoot.appendChild(button);
-  }
+  hideDetailsPanelExtraSections();
 
   renderComposerRemoteReferences();
+}
+
+function hideDetailsPanelExtraSections() {
+  const hiddenIds = [
+    "context-experiments-title",
+    "experiment-overview-cards",
+    "experiment-detail-list",
+    "context-ports-title",
+    "preview-target-list",
+    "context-source-title",
+    "source-overview-cards",
+    "context-files-title",
+    "context-file-list",
+  ];
+
+  for (const id of hiddenIds) {
+    const element = document.getElementById(id);
+    if (!element) {
+      continue;
+    }
+    element.innerHTML = "";
+    element.hidden = true;
+  }
 }
 
 function getSourceEntryTone(entry: SourceChange): SurfaceTone {
@@ -3917,7 +4586,7 @@ function getFooterContextItem(settingsStatus: string): FooterStatusItem {
     const activeAction = actions[Math.min(selectedCommandIndex, Math.max(0, actions.length - 1))];
     const query = commandBarQuery.trim();
     return {
-      label: "Context",
+      label: "Details",
       value: query ? `Search ${query}` : (activeAction?.label || "Search actions"),
       tone: "focus",
     };
@@ -3925,7 +4594,7 @@ function getFooterContextItem(settingsStatus: string): FooterStatusItem {
 
   if (settingsSheetOpen) {
     return {
-      label: "Context",
+      label: "Details",
       value: `Settings ${settingsStatus}`,
       tone: getFooterSettingsTone(settingsStatus),
     };
@@ -3935,7 +4604,7 @@ function getFooterContextItem(settingsStatus: string): FooterStatusItem {
     const previewTarget = detectedPreviewTargets.get(selectedPreviewUrl);
     if (previewTarget) {
       return {
-        label: "Context",
+        label: "Details",
         value: `${previewTarget.portLabel} · ${previewTarget.sourceLabel}`,
         tone: "accent",
       };
@@ -3947,7 +4616,7 @@ function getFooterContextItem(settingsStatus: string): FooterStatusItem {
     const selected = editors.find((editor) => editor.key === selectedEditorKey) || editors[0];
     if (selected) {
       return {
-        label: "Context",
+        label: "Details",
         value: selected.path.split("/").pop() ?? selected.path,
         tone: selected.origin === "context" ? "focus" : "info",
       };
@@ -3956,14 +4625,14 @@ function getFooterContextItem(settingsStatus: string): FooterStatusItem {
 
   if (terminalDrawerOpen) {
     return {
-      label: "Context",
+      label: "Details",
       value: "Utility drawer",
       tone: "info",
     };
   }
 
   return {
-    label: "Context",
+    label: "Details",
     value: "Ctrl+K",
     tone: "accent",
   };
@@ -4194,6 +4863,8 @@ function getSidebarModeTitle(mode: SidebarMode = sidebarMode) {
   switch (mode) {
     case "source":
       return getLanguageText("Source Control", "ソース管理");
+    case "evidence":
+      return getLanguageText("Evidence", "証跡");
     case "workspace":
       return getLanguageText("Workspace", "作業領域");
     case "explorer":
@@ -4221,7 +4892,8 @@ function applyLanguageChrome() {
   setIconButtonChrome("activity-explorer-btn", japanese ? "エクスプローラー" : "Explorer");
   setIconButtonChrome("activity-search-btn", japanese ? "操作検索" : "Search actions");
   setIconButtonChrome("activity-source-btn", japanese ? "ソース管理" : "Source control");
-  setIconButtonChrome("activity-context-btn", japanese ? "文脈" : "Context");
+  setIconButtonChrome("activity-evidence-btn", japanese ? "証跡" : "Evidence");
+  setIconButtonChrome("activity-context-btn", japanese ? "詳細" : "Details");
   setIconButtonChrome("activity-settings-btn", japanese ? "設定" : "Settings");
   updateSidebarModeTitle();
   setElementText("workspace-title", japanese ? "オペレーター" : "Operator");
@@ -4235,8 +4907,8 @@ function applyLanguageChrome() {
   setButtonLabel("toggle-sidebar-btn", japanese ? "作業領域" : "Workspace", japanese ? "作業領域サイドバーを切り替える" : "Toggle workspace sidebar");
   setButtonLabel(
     "toggle-context-btn",
-    contextPanelOpen ? (japanese ? "隠す" : "Hide") : (japanese ? "文脈" : "Context"),
-    contextPanelOpen ? (japanese ? "文脈パネルを隠す" : "Hide context panel") : (japanese ? "文脈パネルを表示" : "Show context panel"),
+    contextPanelOpen ? (japanese ? "隠す" : "Hide") : (japanese ? "詳細" : "Details"),
+    contextPanelOpen ? (japanese ? "詳細パネルを隠す" : "Hide details panel") : (japanese ? "詳細パネルを表示" : "Show details panel"),
   );
   setButtonLabel(
     "toggle-terminal-btn",
@@ -4261,7 +4933,7 @@ function applyLanguageChrome() {
   setElementText("settings-display-label", japanese ? "表示" : "Display");
   setElementText("settings-display-value", japanese ? "タイムラインの詳細を常時どこまで表示するかを選びます。" : "Choose how much timeline detail stays visible by default.");
   setElementText("settings-workspace-label", japanese ? "作業領域" : "Workspace");
-  setElementText("settings-workspace-value", japanese ? "サイドバー幅、文脈パネル、ワークベンチの挙動を扱います。" : "Sidebar width, context collapse, workbench behavior");
+  setElementText("settings-workspace-value", japanese ? "サイドバー幅、詳細パネル、ワークベンチの挙動を扱います。" : "Sidebar width, details panel, workbench behavior");
   setElementText("settings-input-label", japanese ? "入力" : "Input");
   setElementText("settings-input-value", japanese ? "Enter で送信、Shift+Enter で改行、IME 変換中の Enter は保護します。" : "Enter sends, Shift+Enter inserts newline, IME composition is protected");
   setSelectorText(".brand-block .sidebar-caption", japanese ? "オペレーターシェル" : "Operator shell");
@@ -4273,15 +4945,17 @@ function applyLanguageChrome() {
   setElementText("source-control-commit-label", japanese ? "コミット依頼" : "Commit request");
   setElementText("source-control-changes-title", japanese ? "変更" : "Changes");
   setElementText("source-control-graph-title", japanese ? "グラフ" : "Graph");
+  setElementText("evidence-title", japanese ? "証跡" : "Evidence");
   setElementText("workbench-title", japanese ? "ワーカーペイン" : "Worker panes");
   document.getElementById("terminal-drawer")?.setAttribute("aria-label", japanese ? "ワーカーペイン" : "Worker panes");
   document.getElementById("workbench-layout-btn")?.setAttribute("aria-label", japanese ? "ワーカーペインの配置を切り替える" : "Switch worker pane layout");
   updateWorkbenchControls();
   setSelectorText("#thread-meta span:first-child", japanese ? "winsmux セッション" : "winsmux session");
-  setSelectorText("#thread-meta span:last-child", japanese ? "会話シェル · 要点フィード" : "conversation shell · concise feed");
-  setElementText("timeline-feed-hint", japanese ? "重要な出来事だけを表示します。必要な時に詳細を開きます。" : "Key events only. Details open when needed.");
-  setElementText("context-panel-title", japanese ? "文脈" : "Context");
-  setElementText("context-decision-title", japanese ? "判断コックピット" : "Decision cockpit");
+  setSelectorText("#thread-meta span:first-child", "Claude Code");
+  setSelectorText("#thread-meta span:last-child", japanese ? "operator CLI" : "operator CLI");
+  setElementText("timeline-feed-hint", japanese ? "CLI の会話として表示します。" : "Rendered as an operator CLI conversation.");
+  setElementText("context-panel-title", japanese ? "詳細" : "Details");
+  setElementText("context-decision-title", japanese ? "判断" : "Decision");
   setElementText("context-experiments-title", japanese ? "実験" : "Experiments");
   setElementText("context-ports-title", japanese ? "ポート" : "Ports");
   setElementText("context-source-title", japanese ? "ソース管理" : "Source control");
@@ -4296,8 +4970,8 @@ function applyLanguageChrome() {
   setElementText(
     "command-bar-description",
     japanese
-      ? "依頼、レビュー、説明、ソース文脈、設定、端末操作をここから実行できます。"
-      : "Action palette for dispatch, review, explain, source context, settings, and terminal control.",
+      ? "依頼、レビュー、説明、ソース管理、設定、端末操作をここから実行できます。"
+      : "Action palette for dispatch, review, explain, source control, settings, and terminal control.",
   );
   document
     .getElementById("command-bar-results")
@@ -4347,6 +5021,7 @@ function applyThemeState(nextState: ThemeState) {
   renderSourceSummary();
   renderSourceEntries();
   renderSourceControlView();
+  renderEvidenceView();
   renderContextPanel();
   renderTimelineFilters();
   renderRunSummary();
@@ -4506,6 +5181,10 @@ function focusComposer() {
 }
 
 function getFilteredComposerSlashCommands() {
+  if (composerWinsmuxCommandOpen) {
+    const query = composerWinsmuxCommandQuery.toLowerCase();
+    return winsmuxComposerCommandEntries.filter((item) => item.command.toLowerCase().startsWith(query));
+  }
   if (!composerSlashOpen) {
     return [];
   }
@@ -4552,8 +5231,9 @@ function renderComposerSlashCommands() {
 
   const visibleCommands = getVisibleComposerSlashCommands();
   root.innerHTML = "";
-  root.hidden = !composerSlashOpen;
-  if (!composerSlashOpen) {
+  const suggestionOpen = composerSlashOpen || composerWinsmuxCommandOpen;
+  root.hidden = !suggestionOpen || visibleCommands.length === 0;
+  if (!suggestionOpen || visibleCommands.length === 0) {
     return;
   }
 
@@ -4566,9 +5246,9 @@ function renderComposerSlashCommands() {
     const label = themeState.language === "ja" ? item.labelJa : item.label;
     const description = themeState.language === "ja" ? item.descriptionJa : item.description;
     commandLabel.className = "slash-chip-command";
-    commandLabel.textContent = `/${item.command}`;
+    commandLabel.textContent = item.kind === "winsmux" ? item.command : `/${item.command}`;
     descriptionLabel.className = "slash-chip-description";
-    descriptionLabel.textContent = label === `/${item.command}` ? description : label;
+    descriptionLabel.textContent = label === commandLabel.textContent ? description : label;
     button.appendChild(commandLabel);
     button.appendChild(descriptionLabel);
     button.addEventListener("click", () => {
@@ -4580,8 +5260,11 @@ function renderComposerSlashCommands() {
 
 function syncComposerSlashState(value: string) {
   const match = value.match(/^\/([^\s]*)$/);
+  const winsmuxMatch = value.match(/^(winsmux(?:\s.*)?)$/i);
   composerSlashOpen = Boolean(match);
   composerSlashQuery = match ? match[1] : "";
+  composerWinsmuxCommandOpen = !composerSlashOpen && Boolean(winsmuxMatch);
+  composerWinsmuxCommandQuery = winsmuxMatch ? winsmuxMatch[1].replace(/\s+/g, " ").trim() : "";
   const commands = getVisibleComposerSlashCommands();
   selectedComposerSlashIndex = commands.length === 0 ? 0 : Math.min(selectedComposerSlashIndex, commands.length - 1);
   renderComposerSlashCommands();
@@ -4604,6 +5287,8 @@ function applyComposerSlashCommand(command: ComposerSlashCommand) {
   if (command.kind === "mode" && command.mode) {
     setComposerMode(command.mode);
     composerInput.value = composerInput.value.replace(/^\/[^\s]+/, "").replace(/^\s+/, "");
+  } else if (command.kind === "winsmux") {
+    composerInput.value = command.command;
   } else {
     composerInput.value = `/${command.command}${command.command ? " " : ""}`;
   }
@@ -4869,42 +5554,9 @@ function renderComposerRemoteReferences() {
     return;
   }
 
-  const references = getComposerRemoteReferences();
   root.innerHTML = "";
-  root.hidden = references.length === 0;
-  if (references.length === 0) {
-    selectedComposerRemoteReferenceIds.clear();
-    return;
-  }
-
-  const validIds = new Set(references.map((item) => item.id));
-  selectedComposerRemoteReferenceIds = new Set(
-    Array.from(selectedComposerRemoteReferenceIds).filter((id) => validIds.has(id)),
-  );
-
-  references.forEach((item) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `remote-chip ${selectedComposerRemoteReferenceIds.has(item.id) ? "is-active" : ""}`;
-    const label = document.createElement("span");
-    label.className = "remote-chip-label";
-    label.textContent = item.label;
-    const meta = document.createElement("span");
-    meta.className = "remote-chip-meta";
-    meta.textContent = item.meta;
-    button.appendChild(label);
-    button.appendChild(meta);
-    button.addEventListener("click", () => {
-      if (selectedComposerRemoteReferenceIds.has(item.id)) {
-        selectedComposerRemoteReferenceIds.delete(item.id);
-      } else {
-        selectedComposerRemoteReferenceIds.add(item.id);
-      }
-      exitComposerHistoryToDraft();
-      renderComposerRemoteReferences();
-    });
-    root.appendChild(button);
-  });
+  root.hidden = true;
+  selectedComposerRemoteReferenceIds.clear();
 }
 
 function renderComposerModes() {
@@ -5230,7 +5882,7 @@ function renderRunSummary() {
         <div class="run-summary-body">${projection.summary || projection.task || getLanguageText("Projected run surfaced by the backend adapter.", "バックエンドから投影された実行です。")}</div>
         <div class="timeline-chip-row">
           <button type="button" class="timeline-chip" data-action="open-explain">${getLanguageText("Open Explain", "説明を開く")}</button>
-          <button type="button" class="timeline-chip" data-action="open-source-context">${getLanguageText("Source Context", "ソース文脈")}</button>
+          <button type="button" class="timeline-chip" data-action="open-source-context">${getLanguageText("Source Control", "ソース管理")}</button>
           <button type="button" class="timeline-chip" data-action="open-terminal">${getLanguageText("Terminal", "端末")}</button>
         </div>
       </div>
@@ -5881,7 +6533,7 @@ function getCommandActions(): CommandAction[] {
       label: getLanguageText("Explain selected run", "選択中の実行を説明"),
       description: getLanguageText(
         "Open the explain flow for the currently selected run and add operator context to the timeline.",
-        "選択中の実行について、説明用の流れを開いて会話に文脈を追加します。",
+        "選択中の実行について、説明用の流れを開いて会話に詳細を追加します。",
       ),
       keywords: getLanguageText("explain run blocked why", "説明 実行 停止 理由").split(" "),
       tone: "info",
@@ -5892,7 +6544,7 @@ function getCommandActions(): CommandAction[] {
       label: getLanguageText("Open secondary editor", "補助エディターを開く"),
       description: getLanguageText(
         "Open the secondary work surface for the currently selected file or run context.",
-        "選択中のファイルや実行文脈を扱う補助作業面を開きます。",
+        "選択中のファイルや実行の詳細を扱う補助作業面を開きます。",
       ),
       keywords: getLanguageText("editor file changed secondary", "エディター ファイル 変更 補助").split(" "),
       tone: "default",
@@ -5900,14 +6552,25 @@ function getCommandActions(): CommandAction[] {
     },
     {
       id: "source-context",
-      label: getLanguageText("Open source context", "ソース文脈を開く"),
+      label: getLanguageText("Open source control", "ソース管理を開く"),
       description: getLanguageText(
         "Reveal the source-control context sheet and changed-file drill-down.",
-        "ソース管理の文脈と変更ファイルの詳細を表示します。",
+        "ソース管理と変更ファイルの詳細を表示します。",
       ),
-      keywords: getLanguageText("source context changed worktree branch", "ソース 文脈 変更 ブランチ").split(" "),
+      keywords: getLanguageText("source control changed worktree branch", "ソース 管理 変更 ブランチ").split(" "),
       tone: "default",
       run: () => handleChipAction("open-source-context"),
+    },
+    {
+      id: "evidence",
+      label: getLanguageText("Open evidence", "証跡を開く"),
+      description: getLanguageText(
+        "Show verification, review, security, and recent event evidence.",
+        "検証、レビュー、セキュリティ、最近のイベントの証跡を表示します。",
+      ),
+      keywords: getLanguageText("evidence audit trace review verification security", "証跡 監査 記録 レビュー 検証 セキュリティ").split(" "),
+      tone: "info",
+      run: () => showSidebarMode("evidence"),
     },
     {
       id: "terminal",
@@ -6071,7 +6734,8 @@ function getTopMenuItems(menuId: string): TopMenuItem[] {
         { label: getLanguageText("Toggle explorer", "エクスプローラーを切り替え"), action: () => toggleSidebarMode("explorer") },
         { label: getLanguageText("Toggle workspace overview", "作業領域の概要を切り替え"), action: () => toggleSidebarMode("workspace") },
         { label: getLanguageText("Toggle source control", "ソース管理を切り替え"), action: () => toggleSidebarMode("source") },
-        { label: getLanguageText("Toggle context", "文脈を切り替え"), action: () => setContextPanel(!contextPanelOpen) },
+        { label: getLanguageText("Toggle evidence", "証跡を切り替え"), action: () => toggleSidebarMode("evidence") },
+        { label: getLanguageText("Toggle details", "詳細を切り替え"), action: () => setContextPanel(!contextPanelOpen) },
         { label: getLanguageText("Toggle panes", "ペインを切り替え"), action: () => setTerminalDrawer(!terminalDrawerOpen) },
       ];
     case "menu-go-btn":
@@ -6079,6 +6743,7 @@ function getTopMenuItems(menuId: string): TopMenuItem[] {
         { label: getLanguageText("Explorer", "エクスプローラー"), action: () => showSidebarMode("explorer") },
         { label: getLanguageText("Workspace overview", "作業領域の概要"), action: () => showSidebarMode("workspace") },
         { label: getLanguageText("Source control", "ソース管理"), action: () => showSidebarMode("source") },
+        { label: getLanguageText("Evidence", "証跡"), action: () => showSidebarMode("evidence") },
         { label: getLanguageText("Command palette", "操作パレット"), shortcut: "Ctrl+K", action: openCommandBar },
       ];
     case "menu-run-btn":
@@ -6341,7 +7006,7 @@ function renderEditorSurface() {
     browserFrame.src = "about:blank";
     browserSurface.hidden = true;
     tabs.innerHTML = "";
-    renderEditorCode(code, "No backend preview cached.");
+    renderEditorCode(code, "No backend preview cached.", "Text");
     code.hidden = false;
     renderEditorStatusbar(statusbar, [
       { label: "", value: "Idle" },
@@ -6442,7 +7107,7 @@ function renderEditorSurface() {
     }
     browserSurface.hidden = false;
     browserBackButton.disabled = false;
-    browserCopyButton.disabled = !Boolean(navigator.clipboard);
+    browserCopyButton.disabled = false;
     browserReloadButton.disabled = false;
     browserOpenButton.disabled = false;
     code.replaceChildren();
@@ -6530,7 +7195,7 @@ function renderEditorSurface() {
       diffPreview.appendChild(previewMeta);
       diffPreview.hidden = false;
     }
-    renderEditorCode(code, selected.content);
+    renderEditorCode(code, selected.content, selected.language);
     renderEditorStatusbar(statusbar, [
       ...(detachedSurface ? [{ label: "", value: "Detached" }] : []),
       ...(detachedSurface && detachedSurfaceRunLabel ? [{ label: "", value: detachedSurfaceRunLabel }] : []),
@@ -6548,9 +7213,27 @@ function renderEditorSurface() {
   for (const editor of editors) {
     const tab = document.createElement("button");
     tab.type = "button";
-    tab.className = `editor-tab ${editor.key === selected.key ? "is-active" : ""}`;
-    tab.textContent = editor.path.split("/").pop() ?? editor.path;
-    tab.addEventListener("click", () => {
+    tab.className = `editor-tab ${selected && editor.key === selected.key ? "is-active" : ""}`;
+    tab.title = editor.path;
+
+    const tabLabel = document.createElement("span");
+    tabLabel.className = "editor-tab-label";
+    tabLabel.textContent = editor.path.split("/").pop() ?? editor.path;
+    tab.appendChild(tabLabel);
+
+    const closeButton = document.createElement("span");
+    closeButton.className = "editor-tab-close";
+    closeButton.setAttribute("role", "button");
+    closeButton.setAttribute("aria-label", getLanguageText(`Close ${editor.path}`, `${editor.path} を閉じる`));
+    closeButton.textContent = "×";
+    tab.appendChild(closeButton);
+
+    tab.addEventListener("click", (event) => {
+      if ((event.target as HTMLElement | null)?.closest(".editor-tab-close")) {
+        event.stopPropagation();
+        closeEditorTab(editor.key);
+        return;
+      }
       void openEditorTarget(getEditorTargetByKey(editor.key));
     });
     tabs.appendChild(tab);
@@ -6565,7 +7248,135 @@ function splitEditorCodeLines(content: string): EditorCodeLine[] {
   }));
 }
 
-function renderEditorCode(root: HTMLElement, content: string) {
+type EditorSyntaxTokenKind =
+  | "comment"
+  | "function"
+  | "heading"
+  | "keyword"
+  | "link"
+  | "number"
+  | "operator"
+  | "property"
+  | "punctuation"
+  | "string"
+  | "tag";
+
+interface EditorSyntaxToken {
+  start: number;
+  end: number;
+  kind: EditorSyntaxTokenKind;
+}
+
+function appendEditorSyntaxText(root: HTMLElement, text: string, kind?: EditorSyntaxTokenKind) {
+  if (!text) {
+    return;
+  }
+  const span = document.createElement("span");
+  if (kind) {
+    span.className = `editor-token editor-token-${kind}`;
+  }
+  span.textContent = text;
+  root.appendChild(span);
+}
+
+function addEditorSyntaxMatches(tokens: EditorSyntaxToken[], text: string, pattern: RegExp, kind: EditorSyntaxTokenKind) {
+  for (const match of text.matchAll(pattern)) {
+    const start = match.index ?? -1;
+    const value = match[0] ?? "";
+    if (start < 0 || !value) {
+      continue;
+    }
+    const end = start + value.length;
+    if (tokens.some((token) => start < token.end && end > token.start)) {
+      continue;
+    }
+    tokens.push({ start, end, kind });
+  }
+}
+
+function appendTokenizedEditorLine(root: HTMLElement, text: string, tokens: EditorSyntaxToken[]) {
+  let cursor = 0;
+  const orderedTokens = [...tokens].sort((left, right) => left.start - right.start || right.end - left.end);
+  for (const token of orderedTokens) {
+    if (token.start < cursor || token.end <= token.start) {
+      continue;
+    }
+    appendEditorSyntaxText(root, text.slice(cursor, token.start));
+    appendEditorSyntaxText(root, text.slice(token.start, token.end), token.kind);
+    cursor = token.end;
+  }
+  appendEditorSyntaxText(root, text.slice(cursor));
+}
+
+function appendMarkdownEditorLine(root: HTMLElement, text: string) {
+  const heading = /^(#{1,6})(\s+)(.*)$/.exec(text);
+  if (heading) {
+    appendEditorSyntaxText(root, heading[1], "punctuation");
+    appendEditorSyntaxText(root, heading[2]);
+    appendEditorSyntaxText(root, heading[3], "heading");
+    return;
+  }
+
+  const list = /^(\s*)([-*+]|\d+[.)])(\s+)(.*)$/.exec(text);
+  if (list) {
+    appendEditorSyntaxText(root, list[1]);
+    appendEditorSyntaxText(root, list[2], "punctuation");
+    appendEditorSyntaxText(root, list[3]);
+    appendMarkdownInlineSyntax(root, list[4]);
+    return;
+  }
+
+  const quote = /^(\s*>+\s?)(.*)$/.exec(text);
+  if (quote) {
+    appendEditorSyntaxText(root, quote[1], "punctuation");
+    appendMarkdownInlineSyntax(root, quote[2]);
+    return;
+  }
+
+  appendMarkdownInlineSyntax(root, text);
+}
+
+function appendMarkdownInlineSyntax(root: HTMLElement, text: string) {
+  const tokens: EditorSyntaxToken[] = [];
+  addEditorSyntaxMatches(tokens, text, /`[^`]*`/g, "string");
+  addEditorSyntaxMatches(tokens, text, /\[[^\]]+\]\([^)]+\)/g, "link");
+  addEditorSyntaxMatches(tokens, text, /<\/?[A-Za-z][^>]*>/g, "tag");
+  addEditorSyntaxMatches(tokens, text, /(\*\*|__)[^\n]+?\1/g, "keyword");
+  appendTokenizedEditorLine(root, text, tokens);
+}
+
+function appendCodeEditorLine(root: HTMLElement, text: string, language: string) {
+  const normalized = language.toLowerCase();
+  const tokens: EditorSyntaxToken[] = [];
+  if (normalized === "markdown") {
+    appendMarkdownEditorLine(root, text);
+    return;
+  }
+  if (normalized === "html") {
+    addEditorSyntaxMatches(tokens, text, /<!--.*?-->/g, "comment");
+    addEditorSyntaxMatches(tokens, text, /<\/?[A-Za-z][A-Za-z0-9:-]*/g, "tag");
+    addEditorSyntaxMatches(tokens, text, /\b[A-Za-z_:][-A-Za-z0-9_:.]*(?==)/g, "property");
+  } else if (normalized === "css") {
+    addEditorSyntaxMatches(tokens, text, /\/\*.*?\*\//g, "comment");
+    addEditorSyntaxMatches(tokens, text, /(?:--)?[-A-Za-z]+(?=\s*:)/g, "property");
+    addEditorSyntaxMatches(tokens, text, /#[0-9A-Fa-f]{3,8}\b/g, "number");
+  } else if (normalized === "powershell" || normalized === "yaml" || normalized === "toml") {
+    addEditorSyntaxMatches(tokens, text, /#.*/g, "comment");
+  } else {
+    addEditorSyntaxMatches(tokens, text, /\/\/.*/g, "comment");
+  }
+
+  addEditorSyntaxMatches(tokens, text, /(["'`])(?:\\.|(?!\1).)*\1/g, "string");
+  addEditorSyntaxMatches(tokens, text, /\b\d+(?:\.\d+)?\b/g, "number");
+  addEditorSyntaxMatches(tokens, text, /\b(?:async|await|break|case|const|continue|crate|else|enum|export|fn|for|from|function|if|impl|import|interface|let|match|mod|pub|return|self|struct|type|use|where|while)\b/g, "keyword");
+  if (normalized === "powershell") {
+    addEditorSyntaxMatches(tokens, text, /(?:^|\s)-[A-Za-z][A-Za-z0-9-]*/g, "operator");
+  }
+  addEditorSyntaxMatches(tokens, text, /\b[A-Za-z_$][\w$]*(?=\s*\()/g, "function");
+  appendTokenizedEditorLine(root, text, tokens);
+}
+
+function renderEditorCode(root: HTMLElement, content: string, language = "Text") {
   root.innerHTML = "";
   const lines = splitEditorCodeLines(content);
   root.style.setProperty("--editor-line-number-digits", `${Math.max(2, String(lines.length).length)}`);
@@ -6580,7 +7391,11 @@ function renderEditorCode(root: HTMLElement, content: string) {
 
     const lineContent = document.createElement("span");
     lineContent.className = "editor-line-content";
-    lineContent.textContent = line.text || " ";
+    if (line.text) {
+      appendCodeEditorLine(lineContent, line.text, language);
+    } else {
+      lineContent.textContent = " ";
+    }
 
     row.append(lineNumber, lineContent);
     root.appendChild(row);
@@ -7298,9 +8113,9 @@ function setContextPanel(open: boolean, options?: { preserveWidePreference?: boo
 
   panel.toggleAttribute("hidden", !open);
   body.classList.toggle("context-collapsed", !open);
-  setCompactButtonLabel(button, open ? getLanguageText("Hide", "隠す") : getLanguageText("Context", "文脈"));
+  setCompactButtonLabel(button, open ? getLanguageText("Hide", "隠す") : getLanguageText("Details", "詳細"));
   button.setAttribute("aria-expanded", open ? "true" : "false");
-  button.setAttribute("aria-label", open ? getLanguageText("Hide context panel", "文脈パネルを隠す") : getLanguageText("Show context panel", "文脈パネルを表示"));
+  button.setAttribute("aria-label", open ? getLanguageText("Hide details panel", "詳細パネルを隠す") : getLanguageText("Show details panel", "詳細パネルを表示"));
   syncActivityButtons();
 }
 
@@ -7312,6 +8127,7 @@ function setSidebarMode(mode: SidebarMode) {
   const editorsSection = document.getElementById("editors-sidebar-section");
   const sourceSummarySection = document.getElementById("source-sidebar-section");
   const sourceControlView = document.getElementById("source-control-view");
+  const evidenceView = document.getElementById("evidence-view");
   const workspaceSectionsOpen = mode === "workspace";
 
   if (brandBlock) {
@@ -7332,8 +8148,13 @@ function setSidebarMode(mode: SidebarMode) {
   if (sourceControlView) {
     sourceControlView.hidden = mode !== "source";
   }
+  if (evidenceView) {
+    evidenceView.hidden = mode !== "evidence";
+  }
   if (mode === "source") {
     renderSourceControlView();
+  } else if (mode === "evidence") {
+    renderEvidenceView();
   } else if (mode === "workspace") {
     renderSessions();
     renderOpenEditors();
@@ -7410,19 +8231,28 @@ function setSidebarOpen(open: boolean, options?: { preserveWidePreference?: bool
 function syncActivityButtons() {
   const explorerButton = document.getElementById("activity-explorer-btn");
   const sourceButton = document.getElementById("activity-source-btn");
+  const evidenceButton = document.getElementById("activity-evidence-btn");
   const contextButton = document.getElementById("activity-context-btn");
   const sourceBadge = document.getElementById("activity-source-count");
+  const evidenceBadge = document.getElementById("activity-evidence-count");
   const changeCount = getVisibleSourceChanges().length;
+  const evidenceCount = getEvidenceItems().length;
 
   explorerButton?.classList.toggle("is-active", sidebarOpen && sidebarMode === "explorer");
   sourceButton?.classList.toggle("is-active", sidebarOpen && sidebarMode === "source");
+  evidenceButton?.classList.toggle("is-active", sidebarOpen && sidebarMode === "evidence");
   contextButton?.classList.toggle("is-active", contextPanelOpen);
   explorerButton?.setAttribute("aria-expanded", sidebarOpen && sidebarMode === "explorer" ? "true" : "false");
   sourceButton?.setAttribute("aria-expanded", sidebarOpen && sidebarMode === "source" ? "true" : "false");
+  evidenceButton?.setAttribute("aria-expanded", sidebarOpen && sidebarMode === "evidence" ? "true" : "false");
   contextButton?.setAttribute("aria-expanded", contextPanelOpen ? "true" : "false");
   if (sourceBadge) {
     sourceBadge.hidden = changeCount === 0;
     sourceBadge.textContent = `${changeCount}`;
+  }
+  if (evidenceBadge) {
+    evidenceBadge.hidden = evidenceCount === 0;
+    evidenceBadge.textContent = `${evidenceCount}`;
   }
 }
 
@@ -7658,20 +8488,41 @@ function buildCachedEditorFile(
 }
 
 function getEditorFiles() {
-  const targets = new Map<string, EditorTarget>();
-  for (const entry of getProjectionSourceEntries()) {
-    const target = getEditorTargetForSourceChange(entry);
-    if (target) {
-      targets.set(target.key, target);
+  return Array.from(desktopStandaloneEditorTargets.values())
+    .map((target) => findEditorFile(target))
+    .filter((item): item is EditorFile => Boolean(item));
+}
+
+function closeEditorTab(key: string) {
+  const openKeys = Array.from(desktopStandaloneEditorTargets.keys());
+  const closedIndex = openKeys.indexOf(key);
+  const wasSelected = selectedEditorKey === key;
+
+  desktopStandaloneEditorTargets.delete(key);
+  desktopEditorFileCache.delete(key);
+  desktopEditorLoadErrors.delete(key);
+  desktopEditorLoadingPaths.delete(key);
+
+  if (wasSelected) {
+    const remainingKeys = Array.from(desktopStandaloneEditorTargets.keys());
+    const nextKey = remainingKeys[Math.min(Math.max(closedIndex, 0), remainingKeys.length - 1)] ?? "";
+    selectedEditorKey = nextKey;
+
+    if (!nextKey && editorSurfaceMode !== "preview") {
+      setEditorSurface(false);
+      return;
     }
-  }
-  for (const [key, target] of desktopStandaloneEditorTargets) {
-    if (!targets.has(key)) {
-      targets.set(key, target);
+
+    const nextTarget = nextKey ? getEditorTargetByKey(nextKey) : null;
+    if (nextTarget && !desktopEditorFileCache.has(nextTarget.key) && !desktopEditorLoadingPaths.has(nextTarget.key)) {
+      void ensureEditorFileLoaded(nextTarget);
     }
   }
 
-  return Array.from(targets.values()).map((target) => findEditorFile(target)).filter((item): item is EditorFile => Boolean(item));
+  renderEditorSurface();
+  renderOpenEditors();
+  renderContextPanel();
+  renderSourceEntries();
 }
 
 async function ensureEditorFileLoaded(target: EditorTarget | null) {
@@ -7721,6 +8572,7 @@ async function openEditorTarget(target: EditorTarget | null) {
   editorSurfaceMode = "code";
   selectedPreviewUrl = "";
   lastPreviewExternalState = null;
+  desktopStandaloneEditorTargets.set(target.key, target);
   selectedEditorKey = target.key;
   setSelectedRun(target.sourceChange?.run ?? selectedRunId);
   setEditorSurface(true);
@@ -7762,6 +8614,12 @@ function inferLanguageFromPath(path: string) {
   if (path.endsWith(".ts")) {
     return "TypeScript";
   }
+  if (path.endsWith(".rs")) {
+    return "Rust";
+  }
+  if (path.endsWith(".md")) {
+    return "Markdown";
+  }
   if (path.endsWith(".css")) {
     return "CSS";
   }
@@ -7770,6 +8628,15 @@ function inferLanguageFromPath(path: string) {
   }
   if (path.endsWith(".ps1")) {
     return "PowerShell";
+  }
+  if (path.endsWith(".json")) {
+    return "JSON";
+  }
+  if (path.endsWith(".toml")) {
+    return "TOML";
+  }
+  if (path.endsWith(".yml") || path.endsWith(".yaml")) {
+    return "YAML";
   }
   return "Text";
 }
@@ -7876,6 +8743,7 @@ function renderDesktopSurfaces() {
   renderSourceSummary();
   renderSourceEntries();
   renderSourceControlView();
+  renderEvidenceView();
   renderContextPanel();
   renderOpenEditors();
   renderEditorSurface();
@@ -8282,6 +9150,65 @@ function initializeWorkbenchResize() {
   });
 }
 
+function initializeSourceControlSplitResize() {
+  const handle = document.getElementById("source-control-splitter");
+  if (!handle) {
+    return;
+  }
+
+  handle.setAttribute("aria-valuemin", "96");
+  handle.setAttribute("aria-valuemax", "900");
+  applySourceControlSplitHeight();
+
+  const setHeightFromKeyboard = (delta: number) => {
+    sourceControlChangesHeight = clampSourceControlChangesHeight(sourceControlChangesHeight + delta);
+    applySourceControlSplitHeight();
+  };
+
+  handle.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHeightFromKeyboard(-24);
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHeightFromKeyboard(24);
+      return;
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      sourceControlChangesHeight = 96;
+      applySourceControlSplitHeight();
+      return;
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      sourceControlChangesHeight = clampSourceControlChangesHeight(900);
+      applySourceControlSplitHeight();
+    }
+  });
+
+  handle.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    handle.setPointerCapture?.(event.pointerId);
+    const startY = event.clientY;
+    const startHeight = sourceControlChangesHeight;
+    const onMove = (moveEvent: PointerEvent) => {
+      sourceControlChangesHeight = clampSourceControlChangesHeight(startHeight + (moveEvent.clientY - startY));
+      applySourceControlSplitHeight();
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  });
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   installViewportHarnessHooks();
   const popoutSurfaceState = readPopoutSurfaceState();
@@ -8329,6 +9256,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderOpenEditors();
   renderSourceSummary();
   renderSourceEntries();
+  renderEvidenceView();
   renderContextPanel();
   applyShellPreferences();
   applyLanguageChrome();
@@ -8351,6 +9279,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   registerDesktopSummaryLiveRefresh();
   initializeSidebarResize();
   initializeWorkbenchResize();
+  initializeSourceControlSplitResize();
   window.setInterval(() => {
     renderPaneMetadata();
   }, PANE_META_REFRESH_INTERVAL_MS);
@@ -8387,6 +9316,15 @@ window.addEventListener("DOMContentLoaded", async () => {
       return;
     }
     setSidebarMode("source");
+    setSidebarOpen(true);
+  });
+
+  document.getElementById("activity-evidence-btn")?.addEventListener("click", () => {
+    if (sidebarOpen && sidebarMode === "evidence") {
+      setSidebarOpen(false);
+      return;
+    }
+    setSidebarMode("evidence");
     setSidebarOpen(true);
   });
 
@@ -8466,11 +9404,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
   }
 
-  for (const moreButtonId of ["source-control-more-btn", "source-control-graph-more-btn"]) {
-    document.getElementById(moreButtonId)?.addEventListener("click", () => {
-      openCommandBar();
-    });
-  }
+  document.getElementById("source-control-more-btn")?.addEventListener("click", (event) => {
+    showSourceControlActionsMenu(event, "changes");
+  });
+  document.getElementById("source-control-graph-more-btn")?.addEventListener("click", (event) => {
+    showSourceControlActionsMenu(event, "graph");
+  });
 
   document.getElementById("apply-settings-btn")?.addEventListener("click", () => {
     applySettingsDraft();
@@ -8593,13 +9532,14 @@ window.addEventListener("DOMContentLoaded", async () => {
     composerInput.addEventListener("keydown", (event) => {
       const slashCommands = getVisibleComposerSlashCommands();
       const composerImeBlocking = composerImeActive || event.isComposing;
-      if (event.key === "ArrowUp" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSlashOpen && composerHistory.length > 0 && isComposerSelectionCollapsed(composerInput) && isCaretOnFirstLine(composerInput)) {
+      const composerSuggestionOpen = composerSlashOpen || composerWinsmuxCommandOpen;
+      if (event.key === "ArrowUp" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSuggestionOpen && composerHistory.length > 0 && isComposerSelectionCollapsed(composerInput) && isCaretOnFirstLine(composerInput)) {
         event.preventDefault();
         stepComposerHistory(-1);
         return;
       }
 
-      if (event.key === "ArrowDown" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSlashOpen && composerHistoryIndex !== -1 && isComposerSelectionCollapsed(composerInput) && isCaretOnLastLine(composerInput)) {
+      if (event.key === "ArrowDown" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSuggestionOpen && composerHistoryIndex !== -1 && isComposerSelectionCollapsed(composerInput) && isCaretOnLastLine(composerInput)) {
         event.preventDefault();
         stepComposerHistory(1);
         return;
@@ -8755,6 +9695,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (event.key === "Escape" && openTopMenuId) {
       event.preventDefault();
       closeTopMenu();
+      return;
+    }
+
+    if (event.key === "Escape" && explorerContextMenu) {
+      event.preventDefault();
+      closeExplorerContextMenu();
       return;
     }
 
