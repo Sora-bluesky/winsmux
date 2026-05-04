@@ -9,42 +9,130 @@
   </head>
   <body>
     <div id="app-shell">
+      <header id="top-menu-bar" aria-label="Application menu">
+        <nav id="top-menu-items" aria-label="Menu bar">
+          <button id="menu-file-btn" class="menu-bar-item" type="button">File</button>
+          <button id="menu-edit-btn" class="menu-bar-item" type="button">Edit</button>
+          <button id="menu-selection-btn" class="menu-bar-item" type="button">Selection</button>
+          <button id="menu-view-btn" class="menu-bar-item" type="button">View</button>
+          <button id="menu-go-btn" class="menu-bar-item" type="button">Go</button>
+          <button id="menu-run-btn" class="menu-bar-item" type="button">Run</button>
+          <button id="menu-terminal-btn" class="menu-bar-item" type="button">Terminal</button>
+          <button id="menu-help-btn" class="menu-bar-item" type="button">Help</button>
+        </nav>
+        <div id="top-menu-status">
+          <span id="menu-project-name">winsmux</span>
+          <span id="menu-layout-status">2x2 panes</span>
+        </div>
+        <div id="top-menu-popover" role="menu" hidden></div>
+      </header>
       <div id="sidebar-overlay" hidden></div>
+      <aside id="activity-bar" aria-label="Primary navigation">
+        <button id="activity-explorer-btn" class="activity-btn is-active" type="button" aria-label="Explorer" aria-controls="left-rail" aria-expanded="true" title="Explorer">
+          <svg class="activity-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 3.5h8.5L18.5 8v12.5H5z" />
+            <path d="M13.5 3.5V8h5" />
+          </svg>
+        </button>
+        <button id="activity-source-btn" class="activity-btn" type="button" aria-label="Source control" aria-controls="source-control-view" aria-expanded="false" title="Source control">
+          <svg class="activity-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="6" cy="5" r="2" />
+            <circle cx="18" cy="19" r="2" />
+            <circle cx="6" cy="19" r="2" />
+            <path d="M6 7v10" />
+            <path d="M8 5h4.5a3.5 3.5 0 0 1 0 7H10a4 4 0 0 0-4 4" />
+          </svg>
+          <span id="activity-source-count" class="activity-badge" hidden>0</span>
+        </button>
+        <button id="activity-search-btn" class="activity-btn" type="button" aria-label="Search" title="Search">
+          <svg class="activity-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="10.5" cy="10.5" r="5.5" />
+            <path d="M15 15l5 5" />
+          </svg>
+        </button>
+        <button id="activity-context-btn" class="activity-btn" type="button" aria-label="Context" aria-controls="context-panel" aria-expanded="true" title="Context">
+          <svg class="activity-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8" />
+            <path d="M12 4v16" />
+            <path d="M4 12h16" />
+          </svg>
+        </button>
+        <div class="activity-spacer"></div>
+        <button id="activity-settings-btn" class="activity-btn" type="button" aria-label="Settings" title="Settings">
+          <svg class="activity-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.05.05a2 2 0 1 1-2.83 2.83l-.05-.05A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6V20a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.88.34l-.05.05a2 2 0 1 1-2.83-2.83l.05-.05A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1H4a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.88l-.05-.05a2 2 0 1 1 2.83-2.83l.05.05A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6V4a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.05-.05a2 2 0 1 1 2.83 2.83l-.05.05A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 .6 1h.1a2 2 0 1 1 0 4H20a1.7 1.7 0 0 0-.6 1z" />
+          </svg>
+        </button>
+      </aside>
       <aside id="left-rail">
-        <div class="brand-block">
+        <div id="sidebar-mode-title" class="sidebar-mode-title">Explorer</div>
+        <div id="sidebar-brand-block" class="brand-block" hidden>
           <div class="brand">winsmux</div>
           <div class="sidebar-caption">Operator shell</div>
         </div>
-        <section class="sidebar-section">
+        <section id="session-sidebar-section" class="sidebar-section" hidden>
           <div class="sidebar-section-title"><span class="ui-icon" data-icon="◴" aria-hidden="true"></span><span data-i18n="sessions-title">Sessions</span></div>
           <div id="session-list" class="sidebar-list"></div>
         </section>
-        <section class="sidebar-section">
-          <div class="sidebar-section-title"><span class="ui-icon" data-icon="▱" aria-hidden="true"></span><span data-i18n="files-title">Files</span></div>
+        <section id="files-sidebar-section" class="sidebar-section">
           <div id="explorer-list" class="sidebar-list"></div>
         </section>
-        <section class="sidebar-section">
+        <section id="editors-sidebar-section" class="sidebar-section" hidden>
           <div class="sidebar-section-title"><span class="ui-icon" data-icon="✎" aria-hidden="true"></span><span data-i18n="editors-title">Editors</span></div>
           <div id="open-editors-list" class="sidebar-list"></div>
         </section>
-        <section class="sidebar-section">
+        <section id="source-sidebar-section" class="sidebar-section" hidden>
           <div class="sidebar-section-title"><span class="ui-icon" data-icon="⌁" aria-hidden="true"></span><span data-i18n="source-title">Source</span></div>
           <div id="source-summary-list" class="sidebar-list"></div>
           <div id="source-entry-list" class="sidebar-list"></div>
         </section>
-        <div class="sidebar-spacer"></div>
-        <button id="settings-btn" class="sidebar-settings-btn" type="button" aria-label="Open settings">
-          <span class="ui-icon" data-icon="⚙" aria-hidden="true"></span>
-          <span class="btn-label">Settings</span>
-        </button>
+        <section id="source-control-view" class="sidebar-section" hidden>
+          <div class="sidebar-section-title source-control-title-row">
+            <span class="source-control-title-main">
+              <span id="source-control-title">Source control</span>
+              <span id="source-control-count" class="source-control-count">0</span>
+            </span>
+            <span class="source-control-title-actions">
+              <button id="source-control-title-commit-btn" type="button" class="source-control-icon-btn" aria-label="Commit all" title="Commit all">✓</button>
+              <button id="source-control-refresh-btn" type="button" class="source-control-icon-btn" aria-label="Refresh source control" title="Refresh">↻</button>
+              <button id="source-control-more-btn" type="button" class="source-control-icon-btn" aria-label="More source control actions" title="More actions">…</button>
+            </span>
+          </div>
+          <textarea id="source-control-message" rows="2" placeholder="Message"></textarea>
+          <button id="source-control-commit-btn" class="source-control-commit-btn" type="button" disabled>
+            <span class="ui-icon" data-icon="✓" aria-hidden="true"></span>
+            <span id="source-control-commit-label">Commit</span>
+          </button>
+          <div class="sidebar-section-title source-control-subtitle">
+            <span class="source-control-group-label">
+              <span aria-hidden="true">⌄</span>
+              <span id="source-control-changes-title">Changes</span>
+            </span>
+            <span id="source-control-changes-count" class="source-control-count">0</span>
+          </div>
+          <div id="source-control-changes-list" class="sidebar-list"></div>
+          <div class="sidebar-section-title source-control-subtitle">
+            <span class="source-control-group-label">
+              <span aria-hidden="true">⌄</span>
+              <span id="source-control-graph-title">Graph</span>
+            </span>
+            <span class="source-control-title-actions">
+              <button id="source-control-graph-fetch-btn" type="button" class="source-control-icon-btn" aria-label="Fetch" title="Fetch">↓</button>
+              <button id="source-control-graph-refresh-btn" type="button" class="source-control-icon-btn" aria-label="Refresh graph" title="Refresh graph">↻</button>
+              <button id="source-control-graph-more-btn" type="button" class="source-control-icon-btn" aria-label="More graph actions" title="More actions">…</button>
+            </span>
+          </div>
+          <div id="source-control-graph-list" class="sidebar-list"></div>
+        </section>
         <div id="sidebar-resizer" aria-hidden="true"></div>
       </aside>
       <main id="workspace">
         <header id="workspace-header">
           <div>
             <div class="eyebrow">Operator workspace</div>
-            <h1 id="workspace-title">Inbox</h1>
-            <p id="workspace-subtitle">Conversation-first shell for operator judgment, evidence, and action.</p>
+            <h1 id="workspace-title">Operator</h1>
+            <p id="workspace-subtitle">Conversation, runs, and operator decisions.</p>
           </div>
           <div id="header-actions">
             <button
@@ -55,7 +143,10 @@
               aria-expanded="false"
               aria-label="Open action palette"
             >
-              <span class="ui-icon" data-icon="⌕" aria-hidden="true"></span>
+              <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="10.5" cy="10.5" r="5.5" />
+                <path d="M15 15l5 5" />
+              </svg>
               <span class="btn-label">Actions</span>
             </button>
             <button
@@ -116,8 +207,22 @@
               <div id="composer-footer">
                 <div id="attachment-tray" aria-live="polite"></div>
                 <div id="composer-actions">
-                  <span id="ime-hint">IME-safe: Enter sends, Shift+Enter inserts newline, composing Enter never sends.</span>
                   <button type="button" id="attach-btn" class="ghost-btn ghost-btn-small">Attach</button>
+                  <button
+                    type="button"
+                    id="voice-input-btn"
+                    class="ghost-btn ghost-btn-small composer-icon-btn"
+                    aria-label="Start voice input"
+                    aria-pressed="false"
+                    title="Start voice input"
+                  >
+                    <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 1 0 6 0V6a3 3 0 0 0-3-3z" />
+                      <path d="M5 11a7 7 0 0 0 14 0" />
+                      <path d="M12 18v3" />
+                      <path d="M8.5 21h7" />
+                    </svg>
+                  </button>
                   <button type="submit" id="send-btn">Send</button>
                 </div>
               </div>
@@ -125,8 +230,9 @@
           </section>
 
           <aside id="editor-surface" hidden>
-            <div class="panel-title-row">
+            <div id="editor-top-strip">
               <div class="panel-title" id="editor-surface-title">Editor</div>
+              <div id="editor-tabs"></div>
               <div class="panel-title-actions">
                 <button class="ghost-btn ghost-btn-small" id="popout-editor-btn" type="button">Pop out</button>
                 <button class="ghost-btn ghost-btn-small" id="close-editor-btn" type="button">Close</button>
@@ -136,7 +242,6 @@
             <div id="editor-file-path">winsmux-app/src/main.ts</div>
             <div id="editor-meta-row" hidden></div>
             <div id="editor-diff-preview" hidden></div>
-            <div id="editor-tabs"></div>
             <div id="browser-surface" hidden>
               <div id="browser-meta-row" hidden></div>
               <div id="browser-target-list" hidden></div>
@@ -149,39 +254,49 @@
               </div>
               <iframe id="browser-frame" title="Localhost preview browser"></iframe>
             </div>
-            <pre id="editor-code"></pre>
+            <div id="editor-code" role="textbox" aria-readonly="true"></div>
             <div id="editor-statusbar">Secondary work surface: opened from conversation, changed files, or explorer.</div>
           </aside>
 
           <aside id="context-panel">
-            <div class="panel-title">Context</div>
+            <div id="context-panel-title" class="panel-title">Context</div>
             <div id="context-sections"></div>
-            <div class="panel-title secondary-title">Decision cockpit</div>
+            <div id="context-decision-title" class="panel-title secondary-title">Decision cockpit</div>
             <div id="handoff-cockpit-list"></div>
-            <div class="panel-title secondary-title">Experiments</div>
+            <div id="context-experiments-title" class="panel-title secondary-title">Experiments</div>
             <div id="experiment-overview-cards"></div>
             <div id="experiment-detail-list"></div>
-            <div class="panel-title secondary-title">Ports</div>
+            <div id="context-ports-title" class="panel-title secondary-title">Ports</div>
             <div id="preview-target-list"></div>
-            <div class="panel-title secondary-title">Source control</div>
+            <div id="context-source-title" class="panel-title secondary-title">Source control</div>
             <div id="source-overview-cards"></div>
-            <div class="panel-title secondary-title">Changed files</div>
+            <div id="context-files-title" class="panel-title secondary-title">Changed files</div>
             <div id="context-file-list"></div>
           </aside>
+
+          <section id="terminal-drawer" aria-label="Worker panes">
+            <div
+              id="workbench-resizer"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize worker panes"
+              tabindex="0"
+            ></div>
+            <div id="terminal-toolbar">
+              <span><span class="ui-icon" data-icon="▣" aria-hidden="true"></span><span id="workbench-title">Worker panes</span></span>
+              <div id="terminal-toolbar-actions">
+                <button id="workbench-layout-btn" type="button" aria-label="Switch workbench layout">2x2</button>
+                <button id="add-pane-btn" type="button">+ Pane</button>
+              </div>
+            </div>
+            <div id="panes-container"></div>
+          </section>
         </section>
 
         <footer id="workspace-footer">
           <div id="footer-left"></div>
           <div id="footer-right"></div>
         </footer>
-
-        <section id="terminal-drawer" hidden>
-          <div id="terminal-toolbar">
-            <span><span class="ui-icon" data-icon="▣" aria-hidden="true"></span>Utility terminal</span>
-            <button id="add-pane-btn">+ Pane</button>
-          </div>
-          <div id="panes-container"></div>
-        </section>
 
         <section id="settings-sheet" hidden role="dialog" aria-modal="false" aria-labelledby="settings-sheet-title">
           <div class="panel-title-row">
@@ -192,8 +307,8 @@
             </div>
           </div>
           <div class="settings-section">
-            <div class="context-label" id="settings-profile-label">Profile</div>
-            <div class="context-value" id="settings-profile-value">Local environment · GPT-5.4 · High reasoning</div>
+            <div class="context-label" id="settings-profile-label">Runtime</div>
+            <div class="context-value" id="settings-profile-value">Uses the local Claude Code configuration.</div>
           </div>
           <div class="settings-section">
             <div class="context-label" id="settings-language-label">Language</div>
@@ -240,12 +355,12 @@
           <div id="command-bar" role="dialog" aria-modal="true" aria-labelledby="command-bar-title">
             <div id="command-bar-header">
               <div>
-                <div class="timeline-eyebrow">Keyboard-first control</div>
+                <div id="command-bar-eyebrow" class="timeline-eyebrow">Keyboard-first control</div>
                 <div id="command-bar-title">Action palette</div>
               </div>
               <div id="command-bar-hint">Ctrl+K to open · ↑↓ navigate · Enter execute · Esc close</div>
             </div>
-            <label class="sr-only" for="command-bar-input">Search commands</label>
+            <label id="command-bar-search-label" class="sr-only" for="command-bar-input">Search commands</label>
             <input
               id="command-bar-input"
               type="text"
@@ -253,7 +368,7 @@
               placeholder="Search actions, runs, panels, and operator controls"
             />
             <div id="command-bar-meta">
-              <span>Action palette for dispatch, review, explain, source context, settings, and terminal control.</span>
+              <span id="command-bar-description">Action palette for dispatch, review, explain, source context, settings, and terminal control.</span>
             </div>
             <div id="command-bar-results" role="listbox" aria-label="Action results"></div>
           </div>

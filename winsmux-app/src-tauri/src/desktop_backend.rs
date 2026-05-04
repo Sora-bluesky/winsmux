@@ -8,7 +8,10 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 const DESKTOP_JSON_RPC_VERSION: &str = "2.0";
 const JSON_RPC_INVALID_REQUEST: i32 = -32600;
@@ -16,6 +19,8 @@ const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
 const JSON_RPC_INVALID_PARAMS: i32 = -32602;
 const JSON_RPC_INTERNAL_ERROR: i32 = -32603;
 const JSON_RPC_SERVER_ERROR: i32 = -32000;
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Serialize, Deserialize)]
 pub struct DesktopBoardSummary {
@@ -204,6 +209,19 @@ pub struct DesktopEditorFilePayload {
     pub content: String,
     pub line_count: usize,
     pub truncated: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplorerEntry {
+    pub path: String,
+    pub kind: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopExplorerListPayload {
+    pub project_dir: String,
+    pub worktree: String,
+    pub entries: Vec<DesktopExplorerEntry>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -953,6 +971,28 @@ pub fn load_desktop_editor_file(
     read_desktop_editor_file(project_dir, worktree, &path)
 }
 
+pub fn load_desktop_explorer_entries(
+    worktree: Option<String>,
+    project_dir: Option<String>,
+) -> Result<DesktopExplorerListPayload, String> {
+    let read_root = resolve_desktop_read_root(project_dir, worktree)?;
+    let mut entries = Vec::new();
+    collect_desktop_explorer_entries(&read_root, &read_root, 0, &mut entries)?;
+    entries.sort_by(|left, right| {
+        let left_is_file = left.kind == "file";
+        let right_is_file = right.kind == "file";
+        left_is_file
+            .cmp(&right_is_file)
+            .then_with(|| left.path.to_lowercase().cmp(&right.path.to_lowercase()))
+    });
+
+    Ok(DesktopExplorerListPayload {
+        project_dir: read_root.to_string_lossy().to_string(),
+        worktree: ".".to_string(),
+        entries,
+    })
+}
+
 pub fn handle_desktop_json_rpc(
     transport: &dyn DesktopCommandTransport,
     request: DesktopJsonRpcRequest,
@@ -1000,6 +1040,8 @@ pub fn handle_desktop_json_rpc(
                     "desktop.run.compare",
                     "desktop.run.promote",
                     "desktop.run.pick_winner",
+                    "desktop.explorer.list",
+                    "desktop.editor.read",
                 ],
             }),
         ),
@@ -1142,6 +1184,20 @@ pub fn handle_desktop_json_rpc(
                         request_id,
                         JSON_RPC_INTERNAL_ERROR,
                         format!("Failed to serialize desktop editor payload: {err}"),
+                    ),
+                },
+                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
+            }
+        }
+        "desktop.explorer.list" => {
+            let worktree = get_optional_string_param(params.as_ref(), &["worktree"]);
+            match load_desktop_explorer_entries(worktree, resolved_project_dir) {
+                Ok(result) => match serde_json::to_value(result) {
+                    Ok(value) => json_rpc_result(request_id, value),
+                    Err(err) => json_rpc_error(
+                        request_id,
+                        JSON_RPC_INTERNAL_ERROR,
+                        format!("Failed to serialize desktop explorer payload: {err}"),
                     ),
                 },
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
@@ -1325,8 +1381,11 @@ where
     let source = command.source_name().to_string();
 
     thread::spawn(move || {
+        let mut quick_failure_count = 0usize;
         while !stop_requested.load(Ordering::Relaxed) {
-            let mut child = match Command::new("pwsh")
+            let started_at = Instant::now();
+            let mut process = Command::new("pwsh");
+            process
                 .arg("-NoProfile")
                 .arg("-ExecutionPolicy")
                 .arg("Bypass")
@@ -1334,12 +1393,24 @@ where
                 .arg(&command_text)
                 .current_dir(&effective_project_dir)
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
+                .stderr(Stdio::piped());
+            #[cfg(windows)]
             {
+                process.creation_flags(CREATE_NO_WINDOW);
+            }
+
+            let mut child = match process.spawn() {
                 Ok(child) => child,
                 Err(err) => {
                     eprintln!("Failed to start {} summary stream: {}", source, err);
+                    quick_failure_count += 1;
+                    if quick_failure_count >= 3 {
+                        eprintln!(
+                            "winsmux {} stream disabled after repeated pwsh start failures",
+                            source
+                        );
+                        break;
+                    }
                     if stop_requested.load(Ordering::Relaxed) {
                         break;
                     }
@@ -1394,9 +1465,38 @@ where
                 }
             }
 
-            let _ = child.wait();
+            let status = child.wait();
             if stop_requested.load(Ordering::Relaxed) {
                 break;
+            }
+            match status {
+                Ok(status) if status.success() => {
+                    quick_failure_count = 0;
+                }
+                Ok(status) if started_at.elapsed() < Duration::from_secs(10) => {
+                    quick_failure_count += 1;
+                    eprintln!(
+                        "winsmux {} stream exited quickly with status {}; attempt {}",
+                        source, status, quick_failure_count
+                    );
+                    if quick_failure_count >= 3 {
+                        eprintln!(
+                            "winsmux {} stream disabled after repeated quick failures",
+                            source
+                        );
+                        break;
+                    }
+                }
+                Ok(_) => {
+                    quick_failure_count = 0;
+                }
+                Err(err) => {
+                    quick_failure_count += 1;
+                    eprintln!("winsmux {} stream wait failed: {}", source, err);
+                    if quick_failure_count >= 3 {
+                        break;
+                    }
+                }
             }
             thread::sleep(Duration::from_secs(2));
         }
@@ -1438,6 +1538,85 @@ fn resolve_desktop_read_root(
     }
 
     Ok(normalized_requested_root)
+}
+
+const DESKTOP_EXPLORER_MAX_DEPTH: usize = 5;
+const DESKTOP_EXPLORER_MAX_ENTRIES: usize = 1_200;
+
+fn should_descend_desktop_explorer_dir(name: &str) -> bool {
+    !matches!(
+        name,
+        ".git"
+            | ".claude"
+            | ".playwright-mcp"
+            | ".references"
+            | ".shield-harness"
+            | ".winsmux"
+            | ".worktrees"
+            | ".tmp"
+            | "dist"
+            | "node_modules"
+            | "output"
+            | "target"
+    )
+}
+
+fn collect_desktop_explorer_entries(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    entries: &mut Vec<DesktopExplorerEntry>,
+) -> Result<(), String> {
+    if entries.len() >= DESKTOP_EXPLORER_MAX_ENTRIES {
+        return Ok(());
+    }
+
+    let mut children = fs::read_dir(dir)
+        .map_err(|err| format!("Failed to list project explorer directory: {err}"))?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+
+    children.sort_by(|left, right| {
+        left.file_name()
+            .to_string_lossy()
+            .to_lowercase()
+            .cmp(&right.file_name().to_string_lossy().to_lowercase())
+    });
+
+    for child in children {
+        if entries.len() >= DESKTOP_EXPLORER_MAX_ENTRIES {
+            break;
+        }
+        let Ok(file_type) = child.file_type() else {
+            continue;
+        };
+        let path = child.path();
+        let Ok(relative_path) = path.strip_prefix(root) else {
+            continue;
+        };
+        let relative = relative_path.to_string_lossy().replace('\\', "/");
+        if relative.is_empty() {
+            continue;
+        }
+
+        if file_type.is_dir() {
+            entries.push(DesktopExplorerEntry {
+                path: relative.clone(),
+                kind: "directory".to_string(),
+            });
+            let name = child.file_name().to_string_lossy().to_string();
+            if depth < DESKTOP_EXPLORER_MAX_DEPTH && should_descend_desktop_explorer_dir(&name) {
+                let _ = collect_desktop_explorer_entries(root, &path, depth + 1, entries);
+            }
+        } else if file_type.is_file() {
+            entries.push(DesktopExplorerEntry {
+                path: relative,
+                kind: "file".to_string(),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 fn read_desktop_editor_file(
@@ -2331,7 +2510,7 @@ mod tests {
             payload.run.experiment_packet.consultation_ref,
             ".winsmux/consultations/consult-result-__ID__.json"
         );
-        assert_eq!(payload.run.experiment_packet.run_id, "");
+        assert_eq!(payload.run.experiment_packet.run_id, "task:task-256");
         assert_eq!(payload.run.experiment_packet.slot, "slot-builder-1");
         assert_eq!(payload.run.experiment_packet.branch, "worktree-builder-1");
         assert_eq!(payload.run.experiment_packet.worktree, "");
@@ -2433,7 +2612,7 @@ mod tests {
                 .map(|state| state.request.review_contract.style.as_str()),
             Some("utility_first")
         );
-        assert_eq!(payload.recent_events.len(), 2);
+        assert_eq!(payload.recent_events.len(), 3);
         assert_eq!(
             transport.requests.borrow().as_slice(),
             ["explain task:task-256 --json"]

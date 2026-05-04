@@ -106,7 +106,7 @@ async fn pty_json_rpc(
 
 #[tauri::command]
 async fn pty_spawn(app: AppHandle, pane_id: String, cols: u16, rows: u16) -> Result<(), String> {
-    spawn_pty(&app, pane_id, cols, rows, "pty.spawn")
+    spawn_pty(&app, pane_id, cols, rows, None, "pty.spawn")
 }
 
 #[tauri::command]
@@ -143,6 +143,7 @@ fn spawn_pty(
     pane_id: String,
     cols: u16,
     rows: u16,
+    startup_input: Option<String>,
     reason: &str,
 ) -> Result<(), String> {
     let manager = app.state::<PtyManager>();
@@ -177,23 +178,23 @@ fn spawn_pty(
 
     start_pty_reader(
         app,
-        pane_id,
+        pane_id.clone(),
         reader,
         output_history,
         alive,
         generation,
         manager.panes.clone(),
     );
+    if let Some(input) = startup_input {
+        write_pty(app, &pane_id, &input)?;
+    }
     Ok(())
 }
 
 type PtyReader = Box<dyn Read + Send>;
+type SinglePtyParts = (SinglePty, PtyReader, Arc<Mutex<String>>, Arc<AtomicBool>);
 
-fn create_single_pty(
-    cols: u16,
-    rows: u16,
-    generation: u64,
-) -> Result<(SinglePty, PtyReader, Arc<Mutex<String>>, Arc<AtomicBool>), String> {
+fn create_single_pty(cols: u16, rows: u16, generation: u64) -> Result<SinglePtyParts, String> {
     let pty_system = native_pty_system();
 
     let pair = pty_system
@@ -464,8 +465,16 @@ impl PtyCommandTransport for TauriPtyTransport {
                 pane_id,
                 cols,
                 rows,
+                startup_input,
             } => {
-                spawn_pty(&self.app, pane_id.clone(), *cols, *rows, "pty.spawn")?;
+                spawn_pty(
+                    &self.app,
+                    pane_id.clone(),
+                    *cols,
+                    *rows,
+                    startup_input.clone(),
+                    "pty.spawn",
+                )?;
                 Ok(serde_json::json!({ "paneId": pane_id }))
             }
             PtyCommand::Write { pane_id, data } => {
@@ -490,29 +499,6 @@ impl PtyCommandTransport for TauriPtyTransport {
                 Ok(serde_json::json!({ "paneId": pane_id }))
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn trim_pty_history_preserves_utf8_boundaries() {
-        let mut history = "あ".repeat((PTY_CAPTURE_LIMIT / 3) + 2);
-
-        trim_pty_history(&mut history);
-
-        assert!(history.len() <= PTY_CAPTURE_LIMIT);
-        assert!(history.is_char_boundary(0));
-        assert!(history.ends_with('あ'));
-    }
-
-    #[test]
-    fn limit_pty_capture_output_returns_recent_lines() {
-        let output = limit_pty_capture_output("one\ntwo\nthree\nfour\n", Some(2));
-
-        assert_eq!(output, "three\nfour");
     }
 }
 
@@ -560,4 +546,27 @@ pub fn run() {
             manager.stop_requested.store(true, Ordering::SeqCst);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trim_pty_history_preserves_utf8_boundaries() {
+        let mut history = "あ".repeat((PTY_CAPTURE_LIMIT / 3) + 2);
+
+        trim_pty_history(&mut history);
+
+        assert!(history.len() <= PTY_CAPTURE_LIMIT);
+        assert!(history.is_char_boundary(0));
+        assert!(history.ends_with('あ'));
+    }
+
+    #[test]
+    fn limit_pty_capture_output_returns_recent_lines() {
+        let output = limit_pty_capture_output("one\ntwo\nthree\nfour\n", Some(2));
+
+        assert_eq!(output, "three\nfour");
+    }
 }
