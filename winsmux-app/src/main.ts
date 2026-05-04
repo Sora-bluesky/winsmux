@@ -223,11 +223,13 @@ interface SourceChange {
   needsAttention: boolean;
   run: string;
   review: string;
+  staged?: boolean;
 }
 
 interface BrowserSourceGraphItem {
   run_id: string;
   short_sha?: string;
+  graph_symbols?: string;
   task: string;
   branch: string;
   refs?: string[];
@@ -1592,6 +1594,7 @@ function normalizeBrowserSourceChange(change: Partial<SourceChange>): SourceChan
     needsAttention: change.needsAttention ?? false,
     run: change.run || "working-tree",
     review: change.review || "local",
+    staged: Boolean(change.staged),
   };
 }
 
@@ -1603,6 +1606,7 @@ function normalizeBrowserSourceGraphItem(item: Partial<BrowserSourceGraphItem>):
   return {
     run_id: runId,
     short_sha: `${item.short_sha || runId.slice(0, 7)}`.trim(),
+    graph_symbols: `${item.graph_symbols || "* "}`.trimEnd(),
     task: `${item.task || runId}`.trim(),
     branch: `${item.branch || ""}`.trim(),
     refs: Array.isArray(item.refs) ? item.refs.map((ref) => `${ref}`.trim()).filter((ref) => ref) : [],
@@ -2617,6 +2621,12 @@ function getSourceGraphMeta(item: SourceControlGraphItem) {
   return parts.join("  ");
 }
 
+function getSourceGraphSymbols(item: SourceControlGraphItem) {
+  const browserItem = item as BrowserSourceGraphItem;
+  const symbols = `${browserItem.graph_symbols || ""}`.trimEnd();
+  return symbols || "*";
+}
+
 function applySourceControlSplitHeight() {
   const view = document.getElementById("source-control-view");
   if (!view) {
@@ -2649,13 +2659,78 @@ function renderSourceControlView() {
   applySourceControlSplitHeight();
 
   const changes = getVisibleSourceChanges();
+  const stagedChanges = changes.filter((change) => change.staged);
+  const unstagedChanges = changes.filter((change) => !change.staged);
+  const stagedSectionVisible = stagedChanges.length > 0;
+  const primaryChangeCount = stagedSectionVisible ? stagedChanges.length : changes.length;
   count.textContent = `${changes.length}`;
+  const changesTitle = document.getElementById("source-control-changes-title");
+  if (changesTitle) {
+    changesTitle.textContent = stagedSectionVisible
+      ? getLanguageText("Staged Changes", "ステージされている変更")
+      : getLanguageText("Changes", "変更");
+  }
   if (changesCount) {
-    changesCount.textContent = `${changes.length}`;
+    changesCount.textContent = `${primaryChangeCount}`;
   }
   if (messageInput && messageInput.value !== sourceControlCommitMessage) {
     messageInput.value = sourceControlCommitMessage;
   }
+
+  const appendChangeRow = (change: SourceChange) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `sidebar-row source-control-file-row ${getSourceChangeKey(change) === selectedEditorKey && editorSurfaceOpen ? "is-active" : ""}`;
+    button.dataset.tone = getSourceEntryTone(change);
+    button.classList.toggle("is-staged", Boolean(change.staged));
+    const fileName = change.path.split("/").pop() ?? change.path;
+    const fileDir = change.path.split("/").slice(0, -1).join("\\");
+    const icon = document.createElement("span");
+    icon.className = "sidebar-file-icon";
+    const iconKind = getExplorerFileIconKind(change.path, fileName);
+    icon.dataset.iconKind = iconKind;
+    icon.textContent = getExplorerFileIconLabel(iconKind);
+
+    const fileMain = document.createElement("span");
+    fileMain.className = "source-control-file-main";
+    const filePath = document.createElement("span");
+    filePath.className = "sidebar-row-title source-control-file-path";
+    filePath.textContent = fileName;
+    const fileDirectory = document.createElement("span");
+    fileDirectory.className = "source-control-file-dir";
+    fileDirectory.textContent = fileDir;
+    fileMain.append(filePath, fileDirectory);
+
+    const status = document.createElement("span");
+    status.className = "source-control-status";
+    status.textContent = getSourceStatusLabel(change.status);
+    status.title = [
+      change.staged ? getLanguageText("staged", "ステージ済み") : getLanguageText("changes", "未ステージ"),
+      change.status,
+      change.lines,
+    ].filter((value) => value).join(" · ");
+
+    button.append(icon, fileMain, status);
+    button.addEventListener("click", () => {
+      setSelectedRun(change.run);
+      void openEditorSourceChange(change);
+      renderExplorer();
+    });
+    changesRoot.appendChild(button);
+  };
+
+  const appendInlineChangeHeader = (titleText: string, value: number) => {
+    const header = document.createElement("div");
+    header.className = "source-control-inline-group-title";
+    const label = document.createElement("span");
+    label.className = "source-control-group-label";
+    label.textContent = `⌄ ${titleText}`;
+    const badge = document.createElement("span");
+    badge.className = "source-control-count";
+    badge.textContent = `${value}`;
+    header.append(label, badge);
+    changesRoot.appendChild(header);
+  };
 
   changesRoot.innerHTML = "";
   if (changes.length === 0) {
@@ -2666,41 +2741,21 @@ function renderSourceControlView() {
       `<span class="sidebar-row-meta">${getLanguageText("Desktop summary has not reported source changes.", "デスクトップ要約には変更がありません。")}</span>`;
     changesRoot.appendChild(empty);
   } else {
-    for (const change of changes) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `sidebar-row source-control-file-row ${getSourceChangeKey(change) === selectedEditorKey && editorSurfaceOpen ? "is-active" : ""}`;
-      button.dataset.tone = getSourceEntryTone(change);
-      const fileName = change.path.split("/").pop() ?? change.path;
-      const fileDir = change.path.split("/").slice(0, -1).join("\\");
-      const icon = document.createElement("span");
-      icon.className = "sidebar-file-icon";
-      const iconKind = getExplorerFileIconKind(change.path, fileName);
-      icon.dataset.iconKind = iconKind;
-      icon.textContent = getExplorerFileIconLabel(iconKind);
-
-      const fileMain = document.createElement("span");
-      fileMain.className = "source-control-file-main";
-      const filePath = document.createElement("span");
-      filePath.className = "sidebar-row-title source-control-file-path";
-      filePath.textContent = fileName;
-      const fileDirectory = document.createElement("span");
-      fileDirectory.className = "source-control-file-dir";
-      fileDirectory.textContent = fileDir;
-      fileMain.append(filePath, fileDirectory);
-
-      const status = document.createElement("span");
-      status.className = "source-control-status";
-      status.textContent = getSourceStatusLabel(change.status);
-      status.title = `${change.status}${change.lines ? ` · ${change.lines}` : ""}`;
-
-      button.append(icon, fileMain, status);
-      button.addEventListener("click", () => {
-        setSelectedRun(change.run);
-        void openEditorSourceChange(change);
-        renderExplorer();
-      });
-      changesRoot.appendChild(button);
+    for (const change of stagedSectionVisible ? stagedChanges : changes) {
+      appendChangeRow(change);
+    }
+    if (stagedSectionVisible) {
+      appendInlineChangeHeader(getLanguageText("Changes", "変更"), unstagedChanges.length);
+      if (unstagedChanges.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "source-control-empty-group";
+        empty.textContent = getLanguageText("No unstaged changes", "未ステージの変更はありません");
+        changesRoot.appendChild(empty);
+      } else {
+        for (const change of unstagedChanges) {
+          appendChangeRow(change);
+        }
+      }
     }
   }
 
@@ -2730,11 +2785,10 @@ function renderSourceControlView() {
         getSourceGraphMeta(item),
       ].filter((value) => value).join("\n");
 
-      const rail = document.createElement("span");
-      rail.className = "source-control-graph-rail";
-
-      const node = document.createElement("span");
-      node.className = "source-control-graph-node";
+      const lane = document.createElement("span");
+      lane.className = "source-control-graph-lanes";
+      lane.textContent = getSourceGraphSymbols(item);
+      lane.title = getLanguageText("Git graph lane", "Git グラフのレーン");
 
       const content = document.createElement("span");
       content.className = "source-control-graph-content";
@@ -2757,7 +2811,7 @@ function renderSourceControlView() {
       meta.textContent = getSourceGraphMeta(item);
 
       content.append(titleRow, meta);
-      button.append(rail, node, content);
+      button.append(lane, content);
       button.addEventListener("click", () => {
         setSelectedRun(item.run_id);
         renderDesktopSurfaces();
@@ -6857,7 +6911,7 @@ function renderEditorSurface() {
     browserFrame.src = "about:blank";
     browserSurface.hidden = true;
     tabs.innerHTML = "";
-    renderEditorCode(code, "No backend preview cached.");
+    renderEditorCode(code, "No backend preview cached.", "Text");
     code.hidden = false;
     renderEditorStatusbar(statusbar, [
       { label: "", value: "Idle" },
@@ -7046,7 +7100,7 @@ function renderEditorSurface() {
       diffPreview.appendChild(previewMeta);
       diffPreview.hidden = false;
     }
-    renderEditorCode(code, selected.content);
+    renderEditorCode(code, selected.content, selected.language);
     renderEditorStatusbar(statusbar, [
       ...(detachedSurface ? [{ label: "", value: "Detached" }] : []),
       ...(detachedSurface && detachedSurfaceRunLabel ? [{ label: "", value: detachedSurfaceRunLabel }] : []),
@@ -7099,7 +7153,135 @@ function splitEditorCodeLines(content: string): EditorCodeLine[] {
   }));
 }
 
-function renderEditorCode(root: HTMLElement, content: string) {
+type EditorSyntaxTokenKind =
+  | "comment"
+  | "function"
+  | "heading"
+  | "keyword"
+  | "link"
+  | "number"
+  | "operator"
+  | "property"
+  | "punctuation"
+  | "string"
+  | "tag";
+
+interface EditorSyntaxToken {
+  start: number;
+  end: number;
+  kind: EditorSyntaxTokenKind;
+}
+
+function appendEditorSyntaxText(root: HTMLElement, text: string, kind?: EditorSyntaxTokenKind) {
+  if (!text) {
+    return;
+  }
+  const span = document.createElement("span");
+  if (kind) {
+    span.className = `editor-token editor-token-${kind}`;
+  }
+  span.textContent = text;
+  root.appendChild(span);
+}
+
+function addEditorSyntaxMatches(tokens: EditorSyntaxToken[], text: string, pattern: RegExp, kind: EditorSyntaxTokenKind) {
+  for (const match of text.matchAll(pattern)) {
+    const start = match.index ?? -1;
+    const value = match[0] ?? "";
+    if (start < 0 || !value) {
+      continue;
+    }
+    const end = start + value.length;
+    if (tokens.some((token) => start < token.end && end > token.start)) {
+      continue;
+    }
+    tokens.push({ start, end, kind });
+  }
+}
+
+function appendTokenizedEditorLine(root: HTMLElement, text: string, tokens: EditorSyntaxToken[]) {
+  let cursor = 0;
+  const orderedTokens = [...tokens].sort((left, right) => left.start - right.start || right.end - left.end);
+  for (const token of orderedTokens) {
+    if (token.start < cursor || token.end <= token.start) {
+      continue;
+    }
+    appendEditorSyntaxText(root, text.slice(cursor, token.start));
+    appendEditorSyntaxText(root, text.slice(token.start, token.end), token.kind);
+    cursor = token.end;
+  }
+  appendEditorSyntaxText(root, text.slice(cursor));
+}
+
+function appendMarkdownEditorLine(root: HTMLElement, text: string) {
+  const heading = /^(#{1,6})(\s+)(.*)$/.exec(text);
+  if (heading) {
+    appendEditorSyntaxText(root, heading[1], "punctuation");
+    appendEditorSyntaxText(root, heading[2]);
+    appendEditorSyntaxText(root, heading[3], "heading");
+    return;
+  }
+
+  const list = /^(\s*)([-*+]|\d+[.)])(\s+)(.*)$/.exec(text);
+  if (list) {
+    appendEditorSyntaxText(root, list[1]);
+    appendEditorSyntaxText(root, list[2], "punctuation");
+    appendEditorSyntaxText(root, list[3]);
+    appendMarkdownInlineSyntax(root, list[4]);
+    return;
+  }
+
+  const quote = /^(\s*>+\s?)(.*)$/.exec(text);
+  if (quote) {
+    appendEditorSyntaxText(root, quote[1], "punctuation");
+    appendMarkdownInlineSyntax(root, quote[2]);
+    return;
+  }
+
+  appendMarkdownInlineSyntax(root, text);
+}
+
+function appendMarkdownInlineSyntax(root: HTMLElement, text: string) {
+  const tokens: EditorSyntaxToken[] = [];
+  addEditorSyntaxMatches(tokens, text, /`[^`]*`/g, "string");
+  addEditorSyntaxMatches(tokens, text, /\[[^\]]+\]\([^)]+\)/g, "link");
+  addEditorSyntaxMatches(tokens, text, /<\/?[A-Za-z][^>]*>/g, "tag");
+  addEditorSyntaxMatches(tokens, text, /(\*\*|__)[^\n]+?\1/g, "keyword");
+  appendTokenizedEditorLine(root, text, tokens);
+}
+
+function appendCodeEditorLine(root: HTMLElement, text: string, language: string) {
+  const normalized = language.toLowerCase();
+  const tokens: EditorSyntaxToken[] = [];
+  if (normalized === "markdown") {
+    appendMarkdownEditorLine(root, text);
+    return;
+  }
+  if (normalized === "html") {
+    addEditorSyntaxMatches(tokens, text, /<!--.*?-->/g, "comment");
+    addEditorSyntaxMatches(tokens, text, /<\/?[A-Za-z][A-Za-z0-9:-]*/g, "tag");
+    addEditorSyntaxMatches(tokens, text, /\b[A-Za-z_:][-A-Za-z0-9_:.]*(?==)/g, "property");
+  } else if (normalized === "css") {
+    addEditorSyntaxMatches(tokens, text, /\/\*.*?\*\//g, "comment");
+    addEditorSyntaxMatches(tokens, text, /(?:--)?[-A-Za-z]+(?=\s*:)/g, "property");
+    addEditorSyntaxMatches(tokens, text, /#[0-9A-Fa-f]{3,8}\b/g, "number");
+  } else if (normalized === "powershell" || normalized === "yaml" || normalized === "toml") {
+    addEditorSyntaxMatches(tokens, text, /#.*/g, "comment");
+  } else {
+    addEditorSyntaxMatches(tokens, text, /\/\/.*/g, "comment");
+  }
+
+  addEditorSyntaxMatches(tokens, text, /(["'`])(?:\\.|(?!\1).)*\1/g, "string");
+  addEditorSyntaxMatches(tokens, text, /\b\d+(?:\.\d+)?\b/g, "number");
+  addEditorSyntaxMatches(tokens, text, /\b(?:async|await|break|case|const|continue|crate|else|enum|export|fn|for|from|function|if|impl|import|interface|let|match|mod|pub|return|self|struct|type|use|where|while)\b/g, "keyword");
+  if (normalized === "powershell") {
+    addEditorSyntaxMatches(tokens, text, /(?:^|\s)-[A-Za-z][A-Za-z0-9-]*/g, "operator");
+  }
+  addEditorSyntaxMatches(tokens, text, /\b[A-Za-z_$][\w$]*(?=\s*\()/g, "function");
+  appendTokenizedEditorLine(root, text, tokens);
+}
+
+function renderEditorCode(root: HTMLElement, content: string, language = "Text") {
   root.innerHTML = "";
   const lines = splitEditorCodeLines(content);
   root.style.setProperty("--editor-line-number-digits", `${Math.max(2, String(lines.length).length)}`);
@@ -7114,7 +7296,11 @@ function renderEditorCode(root: HTMLElement, content: string) {
 
     const lineContent = document.createElement("span");
     lineContent.className = "editor-line-content";
-    lineContent.textContent = line.text || " ";
+    if (line.text) {
+      appendCodeEditorLine(lineContent, line.text, language);
+    } else {
+      lineContent.textContent = " ";
+    }
 
     row.append(lineNumber, lineContent);
     root.appendChild(row);
@@ -8333,6 +8519,12 @@ function inferLanguageFromPath(path: string) {
   if (path.endsWith(".ts")) {
     return "TypeScript";
   }
+  if (path.endsWith(".rs")) {
+    return "Rust";
+  }
+  if (path.endsWith(".md")) {
+    return "Markdown";
+  }
   if (path.endsWith(".css")) {
     return "CSS";
   }
@@ -8341,6 +8533,15 @@ function inferLanguageFromPath(path: string) {
   }
   if (path.endsWith(".ps1")) {
     return "PowerShell";
+  }
+  if (path.endsWith(".json")) {
+    return "JSON";
+  }
+  if (path.endsWith(".toml")) {
+    return "TOML";
+  }
+  if (path.endsWith(".yml") || path.endsWith(".yaml")) {
+    return "YAML";
   }
   return "Text";
 }

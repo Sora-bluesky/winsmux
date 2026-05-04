@@ -973,6 +973,25 @@ textarea {
   padding: 0 4px;
 }
 
+.source-control-inline-group-title {
+  display: flex;
+  min-height: 22px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding: 0 4px;
+  color: #cccccc;
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.source-control-empty-group {
+  padding: 3px 4px 5px 18px;
+  color: #858585;
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
 .source-control-status {
   font-size: var(--text-xs);
   color: #d7ba7d;
@@ -1045,12 +1064,15 @@ textarea {
 
 .source-control-graph-row {
   position: relative;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: start;
   min-height: 38px;
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 3px 4px 3px 28px;
-  gap: 0;
+  padding: 3px 4px 3px 2px;
+  gap: 4px;
 }
 
 .source-control-graph-row::before {
@@ -1107,6 +1129,39 @@ textarea {
 
 .source-control-graph-row[data-graph-index="5"] .source-control-graph-node {
   border-color: #f0883e;
+}
+
+.source-control-graph-lanes {
+  min-width: 0;
+  height: 32px;
+  overflow: hidden;
+  color: #58a6ff;
+  font-family: var(--font-code);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 16px;
+  white-space: pre;
+  text-align: left;
+}
+
+.source-control-graph-row[data-graph-index="1"] .source-control-graph-lanes {
+  color: #d29922;
+}
+
+.source-control-graph-row[data-graph-index="2"] .source-control-graph-lanes {
+  color: #db61a2;
+}
+
+.source-control-graph-row[data-graph-index="3"] .source-control-graph-lanes {
+  color: #56d4a8;
+}
+
+.source-control-graph-row[data-graph-index="4"] .source-control-graph-lanes {
+  color: #a371f7;
+}
+
+.source-control-graph-row[data-graph-index="5"] .source-control-graph-lanes {
+  color: #f0883e;
 }
 
 .source-control-graph-content {
@@ -2343,6 +2398,41 @@ body[data-popout-surface="1"] #editor-surface {
   padding-right: 16px;
   color: #d4d4d4;
   white-space: pre;
+}
+
+.editor-token-comment {
+  color: #6a9955;
+}
+
+.editor-token-function {
+  color: #dcdcaa;
+}
+
+.editor-token-heading,
+.editor-token-link {
+  color: #4fc1ff;
+}
+
+.editor-token-keyword,
+.editor-token-tag {
+  color: #569cd6;
+}
+
+.editor-token-number {
+  color: #b5cea8;
+}
+
+.editor-token-operator,
+.editor-token-punctuation {
+  color: #808080;
+}
+
+.editor-token-property {
+  color: #9cdcfe;
+}
+
+.editor-token-string {
+  color: #ce9178;
 }
 
 #editor-statusbar {
