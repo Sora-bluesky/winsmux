@@ -57,7 +57,7 @@ Describe 'Get-BridgeSettings defaults' {
         $settings = Get-BridgeSettings
 
         $settings.agent | Should -Be 'codex'
-        $settings.model | Should -Be 'gpt-5.4'
+        $settings.model | Should -Be ''
         $settings.external_operator | Should -Be $true
         $settings.legacy_role_layout | Should -Be $false
         $settings.operators | Should -Be 0
@@ -127,7 +127,13 @@ Describe 'agent launch helpers' {
     It 'builds the Codex launch command with quoted project and worktree paths' {
         $command = Get-AgentLaunchCommand -Agent 'codex' -Model 'gpt-5.4' -ProjectDir "C:\repo path\builder-1" -GitWorktreeDir "C:\repo path\.git"
 
-        $command | Should -Be "codex -c model=gpt-5.4 --sandbox danger-full-access -C 'C:\repo path\builder-1' --add-dir 'C:\repo path\.git'"
+        $command | Should -Be "codex -c 'model=gpt-5.4' --sandbox danger-full-access -C 'C:\repo path\builder-1' --add-dir 'C:\repo path\.git'"
+    }
+
+    It 'lets Codex use its CLI default model when no model is configured' {
+        $command = Get-AgentLaunchCommand -Agent 'codex' -Model '' -ProjectDir "C:\repo path\builder-1" -GitWorktreeDir "C:\repo path\.git"
+
+        $command | Should -Be "codex --sandbox danger-full-access -C 'C:\repo path\builder-1' --add-dir 'C:\repo path\.git'"
     }
 
     It 'uses provider capability command metadata for launch commands' {
@@ -157,12 +163,18 @@ Describe 'agent launch helpers' {
 
             $command = Get-AgentLaunchCommand -Agent 'codex-nightly' -Model 'gpt-5.4' -ProjectDir "C:\repo path\builder-1" -GitWorktreeDir "C:\repo path\.git" -RootPath $root
 
-            $command | Should -Be "& 'C:\Tools\Codex Nightly\codex.exe' -c model=gpt-5.4 --sandbox danger-full-access -C 'C:\repo path\builder-1' --add-dir 'C:\repo path\.git'"
+            $command | Should -Be "& 'C:\Tools\Codex Nightly\codex.exe' -c 'model=gpt-5.4' --sandbox danger-full-access -C 'C:\repo path\builder-1' --add-dir 'C:\repo path\.git'"
         } finally {
             if (Test-Path -LiteralPath $root) {
                 Remove-Item -LiteralPath $root -Recurse -Force
             }
         }
+    }
+
+    It 'quotes Codex model config as a single shell argument' {
+        $command = Get-AgentLaunchCommand -Agent 'codex' -Model 'gpt 5.4;unsafe' -ProjectDir "C:\repo path\builder-1" -GitWorktreeDir "C:\repo path\.git"
+
+        $command | Should -Be "codex -c 'model=gpt 5.4;unsafe' --sandbox danger-full-access -C 'C:\repo path\builder-1' --add-dir 'C:\repo path\.git'"
     }
 
     It 'returns a CLM workaround bootstrap for Codex worktree workers' {

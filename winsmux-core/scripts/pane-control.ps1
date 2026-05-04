@@ -228,7 +228,7 @@ function Get-PaneControlGitWorktreeDir {
 function Get-PaneControlLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Agent,
-        [Parameter(Mandatory = $true)][string]$Model,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath = ''
@@ -527,7 +527,7 @@ function Get-PaneControlRestartPlan {
         } else {
             $Settings = [ordered]@{
                 agent = 'codex'
-                model = 'gpt-5.4'
+                model = ''
                 roles = [ordered]@{}
             }
         }

@@ -6,7 +6,7 @@ Set-StrictMode -Version Latest
 function Get-AgentLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Agent,
-        [Parameter(Mandatory = $true)][string]$Model,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath,

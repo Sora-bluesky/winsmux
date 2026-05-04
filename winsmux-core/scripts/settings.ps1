@@ -19,7 +19,7 @@ $script:BridgeProviderCapabilityRegistryFileName = 'provider-capabilities.json'
 $script:BridgeSettingsSchema = [ordered]@{
     config_version      = @{ Type = 'int';      Default = 1;             Option = $null }
     agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
-    model               = @{ Type = 'string';   Default = 'gpt-5.4';     Option = '@bridge-model' }
+    model               = @{ Type = 'string';   Default = '';            Option = '@bridge-model' }
     prompt_transport    = @{ Type = 'transport'; Default = 'argv';       Option = '@bridge-prompt-transport' }
     auth_mode           = @{ Type = 'string';   Default = '';            Option = $null }
     external_operator  = @{ Type = 'bool';     Default = $true;         Option = '@bridge-external-operator' }
@@ -301,18 +301,21 @@ function New-BridgeManagedAgentSlots {
     param(
         [Parameter(Mandatory = $true)][int]$Count,
         [Parameter(Mandatory = $true)][string]$Agent,
-        [Parameter(Mandatory = $true)][string]$Model
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model
     )
 
     $slots = @()
     for ($index = 1; $index -le $Count; $index++) {
-        $slots += [ordered]@{
+        $slot = [ordered]@{
             slot_id       = "worker-$index"
             runtime_role  = 'worker'
             agent         = $Agent
-            model         = $Model
             worktree_mode = 'managed'
         }
+        if (-not [string]::IsNullOrWhiteSpace($Model)) {
+            $slot.model = $Model
+        }
+        $slots += $slot
     }
 
     return @($slots)
@@ -1053,7 +1056,18 @@ function Get-BridgeProviderLaunchCommand {
 
             $projectLiteral = ConvertTo-BridgePowerShellLiteral -Value $ProjectDir
             $worktreeLiteral = ConvertTo-BridgePowerShellLiteral -Value $GitWorktreeDir
-            return "$commandInvocation -c model=$Model --sandbox danger-full-access -C $projectLiteral --add-dir $worktreeLiteral"
+            $parts = @($commandInvocation)
+            if (-not [string]::IsNullOrWhiteSpace($Model)) {
+                $parts += '-c'
+                $parts += (ConvertTo-BridgePowerShellLiteral -Value "model=$Model")
+            }
+            $parts += '--sandbox'
+            $parts += 'danger-full-access'
+            $parts += '-C'
+            $parts += $projectLiteral
+            $parts += '--add-dir'
+            $parts += $worktreeLiteral
+            return ($parts -join ' ')
         }
         'claude' {
             $parts = @($commandInvocation)

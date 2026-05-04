@@ -215,10 +215,17 @@ When generating or editing a release:
      - `Chores`
      - `Full Changelog`
    - Omit empty sections rather than invent filler.
-3. Keep the GitHub Release body aligned with the `/release-notes` structure, but in English and mapped onto the Codex-style headings above.
-4. Link the compare range in `Full Changelog` when the repository and tag range support it.
-5. Local or private post drafts may be Japanese if the task explicitly asks for them, but the public GitHub Release stays English.
-6. When an item maps to a repository issue or PR, preserve that reference inline in the bullet in Codex style.
+3. Keep the release-note granularity at least as explanatory as `v0.24.0`.
+   - Each bullet should describe the user-facing capability, guard, or behavior change, not just repeat the commit title.
+   - Prefer one concise sentence per bullet with enough context for a new reader to understand why the change matters.
+   - Do not collapse a release to only a version bump or terse commit-title list when the tag contains product, documentation, security, orchestration, or release-gate changes.
+4. Keep the GitHub Release body aligned with the `/release-notes` structure, but in English and mapped onto the Codex-style headings above.
+5. Link the compare range in `Full Changelog` when the repository and tag range support it.
+6. Local or private post drafts may be Japanese if the task explicitly asks for them, but the public GitHub Release stays English.
+7. Do not name external competing editor, IDE, or workbench products as UI references in public release notes or public documentation.
+   - Describe the behavior generically, such as "familiar developer workbench flow" or "source-control-oriented surface".
+   - Provider/runtime names may appear only when they are needed to explain supported official agent integrations, authentication, or compatibility.
+8. When an item maps to a repository issue or PR, preserve that reference inline in the bullet in Codex style.
    - Prefer `(#315)` or `(#315, #318)` at the end of the bullet when the reference is available.
    - Do not strip issue/PR references out of release bullets during summarization if they materially help traceability.
 

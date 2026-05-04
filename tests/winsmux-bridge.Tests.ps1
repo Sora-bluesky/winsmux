@@ -246,7 +246,7 @@ Describe 'Get-BridgeSettings' {
         $settings = Get-BridgeSettings
 
         $settings.agent | Should -Be 'codex'
-        $settings.model | Should -Be 'gpt-5.4'
+        $settings.model | Should -Be ''
         $settings.config_version | Should -Be 1
         $settings.prompt_transport | Should -Be 'argv'
         $settings.external_operator | Should -Be $true
@@ -1022,7 +1022,7 @@ agent-slots:
             -RootPath $script:settingsTempRoot
 
         $command | Should -Match 'codex-beta'
-        $command | Should -Match '-c model=gpt-5\.4'
+        $command | Should -Match "-c 'model=gpt-5\.4'"
         $command | Should -Match "-C 'C:\\Project Root'"
         $command | Should -Match "--add-dir 'C:\\Project Root\\.git\\worktrees\\worker-1'"
     }
@@ -2504,7 +2504,7 @@ panes:
 
         $plan.Agent | Should -Be 'codex-nightly'
         $plan.CapabilityAdapter | Should -Be 'codex'
-        $plan.LaunchCommand | Should -Match '^codex-nightly -c model=gpt-5\.4-nightly'
+        $plan.LaunchCommand | Should -Match "^codex-nightly -c 'model=gpt-5\.4-nightly'"
     }
 
     It 'includes slot-level prompt transport overrides in the restart plan' {
@@ -2917,7 +2917,7 @@ Describe 'agent-monitor helpers' {
         }
         Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
             $PaneId -eq '%2' -and
-            $Text -eq "codex -c model=gpt-5.4 --sandbox danger-full-access -C 'C:\repo\.worktrees\builder-1' --add-dir 'C:\repo\.git\worktrees\builder-1'"
+            $Text -eq "codex -c 'model=gpt-5.4' --sandbox danger-full-access -C 'C:\repo\.worktrees\builder-1' --add-dir 'C:\repo\.git\worktrees\builder-1'"
         }
     }
 
@@ -2973,7 +2973,7 @@ Describe 'agent-monitor helpers' {
             $result.Success | Should -Be $true
             Should -Invoke Send-MonitorBridgeCommand -Times 1 -Exactly -ParameterFilter {
                 $PaneId -eq '%2' -and
-                $Text -match '^codex-nightly -c model=gpt-5\.4-nightly'
+                $Text -match "^codex-nightly -c 'model=gpt-5\.4-nightly'"
             }
             Should -Invoke Get-PaneAgentStatus -Times 1 -Exactly -ParameterFilter {
                 $PaneId -eq '%2' -and $Agent -eq 'codex'
@@ -7004,9 +7004,11 @@ panes:
   - label: reviewer
     pane_id: %4
     role: Reviewer
+    capability_adapter: codex
   - label: operator
     pane_id: %1
     role: Operator
+    capability_adapter: codex
 '@ | Set-Content -Path (Join-Path $manifestDir 'manifest.yaml') -Encoding UTF8
     }
 
@@ -7034,16 +7036,16 @@ panes:
 gpt-5.4   82% context left
 ? send   Ctrl+J newline
 >
-"@) | Should -Be 'idle'
+"@ -Agent 'codex') | Should -Be 'idle'
         (Get-PaneActualStateFromText -Text @"
 Launching codex...
 codex --sandbox danger-full-access -C C:\repo
-"@) | Should -Be 'codex'
+"@ -Agent 'codex') | Should -Be 'codex'
         (Get-PaneActualStateFromText -Text @"
 gpt-5.4   61% context left
 thinking
 Esc to interrupt
-"@) | Should -Be 'busy'
+"@ -Agent 'codex') | Should -Be 'busy'
     }
 
     It 'uses manifest capability adapters when classifying pane captures' {
@@ -7430,9 +7432,11 @@ panes:
   - label: builder-1
     pane_id: %2
     role: Builder
+    capability_adapter: codex
   - label: reviewer
     pane_id: %4
     role: Reviewer
+    capability_adapter: codex
   - label: builder-2
     pane_id: %8
     role: Builder
@@ -7442,6 +7446,8 @@ panes:
             $commandLine = ($args | ForEach-Object { [string]$_ }) -join ' '
             switch -Regex ($commandLine) {
                 '^list-panes ' { return @('%2 111', '%4 222') }
+                '^capture-pane .*%2' { return @('Implementation finished.', '>') }
+                '^capture-pane .*%4' { return @('Review in progress...') }
                 default { throw "unexpected winsmux call: $commandLine" }
             }
         }
@@ -7517,6 +7523,7 @@ panes:
   builder-1:
     pane_id: %2
     role: Builder
+    capability_adapter: codex
     task_id: task-244
     task: Implement session board
     task_state: in_progress
@@ -7532,6 +7539,7 @@ panes:
   worker-1:
     pane_id: %6
     role: Worker
+    capability_adapter: codex
     task_id: ''
     task: ''
     task_state: backlog
@@ -7583,6 +7591,7 @@ panes:
   builder-1:
     pane_id: %2
     role: Builder
+    capability_adapter: codex
     task_id: task-244
     task: Implement session board
     task_state: in_progress
@@ -7597,6 +7606,7 @@ panes:
   worker-1:
     pane_id: %6
     role: Worker
+    capability_adapter: codex
     task_id: ''
     task: ''
     task_state: backlog
@@ -11232,6 +11242,12 @@ Describe 'public first-run helper' {
         $settings.worker_count | Should -Be 6
         $settings.agent_slots.Count | Should -Be 6
         $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
+        $slotKeys = if ($settings.agent_slots[0] -is [System.Collections.IDictionary]) {
+            @($settings.agent_slots[0].Keys)
+        } else {
+            @($settings.agent_slots[0].PSObject.Properties.Name)
+        }
+        $slotKeys | Should -Not -Contain 'model'
         $settings.workspace_lifecycle_preset | Should -Be 'managed-worktree'
     }
 
@@ -11454,6 +11470,12 @@ thinking
 "@ -Agent 'claude') | Should -Be $false
     }
 
+    It 'keeps readiness unknown when provider metadata is missing' {
+        { Test-AgentReadyPromptText -Text '>' -Agent '' } | Should -Not -Throw
+        (Test-AgentReadyPromptText -Text '>' -Agent '') | Should -Be $false
+        (Test-AgentReadyPromptText -Text 'Welcome to Claude Code!' -Agent '') | Should -Be $false
+    }
+
     It 'normalizes provider aliases before adapter readiness checks' {
         ConvertTo-ReadinessAgentName 'codex-nightly' | Should -Be 'codex'
         ConvertTo-ReadinessAgentName 'Claude/opus' | Should -Be 'claude'
@@ -11465,7 +11487,7 @@ thinking
         Get-PaneReadinessAgent -Target 'builder-1' -PaneId '%2' -ProjectDir $script:readinessTempRoot | Should -Be 'codex'
         Get-PaneReadinessAgent -Target 'legacy' -PaneId '%8' -ProjectDir $script:readinessTempRoot | Should -Be 'codex'
         Get-PaneReadinessAgent -Target 'switched' -PaneId '%10' -ProjectDir $script:readinessTempRoot | Should -Be 'codex'
-        Get-PaneReadinessAgent -Target 'missing' -PaneId '%9' -ProjectDir $script:readinessTempRoot | Should -Be 'codex'
+        Get-PaneReadinessAgent -Target 'missing' -PaneId '%9' -ProjectDir $script:readinessTempRoot | Should -Be ''
     }
 
     It 'documents wait-ready without a Codex-only prompt contract' {
@@ -12547,6 +12569,7 @@ Describe 'operator startup restore contract docs' {
         $setupWizardContent | Should -Match 'AI agent provider'
         $setupWizardContent | Should -Match 'Test-SetupWizardAgentProvider'
         $setupWizardContent | Should -Match 'provider-capabilities\.json first'
+        $setupWizardContent | Should -Match "(?s)if \(-not \[string\]::IsNullOrWhiteSpace\(\`$model\)\) \{\s*Set-WinsmuxOption -WinsmuxBin \`$winsmuxBin -OptionName '@bridge-model' -OptionValue \`$model"
         $setupWizardContent | Should -Not -Match 'AI agent CLI \(codex/claude\)'
         $setupWizardContent | Should -Not -Match "Please enter 'codex' or 'claude'\."
         $setupWizardContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
@@ -12666,6 +12689,7 @@ panes:
   builder-1:
     pane_id: %2
     role: Builder
+    capability_adapter: codex
     task_id: task-244
     task: Implement session board
     task_state: in_progress
@@ -12681,6 +12705,7 @@ panes:
   worker-1:
     pane_id: %6
     role: Worker
+    capability_adapter: codex
     task_id: ''
     task: ''
     task_state: backlog

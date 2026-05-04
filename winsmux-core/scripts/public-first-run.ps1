@@ -40,7 +40,7 @@ function Invoke-WinsmuxPublicInit {
         [string]$ProjectDir,
         [switch]$Force,
         [string]$Agent = 'codex',
-        [string]$Model = 'gpt-5.4',
+        [string]$Model = '',
         [int]$WorkerCount = 6,
         [string]$WorkspaceLifecyclePreset = 'managed-worktree'
     )
@@ -69,13 +69,10 @@ function Invoke-WinsmuxPublicInit {
         }
     }
 
-    $agentSlots = New-BridgeManagedAgentSlots -Count $WorkerCount -Agent $Agent -Model $Model
-    Save-BridgeSettings -Scope project -RootPath $resolvedProjectDir -Settings ([ordered]@{
+    $settingsToSave = [ordered]@{
         agent               = $Agent
-        model               = $Model
         external_operator  = $true
         worker_count        = $WorkerCount
-        agent_slots         = @($agentSlots)
         legacy_role_layout  = $false
         operators          = 0
         builders            = 0
@@ -83,7 +80,14 @@ function Invoke-WinsmuxPublicInit {
         reviewers           = 0
         vault_keys          = @('GH_TOKEN')
         workspace_lifecycle_preset = $WorkspaceLifecyclePreset
-    })
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Model)) {
+        $settingsToSave.model = $Model
+    }
+
+    $agentSlots = New-BridgeManagedAgentSlots -Count $WorkerCount -Agent $Agent -Model $Model
+    $settingsToSave.agent_slots = @($agentSlots)
+    Save-BridgeSettings -Scope project -RootPath $resolvedProjectDir -Settings $settingsToSave
 
     return [PSCustomObject][ordered]@{
         command             = 'init'

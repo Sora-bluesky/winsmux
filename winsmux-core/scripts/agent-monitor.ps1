@@ -714,7 +714,7 @@ function Get-PaneAgentStatus {
     #>
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
-        [string]$Agent = 'codex',
+        [string]$Agent = '',
         [string]$Role = '',
         [bool]$ExecMode = $false,
         [int]$HungThreshold = $script:AgentMonitorDefaultHungThreshold
@@ -772,7 +772,7 @@ function Get-PaneAgentStatus {
         $approvalAction = 'enter'
     }
 
-    if ($approvalAction -eq 'enter' -or (Test-CodexApprovalPromptText -Text $text)) {
+    if ($approvalAction -eq 'enter' -or ($Agent -eq 'codex' -and (Test-CodexApprovalPromptText -Text $text))) {
         return [ordered]@{
             Status         = 'approval_waiting'
             PaneId         = $PaneId
@@ -883,7 +883,7 @@ function Invoke-AgentRespawn {
     param(
         [Parameter(Mandatory = $true)][string]$PaneId,
         [Parameter(Mandatory = $true)][string]$Agent,
-        [Parameter(Mandatory = $true)][string]$Model,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath = '',
