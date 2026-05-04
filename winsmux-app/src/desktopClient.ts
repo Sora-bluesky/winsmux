@@ -7,14 +7,16 @@ type DesktopCommandName =
   | "desktop_run_compare"
   | "desktop_run_promote"
   | "desktop_run_pick_winner"
-  | "desktop_editor_read";
+  | "desktop_editor_read"
+  | "desktop_explorer_list";
 type DesktopJsonRpcMethod =
   | "desktop.summary.snapshot"
   | "desktop.run.explain"
   | "desktop.run.compare"
   | "desktop.run.promote"
   | "desktop.run.pick_winner"
-  | "desktop.editor.read";
+  | "desktop.editor.read"
+  | "desktop.explorer.list";
 
 interface DesktopJsonRpcRequest {
   jsonrpc: "2.0";
@@ -397,6 +399,19 @@ export interface DesktopEditorFilePayload {
   truncated: boolean;
 }
 
+export interface DesktopExplorerEntry {
+  path: string;
+  kind: "directory" | "file";
+  has_children?: boolean;
+  hasChildren?: boolean;
+}
+
+export interface DesktopExplorerListPayload {
+  project_dir: string;
+  worktree: string;
+  entries: DesktopExplorerEntry[];
+}
+
 export interface DesktopSummaryRefreshEvent {
   source?: string;
   reason?: string;
@@ -488,6 +503,8 @@ function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMet
       return "desktop.run.pick_winner";
     case "desktop_editor_read":
       return "desktop.editor.read";
+    case "desktop_explorer_list":
+      return "desktop.explorer.list";
   }
 }
 
@@ -645,6 +662,23 @@ export async function getDesktopEditorFile(
   } catch (error) {
     const worktreeSuffix = worktree ? `, ${worktree}` : "";
     throw normalizeDesktopError(`desktop_editor_read(${path}${worktreeSuffix})`, error);
+  }
+}
+
+export async function getDesktopExplorerEntries(
+  worktree?: string,
+  projectDir?: string | null,
+) {
+  try {
+    return await desktopCommandTransport.request<DesktopExplorerListPayload>(
+      "desktop_explorer_list",
+      worktree
+        ? { worktree, ...buildProjectDirPayload(projectDir) }
+        : buildProjectDirPayload(projectDir),
+    );
+  } catch (error) {
+    const worktreeSuffix = worktree ? `, ${worktree}` : "";
+    throw normalizeDesktopError(`desktop_explorer_list(${worktreeSuffix})`, error);
   }
 }
 

@@ -43,6 +43,7 @@ pub enum PtyCommand {
         pane_id: String,
         cols: u16,
         rows: u16,
+        startup_input: Option<String>,
     },
     Write {
         pane_id: String,
@@ -109,6 +110,7 @@ fn parse_command(method: &str, params: Option<&Value>) -> Result<PtyCommand, Par
             pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
             cols: get_required_u16_param(params, &["cols"])?,
             rows: get_required_u16_param(params, &["rows"])?,
+            startup_input: get_optional_string_param(params, &["startupInput", "startup_input"])?,
         }),
         "pty.write" => Ok(PtyCommand::Write {
             pane_id: get_required_string_param(params, &["paneId", "pane_id"])?,
@@ -150,6 +152,25 @@ fn get_required_string_param(params: Option<&Value>, keys: &[&str]) -> Result<St
     }
 
     Err(ParseError::InvalidParams(invalid_params(keys)))
+}
+
+fn get_optional_string_param(
+    params: Option<&Value>,
+    keys: &[&str],
+) -> Result<Option<String>, ParseError> {
+    let Some(object) = params.and_then(Value::as_object) else {
+        return Ok(None);
+    };
+
+    for key in keys {
+        if let Some(value) = object.get(*key).and_then(Value::as_str) {
+            if !value.is_empty() {
+                return Ok(Some(value.to_string()));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 fn get_required_u16_param(params: Option<&Value>, keys: &[&str]) -> Result<u16, ParseError> {
@@ -271,7 +292,50 @@ mod tests {
             [PtyCommand::Spawn {
                 pane_id: "pane-1".to_string(),
                 cols: 120,
-                rows: 40
+                rows: 40,
+                startup_input: None
+            }]
+        );
+    }
+
+    #[test]
+    fn handle_pty_json_rpc_routes_spawn_startup_input() {
+        let transport = FakeTransport {
+            commands: RefCell::new(Vec::new()),
+            response: serde_json::json!({ "paneId": "main" }),
+        };
+
+        let response = handle_pty_json_rpc(
+            &transport,
+            PtyJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-startup"),
+                method: "pty.spawn".to_string(),
+                params: Some(serde_json::json!({
+                    "paneId": "main",
+                    "cols": 120,
+                    "rows": 40,
+                    "startupInput": "claude\r"
+                })),
+            },
+        );
+
+        match response {
+            PtyJsonRpcResponse::Success { result, .. } => {
+                assert_eq!(result["paneId"], "main");
+            }
+            PtyJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+
+        assert_eq!(
+            transport.commands.borrow().as_slice(),
+            [PtyCommand::Spawn {
+                pane_id: "main".to_string(),
+                cols: 120,
+                rows: 40,
+                startup_input: Some("claude\r".to_string())
             }]
         );
     }

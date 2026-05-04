@@ -51,6 +51,8 @@
         "core/docs/plugins.md",
         "core/docs/scripting.md",
         "core/docs/warm-sessions.md",
+        "docs/README.md",
+        "docs/README.ja.md",
         "docs/pane-border-guide.md",
         "packages/winsmux/README.md",
         "winsmux-core/README.md"

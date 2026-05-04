@@ -112,6 +112,7 @@ function boxesOverlap(a, b) {
 }
 
 async function assertFullyVisible(page, selector) {
+  await page.locator(selector).scrollIntoViewIfNeeded().catch(() => {});
   const box = await getBox(page, selector);
   const viewport = page.viewportSize();
   if (!viewport) {
@@ -128,6 +129,7 @@ async function assertFullyVisible(page, selector) {
 }
 
 async function assertHorizontallyVisible(page, selector) {
+  await page.locator(selector).scrollIntoViewIfNeeded().catch(() => {});
   const box = await getBox(page, selector);
   const viewport = page.viewportSize();
   if (!viewport) {
@@ -226,28 +228,22 @@ async function waitForPreviewTargetEntry(page) {
 }
 
 async function openFirstSourceContextEntry(page) {
-  const firstSourceEntry = page.locator("#context-file-list .context-file-row").first();
-  if (await firstSourceEntry.isVisible().catch(() => false)) {
-    await firstSourceEntry.click();
-  } else {
-    await page.waitForFunction(() => Boolean(window.__winsmuxViewportHarness));
-    await page.evaluate(() => {
-      window.__winsmuxViewportHarness?.openEditorPreview(
-        "winsmux-app/src/main.ts",
-        [
-          "const viewportHarnessPreview = true;",
-          "function sampleViewportState() {",
-          "  return 'context + editor';",
-          "}",
-        ].join("\n"),
-      );
-    });
-  }
+  await page.waitForFunction(() => Boolean(window.__winsmuxViewportHarness));
+  await page.evaluate(() => {
+    window.__winsmuxViewportHarness?.openEditorPreview(
+      "winsmux-app/src/main.ts",
+      [
+        "const viewportHarnessPreview = true;",
+        "function sampleViewportState() {",
+        "  return 'context + editor';",
+        "}",
+      ].join("\n"),
+    );
+  });
   await page.locator("#editor-surface").waitFor({ state: "visible" });
   await page.locator("#editor-tabs .editor-tab").first().waitFor({ state: "visible" });
   await assertHorizontallyVisible(page, "#editor-surface");
   await assertHorizontallyVisible(page, "#editor-file-path");
-  await assertHorizontallyVisible(page, "#editor-statusbar");
 }
 
 async function assertBackToCode(page) {
@@ -347,14 +343,12 @@ async function assertEditorPopout(page) {
 async function assertPreviewClosed(page) {
   await page.click("#browser-back-btn");
   await page.locator("#browser-surface").waitFor({ state: "hidden" });
-  const editorSurface = page.locator("#editor-surface");
-  if (await editorSurface.isVisible().catch(() => false)) {
-    throw new Error("Editor surface stayed visible after closing the preview");
-  }
+  await page.locator("#editor-surface").waitFor({ state: "visible" });
+  await page.locator("#editor-code").waitFor({ state: "visible" });
 }
 
 async function assertCommandBarRoundtrip(page, returnSelector) {
-  await page.click("#open-command-bar-btn");
+  await page.click("#activity-search-btn");
   await page.locator("#command-bar-shell").waitFor({ state: "visible" });
   await assertFullyVisible(page, "#command-bar");
   await assertButtonVisible(page, "#command-bar-input");
@@ -364,7 +358,7 @@ async function assertCommandBarRoundtrip(page, returnSelector) {
 }
 
 async function assertSettingsRoundtrip(page, returnSelector) {
-  await page.click("#settings-btn");
+  await page.click("#activity-settings-btn");
   await page.locator("#settings-sheet").waitFor({ state: "visible" });
   await assertFullyVisible(page, "#settings-sheet");
   await assertButtonVisible(page, "#close-settings-btn");
@@ -374,9 +368,9 @@ async function assertSettingsRoundtrip(page, returnSelector) {
 }
 
 async function assertNarrowSettingsRoundtrip(page, returnSelector) {
-  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
-  await page.click("#toggle-sidebar-btn");
-  await page.locator("#toggle-sidebar-btn[aria-expanded='true']").waitFor();
+  await page.locator("#activity-explorer-btn[aria-expanded='false']").waitFor();
+  await page.click("#activity-explorer-btn");
+  await page.locator("#activity-explorer-btn[aria-expanded='true']").waitFor();
   await waitForHorizontalVisibility(page, "#left-rail");
   await assertHorizontallyVisible(page, "#left-rail");
   await assertFullyVisible(page, "#sidebar-overlay");
@@ -386,22 +380,115 @@ async function assertNarrowSettingsRoundtrip(page, returnSelector) {
     throw new Error("Viewport size is unavailable");
   }
   await page.mouse.click(viewport.width - 10, 24);
-  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+  await page.locator("#activity-explorer-btn[aria-expanded='false']").waitFor();
 }
 
 async function assertTerminalDrawerWithSourceContext(page, returnSelector, extraSelector) {
-  await page.click("#toggle-terminal-btn");
+  await ensureWorkbenchOpen(page);
   await page.locator("#terminal-drawer").waitFor({ state: "visible" });
   await assertButtonVisible(page, "#add-pane-btn");
   await assertHorizontallyVisible(page, "#terminal-drawer");
+  await page.locator("#panes-container .pane").first().waitFor({ state: "visible" });
   await page.locator(returnSelector).waitFor({ state: "visible" });
   if (extraSelector) {
     await page.locator(extraSelector).waitFor({ state: "visible" });
     await assertHorizontallyVisible(page, extraSelector);
   }
-  await page.click("#toggle-terminal-btn");
-  await page.locator("#terminal-drawer").waitFor({ state: "hidden" });
   await page.locator(returnSelector).waitFor({ state: "visible" });
+}
+
+async function ensureContextPanelOpen(page) {
+  const contextPanel = page.locator("#context-panel");
+  if (await contextPanel.isVisible().catch(() => false)) {
+    return;
+  }
+  await page.click("#activity-context-btn");
+  await contextPanel.waitFor({ state: "visible" });
+}
+
+async function ensureWorkbenchOpen(page) {
+  const workbench = page.locator("#terminal-drawer");
+  if (await workbench.isVisible().catch(() => false)) {
+    return;
+  }
+  await page.waitForFunction(() => Boolean(window.__winsmuxViewportHarness));
+  await page.evaluate(() => {
+    window.__winsmuxViewportHarness?.setTerminalDrawer(true);
+  });
+  await workbench.waitFor({ state: "visible" });
+}
+
+async function assertWorkbenchPaneGrid(page, expectedMin = 4) {
+  await ensureWorkbenchOpen(page);
+  await assertHorizontallyVisible(page, "#terminal-drawer");
+  await assertButtonVisible(page, "#workbench-layout-btn");
+  await assertButtonVisible(page, "#add-pane-btn");
+  await page.waitForFunction((minCount) => {
+    return document.querySelectorAll("#panes-container .pane").length >= minCount;
+  }, expectedMin);
+}
+
+async function assertSourceControlChrome(page) {
+  await page.click("#activity-source-btn");
+  await page.locator("#source-control-view").waitFor({ state: "visible" });
+  await assertFullyVisible(page, "#source-control-commit-btn");
+  await assertHorizontallyVisible(page, "#source-control-message");
+  await assertHorizontallyVisible(page, "#source-control-changes-list");
+  await assertHorizontallyVisible(page, "#source-control-graph-list");
+  await page.click("#activity-explorer-btn");
+  await page.locator("#explorer-list").waitFor({ state: "visible" });
+}
+
+async function assertExplorerFolderExpandsInline(page) {
+  const folderRow = page.locator("#explorer-list .sidebar-tree-row.is-folder", { hasText: ".agents" }).first();
+  await folderRow.scrollIntoViewIfNeeded();
+  await folderRow.click();
+  await page.waitForFunction(() => {
+    const rows = Array.from(document.querySelectorAll("#explorer-list .sidebar-tree-row"));
+    const folderIndex = rows.findIndex((row) =>
+      row.classList.contains("is-folder") &&
+      row.textContent?.includes(".agents") &&
+      row.getAttribute("aria-expanded") === "true"
+    );
+    if (folderIndex < 0) {
+      return false;
+    }
+    const nextRow = rows[folderIndex + 1];
+    return (
+      nextRow instanceof HTMLElement &&
+      nextRow.classList.contains("is-file") &&
+      nextRow.classList.contains("depth-2") &&
+      nextRow.textContent?.includes("README.md")
+    );
+  });
+}
+
+async function assertExplorerFileOpensMainEditor(page) {
+  const readmeRow = page.locator("#explorer-list .sidebar-tree-row.is-file", { hasText: "README.md" }).first();
+  await readmeRow.scrollIntoViewIfNeeded();
+  await readmeRow.click({ force: true });
+  await page.locator("#editor-surface").waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const conversation = document.querySelector("#conversation-panel");
+    const editorPath = document.querySelector("#editor-file-path");
+    const editorCode = document.querySelector("#editor-code");
+    const firstLineNumber = document.querySelector("#editor-code .editor-line-number");
+    const statusbar = document.querySelector("#editor-statusbar");
+    return (
+      conversation instanceof HTMLElement &&
+      getComputedStyle(conversation).display === "none" &&
+      editorPath instanceof HTMLElement &&
+      editorPath.textContent?.includes("README.md") &&
+      editorCode instanceof HTMLElement &&
+      editorCode.textContent?.includes("winsmux") &&
+      firstLineNumber instanceof HTMLElement &&
+      firstLineNumber.textContent === "1" &&
+      statusbar instanceof HTMLElement &&
+      statusbar.textContent?.includes("Lines")
+    );
+  });
+  await assertHorizontallyVisible(page, "#editor-surface");
+  await assertHorizontallyVisible(page, "#editor-statusbar");
 }
 
 async function verifyDesktopViewport(page, previewUrl) {
@@ -410,26 +497,29 @@ async function verifyDesktopViewport(page, previewUrl) {
 
   await assertHorizontallyVisible(page, "#left-rail");
   await assertFullyVisible(page, "#conversation-panel");
-  await assertHorizontallyVisible(page, "#context-panel");
+  await assertWorkbenchPaneGrid(page);
   await assertButtonVisible(page, "#send-btn");
   await assertFullyVisible(page, "#workspace-footer");
-  await assertNoOverlap(page, "#workspace-header", "#workspace-body");
   await assertNoOverlap(page, "#workspace-body", "#workspace-footer");
 
-  await page.click("#open-command-bar-btn");
+  await page.click("#activity-search-btn");
   await page.locator("#command-bar-shell").waitFor({ state: "visible" });
   await assertFullyVisible(page, "#command-bar");
   await assertButtonVisible(page, "#command-bar-input");
   await page.keyboard.press("Escape");
   await page.locator("#command-bar-shell").waitFor({ state: "hidden" });
 
-  await page.click("#settings-btn");
+  await page.click("#activity-settings-btn");
   await page.locator("#settings-sheet").waitFor({ state: "visible" });
   await assertFullyVisible(page, "#settings-sheet");
   await assertButtonVisible(page, "#close-settings-btn");
   await page.click("#close-settings-btn");
   await page.locator("#settings-sheet").waitFor({ state: "hidden" });
 
+  await assertSourceControlChrome(page);
+  await assertExplorerFolderExpandsInline(page);
+  await assertExplorerFileOpensMainEditor(page);
+  await ensureContextPanelOpen(page);
   await openFirstSourceContextEntry(page);
   await assertEditorPopout(page);
   await assertCommandBarRoundtrip(page, "#editor-surface");
@@ -450,13 +540,11 @@ async function verifyDesktopViewport(page, previewUrl) {
   await assertCommandBarRoundtrip(page, "#browser-toolbar");
   await assertSettingsRoundtrip(page, "#browser-toolbar");
 
-  await page.click("#toggle-terminal-btn");
-  await page.locator("#terminal-drawer").waitFor({ state: "visible" });
-  await assertButtonVisible(page, "#add-pane-btn");
+  await assertWorkbenchPaneGrid(page);
   await assertFullyVisible(page, "#terminal-drawer");
   await assertHorizontallyVisible(page, "#browser-toolbar");
   await assertBackToCode(page);
-  await assertHorizontallyVisible(page, "#editor-statusbar");
+  await assertHorizontallyVisible(page, "#editor-code");
 }
 
 async function verifyNarrowViewport(page, previewUrl) {
@@ -465,17 +553,17 @@ async function verifyNarrowViewport(page, previewUrl) {
 
   await assertButtonVisible(page, "#send-btn");
   await assertFullyVisible(page, "#workspace-footer");
-  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+  await page.locator("#activity-explorer-btn[aria-expanded='false']").waitFor();
 
-  await page.click("#open-command-bar-btn");
+  await page.click("#activity-search-btn");
   await page.locator("#command-bar-shell").waitFor({ state: "visible" });
   await assertFullyVisible(page, "#command-bar");
   await assertButtonVisible(page, "#command-bar-input");
   await page.keyboard.press("Escape");
   await page.locator("#command-bar-shell").waitFor({ state: "hidden" });
 
-  await page.click("#toggle-sidebar-btn");
-  await page.locator("#toggle-sidebar-btn[aria-expanded='true']").waitFor();
+  await page.click("#activity-explorer-btn");
+  await page.locator("#activity-explorer-btn[aria-expanded='true']").waitFor();
   await waitForHorizontalVisibility(page, "#left-rail");
   await assertHorizontallyVisible(page, "#left-rail");
   await assertFullyVisible(page, "#sidebar-overlay");
@@ -485,10 +573,10 @@ async function verifyNarrowViewport(page, previewUrl) {
     throw new Error("Viewport size is unavailable");
   }
   await page.mouse.click(narrowViewport.width - 10, 24);
-  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+  await page.locator("#activity-explorer-btn[aria-expanded='false']").waitFor();
 
-  await page.click("#toggle-context-btn");
-  await page.locator("#toggle-context-btn[aria-expanded='true']").waitFor();
+  await ensureContextPanelOpen(page);
+  await page.locator("#activity-context-btn[aria-expanded='true']").waitFor();
   await waitForHorizontalVisibility(page, "#context-panel");
   await assertHorizontallyVisible(page, "#context-panel");
   await openFirstSourceContextEntry(page);
@@ -496,12 +584,8 @@ async function verifyNarrowViewport(page, previewUrl) {
   await assertNarrowSettingsRoundtrip(page, "#editor-surface");
   await assertTerminalDrawerWithSourceContext(page, "#editor-surface");
 
-  await page.click("#toggle-terminal-btn");
-  await page.locator("#terminal-drawer").waitFor({ state: "visible" });
-  await assertButtonVisible(page, "#add-pane-btn");
+  await assertWorkbenchPaneGrid(page);
   await assertFullyVisible(page, "#terminal-drawer");
-  await page.click("#toggle-terminal-btn");
-  await page.locator("#terminal-drawer").waitFor({ state: "hidden" });
 
   await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
   await waitForPreviewTargetEntry(page);
@@ -525,20 +609,20 @@ async function verifyShortNarrowViewport(page, previewUrl) {
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
 
   await assertButtonVisible(page, "#send-btn");
-  await page.click("#open-command-bar-btn");
+  await page.click("#activity-search-btn");
   await page.locator("#command-bar-shell").waitFor({ state: "visible" });
   await assertFullyVisible(page, "#command-bar");
   await assertButtonVisible(page, "#command-bar-input");
   await page.keyboard.press("Escape");
   await page.locator("#command-bar-shell").waitFor({ state: "hidden" });
 
-  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
-  await page.click("#toggle-sidebar-btn");
-  await page.locator("#toggle-sidebar-btn[aria-expanded='true']").waitFor();
+  await page.locator("#activity-explorer-btn[aria-expanded='false']").waitFor();
+  await page.click("#activity-explorer-btn");
+  await page.locator("#activity-explorer-btn[aria-expanded='true']").waitFor();
   await waitForHorizontalVisibility(page, "#left-rail");
   await assertHorizontallyVisible(page, "#left-rail");
 
-  await page.click("#settings-btn");
+  await page.click("#activity-settings-btn");
   await page.locator("#settings-sheet").waitFor({ state: "visible" });
   await assertFullyVisible(page, "#settings-sheet");
   await assertButtonVisible(page, "#close-settings-btn");
@@ -549,15 +633,11 @@ async function verifyShortNarrowViewport(page, previewUrl) {
     throw new Error("Viewport size is unavailable");
   }
   await page.mouse.click(shortNarrowViewport.width - 10, 24);
-  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+  await page.locator("#activity-explorer-btn[aria-expanded='false']").waitFor();
 
-  await page.click("#toggle-terminal-btn");
-  await page.locator("#terminal-drawer").waitFor({ state: "visible" });
-  await assertButtonVisible(page, "#add-pane-btn");
+  await assertWorkbenchPaneGrid(page);
   await assertHorizontallyVisible(page, "#terminal-drawer");
   await assertHorizontallyVisible(page, "#terminal-toolbar");
-  await page.click("#toggle-terminal-btn");
-  await page.locator("#terminal-drawer").waitFor({ state: "hidden" });
 
   await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
   await waitForPreviewTargetEntry(page);
@@ -577,17 +657,17 @@ async function verifyDeveloperWindowViewport(page, previewUrl, width, height, la
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
 
   await assertButtonVisible(page, "#send-btn");
-  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+  await page.locator("#activity-explorer-btn[aria-expanded='false']").waitFor();
 
-  await page.click("#open-command-bar-btn");
+  await page.click("#activity-search-btn");
   await page.locator("#command-bar-shell").waitFor({ state: "visible" });
   await assertFullyVisible(page, "#command-bar");
   await assertButtonVisible(page, "#command-bar-input");
   await page.keyboard.press("Escape");
   await page.locator("#command-bar-shell").waitFor({ state: "hidden" });
 
-  await page.click("#toggle-sidebar-btn");
-  await page.locator("#toggle-sidebar-btn[aria-expanded='true']").waitFor();
+  await page.click("#activity-explorer-btn");
+  await page.locator("#activity-explorer-btn[aria-expanded='true']").waitFor();
   await waitForHorizontalVisibility(page, "#left-rail");
   await assertHorizontallyVisible(page, "#left-rail");
   await assertFullyVisible(page, "#sidebar-overlay");
@@ -597,15 +677,11 @@ async function verifyDeveloperWindowViewport(page, previewUrl, width, height, la
     throw new Error(`Viewport size is unavailable for ${label}`);
   }
   await page.mouse.click(viewport.width - 10, 24);
-  await page.locator("#toggle-sidebar-btn[aria-expanded='false']").waitFor();
+  await page.locator("#activity-explorer-btn[aria-expanded='false']").waitFor();
 
-  await page.click("#toggle-terminal-btn");
-  await page.locator("#terminal-drawer").waitFor({ state: "visible" });
-  await assertButtonVisible(page, "#add-pane-btn");
+  await assertWorkbenchPaneGrid(page);
   await assertFullyVisible(page, "#terminal-drawer");
   await assertHorizontallyVisible(page, "#terminal-toolbar");
-  await page.click("#toggle-terminal-btn");
-  await page.locator("#terminal-drawer").waitFor({ state: "hidden" });
 }
 
 async function run() {

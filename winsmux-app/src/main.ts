@@ -7,6 +7,7 @@ import {
   compareDesktopRuns,
   getDesktopEditorFile,
   getDesktopRunExplain,
+  getDesktopExplorerEntries,
   getDesktopSummarySnapshot,
   pickDesktopRunWinner,
   promoteDesktopRunTactic,
@@ -14,6 +15,7 @@ import {
   type DesktopCompareRunsResult,
   type DesktopBoardPane,
   type DesktopEditorFilePayload,
+  type DesktopExplorerEntry,
   type DesktopExplainPayload,
   type DesktopRunProjection,
   type DesktopSummarySnapshot,
@@ -34,6 +36,8 @@ interface PaneEntry {
   labelElement: HTMLElement;
   metaElement: HTMLElement;
   lastOutputAt: number | null;
+  ptyStarted: boolean;
+  ptyStarting: Promise<void> | null;
 }
 
 type ChipAction =
@@ -99,7 +103,32 @@ interface ExplorerItem {
   path?: string;
   worktree?: string;
   open?: boolean;
+  hasChildren?: boolean;
   active?: boolean;
+  sourceStatus?: ChangeStatus;
+  hasSourceChanges?: boolean;
+  iconKind?: ExplorerIconKind;
+}
+
+type ExplorerIconKind =
+  | "config"
+  | "image"
+  | "javascript"
+  | "json"
+  | "license"
+  | "lock"
+  | "markdown"
+  | "powershell"
+  | "rust"
+  | "text"
+  | "toml"
+  | "typescript"
+  | "xml"
+  | "yaml";
+
+interface EditorCodeLine {
+  number: number;
+  text: string;
 }
 
 interface EditorFile {
@@ -112,6 +141,14 @@ interface EditorFile {
   modified?: boolean;
   origin: "explorer" | "context";
   active?: boolean;
+}
+
+interface ProjectExplorerTreeNode {
+  label: string;
+  path: string;
+  kind: "directory" | "file";
+  hasChildren?: boolean;
+  children: Map<string, ProjectExplorerTreeNode>;
 }
 
 interface EditorTarget {
@@ -186,6 +223,13 @@ interface SourceChange {
   review: string;
 }
 
+interface BrowserSourceGraphItem {
+  run_id: string;
+  task: string;
+  branch: string;
+  changed_files: string[];
+}
+
 interface FooterStatusItem {
   label: string;
   value?: string;
@@ -215,6 +259,7 @@ type WrapMode = "balanced" | "compact";
 type CodeFontMode = "system" | "google-sans-code" | "jetbrains-mono";
 type FocusMode = "standard" | "focused";
 type LanguageMode = "en" | "ja";
+type WorkbenchLayoutMode = "2x2" | "3x2" | "focus";
 
 interface ThemeState {
   theme: ThemeMode;
@@ -227,8 +272,11 @@ interface ThemeState {
 
 interface ShellPreferenceState extends ThemeState {
   sidebarWidth: number;
+  workbenchWidth: number | null;
   wideSidebarOpen: boolean;
   wideContextOpen: boolean;
+  workbenchOpen: boolean;
+  workbenchLayout: WorkbenchLayoutMode;
 }
 
 interface ComposerAttachment {
@@ -259,7 +307,57 @@ interface ComposerHistoryEntry {
   attachments: ComposerAttachmentSnapshot[];
 }
 
-type ComposerMode = "ask" | "dispatch" | "review" | "explain";
+interface SpeechRecognitionAlternativeLike {
+  transcript?: string;
+}
+
+interface SpeechRecognitionResultLike {
+  isFinal?: boolean;
+  [index: number]: SpeechRecognitionAlternativeLike;
+}
+
+interface SpeechRecognitionResultListLike {
+  length: number;
+  [index: number]: SpeechRecognitionResultLike;
+}
+
+interface SpeechRecognitionEventLike {
+  resultIndex: number;
+  results: SpeechRecognitionResultListLike;
+}
+
+interface SpeechRecognitionErrorEventLike {
+  error?: string;
+  message?: string;
+}
+
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  onerror: ((event: SpeechRecognitionErrorEventLike) => void) | null;
+  onresult: ((event: SpeechRecognitionEventLike) => void) | null;
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+type ComposerMode = "ask" | "dispatch" | "review";
+type SidebarMode = "explorer" | "source" | "workspace";
+
+interface ComposerSlashCommand {
+  command: string;
+  label: string;
+  labelJa: string;
+  description: string;
+  descriptionJa: string;
+  kind: "mode" | "claude";
+  mode?: ComposerMode;
+}
 
 interface CommandAction {
   id: string;
@@ -272,15 +370,17 @@ interface CommandAction {
 }
 
 const panes = new Map<string, PaneEntry>();
-let paneCounter = 0;
-let terminalDrawerOpen = false;
-let contextPanelOpen = true;
+let terminalDrawerOpen = true;
+let contextPanelOpen = false;
 let editorSurfaceOpen = false;
 let editorSurfaceMode: "code" | "preview" = "code";
 let settingsSheetOpen = false;
 let sidebarOpen = true;
+let sidebarMode: SidebarMode = "explorer";
+let workbenchLayout: WorkbenchLayoutMode = "2x2";
 let composerImeActive = false;
 let sidebarWidth = 292;
+let workbenchWidth: number | null = null;
 let selectedEditorKey = "";
 let selectedPreviewUrl = "";
 let lastPreviewExternalState: { url: string; at: number; ok: boolean } | null = null;
@@ -304,7 +404,16 @@ let commandBarQuery = "";
 let selectedCommandIndex = 0;
 let commandBarImeActive = false;
 let lastCommandBarFocus: HTMLElement | null = null;
+let openTopMenuId: string | null = null;
 let pendingAttachments: ComposerAttachment[] = [];
+let sourceControlCommitMessage = "";
+let operatorPtyStarted = false;
+let operatorPtyStarting: Promise<void> | null = null;
+let operatorOutputBuffer = "";
+let operatorOutputFlushTimer: number | null = null;
+let voiceRecognition: SpeechRecognitionLike | null = null;
+let voiceListening = false;
+let voiceTranscriptBase = "";
 const detectedPreviewTargets = new Map<string, PreviewTarget>();
 const PREVIEW_FRESHNESS_WINDOW_MS = 30_000;
 const PANE_META_REFRESH_INTERVAL_MS = 30_000;
@@ -333,6 +442,15 @@ const desktopEditorLoadingPaths = new Set<string>();
 const desktopEditorLoadErrors = new Map<string, string>();
 const desktopStandaloneEditorTargets = new Map<string, EditorTarget>();
 const collapsedExplorerFolders = new Set<string>();
+const expandedExplorerFolders = new Set<string>();
+let projectExplorerEntries: DesktopExplorerEntry[] = [];
+let projectExplorerLoaded = false;
+let projectExplorerRefreshInFlight: Promise<void> | null = null;
+const projectExplorerLoadedFolderPaths = new Set<string>();
+const projectExplorerFolderLoads = new Map<string, Promise<void>>();
+let browserSourceChanges: SourceChange[] = [];
+let browserSourceGraphItems: BrowserSourceGraphItem[] = [];
+let browserSourceRefreshInFlight: Promise<void> | null = null;
 const promotingRunIds = new Set<string>();
 const pickingWinnerRunIds = new Set<string>();
 const pendingPromotedRunRefreshIds = new Set<string>();
@@ -342,6 +460,9 @@ const runtimeConversation: ConversationItem[] = [];
 const DESKTOP_SUMMARY_REFRESH_FALLBACK_INTERVAL_MS = 15_000;
 const DESKTOP_SUMMARY_STREAM_STALE_MS = 60_000;
 const MAX_RUNTIME_CONVERSATION_ITEMS = 80;
+const OPERATOR_PTY_ID = "operator";
+const OPERATOR_PTY_COLS = 120;
+const OPERATOR_PTY_ROWS = 32;
 const themeState: ThemeState = {
   theme: "codex-dark",
   density: "comfortable",
@@ -352,7 +473,7 @@ const themeState: ThemeState = {
 };
 let settingsDraftState: ThemeState | null = null;
 let preferredWideSidebarOpen = true;
-let preferredWideContextOpen = true;
+let preferredWideContextOpen = false;
 const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
 const POPOUT_SURFACE_STORAGE_KEY_PREFIX = "winsmux.popout-surface.";
 const PROJECT_SESSIONS_STORAGE_KEY = "winsmux.project-sessions.v1";
@@ -365,20 +486,140 @@ const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: str
   { mode: "ask", label: "Ask", placeholder: "Ask a question or request guidance" },
   { mode: "dispatch", label: "Dispatch", placeholder: "Describe a task or ask a question" },
   { mode: "review", label: "Review", placeholder: "Describe what needs review or approval" },
-  { mode: "explain", label: "Explain", placeholder: "Ask for an explanation of the current state" },
 ];
 
-const composerSlashCommands: Array<{
-  command: string;
-  label: string;
-  description: string;
-  mode: ComposerMode;
-}> = composerModes.map((item) => ({
-  command: item.mode,
-  label: item.label,
-  description: item.placeholder,
-  mode: item.mode,
-}));
+const localComposerSlashCommands: ComposerSlashCommand[] = [
+  {
+    command: "ask",
+    label: "Ask",
+    labelJa: "質問",
+    description: "Switch the composer to ask mode.",
+    descriptionJa: "質問モードに切り替えます。",
+    kind: "mode",
+    mode: "ask",
+  },
+  {
+    command: "dispatch",
+    label: "Dispatch",
+    labelJa: "依頼",
+    description: "Switch the composer to dispatch mode.",
+    descriptionJa: "依頼モードに切り替えます。",
+    kind: "mode",
+    mode: "dispatch",
+  },
+];
+
+const officialClaudeSlashCommandEntries: Array<Omit<ComposerSlashCommand, "kind">> = [
+  { command: "add-dir", label: "Add directory", labelJa: "ディレクトリ追加", description: "Add a working directory.", descriptionJa: "作業ディレクトリを追加します。" },
+  { command: "agents", label: "Agents", labelJa: "エージェント", description: "Manage agent configurations.", descriptionJa: "エージェント設定を管理します。" },
+  { command: "autofix-pr", label: "Autofix PR", labelJa: "PR 自動修正", description: "Watch a PR and push fixes.", descriptionJa: "PR を監視し、修正を反映します。" },
+  { command: "batch", label: "Batch", labelJa: "一括作業", description: "Plan and run large changes in parallel.", descriptionJa: "大きな変更を分割して並列実行します。" },
+  { command: "branch", label: "Branch", labelJa: "会話ブランチ", description: "Branch the current conversation.", descriptionJa: "現在の会話から分岐します。" },
+  { command: "fork", label: "Fork", labelJa: "分岐", description: "Alias for conversation branch.", descriptionJa: "会話ブランチの別名です。" },
+  { command: "btw", label: "Side question", labelJa: "横質問", description: "Ask without adding to the conversation.", descriptionJa: "会話に混ぜずに短い質問をします。" },
+  { command: "chrome", label: "Chrome", labelJa: "Chrome", description: "Configure Claude in Chrome.", descriptionJa: "Chrome 連携を設定します。" },
+  { command: "claude-api", label: "Claude API", labelJa: "Claude API", description: "Load Claude API guidance.", descriptionJa: "Claude API の手順を読み込みます。" },
+  { command: "clear", label: "Clear", labelJa: "履歴消去", description: "Start a new conversation.", descriptionJa: "新しい会話を開始します。" },
+  { command: "reset", label: "Reset", labelJa: "リセット", description: "Alias for clear.", descriptionJa: "履歴消去の別名です。" },
+  { command: "new", label: "New", labelJa: "新規", description: "Alias for clear.", descriptionJa: "履歴消去の別名です。" },
+  { command: "color", label: "Color", labelJa: "色", description: "Change the prompt bar color.", descriptionJa: "入力バーの色を変更します。" },
+  { command: "compact", label: "Compact", labelJa: "圧縮", description: "Summarize context with optional instructions.", descriptionJa: "指示を付けて文脈を圧縮します。" },
+  { command: "config", label: "Config", labelJa: "設定", description: "Open Claude Code settings.", descriptionJa: "Claude Code の設定を開きます。" },
+  { command: "settings", label: "Settings", labelJa: "設定", description: "Alias for config.", descriptionJa: "設定を開く別名です。" },
+  { command: "context", label: "Context", labelJa: "文脈", description: "Show current context usage.", descriptionJa: "現在の文脈使用量を表示します。" },
+  { command: "copy", label: "Copy", labelJa: "コピー", description: "Copy a recent assistant response.", descriptionJa: "直近の応答をコピーします。" },
+  { command: "cost", label: "Cost", labelJa: "費用", description: "Alias for usage.", descriptionJa: "使用状況を開く別名です。" },
+  { command: "usage", label: "Usage", labelJa: "使用状況", description: "Show usage limits and activity.", descriptionJa: "使用量と制限を表示します。" },
+  { command: "stats", label: "Stats", labelJa: "統計", description: "Alias for usage.", descriptionJa: "使用状況を開く別名です。" },
+  { command: "debug", label: "Debug", labelJa: "デバッグ", description: "Enable logs and diagnose an issue.", descriptionJa: "ログを有効にして問題を調べます。" },
+  { command: "desktop", label: "Desktop", labelJa: "デスクトップ", description: "Continue in Claude Code Desktop.", descriptionJa: "デスクトップアプリで続けます。" },
+  { command: "app", label: "App", labelJa: "アプリ", description: "Alias for desktop.", descriptionJa: "デスクトップ表示の別名です。" },
+  { command: "diff", label: "Diff", labelJa: "差分", description: "Open the interactive diff viewer.", descriptionJa: "対話型の差分表示を開きます。" },
+  { command: "doctor", label: "Doctor", labelJa: "診断", description: "Diagnose installation and settings.", descriptionJa: "インストールと設定を診断します。" },
+  { command: "effort", label: "Effort", labelJa: "思考量", description: "Change model effort level.", descriptionJa: "モデルの思考量を変更します。" },
+  { command: "exit", label: "Exit", labelJa: "終了", description: "Exit the CLI.", descriptionJa: "CLI を終了します。" },
+  { command: "quit", label: "Quit", labelJa: "終了", description: "Alias for exit.", descriptionJa: "終了の別名です。" },
+  { command: "export", label: "Export", labelJa: "書き出し", description: "Export the conversation.", descriptionJa: "会話を書き出します。" },
+  { command: "extra-usage", label: "Extra usage", labelJa: "追加利用", description: "Configure extra usage.", descriptionJa: "追加利用を設定します。" },
+  { command: "fast", label: "Fast", labelJa: "高速", description: "Toggle fast mode.", descriptionJa: "高速モードを切り替えます。" },
+  { command: "feedback", label: "Feedback", labelJa: "フィードバック", description: "Submit feedback.", descriptionJa: "フィードバックを送信します。" },
+  { command: "bug", label: "Bug report", labelJa: "不具合報告", description: "Alias for feedback.", descriptionJa: "フィードバック送信の別名です。" },
+  { command: "fewer-permission-prompts", label: "Fewer prompts", labelJa: "確認を減らす", description: "Suggest permission allow rules.", descriptionJa: "権限確認を減らす設定を提案します。" },
+  { command: "focus", label: "Focus", labelJa: "集中表示", description: "Toggle focus view.", descriptionJa: "集中表示を切り替えます。" },
+  { command: "heapdump", label: "Heap dump", labelJa: "ヒープ保存", description: "Write a memory diagnostic file.", descriptionJa: "メモリ診断ファイルを出力します。" },
+  { command: "help", label: "Help", labelJa: "ヘルプ", description: "Show help and available commands.", descriptionJa: "ヘルプと利用可能なコマンドを表示します。" },
+  { command: "hooks", label: "Hooks", labelJa: "フック", description: "View hook configuration.", descriptionJa: "フック設定を表示します。" },
+  { command: "ide", label: "IDE", labelJa: "IDE", description: "Manage IDE integrations.", descriptionJa: "IDE 連携を管理します。" },
+  { command: "init", label: "Init", labelJa: "初期化", description: "Create or update CLAUDE.md.", descriptionJa: "CLAUDE.md を作成または更新します。" },
+  { command: "insights", label: "Insights", labelJa: "分析", description: "Analyze recent Claude Code sessions.", descriptionJa: "最近のセッションを分析します。" },
+  { command: "install-github-app", label: "GitHub app", labelJa: "GitHub アプリ", description: "Set up the GitHub Actions app.", descriptionJa: "GitHub Actions アプリを設定します。" },
+  { command: "install-slack-app", label: "Slack app", labelJa: "Slack アプリ", description: "Install the Slack app.", descriptionJa: "Slack アプリをインストールします。" },
+  { command: "keybindings", label: "Keybindings", labelJa: "キー設定", description: "Open keybindings configuration.", descriptionJa: "キー設定ファイルを開きます。" },
+  { command: "login", label: "Login", labelJa: "ログイン", description: "Sign in to Anthropic.", descriptionJa: "Anthropic にログインします。" },
+  { command: "logout", label: "Logout", labelJa: "ログアウト", description: "Sign out from Anthropic.", descriptionJa: "Anthropic からログアウトします。" },
+  { command: "loop", label: "Loop", labelJa: "定期実行", description: "Run a prompt repeatedly.", descriptionJa: "プロンプトを繰り返し実行します。" },
+  { command: "proactive", label: "Proactive", labelJa: "定期実行", description: "Alias for loop.", descriptionJa: "定期実行の別名です。" },
+  { command: "mcp", label: "MCP", labelJa: "MCP", description: "Manage MCP connections and OAuth.", descriptionJa: "MCP 接続と OAuth 認証を管理します。" },
+  { command: "memory", label: "Memory", labelJa: "メモリ", description: "Edit Claude memory files.", descriptionJa: "Claude のメモリファイルを編集します。" },
+  { command: "mobile", label: "Mobile", labelJa: "モバイル", description: "Show the mobile app QR code.", descriptionJa: "モバイルアプリの QR コードを表示します。" },
+  { command: "ios", label: "iOS", labelJa: "iOS", description: "Alias for mobile.", descriptionJa: "モバイル表示の別名です。" },
+  { command: "android", label: "Android", labelJa: "Android", description: "Alias for mobile.", descriptionJa: "モバイル表示の別名です。" },
+  { command: "model", label: "Model", labelJa: "モデル", description: "Select or change the model.", descriptionJa: "使用するモデルを変更します。" },
+  { command: "passes", label: "Passes", labelJa: "招待", description: "Share a free Claude Code week.", descriptionJa: "無料利用パスを共有します。" },
+  { command: "permissions", label: "Permissions", labelJa: "権限", description: "Manage tool permissions.", descriptionJa: "ツール権限を管理します。" },
+  { command: "allowed-tools", label: "Allowed tools", labelJa: "許可ツール", description: "Alias for permissions.", descriptionJa: "権限管理の別名です。" },
+  { command: "plan", label: "Plan", labelJa: "計画", description: "Enter plan mode.", descriptionJa: "計画モードに入ります。" },
+  { command: "plugin", label: "Plugin", labelJa: "プラグイン", description: "Manage Claude Code plugins.", descriptionJa: "Claude Code プラグインを管理します。" },
+  { command: "powerup", label: "Powerup", labelJa: "機能紹介", description: "Discover Claude Code features.", descriptionJa: "Claude Code の機能紹介を開きます。" },
+  { command: "pr-comments", label: "PR comments", labelJa: "PR コメント", description: "Legacy PR comment viewer.", descriptionJa: "旧版の PR コメント表示です。" },
+  { command: "privacy-settings", label: "Privacy", labelJa: "プライバシー", description: "View privacy settings.", descriptionJa: "プライバシー設定を表示します。" },
+  { command: "recap", label: "Recap", labelJa: "要約", description: "Generate a session summary.", descriptionJa: "セッション要約を作成します。" },
+  { command: "release-notes", label: "Release notes", labelJa: "リリースノート", description: "Open release notes.", descriptionJa: "リリースノートを開きます。" },
+  { command: "reload-plugins", label: "Reload plugins", labelJa: "プラグイン再読込", description: "Reload active plugins.", descriptionJa: "有効なプラグインを再読み込みします。" },
+  { command: "remote-control", label: "Remote control", labelJa: "リモート操作", description: "Enable remote control.", descriptionJa: "リモート操作を有効にします。" },
+  { command: "rc", label: "Remote control", labelJa: "リモート操作", description: "Alias for remote-control.", descriptionJa: "リモート操作の別名です。" },
+  { command: "remote-env", label: "Remote env", labelJa: "リモート環境", description: "Configure remote environment.", descriptionJa: "リモート環境を設定します。" },
+  { command: "rename", label: "Rename", labelJa: "名前変更", description: "Rename the current session.", descriptionJa: "現在のセッション名を変更します。" },
+  { command: "resume", label: "Resume", labelJa: "再開", description: "Resume a conversation.", descriptionJa: "会話を再開します。" },
+  { command: "continue", label: "Continue", labelJa: "再開", description: "Alias for resume.", descriptionJa: "再開の別名です。" },
+  { command: "review", label: "Review", labelJa: "レビュー", description: "Review a pull request locally.", descriptionJa: "PR をローカルでレビューします。" },
+  { command: "rewind", label: "Rewind", labelJa: "巻き戻し", description: "Return to a previous point.", descriptionJa: "以前の時点へ戻します。" },
+  { command: "checkpoint", label: "Checkpoint", labelJa: "チェックポイント", description: "Alias for rewind.", descriptionJa: "巻き戻しの別名です。" },
+  { command: "undo", label: "Undo", labelJa: "元に戻す", description: "Alias for rewind.", descriptionJa: "巻き戻しの別名です。" },
+  { command: "sandbox", label: "Sandbox", labelJa: "サンドボックス", description: "Toggle sandbox mode.", descriptionJa: "サンドボックスモードを切り替えます。" },
+  { command: "schedule", label: "Schedule", labelJa: "定期予定", description: "Create or manage routines.", descriptionJa: "定期実行の予定を管理します。" },
+  { command: "routines", label: "Routines", labelJa: "定期予定", description: "Alias for schedule.", descriptionJa: "定期予定の別名です。" },
+  { command: "security-review", label: "Security review", labelJa: "セキュリティレビュー", description: "Review changes for security risks.", descriptionJa: "変更のセキュリティリスクを確認します。" },
+  { command: "setup-bedrock", label: "Bedrock setup", labelJa: "Bedrock 設定", description: "Configure Amazon Bedrock.", descriptionJa: "Amazon Bedrock を設定します。" },
+  { command: "setup-vertex", label: "Vertex setup", labelJa: "Vertex 設定", description: "Configure Google Vertex AI.", descriptionJa: "Google Vertex AI を設定します。" },
+  { command: "simplify", label: "Simplify", labelJa: "簡素化", description: "Find and fix code quality issues.", descriptionJa: "コード品質の問題を探して修正します。" },
+  { command: "skills", label: "Skills", labelJa: "スキル", description: "List available skills.", descriptionJa: "利用可能なスキルを一覧表示します。" },
+  { command: "status", label: "Status", labelJa: "状態", description: "Show account and system status.", descriptionJa: "アカウントとシステムの状態を表示します。" },
+  { command: "statusline", label: "Status line", labelJa: "状態行", description: "Configure the status line.", descriptionJa: "状態行を設定します。" },
+  { command: "stickers", label: "Stickers", labelJa: "ステッカー", description: "Order Claude Code stickers.", descriptionJa: "Claude Code ステッカーを注文します。" },
+  { command: "tasks", label: "Tasks", labelJa: "タスク", description: "List background tasks.", descriptionJa: "バックグラウンドタスクを一覧表示します。" },
+  { command: "bashes", label: "Bashes", labelJa: "タスク", description: "Alias for tasks.", descriptionJa: "タスク一覧の別名です。" },
+  { command: "team-onboarding", label: "Team onboarding", labelJa: "チーム導入", description: "Generate an onboarding guide.", descriptionJa: "チーム向け導入ガイドを作成します。" },
+  { command: "teleport", label: "Teleport", labelJa: "取り込み", description: "Pull a web session into the terminal.", descriptionJa: "Web セッションを端末に取り込みます。" },
+  { command: "tp", label: "Teleport", labelJa: "取り込み", description: "Alias for teleport.", descriptionJa: "取り込みの別名です。" },
+  { command: "terminal-setup", label: "Terminal setup", labelJa: "端末設定", description: "Configure terminal keybindings.", descriptionJa: "端末のキー設定を行います。" },
+  { command: "theme", label: "Theme", labelJa: "テーマ", description: "Change the color theme.", descriptionJa: "配色テーマを変更します。" },
+  { command: "tui", label: "TUI", labelJa: "TUI", description: "Set the terminal renderer.", descriptionJa: "端末表示方式を変更します。" },
+  { command: "ultraplan", label: "Ultraplan", labelJa: "高度な計画", description: "Draft a plan in a web session.", descriptionJa: "Web セッションで計画を作成します。" },
+  { command: "ultrareview", label: "Ultrareview", labelJa: "高度なレビュー", description: "Run a cloud-based review.", descriptionJa: "クラウド上で詳細レビューを実行します。" },
+  { command: "upgrade", label: "Upgrade", labelJa: "アップグレード", description: "Open the upgrade page.", descriptionJa: "アップグレード画面を開きます。" },
+  { command: "vim", label: "Vim", labelJa: "Vim", description: "Legacy editor mode command.", descriptionJa: "旧版の編集モードコマンドです。" },
+  { command: "voice", label: "Voice", labelJa: "音声入力", description: "Toggle voice dictation.", descriptionJa: "音声入力を切り替えます。" },
+  { command: "web-setup", label: "Web setup", labelJa: "Web 設定", description: "Connect GitHub for web sessions.", descriptionJa: "Web セッション用に GitHub を接続します。" },
+];
+
+const composerSlashCommands: ComposerSlashCommand[] = [
+  ...localComposerSlashCommands,
+  ...officialClaudeSlashCommandEntries.map((item) => ({
+    ...item,
+    kind: "claude" as const,
+  })),
+];
 
 const timelineFilters: Array<{ filter: TimelineFilter; label: string }> = [
   { filter: "all", label: "All" },
@@ -386,6 +627,13 @@ const timelineFilters: Array<{ filter: TimelineFilter; label: string }> = [
   { filter: "review", label: "Review" },
   { filter: "activity", label: "Activity" },
 ];
+
+const timelineFilterLabelsJa: Record<TimelineFilter, string> = {
+  all: "すべて",
+  attention: "要確認",
+  review: "レビュー",
+  activity: "活動",
+};
 
 const themeOptions: Array<{ value: ThemeMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
   { value: "codex-dark", label: "Codex TUI Dark", labelJa: "Codex TUI Dark", description: "Adaptation of public openai/codex TUI typography and contrast.", descriptionJa: "公開されている openai/codex TUI の文字設計とコントラストを参考にした表示。" },
@@ -418,6 +666,25 @@ const languageOptions: Array<{ value: LanguageMode; label: string; description: 
   { value: "ja", label: "Japanese", labelJa: "日本語", description: "Use Japanese for the main workspace chrome and settings.", descriptionJa: "主要な操作部品と設定を日本語で表示します。" },
 ];
 
+const fallbackExplorerPaths = [
+  ".agents/README.md",
+  ".github/workflows/ci.yml",
+  "core/Cargo.toml",
+  "docs/quickstart.md",
+  "docs/quickstart.ja.md",
+  "docs/installation.md",
+  "docs/installation.ja.md",
+  "docs/operator-model.md",
+  "winsmux-app/index.html",
+  "winsmux-app/src/main.ts",
+  "winsmux-app/src/styles.css",
+  "winsmux-core/scripts/doctor.ps1",
+  "README.md",
+  "README.ja.md",
+  "Cargo.toml",
+  "Cargo.lock",
+];
+
 function getCodeFontFamily(mode: CodeFontMode = themeState.codeFont) {
   switch (mode) {
     case "google-sans-code":
@@ -430,11 +697,37 @@ function getCodeFontFamily(mode: CodeFontMode = themeState.codeFont) {
   }
 }
 
+function getNextWorkerPaneId() {
+  let index = 1;
+  while (panes.has(`worker-${index}`)) {
+    index += 1;
+  }
+  return `worker-${index}`;
+}
+
+function getPaneDisplayLabel(paneId: string, backendLabel?: string) {
+  const label = backendLabel || paneId;
+  const workerPane = /^worker-(\d+)$/.exec(paneId) || /^worker-(\d+)$/.exec(label);
+  if (workerPane) {
+    return `worker-${Number(workerPane[1])}`;
+  }
+  const generatedPane = /^pane-(\d+)$/.exec(paneId);
+  if (generatedPane) {
+    return `worker-${Number(generatedPane[1]) + 1}`;
+  }
+  return paneId.startsWith("worker-") ? paneId : label;
+}
+
 function createPane(paneId?: string): string {
-  const id = paneId || `pane-${++paneCounter}`;
+  const id = paneId || getNextWorkerPaneId();
   const container = document.getElementById("panes-container");
   if (!container) {
     return id;
+  }
+
+  if (!paneId && panes.size >= 6) {
+    const paneIds = Array.from(panes.keys());
+    return paneIds[paneIds.length - 1] ?? id;
   }
 
   const paneDiv = document.createElement("div");
@@ -449,11 +742,11 @@ function createPane(paneId?: string): string {
 
   const label = document.createElement("span");
   label.className = "pane-label";
-  label.textContent = id;
+  label.textContent = getPaneDisplayLabel(id);
 
   const meta = document.createElement("span");
   meta.className = "pane-meta";
-  meta.textContent = "No branch · waiting for summary";
+  meta.textContent = getLanguageText("No branch · waiting for summary", "ブランチなし・要約待ち");
 
   const closeBtn = document.createElement("button");
   closeBtn.className = "pane-close";
@@ -470,12 +763,6 @@ function createPane(paneId?: string): string {
 
   paneDiv.appendChild(header);
   paneDiv.appendChild(termDiv);
-
-  if (panes.size > 0) {
-    const splitter = document.createElement("div");
-    splitter.className = "splitter";
-    container.appendChild(splitter);
-  }
 
   container.appendChild(paneDiv);
 
@@ -496,11 +783,16 @@ function createPane(paneId?: string): string {
   fitAddon.fit();
 
   terminal.onData((data: string) => {
-    void writePtyData(id, data);
+    void ensurePanePtyStarted(id).then(() => writePtyData(id, data)).catch((error) => {
+      console.warn("Failed to write PTY data", error);
+    });
   });
 
   terminal.onResize(({ cols, rows }) => {
-    void resizePtyPane(id, cols, rows);
+    const entry = panes.get(id);
+    if (entry?.ptyStarted) {
+      void resizePtyPane(id, cols, rows);
+    }
   });
 
   panes.set(id, {
@@ -510,18 +802,85 @@ function createPane(paneId?: string): string {
     labelElement: label,
     metaElement: meta,
     lastOutputAt: null,
+    ptyStarted: false,
+    ptyStarting: null,
   });
+  updateWorkbenchControls();
 
-  const { cols, rows } = { cols: terminal.cols, rows: terminal.rows };
-  void spawnPtyPane(id, cols, rows)
-    .catch((error) => {
-      console.warn("Failed to spawn PTY pane", error);
-    })
-    .finally(() => {
-      requestDesktopSummaryRefresh(undefined, 500);
-    });
+  if (shouldAutoStartPane(id)) {
+    void ensurePanePtyStarted(id);
+  }
 
   return id;
+}
+
+function shouldAutoStartPane(_paneId: string) {
+  return false;
+}
+
+function getPaneStartupInput(_paneId: string) {
+  return undefined;
+}
+
+function ensureOperatorPtyStarted() {
+  if (operatorPtyStarted) {
+    return Promise.resolve();
+  }
+  if (operatorPtyStarting) {
+    return operatorPtyStarting;
+  }
+
+  operatorPtyStarting = spawnPtyPane(OPERATOR_PTY_ID, OPERATOR_PTY_COLS, OPERATOR_PTY_ROWS, "claude\r")
+    .then(() => {
+      operatorPtyStarted = true;
+    })
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes(`Pane ${OPERATOR_PTY_ID} already exists`)) {
+        operatorPtyStarted = true;
+        return;
+      }
+      operatorPtyStarted = false;
+      throw error;
+    })
+    .finally(() => {
+      operatorPtyStarting = null;
+    });
+
+  return operatorPtyStarting;
+}
+
+function ensurePanePtyStarted(paneId: string) {
+  const entry = panes.get(paneId);
+  if (!entry) {
+    return Promise.reject(new Error(`Pane ${paneId} not found`));
+  }
+  if (entry.ptyStarted) {
+    return Promise.resolve();
+  }
+  if (entry.ptyStarting) {
+    return entry.ptyStarting;
+  }
+
+  const { cols, rows } = { cols: entry.terminal.cols, rows: entry.terminal.rows };
+  entry.metaElement.textContent = getLanguageText("starting shell", "シェル起動中");
+  entry.ptyStarting = spawnPtyPane(paneId, cols, rows, getPaneStartupInput(paneId))
+    .then(() => {
+      entry.ptyStarted = true;
+      entry.metaElement.textContent = getLanguageText("waiting for summary", "要約待ち");
+      requestDesktopSummaryRefresh(undefined, 500);
+    })
+    .catch((error) => {
+      entry.ptyStarted = false;
+      entry.metaElement.textContent = getLanguageText("shell start failed", "シェル起動失敗");
+      entry.metaElement.title = error instanceof Error ? error.message : String(error);
+      throw error;
+    })
+    .finally(() => {
+      entry.ptyStarting = null;
+    });
+
+  return entry.ptyStarting;
 }
 
 function closePane(id: string) {
@@ -536,22 +895,63 @@ function closePane(id: string) {
 
   entry.terminal.dispose();
 
-  const prev = entry.container.previousElementSibling;
-  if (prev && prev.classList.contains("splitter")) {
-    prev.remove();
-  }
-
   entry.container.remove();
   panes.delete(id);
-  void closePtyPane(id)
-    .catch((error) => {
-      console.warn("Failed to close PTY pane", error);
-    })
-    .finally(() => {
-      requestDesktopSummaryRefresh(undefined, 500);
-    });
+  updateWorkbenchControls();
+  if (entry.ptyStarted || entry.ptyStarting) {
+    void closePtyPane(id)
+      .catch((error) => {
+        console.warn("Failed to close PTY pane", error);
+      })
+      .finally(() => {
+        requestDesktopSummaryRefresh(undefined, 500);
+      });
+  }
 
   panes.forEach((pane) => pane.fitAddon.fit());
+}
+
+function ensureDefaultWorkbenchPanes() {
+  const defaultPaneIds = ["worker-1", "worker-2", "worker-3", "worker-4"];
+  for (const id of defaultPaneIds) {
+    if (panes.size >= 4) {
+      break;
+    }
+    if (!panes.has(id)) {
+      createPane(id);
+    }
+  }
+}
+
+function ensureWorkbenchPaneCount(targetCount: number) {
+  ensureDefaultWorkbenchPanes();
+  while (panes.size < targetCount && panes.size < 6) {
+    createPane();
+  }
+}
+
+function updateWorkbenchControls() {
+  const drawer = document.getElementById("terminal-drawer");
+  const addButton = document.getElementById("add-pane-btn") as HTMLButtonElement | null;
+  const layoutButton = document.getElementById("workbench-layout-btn");
+  const menuLayoutStatus = document.getElementById("menu-layout-status");
+
+  drawer?.setAttribute("data-layout", workbenchLayout);
+  if (addButton) {
+    addButton.disabled = panes.size >= 6;
+    addButton.textContent = panes.size >= 6 ? getLanguageText("6 panes", "6 ペイン") : getLanguageText("+ Pane", "+ ペイン");
+    addButton.setAttribute(
+      "aria-label",
+      panes.size >= 6 ? getLanguageText("Maximum pane count reached", "ペイン数が上限です") : getLanguageText("Add worker pane", "ワーカーペインを追加"),
+    );
+  }
+  if (layoutButton) {
+    layoutButton.textContent = workbenchLayout;
+  }
+  if (menuLayoutStatus) {
+    const paneCount = Math.max(panes.size, terminalDrawerOpen ? 4 : panes.size);
+    menuLayoutStatus.textContent = getLanguageText(`${workbenchLayout} · ${paneCount} panes`, `${workbenchLayout}・${paneCount} ペイン`);
+  }
 }
 
 function normalizeProjectDirInput(value: string | null | undefined) {
@@ -659,6 +1059,15 @@ function resetDesktopProjectState() {
   desktopEditorLoadErrors.clear();
   desktopStandaloneEditorTargets.clear();
   collapsedExplorerFolders.clear();
+  expandedExplorerFolders.clear();
+  projectExplorerEntries = [];
+  projectExplorerLoaded = false;
+  projectExplorerRefreshInFlight = null;
+  projectExplorerLoadedFolderPaths.clear();
+  projectExplorerFolderLoads.clear();
+  browserSourceChanges = [];
+  browserSourceGraphItems = [];
+  browserSourceRefreshInFlight = null;
   promotingRunIds.clear();
   pickingWinnerRunIds.clear();
   pendingPromotedRunRefreshIds.clear();
@@ -679,6 +1088,8 @@ function setActiveProjectDir(projectDir: string | null) {
   persistActiveProjectDir();
   resetDesktopProjectState();
   renderDesktopSurfaces();
+  void refreshProjectExplorerEntries();
+  void refreshBrowserSourceControl();
   requestDesktopSummaryRefresh(undefined, 0);
 }
 
@@ -751,7 +1162,7 @@ function getSessionItems() {
   const items: SessionItem[] = [
     {
       name: activeName,
-      meta: `${board.pane_count} panes · ${inbox.item_count} inbox · ${board.tasks_blocked} blocked`,
+      meta: `${board.pane_count} panes · ${inbox.item_count} notifications · ${board.tasks_blocked} blocked`,
       active: true,
       projectDir: activePath,
     },
@@ -971,7 +1382,7 @@ function setSelectedRun(runId: string | null) {
 function getProjectionSourceEntries(): SourceChange[] {
   const projections = getRunProjections();
   if (projections.length === 0) {
-    return [];
+    return browserSourceChanges;
   }
 
   const entries: SourceChange[] = [];
@@ -1037,7 +1448,343 @@ function createStandaloneEditorTarget(path: string, worktree = ""): EditorTarget
   };
 }
 
+function getFallbackExplorerTargets() {
+  return fallbackExplorerPaths.map((path) => createStandaloneEditorTarget(path));
+}
+
+function normalizeExplorerEntries(entries: DesktopExplorerEntry[]) {
+  return entries
+    .map((entry) => ({
+      path: entry.path.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, ""),
+      kind: entry.kind === "directory" ? "directory" as const : "file" as const,
+      has_children: entry.has_children ?? entry.hasChildren,
+    }))
+    .filter((entry) => entry.path.length > 0);
+}
+
+async function loadBrowserProjectExplorerEntries(path?: string) {
+  const params = new URLSearchParams();
+  if (path) {
+    params.set("path", path);
+  }
+  const query = params.toString();
+  const response = await fetch(`/__winsmux_project_files${query ? `?${query}` : ""}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(`Project explorer endpoint returned ${response.status}`);
+  }
+  const payload = await response.json() as { entries?: DesktopExplorerEntry[] };
+  return normalizeExplorerEntries(payload.entries ?? []);
+}
+
+function mergeProjectExplorerEntries(entries: DesktopExplorerEntry[]) {
+  const byPath = new Map(projectExplorerEntries.map((entry) => [entry.path, entry]));
+  for (const entry of entries) {
+    const existing = byPath.get(entry.path);
+    byPath.set(entry.path, {
+      ...existing,
+      ...entry,
+      has_children: existing?.has_children || entry.has_children,
+      hasChildren: existing?.hasChildren || entry.hasChildren,
+    });
+  }
+  projectExplorerEntries = Array.from(byPath.values());
+}
+
+async function refreshProjectExplorerEntries() {
+  if (projectExplorerRefreshInFlight) {
+    return projectExplorerRefreshInFlight;
+  }
+
+  projectExplorerRefreshInFlight = (async () => {
+    try {
+      const entries = isTauri()
+        ? normalizeExplorerEntries((await getDesktopExplorerEntries(undefined, getActiveProjectDirPayload())).entries)
+        : await loadBrowserProjectExplorerEntries();
+      projectExplorerEntries = entries;
+      projectExplorerLoaded = true;
+      projectExplorerLoadedFolderPaths.clear();
+      projectExplorerLoadedFolderPaths.add("");
+      projectExplorerFolderLoads.clear();
+      expandedExplorerFolders.clear();
+      renderExplorer();
+    } catch (error) {
+      projectExplorerLoaded = true;
+      console.warn("Failed to load project explorer entries", error);
+      renderExplorer();
+    } finally {
+      projectExplorerRefreshInFlight = null;
+    }
+  })();
+
+  return projectExplorerRefreshInFlight;
+}
+
+async function loadBrowserProjectExplorerFolder(path: string) {
+  const normalizedPath = normalizeSourcePath(path);
+  if (isTauri() || !normalizedPath || projectExplorerLoadedFolderPaths.has(normalizedPath)) {
+    return;
+  }
+  const existingLoad = projectExplorerFolderLoads.get(normalizedPath);
+  if (existingLoad) {
+    return existingLoad;
+  }
+
+  const load = (async () => {
+    try {
+      const entries = await loadBrowserProjectExplorerEntries(normalizedPath);
+      mergeProjectExplorerEntries(entries);
+      projectExplorerLoadedFolderPaths.add(normalizedPath);
+      renderExplorer();
+    } catch (error) {
+      console.warn("Failed to load project explorer folder", normalizedPath, error);
+    } finally {
+      projectExplorerFolderLoads.delete(normalizedPath);
+    }
+  })();
+
+  projectExplorerFolderLoads.set(normalizedPath, load);
+  return load;
+}
+
+function normalizeBrowserSourceChange(change: Partial<SourceChange>): SourceChange | null {
+  const path = normalizeSourcePath(change.path);
+  if (!path) {
+    return null;
+  }
+  const status = change.status === "added" || change.status === "deleted" || change.status === "renamed"
+    ? change.status
+    : "modified";
+  return {
+    path,
+    summary: change.summary || `${status} ${path}`,
+    paneLabel: change.paneLabel || "working tree",
+    worktree: change.worktree || ".",
+    status,
+    risk: change.risk === "medium" || change.risk === "high" ? change.risk : "low",
+    branch: change.branch || "",
+    lines: change.lines || getSourceStatusLabel(status),
+    commitCandidate: change.commitCandidate ?? true,
+    needsAttention: change.needsAttention ?? false,
+    run: change.run || "working-tree",
+    review: change.review || "local",
+  };
+}
+
+async function refreshBrowserSourceControl() {
+  if (isTauri()) {
+    return;
+  }
+  if (browserSourceRefreshInFlight) {
+    return browserSourceRefreshInFlight;
+  }
+
+  browserSourceRefreshInFlight = (async () => {
+    try {
+      const response = await fetch("/__winsmux_source_control", {
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) {
+        throw new Error(`Source control endpoint returned ${response.status}`);
+      }
+      const payload = await response.json() as {
+        changes?: Array<Partial<SourceChange>>;
+        graph?: BrowserSourceGraphItem[];
+      };
+      browserSourceChanges = (payload.changes ?? [])
+        .map(normalizeBrowserSourceChange)
+        .filter((change): change is SourceChange => Boolean(change));
+      browserSourceGraphItems = payload.graph ?? [];
+      renderExplorer();
+      renderSourceSummary();
+      renderSourceEntries();
+      renderSourceControlView();
+      renderContextPanel();
+      syncActivityButtons();
+    } catch (error) {
+      console.warn("Failed to load browser source control snapshot", error);
+    } finally {
+      browserSourceRefreshInFlight = null;
+    }
+  })();
+
+  return browserSourceRefreshInFlight;
+}
+
+async function loadBrowserEditorFile(path: string): Promise<DesktopEditorFilePayload> {
+  const response = await fetch(`/__winsmux_project_file?path=${encodeURIComponent(path)}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) {
+    throw new Error(`Project file endpoint returned ${response.status}`);
+  }
+  return await response.json() as DesktopEditorFilePayload;
+}
+
+function getExplorerRootLabel(worktreeKey: string) {
+  if (worktreeKey && worktreeKey !== ".") {
+    return getWorktreeLabel(worktreeKey).toUpperCase();
+  }
+  const activeProject = getActiveProjectDirPayload();
+  const normalized = activeProject?.replace(/\\/g, "/").replace(/\/+$/, "");
+  const name = normalized?.split("/").filter(Boolean).pop();
+  return (name || "winsmux").toUpperCase();
+}
+
+function compareProjectExplorerNodes(left: ProjectExplorerTreeNode, right: ProjectExplorerTreeNode) {
+  const leftIsFile = left.kind === "file";
+  const rightIsFile = right.kind === "file";
+  if (leftIsFile !== rightIsFile) {
+    return leftIsFile ? 1 : -1;
+  }
+  return left.label.localeCompare(right.label, undefined, { sensitivity: "base" });
+}
+
+function getProjectExplorerChildKey(label: string) {
+  return label.toLocaleLowerCase();
+}
+
+function createProjectExplorerTreeNode(
+  label: string,
+  path: string,
+  kind: "directory" | "file",
+  hasChildren?: boolean,
+): ProjectExplorerTreeNode {
+  return {
+    label,
+    path,
+    kind,
+    hasChildren,
+    children: new Map<string, ProjectExplorerTreeNode>(),
+  };
+}
+
+function buildProjectExplorerTree(entries: DesktopExplorerEntry[]) {
+  const rootChildren = new Map<string, ProjectExplorerTreeNode>();
+
+  for (const entry of entries) {
+    const segments = entry.path.split("/").filter(Boolean);
+    let currentChildren = rootChildren;
+    let currentPath = "";
+
+    segments.forEach((segment, index) => {
+      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
+      const isFinalSegment = index === segments.length - 1;
+      const nodeKind = isFinalSegment ? entry.kind : "directory";
+      const childKey = getProjectExplorerChildKey(segment);
+      let node = currentChildren.get(childKey);
+
+      if (!node) {
+        node = createProjectExplorerTreeNode(segment, currentPath, nodeKind, isFinalSegment ? entry.has_children : true);
+        currentChildren.set(childKey, node);
+      } else if (nodeKind === "directory") {
+        node.kind = "directory";
+      }
+      if (node.kind === "directory") {
+        node.hasChildren = node.hasChildren || !isFinalSegment || entry.has_children;
+      }
+
+      currentChildren = node.children;
+    });
+  }
+
+  return rootChildren;
+}
+
+function appendProjectExplorerTreeItems(
+  items: ExplorerItem[],
+  nodes: Iterable<ProjectExplorerTreeNode>,
+  worktreeKey: string,
+  depth: number,
+  sourceChangesByPath: Map<string, SourceChange>,
+  changedFolderKeys: Set<string>,
+) {
+  for (const node of Array.from(nodes).sort(compareProjectExplorerNodes)) {
+    if (node.kind === "directory") {
+      const folderKey = getExplorerFolderKey(worktreeKey, node.path);
+      const hasChildren = node.children.size > 0 || node.hasChildren === true;
+      const open = hasChildren && isExplorerFolderOpen(folderKey, depth);
+      items.push({
+        label: node.label,
+        depth,
+        kind: "folder",
+        folderKey,
+        path: node.path,
+        open,
+        hasChildren,
+        worktree: worktreeKey,
+        hasSourceChanges: changedFolderKeys.has(folderKey),
+      });
+      if (open) {
+        appendProjectExplorerTreeItems(
+          items,
+          node.children.values(),
+          worktreeKey,
+          depth + 1,
+          sourceChangesByPath,
+          changedFolderKeys,
+        );
+      }
+      continue;
+    }
+
+    const target = createStandaloneEditorTarget(node.path);
+    const sourceChange = sourceChangesByPath.get(normalizeSourcePath(node.path));
+    items.push({
+      label: node.label,
+      meta: sourceChange?.summary ?? target.summary,
+      depth,
+      kind: "file",
+      path: node.path,
+      worktree: target.worktree,
+      active: (sourceChange ? getSourceChangeKey(sourceChange) : target.key) === selectedEditorKey,
+      sourceStatus: sourceChange?.status,
+      hasSourceChanges: Boolean(sourceChange),
+      iconKind: getExplorerFileIconKind(node.path, node.label),
+    });
+  }
+}
+
+function getFilesystemExplorerItems() {
+  const worktreeKey = ".";
+  const worktreeFolderKey = getExplorerFolderKey(worktreeKey, "");
+  const worktreeOpen = isExplorerFolderOpen(worktreeFolderKey, 0);
+  const sourceChangesByPath = getSourceChangesByNormalizedPath();
+  const changedFolderKeys = getChangedExplorerFolderKeys(worktreeKey);
+  const items: ExplorerItem[] = [{
+    label: getExplorerRootLabel(worktreeKey),
+    depth: 0,
+    kind: "folder",
+    folderKey: worktreeFolderKey,
+    open: worktreeOpen,
+    worktree: worktreeKey,
+    hasSourceChanges: changedFolderKeys.has(worktreeFolderKey),
+  }];
+
+  if (!worktreeOpen) {
+    return items;
+  }
+
+  const tree = buildProjectExplorerTree(projectExplorerEntries);
+  appendProjectExplorerTreeItems(
+    items,
+    tree.values(),
+    worktreeKey,
+    1,
+    sourceChangesByPath,
+    changedFolderKeys,
+  );
+
+  return items;
+}
+
 function getExplorerItems() {
+  if (projectExplorerEntries.length > 0) {
+    return getFilesystemExplorerItems();
+  }
+
+  const changedFolderKeys = getChangedExplorerFolderKeys(".");
   const targets = new Map<string, EditorTarget>();
   for (const entry of getProjectionSourceEntries()) {
     const target = getEditorTargetForSourceChange(entry);
@@ -1048,6 +1795,11 @@ function getExplorerItems() {
   for (const [key, target] of desktopStandaloneEditorTargets) {
     if (!targets.has(key)) {
       targets.set(key, target);
+    }
+  }
+  if (targets.size === 0) {
+    for (const target of getFallbackExplorerTargets()) {
+      targets.set(target.key, target);
     }
   }
 
@@ -1066,15 +1818,15 @@ function getExplorerItems() {
     getWorktreeLabel(left[0]).localeCompare(getWorktreeLabel(right[0])),
   )) {
     const worktreeFolderKey = getExplorerFolderKey(worktreeKey, "");
-    const worktreeOpen = !collapsedExplorerFolders.has(worktreeFolderKey);
+    const worktreeOpen = isExplorerFolderOpen(worktreeFolderKey, 0);
     items.push({
-      label: getWorktreeLabel(worktreeKey),
-      meta: `${group.length} file${group.length === 1 ? "" : "s"}`,
+      label: getExplorerRootLabel(worktreeKey),
       depth: 0,
       kind: "folder",
       folderKey: worktreeFolderKey,
       open: worktreeOpen,
       worktree: worktreeKey,
+      hasSourceChanges: changedFolderKeys.has(worktreeFolderKey),
     });
 
     if (!worktreeOpen) {
@@ -1095,6 +1847,7 @@ function getExplorerItems() {
         const depth = index + 1;
         const isFile = index === segments.length - 1;
         if (isFile) {
+          const sourceChange = target.sourceChange;
           items.push({
             label: segment,
             meta: target.summary,
@@ -1103,11 +1856,14 @@ function getExplorerItems() {
             path: target.path,
             worktree: target.worktree,
             active: target.key === selectedEditorKey,
+            sourceStatus: sourceChange?.status,
+            hasSourceChanges: Boolean(sourceChange),
+            iconKind: getExplorerFileIconKind(target.path, segment),
           });
           return;
         }
 
-        if (collapsedExplorerFolders.has(folderKey)) {
+        if (!isExplorerFolderOpen(folderKey, depth)) {
           parentCollapsed = true;
         }
         if (seenFolders.has(folderKey)) {
@@ -1120,8 +1876,9 @@ function getExplorerItems() {
           depth,
           kind: "folder",
           folderKey,
-          open: !collapsedExplorerFolders.has(folderKey),
+          open: isExplorerFolderOpen(folderKey, depth),
           worktree: target.worktree,
+          hasSourceChanges: changedFolderKeys.has(folderKey),
         });
       });
     }
@@ -1217,7 +1974,7 @@ function getPaneLabelFromSourceFilter(filter: SourceFilter) {
 
 function getWorktreeLabel(worktree: string | undefined) {
   if (!worktree || worktree === "." || worktree === "./") {
-    return "Project root";
+    return getLanguageText("Project root", "プロジェクトルート");
   }
 
   const normalized = worktree.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -1229,11 +1986,137 @@ function getExplorerFolderKey(worktree: string | undefined, path: string) {
   return `${worktree || "."}::${path}`;
 }
 
-function toggleExplorerFolder(folderKey: string) {
-  if (collapsedExplorerFolders.has(folderKey)) {
-    collapsedExplorerFolders.delete(folderKey);
+function normalizeSourcePath(path: string | undefined) {
+  return (path ?? "").replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "").replace(/\/+$/, "");
+}
+
+function getSourceChangesByNormalizedPath() {
+  const changes = new Map<string, SourceChange>();
+  for (const change of getProjectionSourceEntries()) {
+    const key = normalizeSourcePath(change.path);
+    if (key) {
+      changes.set(key, change);
+    }
+  }
+  return changes;
+}
+
+function getChangedExplorerFolderKeys(worktree = ".") {
+  const keys = new Set<string>();
+  for (const change of getProjectionSourceEntries()) {
+    const segments = normalizeSourcePath(change.path).split("/").filter(Boolean);
+    keys.add(getExplorerFolderKey(worktree, ""));
+    for (let index = 1; index < segments.length; index += 1) {
+      keys.add(getExplorerFolderKey(worktree, segments.slice(0, index).join("/")));
+    }
+  }
+  return keys;
+}
+
+function getExplorerFileIconKind(path: string | undefined, label: string): ExplorerIconKind {
+  const normalized = normalizeSourcePath(path || label).toLowerCase();
+  const fileName = normalized.split("/").pop() || label.toLowerCase();
+  if (fileName === "license") {
+    return "license";
+  }
+  if (fileName === "cargo.lock" || fileName.endsWith(".lock")) {
+    return "lock";
+  }
+  if (fileName === "cargo.toml" || fileName.endsWith(".toml")) {
+    return "toml";
+  }
+  if (fileName.endsWith(".md") || fileName.endsWith(".markdown")) {
+    return "markdown";
+  }
+  if (fileName.endsWith(".ts") || fileName.endsWith(".tsx")) {
+    return "typescript";
+  }
+  if (fileName.endsWith(".js") || fileName.endsWith(".mjs") || fileName.endsWith(".cjs")) {
+    return "javascript";
+  }
+  if (fileName.endsWith(".json")) {
+    return "json";
+  }
+  if (fileName.endsWith(".rs")) {
+    return "rust";
+  }
+  if (fileName.endsWith(".ps1") || fileName.endsWith(".psm1") || fileName.endsWith(".psd1")) {
+    return "powershell";
+  }
+  if (fileName.endsWith(".yaml") || fileName.endsWith(".yml")) {
+    return "yaml";
+  }
+  if (fileName.endsWith(".xml")) {
+    return "xml";
+  }
+  if (fileName.endsWith(".png") || fileName.endsWith(".jpg") || fileName.endsWith(".jpeg") || fileName.endsWith(".webp") || fileName.endsWith(".gif") || fileName.endsWith(".svg")) {
+    return "image";
+  }
+  if (fileName.startsWith(".") || fileName.endsWith(".conf") || fileName.endsWith(".config")) {
+    return "config";
+  }
+  return "text";
+}
+
+function getExplorerFileIconLabel(iconKind: ExplorerIconKind) {
+  switch (iconKind) {
+    case "config":
+      return "⚙";
+    case "image":
+      return "▧";
+    case "javascript":
+      return "JS";
+    case "json":
+      return "{}";
+    case "license":
+      return "§";
+    case "lock":
+      return "●";
+    case "markdown":
+      return "↓";
+    case "powershell":
+      return ">";
+    case "rust":
+      return "RS";
+    case "toml":
+      return "⚙";
+    case "typescript":
+      return "TS";
+    case "xml":
+      return "<>";
+    case "yaml":
+      return "!";
+    case "text":
+    default:
+      return "";
+  }
+}
+
+function isExplorerFolderOpen(folderKey: string, depth: number) {
+  if (depth === 0) {
+    return !collapsedExplorerFolders.has(folderKey);
+  }
+  return expandedExplorerFolders.has(folderKey);
+}
+
+function toggleExplorerFolder(folderKey: string, depth: number, path?: string, worktree?: string) {
+  if (depth === 0) {
+    if (collapsedExplorerFolders.has(folderKey)) {
+      collapsedExplorerFolders.delete(folderKey);
+    } else {
+      collapsedExplorerFolders.add(folderKey);
+    }
+    renderExplorer();
+    return;
+  }
+
+  if (expandedExplorerFolders.has(folderKey)) {
+    expandedExplorerFolders.delete(folderKey);
   } else {
-    collapsedExplorerFolders.add(folderKey);
+    expandedExplorerFolders.add(folderKey);
+    if (worktree === "." && path) {
+      void loadBrowserProjectExplorerFolder(path);
+    }
   }
   renderExplorer();
 }
@@ -1249,9 +2132,12 @@ function renderExplorer() {
   if (explorerItems.length === 0) {
     const empty = document.createElement("div");
     empty.className = "sidebar-row";
-    empty.innerHTML =
-      `<span class="sidebar-row-title">${getLanguageText("No projected files", "投影されたファイルはありません")}</span>` +
-      `<span class="sidebar-row-meta">${getLanguageText("Changed files will appear here after the desktop summary refreshes.", "デスクトップ要約が更新されると、変更ファイルがここに表示されます。")}</span>`;
+    const title = document.createElement("span");
+    title.className = "sidebar-row-title";
+    title.textContent = projectExplorerLoaded
+      ? getLanguageText("No files", "ファイルはありません")
+      : getLanguageText("Loading files", "ファイルを読み込み中");
+    empty.append(title);
     root.appendChild(empty);
     return;
   }
@@ -1259,16 +2145,46 @@ function renderExplorer() {
   for (const item of explorerItems) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `sidebar-row sidebar-tree-row ${item.active ? "is-active" : ""}`;
-    button.style.paddingLeft = `${12 + item.depth * 16}px`;
-    button.innerHTML =
-      `<span class="sidebar-row-title">${item.kind === "folder" ? (item.open ? "▾ " : "▸ ") : "• "}${item.label}</span>` +
-      (item.meta ? `<span class="sidebar-row-meta">${item.meta}</span>` : "");
-    if (item.kind === "folder" && item.folderKey) {
+    button.className = `sidebar-row sidebar-tree-row is-${item.kind} depth-${item.depth} ${item.active ? "is-active" : ""}`;
+    button.classList.toggle("has-source-changes", Boolean(item.hasSourceChanges));
+    if (item.sourceStatus) {
+      button.dataset.sourceStatus = item.sourceStatus;
+    }
+    if (item.iconKind) {
+      button.dataset.iconKind = item.iconKind;
+    }
+    button.style.setProperty("--tree-indent", `${item.depth * 12}px`);
+    const canToggleFolder = item.kind === "folder" && Boolean(item.folderKey) && item.hasChildren !== false;
+    button.classList.toggle("is-empty-folder", item.kind === "folder" && !canToggleFolder);
+    const marker = item.kind === "folder" && canToggleFolder ? (item.open ? "⌄" : "›") : "";
+    const markerElement = document.createElement("span");
+    markerElement.className = "sidebar-tree-marker";
+    markerElement.textContent = marker;
+    const iconElement = document.createElement("span");
+    iconElement.className = "sidebar-file-icon";
+    if (item.kind === "file") {
+      const iconKind = item.iconKind ?? getExplorerFileIconKind(item.path, item.label);
+      iconElement.dataset.iconKind = iconKind;
+      iconElement.textContent = getExplorerFileIconLabel(iconKind);
+    }
+    const title = document.createElement("span");
+    title.className = "sidebar-row-title";
+    title.textContent = item.label;
+    const sourceStatus = document.createElement("span");
+    sourceStatus.className = "sidebar-source-status";
+    sourceStatus.textContent = item.sourceStatus ? getSourceStatusLabel(item.sourceStatus) : (item.kind === "folder" && item.hasSourceChanges ? "•" : "");
+    if (item.sourceStatus) {
+      sourceStatus.title = getLanguageText(`Git status: ${getSourceStatusLabel(item.sourceStatus)}`, `Git 状態: ${getSourceStatusLabel(item.sourceStatus)}`);
+    }
+    button.append(markerElement, iconElement, title, sourceStatus);
+    if (item.meta) {
+      button.title = item.meta;
+    }
+    if (item.kind === "folder" && item.folderKey && canToggleFolder) {
       const folderKey = item.folderKey;
       button.setAttribute("aria-expanded", item.open ? "true" : "false");
       button.addEventListener("click", () => {
-        toggleExplorerFolder(folderKey);
+        toggleExplorerFolder(folderKey, item.depth, item.path, item.worktree);
       });
     }
     if (item.kind === "file" && item.path) {
@@ -1293,7 +2209,9 @@ function renderOpenEditors() {
   if (editors.length === 0) {
     const empty = document.createElement("div");
     empty.className = "sidebar-row";
-    empty.innerHTML = `<span class="sidebar-row-title">No changed files</span><span class="sidebar-row-meta">Connect the backend summary to inspect a real file preview.</span>`;
+    empty.innerHTML =
+      `<span class="sidebar-row-title">${getLanguageText("No changed files", "変更ファイルはありません")}</span>` +
+      `<span class="sidebar-row-meta">${getLanguageText("Connect the backend summary to inspect a real file preview.", "実際のファイル表示にはバックエンド要約の接続が必要です。")}</span>`;
     root.appendChild(empty);
     return;
   }
@@ -1326,11 +2244,11 @@ function renderSourceSummary() {
   const attentionCount = visibleChanges.filter((item) => item.needsAttention).length;
   const commitCandidates = visibleChanges.filter((item) => item.commitCandidate).length;
   const summaryItems = [
-    { label: "Selected scope", value: getSourceFilterLabel(activeSourceFilter) },
-    { label: "Projected", value: `${activeEntries.length} files` },
-    { label: "Changed", value: `${entryCount} files` },
-    { label: "Ready", value: `${commitCandidates} candidate${commitCandidates === 1 ? "" : "s"}` },
-    { label: "Risk", value: `${attentionCount} attention` },
+    { label: getLanguageText("Selected scope", "選択範囲"), value: getSourceFilterLabel(activeSourceFilter) },
+    { label: getLanguageText("Projected", "投影"), value: getLanguageText(`${activeEntries.length} files`, `${activeEntries.length} ファイル`) },
+    { label: getLanguageText("Changed", "変更"), value: getLanguageText(`${entryCount} files`, `${entryCount} ファイル`) },
+    { label: getLanguageText("Ready", "準備済み"), value: getLanguageText(`${commitCandidates} candidate${commitCandidates === 1 ? "" : "s"}`, `${commitCandidates} 件`) },
+    { label: getLanguageText("Risk", "リスク"), value: getLanguageText(`${attentionCount} attention`, `${attentionCount} 要確認`) },
   ];
 
   root.innerHTML = "";
@@ -1351,16 +2269,17 @@ function renderSourceEntries() {
   const activeEntries = getProjectionSourceEntries();
   root.innerHTML = "";
   const entryItems: Array<{ label: string; value: string; filter: SourceFilter; tone?: SurfaceTone }> = [
-    { label: "Commit candidates", value: `${activeEntries.filter((item) => item.commitCandidate).length} ready`, tone: "success", filter: "candidates" },
-    { label: "Needs attention", value: `${activeEntries.filter((item) => item.needsAttention).length} blocker`, tone: "danger", filter: "attention" },
+    { label: getLanguageText("Commit candidates", "コミット候補"), value: getLanguageText(`${activeEntries.filter((item) => item.commitCandidate).length} ready`, `${activeEntries.filter((item) => item.commitCandidate).length} 件`), tone: "success", filter: "candidates" },
+    { label: getLanguageText("Needs attention", "要確認"), value: getLanguageText(`${activeEntries.filter((item) => item.needsAttention).length} blocker`, `${activeEntries.filter((item) => item.needsAttention).length} 件`), tone: "danger", filter: "attention" },
   ];
   const paneLabels = [...new Set(activeEntries.map((item) => item.paneLabel).filter((item) => item))].sort((left, right) =>
     left.localeCompare(right),
   );
   for (const paneLabel of paneLabels) {
+    const count = activeEntries.filter((item) => item.paneLabel === paneLabel).length;
     entryItems.push({
       label: paneLabel,
-      value: `${activeEntries.filter((item) => item.paneLabel === paneLabel).length} files`,
+      value: getLanguageText(`${count} files`, `${count} ファイル`),
       filter: getPaneSourceFilter(paneLabel),
     });
   }
@@ -1388,6 +2307,166 @@ function renderSourceEntries() {
     });
     root.appendChild(button);
   }
+}
+
+function getSourceStatusLabel(status: ChangeStatus) {
+  switch (status) {
+    case "added":
+      return "A";
+    case "deleted":
+      return "D";
+    case "renamed":
+      return "R";
+    case "modified":
+    default:
+      return "M";
+  }
+}
+
+function updateSourceControlCommitButton() {
+  const input = document.getElementById("source-control-message") as HTMLTextAreaElement | null;
+  const button = document.getElementById("source-control-commit-btn") as HTMLButtonElement | null;
+  const titleButton = document.getElementById("source-control-title-commit-btn") as HTMLButtonElement | null;
+  if (!input || !button) {
+    return;
+  }
+
+  sourceControlCommitMessage = input.value;
+  const disabled = input.value.trim().length === 0 || getVisibleSourceChanges().length === 0;
+  button.disabled = disabled;
+  if (titleButton) {
+    titleButton.disabled = disabled;
+  }
+}
+
+function renderSourceControlView() {
+  const changesRoot = document.getElementById("source-control-changes-list");
+  const graphRoot = document.getElementById("source-control-graph-list");
+  const count = document.getElementById("source-control-count");
+  const changesCount = document.getElementById("source-control-changes-count");
+  const messageInput = document.getElementById("source-control-message") as HTMLTextAreaElement | null;
+  if (!changesRoot || !graphRoot || !count) {
+    return;
+  }
+
+  const changes = getVisibleSourceChanges();
+  count.textContent = `${changes.length}`;
+  if (changesCount) {
+    changesCount.textContent = `${changes.length}`;
+  }
+  if (messageInput && messageInput.value !== sourceControlCommitMessage) {
+    messageInput.value = sourceControlCommitMessage;
+  }
+
+  changesRoot.innerHTML = "";
+  if (changes.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sidebar-row";
+    empty.innerHTML =
+      `<span class="sidebar-row-title">${getLanguageText("No changed files", "変更ファイルはありません")}</span>` +
+      `<span class="sidebar-row-meta">${getLanguageText("Desktop summary has not reported source changes.", "デスクトップ要約には変更がありません。")}</span>`;
+    changesRoot.appendChild(empty);
+  } else {
+    for (const change of changes) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `sidebar-row source-control-file-row ${getSourceChangeKey(change) === selectedEditorKey && editorSurfaceOpen ? "is-active" : ""}`;
+      button.dataset.tone = getSourceEntryTone(change);
+      const fileName = change.path.split("/").pop() ?? change.path;
+      const fileDir = change.path.split("/").slice(0, -1).join("\\");
+      const icon = document.createElement("span");
+      icon.className = "sidebar-file-icon";
+      const iconKind = getExplorerFileIconKind(change.path, fileName);
+      icon.dataset.iconKind = iconKind;
+      icon.textContent = getExplorerFileIconLabel(iconKind);
+
+      const fileMain = document.createElement("span");
+      fileMain.className = "source-control-file-main";
+      const filePath = document.createElement("span");
+      filePath.className = "sidebar-row-title source-control-file-path";
+      filePath.textContent = fileName;
+      const fileDirectory = document.createElement("span");
+      fileDirectory.className = "source-control-file-dir";
+      fileDirectory.textContent = fileDir;
+      fileMain.append(filePath, fileDirectory);
+
+      const status = document.createElement("span");
+      status.className = "source-control-status";
+      status.textContent = getSourceStatusLabel(change.status);
+      status.title = `${change.status}${change.lines ? ` · ${change.lines}` : ""}`;
+
+      button.append(icon, fileMain, status);
+      button.addEventListener("click", () => {
+        setSelectedRun(change.run);
+        void openEditorSourceChange(change);
+        renderExplorer();
+      });
+      changesRoot.appendChild(button);
+    }
+  }
+
+  graphRoot.innerHTML = "";
+  const graphItems = (getRunProjections().length > 0
+    ? getRunProjections()
+    : browserSourceGraphItems
+  ).slice(0, 30);
+  if (graphItems.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "sidebar-row";
+    empty.innerHTML =
+      `<span class="sidebar-row-title">${getLanguageText("No graph data", "グラフデータはありません")}</span>` +
+      `<span class="sidebar-row-meta">${getLanguageText("Connect the desktop summary to show recent runs.", "最近の実行を表示するにはデスクトップ要約を接続してください。")}</span>`;
+    graphRoot.appendChild(empty);
+  } else {
+    for (const item of graphItems) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `sidebar-row source-control-graph-row ${item.run_id === getSelectedRunId() ? "is-active" : ""}`;
+      button.innerHTML =
+        `<span class="sidebar-row-title">${item.task || item.run_id}</span>` +
+        `<span class="sidebar-row-meta">${item.branch || getLanguageText("no branch", "ブランチなし")} · ${item.changed_files.length} ${getLanguageText("changed", "変更")}</span>`;
+      button.addEventListener("click", () => {
+        setSelectedRun(item.run_id);
+        renderDesktopSurfaces();
+      });
+      graphRoot.appendChild(button);
+    }
+  }
+
+  updateSourceControlCommitButton();
+}
+
+function submitSourceControlCommitRequest() {
+  const message = sourceControlCommitMessage.trim();
+  const changes = getVisibleSourceChanges();
+  if (!message || changes.length === 0) {
+    return;
+  }
+
+  appendRuntimeConversation({
+    type: "user",
+    category: "activity",
+    timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
+    actor: getLanguageText("User", "ユーザー"),
+    title: getLanguageText("Commit requested", "コミットを依頼"),
+    body: getLanguageText(
+      `Commit message: ${message}. Files: ${summarizeChangedFiles(changes.map((item) => item.path), 4)}.`,
+      `コミットメッセージ: ${message}。対象: ${summarizeChangedFiles(changes.map((item) => item.path), 4)}。`,
+    ),
+    details: [
+      { label: getLanguageText("files", "ファイル"), value: `${changes.length}` },
+      { label: getLanguageText("scope", "範囲"), value: getSourceFilterLabel(activeSourceFilter) },
+    ],
+    tone: "focus",
+  });
+  sourceControlCommitMessage = "";
+  const messageInput = document.getElementById("source-control-message") as HTMLTextAreaElement | null;
+  if (messageInput) {
+    messageInput.value = "";
+  }
+  setComposerMode("dispatch");
+  renderConversation(getConversationItems());
+  renderSourceControlView();
 }
 
 function getVisibleSourceChanges() {
@@ -1647,7 +2726,7 @@ function applyPopoutSurfaceState(state: PopoutSurfaceState | null) {
 
   setSidebarOpen(false, { preserveWidePreference: false });
   setContextPanel(false, { preserveWidePreference: false });
-  setTerminalDrawer(false);
+  setTerminalDrawer(terminalDrawerOpen);
   setSettingsSheet(false);
   closeCommandBar();
 
@@ -1814,11 +2893,11 @@ async function openEditorSurfacePopout() {
 function getSourceFilterLabel(filter: SourceFilter) {
   switch (filter) {
     case "all":
-      return "All changes";
+      return getLanguageText("All changes", "すべての変更");
     case "candidates":
-      return "Commit candidates";
+      return getLanguageText("Commit candidates", "コミット候補");
     case "attention":
-      return "Needs attention";
+      return getLanguageText("Needs attention", "要確認");
     default:
       return getPaneLabelFromSourceFilter(filter) ?? filter;
   }
@@ -1854,32 +2933,32 @@ function getReviewDecisionItem(
   const reviewer = payload?.review_state?.reviewer?.label || payload?.review_state?.request?.target_review_label || "";
   if (reviewState === "PASS") {
     return {
-      label: "Review",
-      value: "Passed",
-      detail: reviewer ? `Approved by ${reviewer}` : "Review evidence is present.",
+      label: getLanguageText("Review", "レビュー"),
+      value: getLanguageText("Passed", "通過"),
+      detail: reviewer ? getLanguageText(`Approved by ${reviewer}`, `${reviewer} が承認しました。`) : getLanguageText("Review evidence is present.", "レビュー証跡があります。"),
       status: "ready",
     };
   }
   if (reviewState === "FAIL" || reviewState === "FAILED") {
     return {
-      label: "Review",
-      value: "Failed",
-      detail: reviewer ? `Reviewer ${reviewer} returned a blocking result.` : "Review is blocking this run.",
+      label: getLanguageText("Review", "レビュー"),
+      value: getLanguageText("Failed", "失敗"),
+      detail: reviewer ? getLanguageText(`Reviewer ${reviewer} returned a blocking result.`, `${reviewer} がブロック結果を返しました。`) : getLanguageText("Review is blocking this run.", "レビューがこの実行を止めています。"),
       status: "blocked",
     };
   }
   if (reviewState === "PENDING") {
     return {
-      label: "Review",
-      value: "Pending",
-      detail: reviewer ? `Waiting on ${reviewer}.` : "Review has been requested.",
+      label: getLanguageText("Review", "レビュー"),
+      value: getLanguageText("Pending", "待機中"),
+      detail: reviewer ? getLanguageText(`Waiting on ${reviewer}.`, `${reviewer} の確認待ちです。`) : getLanguageText("Review has been requested.", "レビューを依頼済みです。"),
       status: "waiting",
     };
   }
   return {
-    label: "Review",
-    value: "Not requested",
-    detail: projection.review_state || "No review state has been recorded.",
+    label: getLanguageText("Review", "レビュー"),
+    value: getLanguageText("Not requested", "未依頼"),
+    detail: projection.review_state || getLanguageText("No review state has been recorded.", "レビュー状態はまだ記録されていません。"),
     status: "missing",
   };
 }
@@ -1891,32 +2970,32 @@ function getVerificationDecisionItem(
   const outcome = normalizeDecisionText(projection.verification_outcome || payload?.evidence_digest.verification_outcome).toUpperCase();
   if (outcome === "PASS") {
     return {
-      label: "Verification",
-      value: "Passed",
-      detail: "Latest evidence reports a passing verification outcome.",
+      label: getLanguageText("Verification", "検証"),
+      value: getLanguageText("Passed", "通過"),
+      detail: getLanguageText("Latest evidence reports a passing verification outcome.", "最新の証跡では検証が通っています。"),
       status: "ready",
     };
   }
   if (outcome === "FAIL" || outcome === "FAILED" || outcome === "BLOCK") {
     return {
-      label: "Verification",
+      label: getLanguageText("Verification", "検証"),
       value: outcome,
-      detail: "Verification must be resolved before release or merge.",
+      detail: getLanguageText("Verification must be resolved before release or merge.", "リリースまたはマージ前に検証失敗を解消してください。"),
       status: "blocked",
     };
   }
   if (outcome === "PARTIAL" || outcome === "WARN" || outcome === "WARNING") {
     return {
-      label: "Verification",
+      label: getLanguageText("Verification", "検証"),
       value: outcome,
-      detail: "Partial evidence needs an operator decision.",
+      detail: getLanguageText("Partial evidence needs an operator decision.", "部分的な証跡にはオペレーター判断が必要です。"),
       status: "waiting",
     };
   }
   return {
-    label: "Verification",
-    value: "Missing",
-    detail: "Open Explain or wait for the run to emit verification evidence.",
+    label: getLanguageText("Verification", "検証"),
+    value: getLanguageText("Missing", "未検出"),
+    detail: getLanguageText("Open Explain or wait for the run to emit verification evidence.", "説明を開くか、実行が検証証跡を出すまで待ってください。"),
     status: "missing",
   };
 }
@@ -1928,24 +3007,24 @@ function getSecurityDecisionItem(
   const securityText = normalizeDecisionText(projection.security_blocked || payload?.evidence_digest.security_blocked).toUpperCase();
   if (securityText === "BLOCK" || securityText === "BLOCKED" || securityText === "TRUE") {
     return {
-      label: "Security",
-      value: "Blocked",
-      detail: "Security policy is blocking this run.",
+      label: getLanguageText("Security", "セキュリティ"),
+      value: getLanguageText("Blocked", "ブロック中"),
+      detail: getLanguageText("Security policy is blocking this run.", "セキュリティ方針がこの実行を止めています。"),
       status: "blocked",
     };
   }
   if (securityText === "ALLOW" || securityText === "PASS" || securityText === "FALSE") {
     return {
-      label: "Security",
-      value: "Clear",
-      detail: "No security block is reported for the selected run.",
+      label: getLanguageText("Security", "セキュリティ"),
+      value: getLanguageText("Clear", "問題なし"),
+      detail: getLanguageText("No security block is reported for the selected run.", "選択中の実行にセキュリティブロックはありません。"),
       status: "ready",
     };
   }
   return {
-    label: "Security",
-    value: "Unknown",
-    detail: "No security verdict is visible yet.",
+    label: getLanguageText("Security", "セキュリティ"),
+    value: getLanguageText("Unknown", "不明"),
+    detail: getLanguageText("No security verdict is visible yet.", "セキュリティ判定はまだ表示されていません。"),
     status: "missing",
   };
 }
@@ -1964,32 +3043,32 @@ function getOperatorDecisionItem(
     lowerNextAction.includes("approve")
   ) {
     return {
-      label: "Operator",
-      value: "Decision needed",
+      label: getLanguageText("Operator", "オペレーター"),
+      value: getLanguageText("Decision needed", "判断が必要"),
       detail: nextAction,
       status: "waiting",
     };
   }
   if (projection.activity === "blocked" || lowerNextAction === "blocked") {
     return {
-      label: "Operator",
-      value: "Blocked",
-      detail: projection.detail || nextAction || "Run is blocked.",
+      label: getLanguageText("Operator", "オペレーター"),
+      value: getLanguageText("Blocked", "ブロック中"),
+      detail: projection.detail || nextAction || getLanguageText("Run is blocked.", "実行が止まっています。"),
       status: "blocked",
     };
   }
   if (reviewState === "PASS" && !nextAction) {
     return {
-      label: "Operator",
-      value: "Ready to package",
-      detail: "Review has passed and no extra decision is visible.",
+      label: getLanguageText("Operator", "オペレーター"),
+      value: getLanguageText("Ready to package", "パッケージ化可能"),
+      detail: getLanguageText("Review has passed and no extra decision is visible.", "レビューは通過済みで、追加判断は見えていません。"),
       status: "ready",
     };
   }
   return {
-    label: "Operator",
-    value: nextAction || "Monitoring",
-    detail: projection.detail || projection.summary || "No operator decision is visible yet.",
+    label: getLanguageText("Operator", "オペレーター"),
+    value: nextAction || getLanguageText("Monitoring", "監視中"),
+    detail: projection.detail || projection.summary || getLanguageText("No operator decision is visible yet.", "オペレーター判断はまだ表示されていません。"),
     status: nextAction ? "waiting" : "missing",
   };
 }
@@ -2000,8 +3079,8 @@ function renderHandoffCockpit(root: HTMLElement, projection: DesktopRunProjectio
     const empty = document.createElement("div");
     empty.className = "context-empty-state";
     empty.innerHTML =
-      `<div class="context-label">No selected run</div>` +
-      `<div class="context-value">A run must be selected before decision gates can be shown.</div>`;
+      `<div class="context-label">${getLanguageText("No selected run", "実行が選択されていません")}</div>` +
+      `<div class="context-value">${getLanguageText("A run must be selected before decision gates can be shown.", "判断項目を表示するには実行を選択してください。")}</div>`;
     root.appendChild(empty);
     return;
   }
@@ -2054,8 +3133,8 @@ function renderExperimentContext() {
     empty.className = "experiment-detail-card";
     empty.dataset.tone = "info";
     empty.innerHTML =
-      `<div class="experiment-detail-title">No experiment run</div>` +
-      `<div class="experiment-detail-body">Select a run to inspect observation, compare, and playbook context.</div>`;
+      `<div class="experiment-detail-title">${getLanguageText("No experiment run", "実験用の実行はありません")}</div>` +
+      `<div class="experiment-detail-body">${getLanguageText("Select a run to inspect observation, compare, and playbook context.", "観測、比較、手順の文脈を確認するには実行を選択してください。")}</div>`;
     detailRoot.appendChild(empty);
     return;
   }
@@ -2066,8 +3145,8 @@ function renderExperimentContext() {
     empty.className = "experiment-detail-card";
     empty.dataset.tone = "info";
     empty.innerHTML =
-      `<div class="experiment-detail-title">Explain not loaded</div>` +
-      `<div class="experiment-detail-body">Open Explain to load experiment context for the selected run.</div>`;
+      `<div class="experiment-detail-title">${getLanguageText("Explain not loaded", "説明は未読込です")}</div>` +
+      `<div class="experiment-detail-body">${getLanguageText("Open Explain to load experiment context for the selected run.", "選択中の実行について実験文脈を読み込むには、説明を開いてください。")}</div>`;
     detailRoot.appendChild(empty);
     return;
   }
@@ -2618,12 +3697,12 @@ function renderContextPanel() {
 
   sectionRoot.innerHTML = "";
   const resolvedContextSections = [
-    { label: "next", value: selectedProjection?.next_action || "Open Explain" },
-    { label: "run", value: selectedProjection?.run_id || primaryChange?.run || "No active run" },
-    { label: "pane", value: primaryChange?.paneLabel ?? "No pane label" },
-    { label: "branch", value: selectedProjection?.branch || primaryChange?.branch || "No branch" },
-    { label: "worktree", value: selectedProjection?.worktree || primaryChange?.worktree || "Project root" },
-    { label: "review", value: selectedProjection?.review_state || primaryChange?.review || "No review state" },
+    { label: getLanguageText("next", "次"), value: selectedProjection?.next_action || getLanguageText("Open Explain", "説明を開く") },
+    { label: getLanguageText("run", "実行"), value: selectedProjection?.run_id || primaryChange?.run || getLanguageText("No active run", "実行はありません") },
+    { label: getLanguageText("pane", "ペイン"), value: primaryChange?.paneLabel ?? getLanguageText("No pane label", "ペイン名はありません") },
+    { label: getLanguageText("branch", "ブランチ"), value: selectedProjection?.branch || primaryChange?.branch || getLanguageText("No branch", "ブランチはありません") },
+    { label: getLanguageText("worktree", "ワークツリー"), value: selectedProjection?.worktree || primaryChange?.worktree || getLanguageText("Project root", "プロジェクトルート") },
+    { label: getLanguageText("review", "レビュー"), value: selectedProjection?.review_state || primaryChange?.review || getLanguageText("No review state", "レビュー状態はありません") },
   ];
   for (const item of resolvedContextSections) {
     const row = document.createElement("div");
@@ -2641,8 +3720,8 @@ function renderContextPanel() {
     const empty = document.createElement("div");
     empty.className = "context-empty-state";
     empty.innerHTML =
-      `<div class="context-label">No detected ports</div>` +
-      `<div class="context-value">Run a localhost dev server in the utility terminal to surface a preview target.</div>`;
+      `<div class="context-label">${getLanguageText("No detected ports", "検出されたポートはありません")}</div>` +
+      `<div class="context-value">${getLanguageText("Run a localhost dev server in the utility terminal to surface a preview target.", "プレビュー対象を表示するには、端末でローカル開発サーバーを起動してください。")}</div>`;
     previewRoot.appendChild(empty);
   } else {
     for (const target of previewTargets) {
@@ -2655,10 +3734,10 @@ function renderContextPanel() {
       name.textContent = target.url;
       const metaLine = document.createElement("span");
       metaLine.className = "context-file-meta";
-      metaLine.textContent = `Preview target · ${target.portLabel} · Seen ${formatPreviewSeenAt(target.lastSeenAt)}`;
+      metaLine.textContent = `${getLanguageText("Preview target", "プレビュー対象")} · ${target.portLabel} · ${getLanguageText("Seen", "検出")} ${formatPreviewSeenAt(target.lastSeenAt)}`;
       const trace = document.createElement("span");
       trace.className = "context-file-trace";
-      trace.textContent = `Detected from ${target.sourceLabel}`;
+      trace.textContent = `${getLanguageText("Detected from", "検出元")} ${target.sourceLabel}`;
       button.appendChild(name);
       button.appendChild(metaLine);
       button.appendChild(trace);
@@ -2671,11 +3750,11 @@ function renderContextPanel() {
 
   overviewRoot.innerHTML = "";
   const overviewCards = [
-    { label: "Selected scope", value: getSourceFilterLabel(activeSourceFilter) },
-    { label: "Commit candidates", value: `${visibleChanges.filter((item) => item.commitCandidate).length}` },
-    { label: "Needs attention", value: `${visibleChanges.filter((item) => item.needsAttention).length}` },
-    { label: "Active pane", value: primaryChange?.paneLabel ?? "n/a" },
-    { label: "Worktree", value: primaryChange?.worktree || "Project root" },
+    { label: getLanguageText("Selected scope", "選択範囲"), value: getSourceFilterLabel(activeSourceFilter) },
+    { label: getLanguageText("Commit candidates", "コミット候補"), value: `${visibleChanges.filter((item) => item.commitCandidate).length}` },
+    { label: getLanguageText("Needs attention", "要確認"), value: `${visibleChanges.filter((item) => item.needsAttention).length}` },
+    { label: getLanguageText("Active pane", "アクティブなペイン"), value: primaryChange?.paneLabel ?? "n/a" },
+    { label: getLanguageText("Worktree", "ワークツリー"), value: primaryChange?.worktree || getLanguageText("Project root", "プロジェクトルート") },
   ];
 
   for (const item of overviewCards) {
@@ -2825,7 +3904,7 @@ function getFooterSettingsTone(status: string): SurfaceTone {
   }
 }
 
-function getFooterInboxTone(count: number): SurfaceTone {
+function getFooterNotificationTone(count: number): SurfaceTone {
   if (count > 0) {
     return "warning";
   }
@@ -2894,7 +3973,9 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
   const selectedProjection = getPrimaryRunProjection();
   const modeLabel = getComposerModeLabel(activeComposerMode);
   const inboxCount = desktopSummarySnapshot?.inbox.summary.item_count ?? 0;
-  const inboxStatus = desktopSummarySnapshot ? `${inboxCount} inbox` : "Inbox idle";
+  const notificationStatus = desktopSummarySnapshot
+    ? (inboxCount > 0 ? getLanguageText(`${inboxCount} items`, `${inboxCount}件`) : getLanguageText("none", "なし"))
+    : getLanguageText("none", "なし");
   const runStatus = selectedProjection?.label || selectedProjection?.run_id || "No run selected";
   const reviewStatus = selectedProjection?.review_state || "No review";
   const nextStatus = selectedProjection?.next_action || "idle";
@@ -2917,7 +3998,7 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
       { label: "Operator", value: operatorStatus.label, tone: operatorStatus.tone },
       { label: "Review", value: reviewStatus, tone: getFooterReviewTone(selectedProjection?.review_state) },
       { label: "Next", value: nextStatus, tone: getFooterNextTone(selectedProjection?.next_action) },
-      { label: "Inbox", value: inboxStatus, tone: getFooterInboxTone(inboxCount) },
+      { label: getLanguageText("Notifications", "通知"), value: notificationStatus, tone: getFooterNotificationTone(inboxCount) },
     ],
   };
 }
@@ -2961,8 +4042,11 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
     }
 
     const sidebarWidthValue = typeof parsed.sidebarWidth === "number" ? parsed.sidebarWidth : 292;
+    const workbenchWidthValue = typeof parsed.workbenchWidth === "number" ? parsed.workbenchWidth : null;
     const wideSidebarOpen = typeof parsed.wideSidebarOpen === "boolean" ? parsed.wideSidebarOpen : true;
-    const wideContextOpen = typeof parsed.wideContextOpen === "boolean" ? parsed.wideContextOpen : true;
+    const wideContextOpen = typeof parsed.wideContextOpen === "boolean" ? parsed.wideContextOpen : false;
+    const workbenchOpen = typeof parsed.workbenchOpen === "boolean" ? parsed.workbenchOpen : true;
+    const workbenchLayout = parsed.workbenchLayout === "3x2" || parsed.workbenchLayout === "focus" ? parsed.workbenchLayout : "2x2";
 
     return {
       theme,
@@ -2972,8 +4056,11 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       focusMode,
       language,
       sidebarWidth: Math.max(240, Math.min(380, Math.round(sidebarWidthValue))),
+      workbenchWidth: workbenchWidthValue === null ? null : Math.max(360, Math.min(1400, Math.round(workbenchWidthValue))),
       wideSidebarOpen,
       wideContextOpen,
+      workbenchOpen,
+      workbenchLayout,
     };
   } catch {
     return null;
@@ -2990,8 +4077,11 @@ function persistThemeState() {
       focusMode: themeState.focusMode,
       language: themeState.language,
       sidebarWidth,
+      workbenchWidth,
       wideSidebarOpen: preferredWideSidebarOpen,
       wideContextOpen: preferredWideContextOpen,
+      workbenchOpen: terminalDrawerOpen,
+      workbenchLayout,
     };
     window.localStorage.setItem(SHELL_PREFERENCES_STORAGE_KEY, JSON.stringify(nextState));
     return true;
@@ -3013,6 +4103,35 @@ function applyShellPreferences() {
   shell.dataset.codeFont = themeState.codeFont;
   shell.dataset.focusMode = themeState.focusMode;
   document.documentElement.lang = themeState.language;
+  if (workbenchWidth !== null) {
+    shell.style.setProperty("--workbench-width", `${workbenchWidth}px`);
+  }
+}
+
+function clampWorkbenchWidth(width: number) {
+  const body = document.getElementById("workspace-body");
+  const availableWidth = body?.clientWidth ?? window.innerWidth;
+  const reservedWidth =
+    360 +
+    (contextPanelOpen && !isNarrowLayout() ? 292 : 0) +
+    (editorSurfaceOpen && !isNarrowLayout() ? 320 : 0) +
+    32;
+  const maxWidth = Math.max(320, Math.min(availableWidth - reservedWidth, 1600));
+  return Math.max(320, Math.min(maxWidth, Math.round(width)));
+}
+
+function applyWorkbenchWidth(width: number) {
+  const shell = document.getElementById("app-shell");
+  if (!shell) {
+    return;
+  }
+  workbenchWidth = clampWorkbenchWidth(width);
+  shell.style.setProperty("--workbench-width", `${workbenchWidth}px`);
+  const handle = document.getElementById("workbench-resizer");
+  handle?.setAttribute("aria-valuenow", `${workbenchWidth}`);
+  requestAnimationFrame(() => {
+    panes.forEach((pane) => pane.fitAddon.fit());
+  });
 }
 
 function getLanguageText(en: string, ja: string) {
@@ -3050,17 +4169,68 @@ function setButtonLabel(id: string, text: string, ariaLabel?: string) {
   }
 }
 
+function setButtonChrome(id: string, text: string, ariaLabel?: string) {
+  const button = document.getElementById(id);
+  if (!button) {
+    return;
+  }
+  button.textContent = text;
+  if (ariaLabel) {
+    button.setAttribute("aria-label", ariaLabel);
+    button.setAttribute("title", ariaLabel);
+  }
+}
+
+function setIconButtonChrome(id: string, ariaLabel: string) {
+  const button = document.getElementById(id);
+  if (!button) {
+    return;
+  }
+  button.setAttribute("aria-label", ariaLabel);
+  button.setAttribute("title", ariaLabel);
+}
+
+function getSidebarModeTitle(mode: SidebarMode = sidebarMode) {
+  switch (mode) {
+    case "source":
+      return getLanguageText("Source Control", "ソース管理");
+    case "workspace":
+      return getLanguageText("Workspace", "作業領域");
+    case "explorer":
+    default:
+      return getLanguageText("Explorer", "エクスプローラー");
+  }
+}
+
+function updateSidebarModeTitle() {
+  setElementText("sidebar-mode-title", getSidebarModeTitle());
+}
+
 function applyLanguageChrome() {
   const japanese = themeState.language === "ja";
   document.documentElement.lang = japanese ? "ja" : "en";
-  setElementText("workspace-title", japanese ? "受信箱" : "Inbox");
+  setElementText("menu-project-name", "winsmux");
+  setButtonChrome("menu-file-btn", japanese ? "ファイル" : "File");
+  setButtonChrome("menu-edit-btn", japanese ? "編集" : "Edit");
+  setButtonChrome("menu-selection-btn", japanese ? "選択" : "Selection");
+  setButtonChrome("menu-view-btn", japanese ? "表示" : "View");
+  setButtonChrome("menu-go-btn", japanese ? "移動" : "Go");
+  setButtonChrome("menu-run-btn", japanese ? "実行" : "Run");
+  setButtonChrome("menu-terminal-btn", japanese ? "端末" : "Terminal");
+  setButtonChrome("menu-help-btn", japanese ? "ヘルプ" : "Help");
+  setIconButtonChrome("activity-explorer-btn", japanese ? "エクスプローラー" : "Explorer");
+  setIconButtonChrome("activity-search-btn", japanese ? "操作検索" : "Search actions");
+  setIconButtonChrome("activity-source-btn", japanese ? "ソース管理" : "Source control");
+  setIconButtonChrome("activity-context-btn", japanese ? "文脈" : "Context");
+  setIconButtonChrome("activity-settings-btn", japanese ? "設定" : "Settings");
+  updateSidebarModeTitle();
+  setElementText("workspace-title", japanese ? "オペレーター" : "Operator");
   setElementText(
     "workspace-subtitle",
     japanese
-      ? "判断、根拠、実行を会話中心に扱うオペレーターシェル。"
-      : "Conversation-first shell for operator judgment, evidence, and action.",
+      ? "会話、実行、判断をここで扱います。"
+      : "Conversation, runs, and operator decisions.",
   );
-  setButtonLabel("settings-btn", japanese ? "設定" : "Settings", japanese ? "設定を開く" : "Open settings");
   setButtonLabel("open-command-bar-btn", japanese ? "操作" : "Actions", japanese ? "操作パレットを開く" : "Open action palette");
   setButtonLabel("toggle-sidebar-btn", japanese ? "作業領域" : "Workspace", japanese ? "作業領域サイドバーを切り替える" : "Toggle workspace sidebar");
   setButtonLabel(
@@ -3070,14 +4240,14 @@ function applyLanguageChrome() {
   );
   setButtonLabel(
     "toggle-terminal-btn",
-    terminalDrawerOpen ? (japanese ? "隠す" : "Hide") : (japanese ? "端末" : "Terminal"),
-    terminalDrawerOpen ? (japanese ? "端末ドロワーを隠す" : "Hide terminal drawer") : (japanese ? "端末ドロワーを開く" : "Open terminal drawer"),
+    terminalDrawerOpen ? (japanese ? "ペインを隠す" : "Hide panes") : (japanese ? "ペイン" : "Panes"),
+    terminalDrawerOpen ? (japanese ? "ワーカーペインを隠す" : "Hide worker panes") : (japanese ? "ワーカーペインを表示" : "Show worker panes"),
   );
   setElementText("settings-sheet-title", japanese ? "設定" : "Settings");
   setElementText("close-settings-btn", japanese ? "キャンセル" : "Cancel");
   setElementText("apply-settings-btn", japanese ? "適用" : "Apply");
-  setElementText("settings-profile-label", japanese ? "プロファイル" : "Profile");
-  setElementText("settings-profile-value", japanese ? "ローカル環境 · GPT-5.4 · 高い推論" : "Local environment · GPT-5.4 · High reasoning");
+  setElementText("settings-profile-label", japanese ? "実行環境" : "Runtime");
+  setElementText("settings-profile-value", japanese ? "ローカルの Claude Code 設定を使用します。" : "Uses the local Claude Code configuration.");
   setElementText("settings-language-label", japanese ? "言語" : "Language");
   setElementText("settings-language-value", japanese ? "作業領域の表示言語を日本語と英語で切り替えます。" : "Switch the workspace chrome between English and Japanese.");
   setElementText("settings-theme-label", japanese ? "テーマ" : "Theme");
@@ -3091,7 +4261,7 @@ function applyLanguageChrome() {
   setElementText("settings-display-label", japanese ? "表示" : "Display");
   setElementText("settings-display-value", japanese ? "タイムラインの詳細を常時どこまで表示するかを選びます。" : "Choose how much timeline detail stays visible by default.");
   setElementText("settings-workspace-label", japanese ? "作業領域" : "Workspace");
-  setElementText("settings-workspace-value", japanese ? "サイドバー幅、文脈パネル、端末ドロワーの挙動を扱います。" : "Sidebar width, context collapse, terminal drawer behavior");
+  setElementText("settings-workspace-value", japanese ? "サイドバー幅、文脈パネル、ワークベンチの挙動を扱います。" : "Sidebar width, context collapse, workbench behavior");
   setElementText("settings-input-label", japanese ? "入力" : "Input");
   setElementText("settings-input-value", japanese ? "Enter で送信、Shift+Enter で改行、IME 変換中の Enter は保護します。" : "Enter sends, Shift+Enter inserts newline, IME composition is protected");
   setSelectorText(".brand-block .sidebar-caption", japanese ? "オペレーターシェル" : "Operator shell");
@@ -3099,15 +4269,39 @@ function applyLanguageChrome() {
   setSelectorText('[data-i18n="files-title"]', japanese ? "ファイル" : "Files");
   setSelectorText('[data-i18n="editors-title"]', japanese ? "エディター" : "Editors");
   setSelectorText('[data-i18n="source-title"]', japanese ? "ソース" : "Source");
+  setElementText("source-control-title", japanese ? "ソース管理" : "Source control");
+  setElementText("source-control-commit-label", japanese ? "コミット依頼" : "Commit request");
+  setElementText("source-control-changes-title", japanese ? "変更" : "Changes");
+  setElementText("source-control-graph-title", japanese ? "グラフ" : "Graph");
+  setElementText("workbench-title", japanese ? "ワーカーペイン" : "Worker panes");
+  document.getElementById("terminal-drawer")?.setAttribute("aria-label", japanese ? "ワーカーペイン" : "Worker panes");
+  document.getElementById("workbench-layout-btn")?.setAttribute("aria-label", japanese ? "ワーカーペインの配置を切り替える" : "Switch worker pane layout");
+  updateWorkbenchControls();
   setSelectorText("#thread-meta span:first-child", japanese ? "winsmux セッション" : "winsmux session");
   setSelectorText("#thread-meta span:last-child", japanese ? "会話シェル · 要点フィード" : "conversation shell · concise feed");
   setElementText("timeline-feed-hint", japanese ? "重要な出来事だけを表示します。必要な時に詳細を開きます。" : "Key events only. Details open when needed.");
-  setElementText("ime-hint", japanese ? "IME 対応: Enter で送信、Shift+Enter で改行、変換中の Enter では送信しません。" : "IME-safe: Enter sends, Shift+Enter inserts newline, composing Enter never sends.");
+  setElementText("context-panel-title", japanese ? "文脈" : "Context");
+  setElementText("context-decision-title", japanese ? "判断コックピット" : "Decision cockpit");
+  setElementText("context-experiments-title", japanese ? "実験" : "Experiments");
+  setElementText("context-ports-title", japanese ? "ポート" : "Ports");
+  setElementText("context-source-title", japanese ? "ソース管理" : "Source control");
+  setElementText("context-files-title", japanese ? "変更ファイル" : "Changed files");
+  setElementText("command-bar-eyebrow", japanese ? "キーボード中心の操作" : "Keyboard-first control");
   setElementText("command-bar-title", japanese ? "操作パレット" : "Action palette");
   setElementText(
     "command-bar-hint",
     japanese ? "Ctrl+K で開く · ↑↓ で移動 · Enter で実行 · Esc で閉じる" : "Ctrl+K to open · ↑↓ navigate · Enter execute · Esc close",
   );
+  setElementText("command-bar-search-label", japanese ? "コマンドを検索" : "Search commands");
+  setElementText(
+    "command-bar-description",
+    japanese
+      ? "依頼、レビュー、説明、ソース文脈、設定、端末操作をここから実行できます。"
+      : "Action palette for dispatch, review, explain, source context, settings, and terminal control.",
+  );
+  document
+    .getElementById("command-bar-results")
+    ?.setAttribute("aria-label", japanese ? "操作候補" : "Action results");
 
   const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
   if (composerInput) {
@@ -3115,11 +4309,22 @@ function applyLanguageChrome() {
     composerInput.placeholder = getComposerModePlaceholder(selected.mode);
   }
 
+  const commandBarInput = document.getElementById("command-bar-input") as HTMLInputElement | null;
+  if (commandBarInput) {
+    commandBarInput.placeholder = japanese ? "操作、実行、ペイン、オペレーター操作を検索" : "Search actions, runs, panels, and operator controls";
+  }
+
   const attachButton = document.getElementById("attach-btn");
   if (attachButton) {
     attachButton.textContent = japanese ? "添付" : "Attach";
   }
+  updateVoiceInputButton();
   setElementText("send-btn", japanese ? "送信" : "Send");
+
+  const sourceControlMessage = document.getElementById("source-control-message") as HTMLTextAreaElement | null;
+  if (sourceControlMessage) {
+    sourceControlMessage.placeholder = japanese ? "コミットメッセージ" : "Commit message";
+  }
 }
 
 function applyThemeState(nextState: ThemeState) {
@@ -3133,6 +4338,18 @@ function applyThemeState(nextState: ThemeState) {
   applyLanguageChrome();
   updateTimelineFeedHint();
   applyCodeFontToPanes();
+  updateWorkbenchControls();
+  renderSessions();
+  renderExplorer();
+  void refreshProjectExplorerEntries();
+  void refreshBrowserSourceControl();
+  renderOpenEditors();
+  renderSourceSummary();
+  renderSourceEntries();
+  renderSourceControlView();
+  renderContextPanel();
+  renderTimelineFilters();
+  renderRunSummary();
   renderConversation(getConversationItems());
   renderComposerModes();
   renderAttachmentTray();
@@ -3288,26 +4505,43 @@ function focusComposer() {
   composerInput.setSelectionRange(length, length);
 }
 
-function getComposerSlashMatch(value: string) {
-  const match = value.match(/^\/([a-z-]+)(?=\s|$)/i);
-  if (!match) {
-    return null;
-  }
-
-  const token = match[1].toLowerCase();
-  return composerSlashCommands.find((item) => item.command === token) ?? null;
-}
-
 function getFilteredComposerSlashCommands() {
   if (!composerSlashOpen) {
     return [];
   }
-
-  if (!composerSlashQuery) {
+  const query = composerSlashQuery.toLowerCase();
+  if (!query) {
     return composerSlashCommands;
   }
+  return composerSlashCommands.filter((item) => item.command.toLowerCase().startsWith(query));
+}
 
-  return composerSlashCommands.filter((item) => item.command.startsWith(composerSlashQuery));
+function getComposerSlashFallbackCommand(): ComposerSlashCommand | null {
+  if (!composerSlashOpen) {
+    return null;
+  }
+  const command = composerSlashQuery.trim();
+  if (!command) {
+    return null;
+  }
+  const isMcpPrompt = command.startsWith("mcp__");
+  return {
+    command,
+    label: `/${command}`,
+    labelJa: `/${command}`,
+    description: isMcpPrompt ? "Run an MCP prompt command." : "Run a custom slash command or skill.",
+    descriptionJa: isMcpPrompt ? "MCP プロンプトコマンドを実行します。" : "カスタムコマンドまたはスキルを実行します。",
+    kind: "claude",
+  };
+}
+
+function getVisibleComposerSlashCommands() {
+  const commands = getFilteredComposerSlashCommands();
+  if (commands.length > 0) {
+    return commands;
+  }
+  const fallback = getComposerSlashFallbackCommand();
+  return fallback ? [fallback] : [];
 }
 
 function renderComposerSlashCommands() {
@@ -3316,18 +4550,27 @@ function renderComposerSlashCommands() {
     return;
   }
 
-  const commands = getFilteredComposerSlashCommands();
+  const visibleCommands = getVisibleComposerSlashCommands();
   root.innerHTML = "";
-  root.hidden = commands.length === 0;
-  if (commands.length === 0) {
+  root.hidden = !composerSlashOpen;
+  if (!composerSlashOpen) {
     return;
   }
 
-  commands.forEach((item, index) => {
+  visibleCommands.forEach((item, index) => {
     const button = document.createElement("button");
+    const commandLabel = document.createElement("span");
+    const descriptionLabel = document.createElement("span");
     button.type = "button";
     button.className = `slash-chip ${index === selectedComposerSlashIndex ? "is-active" : ""}`;
-    button.innerHTML = `<span class="slash-chip-command">/${item.command}</span><span class="slash-chip-description">${getComposerModeLabel(item.mode)}</span>`;
+    const label = themeState.language === "ja" ? item.labelJa : item.label;
+    const description = themeState.language === "ja" ? item.descriptionJa : item.description;
+    commandLabel.className = "slash-chip-command";
+    commandLabel.textContent = `/${item.command}`;
+    descriptionLabel.className = "slash-chip-description";
+    descriptionLabel.textContent = label === `/${item.command}` ? description : label;
+    button.appendChild(commandLabel);
+    button.appendChild(descriptionLabel);
     button.addEventListener("click", () => {
       applyComposerSlashCommand(item);
     });
@@ -3336,31 +4579,147 @@ function renderComposerSlashCommands() {
 }
 
 function syncComposerSlashState(value: string) {
-  const match = value.match(/^\/([a-z-]*)$/i);
+  const match = value.match(/^\/([^\s]*)$/);
   composerSlashOpen = Boolean(match);
-  composerSlashQuery = match ? match[1].toLowerCase() : "";
-  const commands = getFilteredComposerSlashCommands();
-  if (commands.length === 0) {
-    selectedComposerSlashIndex = 0;
-  } else {
-    selectedComposerSlashIndex = Math.min(selectedComposerSlashIndex, commands.length - 1);
-  }
+  composerSlashQuery = match ? match[1] : "";
+  const commands = getVisibleComposerSlashCommands();
+  selectedComposerSlashIndex = commands.length === 0 ? 0 : Math.min(selectedComposerSlashIndex, commands.length - 1);
   renderComposerSlashCommands();
 }
 
-function applyComposerSlashCommand(command: (typeof composerSlashCommands)[number]) {
+function getComposerModeSlashCommand(value: string) {
+  const commandName = value.trim().match(/^\/([^\s]+)$/)?.[1]?.toLowerCase();
+  if (!commandName) {
+    return null;
+  }
+  return composerSlashCommands.find((item) => item.kind === "mode" && item.command.toLowerCase() === commandName) ?? null;
+}
+
+function applyComposerSlashCommand(command: ComposerSlashCommand) {
   const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
   if (!composerInput) {
     return;
   }
 
-  setComposerMode(command.mode);
-  composerInput.value = composerInput.value.replace(/^\/[^\s]+/, "").replace(/^\s+/, "");
+  if (command.kind === "mode" && command.mode) {
+    setComposerMode(command.mode);
+    composerInput.value = composerInput.value.replace(/^\/[^\s]+/, "").replace(/^\s+/, "");
+  } else {
+    composerInput.value = `/${command.command}${command.command ? " " : ""}`;
+  }
   syncComposerSlashState(composerInput.value);
   exitComposerHistoryToDraft(composerInput.value);
   composerInput.focus();
   const length = composerInput.value.length;
   composerInput.setSelectionRange(length, length);
+}
+
+function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
+  const speechWindow = window as unknown as {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  };
+  return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
+}
+
+function updateVoiceInputButton() {
+  const button = document.getElementById("voice-input-btn") as HTMLButtonElement | null;
+  if (!button) {
+    return;
+  }
+
+  const supported = Boolean(getSpeechRecognitionConstructor());
+  button.disabled = !supported;
+  button.classList.toggle("is-recording", voiceListening);
+  button.setAttribute("aria-pressed", voiceListening ? "true" : "false");
+  const label = !supported
+    ? getLanguageText("Voice input is not available in this browser", "このブラウザーでは音声入力を利用できません")
+    : voiceListening
+      ? getLanguageText("Stop voice input", "音声入力を停止")
+      : getLanguageText("Start voice input", "音声入力を開始");
+  button.setAttribute("aria-label", label);
+  button.setAttribute("title", label);
+}
+
+function stopVoiceInput() {
+  if (!voiceRecognition) {
+    return;
+  }
+  try {
+    voiceRecognition.stop();
+  } catch {
+    voiceRecognition.abort();
+  }
+}
+
+function startVoiceInput(composerInput: HTMLTextAreaElement) {
+  const SpeechRecognition = getSpeechRecognitionConstructor();
+  if (!SpeechRecognition) {
+    updateVoiceInputButton();
+    return;
+  }
+
+  if (voiceRecognition) {
+    stopVoiceInput();
+  }
+
+  voiceTranscriptBase = composerInput.value.trimEnd();
+  const recognition = new SpeechRecognition();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = themeState.language === "ja" ? "ja-JP" : "en-US";
+  recognition.onstart = () => {
+    voiceListening = true;
+    updateVoiceInputButton();
+  };
+  recognition.onend = () => {
+    voiceListening = false;
+    voiceRecognition = null;
+    voiceTranscriptBase = "";
+    updateVoiceInputButton();
+    exitComposerHistoryToDraft(composerInput.value);
+    syncComposerSlashState(composerInput.value);
+  };
+  recognition.onerror = (event) => {
+    voiceListening = false;
+    updateVoiceInputButton();
+    if (event.error && event.error !== "no-speech" && event.error !== "aborted") {
+      appendRuntimeConversation({
+        type: "system",
+        category: "attention",
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        actor: "winsmux",
+        title: getLanguageText("Voice input stopped", "音声入力を停止"),
+        body: event.message || event.error,
+        tone: "warning",
+      });
+      renderConversation(getConversationItems());
+    }
+  };
+  recognition.onresult = (event) => {
+    let transcript = "";
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      transcript += event.results[index]?.[0]?.transcript ?? "";
+    }
+    const separator = voiceTranscriptBase && transcript ? " " : "";
+    composerInput.value = `${voiceTranscriptBase}${separator}${transcript}`.trimStart();
+    composerInput.focus();
+    const length = composerInput.value.length;
+    composerInput.setSelectionRange(length, length);
+    syncComposerDraftState(composerInput.value);
+    syncComposerSlashState(composerInput.value);
+  };
+
+  voiceRecognition = recognition;
+  recognition.start();
+}
+
+function toggleVoiceInput(composerInput: HTMLTextAreaElement) {
+  if (voiceListening) {
+    stopVoiceInput();
+    return;
+  }
+  startVoiceInput(composerInput);
 }
 
 function insertComposerTab(composerInput: HTMLTextAreaElement) {
@@ -3588,8 +4947,6 @@ function getComposerModeLabel(mode: ComposerMode) {
       return "依頼";
     case "review":
       return "レビュー";
-    case "explain":
-      return "説明";
   }
 }
 
@@ -3604,8 +4961,6 @@ function getComposerModePlaceholder(mode: ComposerMode) {
       return "タスクを説明するか、質問を入力してください";
     case "review":
       return "レビューしてほしい内容を入力してください";
-    case "explain":
-      return "説明してほしい状態やファイルを入力してください";
   }
 }
 
@@ -3660,15 +5015,9 @@ function renderAttachmentTray() {
 
   tray.innerHTML = "";
   tray.classList.toggle("is-empty", pendingAttachments.length === 0);
+  tray.hidden = pendingAttachments.length === 0;
 
   if (pendingAttachments.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "attachment-empty-state";
-    empty.textContent = getLanguageText(
-      "Paste an image, drop files, or use Attach.",
-      "画像を貼り付け、ファイルをドロップ、または添付できます。",
-    );
-    tray.appendChild(empty);
     return;
   }
 
@@ -3697,8 +5046,8 @@ function renderAttachmentTray() {
     const removeButton = document.createElement("button");
     removeButton.type = "button";
     removeButton.className = "attachment-remove";
-    removeButton.setAttribute("aria-label", `Remove ${attachment.name}`);
-    removeButton.textContent = "Remove";
+    removeButton.setAttribute("aria-label", getLanguageText(`Remove ${attachment.name}`, `${attachment.name} を削除`));
+    removeButton.textContent = getLanguageText("Remove", "削除");
     removeButton.addEventListener("click", () => {
       releaseAttachmentPreview(attachment);
       pendingAttachments = pendingAttachments.filter((item) => item.id !== attachment.id);
@@ -3806,8 +5155,8 @@ function updateTimelineFeedHint() {
   }
 
   hint.textContent = themeState.focusMode === "focused"
-    ? "Focus mode hides routine details. Select a run to expand it."
-    : "Key events only. Details open when needed.";
+    ? getLanguageText("Focus mode hides routine details. Select a run to expand it.", "集中表示では通常の詳細を隠します。実行を選ぶと展開します。")
+    : getLanguageText("Key events only. Details open when needed.", "重要な出来事だけを表示します。必要な時に詳細を開きます。");
 }
 
 function renderTimelineFilters() {
@@ -3821,7 +5170,7 @@ function renderTimelineFilters() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = `timeline-filter-chip ${item.filter === activeTimelineFilter ? "is-active" : ""}`;
-    button.textContent = item.label;
+    button.textContent = themeState.language === "ja" ? timelineFilterLabelsJa[item.filter] : item.label;
     button.setAttribute("aria-pressed", item.filter === activeTimelineFilter ? "true" : "false");
     button.addEventListener("click", () => {
       activeTimelineFilter = item.filter;
@@ -3831,6 +5180,7 @@ function renderTimelineFilters() {
     });
     root.appendChild(button);
   }
+  syncActivityButtons();
 }
 
 function renderRunSummary() {
@@ -3841,6 +5191,7 @@ function renderRunSummary() {
 
   const projection = getPrimaryRunProjection();
   if (projection) {
+    root.hidden = false;
     const statusTone =
       projection.review_state === "PASS"
         ? "success"
@@ -3849,34 +5200,38 @@ function renderRunSummary() {
           : projection.review_state === "FAIL" || projection.review_state === "FAILED"
             ? "danger"
             : "info";
-    const verification = projection.verification_outcome ? `verify ${projection.verification_outcome}` : "verify n/a";
-    const security = projection.security_blocked ? `security ${projection.security_blocked}` : "security n/a";
+    const verification = projection.verification_outcome
+      ? getLanguageText(`verify ${projection.verification_outcome}`, `検証 ${projection.verification_outcome}`)
+      : getLanguageText("verify n/a", "検証なし");
+    const security = projection.security_blocked
+      ? getLanguageText(`security ${projection.security_blocked}`, `セキュリティ ${projection.security_blocked}`)
+      : getLanguageText("security n/a", "セキュリティなし");
 
     root.innerHTML = `
       <div class="run-summary-card">
         <div class="run-summary-header">
           <div>
-            <div class="timeline-eyebrow">Selected run</div>
+            <div class="timeline-eyebrow">${getLanguageText("Selected run", "選択中の実行")}</div>
             <div class="run-summary-title">${projection.run_id}</div>
           </div>
           <div class="run-summary-status" data-tone="${statusTone}">
-            ${projection.detail || projection.activity || projection.review_state || "ready"}
+            ${projection.detail || projection.activity || projection.review_state || getLanguageText("ready", "準備済み")}
           </div>
         </div>
         <div class="run-summary-meta-row">
           <span class="run-summary-pill">${projection.label || projection.pane_id || "summary-stream"}</span>
-          <span class="run-summary-pill">${projection.branch || "no branch"}</span>
-          <span class="run-summary-pill">${projection.phase || "no phase"}</span>
-          <span class="run-summary-pill">${projection.changed_files.length} changed</span>
-          <span class="run-summary-pill">${projection.next_action || "no next action"}</span>
+          <span class="run-summary-pill">${projection.branch || getLanguageText("no branch", "ブランチなし")}</span>
+          <span class="run-summary-pill">${projection.phase || getLanguageText("no phase", "フェーズなし")}</span>
+          <span class="run-summary-pill">${getLanguageText(`${projection.changed_files.length} changed`, `${projection.changed_files.length} 件の変更`)}</span>
+          <span class="run-summary-pill">${projection.next_action || getLanguageText("no next action", "次の操作なし")}</span>
           <span class="run-summary-pill">${verification}</span>
           <span class="run-summary-pill">${security}</span>
         </div>
-        <div class="run-summary-body">${projection.summary || projection.task || "Projected run surfaced by the backend adapter."}</div>
+        <div class="run-summary-body">${projection.summary || projection.task || getLanguageText("Projected run surfaced by the backend adapter.", "バックエンドから投影された実行です。")}</div>
         <div class="timeline-chip-row">
-          <button type="button" class="timeline-chip" data-action="open-explain">Open Explain</button>
-          <button type="button" class="timeline-chip" data-action="open-source-context">Source Context</button>
-          <button type="button" class="timeline-chip" data-action="open-terminal">Terminal</button>
+          <button type="button" class="timeline-chip" data-action="open-explain">${getLanguageText("Open Explain", "説明を開く")}</button>
+          <button type="button" class="timeline-chip" data-action="open-source-context">${getLanguageText("Source Context", "ソース文脈")}</button>
+          <button type="button" class="timeline-chip" data-action="open-terminal">${getLanguageText("Terminal", "端末")}</button>
         </div>
       </div>
     `;
@@ -3891,20 +5246,8 @@ function renderRunSummary() {
     return;
   }
 
-  root.innerHTML = `
-    <div class="run-summary-card">
-      <div class="run-summary-header">
-        <div>
-          <div class="timeline-eyebrow">Selected run</div>
-          <div class="run-summary-title">No projected run</div>
-        </div>
-        <div class="run-summary-status" data-tone="info">
-          awaiting summary
-        </div>
-      </div>
-      <div class="run-summary-body">The desktop summary has not surfaced a run for the current view yet.</div>
-    </div>
-  `;
+  root.hidden = true;
+  root.innerHTML = "";
 }
 
 function renderConversation(items: ConversationItem[]) {
@@ -3919,7 +5262,7 @@ function renderConversation(items: ConversationItem[]) {
   if (visibleItems.length === 0) {
     const empty = document.createElement("div");
     empty.className = "attachment-empty-state";
-    empty.textContent = "No events in this filter yet.";
+    empty.textContent = getLanguageText("No events in this filter yet.", "この条件に一致するイベントはまだありません。");
     timeline.appendChild(empty);
     return;
   }
@@ -4492,9 +5835,12 @@ function getCommandActions(): CommandAction[] {
   return [
     {
       id: "dispatch",
-      label: "Dispatch next task",
-      description: "Switch the composer to dispatch mode and focus the operator input.",
-      keywords: ["dispatch", "task", "composer", "operator"],
+      label: getLanguageText("Dispatch next task", "次のタスクを依頼"),
+      description: getLanguageText(
+        "Switch the composer to dispatch mode and focus the operator input.",
+        "入力欄を依頼モードに切り替え、オペレーター入力へ移動します。",
+      ),
+      keywords: getLanguageText("dispatch task composer", "依頼 タスク 入力").split(" "),
       shortcut: "Ctrl+K",
       tone: "focus",
       run: () => {
@@ -4504,9 +5850,12 @@ function getCommandActions(): CommandAction[] {
     },
     {
       id: "ask",
-      label: "Ask the operator",
-      description: "Switch to ask mode for status questions, clarifications, and routing checks.",
-      keywords: ["ask", "status", "clarify", "operator"],
+      label: getLanguageText("Ask the operator", "オペレーターに質問"),
+      description: getLanguageText(
+        "Switch to ask mode for status questions, clarifications, and routing checks.",
+        "状況確認、追加質問、振り分け確認のために質問モードへ切り替えます。",
+      ),
+      keywords: getLanguageText("ask status clarify", "質問 状況確認 確認").split(" "),
       tone: "info",
       run: () => {
         setComposerMode("ask");
@@ -4515,9 +5864,12 @@ function getCommandActions(): CommandAction[] {
     },
     {
       id: "review",
-      label: "Request review",
-      description: "Switch to review mode to request approval, audit, or verification.",
-      keywords: ["review", "approve", "audit", "verify"],
+      label: getLanguageText("Request review", "レビューを依頼"),
+      description: getLanguageText(
+        "Switch to review mode to request approval, audit, or verification.",
+        "承認、監査、検証を依頼するためにレビューモードへ切り替えます。",
+      ),
+      keywords: getLanguageText("review approve audit verify", "レビュー 承認 監査 検証").split(" "),
       tone: "warning",
       run: () => {
         setComposerMode("review");
@@ -4526,49 +5878,67 @@ function getCommandActions(): CommandAction[] {
     },
     {
       id: "explain",
-      label: "Explain selected run",
-      description: "Open the explain flow for the currently selected run and add operator context to the timeline.",
-      keywords: ["explain", "run", "blocked", "why"],
+      label: getLanguageText("Explain selected run", "選択中の実行を説明"),
+      description: getLanguageText(
+        "Open the explain flow for the currently selected run and add operator context to the timeline.",
+        "選択中の実行について、説明用の流れを開いて会話に文脈を追加します。",
+      ),
+      keywords: getLanguageText("explain run blocked why", "説明 実行 停止 理由").split(" "),
       tone: "info",
       run: () => handleChipAction("open-explain"),
     },
     {
       id: "editor",
-      label: "Open secondary editor",
-      description: "Open the secondary work surface for the currently selected file or run context.",
-      keywords: ["editor", "file", "changed files", "secondary"],
+      label: getLanguageText("Open secondary editor", "補助エディターを開く"),
+      description: getLanguageText(
+        "Open the secondary work surface for the currently selected file or run context.",
+        "選択中のファイルや実行文脈を扱う補助作業面を開きます。",
+      ),
+      keywords: getLanguageText("editor file changed secondary", "エディター ファイル 変更 補助").split(" "),
       tone: "default",
       run: () => handleChipAction("open-editor"),
     },
     {
       id: "source-context",
-      label: "Open source context",
-      description: "Reveal the source-control context sheet and changed-file drill-down.",
-      keywords: ["source", "context", "changed files", "worktree", "branch"],
+      label: getLanguageText("Open source context", "ソース文脈を開く"),
+      description: getLanguageText(
+        "Reveal the source-control context sheet and changed-file drill-down.",
+        "ソース管理の文脈と変更ファイルの詳細を表示します。",
+      ),
+      keywords: getLanguageText("source context changed worktree branch", "ソース 文脈 変更 ブランチ").split(" "),
       tone: "default",
       run: () => handleChipAction("open-source-context"),
     },
     {
       id: "terminal",
-      label: "Open terminal drawer",
-      description: "Show the utility drawer for raw PTY output, diagnostics, and pane control.",
-      keywords: ["terminal", "drawer", "pty", "diagnostics", "pane"],
+      label: getLanguageText("Open workbench panes", "ワークベンチペインを開く"),
+      description: getLanguageText(
+        "Show workbench panes for raw PTY output, diagnostics, and pane control.",
+        "端末出力、診断、ペイン操作のためにワークベンチペインを表示します。",
+      ),
+      keywords: getLanguageText("terminal pane diagnostics pty", "端末 ペイン 診断").split(" "),
       tone: "default",
       run: () => handleChipAction("open-terminal"),
     },
     {
       id: "settings",
-      label: "Open settings",
-      description: "Open theme, density, wrap, font, and display preferences.",
-      keywords: ["settings", "theme", "density", "wrap", "font", "display", "focus", "preferences"],
+      label: getLanguageText("Open settings", "設定を開く"),
+      description: getLanguageText(
+        "Open theme, density, wrap, font, and display preferences.",
+        "テーマ、密度、折り返し、フォント、表示設定を開きます。",
+      ),
+      keywords: getLanguageText("settings theme density wrap font display", "設定 テーマ 密度 折り返し フォント 表示").split(" "),
       tone: "accent",
       run: () => setSettingsSheet(true),
     },
     {
       id: "attention-filter",
-      label: "Filter timeline: attention",
-      description: "Show only blocked and urgent attention events in the conversation feed.",
-      keywords: ["filter", "attention", "blocked", "timeline"],
+      label: getLanguageText("Filter timeline: attention", "タイムラインを要確認で絞る"),
+      description: getLanguageText(
+        "Show only blocked and urgent attention events in the conversation feed.",
+        "会話フィードで停止中または緊急の要確認イベントだけを表示します。",
+      ),
+      keywords: getLanguageText("filter attention blocked timeline", "絞り込み 要確認 停止 タイムライン").split(" "),
       tone: "danger",
       run: () => {
         activeTimelineFilter = "attention";
@@ -4579,9 +5949,12 @@ function getCommandActions(): CommandAction[] {
     },
     {
       id: "review-filter",
-      label: "Filter timeline: review",
-      description: "Show review requests, approvals, and review-capable slot activity.",
-      keywords: ["filter", "review", "timeline", "approve"],
+      label: getLanguageText("Filter timeline: review", "タイムラインをレビューで絞る"),
+      description: getLanguageText(
+        "Show review requests, approvals, and review-capable slot activity.",
+        "レビュー依頼、承認、レビュー担当の動きだけを表示します。",
+      ),
+      keywords: getLanguageText("filter review timeline approve", "絞り込み レビュー タイムライン 承認").split(" "),
       tone: "warning",
       run: () => {
         activeTimelineFilter = "review";
@@ -4655,6 +6028,148 @@ function closeCommandBar(restoreFocus = true) {
   }
 }
 
+interface TopMenuItem {
+  label: string;
+  shortcut?: string;
+  action?: () => void;
+  separator?: boolean;
+}
+
+function closeTopMenu() {
+  const popover = document.getElementById("top-menu-popover");
+  if (popover) {
+    popover.hidden = true;
+    popover.innerHTML = "";
+  }
+  if (openTopMenuId) {
+    document.getElementById(openTopMenuId)?.classList.remove("is-open");
+    document.getElementById(openTopMenuId)?.setAttribute("aria-expanded", "false");
+  }
+  openTopMenuId = null;
+}
+
+function getTopMenuItems(menuId: string): TopMenuItem[] {
+  switch (menuId) {
+    case "menu-file-btn":
+      return [
+        { label: getLanguageText("Add project", "プロジェクトを追加"), action: promptAndAddProjectSession },
+        { label: getLanguageText("Settings", "設定"), action: () => setSettingsSheet(true) },
+      ];
+    case "menu-edit-btn":
+      return [
+        { label: getLanguageText("Focus input", "入力欄へ移動"), shortcut: "Esc", action: focusComposer },
+        { label: getLanguageText("Attach file", "ファイルを添付"), action: () => document.getElementById("composer-file-input")?.click() },
+      ];
+    case "menu-selection-btn":
+      return [
+        { label: getLanguageText("All events", "すべてのイベント"), action: () => setTimelineFilter("all") },
+        { label: getLanguageText("Needs attention", "要確認"), action: () => setTimelineFilter("attention") },
+        { label: getLanguageText("Reviews", "レビュー"), action: () => setTimelineFilter("review") },
+      ];
+    case "menu-view-btn":
+      return [
+        { label: getLanguageText("Toggle explorer", "エクスプローラーを切り替え"), action: () => toggleSidebarMode("explorer") },
+        { label: getLanguageText("Toggle workspace overview", "作業領域の概要を切り替え"), action: () => toggleSidebarMode("workspace") },
+        { label: getLanguageText("Toggle source control", "ソース管理を切り替え"), action: () => toggleSidebarMode("source") },
+        { label: getLanguageText("Toggle context", "文脈を切り替え"), action: () => setContextPanel(!contextPanelOpen) },
+        { label: getLanguageText("Toggle panes", "ペインを切り替え"), action: () => setTerminalDrawer(!terminalDrawerOpen) },
+      ];
+    case "menu-go-btn":
+      return [
+        { label: getLanguageText("Explorer", "エクスプローラー"), action: () => showSidebarMode("explorer") },
+        { label: getLanguageText("Workspace overview", "作業領域の概要"), action: () => showSidebarMode("workspace") },
+        { label: getLanguageText("Source control", "ソース管理"), action: () => showSidebarMode("source") },
+        { label: getLanguageText("Command palette", "操作パレット"), shortcut: "Ctrl+K", action: openCommandBar },
+      ];
+    case "menu-run-btn":
+      return [
+        { label: getLanguageText("Ask", "質問"), action: () => setComposerModeAndFocus("ask") },
+        { label: getLanguageText("Dispatch", "依頼"), action: () => setComposerModeAndFocus("dispatch") },
+        { label: getLanguageText("Review", "レビュー"), action: () => setComposerModeAndFocus("review") },
+      ];
+    case "menu-terminal-btn":
+      return [
+        { label: terminalDrawerOpen ? getLanguageText("Hide panes", "ペインを隠す") : getLanguageText("Show panes", "ペインを表示"), action: () => setTerminalDrawer(!terminalDrawerOpen) },
+        { label: getLanguageText("Add pane", "ペインを追加"), action: () => createPane() },
+        { label: getLanguageText("Switch layout", "配置を切り替え"), action: cycleWorkbenchLayout },
+      ];
+    case "menu-help-btn":
+      return [
+        { label: getLanguageText("Open command palette", "操作パレットを開く"), shortcut: "Ctrl+K", action: openCommandBar },
+      ];
+    default:
+      return [];
+  }
+}
+
+function setTimelineFilter(filter: TimelineFilter) {
+  activeTimelineFilter = filter;
+  renderTimelineFilters();
+  renderRunSummary();
+  renderConversation(getConversationItems());
+}
+
+function setComposerModeAndFocus(mode: ComposerMode) {
+  setComposerMode(mode);
+  focusComposer();
+}
+
+function showSidebarMode(mode: SidebarMode) {
+  setSidebarMode(mode);
+  setSidebarOpen(true);
+}
+
+function toggleSidebarMode(mode: SidebarMode) {
+  if (sidebarOpen && sidebarMode === mode) {
+    setSidebarOpen(false);
+    return;
+  }
+  showSidebarMode(mode);
+}
+
+function openTopMenu(menuId: string) {
+  const button = document.getElementById(menuId);
+  const popover = document.getElementById("top-menu-popover");
+  if (!button || !popover) {
+    return;
+  }
+
+  if (openTopMenuId === menuId && !popover.hidden) {
+    closeTopMenu();
+    return;
+  }
+
+  closeTopMenu();
+  openTopMenuId = menuId;
+  button.classList.add("is-open");
+  button.setAttribute("aria-expanded", "true");
+
+  const rect = button.getBoundingClientRect();
+  popover.style.left = `${Math.max(4, Math.min(rect.left, window.innerWidth - 332))}px`;
+  popover.innerHTML = "";
+  for (const item of getTopMenuItems(menuId)) {
+    if (item.separator) {
+      const separator = document.createElement("div");
+      separator.className = "top-menu-popover-separator";
+      popover.appendChild(separator);
+      continue;
+    }
+    const itemButton = document.createElement("button");
+    itemButton.type = "button";
+    itemButton.className = "top-menu-popover-item";
+    itemButton.setAttribute("role", "menuitem");
+    itemButton.innerHTML =
+      `<span>${item.label}</span>` +
+      (item.shortcut ? `<span class="top-menu-popover-shortcut">${item.shortcut}</span>` : "");
+    itemButton.addEventListener("click", () => {
+      closeTopMenu();
+      item.action?.();
+    });
+    popover.appendChild(itemButton);
+  }
+  popover.hidden = false;
+}
+
 function executeSelectedCommand() {
   const actions = getFilteredCommandActions();
   if (actions.length === 0) {
@@ -4664,6 +6179,24 @@ function executeSelectedCommand() {
   const action = actions[Math.min(selectedCommandIndex, actions.length - 1)];
   closeCommandBar(false);
   action.run();
+}
+
+function setCommandBarActiveIndex(index: number) {
+  selectedCommandIndex = index;
+  const results = document.getElementById("command-bar-results");
+  if (!results) {
+    return;
+  }
+  for (const item of results.querySelectorAll<HTMLButtonElement>(".command-bar-item")) {
+    const active = item.id === `command-option-${getFilteredCommandActions()[index]?.id ?? ""}`;
+    item.classList.toggle("is-active", active);
+    item.setAttribute("aria-selected", active ? "true" : "false");
+  }
+  const activeAction = getFilteredCommandActions()[index];
+  const input = document.getElementById("command-bar-input");
+  if (activeAction) {
+    input?.setAttribute("aria-activedescendant", `command-option-${activeAction.id}`);
+  }
 }
 
 function renderCommandBar() {
@@ -4684,7 +6217,10 @@ function renderCommandBar() {
     input.removeAttribute("aria-activedescendant");
     const empty = document.createElement("div");
     empty.className = "command-bar-empty";
-    empty.textContent = "No matching command. Try run, review, terminal, source, or settings.";
+    empty.textContent = getLanguageText(
+      "No matching command. Try run, review, terminal, source, or settings.",
+      "一致する操作はありません。実行、レビュー、端末、ソース、設定で探してください。",
+    );
     results.appendChild(empty);
     return;
   }
@@ -4707,9 +6243,13 @@ function renderCommandBar() {
       (action.shortcut ? `<span class="command-bar-item-shortcut">${action.shortcut}</span>` : "") +
       `<span class="command-bar-item-keywords">${action.keywords.slice(0, 3).join(" · ")}</span>` +
       `</div>`;
-    button.addEventListener("mouseenter", () => {
-      selectedCommandIndex = index;
-      renderCommandBar();
+    button.addEventListener("pointerenter", () => {
+      setCommandBarActiveIndex(index);
+    });
+    button.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      setCommandBarActiveIndex(index);
+      executeSelectedCommand();
     });
     button.addEventListener("click", () => {
       selectedCommandIndex = index;
@@ -4801,11 +6341,11 @@ function renderEditorSurface() {
     browserFrame.src = "about:blank";
     browserSurface.hidden = true;
     tabs.innerHTML = "";
-    code.textContent = "No backend preview cached.";
+    renderEditorCode(code, "No backend preview cached.");
     code.hidden = false;
     renderEditorStatusbar(statusbar, [
-      { label: "Surface", value: "Idle" },
-      { label: "Files", value: "0 projected" },
+      { label: "", value: "Idle" },
+      { label: "", value: "0 projected" },
     ]);
     popoutButton.disabled = true;
     return;
@@ -4905,17 +6445,17 @@ function renderEditorSurface() {
     browserCopyButton.disabled = !Boolean(navigator.clipboard);
     browserReloadButton.disabled = false;
     browserOpenButton.disabled = false;
-    code.textContent = "";
+    code.replaceChildren();
     code.hidden = true;
     renderEditorStatusbar(statusbar, [
-      { label: "Surface", value: "Preview" },
-      ...(detachedSurface ? [{ label: "Window", value: "Detached" }] : []),
-      ...(detachedSurface && detachedSurfaceRunLabel ? [{ label: "Run", value: detachedSurfaceRunLabel }] : []),
-      { label: "Target", value: previewTarget.portLabel },
-      { label: "Source", value: previewTarget.sourceLabel },
-      { label: "Seen", value: formatPreviewSeenAt(previewTarget.lastSeenAt) },
+      { label: "", value: "Preview" },
+      ...(detachedSurface ? [{ label: "", value: "Detached" }] : []),
+      ...(detachedSurface && detachedSurfaceRunLabel ? [{ label: "", value: detachedSurfaceRunLabel }] : []),
+      { label: "", value: previewTarget.portLabel },
+      { label: "", value: previewTarget.sourceLabel },
+      { label: "", value: formatPreviewSeenAt(previewTarget.lastSeenAt) },
       ...(lastPreviewExternalState?.url === previewTarget.url
-        ? [{ label: "External", value: lastPreviewExternalState.ok ? "Opened" : "Blocked" }]
+        ? [{ label: "", value: lastPreviewExternalState.ok ? "Opened" : "Blocked" }]
         : []),
     ]);
     popoutButton.disabled = false;
@@ -4990,13 +6530,16 @@ function renderEditorSurface() {
       diffPreview.appendChild(previewMeta);
       diffPreview.hidden = false;
     }
-    code.textContent = selected.content;
+    renderEditorCode(code, selected.content);
     renderEditorStatusbar(statusbar, [
-      { label: "Surface", value: selectedTarget?.sourceChange ? "Diff review" : "Editor" },
-      ...(detachedSurface ? [{ label: "Window", value: "Detached" }] : []),
-      ...(detachedSurface && detachedSurfaceRunLabel ? [{ label: "Run", value: detachedSurfaceRunLabel }] : []),
-      { label: "Source", value: selected.origin === "context" ? "Run context" : "Explorer" },
-      ...(selectedWorktreeLabel ? [{ label: "Worktree", value: selectedWorktreeLabel }] : []),
+      ...(detachedSurface ? [{ label: "", value: "Detached" }] : []),
+      ...(detachedSurface && detachedSurfaceRunLabel ? [{ label: "", value: detachedSurfaceRunLabel }] : []),
+      { label: "", value: "Ln 1, Col 1" },
+      { label: "", value: `Lines ${selected.lineCount}` },
+      { label: "", value: getEditorIndentSizeLabel(selected.content) },
+      { label: "", value: "UTF-8" },
+      { label: "", value: getEditorLineEndingLabel(selected.content) },
+      { label: "", value: selected.language },
     ]);
     popoutButton.disabled = false;
   }
@@ -5014,6 +6557,52 @@ function renderEditorSurface() {
   }
 }
 
+function splitEditorCodeLines(content: string): EditorCodeLine[] {
+  const lines = content.split(/\r\n|\r|\n/);
+  return (lines.length > 0 ? lines : [""]).map((text, index) => ({
+    number: index + 1,
+    text,
+  }));
+}
+
+function renderEditorCode(root: HTMLElement, content: string) {
+  root.innerHTML = "";
+  const lines = splitEditorCodeLines(content);
+  root.style.setProperty("--editor-line-number-digits", `${Math.max(2, String(lines.length).length)}`);
+  for (const line of lines) {
+    const row = document.createElement("div");
+    row.className = "editor-code-line";
+    row.dataset.line = `${line.number}`;
+
+    const lineNumber = document.createElement("span");
+    lineNumber.className = "editor-line-number";
+    lineNumber.textContent = `${line.number}`;
+
+    const lineContent = document.createElement("span");
+    lineContent.className = "editor-line-content";
+    lineContent.textContent = line.text || " ";
+
+    row.append(lineNumber, lineContent);
+    root.appendChild(row);
+  }
+}
+
+function getEditorLineEndingLabel(content: string) {
+  return content.includes("\r\n") ? "CRLF" : "LF";
+}
+
+function getEditorIndentSizeLabel(content: string) {
+  const indents = content.match(/^( +)\S/gm) ?? [];
+  if (indents.length === 0) {
+    return content.match(/^\t+\S/gm) ? "Tabs" : "Spaces: 2";
+  }
+  const sizes = indents
+    .map((indent) => indent.search(/\S/))
+    .filter((size) => size > 0);
+  const smallest = sizes.length > 0 ? Math.min(...sizes) : 2;
+  return `Spaces: ${Math.min(Math.max(smallest, 1), 8)}`;
+}
+
 function renderEditorStatusbar(
   root: HTMLElement,
   items: Array<{ label: string; value: string }>,
@@ -5023,15 +6612,16 @@ function renderEditorStatusbar(
     const entry = document.createElement("span");
     entry.className = "editor-status-item";
 
-    const label = document.createElement("span");
-    label.className = "editor-status-label";
-    label.textContent = item.label;
-
     const value = document.createElement("span");
     value.className = "editor-status-value";
     value.textContent = item.value;
 
-    entry.appendChild(label);
+    if (item.label) {
+      const label = document.createElement("span");
+      label.className = "editor-status-label";
+      label.textContent = item.label;
+      entry.appendChild(label);
+    }
     entry.appendChild(value);
     root.appendChild(entry);
   }
@@ -5057,6 +6647,46 @@ function appendRuntimeConversation(item: ConversationItem) {
   if (runtimeConversation.length > MAX_RUNTIME_CONVERSATION_ITEMS) {
     runtimeConversation.splice(0, runtimeConversation.length - MAX_RUNTIME_CONVERSATION_ITEMS);
   }
+}
+
+function stripTerminalControlSequences(value: string) {
+  return value
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[@-Z\\-_]/g, "")
+    .replace(/\r/g, "\n")
+    .replace(/[^\S\n]+$/gm, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function appendOperatorPtyOutput(data: string) {
+  operatorOutputBuffer += data;
+  if (operatorOutputBuffer.length > 8000) {
+    operatorOutputBuffer = operatorOutputBuffer.slice(-8000);
+  }
+
+  if (operatorOutputFlushTimer !== null) {
+    return;
+  }
+
+  operatorOutputFlushTimer = window.setTimeout(() => {
+    operatorOutputFlushTimer = null;
+    const body = stripTerminalControlSequences(operatorOutputBuffer).slice(-3000);
+    operatorOutputBuffer = "";
+    if (!body) {
+      return;
+    }
+    appendRuntimeConversation({
+      type: "operator",
+      category: "activity",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      actor: "Claude Code",
+      body,
+      tone: "info",
+    });
+    renderConversation(getConversationItems());
+  }, 350);
 }
 
 function getExplainPayloadFingerprint(payload: DesktopExplainPayload | null | undefined) {
@@ -5615,9 +7245,9 @@ function buildDesktopFollowConversation(
       category: "attention",
       timestamp,
       actor: "System",
-      title: "Inbox changed",
-      body: `Inbox items moved from ${previousSnapshot.inbox.summary.item_count} to ${nextSnapshot.inbox.summary.item_count}.`,
-      details: [{ label: "inbox", value: `${nextSnapshot.inbox.summary.item_count}` }],
+      title: "Notifications changed",
+      body: `Notification count changed from ${previousSnapshot.inbox.summary.item_count} to ${nextSnapshot.inbox.summary.item_count}.`,
+      details: [{ label: "notifications", value: `${nextSnapshot.inbox.summary.item_count}` }],
       tone: "warning",
     });
   }
@@ -5629,19 +7259,24 @@ function setTerminalDrawer(open: boolean) {
   terminalDrawerOpen = open;
   const drawer = document.getElementById("terminal-drawer");
   const button = document.getElementById("toggle-terminal-btn");
+  const body = document.getElementById("workspace-body");
   if (!drawer || !button) {
     return;
   }
 
   drawer.hidden = !open;
-  setCompactButtonLabel(button, open ? getLanguageText("Hide", "隠す") : getLanguageText("Terminal", "端末"));
+  body?.classList.toggle("workbench-collapsed", !open);
+  drawer.setAttribute("data-layout", workbenchLayout);
+  setCompactButtonLabel(button, open ? getLanguageText("Hide panes", "ペインを隠す") : getLanguageText("Worker panes", "ワーカーペイン"));
   button.setAttribute("aria-expanded", open ? "true" : "false");
-  button.setAttribute("aria-label", open ? getLanguageText("Hide terminal drawer", "端末ドロワーを隠す") : getLanguageText("Open terminal drawer", "端末ドロワーを開く"));
+  button.setAttribute("aria-label", open ? getLanguageText("Hide worker panes", "ワーカーペインを隠す") : getLanguageText("Show worker panes", "ワーカーペインを表示"));
 
-  if (open && panes.size === 0) {
-    createPane("main");
+  if (open) {
+    ensureWorkbenchPaneCount(workbenchLayout === "3x2" ? 6 : 4);
   }
 
+  updateWorkbenchControls();
+  void persistThemeState();
   requestAnimationFrame(() => {
     panes.forEach((pane) => pane.fitAddon.fit());
   });
@@ -5666,6 +7301,59 @@ function setContextPanel(open: boolean, options?: { preserveWidePreference?: boo
   setCompactButtonLabel(button, open ? getLanguageText("Hide", "隠す") : getLanguageText("Context", "文脈"));
   button.setAttribute("aria-expanded", open ? "true" : "false");
   button.setAttribute("aria-label", open ? getLanguageText("Hide context panel", "文脈パネルを隠す") : getLanguageText("Show context panel", "文脈パネルを表示"));
+  syncActivityButtons();
+}
+
+function setSidebarMode(mode: SidebarMode) {
+  sidebarMode = mode;
+  const brandBlock = document.getElementById("sidebar-brand-block");
+  const filesSection = document.getElementById("files-sidebar-section");
+  const sessionSection = document.getElementById("session-sidebar-section");
+  const editorsSection = document.getElementById("editors-sidebar-section");
+  const sourceSummarySection = document.getElementById("source-sidebar-section");
+  const sourceControlView = document.getElementById("source-control-view");
+  const workspaceSectionsOpen = mode === "workspace";
+
+  if (brandBlock) {
+    brandBlock.hidden = !workspaceSectionsOpen;
+  }
+  if (filesSection) {
+    filesSection.hidden = mode !== "explorer";
+  }
+  if (sessionSection) {
+    sessionSection.hidden = !workspaceSectionsOpen;
+  }
+  if (editorsSection) {
+    editorsSection.hidden = !workspaceSectionsOpen;
+  }
+  if (sourceSummarySection) {
+    sourceSummarySection.hidden = !workspaceSectionsOpen;
+  }
+  if (sourceControlView) {
+    sourceControlView.hidden = mode !== "source";
+  }
+  if (mode === "source") {
+    renderSourceControlView();
+  } else if (mode === "workspace") {
+    renderSessions();
+    renderOpenEditors();
+    renderSourceSummary();
+    renderSourceEntries();
+  }
+  updateSidebarModeTitle();
+  syncActivityButtons();
+}
+
+function cycleWorkbenchLayout() {
+  workbenchLayout = workbenchLayout === "2x2" ? "3x2" : workbenchLayout === "3x2" ? "focus" : "2x2";
+  if (terminalDrawerOpen && workbenchLayout === "3x2") {
+    ensureWorkbenchPaneCount(6);
+  }
+  updateWorkbenchControls();
+  void persistThemeState();
+  requestAnimationFrame(() => {
+    panes.forEach((pane) => pane.fitAddon.fit());
+  });
 }
 
 function setCompactButtonLabel(button: Element, label: string) {
@@ -5702,6 +7390,7 @@ function setSidebarOpen(open: boolean, options?: { preserveWidePreference?: bool
   const shell = document.getElementById("app-shell");
   const overlay = document.getElementById("sidebar-overlay");
   const button = document.getElementById("toggle-sidebar-btn");
+  const activityButton = document.getElementById("activity-explorer-btn");
   if (!shell || !overlay || !button) {
     return;
   }
@@ -5714,6 +7403,27 @@ function setSidebarOpen(open: boolean, options?: { preserveWidePreference?: bool
   shell.classList.toggle("sidebar-open", open);
   overlay.hidden = !(open && isNarrowLayout());
   button.setAttribute("aria-expanded", open ? "true" : "false");
+  activityButton?.setAttribute("aria-expanded", open ? "true" : "false");
+  syncActivityButtons();
+}
+
+function syncActivityButtons() {
+  const explorerButton = document.getElementById("activity-explorer-btn");
+  const sourceButton = document.getElementById("activity-source-btn");
+  const contextButton = document.getElementById("activity-context-btn");
+  const sourceBadge = document.getElementById("activity-source-count");
+  const changeCount = getVisibleSourceChanges().length;
+
+  explorerButton?.classList.toggle("is-active", sidebarOpen && sidebarMode === "explorer");
+  sourceButton?.classList.toggle("is-active", sidebarOpen && sidebarMode === "source");
+  contextButton?.classList.toggle("is-active", contextPanelOpen);
+  explorerButton?.setAttribute("aria-expanded", sidebarOpen && sidebarMode === "explorer" ? "true" : "false");
+  sourceButton?.setAttribute("aria-expanded", sidebarOpen && sidebarMode === "source" ? "true" : "false");
+  contextButton?.setAttribute("aria-expanded", contextPanelOpen ? "true" : "false");
+  if (sourceBadge) {
+    sourceBadge.hidden = changeCount === 0;
+    sourceBadge.textContent = `${changeCount}`;
+  }
 }
 
 function setSettingsSheet(open: boolean) {
@@ -5806,16 +7516,65 @@ function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
     category: "activity",
     timestamp,
     actor: "Operator",
-    title: "Queued for dispatch",
-    body: "The request is now part of the operator feed. Open Explain, inspect changed files, or use the terminal drawer only if raw PTY detail becomes necessary.",
+    title: getLanguageText("Sent to operator", "オペレーターへ送信"),
+    body: getLanguageText(
+      "The request was sent to the operator session.",
+      "依頼内容をオペレーターセッションへ送信しました。",
+    ),
     details: [
       { label: "mode", value: activeComposerMode },
       { label: "attachments", value: `${attachments.length}` },
     ],
     tone: "info",
   });
+  void forwardComposerMessageToOperatorPane(message, attachments, timestamp);
   renderRunSummary();
   renderConversation(getConversationItems());
+}
+
+function formatComposerMessageForPty(message: string, attachments: ComposerAttachment[]) {
+  const trimmedMessage = message.trim();
+  const attachmentLines = attachments.map((attachment) => `- ${attachment.name}${attachment.sizeLabel ? ` (${attachment.sizeLabel})` : ""}`);
+  if (attachmentLines.length === 0) {
+    return trimmedMessage;
+  }
+  const attachmentHeader = getLanguageText("Attachments:", "添付:");
+  const attachmentBlock = `${attachmentHeader}\n${attachmentLines.join("\n")}`;
+  return trimmedMessage ? `${trimmedMessage}\n\n${attachmentBlock}` : attachmentBlock;
+}
+
+function encodePtySubmission(message: string) {
+  if (message.includes("\n")) {
+    return `\x1b[200~${message}\x1b[201~\r`;
+  }
+  return `${message}\r`;
+}
+
+async function forwardComposerMessageToOperatorPane(
+  message: string,
+  attachments: ComposerAttachment[],
+  timestamp: string,
+) {
+  const payload = formatComposerMessageForPty(message, attachments);
+  if (!payload.trim()) {
+    return;
+  }
+
+  try {
+    await ensureOperatorPtyStarted();
+    await writePtyData(OPERATOR_PTY_ID, encodePtySubmission(payload));
+  } catch (error) {
+    appendRuntimeConversation({
+      type: "system",
+      category: "attention",
+      timestamp,
+      actor: "winsmux",
+      title: getLanguageText("Claude Code send failed", "Claude Code 送信に失敗"),
+      body: error instanceof Error ? error.message : String(error),
+      tone: "warning",
+    });
+    renderConversation(getConversationItems());
+  }
 }
 
 function findEditorFile(target: EditorTarget | null) {
@@ -5932,7 +7691,9 @@ async function ensureEditorFileLoaded(target: EditorTarget | null) {
   try {
     const projectDir = getActiveProjectDirPayload();
     const projectKey = captureProjectRequestKey();
-    const payload = await getDesktopEditorFile(target.path, target.worktree || undefined, projectDir);
+    const payload = isTauri()
+      ? await getDesktopEditorFile(target.path, target.worktree || undefined, projectDir)
+      : await loadBrowserEditorFile(target.path);
     if (!isProjectRequestCurrent(projectKey)) {
       return;
     }
@@ -6027,10 +7788,10 @@ function buildDesktopSummaryConversation(snapshot: DesktopSummarySnapshot): Conv
       timestamp: new Date(snapshot.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
       actor: "Operator",
       title: "Summary stream connected",
-      body: "Tauri is reading board, inbox, and digest surfaces from the backend adapter instead of treating raw PTY output as the primary UI source.",
+      body: "Tauri is reading board, notifications, and digest surfaces from the backend adapter instead of treating raw PTY output as the primary UI source.",
       details: [
         { label: "panes", value: `${board.pane_count}` },
-        { label: "inbox", value: `${inbox.item_count}` },
+        { label: "notifications", value: `${inbox.item_count}` },
         { label: "runs", value: `${digest.item_count}` },
       ],
       tone: "info",
@@ -6043,7 +7804,7 @@ function buildDesktopSummaryConversation(snapshot: DesktopSummarySnapshot): Conv
       category: "attention",
       timestamp: new Date(snapshot.generated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false }),
       actor: topInboxItem.label || topInboxItem.pane_id || "System",
-      title: `Inbox: ${topInboxItem.kind}`,
+      title: `Notification: ${topInboxItem.kind}`,
       body: topInboxItem.message,
       details: [
         { label: "branch", value: topInboxItem.branch || "no branch" },
@@ -6114,6 +7875,7 @@ function renderDesktopSurfaces() {
   renderRunSummary();
   renderSourceSummary();
   renderSourceEntries();
+  renderSourceControlView();
   renderContextPanel();
   renderOpenEditors();
   renderEditorSurface();
@@ -6141,19 +7903,19 @@ function formatPaneWaitDuration(timestamp: string, now = Date.now()) {
   const elapsedMs = Math.max(0, now - parsed);
   const elapsedMinutes = Math.floor(elapsedMs / 60000);
   if (elapsedMinutes < 1) {
-    return "<1m wait";
+    return getLanguageText("<1m wait", "1分未満待機");
   }
   if (elapsedMinutes < 60) {
-    return `${elapsedMinutes}m wait`;
+    return getLanguageText(`${elapsedMinutes}m wait`, `${elapsedMinutes}分待機`);
   }
 
   const hours = Math.floor(elapsedMinutes / 60);
   const minutes = elapsedMinutes % 60;
   if (minutes === 0) {
-    return `${hours}h wait`;
+    return getLanguageText(`${hours}h wait`, `${hours}時間待機`);
   }
 
-  return `${hours}h ${minutes}m wait`;
+  return getLanguageText(`${hours}h ${minutes}m wait`, `${hours}時間${minutes}分待機`);
 }
 
 function summarizeBoardPaneStatus(pane: DesktopBoardPane | null) {
@@ -6166,22 +7928,22 @@ function summarizeBoardPaneStatus(pane: DesktopBoardPane | null) {
   const reviewState = (pane.review_state || "").toUpperCase();
 
   if (taskState === "blocked") {
-    return `${role} · blocked`;
+    return getLanguageText(`${role} · blocked`, `${role}・ブロック中`);
   }
   if (reviewState === "FAIL" || reviewState === "FAILED") {
-    return `${role} · review failed`;
+    return getLanguageText(`${role} · review failed`, `${role}・レビュー失敗`);
   }
   if (reviewState === "PENDING") {
-    return `${role} · review pending`;
+    return getLanguageText(`${role} · review pending`, `${role}・レビュー待ち`);
   }
   if (reviewState === "PASS") {
-    return `${role} · review pass`;
+    return getLanguageText(`${role} · review pass`, `${role}・レビュー通過`);
   }
   if (taskState === "commit_ready") {
-    return `${role} · commit ready`;
+    return getLanguageText(`${role} · commit ready`, `${role}・コミット可能`);
   }
   if (taskState === "completed" || taskState === "task_completed" || taskState === "done") {
-    return `${role} · completed`;
+    return getLanguageText(`${role} · completed`, `${role}・完了`);
   }
   if (pane.task_state) {
     return `${role} · ${pane.task_state}`;
@@ -6196,8 +7958,18 @@ function renderPaneMetadata() {
 
   panes.forEach((pane, paneId) => {
     const paneRecord = boardPanes.find((item) => item.pane_id === paneId) ?? null;
-    const paneLabel = paneRecord?.label || paneId;
+    const paneLabel = getPaneDisplayLabel(paneId, paneRecord?.label);
     pane.labelElement.textContent = paneLabel;
+
+    if (!paneRecord && !pane.ptyStarted) {
+      const metaText = pane.ptyStarting
+        ? getLanguageText("starting shell", "シェル起動中")
+        : getLanguageText("not started", "未起動");
+      pane.metaElement.textContent = metaText;
+      pane.metaElement.title = metaText;
+      pane.labelElement.title = paneId === paneLabel ? paneLabel : `${paneLabel} (${paneId})`;
+      return;
+    }
 
     const status = summarizeBoardPaneStatus(paneRecord);
     const branch = paneRecord?.branch || "";
@@ -6205,8 +7977,8 @@ function renderPaneMetadata() {
     const waitDuration = paneRecord?.last_event_at
       ? formatPaneWaitDuration(paneRecord.last_event_at, now)
       : pane.lastOutputAt
-        ? `${formatPreviewSeenAt(pane.lastOutputAt)} · live output`
-        : "waiting for summary";
+        ? getLanguageText(`${formatPreviewSeenAt(pane.lastOutputAt)} · live output`, `${formatPreviewSeenAt(pane.lastOutputAt)}・出力あり`)
+        : getLanguageText("waiting for summary", "要約待ち");
 
     const parts = [status];
     if (branch) {
@@ -6219,7 +7991,7 @@ function renderPaneMetadata() {
     const metaText = parts.filter((value) => Boolean(value)).join(" · ");
     pane.metaElement.textContent = metaText;
     pane.metaElement.title = metaText;
-    pane.labelElement.title = paneLabel;
+    pane.labelElement.title = paneId === paneLabel ? paneLabel : `${paneLabel} (${paneId})`;
   });
 }
 
@@ -6447,6 +8219,69 @@ function initializeSidebarResize() {
   });
 }
 
+function initializeWorkbenchResize() {
+  const handle = document.getElementById("workbench-resizer");
+  const drawer = document.getElementById("terminal-drawer");
+  if (!handle || !drawer) {
+    return;
+  }
+
+  const setWidthFromKeyboard = (delta: number) => {
+    const currentWidth = workbenchWidth ?? drawer.getBoundingClientRect().width;
+    applyWorkbenchWidth(currentWidth + delta);
+    void persistThemeState();
+  };
+
+  handle.setAttribute("aria-valuemin", "320");
+  handle.setAttribute("aria-valuemax", "1600");
+  if (workbenchWidth !== null) {
+    handle.setAttribute("aria-valuenow", `${workbenchWidth}`);
+  }
+
+  handle.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setWidthFromKeyboard(32);
+      return;
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setWidthFromKeyboard(-32);
+      return;
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      applyWorkbenchWidth(320);
+      void persistThemeState();
+      return;
+    }
+  });
+
+  handle.addEventListener("pointerdown", (event) => {
+    if (!terminalDrawerOpen || isNarrowLayout()) {
+      return;
+    }
+    event.preventDefault();
+    handle.setPointerCapture?.(event.pointerId);
+    document.body.classList.add("is-resizing-workbench");
+    const startX = event.clientX;
+    const startWidth = drawer.getBoundingClientRect().width;
+    const onMove = (moveEvent: PointerEvent) => {
+      applyWorkbenchWidth(startWidth + (startX - moveEvent.clientX));
+    };
+    const onUp = () => {
+      document.body.classList.remove("is-resizing-workbench");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      void persistThemeState();
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+  });
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   installViewportHarnessHooks();
   const popoutSurfaceState = readPopoutSurfaceState();
@@ -6455,17 +8290,28 @@ window.addEventListener("DOMContentLoaded", async () => {
   if (storedShellPreferences) {
     applyThemeState(storedShellPreferences);
     sidebarWidth = storedShellPreferences.sidebarWidth;
+    workbenchWidth = storedShellPreferences.workbenchWidth;
     preferredWideSidebarOpen = storedShellPreferences.wideSidebarOpen;
     preferredWideContextOpen = storedShellPreferences.wideContextOpen;
+    terminalDrawerOpen = true;
+    workbenchLayout = storedShellPreferences.workbenchLayout;
   }
 
   await subscribeToPtyOutput((payload) => {
+    if (payload.pane_id === OPERATOR_PTY_ID) {
+      appendOperatorPtyOutput(payload.data);
+      return;
+    }
     registerPreviewTargets(payload.pane_id, payload.data);
     const entry = payload.pane_id ? panes.get(payload.pane_id) : undefined;
     if (entry) {
       entry.lastOutputAt = Date.now();
       entry.terminal.write(payload.data);
       renderPaneMetadata();
+      return;
+    }
+
+    if (payload.pane_id) {
       return;
     }
 
@@ -6479,6 +8325,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   renderSessions();
   renderExplorer();
+  void refreshProjectExplorerEntries();
   renderOpenEditors();
   renderSourceSummary();
   renderSourceEntries();
@@ -6498,17 +8345,53 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderEditorSurface();
   syncResponsiveShell();
   setEditorSurface(false);
-  setTerminalDrawer(false);
+  setTerminalDrawer(true);
   applyPopoutSurfaceState(popoutSurfaceState);
   await refreshDesktopSummary();
   registerDesktopSummaryLiveRefresh();
   initializeSidebarResize();
+  initializeWorkbenchResize();
   window.setInterval(() => {
     renderPaneMetadata();
   }, PANE_META_REFRESH_INTERVAL_MS);
 
+  for (const menuButton of document.querySelectorAll<HTMLButtonElement>(".menu-bar-item")) {
+    menuButton.setAttribute("aria-haspopup", "menu");
+    menuButton.setAttribute("aria-expanded", "false");
+    menuButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openTopMenu(menuButton.id);
+    });
+  }
+
   document.getElementById("toggle-sidebar-btn")?.addEventListener("click", () => {
     setSidebarOpen(!sidebarOpen);
+  });
+
+  document.getElementById("activity-explorer-btn")?.addEventListener("click", () => {
+    if (sidebarOpen && sidebarMode === "explorer") {
+      setSidebarOpen(false);
+      return;
+    }
+    setSidebarMode("explorer");
+    setSidebarOpen(true);
+  });
+
+  document.getElementById("activity-search-btn")?.addEventListener("click", () => {
+    openCommandBar();
+  });
+
+  document.getElementById("activity-source-btn")?.addEventListener("click", () => {
+    if (sidebarOpen && sidebarMode === "source") {
+      setSidebarOpen(false);
+      return;
+    }
+    setSidebarMode("source");
+    setSidebarOpen(true);
+  });
+
+  document.getElementById("activity-context-btn")?.addEventListener("click", () => {
+    setContextPanel(!contextPanelOpen);
   });
 
   document.getElementById("open-command-bar-btn")?.addEventListener("click", () => {
@@ -6559,9 +8442,35 @@ window.addEventListener("DOMContentLoaded", async () => {
     await openEditorSurfacePopout();
   });
 
-  document.getElementById("settings-btn")?.addEventListener("click", () => {
+  document.getElementById("activity-settings-btn")?.addEventListener("click", () => {
     setSettingsSheet(true);
   });
+
+  const sourceControlMessageInput = document.getElementById("source-control-message") as HTMLTextAreaElement | null;
+  sourceControlMessageInput?.addEventListener("input", () => {
+    updateSourceControlCommitButton();
+  });
+
+  document.getElementById("source-control-commit-btn")?.addEventListener("click", () => {
+    submitSourceControlCommitRequest();
+  });
+
+  document.getElementById("source-control-title-commit-btn")?.addEventListener("click", () => {
+    submitSourceControlCommitRequest();
+  });
+
+  for (const refreshButtonId of ["source-control-refresh-btn", "source-control-graph-refresh-btn", "source-control-graph-fetch-btn"]) {
+    document.getElementById(refreshButtonId)?.addEventListener("click", () => {
+      void refreshBrowserSourceControl();
+      requestDesktopSummaryRefresh(undefined, 0);
+    });
+  }
+
+  for (const moreButtonId of ["source-control-more-btn", "source-control-graph-more-btn"]) {
+    document.getElementById(moreButtonId)?.addEventListener("click", () => {
+      openCommandBar();
+    });
+  }
 
   document.getElementById("apply-settings-btn")?.addEventListener("click", () => {
     applySettingsDraft();
@@ -6577,6 +8486,22 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   document.getElementById("command-bar-backdrop")?.addEventListener("click", () => {
     closeCommandBar();
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!openTopMenuId) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Node)) {
+      return;
+    }
+    const popover = document.getElementById("top-menu-popover");
+    const button = document.getElementById(openTopMenuId);
+    if (popover?.contains(target) || button?.contains(target)) {
+      return;
+    }
+    closeTopMenu();
   });
 
   document.getElementById("command-bar")?.addEventListener("keydown", (event) => {
@@ -6643,11 +8568,20 @@ window.addEventListener("DOMContentLoaded", async () => {
     createPane();
   });
 
+  document.getElementById("workbench-layout-btn")?.addEventListener("click", () => {
+    cycleWorkbenchLayout();
+  });
+
   const composer = document.getElementById("composer") as HTMLFormElement | null;
   const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
   const composerFileInput = document.getElementById("composer-file-input") as HTMLInputElement | null;
   const attachButton = document.getElementById("attach-btn") as HTMLButtonElement | null;
+  const voiceInputButton = document.getElementById("voice-input-btn") as HTMLButtonElement | null;
   if (composer && composerInput) {
+    voiceInputButton?.addEventListener("click", () => {
+      toggleVoiceInput(composerInput);
+    });
+
     composerInput.addEventListener("compositionstart", () => {
       composerImeActive = true;
     });
@@ -6657,7 +8591,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
 
     composerInput.addEventListener("keydown", (event) => {
-      const slashCommands = getFilteredComposerSlashCommands();
+      const slashCommands = getVisibleComposerSlashCommands();
       const composerImeBlocking = composerImeActive || event.isComposing;
       if (event.key === "ArrowUp" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSlashOpen && composerHistory.length > 0 && isComposerSelectionCollapsed(composerInput) && isCaretOnFirstLine(composerInput)) {
         event.preventDefault();
@@ -6754,9 +8688,13 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     composer.addEventListener("submit", (event) => {
       event.preventDefault();
-      const slashMatch = getComposerSlashMatch(composerInput.value);
-      if (slashMatch) {
-        applyComposerSlashCommand(slashMatch);
+      const slashModeCommand = getComposerModeSlashCommand(composerInput.value);
+      if (slashModeCommand) {
+        applyComposerSlashCommand(slashModeCommand);
+        return;
+      }
+      if (voiceListening) {
+        stopVoiceInput();
       }
       const rawValue = composerInput.value;
       const value = rawValue.trim();
@@ -6814,6 +8752,12 @@ window.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
+    if (event.key === "Escape" && openTopMenuId) {
+      event.preventDefault();
+      closeTopMenu();
+      return;
+    }
+
     if (event.key === "Escape" && settingsSheetOpen) {
       event.preventDefault();
       cancelSettingsDraft();
@@ -6829,5 +8773,9 @@ window.addEventListener("DOMContentLoaded", async () => {
   window.addEventListener("resize", () => {
     syncResponsiveShell();
     panes.forEach((pane) => pane.fitAddon.fit());
+  });
+
+  window.addEventListener("beforeunload", () => {
+    stopVoiceInput();
   });
 });

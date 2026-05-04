@@ -127,9 +127,13 @@ export async function spawnPtyPane(
   paneId: string,
   cols: number,
   rows: number,
+  startupInput?: string,
 ) {
   try {
-    await ptyCommandTransport.request("pty.spawn", { paneId, cols, rows });
+    await ptyCommandTransport.request(
+      "pty.spawn",
+      startupInput ? { paneId, cols, rows, startupInput } : { paneId, cols, rows },
+    );
   } catch (error) {
     throw normalizePtyError(`pty.spawn(${paneId})`, error);
   }
