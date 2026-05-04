@@ -67,6 +67,75 @@ fn operator_cli_board_json_reads_live_winsmux_manifest() {
 }
 
 #[test]
+#[cfg(windows)]
+fn operator_cli_delegates_wrapper_commands_to_winsmux_core_script() {
+    let project_dir = make_temp_project_dir("winsmux-core-bridge");
+    let script_path = project_dir.join("winsmux-core-bridge.ps1");
+    fs::write(
+        &script_path,
+        r#"
+param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
+Write-Output ("bridge:" + ($Rest -join "|"))
+"#,
+    )
+    .expect("test should write fake winsmux-core script");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("list")
+        .env("WINSMUX_CORE_SCRIPT", &script_path)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("bridge:list"),
+        "unexpected stdout: {stdout}"
+    );
+}
+
+#[test]
+fn operator_cli_keeps_native_operator_commands_in_rust_binary() {
+    let project_dir = make_temp_project_dir("winsmux-core-native");
+    write_manifest(&project_dir);
+    let script_path = project_dir.join("winsmux-core-bridge.ps1");
+    fs::write(
+        &script_path,
+        r#"
+param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
+Write-Output ("bridge:" + ($Rest -join "|"))
+"#,
+    )
+    .expect("test should write fake winsmux-core script");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["board", "--json"])
+        .env("WINSMUX_CORE_SCRIPT", &script_path)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("bridge:"),
+        "native command unexpectedly delegated: {stdout}"
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("board output should be JSON");
+    assert_eq!(json["summary"]["pane_count"], 2);
+}
+
+#[test]
 fn operator_cli_board_text_reads_live_winsmux_manifest() {
     let project_dir = make_temp_project_dir("board-text");
     write_manifest(&project_dir);

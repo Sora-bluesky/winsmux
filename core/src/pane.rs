@@ -652,7 +652,7 @@ const PROFILE_SOURCE: &str = concat!(
     "$PROFILE.AllUsersCurrentHost,",
     "$PROFILE.CurrentUserAllHosts,",
     "$PROFILE.CurrentUserCurrentHost",
-    ")) { if ($__p -and (Test-Path $__p)) { try { . $__p } catch { Write-Warning \"psmux: profile error in ${__p}: $_\" } } }",
+    ")) { if ($__p -and (Test-Path $__p)) { try { . $__p } catch { Write-Warning \"winsmux: profile error in ${__p}: $_\" } } }",
 );
 
 /// Sync PowerShell's $PWD to the OS-level CWD (#111).

@@ -468,7 +468,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                 wp.child.kill().ok();
                 match spawn_warm_pane(&*pty_system, &mut app) {
                     Ok(new_wp) => { app.warm_pane = Some(new_wp); }
-                    Err(e) => { eprintln!("psmux: warm pane respawn failed: {e}"); }
+                    Err(e) => { eprintln!("winsmux: warm pane respawn failed: {e}"); }
                 }
             } else {
                 app.warm_pane = Some(wp);
@@ -502,7 +502,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
     if app.warm_pane.is_none() {
         match spawn_warm_pane(&*pty_system, &mut app) {
             Ok(wp) => { app.warm_pane = Some(wp); }
-            Err(e) => { eprintln!("psmux: warm pane pre-spawn failed: {e}"); }
+            Err(e) => { eprintln!("winsmux: warm pane pre-spawn failed: {e}"); }
         }
     }
     // Fire client-attached hooks once at startup so plugins populate initial
@@ -733,7 +733,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                     // so create_window spawns a fresh shell in the correct CWD.
                     let stashed_warm = if start_dir.is_some() { app.warm_pane.take() } else { None };
                     if let Err(e) = create_window(&*pty_system, &mut app, cmd.as_deref(), start_dir.as_deref()) {
-                        eprintln!("psmux: new-window error: {e}");
+                        eprintln!("winsmux: new-window error: {e}");
                     }
                     if let Some(wp) = stashed_warm { app.warm_pane = Some(wp); }
                     if let Some(prev) = saved_dir { env::set_current_dir(prev).ok(); }
@@ -756,7 +756,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                     if let Some(dir) = &start_dir { env::set_current_dir(dir).ok(); }
                     let stashed_warm = if start_dir.is_some() { app.warm_pane.take() } else { None };
                     if let Err(e) = create_window(&*pty_system, &mut app, cmd.as_deref(), start_dir.as_deref()) {
-                        eprintln!("psmux: new-window error: {e}");
+                        eprintln!("winsmux: new-window error: {e}");
                     }
                     if let Some(wp) = stashed_warm { app.warm_pane = Some(wp); }
                     if let Some(prev) = saved_dir { env::set_current_dir(prev).ok(); }
@@ -787,7 +787,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                     // Hide warm pane when explicit start_dir is given (wrong CWD)
                     let stashed_warm = if start_dir.is_some() { app.warm_pane.take() } else { None };
                     if let Err(e) = split_active_with_command(&mut app, k, cmd.as_deref(), Some(&*pty_system), start_dir.as_deref()) {
-                        let _ = resp.send(format!("psmux: split-window: {e}"));
+                        let _ = resp.send(format!("winsmux: split-window: {e}"));
                     } else {
                         let _ = resp.send(String::new());
                     }
@@ -851,7 +851,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                     let prev_path = app.windows[app.active_idx].active_path.clone();
                     let stashed_warm = if start_dir.is_some() { app.warm_pane.take() } else { None };
                     if let Err(e) = split_active_with_command(&mut app, k, cmd.as_deref(), Some(&*pty_system), start_dir.as_deref()) {
-                        eprintln!("psmux: split-window error: {e}");
+                        eprintln!("winsmux: split-window error: {e}");
                     }
                     if let Some(wp) = stashed_warm { app.warm_pane = Some(wp); }
                     // Apply size if specified: (value, true) = percentage, (value, false) = cell count
@@ -2428,7 +2428,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                         app.user_options.remove(&option);
                     } else {
                         match option.as_str() {
-                            "status-left" => { app.status_left = "psmux:#I".to_string(); }
+                            "status-left" => { app.status_left = "winsmux:#I".to_string(); }
                             "status-right" => { app.status_right = "#{?window_bigger,[#{window_offset_x}#,#{window_offset_y}] ,}\"#{=21:pane_title}\" %H:%M %d-%b-%y".to_string(); }
                             "mouse" => { app.mouse_enabled = true; }
                             "escape-time" => { app.escape_time_ms = 500; }
@@ -2933,7 +2933,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                         }
                         match spawn_warm_pane(&*pty_system, &mut app) {
                             Ok(new_wp) => { app.warm_pane = Some(new_wp); }
-                            Err(e) => { eprintln!("psmux: warm pane respawn (SetEnv) failed: {e}"); }
+                            Err(e) => { eprintln!("winsmux: warm pane respawn (SetEnv) failed: {e}"); }
                         }
                     }
                 }
@@ -2948,7 +2948,7 @@ pub fn run_server(session_name: String, socket_name: Option<String>, initial_com
                         }
                         match spawn_warm_pane(&*pty_system, &mut app) {
                             Ok(new_wp) => { app.warm_pane = Some(new_wp); }
-                            Err(e) => { eprintln!("psmux: warm pane respawn (UnsetEnv) failed: {e}"); }
+                            Err(e) => { eprintln!("winsmux: warm pane respawn (UnsetEnv) failed: {e}"); }
                         }
                     }
                 }

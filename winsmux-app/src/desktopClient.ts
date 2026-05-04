@@ -404,6 +404,7 @@ export interface DesktopExplorerEntry {
   kind: "directory" | "file";
   has_children?: boolean;
   hasChildren?: boolean;
+  ignored?: boolean;
 }
 
 export interface DesktopExplorerListPayload {

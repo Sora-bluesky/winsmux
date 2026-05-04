@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -215,6 +215,8 @@ pub struct DesktopEditorFilePayload {
 pub struct DesktopExplorerEntry {
     pub path: String,
     pub kind: String,
+    pub has_children: Option<bool>,
+    pub ignored: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1561,6 +1563,70 @@ fn should_descend_desktop_explorer_dir(name: &str) -> bool {
     )
 }
 
+fn has_desktop_explorer_children(dir: &Path) -> bool {
+    fs::read_dir(dir)
+        .map(|mut children| {
+            children.any(|child| {
+                child
+                    .ok()
+                    .and_then(|entry| entry.file_type().ok())
+                    .map(|file_type| file_type.is_dir() || file_type.is_file())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn collect_desktop_ignored_paths(root: &Path, relative_paths: &[String]) -> HashSet<String> {
+    if relative_paths.is_empty() {
+        return HashSet::new();
+    }
+
+    let mut command = Command::new("git");
+    command
+        .arg("-C")
+        .arg(root)
+        .args(["check-ignore", "-z", "--stdin"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let Ok(mut child) = command.spawn() else {
+        return HashSet::new();
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        for relative_path in relative_paths {
+            if stdin.write_all(relative_path.as_bytes()).is_err() || stdin.write_all(&[0]).is_err() {
+                return HashSet::new();
+            }
+        }
+    }
+
+    let Ok(output) = child.wait_with_output() else {
+        return HashSet::new();
+    };
+    if !matches!(output.status.code(), Some(0) | Some(1)) {
+        return HashSet::new();
+    }
+
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|item| {
+            if item.is_empty() {
+                return None;
+            }
+            String::from_utf8(item.to_vec())
+                .ok()
+                .map(|path| path.replace('\\', "/").trim_end_matches('/').to_string())
+        })
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
 fn collect_desktop_explorer_entries(
     root: &Path,
     dir: &Path,
@@ -1583,6 +1649,7 @@ fn collect_desktop_explorer_entries(
             .cmp(&right.file_name().to_string_lossy().to_lowercase())
     });
 
+    let mut child_records: Vec<(PathBuf, String, bool, String)> = Vec::new();
     for child in children {
         if entries.len() >= DESKTOP_EXPLORER_MAX_ENTRIES {
             break;
@@ -1599,19 +1666,45 @@ fn collect_desktop_explorer_entries(
             continue;
         }
 
-        if file_type.is_dir() {
+        if file_type.is_dir() || file_type.is_file() {
+            child_records.push((
+                path,
+                relative,
+                file_type.is_dir(),
+                child.file_name().to_string_lossy().to_string(),
+            ));
+        }
+    }
+
+    let ignored_paths = collect_desktop_ignored_paths(
+        root,
+        &child_records
+            .iter()
+            .map(|(_, relative, _, _)| relative.clone())
+            .collect::<Vec<_>>(),
+    );
+
+    for (path, relative, is_dir, name) in child_records {
+        if entries.len() >= DESKTOP_EXPLORER_MAX_ENTRIES {
+            break;
+        }
+        let ignored = ignored_paths.contains(&relative) || ignored_paths.contains(&format!("{relative}/"));
+        if is_dir {
             entries.push(DesktopExplorerEntry {
                 path: relative.clone(),
                 kind: "directory".to_string(),
+                has_children: Some(has_desktop_explorer_children(&path)),
+                ignored,
             });
-            let name = child.file_name().to_string_lossy().to_string();
             if depth < DESKTOP_EXPLORER_MAX_DEPTH && should_descend_desktop_explorer_dir(&name) {
                 let _ = collect_desktop_explorer_entries(root, &path, depth + 1, entries);
             }
-        } else if file_type.is_file() {
+        } else {
             entries.push(DesktopExplorerEntry {
                 path: relative,
                 kind: "file".to_string(),
+                has_children: None,
+                ignored,
             });
         }
     }

@@ -34,6 +34,8 @@ mod ssh_input;
 mod debug_log;
 mod control;
 use std::io::{self, Write, Read as _, BufRead as _, IsTerminal};
+use std::path::PathBuf;
+use std::process::Command;
 use std::time::Duration;
 use std::env;
 
@@ -59,8 +61,126 @@ fn main() {
         // Print a user-friendly error message instead of Rust's Debug format
         // which shows "Error: Custom { kind: Other, error: \"...\" }"  (fixes #47)
         let msg = e.to_string();
-        eprintln!("psmux: {}", msg);
+        eprintln!("winsmux: {}", msg);
         std::process::exit(1);
+    }
+}
+
+fn is_winsmux_core_bridge_command(command: &str) -> bool {
+    matches!(
+        command,
+        "init"
+            | "install"
+            | "launch"
+            | "list"
+            | "read"
+            | "type"
+            | "keys"
+            | "message"
+            | "send"
+            | "name"
+            | "resolve"
+            | "id"
+            | "ime-input"
+            | "image-paste"
+            | "clipboard-paste"
+            | "focus"
+            | "focus-lock"
+            | "focus-unlock"
+            | "lock"
+            | "unlock"
+            | "locks"
+            | "github-preflight"
+            | "verify"
+            | "dispatch-task"
+            | "dispatch-route"
+            | "task-split"
+            | "pipeline"
+            | "task-run"
+            | "builder-queue"
+            | "orchestra-smoke"
+            | "orchestra-attach"
+            | "harness-check"
+            | "shadow-cutover-gate"
+            | "powershell-deescalation"
+            | "vault"
+            | "wait-ready"
+            | "health-check"
+            | "mailbox-create"
+            | "mailbox-send"
+            | "mailbox-listen"
+            | "control-rpc"
+            | "watch"
+            | "profile"
+            | "doctor"
+            | "monitor"
+            | "role"
+            | "auto-rebalance"
+            | "kill"
+            | "assign"
+    )
+}
+
+fn find_winsmux_core_script() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Ok(path) = env::var("WINSMUX_CORE_SCRIPT") {
+        candidates.push(PathBuf::from(path));
+    }
+
+    if let Ok(current_dir) = env::current_dir() {
+        for ancestor in current_dir.ancestors() {
+            candidates.push(ancestor.join("scripts").join("winsmux-core.ps1"));
+            candidates.push(
+                ancestor
+                    .join("winsmux-core")
+                    .join("scripts")
+                    .join("winsmux-core.ps1"),
+            );
+        }
+    }
+
+    if let Ok(exe_path) = env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            for ancestor in exe_dir.ancestors() {
+                candidates.push(ancestor.join("scripts").join("winsmux-core.ps1"));
+            }
+        }
+    }
+
+    if let Ok(home) = env::var("USERPROFILE").or_else(|_| env::var("HOME")) {
+        let home = PathBuf::from(home);
+        candidates.push(home.join(".winsmux").join("bin").join("winsmux-core.ps1"));
+        candidates.push(home.join(".winsmux").join("scripts").join("winsmux-core.ps1"));
+    }
+
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+fn run_winsmux_core_script(script_path: PathBuf, cmd_args: &[&String]) -> io::Result<()> {
+    let status = Command::new("pwsh")
+        .arg("-NoProfile")
+        .arg("-File")
+        .arg(&script_path)
+        .args(cmd_args.iter().map(|arg| arg.as_str()))
+        .status()
+        .or_else(|err| {
+            if err.kind() == io::ErrorKind::NotFound {
+                Command::new("powershell")
+                    .arg("-NoProfile")
+                    .arg("-File")
+                    .arg(&script_path)
+                    .args(cmd_args.iter().map(|arg| arg.as_str()))
+                    .status()
+            } else {
+                Err(err)
+            }
+        })?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        std::process::exit(status.code().unwrap_or(1));
     }
 }
 
@@ -243,6 +363,12 @@ fn run_main() -> io::Result<()> {
             return Ok(());
         }
         _ => {}
+    }
+
+    if is_winsmux_core_bridge_command(cmd) {
+        if let Some(script_path) = find_winsmux_core_script() {
+            return run_winsmux_core_script(script_path, &cmd_args);
+        }
     }
 
     if cmd == "status" && operator_cli::is_operator_status_invocation(&cmd_args[1..]) {
@@ -444,7 +570,7 @@ fn run_main() -> io::Result<()> {
                     if env::var("PSMUX_ACTIVE").ok().as_deref() == Some("1")
                         || env::var("PSMUX_SESSION").ok().filter(|v| !v.is_empty()).is_some()
                     {
-                        eprintln!("psmux: sessions should be nested with care, unset PSMUX_SESSION to force");
+                        eprintln!("winsmux: sessions should be nested with care, unset PSMUX_SESSION to force");
                         return Ok(());
                     }
                 }
@@ -564,7 +690,7 @@ fn run_main() -> io::Result<()> {
                             // Skip server creation, jump straight to attach
                             // (handled at the bottom of this match block)
                         } else {
-                            eprintln!("psmux: session '{}' already exists", name);
+                            eprintln!("winsmux: session '{}' already exists", name);
                             return Ok(());
                         }
                     } else {
@@ -688,7 +814,7 @@ fn run_main() -> io::Result<()> {
                 // already active when the port file appears (we moved file write
                 // before create_window), so this connect should succeed instantly.
                 if !std::path::Path::new(&port_path).exists() {
-                    eprintln!("psmux: failed to create session '{}'", name);
+                    eprintln!("winsmux: failed to create session '{}'", name);
                     std::process::exit(1);
                 }
                 {
@@ -703,7 +829,7 @@ fn run_main() -> io::Result<()> {
                     } else { false };
                     if !server_alive {
                         let _ = std::fs::remove_file(&port_path);
-                        eprintln!("psmux: session '{}' exited immediately (check shell command)", name);
+                        eprintln!("winsmux: session '{}' exited immediately (check shell command)", name);
                         std::process::exit(1);
                     }
                 }
@@ -1645,7 +1771,7 @@ fn run_main() -> io::Result<()> {
                     };
                     if let Err(e) = std::fs::read_to_string(&expanded) {
                         if !quiet {
-                            eprintln!("psmux: {}: {}", expanded, e);
+                            eprintln!("winsmux: {}: {}", expanded, e);
                             std::process::exit(1);
                         }
                     } else {
@@ -2453,8 +2579,8 @@ fn run_main() -> io::Result<()> {
             _ => {
                 // Unknown command - print error and exit
                 if !cmd.is_empty() {
-                    eprintln!("psmux: unknown command: {}", cmd);
-                    eprintln!("Run 'psmux --help' for usage information.");
+                    eprintln!("winsmux: unknown command: {}", cmd);
+                    eprintln!("Run 'winsmux --help' for usage information.");
                     return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("unknown command: {}", cmd)));
                 }
             }
@@ -2584,7 +2710,7 @@ fn run_main() -> io::Result<()> {
         if env::var("PSMUX_ACTIVE").ok().as_deref() == Some("1")
             || env::var("PSMUX_SESSION").ok().filter(|v| !v.is_empty()).is_some()
         {
-            eprintln!("psmux: sessions should be nested with care, unset PSMUX_SESSION to force");
+            eprintln!("winsmux: sessions should be nested with care, unset PSMUX_SESSION to force");
             return Ok(());
         }
     }

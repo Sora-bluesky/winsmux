@@ -164,14 +164,15 @@ The Tauri desktop direction follows the same contract:
 
 - **workspace sidebar** for sessions, explorer, open editors, and source control summary
 - **conversation shell** as the primary operator surface
-- **context side sheet** for run, slot, evidence, branch, and review state
+- **details panel** for the selected run, slot, branch, and review state
+- **evidence sidebar** for source-linked verification, review, security, and event records
 - **secondary editor surface** for source-level drill-down
 - **terminal drawer** for raw PTY and diagnostics only
-- **decision cockpit** for verification, review, security, architecture, and operator-decision gates
+- **decision view** for verification, review, security, architecture, and operator judgement
 
 The roadmap groups these desktop surfaces into three UX layers:
 
-- **Decision Cockpit** for compare, evidence, code browser, and localhost preview
+- **Decision View** for compare, evidence, code browser, and localhost preview
 - **Fast Start + Launcher + Coordination Guard** for quick entry, multi-agent launch, and conflict preflight
 - **Managed Team Intelligence** for durable memory, playbooks, and diversity-aware follow-up runs
 

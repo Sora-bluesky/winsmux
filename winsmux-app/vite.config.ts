@@ -1,5 +1,5 @@
 import { defineConfig } from "vite";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -33,8 +33,33 @@ function resolveProjectRelativePath(requestedPath: string) {
   };
 }
 
+function collectGitIgnoredPaths(relativePaths: string[]) {
+  if (relativePaths.length === 0) {
+    return new Set<string>();
+  }
+
+  try {
+    const result = spawnSync("git", ["-C", projectRoot, "check-ignore", "-z", "--stdin"], {
+      input: `${relativePaths.join("\0")}\0`,
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"],
+    });
+    if (result.status !== 0 && result.status !== 1) {
+      return new Set<string>();
+    }
+    return new Set(
+      result.stdout
+        .split("\0")
+        .map((item) => item.replace(/\\/g, "/").replace(/\/+$/, ""))
+        .filter(Boolean),
+    );
+  } catch {
+    return new Set<string>();
+  }
+}
+
 function collectExplorerEntries(root: string, basePath = "") {
-  const entries: Array<{ path: string; kind: "directory" | "file"; has_children?: boolean }> = [];
+  const entries: Array<{ path: string; kind: "directory" | "file"; has_children?: boolean; ignored?: boolean }> = [];
   const baseDir = path.resolve(root, basePath);
   const children = fs.readdirSync(baseDir, { withFileTypes: true })
     .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
@@ -55,7 +80,11 @@ function collectExplorerEntries(root: string, basePath = "") {
     }
   }
 
-  return entries;
+  const ignoredPaths = collectGitIgnoredPaths(entries.map((entry) => entry.path));
+  return entries.map((entry) => ({
+    ...entry,
+    ignored: ignoredPaths.has(entry.path) || ignoredPaths.has(`${entry.path}/`),
+  }));
 }
 
 function serveProjectExplorer(request: { url?: string }, response: { statusCode: number; setHeader: (name: string, value: string) => void; end: (body: string) => void }) {
@@ -165,15 +194,33 @@ function collectSourceControlSnapshot() {
     })
     : [];
 
-  const graph = runGit(["log", "--oneline", "--decorate=short", "-30"])
+  const graph = runGit([
+    "log",
+    "--pretty=format:%H%x1f%h%x1f%D%x1f%an%x1f%ar%x1f%ad%x1f%s",
+    "--date=format:%Y-%m-%d %H:%M",
+    "-30",
+  ])
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => {
-      const [sha = "", ...titleParts] = line.split(" ");
+      const [
+        sha = "",
+        shortSha = "",
+        refsText = "",
+        author = "",
+        relativeTime = "",
+        committedAt = "",
+        subject = "",
+      ] = line.split("\u001f");
       return {
         run_id: sha,
-        task: titleParts.join(" "),
+        short_sha: shortSha,
+        task: subject,
         branch,
+        refs: refsText.split(",").map((ref) => ref.trim()).filter(Boolean),
+        author,
+        relative_time: relativeTime,
+        committed_at: committedAt,
         changed_files: [],
       };
     });
