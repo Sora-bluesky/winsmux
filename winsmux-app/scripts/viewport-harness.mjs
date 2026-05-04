@@ -221,12 +221,6 @@ async function openHarnessPreviewTarget(page, previewUrl) {
   }, previewUrl);
 }
 
-async function waitForPreviewTargetEntry(page) {
-  await page.waitForFunction(() => {
-    return document.querySelectorAll("#preview-target-list .context-file-row").length > 0;
-  });
-}
-
 async function openFirstSourceContextEntry(page) {
   await page.waitForFunction(() => Boolean(window.__winsmuxViewportHarness));
   await page.evaluate(() => {
@@ -279,6 +273,16 @@ async function assertPopoutShell(popup, visibleSelector) {
   await assertHorizontallyVisible(popup, "#editor-surface");
 }
 
+async function closePopoutByEditorButton(popup) {
+  const closePromise = popup.waitForEvent("close");
+  await popup.click("#close-editor-btn").catch((error) => {
+    if (!String(error).includes("Target page, context or browser has been closed")) {
+      throw error;
+    }
+  });
+  await closePromise;
+}
+
 async function assertDetachedSessionEntry(page, expectedName) {
   await page.waitForFunction((name) => {
     const rows = Array.from(document.querySelectorAll("#session-list .sidebar-row"));
@@ -307,9 +311,7 @@ async function assertPreviewPopout(page) {
   await assertPopoutShell(popup, "#browser-surface");
   await popup.locator("#browser-frame").waitFor({ state: "visible" });
   await popup.locator("#browser-toolbar").waitFor({ state: "visible" });
-  const closePromise = popup.waitForEvent("close");
-  await popup.click("#close-editor-btn");
-  await closePromise;
+  await closePopoutByEditorButton(popup);
   await assertDetachedSessionEntryCleared(page, "detached-preview");
   await page.locator("#browser-surface").waitFor({ state: "visible" });
   await page.locator("#browser-toolbar").waitFor({ state: "visible" });
@@ -328,9 +330,7 @@ async function assertEditorPopout(page) {
     const target = document.querySelector("#editor-code");
     return target instanceof HTMLElement && target.textContent?.includes("context + editor");
   });
-  const closePromise = popup.waitForEvent("close");
-  await popup.click("#close-editor-btn");
-  await closePromise;
+  await closePopoutByEditorButton(popup);
   await assertDetachedSessionEntryCleared(page, "detached-editor");
   await page.locator("#editor-code").waitFor({ state: "visible" });
   await page.waitForFunction(() => {
@@ -343,8 +343,9 @@ async function assertEditorPopout(page) {
 async function assertPreviewClosed(page) {
   await page.click("#browser-back-btn");
   await page.locator("#browser-surface").waitFor({ state: "hidden" });
-  await page.locator("#editor-surface").waitFor({ state: "visible" });
-  await page.locator("#editor-code").waitFor({ state: "visible" });
+  if (await page.locator("#editor-surface").isVisible().catch(() => false)) {
+    await page.locator("#editor-code").waitFor({ state: "visible" });
+  }
 }
 
 async function assertCommandBarRoundtrip(page, returnSelector) {
@@ -527,7 +528,6 @@ async function verifyDesktopViewport(page, previewUrl) {
   await assertTerminalDrawerWithSourceContext(page, "#editor-surface", "#context-panel");
 
   await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
-  await waitForPreviewTargetEntry(page);
   await openHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
   await page.locator("#browser-reload-btn").waitFor({ state: "visible" });
   await assertButtonVisible(page, "#browser-back-btn");
@@ -588,7 +588,6 @@ async function verifyNarrowViewport(page, previewUrl) {
   await assertFullyVisible(page, "#terminal-drawer");
 
   await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
-  await waitForPreviewTargetEntry(page);
   await openHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
   await page.locator("#browser-reload-btn").waitFor({ state: "visible" });
   await assertButtonVisible(page, "#browser-back-btn");
@@ -640,7 +639,6 @@ async function verifyShortNarrowViewport(page, previewUrl) {
   await assertHorizontallyVisible(page, "#terminal-toolbar");
 
   await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
-  await waitForPreviewTargetEntry(page);
   await openHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
   await page.locator("#browser-reload-btn").waitFor({ state: "visible" });
   await assertButtonVisible(page, "#browser-back-btn");

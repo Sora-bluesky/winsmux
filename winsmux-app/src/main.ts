@@ -2712,6 +2712,153 @@ function getSourceGraphSymbols(item: SourceControlGraphItem) {
   return symbols || "*";
 }
 
+const sourceGraphLaneColors = [
+  "#58a6ff",
+  "#d29922",
+  "#db61a2",
+  "#56d4a8",
+  "#a371f7",
+  "#f0883e",
+];
+const sourceGraphSvgNamespace = "http://www.w3.org/2000/svg";
+const sourceGraphLaneStep = 8;
+const sourceGraphLaneOffset = 4;
+const sourceGraphRowHeight = 34;
+const sourceGraphMaxLanes = 6;
+
+function getSourceGraphLaneX(laneIndex: number) {
+  return sourceGraphLaneOffset + laneIndex * sourceGraphLaneStep;
+}
+
+function normalizeSourceGraphTokens(symbols: string) {
+  const tokens = Array.from(symbols.trimEnd() || "*")
+    .filter((symbol) => symbol.trim().length > 0)
+    .slice(0, sourceGraphMaxLanes);
+  return tokens.length > 0 ? tokens : ["*"];
+}
+
+function getSourceGraphLaneKind(symbol: string) {
+  if (symbol === "*" || symbol === "o") {
+    return "node";
+  }
+  if (symbol === "|") {
+    return "vertical";
+  }
+  if (symbol === "/") {
+    return "diagonal-left";
+  }
+  if (symbol === "\\") {
+    return "diagonal-right";
+  }
+  if (symbol === "_" || symbol === "-") {
+    return "horizontal";
+  }
+  return symbol.trim().length > 0 ? "connector" : "empty";
+}
+
+function appendSourceGraphLine(
+  svg: SVGElement,
+  fromLane: number,
+  toLane: number,
+  colorLane: number,
+  className: string,
+  y1 = 0,
+  y2 = sourceGraphRowHeight,
+) {
+  const line = document.createElementNS(sourceGraphSvgNamespace, "line");
+  line.setAttribute("class", `source-control-graph-lane-line ${className}`);
+  line.setAttribute("x1", String(getSourceGraphLaneX(fromLane)));
+  line.setAttribute("y1", String(y1));
+  line.setAttribute("x2", String(getSourceGraphLaneX(toLane)));
+  line.setAttribute("y2", String(y2));
+  line.setAttribute("stroke", sourceGraphLaneColors[colorLane % sourceGraphLaneColors.length]);
+  svg.appendChild(line);
+}
+
+function appendSourceGraphElbow(svg: SVGElement, fromLane: number, toLane: number, colorLane: number) {
+  const fromX = getSourceGraphLaneX(fromLane);
+  const toX = getSourceGraphLaneX(toLane);
+  const direction = toX >= fromX ? 1 : -1;
+  const cornerRadius = 4;
+  const topTurnY = 9;
+  const bottomTurnY = 21;
+  const path = document.createElementNS(sourceGraphSvgNamespace, "path");
+  const startCornerX = fromX + direction * cornerRadius;
+  const endCornerX = toX - direction * cornerRadius;
+  path.setAttribute("class", "source-control-graph-lane-path is-elbow");
+  path.setAttribute(
+    "d",
+    [
+      `M ${fromX} 0`,
+      `V ${topTurnY}`,
+      `Q ${fromX} ${topTurnY + cornerRadius} ${startCornerX} ${topTurnY + cornerRadius}`,
+      `H ${endCornerX}`,
+      `Q ${toX} ${topTurnY + cornerRadius} ${toX} ${bottomTurnY}`,
+      `V ${sourceGraphRowHeight}`,
+    ].join(" "),
+  );
+  path.setAttribute("stroke", sourceGraphLaneColors[colorLane % sourceGraphLaneColors.length]);
+  svg.appendChild(path);
+}
+
+function appendSourceGraphNode(svg: SVGElement, laneIndex: number) {
+  const color = sourceGraphLaneColors[laneIndex % sourceGraphLaneColors.length];
+  const outer = document.createElementNS(sourceGraphSvgNamespace, "circle");
+  outer.setAttribute("class", "source-control-graph-lane-node");
+  outer.setAttribute("cx", String(getSourceGraphLaneX(laneIndex)));
+  outer.setAttribute("cy", String(sourceGraphRowHeight / 2));
+  outer.setAttribute("r", "4");
+  outer.setAttribute("stroke", color);
+  svg.appendChild(outer);
+
+  const core = document.createElementNS(sourceGraphSvgNamespace, "circle");
+  core.setAttribute("class", "source-control-graph-lane-node-core");
+  core.setAttribute("cx", String(getSourceGraphLaneX(laneIndex)));
+  core.setAttribute("cy", String(sourceGraphRowHeight / 2));
+  core.setAttribute("r", "1.6");
+  core.setAttribute("fill", color);
+  svg.appendChild(core);
+}
+
+function renderSourceGraphLanes(root: HTMLElement, symbols: string) {
+  root.replaceChildren();
+  const normalizedChars = normalizeSourceGraphTokens(symbols);
+
+  const svg = document.createElementNS(sourceGraphSvgNamespace, "svg");
+  svg.setAttribute("class", "source-control-graph-svg");
+  svg.setAttribute(
+    "viewBox",
+    `0 0 ${sourceGraphLaneOffset * 2 + sourceGraphLaneStep * (sourceGraphMaxLanes - 1)} ${sourceGraphRowHeight}`,
+  );
+  svg.setAttribute("aria-hidden", "true");
+
+  normalizedChars.forEach((symbol, laneIndex) => {
+    const kind = getSourceGraphLaneKind(symbol);
+
+    if (kind === "node") {
+      appendSourceGraphLine(svg, laneIndex, laneIndex, laneIndex, "is-vertical");
+      appendSourceGraphNode(svg, laneIndex);
+    } else if (kind === "vertical") {
+      appendSourceGraphLine(svg, laneIndex, laneIndex, laneIndex, "is-vertical");
+    } else if (kind === "diagonal-left") {
+      appendSourceGraphElbow(svg, laneIndex, Math.max(0, laneIndex - 1), laneIndex);
+    } else if (kind === "diagonal-right") {
+      const fromLane = laneIndex > 0 ? laneIndex - 1 : laneIndex;
+      appendSourceGraphElbow(svg, fromLane, laneIndex, laneIndex);
+    } else if (kind === "horizontal") {
+      const fromLane = Math.max(0, laneIndex - 1);
+      const toLane = Math.min(sourceGraphMaxLanes - 1, laneIndex + 1);
+      appendSourceGraphLine(svg, fromLane, toLane, laneIndex, "is-horizontal", sourceGraphRowHeight / 2, sourceGraphRowHeight / 2);
+    } else if (kind === "connector") {
+      const fromLane = Math.max(0, laneIndex - 1);
+      const toLane = Math.min(sourceGraphMaxLanes - 1, laneIndex + 1);
+      appendSourceGraphLine(svg, fromLane, toLane, laneIndex, "is-horizontal", sourceGraphRowHeight / 2, sourceGraphRowHeight / 2);
+    }
+  });
+
+  root.appendChild(svg);
+}
+
 function applySourceControlSplitHeight() {
   const view = document.getElementById("source-control-view");
   if (!view) {
@@ -2872,8 +3019,14 @@ function renderSourceControlView() {
 
       const lane = document.createElement("span");
       lane.className = "source-control-graph-lanes";
-      lane.textContent = getSourceGraphSymbols(item);
-      lane.title = getLanguageText("Git graph lane", "Git グラフのレーン");
+      const graphSymbols = getSourceGraphSymbols(item);
+      lane.title = getLanguageText(
+        "Commit graph. Dot = commit, vertical line = lane continues, diagonal line = branch or merge.",
+        "コミットグラフ。点はコミット、縦線はレーン継続、斜線は分岐または合流です。",
+      );
+      lane.setAttribute("aria-label", lane.title);
+      lane.dataset.graphSymbols = graphSymbols;
+      renderSourceGraphLanes(lane, graphSymbols);
 
       const content = document.createElement("span");
       content.className = "source-control-graph-content";

@@ -148,6 +148,8 @@ output/
 coverage/
 .nyc_output/
 testResults.xml
+winsmux-graph-lanes-*.png
+winsmux-source-graph-lanes-*.png
 
 # =========================
 # Misc

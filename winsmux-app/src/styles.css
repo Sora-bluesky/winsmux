@@ -1065,7 +1065,7 @@ textarea {
 .source-control-graph-row {
   position: relative;
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr);
+  grid-template-columns: 52px minmax(0, 1fr);
   align-items: start;
   min-height: 38px;
   border: 0;
@@ -1089,79 +1089,47 @@ textarea {
   border-color: transparent;
 }
 
-.source-control-graph-rail {
-  content: "";
-  position: absolute;
-  left: 11px;
-  top: -10px;
-  bottom: -10px;
-  width: 1px;
-  background: #2d5f9a;
-}
-
-.source-control-graph-node {
-  content: "";
-  position: absolute;
-  left: 6px;
-  top: 10px;
-  width: 10px;
-  height: 10px;
-  border-radius: 999px;
-  border: 2px solid #58a6ff;
-  background: var(--bg-sidebar);
-}
-
-.source-control-graph-row[data-graph-index="1"] .source-control-graph-node {
-  border-color: #d29922;
-}
-
-.source-control-graph-row[data-graph-index="2"] .source-control-graph-node {
-  border-color: #db61a2;
-}
-
-.source-control-graph-row[data-graph-index="3"] .source-control-graph-node {
-  border-color: #56d4a8;
-}
-
-.source-control-graph-row[data-graph-index="4"] .source-control-graph-node {
-  border-color: #a371f7;
-}
-
-.source-control-graph-row[data-graph-index="5"] .source-control-graph-node {
-  border-color: #f0883e;
-}
-
 .source-control-graph-lanes {
   min-width: 0;
-  height: 32px;
+  display: block;
+  height: 34px;
   overflow: hidden;
-  color: #58a6ff;
-  font-family: var(--font-code);
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 16px;
-  white-space: pre;
-  text-align: left;
+  padding-left: 1px;
 }
 
-.source-control-graph-row[data-graph-index="1"] .source-control-graph-lanes {
-  color: #d29922;
+.source-control-graph-svg {
+  display: block;
+  width: 52px;
+  height: 34px;
+  overflow: visible;
 }
 
-.source-control-graph-row[data-graph-index="2"] .source-control-graph-lanes {
-  color: #db61a2;
+.source-control-graph-lane-line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-width: 2;
+  opacity: 0.9;
 }
 
-.source-control-graph-row[data-graph-index="3"] .source-control-graph-lanes {
-  color: #56d4a8;
+.source-control-graph-lane-path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  opacity: 0.9;
 }
 
-.source-control-graph-row[data-graph-index="4"] .source-control-graph-lanes {
-  color: #a371f7;
+.source-control-graph-lane-line.is-horizontal {
+  opacity: 0.82;
 }
 
-.source-control-graph-row[data-graph-index="5"] .source-control-graph-lanes {
-  color: #f0883e;
+.source-control-graph-lane-node {
+  fill: var(--bg-sidebar);
+  stroke-width: 2;
+}
+
+.source-control-graph-lane-node-core {
+  opacity: 0.95;
 }
 
 .source-control-graph-content {
@@ -2445,6 +2413,7 @@ body[data-popout-surface="1"] #editor-surface {
   background: #181818;
   font-size: var(--text-2xs);
   color: #cccccc;
+  pointer-events: none;
 }
 
 .editor-status-item {
