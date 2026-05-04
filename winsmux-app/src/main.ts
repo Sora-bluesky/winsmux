@@ -376,7 +376,7 @@ interface ComposerSlashCommand {
   labelJa: string;
   description: string;
   descriptionJa: string;
-  kind: "mode" | "claude";
+  kind: "mode" | "claude" | "winsmux";
   mode?: ComposerMode;
 }
 
@@ -413,6 +413,8 @@ let detachedSurfacePollTimer: number | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
 let composerSlashOpen = false;
 let composerSlashQuery = "";
+let composerWinsmuxCommandOpen = false;
+let composerWinsmuxCommandQuery = "";
 let selectedComposerSlashIndex = 0;
 let composerHistory: ComposerHistoryEntry[] = [];
 let composerHistoryIndex = -1;
@@ -634,6 +636,89 @@ const officialClaudeSlashCommandEntries: Array<Omit<ComposerSlashCommand, "kind"
   { command: "vim", label: "Vim", labelJa: "Vim", description: "Legacy editor mode command.", descriptionJa: "旧版の編集モードコマンドです。" },
   { command: "voice", label: "Voice", labelJa: "音声入力", description: "Toggle voice dictation.", descriptionJa: "音声入力を切り替えます。" },
   { command: "web-setup", label: "Web setup", labelJa: "Web 設定", description: "Connect GitHub for web sessions.", descriptionJa: "Web セッション用に GitHub を接続します。" },
+];
+
+const winsmuxComposerCommandEntries: ComposerSlashCommand[] = [
+  {
+    command: "winsmux list",
+    label: "List panes",
+    labelJa: "ペイン一覧",
+    description: "Show the current managed panes.",
+    descriptionJa: "現在の管理ペインを一覧表示します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux read worker-1 30",
+    label: "Read worker output",
+    labelJa: "ワーカー出力を読む",
+    description: "Read the latest lines from a worker pane.",
+    descriptionJa: "ワーカーペインの直近行を読みます。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux send worker-2 \"最新の認証変更をレビューしてください。\"",
+    label: "Send a review request",
+    labelJa: "レビュー依頼を送る",
+    description: "Send an instruction to a worker pane.",
+    descriptionJa: "ワーカーペインへ指示を送ります。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux health-check",
+    label: "Check pane health",
+    labelJa: "ペイン状態を確認",
+    description: "Check whether the managed panes are responsive.",
+    descriptionJa: "管理ペインが応答しているか確認します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux compare runs <left_run_id> <right_run_id>",
+    label: "Compare recorded runs",
+    labelJa: "実行結果を比較",
+    description: "Compare two recorded runs before choosing one.",
+    descriptionJa: "採用前に 2 つの実行結果を比較します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux compare preflight <left_ref> <right_ref>",
+    label: "Compare refs before merge",
+    labelJa: "マージ前に比較",
+    description: "Check two refs before merge or review.",
+    descriptionJa: "マージやレビューの前に 2 つの参照を確認します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux compare promote <run_id>",
+    label: "Promote a run",
+    labelJa: "実行結果を次へ使う",
+    description: "Export a successful run as input for a later run.",
+    descriptionJa: "成功した実行結果を次の入力として書き出します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux meta-plan --task \"この変更を計画して\" --json",
+    label: "Draft a meta-plan",
+    labelJa: "メタ計画を作る",
+    description: "Create a read-only planning packet.",
+    descriptionJa: "読み取り専用の計画パケットを作成します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux meta-plan --task \"この変更を計画して\" --roles .winsmux/meta-plan-roles.yaml --review-rounds 2 --json",
+    label: "Draft a reviewed meta-plan",
+    labelJa: "レビュー付きメタ計画",
+    description: "Create a multi-role plan with cross-review rounds.",
+    descriptionJa: "複数ロールと相互レビュー付きの計画を作成します。",
+    kind: "winsmux",
+  },
+  {
+    command: "winsmux skills --json",
+    label: "List winsmux skills",
+    labelJa: "スキル一覧",
+    description: "List available winsmux skill packs as JSON.",
+    descriptionJa: "利用可能な winsmux スキルを JSON で表示します。",
+    kind: "winsmux",
+  },
 ];
 
 const composerSlashCommands: ComposerSlashCommand[] = [
@@ -5096,6 +5181,10 @@ function focusComposer() {
 }
 
 function getFilteredComposerSlashCommands() {
+  if (composerWinsmuxCommandOpen) {
+    const query = composerWinsmuxCommandQuery.toLowerCase();
+    return winsmuxComposerCommandEntries.filter((item) => item.command.toLowerCase().startsWith(query));
+  }
   if (!composerSlashOpen) {
     return [];
   }
@@ -5142,8 +5231,9 @@ function renderComposerSlashCommands() {
 
   const visibleCommands = getVisibleComposerSlashCommands();
   root.innerHTML = "";
-  root.hidden = !composerSlashOpen;
-  if (!composerSlashOpen) {
+  const suggestionOpen = composerSlashOpen || composerWinsmuxCommandOpen;
+  root.hidden = !suggestionOpen || visibleCommands.length === 0;
+  if (!suggestionOpen || visibleCommands.length === 0) {
     return;
   }
 
@@ -5156,9 +5246,9 @@ function renderComposerSlashCommands() {
     const label = themeState.language === "ja" ? item.labelJa : item.label;
     const description = themeState.language === "ja" ? item.descriptionJa : item.description;
     commandLabel.className = "slash-chip-command";
-    commandLabel.textContent = `/${item.command}`;
+    commandLabel.textContent = item.kind === "winsmux" ? item.command : `/${item.command}`;
     descriptionLabel.className = "slash-chip-description";
-    descriptionLabel.textContent = label === `/${item.command}` ? description : label;
+    descriptionLabel.textContent = label === commandLabel.textContent ? description : label;
     button.appendChild(commandLabel);
     button.appendChild(descriptionLabel);
     button.addEventListener("click", () => {
@@ -5170,8 +5260,11 @@ function renderComposerSlashCommands() {
 
 function syncComposerSlashState(value: string) {
   const match = value.match(/^\/([^\s]*)$/);
+  const winsmuxMatch = value.match(/^(winsmux(?:\s.*)?)$/i);
   composerSlashOpen = Boolean(match);
   composerSlashQuery = match ? match[1] : "";
+  composerWinsmuxCommandOpen = !composerSlashOpen && Boolean(winsmuxMatch);
+  composerWinsmuxCommandQuery = winsmuxMatch ? winsmuxMatch[1].replace(/\s+/g, " ").trim() : "";
   const commands = getVisibleComposerSlashCommands();
   selectedComposerSlashIndex = commands.length === 0 ? 0 : Math.min(selectedComposerSlashIndex, commands.length - 1);
   renderComposerSlashCommands();
@@ -5194,6 +5287,8 @@ function applyComposerSlashCommand(command: ComposerSlashCommand) {
   if (command.kind === "mode" && command.mode) {
     setComposerMode(command.mode);
     composerInput.value = composerInput.value.replace(/^\/[^\s]+/, "").replace(/^\s+/, "");
+  } else if (command.kind === "winsmux") {
+    composerInput.value = command.command;
   } else {
     composerInput.value = `/${command.command}${command.command ? " " : ""}`;
   }
@@ -9437,13 +9532,14 @@ window.addEventListener("DOMContentLoaded", async () => {
     composerInput.addEventListener("keydown", (event) => {
       const slashCommands = getVisibleComposerSlashCommands();
       const composerImeBlocking = composerImeActive || event.isComposing;
-      if (event.key === "ArrowUp" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSlashOpen && composerHistory.length > 0 && isComposerSelectionCollapsed(composerInput) && isCaretOnFirstLine(composerInput)) {
+      const composerSuggestionOpen = composerSlashOpen || composerWinsmuxCommandOpen;
+      if (event.key === "ArrowUp" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSuggestionOpen && composerHistory.length > 0 && isComposerSelectionCollapsed(composerInput) && isCaretOnFirstLine(composerInput)) {
         event.preventDefault();
         stepComposerHistory(-1);
         return;
       }
 
-      if (event.key === "ArrowDown" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSlashOpen && composerHistoryIndex !== -1 && isComposerSelectionCollapsed(composerInput) && isCaretOnLastLine(composerInput)) {
+      if (event.key === "ArrowDown" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSuggestionOpen && composerHistoryIndex !== -1 && isComposerSelectionCollapsed(composerInput) && isCaretOnLastLine(composerInput)) {
         event.preventDefault();
         stepComposerHistory(1);
         return;

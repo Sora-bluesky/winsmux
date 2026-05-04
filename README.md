@@ -6,11 +6,25 @@
 
 # winsmux
 
-`winsmux` helps one human operator run and supervise several CLI agents on Windows.
+`winsmux` is a Windows-native control desk, a single human-run cockpit, for people who already use multiple coding CLIs and need to keep the work accountable.
 
-You keep local control. `winsmux` starts the panes, lets you read what each agent is doing, sends instructions to the right pane, compares results, and keeps enough evidence for review.
+Instead of hiding agents behind a black-box orchestrator, `winsmux` opens each worker in a real pane, keeps file changes isolated in git worktrees, lets you send or interrupt instructions, and compares completed runs with evidence such as changed-file overlap, review state, verification state, and checkpoints before you decide what to keep.
+
+Use it when one Claude Code, Codex CLI, or Gemini CLI session is not enough, but you still want one human operator, local credentials, and a review trail.
+
+For example: run the same task through two agents, watch both panes live, stop the one going off track, then compare the recorded evidence before accepting either result.
 
 `winsmux` does not sign in to AI services for you. Each agent CLI keeps using its own official sign-in or API key setup.
+
+## Why It Exists
+
+Most tools solve only one part of this workflow.
+
+- Terminal multiplexers show panes, but they do not know which agent changed which files.
+- IDE chat surfaces are good for one conversation, but they do not give you a control plane for several official CLIs.
+- Agent frameworks can automate agents, but they often move the work into code or cloud services instead of keeping a human operator in the loop.
+
+`winsmux` sits between those categories: it keeps the official CLI agents visible, separates their work into independent working directories, records the evidence, and leaves the final choice with you.
 
 ## What It Does
 
