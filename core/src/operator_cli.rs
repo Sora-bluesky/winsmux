@@ -3150,6 +3150,7 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
                 "role_definition_policy": "read_only_required",
                 "provider_allowlist": ["claude", "codex"],
                 "private_prompt_bodies_in_audit": false,
+                "private_prompt_bodies_in_artifacts": false,
             },
         }),
     )?;
@@ -3157,6 +3158,7 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
     let mut draft_refs = Vec::new();
     let mut role_payloads = Vec::new();
     for role in &roles {
+        let prompt_hash = sha256_hex(role.prompt.as_bytes());
         append_meta_plan_audit_record(
             &options.project_dir,
             &options.session_name,
@@ -3172,12 +3174,13 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
                 "plan_mode": role.plan_mode.clone(),
                 "read_only": role.read_only,
                 "review_rounds": role.review_rounds,
+                "prompt_hash": prompt_hash.clone(),
                 "launch_contract": meta_plan_launch_contract(role),
             }),
         )?;
 
         let draft_path = run_dir.join(format!("{}-draft.md", role.role_id));
-        write_text_file_with_lock(&draft_path, &render_meta_plan_role_draft(&run_id, &options.task, role))?;
+        write_text_file_with_lock(&draft_path, &render_meta_plan_role_draft(&run_id, &task_hash, role, &prompt_hash))?;
         let draft_ref = artifact_reference(&options.project_dir, &draft_path);
         draft_refs.push(draft_ref.clone());
         append_meta_plan_audit_record(
@@ -3204,6 +3207,7 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
             "read_only": role.read_only,
             "review_rounds": role.review_rounds,
             "capabilities": role.capabilities.clone(),
+            "prompt_hash": prompt_hash.clone(),
             "draft_ref": draft_ref.clone(),
             "launch_contract": meta_plan_launch_contract(role),
         }));
@@ -3250,7 +3254,7 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
     let integrated_plan_path = run_dir.join("integrated-plan.md");
     write_text_file_with_lock(
         &integrated_plan_path,
-        &render_meta_plan_integrated_plan(&run_id, &options.task, &roles, &draft_refs, &review_refs),
+        &render_meta_plan_integrated_plan(&run_id, &task_hash, &roles, &draft_refs, &review_refs),
     )?;
     let integrated_plan_ref = artifact_reference(&options.project_dir, &integrated_plan_path);
 
@@ -3443,19 +3447,19 @@ fn meta_plan_launch_contract(role: &MetaPlanRole) -> Value {
     }
 }
 
-fn render_meta_plan_role_draft(run_id: &str, task: &str, role: &MetaPlanRole) -> String {
-    format!("# Meta-Planning Draft: {label}\n\nRun: `{run_id}`\nRole: `{role_id}`\nProvider: `{provider}`\nPlan mode: `{plan_mode}`\nRead-only: `{read_only}`\n\n## Task\n\n{task}\n\n## Responsibility\n\n{prompt}\n\n## Draft Plan\n\n- Confirm facts and constraints for this role.\n- Identify assumptions that must be carried into the integrated plan.\n- Keep all recommendations side-effect-free until operator approval.\n\n## Evidence To Collect\n\n- Existing repository contracts and tests relevant to this role.\n- Gaps, risks, or open questions for the operator to merge.\n", label = &role.label, role_id = &role.role_id, provider = &role.provider, plan_mode = &role.plan_mode, read_only = role.read_only, prompt = &role.prompt)
+fn render_meta_plan_role_draft(run_id: &str, task_hash: &str, role: &MetaPlanRole, prompt_hash: &str) -> String {
+    format!("# Meta-Planning Draft: {label}\n\nRun: `{run_id}`\nRole: `{role_id}`\nProvider: `{provider}`\nPlan mode: `{plan_mode}`\nRead-only: `{read_only}`\nTask hash: `{task_hash}`\nRole prompt hash: `{prompt_hash}`\n\n## Task\n\nThe task body is not stored in this artifact. Use the task hash and audit event references to correlate the operator-owned request.\n\n## Responsibility\n\nThe role prompt body is not stored in this artifact by default. Use the prompt hash and role definition source to correlate the role contract.\n\n## Draft Plan\n\n- Confirm facts and constraints for this role.\n- Identify assumptions that must be carried into the integrated plan.\n- Keep all recommendations side-effect-free until operator approval.\n\n## Evidence To Collect\n\n- Existing repository contracts and tests relevant to this role.\n- Gaps, risks, or open questions for the operator to merge.\n", label = &role.label, role_id = &role.role_id, provider = &role.provider, plan_mode = &role.plan_mode, read_only = role.read_only)
 }
 
 fn render_meta_plan_cross_review(run_id: &str, reviewer: &MetaPlanRole, target: &MetaPlanRole, round: u8) -> String {
     format!("# Cross-Planning Review\n\nRun: `{run_id}`\nReviewer: `{reviewer}`\nTarget: `{target}`\nRound: `{round}`\n\n## Review Checklist\n\n- Check whether the target plan stays read-only.\n- Check whether missing tests or approval gates are visible.\n- Check whether unresolved questions need operator attention.\n\n## Findings\n\nNo blocking finding is recorded in the scaffold. A live worker review can replace this artifact before operator approval.\n", reviewer = &reviewer.role_id, target = &target.role_id)
 }
 
-fn render_meta_plan_integrated_plan(run_id: &str, task: &str, roles: &[MetaPlanRole], draft_refs: &[String], review_refs: &[String]) -> String {
+fn render_meta_plan_integrated_plan(run_id: &str, task_hash: &str, roles: &[MetaPlanRole], draft_refs: &[String], review_refs: &[String]) -> String {
     let role_lines = roles.iter().map(|role| format!("- `{}`: {} via `{}`", role.role_id, role.label, role.provider)).collect::<Vec<_>>().join("\n");
     let draft_lines = draft_refs.iter().map(|reference| format!("- `{reference}`")).collect::<Vec<_>>().join("\n");
     let review_lines = review_refs.iter().map(|reference| format!("- `{reference}`")).collect::<Vec<_>>().join("\n");
-    format!("# Integrated Meta-Plan\n\nRun: `{run_id}`\n\n## Summary\n\n{task}\n\n## Key Changes\n\n- Run a two-role planning pass before execution.\n- Keep worker output as evidence and keep operator approval as the only approval point.\n\n## Interfaces And Data Flow\n\n{role_lines}\n\nDraft artifacts:\n\n{draft_lines}\n\nCross-review artifacts:\n\n{review_lines}\n\n## Safety And Approval Gates\n\n- Workers remain read-only and do not own execution approval.\n- The operator reviews this integrated plan and triggers the single user approval point.\n- JSONL audit events are written before execution.\n\n## Test Plan\n\n- Validate `winsmux meta-plan --json` output.\n- Validate required audit events and artifact references.\n- Validate that generated role contracts remain read-only.\n\n## Open Questions\n\n- Replace scaffold draft artifacts with live worker responses when panes are available.\n")
+    format!("# Integrated Meta-Plan\n\nRun: `{run_id}`\nTask hash: `{task_hash}`\n\n## Summary\n\nThe operator-owned task body is not stored in this scaffold artifact by default. The operator keeps the full request in the interactive approval flow.\n\n## Key Changes\n\n- Run a two-role planning pass before execution.\n- Keep worker output as evidence and keep operator approval as the only approval point.\n\n## Interfaces And Data Flow\n\n{role_lines}\n\nDraft artifacts:\n\n{draft_lines}\n\nCross-review artifacts:\n\n{review_lines}\n\n## Safety And Approval Gates\n\n- Workers remain read-only and do not own execution approval.\n- The operator reviews this integrated plan and triggers the single user approval point.\n- JSONL audit events are written before execution.\n- Private task and role prompt bodies are not retained in generated scaffold artifacts.\n\n## Test Plan\n\n- Validate `winsmux meta-plan --json` output.\n- Validate required audit events and artifact references.\n- Validate that generated role contracts remain read-only.\n- Validate that scaffold artifacts retain hashes instead of private prompt bodies.\n\n## Open Questions\n\n- Replace scaffold draft artifacts with live worker responses when panes are available.\n")
 }
 
 fn meta_plan_audit_log_path(project_dir: &Path, session_name: &str) -> PathBuf {

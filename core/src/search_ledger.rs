@@ -11,6 +11,47 @@ use std::{
 
 const DEFAULT_LIMIT: usize = 20;
 const MAX_LIMIT: usize = 500;
+const SEARCH_LEDGER_DATA_ALLOWLIST: &[&str] = &[
+    "anchor",
+    "artifact_path",
+    "branch",
+    "category",
+    "commit",
+    "duration_ms",
+    "end_line",
+    "event_id",
+    "evidence_id",
+    "evidence_kind",
+    "exit_code",
+    "file",
+    "head_sha",
+    "hypothesis",
+    "issue",
+    "kind",
+    "label",
+    "line",
+    "next_action",
+    "note",
+    "path",
+    "pr",
+    "public_worktree_ref",
+    "reason",
+    "result",
+    "review_status",
+    "run_id",
+    "sha",
+    "source",
+    "source_path",
+    "source_ref",
+    "start_line",
+    "status",
+    "summary",
+    "task_id",
+    "test_plan",
+    "title",
+    "url",
+    "verification_status",
+];
 
 #[derive(Debug)]
 pub struct SearchLedger {
@@ -753,7 +794,7 @@ fn detail_json(event: &EventRecord) -> Value {
         "run_id": event_field_with_data_fallback(&event.run_id, event, "run_id"),
         "task_id": event_field_with_data_fallback(&event.task_id, event, "task_id"),
         "head_sha": event_field_with_data_fallback(&event.head_sha, event, "head_sha"),
-        "data": redact_sensitive_value("", &event.data),
+        "data": project_searchable_data_for_indexing(event),
     })
 }
 
@@ -806,6 +847,50 @@ fn should_index_event(event: &EventRecord) -> bool {
     }
 
     true
+}
+
+fn project_searchable_data_for_indexing(event: &EventRecord) -> Value {
+    let Some(data) = event.data.as_object() else {
+        return Value::Object(Map::new());
+    };
+
+    let mut projected = Map::new();
+    for (key, value) in data {
+        if is_search_ledger_private_data_key(key) || !is_search_ledger_allowlisted_data_key(key) {
+            continue;
+        }
+        projected.insert(key.clone(), redact_sensitive_value(key, value));
+    }
+
+    Value::Object(projected)
+}
+
+fn is_search_ledger_allowlisted_data_key(key: &str) -> bool {
+    let normalized = normalize_search_ledger_data_key(key);
+    SEARCH_LEDGER_DATA_ALLOWLIST
+        .iter()
+        .any(|allowed| normalize_search_ledger_data_key(allowed) == normalized)
+}
+
+fn is_search_ledger_private_data_key(key: &str) -> bool {
+    let normalized = normalize_search_ledger_data_key(key);
+    normalized.contains("prompt")
+        || normalized.contains("transcript")
+        || normalized.contains("conversation")
+        || normalized.contains("message")
+        || normalized.contains("stdout")
+        || normalized.contains("stderr")
+        || normalized.contains("standardoutput")
+        || normalized.contains("standarderror")
+        || normalized.contains("output")
+        || normalized.contains("content")
+}
+
+fn normalize_search_ledger_data_key(key: &str) -> String {
+    key.to_ascii_lowercase()
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .collect()
 }
 
 fn bool_field(data: &Map<String, Value>, key: &str) -> bool {
