@@ -100,6 +100,122 @@ Write-Output ("bridge:" + ($Rest -join "|"))
 }
 
 #[test]
+#[cfg(windows)]
+fn operator_cli_forwards_namespace_flags_to_winsmux_core_script() {
+    let project_dir = make_temp_project_dir("winsmux-core-namespace-bridge");
+    let script_path = project_dir.join("winsmux-core-namespace-bridge.ps1");
+    fs::write(
+        &script_path,
+        r#"
+param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
+Write-Output ("bridge:L=$env:WINSMUX_BRIDGE_NAMESPACE_L;S=$env:WINSMUX_BRIDGE_SOCKET_S;N=$env:WINSMUX_BRIDGE_SESSION_NAMESPACE;args=" + ($Rest -join "|"))
+"#,
+    )
+    .expect("test should write fake winsmux-core script");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["-L", "ops", "-S", "socket-name", "list"])
+        .env("WINSMUX_CORE_SCRIPT", &script_path)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("bridge:L=ops;S=socket-name;N=socket-name;args=list"),
+        "unexpected stdout: {stdout}"
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn operator_cli_resolves_relative_socket_path_before_bridge_delegation() {
+    let project_dir = make_temp_project_dir("winsmux-core-relative-socket-bridge");
+    let script_path = project_dir.join("winsmux-core-relative-socket-bridge.ps1");
+    fs::write(
+        &script_path,
+        r#"
+param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest)
+Write-Output ("bridge:S=$env:WINSMUX_BRIDGE_SOCKET_S;N=$env:WINSMUX_BRIDGE_SESSION_NAMESPACE;args=" + ($Rest -join "|"))
+"#,
+    )
+    .expect("test should write fake winsmux-core script");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["-S", "mux.sock", "list"])
+        .env("WINSMUX_CORE_SCRIPT", &script_path)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected_socket = project_dir
+        .join("mux.sock")
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_lowercase();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(&format!("bridge:S={expected_socket};N=socket-")),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(stdout.contains(";args=list"), "unexpected stdout: {stdout}");
+}
+
+#[test]
+#[cfg(windows)]
+fn operator_cli_uses_socket_path_for_native_target_resolution() {
+    let project_dir = make_temp_project_dir("winsmux-core-socket-target");
+    let home_dir = project_dir.join("home");
+    let psmux_dir = home_dir.join(".psmux");
+    fs::create_dir_all(&psmux_dir).expect("test should create psmux dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "-L",
+            "ops",
+            "-S",
+            "socket-name",
+            "display-message",
+            "-t",
+            "winsmux-orchestra",
+            "-p",
+            "probe",
+        ])
+        .env("USERPROFILE", &home_dir)
+        .env("HOME", &home_dir)
+        .env_remove("PSMUX_TARGET_SESSION")
+        .env_remove("PSMUX_TARGET_FULL")
+        .env_remove("TMUX")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "winsmux command should fail because the test only checks target resolution"
+    );
+    assert!(
+        stderr.contains("socket-name__winsmux-orchestra"),
+        "expected -S to select the socket namespace, got stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("ops__winsmux-orchestra"),
+        "expected -S to take precedence over -L, got stderr={stderr}"
+    );
+}
+
+#[test]
 fn operator_cli_keeps_native_operator_commands_in_rust_binary() {
     let project_dir = make_temp_project_dir("winsmux-core-native");
     write_manifest(&project_dir);

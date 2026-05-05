@@ -5,6 +5,14 @@ param(
     [Parameter(Position=2, ValueFromRemainingArguments=$true)][string[]]$Rest
 )
 
+$script:WinsmuxRawGlobalArgs = @()
+if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_NAMESPACE_L)) {
+    $script:WinsmuxRawGlobalArgs += @('-L', $env:WINSMUX_BRIDGE_NAMESPACE_L)
+}
+if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SOCKET_S)) {
+    $script:WinsmuxRawGlobalArgs += @('-S', $env:WINSMUX_BRIDGE_SOCKET_S)
+}
+
 # --- Config ---
 $VERSION = "0.24.22"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -114,7 +122,12 @@ function Get-SafeLastExitCode {
 function Invoke-WinsmuxRaw {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
 
-    return & winsmux @Arguments
+    $rawArguments = @()
+    if ($script:WinsmuxRawGlobalArgs) {
+        $rawArguments += $script:WinsmuxRawGlobalArgs
+    }
+    $rawArguments += @($Arguments)
+    return & winsmux @rawArguments
 }
 
 function Resolve-TerminalBackend {
@@ -2239,7 +2252,7 @@ function Test-CodexReadyPromptText {
 function Test-CodexReadyPrompt {
     param([string]$PaneId)
 
-    $output = & winsmux capture-pane -t $PaneId -p -J -S -50
+    $output = Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-50')
     return Test-CodexReadyPromptText (($output | Out-String).TrimEnd())
 }
 
@@ -2407,7 +2420,7 @@ function Test-AgentReadyPrompt {
         [string]$Agent = ''
     )
 
-    $output = & winsmux capture-pane -t $PaneId -p -J -S -50
+    $output = Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-50')
     return Test-AgentReadyPromptText -Text (($output | Out-String).TrimEnd()) -Agent $Agent
 }
 
@@ -2490,7 +2503,7 @@ function Wait-PaneShellReady {
 
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        $snapshot = (& winsmux capture-pane -t $PaneId -p -J -S -50 2>$null | Out-String).TrimEnd()
+        $snapshot = (Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', $PaneId, '-p', '-J', '-S', '-50') 2>$null | Out-String).TrimEnd()
         $lastLine = Get-LastNonEmptyLine $snapshot
         if ($lastLine -and $lastLine.Trim() -match '^PS ') {
             return
@@ -2504,7 +2517,7 @@ function Wait-PaneShellReady {
 
 function Get-PaneRuntimeMap {
     $paneMap = @{}
-    $raw = & winsmux list-panes -a -F '#{pane_id} #{pane_pid}'
+    $raw = Invoke-WinsmuxRaw -Arguments @('list-panes', '-a', '-F', '#{pane_id} #{pane_pid}')
     $lines = ($raw | Out-String).Trim() -split "`n"
 
     foreach ($line in $lines) {
@@ -2835,13 +2848,13 @@ function Invoke-Id {
     if ($env:TMUX_PANE) {
         Write-Output $env:TMUX_PANE
     } else {
-        $id = & winsmux display-message -p '#{pane_id}'
+        $id = Invoke-WinsmuxRaw -Arguments @('display-message', '-p', '#{pane_id}')
         Write-Output ($id | Out-String).Trim()
     }
 }
 
 function Invoke-List {
-    $raw = & winsmux list-panes -a -F '#{pane_id} #{pane_pid} #{pane_current_command} #{pane_width}x#{pane_height} #{pane_title}'
+    $raw = Invoke-WinsmuxRaw -Arguments @('list-panes', '-a', '-F', '#{pane_id} #{pane_pid} #{pane_current_command} #{pane_width}x#{pane_height} #{pane_title}')
     $labels = Get-Labels
     # Build reverse lookup: paneId -> label
     $reverseLabels = @{}
@@ -2900,7 +2913,7 @@ function Invoke-Read {
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
 
-    $output = & winsmux capture-pane -t $paneId -p -J -S "-$lines"
+    $output = Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', $paneId, '-p', '-J', '-S', "-$lines")
     $currentText = ($output | Out-String).TrimEnd()
 
     # Watermark-based change detection: if a watermark exists (set by send),
@@ -2930,7 +2943,7 @@ function Invoke-Type {
 
     Assert-ReadMark $paneId
 
-    & winsmux send-keys -t $paneId -l -- "$text"
+    Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', '--', "$text")
 
     Clear-ReadMark $paneId
 }
@@ -2945,7 +2958,7 @@ function Invoke-Keys {
     Assert-ReadMark $paneId
 
     foreach ($key in $Rest) {
-        & winsmux send-keys -t $paneId $key
+        Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, $key)
     }
 
     Clear-ReadMark $paneId
@@ -2961,12 +2974,12 @@ function Invoke-Message {
 
     Assert-ReadMark $paneId
 
-    $myId = (& winsmux display-message -p '#{pane_id}' | Out-String).Trim()
-    $myCoord = (& winsmux display-message -p '#{session_name}:#{window_index}.#{pane_index}' | Out-String).Trim()
+    $myId = (Invoke-WinsmuxRaw -Arguments @('display-message', '-p', '#{pane_id}') | Out-String).Trim()
+    $myCoord = (Invoke-WinsmuxRaw -Arguments @('display-message', '-p', '#{session_name}:#{window_index}.#{pane_index}') | Out-String).Trim()
     $agentName = if ($env:WINSMUX_AGENT_NAME) { $env:WINSMUX_AGENT_NAME } else { "unknown" }
 
     $header = "[winsmux from:$agentName pane:$myId at:$myCoord -- load the winsmux skill to reply]"
-    & winsmux send-keys -t $paneId -l -- "$header $text"
+    Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', '--', "$header $text")
 
     Clear-ReadMark $paneId
 }
@@ -3178,7 +3191,7 @@ function Invoke-Name {
 
     # Also set pane title (best-effort)
     try {
-        & winsmux select-pane -t $paneId -T "$label" 2>$null
+        Invoke-WinsmuxRaw -Arguments @('select-pane', '-t', $paneId, '-T', "$label") 2>$null
     } catch { }
 
     Write-Output "Labeled pane $paneId as '$label'"
@@ -3208,7 +3221,7 @@ function Invoke-AutoRebalance {
     $idleBuilders = @()
     foreach ($label in $builderLabels) {
         $paneId = $labels[$label]
-        $snapshot = (& winsmux capture-pane -t $paneId -p 2>$null | Out-String).TrimEnd()
+        $snapshot = (Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', $paneId, '-p') 2>$null | Out-String).TrimEnd()
         $lastLine = ($snapshot -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)
         $isIdle = $lastLine -and ($lastLine.Trim() -match '\d+% left' -or $lastLine.Trim() -match '^[>›]')
         if ($isIdle) { $idleBuilders += $label }
@@ -3334,7 +3347,7 @@ function Invoke-Role {
     }
 
     # Rename pane first (before respawn)
-    & winsmux select-pane -t $paneId -T $newLabel
+    Invoke-WinsmuxRaw -Arguments @('select-pane', '-t', $paneId, '-T', $newLabel)
 
     # Update labels
     $labels[$newLabel] = $paneId
@@ -3397,7 +3410,7 @@ function Invoke-Role {
         }
         foreach ($name in $transientEnvironmentNames) {
             try {
-                & winsmux set-environment -u -t $sessionName $name
+                Invoke-WinsmuxRaw -Arguments @('set-environment', '-u', '-t', $sessionName, $name)
             } catch {
             }
         }
@@ -3433,7 +3446,7 @@ function Invoke-Role {
             -AssignedBranch $assignedBranch `
             -GitWorktreeDir $environmentGitDir
         foreach ($entry in $paneEnvironment.GetEnumerator()) {
-            & winsmux set-environment -t $sessionName ([string]$entry.Key) ([string]$entry.Value)
+            Invoke-WinsmuxRaw -Arguments @('set-environment', '-t', $sessionName, ([string]$entry.Key), ([string]$entry.Value))
             if ($entry.Key -notin $persistentEnvironmentNames -and $entry.Key -notin $transientEnvironmentNames) {
                 $transientEnvironmentNames += [string]$entry.Key
             }
@@ -3442,24 +3455,24 @@ function Invoke-Role {
 
     try {
         # Respawn pane (kills current process + restarts shell in one step, #174)
-        & winsmux respawn-pane -k -t $paneId -c $launchDir
+        Invoke-WinsmuxRaw -Arguments @('respawn-pane', '-k', '-t', $paneId, '-c', $launchDir)
 
         # Wait for shell ready (poll for PS prompt)
         $deadline = (Get-Date).AddSeconds(15)
         while ((Get-Date) -lt $deadline) {
-            $snapshot = (& winsmux capture-pane -t $paneId -p 2>$null | Out-String).TrimEnd()
+            $snapshot = (Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', $paneId, '-p') 2>$null | Out-String).TrimEnd()
             $lastLine = ($snapshot -split "`n" | Where-Object { $_.Trim() } | Select-Object -Last 1)
             if ($lastLine -and $lastLine.Trim() -match '^PS ') { break }
             Start-Sleep -Milliseconds 500
         }
 
-        & winsmux send-keys -t $paneId -l $launchCmd
-        & winsmux send-keys -t $paneId Enter
+        Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', $launchCmd)
+        Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, 'Enter')
     } finally {
         if (-not [string]::IsNullOrWhiteSpace($sessionName)) {
             foreach ($name in @($transientEnvironmentNames | Select-Object -Unique)) {
                 try {
-                    & winsmux set-environment -u -t $sessionName $name
+                    Invoke-WinsmuxRaw -Arguments @('set-environment', '-u', '-t', $sessionName, $name)
                 } catch {
                 }
             }
@@ -3543,7 +3556,7 @@ function Invoke-Doctor {
 
     # winsmux binary check
     try {
-        $ver = & winsmux -V 2>&1
+        $ver = Invoke-WinsmuxRaw -Arguments @('-V') 2>&1
         Write-Output "winsmux: $($ver | Out-String)".Trim()
     } catch {
         Write-Output "winsmux: NOT FOUND"
@@ -3565,7 +3578,7 @@ function Invoke-Doctor {
 
     # Pane count
     try {
-        $panes = & winsmux list-panes -a -F '#{pane_id}'
+        $panes = Invoke-WinsmuxRaw -Arguments @('list-panes', '-a', '-F', '#{pane_id}')
         $count = (($panes | Out-String).Trim() -split "`n" | Where-Object { $_.Trim() }).Count
         Write-Output "Panes: $count"
     } catch {
@@ -3590,7 +3603,7 @@ function Invoke-Doctor {
 
     # escape-time check
     try {
-        $escTime = (& winsmux show-options -g -v escape-time 2>&1 | Out-String).Trim()
+        $escTime = (Invoke-WinsmuxRaw -Arguments @('show-options', '-g', '-v', 'escape-time') 2>&1 | Out-String).Trim()
         if ($escTime -match '^\d+$' -and [int]$escTime -gt 50) {
             Write-Output "escape-time: $escTime ms [WARNING: >50ms causes IME lag. Set to 0 in .winsmux.conf]"
         } else {
@@ -4444,7 +4457,7 @@ function Invoke-ImeInput {
         return
     }
 
-    & winsmux send-keys -t $paneId -l -- "$text"
+    Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', '--', "$text")
     Clear-ReadMark $paneId
     Write-Output "sent to $paneId"
 }
@@ -4475,7 +4488,7 @@ function Invoke-ImagePaste {
     $img.Dispose()
 
     # Send file path as text to the target pane
-    & winsmux send-keys -t $paneId -l -- "$imgPath"
+    Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', '--', "$imgPath")
     Clear-ReadMark $paneId
     Write-Output "image saved: $imgPath"
     Write-Output "path sent to $paneId"
@@ -4494,7 +4507,7 @@ function Invoke-ClipboardPaste {
         Stop-WithError "clipboard is empty"
     }
 
-    & winsmux send-keys -t $paneId -l -- "$text"
+    Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', '--', "$text")
     Clear-ReadMark $paneId
     Write-Output "sent to $paneId"
 }
@@ -4567,7 +4580,7 @@ function Invoke-Watch {
     if ($Rest -and $Rest.Count -gt 1) { $timeoutSec = [int]$Rest[1] }
 
     # Initial snapshot
-    $output = & winsmux capture-pane -t $paneId -p -J -S -50
+    $output = Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', $paneId, '-p', '-J', '-S', '-50')
     $prevHash = [System.BitConverter]::ToString(
         [System.Security.Cryptography.SHA256]::Create().ComputeHash(
             [System.Text.Encoding]::UTF8.GetBytes(($output | Out-String))
@@ -4581,7 +4594,7 @@ function Invoke-Watch {
         Start-Sleep -Seconds 1
         $elapsed++
 
-        $output = & winsmux capture-pane -t $paneId -p -J -S -50
+        $output = Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', $paneId, '-p', '-J', '-S', '-50')
         $currentHash = [System.BitConverter]::ToString(
             [System.Security.Cryptography.SHA256]::Create().ComputeHash(
                 [System.Text.Encoding]::UTF8.GetBytes(($output | Out-String))
@@ -9817,7 +9830,7 @@ function Invoke-Focus {
     $paneId = Confirm-Target $paneId
     Assert-FocusAllowed -PaneId $paneId -RawTarget $FocusTarget
 
-    & winsmux select-pane -t $paneId
+    Invoke-WinsmuxRaw -Arguments @('select-pane', '-t', $paneId)
     Write-Output "Focused pane $paneId ($FocusTarget)"
 }
 
@@ -10088,8 +10101,8 @@ function Invoke-VaultInject {
             # Escape single quotes in value for safe injection
             $escapedValue = $value -replace "'", "''"
             $setCmd = "`$env:$envName = '$escapedValue'"
-            & winsmux send-keys -t $paneId -l -- "$setCmd"
-            & winsmux send-keys -t $paneId Enter
+            Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, '-l', '--', "$setCmd")
+            Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $paneId, 'Enter')
             Start-Sleep -Milliseconds 100
             $injected++
         }
@@ -11207,7 +11220,7 @@ function Invoke-Kill {
     $paneId = Resolve-Target $Target
     $paneId = Confirm-Target $paneId
 
-    & winsmux respawn-pane -k -t $paneId
+    Invoke-WinsmuxRaw -Arguments @('respawn-pane', '-k', '-t', $paneId)
     $nativeExitCode = Get-SafeLastExitCode
     if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
         Stop-WithError "failed to kill pane process: $paneId"
@@ -11231,7 +11244,7 @@ function Invoke-RestartPane {
 
     $plan = Get-PaneControlRestartPlan -ProjectDir $ProjectDir -PaneId $PaneId -Settings $settings
 
-    & winsmux respawn-pane -k -t $PaneId -c $plan.LaunchDir
+    Invoke-WinsmuxRaw -Arguments @('respawn-pane', '-k', '-t', $PaneId, '-c', $plan.LaunchDir)
     $nativeExitCode = Get-SafeLastExitCode
     if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
         Stop-WithError "failed to restart pane shell: $PaneId"
@@ -11243,12 +11256,12 @@ function Invoke-RestartPane {
     } catch {
     }
 
-    & winsmux send-keys -t $PaneId -l -- "$($plan.LaunchCommand)"
+    Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $PaneId, '-l', '--', "$($plan.LaunchCommand)")
     $nativeExitCode = Get-SafeLastExitCode
     if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
         Stop-WithError "failed to send launch command to $PaneId"
     }
-    & winsmux send-keys -t $PaneId Enter
+    Invoke-WinsmuxRaw -Arguments @('send-keys', '-t', $PaneId, 'Enter')
     $nativeExitCode = Get-SafeLastExitCode
     if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
         Stop-WithError "failed to submit launch command to $PaneId"

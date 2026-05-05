@@ -34,7 +34,7 @@ mod ssh_input;
 mod debug_log;
 mod control;
 use std::io::{self, Write, Read as _, BufRead as _, IsTerminal};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 use std::env;
@@ -51,7 +51,8 @@ use crate::cli::{print_help, print_version, print_commands};
 use crate::session::{cleanup_stale_port_files, read_session_key, send_control,
     send_control_with_response, resolve_last_session_name, resolve_default_session_name,
     kill_remaining_server_processes, request_server_shutdown,
-    cleanup_warm_server_for_socket};
+    cleanup_warm_server_for_socket, resolve_last_session_name_with_prefix,
+    socket_path_session_base, normalize_socket_selector};
 use crate::rendering::apply_cursor_style;
 use crate::client::run_remote;
 use crate::ssh_input::{send_mouse_enable, InputSource};
@@ -157,21 +158,61 @@ fn find_winsmux_core_script() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_file())
 }
 
-fn run_winsmux_core_script(script_path: PathBuf, cmd_args: &[&String]) -> io::Result<()> {
-    let status = Command::new("pwsh")
+fn prepare_winsmux_core_script_command(
+    command: &mut Command,
+    script_path: &Path,
+    cmd_args: &[&String],
+    l_socket_name: Option<&str>,
+    s_socket_path: Option<&str>,
+    session_namespace: Option<&str>,
+) {
+    command
         .arg("-NoProfile")
         .arg("-File")
-        .arg(&script_path)
-        .args(cmd_args.iter().map(|arg| arg.as_str()))
+        .arg(script_path)
+        .args(cmd_args.iter().map(|arg| arg.as_str()));
+
+    if let Some(value) = l_socket_name {
+        command.env("WINSMUX_BRIDGE_NAMESPACE_L", value);
+    }
+    if let Some(value) = s_socket_path {
+        command.env("WINSMUX_BRIDGE_SOCKET_S", value);
+    }
+    if let Some(value) = session_namespace {
+        command.env("WINSMUX_BRIDGE_SESSION_NAMESPACE", value);
+    }
+}
+
+fn run_winsmux_core_script(
+    script_path: PathBuf,
+    cmd_args: &[&String],
+    l_socket_name: Option<&str>,
+    s_socket_path: Option<&str>,
+    session_namespace: Option<&str>,
+) -> io::Result<()> {
+    let mut command = Command::new("pwsh");
+    prepare_winsmux_core_script_command(
+        &mut command,
+        &script_path,
+        cmd_args,
+        l_socket_name,
+        s_socket_path,
+        session_namespace,
+    );
+    let status = command
         .status()
         .or_else(|err| {
             if err.kind() == io::ErrorKind::NotFound {
-                Command::new("powershell")
-                    .arg("-NoProfile")
-                    .arg("-File")
-                    .arg(&script_path)
-                    .args(cmd_args.iter().map(|arg| arg.as_str()))
-                    .status()
+                let mut fallback = Command::new("powershell");
+                prepare_winsmux_core_script_command(
+                    &mut fallback,
+                    &script_path,
+                    cmd_args,
+                    l_socket_name,
+                    s_socket_path,
+                    session_namespace,
+                );
+                fallback.status()
             } else {
                 Err(err)
             }
@@ -181,6 +222,171 @@ fn run_winsmux_core_script(script_path: PathBuf, cmd_args: &[&String]) -> io::Re
         Ok(())
     } else {
         std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
+fn resolve_attach_session_name(
+    args: &[String],
+    namespaced_target_session: Option<String>,
+    has_session_namespace: bool,
+) -> String {
+    resolve_attach_session_name_from_parts(
+        args,
+        namespaced_target_session,
+        has_session_namespace,
+        resolve_default_session_name(),
+        resolve_last_session_name(),
+    )
+}
+
+fn resolve_attach_session_name_from_parts(
+    args: &[String],
+    resolved_target_session: Option<String>,
+    has_session_namespace: bool,
+    default_session: Option<String>,
+    last_session: Option<String>,
+) -> String {
+    let raw_target = args
+        .iter()
+        .position(|a| a == "-t")
+        .and_then(|i| args.get(i + 1))
+        .cloned();
+    let resolved_target = resolved_target_session.filter(|value| !value.trim().is_empty());
+
+    if raw_target.is_some() {
+        return resolved_target
+            .or(raw_target)
+            .or(default_session)
+            .or(last_session)
+            .unwrap_or_else(|| "0".to_string());
+    }
+
+    if has_session_namespace {
+        return resolved_target
+            .or(default_session)
+            .or(last_session)
+            .unwrap_or_else(|| "0".to_string());
+    }
+
+    default_session
+        .or(resolved_target)
+        .or(last_session)
+        .unwrap_or_else(|| "0".to_string())
+}
+
+fn bare_session_headless_server_config(
+    session_name: String,
+    session_namespace: Option<String>,
+) -> terminal_engine::HeadlessServerConfig {
+    terminal_engine::HeadlessServerConfig {
+        session_name,
+        socket_name: session_namespace,
+        ..terminal_engine::HeadlessServerConfig::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bare_session_headless_server_config, resolve_attach_session_name_from_parts};
+
+    #[test]
+    fn resolve_attach_session_name_prefers_namespaced_target() {
+        let args = vec![
+            "winsmux".to_string(),
+            "-S".to_string(),
+            "socket-name".to_string(),
+            "attach-session".to_string(),
+            "-t".to_string(),
+            "winsmux-orchestra".to_string(),
+        ];
+
+        let resolved = resolve_attach_session_name_from_parts(
+            &args,
+            Some("socket-name__winsmux-orchestra".to_string()),
+            true,
+            None,
+            None,
+        );
+
+        assert_eq!(resolved, "socket-name__winsmux-orchestra");
+    }
+
+    #[test]
+    fn resolve_attach_session_name_keeps_raw_target_without_namespace() {
+        let args = vec![
+            "winsmux".to_string(),
+            "attach-session".to_string(),
+            "-t".to_string(),
+            "winsmux-orchestra".to_string(),
+        ];
+
+        let resolved = resolve_attach_session_name_from_parts(&args, None, false, None, None);
+
+        assert_eq!(resolved, "winsmux-orchestra");
+    }
+
+    #[test]
+    fn resolve_attach_session_name_prefers_default_before_ambient_target() {
+        let args = vec!["winsmux".to_string(), "attach-session".to_string()];
+
+        let resolved = resolve_attach_session_name_from_parts(
+            &args,
+            Some("last-session".to_string()),
+            false,
+            Some("default-session".to_string()),
+            None,
+        );
+
+        assert_eq!(resolved, "default-session");
+    }
+
+    #[test]
+    fn resolve_attach_session_name_uses_namespace_target_without_default() {
+        let args = vec![
+            "winsmux".to_string(),
+            "-S".to_string(),
+            "socket-name".to_string(),
+            "attach-session".to_string(),
+        ];
+
+        let resolved = resolve_attach_session_name_from_parts(
+            &args,
+            Some("socket-name__latest".to_string()),
+            true,
+            None,
+            Some("global-latest".to_string()),
+        );
+
+        assert_eq!(resolved, "socket-name__latest");
+    }
+
+    #[test]
+    fn resolve_attach_session_name_keeps_namespace_before_default() {
+        let args = vec![
+            "winsmux".to_string(),
+            "-L".to_string(),
+            "ops".to_string(),
+            "attach-session".to_string(),
+        ];
+
+        let resolved = resolve_attach_session_name_from_parts(
+            &args,
+            Some("ops__latest".to_string()),
+            true,
+            Some("default-session".to_string()),
+            None,
+        );
+
+        assert_eq!(resolved, "ops__latest");
+    }
+
+    #[test]
+    fn bare_session_headless_server_config_preserves_socket_namespace() {
+        let config =
+            bare_session_headless_server_config("0".to_string(), Some("socket-name".to_string()));
+
+        assert_eq!(config.session_name, "0");
+        assert_eq!(config.socket_name.as_deref(), Some("socket-name"));
     }
 }
 
@@ -199,6 +405,7 @@ fn run_main() -> io::Result<()> {
     // This avoids conflict with subcommand flags (e.g. select-pane -L, resize-pane -L).
     let mut l_socket_name: Option<String> = None;
     let mut f_config_file: Option<String> = None;
+    let mut s_socket_path: Option<String> = None;
     let mut control_mode: u8 = 0; // 0=off, 1=-C (echo), 2=-CC (no echo)
     {
         let mut i = 1; // skip binary name
@@ -216,7 +423,10 @@ fn run_main() -> io::Result<()> {
             } else if arg == "-f" && i + 1 < args.len() {
                 f_config_file = Some(args[i + 1].clone());
                 i += 2;
-            } else if (arg == "-S" || arg == "-t") && i + 1 < args.len() {
+            } else if arg == "-S" && i + 1 < args.len() {
+                s_socket_path = Some(args[i + 1].clone());
+                i += 2;
+            } else if arg == "-t" && i + 1 < args.len() {
                 i += 2; // skip other global flag-value pairs
             } else if arg.starts_with('-') {
                 i += 1; // skip single global flags (e.g. -v, -V)
@@ -230,6 +440,9 @@ fn run_main() -> io::Result<()> {
     if let Some(ref cf) = f_config_file {
         env::set_var("PSMUX_CONFIG_FILE", cf);
     }
+    let s_socket_selector = s_socket_path.as_deref().and_then(normalize_socket_selector);
+    let s_socket_base = s_socket_selector.as_deref().and_then(socket_path_session_base);
+    let session_namespace = s_socket_base.clone().or_else(|| l_socket_name.clone());
 
     // Parse -t flag early to set target session for all commands
     // Supports session:window.pane format (e.g., "dev:0.1")
@@ -244,7 +457,7 @@ fn run_main() -> io::Result<()> {
             let has_explicit_session = parsed_target.session.is_some();
             let session = parsed_target.session.unwrap_or_else(|| "default".to_string());
             // Apply -L namespace prefix for port file lookup
-            let port_file_base = if let Some(ref l) = l_socket_name {
+            let port_file_base = if let Some(ref l) = session_namespace {
                 format!("{}__{}", l, session)
             } else {
                 session.clone()
@@ -296,6 +509,19 @@ fn run_main() -> io::Result<()> {
     }
     // Fallback: if no -t flag and session still not resolved (e.g. TMUX pointed
     // to a warm session, or no TMUX at all), pick the most recent real session.
+    if env::var("PSMUX_TARGET_SESSION").is_err() {
+        if let Some(ref namespace) = session_namespace {
+            let prefix = format!("{namespace}__");
+            if let Some(name) = resolve_last_session_name_with_prefix(&prefix) {
+                env::set_var("PSMUX_TARGET_SESSION", &name);
+            }
+        }
+    }
+    if env::var("PSMUX_TARGET_SESSION").is_err() {
+        if let Some(ref socket_base) = s_socket_base {
+            env::set_var("PSMUX_TARGET_SESSION", socket_base);
+        }
+    }
     if env::var("PSMUX_TARGET_SESSION").is_err() {
         if let Some(name) = crate::session::resolve_last_session_name() {
             env::set_var("PSMUX_TARGET_SESSION", &name);
@@ -367,7 +593,13 @@ fn run_main() -> io::Result<()> {
 
     if is_winsmux_core_bridge_command(cmd) {
         if let Some(script_path) = find_winsmux_core_script() {
-            return run_winsmux_core_script(script_path, &cmd_args);
+            return run_winsmux_core_script(
+                script_path,
+                &cmd_args,
+                l_socket_name.as_deref(),
+                s_socket_selector.as_deref(),
+                session_namespace.as_deref(),
+            );
         }
     }
 
@@ -430,7 +662,7 @@ fn run_main() -> io::Result<()> {
             let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
             let psmux_dir = format!("{}\\.psmux", home);
             // Compute namespace prefix for -L filtering (matches list-sessions behavior)
-            let ns_prefix = l_socket_name.as_ref().map(|l| format!("{l}__"));
+            let ns_prefix = session_namespace.as_ref().map(|l| format!("{l}__"));
             let mut targets: Vec<(std::path::PathBuf, u16, String)> = Vec::new();
             let mut stale_ports: Vec<std::path::PathBuf> = Vec::new();
             if let Ok(entries) = std::fs::read_dir(&psmux_dir) {
@@ -474,8 +706,8 @@ fn run_main() -> io::Result<()> {
                 let key_path = path.with_extension("key");
                 let _ = std::fs::remove_file(&key_path);
             }
-            if l_socket_name.is_some() {
-                cleanup_warm_server_for_socket(l_socket_name.as_deref());
+            if session_namespace.is_some() {
+                cleanup_warm_server_for_socket(session_namespace.as_deref());
             }
             // Brief wait then verify no processes remain; if any do, force-kill them.
             // Only do the nuclear fallback when not using -L namespace filtering.
@@ -489,7 +721,7 @@ fn run_main() -> io::Result<()> {
                 let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
                 let dir = format!("{}\\.psmux", home);
                 // Compute namespace prefix for -L filtering
-                let ns_prefix = l_socket_name.as_ref().map(|l| format!("{l}__"));
+                let ns_prefix = session_namespace.as_ref().map(|l| format!("{l}__"));
                 if let Ok(entries) = std::fs::read_dir(&dir) {
                     for e in entries.flatten() {
                         if let Some(name) = e.file_name().to_str() {
@@ -548,14 +780,12 @@ fn run_main() -> io::Result<()> {
                 return Ok(());
             }
             "a" | "at" | "attach" | "attach-session" => {
-                let name = args
-                    .iter()
-                    .position(|a| a == "-t")
-                    .and_then(|i| args.get(i + 1))
-                    .map(|s| s.clone())
-                    .or_else(resolve_default_session_name)
-                    .or_else(resolve_last_session_name)
-                    .unwrap_or_else(|| "0".to_string());
+                let name =
+                    resolve_attach_session_name(
+                        &args,
+                        env::var("PSMUX_TARGET_SESSION").ok(),
+                        session_namespace.is_some(),
+                    );
                 env::set_var("PSMUX_SESSION_NAME", name);
                 env::set_var("PSMUX_REMOTE_ATTACH", "1");
             }
@@ -650,10 +880,10 @@ fn run_main() -> io::Result<()> {
 
                 let name = session_name.unwrap_or_else(|| {
                     // tmux-compatible: auto-generate numeric name (0, 1, 2, ...)
-                    crate::session::next_session_name(l_socket_name.as_deref())
+                    crate::session::next_session_name(session_namespace.as_deref())
                 });
                 // Compute port file base name: with -L namespace prefix if specified
-                let port_file_base = if let Some(ref l) = l_socket_name {
+                let port_file_base = if let Some(ref l) = session_namespace {
                     format!("{}__{}", l, name)
                 } else {
                     name.clone()
@@ -711,7 +941,7 @@ fn run_main() -> io::Result<()> {
                 let warm_disabled = std::env::var("PSMUX_NO_WARM").map(|v| v == "1" || v == "true").unwrap_or(false)
                     || crate::config::is_warm_disabled_by_config();
                 let claimed_warm = if !warm_disabled && initial_cmd.is_none() && raw_cmd_args.is_none() && start_dir.is_none() {
-                    let warm_base = if let Some(ref l) = l_socket_name {
+                    let warm_base = if let Some(ref l) = session_namespace {
                         format!("{}____warm__", l)
                     } else {
                         "__warm__".to_string()
@@ -765,7 +995,7 @@ fn run_main() -> io::Result<()> {
                 // Cold path: spawn a background server from scratch
                 let server_config = terminal_engine::HeadlessServerConfig {
                     session_name: name.clone(),
-                    socket_name: l_socket_name.clone(),
+                    socket_name: session_namespace.clone(),
                     initial_command: initial_cmd.clone(),
                     raw_command: raw_cmd_args.clone(),
                     start_dir: start_dir.clone(),
@@ -1231,7 +1461,7 @@ fn run_main() -> io::Result<()> {
                         "-t" => {
                             if let Some(t) = cmd_args.get(i + 1) {
                                 // Apply -L namespace prefix for port file lookup
-                                let namespaced = if let Some(ref l) = l_socket_name {
+                                let namespaced = if let Some(ref l) = session_namespace {
                                     format!("{}__{}", l, t)
                                 } else {
                                     t.to_string()
@@ -1247,7 +1477,7 @@ fn run_main() -> io::Result<()> {
                 let session_name = target.clone().unwrap_or_else(|| {
                     env::var("PSMUX_TARGET_SESSION").unwrap_or_else(|_| {
                         // Apply -L namespace prefix to default
-                        if let Some(ref l) = l_socket_name {
+                        if let Some(ref l) = session_namespace {
                             format!("{}__{}", l, "default")
                         } else {
                             "default".to_string()
@@ -1284,7 +1514,7 @@ fn run_main() -> io::Result<()> {
                         i += 1;
                     }
                     // Apply -L namespace prefix for port file lookup
-                    if let Some(ref l) = l_socket_name {
+                    if let Some(ref l) = session_namespace {
                         format!("{}__{}", l, t)
                     } else {
                         t
@@ -2445,7 +2675,7 @@ fn run_main() -> io::Result<()> {
                 // instant.  Also triggers Windows Defender's scan cache on the
                 // binary, eliminating the ~200-400ms first-run penalty.
                 let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
-                let warm_base = if let Some(ref l) = l_socket_name {
+                let warm_base = if let Some(ref l) = session_namespace {
                     format!("{}____warm__", l)
                 } else {
                     "__warm__".to_string()
@@ -2470,7 +2700,7 @@ fn run_main() -> io::Result<()> {
                 // Spawn the warm server
                 let mut config = terminal_engine::HeadlessServerConfig {
                     session_name: "__warm__".to_string(),
-                    socket_name: l_socket_name.clone(),
+                    socket_name: session_namespace.clone(),
                     ..terminal_engine::HeadlessServerConfig::default()
                 };
                 // Detect terminal size for the warm server
@@ -2608,9 +2838,9 @@ fn run_main() -> io::Result<()> {
     if env::var("PSMUX_REMOTE_ATTACH").ok().as_deref() != Some("1") {
         let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).unwrap_or_default();
         let session_name = env::var("PSMUX_SESSION_NAME").unwrap_or_else(|_| {
-            crate::session::next_session_name(l_socket_name.as_deref())
+            crate::session::next_session_name(session_namespace.as_deref())
         });
-        let port_file_base = if let Some(ref l) = l_socket_name {
+        let port_file_base = if let Some(ref l) = session_namespace {
             format!("{}__{}", l, session_name)
         } else {
             session_name.clone()
@@ -2621,7 +2851,7 @@ fn run_main() -> io::Result<()> {
         // Skipped when PSMUX_NO_WARM=1 is set or config has 'set -g warm off'.
         let warm_disabled = std::env::var("PSMUX_NO_WARM").map(|v| v == "1" || v == "true").unwrap_or(false)
             || crate::config::is_warm_disabled_by_config();
-        let warm_base = if let Some(ref l) = l_socket_name {
+        let warm_base = if let Some(ref l) = session_namespace {
             format!("{}____warm__", l)
         } else {
             "__warm__".to_string()
@@ -2680,12 +2910,10 @@ fn run_main() -> io::Result<()> {
 
         if !warm_claimed {
             // Cold path: spawn a new background server
-            terminal_engine::spawn_headless_server(
-                &terminal_engine::HeadlessServerConfig {
-                    session_name: session_name.clone(),
-                    ..terminal_engine::HeadlessServerConfig::default()
-                },
-            )?;
+            terminal_engine::spawn_headless_server(&bare_session_headless_server_config(
+                session_name.clone(),
+                session_namespace.clone(),
+            ))?;
 
             // Wait for server to start (fast polling — port file is written early)
             for _ in 0..500 {

@@ -48,7 +48,7 @@ try {
         '-BaselineClientCount', $baselineClientCount
     ) -WindowStyle Hidden | Out-Null
 
-    & $winsmuxPath 'attach-session' '-t' $sessionName
+    Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxPath -Arguments @('attach-session', '-t', $sessionName)
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0) {
         Write-OrchestraAttachState -SessionName $sessionName -Properties @{

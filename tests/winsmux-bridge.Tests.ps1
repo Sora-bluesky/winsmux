@@ -4414,6 +4414,162 @@ Describe 'orchestra-preflight health contract' {
         . (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\orchestra-preflight.ps1')
     }
 
+    It 'uses the plain session registry path when no bridge namespace is selected' {
+        $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+        $previousSocket = $env:WINSMUX_BRIDGE_SOCKET_S
+        $previousSessionNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+        try {
+            Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+            Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+            Remove-Item Env:\WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+
+            Split-Path -Leaf (Get-OrchestraSessionPortFilePath -SessionName 'winsmux-orchestra') |
+                Should -Be 'winsmux-orchestra.port'
+            Split-Path -Leaf (Get-OrchestraSessionKeyFilePath -SessionName 'winsmux-orchestra') |
+                Should -Be 'winsmux-orchestra.key'
+        } finally {
+            if ($null -eq $previousNamespace) {
+                Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespace
+            }
+            if ($null -eq $previousSocket) {
+                Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_SOCKET_S = $previousSocket
+            }
+            if ($null -eq $previousSessionNamespace) {
+                Remove-Item Env:\WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = $previousSessionNamespace
+            }
+        }
+    }
+
+    It 'uses the forwarded bridge namespace for orchestra registry paths' {
+        $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+        $previousSocket = $env:WINSMUX_BRIDGE_SOCKET_S
+        $previousSessionNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+        try {
+            $env:WINSMUX_BRIDGE_NAMESPACE_L = 'ops'
+            Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+            Remove-Item Env:\WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+
+            Split-Path -Leaf (Get-OrchestraSessionPortFilePath -SessionName 'winsmux-orchestra') |
+                Should -Be 'ops__winsmux-orchestra.port'
+            Split-Path -Leaf (Get-OrchestraSessionKeyFilePath -SessionName 'winsmux-orchestra') |
+                Should -Be 'ops__winsmux-orchestra.key'
+        } finally {
+            if ($null -eq $previousNamespace) {
+                Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespace
+            }
+            if ($null -eq $previousSocket) {
+                Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_SOCKET_S = $previousSocket
+            }
+            if ($null -eq $previousSessionNamespace) {
+                Remove-Item Env:\WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = $previousSessionNamespace
+            }
+        }
+    }
+
+    It 'prefers the forwarded socket namespace over the -L namespace for orchestra registry paths' {
+        $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+        $previousSocket = $env:WINSMUX_BRIDGE_SOCKET_S
+        $previousSessionNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+        try {
+            $env:WINSMUX_BRIDGE_NAMESPACE_L = 'ops'
+            $env:WINSMUX_BRIDGE_SOCKET_S = 'socket-name'
+            Remove-Item Env:\WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+
+            Split-Path -Leaf (Get-OrchestraSessionPortFilePath -SessionName 'winsmux-orchestra') |
+                Should -Be 'socket-name__winsmux-orchestra.port'
+            Split-Path -Leaf (Get-OrchestraSessionKeyFilePath -SessionName 'winsmux-orchestra') |
+                Should -Be 'socket-name__winsmux-orchestra.key'
+        } finally {
+            if ($null -eq $previousNamespace) {
+                Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespace
+            }
+            if ($null -eq $previousSocket) {
+                Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_SOCKET_S = $previousSocket
+            }
+            if ($null -eq $previousSessionNamespace) {
+                Remove-Item Env:\WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = $previousSessionNamespace
+            }
+        }
+    }
+
+    It 'uses the resolved bridge session namespace when the socket selector was path-based' {
+        $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+        $previousSocket = $env:WINSMUX_BRIDGE_SOCKET_S
+        $previousSessionNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+        try {
+            $env:WINSMUX_BRIDGE_NAMESPACE_L = 'ops'
+            $env:WINSMUX_BRIDGE_SOCKET_S = 'C:\tmp\mux.sock'
+            $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = 'socket-0123456789abcdef'
+
+            Split-Path -Leaf (Get-OrchestraSessionPortFilePath -SessionName 'winsmux-orchestra') |
+                Should -Be 'socket-0123456789abcdef__winsmux-orchestra.port'
+        } finally {
+            if ($null -eq $previousNamespace) {
+                Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespace
+            }
+            if ($null -eq $previousSocket) {
+                Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_SOCKET_S = $previousSocket
+            }
+            if ($null -eq $previousSessionNamespace) {
+                Remove-Item Env:\WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = $previousSessionNamespace
+            }
+        }
+    }
+
+    It 'hashes a path-based socket selector when no resolved namespace is available' {
+        $previousNamespace = $env:WINSMUX_BRIDGE_NAMESPACE_L
+        $previousSocket = $env:WINSMUX_BRIDGE_SOCKET_S
+        $previousSessionNamespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+        try {
+            $env:WINSMUX_BRIDGE_NAMESPACE_L = 'ops'
+            $env:WINSMUX_BRIDGE_SOCKET_S = 'C:\tmp\mux.sock'
+            Remove-Item Env:\WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+
+            Split-Path -Leaf (Get-OrchestraSessionPortFilePath -SessionName 'winsmux-orchestra') |
+                Should -Match '^socket-[0-9a-f]{16}__winsmux-orchestra\.port$'
+        } finally {
+            if ($null -eq $previousNamespace) {
+                Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_NAMESPACE_L = $previousNamespace
+            }
+            if ($null -eq $previousSocket) {
+                Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_SOCKET_S = $previousSocket
+            }
+            if ($null -eq $previousSessionNamespace) {
+                Remove-Item Env:\WINSMUX_BRIDGE_SESSION_NAMESPACE -ErrorAction SilentlyContinue
+            } else {
+                $env:WINSMUX_BRIDGE_SESSION_NAMESPACE = $previousSessionNamespace
+            }
+        }
+    }
+
     It 'marks health unhealthy when the pane count does not match the expected topology' {
         Mock Get-OrchestraSessionPortFilePath { 'C:\temp\winsmux-orchestra.port' }
         Mock Test-Path { $true } -ParameterFilter { $LiteralPath -eq 'C:\temp\winsmux-orchestra.port' }
@@ -12018,7 +12174,7 @@ Describe 'winsmux role command provider routing' {
         $script:winsmuxRoleRawContent | Should -Match '\$launchDir = \[string\]\$manifestEntry\.LaunchDir'
         $script:winsmuxRoleRawContent | Should -Match '\$gitDir = \[string\]\$manifestEntry\.GitWorktreeDir'
         $script:winsmuxRoleRawContent | Should -Match 'ProjectDir \$launchDir'
-        $script:winsmuxRoleRawContent | Should -Match 'respawn-pane -k -t \$paneId -c \$launchDir'
+        $script:winsmuxRoleRawContent | Should -Match ([regex]::Escape("Invoke-WinsmuxRaw -Arguments @('respawn-pane', '-k', '-t', `$paneId, '-c', `$launchDir)"))
         $script:winsmuxRoleRawContent | Should -Match 'role\s*=\s*\$manifestRole'
         $script:winsmuxRoleRawContent | Should -Match 'launch_dir\s*=\s*\$launchDir'
         $script:winsmuxRoleRawContent | Should -Match 'worktree_git_dir\s*=\s*\$gitDir'
@@ -12031,16 +12187,16 @@ Describe 'winsmux role command provider routing' {
         $script:winsmuxRoleRawContent | Should -Match 'Get-WinsmuxEnvironmentVariableNames'
         $script:winsmuxRoleRawContent | Should -Match 'Get-WinsmuxPaneEnvironment'
         $script:winsmuxRoleRawContent | Should -Match 'WINSMUX_ROLE_MAP'
-        $script:winsmuxRoleRawContent | Should -Match 'set-environment -t \$sessionName'
-        $script:winsmuxRoleRawContent | Should -Match 'set-environment -u -t \$sessionName \$name'
+        $script:winsmuxRoleRawContent | Should -Match ([regex]::Escape("Invoke-WinsmuxRaw -Arguments @('set-environment', '-t', `$sessionName"))
+        $script:winsmuxRoleRawContent | Should -Match ([regex]::Escape("Invoke-WinsmuxRaw -Arguments @('set-environment', '-u', '-t', `$sessionName, `$name)"))
         $script:winsmuxRoleRawContent | Should -Not -Match 'codex --sandbox danger-full-access -C'
         $launchIndex = $script:winsmuxRoleRawContent.IndexOf('$launchCmd = Get-BridgeProviderLaunchCommand')
         $nonWorkerResetIndex = $script:winsmuxRoleRawContent.IndexOf('$manifestRole -notin @(''Builder'', ''Worker'')')
-        $renameIndex = $script:winsmuxRoleRawContent.IndexOf('& winsmux select-pane -t $paneId -T $newLabel')
+        $renameIndex = $script:winsmuxRoleRawContent.IndexOf('Invoke-WinsmuxRaw -Arguments @(''select-pane'', ''-t'', $paneId, ''-T'', $newLabel)')
         $manifestUpdateIndex = $script:winsmuxRoleRawContent.IndexOf('Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath')
         $environmentIndex = $script:winsmuxRoleRawContent.IndexOf('$paneEnvironment = Get-WinsmuxPaneEnvironment')
-        $environmentClearIndex = $script:winsmuxRoleRawContent.IndexOf('& winsmux set-environment -u -t $sessionName $name')
-        $respawnIndex = $script:winsmuxRoleRawContent.IndexOf('& winsmux respawn-pane -k -t $paneId -c $launchDir')
+        $environmentClearIndex = $script:winsmuxRoleRawContent.IndexOf('Invoke-WinsmuxRaw -Arguments @(''set-environment'', ''-u'', ''-t'', $sessionName, $name)')
+        $respawnIndex = $script:winsmuxRoleRawContent.IndexOf('Invoke-WinsmuxRaw -Arguments @(''respawn-pane'', ''-k'', ''-t'', $paneId, ''-c'', $launchDir)')
         $launchIndex | Should -BeGreaterThan -1
         $nonWorkerResetIndex | Should -BeGreaterThan -1
         $renameIndex | Should -BeGreaterThan -1
@@ -14616,6 +14772,134 @@ Describe 'winsmux control-rpc command' {
     It 'rejects JSON-RPC requests without a method' {
         { ConvertTo-ControlRpcPayload -JsonText '{"jsonrpc":"2.0","id":1}' } |
             Should -Throw 'control-rpc payload must include a non-empty method'
+    }
+}
+
+Describe 'winsmux raw namespace forwarding' {
+    BeforeAll {
+        $script:namespaceBridgePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $script:previousBridgeNamespaceL = $env:WINSMUX_BRIDGE_NAMESPACE_L
+        $script:previousBridgeSocketS = $env:WINSMUX_BRIDGE_SOCKET_S
+    }
+
+    AfterAll {
+        if ($null -eq $script:previousBridgeNamespaceL) {
+            Remove-Item Env:\WINSMUX_BRIDGE_NAMESPACE_L -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_BRIDGE_NAMESPACE_L = $script:previousBridgeNamespaceL
+        }
+        if ($null -eq $script:previousBridgeSocketS) {
+            Remove-Item Env:\WINSMUX_BRIDGE_SOCKET_S -ErrorAction SilentlyContinue
+        } else {
+            $env:WINSMUX_BRIDGE_SOCKET_S = $script:previousBridgeSocketS
+        }
+    }
+
+    It 'prepends namespace selectors to nested raw winsmux calls' {
+        $env:WINSMUX_BRIDGE_NAMESPACE_L = 'ops'
+        $env:WINSMUX_BRIDGE_SOCKET_S = 'socket-name'
+        $null = . $script:namespaceBridgePath version
+
+        $script:namespaceRawCalls = [System.Collections.Generic.List[string]]::new()
+        function winsmux {
+            param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+
+            $script:namespaceRawCalls.Add(($Arguments -join '|')) | Out-Null
+            return 'ok'
+        }
+
+        try {
+            Invoke-WinsmuxRaw -Arguments @('list-panes', '-a') | Out-Null
+        } finally {
+            Remove-Item Function:\winsmux -ErrorAction SilentlyContinue
+        }
+
+        $script:namespaceRawCalls.Count | Should -Be 1
+        $script:namespaceRawCalls[0] | Should -Be '-L|ops|-S|socket-name|list-panes|-a'
+    }
+
+    It 'keeps command-scoped socket flags after the delegated command name' {
+        $env:WINSMUX_BRIDGE_NAMESPACE_L = 'ops'
+        $env:WINSMUX_BRIDGE_SOCKET_S = 'socket-name'
+        $null = . $script:namespaceBridgePath version
+
+        $script:namespaceRawCalls = [System.Collections.Generic.List[string]]::new()
+        function winsmux {
+            param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+
+            $script:namespaceRawCalls.Add(($Arguments -join '|')) | Out-Null
+            return 'ok'
+        }
+
+        try {
+            Invoke-WinsmuxRaw -Arguments @('capture-pane', '-t', '%1', '-p', '-J', '-S', '-50') | Out-Null
+        } finally {
+            Remove-Item Function:\winsmux -ErrorAction SilentlyContinue
+        }
+
+        $script:namespaceRawCalls.Count | Should -Be 1
+        $script:namespaceRawCalls[0] | Should -Be '-L|ops|-S|socket-name|capture-pane|-t|%1|-p|-J|-S|-50'
+    }
+
+    It 'prepends namespace selectors through the shared helper command' {
+        $env:WINSMUX_BRIDGE_NAMESPACE_L = 'ops'
+        $env:WINSMUX_BRIDGE_SOCKET_S = 'socket-name'
+        $settingsPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\settings.ps1'
+        . $settingsPath
+
+        $script:namespaceRawCalls = [System.Collections.Generic.List[string]]::new()
+        function winsmux {
+            param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
+
+            $script:namespaceRawCalls.Add(($Arguments -join '|')) | Out-Null
+            return 'ok'
+        }
+
+        try {
+            Invoke-WinsmuxBridgeCommand -WinsmuxBin 'winsmux' -Arguments @('list-panes', '-t', 'winsmux-orchestra') | Out-Null
+        } finally {
+            Remove-Item Function:\winsmux -ErrorAction SilentlyContinue
+        }
+
+        $script:namespaceRawCalls.Count | Should -Be 1
+        $script:namespaceRawCalls[0] | Should -Be '-L|ops|-S|socket-name|list-panes|-t|winsmux-orchestra'
+    }
+
+    It 'keeps nested winsmux calls behind Invoke-WinsmuxRaw' {
+        $bridgeContent = Get-Content -LiteralPath $script:namespaceBridgePath -Raw -Encoding UTF8
+
+        $directCallMatches = [regex]::Matches($bridgeContent, '(?m)^\s*(?!return\s+)&\s+winsmux\b')
+        $directAssignmentMatches = [regex]::Matches($bridgeContent, '(?m)^\s*\$[A-Za-z0-9_]+\s*=\s*&\s+winsmux\b')
+
+        $directCallMatches.Count | Should -Be 0
+        $directAssignmentMatches.Count | Should -Be 0
+    }
+
+    It 'keeps helper-script winsmux probes behind the bridge-aware helper' {
+        $repoRoot = Split-Path -Parent $PSScriptRoot
+        $helperPaths = @(
+            'winsmux-core\scripts\agent-monitor.ps1',
+            'winsmux-core\scripts\orchestra-attach-entry.ps1',
+            'winsmux-core\scripts\orchestra-attach.ps1',
+            'winsmux-core\scripts\orchestra-bootstrap.ps1',
+            'winsmux-core\scripts\orchestra-layout.ps1',
+            'winsmux-core\scripts\orchestra-preflight.ps1',
+            'winsmux-core\scripts\orchestra-smoke.ps1',
+            'winsmux-core\scripts\orchestra-start.ps1',
+            'winsmux-core\scripts\orchestra-ui-attach.ps1',
+            'winsmux-core\scripts\operator-poll.ps1',
+            'winsmux-core\scripts\pane-border.ps1',
+            'winsmux-core\scripts\pane-control.ps1',
+            'winsmux-core\scripts\pane-status.ps1',
+            'winsmux-core\scripts\server-watchdog.ps1',
+            'winsmux-core\scripts\vault.ps1'
+        )
+
+        foreach ($relativePath in $helperPaths) {
+            $content = Get-Content -LiteralPath (Join-Path $repoRoot $relativePath) -Raw -Encoding UTF8
+            $directMatches = [regex]::Matches($content, '(?m)&\s+(winsmux|\$winsmuxBin|\$WinsmuxBin|\$winsmuxPath|\$WinsmuxPath|\$script:winsmuxBin)\b')
+            $directMatches.Count | Should -Be 0 -Because "$relativePath should use Invoke-WinsmuxBridgeCommand"
+        }
     }
 }
 

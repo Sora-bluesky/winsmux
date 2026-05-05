@@ -61,7 +61,7 @@ function Invoke-MonitorWinsmux {
     }
 
     if ($CaptureOutput) {
-        $output = & $winsmuxBin @Arguments 2>&1
+        $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments $Arguments 2>&1
         if ($LASTEXITCODE -ne 0) {
             $message = ($output | Out-String).Trim()
             if ([string]::IsNullOrWhiteSpace($message)) {
@@ -74,7 +74,7 @@ function Invoke-MonitorWinsmux {
         return $output
     }
 
-    & $winsmuxBin @Arguments | Out-Null
+    Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments $Arguments | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "winsmux $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
     }
