@@ -296,7 +296,7 @@ function Invoke-OperatorPollWinsmux {
         throw (Get-WinsmuxOperatorNotFoundMessage)
     }
 
-    $output = & $winsmuxBin @Arguments 2>&1
+    $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments $Arguments 2>&1
     if ($LASTEXITCODE -ne 0) {
         $message = ($output | Out-String).Trim()
         if ([string]::IsNullOrWhiteSpace($message)) {

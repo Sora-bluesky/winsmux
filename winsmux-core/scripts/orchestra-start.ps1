@@ -36,7 +36,7 @@ function Invoke-Winsmux {
     )
 
     if ($CaptureOutput) {
-        $output = & $script:winsmuxBin @Arguments 2>&1
+        $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $script:winsmuxBin -Arguments $Arguments 2>&1
         $exitCode = $LASTEXITCODE
         if ($exitCode -ne 0) {
             $message = ($output | Out-String).Trim()
@@ -50,7 +50,7 @@ function Invoke-Winsmux {
         return $output
     }
 
-    & $script:winsmuxBin @Arguments | Out-Null
+    Invoke-WinsmuxBridgeCommand -WinsmuxBin $script:winsmuxBin -Arguments $Arguments | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "winsmux $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
     }
@@ -62,7 +62,7 @@ function Test-OrchestraServerSession {
         [string]$SessionName
     )
 
-    & $script:winsmuxBin has-session -t $SessionName 1>$null 2>$null
+    Invoke-WinsmuxBridgeCommand -WinsmuxBin $script:winsmuxBin -Arguments @('has-session', '-t', $SessionName) 1>$null 2>$null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -1933,7 +1933,7 @@ if ($MyInvocation.InvocationName -ne '.') {
 
     # Clean up any leftover orchestra panes in default session (#213)
     try {
-        $existingPanes = & $winsmuxBin list-panes -F '#{pane_id} #{pane_title}' 2>$null
+        $existingPanes = Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments @('list-panes', '-F', '#{pane_id} #{pane_title}') 2>$null
         if ($LASTEXITCODE -eq 0 -and $existingPanes) {
                     $orchestraLabels = @('worker-', 'builder-', 'researcher-', 'reviewer-')
             foreach ($line in ($existingPanes -split "`n")) {
@@ -1944,7 +1944,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                     foreach ($label in $orchestraLabels) {
                         if ($title -like "$label*") {
                             Write-WinsmuxLog -Level INFO -Event 'preflight.default_pane.kill' -Message "Removing leftover orchestra pane $paneId ($title) from default session." -Data @{ pane_id = $paneId; title = $title } | Out-Null
-                            & $winsmuxBin kill-pane -t $paneId 2>$null
+                            Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments @('kill-pane', '-t', $paneId) 2>$null
                             break
                         }
                     }

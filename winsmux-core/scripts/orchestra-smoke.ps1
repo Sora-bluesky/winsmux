@@ -100,7 +100,7 @@ function Get-OrchestraAttachedClientSnapshot {
     }
 
     try {
-        $clientLines = & $WinsmuxBin list-clients -t $SessionName 2>&1
+        $clientLines = Invoke-WinsmuxBridgeCommand -WinsmuxBin $WinsmuxBin -Arguments @('list-clients', '-t', $SessionName) 2>&1
         if ($LASTEXITCODE -eq 0) {
             $clients = @(
                 $clientLines |
@@ -218,7 +218,7 @@ function Get-OrchestraSmokeProbeState {
     $paneProbeError = ''
     if (-not [string]::IsNullOrWhiteSpace($WinsmuxBin)) {
         try {
-            $paneLines = & $WinsmuxBin list-panes -t $SessionName 2>&1
+            $paneLines = Invoke-WinsmuxBridgeCommand -WinsmuxBin $WinsmuxBin -Arguments @('list-panes', '-t', $SessionName) 2>&1
             if ($LASTEXITCODE -eq 0) {
                 $paneCount = @($paneLines | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count
                 $paneProbeOk = $true

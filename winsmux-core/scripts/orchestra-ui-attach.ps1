@@ -2,6 +2,12 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot 'clm-safe-io.ps1')
+if (-not (Get-Command Invoke-WinsmuxBridgeCommand -ErrorAction SilentlyContinue)) {
+    $settingsScript = Join-Path $PSScriptRoot 'settings.ps1'
+    if (Test-Path -LiteralPath $settingsScript -PathType Leaf) {
+        . $settingsScript
+    }
+}
 
 $script:OrchestraAttachProfileName = 'winsmux orchestra attach'
 
@@ -329,7 +335,7 @@ function Get-OrchestraAttachedClientSnapshot {
     }
 
     try {
-        $clientLines = & $WinsmuxBin 'list-clients' '-t' $SessionName 2>&1
+        $clientLines = Invoke-WinsmuxBridgeCommand -WinsmuxBin $WinsmuxBin -Arguments @('list-clients', '-t', $SessionName) 2>&1
         if ($LASTEXITCODE -eq 0) {
             $clients = @(
                 $clientLines |

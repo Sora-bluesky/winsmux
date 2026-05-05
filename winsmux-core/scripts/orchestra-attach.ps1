@@ -61,7 +61,7 @@ $result = $null
 if ([string]::IsNullOrWhiteSpace($winsmuxPath)) {
     $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $false -RequiresStartup $true -Attempted $false -Launched $false -Attached $false -Status 'winsmux_unresolved' -Reason 'winsmux executable could not be resolved.'
 } else {
-    & $winsmuxPath 'has-session' '-t' $SessionName 1>$null 2>$null
+    Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxPath -Arguments @('has-session', '-t', $SessionName) 1>$null 2>$null
     $sessionExists = ($LASTEXITCODE -eq 0)
     if (-not $sessionExists) {
         $result = New-OrchestraAttachResult -SessionName $SessionName -SessionExists $false -RequiresStartup $true -Attempted $false -Launched $false -Attached $false -Status 'session_missing' -Reason "winsmux session '$SessionName' was not found. Run orchestra-start.ps1 first."

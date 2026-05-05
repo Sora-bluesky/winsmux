@@ -1,5 +1,11 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if (-not (Get-Command Invoke-WinsmuxBridgeCommand -ErrorAction SilentlyContinue)) {
+    $settingsScript = Join-Path $PSScriptRoot 'settings.ps1'
+    if (Test-Path -LiteralPath $settingsScript -PathType Leaf) {
+        . $settingsScript
+    }
+}
 
 function Set-WinsmuxWindowOption {
     param(
@@ -16,7 +22,7 @@ function Set-WinsmuxWindowOption {
     )
 
     foreach ($attempt in $attempts) {
-        & $WinsmuxBin @attempt 1>$null 2>$null
+        Invoke-WinsmuxBridgeCommand -WinsmuxBin $WinsmuxBin -Arguments $attempt 1>$null 2>$null
         if ($LASTEXITCODE -eq 0) {
             return $true
         }

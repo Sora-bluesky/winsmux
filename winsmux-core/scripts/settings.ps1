@@ -104,6 +104,34 @@ if (-not (Get-Command Get-WinsmuxOperatorNotFoundMessage -ErrorAction SilentlyCo
     }
 }
 
+if (-not (Get-Command Get-WinsmuxBridgeGlobalArguments -ErrorAction SilentlyContinue)) {
+    function Get-WinsmuxBridgeGlobalArguments {
+        $forwardedArguments = @()
+        if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_NAMESPACE_L)) {
+            $forwardedArguments += @('-L', $env:WINSMUX_BRIDGE_NAMESPACE_L)
+        }
+        if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SOCKET_S)) {
+            $forwardedArguments += @('-S', $env:WINSMUX_BRIDGE_SOCKET_S)
+        }
+
+        return @($forwardedArguments)
+    }
+}
+
+if (-not (Get-Command Invoke-WinsmuxBridgeCommand -ErrorAction SilentlyContinue)) {
+    function Invoke-WinsmuxBridgeCommand {
+        param(
+            [Parameter(Mandatory = $true)][string]$WinsmuxBin,
+            [Parameter(Mandatory = $true)][string[]]$Arguments
+        )
+
+        $forwardedArguments = @()
+        $forwardedArguments += @(Get-WinsmuxBridgeGlobalArguments)
+        $forwardedArguments += @($Arguments)
+        return & $WinsmuxBin @forwardedArguments
+    }
+}
+
 if (-not (Get-Command Get-WinsmuxOption -ErrorAction SilentlyContinue)) {
     function Test-WinsmuxOptionFailureText {
         param([string]$Value)
@@ -127,7 +155,7 @@ if (-not (Get-Command Get-WinsmuxOption -ErrorAction SilentlyContinue)) {
         }
 
         try {
-            $value = (& $winsmuxBin show-options -g -v $Name 2>&1 | Out-String).Trim()
+            $value = (Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments @('show-options', '-g', '-v', $Name) 2>&1 | Out-String).Trim()
             if (-not (Test-WinsmuxOptionFailureText -Value $value)) {
                 return $value
             }
@@ -146,7 +174,7 @@ if (-not (Get-Command Set-WinsmuxOption -ErrorAction SilentlyContinue)) {
             [Parameter(Mandatory = $true)][string]$OptionValue
         )
 
-        & $WinsmuxBin set-option -g $OptionName $OptionValue | Out-Null
+        Invoke-WinsmuxBridgeCommand -WinsmuxBin $WinsmuxBin -Arguments @('set-option', '-g', $OptionName, $OptionValue) | Out-Null
     }
 }
 

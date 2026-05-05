@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::time::Duration;
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Returns true if this port-file base name belongs to a warm (standby) server.
 /// Warm sessions should be hidden from user-facing lists and never auto-attached.
@@ -21,6 +21,111 @@ pub fn warm_session_base(socket_name: Option<&str>) -> String {
 fn psmux_dir() -> Option<std::path::PathBuf> {
     let home = env::var("USERPROFILE").or_else(|_| env::var("HOME")).ok()?;
     Some(Path::new(&home).join(".psmux"))
+}
+
+pub fn socket_path_session_base(socket_path: &str) -> Option<String> {
+    let selector = normalize_socket_selector(socket_path)?;
+    let path = Path::new(&selector);
+    let looks_like_path =
+        selector.contains('\\') || selector.contains('/') || path.extension().is_some();
+    if looks_like_path {
+        let hash = stable_socket_namespace_hash(&selector);
+        return Some(format!("socket-{hash:016x}"));
+    }
+
+    let candidate = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&selector)
+        .trim()
+        .to_string();
+
+    if candidate.is_empty() || is_warm_session(&candidate) {
+        return None;
+    }
+
+    Some(candidate)
+}
+
+pub fn normalize_socket_selector(socket_path: &str) -> Option<String> {
+    let trimmed = socket_path.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let path = Path::new(trimmed);
+    let looks_like_path =
+        trimmed.contains('\\') || trimmed.contains('/') || path.extension().is_some();
+    if looks_like_path {
+        return Some(normalize_socket_selector_path(path));
+    }
+
+    Some(trimmed.to_string())
+}
+
+fn normalize_socket_selector_path(path: &Path) -> String {
+    let full_path: PathBuf = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .map(|current_dir| current_dir.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let normalized = full_path.to_string_lossy().replace('\\', "/");
+    if cfg!(windows) {
+        normalized.to_lowercase()
+    } else {
+        normalized
+    }
+}
+
+fn stable_socket_namespace_hash(value: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+pub fn resolve_last_session_name_with_prefix(prefix: &str) -> Option<String> {
+    let dir = psmux_dir()?;
+
+    let last_session = std::fs::read_to_string(dir.join("last_session")).ok();
+    let last_session = last_session.as_deref().map(str::trim).unwrap_or("");
+    if !last_session.is_empty()
+        && !is_warm_session(last_session)
+        && last_session.starts_with(prefix)
+        && dir.join(format!("{last_session}.port")).is_file()
+    {
+        return Some(last_session.to_string());
+    }
+
+    let mut picks: Vec<(String, std::time::SystemTime)> = Vec::new();
+
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if let Some(fname) = e.file_name().to_str() {
+                if let Some((base, ext)) = fname.rsplit_once('.') {
+                    if ext != "port" || is_warm_session(base) || !base.starts_with(prefix) {
+                        continue;
+                    }
+
+                    if let Ok(md) = e.metadata() {
+                        picks.push((
+                            base.to_string(),
+                            md.modified()
+                                .unwrap_or(std::time::SystemTime::UNIX_EPOCH),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    picks.sort_by_key(|(_, t)| *t);
+    picks.last().map(|(n, _)| n.clone())
 }
 
 fn port_is_open(port: u16, timeout: Duration) -> bool {
@@ -574,12 +679,83 @@ pub fn kill_remaining_server_processes() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn warm_session_base_matches_namespace_encoding() {
         assert_eq!(warm_session_base(None), "__warm__");
         assert_eq!(warm_session_base(Some("preview")), "preview____warm__");
+    }
+
+    #[test]
+    fn socket_path_session_base_preserves_simple_socket_names() {
+        assert_eq!(
+            socket_path_session_base("socket-name").as_deref(),
+            Some("socket-name")
+        );
+    }
+
+    #[test]
+    fn socket_path_session_base_hashes_real_paths() {
+        let first = socket_path_session_base(r"C:\a\mux.sock").expect("first path should resolve");
+        let second = socket_path_session_base(r"C:\b\mux.sock").expect("second path should resolve");
+        let relative = socket_path_session_base("mux.sock").expect("relative path should resolve");
+
+        assert!(first.starts_with("socket-"));
+        assert!(second.starts_with("socket-"));
+        assert!(relative.starts_with("socket-"));
+        assert_ne!(first, second);
+        assert_ne!(first, relative);
+        assert_ne!(second, relative);
+    }
+
+    #[test]
+    fn normalize_socket_selector_resolves_relative_paths() {
+        let expected = env::current_dir()
+            .expect("test should read current dir")
+            .join("mux.sock")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let expected = if cfg!(windows) {
+            expected.to_lowercase()
+        } else {
+            expected
+        };
+
+        assert_eq!(
+            normalize_socket_selector("mux.sock").as_deref(),
+            Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn resolve_last_session_name_with_prefix_prefers_matching_last_session() {
+        let _guard = ENV_LOCK.lock().expect("env lock should not be poisoned");
+        let old_userprofile = env::var_os("USERPROFILE");
+        let old_home = env::var_os("HOME");
+        let temp_home = make_temp_psmux_home("session-prefix");
+        let psmux_dir = temp_home.join(".psmux");
+
+        std::fs::write(psmux_dir.join("ops__older.port"), "1")
+            .expect("test should write older port file");
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(psmux_dir.join("ops__newer.port"), "2")
+            .expect("test should write newer port file");
+        std::fs::write(psmux_dir.join("last_session"), "ops__older\n")
+            .expect("test should write last_session");
+
+        env::set_var("USERPROFILE", &temp_home);
+        env::set_var("HOME", &temp_home);
+        let resolved = resolve_last_session_name_with_prefix("ops__");
+
+        restore_env("USERPROFILE", old_userprofile);
+        restore_env("HOME", old_home);
+        let _ = std::fs::remove_dir_all(&temp_home);
+
+        assert_eq!(resolved.as_deref(), Some("ops__older"));
     }
 
     #[test]
@@ -603,6 +779,10 @@ mod tests {
     }
 
     fn make_temp_psmux_dir(name: &str) -> std::path::PathBuf {
+        make_temp_psmux_home(name).join(".psmux")
+    }
+
+    fn make_temp_psmux_home(name: &str) -> std::path::PathBuf {
         let suffix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock should be after unix epoch")
@@ -611,7 +791,15 @@ mod tests {
             "winsmux-{name}-{}-{suffix}",
             std::process::id()
         ));
-        std::fs::create_dir_all(&path).expect("test should create temp dir");
+        std::fs::create_dir_all(path.join(".psmux")).expect("test should create temp dir");
         path
+    }
+
+    fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
+        if let Some(value) = value {
+            env::set_var(name, value);
+        } else {
+            env::remove_var(name);
+        }
     }
 }

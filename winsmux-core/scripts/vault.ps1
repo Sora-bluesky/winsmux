@@ -13,6 +13,13 @@ The commands expect the caller to provide the surrounding bridge context, includ
 `Assert-ReadMark`, and `Clear-ReadMark`.
 #>
 
+if (-not (Get-Command Invoke-WinsmuxBridgeCommand -ErrorAction SilentlyContinue)) {
+    $settingsScript = Join-Path $PSScriptRoot 'settings.ps1'
+    if (Test-Path -LiteralPath $settingsScript -PathType Leaf) {
+        . $settingsScript
+    }
+}
+
 if (-not ('WinCred' -as [type])) {
     # --- Windows Credential Manager P/Invoke ---
     Add-Type -TypeDefinition @'
@@ -154,7 +161,7 @@ function Invoke-WinsmuxCommand {
 
     $global:LASTEXITCODE = 0
     try {
-        $output = & winsmux @Arguments 2>&1
+        $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin 'winsmux' -Arguments $Arguments 2>&1
     } catch {
         return [PSCustomObject]@{
             Success  = $false

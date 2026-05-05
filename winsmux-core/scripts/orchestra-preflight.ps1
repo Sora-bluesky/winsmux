@@ -1,6 +1,13 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+if (-not (Get-Command Invoke-WinsmuxBridgeCommand -ErrorAction SilentlyContinue)) {
+    $settingsScript = Join-Path $PSScriptRoot 'settings.ps1'
+    if (Test-Path -LiteralPath $settingsScript -PathType Leaf) {
+        . $settingsScript
+    }
+}
+
 function Get-ProcessSnapshot {
     try {
         $processes = @(Get-CimInstance Win32_Process -OperationTimeoutSec 10)
@@ -245,9 +252,9 @@ function Remove-OrchestraZombieProcesses {
     $protectedIds = Get-AncestorProcessIds -Snapshot $snapshot -ProcessId $PID
     $paneRootIds = @()
 
-    & $WinsmuxBin has-session -t $SessionName 1>$null 2>$null
+    Invoke-WinsmuxBridgeCommand -WinsmuxBin $WinsmuxBin -Arguments @('has-session', '-t', $SessionName) 1>$null 2>$null
     if ($LASTEXITCODE -eq 0) {
-        $panePidOutput = & $WinsmuxBin list-panes -t $SessionName -F '#{pane_pid}' 2>$null
+        $panePidOutput = Invoke-WinsmuxBridgeCommand -WinsmuxBin $WinsmuxBin -Arguments @('list-panes', '-t', $SessionName, '-F', '#{pane_pid}') 2>$null
         $paneRootIds = @(
             $panePidOutput |
                 ForEach-Object { $_.Trim() } |
@@ -296,6 +303,68 @@ function Get-OrchestraSessionRegistryDir {
     return (Join-Path $homeDir '.psmux')
 }
 
+function Get-StableSocketNamespaceHash {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    $hash = [System.Numerics.BigInteger]::Parse('14695981039346656037')
+    $prime = [System.Numerics.BigInteger]::Parse('1099511628211')
+    $modulus = [System.Numerics.BigInteger]::Pow([System.Numerics.BigInteger]2, 64)
+    foreach ($byte in [System.Text.Encoding]::UTF8.GetBytes($Value)) {
+        $hash = [System.Numerics.BigInteger]::Remainder(($hash -bxor [System.Numerics.BigInteger]$byte) * $prime, $modulus)
+    }
+
+    return ('{0:x16}' -f [uint64]$hash)
+}
+
+function Get-WinsmuxSocketNamespaceBase {
+    param([Parameter(Mandatory = $true)][string]$SocketSelector)
+
+    $selector = $SocketSelector.Trim()
+    if ([string]::IsNullOrWhiteSpace($selector)) {
+        return $null
+    }
+
+    $looksLikePath = $selector.Contains('\') -or $selector.Contains('/') -or [System.IO.Path]::HasExtension($selector)
+    if (-not $looksLikePath) {
+        return $selector
+    }
+
+    try {
+        $path = $selector
+        if (-not [System.IO.Path]::IsPathRooted($path)) {
+            $path = Join-Path (Get-Location) $path
+        }
+
+        $normalized = [System.IO.Path]::GetFullPath($path).Replace('\', '/')
+        if ([System.IO.Path]::DirectorySeparatorChar -eq '\') {
+            $normalized = $normalized.ToLowerInvariant()
+        }
+
+        return ('socket-{0}' -f (Get-StableSocketNamespaceHash -Value $normalized))
+    } catch {
+        return ('socket-{0}' -f (Get-StableSocketNamespaceHash -Value $selector.Replace('\', '/').ToLowerInvariant()))
+    }
+}
+
+function Get-OrchestraSessionRegistryBaseName {
+    param([Parameter(Mandatory = $true)][string]$SessionName)
+
+    $namespace = $env:WINSMUX_BRIDGE_SESSION_NAMESPACE
+    if ([string]::IsNullOrWhiteSpace($namespace)) {
+        if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SOCKET_S)) {
+            $namespace = Get-WinsmuxSocketNamespaceBase -SocketSelector $env:WINSMUX_BRIDGE_SOCKET_S
+        } elseif (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_NAMESPACE_L)) {
+            $namespace = $env:WINSMUX_BRIDGE_NAMESPACE_L.Trim()
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($namespace)) {
+        return $SessionName
+    }
+
+    return ("{0}__{1}" -f $namespace.Trim(), $SessionName)
+}
+
 function Get-OrchestraSessionPortFilePath {
     param([Parameter(Mandatory = $true)][string]$SessionName)
 
@@ -304,7 +373,8 @@ function Get-OrchestraSessionPortFilePath {
         return $null
     }
 
-    return (Join-Path $registryDir "$SessionName.port")
+    $registryBaseName = Get-OrchestraSessionRegistryBaseName -SessionName $SessionName
+    return (Join-Path $registryDir "$registryBaseName.port")
 }
 
 function Get-OrchestraSessionKeyFilePath {
@@ -315,7 +385,8 @@ function Get-OrchestraSessionKeyFilePath {
         return $null
     }
 
-    return (Join-Path $registryDir "$SessionName.key")
+    $registryBaseName = Get-OrchestraSessionRegistryBaseName -SessionName $SessionName
+    return (Join-Path $registryDir "$registryBaseName.key")
 }
 
 function Get-OrchestraSessionPort {
@@ -421,7 +492,7 @@ function Invoke-OrchestraHasSessionProbe {
         [Parameter(Mandatory = $true)][string]$WinsmuxBin
     )
 
-    & $WinsmuxBin has-session -t $SessionName 1>$null 2>$null
+    Invoke-WinsmuxBridgeCommand -WinsmuxBin $WinsmuxBin -Arguments @('has-session', '-t', $SessionName) 1>$null 2>$null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -431,7 +502,7 @@ function Get-OrchestraSessionPaneCount {
         [Parameter(Mandatory = $true)][string]$WinsmuxBin
     )
 
-    $paneOutput = & $WinsmuxBin list-panes -t $SessionName -F '#{pane_id}' 2>$null
+    $paneOutput = Invoke-WinsmuxBridgeCommand -WinsmuxBin $WinsmuxBin -Arguments @('list-panes', '-t', $SessionName, '-F', '#{pane_id}') 2>$null
     if ($LASTEXITCODE -ne 0) {
         return $null
     }

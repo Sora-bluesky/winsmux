@@ -124,7 +124,7 @@ function Invoke-ServerWatchdogWinsmux {
         throw (Get-WinsmuxOperatorNotFoundMessage)
     }
 
-    $output = & $winsmuxBin @Arguments 2>&1
+    $output = Invoke-WinsmuxBridgeCommand -WinsmuxBin $winsmuxBin -Arguments $Arguments 2>&1
     $exitCode = $LASTEXITCODE
 
     if ($exitCode -ne 0 -and -not $AllowFailure) {
