@@ -111,6 +111,17 @@ function boxesOverlap(a, b) {
   );
 }
 
+async function runStep(name, action) {
+  try {
+    await action();
+  } catch (error) {
+    if (error instanceof Error) {
+      error.message = `${name}: ${error.message}`;
+    }
+    throw error;
+  }
+}
+
 async function assertFullyVisible(page, selector) {
   await page.locator(selector).scrollIntoViewIfNeeded().catch(() => {});
   const box = await getBox(page, selector);
@@ -387,7 +398,7 @@ async function assertNarrowSettingsRoundtrip(page, returnSelector) {
 async function assertTerminalDrawerWithSourceContext(page, returnSelector, extraSelector) {
   await ensureWorkbenchOpen(page);
   await page.locator("#terminal-drawer").waitFor({ state: "visible" });
-  await assertButtonVisible(page, "#add-pane-btn");
+  await assertFullyVisible(page, "#add-pane-btn");
   await assertHorizontallyVisible(page, "#terminal-drawer");
   await page.locator("#panes-container .pane").first().waitFor({ state: "visible" });
   await page.locator(returnSelector).waitFor({ state: "visible" });
@@ -423,10 +434,166 @@ async function assertWorkbenchPaneGrid(page, expectedMin = 4) {
   await ensureWorkbenchOpen(page);
   await assertHorizontallyVisible(page, "#terminal-drawer");
   await assertButtonVisible(page, "#workbench-layout-btn");
-  await assertButtonVisible(page, "#add-pane-btn");
+  await assertFullyVisible(page, "#add-pane-btn");
   await page.waitForFunction((minCount) => {
     return document.querySelectorAll("#panes-container .pane").length >= minCount;
   }, expectedMin);
+}
+
+async function getVisibleWorkbenchPaneLabels(page) {
+  return page.evaluate(() => {
+    return Array.from(document.querySelectorAll("#panes-container .pane"))
+      .filter((pane) => pane instanceof HTMLElement && !pane.hidden && getComputedStyle(pane).display !== "none")
+      .map((pane) => pane.querySelector(".pane-label")?.textContent?.trim() ?? "");
+  });
+}
+
+async function getWorkbenchPaneLabels(page) {
+  return page.evaluate(() => {
+    return Array.from(document.querySelectorAll("#panes-container .pane"))
+      .map((pane) => pane.querySelector(".pane-label")?.textContent?.trim() ?? "");
+  });
+}
+
+async function assertVisibleWorkbenchPaneCount(page, expectedCount, label) {
+  try {
+    await page.waitForFunction((count) => {
+      return Array.from(document.querySelectorAll("#panes-container .pane"))
+        .filter((pane) => pane instanceof HTMLElement && !pane.hidden && getComputedStyle(pane).display !== "none")
+        .length === count;
+    }, expectedCount);
+  } catch (error) {
+    const visibleLabels = await getVisibleWorkbenchPaneLabels(page).catch(() => []);
+    const paneLabels = await getWorkbenchPaneLabels(page).catch(() => []);
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `${label} expected ${expectedCount} visible panes, visible: ${visibleLabels.join(", ") || "(none)"}, all: ${paneLabels.join(", ") || "(none)"}. ${reason}`,
+    );
+  }
+  const labels = await getVisibleWorkbenchPaneLabels(page);
+  if (labels.length !== expectedCount) {
+    throw new Error(`${label} expected ${expectedCount} visible panes, got ${labels.length}`);
+  }
+  return labels;
+}
+
+async function setWorkbenchLayout(page, layout) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const current = (await page.locator("#workbench-layout-btn").textContent())?.trim();
+    if (current === layout) {
+      return;
+    }
+    await page.click("#workbench-layout-btn");
+  }
+  throw new Error(`Unable to switch workbench layout to ${layout}`);
+}
+
+async function assertWorkbenchLayoutCycle(page) {
+  let visibleLabels;
+
+  await runStep("workbench focus cycle 2x2 initial", async () => {
+    await ensureWorkbenchOpen(page);
+    await setWorkbenchLayout(page, "2x2");
+    await assertVisibleWorkbenchPaneCount(page, 4, "2x2 initial");
+    await page.locator("#menu-layout-status", { hasText: "2x2 · 4 panes" }).waitFor();
+  });
+
+  await runStep("workbench focus cycle 3x2", async () => {
+    await setWorkbenchLayout(page, "3x2");
+    await assertVisibleWorkbenchPaneCount(page, 6, "3x2");
+    await page.locator("#menu-layout-status", { hasText: "3x2 · 6 panes" }).waitFor();
+  });
+
+  await runStep("workbench focus cycle select worker-6", async () => {
+    await setWorkbenchLayout(page, "focus");
+    visibleLabels = await assertVisibleWorkbenchPaneCount(page, 1, "focus");
+    await page.locator("#focused-pane-select").waitFor({ state: "visible" });
+    await page.locator("#menu-layout-status", { hasText: "focus · 1 pane" }).waitFor();
+
+    await page.selectOption("#focused-pane-select", "worker-6");
+    visibleLabels = await assertVisibleWorkbenchPaneCount(page, 1, "focus worker-6");
+    if (visibleLabels[0] !== "worker-6") {
+      throw new Error(`focus layout selected ${visibleLabels[0]} instead of worker-6`);
+    }
+  });
+
+  await runStep("workbench focus cycle reload worker-6", async () => {
+    await page.reload({ waitUntil: "networkidle" });
+    visibleLabels = await assertVisibleWorkbenchPaneCount(page, 1, "focus worker-6 after reload");
+    if (visibleLabels[0] !== "worker-6") {
+      throw new Error(`focus layout restored ${visibleLabels[0]} instead of worker-6`);
+    }
+    await page.locator("#focused-pane-select").waitFor({ state: "visible" });
+    const restoredFocusedPane = await page.locator("#focused-pane-select").inputValue();
+    if (restoredFocusedPane !== "worker-6") {
+      throw new Error(`focus selector restored ${restoredFocusedPane} instead of worker-6`);
+    }
+  });
+
+  await runStep("workbench focus cycle close worker-6", async () => {
+    await page.locator("#panes-container .pane[data-focused-pane] .pane-close").click();
+    await page.waitForFunction(() => {
+      const labels = Array.from(document.querySelectorAll("#panes-container .pane"))
+        .filter((pane) => pane instanceof HTMLElement && !pane.hidden && getComputedStyle(pane).display !== "none")
+        .map((pane) => pane.querySelector(".pane-label")?.textContent?.trim() ?? "");
+      return labels.length === 1 && labels[0] === "worker-1";
+    });
+    const persistedFocusAfterClose = await page.evaluate(() => {
+      const rawValue = window.localStorage.getItem("winsmux.shell.preferences.v1");
+      return rawValue ? JSON.parse(rawValue).focusedWorkbenchPaneId : null;
+    });
+    if (persistedFocusAfterClose === "worker-6") {
+      throw new Error("focus layout kept closed worker-6 in persisted preferences");
+    }
+
+    await page.reload({ waitUntil: "networkidle" });
+    visibleLabels = await assertVisibleWorkbenchPaneCount(page, 1, "focus after closing worker-6 and reloading");
+    if (visibleLabels[0] !== "worker-1") {
+      throw new Error(`focus layout restored ${visibleLabels[0]} after worker-6 was closed`);
+    }
+    const labelsAfterCloseReload = await getWorkbenchPaneLabels(page);
+    if (labelsAfterCloseReload.includes("worker-6")) {
+      throw new Error("focus layout recreated closed worker-6 after reload");
+    }
+  });
+
+  await runStep("workbench focus cycle 2x2 restored", async () => {
+    await setWorkbenchLayout(page, "2x2");
+    visibleLabels = await assertVisibleWorkbenchPaneCount(page, 4, "2x2 restored");
+    if (visibleLabels.includes("worker-5") || visibleLabels.includes("worker-6")) {
+      throw new Error(`2x2 restored with extra panes visible: ${visibleLabels.join(", ")}`);
+    }
+    await page.locator("#focused-pane-select").waitFor({ state: "hidden" });
+    await page.locator("#menu-layout-status", { hasText: "2x2 · 4 panes" }).waitFor();
+  });
+
+  await runStep("workbench focus cycle stale focus fallback", async () => {
+    await page.evaluate(() => {
+      const key = "winsmux.shell.preferences.v1";
+      const current = JSON.parse(window.localStorage.getItem(key) ?? "{}");
+      window.localStorage.setItem(
+        key,
+        JSON.stringify({
+          ...current,
+          workbenchOpen: true,
+          workbenchLayout: "focus",
+          focusedWorkbenchPaneId: "pane-5",
+        }),
+      );
+    });
+    await page.reload({ waitUntil: "networkidle" });
+    visibleLabels = await assertVisibleWorkbenchPaneCount(page, 1, "focus stale pane id after reload");
+    if (visibleLabels[0] !== "worker-1") {
+      throw new Error(`focus layout restored stale pane id as ${visibleLabels[0]} instead of worker-1`);
+    }
+    const fallbackFocusedPane = await page.locator("#focused-pane-select").inputValue();
+    if (fallbackFocusedPane !== "worker-1") {
+      throw new Error(`focus selector fallback restored ${fallbackFocusedPane} instead of worker-1`);
+    }
+
+    await setWorkbenchLayout(page, "2x2");
+    await assertVisibleWorkbenchPaneCount(page, 4, "2x2 after stale focus fallback");
+  });
 }
 
 async function assertSourceControlChrome(page) {
@@ -496,55 +663,74 @@ async function verifyDesktopViewport(page, previewUrl) {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
 
-  await assertHorizontallyVisible(page, "#left-rail");
-  await assertFullyVisible(page, "#conversation-panel");
-  await assertWorkbenchPaneGrid(page);
-  await assertButtonVisible(page, "#send-btn");
-  await assertFullyVisible(page, "#workspace-footer");
-  await assertNoOverlap(page, "#workspace-body", "#workspace-footer");
+  await runStep("desktop initial chrome", async () => {
+    await assertHorizontallyVisible(page, "#left-rail");
+    await assertFullyVisible(page, "#conversation-panel");
+    await assertWorkbenchPaneGrid(page);
+    await assertButtonVisible(page, "#send-btn");
+    await assertFullyVisible(page, "#workspace-footer");
+    await assertNoOverlap(page, "#workspace-body", "#workspace-footer");
+  });
 
-  await page.click("#activity-search-btn");
-  await page.locator("#command-bar-shell").waitFor({ state: "visible" });
-  await assertFullyVisible(page, "#command-bar");
-  await assertButtonVisible(page, "#command-bar-input");
-  await page.keyboard.press("Escape");
-  await page.locator("#command-bar-shell").waitFor({ state: "hidden" });
+  await runStep("desktop command bar", async () => {
+    await page.click("#activity-search-btn");
+    await page.locator("#command-bar-shell").waitFor({ state: "visible" });
+    await assertFullyVisible(page, "#command-bar");
+    await assertButtonVisible(page, "#command-bar-input");
+    await page.keyboard.press("Escape");
+    await page.locator("#command-bar-shell").waitFor({ state: "hidden" });
+  });
 
-  await page.click("#activity-settings-btn");
-  await page.locator("#settings-sheet").waitFor({ state: "visible" });
-  await assertFullyVisible(page, "#settings-sheet");
-  await assertButtonVisible(page, "#close-settings-btn");
-  await page.click("#close-settings-btn");
-  await page.locator("#settings-sheet").waitFor({ state: "hidden" });
+  await runStep("desktop settings sheet", async () => {
+    await page.click("#activity-settings-btn");
+    await page.locator("#settings-sheet").waitFor({ state: "visible" });
+    await assertFullyVisible(page, "#settings-sheet");
+    await assertButtonVisible(page, "#close-settings-btn");
+    await page.click("#close-settings-btn");
+    await page.locator("#settings-sheet").waitFor({ state: "hidden" });
+  });
 
-  await assertSourceControlChrome(page);
-  await assertExplorerFolderExpandsInline(page);
-  await assertExplorerFileOpensMainEditor(page);
-  await ensureContextPanelOpen(page);
-  await openFirstSourceContextEntry(page);
-  await assertEditorPopout(page);
-  await assertCommandBarRoundtrip(page, "#editor-surface");
-  await assertSettingsRoundtrip(page, "#editor-surface");
-  await assertTerminalDrawerWithSourceContext(page, "#editor-surface", "#context-panel");
+  await runStep("desktop editor surface", async () => {
+    await assertSourceControlChrome(page);
+    await assertExplorerFolderExpandsInline(page);
+    await assertExplorerFileOpensMainEditor(page);
+    await ensureContextPanelOpen(page);
+    await openFirstSourceContextEntry(page);
+    await assertEditorPopout(page);
+    await assertCommandBarRoundtrip(page, "#editor-surface");
+    await assertSettingsRoundtrip(page, "#editor-surface");
+    await assertTerminalDrawerWithSourceContext(page, "#editor-surface", "#context-panel");
+  });
 
-  await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
-  await openHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
-  await page.locator("#browser-reload-btn").waitFor({ state: "visible" });
-  await assertButtonVisible(page, "#browser-back-btn");
-  await assertButtonVisible(page, "#browser-reload-btn");
-  await assertButtonVisible(page, "#browser-open-btn");
-  await assertHorizontallyVisible(page, "#browser-toolbar");
-  await assertFullyVisible(page, "#browser-frame");
-  await assertToolbarActionStates(page);
-  await assertPreviewPopout(page);
-  await assertCommandBarRoundtrip(page, "#browser-toolbar");
-  await assertSettingsRoundtrip(page, "#browser-toolbar");
+  await runStep("desktop browser surface", async () => {
+    await registerHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
+    await openHarnessPreviewTarget(page, `${previewUrl}${HARNESS_QUERY}`);
+    await page.locator("#browser-reload-btn").waitFor({ state: "visible" });
+    await assertButtonVisible(page, "#browser-back-btn");
+    await assertButtonVisible(page, "#browser-reload-btn");
+    await assertButtonVisible(page, "#browser-open-btn");
+    await assertHorizontallyVisible(page, "#browser-toolbar");
+    await assertFullyVisible(page, "#browser-frame");
+    await assertToolbarActionStates(page);
+    await assertPreviewPopout(page);
+    await assertCommandBarRoundtrip(page, "#browser-toolbar");
+    await assertSettingsRoundtrip(page, "#browser-toolbar");
+  });
 
-  await assertWorkbenchPaneGrid(page);
-  await assertFullyVisible(page, "#terminal-drawer");
-  await assertHorizontallyVisible(page, "#browser-toolbar");
-  await assertBackToCode(page);
-  await assertHorizontallyVisible(page, "#editor-code");
+  await runStep("desktop workbench layout", async () => {
+    await runStep("desktop workbench grid after browser preview", async () => {
+      await assertWorkbenchPaneGrid(page);
+      await assertFullyVisible(page, "#terminal-drawer");
+      await assertHorizontallyVisible(page, "#browser-toolbar");
+    });
+    await runStep("desktop browser back to code", async () => {
+      await assertBackToCode(page);
+      await assertHorizontallyVisible(page, "#editor-code");
+    });
+    await runStep("desktop workbench focus cycle", async () => {
+      await assertWorkbenchLayoutCycle(page);
+    });
+  });
 }
 
 async function verifyNarrowViewport(page, previewUrl) {
@@ -725,6 +911,10 @@ async function run() {
             "desktop-settings-with-preview",
             "desktop-preview-back-to-code",
             "desktop-terminal-drawer",
+            "desktop-workbench-layout-cycle",
+            "desktop-workbench-focus-persistence",
+            "desktop-workbench-focus-close-persistence",
+            "desktop-workbench-focus-fallback",
             "developer-1366x768",
             "developer-1280x720",
             "tauri-default-800x600",
