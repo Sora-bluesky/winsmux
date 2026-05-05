@@ -641,7 +641,8 @@ function ConvertTo-BridgeProviderCapabilityEntry {
         'supports_file_edit',
         'supports_subagents',
         'supports_verification',
-        'supports_consultation'
+        'supports_consultation',
+        'supports_context_reset'
     )
     $allowedFields = @($stringFields + $transportFields + $stringArrayFields + $boolFields)
 
@@ -1866,6 +1867,8 @@ function Get-SlotAgentConfig {
         SupportsSubagents        = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_subagents'
         SupportsVerification     = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_verification'
         SupportsConsultation     = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_consultation'
+        SupportsContextReset     = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_context_reset'
+        SupportsContextResetDeclared = Test-BridgeProviderCapabilityField -Capability $providerCapability -Name 'supports_context_reset'
     }
 }
 

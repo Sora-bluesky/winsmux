@@ -1495,7 +1495,7 @@ fn operator_cli_provider_capabilities_json_reads_single_provider_case_insensitiv
     fs::create_dir_all(&winsmux_dir).expect("test should create .winsmux directory");
     fs::write(
         winsmux_dir.join("provider-capabilities.json"),
-        r#"{"version":1,"providers":{"Codex":{"adapter":" codex ","command":" codex ","prompt_transports":["ARGV"],"auth_modes":["LOCAL_INTERACTIVE"],"supports_file_edit":true}}}"#,
+        r#"{"version":1,"providers":{"Codex":{"adapter":" codex ","command":" codex ","prompt_transports":["ARGV"],"auth_modes":["LOCAL_INTERACTIVE"],"supports_file_edit":true,"supports_context_reset":true}}}"#,
     )
     .expect("test should write provider registry");
 
@@ -1510,6 +1510,7 @@ fn operator_cli_provider_capabilities_json_reads_single_provider_case_insensitiv
         "local_interactive"
     );
     assert_eq!(provider["capabilities"]["supports_file_edit"], true);
+    assert_eq!(provider["capabilities"]["supports_context_reset"], true);
 }
 
 #[test]

@@ -3358,6 +3358,7 @@ function Invoke-Role {
             supports_subagents         = [bool]$roleAgentConfig.SupportsSubagents
             supports_verification      = [bool]$roleAgentConfig.SupportsVerification
             supports_consultation      = [bool]$roleAgentConfig.SupportsConsultation
+            supports_context_reset     = [bool]$roleAgentConfig.SupportsContextReset
         }
         if ($manifestRole -notin @('Builder', 'Worker')) {
             $manifestProperties['builder_worktree_path'] = ''
@@ -3914,6 +3915,7 @@ function New-LauncherSlotSummary {
         supports_subagents         = [bool]$effective.SupportsSubagents
         supports_verification      = [bool]$effective.SupportsVerification
         supports_consultation      = [bool]$effective.SupportsConsultation
+        supports_context_reset     = [bool]$effective.SupportsContextReset
     }
 }
 
@@ -10831,6 +10833,7 @@ function Invoke-ProviderSwitch {
         supports_subagents         = [bool]$effective.SupportsSubagents
         supports_verification      = [bool]$effective.SupportsVerification
         supports_consultation      = [bool]$effective.SupportsConsultation
+        supports_context_reset     = [bool]$effective.SupportsContextReset
         registry_path              = Get-BridgeProviderRegistryPath -RootPath $projectDir
         updated_at_utc             = if ($clearRequested) { [string]$clearResult.UpdatedAtUtc } else { [string]$entry.updated_at_utc }
         reason                     = if ((-not $clearRequested) -and $entry.Contains('reason')) { [string]$entry.reason } else { '' }
