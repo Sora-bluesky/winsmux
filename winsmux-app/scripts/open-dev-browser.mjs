@@ -21,6 +21,24 @@ function hasFlag(name) {
   return process.argv.slice(2).includes(`--${name}`);
 }
 
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getProtocolDefaultPort(protocol) {
+  if (protocol === "http:") {
+    return "80";
+  }
+  if (protocol === "https:") {
+    return "443";
+  }
+  return "";
+}
+
+function getRequestedPort(targetUrl) {
+  return targetUrl.port || getProtocolDefaultPort(targetUrl.protocol);
+}
+
 const url = readOption("url") || process.env.WINSMUX_DEV_BROWSER_URL || DEFAULT_URL;
 const width = parsePositiveInteger(
   readOption("width") || process.env.WINSMUX_DEV_BROWSER_WIDTH,
@@ -43,13 +61,30 @@ async function canReachDevServer(targetUrl) {
   }
 }
 
-async function waitForDevServer(targetUrl) {
+function waitForChildExit(child) {
+  if (!child) {
+    return new Promise(() => {});
+  }
+  if (child.exitCode !== null) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => child.once("exit", resolve));
+}
+
+async function waitForDevServer(targetUrl, child = null) {
   const startedAt = Date.now();
+  const childExit = waitForChildExit(child);
   while (Date.now() - startedAt < SERVER_READY_TIMEOUT_MS) {
     if (await canReachDevServer(targetUrl)) {
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (child?.exitCode !== null) {
+      throw new Error(`Dev server exited before it became reachable at ${targetUrl}`);
+    }
+    const result = await Promise.race([delay(250).then(() => "retry"), childExit.then(() => "exit")]);
+    if (result === "exit") {
+      throw new Error(`Dev server exited before it became reachable at ${targetUrl}`);
+    }
   }
   throw new Error(`Timed out waiting for dev server at ${targetUrl}`);
 }
@@ -62,9 +97,13 @@ function startDevServerIfNeeded(targetUrl) {
   if (target.hostname !== "127.0.0.1" && target.hostname !== "localhost") {
     return null;
   }
+  const port = getRequestedPort(target);
+  if (!port) {
+    return null;
+  }
   return spawn(
     process.execPath,
-    ["node_modules/vite/bin/vite.js", "--host", target.hostname, "--port", target.port || "5173", "--strictPort"],
+    ["node_modules/vite/bin/vite.js", "--host", target.hostname, "--port", port, "--strictPort"],
     {
       cwd: process.cwd(),
       env: process.env,
@@ -74,7 +113,7 @@ function startDevServerIfNeeded(targetUrl) {
 }
 
 async function stopDevServer(child) {
-  if (!child || child.killed) {
+  if (!child || child.killed || child.exitCode !== null) {
     return;
   }
   if (process.platform === "win32" && child.pid) {
@@ -98,7 +137,7 @@ if (!(await canReachDevServer(url))) {
     throw new Error(`Dev server is not reachable at ${url}`);
   }
   try {
-    await waitForDevServer(url);
+    await waitForDevServer(url, devServer);
   } catch (err) {
     await stopDevServer(devServer);
     throw err;
