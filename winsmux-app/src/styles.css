@@ -1722,6 +1722,99 @@ body[data-popout-surface="1"] #editor-surface {
   gap: 6px;
 }
 
+#composer-session-row {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.composer-session-control {
+  position: relative;
+  min-width: 0;
+}
+
+.composer-session-trigger {
+  min-height: 34px;
+  min-width: 148px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--bg-surface-raised);
+  color: var(--text-primary);
+  padding: 5px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: var(--text-xs);
+  line-height: 1.2;
+}
+
+.composer-session-trigger:hover,
+.composer-session-trigger[aria-expanded="true"] {
+  border-color: var(--status-focus-border);
+  background: var(--bg-panel);
+}
+
+.composer-session-kicker {
+  color: var(--status-info);
+  font-size: var(--text-2xs);
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.composer-session-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-session-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  z-index: 40;
+  width: min(360px, calc(100vw - 48px));
+  padding: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: #1e1e1e;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.36);
+  display: grid;
+  gap: 4px;
+}
+
+.composer-session-option {
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 8px 10px;
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.composer-session-option:hover,
+.composer-session-option.is-active {
+  background: var(--bg-surface-raised);
+  color: var(--text-primary);
+}
+
+.composer-session-option-label {
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+}
+
+.composer-session-option-description {
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+  line-height: var(--leading-normal);
+}
+
 #composer-slash-row {
   margin-top: 8px;
   display: flex;
@@ -3514,6 +3607,11 @@ body.is-resizing-workbench {
   #terminal-drawer[data-layout="3x2"] #panes-container {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .composer-session-control,
+  .composer-session-trigger {
+    width: 100%;
+  }
 }
 
 @media (max-height: 760px) {
@@ -3552,6 +3650,7 @@ body.is-resizing-workbench {
   }
 
   #composer-mode-row,
+  #composer-session-row,
   #composer-slash-row,
   #composer-remote-row,
   #composer-footer {
