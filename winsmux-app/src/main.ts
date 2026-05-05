@@ -288,6 +288,8 @@ type RuntimeRoleId = "operator" | "worker" | "reviewer";
 type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini";
 type RuntimeModelSource = "provider-default" | "cli-discovery" | "official-doc" | "operator-override";
 type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "xhigh" | "max";
+type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
+type ComposerEffortLevel = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
 
 interface ThemeState {
   theme: ThemeMode;
@@ -341,6 +343,11 @@ interface ComposerHistoryEntry {
   value: string;
   remoteReferenceIds: string[];
   attachments: ComposerAttachmentSnapshot[];
+}
+
+interface ComposerSessionControlState {
+  permissionMode: ComposerPermissionMode;
+  effort: ComposerEffortLevel;
 }
 
 interface SpeechRecognitionAlternativeLike {
@@ -426,6 +433,9 @@ let detachedSurfaceRunLabel = "";
 let detachedSurfaceSession: DetachedSurfaceSessionState | null = null;
 let detachedSurfacePollTimer: number | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
+let activeComposerPermissionMode: ComposerPermissionMode = "auto";
+let activeComposerEffort: ComposerEffortLevel = "auto";
+let openComposerSessionMenu: "permission" | "effort" | null = null;
 let composerSlashOpen = false;
 let composerSlashQuery = "";
 let composerWinsmuxCommandOpen = false;
@@ -520,6 +530,7 @@ let preferredWideSidebarOpen = true;
 let preferredWideContextOpen = false;
 const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
 const RUNTIME_ROLE_PREFERENCES_STORAGE_KEY = "winsmux.runtime-role.preferences.v1";
+const COMPOSER_SESSION_STORAGE_KEY = "winsmux.composer-session.v1";
 const POPOUT_SURFACE_STORAGE_KEY_PREFIX = "winsmux.popout-surface.";
 const PROJECT_SESSIONS_STORAGE_KEY = "winsmux.project-sessions.v1";
 const ACTIVE_PROJECT_STORAGE_KEY = "winsmux.active-project.v1";
@@ -531,6 +542,94 @@ const composerModes: Array<{ mode: ComposerMode; label: string; placeholder: str
   { mode: "ask", label: "Ask", placeholder: "Ask a question or request guidance" },
   { mode: "dispatch", label: "Dispatch", placeholder: "Describe a task or ask a question" },
   { mode: "review", label: "Review", placeholder: "Describe what needs review or approval" },
+];
+
+const composerPermissionModeOptions: Array<{
+  value: ComposerPermissionMode;
+  label: string;
+  labelJa: string;
+  description: string;
+  descriptionJa: string;
+}> = [
+  {
+    value: "auto",
+    label: "Auto mode",
+    labelJa: "自動モード",
+    description: "Let Claude choose the permission mode for each task.",
+    descriptionJa: "タスクごとに権限モードを自動で選びます。",
+  },
+  {
+    value: "default",
+    label: "Ask before edits",
+    labelJa: "編集前に確認",
+    description: "Ask before making file edits.",
+    descriptionJa: "ファイルを編集する前に確認します。",
+  },
+  {
+    value: "acceptEdits",
+    label: "Edit automatically",
+    labelJa: "自動編集",
+    description: "Allow edits without an extra edit confirmation.",
+    descriptionJa: "追加の編集確認なしで変更します。",
+  },
+  {
+    value: "plan",
+    label: "Plan mode",
+    labelJa: "計画モード",
+    description: "Explore and prepare a plan before editing.",
+    descriptionJa: "編集前に調査し、計画を作ります。",
+  },
+];
+
+const composerEffortOptions: Array<{
+  value: ComposerEffortLevel;
+  label: string;
+  labelJa: string;
+  description: string;
+  descriptionJa: string;
+}> = [
+  {
+    value: "auto",
+    label: "Auto",
+    labelJa: "自動",
+    description: "Use the provider default effort for this session.",
+    descriptionJa: "このセッションでは既定の思考量を使います。",
+  },
+  {
+    value: "low",
+    label: "Low",
+    labelJa: "低",
+    description: "Prefer faster responses with lighter reasoning.",
+    descriptionJa: "軽めの推論で応答を速くします。",
+  },
+  {
+    value: "medium",
+    label: "Medium",
+    labelJa: "中",
+    description: "Balance speed and reasoning depth.",
+    descriptionJa: "速度と思考の深さを両立します。",
+  },
+  {
+    value: "high",
+    label: "High",
+    labelJa: "高",
+    description: "Use deeper reasoning for complex work.",
+    descriptionJa: "複雑な作業に向けて深く考えます。",
+  },
+  {
+    value: "xhigh",
+    label: "XHigh",
+    labelJa: "特高",
+    description: "Use extra reasoning depth for difficult work.",
+    descriptionJa: "難しい作業に向けてさらに深く考えます。",
+  },
+  {
+    value: "max",
+    label: "Max",
+    labelJa: "最大",
+    description: "Use the maximum available effort.",
+    descriptionJa: "利用可能な最大の思考量を使います。",
+  },
 ];
 
 const localComposerSlashCommands: ComposerSlashCommand[] = [
@@ -834,6 +933,11 @@ const runtimeModelSuggestions = [
 ];
 
 runtimeRolePreferences = readStoredRuntimeRolePreferences();
+{
+  const storedComposerControls = readStoredComposerSessionControls();
+  activeComposerPermissionMode = storedComposerControls.permissionMode;
+  activeComposerEffort = storedComposerControls.effort;
+}
 
 const fallbackExplorerPaths = [
   ".agents/README.md",
@@ -991,6 +1095,14 @@ function getPaneStartupInput(_paneId: string) {
   return undefined;
 }
 
+function getOperatorStartupInput() {
+  const args = ["claude", "--permission-mode", activeComposerPermissionMode];
+  if (activeComposerEffort !== "auto") {
+    args.push("--effort", activeComposerEffort);
+  }
+  return `${args.join(" ")}\r`;
+}
+
 function ensureOperatorPtyStarted() {
   if (operatorPtyStarted) {
     return Promise.resolve();
@@ -999,7 +1111,7 @@ function ensureOperatorPtyStarted() {
     return operatorPtyStarting;
   }
 
-  operatorPtyStarting = spawnPtyPane(OPERATOR_PTY_ID, OPERATOR_PTY_COLS, OPERATOR_PTY_ROWS, "claude\r")
+  operatorPtyStarting = spawnPtyPane(OPERATOR_PTY_ID, OPERATOR_PTY_COLS, OPERATOR_PTY_ROWS, getOperatorStartupInput())
     .then(() => {
       operatorPtyStarted = true;
     })
@@ -4954,6 +5066,50 @@ function persistRuntimeRolePreferences() {
   }
 }
 
+function defaultComposerSessionControls(): ComposerSessionControlState {
+  return {
+    permissionMode: "auto",
+    effort: "auto",
+  };
+}
+
+function normalizeComposerSessionControls(value: Partial<ComposerSessionControlState> | null | undefined) {
+  const fallback = defaultComposerSessionControls();
+  return {
+    permissionMode: composerPermissionModeOptions.find((item) => item.value === value?.permissionMode)?.value ?? fallback.permissionMode,
+    effort: composerEffortOptions.find((item) => item.value === value?.effort)?.value ?? fallback.effort,
+  };
+}
+
+function readStoredComposerSessionControls() {
+  try {
+    const rawValue = window.localStorage.getItem(COMPOSER_SESSION_STORAGE_KEY);
+    if (!rawValue) {
+      return defaultComposerSessionControls();
+    }
+
+    return normalizeComposerSessionControls(JSON.parse(rawValue) as Partial<ComposerSessionControlState>);
+  } catch {
+    return defaultComposerSessionControls();
+  }
+}
+
+function persistComposerSessionControls() {
+  try {
+    window.localStorage.setItem(
+      COMPOSER_SESSION_STORAGE_KEY,
+      JSON.stringify({
+        permissionMode: activeComposerPermissionMode,
+        effort: activeComposerEffort,
+      }),
+    );
+    return true;
+  } catch (error) {
+    console.warn("Failed to persist composer session controls", error);
+    return false;
+  }
+}
+
 function runtimeRolePreferencesEqual(left: RuntimeRolePreference[], right: RuntimeRolePreference[]) {
   if (left.length !== right.length) {
     return false;
@@ -5299,6 +5455,7 @@ function applyLanguageChrome() {
   }
   updateVoiceInputButton();
   updateOperatorInterruptButton();
+  renderComposerSessionControls();
   setElementText("send-btn", japanese ? "送信" : "Send");
 
   const sourceControlMessage = document.getElementById("source-control-message") as HTMLTextAreaElement | null;
@@ -6045,6 +6202,115 @@ function renderComposerRemoteReferences() {
   selectedComposerRemoteReferenceIds.clear();
 }
 
+function getComposerPermissionModeOption(mode: ComposerPermissionMode = activeComposerPermissionMode) {
+  return composerPermissionModeOptions.find((item) => item.value === mode) ?? composerPermissionModeOptions[0];
+}
+
+function getComposerEffortOption(effort: ComposerEffortLevel = activeComposerEffort) {
+  return composerEffortOptions.find((item) => item.value === effort) ?? composerEffortOptions[0];
+}
+
+function setComposerPermissionMode(mode: ComposerPermissionMode) {
+  activeComposerPermissionMode = mode;
+  persistComposerSessionControls();
+  openComposerSessionMenu = null;
+  renderComposerSessionControls();
+}
+
+function setComposerEffort(effort: ComposerEffortLevel) {
+  activeComposerEffort = effort;
+  persistComposerSessionControls();
+  openComposerSessionMenu = null;
+  renderComposerSessionControls();
+}
+
+function stepComposerPermissionMode(delta: 1 | -1) {
+  const currentIndex = composerPermissionModeOptions.findIndex((item) => item.value === activeComposerPermissionMode);
+  const index = currentIndex === -1 ? 0 : currentIndex;
+  const next = composerPermissionModeOptions[(index + delta + composerPermissionModeOptions.length) % composerPermissionModeOptions.length];
+  setComposerPermissionMode(next.value);
+}
+
+function createComposerSessionMenuButton<T extends string>(
+  kind: "permission" | "effort",
+  kicker: string,
+  selectedValue: T,
+  selectedLabel: string,
+  options: Array<{ value: T; label: string; labelJa: string; description: string; descriptionJa: string }>,
+  onSelect: (value: T) => void,
+) {
+  const group = document.createElement("div");
+  group.className = "composer-session-control";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "composer-session-trigger";
+  button.setAttribute("aria-expanded", openComposerSessionMenu === kind ? "true" : "false");
+  button.setAttribute("aria-haspopup", "menu");
+  button.setAttribute("aria-controls", `composer-${kind}-menu`);
+  button.innerHTML = `<span class="composer-session-kicker">${kicker}</span><span class="composer-session-value">${selectedLabel}</span>`;
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openComposerSessionMenu = openComposerSessionMenu === kind ? null : kind;
+    renderComposerSessionControls();
+  });
+  group.appendChild(button);
+
+  if (openComposerSessionMenu === kind) {
+    const menu = document.createElement("div");
+    menu.id = `composer-${kind}-menu`;
+    menu.className = "composer-session-menu";
+    menu.setAttribute("role", "menu");
+    for (const option of options) {
+      const optionButton = document.createElement("button");
+      optionButton.type = "button";
+      optionButton.className = `composer-session-option ${option.value === selectedValue ? "is-active" : ""}`;
+      optionButton.setAttribute("role", "menuitemradio");
+      optionButton.setAttribute("aria-checked", option.value === selectedValue ? "true" : "false");
+      optionButton.innerHTML = `
+        <span class="composer-session-option-label">${themeState.language === "ja" ? option.labelJa : option.label}</span>
+        <span class="composer-session-option-description">${themeState.language === "ja" ? option.descriptionJa : option.description}</span>
+      `;
+      optionButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        onSelect(option.value);
+      });
+      menu.appendChild(optionButton);
+    }
+    group.appendChild(menu);
+  }
+
+  return group;
+}
+
+function renderComposerSessionControls() {
+  const root = document.getElementById("composer-session-row");
+  if (!root) {
+    return;
+  }
+
+  const permissionOption = getComposerPermissionModeOption();
+  const effortOption = getComposerEffortOption();
+  const japanese = themeState.language === "ja";
+  root.innerHTML = "";
+  root.appendChild(createComposerSessionMenuButton(
+    "permission",
+    japanese ? "権限" : "Mode",
+    activeComposerPermissionMode,
+    japanese ? permissionOption.labelJa : permissionOption.label,
+    composerPermissionModeOptions,
+    setComposerPermissionMode,
+  ));
+  root.appendChild(createComposerSessionMenuButton(
+    "effort",
+    japanese ? "思考量" : "Effort",
+    activeComposerEffort,
+    japanese ? effortOption.labelJa : effortOption.label,
+    composerEffortOptions,
+    setComposerEffort,
+  ));
+}
+
 function renderComposerModes() {
   const root = document.getElementById("composer-mode-row");
   const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
@@ -6072,6 +6338,7 @@ function renderComposerModes() {
 
   renderComposerSlashCommands();
   renderComposerRemoteReferences();
+  renderComposerSessionControls();
 }
 
 function getComposerModeLabel(mode: ComposerMode) {
@@ -8887,6 +9154,8 @@ function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
     ),
     details: [
       { label: "mode", value: activeComposerMode },
+      { label: "permission-mode", value: activeComposerPermissionMode },
+      { label: "effort", value: activeComposerEffort },
       { label: "attachments", value: `${attachments.length}` },
     ],
     tone: "info",
@@ -10161,6 +10430,12 @@ window.addEventListener("DOMContentLoaded", async () => {
         return;
       }
 
+      if (event.key === "Tab" && !composerImeBlocking && event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        stepComposerPermissionMode(-1);
+        return;
+      }
+
       if (event.key === "Tab" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
         event.preventDefault();
         if (slashCommands.length > 0) {
@@ -10275,6 +10550,18 @@ window.addEventListener("DOMContentLoaded", async () => {
     void interruptOperatorRequest();
   });
 
+  document.addEventListener("click", (event) => {
+    if (!openComposerSessionMenu) {
+      return;
+    }
+    const root = document.getElementById("composer-session-row");
+    if (root && event.target instanceof Node && root.contains(event.target)) {
+      return;
+    }
+    openComposerSessionMenu = null;
+    renderComposerSessionControls();
+  });
+
   composerFileInput?.addEventListener("change", () => {
     const files = Array.from(composerFileInput.files ?? []);
     appendAttachments(files);
@@ -10313,6 +10600,13 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (event.key === "Escape" && settingsSheetOpen) {
       event.preventDefault();
       cancelSettingsDraft();
+      return;
+    }
+
+    if (event.key === "Escape" && openComposerSessionMenu) {
+      event.preventDefault();
+      openComposerSessionMenu = null;
+      renderComposerSessionControls();
       return;
     }
 
