@@ -307,6 +307,7 @@ interface ShellPreferenceState extends ThemeState {
   wideContextOpen: boolean;
   workbenchOpen: boolean;
   workbenchLayout: WorkbenchLayoutMode;
+  focusedWorkbenchPaneId: string | null;
 }
 
 interface RuntimeRolePreference {
@@ -421,6 +422,7 @@ let settingsSheetOpen = false;
 let sidebarOpen = true;
 let sidebarMode: SidebarMode = "explorer";
 let workbenchLayout: WorkbenchLayoutMode = "2x2";
+let focusedWorkbenchPaneId: string | null = null;
 let composerImeActive = false;
 let sidebarWidth = 292;
 let workbenchWidth: number | null = null;
@@ -991,6 +993,18 @@ function getPaneDisplayLabel(paneId: string, backendLabel?: string) {
   return paneId.startsWith("worker-") ? paneId : label;
 }
 
+function getWorkbenchPaneOrdinal(paneId: string | null | undefined) {
+  if (!paneId) {
+    return null;
+  }
+  const workerPane = /^worker-(\d+)$/.exec(paneId);
+  if (workerPane) {
+    const ordinal = Number(workerPane[1]);
+    return ordinal >= 1 && ordinal <= 6 ? ordinal : null;
+  }
+  return null;
+}
+
 function createPane(paneId?: string): string {
   const id = paneId || getNextWorkerPaneId();
   const container = document.getElementById("panes-container");
@@ -1078,6 +1092,13 @@ function createPane(paneId?: string): string {
     ptyStarted: false,
     ptyStarting: null,
   });
+  const hasKnownFocusedPane = focusedWorkbenchPaneId && (panes.has(focusedWorkbenchPaneId) || getWorkbenchPaneOrdinal(focusedWorkbenchPaneId) !== null);
+  if (!hasKnownFocusedPane || (!paneId && workbenchLayout === "focus")) {
+    focusedWorkbenchPaneId = id;
+  }
+  if (!paneId && workbenchLayout === "2x2" && panes.size > 4) {
+    workbenchLayout = "3x2";
+  }
   updateWorkbenchControls();
 
   if (shouldAutoStartPane(id)) {
@@ -1178,7 +1199,11 @@ function closePane(id: string) {
 
   entry.container.remove();
   panes.delete(id);
+  if (focusedWorkbenchPaneId === id) {
+    focusedWorkbenchPaneId = null;
+  }
   updateWorkbenchControls();
+  void persistThemeState();
   if (entry.ptyStarted || entry.ptyStarting) {
     void closePtyPane(id)
       .catch((error) => {
@@ -1189,7 +1214,7 @@ function closePane(id: string) {
       });
   }
 
-  panes.forEach((pane) => pane.fitAddon.fit());
+  fitVisibleWorkbenchPanes();
 }
 
 function ensureDefaultWorkbenchPanes() {
@@ -1211,6 +1236,81 @@ function ensureWorkbenchPaneCount(targetCount: number) {
   }
 }
 
+function getWorkbenchPaneIds() {
+  return Array.from(panes.keys());
+}
+
+function getFocusedWorkbenchPaneId() {
+  if (focusedWorkbenchPaneId && panes.has(focusedWorkbenchPaneId)) {
+    return focusedWorkbenchPaneId;
+  }
+  const firstPaneId = getWorkbenchPaneIds()[0] ?? null;
+  const pendingOrdinal = getWorkbenchPaneOrdinal(focusedWorkbenchPaneId);
+  if (pendingOrdinal !== null && panes.size < pendingOrdinal) {
+    return firstPaneId;
+  }
+  if (!focusedWorkbenchPaneId || !panes.has(focusedWorkbenchPaneId)) {
+    focusedWorkbenchPaneId = firstPaneId;
+  }
+  return firstPaneId;
+}
+
+function getWorkbenchPaneCountForLayout() {
+  if (workbenchLayout === "3x2") {
+    return 6;
+  }
+  if (workbenchLayout === "focus") {
+    return Math.max(4, getWorkbenchPaneOrdinal(focusedWorkbenchPaneId) ?? 1);
+  }
+  return 4;
+}
+
+function getVisibleWorkbenchPaneIds() {
+  const paneIds = getWorkbenchPaneIds();
+  if (workbenchLayout === "focus") {
+    const focusedPaneId = getFocusedWorkbenchPaneId();
+    return focusedPaneId ? [focusedPaneId] : [];
+  }
+  return paneIds.slice(0, workbenchLayout === "3x2" ? 6 : 4);
+}
+
+function syncFocusedPaneSelect() {
+  const select = document.getElementById("focused-pane-select") as HTMLSelectElement | null;
+  if (!select) {
+    return;
+  }
+
+  const focusedPaneId = getFocusedWorkbenchPaneId();
+  select.replaceChildren(...getWorkbenchPaneIds().map((paneId) => {
+    const option = document.createElement("option");
+    option.value = paneId;
+    option.textContent = getPaneDisplayLabel(paneId);
+    return option;
+  }));
+  if (focusedPaneId) {
+    select.value = focusedPaneId;
+  }
+  select.hidden = workbenchLayout !== "focus";
+  select.disabled = workbenchLayout !== "focus" || panes.size <= 1;
+}
+
+function syncWorkbenchPaneVisibility() {
+  const visibleIds = new Set(getVisibleWorkbenchPaneIds());
+  panes.forEach((pane, paneId) => {
+    const visible = visibleIds.has(paneId);
+    pane.container.hidden = !visible;
+    pane.container.toggleAttribute("data-focused-pane", workbenchLayout === "focus" && visible);
+  });
+}
+
+function fitVisibleWorkbenchPanes() {
+  panes.forEach((pane) => {
+    if (!pane.container.hidden) {
+      pane.fitAddon.fit();
+    }
+  });
+}
+
 function updateWorkbenchControls() {
   const drawer = document.getElementById("terminal-drawer");
   const addButton = document.getElementById("add-pane-btn") as HTMLButtonElement | null;
@@ -1218,6 +1318,8 @@ function updateWorkbenchControls() {
   const menuLayoutStatus = document.getElementById("menu-layout-status");
 
   drawer?.setAttribute("data-layout", workbenchLayout);
+  syncWorkbenchPaneVisibility();
+  syncFocusedPaneSelect();
   if (addButton) {
     addButton.disabled = panes.size >= 6;
     addButton.textContent = panes.size >= 6 ? getLanguageText("6 panes", "6 ペイン") : getLanguageText("+ Pane", "+ ペイン");
@@ -1230,8 +1332,9 @@ function updateWorkbenchControls() {
     layoutButton.textContent = workbenchLayout;
   }
   if (menuLayoutStatus) {
-    const paneCount = Math.max(panes.size, terminalDrawerOpen ? 4 : panes.size);
-    menuLayoutStatus.textContent = getLanguageText(`${workbenchLayout} · ${paneCount} panes`, `${workbenchLayout}・${paneCount} ペイン`);
+    const paneCount = terminalDrawerOpen ? getVisibleWorkbenchPaneIds().length : panes.size;
+    const paneLabel = paneCount === 1 ? "pane" : "panes";
+    menuLayoutStatus.textContent = getLanguageText(`${workbenchLayout} · ${paneCount} ${paneLabel}`, `${workbenchLayout}・${paneCount} ペイン`);
   }
 }
 
@@ -5172,6 +5275,9 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
     const wideContextOpen = typeof parsed.wideContextOpen === "boolean" ? parsed.wideContextOpen : false;
     const workbenchOpen = typeof parsed.workbenchOpen === "boolean" ? parsed.workbenchOpen : true;
     const workbenchLayout = parsed.workbenchLayout === "3x2" || parsed.workbenchLayout === "focus" ? parsed.workbenchLayout : "2x2";
+    const storedFocusedWorkbenchPaneId = typeof parsed.focusedWorkbenchPaneId === "string" && getWorkbenchPaneOrdinal(parsed.focusedWorkbenchPaneId) !== null
+      ? parsed.focusedWorkbenchPaneId
+      : null;
 
     return {
       theme,
@@ -5186,6 +5292,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       wideContextOpen,
       workbenchOpen,
       workbenchLayout,
+      focusedWorkbenchPaneId: storedFocusedWorkbenchPaneId,
     };
   } catch {
     return null;
@@ -5207,6 +5314,7 @@ function persistThemeState() {
       wideContextOpen: preferredWideContextOpen,
       workbenchOpen: terminalDrawerOpen,
       workbenchLayout,
+      focusedWorkbenchPaneId: focusedWorkbenchPaneId && panes.has(focusedWorkbenchPaneId) ? focusedWorkbenchPaneId : null,
     };
     window.localStorage.setItem(SHELL_PREFERENCES_STORAGE_KEY, JSON.stringify(nextState));
     return true;
@@ -5255,7 +5363,7 @@ function applyWorkbenchWidth(width: number) {
   const handle = document.getElementById("workbench-resizer");
   handle?.setAttribute("aria-valuenow", `${workbenchWidth}`);
   requestAnimationFrame(() => {
-    panes.forEach((pane) => pane.fitAddon.fit());
+    fitVisibleWorkbenchPanes();
   });
 }
 
@@ -5500,8 +5608,8 @@ function applyCodeFontToPanes() {
   const fontFamily = getCodeFontFamily();
   panes.forEach((pane) => {
     pane.terminal.options.fontFamily = fontFamily;
-    pane.fitAddon.fit();
   });
+  fitVisibleWorkbenchPanes();
 }
 
 function renderPreferenceOptions<T extends string>(
@@ -8863,13 +8971,13 @@ function setTerminalDrawer(open: boolean) {
   button.setAttribute("aria-label", open ? getLanguageText("Hide worker panes", "ワーカーペインを隠す") : getLanguageText("Show worker panes", "ワーカーペインを表示"));
 
   if (open) {
-    ensureWorkbenchPaneCount(workbenchLayout === "3x2" ? 6 : 4);
+    ensureWorkbenchPaneCount(getWorkbenchPaneCountForLayout());
   }
 
   updateWorkbenchControls();
   void persistThemeState();
   requestAnimationFrame(() => {
-    panes.forEach((pane) => pane.fitAddon.fit());
+    fitVisibleWorkbenchPanes();
   });
 }
 
@@ -8949,7 +9057,7 @@ function cycleWorkbenchLayout() {
   updateWorkbenchControls();
   void persistThemeState();
   requestAnimationFrame(() => {
-    panes.forEach((pane) => pane.fitAddon.fit());
+    fitVisibleWorkbenchPanes();
   });
 }
 
@@ -10092,6 +10200,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     preferredWideContextOpen = storedShellPreferences.wideContextOpen;
     terminalDrawerOpen = true;
     workbenchLayout = storedShellPreferences.workbenchLayout;
+    focusedWorkbenchPaneId = storedShellPreferences.focusedWorkbenchPaneId;
   }
 
   await subscribeToPtyOutput((payload) => {
@@ -10381,6 +10490,19 @@ window.addEventListener("DOMContentLoaded", async () => {
     cycleWorkbenchLayout();
   });
 
+  document.getElementById("focused-pane-select")?.addEventListener("change", (event) => {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    if (!panes.has(value)) {
+      return;
+    }
+    focusedWorkbenchPaneId = value;
+    updateWorkbenchControls();
+    void persistThemeState();
+    requestAnimationFrame(() => {
+      fitVisibleWorkbenchPanes();
+    });
+  });
+
   const composer = document.getElementById("composer") as HTMLFormElement | null;
   const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
   const composerFileInput = document.getElementById("composer-file-input") as HTMLInputElement | null;
@@ -10618,7 +10740,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   window.addEventListener("resize", () => {
     syncResponsiveShell();
-    panes.forEach((pane) => pane.fitAddon.fit());
+    fitVisibleWorkbenchPanes();
   });
 
   window.addEventListener("beforeunload", () => {

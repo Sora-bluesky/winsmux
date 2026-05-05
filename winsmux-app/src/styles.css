@@ -3234,7 +3234,8 @@ body.is-resizing-workbench {
 }
 
 #add-pane-btn,
-#workbench-layout-btn {
+#workbench-layout-btn,
+#focused-pane-select {
   border: 1px solid var(--border-strong);
   background: var(--bg-surface-raised);
   color: var(--text-secondary);
@@ -3244,8 +3245,19 @@ body.is-resizing-workbench {
 }
 
 #add-pane-btn:hover,
-#workbench-layout-btn:hover {
+#workbench-layout-btn:hover,
+#focused-pane-select:hover {
   background: var(--bg-panel);
+}
+
+#focused-pane-select {
+  min-width: 112px;
+  max-width: 152px;
+  font-size: var(--text-xs);
+}
+
+#focused-pane-select[hidden] {
+  display: none;
 }
 
 #panes-container {
