@@ -153,6 +153,15 @@ function Set-WinsmuxOption {
     & $WinsmuxBin set-option -g $OptionName $OptionValue | Out-Null
 }
 
+function Clear-WinsmuxOption {
+    param(
+        [Parameter(Mandatory = $true)][string]$WinsmuxBin,
+        [Parameter(Mandatory = $true)][string]$OptionName
+    )
+
+    & $WinsmuxBin set-option -gu $OptionName | Out-Null
+}
+
 function Set-GitHubTokenVault {
     param([Parameter(Mandatory = $true)][string]$BridgeCommand)
 
@@ -219,7 +228,9 @@ if ($externalOperator) {
 $storeVault = Read-YesNo -Prompt 'Store GH_TOKEN in the winsmux vault?' -Default $false
 
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-agent' -OptionValue $agentCli
-if (-not [string]::IsNullOrWhiteSpace($model)) {
+if ([string]::IsNullOrWhiteSpace($model)) {
+    Clear-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-model'
+} else {
     Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-model' -OptionValue $model
 }
 Set-WinsmuxOption -WinsmuxBin $winsmuxBin -OptionName '@bridge-external-operator' -OptionValue $(if ($externalOperator) { 'on' } else { 'off' })
