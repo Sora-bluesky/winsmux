@@ -1,12 +1,5 @@
 const PALETTE: &[&str] = &[
-    "#EF9F27",
-    "#D4537E",
-    "#378ADD",
-    "#1D9E75",
-    "#7F77DD",
-    "#D85A30",
-    "#639922",
-    "#A32D2D",
+    "#EF9F27", "#D4537E", "#378ADD", "#1D9E75", "#7F77DD", "#D85A30", "#639922", "#A32D2D",
 ];
 
 pub fn color_for(branch_id: u64) -> &'static str {

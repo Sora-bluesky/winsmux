@@ -112,6 +112,15 @@ winsmux skills --json
 Legacy binary aliases `psmux`, `pmux`, and `tmux` are in `v0.24.5` warning-only sunset mode.
 Use `winsmux` for new scripts and docs. The legacy alias contract will be removed before `v1.0.0`.
 
+## Git Graph CLI
+
+The repository includes `git-graph`, a Rust CLI that renders recent Git history as a VS Code-style SVG graph. It reads commit IDs and parent IDs, rebuilds lanes from the parent relationships, and draws lane shifts with cubic Bezier curves instead of parsing `git log --graph` characters.
+
+```powershell
+cargo run -p git-graph -- --repo . --max 30 --out output/git-graph.svg
+git log --format="%H %P" --max-count=30 | cargo run -p git-graph -- --from-stdin --out output/git-graph.svg
+```
+
 ## Authentication Support
 
 | Tool | Authentication mode | winsmux support |

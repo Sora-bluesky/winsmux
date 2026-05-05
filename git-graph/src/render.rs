@@ -91,13 +91,21 @@ fn append_row_paths(output: &mut String, row: &Row, row_idx: usize) {
         if lane.branch_id == current_branch_id {
             continue;
         }
-        if let Some(col_out) = row.lanes_out.iter().position(|out| out.branch_id == lane.branch_id) {
+        if let Some(col_out) = row
+            .lanes_out
+            .iter()
+            .position(|out| out.branch_id == lane.branch_id)
+        {
             append_path(output, col_in, col_out, y1, y2, lane.branch_id);
         }
     }
 
     for (parent_index, parent) in row.commit.parents.iter().enumerate() {
-        if let Some(col_out) = row.lanes_out.iter().position(|lane| lane.expecting == *parent) {
+        if let Some(col_out) = row
+            .lanes_out
+            .iter()
+            .position(|lane| lane.expecting == *parent)
+        {
             let branch_id = if parent_index == 0 {
                 current_branch_id
             } else {
@@ -108,20 +116,31 @@ fn append_row_paths(output: &mut String, row: &Row, row_idx: usize) {
     }
 }
 
-fn append_path(output: &mut String, from_col: usize, to_col: usize, y1: f32, y2: f32, branch_id: u64) {
+fn append_path(
+    output: &mut String,
+    from_col: usize,
+    to_col: usize,
+    y1: f32,
+    y2: f32,
+    branch_id: u64,
+) {
     let x1 = lane_x(from_col);
     let x2 = lane_x(to_col);
     let color = color_for(branch_id);
-    let d = if (x1 - x2).abs() < 0.01 {
-        format!("M {x1:.1} {y1:.1} L {x2:.1} {y2:.1}")
-    } else {
-        let cy = (y1 + y2) / 2.0;
-        format!("M {x1:.1} {y1:.1} C {x1:.1} {cy:.1}, {x2:.1} {cy:.1}, {x2:.1} {y2:.1}")
-    };
+    let d = segment_path(x1, y1, x2, y2);
     output.push_str(&format!(
         r#"<path d="{d}" stroke="{color}" stroke-width="{STROKE_W:.1}"/>"#
     ));
     output.push('\n');
+}
+
+pub fn segment_path(x1: f32, y1: f32, x2: f32, y2: f32) -> String {
+    if (x1 - x2).abs() < 0.01 {
+        return format!("M {x1} {y1} L {x2} {y2}");
+    }
+
+    let cy = (y1 + y2) / 2.0;
+    format!("M {x1} {y1} C {x1} {cy} {x2} {cy} {x2} {y2}")
 }
 
 fn short_hash(id: &str) -> &str {
@@ -154,9 +173,24 @@ mod tests {
     #[test]
     fn renders_paths_before_circles_and_text() {
         let rows = assign_lanes(&[
-            commit("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "cccccccccccccccccccccccccccccccccccccccc"], "merge"),
-            commit("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", &["dddddddddddddddddddddddddddddddddddddddd"], "main"),
-            commit("cccccccccccccccccccccccccccccccccccccccc", &["dddddddddddddddddddddddddddddddddddddddd"], "feature"),
+            commit(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                &[
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "cccccccccccccccccccccccccccccccccccccccc",
+                ],
+                "merge",
+            ),
+            commit(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                &["dddddddddddddddddddddddddddddddddddddddd"],
+                "main",
+            ),
+            commit(
+                "cccccccccccccccccccccccccccccccccccccccc",
+                &["dddddddddddddddddddddddddddddddddddddddd"],
+                "feature",
+            ),
             commit("dddddddddddddddddddddddddddddddddddddddd", &[], "root"),
         ]);
         let svg = render_svg(&rows);
@@ -171,9 +205,29 @@ mod tests {
 
     #[test]
     fn escapes_xml_text() {
-        let rows = assign_lanes(&[commit("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &[], "fix <tag> & quote \"")]);
+        let rows = assign_lanes(&[commit(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            &[],
+            "fix <tag> & quote \"",
+        )]);
         let svg = render_svg(&rows);
 
         assert!(svg.contains("fix &lt;tag&gt; &amp; quote &quot;"));
+    }
+
+    #[test]
+    fn s_curve_control_points_are_vertical() {
+        let path = segment_path(40.0, 100.0, 60.0, 130.0);
+
+        assert_eq!(path, "M 40 100 C 40 115 60 115 60 130");
+        assert!(path.contains("C 40 "));
+        assert!(path.contains(" 60 115 60 130"));
+    }
+
+    #[test]
+    fn vertical_segment_stays_straight() {
+        let path = segment_path(40.0, 100.0, 40.0, 130.0);
+
+        assert_eq!(path, "M 40 100 L 40 130");
     }
 }

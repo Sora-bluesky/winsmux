@@ -44,7 +44,10 @@ pub fn read_repo_commits(repo_path: &Path, max: usize) -> Result<Vec<Commit>, gi
     for oid_result in revwalk.take(max) {
         let oid = oid_result?;
         let commit = repo.find_commit(oid)?;
-        let parents = commit.parent_ids().map(|parent| parent.to_string()).collect();
+        let parents = commit
+            .parent_ids()
+            .map(|parent| parent.to_string())
+            .collect();
         commits.push(Commit {
             id: oid.to_string(),
             parents,
@@ -65,7 +68,10 @@ mod tests {
 
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        assert_eq!(commits[0].parents, vec!["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]);
+        assert_eq!(
+            commits[0].parents,
+            vec!["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]
+        );
         assert_eq!(commits[0].message, "aaaaaaaaaaaa");
         assert_eq!(commits[1].parents, Vec::<String>::new());
     }

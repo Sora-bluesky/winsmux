@@ -57,7 +57,10 @@ pub fn assign_lanes(commits: &[Commit]) -> Vec<Row> {
         if let Some(first_parent) = commit.parents.first() {
             if active
                 .iter()
-                .position(|lane| lane.expecting == *first_parent && lane.branch_id != active[commit_lane].branch_id)
+                .position(|lane| {
+                    lane.expecting == *first_parent
+                        && lane.branch_id != active[commit_lane].branch_id
+                })
                 .is_some()
             {
                 active.remove(commit_lane);
@@ -90,7 +93,12 @@ pub fn assign_lanes(commits: &[Commit]) -> Vec<Row> {
     rows
 }
 
-pub fn build_segments(out: &[Lane], next_in: &[Lane], _next_commit: &Commit, _next_commit_lane: usize) -> Vec<Segment> {
+pub fn build_segments(
+    out: &[Lane],
+    next_in: &[Lane],
+    _next_commit: &Commit,
+    _next_commit_lane: usize,
+) -> Vec<Segment> {
     let mut ids = BTreeSet::new();
     for lane in out.iter().chain(next_in.iter()) {
         ids.insert(lane.branch_id);
@@ -143,11 +151,7 @@ mod tests {
 
     #[test]
     fn linear_history() {
-        let rows = assign_lanes(&[
-            commit("A", &["B"]),
-            commit("B", &["C"]),
-            commit("C", &[]),
-        ]);
+        let rows = assign_lanes(&[commit("A", &["B"]), commit("B", &["C"]), commit("C", &[])]);
 
         assert_eq!(rows.len(), 3);
         assert!(rows.iter().all(|row| row.commit_lane == 0));
@@ -156,7 +160,12 @@ mod tests {
         assert_eq!(rows[1].lanes_in.len(), 1);
         assert_eq!(rows[2].lanes_out.len(), 0);
 
-        let segments = build_segments(&rows[0].lanes_out, &rows[1].lanes_in, &rows[1].commit, rows[1].commit_lane);
+        let segments = build_segments(
+            &rows[0].lanes_out,
+            &rows[1].lanes_in,
+            &rows[1].commit,
+            rows[1].commit_lane,
+        );
         assert_eq!(segments[0].kind, SegmentKind::Straight);
     }
 
