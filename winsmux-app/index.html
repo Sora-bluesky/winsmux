@@ -230,29 +230,40 @@
             <div id="conversation-timeline" role="log" aria-live="polite" aria-relevant="additions text"></div>
             <form id="composer" autocomplete="off">
               <label class="sr-only" for="composer-input">Message the Operator</label>
-              <textarea id="composer-input" rows="2" placeholder="Describe a task or ask a question"></textarea>
+              <div id="composer-input-wrap">
+                <textarea id="composer-input" rows="2" placeholder="Describe a task or ask a question"></textarea>
+                <button
+                  type="button"
+                  id="voice-input-btn"
+                  class="ghost-btn ghost-btn-small composer-icon-btn composer-input-icon-btn"
+                  aria-label="Start voice input"
+                  aria-pressed="false"
+                  title="Start voice input"
+                >
+                  <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 1 0 6 0V6a3 3 0 0 0-3-3z" />
+                    <path d="M5 11a7 7 0 0 0 14 0" />
+                    <path d="M12 18v3" />
+                    <path d="M8.5 21h7" />
+                  </svg>
+                </button>
+                <button type="submit" id="send-btn" aria-label="Send with Enter" title="Send with Enter">
+                  <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M19 5v7a4 4 0 0 1-4 4H6" />
+                    <path d="m10 12-4 4 4 4" />
+                  </svg>
+                </button>
+              </div>
               <input id="composer-file-input" type="file" hidden multiple />
-              <div id="composer-mode-row" aria-label="Composer modes"></div>
-              <div id="composer-session-row" aria-label="Composer session controls"></div>
               <div id="composer-slash-row" aria-label="Composer suggestions" hidden></div>
               <div id="composer-remote-row" aria-label="Composer remote attachments" hidden></div>
               <div id="composer-footer">
-                <div id="attachment-tray" aria-live="polite"></div>
                 <div id="composer-actions">
-                  <button type="button" id="attach-btn" class="ghost-btn ghost-btn-small">Attach</button>
-                  <button
-                    type="button"
-                    id="voice-input-btn"
-                    class="ghost-btn ghost-btn-small composer-icon-btn"
-                    aria-label="Start voice input"
-                    aria-pressed="false"
-                    title="Start voice input"
-                  >
+                  <div id="composer-session-row" aria-label="Composer session controls"></div>
+                  <button type="button" id="attach-btn" class="ghost-btn ghost-btn-small composer-icon-btn" aria-label="Attach" title="Attach">
                     <svg class="button-icon" viewBox="0 0 24 24" aria-hidden="true">
-                      <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 1 0 6 0V6a3 3 0 0 0-3-3z" />
-                      <path d="M5 11a7 7 0 0 0 14 0" />
-                      <path d="M12 18v3" />
-                      <path d="M8.5 21h7" />
+                      <path d="M12 5v14" />
+                      <path d="M5 12h14" />
                     </svg>
                   </button>
                   <button
@@ -267,9 +278,10 @@
                       <rect x="8" y="8" width="8" height="8" rx="2" />
                     </svg>
                   </button>
-                  <button type="submit" id="send-btn">Send</button>
                 </div>
+                <div id="composer-model-row" aria-label="Composer model controls"></div>
               </div>
+              <div id="attachment-tray" aria-live="polite"></div>
             </form>
           </section>
 
@@ -343,56 +355,111 @@
           <div id="footer-right"></div>
         </footer>
 
-        <section id="settings-sheet" hidden role="dialog" aria-modal="false" aria-labelledby="settings-sheet-title">
-          <div class="panel-title-row">
-            <div class="panel-title" id="settings-sheet-title">Settings</div>
-            <div class="settings-sheet-actions">
-              <button class="ghost-btn ghost-btn-small" id="close-settings-btn" type="button">Cancel</button>
-              <button class="ghost-btn ghost-btn-small" id="apply-settings-btn" type="button">Apply</button>
+        <section id="settings-sheet" hidden role="dialog" aria-modal="true" aria-labelledby="settings-sheet-title">
+          <div id="settings-dialog">
+            <div class="panel-title-row settings-title-row">
+              <div class="panel-title" id="settings-sheet-title">Settings</div>
+              <div class="settings-sheet-actions">
+                <button class="ghost-btn ghost-btn-small" id="apply-settings-btn" type="button">Apply</button>
+                <button class="ghost-btn ghost-btn-small settings-close-btn" id="close-settings-btn" type="button" aria-label="Close settings">×</button>
+              </div>
             </div>
-          </div>
-          <div class="settings-section">
-            <div class="context-label" id="settings-profile-label">Runtime</div>
-            <div class="context-value" id="settings-profile-value">Uses the local Claude Code configuration.</div>
-            <div id="runtime-role-options" class="runtime-role-grid" aria-label="Runtime role controls"></div>
-          </div>
-          <div class="settings-section">
-            <div class="context-label" id="settings-language-label">Language</div>
-            <div class="context-value" id="settings-language-value">Switch the workspace chrome between English and Japanese.</div>
-            <div id="language-options" class="settings-option-row" aria-label="Language options"></div>
-          </div>
-          <div class="settings-section">
-            <div class="context-label" id="settings-theme-label">Theme</div>
-            <div class="context-value" id="settings-theme-value">Public openai/codex TUI-derived typography, semantic color tokens, and shell contrast.</div>
-            <div id="theme-options" class="settings-option-row" aria-label="Theme options"></div>
-          </div>
-          <div class="settings-section">
-            <div class="context-label" id="settings-density-label">Density</div>
-            <div class="context-value" id="settings-density-value">Workspace spacing, composer height, and panel padding.</div>
-            <div id="density-options" class="settings-option-row" aria-label="Density options"></div>
-          </div>
-          <div class="settings-section">
-            <div class="context-label" id="settings-wrap-label">Wrap</div>
-            <div class="context-value" id="settings-wrap-value">Conversation, editor, and footer wrapping behavior.</div>
-            <div id="wrap-options" class="settings-option-row" aria-label="Wrap options"></div>
-          </div>
-          <div class="settings-section">
-            <div class="context-label" id="settings-code-font-label">Code font</div>
-            <div class="context-value" id="settings-code-font-value">Used in code preview, terminal panes, and diff details.</div>
-            <div id="code-font-options" class="settings-option-row" aria-label="Code font options"></div>
-          </div>
-          <div class="settings-section">
-            <div class="context-label" id="settings-display-label">Display</div>
-            <div class="context-value" id="settings-display-value">Choose how much timeline detail stays visible by default.</div>
-            <div id="focus-mode-options" class="settings-option-row" aria-label="Display detail options"></div>
-          </div>
-          <div class="settings-section">
-            <div class="context-label" id="settings-workspace-label">Workspace</div>
-            <div class="context-value" id="settings-workspace-value">Sidebar width, context collapse, terminal drawer behavior</div>
-          </div>
-          <div class="settings-section">
-            <div class="context-label" id="settings-input-label">Input</div>
-            <div class="context-value" id="settings-input-value">Enter sends, Shift+Enter inserts newline, IME composition is protected</div>
+            <label class="sr-only" id="settings-search-label" for="settings-search-input">Search settings</label>
+            <div class="settings-search-row">
+              <input id="settings-search-input" type="text" autocomplete="off" placeholder="Search settings" />
+              <div class="settings-search-actions" aria-hidden="true">
+                <span class="settings-search-action">☰</span>
+                <span class="settings-search-action">▽</span>
+              </div>
+            </div>
+            <div class="settings-tabs" role="tablist" aria-label="Settings scopes">
+              <button id="settings-tab-user" class="settings-tab is-active" type="button">User</button>
+              <button id="settings-tab-workspace" class="settings-tab" type="button">Workspace</button>
+            </div>
+            <div class="settings-layout">
+              <nav id="settings-nav" class="settings-nav" aria-label="Settings categories">
+                <button id="settings-nav-common" class="settings-nav-item is-active" type="button" data-settings-target="settings-section-common">Commonly Used</button>
+                <button id="settings-nav-editor" class="settings-nav-item" type="button" data-settings-target="settings-section-common">Text Editor</button>
+                <button id="settings-nav-workbench" class="settings-nav-item" type="button" data-settings-target="settings-section-workspace">Workbench</button>
+                <button id="settings-nav-window" class="settings-nav-item" type="button" data-settings-target="settings-section-theme">Window</button>
+                <button id="settings-nav-chat" class="settings-nav-item" type="button" data-settings-target="settings-section-runtime">Chat</button>
+                <button id="settings-nav-features" class="settings-nav-item" type="button" data-settings-target="settings-section-display">Features</button>
+                <button id="settings-nav-application" class="settings-nav-item" type="button" data-settings-target="settings-section-language">Application</button>
+                <button id="settings-nav-security" class="settings-nav-item" type="button" data-settings-target="settings-section-input">Security</button>
+                <button id="settings-nav-extensions" class="settings-nav-item" type="button" data-settings-target="settings-section-runtime">Extensions</button>
+              </nav>
+              <div id="settings-content" class="settings-content">
+                <section id="settings-section-common" class="settings-section settings-section-main">
+                  <div class="context-label" id="settings-common-label">Commonly Used</div>
+                  <div class="context-value" id="settings-common-value">Editor font size and font family for code-oriented surfaces.</div>
+                  <div class="settings-field settings-field-wide">
+                    <label class="settings-field-label" id="editor-font-size-label" for="editor-font-size-input">Editor: Font Size</label>
+                    <div class="settings-field-description" id="editor-font-size-description">Controls the font size used in editor previews and terminal panes.</div>
+                    <div class="settings-control-row">
+                      <input id="editor-font-size-input" class="settings-number-input" type="number" min="8" max="32" step="1" inputmode="numeric" />
+                      <button class="ghost-btn ghost-btn-small settings-inline-action" id="editor-font-size-reset-btn" type="button">Default 14</button>
+                    </div>
+                  </div>
+                  <div class="settings-field settings-field-wide context-label-sub">
+                    <label class="settings-field-label" id="settings-code-font-label" for="settings-font-family-input">Editor: Font Family</label>
+                    <div class="settings-field-description" id="settings-code-font-value">Used in code preview, terminal panes, and diff details.</div>
+                    <div class="settings-control-row settings-font-family-control">
+                      <input id="settings-font-family-input" class="settings-text-input" type="text" autocomplete="off" />
+                      <button
+                        class="ghost-btn ghost-btn-small settings-icon-action"
+                        id="settings-font-family-menu-btn"
+                        type="button"
+                        aria-haspopup="menu"
+                        aria-expanded="false"
+                        aria-label="Choose font family"
+                        title="Choose font family"
+                      >
+                        <span class="settings-icon-action-glyph" aria-hidden="true">⚙</span>
+                      </button>
+                      <div id="settings-font-family-menu" class="settings-popover-menu" role="menu" hidden></div>
+                    </div>
+                  </div>
+                </section>
+                <section id="settings-section-runtime" class="settings-section">
+                  <div class="context-label" id="settings-profile-label">Runtime</div>
+                  <div class="context-value" id="settings-profile-value">Uses the local Claude Code configuration.</div>
+                  <div id="runtime-role-options" class="runtime-role-grid" aria-label="Runtime role controls"></div>
+                </section>
+                <section id="settings-section-language" class="settings-section">
+                  <div class="context-label" id="settings-language-label">Language</div>
+                  <div class="context-value" id="settings-language-value">Switch the workspace chrome between English and Japanese.</div>
+                  <div id="language-options" class="settings-option-row" aria-label="Language options"></div>
+                </section>
+                <section id="settings-section-theme" class="settings-section">
+                  <div class="context-label" id="settings-theme-label">Theme</div>
+                  <div class="context-value" id="settings-theme-value">Public openai/codex TUI-derived typography, semantic color tokens, and shell contrast.</div>
+                  <div id="theme-options" class="settings-option-row" aria-label="Theme options"></div>
+                </section>
+                <section id="settings-section-density" class="settings-section">
+                  <div class="context-label" id="settings-density-label">Density</div>
+                  <div class="context-value" id="settings-density-value">Workspace spacing, composer height, and panel padding.</div>
+                  <div id="density-options" class="settings-option-row" aria-label="Density options"></div>
+                </section>
+                <section id="settings-section-wrap" class="settings-section">
+                  <div class="context-label" id="settings-wrap-label">Wrap</div>
+                  <div class="context-value" id="settings-wrap-value">Conversation, editor, and footer wrapping behavior.</div>
+                  <div id="wrap-options" class="settings-option-row" aria-label="Wrap options"></div>
+                </section>
+                <section id="settings-section-display" class="settings-section">
+                  <div class="context-label" id="settings-display-label">Display</div>
+                  <div class="context-value" id="settings-display-value">Choose how much timeline detail stays visible by default.</div>
+                  <div id="focus-mode-options" class="settings-option-row" aria-label="Display detail options"></div>
+                </section>
+                <section id="settings-section-workspace" class="settings-section">
+                  <div class="context-label" id="settings-workspace-label">Workspace</div>
+                  <div class="context-value" id="settings-workspace-value">Sidebar width, context collapse, terminal drawer behavior</div>
+                </section>
+                <section id="settings-section-input" class="settings-section">
+                  <div class="context-label" id="settings-input-label">Input</div>
+                  <div class="context-value" id="settings-input-value">Enter sends, Shift+Enter inserts newline, IME composition is protected</div>
+                </section>
+              </div>
+            </div>
           </div>
         </section>
 

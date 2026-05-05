@@ -8,6 +8,25 @@ pub struct Commit {
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CommitKind {
+    Head,
+    Merge,
+    Normal,
+}
+
+impl Commit {
+    pub fn kind(&self, is_head: bool) -> CommitKind {
+        if is_head {
+            CommitKind::Head
+        } else if self.parents.len() >= 2 {
+            CommitKind::Merge
+        } else {
+            CommitKind::Normal
+        }
+    }
+}
+
 pub fn parse_stdin_log(input: &str) -> Vec<Commit> {
     input
         .lines()
@@ -74,5 +93,23 @@ mod tests {
         );
         assert_eq!(commits[0].message, "aaaaaaaaaaaa");
         assert_eq!(commits[1].parents, Vec::<String>::new());
+    }
+
+    #[test]
+    fn classifies_commit_kind() {
+        let normal = Commit {
+            id: "A".to_string(),
+            parents: vec!["B".to_string()],
+            message: "A".to_string(),
+        };
+        let merge = Commit {
+            id: "M".to_string(),
+            parents: vec!["A".to_string(), "B".to_string()],
+            message: "M".to_string(),
+        };
+
+        assert_eq!(normal.kind(false), CommitKind::Normal);
+        assert_eq!(merge.kind(false), CommitKind::Merge);
+        assert_eq!(merge.kind(true), CommitKind::Head);
     }
 }

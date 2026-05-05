@@ -30,7 +30,6 @@ import {
   subscribeToPtyOutput,
   writePtyData,
 } from "./ptyClient";
-import { getSourceGraphLaneKind, normalizeSourceGraphTokens, sourceGraphMaxLanes } from "./sourceGraph";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -232,7 +231,7 @@ interface SourceChange {
 interface BrowserSourceGraphItem {
   run_id: string;
   short_sha?: string;
-  graph_symbols?: string;
+  parents?: string[];
   task: string;
   branch: string;
   refs?: string[];
@@ -290,12 +289,15 @@ type RuntimeModelSource = "provider-default" | "cli-discovery" | "official-doc" 
 type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "xhigh" | "max";
 type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
 type ComposerEffortLevel = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
+type ComposerModelId = "opus-4.7" | "opus-4.7-1m" | "sonnet-4.6" | "haiku-4.5";
 
 interface ThemeState {
   theme: ThemeMode;
   density: DensityMode;
   wrapMode: WrapMode;
   codeFont: CodeFontMode;
+  codeFontFamily: string;
+  editorFontSize: number;
   focusMode: FocusMode;
   language: LanguageMode;
 }
@@ -348,7 +350,9 @@ interface ComposerHistoryEntry {
 
 interface ComposerSessionControlState {
   permissionMode: ComposerPermissionMode;
+  model: ComposerModelId;
   effort: ComposerEffortLevel;
+  fastModeEnabled: boolean;
 }
 
 interface SpeechRecognitionAlternativeLike {
@@ -435,9 +439,11 @@ let detachedSurfaceRunLabel = "";
 let detachedSurfaceSession: DetachedSurfaceSessionState | null = null;
 let detachedSurfacePollTimer: number | null = null;
 let activeComposerMode: ComposerMode = "dispatch";
-let activeComposerPermissionMode: ComposerPermissionMode = "auto";
-let activeComposerEffort: ComposerEffortLevel = "auto";
-let openComposerSessionMenu: "permission" | "effort" | null = null;
+let activeComposerPermissionMode: ComposerPermissionMode = "acceptEdits";
+let activeComposerModel: ComposerModelId = "opus-4.7-1m";
+let activeComposerEffort: ComposerEffortLevel = "xhigh";
+let activeComposerFastModeEnabled = false;
+let openComposerSessionMenu: "permission" | "model" | null = null;
 let composerSlashOpen = false;
 let composerSlashQuery = "";
 let composerWinsmuxCommandOpen = false;
@@ -517,15 +523,22 @@ const MAX_RUNTIME_CONVERSATION_ITEMS = 80;
 const OPERATOR_PTY_ID = "operator";
 const OPERATOR_PTY_COLS = 120;
 const OPERATOR_PTY_ROWS = 32;
+const DEFAULT_EDITOR_FONT_SIZE = 14;
+const MIN_EDITOR_FONT_SIZE = 8;
+const MAX_EDITOR_FONT_SIZE = 32;
+const DEFAULT_CODE_FONT_FAMILY = "Consolas, 'Courier New', monospace";
 const themeState: ThemeState = {
   theme: "codex-dark",
   density: "comfortable",
   wrapMode: "balanced",
   codeFont: "system",
+  codeFontFamily: DEFAULT_CODE_FONT_FAMILY,
+  editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
   focusMode: "standard",
   language: "en",
 };
 let settingsDraftState: ThemeState | null = null;
+let settingsFontFamilyMenuOpen = false;
 let runtimeRolePreferences: RuntimeRolePreference[] = [];
 let runtimeRoleDraftState: RuntimeRolePreference[] | null = null;
 let preferredWideSidebarOpen = true;
@@ -552,35 +565,37 @@ const composerPermissionModeOptions: Array<{
   labelJa: string;
   description: string;
   descriptionJa: string;
+  shortcut: string;
 }> = [
   {
-    value: "auto",
-    label: "Auto mode",
-    labelJa: "自動モード",
-    description: "Let Claude choose the permission mode for each task.",
-    descriptionJa: "タスクごとに権限モードを自動で選びます。",
-  },
-  {
-    value: "default",
-    label: "Ask before edits",
-    labelJa: "編集前に確認",
-    description: "Ask before making file edits.",
-    descriptionJa: "ファイルを編集する前に確認します。",
-  },
-  {
     value: "acceptEdits",
-    label: "Edit automatically",
-    labelJa: "自動編集",
-    description: "Allow edits without an extra edit confirmation.",
-    descriptionJa: "追加の編集確認なしで変更します。",
+    label: "Approve edits",
+    labelJa: "編集を承認",
+    description: "Allow Claude to edit without prompting for each change.",
+    descriptionJa: "変更ごとの確認を省き、編集を承認します。",
+    shortcut: "1",
   },
   {
     value: "plan",
     label: "Plan mode",
-    labelJa: "計画モード",
+    labelJa: "プランモード",
     description: "Explore and prepare a plan before editing.",
     descriptionJa: "編集前に調査し、計画を作ります。",
+    shortcut: "2",
   },
+];
+
+const composerModelOptions: Array<{
+  value: ComposerModelId;
+  label: string;
+  labelJa: string;
+  cliModel: string;
+  shortcut: string;
+}> = [
+  { value: "opus-4.7", label: "Opus 4.7", labelJa: "Opus 4.7", cliModel: "opus", shortcut: "1" },
+  { value: "opus-4.7-1m", label: "Opus 4.7 1M", labelJa: "Opus 4.7 1M", cliModel: "opusplan", shortcut: "2" },
+  { value: "sonnet-4.6", label: "Sonnet 4.6", labelJa: "Sonnet 4.6", cliModel: "sonnet", shortcut: "3" },
+  { value: "haiku-4.5", label: "Haiku 4.5", labelJa: "Haiku 4.5", cliModel: "haiku", shortcut: "4" },
 ];
 
 const composerEffortOptions: Array<{
@@ -589,20 +604,15 @@ const composerEffortOptions: Array<{
   labelJa: string;
   description: string;
   descriptionJa: string;
+  shortcut: string;
 }> = [
-  {
-    value: "auto",
-    label: "Auto",
-    labelJa: "自動",
-    description: "Use the provider default effort for this session.",
-    descriptionJa: "このセッションでは既定の思考量を使います。",
-  },
   {
     value: "low",
     label: "Low",
     labelJa: "低",
     description: "Prefer faster responses with lighter reasoning.",
     descriptionJa: "軽めの推論で応答を速くします。",
+    shortcut: "L",
   },
   {
     value: "medium",
@@ -610,6 +620,7 @@ const composerEffortOptions: Array<{
     labelJa: "中",
     description: "Balance speed and reasoning depth.",
     descriptionJa: "速度と思考の深さを両立します。",
+    shortcut: "M",
   },
   {
     value: "high",
@@ -617,20 +628,23 @@ const composerEffortOptions: Array<{
     labelJa: "高",
     description: "Use deeper reasoning for complex work.",
     descriptionJa: "複雑な作業に向けて深く考えます。",
+    shortcut: "H",
   },
   {
     value: "xhigh",
-    label: "XHigh",
-    labelJa: "特高",
+    label: "Ultra",
+    labelJa: "超高",
     description: "Use extra reasoning depth for difficult work.",
     descriptionJa: "難しい作業に向けてさらに深く考えます。",
+    shortcut: "U",
   },
   {
     value: "max",
     label: "Max",
-    labelJa: "最大",
+    labelJa: "Max",
     description: "Use the maximum available effort.",
     descriptionJa: "利用可能な最大の思考量を使います。",
+    shortcut: "X",
   },
 ];
 
@@ -880,9 +894,9 @@ const wrapOptions: Array<{ value: WrapMode; label: string; description: string; 
 ];
 
 const codeFontOptions: Array<{ value: CodeFontMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
-  { value: "system", label: "System mono", labelJa: "システム等幅", description: "Use the current platform monospace stack.", descriptionJa: "現在の Windows 環境の等幅フォントを使います。" },
-  { value: "google-sans-code", label: "Google Sans Code", labelJa: "Google Sans Code", description: "Cleaner code reading when installed on Windows.", descriptionJa: "インストール済みの時にコードを読みやすく表示します。" },
-  { value: "jetbrains-mono", label: "JetBrains Mono", labelJa: "JetBrains Mono", description: "Familiar developer font with clear symbols.", descriptionJa: "記号を判別しやすい開発者向けフォントです。" },
+  { value: "system", label: "Consolas / Courier New", labelJa: "Consolas / Courier New", description: "VS Code Windows default: Consolas, 'Courier New', monospace.", descriptionJa: "VS Code の Windows 既定値: Consolas, 'Courier New', monospace。" },
+  { value: "google-sans-code", label: "Google Sans Code", labelJa: "Google Sans Code", description: "Use Google Sans Code when it is installed.", descriptionJa: "インストール済みの時に Google Sans Code を使います。" },
+  { value: "jetbrains-mono", label: "JetBrains Mono", labelJa: "JetBrains Mono", description: "Use JetBrains Mono when it is installed.", descriptionJa: "インストール済みの時に JetBrains Mono を使います。" },
 ];
 
 const focusModeOptions: Array<{ value: FocusMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
@@ -907,6 +921,13 @@ const runtimeProviderOptions: Array<{ value: RuntimeProviderId; label: string; l
   { value: "claude", label: "Claude Code", labelJa: "Claude Code" },
   { value: "gemini", label: "Gemini CLI", labelJa: "Gemini CLI" },
 ];
+const lockedOperatorRuntimePreference: RuntimeRolePreference = {
+  roleId: "operator",
+  provider: "claude",
+  model: "provider-default",
+  modelSource: "provider-default",
+  reasoningEffort: "provider-default",
+};
 
 const runtimeModelSourceOptions: Array<{ value: RuntimeModelSource; label: string; labelJa: string }> = [
   { value: "provider-default", label: "Provider default", labelJa: "既定値" },
@@ -938,7 +959,9 @@ runtimeRolePreferences = readStoredRuntimeRolePreferences();
 {
   const storedComposerControls = readStoredComposerSessionControls();
   activeComposerPermissionMode = storedComposerControls.permissionMode;
+  activeComposerModel = storedComposerControls.model;
   activeComposerEffort = storedComposerControls.effort;
+  activeComposerFastModeEnabled = storedComposerControls.fastModeEnabled;
 }
 
 const fallbackExplorerPaths = [
@@ -960,15 +983,30 @@ const fallbackExplorerPaths = [
   "Cargo.lock",
 ];
 
-function getCodeFontFamily(mode: CodeFontMode = themeState.codeFont) {
+function normalizeCodeFontFamily(value: unknown, fallback = DEFAULT_CODE_FONT_FAMILY) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 200) {
+    return fallback;
+  }
+  return trimmed;
+}
+
+function getCodeFontFamily(mode: CodeFontMode = themeState.codeFont, fontFamily: string = themeState.codeFontFamily) {
+  const normalizedFamily = normalizeCodeFontFamily(fontFamily, "");
+  if (normalizedFamily) {
+    return normalizedFamily;
+  }
   switch (mode) {
     case "google-sans-code":
-      return "\"Google Sans Code\", \"Cascadia Code\", \"Consolas\", monospace";
+      return "Google Sans Code, Consolas, 'Courier New', monospace";
     case "jetbrains-mono":
-      return "\"JetBrains Mono\", \"Cascadia Code\", \"Consolas\", monospace";
+      return "JetBrains Mono, Consolas, 'Courier New', monospace";
     case "system":
     default:
-      return "\"Cascadia Code\", \"Consolas\", monospace";
+      return DEFAULT_CODE_FONT_FAMILY;
   }
 }
 
@@ -1055,7 +1093,7 @@ function createPane(paneId?: string): string {
 
   const terminal = new Terminal({
     cursorBlink: true,
-    fontSize: 13,
+    fontSize: themeState.editorFontSize,
     fontFamily: getCodeFontFamily(),
     theme: {
       background: "#131722",
@@ -1118,10 +1156,17 @@ function getPaneStartupInput(_paneId: string) {
 
 function getOperatorStartupInput() {
   const args = ["claude", "--permission-mode", activeComposerPermissionMode];
+  const modelOption = getComposerModelOption();
+  if (modelOption.cliModel) {
+    args.push("--model", modelOption.cliModel);
+  }
   if (activeComposerEffort !== "auto") {
     args.push("--effort", activeComposerEffort);
   }
-  return `${args.join(" ")}\r`;
+  const startupInput = `${args.join(" ")}\r`;
+  return activeComposerFastModeEnabled
+    ? `${startupInput}/fast\r`
+    : startupInput;
 }
 
 function ensureOperatorPtyStarted() {
@@ -1967,7 +2012,9 @@ function normalizeBrowserSourceGraphItem(item: Partial<BrowserSourceGraphItem>):
   return {
     run_id: runId,
     short_sha: `${item.short_sha || runId.slice(0, 7)}`.trim(),
-    graph_symbols: `${item.graph_symbols || "* "}`.trimEnd(),
+    parents: Array.isArray(item.parents)
+      ? item.parents.map((parent) => `${parent || ""}`.trim()).filter((parent) => parent)
+      : [],
     task: `${item.task || runId}`.trim(),
     branch: `${item.branch || ""}`.trim(),
     refs: Array.isArray(item.refs) ? item.refs.map((ref) => `${ref}`.trim()).filter((ref) => ref) : [],
@@ -2982,10 +3029,43 @@ function getSourceGraphMeta(item: SourceControlGraphItem) {
   return parts.join("  ");
 }
 
-function getSourceGraphSymbols(item: SourceControlGraphItem) {
+function getSourceGraphParents(item: SourceControlGraphItem) {
   const browserItem = item as BrowserSourceGraphItem;
-  const symbols = `${browserItem.graph_symbols || ""}`.trimEnd();
-  return symbols || "*";
+  return Array.isArray(browserItem.parents)
+    ? browserItem.parents.map((parent) => `${parent || ""}`.trim()).filter((parent) => parent)
+    : [];
+}
+
+interface SourceGraphLane {
+  branchId: number;
+  expecting: string;
+}
+
+interface SourceGraphRow {
+  item: SourceControlGraphItem;
+  commitLane: number;
+  lanesIn: SourceGraphLane[];
+  lanesOut: SourceGraphLane[];
+}
+
+interface SourceGraphLaneSpan {
+  branchId: number;
+  col: number;
+  startRow: number;
+  endRow: number;
+}
+
+interface SourceGraphMergeMarker {
+  row: number;
+  fromCol: number;
+  toCol: number;
+  colorLane: number;
+}
+
+interface SourceGraphLayout {
+  rows: SourceGraphRow[];
+  laneSpans: SourceGraphLaneSpan[];
+  mergeMarkers: SourceGraphMergeMarker[];
 }
 
 const sourceGraphLaneColors = [
@@ -2998,114 +3078,300 @@ const sourceGraphLaneColors = [
 ];
 const sourceGraphSvgNamespace = "http://www.w3.org/2000/svg";
 const sourceGraphLaneStep = 8;
-const sourceGraphLaneOffset = 4;
-const sourceGraphRowHeight = 34;
+const sourceGraphLaneOffset = 8.5;
+const sourceGraphRowHeight = 46;
+const sourceGraphCurveZone = 5;
+const sourceGraphNormalNodeRadius = 2.5;
+const sourceGraphHeadNodeRadius = 3.5;
+const sourceGraphMergeNodeRadius = 2;
 
 function getSourceGraphLaneX(laneIndex: number) {
   return sourceGraphLaneOffset + laneIndex * sourceGraphLaneStep;
 }
 
-function appendSourceGraphLine(
-  svg: SVGElement,
-  fromLane: number,
-  toLane: number,
-  colorLane: number,
-  className: string,
-  y1 = 0,
-  y2 = sourceGraphRowHeight,
-) {
-  const line = document.createElementNS(sourceGraphSvgNamespace, "line");
-  line.setAttribute("class", `source-control-graph-lane-line ${className}`);
-  line.setAttribute("x1", String(getSourceGraphLaneX(fromLane)));
-  line.setAttribute("y1", String(y1));
-  line.setAttribute("x2", String(getSourceGraphLaneX(toLane)));
-  line.setAttribute("y2", String(y2));
-  line.setAttribute("stroke", sourceGraphLaneColors[colorLane % sourceGraphLaneColors.length]);
-  svg.appendChild(line);
+function getSourceGraphRowY(rowIndex: number) {
+  return sourceGraphRowHeight / 2 + rowIndex * sourceGraphRowHeight;
 }
 
-function appendSourceGraphElbow(svg: SVGElement, fromLane: number, toLane: number, colorLane: number) {
-  const fromX = getSourceGraphLaneX(fromLane);
-  const toX = getSourceGraphLaneX(toLane);
-  const direction = toX >= fromX ? 1 : -1;
-  const cornerRadius = 4;
-  const topTurnY = 9;
-  const bottomTurnY = 21;
-  const path = document.createElementNS(sourceGraphSvgNamespace, "path");
-  const startCornerX = fromX + direction * cornerRadius;
-  const endCornerX = toX - direction * cornerRadius;
-  path.setAttribute("class", "source-control-graph-lane-path is-elbow");
-  path.setAttribute(
-    "d",
-    [
-      `M ${fromX} 0`,
-      `V ${topTurnY}`,
-      `Q ${fromX} ${topTurnY + cornerRadius} ${startCornerX} ${topTurnY + cornerRadius}`,
-      `H ${endCornerX}`,
-      `Q ${toX} ${topTurnY + cornerRadius} ${toX} ${bottomTurnY}`,
-      `V ${sourceGraphRowHeight}`,
-    ].join(" "),
-  );
-  path.setAttribute("stroke", sourceGraphLaneColors[colorLane % sourceGraphLaneColors.length]);
-  svg.appendChild(path);
+function getSourceGraphColor(colorLane: number) {
+  return sourceGraphLaneColors[colorLane % sourceGraphLaneColors.length];
 }
 
-function appendSourceGraphNode(svg: SVGElement, laneIndex: number) {
-  const color = sourceGraphLaneColors[laneIndex % sourceGraphLaneColors.length];
-  const outer = document.createElementNS(sourceGraphSvgNamespace, "circle");
-  outer.setAttribute("class", "source-control-graph-lane-node");
-  outer.setAttribute("cx", String(getSourceGraphLaneX(laneIndex)));
-  outer.setAttribute("cy", String(sourceGraphRowHeight / 2));
-  outer.setAttribute("r", "4");
-  outer.setAttribute("stroke", color);
-  svg.appendChild(outer);
-
-  const core = document.createElementNS(sourceGraphSvgNamespace, "circle");
-  core.setAttribute("class", "source-control-graph-lane-node-core");
-  core.setAttribute("cx", String(getSourceGraphLaneX(laneIndex)));
-  core.setAttribute("cy", String(sourceGraphRowHeight / 2));
-  core.setAttribute("r", "1.6");
-  core.setAttribute("fill", color);
-  svg.appendChild(core);
+function cloneSourceGraphLanes(lanes: SourceGraphLane[]) {
+  return lanes.map((lane) => ({ ...lane }));
 }
 
-function renderSourceGraphLanes(root: HTMLElement, symbols: string) {
-  root.replaceChildren();
-  const normalizedChars = normalizeSourceGraphTokens(symbols);
+function assignSourceGraphRows(items: SourceControlGraphItem[]) {
+  const rows: SourceGraphRow[] = [];
+  const active: SourceGraphLane[] = [];
+  let nextBranchId = 0;
 
-  const svg = document.createElementNS(sourceGraphSvgNamespace, "svg");
-  svg.setAttribute("class", "source-control-graph-svg");
-  svg.setAttribute(
-    "viewBox",
-    `0 0 ${sourceGraphLaneOffset * 2 + sourceGraphLaneStep * (sourceGraphMaxLanes - 1)} ${sourceGraphRowHeight}`,
-  );
-  svg.setAttribute("aria-hidden", "true");
+  for (const item of items) {
+    const commitId = item.run_id;
+    let commitLane = active.findIndex((lane) => lane.expecting === commitId);
+    if (commitLane < 0) {
+      active.push({
+        branchId: nextBranchId,
+        expecting: commitId,
+      });
+      nextBranchId += 1;
+      commitLane = active.length - 1;
+    }
 
-  normalizedChars.forEach((symbol, laneIndex) => {
-    const kind = getSourceGraphLaneKind(symbol);
+    const lanesIn = cloneSourceGraphLanes(active);
+    const parents = getSourceGraphParents(item);
+    const firstParent = parents[0] ?? "";
+    if (firstParent) {
+      const existingParentLane = active.findIndex((lane) => lane.expecting === firstParent && lane.branchId !== active[commitLane].branchId);
+      if (existingParentLane >= 0) {
+        active.splice(commitLane, 1);
+      } else {
+        active[commitLane].expecting = firstParent;
+      }
+    } else {
+      active.splice(commitLane, 1);
+    }
 
-    if (kind === "node") {
-      appendSourceGraphLine(svg, laneIndex, laneIndex, laneIndex, "is-vertical");
-      appendSourceGraphNode(svg, laneIndex);
-    } else if (kind === "vertical") {
-      appendSourceGraphLine(svg, laneIndex, laneIndex, laneIndex, "is-vertical");
-    } else if (kind === "diagonal-left") {
-      appendSourceGraphElbow(svg, laneIndex, Math.max(0, laneIndex - 1), laneIndex);
-    } else if (kind === "diagonal-right") {
-      const fromLane = laneIndex > 0 ? laneIndex - 1 : laneIndex;
-      appendSourceGraphElbow(svg, fromLane, laneIndex, laneIndex);
-    } else if (kind === "horizontal") {
-      const fromLane = Math.max(0, laneIndex - 1);
-      const toLane = Math.min(sourceGraphMaxLanes - 1, laneIndex + 1);
-      appendSourceGraphLine(svg, fromLane, toLane, laneIndex, "is-horizontal", sourceGraphRowHeight / 2, sourceGraphRowHeight / 2);
-    } else if (kind === "connector") {
-      const fromLane = Math.max(0, laneIndex - 1);
-      const toLane = Math.min(sourceGraphMaxLanes - 1, laneIndex + 1);
-      appendSourceGraphLine(svg, fromLane, toLane, laneIndex, "is-horizontal", sourceGraphRowHeight / 2, sourceGraphRowHeight / 2);
+    for (const parent of parents.slice(1)) {
+      if (!active.some((lane) => lane.expecting === parent)) {
+        active.push({
+          branchId: nextBranchId,
+          expecting: parent,
+        });
+        nextBranchId += 1;
+      }
+    }
+
+    rows.push({
+      item,
+      commitLane,
+      lanesIn,
+      lanesOut: cloneSourceGraphLanes(active),
+    });
+  }
+
+  return rows;
+}
+
+function pushSourceGraphLaneSpan(spans: SourceGraphLaneSpan[], branchId: number, col: number, startRow: number, endRow: number) {
+  if (startRow === endRow) {
+    return;
+  }
+  spans.push({ branchId, col, startRow, endRow });
+}
+
+function buildSourceGraphLaneSpans(rows: SourceGraphRow[]) {
+  const spans: SourceGraphLaneSpan[] = [];
+  const active = new Map<number, { startRow: number; col: number }>();
+
+  rows.forEach((row, rowIndex) => {
+    row.lanesIn.forEach((lane, col) => {
+      if (!active.has(lane.branchId)) {
+        active.set(lane.branchId, { startRow: rowIndex, col });
+      }
+    });
+
+    const outIds = new Set(row.lanesOut.map((lane) => lane.branchId));
+    row.lanesOut.forEach((lane, col) => {
+      const current = active.get(lane.branchId);
+      if (!current) {
+        active.set(lane.branchId, { startRow: rowIndex + 1, col });
+        return;
+      }
+      if (current.col !== col) {
+        pushSourceGraphLaneSpan(spans, lane.branchId, current.col, current.startRow, rowIndex);
+        active.set(lane.branchId, { startRow: rowIndex + 1, col });
+      }
+    });
+
+    for (const [branchId, current] of Array.from(active.entries())) {
+      if (!outIds.has(branchId)) {
+        active.delete(branchId);
+        pushSourceGraphLaneSpan(spans, branchId, current.col, current.startRow, rowIndex);
+      }
     }
   });
 
-  root.appendChild(svg);
+  active.forEach((current, branchId) => {
+    pushSourceGraphLaneSpan(spans, branchId, current.col, current.startRow, rows.length);
+  });
+
+  return spans.sort((a, b) =>
+    a.startRow - b.startRow ||
+    a.col - b.col ||
+    a.branchId - b.branchId ||
+    a.endRow - b.endRow
+  );
+}
+
+function buildSourceGraphMergeMarkers(rows: SourceGraphRow[]) {
+  const markers: SourceGraphMergeMarker[] = [];
+
+  rows.forEach((row, rowIndex) => {
+    const parents = getSourceGraphParents(row.item);
+    parents.slice(1).forEach((parent) => {
+      const fromCol = row.lanesOut.findIndex((lane) => lane.expecting === parent);
+      if (fromCol < 0 || fromCol === row.commitLane) {
+        return;
+      }
+      markers.push({
+        row: rowIndex,
+        fromCol,
+        toCol: row.commitLane,
+        colorLane: row.lanesOut[fromCol].branchId,
+      });
+    });
+  });
+
+  return markers;
+}
+
+function buildSourceGraphLayout(rows: SourceGraphRow[]): SourceGraphLayout {
+  return {
+    rows,
+    laneSpans: buildSourceGraphLaneSpans(rows),
+    mergeMarkers: buildSourceGraphMergeMarkers(rows),
+  };
+}
+
+function getSourceGraphRowLaneCount(row: SourceGraphRow) {
+  return Math.max(1, row.commitLane + 1, row.lanesIn.length, row.lanesOut.length);
+}
+
+function getSourceGraphSvgWidth(laneCount: number) {
+  const rightEdge = getSourceGraphLaneX(Math.max(0, laneCount - 1)) + sourceGraphHeadNodeRadius;
+  return Math.max(52, Math.ceil(rightEdge));
+}
+
+function sourceGraphLaneShiftPath(x1: number, y1: number, x2: number, y2: number) {
+  if (Math.abs(x1 - x2) < 0.01) {
+    return `M ${x1} ${y1} L ${x2} ${y2}`;
+  }
+  const middle = (y1 + y2) / 2;
+  const curveTop = Math.max(y1, middle - sourceGraphCurveZone);
+  const curveBottom = Math.min(y2, middle + sourceGraphCurveZone);
+  const cy1 = curveTop + (curveBottom - curveTop) * 0.4;
+  const cy2 = curveTop + (curveBottom - curveTop) * 0.6;
+  return `M ${x1} ${y1} L ${x1} ${curveTop} C ${x1} ${cy1} ${x2} ${cy2} ${x2} ${curveBottom} L ${x2} ${y2}`;
+}
+
+function appendSourceGraphPath(svg: SVGElement, d: string, branchId: number, className: string) {
+  const path = document.createElementNS(sourceGraphSvgNamespace, "path");
+  path.setAttribute("class", `source-control-graph-lane-path ${className}`);
+  path.setAttribute("d", d);
+  path.setAttribute("stroke", getSourceGraphColor(branchId));
+  svg.appendChild(path);
+}
+
+function appendSourceGraphSegment(svg: SVGElement, fromLane: number, fromY: number, toLane: number, toY: number, branchId: number, className = "is-segment") {
+  const fromX = getSourceGraphLaneX(fromLane);
+  const toX = getSourceGraphLaneX(toLane);
+  appendSourceGraphPath(svg, sourceGraphLaneShiftPath(fromX, fromY, toX, toY), branchId, className);
+}
+
+function appendSourceGraphNode(svg: SVGElement, laneIndex: number, y: number, branchId: number, rowIndex: number) {
+  const color = getSourceGraphColor(branchId);
+  const outer = document.createElementNS(sourceGraphSvgNamespace, "circle");
+  outer.setAttribute("class", rowIndex === 0 ? "source-control-graph-lane-node is-head" : "source-control-graph-lane-node");
+  outer.setAttribute("cx", String(getSourceGraphLaneX(laneIndex)));
+  outer.setAttribute("cy", String(y));
+  outer.setAttribute("r", String(rowIndex === 0 ? sourceGraphHeadNodeRadius : sourceGraphNormalNodeRadius));
+  outer.setAttribute("stroke", color);
+  svg.appendChild(outer);
+
+  if (rowIndex === 0) {
+    const core = document.createElementNS(sourceGraphSvgNamespace, "circle");
+    core.setAttribute("class", "source-control-graph-lane-node-core");
+    core.setAttribute("cx", String(getSourceGraphLaneX(laneIndex)));
+    core.setAttribute("cy", String(y));
+    core.setAttribute("r", "1.2");
+    core.setAttribute("fill", color);
+    svg.appendChild(core);
+  }
+}
+
+function appendSourceGraphMergeMarker(svg: SVGElement, marker: SourceGraphMergeMarker) {
+  const color = getSourceGraphColor(marker.colorLane);
+  const dot = document.createElementNS(sourceGraphSvgNamespace, "circle");
+  dot.setAttribute("class", "source-control-graph-merge-marker");
+  dot.setAttribute("cx", String(getSourceGraphLaneX(marker.fromCol)));
+  dot.setAttribute("cy", String(getSourceGraphRowY(marker.row)));
+  dot.setAttribute("r", String(sourceGraphMergeNodeRadius));
+  dot.setAttribute("stroke", color);
+  svg.appendChild(dot);
+}
+
+function renderSourceGraphOverlay(layout: SourceGraphLayout) {
+  const maxLanes = Math.max(
+    1,
+    ...layout.rows.map(getSourceGraphRowLaneCount),
+    ...layout.laneSpans.map((span) => span.col + 1),
+    ...layout.mergeMarkers.map((marker) => Math.max(marker.fromCol, marker.toCol) + 1),
+  );
+  const svgWidth = getSourceGraphSvgWidth(maxLanes);
+  const svgHeight = Math.max(sourceGraphRowHeight, layout.rows.length * sourceGraphRowHeight);
+  const svg = document.createElementNS(sourceGraphSvgNamespace, "svg");
+  svg.setAttribute("class", "source-control-graph-svg source-control-graph-overlay");
+  svg.setAttribute("viewBox", `0 0 ${svgWidth} ${svgHeight}`);
+  svg.setAttribute("width", String(svgWidth));
+  svg.setAttribute("height", String(svgHeight));
+  svg.style.width = `${svgWidth}px`;
+  svg.style.height = `${svgHeight}px`;
+  svg.setAttribute("aria-hidden", "true");
+
+  layout.laneSpans.forEach((span) => {
+    appendSourceGraphPath(
+      svg,
+      `M ${getSourceGraphLaneX(span.col)} ${getSourceGraphRowY(span.startRow)} L ${getSourceGraphLaneX(span.col)} ${getSourceGraphRowY(span.endRow)}`,
+      span.branchId,
+      "is-pillar",
+    );
+  });
+
+  layout.rows.forEach((row, rowIndex) => {
+    const currentLane = row.lanesIn[row.commitLane];
+    if (!currentLane) {
+      return;
+    }
+
+    const y1 = getSourceGraphRowY(rowIndex);
+    const y2 = getSourceGraphRowY(rowIndex + 1);
+    row.lanesIn.forEach((lane, laneIndex) => {
+      if (lane.branchId === currentLane.branchId) {
+        return;
+      }
+      const nextLaneIndex = row.lanesOut.findIndex((nextLane) => nextLane.branchId === lane.branchId);
+      if (nextLaneIndex >= 0 && nextLaneIndex !== laneIndex) {
+        appendSourceGraphSegment(svg, laneIndex, y1, nextLaneIndex, y2, lane.branchId);
+      }
+    });
+
+    for (const [parentIndex, parent] of getSourceGraphParents(row.item).entries()) {
+      const nextLaneIndex = row.lanesOut.findIndex((lane) => lane.expecting === parent);
+      if (nextLaneIndex < 0 || nextLaneIndex === row.commitLane) {
+        continue;
+      }
+      const branchId = parentIndex === 0
+        ? currentLane.branchId
+        : row.lanesOut[nextLaneIndex].branchId;
+      appendSourceGraphSegment(svg, row.commitLane, y1, nextLaneIndex, y2, branchId);
+    }
+  });
+
+  layout.rows.forEach((row, rowIndex) => {
+    const currentLane = row.lanesIn[row.commitLane];
+    if (currentLane) {
+      appendSourceGraphNode(svg, row.commitLane, getSourceGraphRowY(rowIndex), currentLane.branchId, rowIndex);
+    }
+  });
+  layout.mergeMarkers.forEach((marker) => appendSourceGraphMergeMarker(svg, marker));
+  return svg;
+}
+
+function renderSourceGraphLanes(root: HTMLElement, row: SourceGraphRow) {
+  root.replaceChildren();
+  root.style.width = `${getSourceGraphSvgWidth(getSourceGraphRowLaneCount(row))}px`;
+  root.style.height = `${sourceGraphRowHeight}px`;
 }
 
 function applySourceControlSplitHeight() {
@@ -3241,10 +3507,11 @@ function renderSourceControlView() {
   }
 
   graphRoot.innerHTML = "";
-  const graphItems = (getRunProjections().length > 0
-    ? getRunProjections()
-    : browserSourceGraphItems
+  const graphItems = (browserSourceGraphItems.length > 0
+    ? browserSourceGraphItems
+    : getRunProjections()
   ).slice(0, 30);
+  const graphRows = assignSourceGraphRows(graphItems);
   if (graphItems.length === 0) {
     const empty = document.createElement("div");
     empty.className = "sidebar-row";
@@ -3253,7 +3520,10 @@ function renderSourceControlView() {
       `<span class="sidebar-row-meta">${getLanguageText("Connect the desktop summary to show recent runs.", "最近の実行を表示するにはデスクトップ要約を接続してください。")}</span>`;
     graphRoot.appendChild(empty);
   } else {
-    graphItems.forEach((item, index) => {
+    const graphLayout = buildSourceGraphLayout(graphRows);
+    graphRoot.appendChild(renderSourceGraphOverlay(graphLayout));
+    graphRows.forEach((row, index) => {
+      const item = row.item;
       const commit = getSourceGraphCommit(item);
       const button = document.createElement("button");
       button.type = "button";
@@ -3268,14 +3538,14 @@ function renderSourceControlView() {
 
       const lane = document.createElement("span");
       lane.className = "source-control-graph-lanes";
-      const graphSymbols = getSourceGraphSymbols(item);
       lane.title = getLanguageText(
-        "Commit graph. Dot = commit, vertical line = lane continues, diagonal line = branch or merge.",
-        "コミットグラフ。点はコミット、縦線はレーン継続、斜線は分岐または合流です。",
+        "Commit graph. Dot = commit; lines show lane, branch, and merge flow.",
+        "コミットグラフ。点はコミット、線はレーン、分岐、合流の流れを示します。",
       );
       lane.setAttribute("aria-label", lane.title);
-      lane.dataset.graphSymbols = graphSymbols;
-      renderSourceGraphLanes(lane, graphSymbols);
+      lane.dataset.graphParents = getSourceGraphParents(item).join(" ");
+      lane.dataset.graphLaneCount = `${getSourceGraphRowLaneCount(row)}`;
+      renderSourceGraphLanes(lane, row);
 
       const content = document.createElement("span");
       content.className = "source-control-graph-content";
@@ -5082,6 +5352,8 @@ function cloneThemeState(state: ThemeState): ThemeState {
     density: state.density,
     wrapMode: state.wrapMode,
     codeFont: state.codeFont,
+    codeFontFamily: state.codeFontFamily,
+    editorFontSize: state.editorFontSize,
     focusMode: state.focusMode,
     language: state.language,
   };
@@ -5092,19 +5364,15 @@ function themeStatesEqual(left: ThemeState, right: ThemeState) {
     && left.density === right.density
     && left.wrapMode === right.wrapMode
     && left.codeFont === right.codeFont
+    && left.codeFontFamily === right.codeFontFamily
+    && left.editorFontSize === right.editorFontSize
     && left.focusMode === right.focusMode
     && left.language === right.language;
 }
 
 function defaultRuntimeRolePreferences(): RuntimeRolePreference[] {
   return [
-    {
-      roleId: "operator",
-      provider: "claude",
-      model: "provider-default",
-      modelSource: "provider-default",
-      reasoningEffort: "provider-default",
-    },
+    { ...lockedOperatorRuntimePreference },
     {
       roleId: "worker",
       provider: "codex",
@@ -5127,6 +5395,9 @@ function cloneRuntimeRolePreferences(state: RuntimeRolePreference[]) {
 }
 
 function normalizeRuntimeRolePreference(value: Partial<RuntimeRolePreference>, fallback: RuntimeRolePreference): RuntimeRolePreference {
+  if (fallback.roleId === "operator") {
+    return { ...lockedOperatorRuntimePreference };
+  }
   const provider = runtimeProviderOptions.find((item) => item.value === value.provider)?.value ?? fallback.provider;
   const modelSource = runtimeModelSourceOptions.find((item) => item.value === value.modelSource)?.value ?? fallback.modelSource;
   const reasoningEffort = runtimeReasoningOptions.find((item) => item.value === value.reasoningEffort)?.value ?? fallback.reasoningEffort;
@@ -5171,8 +5442,10 @@ function persistRuntimeRolePreferences() {
 
 function defaultComposerSessionControls(): ComposerSessionControlState {
   return {
-    permissionMode: "auto",
-    effort: "auto",
+    permissionMode: "acceptEdits",
+    model: "opus-4.7-1m",
+    effort: "xhigh",
+    fastModeEnabled: false,
   };
 }
 
@@ -5180,7 +5453,9 @@ function normalizeComposerSessionControls(value: Partial<ComposerSessionControlS
   const fallback = defaultComposerSessionControls();
   return {
     permissionMode: composerPermissionModeOptions.find((item) => item.value === value?.permissionMode)?.value ?? fallback.permissionMode,
+    model: composerModelOptions.find((item) => item.value === value?.model)?.value ?? fallback.model,
     effort: composerEffortOptions.find((item) => item.value === value?.effort)?.value ?? fallback.effort,
+    fastModeEnabled: typeof value?.fastModeEnabled === "boolean" ? value.fastModeEnabled : fallback.fastModeEnabled,
   };
 }
 
@@ -5203,7 +5478,9 @@ function persistComposerSessionControls() {
       COMPOSER_SESSION_STORAGE_KEY,
       JSON.stringify({
         permissionMode: activeComposerPermissionMode,
+        model: activeComposerModel,
         effort: activeComposerEffort,
+        fastModeEnabled: activeComposerFastModeEnabled,
       }),
     );
     return true;
@@ -5251,6 +5528,14 @@ async function applyRuntimeRolePreferencesToDesktop(state: RuntimeRolePreference
   );
 }
 
+function clampEditorFontSize(value: unknown) {
+  const numericValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return DEFAULT_EDITOR_FONT_SIZE;
+  }
+  return Math.max(MIN_EDITOR_FONT_SIZE, Math.min(MAX_EDITOR_FONT_SIZE, Math.round(numericValue)));
+}
+
 function readStoredShellPreferences(): ShellPreferenceState | null {
   try {
     const rawValue = window.localStorage.getItem(SHELL_PREFERENCES_STORAGE_KEY);
@@ -5263,6 +5548,8 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
     const density = densityOptions.find((item) => item.value === parsed.density)?.value;
     const wrapMode = wrapOptions.find((item) => item.value === parsed.wrapMode)?.value;
     const codeFont = codeFontOptions.find((item) => item.value === parsed.codeFont)?.value ?? "system";
+    const codeFontFamily = normalizeCodeFontFamily(parsed.codeFontFamily, getCodeFontFamily(codeFont, ""));
+    const editorFontSize = clampEditorFontSize(parsed.editorFontSize);
     const focusMode = focusModeOptions.find((item) => item.value === parsed.focusMode)?.value ?? "standard";
     const language = languageOptions.find((item) => item.value === parsed.language)?.value ?? "en";
     if (!theme || !density || !wrapMode) {
@@ -5284,6 +5571,8 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       density,
       wrapMode,
       codeFont,
+      codeFontFamily,
+      editorFontSize,
       focusMode,
       language,
       sidebarWidth: Math.max(240, Math.min(380, Math.round(sidebarWidthValue))),
@@ -5306,6 +5595,8 @@ function persistThemeState() {
       density: themeState.density,
       wrapMode: themeState.wrapMode,
       codeFont: themeState.codeFont,
+      codeFontFamily: themeState.codeFontFamily,
+      editorFontSize: themeState.editorFontSize,
       focusMode: themeState.focusMode,
       language: themeState.language,
       sidebarWidth,
@@ -5335,6 +5626,8 @@ function applyShellPreferences() {
   shell.dataset.wrapMode = themeState.wrapMode;
   shell.dataset.codeFont = themeState.codeFont;
   shell.dataset.focusMode = themeState.focusMode;
+  shell.style.setProperty("--font-code", themeState.codeFontFamily);
+  shell.style.setProperty("--editor-font-size", `${themeState.editorFontSize}px`);
   document.documentElement.lang = themeState.language;
   if (workbenchWidth !== null) {
     shell.style.setProperty("--workbench-width", `${workbenchWidth}px`);
@@ -5480,8 +5773,35 @@ function applyLanguageChrome() {
     terminalDrawerOpen ? (japanese ? "ワーカーペインを隠す" : "Hide worker panes") : (japanese ? "ワーカーペインを表示" : "Show worker panes"),
   );
   setElementText("settings-sheet-title", japanese ? "設定" : "Settings");
-  setElementText("close-settings-btn", japanese ? "キャンセル" : "Cancel");
   setElementText("apply-settings-btn", japanese ? "適用" : "Apply");
+  document.getElementById("close-settings-btn")?.setAttribute("aria-label", japanese ? "設定を閉じる" : "Close settings");
+  document.getElementById("close-settings-btn")?.setAttribute("title", japanese ? "設定を閉じる" : "Close settings");
+  setElementText("settings-search-label", japanese ? "設定を検索" : "Search settings");
+  const settingsSearchInput = document.getElementById("settings-search-input") as HTMLInputElement | null;
+  if (settingsSearchInput) {
+    settingsSearchInput.placeholder = japanese ? "設定の検索" : "Search settings";
+  }
+  setElementText("settings-tab-user", japanese ? "ユーザー" : "User");
+  setElementText("settings-tab-workspace", japanese ? "ワークスペース" : "Workspace");
+  setElementText("settings-nav-common", japanese ? "よく使用するもの" : "Commonly Used");
+  setElementText("settings-nav-editor", japanese ? "テキスト エディター" : "Text Editor");
+  setElementText("settings-nav-workbench", japanese ? "ワークベンチ" : "Workbench");
+  setElementText("settings-nav-window", japanese ? "ウィンドウ" : "Window");
+  setElementText("settings-nav-chat", japanese ? "チャット" : "Chat");
+  setElementText("settings-nav-features", japanese ? "機能" : "Features");
+  setElementText("settings-nav-application", japanese ? "アプリケーション" : "Application");
+  setElementText("settings-nav-security", japanese ? "セキュリティ" : "Security");
+  setElementText("settings-nav-extensions", japanese ? "拡張機能" : "Extensions");
+  setElementText("settings-common-label", japanese ? "よく使用するもの" : "Commonly Used");
+  setElementText("settings-common-value", japanese ? "エディターや端末で使うフォント設定です。" : "Editor font size and font family for code-oriented surfaces.");
+  setElementText("editor-font-size-label", japanese ? "エディター: フォント サイズ" : "Editor: Font Size");
+  setElementText(
+    "editor-font-size-description",
+    japanese
+      ? "エディター表示と端末ペインで使うフォントサイズです。既定値は 14 です。"
+      : "Controls the font size used in editor previews and terminal panes. The default is 14.",
+  );
+  setElementText("editor-font-size-reset-btn", japanese ? "既定値 14" : "Default 14");
   setElementText("settings-profile-label", japanese ? "実行環境" : "Runtime");
   setElementText(
     "settings-profile-value",
@@ -5497,8 +5817,14 @@ function applyLanguageChrome() {
   setElementText("settings-density-value", japanese ? "作業領域、入力欄、パネルの余白を調整します。" : "Workspace spacing, composer height, and panel padding.");
   setElementText("settings-wrap-label", japanese ? "折り返し" : "Wrap");
   setElementText("settings-wrap-value", japanese ? "会話、エディター、下部ステータスの折り返しを調整します。" : "Conversation, editor, and footer wrapping behavior.");
-  setElementText("settings-code-font-label", japanese ? "コードフォント" : "Code font");
+  setElementText("settings-code-font-label", japanese ? "エディター: フォント ファミリ" : "Editor: Font Family");
   setElementText("settings-code-font-value", japanese ? "コード表示、端末ペイン、差分詳細に使います。" : "Used in code preview, terminal panes, and diff details.");
+  document
+    .getElementById("settings-font-family-menu-btn")
+    ?.setAttribute("aria-label", japanese ? "フォント ファミリを選ぶ" : "Choose font family");
+  document
+    .getElementById("settings-font-family-menu-btn")
+    ?.setAttribute("title", japanese ? "フォント ファミリを選ぶ" : "Choose font family");
   setElementText("settings-display-label", japanese ? "表示" : "Display");
   setElementText("settings-display-value", japanese ? "タイムラインの詳細を常時どこまで表示するかを選びます。" : "Choose how much timeline detail stays visible by default.");
   setElementText("settings-workspace-label", japanese ? "作業領域" : "Workspace");
@@ -5559,12 +5885,17 @@ function applyLanguageChrome() {
 
   const attachButton = document.getElementById("attach-btn");
   if (attachButton) {
-    attachButton.textContent = japanese ? "添付" : "Attach";
+    attachButton.setAttribute("aria-label", japanese ? "ファイルを添付" : "Attach files");
+    attachButton.setAttribute("title", japanese ? "ファイルを添付" : "Attach files");
   }
   updateVoiceInputButton();
   updateOperatorInterruptButton();
   renderComposerSessionControls();
-  setElementText("send-btn", japanese ? "送信" : "Send");
+  const sendButton = document.getElementById("send-btn");
+  if (sendButton) {
+    sendButton.setAttribute("aria-label", japanese ? "Enter で送信" : "Send with Enter");
+    sendButton.setAttribute("title", japanese ? "Enter で送信" : "Send with Enter");
+  }
 
   const sourceControlMessage = document.getElementById("source-control-message") as HTMLTextAreaElement | null;
   if (sourceControlMessage) {
@@ -5577,6 +5908,8 @@ function applyThemeState(nextState: ThemeState) {
   themeState.density = nextState.density;
   themeState.wrapMode = nextState.wrapMode;
   themeState.codeFont = nextState.codeFont;
+  themeState.codeFontFamily = normalizeCodeFontFamily(nextState.codeFontFamily);
+  themeState.editorFontSize = clampEditorFontSize(nextState.editorFontSize);
   themeState.focusMode = nextState.focusMode;
   themeState.language = nextState.language;
   applyShellPreferences();
@@ -5606,8 +5939,10 @@ function applyThemeState(nextState: ThemeState) {
 
 function applyCodeFontToPanes() {
   const fontFamily = getCodeFontFamily();
+  const fontSize = themeState.editorFontSize;
   panes.forEach((pane) => {
     pane.terminal.options.fontFamily = fontFamily;
+    pane.terminal.options.fontSize = fontSize;
   });
   fitVisibleWorkbenchPanes();
 }
@@ -5636,6 +5971,144 @@ function renderPreferenceOptions<T extends string>(
   }
 }
 
+function getSettingsDraftState() {
+  if (!settingsDraftState) {
+    settingsDraftState = cloneThemeState(themeState);
+  }
+  return settingsDraftState;
+}
+
+function updateSettingsApplyButton() {
+  const applyButton = document.getElementById("apply-settings-btn") as HTMLButtonElement | null;
+  if (!applyButton) {
+    return;
+  }
+  const hasThemeChanges = Boolean(settingsDraftState && !themeStatesEqual(settingsDraftState, themeState));
+  const hasRuntimeChanges = Boolean(runtimeRoleDraftState && !runtimeRolePreferencesEqual(runtimeRoleDraftState, runtimeRolePreferences));
+  const hasChanges = hasThemeChanges || hasRuntimeChanges;
+  applyButton.disabled = !hasChanges;
+  applyButton.setAttribute("aria-disabled", hasChanges ? "false" : "true");
+}
+
+function updateEditorFontSizeControl(activeState: ThemeState) {
+  const input = document.getElementById("editor-font-size-input") as HTMLInputElement | null;
+  const resetButton = document.getElementById("editor-font-size-reset-btn") as HTMLButtonElement | null;
+  if (input) {
+    input.min = `${MIN_EDITOR_FONT_SIZE}`;
+    input.max = `${MAX_EDITOR_FONT_SIZE}`;
+    input.step = "1";
+    const activeValue = `${activeState.editorFontSize}`;
+    if (input.value !== activeValue) {
+      input.value = activeValue;
+    }
+    input.setAttribute("aria-valuemin", `${MIN_EDITOR_FONT_SIZE}`);
+    input.setAttribute("aria-valuemax", `${MAX_EDITOR_FONT_SIZE}`);
+    input.setAttribute("aria-valuenow", activeValue);
+    input.oninput = () => {
+      const draft = getSettingsDraftState();
+      draft.editorFontSize = clampEditorFontSize(input.value);
+      input.setAttribute("aria-valuenow", `${draft.editorFontSize}`);
+      updateSettingsApplyButton();
+      renderFooterLane();
+    };
+    input.onchange = () => {
+      const draft = getSettingsDraftState();
+      draft.editorFontSize = clampEditorFontSize(input.value);
+      input.value = `${draft.editorFontSize}`;
+      renderSettingsControls();
+    };
+  }
+  if (resetButton) {
+    resetButton.disabled = activeState.editorFontSize === DEFAULT_EDITOR_FONT_SIZE;
+    resetButton.setAttribute("aria-disabled", resetButton.disabled ? "true" : "false");
+    resetButton.onclick = () => {
+      const draft = getSettingsDraftState();
+      draft.editorFontSize = DEFAULT_EDITOR_FONT_SIZE;
+      renderSettingsControls();
+    };
+  }
+}
+
+function updateFontFamilyControl(activeState: ThemeState) {
+  const input = document.getElementById("settings-font-family-input") as HTMLInputElement | null;
+  if (!input) {
+    return;
+  }
+  if (input.value !== activeState.codeFontFamily) {
+    input.value = activeState.codeFontFamily;
+  }
+  input.oninput = () => {
+    const draft = getSettingsDraftState();
+    draft.codeFontFamily = normalizeCodeFontFamily(input.value);
+    settingsFontFamilyMenuOpen = false;
+    updateSettingsApplyButton();
+    renderFooterLane();
+  };
+  input.onchange = () => {
+    const draft = getSettingsDraftState();
+    draft.codeFontFamily = normalizeCodeFontFamily(input.value);
+    input.value = draft.codeFontFamily;
+    renderSettingsControls();
+  };
+}
+
+function renderSettingsFontFamilyMenu(activeState: ThemeState) {
+  const button = document.getElementById("settings-font-family-menu-btn") as HTMLButtonElement | null;
+  const menu = document.getElementById("settings-font-family-menu");
+  if (!button || !menu) {
+    return;
+  }
+
+  const japanese = activeState.language === "ja";
+  button.setAttribute("aria-expanded", settingsFontFamilyMenuOpen ? "true" : "false");
+  button.onclick = (event) => {
+    event.stopPropagation();
+    settingsFontFamilyMenuOpen = !settingsFontFamilyMenuOpen;
+    renderSettingsControls();
+  };
+
+  menu.hidden = !settingsFontFamilyMenuOpen;
+  menu.innerHTML = "";
+  for (const option of codeFontOptions) {
+    const presetValue = getCodeFontFamily(option.value, "");
+    const isSelected = normalizeCodeFontFamily(activeState.codeFontFamily, "") === presetValue;
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `settings-popover-item ${isSelected ? "is-active" : ""}`;
+    item.setAttribute("role", "menuitemradio");
+    item.setAttribute("aria-checked", isSelected ? "true" : "false");
+
+    const check = document.createElement("span");
+    check.className = "settings-popover-check";
+    check.textContent = isSelected ? "✓" : "";
+    item.appendChild(check);
+
+    const body = document.createElement("span");
+    body.className = "settings-popover-item-body";
+
+    const label = document.createElement("span");
+    label.className = "settings-popover-item-label";
+    label.textContent = japanese ? (option.labelJa ?? option.label) : option.label;
+    body.appendChild(label);
+
+    const description = document.createElement("span");
+    description.className = "settings-popover-item-description";
+    description.textContent = presetValue;
+    body.appendChild(description);
+
+    item.appendChild(body);
+    item.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const draft = getSettingsDraftState();
+      draft.codeFont = option.value;
+      draft.codeFontFamily = presetValue;
+      settingsFontFamilyMenuOpen = false;
+      renderSettingsControls();
+    });
+    menu.appendChild(item);
+  }
+}
+
 function getRuntimeRoleDraft() {
   if (!runtimeRoleDraftState) {
     runtimeRoleDraftState = cloneRuntimeRolePreferences(runtimeRolePreferences);
@@ -5649,11 +6122,18 @@ function updateRuntimeRoleDraft(roleId: RuntimeRoleId, patch: Partial<RuntimeRol
   if (index === -1) {
     return;
   }
-  draft[index] = { ...draft[index], ...patch };
+  draft[index] = roleId === "operator"
+    ? { ...lockedOperatorRuntimePreference }
+    : { ...draft[index], ...patch };
   renderSettingsControls();
 }
 
 function runtimeAccessNote(preference: RuntimeRolePreference, japanese: boolean) {
+  if (preference.roleId === "operator") {
+    return japanese
+      ? "デスクトップのオペレーターペインは現在 Claude Code 固定です。プロバイダー変更は今後のリリースで対応予定です。モデルと工数は入力欄のメニューで選びます。"
+      : "The desktop operator pane is currently fixed to Claude Code. Provider switching is planned for a later release. Choose model and effort from the composer menu.";
+  }
   if (preference.provider === "codex") {
     return japanese
       ? "ローカルの Codex CLI のモデル一覧と ChatGPT アカウント権限を使います。API の一覧だけでは判断しません。"
@@ -5681,10 +6161,14 @@ function createRuntimeSelect<T extends string>(
   options: Array<{ value: T; label: string; labelJa: string }>,
   japanese: boolean,
   onChange: (value: T) => void,
+  controlOptions: { disabled?: boolean; title?: string } = {},
 ) {
   const group = document.createElement("label");
-  group.className = "runtime-control-group";
+  group.className = `runtime-control-group ${controlOptions.disabled ? "is-disabled" : ""}`;
   group.setAttribute("for", id);
+  if (controlOptions.title) {
+    group.setAttribute("title", controlOptions.title);
+  }
 
   const caption = document.createElement("span");
   caption.className = "runtime-control-caption";
@@ -5694,6 +6178,8 @@ function createRuntimeSelect<T extends string>(
   const select = document.createElement("select");
   select.id = id;
   select.className = "runtime-control-select";
+  select.disabled = Boolean(controlOptions.disabled);
+  select.setAttribute("aria-disabled", controlOptions.disabled ? "true" : "false");
   for (const option of options) {
     const element = document.createElement("option");
     element.value = option.value;
@@ -5726,10 +6212,11 @@ function renderRuntimeRoleControls() {
   root.appendChild(datalist);
 
   for (const role of runtimeRoleOptions) {
+    const operatorLocked = role.value === "operator";
     const preference = activeRuntimeState.find((item) => item.roleId === role.value)
       ?? defaultRuntimeRolePreferences().find((item) => item.roleId === role.value)!;
     const panel = document.createElement("section");
-    panel.className = "runtime-role-panel";
+    panel.className = `runtime-role-panel ${operatorLocked ? "is-locked" : ""}`;
 
     const header = document.createElement("div");
     header.className = "runtime-role-header";
@@ -5747,10 +6234,18 @@ function renderRuntimeRoleControls() {
     controls.appendChild(createRuntimeSelect(
       `runtime-provider-${role.value}`,
       japanese ? "プロバイダー" : "Provider",
-      preference.provider,
+      operatorLocked ? lockedOperatorRuntimePreference.provider : preference.provider,
       runtimeProviderOptions,
       japanese,
       (provider) => updateRuntimeRoleDraft(role.value, { provider }),
+      operatorLocked
+        ? {
+            disabled: true,
+            title: japanese
+              ? "オペレーターペインは現在 Claude Code 固定です。"
+              : "The operator pane is currently fixed to Claude Code.",
+          }
+        : {},
     ));
 
     const modelGroup = document.createElement("label");
@@ -5762,7 +6257,9 @@ function renderRuntimeRoleControls() {
     const modelInput = document.createElement("input");
     modelInput.id = `runtime-model-${role.value}`;
     modelInput.className = "runtime-control-input";
-    modelInput.value = preference.model;
+    modelInput.value = operatorLocked ? lockedOperatorRuntimePreference.model : preference.model;
+    modelInput.disabled = operatorLocked;
+    modelInput.setAttribute("aria-disabled", operatorLocked ? "true" : "false");
     modelInput.setAttribute("list", "runtime-model-suggestions");
     modelInput.placeholder = "provider-default";
     modelInput.addEventListener("change", () => {
@@ -5780,6 +6277,7 @@ function renderRuntimeRoleControls() {
       runtimeModelSourceOptions,
       japanese,
       (modelSource) => updateRuntimeRoleDraft(role.value, { modelSource }),
+      operatorLocked ? { disabled: true } : {},
     ));
     controls.appendChild(createRuntimeSelect(
       `runtime-reasoning-${role.value}`,
@@ -5788,12 +6286,13 @@ function renderRuntimeRoleControls() {
       runtimeReasoningOptions,
       japanese,
       (reasoningEffort) => updateRuntimeRoleDraft(role.value, { reasoningEffort }),
+      operatorLocked ? { disabled: true } : {},
     ));
     panel.appendChild(controls);
 
     const note = document.createElement("div");
     note.className = "runtime-access-note";
-    note.textContent = runtimeAccessNote(preference, japanese);
+    note.textContent = runtimeAccessNote(operatorLocked ? lockedOperatorRuntimePreference : preference, japanese);
     panel.appendChild(note);
 
     root.appendChild(panel);
@@ -5802,65 +6301,38 @@ function renderRuntimeRoleControls() {
 
 function renderSettingsControls() {
   const activeState = settingsDraftState ?? themeState;
-  const applyButton = document.getElementById("apply-settings-btn") as HTMLButtonElement | null;
+
+  updateEditorFontSizeControl(activeState);
+  updateFontFamilyControl(activeState);
+  renderSettingsFontFamilyMenu(activeState);
 
   renderPreferenceOptions("theme-options", themeOptions, activeState.theme, (value) => {
-    if (!settingsDraftState) {
-      settingsDraftState = cloneThemeState(themeState);
-    }
-    settingsDraftState.theme = value;
+    getSettingsDraftState().theme = value;
     renderSettingsControls();
   });
 
   renderPreferenceOptions("density-options", densityOptions, activeState.density, (value) => {
-    if (!settingsDraftState) {
-      settingsDraftState = cloneThemeState(themeState);
-    }
-    settingsDraftState.density = value;
+    getSettingsDraftState().density = value;
     renderSettingsControls();
   });
 
   renderPreferenceOptions("wrap-options", wrapOptions, activeState.wrapMode, (value) => {
-    if (!settingsDraftState) {
-      settingsDraftState = cloneThemeState(themeState);
-    }
-    settingsDraftState.wrapMode = value;
-    renderSettingsControls();
-  });
-
-  renderPreferenceOptions("code-font-options", codeFontOptions, activeState.codeFont, (value) => {
-    if (!settingsDraftState) {
-      settingsDraftState = cloneThemeState(themeState);
-    }
-    settingsDraftState.codeFont = value;
+    getSettingsDraftState().wrapMode = value;
     renderSettingsControls();
   });
 
   renderPreferenceOptions("focus-mode-options", focusModeOptions, activeState.focusMode, (value) => {
-    if (!settingsDraftState) {
-      settingsDraftState = cloneThemeState(themeState);
-    }
-    settingsDraftState.focusMode = value;
+    getSettingsDraftState().focusMode = value;
     renderSettingsControls();
   });
 
   renderPreferenceOptions("language-options", languageOptions, activeState.language, (value) => {
-    if (!settingsDraftState) {
-      settingsDraftState = cloneThemeState(themeState);
-    }
-    settingsDraftState.language = value;
+    getSettingsDraftState().language = value;
     renderSettingsControls();
   });
 
   renderRuntimeRoleControls();
-
-  if (applyButton) {
-    const hasThemeChanges = Boolean(settingsDraftState && !themeStatesEqual(settingsDraftState, themeState));
-    const hasRuntimeChanges = Boolean(runtimeRoleDraftState && !runtimeRolePreferencesEqual(runtimeRoleDraftState, runtimeRolePreferences));
-    const hasChanges = hasThemeChanges || hasRuntimeChanges;
-    applyButton.disabled = !hasChanges;
-    applyButton.setAttribute("aria-disabled", hasChanges ? "false" : "true");
-  }
+  updateSettingsApplyButton();
 
   renderFooterLane();
 }
@@ -6314,6 +6786,10 @@ function getComposerPermissionModeOption(mode: ComposerPermissionMode = activeCo
   return composerPermissionModeOptions.find((item) => item.value === mode) ?? composerPermissionModeOptions[0];
 }
 
+function getComposerModelOption(model: ComposerModelId = activeComposerModel) {
+  return composerModelOptions.find((item) => item.value === model) ?? composerModelOptions[0];
+}
+
 function getComposerEffortOption(effort: ComposerEffortLevel = activeComposerEffort) {
   return composerEffortOptions.find((item) => item.value === effort) ?? composerEffortOptions[0];
 }
@@ -6328,7 +6804,18 @@ function setComposerPermissionMode(mode: ComposerPermissionMode) {
 function setComposerEffort(effort: ComposerEffortLevel) {
   activeComposerEffort = effort;
   persistComposerSessionControls();
-  openComposerSessionMenu = null;
+  renderComposerSessionControls();
+}
+
+function setComposerModel(model: ComposerModelId) {
+  activeComposerModel = model;
+  persistComposerSessionControls();
+  renderComposerSessionControls();
+}
+
+function setComposerFastMode(enabled: boolean) {
+  activeComposerFastModeEnabled = enabled;
+  persistComposerSessionControls();
   renderComposerSessionControls();
 }
 
@@ -6339,84 +6826,163 @@ function stepComposerPermissionMode(delta: 1 | -1) {
   setComposerPermissionMode(next.value);
 }
 
-function createComposerSessionMenuButton<T extends string>(
-  kind: "permission" | "effort",
-  kicker: string,
-  selectedValue: T,
-  selectedLabel: string,
-  options: Array<{ value: T; label: string; labelJa: string; description: string; descriptionJa: string }>,
-  onSelect: (value: T) => void,
-) {
+function createComposerShortcut(label: string) {
+  const shortcut = document.createElement("span");
+  shortcut.className = "composer-session-shortcut";
+  shortcut.textContent = label;
+  return shortcut;
+}
+
+function createComposerSessionControl(kind: "permission" | "model", selectedLabel: string) {
   const group = document.createElement("div");
-  group.className = "composer-session-control";
+  group.className = `composer-session-control composer-session-control-${kind}`;
 
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "composer-session-trigger";
+  button.className = `composer-session-trigger composer-session-trigger-${kind}`;
   button.setAttribute("aria-expanded", openComposerSessionMenu === kind ? "true" : "false");
   button.setAttribute("aria-haspopup", "menu");
   button.setAttribute("aria-controls", `composer-${kind}-menu`);
-  button.innerHTML = `<span class="composer-session-kicker">${kicker}</span><span class="composer-session-value">${selectedLabel}</span>`;
+  button.innerHTML = `<span class="composer-session-value">${selectedLabel}</span>`;
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     openComposerSessionMenu = openComposerSessionMenu === kind ? null : kind;
     renderComposerSessionControls();
   });
   group.appendChild(button);
+  return group;
+}
 
-  if (openComposerSessionMenu === kind) {
-    const menu = document.createElement("div");
-    menu.id = `composer-${kind}-menu`;
-    menu.className = "composer-session-menu";
-    menu.setAttribute("role", "menu");
-    for (const option of options) {
-      const optionButton = document.createElement("button");
-      optionButton.type = "button";
-      optionButton.className = `composer-session-option ${option.value === selectedValue ? "is-active" : ""}`;
-      optionButton.setAttribute("role", "menuitemradio");
-      optionButton.setAttribute("aria-checked", option.value === selectedValue ? "true" : "false");
-      optionButton.innerHTML = `
-        <span class="composer-session-option-label">${themeState.language === "ja" ? option.labelJa : option.label}</span>
-        <span class="composer-session-option-description">${themeState.language === "ja" ? option.descriptionJa : option.description}</span>
-      `;
-      optionButton.addEventListener("click", (event) => {
-        event.stopPropagation();
-        onSelect(option.value);
-      });
-      menu.appendChild(optionButton);
-    }
-    group.appendChild(menu);
+function createComposerMenu(id: string, className = "") {
+  const menu = document.createElement("div");
+  menu.id = id;
+  menu.className = `composer-session-menu ${className}`.trim();
+  menu.setAttribute("role", "menu");
+  return menu;
+}
+
+function appendComposerMenuHeading(menu: HTMLElement, label: string) {
+  const heading = document.createElement("div");
+  heading.className = "composer-session-heading";
+  heading.textContent = label;
+  menu.appendChild(heading);
+}
+
+function appendComposerMenuSeparator(menu: HTMLElement) {
+  const separator = document.createElement("div");
+  separator.className = "composer-session-separator";
+  menu.appendChild(separator);
+}
+
+function appendComposerOptionButton<T extends string>(
+  menu: HTMLElement,
+  option: { value: T; label: string; labelJa: string; description?: string; descriptionJa?: string; shortcut?: string },
+  selectedValue: T,
+  onSelect: (value: T) => void,
+) {
+  const japanese = themeState.language === "ja";
+  const optionButton = document.createElement("button");
+  optionButton.type = "button";
+  optionButton.className = `composer-session-option ${option.value === selectedValue ? "is-active" : ""}`;
+  optionButton.setAttribute("role", "menuitemradio");
+  optionButton.setAttribute("aria-checked", option.value === selectedValue ? "true" : "false");
+
+  const labelRow = document.createElement("span");
+  labelRow.className = "composer-session-option-label-row";
+
+  const label = document.createElement("span");
+  label.className = "composer-session-option-label";
+  label.textContent = japanese ? option.labelJa : option.label;
+  labelRow.appendChild(label);
+  if (option.shortcut) {
+    labelRow.appendChild(createComposerShortcut(option.shortcut));
   }
+  optionButton.appendChild(labelRow);
+
+  const descriptionText = japanese ? option.descriptionJa : option.description;
+  if (descriptionText) {
+    const description = document.createElement("span");
+    description.className = "composer-session-option-description";
+    description.textContent = descriptionText;
+    optionButton.appendChild(description);
+  }
+
+  optionButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onSelect(option.value);
+  });
+  menu.appendChild(optionButton);
+}
+
+function createComposerPermissionMenu() {
+  const group = createComposerSessionControl("permission", themeState.language === "ja" ? getComposerPermissionModeOption().labelJa : getComposerPermissionModeOption().label);
+  if (openComposerSessionMenu !== "permission") {
+    return group;
+  }
+
+  const menu = createComposerMenu("composer-permission-menu", "composer-session-menu-permission");
+  appendComposerMenuHeading(menu, themeState.language === "ja" ? "モード" : "Mode");
+  for (const option of composerPermissionModeOptions) {
+    appendComposerOptionButton(menu, option, activeComposerPermissionMode, setComposerPermissionMode);
+  }
+  group.appendChild(menu);
+  return group;
+}
+
+function createComposerModelMenu() {
+  const modelOption = getComposerModelOption();
+  const effortOption = getComposerEffortOption();
+  const selectedLabel = `${themeState.language === "ja" ? modelOption.labelJa : modelOption.label}・${themeState.language === "ja" ? effortOption.labelJa : effortOption.label}`;
+  const group = createComposerSessionControl("model", selectedLabel);
+  if (openComposerSessionMenu !== "model") {
+    return group;
+  }
+
+  const japanese = themeState.language === "ja";
+  const menu = createComposerMenu("composer-model-menu", "composer-session-menu-model");
+  appendComposerMenuHeading(menu, japanese ? "モデル" : "Model");
+  for (const option of composerModelOptions) {
+    appendComposerOptionButton(menu, option, activeComposerModel, setComposerModel);
+  }
+  appendComposerMenuSeparator(menu);
+  appendComposerMenuHeading(menu, japanese ? "工数" : "Effort");
+  for (const option of composerEffortOptions) {
+    appendComposerOptionButton(menu, option, activeComposerEffort, setComposerEffort);
+  }
+  appendComposerMenuSeparator(menu);
+  appendComposerMenuHeading(menu, japanese ? "高速モード" : "Fast mode");
+  const fastToggle = document.createElement("button");
+  fastToggle.type = "button";
+  fastToggle.className = `composer-fast-toggle ${activeComposerFastModeEnabled ? "is-active" : ""}`;
+  fastToggle.setAttribute("role", "switch");
+  fastToggle.setAttribute("aria-checked", activeComposerFastModeEnabled ? "true" : "false");
+  fastToggle.innerHTML = `
+    <span>${japanese ? "高速モードを有効にする" : "Enable fast mode"}</span>
+    <span class="composer-fast-toggle-track" aria-hidden="true"><span class="composer-fast-toggle-thumb"></span></span>
+  `;
+  fastToggle.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setComposerFastMode(!activeComposerFastModeEnabled);
+  });
+  menu.appendChild(fastToggle);
+  group.appendChild(menu);
 
   return group;
 }
 
 function renderComposerSessionControls() {
   const root = document.getElementById("composer-session-row");
+  const modelRoot = document.getElementById("composer-model-row");
   if (!root) {
     return;
   }
 
-  const permissionOption = getComposerPermissionModeOption();
-  const effortOption = getComposerEffortOption();
-  const japanese = themeState.language === "ja";
   root.innerHTML = "";
-  root.appendChild(createComposerSessionMenuButton(
-    "permission",
-    japanese ? "権限" : "Mode",
-    activeComposerPermissionMode,
-    japanese ? permissionOption.labelJa : permissionOption.label,
-    composerPermissionModeOptions,
-    setComposerPermissionMode,
-  ));
-  root.appendChild(createComposerSessionMenuButton(
-    "effort",
-    japanese ? "思考量" : "Effort",
-    activeComposerEffort,
-    japanese ? effortOption.labelJa : effortOption.label,
-    composerEffortOptions,
-    setComposerEffort,
-  ));
+  if (modelRoot) {
+    modelRoot.innerHTML = "";
+  }
+  root.appendChild(createComposerPermissionMenu());
+  (modelRoot ?? root).appendChild(createComposerModelMenu());
 }
 
 function renderComposerModes() {
@@ -6427,17 +6993,7 @@ function renderComposerModes() {
   }
 
   root.innerHTML = "";
-  for (const item of composerModes) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = `mode-chip ${item.mode === activeComposerMode ? "is-active" : ""}`;
-    button.textContent = getComposerModeLabel(item.mode);
-    button.setAttribute("aria-pressed", item.mode === activeComposerMode ? "true" : "false");
-    button.addEventListener("click", () => {
-      setComposerMode(item.mode);
-    });
-    root.appendChild(button);
-  }
+  root.hidden = true;
 
   const selected = composerModes.find((item) => item.mode === activeComposerMode);
   if (selected) {
@@ -7506,13 +8062,14 @@ function getFilteredCommandActions() {
 }
 
 function openCommandBar() {
+  if (settingsSheetOpen) {
+    (document.getElementById("settings-search-input") as HTMLInputElement | null)?.focus();
+    return;
+  }
   commandBarOpen = true;
   commandBarQuery = "";
   selectedCommandIndex = 0;
   lastCommandBarFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  if (settingsSheetOpen) {
-    setSettingsSheet(false);
-  }
   renderCommandBar();
 
   const shell = document.getElementById("command-bar-shell");
@@ -8056,7 +8613,11 @@ function renderEditorSurface() {
       diffPreview.appendChild(previewMeta);
       diffPreview.hidden = false;
     }
-    renderEditorCode(code, selected.content, selected.language);
+    if (isEditorSvgPreview(selected)) {
+      renderEditorSvgPreview(code, selected.content, selected.path);
+    } else {
+      renderEditorCode(code, selected.content, selected.language);
+    }
     renderEditorStatusbar(statusbar, [
       ...(detachedSurface ? [{ label: "", value: "Detached" }] : []),
       ...(detachedSurface && detachedSurfaceRunLabel ? [{ label: "", value: detachedSurfaceRunLabel }] : []),
@@ -8239,6 +8800,7 @@ function appendCodeEditorLine(root: HTMLElement, text: string, language: string)
 
 function renderEditorCode(root: HTMLElement, content: string, language = "Text") {
   root.innerHTML = "";
+  root.classList.remove("is-image-preview");
   const lines = splitEditorCodeLines(content);
   root.style.setProperty("--editor-line-number-digits", `${Math.max(2, String(lines.length).length)}`);
   for (const line of lines) {
@@ -8261,6 +8823,26 @@ function renderEditorCode(root: HTMLElement, content: string, language = "Text")
     row.append(lineNumber, lineContent);
     root.appendChild(row);
   }
+}
+
+function renderEditorSvgPreview(root: HTMLElement, content: string, path: string) {
+  root.innerHTML = "";
+  root.classList.add("is-image-preview");
+
+  const preview = document.createElement("div");
+  preview.className = "editor-svg-preview";
+
+  const image = document.createElement("img");
+  image.className = "editor-svg-preview-image";
+  image.alt = path;
+  image.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(content)}`;
+
+  preview.appendChild(image);
+  root.appendChild(preview);
+}
+
+function isEditorSvgPreview(selected: EditorFile) {
+  return selected.path.toLowerCase().endsWith(".svg");
 }
 
 function getEditorLineEndingLabel(content: string) {
@@ -9140,6 +9722,109 @@ function syncActivityButtons() {
   }
 }
 
+function getSettingsSections() {
+  return Array.from(document.querySelectorAll<HTMLElement>("#settings-content .settings-section"));
+}
+
+function setActiveSettingsNav(targetId: string) {
+  document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
+    button.classList.toggle("is-active", button.dataset.settingsTarget === targetId);
+  });
+}
+
+function updateSettingsSearchFilter() {
+  const input = document.getElementById("settings-search-input") as HTMLInputElement | null;
+  const query = input?.value.trim().toLowerCase() ?? "";
+  const sections = getSettingsSections();
+  let firstVisibleId = "";
+  for (const section of sections) {
+    const text = section.textContent?.toLowerCase() ?? "";
+    const visible = !query || text.includes(query);
+    section.hidden = !visible;
+    if (visible && !firstVisibleId) {
+      firstVisibleId = section.id;
+    }
+  }
+
+  document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
+    const targetId = button.dataset.settingsTarget ?? "";
+    const target = document.getElementById(targetId);
+    const disabled = Boolean(query && target instanceof HTMLElement && target.hidden);
+    button.disabled = disabled;
+    button.setAttribute("aria-disabled", disabled ? "true" : "false");
+  });
+
+  if (firstVisibleId) {
+    setActiveSettingsNav(firstVisibleId);
+  }
+}
+
+function scrollToSettingsSection(targetId: string) {
+  const target = document.getElementById(targetId);
+  if (!(target instanceof HTMLElement) || target.hidden) {
+    return;
+  }
+  setActiveSettingsNav(targetId);
+  target.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+function resetSettingsView() {
+  settingsFontFamilyMenuOpen = false;
+  const searchInput = document.getElementById("settings-search-input") as HTMLInputElement | null;
+  if (searchInput) {
+    searchInput.value = "";
+  }
+  getSettingsSections().forEach((section) => {
+    section.hidden = false;
+  });
+  document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
+    button.disabled = false;
+    button.setAttribute("aria-disabled", "false");
+  });
+  setActiveSettingsNav("settings-section-common");
+  const content = document.getElementById("settings-content");
+  if (content) {
+    content.scrollTop = 0;
+  }
+}
+
+function initializeSettingsDialogControls() {
+  document.querySelectorAll<HTMLButtonElement>(".settings-nav-item").forEach((button) => {
+    button.addEventListener("click", () => {
+      const targetId = button.dataset.settingsTarget;
+      if (targetId) {
+        scrollToSettingsSection(targetId);
+      }
+    });
+  });
+
+  document.getElementById("settings-search-input")?.addEventListener("input", updateSettingsSearchFilter);
+
+  document.addEventListener("click", (event) => {
+    if (!settingsFontFamilyMenuOpen) {
+      return;
+    }
+    const target = event.target;
+    if (!(target instanceof Node)) {
+      return;
+    }
+    const control = document.querySelector(".settings-font-family-control");
+    if (control?.contains(target)) {
+      return;
+    }
+    settingsFontFamilyMenuOpen = false;
+    renderSettingsControls();
+  });
+
+  document.querySelectorAll<HTMLButtonElement>(".settings-tab").forEach((button) => {
+    button.addEventListener("click", () => {
+      document.querySelectorAll<HTMLButtonElement>(".settings-tab").forEach((candidate) => {
+        candidate.classList.toggle("is-active", candidate === button);
+      });
+    });
+  });
+}
+
 function setSettingsSheet(open: boolean) {
   const sheet = document.getElementById("settings-sheet");
   if (!sheet) {
@@ -9151,6 +9836,9 @@ function setSettingsSheet(open: boolean) {
   }
 
   settingsSheetOpen = open;
+  if (!open) {
+    settingsFontFamilyMenuOpen = false;
+  }
   if (open) {
     if (!settingsDraftState) {
       settingsDraftState = cloneThemeState(themeState);
@@ -9158,7 +9846,11 @@ function setSettingsSheet(open: boolean) {
     if (!runtimeRoleDraftState) {
       runtimeRoleDraftState = cloneRuntimeRolePreferences(runtimeRolePreferences);
     }
+    resetSettingsView();
     renderSettingsControls();
+    requestAnimationFrame(() => {
+      (document.getElementById("settings-search-input") as HTMLInputElement | null)?.focus();
+    });
   }
   sheet.hidden = !open;
   renderFooterLane();
@@ -9190,7 +9882,10 @@ async function applySettingsDraft() {
   }
   settingsDraftState = null;
   runtimeRoleDraftState = null;
-  setSettingsSheet(false);
+  if (settingsSheetOpen) {
+    renderSettingsControls();
+    renderFooterLane();
+  }
   renderConversation(getConversationItems());
 }
 
@@ -9263,7 +9958,9 @@ function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
     details: [
       { label: "mode", value: activeComposerMode },
       { label: "permission-mode", value: activeComposerPermissionMode },
+      { label: "model", value: getComposerModelOption().label },
       { label: "effort", value: activeComposerEffort },
+      { label: "fast-mode", value: activeComposerFastModeEnabled ? "enabled" : "disabled" },
       { label: "attachments", value: `${attachments.length}` },
     ],
     tone: "info",
@@ -9603,6 +10300,9 @@ function inferLanguageFromPath(path: string) {
   }
   if (path.endsWith(".html")) {
     return "HTML";
+  }
+  if (path.endsWith(".svg")) {
+    return "SVG";
   }
   if (path.endsWith(".ps1")) {
     return "PowerShell";
@@ -10232,6 +10932,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   renderSessions();
   renderExplorer();
   void refreshProjectExplorerEntries();
+  void refreshBrowserSourceControl();
   renderOpenEditors();
   renderSourceSummary();
   renderSourceEntries();
@@ -10397,6 +11098,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("close-settings-btn")?.addEventListener("click", () => {
     cancelSettingsDraft();
   });
+
+  initializeSettingsDialogControls();
 
   document.getElementById("sidebar-overlay")?.addEventListener("click", () => {
     setSidebarOpen(false);
@@ -10719,12 +11422,6 @@ window.addEventListener("DOMContentLoaded", async () => {
       return;
     }
 
-    if (event.key === "Escape" && settingsSheetOpen) {
-      event.preventDefault();
-      cancelSettingsDraft();
-      return;
-    }
-
     if (event.key === "Escape" && openComposerSessionMenu) {
       event.preventDefault();
       openComposerSessionMenu = null;
@@ -10734,7 +11431,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
     if ((event.ctrlKey || event.metaKey) && event.key === ",") {
       event.preventDefault();
-      setSettingsSheet(!settingsSheetOpen);
+      setSettingsSheet(true);
     }
   });
 

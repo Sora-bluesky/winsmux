@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use git_graph::commit::{read_repo_commits, read_stdin_log};
 use git_graph::lane::assign_lanes;
+use git_graph::layout::build_layout;
 use git_graph::render::render_svg;
 
 #[derive(Debug, Parser)]
@@ -32,8 +33,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     commits.truncate(args.max);
+    let head_id = commits.first().map(|commit| commit.id.as_str());
     let rows = assign_lanes(&commits);
-    let svg = render_svg(&rows);
+    let layout = build_layout(rows);
+    let svg = render_svg(&layout, head_id);
 
     if let Some(out) = args.out {
         fs::write(out, svg)?;

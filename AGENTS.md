@@ -62,6 +62,14 @@ cmd /c "echo content > path\to\file.txt"
 winsmux is a Windows-native AI agent orchestration platform.
 Builders operate in isolated git worktrees under `.worktrees/builder-N/`.
 
+## Local Reference Workspace
+
+`.references/` is an ignored local workspace for upstream checkouts and private research material.
+
+Keep the root of `.references/` limited to named upstream checkouts or major reference bundles, such as `.references/vscode` or `.references/codex`.
+Do not place one-off Markdown, JSON, scripts, generated drafts, or Codex comparison notes directly under `.references/`.
+Store those files under `.references/notes/<topic>/` or another clearly named child directory before ending the session.
+
 ## Handoff Maintenance
 
 The live handoff source of truth for Claude Code dogfooding is the ignored local file:
