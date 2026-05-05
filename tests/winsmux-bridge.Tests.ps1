@@ -686,7 +686,8 @@ agent-slots:
       "supports_file_edit": true,
       "supports_subagents": true,
       "supports_verification": true,
-      "supports_consultation": false
+      "supports_consultation": false,
+      "supports_context_reset": true
     }
   }
 }
@@ -698,6 +699,7 @@ agent-slots:
         $registry.providers.codex.auth_modes | Should -Be @('api-key', 'codex-chatgpt-local')
         $registry.providers.codex.local_interactive_oauth_modes | Should -Be @('codex-chatgpt-local')
         $registry.providers.codex.supports_file_edit | Should -Be $true
+        $registry.providers.codex.supports_context_reset | Should -Be $true
 
         $capability = Get-BridgeProviderCapability -RootPath $script:settingsTempRoot -ProviderId 'CODEX'
         $capability.command | Should -Be 'codex'
@@ -724,7 +726,8 @@ agent-slots:
       "supports_file_edit": true,
       "supports_subagents": true,
       "supports_verification": true,
-      "supports_consultation": false
+      "supports_consultation": false,
+      "supports_context_reset": true
     }
   }
 }
@@ -759,6 +762,8 @@ agent-slots:
         $config.SupportsSubagents | Should -Be $true
         $config.SupportsVerification | Should -Be $true
         $config.SupportsConsultation | Should -Be $false
+        $config.SupportsContextReset | Should -Be $true
+        $config.SupportsContextResetDeclared | Should -Be $true
     }
 
     It 'distinguishes a missing interrupt capability from an explicit false value' {
@@ -2486,7 +2491,8 @@ panes:
       "supports_file_edit": true,
       "supports_subagents": true,
       "supports_verification": true,
-      "supports_consultation": false
+      "supports_consultation": false,
+      "supports_context_reset": true
     }
   }
 }
@@ -2881,6 +2887,22 @@ Describe 'agent-monitor helpers' {
         (Get-MonitorContextRemainingPercent -Text '') | Should -BeNullOrEmpty
     }
 
+    It 'keeps context reset disabled for non-Codex adapters even when provider metadata opts in' {
+        $slotAgentConfig = [PSCustomObject]@{
+            Agent                        = 'claude'
+            SupportsContextReset         = $true
+            SupportsContextResetDeclared = $true
+        }
+
+        $eligible = Test-MonitorContextResetEligible `
+            -SlotAgentConfig $slotAgentConfig `
+            -StatusAgentName 'claude' `
+            -ManifestCapabilityAdapter 'claude' `
+            -ManifestProviderTarget 'claude:sonnet'
+
+        $eligible | Should -Be $false
+    }
+
     It 'respawns the pane in the launch directory before sending the agent command' {
         Mock Invoke-MonitorWinsmux { } -ParameterFilter {
             $Arguments[0] -eq 'respawn-pane'
@@ -2941,7 +2963,8 @@ Describe 'agent-monitor helpers' {
       "supports_file_edit": true,
       "supports_subagents": true,
       "supports_verification": true,
-      "supports_consultation": false
+      "supports_consultation": false,
+      "supports_context_reset": true
     }
   }
 }
@@ -3002,6 +3025,7 @@ panes:
     pane_id: %2
     role: Builder
     launch_dir: $tempRoot
+    capability_adapter: codex
 "@ | Set-Content -Path $manifestPath -Encoding UTF8
 
             Mock Invoke-MonitorWinsmux { } -ParameterFilter {
@@ -3881,6 +3905,63 @@ gpt-5.4   10% context left
         }
     }
 
+    It 'does not reset context when provider metadata is missing' {
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
+        $manifestDir = Join-Path $tempRoot '.winsmux'
+        $manifestPath = Join-Path $manifestDir 'manifest.yaml'
+
+        try {
+            New-Item -ItemType Directory -Path $manifestDir -Force | Out-Null
+@"
+version: 1
+session:
+  name: winsmux-orchestra
+  project_dir: $tempRoot
+panes:
+  - label: worker-1
+    pane_id: %2
+    role: Worker
+    launch_dir: $tempRoot
+"@ | Set-Content -Path $manifestPath -Encoding UTF8
+
+            Mock Get-PaneAgentStatus {
+                [ordered]@{
+                    Status       = 'ready'
+                    PaneId       = '%2'
+                    SnapshotTail = @"
+gpt-5.4   10% context left
+>
+"@
+                    SnapshotHash = 'hash-worker'
+                    ExitReason   = ''
+                }
+            }
+            Mock Send-MonitorBridgeCommand { }
+            Mock Update-MonitorIdleAlertState {
+                [ordered]@{
+                    ShouldAlert = $false
+                    Message     = ''
+                }
+            }
+            Mock Test-BuilderStall { $false }
+
+            $result = Invoke-AgentMonitorCycle -Settings ([ordered]@{
+                agent = 'custom-agent'
+                model = 'custom-model'
+                roles = [ordered]@{}
+            }) -ManifestPath $manifestPath -SessionName 'winsmux-orchestra'
+
+            $result.ContextResets | Should -Be 0
+            $result.Results.Count | Should -Be 1
+            $result.Results[0].ContextReset | Should -Be $false
+            Should -Invoke Send-MonitorBridgeCommand -Times 0 -Exactly
+        } finally {
+            if (Test-Path $tempRoot) {
+                Remove-Item -Path $tempRoot -Recurse -Force
+            }
+        }
+    }
+
     It 'syncs task review git state into manifest and monitor events' {
         $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-agent-monitor-tests-' + [guid]::NewGuid().ToString('N'))
         $manifestDir = Join-Path $tempRoot '.winsmux'
@@ -4488,6 +4569,7 @@ Describe 'orchestra-start server bootstrap' {
         $pane.project_dir | Should -Be 'C:\repo'
         $pane.worktree_git_dir | Should -Be 'C:\repo\.git\worktrees\worker-1'
         $pane.expected_origin | Should -Be 'https://github.com/example/repo.git'
+        $pane.supports_context_reset | Should -Be $false
     }
 
     It 'returns success when the server session already exists' {
@@ -5624,9 +5706,11 @@ Describe 'orchestra-start session reuse contract' {
         $script:orchestraStartContent | Should -Match 'CapabilityAdapter = \[string\]\$slotAgentConfig\.CapabilityAdapter'
         $script:orchestraStartContent | Should -Match 'SupportsFileEdit = \[bool\]\$slotAgentConfig\.SupportsFileEdit'
         $script:orchestraStartContent | Should -Match 'SupportsVerification = \[bool\]\$slotAgentConfig\.SupportsVerification'
+        $script:orchestraStartContent | Should -Match 'SupportsContextReset = \[bool\]\$slotAgentConfig\.SupportsContextReset'
         $script:orchestraStartContent | Should -Match 'capability_adapter\s*=\s*\[string\]\$paneSummary\.CapabilityAdapter'
         $script:orchestraStartContent | Should -Match 'supports_file_edit\s*=\s*\[bool\]\$paneSummary\.SupportsFileEdit'
         $script:orchestraStartContent | Should -Match 'supports_verification\s*=\s*\[bool\]\$paneSummary\.SupportsVerification'
+        $script:orchestraStartContent | Should -Match 'supports_context_reset\s*=\s*\[bool\]\(Get-OrchestraObjectPropertyValue -InputObject \$paneSummary -Name ''SupportsContextReset'' -Default \$false\)'
     }
 
     It 'uses the capability adapter for startup readiness detection' {
@@ -12009,7 +12093,8 @@ agent-slots:
       "supports_file_edit": true,
       "supports_subagents": true,
       "supports_verification": true,
-      "supports_consultation": false
+      "supports_consultation": false,
+      "supports_context_reset": true
     },
     "claude": {
       "adapter": "claude",
@@ -12023,7 +12108,8 @@ agent-slots:
       "supports_file_edit": true,
       "supports_subagents": false,
       "supports_verification": true,
-      "supports_consultation": true
+      "supports_consultation": true,
+      "supports_context_reset": false
     }
   }
 }
@@ -12060,6 +12146,7 @@ agent-slots:
         $result.supports_file_edit | Should -Be $true
         $result.supports_subagents | Should -Be $false
         $result.supports_consultation | Should -Be $true
+        $result.supports_context_reset | Should -Be $false
         $result.restart_requested | Should -Be $false
         $result.restarted | Should -Be $false
 
@@ -12104,6 +12191,7 @@ agent-slots:
         $result.supports_parallel_runs | Should -Be $true
         $result.supports_verification | Should -Be $true
         $result.supports_consultation | Should -Be $false
+        $result.supports_context_reset | Should -Be $true
         $result.clear_requested | Should -Be $true
         $result.cleared | Should -Be $true
         $registry = Get-Content -LiteralPath (Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json') -Raw -Encoding UTF8 | ConvertFrom-Json

@@ -700,6 +700,37 @@ function Get-MonitorStateEventMessage {
     }
 }
 
+function Test-MonitorContextResetEligible {
+    param(
+        [AllowNull()]$SlotAgentConfig,
+        [string]$StatusAgentName = '',
+        [string]$ManifestCapabilityAdapter = '',
+        [string]$ManifestProviderTarget = ''
+    )
+
+    if ((ConvertTo-ReadinessAgentName $StatusAgentName) -ne 'codex') {
+        return $false
+    }
+
+    $declared = [bool](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'SupportsContextResetDeclared' -Default $false)
+    if ($declared) {
+        return [bool](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'SupportsContextReset' -Default $false)
+    }
+
+    $slotAgentName = [string](Get-MonitorPropertyValue -InputObject $SlotAgentConfig -Name 'Agent' -Default '')
+    if ((ConvertTo-ReadinessAgentName $slotAgentName) -eq 'codex') {
+        return $true
+    }
+
+    foreach ($candidate in @($ManifestCapabilityAdapter, $ManifestProviderTarget)) {
+        if ((ConvertTo-ReadinessAgentName $candidate) -eq 'codex') {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 # ---------------------------------------------------------------------------
 # 1. Get-PaneAgentStatus
 # ---------------------------------------------------------------------------
@@ -1197,6 +1228,13 @@ function Invoke-AgentMonitorCycle {
         if ([string]::IsNullOrWhiteSpace($statusAgentName)) {
             $statusAgentName = $agentName
         }
+        $manifestCapabilityAdapter = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'capability_adapter' -Default '')
+        $manifestProviderTarget = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'provider_target' -Default '')
+        $supportsContextReset = Test-MonitorContextResetEligible `
+            -SlotAgentConfig $roleAgentConfig `
+            -StatusAgentName $statusAgentName `
+            -ManifestCapabilityAdapter $manifestCapabilityAdapter `
+            -ManifestProviderTarget $manifestProviderTarget
         $launchDirFromManifest = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'launch_dir' -Default '')
         $builderWorktreePath = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'builder_worktree_path' -Default '')
 
@@ -1309,7 +1347,7 @@ function Invoke-AgentMonitorCycle {
         }
 
         $contextRemainingPercent = Get-MonitorContextRemainingPercent -Text $statusSnapshotTail
-        if ($statusAgentName -eq 'codex' -and $statusName -eq 'ready' -and $null -ne $contextRemainingPercent) {
+        if ($supportsContextReset -and $statusName -eq 'ready' -and $null -ne $contextRemainingPercent) {
             $result['ContextRemainingPercent'] = $contextRemainingPercent
             if ($contextRemainingPercent -le $ContextResetThresholdPercent) {
                 try {

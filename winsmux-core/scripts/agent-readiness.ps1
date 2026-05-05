@@ -46,6 +46,23 @@ function Get-RecentNonEmptyLines {
     return @($recent)
 }
 
+function ConvertTo-ReadinessAgentName {
+    param([AllowNull()][string]$Value)
+
+    $lowered = if ($null -eq $Value) { '' } else { $Value.Trim().ToLowerInvariant() }
+    foreach ($name in @('codex', 'claude', 'gemini')) {
+        if ($lowered -eq $name `
+            -or $lowered.StartsWith("${name}:") `
+            -or $lowered.StartsWith("${name}-") `
+            -or $lowered.StartsWith("${name}_") `
+            -or $lowered.StartsWith("${name}/")) {
+            return $name
+        }
+    }
+
+    return ''
+}
+
 function Test-AgentPromptText {
     param(
         [AllowNull()][string]$Text,

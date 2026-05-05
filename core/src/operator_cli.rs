@@ -956,6 +956,7 @@ pub fn run_provider_switch_command(args: &[&String]) -> io::Result<()> {
         "supports_subagents": effective.supports_subagents,
         "supports_verification": effective.supports_verification,
         "supports_consultation": effective.supports_consultation,
+        "supports_context_reset": effective.supports_context_reset,
         "registry_path": registry_path.display().to_string(),
         "updated_at_utc": updated_at_utc,
         "reason": reason,
@@ -1152,6 +1153,7 @@ struct SlotAgentConfig {
     supports_subagents: bool,
     supports_verification: bool,
     supports_consultation: bool,
+    supports_context_reset: bool,
 }
 
 #[derive(Debug)]
@@ -1448,6 +1450,7 @@ fn normalize_provider_capability_entry(
         "supports_subagents",
         "supports_verification",
         "supports_consultation",
+        "supports_context_reset",
     ];
 
     for (field, field_value) in entry {
@@ -2015,6 +2018,7 @@ fn finalize_slot_agent_config(
         supports_subagents: capability_bool(capability.as_ref(), "supports_subagents"),
         supports_verification: capability_bool(capability.as_ref(), "supports_verification"),
         supports_consultation: capability_bool(capability.as_ref(), "supports_consultation"),
+        supports_context_reset: capability_bool(capability.as_ref(), "supports_context_reset"),
         agent,
         model,
         prompt_transport,
@@ -5859,6 +5863,17 @@ fn provider_target_with_model(agent: &str, model: &str) -> String {
 }
 
 fn invoke_restart_plan(plan: &RestartPlan) -> io::Result<()> {
+    let readiness_agent = restart_readiness_agent(plan);
+    if readiness_agent.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "restart readiness adapter missing for pane '{}' ({}). Set provider capability metadata before restart.",
+                plan.pane_id, plan.label
+            ),
+        ));
+    }
+
     run_winsmux_command(&[
         "respawn-pane",
         "-k",
@@ -5877,7 +5892,7 @@ fn invoke_restart_plan(plan: &RestartPlan) -> io::Result<()> {
         &plan.launch_command,
     ])?;
     run_winsmux_command(&["send-keys", "-t", &plan.pane_id, "Enter"])?;
-    wait_for_agent_prompt(&plan.pane_id, &restart_readiness_agent(plan))?;
+    wait_for_agent_prompt(&plan.pane_id, &readiness_agent)?;
     Ok(())
 }
 
@@ -5887,11 +5902,7 @@ fn restart_readiness_agent(plan: &RestartPlan) -> String {
         return adapter;
     }
     let agent = readiness_agent_name(&plan.agent);
-    if agent.is_empty() {
-        "codex".to_string()
-    } else {
-        agent
-    }
+    agent
 }
 
 fn readiness_agent_name(value: &str) -> String {
@@ -9224,4 +9235,47 @@ fn write_json<T: Serialize>(value: &T) -> io::Result<()> {
     })?;
     writeln!(stdout)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn restart_plan(agent: &str, capability_adapter: &str) -> RestartPlan {
+        RestartPlan {
+            label: "worker-1".to_string(),
+            pane_id: "%2".to_string(),
+            role: "Worker".to_string(),
+            session_name: "winsmux-orchestra".to_string(),
+            launch_dir: "C:\\repo".to_string(),
+            git_worktree_dir: "C:\\repo\\.git".to_string(),
+            agent: agent.to_string(),
+            model: String::new(),
+            capability_adapter: capability_adapter.to_string(),
+            launch_command: "noop".to_string(),
+        }
+    }
+
+    #[test]
+    fn restart_readiness_agent_resolves_known_adapters() {
+        assert_eq!(restart_readiness_agent(&restart_plan("custom", "codex")), "codex");
+        assert_eq!(
+            restart_readiness_agent(&restart_plan("claude-opus", "")),
+            "claude"
+        );
+        assert_eq!(
+            restart_readiness_agent(&restart_plan("gemini:flash", "")),
+            "gemini"
+        );
+    }
+
+    #[test]
+    fn restart_readiness_agent_does_not_default_unknown_to_codex() {
+        assert_eq!(restart_readiness_agent(&restart_plan("", "")), "");
+        assert_eq!(restart_readiness_agent(&restart_plan("custom-agent", "")), "");
+        assert_eq!(
+            restart_readiness_agent(&restart_plan("custom-agent", "custom-adapter")),
+            ""
+        );
+    }
 }

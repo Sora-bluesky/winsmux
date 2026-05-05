@@ -1111,6 +1111,7 @@ function Save-OrchestraSessionState {
             supports_subagents         = [bool]$paneSummary.SupportsSubagents
             supports_verification      = [bool]$paneSummary.SupportsVerification
             supports_consultation      = [bool]$paneSummary.SupportsConsultation
+            supports_context_reset     = [bool](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'SupportsContextReset' -Default $false)
             task                       = $null
             status                     = if ($paneSummary.Status) { $paneSummary.Status } else { 'ready' }
         }
@@ -2179,6 +2180,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             SupportsSubagents = [bool]$slotAgentConfig.SupportsSubagents
             SupportsVerification = [bool]$slotAgentConfig.SupportsVerification
             SupportsConsultation = [bool]$slotAgentConfig.SupportsConsultation
+            SupportsContextReset = [bool]$slotAgentConfig.SupportsContextReset
             ExecMode = $false
             LaunchDir = $launchDir
             ProjectDir = $projectDir
