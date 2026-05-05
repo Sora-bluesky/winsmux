@@ -7,6 +7,7 @@ type DesktopCommandName =
   | "desktop_run_compare"
   | "desktop_run_promote"
   | "desktop_run_pick_winner"
+  | "desktop_runtime_roles_apply"
   | "desktop_editor_read"
   | "desktop_explorer_list";
 type DesktopJsonRpcMethod =
@@ -15,6 +16,7 @@ type DesktopJsonRpcMethod =
   | "desktop.run.compare"
   | "desktop.run.promote"
   | "desktop.run.pick_winner"
+  | "desktop.runtime.roles.apply"
   | "desktop.editor.read"
   | "desktop.explorer.list";
 
@@ -502,6 +504,8 @@ function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMet
       return "desktop.run.promote";
     case "desktop_run_pick_winner":
       return "desktop.run.pick_winner";
+    case "desktop_runtime_roles_apply":
+      return "desktop.runtime.roles.apply";
     case "desktop_editor_read":
       return "desktop.editor.read";
     case "desktop_explorer_list":
@@ -645,6 +649,28 @@ export async function pickDesktopRunWinner(
     );
   } catch (error) {
     throw normalizeDesktopError(`desktop_run_pick_winner(${runId})`, error);
+  }
+}
+
+export interface DesktopRuntimeRolePreference {
+  role_id: string;
+  provider: string;
+  model: string;
+  model_source: string;
+  reasoning_effort: string;
+}
+
+export async function applyDesktopRuntimeRolePreferences(
+  roles: DesktopRuntimeRolePreference[],
+  projectDir?: string | null,
+) {
+  try {
+    return await desktopCommandTransport.request<Record<string, unknown>>(
+      "desktop_runtime_roles_apply",
+      { roles, ...buildProjectDirPayload(projectDir) },
+    );
+  } catch (error) {
+    throw normalizeDesktopError("desktop_runtime_roles_apply", error);
   }
 }
 

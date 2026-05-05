@@ -915,6 +915,8 @@ function Invoke-AgentRespawn {
         [Parameter(Mandatory = $true)][string]$PaneId,
         [Parameter(Mandatory = $true)][string]$Agent,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
+        [AllowEmptyString()][string]$ModelSource = '',
+        [AllowEmptyString()][string]$ReasoningEffort = '',
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath = '',
@@ -948,6 +950,8 @@ function Invoke-AgentRespawn {
         $launchCommand = Get-BridgeProviderLaunchCommand `
             -ProviderId $Agent `
             -Model $Model `
+            -ModelSource $ModelSource `
+            -ReasoningEffort $ReasoningEffort `
             -ProjectDir $ProjectDir `
             -GitWorktreeDir $GitWorktreeDir `
             -RootPath $capabilityRootPath
@@ -1209,7 +1213,7 @@ function Invoke-AgentMonitorCycle {
             $roleAgentConfig = Get-SlotAgentConfig -Role $role -SlotId $label -Settings $Settings -RootPath $projectDir
         } else {
             try {
-                $roleAgentConfig = Get-RoleAgentConfig -Role $role -Settings $Settings
+                $roleAgentConfig = Get-RoleAgentConfig -Role $role -Settings $Settings -RootPath $projectDir
             } catch {
                 # Fallback to default settings when only the legacy role helper is unavailable or malformed.
                 $roleAgentConfig = [ordered]@{

@@ -229,6 +229,8 @@ function Get-PaneControlLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Agent,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
+        [AllowEmptyString()][string]$ModelSource = '',
+        [AllowEmptyString()][string]$ReasoningEffort = '',
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath = ''
@@ -237,6 +239,8 @@ function Get-PaneControlLaunchCommand {
     return Get-BridgeProviderLaunchCommand `
         -ProviderId $Agent `
         -Model $Model `
+        -ModelSource $ModelSource `
+        -ReasoningEffort $ReasoningEffort `
         -ProjectDir $ProjectDir `
         -GitWorktreeDir $GitWorktreeDir `
         -RootPath $RootPath
@@ -538,7 +542,7 @@ function Get-PaneControlRestartPlan {
     if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
         $agentConfig = Get-SlotAgentConfig -Role $context.Role -SlotId $context.Label -Settings $Settings -RootPath $ProjectDir
     } elseif (Get-Command Get-RoleAgentConfig -ErrorAction SilentlyContinue) {
-        $agentConfig = Get-RoleAgentConfig -Role $context.Role -Settings $Settings
+        $agentConfig = Get-RoleAgentConfig -Role $context.Role -Settings $Settings -RootPath $ProjectDir
     } else {
         $agentConfig = [ordered]@{
             Agent = [string]$Settings.agent
@@ -546,7 +550,7 @@ function Get-PaneControlRestartPlan {
         }
     }
 
-    $launchCommand = Get-PaneControlLaunchCommand -Agent $agentConfig.Agent -Model $agentConfig.Model -ProjectDir $context.LaunchDir -GitWorktreeDir $context.GitWorktreeDir -RootPath $ProjectDir
+    $launchCommand = Get-PaneControlLaunchCommand -Agent $agentConfig.Agent -Model $agentConfig.Model -ModelSource $agentConfig.ModelSource -ReasoningEffort $agentConfig.ReasoningEffort -ProjectDir $context.LaunchDir -GitWorktreeDir $context.GitWorktreeDir -RootPath $ProjectDir
 
     return [ordered]@{
         PaneId         = $context.PaneId

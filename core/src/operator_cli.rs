@@ -873,12 +873,14 @@ pub fn run_provider_switch_command(args: &[&String]) -> io::Result<()> {
     if options.clear
         && (options.agent.is_some()
             || options.model.is_some()
+            || options.model_source.is_some()
+            || options.reasoning_effort.is_some()
             || options.prompt_transport.is_some()
             || options.auth_mode.is_some())
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "provider-switch --clear cannot be combined with --agent, --model, --prompt-transport, or --auth-mode.",
+            "provider-switch --clear cannot be combined with --agent, --model, --model-source, --reasoning-effort, --prompt-transport, or --auth-mode.",
         ));
     }
 
@@ -943,9 +945,12 @@ pub fn run_provider_switch_command(args: &[&String]) -> io::Result<()> {
         "slot_id": options.slot_id,
         "agent": effective.agent,
         "model": effective.model,
+        "model_source": effective.model_source,
+        "reasoning_effort": effective.reasoning_effort,
         "prompt_transport": effective.prompt_transport,
         "auth_mode": effective.auth_mode,
         "auth_policy": effective.auth_policy,
+        "local_access_note": effective.local_access_note,
         "source": effective.source,
         "capability_adapter": effective.capability_adapter,
         "capability_command": effective.capability_command,
@@ -1089,6 +1094,8 @@ struct ProviderSwitchOptions {
     slot_id: String,
     agent: Option<String>,
     model: Option<String>,
+    model_source: Option<String>,
+    reasoning_effort: Option<String>,
     prompt_transport: Option<String>,
     auth_mode: Option<String>,
     reason: Option<String>,
@@ -1101,6 +1108,8 @@ struct ProviderSwitchOptions {
 struct BridgeSettings {
     agent: String,
     model: String,
+    model_source: String,
+    reasoning_effort: String,
     prompt_transport: String,
     auth_mode: String,
     agent_explicit: bool,
@@ -1113,6 +1122,8 @@ struct BridgeSettings {
 struct ProviderRoleConfig {
     agent: Option<String>,
     model: Option<String>,
+    model_source: Option<String>,
+    reasoning_effort: Option<String>,
     prompt_transport: Option<String>,
     auth_mode: Option<String>,
 }
@@ -1122,6 +1133,8 @@ struct ProviderSlotConfig {
     slot_id: String,
     agent: Option<String>,
     model: Option<String>,
+    model_source: Option<String>,
+    reasoning_effort: Option<String>,
     prompt_transport: Option<String>,
     auth_mode: Option<String>,
 }
@@ -1130,6 +1143,8 @@ struct ProviderSlotConfig {
 struct ProviderRegistryEntry {
     agent: Option<String>,
     model: Option<String>,
+    model_source: Option<String>,
+    reasoning_effort: Option<String>,
     prompt_transport: Option<String>,
     auth_mode: Option<String>,
     updated_at_utc: String,
@@ -1140,12 +1155,18 @@ struct ProviderRegistryEntry {
 struct SlotAgentConfig {
     agent: String,
     model: String,
+    model_source: String,
+    reasoning_effort: String,
     prompt_transport: String,
     auth_mode: String,
     auth_policy: String,
     source: String,
     capability_adapter: String,
     capability_command: String,
+    model_options: Value,
+    model_sources: Value,
+    reasoning_efforts: Value,
+    local_access_note: String,
     supports_parallel_runs: bool,
     supports_interrupt: bool,
     supports_structured_result: bool,
@@ -1219,6 +1240,8 @@ fn parse_provider_switch_options(args: &[&String]) -> io::Result<ProviderSwitchO
     let mut slot_id: Option<String> = None;
     let mut agent = None;
     let mut model = None;
+    let mut model_source = None;
+    let mut reasoning_effort = None;
     let mut prompt_transport = None;
     let mut auth_mode = None;
     let mut reason = None;
@@ -1235,6 +1258,18 @@ fn parse_provider_switch_options(args: &[&String]) -> io::Result<ProviderSwitchO
             }
             "--model" => {
                 model = Some(required_option_value(args, index, "--model")?);
+                index += 2;
+            }
+            "--model-source" => {
+                let value = required_option_value(args, index, "--model-source")?;
+                validate_model_source(&value)?;
+                model_source = Some(value);
+                index += 2;
+            }
+            "--reasoning-effort" => {
+                let value = required_option_value(args, index, "--reasoning-effort")?;
+                validate_reasoning_effort(&value)?;
+                reasoning_effort = Some(value.trim().to_ascii_lowercase());
                 index += 2;
             }
             "--prompt-transport" => {
@@ -1304,6 +1339,8 @@ fn parse_provider_switch_options(args: &[&String]) -> io::Result<ProviderSwitchO
         slot_id,
         agent: trim_optional(agent),
         model: trim_optional(model),
+        model_source: trim_optional(model_source),
+        reasoning_effort: trim_optional(reasoning_effort),
         prompt_transport,
         auth_mode: trim_optional(auth_mode),
         reason: trim_optional(reason),
@@ -1327,6 +1364,36 @@ fn trim_optional(value: Option<String>) -> Option<String> {
     value
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())
+}
+
+fn validate_model_source(value: &str) -> io::Result<()> {
+    let normalized = value.trim();
+    if matches!(
+        normalized,
+        "provider-default" | "cli-discovery" | "official-doc" | "operator-override"
+    ) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Invalid provider registry model_source '{value}'."),
+        ))
+    }
+}
+
+fn validate_reasoning_effort(value: &str) -> io::Result<()> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if matches!(
+        normalized.as_str(),
+        "provider-default" | "low" | "medium" | "high" | "xhigh" | "max"
+    ) {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("Invalid provider registry reasoning_effort '{value}'."),
+        ))
+    }
 }
 
 fn provider_capability_registry_path(project_dir: &Path) -> PathBuf {
@@ -1439,9 +1506,21 @@ fn normalize_provider_capability_entry(
     }
 
     let mut normalized = Map::new();
-    let string_fields = ["adapter", "display_name", "command"];
+    let string_fields = [
+        "adapter",
+        "display_name",
+        "command",
+        "model_catalog_source",
+        "local_access_note",
+    ];
     let transport_fields = ["prompt_transports"];
-    let string_array_fields = ["auth_modes", "local_interactive_oauth_modes"];
+    let string_array_fields = [
+        "auth_modes",
+        "local_interactive_oauth_modes",
+        "model_sources",
+        "reasoning_efforts",
+    ];
+    let model_option_fields = ["model_options"];
     let bool_fields = [
         "supports_parallel_runs",
         "supports_interrupt",
@@ -1458,6 +1537,7 @@ fn normalize_provider_capability_entry(
         if !string_fields.contains(&name)
             && !transport_fields.contains(&name)
             && !string_array_fields.contains(&name)
+            && !model_option_fields.contains(&name)
             && !bool_fields.contains(&name)
         {
             return Err(invalid_provider_capability_field(name));
@@ -1514,7 +1594,28 @@ fn normalize_provider_capability_entry(
                 if normalized_text.is_empty() {
                     return Err(invalid_provider_capability_field(name));
                 }
+                if name == "model_sources" && !valid_model_source(&normalized_text) {
+                    return Err(invalid_provider_capability_field(name));
+                }
+                if name == "reasoning_efforts" && !valid_reasoning_effort(&normalized_text) {
+                    return Err(invalid_provider_capability_field(name));
+                }
                 normalized_items.push(Value::String(normalized_text));
+            }
+            normalized.insert(field.clone(), Value::Array(normalized_items));
+            continue;
+        }
+
+        if model_option_fields.contains(&name) {
+            let Some(items) = field_value.as_array() else {
+                return Err(invalid_provider_capability_field(name));
+            };
+            if items.is_empty() {
+                return Err(invalid_provider_capability_field(name));
+            }
+            let mut normalized_items = Vec::new();
+            for item in items {
+                normalized_items.push(normalize_provider_model_option(item)?);
             }
             normalized.insert(field.clone(), Value::Array(normalized_items));
             continue;
@@ -1538,6 +1639,94 @@ fn normalize_provider_capability_entry(
     }
 
     Ok(Value::Object(normalized))
+}
+
+fn normalize_provider_model_option(value: &Value) -> io::Result<Value> {
+    let Some(entry) = value.as_object() else {
+        return Err(invalid_provider_capability_field("model_options"));
+    };
+    let mut normalized = Map::new();
+    for (field, field_value) in entry {
+        if !matches!(
+            field.as_str(),
+            "id" | "label" | "source" | "availability" | "notes"
+        ) {
+            return Err(invalid_provider_capability_field("model_options"));
+        }
+        let Some(text) = field_value.as_str() else {
+            return Err(invalid_provider_capability_field("model_options"));
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            if matches!(field.as_str(), "id" | "source") {
+                return Err(invalid_provider_capability_field("model_options"));
+            }
+            continue;
+        }
+        let value = if field == "source" {
+            let normalized_source = trimmed.to_ascii_lowercase();
+            if !valid_model_source(&normalized_source) {
+                return Err(invalid_provider_capability_field("model_options"));
+            }
+            normalized_source
+        } else {
+            trimmed.to_string()
+        };
+        normalized.insert(field.clone(), Value::String(value));
+    }
+    if !normalized.contains_key("id") || !normalized.contains_key("source") {
+        return Err(invalid_provider_capability_field("model_options"));
+    }
+    Ok(Value::Object(normalized))
+}
+
+fn valid_model_source(value: &str) -> bool {
+    matches!(
+        value,
+        "provider-default" | "cli-discovery" | "official-doc" | "operator-override"
+    )
+}
+
+fn valid_reasoning_effort(value: &str) -> bool {
+    matches!(
+        value,
+        "provider-default" | "low" | "medium" | "high" | "xhigh" | "max"
+    )
+}
+
+fn default_provider_model_source() -> String {
+    "provider-default".to_string()
+}
+
+fn default_provider_reasoning_effort() -> String {
+    "provider-default".to_string()
+}
+
+fn inferred_model_source_for_model(model: &str) -> String {
+    if provider_default_model(model) {
+        default_provider_model_source()
+    } else {
+        "operator-override".to_string()
+    }
+}
+
+fn provider_default_model(model: &str) -> bool {
+    model.trim().is_empty() || model.trim().eq_ignore_ascii_case("provider-default")
+}
+
+fn provider_default_model_source(model_source: &str) -> bool {
+    !model_source.trim().is_empty() && model_source.trim().eq_ignore_ascii_case("provider-default")
+}
+
+fn provider_model_override(model: &str, model_source: &str) -> bool {
+    !provider_default_model(model) && !provider_default_model_source(model_source)
+}
+
+fn provider_default_reasoning_effort(reasoning_effort: &str) -> bool {
+    reasoning_effort.trim().is_empty()
+        || reasoning_effort
+            .trim()
+            .eq_ignore_ascii_case("provider-default")
 }
 
 fn invalid_provider_capability_field(field: &str) -> io::Error {
@@ -1601,17 +1790,27 @@ impl ProviderRegistryEntry {
     fn new(options: &ProviderSwitchOptions) -> io::Result<Self> {
         if options.agent.is_none()
             && options.model.is_none()
+            && options.model_source.is_none()
+            && options.reasoning_effort.is_none()
             && options.prompt_transport.is_none()
             && options.auth_mode.is_none()
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Provider registry entry requires agent, model, prompt_transport, or auth_mode.",
+                "Provider registry entry requires agent, model, model_source, reasoning_effort, prompt_transport, or auth_mode.",
             ));
         }
+        let model_source = options.model_source.clone().or_else(|| {
+            options
+                .model
+                .as_deref()
+                .map(inferred_model_source_for_model)
+        });
         Ok(Self {
             agent: options.agent.clone(),
             model: options.model.clone(),
+            model_source,
+            reasoning_effort: options.reasoning_effort.clone(),
             prompt_transport: options.prompt_transport.clone(),
             auth_mode: options.auth_mode.clone(),
             updated_at_utc: generated_at(),
@@ -1631,6 +1830,8 @@ impl ProviderRegistryEntry {
         };
         let agent = provider_registry_optional_string(map, "agent")?;
         let model = provider_registry_optional_string(map, "model")?;
+        let mut model_source = provider_registry_optional_string(map, "model_source")?;
+        let reasoning_effort = provider_registry_optional_string(map, "reasoning_effort")?;
         let prompt_transport = provider_registry_optional_string(map, "prompt_transport")?;
         let auth_mode = provider_registry_optional_string(map, "auth_mode")?;
         let updated_at_utc =
@@ -1644,7 +1845,21 @@ impl ProviderRegistryEntry {
                 ));
             }
         }
-        if agent.is_none() && model.is_none() && prompt_transport.is_none() && auth_mode.is_none() {
+        if let Some(value) = model_source.as_deref() {
+            validate_model_source(value)?;
+        } else if let Some(value) = model.as_deref() {
+            model_source = Some(inferred_model_source_for_model(value));
+        }
+        if let Some(value) = reasoning_effort.as_deref() {
+            validate_reasoning_effort(value)?;
+        }
+        if agent.is_none()
+            && model.is_none()
+            && model_source.is_none()
+            && reasoning_effort.is_none()
+            && prompt_transport.is_none()
+            && auth_mode.is_none()
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -1656,6 +1871,8 @@ impl ProviderRegistryEntry {
         Ok(Self {
             agent,
             model,
+            model_source,
+            reasoning_effort,
             prompt_transport,
             auth_mode,
             updated_at_utc,
@@ -1670,6 +1887,15 @@ impl ProviderRegistryEntry {
         }
         if let Some(value) = self.model.as_deref() {
             map.insert("model".to_string(), Value::String(value.to_string()));
+        }
+        if let Some(value) = self.model_source.as_deref() {
+            map.insert("model_source".to_string(), Value::String(value.to_string()));
+        }
+        if let Some(value) = self.reasoning_effort.as_deref() {
+            map.insert(
+                "reasoning_effort".to_string(),
+                Value::String(value.to_string()),
+            );
         }
         if let Some(value) = self.prompt_transport.as_deref() {
             map.insert(
@@ -1696,6 +1922,8 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
     let mut settings = BridgeSettings {
         agent: "codex".to_string(),
         model: String::new(),
+        model_source: "provider-default".to_string(),
+        reasoning_effort: "provider-default".to_string(),
         prompt_transport: "argv".to_string(),
         auth_mode: String::new(),
         agent_explicit: false,
@@ -1704,11 +1932,17 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
         agent_slots: Vec::new(),
     };
     if !path.exists() {
+        if let Some(runtime_worker_role) = runtime_role_config(project_dir, "worker")? {
+            settings.worker_role = merge_role_config(settings.worker_role, runtime_worker_role);
+        }
         return Ok(settings);
     }
 
     let raw = fs::read_to_string(&path)?;
     if raw.trim().is_empty() {
+        if let Some(runtime_worker_role) = runtime_role_config(project_dir, "worker")? {
+            settings.worker_role = merge_role_config(settings.worker_role, runtime_worker_role);
+        }
         return Ok(settings);
     }
     let root = serde_yaml::from_str::<serde_yaml::Value>(&raw).map_err(|err| {
@@ -1726,6 +1960,18 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
         settings.model = value;
         settings.model_explicit = true;
     }
+    if let Some(value) =
+        yaml_string(&root, "model_source").or_else(|| yaml_string(&root, "model-source"))
+    {
+        settings.model_source = value;
+    } else if settings.model_explicit {
+        settings.model_source = inferred_model_source_for_model(&settings.model);
+    }
+    if let Some(value) =
+        yaml_string(&root, "reasoning_effort").or_else(|| yaml_string(&root, "reasoning-effort"))
+    {
+        settings.reasoning_effort = value.to_ascii_lowercase();
+    }
     settings.prompt_transport = yaml_string(&root, "prompt_transport")
         .or_else(|| yaml_string(&root, "prompt-transport"))
         .unwrap_or(settings.prompt_transport);
@@ -1735,6 +1981,9 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
     settings.worker_role = yaml_role_config(&root, "Worker")
         .or_else(|| yaml_role_config(&root, "worker"))
         .unwrap_or_default();
+    if let Some(runtime_worker_role) = runtime_role_config(project_dir, "worker")? {
+        settings.worker_role = merge_role_config(settings.worker_role, runtime_worker_role);
+    }
     settings.agent_slots = yaml_agent_slots(&root)?;
     let external_operator = yaml_bool(&root, "external_operator")
         .or_else(|| yaml_bool(&root, "external-operator"))
@@ -1751,6 +2000,8 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
                 slot_id: format!("worker-{index}"),
                 agent: settings.agent_explicit.then(|| settings.agent.clone()),
                 model: settings.model_explicit.then(|| settings.model.clone()),
+                model_source: Some(settings.model_source.clone()),
+                reasoning_effort: Some(settings.reasoning_effort.clone()),
                 prompt_transport: Some(settings.prompt_transport.clone()),
                 auth_mode: (!settings.auth_mode.trim().is_empty())
                     .then(|| settings.auth_mode.clone()),
@@ -1758,6 +2009,126 @@ fn read_bridge_settings(project_dir: &Path) -> io::Result<BridgeSettings> {
         }
     }
     Ok(settings)
+}
+
+fn merge_role_config(
+    mut base: ProviderRoleConfig,
+    overlay: ProviderRoleConfig,
+) -> ProviderRoleConfig {
+    if overlay.agent.is_some() {
+        base.agent = overlay.agent;
+    }
+    if overlay.model.is_some() {
+        base.model = overlay.model;
+    }
+    if overlay.model_source.is_some() {
+        base.model_source = overlay.model_source;
+    }
+    if overlay.reasoning_effort.is_some() {
+        base.reasoning_effort = overlay.reasoning_effort;
+    }
+    if overlay.prompt_transport.is_some() {
+        base.prompt_transport = overlay.prompt_transport;
+    }
+    if overlay.auth_mode.is_some() {
+        base.auth_mode = overlay.auth_mode;
+    }
+    base
+}
+
+fn runtime_role_config(project_dir: &Path, role: &str) -> io::Result<Option<ProviderRoleConfig>> {
+    let path = project_dir
+        .join(".winsmux")
+        .join("runtime-role-preferences.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(&path)?;
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    let root = serde_json::from_str::<Value>(&raw).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "invalid runtime role preferences: {}: {err}",
+                path.display()
+            ),
+        )
+    })?;
+    let version = root.get("version").and_then(Value::as_u64).unwrap_or(1);
+    if version != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Unsupported runtime role preferences version '{version}'. Supported versions: 1."
+            ),
+        ));
+    }
+    let roles = root.get("roles").unwrap_or(&root);
+    runtime_role_config_from_roles(roles, role)
+}
+
+fn runtime_role_config_from_roles(
+    roles: &Value,
+    role: &str,
+) -> io::Result<Option<ProviderRoleConfig>> {
+    if let Some(map) = roles.as_object() {
+        for (key, value) in map {
+            if key.eq_ignore_ascii_case(role) {
+                return Ok(Some(runtime_role_config_from_value(value)?));
+            }
+        }
+        return Ok(None);
+    }
+    if let Some(items) = roles.as_array() {
+        for item in items {
+            let role_id =
+                json_string_any(item, &["role_id", "roleId", "runtime_role", "runtimeRole"])
+                    .unwrap_or_default();
+            if role_id.eq_ignore_ascii_case(role) {
+                return Ok(Some(runtime_role_config_from_value(item)?));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn runtime_role_config_from_value(value: &Value) -> io::Result<ProviderRoleConfig> {
+    let model = json_string_any(value, &["model"]);
+    let model_source = json_string_any(value, &["model_source", "model-source", "modelSource"])
+        .or_else(|| model.as_deref().map(inferred_model_source_for_model));
+    let config = ProviderRoleConfig {
+        agent: json_string_any(value, &["agent", "provider"])
+            .filter(|value| !value.eq_ignore_ascii_case("provider-default")),
+        model,
+        model_source,
+        reasoning_effort: json_string_any(
+            value,
+            &["reasoning_effort", "reasoning-effort", "reasoningEffort"],
+        )
+        .map(|value| value.to_ascii_lowercase()),
+        prompt_transport: json_string_any(value, &["prompt_transport", "prompt-transport"]),
+        auth_mode: json_string_any(value, &["auth_mode", "auth-mode"]),
+    };
+    if let Some(source) = config.model_source.as_deref() {
+        validate_model_source(source)?;
+    }
+    if let Some(effort) = config.reasoning_effort.as_deref() {
+        validate_reasoning_effort(effort)?;
+    }
+    Ok(config)
+}
+
+fn json_string_any(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value
+            .get(*key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    })
 }
 
 fn yaml_agent_slots(root: &serde_yaml::Value) -> io::Result<Vec<ProviderSlotConfig>> {
@@ -1782,10 +2153,18 @@ fn yaml_agent_slots(root: &serde_yaml::Value) -> io::Result<Vec<ProviderSlotConf
                 "Invalid agent_slots configuration: every slot entry must include at least slot_id.",
             ));
         }
+        let model = yaml_string(item, "model");
+        let model_source = yaml_string(item, "model_source")
+            .or_else(|| yaml_string(item, "model-source"))
+            .or_else(|| model.as_deref().map(inferred_model_source_for_model));
         result.push(ProviderSlotConfig {
             slot_id,
             agent: yaml_string(item, "agent"),
-            model: yaml_string(item, "model"),
+            model,
+            model_source,
+            reasoning_effort: yaml_string(item, "reasoning_effort")
+                .or_else(|| yaml_string(item, "reasoning-effort"))
+                .map(|value| value.to_ascii_lowercase()),
             prompt_transport: yaml_string(item, "prompt_transport")
                 .or_else(|| yaml_string(item, "prompt-transport")),
             auth_mode: yaml_string(item, "auth_mode").or_else(|| yaml_string(item, "auth-mode")),
@@ -1797,9 +2176,17 @@ fn yaml_agent_slots(root: &serde_yaml::Value) -> io::Result<Vec<ProviderSlotConf
 fn yaml_role_config(root: &serde_yaml::Value, role: &str) -> Option<ProviderRoleConfig> {
     let roles = yaml_get(root, "roles")?;
     let role_value = yaml_get(roles, role)?;
+    let model = yaml_string(role_value, "model");
+    let model_source = yaml_string(role_value, "model_source")
+        .or_else(|| yaml_string(role_value, "model-source"))
+        .or_else(|| model.as_deref().map(inferred_model_source_for_model));
     Some(ProviderRoleConfig {
         agent: yaml_string(role_value, "agent"),
-        model: yaml_string(role_value, "model"),
+        model,
+        model_source,
+        reasoning_effort: yaml_string(role_value, "reasoning_effort")
+            .or_else(|| yaml_string(role_value, "reasoning-effort"))
+            .map(|value| value.to_ascii_lowercase()),
         prompt_transport: yaml_string(role_value, "prompt_transport")
             .or_else(|| yaml_string(role_value, "prompt-transport")),
         auth_mode: yaml_string(role_value, "auth_mode")
@@ -1869,6 +2256,8 @@ fn resolve_slot_agent_config_inner(
 ) -> io::Result<SlotAgentConfig> {
     let mut agent = settings.agent.clone();
     let mut model = settings.model.clone();
+    let mut model_source = settings.model_source.clone();
+    let mut reasoning_effort = settings.reasoning_effort.clone();
     let mut prompt_transport = settings.prompt_transport.clone();
     let mut auth_mode = settings.auth_mode.clone();
     let mut source = "role".to_string();
@@ -1876,6 +2265,8 @@ fn resolve_slot_agent_config_inner(
     apply_role_config(
         &mut agent,
         &mut model,
+        &mut model_source,
+        &mut reasoning_effort,
         &mut prompt_transport,
         &mut auth_mode,
         &settings.worker_role,
@@ -1888,6 +2279,14 @@ fn resolve_slot_agent_config_inner(
         }
         if let Some(value) = slot.model.as_deref() {
             model = value.to_string();
+            source = "slot".to_string();
+        }
+        if let Some(value) = slot.model_source.as_deref() {
+            model_source = value.to_string();
+            source = "slot".to_string();
+        }
+        if let Some(value) = slot.reasoning_effort.as_deref() {
+            reasoning_effort = value.to_string();
             source = "slot".to_string();
         }
         if let Some(value) = slot.prompt_transport.as_deref() {
@@ -1908,6 +2307,12 @@ fn resolve_slot_agent_config_inner(
             if let Some(value) = entry.model {
                 model = value;
             }
+            if let Some(value) = entry.model_source {
+                model_source = value;
+            }
+            if let Some(value) = entry.reasoning_effort {
+                reasoning_effort = value;
+            }
             if let Some(value) = entry.prompt_transport {
                 prompt_transport = value;
             }
@@ -1922,6 +2327,8 @@ fn resolve_slot_agent_config_inner(
         project_dir,
         agent,
         model,
+        model_source,
+        reasoning_effort,
         prompt_transport,
         auth_mode,
         source,
@@ -1936,6 +2343,8 @@ fn resolve_slot_agent_config_with_registry_replacement(
 ) -> io::Result<SlotAgentConfig> {
     let mut agent = settings.agent.clone();
     let mut model = settings.model.clone();
+    let mut model_source = settings.model_source.clone();
+    let mut reasoning_effort = settings.reasoning_effort.clone();
     let mut prompt_transport = settings.prompt_transport.clone();
     let mut auth_mode = settings.auth_mode.clone();
     let mut source = "role".to_string();
@@ -1943,6 +2352,8 @@ fn resolve_slot_agent_config_with_registry_replacement(
     apply_role_config(
         &mut agent,
         &mut model,
+        &mut model_source,
+        &mut reasoning_effort,
         &mut prompt_transport,
         &mut auth_mode,
         &settings.worker_role,
@@ -1955,6 +2366,14 @@ fn resolve_slot_agent_config_with_registry_replacement(
         }
         if let Some(value) = slot.model.as_deref() {
             model = value.to_string();
+            source = "slot".to_string();
+        }
+        if let Some(value) = slot.model_source.as_deref() {
+            model_source = value.to_string();
+            source = "slot".to_string();
+        }
+        if let Some(value) = slot.reasoning_effort.as_deref() {
+            reasoning_effort = value.to_string();
             source = "slot".to_string();
         }
         if let Some(value) = slot.prompt_transport.as_deref() {
@@ -1974,6 +2393,12 @@ fn resolve_slot_agent_config_with_registry_replacement(
         if let Some(value) = entry.model.as_deref() {
             model = value.to_string();
         }
+        if let Some(value) = entry.model_source.as_deref() {
+            model_source = value.to_string();
+        }
+        if let Some(value) = entry.reasoning_effort.as_deref() {
+            reasoning_effort = value.to_string();
+        }
         if let Some(value) = entry.prompt_transport.as_deref() {
             prompt_transport = value.to_string();
         }
@@ -1987,6 +2412,8 @@ fn resolve_slot_agent_config_with_registry_replacement(
         project_dir,
         agent,
         model,
+        model_source,
+        reasoning_effort,
         prompt_transport,
         auth_mode,
         source,
@@ -1997,17 +2424,51 @@ fn finalize_slot_agent_config(
     project_dir: &Path,
     agent: String,
     model: String,
+    model_source: String,
+    reasoning_effort: String,
     prompt_transport: String,
     auth_mode: String,
     source: String,
 ) -> io::Result<SlotAgentConfig> {
     assert_provider_prompt_transport(project_dir, &agent, &prompt_transport)?;
     assert_provider_auth_mode(project_dir, &agent, &auth_mode)?;
+    validate_model_source(&model_source)?;
+    validate_reasoning_effort(&reasoning_effort)?;
     let capability = resolve_provider_capability(project_dir, &agent)?;
+    assert_provider_capability_selection(
+        capability.as_ref(),
+        &agent,
+        "model_sources",
+        "model_source",
+        &model_source,
+    )?;
+    assert_provider_capability_selection(
+        capability.as_ref(),
+        &agent,
+        "reasoning_efforts",
+        "reasoning_effort",
+        &reasoning_effort,
+    )?;
     Ok(SlotAgentConfig {
         auth_policy: provider_auth_policy(capability.as_ref(), &auth_mode),
         capability_adapter: capability_string(capability.as_ref(), "adapter"),
         capability_command: capability_string(capability.as_ref(), "command"),
+        model_options: capability
+            .as_ref()
+            .and_then(|value| value.get("model_options"))
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+        model_sources: capability
+            .as_ref()
+            .and_then(|value| value.get("model_sources"))
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+        reasoning_efforts: capability
+            .as_ref()
+            .and_then(|value| value.get("reasoning_efforts"))
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+        local_access_note: capability_string(capability.as_ref(), "local_access_note"),
         supports_parallel_runs: capability_bool(capability.as_ref(), "supports_parallel_runs"),
         supports_interrupt: capability_bool(capability.as_ref(), "supports_interrupt"),
         supports_structured_result: capability_bool(
@@ -2021,6 +2482,8 @@ fn finalize_slot_agent_config(
         supports_context_reset: capability_bool(capability.as_ref(), "supports_context_reset"),
         agent,
         model,
+        model_source,
+        reasoning_effort,
         prompt_transport,
         auth_mode,
         source,
@@ -2030,6 +2493,8 @@ fn finalize_slot_agent_config(
 fn apply_role_config(
     agent: &mut String,
     model: &mut String,
+    model_source: &mut String,
+    reasoning_effort: &mut String,
     prompt_transport: &mut String,
     auth_mode: &mut String,
     config: &ProviderRoleConfig,
@@ -2041,6 +2506,14 @@ fn apply_role_config(
     }
     if let Some(value) = config.model.as_deref() {
         *model = value.to_string();
+        *source = "role".to_string();
+    }
+    if let Some(value) = config.model_source.as_deref() {
+        *model_source = value.to_string();
+        *source = "role".to_string();
+    }
+    if let Some(value) = config.reasoning_effort.as_deref() {
+        *reasoning_effort = value.to_string();
         *source = "role".to_string();
     }
     if let Some(value) = config.prompt_transport.as_deref() {
@@ -2228,7 +2701,15 @@ fn provider_registry_optional_string(
     };
     let trimmed = text.trim();
     if trimmed.is_empty() {
-        if matches!(key, "agent" | "model" | "prompt_transport" | "auth_mode") {
+        if matches!(
+            key,
+            "agent"
+                | "model"
+                | "model_source"
+                | "reasoning_effort"
+                | "prompt_transport"
+                | "auth_mode"
+        ) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Invalid provider registry field '{key}'."),
@@ -2333,6 +2814,45 @@ fn assert_provider_auth_mode(
             io::ErrorKind::InvalidInput,
             format!(
                 "Provider capability '{provider_id}' does not support auth_mode '{requested}'. Supported values: {}.",
+                supported.join(", ")
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn assert_provider_capability_selection(
+    capability: Option<&Value>,
+    provider_id: &str,
+    capability_field: &str,
+    selector_name: &str,
+    value: &str,
+) -> io::Result<()> {
+    if value.trim().is_empty() {
+        return Ok(());
+    }
+    let Some(capability) = capability else {
+        return Ok(());
+    };
+    let Some(raw_values) = capability.get(capability_field) else {
+        return Ok(());
+    };
+    let Some(values) = raw_values.as_array() else {
+        return Err(invalid_provider_capability_field(capability_field));
+    };
+
+    let requested = value.trim().to_ascii_lowercase();
+    let supported: Vec<String> = values
+        .iter()
+        .filter_map(Value::as_str)
+        .map(|item| item.trim().to_ascii_lowercase())
+        .filter(|item| !item.is_empty())
+        .collect();
+    if !supported.iter().any(|item| item == &requested) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "Provider capability '{provider_id}' does not support {selector_name} '{requested}'. Supported values: {}.",
                 supported.join(", ")
             ),
         ));
@@ -3056,6 +3576,13 @@ struct MetaPlanRole {
     label: String,
     provider: String,
     model: String,
+    #[serde(default = "default_provider_model_source", alias = "model-source")]
+    model_source: String,
+    #[serde(
+        default = "default_provider_reasoning_effort",
+        alias = "reasoning-effort"
+    )]
+    reasoning_effort: String,
     #[serde(alias = "plan-mode")]
     plan_mode: String,
     #[serde(alias = "read-only")]
@@ -3366,6 +3893,8 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
                 "provider": role.provider.clone(),
                 "provider_adapter": provider_adapter.clone(),
                 "model": role.model.clone(),
+                "model_source": role.model_source.clone(),
+                "reasoning_effort": role.reasoning_effort.clone(),
                 "plan_mode": role.plan_mode.clone(),
                 "read_only": role.read_only,
                 "review_rounds": role.review_rounds,
@@ -3402,6 +3931,8 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
             "provider": role.provider.clone(),
             "provider_adapter": provider_adapter.clone(),
             "model": role.model.clone(),
+            "model_source": role.model_source.clone(),
+            "reasoning_effort": role.reasoning_effort.clone(),
             "plan_mode": role.plan_mode.clone(),
             "read_only": role.read_only,
             "review_rounds": role.review_rounds,
@@ -3530,6 +4061,8 @@ fn default_meta_plan_roles() -> Vec<MetaPlanRole> {
             label: "Investigator".to_string(),
             provider: "claude".to_string(),
             model: "provider-default".to_string(),
+            model_source: default_provider_model_source(),
+            reasoning_effort: default_provider_reasoning_effort(),
             plan_mode: "required".to_string(),
             read_only: true,
             review_rounds: 1,
@@ -3541,6 +4074,8 @@ fn default_meta_plan_roles() -> Vec<MetaPlanRole> {
             label: "Verifier".to_string(),
             provider: "codex".to_string(),
             model: "provider-default".to_string(),
+            model_source: default_provider_model_source(),
+            reasoning_effort: default_provider_reasoning_effort(),
             plan_mode: "read_only_equivalent".to_string(),
             read_only: true,
             review_rounds: 1,
@@ -3612,6 +4147,8 @@ fn validate_meta_plan_role(project_dir: &Path, role: &MetaPlanRole) -> io::Resul
             format!("meta-plan role '{}' model must not be empty", role.role_id),
         ));
     }
+    validate_model_source(&role.model_source)?;
+    validate_reasoning_effort(&role.reasoning_effort)?;
     if !role.read_only {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -3746,31 +4283,90 @@ fn meta_plan_launch_contract(
     provider_adapter: &str,
     provider_command: &str,
 ) -> Value {
+    let model_override = provider_model_override(&role.model, &role.model_source);
+    let mut args = Vec::new();
     match provider_adapter {
-        "claude" => json!({
-            "provider": role.provider.clone(),
-            "provider_adapter": provider_adapter,
-            "command": provider_command,
-            "model": role.model.clone(),
-            "args": ["--permission-mode", "plan"],
-            "plan_mode_enforced": true,
-            "read_only": role.read_only,
-        }),
-        "codex" => json!({
-            "provider": role.provider.clone(),
-            "provider_adapter": provider_adapter,
-            "command": provider_command,
-            "model": role.model.clone(),
-            "args": ["exec", "--sandbox", "read-only"],
-            "plan_mode_enforced": false,
-            "read_only_equivalent": true,
-            "read_only": role.read_only,
-        }),
+        "claude" => {
+            if model_override {
+                args.push("--model".to_string());
+                args.push(role.model.clone());
+            }
+            if !provider_default_reasoning_effort(&role.reasoning_effort) {
+                args.push("--effort".to_string());
+                args.push(role.reasoning_effort.trim().to_ascii_lowercase());
+            }
+            args.push("--permission-mode".to_string());
+            args.push("plan".to_string());
+            json!({
+                "provider": role.provider.clone(),
+                "provider_adapter": provider_adapter,
+                "command": provider_command,
+                "model": role.model.clone(),
+                "model_source": role.model_source.clone(),
+                "reasoning_effort": role.reasoning_effort.clone(),
+                "model_override": model_override,
+                "args": args,
+                "plan_mode_enforced": true,
+                "read_only": role.read_only,
+            })
+        }
+        "codex" => {
+            args.push("exec".to_string());
+            if model_override {
+                args.push("-c".to_string());
+                args.push(format!("model={}", role.model));
+            }
+            if !provider_default_reasoning_effort(&role.reasoning_effort) {
+                args.push("-c".to_string());
+                args.push(format!(
+                    "model_reasoning_effort={}",
+                    role.reasoning_effort.trim().to_ascii_lowercase()
+                ));
+            }
+            args.push("--sandbox".to_string());
+            args.push("read-only".to_string());
+            json!({
+                "provider": role.provider.clone(),
+                "provider_adapter": provider_adapter,
+                "command": provider_command,
+                "model": role.model.clone(),
+                "model_source": role.model_source.clone(),
+                "reasoning_effort": role.reasoning_effort.clone(),
+                "model_override": model_override,
+                "args": args,
+                "plan_mode_enforced": false,
+                "read_only_equivalent": true,
+                "read_only": role.read_only,
+            })
+        }
+        "gemini" => {
+            if model_override {
+                args.push("--model".to_string());
+                args.push(role.model.clone());
+            }
+            args.push("--approval-mode=plan".to_string());
+            json!({
+                "provider": role.provider.clone(),
+                "provider_adapter": provider_adapter,
+                "command": provider_command,
+                "model": role.model.clone(),
+                "model_source": role.model_source.clone(),
+                "reasoning_effort": role.reasoning_effort.clone(),
+                "model_override": model_override,
+                "args": args,
+                "plan_mode_enforced": false,
+                "read_only_equivalent": true,
+                "read_only": role.read_only,
+            })
+        }
         _ => json!({
             "provider": role.provider.clone(),
             "provider_adapter": provider_adapter,
             "command": provider_command,
             "model": role.model.clone(),
+            "model_source": role.model_source.clone(),
+            "reasoning_effort": role.reasoning_effort.clone(),
+            "model_override": model_override,
             "args": [],
             "plan_mode_enforced": false,
             "read_only_equivalent": true,
@@ -3785,7 +4381,7 @@ fn render_meta_plan_role_draft(
     role: &MetaPlanRole,
     prompt_hash: &str,
 ) -> String {
-    format!("# Meta-Planning Draft: {label}\n\nRun: `{run_id}`\nRole: `{role_id}`\nProvider: `{provider}`\nPlan mode: `{plan_mode}`\nRead-only: `{read_only}`\nTask hash: `{task_hash}`\nRole prompt hash: `{prompt_hash}`\n\n## Task\n\nThe task body is not stored in this artifact. Use the task hash and audit event references to correlate the operator-owned request.\n\n## Responsibility\n\nThe role prompt body is not stored in this artifact by default. Use the prompt hash and role definition source to correlate the role contract.\n\n## Draft Plan\n\n- Confirm facts and constraints for this role.\n- Identify assumptions that must be carried into the integrated plan.\n- Keep all recommendations side-effect-free until operator approval.\n\n## Evidence To Collect\n\n- Existing repository contracts and tests relevant to this role.\n- Gaps, risks, or open questions for the operator to merge.\n", label = &role.label, role_id = &role.role_id, provider = &role.provider, plan_mode = &role.plan_mode, read_only = role.read_only)
+    format!("# Meta-Planning Draft: {label}\n\nRun: `{run_id}`\nRole: `{role_id}`\nProvider: `{provider}`\nModel: `{model}`\nModel source: `{model_source}`\nReasoning effort: `{reasoning_effort}`\nPlan mode: `{plan_mode}`\nRead-only: `{read_only}`\nTask hash: `{task_hash}`\nRole prompt hash: `{prompt_hash}`\n\n## Task\n\nThe task body is not stored in this artifact. Use the task hash and audit event references to correlate the operator-owned request.\n\n## Responsibility\n\nThe role prompt body is not stored in this artifact by default. Use the prompt hash and role definition source to correlate the role contract.\n\n## Draft Plan\n\n- Confirm facts and constraints for this role.\n- Identify assumptions that must be carried into the integrated plan.\n- Keep all recommendations side-effect-free until operator approval.\n\n## Evidence To Collect\n\n- Existing repository contracts and tests relevant to this role.\n- Gaps, risks, or open questions for the operator to merge.\n", label = &role.label, role_id = &role.role_id, provider = &role.provider, model = &role.model, model_source = &role.model_source, reasoning_effort = &role.reasoning_effort, plan_mode = &role.plan_mode, read_only = role.read_only)
 }
 
 fn render_meta_plan_cross_review(
@@ -4555,7 +5151,7 @@ fn usage_for(command: &str) -> &'static str {
         }
         "guard" => "usage: winsmux guard [--json] [--project-dir <path>]",
         "provider-switch" => {
-            "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json] [--project-dir <path>]"
+            "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--model-source <source>] [--reasoning-effort <level>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json] [--project-dir <path>]"
         }
         "signal" => "usage: winsmux signal <channel>",
         "wait" => "usage: winsmux wait <channel> [timeout_seconds]",
@@ -4926,6 +5522,8 @@ struct RestartPlan {
     git_worktree_dir: String,
     agent: String,
     model: String,
+    model_source: String,
+    reasoning_effort: String,
     capability_adapter: String,
     launch_command: String,
 }
@@ -5448,7 +6046,7 @@ fn build_restart_plan(project_dir: &Path, target: &str) -> io::Result<RestartPla
 fn build_restart_plan_with_provider(
     project_dir: &Path,
     target: &str,
-    provider_override: Option<(String, String, String)>,
+    provider_override: Option<(String, String, String, String, String)>,
 ) -> io::Result<RestartPlan> {
     let manifest_path = project_dir.join(".winsmux").join("manifest.yaml");
     let raw = fs::read_to_string(&manifest_path)?;
@@ -5470,14 +6068,17 @@ fn build_restart_plan_with_provider(
     )?;
     ensure_live_pane_target(&session_name, &context.pane_id)?;
 
-    let (agent, model, capability_adapter) = if let Some(provider) = provider_override {
-        provider
-    } else {
-        resolve_restart_provider(project_dir, &context)?
-    };
+    let (agent, model, model_source, reasoning_effort, capability_adapter) =
+        if let Some(provider) = provider_override {
+            provider
+        } else {
+            resolve_restart_provider(project_dir, &context)?
+        };
     let launch_command = build_provider_launch_command(
         &agent,
         &model,
+        &model_source,
+        &reasoning_effort,
         &capability_adapter,
         &context.launch_dir,
         &context.git_worktree_dir,
@@ -5491,6 +6092,8 @@ fn build_restart_plan_with_provider(
         git_worktree_dir: context.git_worktree_dir,
         agent,
         model,
+        model_source,
+        reasoning_effort,
         capability_adapter,
         launch_command,
     })
@@ -5525,7 +6128,13 @@ fn build_provider_switch_restart_plan(
     build_restart_plan_with_provider(
         project_dir,
         pane_id,
-        Some((effective.agent, effective.model, adapter)),
+        Some((
+            effective.agent,
+            effective.model,
+            effective.model_source,
+            effective.reasoning_effort,
+            adapter,
+        )),
     )
 }
 
@@ -5636,7 +6245,9 @@ fn restart_context_from_value(
         git_worktree_dir,
         agent: String::new(),
         model: String::new(),
+        model_source: default_provider_model_source(),
         capability_adapter: String::new(),
+        reasoning_effort: default_provider_reasoning_effort(),
         launch_command: String::new(),
     })
 }
@@ -5665,7 +6276,7 @@ fn pane_git_worktree_dir(project_dir: &Path) -> String {
 fn resolve_restart_provider(
     project_dir: &Path,
     context: &RestartPlan,
-) -> io::Result<(String, String, String)> {
+) -> io::Result<(String, String, String, String, String)> {
     let manifest_provider_target = manifest_provider_target(project_dir, &context.pane_id);
     let manifest_capability_adapter =
         manifest_capability_adapter(project_dir, &context.pane_id).unwrap_or_default();
@@ -5681,7 +6292,13 @@ fn resolve_restart_provider(
                 } else {
                     effective.capability_adapter
                 };
-                return Ok((effective.agent, effective.model, adapter));
+                return Ok((
+                    effective.agent,
+                    effective.model,
+                    effective.model_source,
+                    effective.reasoning_effort,
+                    adapter,
+                ));
             }
         }
     }
@@ -5698,7 +6315,13 @@ fn resolve_restart_provider(
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| provider_adapter_from_agent(&agent))
         };
-        return Ok((agent, model, adapter));
+        return Ok((
+            agent,
+            model.clone(),
+            inferred_model_source_for_model(&model),
+            default_provider_reasoning_effort(),
+            adapter,
+        ));
     }
 
     Err(io::Error::new(
@@ -5808,16 +6431,27 @@ fn provider_adapter_from_agent(agent: &str) -> String {
 fn build_provider_launch_command(
     agent: &str,
     model: &str,
+    model_source: &str,
+    reasoning_effort: &str,
     capability_adapter: &str,
     launch_dir: &str,
     git_worktree_dir: &str,
 ) -> io::Result<String> {
+    let model_override = provider_model_override(model, model_source);
+    let effort_override = !provider_default_reasoning_effort(reasoning_effort);
     match capability_adapter.trim().to_ascii_lowercase().as_str() {
         "codex" => {
             let mut parts = vec![shell_literal(agent)];
-            if !model.trim().is_empty() {
+            if model_override {
                 parts.push("-c".to_string());
                 parts.push(shell_literal(&format!("model={model}")));
+            }
+            if effort_override {
+                parts.push("-c".to_string());
+                parts.push(shell_literal(&format!(
+                    "model_reasoning_effort={}",
+                    reasoning_effort.trim().to_ascii_lowercase()
+                )));
             }
             parts.push("--sandbox".to_string());
             parts.push("danger-full-access".to_string());
@@ -5829,12 +6463,25 @@ fn build_provider_launch_command(
         }
         "claude" => {
             let mut parts = vec![shell_literal(agent)];
-            if !model.trim().is_empty() {
+            if model_override {
                 parts.push("--model".to_string());
                 parts.push(shell_literal(model));
             }
+            if effort_override {
+                parts.push("--effort".to_string());
+                parts.push(reasoning_effort.trim().to_ascii_lowercase());
+            }
             parts.push("--permission-mode".to_string());
             parts.push("bypassPermissions".to_string());
+            Ok(parts.join(" "))
+        }
+        "gemini" => {
+            let mut parts = vec![shell_literal(agent)];
+            if model_override {
+                parts.push("--model".to_string());
+                parts.push(shell_literal(model));
+            }
+            parts.push("--approval-mode=default".to_string());
             Ok(parts.join(" "))
         }
         adapter => Err(io::Error::new(
@@ -5854,8 +6501,8 @@ fn shell_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-fn provider_target_with_model(agent: &str, model: &str) -> String {
-    if model.trim().is_empty() {
+fn provider_target_with_model(agent: &str, model: &str, model_source: &str) -> String {
+    if !provider_model_override(model, model_source) {
         agent.to_string()
     } else {
         format!("{}:{}", agent.trim(), model.trim())
@@ -6037,7 +6684,8 @@ fn update_restart_manifest_metadata(project_dir: &Path, plan: &RestartPlan) -> i
                 format!("invalid manifest: {}: {err}", manifest_path.display()),
             )
         })?;
-        let provider_target = provider_target_with_model(&plan.agent, &plan.model);
+        let provider_target =
+            provider_target_with_model(&plan.agent, &plan.model, &plan.model_source);
         let updated = update_manifest_pane_restart_fields(
             &mut manifest,
             &plan.pane_id,
@@ -9251,6 +9899,8 @@ mod tests {
             git_worktree_dir: "C:\\repo\\.git".to_string(),
             agent: agent.to_string(),
             model: String::new(),
+            model_source: default_provider_model_source(),
+            reasoning_effort: default_provider_reasoning_effort(),
             capability_adapter: capability_adapter.to_string(),
             launch_command: "noop".to_string(),
         }
@@ -9258,7 +9908,10 @@ mod tests {
 
     #[test]
     fn restart_readiness_agent_resolves_known_adapters() {
-        assert_eq!(restart_readiness_agent(&restart_plan("custom", "codex")), "codex");
+        assert_eq!(
+            restart_readiness_agent(&restart_plan("custom", "codex")),
+            "codex"
+        );
         assert_eq!(
             restart_readiness_agent(&restart_plan("claude-opus", "")),
             "claude"
@@ -9272,7 +9925,10 @@ mod tests {
     #[test]
     fn restart_readiness_agent_does_not_default_unknown_to_codex() {
         assert_eq!(restart_readiness_agent(&restart_plan("", "")), "");
-        assert_eq!(restart_readiness_agent(&restart_plan("custom-agent", "")), "");
+        assert_eq!(
+            restart_readiness_agent(&restart_plan("custom-agent", "")),
+            ""
+        );
         assert_eq!(
             restart_readiness_agent(&restart_plan("custom-agent", "custom-adapter")),
             ""

@@ -162,6 +162,8 @@ function Get-PaneScalerLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Agent,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
+        [AllowEmptyString()][string]$ModelSource = '',
+        [AllowEmptyString()][string]$ReasoningEffort = '',
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath = ''
@@ -170,6 +172,8 @@ function Get-PaneScalerLaunchCommand {
     return Get-BridgeProviderLaunchCommand `
         -ProviderId $Agent `
         -Model $Model `
+        -ModelSource $ModelSource `
+        -ReasoningEffort $ReasoningEffort `
         -ProjectDir $ProjectDir `
         -GitWorktreeDir $GitWorktreeDir `
         -RootPath $RootPath
@@ -228,7 +232,7 @@ function Get-PaneScalerSlotAgentConfig {
     }
 
     try {
-        return Get-RoleAgentConfig -Role 'Builder' -Settings $Settings
+        return Get-RoleAgentConfig -Role 'Builder' -Settings $Settings -RootPath $ProjectDir
     } catch {
         return [PSCustomObject]@{
             Agent = [string]$Settings.agent
@@ -341,7 +345,7 @@ function Get-PaneWorkload {
             $roleAgentConfig = Get-SlotAgentConfig -Role 'Builder' -SlotId $label -Settings $Settings -RootPath $projectDir
         } else {
             try {
-                $roleAgentConfig = Get-RoleAgentConfig -Role 'Builder' -Settings $Settings
+                $roleAgentConfig = Get-RoleAgentConfig -Role 'Builder' -Settings $Settings -RootPath $projectDir
             } catch {
                 $roleAgentConfig = [PSCustomObject]@{
                     Agent = [string]$Settings.agent
@@ -432,7 +436,7 @@ function Add-OrchestraPane {
         Invoke-MonitorWinsmux -Arguments @('select-pane', '-t', $newPaneId, '-T', $newLabel) | Out-Null
 
         Wait-MonitorPaneShellReady -PaneId $newPaneId
-        Send-MonitorBridgeCommand -PaneId $newPaneId -Text (Get-PaneScalerLaunchCommand -Agent ([string]$roleAgentConfig.Agent) -Model ([string]$roleAgentConfig.Model) -ProjectDir $worktree.WorktreePath -GitWorktreeDir $worktree.GitWorktreeDir -RootPath $projectDir)
+        Send-MonitorBridgeCommand -PaneId $newPaneId -Text (Get-PaneScalerLaunchCommand -Agent ([string]$roleAgentConfig.Agent) -Model ([string]$roleAgentConfig.Model) -ModelSource ([string]$roleAgentConfig.ModelSource) -ReasoningEffort ([string]$roleAgentConfig.ReasoningEffort) -ProjectDir $worktree.WorktreePath -GitWorktreeDir $worktree.GitWorktreeDir -RootPath $projectDir)
 
         $newPane = [ordered]@{
             label                = $newLabel
