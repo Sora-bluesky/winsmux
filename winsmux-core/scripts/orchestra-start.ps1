@@ -786,6 +786,8 @@ function Get-AgentLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Agent,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
+        [AllowEmptyString()][string]$ModelSource = '',
+        [AllowEmptyString()][string]$ReasoningEffort = '',
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath,
@@ -795,6 +797,8 @@ function Get-AgentLaunchCommand {
     return Get-BridgeProviderLaunchCommand `
         -ProviderId $Agent `
         -Model $Model `
+        -ModelSource $ModelSource `
+        -ReasoningEffort $ReasoningEffort `
         -ProjectDir $ProjectDir `
         -GitWorktreeDir $GitWorktreeDir `
         -RootPath $RootPath `
@@ -2119,7 +2123,7 @@ if ($MyInvocation.InvocationName -ne '.') {
             $execModeAgent = [string]$slotAgentConfig.Agent
         }
         $execMode = $execModeAgent.Trim().ToLowerInvariant() -eq 'codex'
-        $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -RootPath $projectDir -ExecMode $false
+        $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ModelSource $slotAgentConfig.ModelSource -ReasoningEffort $slotAgentConfig.ReasoningEffort -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -RootPath $projectDir -ExecMode $false
         $supportsInterrupt = Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $slotAgentConfig
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)

@@ -4,6 +4,7 @@ import "xterm/css/xterm.css";
 import { isTauri } from "@tauri-apps/api/core";
 import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
+  applyDesktopRuntimeRolePreferences,
   compareDesktopRuns,
   getDesktopEditorFile,
   getDesktopRunExplain,
@@ -19,6 +20,7 @@ import {
   type DesktopExplainPayload,
   type DesktopRunProjection,
   type DesktopSummarySnapshot,
+  type DesktopRuntimeRolePreference,
 } from "./desktopClient";
 import { getEditorFileKey, getSourceChangeKey, pickEditorPathCandidate } from "./editorTargets";
 import {
@@ -281,6 +283,10 @@ type CodeFontMode = "system" | "google-sans-code" | "jetbrains-mono";
 type FocusMode = "standard" | "focused";
 type LanguageMode = "en" | "ja";
 type WorkbenchLayoutMode = "2x2" | "3x2" | "focus";
+type RuntimeRoleId = "operator" | "worker" | "reviewer";
+type RuntimeProviderId = "provider-default" | "codex" | "claude" | "gemini";
+type RuntimeModelSource = "provider-default" | "cli-discovery" | "official-doc" | "operator-override";
+type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "xhigh" | "max";
 
 interface ThemeState {
   theme: ThemeMode;
@@ -298,6 +304,14 @@ interface ShellPreferenceState extends ThemeState {
   wideContextOpen: boolean;
   workbenchOpen: boolean;
   workbenchLayout: WorkbenchLayoutMode;
+}
+
+interface RuntimeRolePreference {
+  roleId: RuntimeRoleId;
+  provider: RuntimeProviderId;
+  model: string;
+  modelSource: RuntimeModelSource;
+  reasoningEffort: RuntimeReasoningEffort;
 }
 
 interface ComposerAttachment {
@@ -499,9 +513,12 @@ const themeState: ThemeState = {
   language: "en",
 };
 let settingsDraftState: ThemeState | null = null;
+let runtimeRolePreferences: RuntimeRolePreference[] = [];
+let runtimeRoleDraftState: RuntimeRolePreference[] | null = null;
 let preferredWideSidebarOpen = true;
 let preferredWideContextOpen = false;
 const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
+const RUNTIME_ROLE_PREFERENCES_STORAGE_KEY = "winsmux.runtime-role.preferences.v1";
 const POPOUT_SURFACE_STORAGE_KEY_PREFIX = "winsmux.popout-surface.";
 const PROJECT_SESSIONS_STORAGE_KEY = "winsmux.project-sessions.v1";
 const ACTIVE_PROJECT_STORAGE_KEY = "winsmux.active-project.v1";
@@ -775,6 +792,47 @@ const languageOptions: Array<{ value: LanguageMode; label: string; description: 
   { value: "en", label: "English", labelJa: "English", description: "Use English for the workspace chrome and controls.", descriptionJa: "作業領域と操作部品を英語で表示します。" },
   { value: "ja", label: "Japanese", labelJa: "日本語", description: "Use Japanese for the main workspace chrome and settings.", descriptionJa: "主要な操作部品と設定を日本語で表示します。" },
 ];
+
+const runtimeRoleOptions: Array<{ value: RuntimeRoleId; label: string; labelJa: string; description: string; descriptionJa: string }> = [
+  { value: "operator", label: "Operator", labelJa: "オペレーター", description: "Owns approvals and session control.", descriptionJa: "承認とセッション制御を担当します。" },
+  { value: "worker", label: "Worker", labelJa: "ワーカー", description: "Handles implementation and verification work.", descriptionJa: "実装と検証を担当します。" },
+  { value: "reviewer", label: "Reviewer", labelJa: "レビュアー", description: "Checks diffs, risks, and tests.", descriptionJa: "差分、リスク、テストを確認します。" },
+];
+
+const runtimeProviderOptions: Array<{ value: RuntimeProviderId; label: string; labelJa: string }> = [
+  { value: "provider-default", label: "Provider default", labelJa: "既定値" },
+  { value: "codex", label: "Codex CLI", labelJa: "Codex CLI" },
+  { value: "claude", label: "Claude Code", labelJa: "Claude Code" },
+  { value: "gemini", label: "Gemini CLI", labelJa: "Gemini CLI" },
+];
+
+const runtimeModelSourceOptions: Array<{ value: RuntimeModelSource; label: string; labelJa: string }> = [
+  { value: "provider-default", label: "Provider default", labelJa: "既定値" },
+  { value: "cli-discovery", label: "Local CLI catalog", labelJa: "ローカル CLI" },
+  { value: "official-doc", label: "Official docs", labelJa: "公式ドキュメント" },
+  { value: "operator-override", label: "Operator override", labelJa: "明示指定" },
+];
+
+const runtimeReasoningOptions: Array<{ value: RuntimeReasoningEffort; label: string; labelJa: string }> = [
+  { value: "provider-default", label: "Auto", labelJa: "自動" },
+  { value: "low", label: "Low", labelJa: "低" },
+  { value: "medium", label: "Medium", labelJa: "中" },
+  { value: "high", label: "High", labelJa: "高" },
+  { value: "xhigh", label: "X High", labelJa: "特高" },
+  { value: "max", label: "Max", labelJa: "最大" },
+];
+
+const runtimeModelSuggestions = [
+  "provider-default",
+  "gpt-5.3-codex-spark",
+  "gpt-5.5",
+  "default",
+  "sonnet",
+  "opus",
+  "opusplan",
+];
+
+runtimeRolePreferences = readStoredRuntimeRolePreferences();
 
 const fallbackExplorerPaths = [
   ".agents/README.md",
@@ -4804,9 +4862,11 @@ function getFooterItems(): { left: FooterStatusItem[]; right: FooterStatusItem[]
   const reviewStatus = selectedProjection?.review_state || "No review";
   const nextStatus = selectedProjection?.next_action || "idle";
   const operatorStatus = getFooterOperatorStatus(selectedProjection ?? undefined);
-  const settingsStatus = settingsDraftState
-    ? (themeStatesEqual(settingsDraftState, themeState) ? (settingsSheetOpen ? "Editing" : "Ready") : "Draft")
-    : "Saved";
+  const hasThemeDraft = Boolean(settingsDraftState && !themeStatesEqual(settingsDraftState, themeState));
+  const hasRuntimeDraft = Boolean(runtimeRoleDraftState && !runtimeRolePreferencesEqual(runtimeRoleDraftState, runtimeRolePreferences));
+  const settingsStatus = hasThemeDraft || hasRuntimeDraft
+    ? "Draft"
+    : (settingsSheetOpen ? "Editing" : "Saved");
   const surfaceStatus = getFooterSurfaceStatus();
   const contextItem = getFooterContextItem(settingsStatus);
 
@@ -4845,6 +4905,117 @@ function themeStatesEqual(left: ThemeState, right: ThemeState) {
     && left.codeFont === right.codeFont
     && left.focusMode === right.focusMode
     && left.language === right.language;
+}
+
+function defaultRuntimeRolePreferences(): RuntimeRolePreference[] {
+  return [
+    {
+      roleId: "operator",
+      provider: "claude",
+      model: "provider-default",
+      modelSource: "provider-default",
+      reasoningEffort: "provider-default",
+    },
+    {
+      roleId: "worker",
+      provider: "codex",
+      model: "provider-default",
+      modelSource: "provider-default",
+      reasoningEffort: "provider-default",
+    },
+    {
+      roleId: "reviewer",
+      provider: "codex",
+      model: "gpt-5.3-codex-spark",
+      modelSource: "cli-discovery",
+      reasoningEffort: "high",
+    },
+  ];
+}
+
+function cloneRuntimeRolePreferences(state: RuntimeRolePreference[]) {
+  return state.map((item) => ({ ...item }));
+}
+
+function normalizeRuntimeRolePreference(value: Partial<RuntimeRolePreference>, fallback: RuntimeRolePreference): RuntimeRolePreference {
+  const provider = runtimeProviderOptions.find((item) => item.value === value.provider)?.value ?? fallback.provider;
+  const modelSource = runtimeModelSourceOptions.find((item) => item.value === value.modelSource)?.value ?? fallback.modelSource;
+  const reasoningEffort = runtimeReasoningOptions.find((item) => item.value === value.reasoningEffort)?.value ?? fallback.reasoningEffort;
+  const model = typeof value.model === "string" && value.model.trim() ? value.model.trim() : fallback.model;
+  return {
+    roleId: fallback.roleId,
+    provider,
+    model,
+    modelSource,
+    reasoningEffort,
+  };
+}
+
+function readStoredRuntimeRolePreferences(): RuntimeRolePreference[] {
+  const defaults = defaultRuntimeRolePreferences();
+  try {
+    const rawValue = window.localStorage.getItem(RUNTIME_ROLE_PREFERENCES_STORAGE_KEY);
+    if (!rawValue) {
+      return defaults;
+    }
+
+    const parsed = JSON.parse(rawValue) as Partial<RuntimeRolePreference>[] | { roles?: Partial<RuntimeRolePreference>[] };
+    const entries = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.roles) ? parsed.roles : []);
+    return defaults.map((fallback) => {
+      const stored = entries.find((item) => item.roleId === fallback.roleId) ?? {};
+      return normalizeRuntimeRolePreference(stored, fallback);
+    });
+  } catch {
+    return defaults;
+  }
+}
+
+function persistRuntimeRolePreferences() {
+  try {
+    window.localStorage.setItem(RUNTIME_ROLE_PREFERENCES_STORAGE_KEY, JSON.stringify(runtimeRolePreferences));
+    return true;
+  } catch (error) {
+    console.warn("Failed to persist runtime role preferences", error);
+    return false;
+  }
+}
+
+function runtimeRolePreferencesEqual(left: RuntimeRolePreference[], right: RuntimeRolePreference[]) {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  return left.every((item, index) => {
+    const other = right[index];
+    return Boolean(other)
+      && item.roleId === other.roleId
+      && item.provider === other.provider
+      && item.model === other.model
+      && item.modelSource === other.modelSource
+      && item.reasoningEffort === other.reasoningEffort;
+  });
+}
+
+function toDesktopRuntimeRolePreferences(state: RuntimeRolePreference[]): DesktopRuntimeRolePreference[] {
+  return state.map((item) => ({
+    role_id: item.roleId,
+    provider: item.provider,
+    model: item.model,
+    model_source: item.modelSource,
+    reasoning_effort: item.reasoningEffort,
+  }));
+}
+
+async function applyRuntimeRolePreferencesToDesktop(state: RuntimeRolePreference[]) {
+  if (!isTauri()) {
+    console.warn("Runtime role preferences were saved locally; desktop runtime apply is unavailable outside Tauri.");
+    return;
+  }
+
+  await applyDesktopRuntimeRolePreferences(
+    toDesktopRuntimeRolePreferences(state),
+    activeProjectDir,
+  );
 }
 
 function readStoredShellPreferences(): ShellPreferenceState | null {
@@ -5074,7 +5245,12 @@ function applyLanguageChrome() {
   setElementText("close-settings-btn", japanese ? "キャンセル" : "Cancel");
   setElementText("apply-settings-btn", japanese ? "適用" : "Apply");
   setElementText("settings-profile-label", japanese ? "実行環境" : "Runtime");
-  setElementText("settings-profile-value", japanese ? "ローカルの Claude Code 設定を使用します。" : "Uses the local Claude Code configuration.");
+  setElementText(
+    "settings-profile-value",
+    japanese
+      ? "ロールごとにローカル CLI、モデル入手元、思考量を選べます。既定値ではモデル指定を渡しません。"
+      : "Choose local CLI, model source, and effort per role. Provider default passes no model override.",
+  );
   setElementText("settings-language-label", japanese ? "言語" : "Language");
   setElementText("settings-language-value", japanese ? "作業領域の表示言語を日本語と英語で切り替えます。" : "Switch the workspace chrome between English and Japanese.");
   setElementText("settings-theme-label", japanese ? "テーマ" : "Theme");
@@ -5221,6 +5397,170 @@ function renderPreferenceOptions<T extends string>(
   }
 }
 
+function getRuntimeRoleDraft() {
+  if (!runtimeRoleDraftState) {
+    runtimeRoleDraftState = cloneRuntimeRolePreferences(runtimeRolePreferences);
+  }
+  return runtimeRoleDraftState;
+}
+
+function updateRuntimeRoleDraft(roleId: RuntimeRoleId, patch: Partial<RuntimeRolePreference>) {
+  const draft = getRuntimeRoleDraft();
+  const index = draft.findIndex((item) => item.roleId === roleId);
+  if (index === -1) {
+    return;
+  }
+  draft[index] = { ...draft[index], ...patch };
+  renderSettingsControls();
+}
+
+function runtimeAccessNote(preference: RuntimeRolePreference, japanese: boolean) {
+  if (preference.provider === "codex") {
+    return japanese
+      ? "ローカルの Codex CLI のモデル一覧と ChatGPT アカウント権限を使います。API の一覧だけでは判断しません。"
+      : "Uses the local Codex CLI catalog and ChatGPT account access, not API-only availability.";
+  }
+  if (preference.provider === "claude") {
+    return japanese
+      ? "ローカルの Claude Code 設定を使います。`default`、`sonnet`、`opus`、`opusplan` を指定できます。"
+      : "Uses local Claude Code settings. Aliases such as default, sonnet, opus, and opusplan are accepted.";
+  }
+  if (preference.provider === "gemini") {
+    return japanese
+      ? "ローカルの Gemini CLI 設定を使います。計画時は `--approval-mode plan` を使えます。"
+      : "Uses local Gemini CLI settings. Plan runs can use --approval-mode plan.";
+  }
+  return japanese
+    ? "winsmux はモデル指定を渡さず、プロバイダー側の既定値を使います。"
+    : "winsmux passes no model override and lets the provider choose its default.";
+}
+
+function createRuntimeSelect<T extends string>(
+  id: string,
+  label: string,
+  value: T,
+  options: Array<{ value: T; label: string; labelJa: string }>,
+  japanese: boolean,
+  onChange: (value: T) => void,
+) {
+  const group = document.createElement("label");
+  group.className = "runtime-control-group";
+  group.setAttribute("for", id);
+
+  const caption = document.createElement("span");
+  caption.className = "runtime-control-caption";
+  caption.textContent = label;
+  group.appendChild(caption);
+
+  const select = document.createElement("select");
+  select.id = id;
+  select.className = "runtime-control-select";
+  for (const option of options) {
+    const element = document.createElement("option");
+    element.value = option.value;
+    element.textContent = japanese ? option.labelJa : option.label;
+    element.selected = option.value === value;
+    select.appendChild(element);
+  }
+  select.addEventListener("change", () => onChange(select.value as T));
+  group.appendChild(select);
+  return group;
+}
+
+function renderRuntimeRoleControls() {
+  const root = document.getElementById("runtime-role-options");
+  if (!root) {
+    return;
+  }
+
+  const activeRuntimeState = runtimeRoleDraftState ?? runtimeRolePreferences;
+  const japanese = (settingsDraftState?.language ?? themeState.language) === "ja";
+  root.innerHTML = "";
+
+  const datalist = document.createElement("datalist");
+  datalist.id = "runtime-model-suggestions";
+  for (const model of runtimeModelSuggestions) {
+    const option = document.createElement("option");
+    option.value = model;
+    datalist.appendChild(option);
+  }
+  root.appendChild(datalist);
+
+  for (const role of runtimeRoleOptions) {
+    const preference = activeRuntimeState.find((item) => item.roleId === role.value)
+      ?? defaultRuntimeRolePreferences().find((item) => item.roleId === role.value)!;
+    const panel = document.createElement("section");
+    panel.className = "runtime-role-panel";
+
+    const header = document.createElement("div");
+    header.className = "runtime-role-header";
+    const title = document.createElement("div");
+    title.className = "runtime-role-title";
+    title.textContent = japanese ? role.labelJa : role.label;
+    const description = document.createElement("div");
+    description.className = "runtime-role-description";
+    description.textContent = japanese ? role.descriptionJa : role.description;
+    header.append(title, description);
+    panel.appendChild(header);
+
+    const controls = document.createElement("div");
+    controls.className = "runtime-role-controls";
+    controls.appendChild(createRuntimeSelect(
+      `runtime-provider-${role.value}`,
+      japanese ? "プロバイダー" : "Provider",
+      preference.provider,
+      runtimeProviderOptions,
+      japanese,
+      (provider) => updateRuntimeRoleDraft(role.value, { provider }),
+    ));
+
+    const modelGroup = document.createElement("label");
+    modelGroup.className = "runtime-control-group runtime-control-group-wide";
+    modelGroup.setAttribute("for", `runtime-model-${role.value}`);
+    const modelCaption = document.createElement("span");
+    modelCaption.className = "runtime-control-caption";
+    modelCaption.textContent = japanese ? "モデル" : "Model";
+    const modelInput = document.createElement("input");
+    modelInput.id = `runtime-model-${role.value}`;
+    modelInput.className = "runtime-control-input";
+    modelInput.value = preference.model;
+    modelInput.setAttribute("list", "runtime-model-suggestions");
+    modelInput.placeholder = "provider-default";
+    modelInput.addEventListener("change", () => {
+      const value = modelInput.value.trim() || "provider-default";
+      const nextSource = value === "provider-default" ? "provider-default" : preference.modelSource;
+      updateRuntimeRoleDraft(role.value, { model: value, modelSource: nextSource });
+    });
+    modelGroup.append(modelCaption, modelInput);
+    controls.appendChild(modelGroup);
+
+    controls.appendChild(createRuntimeSelect(
+      `runtime-model-source-${role.value}`,
+      japanese ? "入手元" : "Source",
+      preference.modelSource,
+      runtimeModelSourceOptions,
+      japanese,
+      (modelSource) => updateRuntimeRoleDraft(role.value, { modelSource }),
+    ));
+    controls.appendChild(createRuntimeSelect(
+      `runtime-reasoning-${role.value}`,
+      japanese ? "思考量" : "Effort",
+      preference.reasoningEffort,
+      runtimeReasoningOptions,
+      japanese,
+      (reasoningEffort) => updateRuntimeRoleDraft(role.value, { reasoningEffort }),
+    ));
+    panel.appendChild(controls);
+
+    const note = document.createElement("div");
+    note.className = "runtime-access-note";
+    note.textContent = runtimeAccessNote(preference, japanese);
+    panel.appendChild(note);
+
+    root.appendChild(panel);
+  }
+}
+
 function renderSettingsControls() {
   const activeState = settingsDraftState ?? themeState;
   const applyButton = document.getElementById("apply-settings-btn") as HTMLButtonElement | null;
@@ -5273,8 +5613,12 @@ function renderSettingsControls() {
     renderSettingsControls();
   });
 
+  renderRuntimeRoleControls();
+
   if (applyButton) {
-    const hasChanges = Boolean(settingsDraftState && !themeStatesEqual(settingsDraftState, themeState));
+    const hasThemeChanges = Boolean(settingsDraftState && !themeStatesEqual(settingsDraftState, themeState));
+    const hasRuntimeChanges = Boolean(runtimeRoleDraftState && !runtimeRolePreferencesEqual(runtimeRoleDraftState, runtimeRolePreferences));
+    const hasChanges = hasThemeChanges || hasRuntimeChanges;
     applyButton.disabled = !hasChanges;
     applyButton.setAttribute("aria-disabled", hasChanges ? "false" : "true");
   }
@@ -8462,23 +8806,48 @@ function setSettingsSheet(open: boolean) {
     if (!settingsDraftState) {
       settingsDraftState = cloneThemeState(themeState);
     }
+    if (!runtimeRoleDraftState) {
+      runtimeRoleDraftState = cloneRuntimeRolePreferences(runtimeRolePreferences);
+    }
     renderSettingsControls();
   }
   sheet.hidden = !open;
   renderFooterLane();
 }
 
-function applySettingsDraft() {
+async function applySettingsDraft() {
   if (settingsDraftState) {
     applyThemeState(settingsDraftState);
     persistThemeState();
   }
+  if (runtimeRoleDraftState) {
+    runtimeRolePreferences = cloneRuntimeRolePreferences(runtimeRoleDraftState);
+    persistRuntimeRolePreferences();
+    try {
+      await applyRuntimeRolePreferencesToDesktop(runtimeRolePreferences);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      appendRuntimeConversation({
+        type: "system",
+        category: "attention",
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        actor: "winsmux",
+        title: getLanguageText("Runtime settings were saved locally", "実行環境設定はローカルに保存しました"),
+        body: message,
+        tone: "warning",
+      });
+      console.warn("Failed to apply runtime role preferences to desktop runtime", error);
+    }
+  }
   settingsDraftState = null;
+  runtimeRoleDraftState = null;
   setSettingsSheet(false);
+  renderConversation(getConversationItems());
 }
 
 function cancelSettingsDraft() {
   settingsDraftState = null;
+  runtimeRoleDraftState = null;
   setSettingsSheet(false);
 }
 
@@ -9670,7 +10039,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.getElementById("apply-settings-btn")?.addEventListener("click", () => {
-    applySettingsDraft();
+    void applySettingsDraft();
   });
 
   document.getElementById("close-settings-btn")?.addEventListener("click", () => {

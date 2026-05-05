@@ -621,6 +621,10 @@ pub enum DesktopCommand {
         next_test: String,
         project_dir: Option<String>,
     },
+    RuntimeRolesApply {
+        roles_json: String,
+        project_dir: Option<String>,
+    },
 }
 
 pub enum DesktopStreamCommand {
@@ -635,6 +639,7 @@ impl DesktopCommand {
             DesktopCommand::RunCompare { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::RunPromote { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::RunPickWinner { project_dir, .. } => project_dir.as_deref(),
+            DesktopCommand::RuntimeRolesApply { project_dir, .. } => project_dir.as_deref(),
         }
     }
 
@@ -692,6 +697,13 @@ impl DesktopCommand {
                 }
                 args
             }
+            DesktopCommand::RuntimeRolesApply { roles_json, .. } => vec![
+                "runtime-roles".to_string(),
+                "apply".to_string(),
+                "--roles-json".to_string(),
+                roles_json.clone(),
+                "--json".to_string(),
+            ],
         }
     }
 }
@@ -965,6 +977,17 @@ pub fn load_desktop_run_pick_winner(
         .map_err(|err| format!("Failed to parse desktop pick-winner payload: {err}"))
 }
 
+pub fn apply_desktop_runtime_roles(
+    transport: &dyn DesktopCommandTransport,
+    roles_json: String,
+    project_dir: Option<String>,
+) -> Result<Value, String> {
+    transport.request_json(&DesktopCommand::RuntimeRolesApply {
+        roles_json,
+        project_dir,
+    })
+}
+
 pub fn load_desktop_editor_file(
     path: String,
     worktree: Option<String>,
@@ -1042,6 +1065,7 @@ pub fn handle_desktop_json_rpc(
                     "desktop.run.compare",
                     "desktop.run.promote",
                     "desktop.run.pick_winner",
+                    "desktop.runtime.roles.apply",
                     "desktop.explorer.list",
                     "desktop.editor.read",
                 ],
@@ -1167,6 +1191,36 @@ pub fn handle_desktop_json_rpc(
                         format!("Failed to serialize desktop pick-winner payload: {err}"),
                     ),
                 },
+                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
+            }
+        }
+        "desktop.runtime.roles.apply" => {
+            let roles = match params
+                .as_ref()
+                .and_then(|value| value.as_object())
+                .and_then(|object| object.get("roles"))
+            {
+                Some(value) => value.clone(),
+                None => {
+                    return json_rpc_error(
+                        request_id,
+                        JSON_RPC_INVALID_PARAMS,
+                        "Missing required params field: roles",
+                    );
+                }
+            };
+            let roles_json = match serde_json::to_string(&roles) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(
+                        request_id,
+                        JSON_RPC_INVALID_PARAMS,
+                        format!("Failed to serialize runtime role preferences: {err}"),
+                    );
+                }
+            };
+            match apply_desktop_runtime_roles(transport, roles_json, resolved_project_dir) {
+                Ok(result) => json_rpc_result(request_id, result),
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
             }
         }
@@ -1599,7 +1653,8 @@ fn collect_desktop_ignored_paths(root: &Path, relative_paths: &[String]) -> Hash
 
     if let Some(mut stdin) = child.stdin.take() {
         for relative_path in relative_paths {
-            if stdin.write_all(relative_path.as_bytes()).is_err() || stdin.write_all(&[0]).is_err() {
+            if stdin.write_all(relative_path.as_bytes()).is_err() || stdin.write_all(&[0]).is_err()
+            {
                 return HashSet::new();
             }
         }
@@ -1688,7 +1743,8 @@ fn collect_desktop_explorer_entries(
         if entries.len() >= DESKTOP_EXPLORER_MAX_ENTRIES {
             break;
         }
-        let ignored = ignored_paths.contains(&relative) || ignored_paths.contains(&format!("{relative}/"));
+        let ignored =
+            ignored_paths.contains(&relative) || ignored_paths.contains(&format!("{relative}/"));
         if is_dir {
             entries.push(DesktopExplorerEntry {
                 path: relative.clone(),
@@ -4394,6 +4450,91 @@ mod tests {
             transport.requests.borrow().as_slice(),
             ["desktop-summary --json"]
         );
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_contract_advertises_runtime_roles_apply() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-contract"),
+                method: "desktop.control_plane.contract".to_string(),
+                params: None,
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Success { result, .. } => {
+                let methods = result["methods"]
+                    .as_array()
+                    .expect("contract methods must be an array");
+                assert!(methods
+                    .iter()
+                    .any(|method| { method.as_str() == Some("desktop.runtime.roles.apply") }));
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_routes_runtime_roles_apply() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({
+                "version": 1,
+                "roles": {
+                    "worker": {
+                        "agent": "codex",
+                        "model": "gpt-5.3-codex-spark",
+                        "model_source": "cli-discovery",
+                        "reasoning_effort": "high"
+                    }
+                }
+            }),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-runtime"),
+                method: "desktop.runtime.roles.apply".to_string(),
+                params: Some(serde_json::json!({
+                    "roles": [
+                        {
+                            "role_id": "worker",
+                            "provider": "codex",
+                            "model": "gpt-5.3-codex-spark",
+                            "model_source": "cli-discovery",
+                            "reasoning_effort": "high"
+                        }
+                    ]
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Success { id, result, .. } => {
+                assert_eq!(id, serde_json::json!("req-runtime"));
+                assert_eq!(result["roles"]["worker"]["agent"], "codex");
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+        let requests = transport.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("runtime-roles apply --roles-json "));
+        assert!(requests[0].contains("\"role_id\":\"worker\""));
+        assert!(requests[0].ends_with(" --json"));
     }
 
     #[test]

@@ -3318,7 +3318,7 @@ function Invoke-Role {
     if (Get-Command Get-SlotAgentConfig -ErrorAction SilentlyContinue) {
         $roleAgentConfig = Get-SlotAgentConfig -Role $newRole -SlotId $newLabel -Settings $settings -RootPath $projectDir
     } else {
-        $roleAgentConfig = Get-RoleAgentConfig -Role $newRole -Settings $settings
+        $roleAgentConfig = Get-RoleAgentConfig -Role $newRole -Settings $settings -RootPath $projectDir
     }
     $manifestRole = switch ($newRole) {
         'worker' { 'Worker' }
@@ -3338,11 +3338,20 @@ function Invoke-Role {
     $launchCmd = Get-BridgeProviderLaunchCommand `
         -ProviderId ([string]$roleAgentConfig.Agent) `
         -Model ([string]$roleAgentConfig.Model) `
+        -ModelSource ([string]$roleAgentConfig.ModelSource) `
+        -ReasoningEffort ([string]$roleAgentConfig.ReasoningEffort) `
         -ProjectDir $launchDir `
         -GitWorktreeDir $gitDir `
         -RootPath $projectDir
     $providerTarget = [string]$roleAgentConfig.Agent
-    if (-not [string]::IsNullOrWhiteSpace([string]$roleAgentConfig.Model)) {
+    $providerModelSource = [string]$roleAgentConfig.ModelSource
+    if ([string]::IsNullOrWhiteSpace($providerModelSource)) {
+        $providerModelSource = 'provider-default'
+    }
+    $hasModelOverride = (-not [string]::IsNullOrWhiteSpace([string]$roleAgentConfig.Model)) -and
+        (-not [string]::Equals(([string]$roleAgentConfig.Model).Trim(), 'provider-default', [System.StringComparison]::OrdinalIgnoreCase)) -and
+        (-not [string]::Equals($providerModelSource.Trim(), 'provider-default', [System.StringComparison]::OrdinalIgnoreCase))
+    if ($hasModelOverride) {
         $providerTarget = "${providerTarget}:$([string]$roleAgentConfig.Model)"
     }
 
@@ -3915,9 +3924,12 @@ function New-LauncherSlotSummary {
         runtime_role               = $runtimeRole
         agent                      = [string]$effective.Agent
         model                      = [string]$effective.Model
+        model_source               = [string]$effective.ModelSource
+        reasoning_effort           = [string]$effective.ReasoningEffort
         prompt_transport           = [string]$effective.PromptTransport
         auth_mode                  = [string]$effective.AuthMode
         auth_policy                = [string]$effective.AuthPolicy
+        local_access_note          = [string]$effective.LocalAccessNote
         source                     = [string]$effective.Source
         capability_adapter         = [string]$effective.CapabilityAdapter
         capability_command         = [string]$effective.CapabilityCommand
@@ -10717,12 +10729,14 @@ function Invoke-Guard {
 function Invoke-ProviderSwitch {
     $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
     if ($tokens.Count -lt 1) {
-        Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]"
+        Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--model-source <source>] [--reasoning-effort <level>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]"
     }
 
     $slotId = [string]$tokens[0]
     $agent = ''
     $model = ''
+    $modelSource = ''
+    $reasoningEffort = ''
     $promptTransport = ''
     $authMode = ''
     $reason = ''
@@ -10744,6 +10758,20 @@ function Invoke-ProviderSwitch {
                     Stop-WithError '--model requires a value'
                 }
                 $model = [string]$tokens[$index + 1]
+                $index++
+            }
+            '--model-source' {
+                if ($index + 1 -ge $tokens.Count) {
+                    Stop-WithError '--model-source requires a value'
+                }
+                $modelSource = [string]$tokens[$index + 1]
+                $index++
+            }
+            '--reasoning-effort' {
+                if ($index + 1 -ge $tokens.Count) {
+                    Stop-WithError '--reasoning-effort requires a value'
+                }
+                $reasoningEffort = [string]$tokens[$index + 1]
                 $index++
             }
             '--prompt-transport' {
@@ -10777,13 +10805,13 @@ function Invoke-ProviderSwitch {
                 $clearRequested = $true
             }
             default {
-                Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]"
+                Stop-WithError "usage: winsmux provider-switch <slot> [--agent <name>] [--model <name>] [--model-source <source>] [--reasoning-effort <level>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]"
             }
         }
     }
 
-    if ($clearRequested -and (-not [string]::IsNullOrWhiteSpace($agent) -or -not [string]::IsNullOrWhiteSpace($model) -or -not [string]::IsNullOrWhiteSpace($promptTransport) -or -not [string]::IsNullOrWhiteSpace($authMode))) {
-        Stop-WithError 'provider-switch --clear cannot be combined with --agent, --model, --prompt-transport, or --auth-mode.'
+    if ($clearRequested -and (-not [string]::IsNullOrWhiteSpace($agent) -or -not [string]::IsNullOrWhiteSpace($model) -or -not [string]::IsNullOrWhiteSpace($modelSource) -or -not [string]::IsNullOrWhiteSpace($reasoningEffort) -or -not [string]::IsNullOrWhiteSpace($promptTransport) -or -not [string]::IsNullOrWhiteSpace($authMode))) {
+        Stop-WithError 'provider-switch --clear cannot be combined with --agent, --model, --model-source, --reasoning-effort, --prompt-transport, or --auth-mode.'
     }
 
     $projectDir = (Get-Location).Path
@@ -10818,24 +10846,28 @@ function Invoke-ProviderSwitch {
         $clearResult = Remove-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId
         $cleared = [bool]$clearResult.Removed
     } else {
-        if (-not [string]::IsNullOrWhiteSpace($authMode)) {
-            $currentEffective = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $settings -RootPath $projectDir
-            $candidateAgent = [string]$currentEffective.Agent
-            if (-not [string]::IsNullOrWhiteSpace($agent)) {
-                $candidateAgent = $agent
-            }
-            Assert-BridgeProviderCapabilityAuthMode -ProviderId $candidateAgent -AuthMode $authMode -RootPath $projectDir
-        }
-        $entry = Write-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId -Agent $agent -Model $model -PromptTransport $promptTransport -AuthMode $authMode -Reason $reason
+        $candidateInput = [ordered]@{}
+        if (-not [string]::IsNullOrWhiteSpace($agent)) { $candidateInput.agent = $agent }
+        if (-not [string]::IsNullOrWhiteSpace($model)) { $candidateInput.model = $model }
+        if (-not [string]::IsNullOrWhiteSpace($modelSource)) { $candidateInput.model_source = $modelSource }
+        if (-not [string]::IsNullOrWhiteSpace($reasoningEffort)) { $candidateInput.reasoning_effort = $reasoningEffort }
+        if (-not [string]::IsNullOrWhiteSpace($promptTransport)) { $candidateInput.prompt_transport = $promptTransport }
+        if (-not [string]::IsNullOrWhiteSpace($authMode)) { $candidateInput.auth_mode = $authMode }
+        $candidateEntry = ConvertTo-BridgeProviderRegistryEntry $candidateInput
+        $null = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $settings -RootPath $projectDir -ProviderRegistryEntryOverride $candidateEntry
+        $entry = Write-BridgeProviderRegistryEntry -RootPath $projectDir -SlotId $slotId -Agent $agent -Model $model -ModelSource $modelSource -ReasoningEffort $reasoningEffort -PromptTransport $promptTransport -AuthMode $authMode -Reason $reason
     }
     $effective = Get-SlotAgentConfig -Role 'Worker' -SlotId $slotId -Settings $settings -RootPath $projectDir
     $result = [ordered]@{
         slot_id                    = $slotId
         agent                      = [string]$effective.Agent
         model                      = [string]$effective.Model
+        model_source               = [string]$effective.ModelSource
+        reasoning_effort           = [string]$effective.ReasoningEffort
         prompt_transport           = [string]$effective.PromptTransport
         auth_mode                  = [string]$effective.AuthMode
         auth_policy                = [string]$effective.AuthPolicy
+        local_access_note          = [string]$effective.LocalAccessNote
         source                     = [string]$effective.Source
         capability_adapter         = [string]$effective.CapabilityAdapter
         capability_command         = [string]$effective.CapabilityCommand
@@ -10876,6 +10908,59 @@ function Invoke-ProviderSwitch {
     Write-Output "provider switched for ${slotId}: $($result.agent) / $($result.model) ($($result.prompt_transport), $($result.auth_policy))"
 }
 
+function Invoke-RuntimeRoles {
+    $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
+    if ($tokens.Count -lt 1 -or $tokens[0] -ne 'apply') {
+        Stop-WithError "usage: winsmux runtime-roles apply --roles-json <json> [--json]"
+    }
+
+    $rolesJson = ''
+    $jsonOutput = $false
+    for ($index = 1; $index -lt $tokens.Count; $index++) {
+        switch ($tokens[$index]) {
+            '--roles-json' {
+                if ($index + 1 -ge $tokens.Count) {
+                    Stop-WithError '--roles-json requires a value'
+                }
+                $rolesJson = [string]$tokens[$index + 1]
+                $index++
+            }
+            '--json' {
+                $jsonOutput = $true
+            }
+            default {
+                Stop-WithError "usage: winsmux runtime-roles apply --roles-json <json> [--json]"
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($rolesJson)) {
+        Stop-WithError '--roles-json requires a value'
+    }
+
+    try {
+        $roles = $rolesJson | ConvertFrom-Json -Depth 16 -ErrorAction Stop
+    } catch {
+        Stop-WithError 'runtime-roles apply received invalid JSON.'
+    }
+
+    $projectDir = (Get-Location).Path
+    $payload = Write-BridgeRuntimeRolePreferences -RootPath $projectDir -Roles $roles
+    $result = [ordered]@{
+        version        = [int]$payload.version
+        updated_at_utc = [string]$payload.updated_at_utc
+        roles          = $payload.roles
+        preferences_path = Get-BridgeRuntimeRolePreferencesPath -RootPath $projectDir
+    }
+
+    if ($jsonOutput) {
+        $result | ConvertTo-Json -Depth 16 -Compress | Write-Output
+        return
+    }
+
+    Write-Output "runtime role preferences updated: $(@($result.roles.Keys).Count) roles"
+}
+
 function Show-Usage {
     Write-Output @"
 winsmux $VERSION - winsmux bridge for winsmux
@@ -10912,6 +10997,7 @@ Commands:
   consult-error <mode> [--message <text>] [--target-slot <slot>]  Record a consultation error packet/event
   meta-plan --task <text> [--roles <path>] [--review-rounds <1|2>] [--json] [--project-dir <path>] [--session <name>]  Draft a read-only multi-role planning packet
   provider-capabilities [provider] [--json]  Inspect the provider capability registry contract
+  runtime-roles apply --roles-json <json> [--json]  Persist local runtime role provider/model preferences
   skills [--json]  Print agent-readable command skill contracts
   machine-contract --json  Print the hook and agent machine contract JSON
   rust-canary [--json]  Print the Rust default-on canary gate JSON
@@ -10919,7 +11005,7 @@ Commands:
   legacy-compat-gate [--json]  Print the legacy compatibility removal inventory gate
   guard [--json]  Print the public security and release guard baseline
   assign --task <TASK-ID> [--json] [--text <text>]  Dry-run provider, role, model-tier, approval, and sandbox assignment
-  provider-switch <slot> [--agent <name>] [--model <name>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]  Record or clear a runtime provider reassignment for a managed slot
+  provider-switch <slot> [--agent <name>] [--model <name>] [--model-source <source>] [--reasoning-effort <level>] [--prompt-transport <argv|file|stdin>] [--auth-mode <mode>] [--reason <text>] [--restart] [--clear] [--json]  Record or clear a runtime provider reassignment for a managed slot
   github-preflight [--repo <owner/name>] [--json] [--connector-available] [--require-gh]  Select the GitHub write path before merge/release automation
   locks                     List active file locks
   verify <pr-number>        Run Pester in tests/ and merge PR only on PASS
@@ -11680,6 +11766,7 @@ switch ($Command) {
         }
     }
     'provider-switch' { Invoke-ProviderSwitch }
+    'runtime-roles' { Invoke-RuntimeRoles }
     'rebind-worktree' { Invoke-RebindWorktree }
     ''                { Show-Usage }
     default           { Stop-WithError "unknown command: $Command. Run without arguments for usage." }

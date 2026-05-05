@@ -326,6 +326,9 @@ fn operator_cli_meta_plan_json_writes_plan_artifacts_and_audit_log() {
         2
     );
     assert_eq!(json["roles"][0]["role_id"], "investigator");
+    assert_eq!(json["roles"][0]["model_source"], "provider-default");
+    assert_eq!(json["roles"][0]["reasoning_effort"], "provider-default");
+    assert_eq!(json["roles"][0]["launch_contract"]["model_override"], false);
     assert_eq!(
         json["roles"][0]["launch_contract"]["args"][0],
         "--permission-mode"
@@ -599,6 +602,11 @@ roles:
         "gemini"
     );
     assert_eq!(json["roles"][2]["launch_contract"]["command"], "gemini-cli");
+    assert_eq!(
+        json["roles"][2]["launch_contract"]["args"][0],
+        "--approval-mode=plan"
+    );
+    assert_eq!(json["roles"][2]["launch_contract"]["model_override"], false);
     assert_eq!(
         json["roles"][2]["launch_contract"]["read_only_equivalent"],
         true
@@ -1106,6 +1114,13 @@ fn operator_cli_provider_capabilities_json_reads_registry() {
     "codex": {
       "adapter": "codex",
       "command": "codex",
+      "model_options": [
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account"}
+      ],
+      "model_sources": ["provider-default", "cli-discovery"],
+      "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
+      "local_access_note": "Local Codex CLI catalog and ChatGPT account access.",
       "prompt_transports": ["argv", "file", "stdin"],
       "auth_modes": ["local_interactive"],
       "supports_subagents": true
@@ -1132,6 +1147,18 @@ fn operator_cli_provider_capabilities_json_reads_registry() {
             || registry_path.ends_with(".winsmux/provider-capabilities.json")
     );
     assert_eq!(registry["providers"]["codex"]["adapter"], "codex");
+    assert_eq!(
+        registry["providers"]["codex"]["model_options"][1]["source"],
+        "cli-discovery"
+    );
+    assert_eq!(
+        registry["providers"]["codex"]["reasoning_efforts"][4],
+        "xhigh"
+    );
+    assert_eq!(
+        registry["providers"]["codex"]["local_access_note"],
+        "Local Codex CLI catalog and ChatGPT account access."
+    );
     assert_eq!(
         registry["providers"]["codex"]["prompt_transports"][2],
         "stdin"
@@ -1719,6 +1746,10 @@ fn operator_cli_provider_switch_writes_registry_entry() {
             "claude",
             "--model",
             "opus",
+            "--model-source",
+            "operator-override",
+            "--reasoning-effort",
+            "xhigh",
             "--prompt-transport",
             "file",
             "--auth-mode",
@@ -1732,6 +1763,8 @@ fn operator_cli_provider_switch_writes_registry_entry() {
     assert_eq!(result["slot_id"], "worker-1");
     assert_eq!(result["agent"], "claude");
     assert_eq!(result["model"], "opus");
+    assert_eq!(result["model_source"], "operator-override");
+    assert_eq!(result["reasoning_effort"], "xhigh");
     assert_eq!(result["prompt_transport"], "file");
     assert_eq!(result["auth_mode"], "claude-pro-max-oauth");
     assert_eq!(result["auth_policy"], "local_interactive_only");
@@ -1747,6 +1780,11 @@ fn operator_cli_provider_switch_writes_registry_entry() {
     let registry = read_json_file(&project_dir.join(".winsmux").join("provider-registry.json"));
     assert_eq!(registry["slots"]["worker-1"]["agent"], "claude");
     assert_eq!(registry["slots"]["worker-1"]["model"], "opus");
+    assert_eq!(
+        registry["slots"]["worker-1"]["model_source"],
+        "operator-override"
+    );
+    assert_eq!(registry["slots"]["worker-1"]["reasoning_effort"], "xhigh");
     assert_eq!(registry["slots"]["worker-1"]["prompt_transport"], "file");
     assert_eq!(
         registry["slots"]["worker-1"]["reason"],
@@ -1789,6 +1827,64 @@ fn operator_cli_provider_switch_rejects_blocked_auth_before_write() {
 }
 
 #[test]
+fn operator_cli_provider_switch_rejects_capability_selector_mismatch_before_write() {
+    let project_dir = make_temp_project_dir("provider-switch-capability-selector");
+    write_provider_switch_fixture(&project_dir);
+
+    let model_source_output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--agent",
+            "codex",
+            "--model",
+            "gpt-5.5",
+            "--model-source",
+            "operator-override",
+            "--json",
+        ])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!model_source_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&model_source_output.stderr)
+            .contains("does not support model_source 'operator-override'"),
+        "stderr should explain unsupported model source"
+    );
+    assert!(!project_dir
+        .join(".winsmux")
+        .join("provider-registry.json")
+        .exists());
+
+    let reasoning_output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--agent",
+            "codex",
+            "--reasoning-effort",
+            "max",
+            "--json",
+        ])
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!reasoning_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&reasoning_output.stderr)
+            .contains("does not support reasoning_effort 'max'"),
+        "stderr should explain unsupported reasoning effort"
+    );
+    assert!(!project_dir
+        .join(".winsmux")
+        .join("provider-registry.json")
+        .exists());
+}
+
+#[test]
 fn operator_cli_provider_switch_validates_candidate_before_write() {
     let project_dir = make_temp_project_dir("provider-switch-candidate-before-write");
     write_provider_switch_fixture(&project_dir);
@@ -1823,6 +1919,8 @@ fn operator_cli_provider_switch_replaces_case_variant_registry_key() {
             "WORKER-1",
             "--model",
             "gpt-5.5",
+            "--model-source",
+            "cli-discovery",
             "--json",
         ],
     );
@@ -1833,6 +1931,8 @@ fn operator_cli_provider_switch_replaces_case_variant_registry_key() {
             "worker-1",
             "--model",
             "gpt-5.4",
+            "--model-source",
+            "cli-discovery",
             "--json",
         ],
     );
@@ -1929,6 +2029,7 @@ fn operator_cli_provider_switch_accepts_default_managed_slots() {
         r#"
 agent: codex
 model: gpt-5.4
+model-source: cli-discovery
 prompt-transport: argv
 worker-count: 2
 external-operator: true
@@ -1943,11 +2044,54 @@ external-operator: true
             "worker-2",
             "--model",
             "gpt-5.5",
+            "--model-source",
+            "cli-discovery",
             "--json",
         ],
     );
 
     assert_eq!(result["slot_id"], "worker-2");
+    assert_eq!(result["agent"], "codex");
+    assert_eq!(result["model"], "gpt-5.5");
+    assert_eq!(result["source"], "registry");
+}
+
+#[test]
+fn operator_cli_runtime_provider_default_keeps_configured_provider() {
+    let project_dir = make_temp_project_dir("runtime-provider-default");
+    write_provider_switch_fixture(&project_dir);
+    fs::write(
+        project_dir
+            .join(".winsmux")
+            .join("runtime-role-preferences.json"),
+        r#"{
+  "version": 1,
+  "roles": {
+    "worker": {
+      "provider": "provider-default",
+      "model": "provider-default",
+      "model_source": "provider-default",
+      "reasoning_effort": "provider-default"
+    }
+  }
+}"#,
+    )
+    .expect("test should write runtime role preferences");
+
+    let result = run_json(
+        &project_dir,
+        &[
+            "provider-switch",
+            "worker-1",
+            "--model",
+            "gpt-5.5",
+            "--model-source",
+            "cli-discovery",
+            "--json",
+        ],
+    );
+
+    assert_eq!(result["slot_id"], "worker-1");
     assert_eq!(result["agent"], "codex");
     assert_eq!(result["model"], "gpt-5.5");
     assert_eq!(result["source"], "registry");
@@ -2061,6 +2205,118 @@ panes:
     let log = fs::read_to_string(&log_path).expect("fake winsmux log should exist");
     assert!(log.contains("send-keys -t \"%2\" -l -- \"claude --model opus"));
     assert!(!log.contains("codex -c"));
+}
+
+#[test]
+fn operator_cli_provider_switch_restart_skips_provider_default_model() {
+    let project_dir = make_temp_project_dir("provider-switch-restart-provider-default");
+    write_provider_switch_fixture(&project_dir);
+    fs::write(
+        project_dir.join(".winsmux").join("manifest.yaml"),
+        format!(
+            r#"
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Builder
+    launch_dir: {}
+    capability_adapter: codex
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write manifest");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2"]);
+
+    let result = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--model",
+            "provider-default",
+            "--reasoning-effort",
+            "xhigh",
+            "--restart",
+            "--json",
+        ])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        result.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&result.stdout).expect("stdout should be JSON");
+    assert_eq!(payload["model"], "provider-default");
+    assert_eq!(payload["reasoning_effort"], "xhigh");
+    let log = fs::read_to_string(&log_path).expect("fake winsmux log should exist");
+    assert!(log.contains("send-keys -t \"%2\" -l -- \"codex -c 'model_reasoning_effort=xhigh'"));
+    assert!(!log.contains("model=provider-default"));
+}
+
+#[test]
+fn operator_cli_provider_switch_restart_skips_provider_default_model_source() {
+    let project_dir = make_temp_project_dir("provider-switch-restart-provider-default-source");
+    write_provider_switch_fixture(&project_dir);
+    fs::write(
+        project_dir.join(".winsmux").join("manifest.yaml"),
+        format!(
+            r#"
+session:
+  name: winsmux-orchestra
+  project_dir: {}
+panes:
+  worker-1:
+    pane_id: "%2"
+    role: Builder
+    launch_dir: {}
+    capability_adapter: codex
+"#,
+            project_dir.display(),
+            project_dir.display()
+        ),
+    )
+    .expect("test should write manifest");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2"]);
+
+    let result = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args([
+            "provider-switch",
+            "worker-1",
+            "--model",
+            "gpt-5.4",
+            "--model-source",
+            "provider-default",
+            "--restart",
+            "--json",
+        ])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        result.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let payload: serde_json::Value =
+        serde_json::from_slice(&result.stdout).expect("stdout should be JSON");
+    assert_eq!(payload["model"], "gpt-5.4");
+    assert_eq!(payload["model_source"], "provider-default");
+    let log = fs::read_to_string(&log_path).expect("fake winsmux log should exist");
+    assert!(log.contains("send-keys -t \"%2\" -l -- \"codex --sandbox"));
+    assert!(!log.contains("model=gpt-5.4"));
 }
 
 #[test]
@@ -5032,6 +5288,8 @@ panes:
             "worker-1",
             "--model",
             "gpt-5.5",
+            "--model-source",
+            "cli-discovery",
             "--restart",
             "--json",
         ])
@@ -5320,12 +5578,14 @@ fn write_provider_switch_fixture(project_dir: &std::path::Path) {
         r#"
 agent: codex
 model: gpt-5.4
+model-source: cli-discovery
 prompt-transport: argv
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
     agent: codex
     model: gpt-5.4
+    model-source: cli-discovery
     prompt-transport: argv
 "#,
     )
@@ -5338,6 +5598,13 @@ agent-slots:
     "codex": {
       "adapter": "codex",
       "command": "codex",
+      "model_options": [
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account"}
+      ],
+      "model_sources": ["provider-default", "cli-discovery"],
+      "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
+      "local_access_note": "Local Codex CLI catalog and ChatGPT account access.",
       "prompt_transports": ["argv", "file", "stdin"],
       "auth_modes": ["api-key", "codex-chatgpt-local"],
       "local_interactive_oauth_modes": ["codex-chatgpt-local"],
@@ -5352,9 +5619,39 @@ agent-slots:
     "claude": {
       "adapter": "claude",
       "command": "claude",
+      "model_options": [
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
+        {"id": "sonnet", "label": "Sonnet", "source": "official-doc"},
+        {"id": "opus", "label": "Opus", "source": "official-doc"},
+        {"id": "opusplan", "label": "Opus Plan", "source": "official-doc"}
+      ],
+      "model_sources": ["provider-default", "official-doc", "operator-override"],
+      "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh", "max"],
+      "local_access_note": "Local Claude Code account and settings.",
       "prompt_transports": ["file"],
       "auth_modes": ["api-key", "claude-pro-max-oauth"],
       "local_interactive_oauth_modes": ["claude-pro-max-oauth"],
+      "supports_parallel_runs": false,
+      "supports_interrupt": true,
+      "supports_structured_result": false,
+      "supports_file_edit": true,
+      "supports_subagents": false,
+      "supports_verification": true,
+      "supports_consultation": true
+    },
+    "gemini": {
+      "adapter": "gemini",
+      "command": "gemini",
+      "model_options": [
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
+        {"id": "operator-override", "label": "Operator override", "source": "operator-override"}
+      ],
+      "model_sources": ["provider-default", "operator-override"],
+      "reasoning_efforts": ["provider-default"],
+      "local_access_note": "Local Gemini CLI account and settings.",
+      "prompt_transports": ["argv", "file"],
+      "auth_modes": ["gemini-local"],
+      "local_interactive_oauth_modes": ["gemini-local"],
       "supports_parallel_runs": false,
       "supports_interrupt": true,
       "supports_structured_result": false,

@@ -381,6 +381,97 @@ roles:
         $operatorConfig.Model | Should -Be 'gpt-5.4'
     }
 
+    It 'overlays ignored runtime role preferences on project role defaults' {
+@'
+agent: codex
+model: gpt-5.4
+roles:
+  worker:
+    agent: codex
+    model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+        $settings = Get-BridgeSettings -RootPath $script:settingsTempRoot
+        $roles = @(
+            [ordered]@{
+                role_id          = 'worker'
+                provider         = 'claude'
+                model            = 'opus'
+                model_source     = 'operator-override'
+                reasoning_effort = 'xhigh'
+            },
+            [ordered]@{
+                role_id          = 'reviewer'
+                provider         = 'codex'
+                model            = 'gpt-5.3-codex-spark'
+                model_source     = 'cli-discovery'
+                reasoning_effort = 'high'
+            }
+        )
+
+        $result = Write-BridgeRuntimeRolePreferences -RootPath $script:settingsTempRoot -Roles $roles
+        $result.roles.worker.agent | Should -Be 'claude'
+
+        $workerConfig = Get-RoleAgentConfig -Role 'Worker' -Settings $settings -RootPath $script:settingsTempRoot
+        $workerConfig.Agent | Should -Be 'claude'
+        $workerConfig.Model | Should -Be 'opus'
+        $workerConfig.ModelSource | Should -Be 'operator-override'
+        $workerConfig.ReasoningEffort | Should -Be 'xhigh'
+
+        $slotConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        $slotConfig.Agent | Should -Be 'claude'
+        $slotConfig.Model | Should -Be 'opus'
+    }
+
+    It 'keeps the configured provider when runtime preferences use provider-default' {
+@'
+agent: codex
+model: gpt-5.4
+roles:
+  worker:
+    agent: codex
+    model: gpt-5.4
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+        $settings = Get-BridgeSettings -RootPath $script:settingsTempRoot
+        $roles = @(
+            [ordered]@{
+                role_id          = 'worker'
+                provider         = 'provider-default'
+                model            = 'provider-default'
+                model_source     = 'provider-default'
+                reasoning_effort = 'provider-default'
+            }
+        )
+
+        $result = Write-BridgeRuntimeRolePreferences -RootPath $script:settingsTempRoot -Roles $roles
+        $result.roles.worker.Contains('agent') | Should -Be $false
+
+        $slotConfig = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings -RootPath $script:settingsTempRoot
+        $slotConfig.Agent | Should -Be 'codex'
+        $slotConfig.Model | Should -Be 'provider-default'
+
+        $command = Get-BridgeProviderLaunchCommand `
+            -ProviderId $slotConfig.Agent `
+            -Model $slotConfig.Model `
+            -ModelSource $slotConfig.ModelSource `
+            -ReasoningEffort $slotConfig.ReasoningEffort `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+            -RootPath $script:settingsTempRoot
+
+        $command | Should -Match '^codex '
+        $command | Should -Not -Match 'provider-default'
+    }
+
     It 'parses per-role and slot-level prompt transport overrides with the same precedence as agent/model' {
 @'
 agent: codex
@@ -592,12 +683,14 @@ agent-slots:
 @'
 agent: codex
 model: gpt-5.4
+model-source: cli-discovery
 prompt-transport: argv
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
     agent: codex
     model: gpt-5.4
+    model-source: cli-discovery
     prompt-transport: argv
 '@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
 
@@ -677,6 +770,13 @@ agent-slots:
       "adapter": "codex",
       "display_name": "Codex",
       "command": "codex",
+      "model_options": [
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account"}
+      ],
+      "model_sources": ["provider-default", "cli-discovery"],
+      "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
+      "local_access_note": "Local Codex CLI catalog and ChatGPT account access.",
       "prompt_transports": ["argv", "file", "stdin"],
       "auth_modes": ["api-key", "codex-chatgpt-local"],
       "local_interactive_oauth_modes": ["codex-chatgpt-local"],
@@ -696,6 +796,10 @@ agent-slots:
         $registry = Read-BridgeProviderCapabilityRegistry -RootPath $script:settingsTempRoot
         $registry.providers.codex.adapter | Should -Be 'codex'
         $registry.providers.codex.prompt_transports | Should -Be @('argv', 'file', 'stdin')
+        $registry.providers.codex.model_options[1].source | Should -Be 'cli-discovery'
+        $registry.providers.codex.model_sources | Should -Be @('provider-default', 'cli-discovery')
+        $registry.providers.codex.reasoning_efforts | Should -Be @('provider-default', 'low', 'medium', 'high', 'xhigh')
+        $registry.providers.codex.local_access_note | Should -Be 'Local Codex CLI catalog and ChatGPT account access.'
         $registry.providers.codex.auth_modes | Should -Be @('api-key', 'codex-chatgpt-local')
         $registry.providers.codex.local_interactive_oauth_modes | Should -Be @('codex-chatgpt-local')
         $registry.providers.codex.supports_file_edit | Should -Be $true
@@ -717,6 +821,13 @@ agent-slots:
     "codex": {
       "adapter": "codex",
       "command": "codex",
+      "model_options": [
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account"}
+      ],
+      "model_sources": ["provider-default", "cli-discovery"],
+      "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
+      "local_access_note": "Local Codex CLI catalog and ChatGPT account access.",
       "prompt_transports": ["argv", "file", "stdin"],
       "auth_modes": ["api-key", "codex-chatgpt-local"],
       "local_interactive_oauth_modes": ["codex-chatgpt-local"],
@@ -741,6 +852,8 @@ agent-slots:
     runtime-role: worker
     agent: codex
     model: gpt-5.4
+    model-source: cli-discovery
+    reasoning-effort: high
     prompt-transport: argv
     auth-mode: codex-chatgpt-local
 '@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
@@ -752,6 +865,12 @@ agent-slots:
 
         $config.CapabilityAdapter | Should -Be 'codex'
         $config.CapabilityCommand | Should -Be 'codex'
+        $config.ModelSource | Should -Be 'cli-discovery'
+        $config.ReasoningEffort | Should -Be 'high'
+        $config.ModelOptions[1].source | Should -Be 'cli-discovery'
+        $config.ModelSources | Should -Be @('provider-default', 'cli-discovery')
+        $config.ReasoningEfforts | Should -Be @('provider-default', 'low', 'medium', 'high', 'xhigh')
+        $config.LocalAccessNote | Should -Be 'Local Codex CLI catalog and ChatGPT account access.'
         $config.AuthMode | Should -Be 'codex-chatgpt-local'
         $config.AuthPolicy | Should -Be 'local_interactive_only'
         $config.SupportsParallelRuns | Should -Be $true
@@ -1022,14 +1141,40 @@ agent-slots:
         $command = Get-BridgeProviderLaunchCommand `
             -ProviderId 'codex-local' `
             -Model 'gpt-5.4' `
+            -ModelSource 'cli-discovery' `
+            -ReasoningEffort 'xhigh' `
             -ProjectDir 'C:\Project Root' `
             -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
             -RootPath $script:settingsTempRoot
 
         $command | Should -Match 'codex-beta'
         $command | Should -Match "-c 'model=gpt-5\.4'"
+        $command | Should -Match "-c 'model_reasoning_effort=xhigh'"
         $command | Should -Match "-C 'C:\\Project Root'"
         $command | Should -Match "--add-dir 'C:\\Project Root\\.git\\worktrees\\worker-1'"
+
+        $providerDefaultCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'codex-local' `
+            -Model 'provider-default' `
+            -ModelSource 'provider-default' `
+            -ReasoningEffort 'high' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+            -RootPath $script:settingsTempRoot
+
+        $providerDefaultCommand | Should -Match "-c 'model_reasoning_effort=high'"
+        $providerDefaultCommand | Should -Not -Match 'model=provider-default'
+
+        $providerDefaultSourceCommand = Get-BridgeProviderLaunchCommand `
+            -ProviderId 'codex-local' `
+            -Model 'gpt-5.4' `
+            -ModelSource 'provider-default' `
+            -ReasoningEffort 'provider-default' `
+            -ProjectDir 'C:\Project Root' `
+            -GitWorktreeDir 'C:\Project Root\.git\worktrees\worker-1' `
+            -RootPath $script:settingsTempRoot
+
+        $providerDefaultSourceCommand | Should -Not -Match 'model=gpt-5\.4'
     }
 
     It 'rejects structurally malformed provider capability registries' {
@@ -11756,6 +11901,13 @@ Describe 'winsmux provider-capabilities command' {
       "adapter": "codex",
       "display_name": "Codex",
       "command": "codex",
+      "model_options": [
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account"}
+      ],
+      "model_sources": ["provider-default", "cli-discovery"],
+      "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
+      "local_access_note": "Local Codex CLI catalog and ChatGPT account access.",
       "prompt_transports": ["argv", "file", "stdin"],
       "supports_file_edit": true,
       "supports_verification": true,
@@ -11786,6 +11938,9 @@ Describe 'winsmux provider-capabilities command' {
         $payload = $output | ConvertFrom-Json
         $payload.version | Should -Be 1
         $payload.providers.codex.adapter | Should -Be 'codex'
+        $payload.providers.codex.model_options[1].source | Should -Be 'cli-discovery'
+        $payload.providers.codex.reasoning_efforts | Should -Be @('provider-default', 'low', 'medium', 'high', 'xhigh')
+        $payload.providers.codex.local_access_note | Should -Be 'Local Codex CLI catalog and ChatGPT account access.'
         $payload.providers.codex.prompt_transports | Should -Be @('argv', 'file', 'stdin')
         $payload.providers.codex.supports_file_edit | Should -Be $true
     }
@@ -11801,6 +11956,7 @@ Describe 'winsmux provider-capabilities command' {
         $payload = $output | ConvertFrom-Json
         $payload.provider_id | Should -Be 'CODEX'
         $payload.capabilities.command | Should -Be 'codex'
+        $payload.capabilities.model_sources | Should -Be @('provider-default', 'cli-discovery')
         $payload.capabilities.supports_verification | Should -Be $true
     }
 }
@@ -12224,12 +12380,14 @@ Describe 'winsmux provider-switch command' {
         @'
 agent: codex
 model: gpt-5.4
+model-source: cli-discovery
 prompt-transport: argv
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
     agent: codex
     model: gpt-5.4
+    model-source: cli-discovery
     prompt-transport: argv
 '@ | Set-Content -Path (Join-Path $script:providerSwitchTempRoot '.winsmux.yaml') -Encoding UTF8
         New-Item -ItemType Directory -Path (Join-Path $script:providerSwitchTempRoot '.winsmux') -Force | Out-Null
@@ -12240,6 +12398,13 @@ agent-slots:
     "codex": {
       "adapter": "codex",
       "command": "codex",
+      "model_options": [
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
+        {"id": "gpt-5.3-codex-spark", "label": "GPT-5.3-Codex-Spark", "source": "cli-discovery", "availability": "local-account"}
+      ],
+      "model_sources": ["provider-default", "cli-discovery"],
+      "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh"],
+      "local_access_note": "Local Codex CLI catalog and ChatGPT account access.",
       "prompt_transports": ["argv", "file", "stdin"],
       "auth_modes": ["api-key", "codex-chatgpt-local"],
       "local_interactive_oauth_modes": ["codex-chatgpt-local"],
@@ -12255,6 +12420,15 @@ agent-slots:
     "claude": {
       "adapter": "claude",
       "command": "claude",
+      "model_options": [
+        {"id": "provider-default", "label": "Provider default", "source": "provider-default"},
+        {"id": "sonnet", "label": "Sonnet", "source": "official-doc"},
+        {"id": "opus", "label": "Opus", "source": "official-doc"},
+        {"id": "opusplan", "label": "Opus Plan", "source": "official-doc"}
+      ],
+      "model_sources": ["provider-default", "official-doc", "operator-override"],
+      "reasoning_efforts": ["provider-default", "low", "medium", "high", "xhigh", "max"],
+      "local_access_note": "Local Claude Code account and settings.",
       "prompt_transports": ["file"],
       "auth_modes": ["api-key", "claude-pro-max-oauth"],
       "local_interactive_oauth_modes": ["claude-pro-max-oauth"],
@@ -12279,12 +12453,12 @@ agent-slots:
     }
 
     It 'documents provider-switch in usage and writes a provider registry entry' {
-        $script:winsmuxCoreRawContent | Should -Match 'provider-switch <slot> \[--agent <name>\] \[--model <name>\] \[--prompt-transport <argv\|file\|stdin>\] \[--auth-mode <mode>\] \[--reason <text>\] \[--restart\] \[--clear\] \[--json\]'
+        $script:winsmuxCoreRawContent | Should -Match 'provider-switch <slot> \[--agent <name>\] \[--model <name>\] \[--model-source <source>\] \[--reasoning-effort <level>\] \[--prompt-transport <argv\|file\|stdin>\] \[--auth-mode <mode>\] \[--reason <text>\] \[--restart\] \[--clear\] \[--json\]'
         $script:winsmuxCoreRawContent | Should -Match "'provider-switch'\s*\{"
 
         Push-Location $script:providerSwitchTempRoot
         try {
-            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --prompt-transport file --auth-mode claude-pro-max-oauth --reason 'operator requested provider switch' --json
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent claude --model opus --model-source operator-override --reasoning-effort xhigh --prompt-transport file --auth-mode claude-pro-max-oauth --reason 'operator requested provider switch' --json
         } finally {
             Pop-Location
         }
@@ -12293,12 +12467,15 @@ agent-slots:
         $result.slot_id | Should -Be 'worker-1'
         $result.agent | Should -Be 'claude'
         $result.model | Should -Be 'opus'
+        $result.model_source | Should -Be 'operator-override'
+        $result.reasoning_effort | Should -Be 'xhigh'
         $result.prompt_transport | Should -Be 'file'
         $result.auth_mode | Should -Be 'claude-pro-max-oauth'
         $result.auth_policy | Should -Be 'local_interactive_only'
         $result.source | Should -Be 'registry'
         $result.capability_adapter | Should -Be 'claude'
         $result.capability_command | Should -Be 'claude'
+        $result.local_access_note | Should -Be 'Local Claude Code account and settings.'
         $result.supports_file_edit | Should -Be $true
         $result.supports_subagents | Should -Be $false
         $result.supports_consultation | Should -Be $true
@@ -12311,8 +12488,46 @@ agent-slots:
         $registry = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $registry.slots.'worker-1'.agent | Should -Be 'claude'
         $registry.slots.'worker-1'.model | Should -Be 'opus'
+        $registry.slots.'worker-1'.model_source | Should -Be 'operator-override'
+        $registry.slots.'worker-1'.reasoning_effort | Should -Be 'xhigh'
         $registry.slots.'worker-1'.prompt_transport | Should -Be 'file'
         $registry.slots.'worker-1'.reason | Should -Be 'operator requested provider switch'
+    }
+
+    It 'persists runtime role preferences for desktop settings' {
+        $script:winsmuxCoreRawContent | Should -Match 'runtime-roles apply --roles-json <json> \[--json\]'
+        $script:winsmuxCoreRawContent | Should -Match "'runtime-roles'\s*\{"
+
+        $rolesJson = @(
+            [ordered]@{
+                role_id          = 'worker'
+                provider         = 'codex'
+                model            = 'gpt-5.3-codex-spark'
+                model_source     = 'cli-discovery'
+                reasoning_effort = 'high'
+            },
+            [ordered]@{
+                role_id          = 'operator'
+                provider         = 'claude'
+                model            = 'provider-default'
+                model_source     = 'provider-default'
+                reasoning_effort = 'provider-default'
+            }
+        ) | ConvertTo-Json -Compress -Depth 8
+
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath runtime-roles apply --roles-json $rolesJson --json
+        } finally {
+            Pop-Location
+        }
+
+        $result = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $result.roles.worker.agent | Should -Be 'codex'
+        $result.roles.worker.model | Should -Be 'gpt-5.3-codex-spark'
+        $result.roles.worker.model_source | Should -Be 'cli-discovery'
+        $result.roles.worker.reasoning_effort | Should -Be 'high'
+        Test-Path -LiteralPath (Join-Path $script:providerSwitchTempRoot '.winsmux\runtime-role-preferences.json') | Should -Be $true
     }
 
     It 'rejects provider-switch blocked auth modes before writing the provider registry' {
@@ -12326,6 +12541,42 @@ agent-slots:
         [string]::Join("`n", @($output)) | Should -Match 'must not broker OAuth'
         $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
         Test-Path $registryPath | Should -BeFalse
+    }
+
+    It 'rejects provider-switch selectors outside provider capabilities before writing the provider registry' {
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $modelSourceOutput = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --model gpt-5.5 --model-source operator-override --json 2>&1
+            $reasoningOutput = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --agent codex --reasoning-effort max --json 2>&1
+        } finally {
+            Pop-Location
+        }
+
+        [string]::Join("`n", @($modelSourceOutput)) | Should -Match "does not support model_source 'operator-override'"
+        [string]::Join("`n", @($reasoningOutput)) | Should -Match "does not support reasoning_effort 'max'"
+        $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
+        Test-Path $registryPath | Should -BeFalse
+    }
+
+    It 'allows provider-switch to repair stale provider selector overrides' {
+        $registryPath = Join-Path $script:providerSwitchTempRoot '.winsmux\provider-registry.json'
+@'
+{"version":1,"slots":{"worker-1":{"agent":"codex","model_source":"operator-override","reasoning_effort":"max","updated_at_utc":"2026-05-05T00:00:00Z"}}}
+'@ | Set-Content -Path $registryPath -Encoding UTF8
+
+        Push-Location $script:providerSwitchTempRoot
+        try {
+            $output = & pwsh -NoProfile -File $script:winsmuxCoreRawPath provider-switch worker-1 --reasoning-effort high --json
+        } finally {
+            Pop-Location
+        }
+
+        $result = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $result.reasoning_effort | Should -Be 'high'
+        $result.model_source | Should -Be 'cli-discovery'
+        $registry = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $registry.slots.'worker-1'.reasoning_effort | Should -Be 'high'
+        $registry.slots.'worker-1'.PSObject.Properties.Name | Should -Not -Contain 'model_source'
     }
 
     It 'clears provider-switch overrides and reports the configured slot provider' {
@@ -12894,7 +13145,7 @@ Describe 'orchestra pane bootstrap plan' {
 
     It 'builds pane launch commands through provider capability metadata' {
         $script:orchestraStartContent | Should -Match 'Get-BridgeProviderLaunchCommand'
-        $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'
+        $script:orchestraStartContent | Should -Match 'Get-AgentLaunchCommand -Agent \$slotAgentConfig\.Agent -Model \$slotAgentConfig\.Model -ModelSource \$slotAgentConfig\.ModelSource -ReasoningEffort \$slotAgentConfig\.ReasoningEffort -ProjectDir \$launchDir -GitWorktreeDir \$launchGitWorktreeDir -RootPath \$projectDir'
     }
 
     It 'prints a concise startup summary before invoking the agent launch command' {

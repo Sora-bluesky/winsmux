@@ -16,10 +16,13 @@ Dot-source this script to load the helpers:
 $script:BridgeSettingsFileName = '.winsmux.yaml'
 $script:BridgeProviderRegistryFileName = 'provider-registry.json'
 $script:BridgeProviderCapabilityRegistryFileName = 'provider-capabilities.json'
+$script:BridgeRuntimeRolePreferencesFileName = 'runtime-role-preferences.json'
 $script:BridgeSettingsSchema = [ordered]@{
     config_version      = @{ Type = 'int';      Default = 1;             Option = $null }
     agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
     model               = @{ Type = 'string';   Default = '';            Option = '@bridge-model' }
+    model_source        = @{ Type = 'string';   Default = 'provider-default'; Option = $null }
+    reasoning_effort    = @{ Type = 'string';   Default = 'provider-default'; Option = $null }
     prompt_transport    = @{ Type = 'transport'; Default = 'argv';       Option = '@bridge-prompt-transport' }
     auth_mode           = @{ Type = 'string';   Default = '';            Option = $null }
     external_operator  = @{ Type = 'bool';     Default = $true;         Option = '@bridge-external-operator' }
@@ -302,7 +305,7 @@ function ConvertTo-BridgeSlotEntry {
     $slot = [ordered]@{}
     foreach ($pair in $pairs) {
         $key = $pair.Key.ToString() -replace '-', '_'
-        if ($key -notin @('slot_id', 'runtime_role', 'agent', 'model', 'prompt_transport', 'auth_mode', 'worktree_mode')) {
+        if ($key -notin @('slot_id', 'runtime_role', 'agent', 'model', 'model_source', 'reasoning_effort', 'prompt_transport', 'auth_mode', 'worktree_mode')) {
             continue
         }
 
@@ -320,6 +323,13 @@ function ConvertTo-BridgeSlotEntry {
 
     if (-not $slot.Contains('runtime_role')) {
         $slot.runtime_role = 'worker'
+    }
+    if ($slot.Contains('model') -and -not $slot.Contains('model_source')) {
+        if (Test-BridgeProviderDefaultModel -Model ([string]$slot.model)) {
+            $slot.model_source = 'provider-default'
+        } else {
+            $slot.model_source = 'operator-override'
+        }
     }
 
     return $slot
@@ -418,7 +428,7 @@ function ConvertTo-BridgeProviderRegistryEntry {
     $entry = [ordered]@{}
     foreach ($pair in $pairs) {
         $key = $pair.Key.ToString() -replace '-', '_'
-        if ($key -notin @('agent', 'model', 'prompt_transport', 'auth_mode', 'updated_at_utc', 'reason')) {
+        if ($key -notin @('agent', 'model', 'model_source', 'reasoning_effort', 'prompt_transport', 'auth_mode', 'updated_at_utc', 'reason')) {
             continue
         }
 
@@ -428,7 +438,7 @@ function ConvertTo-BridgeProviderRegistryEntry {
 
         $text = ConvertFrom-BridgeYamlScalar $pair.Value
         if ([string]::IsNullOrWhiteSpace($text)) {
-            if ($key -in @('agent', 'model', 'prompt_transport', 'auth_mode')) {
+            if ($key -in @('agent', 'model', 'model_source', 'reasoning_effort', 'prompt_transport', 'auth_mode')) {
                 throw "Invalid provider registry field '$key'."
             }
 
@@ -438,11 +448,24 @@ function ConvertTo-BridgeProviderRegistryEntry {
         if ($key -eq 'prompt_transport' -and $text -notin @('argv', 'file', 'stdin')) {
             throw "Invalid provider registry prompt_transport '$text'."
         }
+        if ($key -eq 'model_source' -and $text -notin @('provider-default', 'cli-discovery', 'official-doc', 'operator-override')) {
+            throw "Invalid provider registry model_source '$text'."
+        }
+        if ($key -eq 'reasoning_effort' -and $text -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
+            throw "Invalid provider registry reasoning_effort '$text'."
+        }
 
         $entry[$key] = $text
     }
+    if ($entry.Contains('model') -and -not $entry.Contains('model_source')) {
+        if (Test-BridgeProviderDefaultModel -Model ([string]$entry.model)) {
+            $entry.model_source = 'provider-default'
+        } else {
+            $entry.model_source = 'operator-override'
+        }
+    }
 
-    if (-not ($entry.Contains('agent') -or $entry.Contains('model') -or $entry.Contains('prompt_transport') -or $entry.Contains('auth_mode'))) {
+    if (-not ($entry.Contains('agent') -or $entry.Contains('model') -or $entry.Contains('model_source') -or $entry.Contains('reasoning_effort') -or $entry.Contains('prompt_transport') -or $entry.Contains('auth_mode'))) {
         return $null
     }
 
@@ -540,6 +563,8 @@ function Write-BridgeProviderRegistryEntry {
         [Parameter(Mandatory = $true)][string]$SlotId,
         [string]$Agent,
         [string]$Model,
+        [string]$ModelSource,
+        [string]$ReasoningEffort,
         [string]$PromptTransport,
         [string]$AuthMode,
         [string]$Reason,
@@ -557,6 +582,26 @@ function Write-BridgeProviderRegistryEntry {
     if (-not [string]::IsNullOrWhiteSpace($Model)) {
         $entry.model = $Model.Trim()
     }
+    if (-not [string]::IsNullOrWhiteSpace($ModelSource)) {
+        $normalizedModelSource = $ModelSource.Trim()
+        if ($normalizedModelSource -notin @('provider-default', 'cli-discovery', 'official-doc', 'operator-override')) {
+            throw "Invalid provider registry model_source '$ModelSource'."
+        }
+        $entry.model_source = $normalizedModelSource
+    } elseif ($entry.Contains('model')) {
+        if (Test-BridgeProviderDefaultModel -Model ([string]$entry.model)) {
+            $entry.model_source = 'provider-default'
+        } else {
+            $entry.model_source = 'operator-override'
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ReasoningEffort)) {
+        $normalizedEffort = $ReasoningEffort.Trim().ToLowerInvariant()
+        if ($normalizedEffort -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
+            throw "Invalid provider registry reasoning_effort '$ReasoningEffort'."
+        }
+        $entry.reasoning_effort = $normalizedEffort
+    }
     if (-not [string]::IsNullOrWhiteSpace($PromptTransport)) {
         $normalizedTransport = $PromptTransport.Trim().ToLowerInvariant()
         if ($normalizedTransport -notin @('argv', 'file', 'stdin')) {
@@ -567,8 +612,8 @@ function Write-BridgeProviderRegistryEntry {
     if (-not [string]::IsNullOrWhiteSpace($AuthMode)) {
         $entry.auth_mode = $AuthMode.Trim()
     }
-    if (-not ($entry.Contains('agent') -or $entry.Contains('model') -or $entry.Contains('prompt_transport') -or $entry.Contains('auth_mode'))) {
-        throw 'Provider registry entry requires agent, model, prompt_transport, or auth_mode.'
+    if (-not ($entry.Contains('agent') -or $entry.Contains('model') -or $entry.Contains('model_source') -or $entry.Contains('reasoning_effort') -or $entry.Contains('prompt_transport') -or $entry.Contains('auth_mode'))) {
+        throw 'Provider registry entry requires agent, model, model_source, reasoning_effort, prompt_transport, or auth_mode.'
     }
 
     $entry.updated_at_utc = (Get-Date).ToUniversalTime().ToString('o')
@@ -628,6 +673,255 @@ function Remove-BridgeProviderRegistryEntry {
     }
 }
 
+function Get-BridgeRuntimeRolePreferencesPath {
+    param([string]$RootPath)
+
+    if ([string]::IsNullOrWhiteSpace($RootPath)) {
+        $RootPath = (Get-Location).Path
+    }
+
+    return Join-Path (Join-Path $RootPath '.winsmux') $script:BridgeRuntimeRolePreferencesFileName
+}
+
+function ConvertTo-BridgeRuntimeRoleConfig {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    $pairs = @()
+    if ($Value -is [System.Collections.IDictionary]) {
+        $pairs = $Value.GetEnumerator()
+    } elseif ($Value -is [PSCustomObject]) {
+        $pairs = $Value.PSObject.Properties | ForEach-Object {
+            [PSCustomObject]@{
+                Key   = $_.Name
+                Value = $_.Value
+            }
+        }
+    } else {
+        return $null
+    }
+
+    $entry = [ordered]@{}
+    foreach ($pair in $pairs) {
+        $key = $pair.Key.ToString() -replace '-', '_'
+        switch ($key) {
+            'provider' { $key = 'agent' }
+            'modelSource' { $key = 'model_source' }
+            'reasoningEffort' { $key = 'reasoning_effort' }
+            default { }
+        }
+
+        if ($key -in @('role_id', 'roleId', 'runtime_role', 'runtimeRole')) {
+            continue
+        }
+        if ($key -notin @('agent', 'model', 'model_source', 'reasoning_effort', 'prompt_transport', 'auth_mode')) {
+            continue
+        }
+        if (-not (Test-BridgeProviderRegistryScalarValue $pair.Value)) {
+            throw "Invalid runtime role preference field '$key'."
+        }
+
+        $text = ConvertFrom-BridgeYamlScalar $pair.Value
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            continue
+        }
+        $text = $text.Trim()
+
+        if ($key -eq 'agent' -and [string]::Equals($text, 'provider-default', [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+
+        if ($key -eq 'model_source' -and $text -notin @('provider-default', 'cli-discovery', 'official-doc', 'operator-override')) {
+            throw "Invalid runtime role preference model_source '$text'."
+        }
+        if ($key -eq 'reasoning_effort') {
+            $text = $text.Trim().ToLowerInvariant()
+            if ($text -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
+                throw "Invalid runtime role preference reasoning_effort '$text'."
+            }
+        }
+
+        $entry[$key] = $text
+    }
+    if ($entry.Contains('model') -and -not $entry.Contains('model_source')) {
+        if (Test-BridgeProviderDefaultModel -Model ([string]$entry.model)) {
+            $entry.model_source = 'provider-default'
+        } else {
+            $entry.model_source = 'operator-override'
+        }
+    }
+
+    return $entry
+}
+
+function Get-BridgeRuntimeRoleId {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return ''
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($key in @('role_id', 'roleId', 'runtime_role', 'runtimeRole')) {
+            if ($Value.Contains($key)) {
+                return [string]$Value[$key]
+            }
+        }
+        return ''
+    }
+    if ($null -ne $Value.PSObject) {
+        foreach ($key in @('role_id', 'roleId', 'runtime_role', 'runtimeRole')) {
+            if ($Value.PSObject.Properties.Name -contains $key) {
+                return [string]$Value.PSObject.Properties[$key].Value
+            }
+        }
+    }
+
+    return ''
+}
+
+function ConvertTo-BridgeRuntimeRolePreferencesMap {
+    param([AllowNull()]$Roles)
+
+    $map = [ordered]@{}
+    if ($null -eq $Roles) {
+        return $map
+    }
+
+    if ($Roles -is [System.Collections.IDictionary]) {
+        foreach ($entry in $Roles.GetEnumerator()) {
+            $roleId = ConvertFrom-BridgeYamlScalar $entry.Key
+            if ([string]::IsNullOrWhiteSpace($roleId)) {
+                continue
+            }
+            $config = ConvertTo-BridgeRuntimeRoleConfig $entry.Value
+            if ($null -ne $config) {
+                $map[$roleId] = $config
+            }
+        }
+        return $map
+    }
+
+    if ($Roles -is [PSCustomObject]) {
+        if ($Roles.PSObject.Properties.Name -contains 'roles') {
+            return ConvertTo-BridgeRuntimeRolePreferencesMap $Roles.roles
+        }
+        foreach ($property in $Roles.PSObject.Properties) {
+            $roleId = ConvertFrom-BridgeYamlScalar $property.Name
+            if ([string]::IsNullOrWhiteSpace($roleId)) {
+                continue
+            }
+            $config = ConvertTo-BridgeRuntimeRoleConfig $property.Value
+            if ($null -ne $config) {
+                $map[$roleId] = $config
+            }
+        }
+        return $map
+    }
+
+    if ($Roles -is [System.Collections.IEnumerable] -and $Roles -isnot [string]) {
+        foreach ($role in @($Roles)) {
+            $roleId = Get-BridgeRuntimeRoleId $role
+            if ([string]::IsNullOrWhiteSpace($roleId)) {
+                continue
+            }
+            $config = ConvertTo-BridgeRuntimeRoleConfig $role
+            if ($null -ne $config) {
+                $map[$roleId] = $config
+            }
+        }
+        return $map
+    }
+
+    return $map
+}
+
+function Read-BridgeRuntimeRolePreferences {
+    param([string]$RootPath)
+
+    $path = Get-BridgeRuntimeRolePreferencesPath -RootPath $RootPath
+    $preferences = [ordered]@{
+        version = 1
+        roles   = [ordered]@{}
+    }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        return $preferences
+    }
+
+    $raw = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($raw)) {
+        return $preferences
+    }
+
+    try {
+        $parsed = $raw | ConvertFrom-Json -Depth 16 -ErrorAction Stop
+    } catch {
+        throw "Invalid runtime role preferences JSON at '$path'."
+    }
+
+    $version = 1
+    if ($null -ne $parsed.PSObject -and $parsed.PSObject.Properties.Name -contains 'version') {
+        $version = [int]$parsed.version
+    }
+    if ($version -ne 1) {
+        throw "Unsupported runtime role preferences version '$version'. Supported versions: 1."
+    }
+
+    $roles = if ($null -ne $parsed.PSObject -and $parsed.PSObject.Properties.Name -contains 'roles') {
+        $parsed.roles
+    } else {
+        $parsed
+    }
+    $preferences.version = $version
+    $preferences.roles = ConvertTo-BridgeRuntimeRolePreferencesMap $roles
+    return $preferences
+}
+
+function Write-BridgeRuntimeRolePreferences {
+    param(
+        [Parameter(Mandatory = $true)]$Roles,
+        [string]$RootPath
+    )
+
+    $roleMap = ConvertTo-BridgeRuntimeRolePreferencesMap $Roles
+    $payload = [ordered]@{
+        version        = 1
+        updated_at_utc = (Get-Date).ToUniversalTime().ToString('o')
+        roles          = $roleMap
+    }
+
+    $path = Get-BridgeRuntimeRolePreferencesPath -RootPath $RootPath
+    $directory = Split-Path -Parent $path
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+
+    $payload | ConvertTo-Json -Depth 16 | Set-Content -LiteralPath $path -Encoding UTF8
+    return $payload
+}
+
+function Get-BridgeRuntimeRolePreference {
+    param(
+        [Parameter(Mandatory = $true)][string]$Role,
+        [string]$RootPath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Role)) {
+        return $null
+    }
+
+    $preferences = Read-BridgeRuntimeRolePreferences -RootPath $RootPath
+    foreach ($entry in $preferences.roles.GetEnumerator()) {
+        if ([string]::Equals([string]$entry.Key, $Role, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $entry.Value
+        }
+    }
+
+    return $null
+}
+
 function Get-BridgeProviderCapabilityRegistryPath {
     param([string]$RootPath)
 
@@ -659,9 +953,10 @@ function ConvertTo-BridgeProviderCapabilityEntry {
         return $null
     }
 
-    $stringFields = @('adapter', 'display_name', 'command')
+    $stringFields = @('adapter', 'display_name', 'command', 'model_catalog_source', 'local_access_note')
     $transportFields = @('prompt_transports')
-    $stringArrayFields = @('auth_modes', 'local_interactive_oauth_modes')
+    $stringArrayFields = @('auth_modes', 'local_interactive_oauth_modes', 'model_sources', 'reasoning_efforts')
+    $modelOptionFields = @('model_options')
     $boolFields = @(
         'supports_parallel_runs',
         'supports_interrupt',
@@ -672,7 +967,7 @@ function ConvertTo-BridgeProviderCapabilityEntry {
         'supports_consultation',
         'supports_context_reset'
     )
-    $allowedFields = @($stringFields + $transportFields + $stringArrayFields + $boolFields)
+    $allowedFields = @($stringFields + $transportFields + $stringArrayFields + $modelOptionFields + $boolFields)
 
     $entry = [ordered]@{}
     foreach ($pair in $pairs) {
@@ -732,10 +1027,34 @@ function ConvertTo-BridgeProviderCapabilityEntry {
                     throw "Invalid provider capability field '$key'."
                 }
 
-                $items += $text.Trim().ToLowerInvariant()
+                $normalizedText = $text.Trim().ToLowerInvariant()
+                if ($key -eq 'model_sources' -and $normalizedText -notin @('provider-default', 'cli-discovery', 'official-doc', 'operator-override')) {
+                    throw "Invalid provider capability field '$key'."
+                }
+                if ($key -eq 'reasoning_efforts' -and $normalizedText -notin @('provider-default', 'low', 'medium', 'high', 'xhigh', 'max')) {
+                    throw "Invalid provider capability field '$key'."
+                }
+
+                $items += $normalizedText
             }
 
             $entry[$key] = @($items)
+            continue
+        }
+
+        if ($key -in $modelOptionFields) {
+            if ($pair.Value -isnot [System.Collections.IEnumerable] -or $pair.Value -is [string]) {
+                throw "Invalid provider capability field '$key'."
+            }
+
+            $modelOptions = @()
+            foreach ($item in @($pair.Value)) {
+                $modelOptions += ConvertTo-BridgeProviderModelOption -Value $item
+            }
+            if ($modelOptions.Count -lt 1) {
+                throw "Invalid provider capability field '$key'."
+            }
+            $entry[$key] = @($modelOptions)
             continue
         }
 
@@ -759,6 +1078,45 @@ function ConvertTo-BridgeProviderCapabilityEntry {
     }
 
     return $entry
+}
+
+function ConvertTo-BridgeProviderModelOption {
+    param([AllowNull()]$Value)
+
+    if (-not (Test-BridgeProviderRegistryObject $Value)) {
+        throw "Invalid provider capability field 'model_options'."
+    }
+
+    $option = [ordered]@{}
+    foreach ($property in (Get-BridgeProviderRegistryObjectProperties $Value)) {
+        $key = $property.Name.ToString()
+        if ($key -notin @('id', 'label', 'source', 'availability', 'notes')) {
+            throw "Invalid provider capability field 'model_options'."
+        }
+        if (-not (Test-BridgeProviderRegistryScalarValue $property.Value)) {
+            throw "Invalid provider capability field 'model_options'."
+        }
+        $text = ConvertFrom-BridgeYamlScalar $property.Value
+        if ([string]::IsNullOrWhiteSpace($text)) {
+            if ($key -in @('id', 'source')) {
+                throw "Invalid provider capability field 'model_options'."
+            }
+            continue
+        }
+        if ($key -eq 'source') {
+            $text = $text.Trim().ToLowerInvariant()
+            if ($text -notin @('provider-default', 'cli-discovery', 'official-doc', 'operator-override')) {
+                throw "Invalid provider capability field 'model_options'."
+            }
+        }
+        $option[$key] = $text
+    }
+
+    if (-not $option.Contains('id') -or -not $option.Contains('source')) {
+        throw "Invalid provider capability field 'model_options'."
+    }
+
+    return $option
 }
 
 function ConvertTo-BridgePowerShellLiteral {
@@ -1052,10 +1410,39 @@ function Assert-BridgeProviderCapabilityAuthMode {
     }
 }
 
+function Assert-BridgeProviderCapabilitySelection {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProviderId,
+        [AllowNull()]$Capability,
+        [Parameter(Mandatory = $true)][string]$FieldName,
+        [Parameter(Mandatory = $true)][string]$SelectorName,
+        [AllowNull()][string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return
+    }
+    if ($null -eq $Capability -or -not (Test-BridgeProviderCapabilityField -Capability $Capability -Name $FieldName)) {
+        return
+    }
+
+    $requested = $Value.Trim().ToLowerInvariant()
+    $supported = @(
+        Get-BridgeProviderCapabilityValue -Capability $Capability -Name $FieldName -Default @() |
+            ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    if ($requested -notin $supported) {
+        throw "Provider capability '$ProviderId' does not support $SelectorName '$requested'. Supported values: $($supported -join ', ')."
+    }
+}
+
 function Get-BridgeProviderLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$ProviderId,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
+        [AllowEmptyString()][string]$ModelSource = '',
+        [AllowEmptyString()][string]$ReasoningEffort = '',
         [Parameter(Mandatory = $true)][string]$ProjectDir,
         [Parameter(Mandatory = $true)][string]$GitWorktreeDir,
         [string]$RootPath,
@@ -1077,6 +1464,8 @@ function Get-BridgeProviderLaunchCommand {
 
     $adapterKey = $adapter.Trim().ToLowerInvariant()
     $commandInvocation = ConvertTo-BridgePowerShellCommandInvocation -Value $command
+    $modelOverride = Test-BridgeProviderModelOverride -Model $Model -ModelSource $ModelSource
+    $effortOverride = -not (Test-BridgeProviderDefaultReasoningEffort -ReasoningEffort $ReasoningEffort)
     switch ($adapterKey) {
         'codex' {
             if ($ExecMode) {
@@ -1086,9 +1475,13 @@ function Get-BridgeProviderLaunchCommand {
             $projectLiteral = ConvertTo-BridgePowerShellLiteral -Value $ProjectDir
             $worktreeLiteral = ConvertTo-BridgePowerShellLiteral -Value $GitWorktreeDir
             $parts = @($commandInvocation)
-            if (-not [string]::IsNullOrWhiteSpace($Model)) {
+            if ($modelOverride) {
                 $parts += '-c'
                 $parts += (ConvertTo-BridgePowerShellLiteral -Value "model=$Model")
+            }
+            if ($effortOverride) {
+                $parts += '-c'
+                $parts += (ConvertTo-BridgePowerShellLiteral -Value "model_reasoning_effort=$($ReasoningEffort.Trim().ToLowerInvariant())")
             }
             $parts += '--sandbox'
             $parts += 'danger-full-access'
@@ -1100,18 +1493,68 @@ function Get-BridgeProviderLaunchCommand {
         }
         'claude' {
             $parts = @($commandInvocation)
-            if (-not [string]::IsNullOrWhiteSpace($Model)) {
+            if ($modelOverride) {
                 $parts += '--model'
                 $parts += (ConvertTo-BridgePowerShellLiteral -Value $Model)
             }
+            if ($effortOverride) {
+                $parts += '--effort'
+                $parts += $ReasoningEffort.Trim().ToLowerInvariant()
+            }
             $parts += '--permission-mode'
             $parts += 'bypassPermissions'
+            return ($parts -join ' ')
+        }
+        'gemini' {
+            $parts = @($commandInvocation)
+            if ($modelOverride) {
+                $parts += '--model'
+                $parts += (ConvertTo-BridgePowerShellLiteral -Value $Model)
+            }
+            $parts += '--approval-mode=default'
             return ($parts -join ' ')
         }
         default {
             throw "Unsupported provider adapter '$adapter' for provider '$provider'."
         }
     }
+}
+
+function Test-BridgeProviderDefaultModel {
+    param([AllowNull()][string]$Model)
+
+    return ([string]::IsNullOrWhiteSpace($Model) -or [string]::Equals($Model.Trim(), 'provider-default', [System.StringComparison]::OrdinalIgnoreCase))
+}
+
+function Test-BridgeProviderDefaultModelSource {
+    param([AllowNull()][string]$ModelSource)
+
+    return ((-not [string]::IsNullOrWhiteSpace($ModelSource)) -and [string]::Equals($ModelSource.Trim(), 'provider-default', [System.StringComparison]::OrdinalIgnoreCase))
+}
+
+function Get-BridgeProviderInferredModelSource {
+    param([AllowNull()][string]$Model)
+
+    if (Test-BridgeProviderDefaultModel -Model $Model) {
+        return 'provider-default'
+    }
+
+    return 'operator-override'
+}
+
+function Test-BridgeProviderModelOverride {
+    param(
+        [AllowNull()][string]$Model,
+        [AllowNull()][string]$ModelSource
+    )
+
+    return ((-not (Test-BridgeProviderDefaultModel -Model $Model)) -and (-not (Test-BridgeProviderDefaultModelSource -ModelSource $ModelSource)))
+}
+
+function Test-BridgeProviderDefaultReasoningEffort {
+    param([AllowNull()][string]$ReasoningEffort)
+
+    return ([string]::IsNullOrWhiteSpace($ReasoningEffort) -or [string]::Equals($ReasoningEffort.Trim(), 'provider-default', [System.StringComparison]::OrdinalIgnoreCase))
 }
 
 function ConvertFrom-BridgeManualYaml {
@@ -1424,7 +1867,7 @@ function Test-BridgeSettingValue {
 
                 foreach ($rolePair in $rolePairs) {
                     $propertyKey = $rolePair.Key.ToString() -replace '-', '_'
-                    if ($propertyKey -notin @('agent', 'model', 'prompt_transport', 'auth_mode')) {
+                    if ($propertyKey -notin @('agent', 'model', 'model_source', 'reasoning_effort', 'prompt_transport', 'auth_mode')) {
                         continue
                     }
 
@@ -1434,6 +1877,13 @@ function Test-BridgeSettingValue {
                     }
 
                     $roleConfig[$propertyKey] = $text
+                }
+                if ($roleConfig.Contains('model') -and -not $roleConfig.Contains('model_source')) {
+                    if (Test-BridgeProviderDefaultModel -Model ([string]$roleConfig.model)) {
+                        $roleConfig.model_source = 'provider-default'
+                    } else {
+                        $roleConfig.model_source = 'operator-override'
+                    }
                 }
 
                 $map[$roleKey] = $roleConfig
@@ -1562,6 +2012,13 @@ function Get-BridgeSettings {
             $settings[$key] = $value
         }
     }
+    if ($globalSettings.Contains('model') -and -not $globalSettings.Contains('model_source')) {
+        if (Test-BridgeProviderDefaultModel -Model ([string]$settings.model)) {
+            $settings.model_source = 'provider-default'
+        } else {
+            $settings.model_source = 'operator-override'
+        }
+    }
 
     $rawProjectSettings = Read-BridgeProjectSettings -RootPath $RootPath
     $projectSettings = ConvertTo-BridgeSettingsSource $rawProjectSettings
@@ -1599,6 +2056,13 @@ function Get-BridgeSettings {
             $settings[$key] = @($value)
         } else {
             $settings[$key] = $value
+        }
+    }
+    if ($projectSettings.Contains('model') -and -not $projectSettings.Contains('model_source')) {
+        if (Test-BridgeProviderDefaultModel -Model ([string]$settings.model)) {
+            $settings.model_source = 'provider-default'
+        } else {
+            $settings.model_source = 'operator-override'
         }
     }
 
@@ -1667,7 +2131,8 @@ function Get-BridgeSettingsMetadata {
 function Get-RoleAgentConfig {
     param(
         [Parameter(Mandatory = $true)][string]$Role,
-        $Settings = (Get-BridgeSettings)
+        $Settings = (Get-BridgeSettings),
+        [string]$RootPath
     )
 
     if ($null -eq $Settings) {
@@ -1687,9 +2152,19 @@ function Get-RoleAgentConfig {
 
     $agent = $Settings.agent
     $model = $Settings.model
+    $modelSource = 'provider-default'
+    $reasoningEffort = 'provider-default'
     $promptTransport = 'argv'
     $authMode = ''
+    $settingsModelSourceSet = $false
     if ($Settings -is [System.Collections.IDictionary]) {
+        if ($Settings.Contains('model_source') -and -not [string]::IsNullOrWhiteSpace([string]$Settings['model_source'])) {
+            $modelSource = [string]$Settings['model_source']
+            $settingsModelSourceSet = $true
+        }
+        if ($Settings.Contains('reasoning_effort') -and -not [string]::IsNullOrWhiteSpace([string]$Settings['reasoning_effort'])) {
+            $reasoningEffort = [string]$Settings['reasoning_effort']
+        }
         if ($Settings.Contains('prompt_transport') -and -not [string]::IsNullOrWhiteSpace([string]$Settings['prompt_transport'])) {
             $promptTransport = [string]$Settings['prompt_transport']
         }
@@ -1697,6 +2172,13 @@ function Get-RoleAgentConfig {
             $authMode = [string]$Settings['auth_mode']
         }
     } elseif ($null -ne $Settings.PSObject) {
+        if ($Settings.PSObject.Properties.Name -contains 'model_source' -and -not [string]::IsNullOrWhiteSpace([string]$Settings.model_source)) {
+            $modelSource = [string]$Settings.model_source
+            $settingsModelSourceSet = $true
+        }
+        if ($Settings.PSObject.Properties.Name -contains 'reasoning_effort' -and -not [string]::IsNullOrWhiteSpace([string]$Settings.reasoning_effort)) {
+            $reasoningEffort = [string]$Settings.reasoning_effort
+        }
         if ($Settings.PSObject.Properties.Name -contains 'prompt_transport' -and -not [string]::IsNullOrWhiteSpace([string]$Settings.prompt_transport)) {
             $promptTransport = [string]$Settings.prompt_transport
         }
@@ -1704,7 +2186,12 @@ function Get-RoleAgentConfig {
             $authMode = [string]$Settings.auth_mode
         }
     }
+    if (-not $settingsModelSourceSet) {
+        $modelSource = Get-BridgeProviderInferredModelSource -Model $model
+    }
 
+    $roleModelSet = $false
+    $roleModelSourceSet = $false
     if ($resolvedRoleConfig -is [System.Collections.IDictionary]) {
         if ($resolvedRoleConfig.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['agent'])) {
             $agent = [string]$resolvedRoleConfig['agent']
@@ -1712,6 +2199,16 @@ function Get-RoleAgentConfig {
 
         if ($resolvedRoleConfig.Contains('model') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['model'])) {
             $model = [string]$resolvedRoleConfig['model']
+            $roleModelSet = $true
+        }
+
+        if ($resolvedRoleConfig.Contains('model_source') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['model_source'])) {
+            $modelSource = [string]$resolvedRoleConfig['model_source']
+            $roleModelSourceSet = $true
+        }
+
+        if ($resolvedRoleConfig.Contains('reasoning_effort') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['reasoning_effort'])) {
+            $reasoningEffort = [string]$resolvedRoleConfig['reasoning_effort']
         }
 
         if ($resolvedRoleConfig.Contains('prompt_transport') -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig['prompt_transport'])) {
@@ -1728,6 +2225,16 @@ function Get-RoleAgentConfig {
 
         if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'model' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.model)) {
             $model = [string]$resolvedRoleConfig.model
+            $roleModelSet = $true
+        }
+
+        if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'model_source' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.model_source)) {
+            $modelSource = [string]$resolvedRoleConfig.model_source
+            $roleModelSourceSet = $true
+        }
+
+        if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'reasoning_effort' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.reasoning_effort)) {
+            $reasoningEffort = [string]$resolvedRoleConfig.reasoning_effort
         }
 
         if ($resolvedRoleConfig.PSObject.Properties.Name -contains 'prompt_transport' -and -not [string]::IsNullOrWhiteSpace([string]$resolvedRoleConfig.prompt_transport)) {
@@ -1738,10 +2245,39 @@ function Get-RoleAgentConfig {
             $authMode = [string]$resolvedRoleConfig.auth_mode
         }
     }
+    if ($roleModelSet -and -not $roleModelSourceSet) {
+        $modelSource = Get-BridgeProviderInferredModelSource -Model $model
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($RootPath)) {
+        $runtimeRoleConfig = Get-BridgeRuntimeRolePreference -Role $Role -RootPath $RootPath
+        if ($runtimeRoleConfig -is [System.Collections.IDictionary]) {
+            if ($runtimeRoleConfig.Contains('agent') -and -not [string]::IsNullOrWhiteSpace([string]$runtimeRoleConfig['agent'])) {
+                $agent = [string]$runtimeRoleConfig['agent']
+            }
+            if ($runtimeRoleConfig.Contains('model') -and -not [string]::IsNullOrWhiteSpace([string]$runtimeRoleConfig['model'])) {
+                $model = [string]$runtimeRoleConfig['model']
+            }
+            if ($runtimeRoleConfig.Contains('model_source') -and -not [string]::IsNullOrWhiteSpace([string]$runtimeRoleConfig['model_source'])) {
+                $modelSource = [string]$runtimeRoleConfig['model_source']
+            }
+            if ($runtimeRoleConfig.Contains('reasoning_effort') -and -not [string]::IsNullOrWhiteSpace([string]$runtimeRoleConfig['reasoning_effort'])) {
+                $reasoningEffort = [string]$runtimeRoleConfig['reasoning_effort']
+            }
+            if ($runtimeRoleConfig.Contains('prompt_transport') -and -not [string]::IsNullOrWhiteSpace([string]$runtimeRoleConfig['prompt_transport'])) {
+                $promptTransport = [string]$runtimeRoleConfig['prompt_transport']
+            }
+            if ($runtimeRoleConfig.Contains('auth_mode') -and -not [string]::IsNullOrWhiteSpace([string]$runtimeRoleConfig['auth_mode'])) {
+                $authMode = [string]$runtimeRoleConfig['auth_mode']
+            }
+        }
+    }
 
     return [PSCustomObject]@{
         Agent           = [string]$agent
         Model           = [string]$model
+        ModelSource     = [string]$modelSource
+        ReasoningEffort = [string]$reasoningEffort
         PromptTransport = [string]$promptTransport
         AuthMode        = [string]$authMode
     }
@@ -1752,16 +2288,20 @@ function Get-SlotAgentConfig {
         [Parameter(Mandatory = $true)][string]$Role,
         [string]$SlotId,
         $Settings = (Get-BridgeSettings),
-        [string]$RootPath
+        [string]$RootPath,
+        [AllowNull()]$ProviderRegistryEntryOverride = $null,
+        [switch]$IgnoreProviderRegistry
     )
 
     if ($null -eq $Settings) {
         throw 'Settings cannot be null.'
     }
 
-    $roleAgentConfig = Get-RoleAgentConfig -Role $Role -Settings $Settings
+    $roleAgentConfig = Get-RoleAgentConfig -Role $Role -Settings $Settings -RootPath $RootPath
     $agent = [string]$roleAgentConfig.Agent
     $model = [string]$roleAgentConfig.Model
+    $modelSource = [string]$roleAgentConfig.ModelSource
+    $reasoningEffort = [string]$roleAgentConfig.ReasoningEffort
     $promptTransport = [string]$roleAgentConfig.PromptTransport
     $authMode = [string]$roleAgentConfig.AuthMode
     $source = 'role'
@@ -1784,8 +2324,12 @@ function Get-SlotAgentConfig {
             $candidateSlotId = ''
             $slotAgent = ''
             $slotModel = ''
+            $slotModelSource = ''
+            $slotReasoningEffort = ''
             $slotPromptTransport = ''
             $slotAuthMode = ''
+            $slotModelSet = $false
+            $slotModelSourceSet = $false
 
             if ($slot -is [System.Collections.IDictionary]) {
                 if ($slot.Contains('slot_id')) {
@@ -1796,6 +2340,14 @@ function Get-SlotAgentConfig {
                 }
                 if ($slot.Contains('model')) {
                     $slotModel = [string]$slot['model']
+                    $slotModelSet = $true
+                }
+                if ($slot.Contains('model_source')) {
+                    $slotModelSource = [string]$slot['model_source']
+                    $slotModelSourceSet = $true
+                }
+                if ($slot.Contains('reasoning_effort')) {
+                    $slotReasoningEffort = [string]$slot['reasoning_effort']
                 }
                 if ($slot.Contains('prompt_transport')) {
                     $slotPromptTransport = [string]$slot['prompt_transport']
@@ -1812,6 +2364,14 @@ function Get-SlotAgentConfig {
                 }
                 if ($slot.PSObject.Properties.Name -contains 'model') {
                     $slotModel = [string]$slot.model
+                    $slotModelSet = $true
+                }
+                if ($slot.PSObject.Properties.Name -contains 'model_source') {
+                    $slotModelSource = [string]$slot.model_source
+                    $slotModelSourceSet = $true
+                }
+                if ($slot.PSObject.Properties.Name -contains 'reasoning_effort') {
+                    $slotReasoningEffort = [string]$slot.reasoning_effort
                 }
                 if ($slot.PSObject.Properties.Name -contains 'prompt_transport') {
                     $slotPromptTransport = [string]$slot.prompt_transport
@@ -1835,6 +2395,20 @@ function Get-SlotAgentConfig {
                 $source = 'slot'
             }
 
+            if (-not [string]::IsNullOrWhiteSpace($slotModelSource)) {
+                $modelSource = $slotModelSource
+                $source = 'slot'
+            }
+            if ($slotModelSet -and -not $slotModelSourceSet) {
+                $modelSource = Get-BridgeProviderInferredModelSource -Model $model
+                $source = 'slot'
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($slotReasoningEffort)) {
+                $reasoningEffort = $slotReasoningEffort
+                $source = 'slot'
+            }
+
             if (-not [string]::IsNullOrWhiteSpace($slotPromptTransport)) {
                 $promptTransport = $slotPromptTransport
                 $source = 'slot'
@@ -1849,7 +2423,12 @@ function Get-SlotAgentConfig {
         }
     }
 
-    $registryEntry = Get-BridgeProviderRegistryEntry -SlotId $SlotId -RootPath $RootPath
+    $registryEntry = $null
+    if ($null -ne $ProviderRegistryEntryOverride) {
+        $registryEntry = ConvertTo-BridgeProviderRegistryEntry $ProviderRegistryEntryOverride
+    } elseif (-not $IgnoreProviderRegistry) {
+        $registryEntry = Get-BridgeProviderRegistryEntry -SlotId $SlotId -RootPath $RootPath
+    }
     if ($null -ne $registryEntry) {
         if ($registryEntry.Contains('agent')) {
             $agent = [string]$registryEntry.agent
@@ -1857,6 +2436,14 @@ function Get-SlotAgentConfig {
 
         if ($registryEntry.Contains('model')) {
             $model = [string]$registryEntry.model
+        }
+
+        if ($registryEntry.Contains('model_source')) {
+            $modelSource = [string]$registryEntry.model_source
+        }
+
+        if ($registryEntry.Contains('reasoning_effort')) {
+            $reasoningEffort = [string]$registryEntry.reasoning_effort
         }
 
         if ($registryEntry.Contains('prompt_transport')) {
@@ -1875,18 +2462,26 @@ function Get-SlotAgentConfig {
         Assert-BridgeProviderCapabilityTransport -ProviderId $agent -PromptTransport $promptTransport -RootPath $RootPath
         Assert-BridgeProviderCapabilityAuthMode -ProviderId $agent -AuthMode $authMode -RootPath $RootPath
         $providerCapability = Resolve-BridgeProviderCapability -ProviderId $agent -RootPath $RootPath -RequireWhenRegistryPresent
+        Assert-BridgeProviderCapabilitySelection -ProviderId $agent -Capability $providerCapability -FieldName 'model_sources' -SelectorName 'model_source' -Value $modelSource
+        Assert-BridgeProviderCapabilitySelection -ProviderId $agent -Capability $providerCapability -FieldName 'reasoning_efforts' -SelectorName 'reasoning_effort' -Value $reasoningEffort
     }
 
     return [PSCustomObject]@{
         SlotId                   = [string]$SlotId
         Agent                    = [string]$agent
         Model                    = [string]$model
+        ModelSource              = [string]$modelSource
+        ReasoningEffort          = [string]$reasoningEffort
         PromptTransport          = [string]$promptTransport
         AuthMode                 = [string]$authMode
         AuthPolicy               = Get-BridgeProviderAuthPolicy -Capability $providerCapability -AuthMode $authMode
         Source                   = [string]$source
         CapabilityAdapter        = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'adapter' -Default '')
         CapabilityCommand        = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'command' -Default '')
+        ModelOptions             = @(Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'model_options' -Default @())
+        ModelSources             = @(Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'model_sources' -Default @())
+        ReasoningEfforts         = @(Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'reasoning_efforts' -Default @())
+        LocalAccessNote          = [string](Get-BridgeProviderCapabilityValue -Capability $providerCapability -Name 'local_access_note' -Default '')
         SupportsParallelRuns     = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_parallel_runs'
         SupportsInterrupt        = Get-BridgeProviderCapabilityBoolean -Capability $providerCapability -Name 'supports_interrupt'
         SupportsInterruptDeclared = Test-BridgeProviderCapabilityField -Capability $providerCapability -Name 'supports_interrupt'
