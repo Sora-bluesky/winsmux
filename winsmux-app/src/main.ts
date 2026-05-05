@@ -30,6 +30,7 @@ import {
   subscribeToPtyOutput,
   writePtyData,
 } from "./ptyClient";
+import { getSourceGraphLaneKind, normalizeSourceGraphTokens, sourceGraphMaxLanes } from "./sourceGraph";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -2784,36 +2785,9 @@ const sourceGraphSvgNamespace = "http://www.w3.org/2000/svg";
 const sourceGraphLaneStep = 8;
 const sourceGraphLaneOffset = 4;
 const sourceGraphRowHeight = 34;
-const sourceGraphMaxLanes = 6;
 
 function getSourceGraphLaneX(laneIndex: number) {
   return sourceGraphLaneOffset + laneIndex * sourceGraphLaneStep;
-}
-
-function normalizeSourceGraphTokens(symbols: string) {
-  const tokens = Array.from(symbols.trimEnd() || "*")
-    .filter((symbol) => symbol.trim().length > 0)
-    .slice(0, sourceGraphMaxLanes);
-  return tokens.length > 0 ? tokens : ["*"];
-}
-
-function getSourceGraphLaneKind(symbol: string) {
-  if (symbol === "*" || symbol === "o") {
-    return "node";
-  }
-  if (symbol === "|") {
-    return "vertical";
-  }
-  if (symbol === "/") {
-    return "diagonal-left";
-  }
-  if (symbol === "\\") {
-    return "diagonal-right";
-  }
-  if (symbol === "_" || symbol === "-") {
-    return "horizontal";
-  }
-  return symbol.trim().length > 0 ? "connector" : "empty";
 }
 
 function appendSourceGraphLine(
