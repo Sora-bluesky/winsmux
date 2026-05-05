@@ -477,6 +477,85 @@ function New-PowerShellProcessPressureResult {
     return New-DoctorResult -Status pass -Label 'PowerShell process pressure' -Detail "$count found"
 }
 
+function Get-DoctorProcessParentCategory {
+    param(
+        [Parameter(Mandatory = $true)]$Snapshot,
+        [Parameter(Mandatory = $true)]$Process
+    )
+
+    $parentId = [int]$Process.ParentProcessId
+    if ($parentId -le 0 -or -not $Snapshot.ById.ContainsKey($parentId)) {
+        return 'missing-parent'
+    }
+
+    $parent = $Snapshot.ById[$parentId]
+    $name = Get-DoctorNormalizedProcessName -Name $parent.Name
+    $commandLine = [string]$parent.CommandLine
+
+    if ($name -in @('code', 'code-insiders')) {
+        return 'vscode'
+    }
+    if ($name -in @('windowsterminal', 'wt')) {
+        return 'windows-terminal'
+    }
+    if ($commandLine.IndexOf('WindowsTerminal', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        return 'windows-terminal'
+    }
+    if ($name -eq 'codex') {
+        return 'codex'
+    }
+    if ($name -in @('pwsh', 'powershell')) {
+        return 'powershell'
+    }
+    if ($name -in @('conhost', 'openconsole')) {
+        return 'console-host'
+    }
+
+    return 'other'
+}
+
+function New-PowerShellStartupEvidenceResult {
+    param(
+        [Parameter(Mandatory = $true)]$Snapshot,
+        [Parameter(Mandatory = $true)]$ProtectedIds,
+        [Parameter(Mandatory = $true)][int]$WarnThreshold,
+        [Parameter(Mandatory = $true)][ValidateSet('pass', 'fail')][string]$SmokeStatus,
+        [Parameter(Mandatory = $true)][string]$SmokeDetail
+    )
+
+    $count = 0
+    $categoryCounts = @{}
+    foreach ($process in $Snapshot.Processes) {
+        $processId = [int]$process.ProcessId
+        if ($ProtectedIds.Contains($processId)) {
+            continue
+        }
+
+        $name = Get-DoctorNormalizedProcessName -Name $process.Name
+        if ($name -notin @('pwsh', 'powershell')) {
+            continue
+        }
+
+        $count++
+        $category = Get-DoctorProcessParentCategory -Snapshot $Snapshot -Process $process
+        if (-not $categoryCounts.ContainsKey($category)) {
+            $categoryCounts[$category] = 0
+        }
+        $categoryCounts[$category]++
+    }
+
+    $categoryText = 'none'
+    if ($categoryCounts.Count -gt 0) {
+        $categoryText = (@($categoryCounts.Keys) | Sort-Object | ForEach-Object { "$_=$($categoryCounts[$_])" }) -join ','
+    }
+
+    $countState = if ($count -ge $WarnThreshold) { 'at_or_above_threshold' } else { 'below_threshold' }
+    $status = if ($SmokeStatus -eq 'fail') { 'warn' } else { 'pass' }
+    $detail = "pwsh_count=$count; count_state=$countState; parent_categories=$categoryText; bare_pwsh=$SmokeStatus; smoke_detail=$SmokeDetail; scoped_cleanup=close related VS Code, Windows Terminal, or Codex shells first; command_lines=omitted"
+
+    return New-DoctorResult -Status $status -Label 'PowerShell startup evidence' -Detail $detail
+}
+
 function Test-PowerShellProcessPressureCheck {
     $snapshot = Get-DoctorProcessSnapshot
     $protectedIds = @(Get-DoctorAncestorProcessIds -Snapshot $snapshot -ProcessId $PID)
@@ -485,10 +564,13 @@ function Test-PowerShellProcessPressureCheck {
     return New-PowerShellProcessPressureResult -Snapshot $snapshot -ProtectedIds $protectedIds -WarnThreshold $warnThreshold
 }
 
-function Test-PowerShellStartupHealthCheck {
+function Invoke-DoctorPowerShellStartupSmoke {
     $command = Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($null -eq $command) {
-        return New-DoctorResult -Status fail -Label 'PowerShell startup health' -Detail 'pwsh was not found on PATH'
+        return [PSCustomObject]@{
+            Status = 'fail'
+            Detail = 'pwsh was not found on PATH'
+        }
     }
 
     $pwshPath = $command.Path
@@ -500,7 +582,10 @@ function Test-PowerShellStartupHealthCheck {
         $output = & $pwshPath -NoProfile -NoLogo -Command '$PSVersionTable.PSVersion.ToString()' 2>&1
         $exitCode = $LASTEXITCODE
     } catch {
-        return New-DoctorResult -Status fail -Label 'PowerShell startup health' -Detail $_.Exception.Message
+        return [PSCustomObject]@{
+            Status = 'fail'
+            Detail = $_.Exception.Message
+        }
     }
 
     $message = (@($output) | ForEach-Object { $_.ToString().Trim() } | Where-Object { $_ }) -join '; '
@@ -512,7 +597,10 @@ function Test-PowerShellStartupHealthCheck {
         }
         $message = "$message; check Windows Application event log for pwsh.exe initialization errors"
 
-        return New-DoctorResult -Status fail -Label 'PowerShell startup health' -Detail $message
+        return [PSCustomObject]@{
+            Status = 'fail'
+            Detail = $message
+        }
     }
 
     if ([string]::IsNullOrWhiteSpace($message)) {
@@ -521,7 +609,24 @@ function Test-PowerShellStartupHealthCheck {
         $message = "$message ($pwshPath)"
     }
 
-    return New-DoctorResult -Status pass -Label 'PowerShell startup health' -Detail $message
+    return [PSCustomObject]@{
+        Status = 'pass'
+        Detail = $message
+    }
+}
+
+function Test-PowerShellStartupHealthCheck {
+    $smoke = Invoke-DoctorPowerShellStartupSmoke
+    return New-DoctorResult -Status $smoke.Status -Label 'PowerShell startup health' -Detail $smoke.Detail
+}
+
+function Test-PowerShellStartupEvidenceCheck {
+    $snapshot = Get-DoctorProcessSnapshot
+    $protectedIds = @(Get-DoctorAncestorProcessIds -Snapshot $snapshot -ProcessId $PID)
+    $warnThreshold = Get-DoctorPowerShellProcessWarnThreshold
+    $smoke = Invoke-DoctorPowerShellStartupSmoke
+
+    return New-PowerShellStartupEvidenceResult -Snapshot $snapshot -ProtectedIds $protectedIds -WarnThreshold $warnThreshold -SmokeStatus $smoke.Status -SmokeDetail $smoke.Detail
 }
 
 function Test-BridgeConfigCheck {
@@ -615,6 +720,7 @@ if (-not $functionsOnly) {
         Test-ZombieProcessesCheck
         Test-PowerShellProcessPressureCheck
         Test-PowerShellStartupHealthCheck
+        Test-PowerShellStartupEvidenceCheck
         Test-BridgeConfigCheck
         Test-BridgeConfigMetadataCheck
         Test-HookProfileCheck
