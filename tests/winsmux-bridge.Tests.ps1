@@ -6556,6 +6556,60 @@ Describe 'doctor bridge config metadata check' {
             $env:WINSMUX_DOCTOR_POWERSHELL_PROCESS_WARN_THRESHOLD = $originalValue
         }
     }
+
+    It 'summarizes low-count PowerShell startup evidence without leaking command lines or process ids' {
+        $protectedIds = [System.Collections.Generic.HashSet[int]]::new()
+        $snapshot = [pscustomobject]@{
+            Processes = @(
+                [pscustomobject]@{ ProcessId = 2101; ParentProcessId = 0; Name = 'Code.exe'; CommandLine = 'Code.exe' }
+                [pscustomobject]@{ ProcessId = 2102; ParentProcessId = 0; Name = 'WindowsTerminal.exe'; CommandLine = 'WindowsTerminal.exe' }
+                [pscustomobject]@{ ProcessId = 2103; ParentProcessId = 0; Name = 'codex.exe'; CommandLine = 'codex.exe' }
+                [pscustomobject]@{ ProcessId = 2201; ParentProcessId = 2101; Name = 'pwsh.exe'; CommandLine = 'pwsh -NoProfile -Command secret-value' }
+                [pscustomobject]@{ ProcessId = 2202; ParentProcessId = 2102; Name = 'pwsh.exe'; CommandLine = 'pwsh -NoLogo' }
+                [pscustomobject]@{ ProcessId = 2203; ParentProcessId = 2103; Name = 'powershell.exe'; CommandLine = 'powershell -NoProfile' }
+            )
+            ById = @{
+                2101 = [pscustomobject]@{ ProcessId = 2101; ParentProcessId = 0; Name = 'Code.exe'; CommandLine = 'Code.exe' }
+                2102 = [pscustomobject]@{ ProcessId = 2102; ParentProcessId = 0; Name = 'WindowsTerminal.exe'; CommandLine = 'WindowsTerminal.exe' }
+                2103 = [pscustomobject]@{ ProcessId = 2103; ParentProcessId = 0; Name = 'codex.exe'; CommandLine = 'codex.exe' }
+                2201 = [pscustomobject]@{ ProcessId = 2201; ParentProcessId = 2101; Name = 'pwsh.exe'; CommandLine = 'pwsh -NoProfile -Command secret-value' }
+                2202 = [pscustomobject]@{ ProcessId = 2202; ParentProcessId = 2102; Name = 'pwsh.exe'; CommandLine = 'pwsh -NoLogo' }
+                2203 = [pscustomobject]@{ ProcessId = 2203; ParentProcessId = 2103; Name = 'powershell.exe'; CommandLine = 'powershell -NoProfile' }
+            }
+            SupportsCommandLine = $true
+        }
+
+        $result = New-PowerShellStartupEvidenceResult -Snapshot $snapshot -ProtectedIds $protectedIds -WarnThreshold 100 -SmokeStatus pass -SmokeDetail '7.5.4'
+
+        $result.Status | Should -Be 'pass'
+        $result.Label | Should -Be 'PowerShell startup evidence'
+        $result.Detail | Should -Match 'pwsh_count=3'
+        $result.Detail | Should -Match 'count_state=below_threshold'
+        $result.Detail | Should -Match 'bare_pwsh=pass'
+        $result.Detail | Should -Match 'codex=1'
+        $result.Detail | Should -Match 'vscode=1'
+        $result.Detail | Should -Match 'windows-terminal=1'
+        $result.Detail | Should -Match 'command_lines=omitted'
+        $result.Detail | Should -Not -Match 'secret-value'
+        $result.Detail | Should -Not -Match '2201'
+    }
+
+    It 'warns in startup evidence when the bare PowerShell smoke check fails' {
+        $protectedIds = [System.Collections.Generic.HashSet[int]]::new()
+        $snapshot = [pscustomobject]@{
+            Processes = @()
+            ById = @{}
+            SupportsCommandLine = $true
+        }
+
+        $result = New-PowerShellStartupEvidenceResult -Snapshot $snapshot -ProtectedIds $protectedIds -WarnThreshold 100 -SmokeStatus fail -SmokeDetail 'pwsh exited with code 3221225794'
+
+        $result.Status | Should -Be 'warn'
+        $result.Label | Should -Be 'PowerShell startup evidence'
+        $result.Detail | Should -Match 'pwsh_count=0'
+        $result.Detail | Should -Match 'bare_pwsh=fail'
+        $result.Detail | Should -Match '3221225794'
+    }
 }
 
 Describe 'worker isolation diagnostics' {
