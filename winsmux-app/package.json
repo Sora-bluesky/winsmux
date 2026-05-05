@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "test:editor-targets": "node ./scripts/editor-targets-check.mjs",
+    "test:source-graph": "node ./scripts/source-graph-check.mjs",
     "test:viewport-harness": "npm run build && node ./scripts/viewport-harness.mjs",
     "preview": "vite preview",
     "tauri": "tauri"

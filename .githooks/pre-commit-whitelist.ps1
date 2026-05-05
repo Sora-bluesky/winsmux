@@ -78,6 +78,7 @@ $whitelistPatterns = @(
     'winsmux-app/scripts/*.mjs',
     'winsmux-app/package.json',
     'winsmux-app/package-lock.json',
+    'winsmux-app/src/sourceGraph.ts',
     'winsmux-app/src-tauri/Cargo.toml',
     'winsmux-app/src-tauri/Cargo.lock',
     'winsmux-app/src-tauri/tauri.conf.json',
