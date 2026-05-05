@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:browser": "node ./scripts/open-dev-browser.mjs",
     "build": "tsc && vite build",
     "test:editor-targets": "node ./scripts/editor-targets-check.mjs",
     "test:source-graph": "node ./scripts/source-graph-check.mjs",

@@ -26,6 +26,19 @@ Run a development build:
 npm run build
 ```
 
+Start the local dev server when needed, then open it in a Playwright browser
+whose viewport follows the window size:
+
+```powershell
+npm run dev:browser
+```
+
+Run a headless viewport probe:
+
+```powershell
+npm run dev:browser -- --headless --probe --width=2048 --height=1244
+```
+
 Run the viewport harness when changing desktop UI layout:
 
 ```powershell
