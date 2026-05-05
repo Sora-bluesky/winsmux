@@ -13064,7 +13064,7 @@ Describe 'operator startup restore contract docs' {
         $setupWizardContent | Should -Match 'AI agent provider'
         $setupWizardContent | Should -Match 'Test-SetupWizardAgentProvider'
         $setupWizardContent | Should -Match 'provider-capabilities\.json first'
-        $setupWizardContent | Should -Match "(?s)if \(-not \[string\]::IsNullOrWhiteSpace\(\`$model\)\) \{\s*Set-WinsmuxOption -WinsmuxBin \`$winsmuxBin -OptionName '@bridge-model' -OptionValue \`$model"
+        $setupWizardContent | Should -Match "(?s)if \(\[string\]::IsNullOrWhiteSpace\(\`$model\)\) \{\s*Clear-WinsmuxOption -WinsmuxBin \`$winsmuxBin -OptionName '@bridge-model'\s*\} else \{\s*Set-WinsmuxOption -WinsmuxBin \`$winsmuxBin -OptionName '@bridge-model' -OptionValue \`$model"
         $setupWizardContent | Should -Not -Match 'AI agent CLI \(codex/claude\)'
         $setupWizardContent | Should -Not -Match "Please enter 'codex' or 'claude'\."
         $setupWizardContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
@@ -13072,6 +13072,15 @@ Describe 'operator startup restore contract docs' {
         $agentMonitorContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
         $watchdogContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
         $orchestraStartContent | Should -Not -Match 'Tried: winsmux, pmux, tmux'
+    }
+
+    It 'clears stale setup wizard model overrides when provider default is selected' {
+        $setupWizardPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\setup-wizard.ps1'
+        $setupWizardContent = Get-Content -Path $setupWizardPath -Raw -Encoding UTF8
+
+        $setupWizardContent | Should -Match 'function Clear-WinsmuxOption'
+        $setupWizardContent | Should -Match 'set-option -gu \$OptionName'
+        $setupWizardContent | Should -Match "(?s)if \(\[string\]::IsNullOrWhiteSpace\(\`$model\)\) \{\s*Clear-WinsmuxOption -WinsmuxBin \`$winsmuxBin -OptionName '@bridge-model'"
     }
 
     It 'keeps the legacy orchestra prompt provider-neutral' {
