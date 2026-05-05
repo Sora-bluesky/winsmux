@@ -5160,6 +5160,68 @@ fn operator_cli_restart_dispatches_launch_plan_and_updates_manifest() {
 }
 
 #[test]
+fn operator_cli_restart_infers_adapter_when_registry_lacks_provider() {
+    let project_dir = make_temp_project_dir("restart-missing-capability-provider");
+    write_manifest(&project_dir);
+    fs::write(
+        project_dir.join(".winsmux").join("provider-capabilities.json"),
+        r#"{"version":1,"providers":{"claude":{"adapter":"claude","command":"claude","prompt_transports":["file"],"supports_file_edit":true,"supports_verification":true}}}"#,
+    )
+    .expect("test should write provider capability registry");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2", "%3"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["restart", "builder-1"])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let log = fs::read_to_string(&log_path).expect("fake winsmux log should exist");
+    assert!(log.contains("send-keys -t \"%2\" -l -- \"codex -c 'model=gpt-5.4'"));
+    let builder = read_manifest_pane(&project_dir, "builder-1");
+    assert_eq!(builder["capability_adapter"].as_str(), Some("codex"));
+}
+
+#[test]
+fn operator_cli_restart_rejects_malformed_provider_registry() {
+    let project_dir = make_temp_project_dir("restart-malformed-capability-registry");
+    write_manifest(&project_dir);
+    fs::write(
+        project_dir.join(".winsmux").join("provider-capabilities.json"),
+        "{",
+    )
+    .expect("test should write malformed provider capability registry");
+    let (winsmux_bin, log_path) =
+        write_fake_winsmux_restart(&project_dir, Some("winsmux-orchestra"), &["%2", "%3"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["restart", "builder-1"])
+        .env("WINSMUX_BIN", winsmux_bin)
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Invalid provider capability registry JSON"),
+        "unexpected stderr: {stderr}"
+    );
+    let log = fs::read_to_string(&log_path).unwrap_or_default();
+    assert!(
+        !log.contains("send-keys"),
+        "restart should not dispatch with a malformed registry: {log}"
+    );
+}
+
+#[test]
 fn operator_cli_restart_rejects_stale_manifest_target() {
     let project_dir = make_temp_project_dir("restart-stale");
     write_manifest(&project_dir);

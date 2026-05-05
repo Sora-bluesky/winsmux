@@ -6307,13 +6307,19 @@ fn resolve_restart_provider(
         let adapter = if !manifest_capability_adapter.trim().is_empty() {
             manifest_capability_adapter
         } else {
-            resolve_provider_capability(project_dir, &agent)?
-                .as_ref()
-                .and_then(|capability| capability.get("adapter"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| provider_adapter_from_agent(&agent))
+            match resolve_provider_capability(project_dir, &agent) {
+                Ok(capability) => capability
+                    .as_ref()
+                    .and_then(|capability| capability.get("adapter"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| provider_adapter_from_agent(&agent)),
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                    provider_adapter_from_agent(&agent)
+                }
+                Err(err) => return Err(err),
+            }
         };
         return Ok((
             agent,
