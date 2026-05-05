@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "core",
+    "git-graph",
     "winsmux-app/src-tauri",
 ]
 resolver = "2"
