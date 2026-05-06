@@ -7000,24 +7000,27 @@ function renderComposerSessionControls() {
   (modelRoot ?? root).appendChild(createComposerModelMenu());
 }
 
-function renderComposerModes() {
-  const root = document.getElementById("composer-mode-row");
+function renderComposerModeChrome() {
   const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
-  if (!root || !composerInput) {
-    return;
-  }
-
-  root.innerHTML = "";
-  root.hidden = true;
-
   const selected = composerModes.find((item) => item.mode === activeComposerMode);
-  if (selected) {
+  if (composerInput && selected) {
     composerInput.placeholder = getComposerModePlaceholder(selected.mode);
   }
 
   renderComposerSlashCommands();
   renderComposerRemoteReferences();
   renderComposerSessionControls();
+  renderFooterLane();
+}
+
+function renderComposerModes() {
+  const root = document.getElementById("composer-mode-row");
+  if (root) {
+    root.innerHTML = "";
+    root.hidden = true;
+  }
+
+  renderComposerModeChrome();
 }
 
 function getComposerModeLabel(mode: ComposerMode) {

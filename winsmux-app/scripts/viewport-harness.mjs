@@ -579,6 +579,31 @@ async function assertComposerSessionControls(page, previewUrl) {
 
   await setShellLanguage(page, "en");
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
+  await assertComposerModeChromeUpdates(page);
+}
+
+async function assertComposerModeChromeUpdates(page) {
+  async function selectMode(label, placeholder) {
+    await page.click("#menu-run-btn");
+    await page.locator("#top-menu-popover .top-menu-popover-item", { hasText: label }).click();
+    await page.waitForFunction(
+      ({ expectedLabel, expectedPlaceholder }) => {
+        const input = document.querySelector("#composer-input");
+        const footerMode = Array.from(document.querySelectorAll("#footer-left .footer-pill")).find((item) => {
+          const label = item.querySelector(".footer-pill-label")?.textContent?.trim() ?? "";
+          const value = item.querySelector(".footer-pill-value")?.textContent?.trim() ?? "";
+          return label === "Mode" && value === expectedLabel;
+        });
+        return input instanceof HTMLTextAreaElement && input.placeholder === expectedPlaceholder && Boolean(footerMode);
+      },
+      { expectedLabel: label, expectedPlaceholder: placeholder },
+    );
+  }
+
+  await page.locator("#composer-mode-row").waitFor({ state: "hidden" });
+  await selectMode("Ask", "Ask a question or request guidance");
+  await selectMode("Review", "Describe what needs review or approval");
+  await selectMode("Dispatch", "Describe a task or ask a question");
 }
 
 async function getVisibleWorkbenchPaneLabels(page) {
