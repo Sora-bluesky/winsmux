@@ -289,7 +289,7 @@ type RuntimeModelSource = "provider-default" | "cli-discovery" | "official-doc" 
 type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "xhigh" | "max";
 type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
 type ComposerEffortLevel = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
-type ComposerModelId = "opus-4.7" | "opus-4.7-1m" | "sonnet-4.6" | "haiku-4.5";
+type ComposerModelId = "opus-4.7" | "opus-4.7-1m" | "opus-4.6" | "sonnet-4.6" | "haiku-4.5";
 
 interface ThemeState {
   theme: ThemeMode;
@@ -603,8 +603,9 @@ const composerModelOptions: Array<{
 }> = [
   { value: "opus-4.7", label: "Opus 4.7", labelJa: "Opus 4.7", cliModel: "opus", shortcut: "1" },
   { value: "opus-4.7-1m", label: "Opus 4.7 1M", labelJa: "Opus 4.7 1M", cliModel: "opus[1m]", shortcut: "2" },
-  { value: "sonnet-4.6", label: "Sonnet 4.6", labelJa: "Sonnet 4.6", cliModel: "sonnet", shortcut: "3" },
-  { value: "haiku-4.5", label: "Haiku 4.5", labelJa: "Haiku 4.5", cliModel: "haiku", shortcut: "4" },
+  { value: "opus-4.6", label: "Opus 4.6", labelJa: "Opus 4.6", cliModel: "claude-opus-4-6", shortcut: "3", fastModeCompatible: true },
+  { value: "sonnet-4.6", label: "Sonnet 4.6", labelJa: "Sonnet 4.6", cliModel: "sonnet", shortcut: "4" },
+  { value: "haiku-4.5", label: "Haiku 4.5", labelJa: "Haiku 4.5", cliModel: "haiku", shortcut: "5" },
 ];
 
 const composerEffortOptions: Array<{
