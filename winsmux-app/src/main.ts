@@ -894,7 +894,7 @@ const wrapOptions: Array<{ value: WrapMode; label: string; description: string; 
 ];
 
 const codeFontOptions: Array<{ value: CodeFontMode; label: string; description: string; labelJa?: string; descriptionJa?: string }> = [
-  { value: "system", label: "Consolas / Courier New", labelJa: "Consolas / Courier New", description: "VS Code Windows default: Consolas, 'Courier New', monospace.", descriptionJa: "VS Code の Windows 既定値: Consolas, 'Courier New', monospace。" },
+  { value: "system", label: "Consolas / Courier New", labelJa: "Consolas / Courier New", description: "Windows developer default: Consolas, 'Courier New', monospace.", descriptionJa: "Windows 開発環境の既定値: Consolas, 'Courier New', monospace。" },
   { value: "google-sans-code", label: "Google Sans Code", labelJa: "Google Sans Code", description: "Use Google Sans Code when it is installed.", descriptionJa: "インストール済みの時に Google Sans Code を使います。" },
   { value: "jetbrains-mono", label: "JetBrains Mono", labelJa: "JetBrains Mono", description: "Use JetBrains Mono when it is installed.", descriptionJa: "インストール済みの時に JetBrains Mono を使います。" },
 ];
@@ -3077,8 +3077,8 @@ const sourceGraphLaneColors = [
   "#f0883e",
 ];
 const sourceGraphSvgNamespace = "http://www.w3.org/2000/svg";
-const sourceGraphLaneStep = 8;
-const sourceGraphLaneOffset = 8.5;
+const sourceGraphLaneStep = 10;
+const sourceGraphLaneOffset = 10.5;
 const sourceGraphRowHeight = 46;
 const sourceGraphCurveZone = 5;
 const sourceGraphNormalNodeRadius = 2.5;
@@ -3240,7 +3240,7 @@ function getSourceGraphRowLaneCount(row: SourceGraphRow) {
 
 function getSourceGraphSvgWidth(laneCount: number) {
   const rightEdge = getSourceGraphLaneX(Math.max(0, laneCount - 1)) + sourceGraphHeadNodeRadius;
-  return Math.max(52, Math.ceil(rightEdge));
+  return Math.max(64, Math.ceil(rightEdge));
 }
 
 function sourceGraphLaneShiftPath(x1: number, y1: number, x2: number, y2: number) {

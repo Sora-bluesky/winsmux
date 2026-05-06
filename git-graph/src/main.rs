@@ -9,7 +9,7 @@ use git_graph::render::render_svg;
 
 #[derive(Debug, Parser)]
 #[command(name = "git-graph")]
-#[command(about = "Render a VS Code-style Git history graph as SVG.")]
+#[command(about = "Render a source-control-style Git history graph as SVG.")]
 struct Args {
     #[arg(long, default_value = ".")]
     repo: PathBuf,

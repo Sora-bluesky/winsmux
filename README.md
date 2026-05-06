@@ -114,7 +114,7 @@ Use `winsmux` for new scripts and docs. The legacy alias contract will be remove
 
 ## Git Graph CLI
 
-The repository includes `git-graph`, a Rust CLI that renders recent Git history as a VS Code-style SVG graph. It reads commit IDs and parent IDs, rebuilds lanes from the parent relationships, and draws lane shifts with cubic Bezier curves instead of parsing `git log --graph` characters.
+The repository includes `git-graph`, a Rust CLI that renders recent Git history as a source-control-style SVG graph. It reads commit IDs and parent IDs, rebuilds lanes from the parent relationships, and draws lane shifts with cubic Bezier curves instead of parsing `git log --graph` characters.
 
 ```powershell
 cargo run -p git-graph -- --repo . --max 30 --out output/git-graph.svg

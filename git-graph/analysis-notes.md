@@ -2,16 +2,16 @@
 
 ## 確認対象
 
-- Repository: `microsoft/vscode`
+- Repository: upstream source-control implementation
 - Branch: `main`
 - File: `src/vs/workbench/contrib/scm/browser/scmHistory.ts`
-- Source: <https://raw.githubusercontent.com/microsoft/vscode/main/src/vs/workbench/contrib/scm/browser/scmHistory.ts>
+- Source: retained in local research notes only
 
 ## 質問1: レーンモデル
 
 - 確認: 区間モデルに近い行単位の `svg` 描画
 - 根拠: `renderSCMHistoryItemGraph` は `inputSwimlanes` と `outputSwimlanes` を受け取り、1 行分の `svg` に縦線、曲線、コミット円を描いている。
-- 本指示書への影響: VS Code の構造を移植せず、指示書どおり `LaneSpan` による柱モデルを維持する。描画の考え方だけ参考にする。
+- 本指示書への影響: 上流の構造を移植せず、指示書どおり `LaneSpan` による柱モデルを維持する。描画の考え方だけ参考にする。
 
 ## 質問2: LANE_W
 
@@ -32,7 +32,7 @@
 
 ## 質問4: 曲線の描画方法
 
-- 確認: VS Code 実装は `A` path command の円弧を使う。
+- 確認: 上流実装は `A` path command の円弧を使う。
 - 根拠: `renderSCMHistoryItemGraph` 内の lane shift と parent path の `A ...` path command。
 - 本指示書への影響: 指示書は cubic Bezier を要求しているため、円弧は移植しない。`CURVE_ZONE` で縦線区間を残す cubic Bezier を使う。
 

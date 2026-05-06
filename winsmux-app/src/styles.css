@@ -1075,7 +1075,7 @@ textarea {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr);
+  grid-template-columns: 64px minmax(0, 1fr);
   align-items: stretch;
   min-height: 46px;
   border: 0;
@@ -1110,7 +1110,7 @@ textarea {
 
 .source-control-graph-svg {
   display: block;
-  width: 50px;
+  width: 62px;
   height: 100%;
   min-height: 46px;
   overflow: visible;
@@ -1121,7 +1121,7 @@ textarea {
   z-index: 2;
   top: 0;
   left: 2px;
-  width: 52px;
+  width: 64px;
   min-height: 0;
   pointer-events: none;
 }

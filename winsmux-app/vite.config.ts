@@ -224,6 +224,7 @@ function collectSourceControlSnapshot() {
 
   const graphText = runGitRaw([
     "log",
+    "--topo-order",
     "--pretty=format:%H%x1f%P%x1f%h%x1f%D%x1f%an%x1f%ar%x1f%ad%x1f%s",
     "--date=format:%Y-%m-%d %H:%M",
     "-30",
