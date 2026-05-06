@@ -35,6 +35,7 @@ function Test-IsPublicDoc {
         'THIRD_PARTY_NOTICES.md',
         'docs/README.md',
         'docs/README.ja.md',
+        'docs/winsmux-hero.svg',
         'docs/operator-model.md',
         'docs/quickstart.md',
         'docs/quickstart.ja.md',
@@ -54,6 +55,7 @@ function Test-IsTrackedTextSurface {
     $normalized = $Path.Replace('\', '/')
     if ($normalized -match '^\.claude/logs/') { return $false }
     if ($normalized -match '^docs/internal/') { return $false }
+    if ($normalized -eq 'docs/winsmux-hero.svg') { return $true }
     return $normalized -match '(^README(\.ja)?\.md$)|(^AGENTS?(-BASE)?\.md$)|(^GEMINI\.md$)|(^docs/.+\.md$)|(^\.claude/CLAUDE\.md$)|(^\.agents/.+\.md$)|(^tests/.+\.(ps1|md|json|txt)$)|(^\.github/workflows/.+\.ya?ml$)|(^\.githooks/.+$)|(^scripts/.+\.ps1$)'
 }
 
