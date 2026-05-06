@@ -560,8 +560,13 @@ async function assertComposerSessionControls(page, previewUrl) {
   await page.locator("#composer-model-menu .composer-session-option", { hasText: "Max" }).click();
   await page.locator("#composer-model-menu .composer-session-option", { hasText: "Sonnet 4.6" }).click();
   await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6・Max" }).waitFor();
-  await page.locator("#composer-model-menu .composer-fast-toggle").click();
-  await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='true']").waitFor();
+  await page.waitForFunction(() => {
+    const toggle = document.querySelector("#composer-model-menu .composer-fast-toggle");
+    return toggle instanceof HTMLButtonElement &&
+      toggle.disabled &&
+      toggle.getAttribute("aria-checked") === "false" &&
+      toggle.textContent?.includes("Opus 4.6");
+  });
 
   await page.reload({ waitUntil: "networkidle" });
   await page.locator(".composer-session-trigger-permission", { hasText: "Plan mode" }).waitFor();
@@ -575,7 +580,7 @@ async function assertComposerSessionControls(page, previewUrl) {
   await page.locator("#composer-model-menu", { hasText: "モデル" }).waitFor();
   await page.locator("#composer-model-menu", { hasText: "工数" }).waitFor();
   await page.locator("#composer-model-menu", { hasText: "高速モード" }).waitFor();
-  await page.locator("#composer-model-menu", { hasText: "高速モードを有効にする" }).waitFor();
+  await page.locator("#composer-model-menu", { hasText: "高速モードは Opus 4.6 でのみ利用できます" }).waitFor();
 
   await setShellLanguage(page, "en");
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });

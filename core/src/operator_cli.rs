@@ -1520,6 +1520,7 @@ fn normalize_provider_capability_entry(
         "model_sources",
         "reasoning_efforts",
     ];
+    let raw_string_array_fields = ["read_only_launch_args"];
     let model_option_fields = ["model_options"];
     let bool_fields = [
         "supports_parallel_runs",
@@ -1537,6 +1538,7 @@ fn normalize_provider_capability_entry(
         if !string_fields.contains(&name)
             && !transport_fields.contains(&name)
             && !string_array_fields.contains(&name)
+            && !raw_string_array_fields.contains(&name)
             && !model_option_fields.contains(&name)
             && !bool_fields.contains(&name)
         {
@@ -1601,6 +1603,28 @@ fn normalize_provider_capability_entry(
                     return Err(invalid_provider_capability_field(name));
                 }
                 normalized_items.push(Value::String(normalized_text));
+            }
+            normalized.insert(field.clone(), Value::Array(normalized_items));
+            continue;
+        }
+
+        if raw_string_array_fields.contains(&name) {
+            let Some(items) = field_value.as_array() else {
+                return Err(invalid_provider_capability_field(name));
+            };
+            if items.is_empty() {
+                return Err(invalid_provider_capability_field(name));
+            }
+            let mut normalized_items = Vec::new();
+            for item in items {
+                let Some(text) = item.as_str() else {
+                    return Err(invalid_provider_capability_field(name));
+                };
+                let trimmed_text = text.trim();
+                if trimmed_text.is_empty() {
+                    return Err(invalid_provider_capability_field(name));
+                }
+                normalized_items.push(Value::String(trimmed_text.to_string()));
             }
             normalized.insert(field.clone(), Value::Array(normalized_items));
             continue;
@@ -2906,6 +2930,20 @@ fn capability_string(capability: Option<&Value>, key: &str) -> String {
         .to_string()
 }
 
+fn capability_string_array(capability: Option<&Value>, key: &str) -> Vec<String> {
+    capability
+        .and_then(|value| value.get(key))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn capability_bool(capability: Option<&Value>, key: &str) -> bool {
     capability
         .and_then(|value| value.get(key))
@@ -3880,6 +3918,12 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
         .zip(role_provider_commands.iter())
     {
         let prompt_hash = sha256_hex(role.prompt.as_bytes());
+        let launch_contract = meta_plan_launch_contract(
+            &options.project_dir,
+            role,
+            provider_adapter,
+            provider_command,
+        )?;
         append_meta_plan_audit_record(
             &options.project_dir,
             &options.session_name,
@@ -3899,7 +3943,7 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
                 "read_only": role.read_only,
                 "review_rounds": role.review_rounds,
                 "prompt_hash": prompt_hash.clone(),
-                "launch_contract": meta_plan_launch_contract(role, provider_adapter, provider_command),
+                "launch_contract": launch_contract.clone(),
             }),
         )?;
 
@@ -3939,7 +3983,7 @@ fn build_meta_plan_run(options: &MetaPlanOptions) -> io::Result<MetaPlanRun> {
             "capabilities": role.capabilities.clone(),
             "prompt_hash": prompt_hash.clone(),
             "draft_ref": draft_ref.clone(),
-            "launch_contract": meta_plan_launch_contract(role, provider_adapter, provider_command),
+            "launch_contract": launch_contract.clone(),
         }));
     }
 
@@ -4171,6 +4215,9 @@ fn validate_meta_plan_role(project_dir: &Path, role: &MetaPlanRole) -> io::Resul
     if provider_adapter != "claude" && role.plan_mode != "read_only_equivalent" {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("meta-plan role '{}' must use plan_mode: read_only_equivalent for non-Claude providers", role.role_id)));
     }
+    if !matches!(provider_adapter.as_str(), "claude" | "codex" | "gemini") {
+        let _ = meta_plan_provider_read_only_launch_args(project_dir, role, &provider_adapter)?;
+    }
     if !matches!(role.review_rounds, 0 | 1 | 2) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -4278,14 +4325,42 @@ fn meta_plan_provider_command(project_dir: &Path, role: &MetaPlanRole) -> io::Re
     Ok(command)
 }
 
+fn meta_plan_provider_read_only_launch_args(
+    project_dir: &Path,
+    role: &MetaPlanRole,
+    provider_adapter: &str,
+) -> io::Result<Vec<String>> {
+    if matches!(provider_adapter, "claude" | "codex" | "gemini") {
+        return Ok(Vec::new());
+    }
+
+    let Some(capability) = meta_plan_provider_capability(project_dir, role)? else {
+        return Ok(Vec::new());
+    };
+
+    let args = capability_string_array(Some(&capability), "read_only_launch_args");
+    if args.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "meta-plan role '{}' provider '{}' with adapter '{}' must declare read_only_launch_args in .winsmux/provider-capabilities.json",
+                role.role_id, role.provider, provider_adapter
+            ),
+        ));
+    }
+
+    Ok(args)
+}
+
 fn meta_plan_launch_contract(
+    project_dir: &Path,
     role: &MetaPlanRole,
     provider_adapter: &str,
     provider_command: &str,
-) -> Value {
+) -> io::Result<Value> {
     let model_override = provider_model_override(&role.model, &role.model_source);
     let mut args = Vec::new();
-    match provider_adapter {
+    let launch_contract = match provider_adapter {
         "claude" => {
             if model_override {
                 args.push("--model".to_string());
@@ -4359,20 +4434,24 @@ fn meta_plan_launch_contract(
                 "read_only": role.read_only,
             })
         }
-        _ => json!({
-            "provider": role.provider.clone(),
-            "provider_adapter": provider_adapter,
-            "command": provider_command,
-            "model": role.model.clone(),
-            "model_source": role.model_source.clone(),
-            "reasoning_effort": role.reasoning_effort.clone(),
-            "model_override": model_override,
-            "args": [],
-            "plan_mode_enforced": false,
-            "read_only_equivalent": true,
-            "read_only": role.read_only,
-        }),
-    }
+        _ => {
+            args = meta_plan_provider_read_only_launch_args(project_dir, role, provider_adapter)?;
+            json!({
+                "provider": role.provider.clone(),
+                "provider_adapter": provider_adapter,
+                "command": provider_command,
+                "model": role.model.clone(),
+                "model_source": role.model_source.clone(),
+                "reasoning_effort": role.reasoning_effort.clone(),
+                "model_override": model_override,
+                "args": args,
+                "plan_mode_enforced": false,
+                "read_only_equivalent": true,
+                "read_only": role.read_only,
+            })
+        }
+    };
+    Ok(launch_contract)
 }
 
 fn render_meta_plan_role_draft(
@@ -9994,7 +10073,8 @@ mod tests {
         validate_meta_plan_role(&project_dir, &role).expect("role should validate");
         let adapter = meta_plan_provider_adapter(&project_dir, &role).expect("adapter");
         let command = meta_plan_provider_command(&project_dir, &role).expect("command");
-        let launch = meta_plan_launch_contract(&role, &adapter, &command);
+        let launch =
+            meta_plan_launch_contract(&project_dir, &role, &adapter, &command).expect("launch");
 
         assert_eq!(adapter, "gemini");
         assert_eq!(command, "gemini");
@@ -10015,6 +10095,77 @@ mod tests {
         assert!(error
             .to_string()
             .contains("must be declared in .winsmux/provider-capabilities.json"));
+
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+
+    #[test]
+    fn meta_plan_role_rejects_custom_adapter_without_read_only_launch_args() {
+        let project_dir = test_project_dir("meta-plan-custom-provider-no-read-only-args");
+        let capability_path = provider_capability_registry_path(&project_dir);
+        std::fs::write(
+            &capability_path,
+            r#"{
+              "version": 1,
+              "providers": {
+                "future-planner": {
+                  "adapter": "future-cli",
+                  "command": "future",
+                  "prompt_transports": ["stdin"],
+                  "supports_file_edit": false,
+                  "supports_consultation": true
+                }
+              }
+            }"#,
+        )
+        .expect("write provider capability registry");
+
+        let role = meta_plan_role("future-planner", "read_only_equivalent");
+        let error = validate_meta_plan_role(&project_dir, &role).expect_err("role should fail");
+
+        assert!(error
+            .to_string()
+            .contains("must declare read_only_launch_args"));
+
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+
+    #[test]
+    fn meta_plan_role_uses_custom_adapter_read_only_launch_args() {
+        let project_dir = test_project_dir("meta-plan-custom-provider-read-only-args");
+        let capability_path = provider_capability_registry_path(&project_dir);
+        std::fs::write(
+            &capability_path,
+            r#"{
+              "version": 1,
+              "providers": {
+                "future-planner": {
+                  "adapter": "future-cli",
+                  "command": "future",
+                  "prompt_transports": ["stdin"],
+                  "read_only_launch_args": ["--read-only", "--no-write"],
+                  "supports_file_edit": false,
+                  "supports_consultation": true
+                }
+              }
+            }"#,
+        )
+        .expect("write provider capability registry");
+
+        let role = meta_plan_role("future-planner", "read_only_equivalent");
+        validate_meta_plan_role(&project_dir, &role).expect("role should validate");
+        let adapter = meta_plan_provider_adapter(&project_dir, &role).expect("adapter");
+        let command = meta_plan_provider_command(&project_dir, &role).expect("command");
+        let launch =
+            meta_plan_launch_contract(&project_dir, &role, &adapter, &command).expect("launch");
+
+        assert_eq!(adapter, "future-cli");
+        assert_eq!(command, "future");
+        assert_eq!(launch["provider"], "future-planner");
+        assert_eq!(launch["provider_adapter"], "future-cli");
+        assert_eq!(launch["args"], json!(["--read-only", "--no-write"]));
+        assert_eq!(launch["read_only_equivalent"], true);
+        assert_eq!(launch["read_only"], true);
 
         let _ = std::fs::remove_dir_all(project_dir);
     }

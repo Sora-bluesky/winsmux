@@ -1919,6 +1919,17 @@ body[data-popout-surface="1"] #editor-surface {
   color: var(--text-primary);
 }
 
+.composer-fast-toggle:disabled {
+  cursor: not-allowed;
+  color: var(--text-muted);
+  opacity: 0.65;
+}
+
+.composer-fast-toggle:disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
+
 .composer-fast-toggle-track {
   width: 28px;
   height: 16px;

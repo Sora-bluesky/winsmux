@@ -599,9 +599,10 @@ const composerModelOptions: Array<{
   labelJa: string;
   cliModel: string;
   shortcut: string;
+  fastModeCompatible?: boolean;
 }> = [
   { value: "opus-4.7", label: "Opus 4.7", labelJa: "Opus 4.7", cliModel: "opus", shortcut: "1" },
-  { value: "opus-4.7-1m", label: "Opus 4.7 1M", labelJa: "Opus 4.7 1M", cliModel: "opusplan", shortcut: "2" },
+  { value: "opus-4.7-1m", label: "Opus 4.7 1M", labelJa: "Opus 4.7 1M", cliModel: "opus[1m]", shortcut: "2" },
   { value: "sonnet-4.6", label: "Sonnet 4.6", labelJa: "Sonnet 4.6", cliModel: "sonnet", shortcut: "3" },
   { value: "haiku-4.5", label: "Haiku 4.5", labelJa: "Haiku 4.5", cliModel: "haiku", shortcut: "4" },
 ];
@@ -1172,7 +1173,7 @@ function getOperatorStartupInput() {
     args.push("--effort", activeComposerEffort);
   }
   const startupInput = `${args.join(" ")}\r`;
-  return activeComposerFastModeEnabled
+  return activeComposerFastModeEnabled && isComposerFastModeCompatible()
     ? `${startupInput}/fast\r`
     : startupInput;
 }
@@ -5459,11 +5460,16 @@ function defaultComposerSessionControls(): ComposerSessionControlState {
 
 function normalizeComposerSessionControls(value: Partial<ComposerSessionControlState> | null | undefined) {
   const fallback = defaultComposerSessionControls();
+  const model = composerModelOptions.find((item) => item.value === value?.model)?.value ?? fallback.model;
+  const fastModeEnabled =
+    typeof value?.fastModeEnabled === "boolean" && isComposerFastModeCompatible(model)
+      ? value.fastModeEnabled
+      : fallback.fastModeEnabled;
   return {
     permissionMode: normalizeComposerPermissionMode(value?.permissionMode, fallback.permissionMode),
-    model: composerModelOptions.find((item) => item.value === value?.model)?.value ?? fallback.model,
+    model,
     effort: composerEffortOptions.find((item) => item.value === value?.effort)?.value ?? fallback.effort,
-    fastModeEnabled: typeof value?.fastModeEnabled === "boolean" ? value.fastModeEnabled : fallback.fastModeEnabled,
+    fastModeEnabled,
   };
 }
 
@@ -6805,6 +6811,10 @@ function getComposerModelOption(model: ComposerModelId = activeComposerModel) {
   return composerModelOptions.find((item) => item.value === model) ?? composerModelOptions[0];
 }
 
+function isComposerFastModeCompatible(model: ComposerModelId = activeComposerModel) {
+  return Boolean(getComposerModelOption(model).fastModeCompatible);
+}
+
 function getComposerEffortOption(effort: ComposerEffortLevel = activeComposerEffort) {
   return composerEffortOptions.find((item) => item.value === effort) ?? composerEffortOptions[0];
 }
@@ -6824,12 +6834,15 @@ function setComposerEffort(effort: ComposerEffortLevel) {
 
 function setComposerModel(model: ComposerModelId) {
   activeComposerModel = model;
+  if (!isComposerFastModeCompatible(model)) {
+    activeComposerFastModeEnabled = false;
+  }
   persistComposerSessionControls();
   renderComposerSessionControls();
 }
 
 function setComposerFastMode(enabled: boolean) {
-  activeComposerFastModeEnabled = enabled;
+  activeComposerFastModeEnabled = enabled && isComposerFastModeCompatible();
   persistComposerSessionControls();
   renderComposerSessionControls();
 }
@@ -6966,17 +6979,27 @@ function createComposerModelMenu() {
   }
   appendComposerMenuSeparator(menu);
   appendComposerMenuHeading(menu, japanese ? "高速モード" : "Fast mode");
+  const fastModeCompatible = isComposerFastModeCompatible();
+  if (!fastModeCompatible && activeComposerFastModeEnabled) {
+    activeComposerFastModeEnabled = false;
+    persistComposerSessionControls();
+  }
   const fastToggle = document.createElement("button");
   fastToggle.type = "button";
   fastToggle.className = `composer-fast-toggle ${activeComposerFastModeEnabled ? "is-active" : ""}`;
+  fastToggle.disabled = !fastModeCompatible;
   fastToggle.setAttribute("role", "switch");
   fastToggle.setAttribute("aria-checked", activeComposerFastModeEnabled ? "true" : "false");
+  fastToggle.setAttribute("aria-disabled", fastModeCompatible ? "false" : "true");
   fastToggle.innerHTML = `
-    <span>${japanese ? "高速モードを有効にする" : "Enable fast mode"}</span>
+    <span>${fastModeCompatible ? (japanese ? "高速モードを有効にする" : "Enable fast mode") : (japanese ? "高速モードは Opus 4.6 でのみ利用できます" : "Fast mode is only available on Opus 4.6")}</span>
     <span class="composer-fast-toggle-track" aria-hidden="true"><span class="composer-fast-toggle-thumb"></span></span>
   `;
   fastToggle.addEventListener("click", (event) => {
     event.stopPropagation();
+    if (!fastModeCompatible) {
+      return;
+    }
     setComposerFastMode(!activeComposerFastModeEnabled);
   });
   menu.appendChild(fastToggle);
