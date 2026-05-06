@@ -575,6 +575,20 @@ async function assertComposerSessionControls(page, previewUrl) {
   await page.reload({ waitUntil: "networkidle" });
   await page.locator(".composer-session-trigger-permission", { hasText: "Plan mode" }).waitFor();
   await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.6・Max" }).waitFor();
+  const startupInputs = await page.evaluate(() => [
+    window.__winsmuxViewportHarness?.getOperatorStartupInput(),
+    window.__winsmuxViewportHarness?.getOperatorStartupInput(),
+    JSON.parse(localStorage.getItem("winsmux.composer-session.v1") || "{}"),
+  ]);
+  if (!String(startupInputs[0]).includes("/fast\r")) {
+    throw new Error("Fast mode toggle was not sent once after enabling Opus 4.6 fast mode");
+  }
+  if (String(startupInputs[1]).includes("/fast\r")) {
+    throw new Error("Fast mode toggle was sent more than once after enabling Opus 4.6 fast mode");
+  }
+  if (startupInputs[2]?.fastModeEnabled !== true || startupInputs[2]?.fastModeTogglePending !== false) {
+    throw new Error("Fast mode persisted state did not keep enabled mode with the launch toggle consumed");
+  }
 
   await setShellLanguage(page, "ja");
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });

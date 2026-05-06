@@ -203,6 +203,7 @@ declare global {
       openEditorPreview: (path: string, content: string, worktree?: string) => void;
       setContextPanel: (open: boolean) => void;
       setTerminalDrawer: (open: boolean) => void;
+      getOperatorStartupInput: () => string;
     };
   }
 }
@@ -353,6 +354,7 @@ interface ComposerSessionControlState {
   model: ComposerModelId;
   effort: ComposerEffortLevel;
   fastModeEnabled: boolean;
+  fastModeTogglePending: boolean;
 }
 
 interface SpeechRecognitionAlternativeLike {
@@ -443,6 +445,7 @@ let activeComposerPermissionMode: ComposerPermissionMode = "acceptEdits";
 let activeComposerModel: ComposerModelId = "opus-4.7-1m";
 let activeComposerEffort: ComposerEffortLevel = "xhigh";
 let activeComposerFastModeEnabled = false;
+let activeComposerFastModeTogglePending = false;
 let openComposerSessionMenu: "permission" | "model" | null = null;
 let composerSlashOpen = false;
 let composerSlashQuery = "";
@@ -972,6 +975,7 @@ runtimeRolePreferences = readStoredRuntimeRolePreferences();
   activeComposerModel = storedComposerControls.model;
   activeComposerEffort = storedComposerControls.effort;
   activeComposerFastModeEnabled = storedComposerControls.fastModeEnabled;
+  activeComposerFastModeTogglePending = storedComposerControls.fastModeTogglePending;
 }
 
 const fallbackExplorerPaths = [
@@ -1174,9 +1178,16 @@ function getOperatorStartupInput() {
     args.push("--effort", activeComposerEffort);
   }
   const startupInput = `${args.join(" ")}\r`;
-  return activeComposerFastModeEnabled && isComposerFastModeCompatible()
-    ? `${startupInput}/fast\r`
-    : startupInput;
+  const shouldToggleFastMode =
+    activeComposerFastModeEnabled &&
+    activeComposerFastModeTogglePending &&
+    isComposerFastModeCompatible();
+  if (!shouldToggleFastMode) {
+    return startupInput;
+  }
+  activeComposerFastModeTogglePending = false;
+  persistComposerSessionControls();
+  return `${startupInput}/fast\r`;
 }
 
 function ensureOperatorPtyStarted() {
@@ -5456,6 +5467,7 @@ function defaultComposerSessionControls(): ComposerSessionControlState {
     model: "opus-4.7-1m",
     effort: "xhigh",
     fastModeEnabled: false,
+    fastModeTogglePending: false,
   };
 }
 
@@ -5466,11 +5478,16 @@ function normalizeComposerSessionControls(value: Partial<ComposerSessionControlS
     typeof value?.fastModeEnabled === "boolean" && isComposerFastModeCompatible(model)
       ? value.fastModeEnabled
       : fallback.fastModeEnabled;
+  const fastModeTogglePending =
+    fastModeEnabled && typeof value?.fastModeTogglePending === "boolean"
+      ? value.fastModeTogglePending
+      : fallback.fastModeTogglePending;
   return {
     permissionMode: normalizeComposerPermissionMode(value?.permissionMode, fallback.permissionMode),
     model,
     effort: composerEffortOptions.find((item) => item.value === value?.effort)?.value ?? fallback.effort,
     fastModeEnabled,
+    fastModeTogglePending,
   };
 }
 
@@ -5503,6 +5520,7 @@ function persistComposerSessionControls() {
         model: activeComposerModel,
         effort: activeComposerEffort,
         fastModeEnabled: activeComposerFastModeEnabled,
+        fastModeTogglePending: activeComposerFastModeTogglePending,
       }),
     );
     return true;
@@ -6837,13 +6855,16 @@ function setComposerModel(model: ComposerModelId) {
   activeComposerModel = model;
   if (!isComposerFastModeCompatible(model)) {
     activeComposerFastModeEnabled = false;
+    activeComposerFastModeTogglePending = false;
   }
   persistComposerSessionControls();
   renderComposerSessionControls();
 }
 
 function setComposerFastMode(enabled: boolean) {
-  activeComposerFastModeEnabled = enabled && isComposerFastModeCompatible();
+  const nextEnabled = enabled && isComposerFastModeCompatible();
+  activeComposerFastModeEnabled = nextEnabled;
+  activeComposerFastModeTogglePending = nextEnabled;
   persistComposerSessionControls();
   renderComposerSessionControls();
 }
@@ -6983,6 +7004,7 @@ function createComposerModelMenu() {
   const fastModeCompatible = isComposerFastModeCompatible();
   if (!fastModeCompatible && activeComposerFastModeEnabled) {
     activeComposerFastModeEnabled = false;
+    activeComposerFastModeTogglePending = false;
     persistComposerSessionControls();
   }
   const fastToggle = document.createElement("button");
@@ -9969,6 +9991,7 @@ function installViewportHarnessHooks() {
     setTerminalDrawer: (open: boolean) => {
       setTerminalDrawer(open);
     },
+    getOperatorStartupInput: () => getOperatorStartupInput(),
   };
 }
 
