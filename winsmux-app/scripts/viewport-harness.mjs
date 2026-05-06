@@ -359,6 +359,37 @@ async function assertPreviewClosed(page) {
   }
 }
 
+async function installSpeechRecognitionStub(page) {
+  await page.addInitScript(() => {
+    class MockSpeechRecognition {
+      constructor() {
+        this.continuous = false;
+        this.interimResults = false;
+        this.lang = "en-US";
+        this.onerror = null;
+        this.onend = null;
+        this.onresult = null;
+        this.onstart = null;
+      }
+
+      start() {
+        this.onstart?.();
+      }
+
+      stop() {
+        this.onend?.();
+      }
+
+      abort() {
+        this.onend?.();
+      }
+    }
+
+    window.SpeechRecognition = MockSpeechRecognition;
+    window.webkitSpeechRecognition = MockSpeechRecognition;
+  });
+}
+
 async function assertCommandBarRoundtrip(page, returnSelector) {
   await page.click("#activity-search-btn");
   await page.locator("#command-bar-shell").waitFor({ state: "visible" });
@@ -413,6 +444,28 @@ async function assertSettingsRoundtrip(page, returnSelector) {
       source.disabled &&
       effort instanceof HTMLSelectElement &&
       effort.disabled;
+  });
+  await page.locator("#voice-shortcut-input").waitFor();
+  await page.locator("#voice-shortcut-input").scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#voice-shortcut-input");
+    return input instanceof HTMLInputElement && input.value === "Ctrl+Alt+M";
+  });
+  await page.click("#voice-shortcut-input");
+  await page.keyboard.press("Control+Space");
+  await page.locator("#voice-shortcut-warning", { hasText: "conflicts" }).waitFor({ state: "visible" });
+  await page.waitForFunction(() => {
+    const apply = document.querySelector("#apply-settings-btn");
+    return apply instanceof HTMLButtonElement && apply.disabled;
+  });
+  await page.click("#voice-shortcut-reset-btn");
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#voice-shortcut-input");
+    const warning = document.querySelector("#voice-shortcut-warning");
+    return input instanceof HTMLInputElement &&
+      input.value === "Ctrl+Alt+M" &&
+      warning instanceof HTMLElement &&
+      warning.hidden;
   });
   await page.keyboard.press("Escape");
   await page.locator("#settings-sheet").waitFor({ state: "visible" });
@@ -946,6 +999,22 @@ async function verifyDesktopViewport(page, previewUrl) {
     await assertButtonVisible(page, "#send-btn");
     await assertButtonVisible(page, "#voice-input-btn");
     await page.waitForFunction(() => {
+      const voice = document.querySelector("#voice-input-btn");
+      return voice instanceof HTMLButtonElement &&
+        !voice.disabled &&
+        voice.getAttribute("aria-label")?.includes("Ctrl+Alt+M");
+    });
+    await page.keyboard.press("Control+Alt+M");
+    await page.waitForFunction(() => {
+      const voice = document.querySelector("#voice-input-btn");
+      return voice instanceof HTMLElement && voice.getAttribute("aria-pressed") === "true";
+    });
+    await page.keyboard.press("Control+Alt+M");
+    await page.waitForFunction(() => {
+      const voice = document.querySelector("#voice-input-btn");
+      return voice instanceof HTMLElement && voice.getAttribute("aria-pressed") === "false";
+    });
+    await page.waitForFunction(() => {
       const wrap = document.querySelector("#composer-input-wrap");
       const voice = document.querySelector("#voice-input-btn");
       const send = document.querySelector("#send-btn");
@@ -1174,6 +1243,7 @@ async function run() {
     await waitForPreviewServer(previewUrl);
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage();
+    await installSpeechRecognitionStub(page);
 
     await verifyDesktopViewport(page, previewUrl);
     await verifyDeveloperWindowViewport(page, previewUrl, 1366, 768, "developer-1366x768");
@@ -1194,7 +1264,9 @@ async function run() {
             "desktop-command-bar",
             "desktop-composer-model-controls",
             "desktop-composer-japanese-controls",
+            "desktop-voice-shortcut",
             "desktop-settings-sheet",
+            "desktop-settings-voice-shortcut",
             "desktop-source-context",
             "desktop-editor-popout",
             "desktop-command-bar-with-editor",

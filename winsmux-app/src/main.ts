@@ -302,6 +302,7 @@ interface ThemeState {
   codeFont: CodeFontMode;
   codeFontFamily: string;
   editorFontSize: number;
+  voiceShortcut: string;
   focusMode: FocusMode;
   language: LanguageMode;
 }
@@ -542,6 +543,8 @@ const DEFAULT_EDITOR_FONT_SIZE = 14;
 const MIN_EDITOR_FONT_SIZE = 8;
 const MAX_EDITOR_FONT_SIZE = 32;
 const DEFAULT_CODE_FONT_FAMILY = "Consolas, 'Courier New', monospace";
+const DEFAULT_VOICE_SHORTCUT = "Ctrl+Alt+M";
+const RESERVED_VOICE_SHORTCUTS = new Set(["Win+H", "Ctrl+Space", "Ctrl+Shift+Space"]);
 const themeState: ThemeState = {
   theme: "codex-dark",
   density: "comfortable",
@@ -549,6 +552,7 @@ const themeState: ThemeState = {
   codeFont: "system",
   codeFontFamily: DEFAULT_CODE_FONT_FAMILY,
   editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
+  voiceShortcut: DEFAULT_VOICE_SHORTCUT,
   focusMode: "standard",
   language: "en",
 };
@@ -1034,6 +1038,200 @@ function getCodeFontFamily(mode: CodeFontMode = themeState.codeFont, fontFamily:
     default:
       return DEFAULT_CODE_FONT_FAMILY;
   }
+}
+
+interface VoiceShortcutParts {
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  meta: boolean;
+  key: string;
+}
+
+function isModifierShortcutKey(key: string) {
+  const normalized = key.toLowerCase();
+  return normalized === "control"
+    || normalized === "ctrl"
+    || normalized === "alt"
+    || normalized === "shift"
+    || normalized === "meta"
+    || normalized === "win"
+    || normalized === "windows"
+    || normalized === "cmd"
+    || normalized === "command";
+}
+
+function normalizeShortcutKey(value: string) {
+  if (value === " ") {
+    return "Space";
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  const lower = trimmed.toLowerCase();
+  if (lower === " " || lower === "space" || lower === "spacebar") {
+    return "Space";
+  }
+  if (lower === "esc") {
+    return "Escape";
+  }
+  if (lower === "up") {
+    return "ArrowUp";
+  }
+  if (lower === "down") {
+    return "ArrowDown";
+  }
+  if (lower === "left") {
+    return "ArrowLeft";
+  }
+  if (lower === "right") {
+    return "ArrowRight";
+  }
+  if (trimmed.length === 1) {
+    return trimmed.toUpperCase();
+  }
+  return `${trimmed[0]?.toUpperCase() ?? ""}${trimmed.slice(1)}`;
+}
+
+function formatVoiceShortcut(parts: VoiceShortcutParts) {
+  const keys: string[] = [];
+  if (parts.ctrl) {
+    keys.push("Ctrl");
+  }
+  if (parts.alt) {
+    keys.push("Alt");
+  }
+  if (parts.shift) {
+    keys.push("Shift");
+  }
+  if (parts.meta) {
+    keys.push("Win");
+  }
+  keys.push(parts.key);
+  return keys.join("+");
+}
+
+function parseVoiceShortcut(value: unknown): VoiceShortcutParts | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const tokens = value
+    .split("+")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    return null;
+  }
+
+  const parts: VoiceShortcutParts = {
+    ctrl: false,
+    alt: false,
+    shift: false,
+    meta: false,
+    key: "",
+  };
+
+  for (const token of tokens) {
+    const lower = token.toLowerCase();
+    if (lower === "control" || lower === "ctrl") {
+      parts.ctrl = true;
+      continue;
+    }
+    if (lower === "alt" || lower === "option") {
+      parts.alt = true;
+      continue;
+    }
+    if (lower === "shift") {
+      parts.shift = true;
+      continue;
+    }
+    if (lower === "meta" || lower === "win" || lower === "windows" || lower === "cmd" || lower === "command") {
+      parts.meta = true;
+      continue;
+    }
+    if (parts.key) {
+      return null;
+    }
+    parts.key = normalizeShortcutKey(token);
+  }
+
+  return parts.key ? parts : null;
+}
+
+function normalizeVoiceShortcut(value: unknown, fallback = DEFAULT_VOICE_SHORTCUT) {
+  const parsed = parseVoiceShortcut(value);
+  if (!parsed || (!parsed.ctrl && !parsed.alt && !parsed.shift && !parsed.meta)) {
+    return fallback;
+  }
+  const formatted = formatVoiceShortcut(parsed);
+  return RESERVED_VOICE_SHORTCUTS.has(formatted) ? fallback : formatted;
+}
+
+function getVoiceShortcutValidation(value: unknown, japanese: boolean) {
+  const parsed = parseVoiceShortcut(value);
+  if (!parsed) {
+    return {
+      valid: false,
+      normalized: "",
+      message: japanese ? "ショートカットを入力してください。" : "Enter a keyboard shortcut.",
+    };
+  }
+
+  const hasModifier = parsed.ctrl || parsed.alt || parsed.shift || parsed.meta;
+  if (!hasModifier) {
+    return {
+      valid: false,
+      normalized: formatVoiceShortcut(parsed),
+      message: japanese ? "少なくとも 1 つの修飾キーを含めてください。" : "Include at least one modifier key.",
+    };
+  }
+
+  const normalized = formatVoiceShortcut(parsed);
+  if (RESERVED_VOICE_SHORTCUTS.has(normalized)) {
+    return {
+      valid: false,
+      normalized,
+      message: japanese
+        ? "Windows 音声入力、IME、エディター補完と競合するため、この組み合わせは使えません。"
+        : "This shortcut conflicts with Windows voice typing, IME, or editor completion.",
+    };
+  }
+
+  return { valid: true, normalized, message: "" };
+}
+
+function getVoiceShortcutFromKeyboardEvent(event: KeyboardEvent) {
+  if (isModifierShortcutKey(event.key)) {
+    return "";
+  }
+  const key = normalizeShortcutKey(event.key);
+  if (!key) {
+    return "";
+  }
+  return formatVoiceShortcut({
+    ctrl: event.ctrlKey,
+    alt: event.altKey,
+    shift: event.shiftKey,
+    meta: event.metaKey,
+    key,
+  });
+}
+
+function isVoiceShortcutEvent(event: KeyboardEvent) {
+  const shortcut = parseVoiceShortcut(themeState.voiceShortcut);
+  if (!shortcut) {
+    return false;
+  }
+  const key = normalizeShortcutKey(event.key);
+  return Boolean(key)
+    && shortcut.key === key
+    && shortcut.ctrl === event.ctrlKey
+    && shortcut.alt === event.altKey
+    && shortcut.shift === event.shiftKey
+    && shortcut.meta === event.metaKey;
 }
 
 function getNextWorkerPaneId() {
@@ -5394,6 +5592,7 @@ function cloneThemeState(state: ThemeState): ThemeState {
     codeFont: state.codeFont,
     codeFontFamily: state.codeFontFamily,
     editorFontSize: state.editorFontSize,
+    voiceShortcut: state.voiceShortcut,
     focusMode: state.focusMode,
     language: state.language,
   };
@@ -5406,6 +5605,7 @@ function themeStatesEqual(left: ThemeState, right: ThemeState) {
     && left.codeFont === right.codeFont
     && left.codeFontFamily === right.codeFontFamily
     && left.editorFontSize === right.editorFontSize
+    && left.voiceShortcut === right.voiceShortcut
     && left.focusMode === right.focusMode
     && left.language === right.language;
 }
@@ -5611,6 +5811,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
     const codeFont = codeFontOptions.find((item) => item.value === parsed.codeFont)?.value ?? "system";
     const codeFontFamily = normalizeCodeFontFamily(parsed.codeFontFamily, getCodeFontFamily(codeFont, ""));
     const editorFontSize = clampEditorFontSize(parsed.editorFontSize);
+    const voiceShortcut = normalizeVoiceShortcut(parsed.voiceShortcut);
     const focusMode = focusModeOptions.find((item) => item.value === parsed.focusMode)?.value ?? "standard";
     const language = languageOptions.find((item) => item.value === parsed.language)?.value ?? "en";
     if (!theme || !density || !wrapMode) {
@@ -5634,6 +5835,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       codeFont,
       codeFontFamily,
       editorFontSize,
+      voiceShortcut,
       focusMode,
       language,
       sidebarWidth: Math.max(240, Math.min(380, Math.round(sidebarWidthValue))),
@@ -5658,6 +5860,7 @@ function persistThemeState() {
       codeFont: themeState.codeFont,
       codeFontFamily: themeState.codeFontFamily,
       editorFontSize: themeState.editorFontSize,
+      voiceShortcut: normalizeVoiceShortcut(themeState.voiceShortcut),
       focusMode: themeState.focusMode,
       language: themeState.language,
       sidebarWidth,
@@ -5851,7 +6054,7 @@ function applyLanguageChrome() {
   setElementText("settings-nav-chat", japanese ? "チャット" : "Chat");
   setElementText("settings-nav-features", japanese ? "機能" : "Features");
   setElementText("settings-nav-application", japanese ? "アプリケーション" : "Application");
-  setElementText("settings-nav-security", japanese ? "セキュリティ" : "Security");
+  setElementText("settings-nav-security", japanese ? "入力" : "Input");
   setElementText("settings-nav-extensions", japanese ? "拡張機能" : "Extensions");
   setElementText("settings-common-label", japanese ? "よく使用するもの" : "Commonly Used");
   setElementText("settings-common-value", japanese ? "エディターや端末で使うフォント設定です。" : "Editor font size and font family for code-oriented surfaces.");
@@ -5892,6 +6095,14 @@ function applyLanguageChrome() {
   setElementText("settings-workspace-value", japanese ? "サイドバー幅、詳細パネル、ワークベンチの挙動を扱います。" : "Sidebar width, details panel, workbench behavior");
   setElementText("settings-input-label", japanese ? "入力" : "Input");
   setElementText("settings-input-value", japanese ? "Enter で送信、Shift+Enter で改行、IME 変換中の Enter は保護します。" : "Enter sends, Shift+Enter inserts newline, IME composition is protected");
+  setElementText("voice-shortcut-label", japanese ? "音声入力: ショートカット" : "Voice Input: Shortcut");
+  setElementText(
+    "voice-shortcut-description",
+    japanese
+      ? "音声入力の開始と停止に使います。認識した文字は送信せず、オペレーター入力欄の下書きに入れます。"
+      : "Starts or stops voice capture and writes recognized text into the operator composer as an editable draft.",
+  );
+  setElementText("voice-shortcut-reset-btn", japanese ? `既定値 ${DEFAULT_VOICE_SHORTCUT}` : `Default ${DEFAULT_VOICE_SHORTCUT}`);
   setSelectorText(".brand-block .sidebar-caption", japanese ? "オペレーターシェル" : "Operator shell");
   setSelectorText('[data-i18n="sessions-title"]', japanese ? "セッション" : "Sessions");
   setSelectorText('[data-i18n="files-title"]', japanese ? "ファイル" : "Files");
@@ -5971,6 +6182,7 @@ function applyThemeState(nextState: ThemeState) {
   themeState.codeFont = nextState.codeFont;
   themeState.codeFontFamily = normalizeCodeFontFamily(nextState.codeFontFamily);
   themeState.editorFontSize = clampEditorFontSize(nextState.editorFontSize);
+  themeState.voiceShortcut = normalizeVoiceShortcut(nextState.voiceShortcut);
   themeState.focusMode = nextState.focusMode;
   themeState.language = nextState.language;
   applyShellPreferences();
@@ -6044,11 +6256,13 @@ function updateSettingsApplyButton() {
   if (!applyButton) {
     return;
   }
+  const activeState = settingsDraftState ?? themeState;
+  const voiceShortcutValid = getVoiceShortcutValidation(activeState.voiceShortcut, activeState.language === "ja").valid;
   const hasThemeChanges = Boolean(settingsDraftState && !themeStatesEqual(settingsDraftState, themeState));
   const hasRuntimeChanges = Boolean(runtimeRoleDraftState && !runtimeRolePreferencesEqual(runtimeRoleDraftState, runtimeRolePreferences));
   const hasChanges = hasThemeChanges || hasRuntimeChanges;
-  applyButton.disabled = !hasChanges;
-  applyButton.setAttribute("aria-disabled", hasChanges ? "false" : "true");
+  applyButton.disabled = !hasChanges || !voiceShortcutValid;
+  applyButton.setAttribute("aria-disabled", applyButton.disabled ? "true" : "false");
 }
 
 function updateEditorFontSizeControl(activeState: ThemeState) {
@@ -6111,6 +6325,85 @@ function updateFontFamilyControl(activeState: ThemeState) {
     input.value = draft.codeFontFamily;
     renderSettingsControls();
   };
+}
+
+function updateVoiceShortcutWarning(activeState: ThemeState) {
+  const input = document.getElementById("voice-shortcut-input") as HTMLInputElement | null;
+  const resetButton = document.getElementById("voice-shortcut-reset-btn") as HTMLButtonElement | null;
+  const warning = document.getElementById("voice-shortcut-warning");
+  const validation = getVoiceShortcutValidation(activeState.voiceShortcut, activeState.language === "ja");
+  if (input) {
+    input.setAttribute("aria-invalid", validation.valid ? "false" : "true");
+  }
+  if (resetButton) {
+    resetButton.disabled = validation.valid && validation.normalized === DEFAULT_VOICE_SHORTCUT;
+    resetButton.setAttribute("aria-disabled", resetButton.disabled ? "true" : "false");
+  }
+  if (warning) {
+    warning.hidden = validation.valid;
+    warning.textContent = validation.message;
+  }
+  updateSettingsApplyButton();
+}
+
+function updateVoiceShortcutControl(activeState: ThemeState) {
+  const input = document.getElementById("voice-shortcut-input") as HTMLInputElement | null;
+  const resetButton = document.getElementById("voice-shortcut-reset-btn") as HTMLButtonElement | null;
+  if (input) {
+    const shortcutValue = typeof activeState.voiceShortcut === "string" ? activeState.voiceShortcut : DEFAULT_VOICE_SHORTCUT;
+    if (document.activeElement !== input && input.value !== shortcutValue) {
+      input.value = shortcutValue;
+    }
+    input.oninput = () => {
+      const draft = getSettingsDraftState();
+      draft.voiceShortcut = input.value;
+      updateVoiceShortcutWarning(draft);
+      renderFooterLane();
+    };
+    input.onkeydown = (event) => {
+      if (event.key === "Tab" && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
+        return;
+      }
+      if ((event.key === "Backspace" || event.key === "Delete") && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
+        event.preventDefault();
+        const draft = getSettingsDraftState();
+        draft.voiceShortcut = "";
+        input.value = "";
+        updateVoiceShortcutWarning(draft);
+        renderFooterLane();
+        return;
+      }
+      const captured = getVoiceShortcutFromKeyboardEvent(event);
+      if (!captured || (!event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const draft = getSettingsDraftState();
+      draft.voiceShortcut = captured;
+      input.value = captured;
+      updateVoiceShortcutWarning(draft);
+      renderFooterLane();
+    };
+    input.onchange = () => {
+      const draft = getSettingsDraftState();
+      const validation = getVoiceShortcutValidation(input.value, draft.language === "ja");
+      draft.voiceShortcut = validation.valid ? validation.normalized : input.value;
+      input.value = draft.voiceShortcut;
+      renderSettingsControls();
+    };
+  }
+  if (resetButton) {
+    const validation = getVoiceShortcutValidation(activeState.voiceShortcut, activeState.language === "ja");
+    resetButton.disabled = validation.valid && validation.normalized === DEFAULT_VOICE_SHORTCUT;
+    resetButton.setAttribute("aria-disabled", resetButton.disabled ? "true" : "false");
+    resetButton.onclick = () => {
+      const draft = getSettingsDraftState();
+      draft.voiceShortcut = DEFAULT_VOICE_SHORTCUT;
+      renderSettingsControls();
+    };
+  }
+  updateVoiceShortcutWarning(activeState);
 }
 
 function renderSettingsFontFamilyMenu(activeState: ThemeState) {
@@ -6365,6 +6658,7 @@ function renderSettingsControls() {
 
   updateEditorFontSizeControl(activeState);
   updateFontFamilyControl(activeState);
+  updateVoiceShortcutControl(activeState);
   renderSettingsFontFamilyMenu(activeState);
 
   renderPreferenceOptions("theme-options", themeOptions, activeState.theme, (value) => {
@@ -6606,8 +6900,9 @@ function updateVoiceInputButton() {
     : voiceListening
       ? getLanguageText("Stop voice input", "音声入力を停止")
       : getLanguageText("Start voice input", "音声入力を開始");
-  button.setAttribute("aria-label", label);
-  button.setAttribute("title", label);
+  const labelWithShortcut = supported ? `${label} (${normalizeVoiceShortcut(themeState.voiceShortcut)})` : label;
+  button.setAttribute("aria-label", labelWithShortcut);
+  button.setAttribute("title", labelWithShortcut);
 }
 
 function stopVoiceInput() {
@@ -10092,6 +10387,12 @@ function setSettingsSheet(open: boolean) {
 
 async function applySettingsDraft() {
   if (settingsDraftState) {
+    const validation = getVoiceShortcutValidation(settingsDraftState.voiceShortcut, settingsDraftState.language === "ja");
+    if (!validation.valid) {
+      updateVoiceShortcutWarning(settingsDraftState);
+      return;
+    }
+    settingsDraftState.voiceShortcut = validation.normalized;
     applyThemeState(settingsDraftState);
     persistThemeState();
   }
@@ -11643,6 +11944,15 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
 
   window.addEventListener("keydown", (event) => {
+    const keyTarget = event.target;
+    const settingsSheet = document.getElementById("settings-sheet");
+    const keyInsideSettings = keyTarget instanceof Node && Boolean(settingsSheet?.contains(keyTarget));
+    if (composerInput && !keyInsideSettings && !commandBarOpen && !event.isComposing && !composerImeActive && isVoiceShortcutEvent(event)) {
+      event.preventDefault();
+      toggleVoiceInput(composerInput);
+      return;
+    }
+
     if (event.ctrlKey && event.key.toLowerCase() === "k") {
       event.preventDefault();
       if (commandBarOpen) {
