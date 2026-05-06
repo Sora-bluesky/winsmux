@@ -4936,7 +4936,7 @@ Describe 'orchestra-start server bootstrap' {
         $script:probeCount | Should -Be 2
     }
 
-    It 'launches visible attach through a fixed Windows Terminal profile and handshake' {
+    It 'launches visible attach through Windows Terminal without relying on profile reload timing' {
         $script:startProcessCalls = @()
         $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
 
@@ -4977,6 +4977,8 @@ Describe 'orchestra-start server bootstrap' {
         Mock Wait-OrchestraAttachLaunchObservation {
             [PSCustomObject]@{ Observed = $true; Reason = 'launch observed' }
         }
+        Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
+        Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
             [PSCustomObject][ordered]@{
                 Confirmed           = $true
@@ -5025,7 +5027,13 @@ Describe 'orchestra-start server bootstrap' {
         $result.attach_adapter_trace[0].launch_result | Should -Be 'attach_confirmed'
         $script:startProcessCalls.Count | Should -Be 1
         $script:startProcessCalls[0].FilePath | Should -Be 'C:\Windows\System32\wt.exe'
-        $script:startProcessCalls[0].ArgumentList | Should -Be @('-w', '-1', 'new-window', '-p', '"winsmux orchestra attach"')
+        $script:startProcessCalls[0].ArgumentList | Should -Contain 'new-window'
+        $script:startProcessCalls[0].ArgumentList | Should -Not -Contain '-p'
+        $script:startProcessCalls[0].ArgumentList | Should -Contain '--title'
+        $script:startProcessCalls[0].ArgumentList | Should -Contain 'winsmux-orchestra'
+        $script:startProcessCalls[0].ArgumentList | Should -Contain '"C:\Program Files\PowerShell\7\pwsh.exe"'
+        $script:startProcessCalls[0].ArgumentList | Should -Contain '-File'
+        $script:startProcessCalls[0].ArgumentList | Should -Contain 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1'
     }
 
     It 'returns attach_already_present only when a live visible attach state already exists' {

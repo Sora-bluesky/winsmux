@@ -428,10 +428,28 @@ function ConvertTo-OrchestraQuotedArgument {
 function Start-OrchestraWindowsTerminalVisibleAttach {
     param(
         [Parameter(Mandatory = $true)][string]$TerminalPath,
-        [Parameter(Mandatory = $true)][string]$ProfileName
+        [Parameter(Mandatory = $true)][string]$ProjectDir
     )
 
-    $process = Start-Process -FilePath $TerminalPath -ArgumentList @('-w', '-1', 'new-window', '-p', (ConvertTo-OrchestraQuotedArgument -Value $ProfileName)) -PassThru
+    $pwshPath = Get-OrchestraPowerShellPath
+    $argumentList = @(
+        '-w',
+        '-1',
+        'new-window',
+        '-d',
+        (ConvertTo-OrchestraQuotedArgument -Value $ProjectDir),
+        '--title',
+        'winsmux-orchestra',
+        (ConvertTo-OrchestraQuotedArgument -Value $pwshPath)
+    ) + (Get-OrchestraAttachEntryArgumentList | ForEach-Object {
+        if ([string]$_ -match '[\s"]') {
+            ConvertTo-OrchestraQuotedArgument -Value ([string]$_)
+        } else {
+            [string]$_
+        }
+    })
+
+    $process = Start-Process -FilePath $TerminalPath -ArgumentList $argumentList -PassThru
     return [PSCustomObject][ordered]@{
         HostKind = 'windows-terminal'
         Path     = $TerminalPath
@@ -582,8 +600,8 @@ function Start-OrchestraVisibleAttachHostCandidate {
 
     switch ([string]$Candidate.HostKind) {
         'windows-terminal' {
-            $profile = Ensure-OrchestraAttachProfile -ProjectDir ([string]$Candidate.ProjectDir)
-            return Start-OrchestraWindowsTerminalVisibleAttach -TerminalPath ([string]$Candidate.Path) -ProfileName ([string]$profile.ProfileName)
+            $null = Ensure-OrchestraAttachProfile -ProjectDir ([string]$Candidate.ProjectDir)
+            return Start-OrchestraWindowsTerminalVisibleAttach -TerminalPath ([string]$Candidate.Path) -ProjectDir ([string]$Candidate.ProjectDir)
         }
         'powershell-window' {
             return Start-OrchestraPowerShellVisibleAttach

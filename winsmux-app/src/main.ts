@@ -10492,14 +10492,7 @@ function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
       sizeLabel: attachment.sizeLabel,
     })),
   });
-  void forwardComposerMessageToOperatorPane(message, attachments, timestamp, [
-    { label: "mode", value: activeComposerMode },
-    { label: "permission-mode", value: activeComposerPermissionMode },
-    { label: "model", value: getComposerModelOption().label },
-    { label: "effort", value: activeComposerEffort },
-    { label: "fast-mode", value: activeComposerFastModeEnabled ? "enabled" : "disabled" },
-    { label: "attachments", value: `${attachments.length}` },
-  ]);
+  void forwardComposerMessageToOperatorPane(message, attachments, timestamp);
   void recordComposerDogfoodEvent(message, attachments, dogfoodInputSource, dogfoodStartedAt, dogfoodDraft);
   resetComposerDogfoodDraft();
   renderRunSummary();
@@ -10672,7 +10665,6 @@ async function forwardComposerMessageToOperatorPane(
   message: string,
   attachments: ComposerAttachment[],
   timestamp: string,
-  details: ConversationDetail[],
 ) {
   const payload = formatComposerMessageForPty(message, attachments);
   if (!payload.trim()) {
@@ -10690,20 +10682,6 @@ async function forwardComposerMessageToOperatorPane(
     if (!isCurrentOperatorRequest(requestGeneration)) {
       return;
     }
-    appendRuntimeConversation({
-      type: "operator",
-      category: "activity",
-      timestamp,
-      actor: "Operator",
-      title: getLanguageText("Sent to operator", "オペレーターへ送信"),
-      body: getLanguageText(
-        "The request was sent to the operator session.",
-        "依頼内容をオペレーターセッションへ送信しました。",
-      ),
-      details,
-      tone: "info",
-    });
-    renderConversation(getConversationItems());
   } catch (error) {
     if (!isCurrentOperatorRequest(requestGeneration)) {
       return;
