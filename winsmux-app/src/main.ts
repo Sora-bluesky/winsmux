@@ -568,6 +568,14 @@ const composerPermissionModeOptions: Array<{
   shortcut: string;
 }> = [
   {
+    value: "default",
+    label: "Ask before edits",
+    labelJa: "編集前に確認",
+    description: "Ask before file edits while keeping normal conversation flow.",
+    descriptionJa: "通常の会話を保ちながら、ファイル編集前に確認します。",
+    shortcut: "0",
+  },
+  {
     value: "acceptEdits",
     label: "Approve edits",
     labelJa: "編集を承認",
@@ -5452,11 +5460,18 @@ function defaultComposerSessionControls(): ComposerSessionControlState {
 function normalizeComposerSessionControls(value: Partial<ComposerSessionControlState> | null | undefined) {
   const fallback = defaultComposerSessionControls();
   return {
-    permissionMode: composerPermissionModeOptions.find((item) => item.value === value?.permissionMode)?.value ?? fallback.permissionMode,
+    permissionMode: normalizeComposerPermissionMode(value?.permissionMode, fallback.permissionMode),
     model: composerModelOptions.find((item) => item.value === value?.model)?.value ?? fallback.model,
     effort: composerEffortOptions.find((item) => item.value === value?.effort)?.value ?? fallback.effort,
     fastModeEnabled: typeof value?.fastModeEnabled === "boolean" ? value.fastModeEnabled : fallback.fastModeEnabled,
   };
+}
+
+function normalizeComposerPermissionMode(value: string | null | undefined, fallback: ComposerPermissionMode) {
+  if (value === "auto" || value === "default") {
+    return "default";
+  }
+  return composerPermissionModeOptions.find((item) => item.value === value)?.value ?? fallback;
 }
 
 function readStoredComposerSessionControls() {

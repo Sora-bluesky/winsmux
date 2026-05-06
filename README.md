@@ -109,16 +109,24 @@ winsmux skills --json
 
 `winsmux conflict-preflight` remains available as a compatibility command behind `winsmux compare preflight`.
 
-Legacy binary aliases `psmux`, `pmux`, and `tmux` are in `v0.24.5` warning-only sunset mode.
-Use `winsmux` for new scripts and docs. The legacy alias contract will be removed before `v1.0.0`.
+Compatibility aliases `psmux`, `pmux`, and `tmux` still run with a deprecation warning.
+Use `winsmux` for new scripts and docs; the alias contract will be removed before `v1.0.0`.
 
 ## Git Graph CLI
 
 The repository includes `git-graph`, a Rust CLI that renders recent Git history as a source-control-style SVG graph. It reads commit IDs and parent IDs, rebuilds lanes from the parent relationships, and draws lane shifts with cubic Bezier curves instead of parsing `git log --graph` characters.
 
 ```powershell
+New-Item -ItemType Directory -Force -Path output | Out-Null
 cargo run -p git-graph -- --repo . --max 30 --out output/git-graph.svg
-git log --format="%H %P" --max-count=30 | cargo run -p git-graph -- --from-stdin --out output/git-graph.svg
+git log --topo-order --format="%H %P" --max-count=30 | cargo run -p git-graph -- --from-stdin --out output/git-graph.svg
+```
+
+After installing or copying the binary, use the same options directly:
+
+```powershell
+git-graph --max 30 --out graph.svg
+git log --topo-order --format="%H %P" --max-count=30 | git-graph --from-stdin --out graph.svg
 ```
 
 ## Authentication Support

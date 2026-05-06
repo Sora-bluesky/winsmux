@@ -132,8 +132,25 @@ winsmux skills --json
 - ペインへ資格情報を渡す必要がある時は、`winsmux vault` を使ってください。
 - 比較結果やリリース証跡は、レビュー材料として扱ってください。自動承認には使わないでください。
 
-旧バイナリ名の `psmux`、`pmux`、`tmux` は、`v0.24.5` では警告だけを出す非推奨モードです。
+互換用の旧名 `psmux`、`pmux`、`tmux` はまだ動作しますが、非推奨の警告を出します。
 新しいスクリプトやドキュメントでは `winsmux` を使ってください。旧名の互換サポートは `v1.0.0` リリース前に削除します。
+
+## Git Graph CLI
+
+このリポジトリには、最近の Git 履歴をソース管理ツール風の SVG グラフとして描画する Rust CLI `git-graph` が含まれています。コミット ID と親コミット ID の関係からレーンを再構築し、`git log --graph` の文字を解析せずに、レーン移動を 3 次ベジェ曲線で描画します。
+
+```powershell
+New-Item -ItemType Directory -Force -Path output | Out-Null
+cargo run -p git-graph -- --repo . --max 30 --out output/git-graph.svg
+git log --topo-order --format="%H %P" --max-count=30 | cargo run -p git-graph -- --from-stdin --out output/git-graph.svg
+```
+
+バイナリをインストールまたは配置した後は、同じオプションを直接使えます。
+
+```powershell
+git-graph --max 30 --out graph.svg
+git log --topo-order --format="%H %P" --max-count=30 | git-graph --from-stdin --out graph.svg
+```
 
 ## 関連ドキュメント
 

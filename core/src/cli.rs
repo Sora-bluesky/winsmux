@@ -19,7 +19,7 @@ pub fn legacy_alias_warning_for_program(name: &str) -> Option<String> {
     }
 
     Some(format!(
-        "winsmux: compatibility alias '{normalized}' is deprecated; use 'winsmux' instead. v0.24.5 keeps this alias as warning-only, and the legacy alias contract will be removed before v1.0.0."
+        "winsmux: compatibility alias '{normalized}' is deprecated; use 'winsmux' instead. The legacy alias contract will be removed before v1.0.0."
     ))
 }
 
@@ -429,7 +429,7 @@ EXAMPLES:
     {prog} source-file ~/.psmux.conf Reload config
 
 NOTE: winsmux preserves compatibility aliases 'psmux', 'pmux', and 'tmux' where supported.
-These aliases are in v0.24.5 warning-only sunset mode and will be removed before v1.0.0.
+These aliases are deprecated and will be removed before v1.0.0.
 
 For more information: https://github.com/Sora-bluesky/winsmux
 "#, prog = prog, ver = VERSION)
@@ -636,7 +636,7 @@ mod tests {
         assert!(text.contains("manual-checklist        Print the versioned manual validation checklist gate"));
         assert!(text.contains("legacy-compat-gate      Print the legacy compatibility removal inventory gate"));
         assert!(text.contains("winsmux preserves compatibility aliases 'psmux', 'pmux', and 'tmux' where supported."));
-        assert!(text.contains("v0.24.5 warning-only sunset mode"));
+        assert!(text.contains("These aliases are deprecated and will be removed before v1.0.0."));
         assert!(text.contains("For more information: https://github.com/Sora-bluesky/winsmux"));
         assert!(!text.contains("psmux reads config on startup from the first file found:"));
         assert!(!text.contains("psmux launches PowerShell 7 (pwsh) by default."));
@@ -648,7 +648,6 @@ mod tests {
 
         assert!(warning.contains("compatibility alias 'psmux' is deprecated"));
         assert!(warning.contains("use 'winsmux' instead"));
-        assert!(warning.contains("v0.24.5 keeps this alias as warning-only"));
         assert!(warning.contains("removed before v1.0.0"));
         assert!(legacy_alias_warning_for_program("winsmux").is_none());
         assert!(legacy_alias_warning_for_program("custom").is_none());

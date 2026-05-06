@@ -515,6 +515,39 @@ async function assertComposerSessionControls(page, previewUrl) {
   await page.locator(".composer-session-trigger-permission", { hasText: "Approve edits" }).waitFor();
   await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.7 1M・Ultra" }).waitFor();
 
+  await page.evaluate(() => {
+    localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
+      permissionMode: "default",
+      model: "opus-4.7-1m",
+      effort: "xhigh",
+      fastModeEnabled: false,
+    }));
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".composer-session-trigger-permission", { hasText: "Ask before edits" }).waitFor();
+
+  await page.evaluate(() => {
+    localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
+      permissionMode: "auto",
+      model: "opus-4.7-1m",
+      effort: "xhigh",
+      fastModeEnabled: false,
+    }));
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".composer-session-trigger-permission", { hasText: "Ask before edits" }).waitFor();
+
+  await page.evaluate(() => {
+    localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
+      permissionMode: "acceptEdits",
+      model: "opus-4.7-1m",
+      effort: "xhigh",
+      fastModeEnabled: false,
+    }));
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".composer-session-trigger-permission", { hasText: "Approve edits" }).waitFor();
+
   await page.click(".composer-session-trigger-permission");
   await page.locator("#composer-permission-menu", { hasText: "Mode" }).waitFor();
   await page.locator("#composer-permission-menu .composer-session-option", { hasText: "Plan mode" }).click();
