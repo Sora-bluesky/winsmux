@@ -9894,6 +9894,7 @@ fn write_json<T: Serialize>(value: &T) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn restart_plan(agent: &str, capability_adapter: &str) -> RestartPlan {
         RestartPlan {
@@ -9909,6 +9910,33 @@ mod tests {
             reasoning_effort: default_provider_reasoning_effort(),
             capability_adapter: capability_adapter.to_string(),
             launch_command: "noop".to_string(),
+        }
+    }
+
+    fn test_project_dir(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("winsmux-{name}-{}-{suffix}", std::process::id()));
+        std::fs::create_dir_all(path.join(".winsmux")).expect("create test project");
+        path
+    }
+
+    fn meta_plan_role(provider: &str, plan_mode: &str) -> MetaPlanRole {
+        MetaPlanRole {
+            role_id: "planner".to_string(),
+            label: "Planner".to_string(),
+            provider: provider.to_string(),
+            model: "provider-default".to_string(),
+            model_source: default_provider_model_source(),
+            reasoning_effort: default_provider_reasoning_effort(),
+            plan_mode: plan_mode.to_string(),
+            read_only: true,
+            review_rounds: 1,
+            capabilities: vec!["planning".to_string()],
+            prompt: "Plan without editing files.".to_string(),
         }
     }
 
@@ -9939,5 +9967,55 @@ mod tests {
             restart_readiness_agent(&restart_plan("custom-agent", "custom-adapter")),
             ""
         );
+    }
+
+    #[test]
+    fn meta_plan_role_uses_provider_capability_metadata_for_future_provider() {
+        let project_dir = test_project_dir("meta-plan-provider-capability");
+        let capability_path = provider_capability_registry_path(&project_dir);
+        std::fs::write(
+            &capability_path,
+            r#"{
+              "version": 1,
+              "providers": {
+                "gemini-planner": {
+                  "adapter": "gemini",
+                  "command": "gemini",
+                  "prompt_transports": ["stdin"],
+                  "supports_file_edit": false,
+                  "supports_consultation": true
+                }
+              }
+            }"#,
+        )
+        .expect("write provider capability registry");
+
+        let role = meta_plan_role("gemini-planner", "read_only_equivalent");
+        validate_meta_plan_role(&project_dir, &role).expect("role should validate");
+        let adapter = meta_plan_provider_adapter(&project_dir, &role).expect("adapter");
+        let command = meta_plan_provider_command(&project_dir, &role).expect("command");
+        let launch = meta_plan_launch_contract(&role, &adapter, &command);
+
+        assert_eq!(adapter, "gemini");
+        assert_eq!(command, "gemini");
+        assert_eq!(launch["provider"], "gemini-planner");
+        assert_eq!(launch["provider_adapter"], "gemini");
+        assert_eq!(launch["read_only_equivalent"], true);
+        assert_eq!(launch["read_only"], true);
+
+        let _ = std::fs::remove_dir_all(project_dir);
+    }
+
+    #[test]
+    fn meta_plan_role_rejects_future_provider_without_capability_metadata() {
+        let project_dir = test_project_dir("meta-plan-missing-provider-capability");
+        let role = meta_plan_role("future-planner", "read_only_equivalent");
+        let error = validate_meta_plan_role(&project_dir, &role).expect_err("role should fail");
+
+        assert!(error
+            .to_string()
+            .contains("must be declared in .winsmux/provider-capabilities.json"));
+
+        let _ = std::fs::remove_dir_all(project_dir);
     }
 }

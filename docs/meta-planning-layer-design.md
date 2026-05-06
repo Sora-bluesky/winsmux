@@ -3,7 +3,7 @@
 ## Status
 
 Phase 0 design has been reviewed for implementation. `v0.24.18` adds the
-CLI-only `winsmux meta-plan` entrypoint for the fixed MVP role set:
+CLI-only `winsmux meta-plan` entrypoint for the MVP seed role set:
 `investigator` and `verifier`.
 
 The command writes role draft artifacts, cross-review artifacts, an integrated
@@ -13,6 +13,9 @@ read-only, and the operator keeps the single approval gate.
 `v0.24.19` adds UTF-8 role YAML loading through `--roles <path>` and supports
 one or two cross-review rounds through `--review-rounds <1|2>`. Role labels and
 prompts may contain Japanese text, while `role_id` remains ASCII for logs.
+The built-in seed remains Claude/Codex for the MVP, but custom role files can
+select future providers when `.winsmux/provider-capabilities.json` declares the
+adapter, launch command, prompt transport, and read-only planning contract.
 
 `v0.24.20` hardens runtime retention. Generated scaffold artifacts keep
 `task_hash` and `prompt_hash` references instead of storing the operator task
@@ -38,7 +41,11 @@ User -> Operator planning session -> specialist planning workers
 ## Constraints
 
 - Windows-native only. Do not require WSL2.
-- ToS-safe worker runtimes only: Claude Code and Codex CLI.
+- The MVP seed uses Claude Code and Codex CLI, but role selection must be
+  capability-driven for custom role files.
+- Providers outside the built-in MVP seed must be declared in
+  `.winsmux/provider-capabilities.json` before they can be used as planning
+  workers.
 - Worker panes must stay read-only and must not leave planning mode.
 - The operator is the only component that may request final user approval.
 - Role names must be configurable per task. Do not build around fixed role pairs.
@@ -123,7 +130,9 @@ Meta-planning must integrate through existing pane control and logging concepts:
 7. The operator requests one user approval for the integrated plan.
 8. Execution remains blocked until that approval exists.
 
-The MVP intentionally skips the Tauri GUI and YAML role editing UI.
+The MVP intentionally skips the Tauri GUI and role editing UI. It does not make
+Claude/Codex a permanent product model; it is the first seed for the
+capability-driven role contract.
 
 ## Audit JSONL Schema Draft
 
@@ -189,10 +198,14 @@ Rules:
 
 - `role_id` must be ASCII and stable for logs.
 - `label` and `prompt` may contain Japanese text.
-- `provider` must be one of the supported official CLIs.
+- `provider` may be `claude` or `codex` for the built-in MVP seed, or a provider
+  id declared in `.winsmux/provider-capabilities.json`.
 - `read_only` must be true for meta-planning workers.
-- `plan_mode` must be `required` for Claude Code or `read_only_equivalent` for
-  Codex until Codex exposes a native plan-mode contract.
+- `plan_mode` must be `required` for Claude-compatible providers and
+  `read_only_equivalent` for non-Claude providers until their capability
+  contract exposes a native plan-mode guarantee.
+- Gemini and future providers are eligible for read-only planning only after
+  their capability metadata declares the provider adapter and launch command.
 
 ## Integrated Plan Format
 
@@ -217,8 +230,6 @@ evidence, not approval surfaces.
 
 ## Open Questions
 
-- Should Codex workers be allowed in Phase 1 MVP if their guarantee is read-only
-  equivalent rather than native plan mode?
 - Should Phase 1 use interactive panes only, or also support non-interactive
   `codex exec --json` collection for planning drafts?
 - Where should role YAML live by default: project `.winsmux/`, external planning
