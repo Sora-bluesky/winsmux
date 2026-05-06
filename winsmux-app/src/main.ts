@@ -482,6 +482,8 @@ let sourceControlCommitMessage = "";
 let operatorPtyStarted = false;
 let operatorPtyStarting: Promise<void> | null = null;
 let operatorRequestActive = false;
+let operatorRequestStartedAt = 0;
+let operatorRequestStatusTimer: number | null = null;
 let operatorInterruptInFlight = false;
 let operatorOutputBuffer = "";
 let operatorOutputFlushTimer: number | null = null;
@@ -6162,6 +6164,7 @@ function applyLanguageChrome() {
   }
   updateVoiceInputButton();
   updateOperatorInterruptButton();
+  updateOperatorStatusIndicator();
   renderComposerSessionControls();
   const sendButton = document.getElementById("send-btn");
   if (sendButton) {
@@ -10488,27 +10491,14 @@ function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
       sizeLabel: attachment.sizeLabel,
     })),
   });
-  appendRuntimeConversation({
-    type: "operator",
-    category: "activity",
-    timestamp,
-    actor: "Operator",
-    title: getLanguageText("Sent to operator", "オペレーターへ送信"),
-    body: getLanguageText(
-      "The request was sent to the operator session.",
-      "依頼内容をオペレーターセッションへ送信しました。",
-    ),
-    details: [
-      { label: "mode", value: activeComposerMode },
-      { label: "permission-mode", value: activeComposerPermissionMode },
-      { label: "model", value: getComposerModelOption().label },
-      { label: "effort", value: activeComposerEffort },
-      { label: "fast-mode", value: activeComposerFastModeEnabled ? "enabled" : "disabled" },
-      { label: "attachments", value: `${attachments.length}` },
-    ],
-    tone: "info",
-  });
-  void forwardComposerMessageToOperatorPane(message, attachments, timestamp);
+  void forwardComposerMessageToOperatorPane(message, attachments, timestamp, [
+    { label: "mode", value: activeComposerMode },
+    { label: "permission-mode", value: activeComposerPermissionMode },
+    { label: "model", value: getComposerModelOption().label },
+    { label: "effort", value: activeComposerEffort },
+    { label: "fast-mode", value: activeComposerFastModeEnabled ? "enabled" : "disabled" },
+    { label: "attachments", value: `${attachments.length}` },
+  ]);
   void recordComposerDogfoodEvent(message, attachments, dogfoodInputSource, dogfoodStartedAt, dogfoodDraft);
   resetComposerDogfoodDraft();
   renderRunSummary();
@@ -10531,9 +10521,70 @@ function updateOperatorInterruptButton() {
   button.setAttribute("title", label);
 }
 
+function formatOperatorWorkingElapsed(startedAt: number) {
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const seconds = elapsedSeconds % 60;
+  return `${minutes}m ${`${seconds}`.padStart(2, "0")}s`;
+}
+
+function updateOperatorStatusIndicator() {
+  const status = document.getElementById("composer-operator-status");
+  if (!status) {
+    return;
+  }
+
+  status.hidden = !operatorRequestActive;
+  if (!operatorRequestActive) {
+    return;
+  }
+
+  const label = document.getElementById("operator-working-label");
+  const elapsed = document.getElementById("operator-working-elapsed");
+  const hint = document.getElementById("operator-working-hint");
+  if (label) {
+    label.textContent = getLanguageText("working", "処理中");
+  }
+  if (elapsed) {
+    elapsed.textContent = formatOperatorWorkingElapsed(operatorRequestStartedAt || Date.now());
+  }
+  if (hint) {
+    hint.textContent = getLanguageText("Esc to interrupt", "Esc で中断");
+  }
+}
+
+function startOperatorStatusTimer() {
+  if (operatorRequestStatusTimer !== null) {
+    return;
+  }
+
+  operatorRequestStatusTimer = window.setInterval(() => {
+    updateOperatorStatusIndicator();
+  }, 1000);
+}
+
+function stopOperatorStatusTimer() {
+  if (operatorRequestStatusTimer === null) {
+    return;
+  }
+
+  window.clearInterval(operatorRequestStatusTimer);
+  operatorRequestStatusTimer = null;
+}
+
 function setOperatorRequestActive(active: boolean) {
+  const wasActive = operatorRequestActive;
   operatorRequestActive = active;
+  if (active && !wasActive) {
+    operatorRequestStartedAt = Date.now();
+    startOperatorStatusTimer();
+  }
+  if (!active) {
+    operatorRequestStartedAt = 0;
+    stopOperatorStatusTimer();
+  }
   updateOperatorInterruptButton();
+  updateOperatorStatusIndicator();
 }
 
 async function interruptOperatorRequest() {
@@ -10601,6 +10652,7 @@ async function forwardComposerMessageToOperatorPane(
   message: string,
   attachments: ComposerAttachment[],
   timestamp: string,
+  details: ConversationDetail[],
 ) {
   const payload = formatComposerMessageForPty(message, attachments);
   if (!payload.trim()) {
@@ -10609,18 +10661,39 @@ async function forwardComposerMessageToOperatorPane(
   }
 
   try {
+    setOperatorRequestActive(true);
     await ensureOperatorPtyStarted();
     await writePtyData(OPERATOR_PTY_ID, encodePtySubmission(payload));
-    setOperatorRequestActive(true);
+    appendRuntimeConversation({
+      type: "operator",
+      category: "activity",
+      timestamp,
+      actor: "Operator",
+      title: getLanguageText("Sent to operator", "オペレーターへ送信"),
+      body: getLanguageText(
+        "The request was sent to the operator session.",
+        "依頼内容をオペレーターセッションへ送信しました。",
+      ),
+      details,
+      tone: "info",
+    });
+    renderConversation(getConversationItems());
   } catch (error) {
     setOperatorRequestActive(false);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const desktopRuntimeError = errorMessage.includes("outside the Tauri runtime");
     appendRuntimeConversation({
       type: "system",
       category: "attention",
       timestamp,
       actor: "winsmux",
       title: getLanguageText("Claude Code send failed", "Claude Code 送信に失敗"),
-      body: error instanceof Error ? error.message : String(error),
+      body: desktopRuntimeError
+        ? getLanguageText(
+          "Open winsmux in the desktop runtime. The browser preview cannot launch or write to the operator CLI.",
+          "winsmux デスクトップで開いてください。ブラウザー表示ではオペレーター CLI を起動・送信できません。",
+        )
+        : errorMessage,
       tone: "warning",
     });
     renderConversation(getConversationItems());
@@ -11985,6 +12058,12 @@ window.addEventListener("DOMContentLoaded", async () => {
       event.preventDefault();
       openComposerSessionMenu = null;
       renderComposerSessionControls();
+      return;
+    }
+
+    if (event.key === "Escape" && operatorRequestActive && !operatorInterruptInFlight && !keyInsideSettings) {
+      event.preventDefault();
+      void interruptOperatorRequest();
       return;
     }
 

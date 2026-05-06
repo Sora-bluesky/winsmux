@@ -95,7 +95,7 @@ export function createTauriPtyCommandTransport(
           } as T;
         }
 
-        return undefined as T;
+        throw new Error(`PTY command transport is unavailable outside the Tauri runtime (${command})`);
       }
 
       const request: PtyJsonRpcRequest = {
