@@ -1,6 +1,4 @@
-// Multi-binary crate (psmux, pmux, tmux) sharing all modules —
-// suppress dead_code warnings for functions only used by a subset of binaries.
-#![allow(dead_code)]
+// Shared CLI implementation used by the winsmux binary and legacy aliases.
 
 mod types;
 mod platform;
@@ -58,7 +56,7 @@ use crate::rendering::apply_cursor_style;
 use crate::client::run_remote;
 use crate::ssh_input::{send_mouse_enable, InputSource};
 
-fn main() {
+pub fn main() {
     if let Err(e) = run_main() {
         // Print a user-friendly error message instead of Rust's Debug format
         // which shows "Error: Custom { kind: Other, error: \"...\" }"  (fixes #47)

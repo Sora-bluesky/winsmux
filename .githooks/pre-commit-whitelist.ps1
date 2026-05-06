@@ -19,6 +19,7 @@ $whitelistPatterns = @(
     'core/Cargo.toml',
     'core/Cargo.lock',
     'core/src/*.rs',
+    'core/src/bin/*.rs',
     'core/tests-rs/*.rs',
     'git-graph/**',
     '.gitignore',
