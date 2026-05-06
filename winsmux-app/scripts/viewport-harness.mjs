@@ -589,6 +589,23 @@ async function assertComposerSessionControls(page, previewUrl) {
   if (startupInputs[2]?.fastModeEnabled !== true || startupInputs[2]?.fastModeTogglePending !== false) {
     throw new Error("Fast mode persisted state did not keep enabled mode with the launch toggle consumed");
   }
+  await page.click(".composer-session-trigger-model");
+  await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='true']").click();
+  await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='false']").waitFor();
+  const disableStartupInputs = await page.evaluate(() => [
+    window.__winsmuxViewportHarness?.getOperatorStartupInput(),
+    window.__winsmuxViewportHarness?.getOperatorStartupInput(),
+    JSON.parse(localStorage.getItem("winsmux.composer-session.v1") || "{}"),
+  ]);
+  if (!String(disableStartupInputs[0]).includes("/fast\r")) {
+    throw new Error("Fast mode toggle was not sent once after disabling Opus 4.6 fast mode");
+  }
+  if (String(disableStartupInputs[1]).includes("/fast\r")) {
+    throw new Error("Fast mode disable toggle was sent more than once");
+  }
+  if (disableStartupInputs[2]?.fastModeEnabled !== false || disableStartupInputs[2]?.fastModeTogglePending !== false) {
+    throw new Error("Fast mode persisted state did not keep disabled mode with the launch toggle consumed");
+  }
 
   await setShellLanguage(page, "ja");
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
@@ -599,7 +616,7 @@ async function assertComposerSessionControls(page, previewUrl) {
   await page.locator("#composer-model-menu", { hasText: "工数" }).waitFor();
   await page.locator("#composer-model-menu", { hasText: "高速モード" }).waitFor();
   await page.locator("#composer-model-menu", { hasText: "高速モードを有効にする" }).waitFor();
-  await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='true']").waitFor();
+  await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='false']").waitFor();
 
   await setShellLanguage(page, "en");
   await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });

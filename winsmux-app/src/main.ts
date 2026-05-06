@@ -1179,7 +1179,6 @@ function getOperatorStartupInput() {
   }
   const startupInput = `${args.join(" ")}\r`;
   const shouldToggleFastMode =
-    activeComposerFastModeEnabled &&
     activeComposerFastModeTogglePending &&
     isComposerFastModeCompatible();
   if (!shouldToggleFastMode) {
@@ -5479,7 +5478,7 @@ function normalizeComposerSessionControls(value: Partial<ComposerSessionControlS
       ? value.fastModeEnabled
       : fallback.fastModeEnabled;
   const fastModeTogglePending =
-    fastModeEnabled && typeof value?.fastModeTogglePending === "boolean"
+    isComposerFastModeCompatible(model) && typeof value?.fastModeTogglePending === "boolean"
       ? value.fastModeTogglePending
       : fallback.fastModeTogglePending;
   return {
@@ -6862,9 +6861,12 @@ function setComposerModel(model: ComposerModelId) {
 }
 
 function setComposerFastMode(enabled: boolean) {
+  const previousAppliedState = activeComposerFastModeTogglePending
+    ? !activeComposerFastModeEnabled
+    : activeComposerFastModeEnabled;
   const nextEnabled = enabled && isComposerFastModeCompatible();
   activeComposerFastModeEnabled = nextEnabled;
-  activeComposerFastModeTogglePending = nextEnabled;
+  activeComposerFastModeTogglePending = nextEnabled !== previousAppliedState;
   persistComposerSessionControls();
   renderComposerSessionControls();
 }
