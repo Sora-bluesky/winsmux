@@ -203,6 +203,7 @@ declare global {
       openEditorPreview: (path: string, content: string, worktree?: string) => void;
       setContextPanel: (open: boolean) => void;
       setTerminalDrawer: (open: boolean) => void;
+      getOperatorStartupInput: () => string;
     };
   }
 }
@@ -289,7 +290,7 @@ type RuntimeModelSource = "provider-default" | "cli-discovery" | "official-doc" 
 type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "xhigh" | "max";
 type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
 type ComposerEffortLevel = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
-type ComposerModelId = "opus-4.7" | "opus-4.7-1m" | "sonnet-4.6" | "haiku-4.5";
+type ComposerModelId = "opus-4.7" | "opus-4.7-1m" | "opus-4.6" | "sonnet-4.6" | "haiku-4.5";
 
 interface ThemeState {
   theme: ThemeMode;
@@ -353,6 +354,7 @@ interface ComposerSessionControlState {
   model: ComposerModelId;
   effort: ComposerEffortLevel;
   fastModeEnabled: boolean;
+  fastModeTogglePending: boolean;
 }
 
 interface SpeechRecognitionAlternativeLike {
@@ -443,6 +445,7 @@ let activeComposerPermissionMode: ComposerPermissionMode = "acceptEdits";
 let activeComposerModel: ComposerModelId = "opus-4.7-1m";
 let activeComposerEffort: ComposerEffortLevel = "xhigh";
 let activeComposerFastModeEnabled = false;
+let activeComposerFastModeTogglePending = false;
 let openComposerSessionMenu: "permission" | "model" | null = null;
 let composerSlashOpen = false;
 let composerSlashQuery = "";
@@ -603,8 +606,9 @@ const composerModelOptions: Array<{
 }> = [
   { value: "opus-4.7", label: "Opus 4.7", labelJa: "Opus 4.7", cliModel: "opus", shortcut: "1" },
   { value: "opus-4.7-1m", label: "Opus 4.7 1M", labelJa: "Opus 4.7 1M", cliModel: "opus[1m]", shortcut: "2" },
-  { value: "sonnet-4.6", label: "Sonnet 4.6", labelJa: "Sonnet 4.6", cliModel: "sonnet", shortcut: "3" },
-  { value: "haiku-4.5", label: "Haiku 4.5", labelJa: "Haiku 4.5", cliModel: "haiku", shortcut: "4" },
+  { value: "opus-4.6", label: "Opus 4.6", labelJa: "Opus 4.6", cliModel: "claude-opus-4-6", shortcut: "3", fastModeCompatible: true },
+  { value: "sonnet-4.6", label: "Sonnet 4.6", labelJa: "Sonnet 4.6", cliModel: "sonnet", shortcut: "4" },
+  { value: "haiku-4.5", label: "Haiku 4.5", labelJa: "Haiku 4.5", cliModel: "haiku", shortcut: "5" },
 ];
 
 const composerEffortOptions: Array<{
@@ -971,6 +975,7 @@ runtimeRolePreferences = readStoredRuntimeRolePreferences();
   activeComposerModel = storedComposerControls.model;
   activeComposerEffort = storedComposerControls.effort;
   activeComposerFastModeEnabled = storedComposerControls.fastModeEnabled;
+  activeComposerFastModeTogglePending = storedComposerControls.fastModeTogglePending;
 }
 
 const fallbackExplorerPaths = [
@@ -1173,9 +1178,15 @@ function getOperatorStartupInput() {
     args.push("--effort", activeComposerEffort);
   }
   const startupInput = `${args.join(" ")}\r`;
-  return activeComposerFastModeEnabled && isComposerFastModeCompatible()
-    ? `${startupInput}/fast\r`
-    : startupInput;
+  const shouldToggleFastMode =
+    activeComposerFastModeTogglePending &&
+    isComposerFastModeCompatible();
+  if (!shouldToggleFastMode) {
+    return startupInput;
+  }
+  activeComposerFastModeTogglePending = false;
+  persistComposerSessionControls();
+  return `${startupInput}/fast\r`;
 }
 
 function ensureOperatorPtyStarted() {
@@ -5455,6 +5466,7 @@ function defaultComposerSessionControls(): ComposerSessionControlState {
     model: "opus-4.7-1m",
     effort: "xhigh",
     fastModeEnabled: false,
+    fastModeTogglePending: false,
   };
 }
 
@@ -5465,11 +5477,16 @@ function normalizeComposerSessionControls(value: Partial<ComposerSessionControlS
     typeof value?.fastModeEnabled === "boolean" && isComposerFastModeCompatible(model)
       ? value.fastModeEnabled
       : fallback.fastModeEnabled;
+  const fastModeTogglePending =
+    isComposerFastModeCompatible(model) && typeof value?.fastModeTogglePending === "boolean"
+      ? value.fastModeTogglePending
+      : fallback.fastModeTogglePending;
   return {
     permissionMode: normalizeComposerPermissionMode(value?.permissionMode, fallback.permissionMode),
     model,
     effort: composerEffortOptions.find((item) => item.value === value?.effort)?.value ?? fallback.effort,
     fastModeEnabled,
+    fastModeTogglePending,
   };
 }
 
@@ -5502,6 +5519,7 @@ function persistComposerSessionControls() {
         model: activeComposerModel,
         effort: activeComposerEffort,
         fastModeEnabled: activeComposerFastModeEnabled,
+        fastModeTogglePending: activeComposerFastModeTogglePending,
       }),
     );
     return true;
@@ -6836,13 +6854,19 @@ function setComposerModel(model: ComposerModelId) {
   activeComposerModel = model;
   if (!isComposerFastModeCompatible(model)) {
     activeComposerFastModeEnabled = false;
+    activeComposerFastModeTogglePending = false;
   }
   persistComposerSessionControls();
   renderComposerSessionControls();
 }
 
 function setComposerFastMode(enabled: boolean) {
-  activeComposerFastModeEnabled = enabled && isComposerFastModeCompatible();
+  const previousAppliedState = activeComposerFastModeTogglePending
+    ? !activeComposerFastModeEnabled
+    : activeComposerFastModeEnabled;
+  const nextEnabled = enabled && isComposerFastModeCompatible();
+  activeComposerFastModeEnabled = nextEnabled;
+  activeComposerFastModeTogglePending = nextEnabled !== previousAppliedState;
   persistComposerSessionControls();
   renderComposerSessionControls();
 }
@@ -6982,6 +7006,7 @@ function createComposerModelMenu() {
   const fastModeCompatible = isComposerFastModeCompatible();
   if (!fastModeCompatible && activeComposerFastModeEnabled) {
     activeComposerFastModeEnabled = false;
+    activeComposerFastModeTogglePending = false;
     persistComposerSessionControls();
   }
   const fastToggle = document.createElement("button");
@@ -9968,6 +9993,7 @@ function installViewportHarnessHooks() {
     setTerminalDrawer: (open: boolean) => {
       setTerminalDrawer(open);
     },
+    getOperatorStartupInput: () => getOperatorStartupInput(),
   };
 }
 
