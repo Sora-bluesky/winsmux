@@ -1178,9 +1178,7 @@ function getOperatorStartupInput() {
     args.push("--effort", activeComposerEffort);
   }
   const startupInput = `${args.join(" ")}\r`;
-  const shouldToggleFastMode =
-    activeComposerFastModeTogglePending &&
-    isComposerFastModeCompatible();
+  const shouldToggleFastMode = activeComposerFastModeTogglePending;
   if (!shouldToggleFastMode) {
     return startupInput;
   }
@@ -5473,12 +5471,14 @@ function defaultComposerSessionControls(): ComposerSessionControlState {
 function normalizeComposerSessionControls(value: Partial<ComposerSessionControlState> | null | undefined) {
   const fallback = defaultComposerSessionControls();
   const model = composerModelOptions.find((item) => item.value === value?.model)?.value ?? fallback.model;
-  const fastModeEnabled =
-    typeof value?.fastModeEnabled === "boolean" && isComposerFastModeCompatible(model)
-      ? value.fastModeEnabled
-      : fallback.fastModeEnabled;
+  const fastModeCompatible = isComposerFastModeCompatible(model);
+  const storedFastModeEnabled =
+    typeof value?.fastModeEnabled === "boolean" ? value.fastModeEnabled : fallback.fastModeEnabled;
+  const fastModeEnabled = fastModeCompatible ? storedFastModeEnabled : fallback.fastModeEnabled;
+  const preservesPendingDisable =
+    !fastModeCompatible && storedFastModeEnabled === false && value?.fastModeTogglePending === true;
   const fastModeTogglePending =
-    isComposerFastModeCompatible(model) && typeof value?.fastModeTogglePending === "boolean"
+    typeof value?.fastModeTogglePending === "boolean" && (fastModeCompatible || preservesPendingDisable)
       ? value.fastModeTogglePending
       : fallback.fastModeTogglePending;
   return {
@@ -6833,6 +6833,12 @@ function isComposerFastModeCompatible(model: ComposerModelId = activeComposerMod
   return Boolean(getComposerModelOption(model).fastModeCompatible);
 }
 
+function getComposerFastModeAppliedState() {
+  return activeComposerFastModeTogglePending
+    ? !activeComposerFastModeEnabled
+    : activeComposerFastModeEnabled;
+}
+
 function getComposerEffortOption(effort: ComposerEffortLevel = activeComposerEffort) {
   return composerEffortOptions.find((item) => item.value === effort) ?? composerEffortOptions[0];
 }
@@ -6851,19 +6857,18 @@ function setComposerEffort(effort: ComposerEffortLevel) {
 }
 
 function setComposerModel(model: ComposerModelId) {
+  const previousAppliedState = getComposerFastModeAppliedState();
   activeComposerModel = model;
   if (!isComposerFastModeCompatible(model)) {
     activeComposerFastModeEnabled = false;
-    activeComposerFastModeTogglePending = false;
+    activeComposerFastModeTogglePending = previousAppliedState;
   }
   persistComposerSessionControls();
   renderComposerSessionControls();
 }
 
 function setComposerFastMode(enabled: boolean) {
-  const previousAppliedState = activeComposerFastModeTogglePending
-    ? !activeComposerFastModeEnabled
-    : activeComposerFastModeEnabled;
+  const previousAppliedState = getComposerFastModeAppliedState();
   const nextEnabled = enabled && isComposerFastModeCompatible();
   activeComposerFastModeEnabled = nextEnabled;
   activeComposerFastModeTogglePending = nextEnabled !== previousAppliedState;
