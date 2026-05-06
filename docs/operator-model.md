@@ -114,6 +114,10 @@ Panes may differ by:
 The current direction is **slot/capability-based orchestration**, not hard-coded vendor roles.
 
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
+Meta-planning follows the same rule: the current Claude/Codex role pair is an
+MVP seed, while custom planning roles should be selected from provider
+capability metadata. The operator remains the only approval owner, and planning
+workers only return read-only drafts or reviews.
 
 ## 4. Public docs vs runtime contracts
 
