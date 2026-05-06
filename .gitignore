@@ -95,6 +95,19 @@ DEV-NOTES*.md
 .winsmux/
 .tmp-appdata/
 .tmp-settings/
+dogfood/
+dogfood.db
+dogfood.db-*
+*dogfood*.db
+*dogfood*.db-*
+*.dogfood.json
+*.dogfood.csv
+dogfood-stats-*.json
+dogfood-stats-*.csv
+exports/dogfood-stats-*.json
+exports/dogfood-stats-*.csv
+events.db
+events.db-*
 
 # =========================
 # Claude Code / AI agent config

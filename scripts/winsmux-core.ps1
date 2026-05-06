@@ -1,4 +1,3 @@
-[CmdletBinding()]
 param(
     [Parameter(Position=0)][string]$Command,
     [Parameter(Position=1)][string]$Target,
@@ -11,6 +10,10 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_NAMESPACE_L)) {
 }
 if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SOCKET_S)) {
     $script:WinsmuxRawGlobalArgs += @('-S', $env:WINSMUX_BRIDGE_SOCKET_S)
+}
+$script:WinsmuxRawCommand = 'winsmux'
+if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
+    $script:WinsmuxRawCommand = $env:WINSMUX_RAW_EXE
 }
 
 # --- Config ---
@@ -127,7 +130,7 @@ function Invoke-WinsmuxRaw {
         $rawArguments += $script:WinsmuxRawGlobalArgs
     }
     $rawArguments += @($Arguments)
-    return & winsmux @rawArguments
+    return & $script:WinsmuxRawCommand @rawArguments
 }
 
 function Resolve-TerminalBackend {
@@ -10652,6 +10655,77 @@ function Invoke-RustCanary {
     $output | Write-Output
 }
 
+function Invoke-Dogfood {
+    param(
+        [AllowNull()][string]$DogfoodTarget = $Target,
+        [AllowNull()][string[]]$DogfoodRest = $Rest
+    )
+
+    $tokens = @(@($DogfoodTarget) + @($DogfoodRest) | Where-Object { $_ })
+    if ($tokens.Count -lt 1) {
+        Stop-WithError "usage: winsmux dogfood <event|run-start|run-finish|stats> ..."
+    }
+
+    if ($tokens.Count -ge 2 -and $tokens -notcontains '--db') {
+        $valueOptions = @(
+            '--action-type',
+            '--ci-failures',
+            '--duration-ms',
+            '--ended-at',
+            '--event-id',
+            '--event-json',
+            '--input-source',
+            '--local-gate-failures',
+            '--mode',
+            '--model',
+            '--notes-hash',
+            '--outcome',
+            '--pane-id',
+            '--payload-hash',
+            '--payload-text',
+            '--reasoning-effort',
+            '--review-fix-loops',
+            '--rework-commits',
+            '--run-id',
+            '--session-id',
+            '--since',
+            '--started-at',
+            '--task-class',
+            '--task-ref',
+            '--timestamp'
+        )
+        $rebuiltTokens = @($tokens[0])
+        $dbPathRecovered = $false
+        for ($index = 1; $index -lt $tokens.Count; $index++) {
+            $token = [string]$tokens[$index]
+            if ($token.StartsWith('-')) {
+                $rebuiltTokens += $token
+                if ($valueOptions -contains $token -and $index + 1 -lt $tokens.Count) {
+                    $rebuiltTokens += [string]$tokens[$index + 1]
+                    $index++
+                }
+                continue
+            }
+
+            if (-not $dbPathRecovered) {
+                $rebuiltTokens += @('--db', $token)
+                $dbPathRecovered = $true
+            } else {
+                $rebuiltTokens += $token
+            }
+        }
+        $tokens = $rebuiltTokens
+    }
+
+    $output = Invoke-WinsmuxRaw -Arguments (@('dogfood') + $tokens)
+    $nativeExitCode = Get-SafeLastExitCode
+    if ($null -ne $nativeExitCode -and $nativeExitCode -ne 0) {
+        exit $nativeExitCode
+    }
+
+    $output | Write-Output
+}
+
 function Invoke-ManualChecklist {
     $tokens = @(@($Target) + @($Rest) | Where-Object { $_ })
     $rustArgs = @('manual-checklist')
@@ -11001,6 +11075,7 @@ Commands:
   skills [--json]  Print agent-readable command skill contracts
   machine-contract --json  Print the hook and agent machine contract JSON
   rust-canary [--json]  Print the Rust default-on canary gate JSON
+  dogfood <event|run-start|run-finish|stats> ...  Record and summarize private dogfooding metrics
   manual-checklist [--json]  Print the versioned manual validation checklist gate
   legacy-compat-gate [--json]  Print the legacy compatibility removal inventory gate
   guard [--json]  Print the public security and release guard baseline
@@ -11730,6 +11805,7 @@ switch ($Command) {
     'skills' { Invoke-Skills }
     'machine-contract' { Invoke-MachineContract }
     'rust-canary' { Invoke-RustCanary }
+    'dogfood' { Invoke-Dogfood }
     'manual-checklist' { Invoke-ManualChecklist }
     'legacy-compat-gate' { Invoke-LegacyCompatGate }
     'guard' { Invoke-Guard }

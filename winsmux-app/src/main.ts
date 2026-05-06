@@ -12,9 +12,11 @@ import {
   getDesktopSummarySnapshot,
   pickDesktopRunWinner,
   promoteDesktopRunTactic,
+  recordDesktopDogfoodEvent,
   subscribeToDesktopSummaryRefresh,
   type DesktopCompareRunsResult,
   type DesktopBoardPane,
+  type DesktopDogfoodEventInput,
   type DesktopEditorFilePayload,
   type DesktopExplorerEntry,
   type DesktopExplainPayload,
@@ -398,6 +400,8 @@ interface SpeechRecognitionLike {
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 
 type ComposerMode = "ask" | "dispatch" | "review";
+type DogfoodInputSource = DesktopDogfoodEventInput["inputSource"];
+type DogfoodActionType = DesktopDogfoodEventInput["actionType"];
 type SidebarMode = "explorer" | "source" | "evidence" | "workspace";
 
 interface ComposerSlashCommand {
@@ -457,6 +461,13 @@ let composerHistory: ComposerHistoryEntry[] = [];
 let composerHistoryIndex = -1;
 let composerDraftState: ComposerHistoryEntry = { value: "", remoteReferenceIds: [], attachments: [] };
 let selectedComposerRemoteReferenceIds = new Set<string>();
+let composerInputSource: DogfoodInputSource = "keyboard";
+let composerDraftStartedAt = 0;
+let composerDogfoodTaskRef = "";
+let composerVoiceStartedAt = 0;
+let composerKeyboardAfterVoiceAt = 0;
+const dogfoodSessionId = `desktop-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+let dogfoodRunCounter = 0;
 let activeSourceFilter: SourceFilter = "all";
 let activeTimelineFilter: TimelineFilter = "all";
 let commandBarOpen = false;
@@ -5035,6 +5046,14 @@ function renderExperimentContext() {
         button.textContent = disabled && pendingLabel ? pendingLabel : label;
         button.disabled = disabled ?? false;
         button.addEventListener("click", async () => {
+          void recordOperatorDogfoodEvent({
+            actionType: type === "compare" ? "retry" : type === "focus" ? "command" : "approval",
+            inputSource: "shortcut",
+            runId,
+            taskRef: runId,
+            taskClass: `details-${type}`,
+            payload: { type, runId, peerRunId, peerSlot, recommendation, confidence, nextTest },
+          });
           if (type === "compare" && peerRunId) {
             await compareSelectedRunWithPeer(runId, peerRunId);
             return;
@@ -6647,6 +6666,7 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
     }
   };
   recognition.onresult = (event) => {
+    markComposerInputSource("voice");
     let transcript = "";
     for (let index = event.resultIndex; index < event.results.length; index += 1) {
       transcript += event.results[index]?.[0]?.transcript ?? "";
@@ -6670,6 +6690,146 @@ function toggleVoiceInput(composerInput: HTMLTextAreaElement) {
     return;
   }
   startVoiceInput(composerInput);
+}
+
+function markComposerInputSource(source: DogfoodInputSource) {
+  const now = Date.now();
+  composerInputSource = source;
+  if (!composerDraftStartedAt) {
+    composerDraftStartedAt = now;
+  }
+  ensureComposerDogfoodTaskRef(now);
+  if (source === "voice" && !composerVoiceStartedAt) {
+    composerVoiceStartedAt = now;
+  }
+  if (source === "keyboard" && composerVoiceStartedAt && !composerKeyboardAfterVoiceAt) {
+    composerKeyboardAfterVoiceAt = now;
+  }
+}
+
+function resetComposerDogfoodDraft() {
+  composerInputSource = "keyboard";
+  composerDraftStartedAt = 0;
+  composerDogfoodTaskRef = "";
+  composerVoiceStartedAt = 0;
+  composerKeyboardAfterVoiceAt = 0;
+}
+
+function ensureComposerDogfoodTaskRef(timestamp = Date.now()) {
+  if (!composerDogfoodTaskRef) {
+    composerDogfoodTaskRef = `desktop-command-${++dogfoodRunCounter}-${timestamp}`;
+  }
+  return composerDogfoodTaskRef;
+}
+
+function isComposerTypingKey(event: KeyboardEvent) {
+  return (
+    event.key.length === 1 ||
+    event.key === "Backspace" ||
+    event.key === "Delete"
+  ) && !event.ctrlKey && !event.metaKey && !event.altKey;
+}
+
+async function sha256Hex(value: string) {
+  if (!window.crypto?.subtle) {
+    return "";
+  }
+  const digest = await window.crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function recordComposerDogfoodEvent(
+  message: string,
+  attachments: ComposerAttachment[],
+  inputSource: DogfoodInputSource,
+  startedAt: number,
+  draft: { taskRef: string; voiceStartedAt: number; keyboardAfterVoiceAt: number },
+) {
+  if (draft.voiceStartedAt) {
+    await recordOperatorDogfoodEvent({
+      actionType: "input",
+      inputSource: "voice",
+      timestamp: draft.voiceStartedAt,
+      startedAt: draft.voiceStartedAt,
+      taskRef: draft.taskRef,
+      taskClass: activeComposerMode,
+      payload: { phase: "draft-input", source: "voice" },
+    });
+  }
+  if (draft.keyboardAfterVoiceAt) {
+    await recordOperatorDogfoodEvent({
+      actionType: "input",
+      inputSource: "keyboard",
+      timestamp: draft.keyboardAfterVoiceAt,
+      startedAt: draft.keyboardAfterVoiceAt,
+      taskRef: draft.taskRef,
+      taskClass: activeComposerMode,
+      payload: { phase: "draft-input", source: "keyboard" },
+    });
+  }
+  await recordOperatorDogfoodEvent({
+    actionType: "command",
+    inputSource,
+    startedAt,
+    taskRef: draft.taskRef,
+    taskClass: activeComposerMode,
+    payload: {
+      message,
+      attachments: attachments.map((attachment) => ({
+        name: attachment.name,
+        kind: attachment.kind,
+        sizeLabel: attachment.sizeLabel,
+      })),
+    },
+  });
+}
+
+async function recordOperatorDogfoodEvent(input: {
+  actionType: DogfoodActionType;
+  inputSource: DogfoodInputSource;
+  timestamp?: number;
+  startedAt?: number;
+  runId?: string;
+  taskRef?: string;
+  taskClass?: string;
+  payload: unknown;
+}) {
+  if (!isTauri()) {
+    return;
+  }
+  const timestamp = input.timestamp || Date.now();
+  const startedAt = input.startedAt || timestamp;
+  const fallbackRunId = input.actionType === "command" || input.actionType === "input" ? "" : `desktop-${input.actionType}-${++dogfoodRunCounter}-${timestamp}`;
+  const runId = input.runId || fallbackRunId;
+  const fallbackTaskRef = input.actionType === "command" || input.actionType === "input"
+    ? `desktop-command-${++dogfoodRunCounter}-${timestamp}`
+    : input.runId ? input.runId : "";
+  const taskRef = input.taskRef ?? fallbackTaskRef;
+  const payloadHash = await sha256Hex(JSON.stringify(input.payload));
+  try {
+    await recordDesktopDogfoodEvent(
+      {
+        timestamp,
+        runId,
+        sessionId: dogfoodSessionId,
+        paneId: OPERATOR_PTY_ID,
+        inputSource: input.inputSource,
+        actionType: input.actionType,
+        taskRef,
+        durationMs: Math.max(0, timestamp - startedAt),
+        payloadHash,
+        mode: "winsmux_desktop",
+        taskClass: input.taskClass || "operator",
+        model: getComposerModelOption().label,
+        reasoningEffort: activeComposerEffort,
+      },
+      getActiveProjectDirPayload(),
+    );
+  } catch (error) {
+    console.warn("Failed to record dogfood event", error);
+  }
 }
 
 function insertComposerTab(composerInput: HTMLTextAreaElement) {
@@ -10006,6 +10166,13 @@ function installViewportHarnessHooks() {
 }
 
 function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
+  const dogfoodInputSource = composerInputSource;
+  const dogfoodStartedAt = composerDraftStartedAt || Date.now();
+  const dogfoodDraft = {
+    taskRef: ensureComposerDogfoodTaskRef(dogfoodStartedAt),
+    voiceStartedAt: composerVoiceStartedAt,
+    keyboardAfterVoiceAt: composerKeyboardAfterVoiceAt,
+  };
   const now = new Date();
   const timestamp = `${`${now.getHours()}`.padStart(2, "0")}:${`${now.getMinutes()}`.padStart(2, "0")}`;
   appendRuntimeConversation({
@@ -10041,6 +10208,8 @@ function appendUserMessage(message: string, attachments: ComposerAttachment[]) {
     tone: "info",
   });
   void forwardComposerMessageToOperatorPane(message, attachments, timestamp);
+  void recordComposerDogfoodEvent(message, attachments, dogfoodInputSource, dogfoodStartedAt, dogfoodDraft);
+  resetComposerDogfoodDraft();
   renderRunSummary();
   renderConversation(getConversationItems());
 }
@@ -11304,6 +11473,9 @@ window.addEventListener("DOMContentLoaded", async () => {
       const slashCommands = getVisibleComposerSlashCommands();
       const composerImeBlocking = composerImeActive || event.isComposing;
       const composerSuggestionOpen = composerSlashOpen || composerWinsmuxCommandOpen;
+      if (!composerImeBlocking && isComposerTypingKey(event)) {
+        markComposerInputSource("keyboard");
+      }
       if (event.key === "ArrowUp" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && !composerSuggestionOpen && composerHistory.length > 0 && isComposerSelectionCollapsed(composerInput) && isCaretOnFirstLine(composerInput)) {
         event.preventDefault();
         stepComposerHistory(-1);
@@ -11339,6 +11511,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       if (event.key === "Tab" && !composerImeBlocking && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
         event.preventDefault();
         if (slashCommands.length > 0) {
+          markComposerInputSource("shortcut");
           applyComposerSlashCommand(slashCommands[selectedComposerSlashIndex] ?? slashCommands[0]);
           return;
         }
@@ -11369,6 +11542,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
 
     composerInput.addEventListener("paste", (event) => {
+      markComposerInputSource("paste");
       const attachmentFiles = getClipboardAttachmentFiles(event.clipboardData);
 
       if (attachmentFiles.length > 0) {
