@@ -31,6 +31,7 @@ const {
   getEditorFileKey,
   getSourceChangeKey,
   pickEditorPathCandidate,
+  pickSourceChangeKeyCandidate,
 } = await loadEditorTargetsModule();
 
 const duplicateCandidates = [
@@ -60,6 +61,28 @@ assert.equal(
 assert.deepEqual(
   pickEditorPathCandidate([{ path: "winsmux-app/src/desktopClient.ts", worktree: "" }], "winsmux-app/src/desktopClient.ts", "", ""),
   { path: "winsmux-app/src/desktopClient.ts", worktree: "" },
+);
+
+assert.deepEqual(
+  pickSourceChangeKeyCandidate(
+    [
+      [{ path: "winsmux-app/src/main.ts", worktree: "builder-2" }],
+      [
+        { path: "winsmux-app/src/main.ts", worktree: "builder-2" },
+        { path: "winsmux-app/src/main.ts", worktree: "builder-3" },
+      ],
+    ],
+    "builder-3::winsmux-app/src/main.ts",
+  ),
+  { path: "winsmux-app/src/main.ts", worktree: "builder-3" },
+);
+
+assert.equal(
+  pickSourceChangeKeyCandidate(
+    [[{ path: "winsmux-app/src/main.ts", worktree: "builder-2" }]],
+    "builder-9::winsmux-app/src/main.ts",
+  ),
+  null,
 );
 
 console.log("editor-targets-check: ok");
