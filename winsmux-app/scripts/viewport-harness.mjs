@@ -590,6 +590,40 @@ async function assertComposerSessionControls(page, previewUrl) {
     throw new Error("Fast mode persisted state did not keep enabled mode with the launch toggle consumed");
   }
   await page.click(".composer-session-trigger-model");
+  await page.locator("#composer-model-menu .composer-session-option", { hasText: "Sonnet 4.6" }).click();
+  await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6・Max" }).waitFor();
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6・Max" }).waitFor();
+  const modelSwitchDisableStartupInputs = await page.evaluate(() => [
+    window.__winsmuxViewportHarness?.getOperatorStartupInput(),
+    window.__winsmuxViewportHarness?.getOperatorStartupInput(),
+    JSON.parse(localStorage.getItem("winsmux.composer-session.v1") || "{}"),
+  ]);
+  if (!String(modelSwitchDisableStartupInputs[0]).includes("/fast\r")) {
+    throw new Error("Fast mode toggle was not sent once after switching away from Opus 4.6 fast mode");
+  }
+  if (String(modelSwitchDisableStartupInputs[1]).includes("/fast\r")) {
+    throw new Error("Fast mode model-switch disable toggle was sent more than once");
+  }
+  if (modelSwitchDisableStartupInputs[2]?.fastModeEnabled !== false || modelSwitchDisableStartupInputs[2]?.fastModeTogglePending !== false) {
+    throw new Error("Fast mode model-switch disable did not persist with the launch toggle consumed");
+  }
+  await page.click(".composer-session-trigger-model");
+  await page.locator("#composer-model-menu .composer-session-option", { hasText: "Opus 4.6" }).click();
+  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.6・Max" }).waitFor();
+  await page.locator("#composer-model-menu .composer-fast-toggle").click();
+  await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='true']").waitFor();
+  const modelSwitchReenableStartupInputs = await page.evaluate(() => [
+    window.__winsmuxViewportHarness?.getOperatorStartupInput(),
+    window.__winsmuxViewportHarness?.getOperatorStartupInput(),
+    JSON.parse(localStorage.getItem("winsmux.composer-session.v1") || "{}"),
+  ]);
+  if (!String(modelSwitchReenableStartupInputs[0]).includes("/fast\r")) {
+    throw new Error("Fast mode toggle was not sent once after re-enabling Opus 4.6 fast mode");
+  }
+  if (String(modelSwitchReenableStartupInputs[1]).includes("/fast\r")) {
+    throw new Error("Fast mode re-enable toggle was sent more than once");
+  }
   await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='true']").click();
   await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='false']").waitFor();
   const disableStartupInputs = await page.evaluate(() => [
