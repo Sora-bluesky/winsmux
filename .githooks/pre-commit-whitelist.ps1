@@ -25,7 +25,7 @@ $whitelistPatterns = @(
     'AGENTS.md',
     '.winsmux.conf',
     '.winsmux.yaml.example',
-    'docs/winsmux-hero.png',
+    'docs/winsmux-hero.svg',
     'docs/pane-border-guide.md',
     'docs/README.md',
     'docs/README.ja.md',
