@@ -22,7 +22,7 @@ import {
   type DesktopSummarySnapshot,
   type DesktopRuntimeRolePreference,
 } from "./desktopClient";
-import { getEditorFileKey, getSourceChangeKey, pickEditorPathCandidate } from "./editorTargets";
+import { getEditorFileKey, getSourceChangeKey, pickEditorPathCandidate, pickSourceChangeKeyCandidate } from "./editorTargets";
 import {
   closePtyPane,
   resizePtyPane,
@@ -265,6 +265,7 @@ interface EvidenceItem {
   tone: SurfaceTone;
   runId?: string;
   primaryPath?: string;
+  primaryWorktree?: string;
 }
 
 interface ExperimentDetailLine {
@@ -1873,7 +1874,7 @@ function getProjectionSourceEntries(): SourceChange[] {
 }
 
 function findSourceChangeByKey(key: string) {
-  return getProjectionSourceEntries().find((entry) => getSourceChangeKey(entry) === key);
+  return pickSourceChangeKeyCandidate([getVisibleSourceChanges(), getProjectionSourceEntries()], key);
 }
 
 function findSourceChangeByPath(path: string, worktree = "") {
@@ -3673,6 +3674,7 @@ function getEvidenceItems(): EvidenceItem[] {
         tone: getEvidenceTone(digest.verification_outcome || digest.security_blocked),
         runId: payload.run.run_id,
         primaryPath: digest.changed_files[0] || payload.run.changed_files[0],
+        primaryWorktree: payload.run.worktree || "",
       });
     }
 
@@ -3738,6 +3740,7 @@ function getEvidenceItems(): EvidenceItem[] {
       tone: getEvidenceTone(outcome),
       runId: projection.run_id,
       primaryPath: projection.changed_files[0],
+      primaryWorktree: projection.worktree || "",
     });
   }
 
@@ -3814,7 +3817,7 @@ function renderEvidenceView() {
     });
     button.addEventListener("dblclick", () => {
       if (item.primaryPath) {
-        void openEditorPath(item.primaryPath);
+        void openEditorPath(item.primaryPath, item.primaryWorktree ?? "");
       }
     });
     root.appendChild(button);

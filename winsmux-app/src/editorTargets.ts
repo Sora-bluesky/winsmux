@@ -42,3 +42,25 @@ export function pickEditorPathCandidate<T extends EditorPathCandidate>(
 
   return null;
 }
+
+export function pickSourceChangeKeyCandidate<T extends EditorPathCandidate>(
+  candidateGroups: T[][],
+  key: string,
+) {
+  const seen = new Set<string>();
+
+  for (const candidates of candidateGroups) {
+    for (const candidate of candidates) {
+      const candidateKey = getSourceChangeKey(candidate);
+      if (seen.has(candidateKey)) {
+        continue;
+      }
+      seen.add(candidateKey);
+      if (candidateKey === key) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
