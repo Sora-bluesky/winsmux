@@ -8,6 +8,23 @@ import { chromium } from "playwright";
 
 const OUTPUT_DIR = path.join(process.cwd(), "output", "playwright", "viewport-harness");
 const HARNESS_QUERY = "?viewport-harness=1";
+const APP_DIR = process.cwd();
+
+async function assertOperatorChatContractSource() {
+  const source = await fs.readFile(path.join(APP_DIR, "src", "main.ts"), "utf8");
+  const forbiddenSnippets = [
+    "Sent to operator",
+    "オペレーターへ送信",
+    "The request was sent to the operator session.",
+    "依頼内容をオペレーターセッションへ送信しました。",
+  ];
+  const matched = forbiddenSnippets.filter((snippet) => source.includes(snippet));
+  if (matched.length > 0) {
+    throw new Error(
+      `Operator chat must mirror Claude Code output without internal sent acknowledgements: ${matched.join(", ")}`,
+    );
+  }
+}
 
 async function ensureOutputDir() {
   await fs.mkdir(OUTPUT_DIR, { recursive: true });
@@ -1232,6 +1249,7 @@ async function verifyDeveloperWindowViewport(page, previewUrl, width, height, la
 }
 
 async function run() {
+  await runStep("desktop-operator-chat-contract", assertOperatorChatContractSource);
   await ensureOutputDir();
 
   const previewPort = await getAvailablePort();
@@ -1260,6 +1278,7 @@ async function run() {
           generatedAt: new Date().toISOString(),
           previewUrl,
           checks: [
+            "desktop-operator-chat-contract",
             "desktop-1440x900",
             "desktop-command-bar",
             "desktop-composer-model-controls",
