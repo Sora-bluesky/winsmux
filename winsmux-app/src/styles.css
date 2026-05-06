@@ -3490,6 +3490,13 @@ body.is-resizing-workbench {
   max-width: 820px;
 }
 
+.settings-field-warning {
+  color: #fbbf24;
+  font-size: 12px;
+  line-height: var(--leading-normal);
+  max-width: 820px;
+}
+
 .settings-control-row {
   position: relative;
   display: flex;
@@ -3568,6 +3575,15 @@ body.is-resizing-workbench {
 .settings-font-family-control .settings-text-input {
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.settings-shortcut-control {
+  max-width: 560px;
+}
+
+.settings-shortcut-input {
+  width: 240px;
+  font-family: var(--font-code);
 }
 
 .settings-popover-menu {

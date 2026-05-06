@@ -385,7 +385,7 @@
                 <button id="settings-nav-chat" class="settings-nav-item" type="button" data-settings-target="settings-section-runtime">Chat</button>
                 <button id="settings-nav-features" class="settings-nav-item" type="button" data-settings-target="settings-section-display">Features</button>
                 <button id="settings-nav-application" class="settings-nav-item" type="button" data-settings-target="settings-section-language">Application</button>
-                <button id="settings-nav-security" class="settings-nav-item" type="button" data-settings-target="settings-section-input">Security</button>
+                <button id="settings-nav-security" class="settings-nav-item" type="button" data-settings-target="settings-section-input">Input</button>
                 <button id="settings-nav-extensions" class="settings-nav-item" type="button" data-settings-target="settings-section-runtime">Extensions</button>
               </nav>
               <div id="settings-content" class="settings-content">
@@ -457,6 +457,15 @@
                 <section id="settings-section-input" class="settings-section">
                   <div class="context-label" id="settings-input-label">Input</div>
                   <div class="context-value" id="settings-input-value">Enter sends, Shift+Enter inserts newline, IME composition is protected</div>
+                  <div class="settings-field settings-field-wide context-label-sub">
+                    <label class="settings-field-label" id="voice-shortcut-label" for="voice-shortcut-input">Voice Input: Shortcut</label>
+                    <div class="settings-field-description" id="voice-shortcut-description">Starts or stops voice capture and writes recognized text into the operator composer as an editable draft.</div>
+                    <div class="settings-control-row settings-shortcut-control">
+                      <input id="voice-shortcut-input" class="settings-text-input settings-shortcut-input" type="text" autocomplete="off" spellcheck="false" />
+                      <button class="ghost-btn ghost-btn-small settings-inline-action" id="voice-shortcut-reset-btn" type="button">Default Ctrl+Alt+M</button>
+                    </div>
+                    <div class="settings-field-warning" id="voice-shortcut-warning" role="alert" hidden></div>
+                  </div>
                 </section>
               </div>
             </div>
