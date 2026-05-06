@@ -160,6 +160,7 @@ OPERATOR COMMANDS:
     inbox                   Print actionable approval and review items
     digest                  Print high-signal run digest
     desktop-summary         Print desktop summary projection JSON or counts
+    dogfood                 Record and summarize private dogfooding metrics
     meta-plan               Draft a read-only multi-role planning packet
     provider-capabilities   Inspect the provider capability registry contract
     skills                  Print agent-readable command skill contracts
@@ -477,6 +478,7 @@ fn commands_text() -> &'static str {
   list-buffers (lsb)        - List paste buffers
   list-clients (lsc)        - List connected clients
   list-commands (lscm)      - List commands
+  dogfood                   - Record and summarize private dogfooding metrics
   machine-contract          - Print the hook and agent machine contract JSON
   meta-plan                 - Draft a read-only multi-role planning packet
   rust-canary               - Print the Rust default-on canary gate JSON

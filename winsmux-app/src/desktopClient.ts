@@ -8,6 +8,7 @@ type DesktopCommandName =
   | "desktop_run_promote"
   | "desktop_run_pick_winner"
   | "desktop_runtime_roles_apply"
+  | "desktop_dogfood_event"
   | "desktop_editor_read"
   | "desktop_explorer_list";
 type DesktopJsonRpcMethod =
@@ -17,6 +18,7 @@ type DesktopJsonRpcMethod =
   | "desktop.run.promote"
   | "desktop.run.pick_winner"
   | "desktop.runtime.roles.apply"
+  | "desktop.dogfood.event"
   | "desktop.editor.read"
   | "desktop.explorer.list";
 
@@ -422,6 +424,32 @@ export interface DesktopSummaryRefreshEvent {
   run_id?: string;
 }
 
+export interface DesktopDogfoodEventInput {
+  eventId?: string;
+  timestamp?: number;
+  runId?: string;
+  sessionId: string;
+  paneId: string;
+  inputSource: "voice" | "keyboard" | "shortcut" | "paste";
+  actionType: "command" | "approval" | "cancel" | "retry" | "completion" | "input";
+  taskRef?: string;
+  durationMs?: number;
+  payloadHash?: string;
+  mode?: "codex_direct" | "winsmux_desktop";
+  taskClass?: string;
+  model?: string;
+  reasoningEffort?: string;
+}
+
+export interface DesktopDogfoodEventResult {
+  status: string;
+  event_id: string;
+  run_id: string;
+  db_path: string;
+  raw_payload_stored: boolean;
+  payload_hash_only: boolean;
+}
+
 export interface DesktopPromoteTacticCandidate {
   packet_type: string;
   kind: string;
@@ -506,6 +534,8 @@ function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMet
       return "desktop.run.pick_winner";
     case "desktop_runtime_roles_apply":
       return "desktop.runtime.roles.apply";
+    case "desktop_dogfood_event":
+      return "desktop.dogfood.event";
     case "desktop_editor_read":
       return "desktop.editor.read";
     case "desktop_explorer_list":
@@ -671,6 +701,20 @@ export async function applyDesktopRuntimeRolePreferences(
     );
   } catch (error) {
     throw normalizeDesktopError("desktop_runtime_roles_apply", error);
+  }
+}
+
+export async function recordDesktopDogfoodEvent(
+  event: DesktopDogfoodEventInput,
+  projectDir?: string | null,
+) {
+  try {
+    return await desktopCommandTransport.request<DesktopDogfoodEventResult>(
+      "desktop_dogfood_event",
+      { event, ...buildProjectDirPayload(projectDir) },
+    );
+  } catch (error) {
+    throw normalizeDesktopError("desktop_dogfood_event", error);
   }
 }
 

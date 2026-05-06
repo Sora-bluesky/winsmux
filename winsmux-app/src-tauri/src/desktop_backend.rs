@@ -625,6 +625,10 @@ pub enum DesktopCommand {
         roles_json: String,
         project_dir: Option<String>,
     },
+    DogfoodEvent {
+        event_json: String,
+        project_dir: Option<String>,
+    },
 }
 
 pub enum DesktopStreamCommand {
@@ -640,6 +644,7 @@ impl DesktopCommand {
             DesktopCommand::RunPromote { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::RunPickWinner { project_dir, .. } => project_dir.as_deref(),
             DesktopCommand::RuntimeRolesApply { project_dir, .. } => project_dir.as_deref(),
+            DesktopCommand::DogfoodEvent { project_dir, .. } => project_dir.as_deref(),
         }
     }
 
@@ -704,6 +709,13 @@ impl DesktopCommand {
                 roles_json.clone(),
                 "--json".to_string(),
             ],
+            DesktopCommand::DogfoodEvent { event_json, .. } => vec![
+                "dogfood".to_string(),
+                "event".to_string(),
+                "--event-json".to_string(),
+                event_json.clone(),
+                "--json".to_string(),
+            ],
         }
     }
 }
@@ -756,6 +768,17 @@ pub fn load_desktop_summary_snapshot(
     let snapshot = transport.request_json(&DesktopCommand::SummarySnapshot { project_dir })?;
     serde_json::from_value(snapshot)
         .map_err(|err| format!("Failed to parse desktop summary payload: {err}"))
+}
+
+pub fn record_desktop_dogfood_event(
+    transport: &dyn DesktopCommandTransport,
+    event_json: String,
+    project_dir: Option<String>,
+) -> Result<Value, String> {
+    transport.request_json(&DesktopCommand::DogfoodEvent {
+        event_json,
+        project_dir,
+    })
 }
 
 pub fn load_desktop_run_explain(
@@ -1066,6 +1089,7 @@ pub fn handle_desktop_json_rpc(
                     "desktop.run.promote",
                     "desktop.run.pick_winner",
                     "desktop.runtime.roles.apply",
+                    "desktop.dogfood.event",
                     "desktop.explorer.list",
                     "desktop.editor.read",
                 ],
@@ -1220,6 +1244,36 @@ pub fn handle_desktop_json_rpc(
                 }
             };
             match apply_desktop_runtime_roles(transport, roles_json, resolved_project_dir) {
+                Ok(result) => json_rpc_result(request_id, result),
+                Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
+            }
+        }
+        "desktop.dogfood.event" => {
+            let event = match params
+                .as_ref()
+                .and_then(|value| value.as_object())
+                .and_then(|object| object.get("event"))
+            {
+                Some(value) => value.clone(),
+                None => {
+                    return json_rpc_error(
+                        request_id,
+                        JSON_RPC_INVALID_PARAMS,
+                        "Missing required params field: event",
+                    );
+                }
+            };
+            let event_json = match serde_json::to_string(&event) {
+                Ok(value) => value,
+                Err(err) => {
+                    return json_rpc_error(
+                        request_id,
+                        JSON_RPC_INVALID_PARAMS,
+                        format!("Failed to serialize dogfood event: {err}"),
+                    );
+                }
+            };
+            match record_desktop_dogfood_event(transport, event_json, resolved_project_dir) {
                 Ok(result) => json_rpc_result(request_id, result),
                 Err(err) => json_rpc_error(request_id, JSON_RPC_SERVER_ERROR, err),
             }
@@ -4477,6 +4531,9 @@ mod tests {
                 assert!(methods
                     .iter()
                     .any(|method| { method.as_str() == Some("desktop.runtime.roles.apply") }));
+                assert!(methods
+                    .iter()
+                    .any(|method| { method.as_str() == Some("desktop.dogfood.event") }));
             }
             DesktopJsonRpcResponse::Error { error, .. } => {
                 panic!("expected success, got {:?}", error);
@@ -4535,6 +4592,59 @@ mod tests {
         assert!(requests[0].starts_with("runtime-roles apply --roles-json "));
         assert!(requests[0].contains("\"role_id\":\"worker\""));
         assert!(requests[0].ends_with(" --json"));
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_routes_dogfood_event() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({
+                "status": "recorded",
+                "event_id": "dogevent-test",
+                "run_id": "run-test",
+                "db_path": "__DOGFOOD_DB__",
+                "raw_payload_stored": false,
+                "payload_hash_only": true
+            }),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-dogfood"),
+                method: "desktop.dogfood.event".to_string(),
+                params: Some(serde_json::json!({
+                    "event": {
+                        "timestamp": 1_700_000_000_000_i64,
+                        "runId": "run-test",
+                        "sessionId": "session-test",
+                        "paneId": "operator",
+                        "inputSource": "voice",
+                        "actionType": "command",
+                        "payloadHash": "hash-test",
+                        "mode": "winsmux_desktop"
+                    }
+                })),
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Success { id, result, .. } => {
+                assert_eq!(id, serde_json::json!("req-dogfood"));
+                assert_eq!(result["status"], "recorded");
+                assert_eq!(result["raw_payload_stored"], false);
+                assert_eq!(result["payload_hash_only"], true);
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+        let requests = transport.requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("dogfood event --event-json "));
+        assert!(requests[0].contains("\"sessionId\":\"session-test\""));
+        assert!(requests[0].contains(" --json"));
     }
 
     #[test]

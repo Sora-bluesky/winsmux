@@ -26,6 +26,7 @@ mod manifest_contract;
 mod event_contract;
 mod ledger;
 mod search_ledger;
+mod dogfood;
 mod machine_contract;
 mod operator_cli;
 mod client;
@@ -615,6 +616,7 @@ fn run_main() -> io::Result<()> {
         "meta-plan" => return operator_cli::run_meta_plan_command(&cmd_args[1..]),
         "provider-capabilities" => return operator_cli::run_provider_capabilities_command(&cmd_args[1..]),
         "skills" => return operator_cli::run_skills_command(&cmd_args[1..]),
+        "dogfood" => return dogfood::run_dogfood_command(&cmd_args[1..]),
         "machine-contract" => return operator_cli::run_machine_contract_command(&cmd_args[1..]),
         "rust-canary" => return operator_cli::run_rust_canary_command(&cmd_args[1..]),
         "manual-checklist" => return operator_cli::run_manual_checklist_command(&cmd_args[1..]),

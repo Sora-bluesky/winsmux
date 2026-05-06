@@ -1,7 +1,7 @@
 [English](README.md) | [日本語](README.ja.md)
 
 <p align="center">
-  <img src="docs/winsmux-hero.svg" alt="winsmux: Governance for AI agents on Windows" width="100%">
+  <img src="docs/brand-hero.svg" alt="winsmux: Governance for AI agents on Windows" width="100%">
 </p>
 
 # winsmux
