@@ -482,6 +482,7 @@ let sourceControlCommitMessage = "";
 let operatorPtyStarted = false;
 let operatorPtyStarting: Promise<void> | null = null;
 let operatorRequestActive = false;
+let operatorRequestGeneration = 0;
 let operatorRequestStartedAt = 0;
 let operatorRequestStatusTimer: number | null = null;
 let operatorInterruptInFlight = false;
@@ -10587,6 +10588,20 @@ function setOperatorRequestActive(active: boolean) {
   updateOperatorStatusIndicator();
 }
 
+function beginOperatorRequest() {
+  operatorRequestGeneration += 1;
+  setOperatorRequestActive(true);
+  return operatorRequestGeneration;
+}
+
+function invalidateOperatorRequest() {
+  operatorRequestGeneration += 1;
+}
+
+function isCurrentOperatorRequest(generation: number) {
+  return operatorRequestActive && operatorRequestGeneration === generation;
+}
+
 async function interruptOperatorRequest() {
   if (!operatorRequestActive || operatorInterruptInFlight) {
     return;
@@ -10594,11 +10609,16 @@ async function interruptOperatorRequest() {
 
   const timestamp = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   operatorInterruptInFlight = true;
+  invalidateOperatorRequest();
+  const canceledGeneration = operatorRequestGeneration;
+  setOperatorRequestActive(false);
   updateOperatorInterruptButton();
   try {
     await ensureOperatorPtyStarted();
+    if (operatorRequestGeneration !== canceledGeneration || operatorRequestActive) {
+      return;
+    }
     await writePtyData(OPERATOR_PTY_ID, "\x03");
-    setOperatorRequestActive(false);
     appendRuntimeConversation({
       type: "system",
       category: "attention",
@@ -10660,10 +10680,16 @@ async function forwardComposerMessageToOperatorPane(
     return;
   }
 
+  const requestGeneration = beginOperatorRequest();
   try {
-    setOperatorRequestActive(true);
     await ensureOperatorPtyStarted();
+    if (!isCurrentOperatorRequest(requestGeneration)) {
+      return;
+    }
     await writePtyData(OPERATOR_PTY_ID, encodePtySubmission(payload));
+    if (!isCurrentOperatorRequest(requestGeneration)) {
+      return;
+    }
     appendRuntimeConversation({
       type: "operator",
       category: "activity",
@@ -10679,6 +10705,9 @@ async function forwardComposerMessageToOperatorPane(
     });
     renderConversation(getConversationItems());
   } catch (error) {
+    if (!isCurrentOperatorRequest(requestGeneration)) {
+      return;
+    }
     setOperatorRequestActive(false);
     const errorMessage = error instanceof Error ? error.message : String(error);
     const desktopRuntimeError = errorMessage.includes("outside the Tauri runtime");
@@ -11521,7 +11550,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     focusedWorkbenchPaneId = storedShellPreferences.focusedWorkbenchPaneId;
   }
 
-  await subscribeToPtyOutput((payload) => {
+  void subscribeToPtyOutput((payload) => {
     if (payload.pane_id === OPERATOR_PTY_ID) {
       appendOperatorPtyOutput(payload.data);
       return;
@@ -11545,6 +11574,8 @@ window.addEventListener("DOMContentLoaded", async () => {
       first.terminal.write(payload.data);
       renderPaneMetadata();
     }
+  }).catch((error) => {
+    console.warn("Failed to subscribe to PTY output events", error);
   });
 
   renderSessions();
@@ -11573,8 +11604,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   setEditorSurface(false);
   setTerminalDrawer(true);
   applyPopoutSurfaceState(popoutSurfaceState);
-  await refreshDesktopSummary();
   registerDesktopSummaryLiveRefresh();
+  void refreshDesktopSummary();
   initializeSidebarResize();
   initializeWorkbenchResize();
   initializeSourceControlSplitResize();
