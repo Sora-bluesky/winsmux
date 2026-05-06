@@ -215,17 +215,6 @@ function collectSourceControlChangeRows(line: string, branch: string) {
   return rows;
 }
 
-function parseGitGraphLine(line: string) {
-  const match = /^([\s|*\\/._-]*?)([0-9a-f]{40}\u001f.*)$/i.exec(line);
-  if (!match) {
-    return null;
-  }
-  return {
-    symbols: (match[1] || "* ").replace(/ /g, "\u00a0"),
-    payload: match[2] || line,
-  };
-}
-
 function collectSourceControlSnapshot() {
   const branch = runGit(["rev-parse", "--abbrev-ref", "HEAD"]) || "HEAD";
   const statusText = runGitRaw(["status", "--short", "--untracked-files=all"]).trimEnd();
@@ -233,33 +222,31 @@ function collectSourceControlSnapshot() {
     ? statusText.split(/\r?\n/).filter(Boolean).flatMap((line) => collectSourceControlChangeRows(line, branch))
     : [];
 
-  const graph = runGitRaw([
+  const graphText = runGitRaw([
     "log",
-    "--graph",
-    "--pretty=format:%H%x1f%h%x1f%D%x1f%an%x1f%ar%x1f%ad%x1f%s",
+    "--topo-order",
+    "--pretty=format:%H%x1f%P%x1f%h%x1f%D%x1f%an%x1f%ar%x1f%ad%x1f%s",
     "--date=format:%Y-%m-%d %H:%M",
     "-30",
-  ]).trimEnd()
+  ]).trimEnd();
+  const graph = graphText
     .split(/\r?\n/)
     .filter(Boolean)
-    .flatMap((line) => {
-      const parsed = parseGitGraphLine(line);
-      if (!parsed) {
-        return [];
-      }
+    .map((line) => {
       const [
         sha = "",
+        parentsText = "",
         shortSha = "",
         refsText = "",
         author = "",
         relativeTime = "",
         committedAt = "",
         subject = "",
-      ] = parsed.payload.split("\u001f");
-      return [{
+      ] = line.split("\u001f");
+      return {
         run_id: sha,
         short_sha: shortSha,
-        graph_symbols: parsed.symbols,
+        parents: parentsText.split(/\s+/).map((parent) => parent.trim()).filter(Boolean),
         task: subject,
         branch,
         refs: refsText.split(",").map((ref) => ref.trim()).filter(Boolean),
@@ -267,7 +254,7 @@ function collectSourceControlSnapshot() {
         relative_time: relativeTime,
         committed_at: committedAt,
         changed_files: [],
-      }];
+      };
     });
 
   return { branch, changes, graph };

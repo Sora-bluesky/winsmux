@@ -20,6 +20,7 @@ $whitelistPatterns = @(
     'core/Cargo.lock',
     'core/src/*.rs',
     'core/tests-rs/*.rs',
+    'git-graph/**',
     '.gitignore',
     'AGENTS.md',
     '.winsmux.conf',

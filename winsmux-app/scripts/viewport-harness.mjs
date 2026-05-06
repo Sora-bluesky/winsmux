@@ -374,6 +374,48 @@ async function assertSettingsRoundtrip(page, returnSelector) {
   await page.locator("#settings-sheet").waitFor({ state: "visible" });
   await assertFullyVisible(page, "#settings-sheet");
   await assertButtonVisible(page, "#close-settings-btn");
+  await page.locator("#theme-options", { hasText: "Codex TUI Dark" }).waitFor();
+  await page.locator("#theme-options", { hasText: "Graphite" }).waitFor();
+  await page.locator("#density-options", { hasText: "Comfortable" }).waitFor();
+  await page.locator("#wrap-options", { hasText: "Balanced" }).waitFor();
+  await page.locator("#editor-font-size-input").waitFor();
+  await page.locator("#settings-font-family-input").waitFor();
+  await assertButtonVisible(page, "#settings-font-family-menu-btn");
+  await page.locator("#focus-mode-options", { hasText: "Focus" }).waitFor();
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#editor-font-size-input");
+    return input instanceof HTMLInputElement && input.value === "14";
+  });
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#settings-font-family-input");
+    return input instanceof HTMLInputElement &&
+      input.value === "Consolas, 'Courier New', monospace";
+  });
+  await page.click("#settings-font-family-menu-btn");
+  await page.locator("#settings-font-family-menu").waitFor({ state: "visible" });
+  await page.locator("#settings-font-family-menu", { hasText: "JetBrains Mono" }).waitFor();
+  await page.locator("#settings-font-family-menu .settings-popover-item", { hasText: "JetBrains Mono" }).click();
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#settings-font-family-input");
+    return input instanceof HTMLInputElement && input.value.startsWith("JetBrains Mono");
+  });
+  await page.waitForFunction(() => {
+    const provider = document.querySelector("#runtime-provider-operator");
+    const model = document.querySelector("#runtime-model-operator");
+    const source = document.querySelector("#runtime-model-source-operator");
+    const effort = document.querySelector("#runtime-reasoning-operator");
+    return provider instanceof HTMLSelectElement &&
+      provider.value === "claude" &&
+      provider.disabled &&
+      model instanceof HTMLInputElement &&
+      model.disabled &&
+      source instanceof HTMLSelectElement &&
+      source.disabled &&
+      effort instanceof HTMLSelectElement &&
+      effort.disabled;
+  });
+  await page.keyboard.press("Escape");
+  await page.locator("#settings-sheet").waitFor({ state: "visible" });
   await page.click("#close-settings-btn");
   await page.locator("#settings-sheet").waitFor({ state: "hidden" });
   await page.locator(returnSelector).waitFor({ state: "visible" });
@@ -438,6 +480,130 @@ async function assertWorkbenchPaneGrid(page, expectedMin = 4) {
   await page.waitForFunction((minCount) => {
     return document.querySelectorAll("#panes-container .pane").length >= minCount;
   }, expectedMin);
+}
+
+async function setShellLanguage(page, language) {
+  await page.evaluate((nextLanguage) => {
+    const key = "winsmux.shell.preferences.v1";
+    const current = JSON.parse(window.localStorage.getItem(key) ?? "{}");
+    window.localStorage.setItem(
+      key,
+      JSON.stringify({
+        theme: "codex-dark",
+        density: "comfortable",
+        wrapMode: "balanced",
+        codeFont: "system",
+        codeFontFamily: "Consolas, 'Courier New', monospace",
+        editorFontSize: 14,
+        focusMode: "standard",
+        sidebarWidth: 292,
+        workbenchWidth: null,
+        wideSidebarOpen: true,
+        wideContextOpen: false,
+        workbenchOpen: true,
+        workbenchLayout: "2x2",
+        focusedWorkbenchPaneId: null,
+        ...current,
+        language: nextLanguage,
+      }),
+    );
+  }, language);
+}
+
+async function assertComposerSessionControls(page, previewUrl) {
+  await page.locator("#composer-mode-row").waitFor({ state: "hidden" });
+  await page.locator(".composer-session-trigger-permission", { hasText: "Approve edits" }).waitFor();
+  await page.locator(".composer-session-trigger-model", { hasText: "Opus 4.7 1M・Ultra" }).waitFor();
+
+  await page.evaluate(() => {
+    localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
+      permissionMode: "default",
+      model: "opus-4.7-1m",
+      effort: "xhigh",
+      fastModeEnabled: false,
+    }));
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".composer-session-trigger-permission", { hasText: "Ask before edits" }).waitFor();
+
+  await page.evaluate(() => {
+    localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
+      permissionMode: "auto",
+      model: "opus-4.7-1m",
+      effort: "xhigh",
+      fastModeEnabled: false,
+    }));
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".composer-session-trigger-permission", { hasText: "Ask before edits" }).waitFor();
+
+  await page.evaluate(() => {
+    localStorage.setItem("winsmux.composer-session.v1", JSON.stringify({
+      permissionMode: "acceptEdits",
+      model: "opus-4.7-1m",
+      effort: "xhigh",
+      fastModeEnabled: false,
+    }));
+  });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".composer-session-trigger-permission", { hasText: "Approve edits" }).waitFor();
+
+  await page.click(".composer-session-trigger-permission");
+  await page.locator("#composer-permission-menu", { hasText: "Mode" }).waitFor();
+  await page.locator("#composer-permission-menu .composer-session-option", { hasText: "Plan mode" }).click();
+  await page.locator(".composer-session-trigger-permission", { hasText: "Plan mode" }).waitFor();
+
+  await page.click(".composer-session-trigger-model");
+  await page.locator("#composer-model-menu", { hasText: "Model" }).waitFor();
+  await page.locator("#composer-model-menu", { hasText: "Effort" }).waitFor();
+  await page.locator("#composer-model-menu", { hasText: "Fast mode" }).waitFor();
+  await page.locator("#composer-model-menu .composer-session-option", { hasText: "Max" }).click();
+  await page.locator("#composer-model-menu .composer-session-option", { hasText: "Sonnet 4.6" }).click();
+  await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6・Max" }).waitFor();
+  await page.locator("#composer-model-menu .composer-fast-toggle").click();
+  await page.locator("#composer-model-menu .composer-fast-toggle[aria-checked='true']").waitFor();
+
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".composer-session-trigger-permission", { hasText: "Plan mode" }).waitFor();
+  await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6・Max" }).waitFor();
+
+  await setShellLanguage(page, "ja");
+  await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
+  await page.locator(".composer-session-trigger-permission", { hasText: "プランモード" }).waitFor();
+  await page.locator(".composer-session-trigger-model", { hasText: "Sonnet 4.6・Max" }).waitFor();
+  await page.click(".composer-session-trigger-model");
+  await page.locator("#composer-model-menu", { hasText: "モデル" }).waitFor();
+  await page.locator("#composer-model-menu", { hasText: "工数" }).waitFor();
+  await page.locator("#composer-model-menu", { hasText: "高速モード" }).waitFor();
+  await page.locator("#composer-model-menu", { hasText: "高速モードを有効にする" }).waitFor();
+
+  await setShellLanguage(page, "en");
+  await page.goto(`${previewUrl}${HARNESS_QUERY}`, { waitUntil: "networkidle" });
+  await assertComposerModeChromeUpdates(page);
+}
+
+async function assertComposerModeChromeUpdates(page) {
+  async function selectMode(label, placeholder) {
+    await page.click("#menu-run-btn");
+    await page.locator("#top-menu-popover .top-menu-popover-item", { hasText: label }).click();
+    await page.waitForFunction(
+      ({ expectedLabel, expectedPlaceholder }) => {
+        const input = document.querySelector("#composer-input");
+        const footerMode = Array.from(document.querySelectorAll("#footer-left .footer-pill")).find((item) => {
+          const label = item.querySelector(".footer-pill-label")?.textContent?.trim() ?? "";
+          const value = item.querySelector(".footer-pill-value")?.textContent?.trim() ?? "";
+          return label === "Mode" && value === expectedLabel;
+        });
+        return input instanceof HTMLTextAreaElement && input.placeholder === expectedPlaceholder && Boolean(footerMode);
+      },
+      { expectedLabel: label, expectedPlaceholder: placeholder },
+    );
+  }
+
+  await page.locator("#composer-mode-row").waitFor({ state: "hidden" });
+  await selectMode("Ask", "Ask a question or request guidance");
+  await selectMode("Review", "Describe what needs review or approval");
+  await selectMode("Dispatch", "Describe a task or ask a question");
 }
 
 async function getVisibleWorkbenchPaneLabels(page) {
@@ -603,6 +769,41 @@ async function assertSourceControlChrome(page) {
   await assertHorizontallyVisible(page, "#source-control-message");
   await assertHorizontallyVisible(page, "#source-control-changes-list");
   await assertHorizontallyVisible(page, "#source-control-graph-list");
+  await page.locator("#source-control-graph-list .source-control-graph-row").first().waitFor();
+  await page.waitForFunction(() => {
+    const lane = document.querySelector("#source-control-graph-list .source-control-graph-lanes");
+    const title = lane?.getAttribute("title") ?? "";
+    return title.includes("Commit graph") &&
+      !title.includes("diagonal") &&
+      !title.includes("斜線");
+  });
+  await page.waitForFunction(() => {
+    const row = document.querySelector("#source-control-graph-list .source-control-graph-row");
+    const svg = document.querySelector("#source-control-graph-list .source-control-graph-overlay");
+    if (!(row instanceof HTMLElement) || !(svg instanceof SVGElement)) {
+      return false;
+    }
+    return svg.getBoundingClientRect().height >= row.getBoundingClientRect().height;
+  });
+  await page.waitForFunction(() => {
+    const lane = document.querySelector("#source-control-graph-list .source-control-graph-lanes");
+    const svg = document.querySelector("#source-control-graph-list .source-control-graph-overlay");
+    return lane instanceof HTMLElement &&
+      svg instanceof SVGElement &&
+      lane.getBoundingClientRect().width <= 80 &&
+      svg.getBoundingClientRect().width <= 80;
+  });
+  await page.waitForFunction(() => {
+    const path = Array.from(document.querySelectorAll("#source-control-graph-list .source-control-graph-lane-path"))
+      .find((candidate) => (candidate.getAttribute("d") ?? "").includes(" C "));
+    const pillar = Array.from(document.querySelectorAll("#source-control-graph-list .source-control-graph-lane-path.is-pillar"))
+      .find((candidate) => !(candidate.getAttribute("d") ?? "").includes(" C "));
+    const arcPath = Array.from(document.querySelectorAll("#source-control-graph-list .source-control-graph-lane-path"))
+      .find((candidate) => (candidate.getAttribute("d") ?? "").includes(" A "));
+    const parentLane = Array.from(document.querySelectorAll("#source-control-graph-list .source-control-graph-lanes"))
+      .find((lane) => (lane instanceof HTMLElement) && (lane.dataset.graphParents ?? "").length > 0);
+    return Boolean(path && pillar && parentLane && !arcPath);
+  });
   await page.click("#activity-explorer-btn");
   await page.locator("#explorer-list").waitFor({ state: "visible" });
 }
@@ -668,9 +869,27 @@ async function verifyDesktopViewport(page, previewUrl) {
     await assertFullyVisible(page, "#conversation-panel");
     await assertWorkbenchPaneGrid(page);
     await assertButtonVisible(page, "#send-btn");
+    await assertButtonVisible(page, "#voice-input-btn");
+    await page.waitForFunction(() => {
+      const wrap = document.querySelector("#composer-input-wrap");
+      const voice = document.querySelector("#voice-input-btn");
+      const send = document.querySelector("#send-btn");
+      if (!(wrap instanceof HTMLElement) || !(voice instanceof HTMLElement) || !(send instanceof HTMLElement)) {
+        return false;
+      }
+      const wrapRect = wrap.getBoundingClientRect();
+      const voiceRect = voice.getBoundingClientRect();
+      const sendRect = send.getBoundingClientRect();
+      return voiceRect.left >= wrapRect.left &&
+        voiceRect.right <= wrapRect.right &&
+        sendRect.left >= wrapRect.left &&
+        sendRect.right <= wrapRect.right &&
+        Math.abs(voiceRect.top - sendRect.top) <= 2;
+    });
     await assertFullyVisible(page, "#workspace-footer");
     await assertNoOverlap(page, "#workspace-body", "#workspace-footer");
   });
+  await assertComposerSessionControls(page, previewUrl);
 
   await runStep("desktop command bar", async () => {
     await page.click("#activity-search-btn");
@@ -898,6 +1117,8 @@ async function run() {
           checks: [
             "desktop-1440x900",
             "desktop-command-bar",
+            "desktop-composer-model-controls",
+            "desktop-composer-japanese-controls",
             "desktop-settings-sheet",
             "desktop-source-context",
             "desktop-editor-popout",

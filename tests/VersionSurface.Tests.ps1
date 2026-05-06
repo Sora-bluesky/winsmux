@@ -110,17 +110,17 @@ Describe 'winsmux version surface' {
         $inventory = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'docs\project\powershell-adapter-inventory.md') -Raw -Encoding UTF8
 
         foreach ($content in @($readme, $readmeJa, $compatibility, $thirdPartyNotices, $inventory)) {
-            $content | Should -Match 'v0\.24\.5'
             $content | Should -Match 'v1\.0\.0'
             $content | Should -Match 'psmux'
             $content | Should -Match 'pmux'
             $content | Should -Match 'tmux'
             $content | Should -Match 'winsmux'
+            $content | Should -Match 'deprecat|非推奨'
         }
 
-        $compatibility | Should -Match 'warning-only sunset phase'
+        $compatibility | Should -Match 'deprecated but still\s+run with a warning'
         $compatibility | Should -Match 'does not remove tmux-compatible configuration support'
-        $thirdPartyNotices | Should -Match 'warning-only sunset mode'
+        $thirdPartyNotices | Should -Match 'deprecated but still run with a deprecation warning'
     }
 
     It 'stops the release flow when verify fails before tagging or publishing' {

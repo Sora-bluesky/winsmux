@@ -23,11 +23,11 @@ winsmux is the most tmux-compatible terminal multiplexer on Windows.
 
 ## Legacy Alias Sunset
 
-`v0.24.5` is the warning-only sunset phase for the legacy binary aliases
-`psmux`, `pmux`, and `tmux`.
+The legacy binary aliases `psmux`, `pmux`, and `tmux` are deprecated but still
+run with a warning.
 
 - Use `winsmux` for new scripts, docs, and operator workflows.
-- Legacy aliases still run during `v0.24.5`, but they print a deprecation warning to stderr.
+- Legacy aliases print a deprecation warning to stderr.
 - The legacy alias contract will be removed before `v1.0.0`.
 
 This alias sunset does not remove tmux-compatible configuration support. Compatibility for
