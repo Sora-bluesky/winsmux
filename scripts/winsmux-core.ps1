@@ -14,7 +14,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_BRIDGE_SOCKET_S)) {
 }
 
 # --- Config ---
-$VERSION = "0.24.22"
+$VERSION = "0.24.23"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
