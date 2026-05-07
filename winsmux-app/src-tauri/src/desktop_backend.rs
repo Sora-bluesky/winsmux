@@ -13,6 +13,11 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+#[cfg(windows)]
+use windows_sys::Win32::Media::Audio::{waveInGetDevCapsW, waveInGetNumDevs, WAVEINCAPSW};
+#[cfg(windows)]
+use windows_sys::Win32::Media::MMSYSERR_NOERROR;
+
 const DESKTOP_JSON_RPC_VERSION: &str = "2.0";
 const JSON_RPC_INVALID_REQUEST: i32 = -32600;
 const JSON_RPC_METHOD_NOT_FOUND: i32 = -32601;
@@ -602,6 +607,7 @@ pub struct DesktopVoiceCaptureNativeStatus {
     pub state: String,
     pub permission: String,
     pub device: String,
+    pub device_count: u32,
     pub meter_supported: bool,
     pub restart_supported: bool,
     pub reason: String,
@@ -661,18 +667,51 @@ pub enum DesktopStreamCommand {
     Summary { project_dir: Option<String> },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DesktopVoiceDeviceProbe {
+    pub device_count: u32,
+    pub first_device_name: Option<String>,
+    pub error: Option<String>,
+}
+
 pub fn load_desktop_voice_capture_status() -> DesktopVoiceCaptureStatus {
+    build_desktop_voice_capture_status(probe_desktop_voice_devices())
+}
+
+pub fn build_desktop_voice_capture_status(
+    probe: DesktopVoiceDeviceProbe,
+) -> DesktopVoiceCaptureStatus {
+    let (state, device, reason) = if probe.device_count == 0 {
+        (
+            "no_microphone".to_string(),
+            "none".to_string(),
+            probe
+                .error
+                .unwrap_or_else(|| "No Windows microphone input device was reported.".to_string()),
+        )
+    } else {
+        let device = probe
+            .first_device_name
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| format!("{} input device(s)", probe.device_count));
+        let reason = probe.error.unwrap_or_else(|| {
+            "Windows reports a microphone input device; native capture start/stop is not implemented in this build.".to_string()
+        });
+        ("unavailable".to_string(), device, reason)
+    };
+
     DesktopVoiceCaptureStatus {
         version: 1,
         capture_mode: "browser_fallback".to_string(),
         native: DesktopVoiceCaptureNativeStatus {
             available: false,
-            state: "unavailable".to_string(),
+            state,
             permission: "unknown".to_string(),
-            device: "unknown".to_string(),
+            device,
+            device_count: probe.device_count,
             meter_supported: false,
             restart_supported: false,
-            reason: "Native microphone capture is not implemented in this build.".to_string(),
+            reason,
         },
         browser_fallback: DesktopVoiceCaptureBrowserFallbackStatus {
             expected: true,
@@ -689,6 +728,52 @@ pub fn load_desktop_voice_capture_status() -> DesktopVoiceCaptureStatus {
             "recording".to_string(),
             "stopped".to_string(),
         ],
+    }
+}
+
+#[cfg(windows)]
+pub fn probe_desktop_voice_devices() -> DesktopVoiceDeviceProbe {
+    let device_count = unsafe { waveInGetNumDevs() };
+    if device_count == 0 {
+        return DesktopVoiceDeviceProbe {
+            device_count,
+            first_device_name: None,
+            error: None,
+        };
+    }
+
+    let mut caps = WAVEINCAPSW::default();
+    let result =
+        unsafe { waveInGetDevCapsW(0, &mut caps, std::mem::size_of::<WAVEINCAPSW>() as u32) };
+    if result != MMSYSERR_NOERROR {
+        return DesktopVoiceDeviceProbe {
+            device_count,
+            first_device_name: None,
+            error: Some(format!(
+                "Windows microphone device enumeration failed with MMSYSERR code {result}."
+            )),
+        };
+    }
+
+    let name_units = caps.szPname;
+    let name_length = name_units
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(name_units.len());
+
+    DesktopVoiceDeviceProbe {
+        device_count,
+        first_device_name: Some(String::from_utf16_lossy(&name_units[..name_length])),
+        error: None,
+    }
+}
+
+#[cfg(not(windows))]
+pub fn probe_desktop_voice_devices() -> DesktopVoiceDeviceProbe {
+    DesktopVoiceDeviceProbe {
+        device_count: 0,
+        first_device_name: None,
+        error: Some("Native microphone device probing is only implemented on Windows.".to_string()),
     }
 }
 
@@ -4635,7 +4720,11 @@ mod tests {
                 assert_eq!(result["version"], 1);
                 assert_eq!(result["capture_mode"], "browser_fallback");
                 assert_eq!(result["native"]["available"], false);
-                assert_eq!(result["native"]["state"], "unavailable");
+                assert!(matches!(
+                    result["native"]["state"].as_str(),
+                    Some("unavailable") | Some("no_microphone")
+                ));
+                assert!(result["native"]["device_count"].is_number());
                 assert_eq!(result["browser_fallback"]["expected"], true);
                 assert!(result["state_contract"]
                     .as_array()
@@ -4648,6 +4737,40 @@ mod tests {
             }
         }
         assert!(transport.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn build_voice_capture_status_reports_no_microphone() {
+        let status = build_desktop_voice_capture_status(DesktopVoiceDeviceProbe {
+            device_count: 0,
+            first_device_name: None,
+            error: None,
+        });
+
+        assert_eq!(status.capture_mode, "browser_fallback");
+        assert!(!status.native.available);
+        assert_eq!(status.native.state, "no_microphone");
+        assert_eq!(status.native.device, "none");
+        assert_eq!(status.native.device_count, 0);
+        assert_eq!(status.native.permission, "unknown");
+        assert!(status.browser_fallback.expected);
+    }
+
+    #[test]
+    fn build_voice_capture_status_reports_detected_windows_input_device() {
+        let status = build_desktop_voice_capture_status(DesktopVoiceDeviceProbe {
+            device_count: 2,
+            first_device_name: Some("USB Microphone".to_string()),
+            error: None,
+        });
+
+        assert_eq!(status.capture_mode, "browser_fallback");
+        assert!(!status.native.available);
+        assert_eq!(status.native.state, "unavailable");
+        assert_eq!(status.native.device, "USB Microphone");
+        assert_eq!(status.native.device_count, 2);
+        assert!(status.native.reason.contains("Windows reports"));
+        assert!(status.browser_fallback.expected);
     }
 
     #[test]

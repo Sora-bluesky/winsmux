@@ -70,6 +70,7 @@ export interface DesktopVoiceCaptureNativeStatus {
   state: DesktopVoiceCaptureState;
   permission: string;
   device: string;
+  device_count: number;
   meter_supported: boolean;
   restart_supported: boolean;
   reason: string;
