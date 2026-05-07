@@ -1080,6 +1080,7 @@ function Save-OrchestraSessionState {
         [Nullable[int]]$OperatorPollPid = $null,
         [Nullable[int]]$WatchdogPid = $null,
         [Nullable[int]]$ServerWatchdogPid = $null,
+        [Nullable[int]]$SupervisorPid = $null,
         [AllowEmptyString()][string]$BootstrapMode = '',
         [bool]$SessionReady = $false,
         [bool]$UiAttachLaunched = $false,
@@ -1139,6 +1140,7 @@ function Save-OrchestraSessionState {
             operator_poll_pid  = $OperatorPollPid
             watchdog_pid        = $WatchdogPid
             server_watchdog_pid = $ServerWatchdogPid
+            supervisor_pid      = $SupervisorPid
             bootstrap_mode      = $BootstrapMode
             session_ready       = $SessionReady
             ui_attach_launched  = $UiAttachLaunched
@@ -1199,7 +1201,7 @@ function Stop-OrchestraBackgroundProcessesFromManifest {
     }
 
     $pidMap = [ordered]@{}
-    foreach ($propertyName in @('operator_poll_pid', 'commander_poll_pid', 'watchdog_pid', 'server_watchdog_pid')) {
+    foreach ($propertyName in @('supervisor_pid', 'operator_poll_pid', 'commander_poll_pid', 'watchdog_pid', 'server_watchdog_pid')) {
         $rawPid = $null
         if ($manifest.session -is [System.Collections.IDictionary]) {
             if ($manifest.session.Contains($propertyName)) {
@@ -1233,6 +1235,7 @@ function Stop-OrchestraBackgroundProcessesFromManifest {
             $process = $snapshot.ById[$processId]
             $commandLine = [string]$process.CommandLine
             $requiredScript = switch ($label) {
+                'supervisor_pid' { 'orchestra-supervisor.ps1' }
                 'operator_poll_pid' { 'operator-poll.ps1' }
                 'watchdog_pid' { 'agent-watchdog.ps1' }
                 'server_watchdog_pid' { 'server-watchdog.ps1' }
@@ -1372,6 +1375,45 @@ function Start-ServerWatchdogJob {
             $StartupToken,
             '-PollInterval',
             $PollInterval,
+            '-MaxRestartAttempts',
+            $MaxRestartAttempts,
+            '-RestartWindowMinutes',
+            $RestartWindowMinutes
+        ) -WindowStyle Hidden -PassThru)
+}
+
+function Start-OrchestraSupervisorJob {
+    param(
+        [Parameter(Mandatory = $true)][string]$SupervisorScriptPath,
+        [Parameter(Mandatory = $true)][string]$ManifestPath,
+        [Parameter(Mandatory = $true)][string]$SessionName,
+        [AllowEmptyString()][string]$StartupToken = '',
+        [int]$OperatorPollInterval = 20,
+        [int]$AgentWatchdogInterval = 30,
+        [ValidateRange(5, 10)][int]$ServerWatchdogInterval = 5,
+        [int]$IdleThreshold = 120,
+        [int]$MaxRestartAttempts = 3,
+        [int]$RestartWindowMinutes = 10
+    )
+
+    return (Start-Process -FilePath 'pwsh' -ArgumentList @(
+            '-NoProfile',
+            '-File',
+            $SupervisorScriptPath,
+            '-ManifestPath',
+            $ManifestPath,
+            '-SessionName',
+            $SessionName,
+            '-StartupToken',
+            $StartupToken,
+            '-OperatorPollInterval',
+            $OperatorPollInterval,
+            '-AgentWatchdogInterval',
+            $AgentWatchdogInterval,
+            '-ServerWatchdogInterval',
+            $ServerWatchdogInterval,
+            '-IdleThreshold',
+            $IdleThreshold,
             '-MaxRestartAttempts',
             $MaxRestartAttempts,
             '-RestartWindowMinutes',
@@ -1832,6 +1874,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     $operatorPollProcess = $null
     $watchdogProcess = $null
     $serverWatchdogProcess = $null
+    $supervisorProcess = $null
     $projectDir = $null
     $gitWorktreeDir = $null
     $expectedOrigin = ''
@@ -2244,19 +2287,11 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
 
     $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $false -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source) -UiHostKind ([string]$uiAttachResult.ui_host_kind) -AttachRequestId ([string]$uiAttachResult.attach_request_id) -AttachAdapterTrace @($uiAttachResult.attach_adapter_trace)
-    $operatorPollScriptPath = Join-Path $scriptDir 'operator-poll.ps1'
-    $operatorPollProcess = Start-OperatorPollJob -OperatorPollScriptPath $operatorPollScriptPath -ManifestPath $manifestPath -StartupToken $startupToken -Interval 20
-    Write-WinsmuxLog -Level INFO -Event 'preflight.operator_poll.started' -Message "Started operator poll for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; operator_poll_pid = $operatorPollProcess.Id; process_name = $operatorPollProcess.ProcessName } | Out-Null
-    $watchdogScriptPath = Join-Path $scriptDir 'agent-watchdog.ps1'
-    $watchdogProcess = Start-AgentWatchdogJob -WatchdogScriptPath $watchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName -StartupToken $startupToken
-    $serverWatchdogScriptPath = Join-Path $scriptDir 'server-watchdog.ps1'
-    $serverWatchdogProcess = Start-ServerWatchdogJob -WatchdogScriptPath $serverWatchdogScriptPath -ManifestPath $manifestPath -SessionName $sessionName -StartupToken $startupToken
-    Assert-OrchestraBackgroundProcessStarted -Process $operatorPollProcess -Name 'Operator poll job'
-    Assert-OrchestraBackgroundProcessStarted -Process $watchdogProcess -Name 'Agent watchdog job'
-    Assert-OrchestraBackgroundProcessStarted -Process $serverWatchdogProcess -Name 'Server watchdog job'
-    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -OperatorPollPid $operatorPollProcess.Id -WatchdogPid $watchdogProcess.Id -ServerWatchdogPid $serverWatchdogProcess.Id -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $true -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source) -UiHostKind ([string]$uiAttachResult.ui_host_kind) -AttachRequestId ([string]$uiAttachResult.attach_request_id) -AttachAdapterTrace @($uiAttachResult.attach_adapter_trace)
-    Write-WinsmuxLog -Level INFO -Event 'preflight.watchdog.started' -Message "Started agent watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; watchdog_pid = $watchdogProcess.Id; process_name = $watchdogProcess.ProcessName } | Out-Null
-    Write-WinsmuxLog -Level INFO -Event 'preflight.server_watchdog.started' -Message "Started server watchdog for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; server_watchdog_pid = $serverWatchdogProcess.Id; process_name = $serverWatchdogProcess.ProcessName } | Out-Null
+    $supervisorScriptPath = Join-Path $scriptDir 'orchestra-supervisor.ps1'
+    $supervisorProcess = Start-OrchestraSupervisorJob -SupervisorScriptPath $supervisorScriptPath -ManifestPath $manifestPath -SessionName $sessionName -StartupToken $startupToken
+    Assert-OrchestraBackgroundProcessStarted -Process $supervisorProcess -Name 'Orchestra supervisor job'
+    $manifestPath = Save-OrchestraSessionState -ProjectDir $projectDir -SessionName $sessionName -Settings $settings -GitWorktreeDir $gitWorktreeDir -PaneSummaries $validPaneSummaries -StartupToken $startupToken -SupervisorPid $supervisorProcess.Id -BootstrapMode ([string]$orchestraServer.BootstrapMode) -SessionReady $true -UiAttachLaunched ([bool]$uiAttachResult.Launched) -UiAttached ([bool]$uiAttachResult.Attached) -UiAttachStatus ([string]$uiAttachResult.Status) -UiAttachReason ([string]$uiAttachResult.Reason) -UiAttachSource ([string]$uiAttachResult.Source) -UiHostKind ([string]$uiAttachResult.ui_host_kind) -AttachRequestId ([string]$uiAttachResult.attach_request_id) -AttachAdapterTrace @($uiAttachResult.attach_adapter_trace)
+    Write-WinsmuxLog -Level INFO -Event 'preflight.supervisor.started' -Message "Started orchestra supervisor for session $sessionName." -Data @{ session_name = $sessionName; manifest_path = $manifestPath; supervisor_pid = $supervisorProcess.Id; process_name = $supervisorProcess.ProcessName } | Out-Null
     Write-WinsmuxLog -Level INFO -Event 'orchestra.startup.session_ready' -Message "Orchestra session $sessionName reached session-ready; UI attach remains a separate state." -Data ([ordered]@{
         session_name       = $sessionName
         expected_panes     = $expectedPaneCount
@@ -2318,12 +2353,9 @@ if ($MyInvocation.InvocationName -ne '.') {
 
     Write-Output ''
     Write-Output "Manifest: $manifestPath"
-    Write-Output "Operator Poll PID: $($operatorPollProcess.Id)"
-    Write-Output "Watchdog PID: $($watchdogProcess.Id)"
-    Write-Output "Server Watchdog PID: $($serverWatchdogProcess.Id)"
-    Write-Output 'Cleanup: stop the operator poll and watchdogs after the session ends.'
-    Write-Output ("  Stop-Process -Id {0}" -f $operatorPollProcess.Id)
-    Write-Output ("  Stop-Process -Id {0},{1}" -f $watchdogProcess.Id, $serverWatchdogProcess.Id)
+    Write-Output "Supervisor PID: $($supervisorProcess.Id)"
+    Write-Output 'Cleanup: stop the orchestra supervisor after the session ends.'
+    Write-Output ("  Stop-Process -Id {0}" -f $supervisorProcess.Id)
 } catch {
     Write-Warning "STARTUP ERROR: $($_.Exception.Message)"
     Write-Warning "AT: $($_.ScriptStackTrace)"
@@ -2335,6 +2367,9 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
     if ($null -ne $serverWatchdogProcess) {
         try { Stop-Process -Id $serverWatchdogProcess.Id -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    if ($null -ne $supervisorProcess) {
+        try { Stop-Process -Id $supervisorProcess.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
 
     $rollback = Invoke-OrchestraStartupRollback -ProjectDir $projectDir -SessionName $sessionName -BootstrapPaneId $bootstrapPaneId -CreatedPaneIds $createdPaneIds -CreatedWorktrees $createdWorktrees -FailureMessage $_.Exception.Message
