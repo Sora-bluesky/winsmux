@@ -7,7 +7,7 @@ use desktop_backend::{
     handle_desktop_json_rpc, load_desktop_run_explain, load_desktop_summary_snapshot,
     spawn_desktop_summary_refresh_stream, DesktopExplainPayload, DesktopJsonRpcRequest,
     DesktopJsonRpcResponse, DesktopStreamCommand, DesktopSummaryRefreshSignal,
-    DesktopSummarySnapshot, PwshScriptTransport,
+    DesktopSummarySnapshot, DesktopVoiceCaptureStatus, PwshScriptTransport,
 };
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use pty_backend::{
@@ -17,7 +17,19 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
+
+#[cfg(windows)]
+use windows_sys::Win32::Media::Audio::{
+    waveInAddBuffer, waveInClose, waveInOpen, waveInPrepareHeader, waveInReset, waveInStart,
+    waveInStop, waveInUnprepareHeader, CALLBACK_NULL, WAVEFORMATEX, WAVEHDR, WAVE_FORMAT_PCM,
+    WAVE_MAPPER, WHDR_DONE,
+};
+#[cfg(windows)]
+use windows_sys::Win32::Media::{
+    MMSYSERR_ALLOCATED, MMSYSERR_BADDEVICEID, MMSYSERR_NODRIVER, MMSYSERR_NOERROR,
+};
 
 const DESKTOP_SUMMARY_REFRESH_EVENT: &str = "desktop-summary-refresh";
 const PTY_CAPTURE_LIMIT: usize = 64 * 1024;
@@ -41,6 +53,42 @@ struct PtyManager {
 struct DesktopSummaryStreamManager {
     started: AtomicBool,
     stop_requested: Arc<AtomicBool>,
+}
+
+struct VoiceCaptureSession {
+    generation: u64,
+    stop_requested: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Debug)]
+struct VoiceCaptureRuntimeSnapshot {
+    generation: u64,
+    state: String,
+    permission: String,
+    reason: String,
+    meter_level: f64,
+    running: bool,
+    native_available: bool,
+}
+
+impl Default for VoiceCaptureRuntimeSnapshot {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            state: "stopped".to_string(),
+            permission: "unknown".to_string(),
+            reason: "Native microphone capture is ready.".to_string(),
+            meter_level: 0.0,
+            running: false,
+            native_available: false,
+        }
+    }
+}
+
+struct VoiceCaptureManager {
+    snapshot: Arc<Mutex<VoiceCaptureRuntimeSnapshot>>,
+    session: Mutex<Option<VoiceCaptureSession>>,
+    next_generation: AtomicU64,
 }
 
 struct TauriPtyTransport {
@@ -67,6 +115,374 @@ fn start_desktop_summary_refresh_streams(app: &AppHandle) {
     ) {
         eprintln!("Failed to start desktop summary stream adapter: {}", err);
     }
+}
+
+fn update_voice_capture_snapshot(
+    snapshot: &Arc<Mutex<VoiceCaptureRuntimeSnapshot>>,
+    generation: u64,
+    update: impl FnOnce(&mut VoiceCaptureRuntimeSnapshot),
+) {
+    if let Ok(mut current) = snapshot.lock() {
+        if current.generation == generation {
+            update(&mut current);
+        }
+    }
+}
+
+fn desktop_voice_capture_status_from_snapshot(
+    snapshot: VoiceCaptureRuntimeSnapshot,
+) -> DesktopVoiceCaptureStatus {
+    let mut status = load_desktop_summary_voice_capture_status();
+    if status.native.device_count > 0 && snapshot.generation == 0 {
+        status.capture_mode = "native".to_string();
+        status.native.available = true;
+        status.native.state = "stopped".to_string();
+        status.native.permission = "unknown".to_string();
+        status.native.meter_supported = true;
+        status.native.meter_level = 0.0;
+        status.native.restart_supported = true;
+        status.native.reason = "Native microphone capture is ready.".to_string();
+        status.browser_fallback.expected = false;
+        status.browser_fallback.reason =
+            "Native microphone capture is available in the desktop runtime.".to_string();
+        return status;
+    }
+
+    if snapshot.generation == 0 || status.native.device_count == 0 {
+        return status;
+    }
+
+    status.capture_mode = if snapshot.native_available {
+        "native".to_string()
+    } else {
+        "unavailable".to_string()
+    };
+    status.native.available = snapshot.native_available;
+    status.native.state = snapshot.state;
+    status.native.permission = snapshot.permission;
+    status.native.meter_supported = true;
+    status.native.meter_level = snapshot.meter_level.clamp(0.0, 1.0);
+    status.native.restart_supported = true;
+    status.native.reason = snapshot.reason;
+    status.browser_fallback.expected = !snapshot.native_available;
+    status.browser_fallback.reason = if snapshot.native_available {
+        "Native microphone capture is running in the desktop runtime.".to_string()
+    } else {
+        "Use browser speech recognition until the native capture backend is available.".to_string()
+    };
+    status
+}
+
+fn load_desktop_summary_voice_capture_status() -> DesktopVoiceCaptureStatus {
+    desktop_backend::load_desktop_voice_capture_status()
+}
+
+fn get_voice_capture_status(app: &AppHandle) -> DesktopVoiceCaptureStatus {
+    let manager = app.state::<VoiceCaptureManager>();
+    let snapshot = manager
+        .snapshot
+        .lock()
+        .map(|value| value.clone())
+        .unwrap_or_default();
+    desktop_voice_capture_status_from_snapshot(snapshot)
+}
+
+#[tauri::command]
+async fn desktop_voice_capture_status(app: AppHandle) -> Result<DesktopVoiceCaptureStatus, String> {
+    Ok(get_voice_capture_status(&app))
+}
+
+#[tauri::command]
+async fn desktop_voice_capture_start(app: AppHandle) -> Result<DesktopVoiceCaptureStatus, String> {
+    let manager = app.state::<VoiceCaptureManager>();
+    let generation = manager.next_generation.fetch_add(1, Ordering::SeqCst);
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    {
+        let mut session = manager.session.lock().map_err(|e| e.to_string())?;
+        if let Some(existing) = session.take() {
+            existing.stop_requested.store(true, Ordering::SeqCst);
+        }
+        *session = Some(VoiceCaptureSession {
+            generation,
+            stop_requested: stop_requested.clone(),
+        });
+    }
+    {
+        let mut snapshot = manager.snapshot.lock().map_err(|e| e.to_string())?;
+        *snapshot = VoiceCaptureRuntimeSnapshot {
+            generation,
+            state: "restarting".to_string(),
+            permission: "unknown".to_string(),
+            reason: "Starting native microphone capture.".to_string(),
+            meter_level: 0.0,
+            running: true,
+            native_available: true,
+        };
+    }
+
+    let snapshot = manager.snapshot.clone();
+    std::thread::spawn(move || {
+        run_voice_capture_worker(snapshot, generation, stop_requested);
+    });
+
+    Ok(get_voice_capture_status(&app))
+}
+
+#[tauri::command]
+async fn desktop_voice_capture_stop(
+    app: AppHandle,
+    cancelled: Option<bool>,
+) -> Result<DesktopVoiceCaptureStatus, String> {
+    let manager = app.state::<VoiceCaptureManager>();
+    let generation = {
+        let mut session = manager.session.lock().map_err(|e| e.to_string())?;
+        match session.take() {
+            Some(existing) => {
+                existing.stop_requested.store(true, Ordering::SeqCst);
+                existing.generation
+            }
+            None => 0,
+        }
+    };
+
+    let state = if cancelled.unwrap_or(false) {
+        "cancelled"
+    } else {
+        "stopped"
+    };
+    if generation > 0 {
+        update_voice_capture_snapshot(&manager.snapshot, generation, |snapshot| {
+            snapshot.state = state.to_string();
+            snapshot.reason = if state == "cancelled" {
+                "Native microphone capture was cancelled by the user.".to_string()
+            } else {
+                "Native microphone capture stopped.".to_string()
+            };
+            snapshot.running = false;
+            snapshot.meter_level = 0.0;
+        });
+    }
+
+    Ok(get_voice_capture_status(&app))
+}
+
+fn run_voice_capture_worker(
+    snapshot: Arc<Mutex<VoiceCaptureRuntimeSnapshot>>,
+    generation: u64,
+    stop_requested: Arc<AtomicBool>,
+) {
+    #[cfg(windows)]
+    run_windows_voice_capture_worker(snapshot, generation, stop_requested);
+
+    #[cfg(not(windows))]
+    {
+        update_voice_capture_snapshot(&snapshot, generation, |current| {
+            current.state = "unavailable".to_string();
+            current.permission = "unknown".to_string();
+            current.reason =
+                "Native microphone capture is only implemented on Windows.".to_string();
+            current.running = false;
+            current.native_available = false;
+            current.meter_level = 0.0;
+        });
+    }
+}
+
+#[cfg(windows)]
+fn run_windows_voice_capture_worker(
+    snapshot: Arc<Mutex<VoiceCaptureRuntimeSnapshot>>,
+    generation: u64,
+    stop_requested: Arc<AtomicBool>,
+) {
+    const SAMPLE_RATE: u32 = 16_000;
+    const CHANNELS: u16 = 1;
+    const BITS_PER_SAMPLE: u16 = 16;
+    const BUFFER_BYTES: usize = (SAMPLE_RATE as usize * 2) / 10;
+    const BUFFER_COUNT: usize = 4;
+
+    let format = WAVEFORMATEX {
+        wFormatTag: WAVE_FORMAT_PCM as u16,
+        nChannels: CHANNELS,
+        nSamplesPerSec: SAMPLE_RATE,
+        nAvgBytesPerSec: SAMPLE_RATE * CHANNELS as u32 * (BITS_PER_SAMPLE as u32 / 8),
+        nBlockAlign: CHANNELS * (BITS_PER_SAMPLE / 8),
+        wBitsPerSample: BITS_PER_SAMPLE,
+        cbSize: 0,
+    };
+    let mut handle = std::ptr::null_mut();
+    let open_result = unsafe { waveInOpen(&mut handle, WAVE_MAPPER, &format, 0, 0, CALLBACK_NULL) };
+    if open_result != MMSYSERR_NOERROR {
+        let (state, permission, native_available, reason) = map_wave_open_error(open_result);
+        update_voice_capture_snapshot(&snapshot, generation, |current| {
+            current.state = state;
+            current.permission = permission;
+            current.reason = reason;
+            current.running = false;
+            current.native_available = native_available;
+            current.meter_level = 0.0;
+        });
+        return;
+    }
+
+    update_voice_capture_snapshot(&snapshot, generation, |current| {
+        current.state = "recording".to_string();
+        current.permission = "granted".to_string();
+        current.reason = "Native microphone capture is recording.".to_string();
+        current.running = true;
+        current.native_available = true;
+        current.meter_level = 0.0;
+    });
+
+    let mut buffers = (0..BUFFER_COUNT)
+        .map(|_| vec![0u8; BUFFER_BYTES])
+        .collect::<Vec<_>>();
+    let mut headers = buffers
+        .iter_mut()
+        .map(|buffer| WAVEHDR {
+            lpData: buffer.as_mut_ptr(),
+            dwBufferLength: buffer.len() as u32,
+            dwBytesRecorded: 0,
+            dwUser: 0,
+            dwFlags: 0,
+            dwLoops: 0,
+            lpNext: std::ptr::null_mut(),
+            reserved: 0,
+        })
+        .collect::<Vec<_>>();
+
+    let header_size = std::mem::size_of::<WAVEHDR>() as u32;
+    let mut queued_buffer_count = 0usize;
+    for header in headers.iter_mut() {
+        let prepare_result = unsafe { waveInPrepareHeader(handle, header, header_size) };
+        if prepare_result == MMSYSERR_NOERROR {
+            let add_result = unsafe { waveInAddBuffer(handle, header, header_size) };
+            if add_result == MMSYSERR_NOERROR {
+                queued_buffer_count += 1;
+            }
+        }
+    }
+    if queued_buffer_count == 0 {
+        update_voice_capture_snapshot(&snapshot, generation, |current| {
+            current.state = "permission_denied".to_string();
+            current.permission = "denied".to_string();
+            current.reason = "Windows could not queue a microphone capture buffer.".to_string();
+            current.running = false;
+            current.native_available = false;
+            current.meter_level = 0.0;
+        });
+        for header in headers.iter_mut() {
+            let _ = unsafe { waveInUnprepareHeader(handle, header, header_size) };
+        }
+        let _ = unsafe { waveInClose(handle) };
+        return;
+    }
+
+    let start_result = unsafe { waveInStart(handle) };
+    if start_result != MMSYSERR_NOERROR {
+        update_voice_capture_snapshot(&snapshot, generation, |current| {
+            current.state = "permission_denied".to_string();
+            current.permission = "denied".to_string();
+            current.reason = format!(
+                "Windows could not start microphone capture: MMSYSERR code {start_result}."
+            );
+            current.running = false;
+            current.native_available = false;
+            current.meter_level = 0.0;
+        });
+    } else {
+        let mut last_voice_at = Instant::now();
+        while !stop_requested.load(Ordering::SeqCst) {
+            for (index, header) in headers.iter_mut().enumerate() {
+                let flags = header.dwFlags;
+                let recorded = header.dwBytesRecorded as usize;
+                if flags & WHDR_DONE == 0 || recorded == 0 {
+                    continue;
+                }
+
+                let bytes = &buffers[index][..recorded.min(BUFFER_BYTES)];
+                let meter = calculate_pcm16_meter_level(bytes);
+                if meter > 0.03 {
+                    last_voice_at = Instant::now();
+                }
+                let silent = last_voice_at.elapsed() >= Duration::from_secs(2);
+                update_voice_capture_snapshot(&snapshot, generation, |current| {
+                    current.state = if silent {
+                        "silence".to_string()
+                    } else {
+                        "recording".to_string()
+                    };
+                    current.permission = "granted".to_string();
+                    current.reason = if silent {
+                        "Native microphone capture is running, but no speech-level input has been detected.".to_string()
+                    } else {
+                        "Native microphone capture is recording.".to_string()
+                    };
+                    current.running = true;
+                    current.native_available = true;
+                    current.meter_level = meter;
+                });
+
+                header.dwBytesRecorded = 0;
+                header.dwFlags &= !WHDR_DONE;
+                let _ = unsafe { waveInAddBuffer(handle, header, header_size) };
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    let _ = unsafe { waveInStop(handle) };
+    let _ = unsafe { waveInReset(handle) };
+    for header in headers.iter_mut() {
+        let _ = unsafe { waveInUnprepareHeader(handle, header, header_size) };
+    }
+    let _ = unsafe { waveInClose(handle) };
+    update_voice_capture_snapshot(&snapshot, generation, |current| {
+        if current.running {
+            current.state = "stopped".to_string();
+            current.reason = "Native microphone capture stopped.".to_string();
+        }
+        current.running = false;
+        current.meter_level = 0.0;
+    });
+}
+
+#[cfg(windows)]
+fn map_wave_open_error(result: u32) -> (String, String, bool, String) {
+    match result {
+        MMSYSERR_BADDEVICEID | MMSYSERR_NODRIVER => (
+            "no_microphone".to_string(),
+            "unknown".to_string(),
+            false,
+            "Windows did not expose a usable microphone input device.".to_string(),
+        ),
+        MMSYSERR_ALLOCATED => (
+            "permission_denied".to_string(),
+            "denied".to_string(),
+            false,
+            "Windows reported that the microphone input device is unavailable to this app."
+                .to_string(),
+        ),
+        _ => (
+            "permission_denied".to_string(),
+            "denied".to_string(),
+            false,
+            format!("Windows could not open microphone capture: MMSYSERR code {result}."),
+        ),
+    }
+}
+
+fn calculate_pcm16_meter_level(bytes: &[u8]) -> f64 {
+    let mut sum = 0f64;
+    let mut count = 0f64;
+    for chunk in bytes.chunks_exact(2) {
+        let sample = i16::from_le_bytes([chunk[0], chunk[1]]) as f64 / i16::MAX as f64;
+        sum += sample * sample;
+        count += 1.0;
+    }
+    if count == 0.0 {
+        return 0.0;
+    }
+    (sum / count).sqrt().clamp(0.0, 1.0)
 }
 
 #[tauri::command]
@@ -514,6 +930,11 @@ pub fn run() {
             started: AtomicBool::new(false),
             stop_requested: Arc::new(AtomicBool::new(false)),
         })
+        .manage(VoiceCaptureManager {
+            snapshot: Arc::new(Mutex::new(VoiceCaptureRuntimeSnapshot::default())),
+            session: Mutex::new(None),
+            next_generation: AtomicU64::new(1),
+        })
         .setup(|app| {
             let app_handle = app.handle().clone();
             start_control_pipe_server(Arc::new(TauriPtyTransport {
@@ -526,6 +947,9 @@ pub fn run() {
             desktop_summary_snapshot,
             desktop_run_explain,
             desktop_json_rpc,
+            desktop_voice_capture_status,
+            desktop_voice_capture_start,
+            desktop_voice_capture_stop,
             pty_json_rpc,
             pty_spawn,
             pty_write,
@@ -568,5 +992,21 @@ mod tests {
         let output = limit_pty_capture_output("one\ntwo\nthree\nfour\n", Some(2));
 
         assert_eq!(output, "three\nfour");
+    }
+
+    #[test]
+    fn calculate_pcm16_meter_level_reports_silence() {
+        assert_eq!(calculate_pcm16_meter_level(&[0, 0, 0, 0]), 0.0);
+    }
+
+    #[test]
+    fn calculate_pcm16_meter_level_reports_signal_strength() {
+        let level = calculate_pcm16_meter_level(&[
+            0xff, 0x7f, // i16::MAX
+            0x01, 0x80, // i16::MIN + 1
+        ]);
+
+        assert!(level > 0.99);
+        assert!(level <= 1.0);
     }
 }

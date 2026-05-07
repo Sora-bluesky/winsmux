@@ -9,6 +9,8 @@ type DesktopCommandName =
   | "desktop_run_pick_winner"
   | "desktop_runtime_roles_apply"
   | "desktop_voice_capture_status"
+  | "desktop_voice_capture_start"
+  | "desktop_voice_capture_stop"
   | "desktop_dogfood_event"
   | "desktop_editor_read"
   | "desktop_explorer_list";
@@ -72,6 +74,7 @@ export interface DesktopVoiceCaptureNativeStatus {
   device: string;
   device_count: number;
   meter_supported: boolean;
+  meter_level: number;
   restart_supported: boolean;
   reason: string;
 }
@@ -572,6 +575,9 @@ function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMet
       return "desktop.runtime.roles.apply";
     case "desktop_voice_capture_status":
       return "desktop.voice.capture_status";
+    case "desktop_voice_capture_start":
+    case "desktop_voice_capture_stop":
+      throw new Error(`${command} does not use the desktop JSON-RPC transport`);
     case "desktop_dogfood_event":
       return "desktop.dogfood.event";
     case "desktop_editor_read":
@@ -628,14 +634,31 @@ export function createJsonRpcDesktopCommandTransport(
   };
 }
 
-let desktopCommandTransport: DesktopCommandTransport =
-  createJsonRpcDesktopCommandTransport();
-
 export function createTauriDesktopCommandTransport(
   invokeCommand: typeof invoke = invoke,
 ): DesktopCommandTransport {
-  return createJsonRpcDesktopCommandTransport(invokeCommand);
+  const jsonRpcTransport = createJsonRpcDesktopCommandTransport(invokeCommand);
+  return {
+    async request<TResponse>(
+      command: DesktopCommandName,
+      payload?: Record<string, unknown>,
+    ) {
+      if (command === "desktop_voice_capture_status") {
+        return await invokeCommand<TResponse>("desktop_voice_capture_status");
+      }
+      if (command === "desktop_voice_capture_start") {
+        return await invokeCommand<TResponse>("desktop_voice_capture_start");
+      }
+      if (command === "desktop_voice_capture_stop") {
+        return await invokeCommand<TResponse>("desktop_voice_capture_stop", payload);
+      }
+      return await jsonRpcTransport.request<TResponse>(command, payload);
+    },
+  };
 }
+
+let desktopCommandTransport: DesktopCommandTransport =
+  createTauriDesktopCommandTransport();
 
 export function configureDesktopCommandTransport(
   transport: DesktopCommandTransport,
@@ -750,6 +773,27 @@ export async function getDesktopVoiceCaptureStatus(projectDir?: string | null) {
     );
   } catch (error) {
     throw normalizeDesktopError("desktop_voice_capture_status", error);
+  }
+}
+
+export async function startDesktopVoiceCapture() {
+  try {
+    return await desktopCommandTransport.request<DesktopVoiceCaptureStatus>(
+      "desktop_voice_capture_start",
+    );
+  } catch (error) {
+    throw normalizeDesktopError("desktop_voice_capture_start", error);
+  }
+}
+
+export async function stopDesktopVoiceCapture(cancelled = false) {
+  try {
+    return await desktopCommandTransport.request<DesktopVoiceCaptureStatus>(
+      "desktop_voice_capture_stop",
+      { cancelled },
+    );
+  } catch (error) {
+    throw normalizeDesktopError("desktop_voice_capture_stop", error);
   }
 }
 

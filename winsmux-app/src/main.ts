@@ -14,6 +14,8 @@ import {
   pickDesktopRunWinner,
   promoteDesktopRunTactic,
   recordDesktopDogfoodEvent,
+  startDesktopVoiceCapture,
+  stopDesktopVoiceCapture,
   subscribeToDesktopSummaryRefresh,
   type DesktopCompareRunsResult,
   type DesktopBoardPane,
@@ -492,10 +494,12 @@ let operatorOutputBuffer = "";
 let operatorOutputFlushTimer: number | null = null;
 let voiceRecognition: SpeechRecognitionLike | null = null;
 let voiceListening = false;
+let voiceInputMode: "browser" | "native" | null = null;
 let voiceTranscriptBase = "";
 let voiceCaptureStatus: DesktopVoiceCaptureStatus | null = null;
 let voiceCaptureStatusError = "";
 let voiceCaptureStatusRefreshStarted = false;
+let voiceCapturePollTimer: number | null = null;
 const detectedPreviewTargets = new Map<string, PreviewTarget>();
 const PREVIEW_FRESHNESS_WINDOW_MS = 30_000;
 const PANE_META_REFRESH_INTERVAL_MS = 30_000;
@@ -6899,6 +6903,18 @@ function isBrowserVoiceInputSupported() {
   return Boolean(getSpeechRecognitionConstructor());
 }
 
+function isNativeVoiceCaptureAvailable() {
+  return isTauri() && voiceCaptureStatus?.native.available === true;
+}
+
+function isNativeVoiceCaptureTerminalState(state: string | undefined) {
+  return state === "stopped" || state === "cancelled" || state === "permission_denied" || state === "no_microphone";
+}
+
+function getVoiceCaptureMeterPercent() {
+  return Math.round(Math.max(0, Math.min(1, voiceCaptureStatus?.native.meter_level ?? 0)) * 100);
+}
+
 function getVoiceCaptureStatusMessage() {
   if (!isTauri()) {
     return "";
@@ -6915,6 +6931,50 @@ function getVoiceCaptureStatusMessage() {
     return getLanguageText(
       "Checking native microphone status...",
       "ネイティブのマイク状態を確認中...",
+    );
+  }
+
+  if (voiceCaptureStatus.native.state === "recording") {
+    const meter = getVoiceCaptureMeterPercent();
+    return getLanguageText(
+      `Native microphone capture is recording. Meter ${meter}%.`,
+      `ネイティブのマイク入力で録音中です。メーターは ${meter}% です。`,
+    );
+  }
+
+  if (voiceCaptureStatus.native.state === "silence") {
+    const meter = getVoiceCaptureMeterPercent();
+    return getLanguageText(
+      `Native microphone capture is running, but speech is not detected. Meter ${meter}%.`,
+      `ネイティブのマイク入力は動作中ですが、発話を検出していません。メーターは ${meter}% です。`,
+    );
+  }
+
+  if (voiceCaptureStatus.native.state === "restarting") {
+    return getLanguageText(
+      "Restarting native microphone capture...",
+      "ネイティブのマイク入力を再起動しています...",
+    );
+  }
+
+  if (voiceCaptureStatus.native.state === "cancelled") {
+    return getLanguageText(
+      "Native microphone capture was cancelled.",
+      "ネイティブのマイク入力をキャンセルしました。",
+    );
+  }
+
+  if (voiceCaptureStatus.native.state === "stopped") {
+    return getLanguageText(
+      "Native microphone capture is ready.",
+      "ネイティブのマイク入力を開始できます。",
+    );
+  }
+
+  if (voiceCaptureStatus.native.state === "permission_denied") {
+    return getLanguageText(
+      "Native microphone capture could not access the microphone.",
+      "ネイティブのマイク入力がマイクにアクセスできませんでした。",
     );
   }
 
@@ -6955,6 +7015,7 @@ function renderVoiceCaptureStatus() {
   status.hidden = !message;
   status.textContent = message;
   status.dataset.state = voiceCaptureStatus?.native.state ?? (voiceCaptureStatusError ? "error" : "unknown");
+  status.style.setProperty("--voice-meter", `${getVoiceCaptureMeterPercent()}%`);
 }
 
 async function refreshVoiceCaptureStatus() {
@@ -6972,6 +7033,12 @@ async function refreshVoiceCaptureStatus() {
   }
   updateVoiceInputButton();
   renderVoiceCaptureStatus();
+  if (voiceInputMode === "native" && isNativeVoiceCaptureTerminalState(voiceCaptureStatus?.native.state)) {
+    voiceListening = false;
+    voiceInputMode = null;
+    stopVoiceCapturePolling();
+    updateVoiceInputButton();
+  }
 }
 
 function ensureVoiceCaptureStatusRefresh() {
@@ -6982,13 +7049,31 @@ function ensureVoiceCaptureStatusRefresh() {
   void refreshVoiceCaptureStatus();
 }
 
+function startVoiceCapturePolling() {
+  if (voiceCapturePollTimer !== null) {
+    return;
+  }
+  voiceCapturePollTimer = window.setInterval(() => {
+    void refreshVoiceCaptureStatus();
+  }, 250);
+}
+
+function stopVoiceCapturePolling() {
+  if (voiceCapturePollTimer === null) {
+    return;
+  }
+  window.clearInterval(voiceCapturePollTimer);
+  voiceCapturePollTimer = null;
+}
+
 function updateVoiceInputButton() {
   const button = document.getElementById("voice-input-btn") as HTMLButtonElement | null;
   if (!button) {
     return;
   }
 
-  const supported = isBrowserVoiceInputSupported();
+  const browserSupported = isBrowserVoiceInputSupported();
+  const supported = browserSupported || isNativeVoiceCaptureAvailable();
   button.disabled = !supported;
   button.classList.toggle("is-recording", voiceListening);
   button.setAttribute("aria-pressed", voiceListening ? "true" : "false");
@@ -7009,6 +7094,11 @@ function updateVoiceInputButton() {
 }
 
 function stopVoiceInput() {
+  if (voiceInputMode === "native") {
+    void stopNativeVoiceInput(true);
+    return;
+  }
+
   if (!voiceRecognition) {
     return;
   }
@@ -7019,10 +7109,49 @@ function stopVoiceInput() {
   }
 }
 
+async function startNativeVoiceInput(composerInput: HTMLTextAreaElement) {
+  try {
+    voiceCaptureStatus = await startDesktopVoiceCapture();
+    voiceCaptureStatusError = "";
+    voiceInputMode = "native";
+    voiceListening = true;
+    markComposerInputSource("voice");
+    startVoiceCapturePolling();
+    updateVoiceInputButton();
+    renderVoiceCaptureStatus();
+    composerInput.focus();
+  } catch (error) {
+    voiceCaptureStatus = null;
+    voiceCaptureStatusError = error instanceof Error ? error.message : String(error);
+    voiceInputMode = null;
+    voiceListening = false;
+    stopVoiceCapturePolling();
+    updateVoiceInputButton();
+    renderVoiceCaptureStatus();
+  }
+}
+
+async function stopNativeVoiceInput(cancelled: boolean) {
+  try {
+    voiceCaptureStatus = await stopDesktopVoiceCapture(cancelled);
+    voiceCaptureStatusError = "";
+  } catch (error) {
+    voiceCaptureStatusError = error instanceof Error ? error.message : String(error);
+  }
+  voiceInputMode = null;
+  voiceListening = false;
+  stopVoiceCapturePolling();
+  updateVoiceInputButton();
+  renderVoiceCaptureStatus();
+}
+
 function startVoiceInput(composerInput: HTMLTextAreaElement) {
   const SpeechRecognition = getSpeechRecognitionConstructor();
   if (!SpeechRecognition) {
     ensureVoiceCaptureStatusRefresh();
+    if (isNativeVoiceCaptureAvailable()) {
+      void startNativeVoiceInput(composerInput);
+    }
     updateVoiceInputButton();
     return;
   }
@@ -7038,11 +7167,13 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
   recognition.lang = themeState.language === "ja" ? "ja-JP" : "en-US";
   recognition.onstart = () => {
     voiceListening = true;
+    voiceInputMode = "browser";
     updateVoiceInputButton();
   };
   recognition.onend = () => {
     voiceListening = false;
     voiceRecognition = null;
+    voiceInputMode = null;
     voiceTranscriptBase = "";
     updateVoiceInputButton();
     exitComposerHistoryToDraft(composerInput.value);
@@ -7050,6 +7181,7 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
   };
   recognition.onerror = (event) => {
     voiceListening = false;
+    voiceInputMode = null;
     updateVoiceInputButton();
     if (event.error && event.error !== "no-speech" && event.error !== "aborted") {
       appendRuntimeConversation({
