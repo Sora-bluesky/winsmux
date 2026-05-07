@@ -3013,6 +3013,125 @@ function Get-SendConfigValue {
     return $Default
 }
 
+function Test-DeferredPaneStartManifestEntry {
+    param([AllowNull()]$ManifestEntry)
+
+    if ($null -eq $ManifestEntry) {
+        return $false
+    }
+
+    $status = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'Status' -Default '')
+    if ([string]::IsNullOrWhiteSpace($status)) {
+        return $false
+    }
+
+    return @('deferred_start', 'deferred_starting') -contains $status.Trim().ToLowerInvariant()
+}
+
+function Set-DeferredPaneStartStatus {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [Parameter(Mandatory = $true)][string]$Status,
+        [AllowEmptyString()][string]$MarkerPath = ''
+    )
+
+    if (-not (Get-Command Set-PaneControlManifestPaneProperties -ErrorAction SilentlyContinue)) {
+        return
+    }
+
+    $manifestPath = Join-Path (Join-Path $ProjectDir '.winsmux') 'manifest.yaml'
+    $properties = [ordered]@{
+        status = $Status
+    }
+    if (-not [string]::IsNullOrWhiteSpace($MarkerPath)) {
+        $properties['bootstrap_marker_path'] = $MarkerPath
+    }
+
+    Set-PaneControlManifestPaneProperties -ManifestPath $manifestPath -PaneId $PaneId -Properties $properties
+}
+
+function Wait-DeferredPaneReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$PaneId,
+        [AllowEmptyString()][string]$Agent = '',
+        [int]$TimeoutSeconds = 90
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-AgentReadyPrompt -PaneId $PaneId -Agent $Agent) {
+            return
+        }
+
+        Start-Sleep -Seconds 1
+    }
+
+    Stop-WithError "timed out waiting for deferred pane $PaneId to become ready"
+}
+
+function Start-DeferredPaneFromManifestEntry {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [AllowNull()]$ManifestEntry
+    )
+
+    if (-not (Test-DeferredPaneStartManifestEntry -ManifestEntry $ManifestEntry)) {
+        return $false
+    }
+
+    $label = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'Label' -Default '')
+    $paneId = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'PaneId' -Default '')
+    if ([string]::IsNullOrWhiteSpace($paneId)) {
+        Stop-WithError "deferred pane '$label' is missing pane id"
+    }
+
+    $planPath = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'BootstrapPlanPath' -Default '')
+    if ([string]::IsNullOrWhiteSpace($planPath)) {
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed'
+        Stop-WithError "deferred pane '$label' is missing bootstrap plan path"
+    }
+    if (-not [System.IO.Path]::IsPathRooted($planPath)) {
+        $planPath = [System.IO.Path]::GetFullPath((Join-Path $ProjectDir $planPath))
+    }
+    if (-not (Test-Path -LiteralPath $planPath -PathType Leaf)) {
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed'
+        Stop-WithError "deferred pane '$label' bootstrap plan not found: $planPath"
+    }
+
+    $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 8
+    $markerPath = [string](Get-SendConfigValue -InputObject $plan -Name 'ready_marker_path' -Default '')
+    $status = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'Status' -Default '')
+
+    if ($status.Trim().ToLowerInvariant() -eq 'deferred_start') {
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_starting' -MarkerPath $markerPath
+        $bootstrapScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-pane-bootstrap.ps1'))
+        $bootstrapCommand = "pwsh -NoProfile -File {0} -PlanFile {1}" -f `
+            (ConvertTo-DispatchPowerShellLiteral -Value $bootstrapScriptPath), `
+            (ConvertTo-DispatchPowerShellLiteral -Value $planPath)
+
+        Wait-PaneShellReady -PaneId $paneId -TimeoutSeconds 30
+        Send-TextToPane -PaneId $paneId -CommandText $bootstrapCommand | Out-Null
+    }
+
+    $readinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'CapabilityAdapter' -Default ''))
+    if ([string]::IsNullOrWhiteSpace($readinessAgent)) {
+        $readinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'ProviderTarget' -Default ''))
+    }
+    if ([string]::IsNullOrWhiteSpace($readinessAgent)) {
+        $readinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $plan -Name 'agent' -Default ''))
+    }
+
+    try {
+        Wait-DeferredPaneReady -PaneId $paneId -Agent $readinessAgent -TimeoutSeconds 90
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'ready' -MarkerPath $markerPath
+        return $true
+    } catch {
+        Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed' -MarkerPath $markerPath
+        throw
+    }
+}
+
 function Invoke-Send {
     if (-not $Target) { Stop-WithError "usage: winsmux send <target> <text>" }
     if (-not $Rest -or $Rest.Count -eq 0) { Stop-WithError "usage: winsmux send <target> <text>" }
@@ -3135,6 +3254,8 @@ function Invoke-Send {
             Stop-WithError ([string]$policyViolation['reason'])
         }
     }
+
+    Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $context | Out-Null
 
     $contextLaunchDir = $projectDir
     $contextGitWorktreeDir = ''
@@ -10255,6 +10376,7 @@ function Invoke-DispatchTask {
 
         $selectedLabel = [string]$reviewEntry.Label
         $paneId = [string]$reviewEntry.PaneId
+        Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $reviewEntry | Out-Null
     } else {
         $manifestEntry = Get-DispatchTaskManifestEntry -ProjectDir $projectDir -Label $selectedLabel
         if ($null -eq $manifestEntry -or [string]::IsNullOrWhiteSpace([string]$manifestEntry.PaneId)) {
@@ -10262,6 +10384,7 @@ function Invoke-DispatchTask {
         }
 
         $paneId = [string]$manifestEntry.PaneId
+        Start-DeferredPaneFromManifestEntry -ProjectDir $projectDir -ManifestEntry $manifestEntry | Out-Null
     }
 
     Send-TextToPane -PaneId $paneId -CommandText $taskText

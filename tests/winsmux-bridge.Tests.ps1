@@ -13568,9 +13568,12 @@ Describe 'orchestra pane bootstrap plan' {
         $script:orchestraStartContent | Should -Match 'function New-OrchestraPaneBootstrapPlan'
         $script:orchestraStartContent | Should -Match 'function Get-OrchestraPaneBootstrapMarkerPath'
         $script:orchestraStartContent | Should -Match 'function Start-OrchestraPaneBootstrap'
+        $script:orchestraStartContent | Should -Match 'function Test-OrchestraPaneDeferredStart'
         $script:orchestraStartContent | Should -Match 'function Wait-OrchestraServerSessionAbsent'
         $script:orchestraStartContent | Should -Match 'orchestra-pane-bootstrap\.ps1'
         $script:orchestraStartContent | Should -Match 'Start-OrchestraPaneBootstrap -PaneId \$paneId -PlanPath \$bootstrapPlanPath'
+        $script:orchestraStartContent | Should -Match 'deferred_start'
+        $script:orchestraStartContent | Should -Match 'preflight\.worker\.deferred_start'
         $script:orchestraStartContent | Should -Match 'ready_marker_path'
         $script:orchestraStartContent | Should -Match 'Wait-OrchestraServerSessionAbsent -SessionName \$SessionName -TimeoutSeconds 20'
     }
@@ -15699,6 +15702,93 @@ Describe 'winsmux terminal backend switch' {
         $writes.Count | Should -Be 2
         $writes[0].params.data | Should -Be 'echo test'
         $writes[1].params.data | Should -Be "`r"
+    }
+}
+
+Describe 'deferred worker startup' {
+    BeforeAll {
+        $bridgePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'scripts\winsmux-core.ps1'
+        $null = . $bridgePath version
+        $script:deferredCoreContent = Get-Content -LiteralPath $bridgePath -Raw -Encoding UTF8
+        $script:deferredMonitorContent = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'winsmux-core\scripts\agent-monitor.ps1') -Raw -Encoding UTF8
+    }
+
+    BeforeEach {
+        $script:deferredTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-deferred-worker-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:deferredTempRoot -Force | Out-Null
+        $script:deferredPlanPath = Join-Path $script:deferredTempRoot 'worker-2.json'
+        $script:deferredMarkerPath = Join-Path $script:deferredTempRoot 'worker-2.ready.json'
+        ([ordered]@{
+            agent             = 'codex'
+            ready_marker_path = $script:deferredMarkerPath
+        } | ConvertTo-Json -Depth 6) | Set-Content -Path $script:deferredPlanPath -Encoding UTF8
+        $script:deferredSendCommands = [System.Collections.Generic.List[string]]::new()
+        $script:deferredStatusWrites = [System.Collections.Generic.List[string]]::new()
+
+        Mock Wait-PaneShellReady { }
+        Mock Send-TextToPane {
+            param([string]$PaneId, [string]$CommandText)
+            $script:deferredSendCommands.Add($CommandText) | Out-Null
+            return "sent to $PaneId"
+        }
+        Mock Test-AgentReadyPrompt { return $true }
+        Mock Set-PaneControlManifestPaneProperties {
+            param([string]$ManifestPath, [string]$PaneId, [System.Collections.IDictionary]$Properties)
+            $script:deferredStatusWrites.Add([string]$Properties['status']) | Out-Null
+        }
+    }
+
+    AfterEach {
+        if ($script:deferredTempRoot -and (Test-Path -LiteralPath $script:deferredTempRoot)) {
+            Remove-Item -LiteralPath $script:deferredTempRoot -Recurse -Force
+        }
+    }
+
+    It 'starts a deferred pane from its bootstrap plan before delivery' {
+        $entry = [PSCustomObject]@{
+            Label             = 'worker-2'
+            PaneId            = '%3'
+            Status            = 'deferred_start'
+            BootstrapPlanPath = $script:deferredPlanPath
+            CapabilityAdapter = 'codex'
+            ProviderTarget    = ''
+        }
+
+        $started = Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry
+
+        $started | Should -Be $true
+        Should -Invoke Wait-PaneShellReady -Times 1 -Exactly -ParameterFilter { $PaneId -eq '%3' }
+        Should -Invoke Test-AgentReadyPrompt -Times 1 -Exactly -ParameterFilter { $PaneId -eq '%3' -and $Agent -eq 'codex' }
+        $script:deferredSendCommands.Count | Should -Be 1
+        $script:deferredSendCommands[0] | Should -Match 'orchestra-pane-bootstrap\.ps1'
+        $script:deferredSendCommands[0] | Should -Match '-PlanFile'
+        $script:deferredStatusWrites | Should -Be @('deferred_starting', 'ready')
+    }
+
+    It 'waits for an already-starting deferred pane without launching a duplicate bootstrap' {
+        $entry = [PSCustomObject]@{
+            Label             = 'worker-2'
+            PaneId            = '%3'
+            Status            = 'deferred_starting'
+            BootstrapPlanPath = $script:deferredPlanPath
+            CapabilityAdapter = 'codex'
+            ProviderTarget    = ''
+        }
+
+        $started = Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry
+
+        $started | Should -Be $true
+        Should -Invoke Wait-PaneShellReady -Times 0 -Exactly
+        $script:deferredSendCommands.Count | Should -Be 0
+        $script:deferredStatusWrites | Should -Be @('ready')
+    }
+
+    It 'keeps send, dispatch-task, and monitor paths aware of deferred panes' {
+        $script:deferredCoreContent | Should -Match 'function Start-DeferredPaneFromManifestEntry'
+        $script:deferredCoreContent | Should -Match 'Start-DeferredPaneFromManifestEntry -ProjectDir \$projectDir -ManifestEntry \$context'
+        $script:deferredCoreContent | Should -Match 'Start-DeferredPaneFromManifestEntry -ProjectDir \$projectDir -ManifestEntry \$manifestEntry'
+        $script:deferredCoreContent | Should -Match 'deferred_starting'
+        $script:deferredMonitorContent | Should -Match 'deferred_start_failed'
     }
 }
 
