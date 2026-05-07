@@ -1877,6 +1877,10 @@ body[data-popout-surface="1"] #editor-surface {
   width: min(220px, calc(100vw - 48px));
 }
 
+.composer-session-menu-voice {
+  width: min(280px, calc(100vw - 48px));
+}
+
 .composer-session-heading {
   padding: 5px 6px 2px;
   color: var(--text-muted);

@@ -298,6 +298,7 @@ type RuntimeReasoningEffort = "provider-default" | "low" | "medium" | "high" | "
 type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
 type ComposerEffortLevel = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
 type ComposerModelId = "opus-4.7" | "opus-4.7-1m" | "opus-4.6" | "sonnet-4.6" | "haiku-4.5";
+type VoiceDraftMode = "raw" | "cleaned" | "operator_request";
 
 interface ThemeState {
   theme: ThemeMode;
@@ -361,6 +362,7 @@ interface ComposerSessionControlState {
   permissionMode: ComposerPermissionMode;
   model: ComposerModelId;
   effort: ComposerEffortLevel;
+  voiceDraftMode: VoiceDraftMode;
   fastModeEnabled: boolean;
   fastModeTogglePending: boolean;
 }
@@ -454,9 +456,10 @@ let activeComposerMode: ComposerMode = "dispatch";
 let activeComposerPermissionMode: ComposerPermissionMode = "acceptEdits";
 let activeComposerModel: ComposerModelId = "opus-4.7-1m";
 let activeComposerEffort: ComposerEffortLevel = "xhigh";
+let activeVoiceDraftMode: VoiceDraftMode = "raw";
 let activeComposerFastModeEnabled = false;
 let activeComposerFastModeTogglePending = false;
-let openComposerSessionMenu: "permission" | "model" | null = null;
+let openComposerSessionMenu: "permission" | "model" | "voice" | null = null;
 let composerSlashOpen = false;
 let composerSlashQuery = "";
 let composerWinsmuxCommandOpen = false;
@@ -950,6 +953,12 @@ const languageOptions: Array<{ value: LanguageMode; label: string; description: 
   { value: "ja", label: "Japanese", labelJa: "日本語", description: "Use Japanese for the main workspace chrome and settings.", descriptionJa: "主要な操作部品と設定を日本語で表示します。" },
 ];
 
+const voiceDraftModeOptions: Array<{ value: VoiceDraftMode; label: string; labelJa: string; description: string; descriptionJa: string }> = [
+  { value: "raw", label: "Raw", labelJa: "そのまま", description: "Insert the recognized transcript without cleanup.", descriptionJa: "認識結果を整形せず下書きへ入れます。" },
+  { value: "cleaned", label: "Clean draft", labelJa: "整える", description: "Remove fillers and repeated phrases conservatively.", descriptionJa: "不要な言いよどみや繰り返しだけを控えめに整えます。" },
+  { value: "operator_request", label: "Operator request", labelJa: "依頼文", description: "Shape spoken intent into an editable operator request.", descriptionJa: "話した意図を編集可能な依頼文として整えます。" },
+];
+
 const runtimeRoleOptions: Array<{ value: RuntimeRoleId; label: string; labelJa: string; description: string; descriptionJa: string }> = [
   { value: "operator", label: "Operator", labelJa: "オペレーター", description: "Owns approvals and session control.", descriptionJa: "承認とセッション制御を担当します。" },
   { value: "worker", label: "Worker", labelJa: "ワーカー", description: "Handles implementation and verification work.", descriptionJa: "実装と検証を担当します。" },
@@ -1002,6 +1011,7 @@ runtimeRolePreferences = readStoredRuntimeRolePreferences();
   activeComposerPermissionMode = storedComposerControls.permissionMode;
   activeComposerModel = storedComposerControls.model;
   activeComposerEffort = storedComposerControls.effort;
+  activeVoiceDraftMode = storedComposerControls.voiceDraftMode;
   activeComposerFastModeEnabled = storedComposerControls.fastModeEnabled;
   activeComposerFastModeTogglePending = storedComposerControls.fastModeTogglePending;
 }
@@ -5697,6 +5707,7 @@ function defaultComposerSessionControls(): ComposerSessionControlState {
     permissionMode: "acceptEdits",
     model: "opus-4.7-1m",
     effort: "xhigh",
+    voiceDraftMode: "raw",
     fastModeEnabled: false,
     fastModeTogglePending: false,
   };
@@ -5719,6 +5730,7 @@ function normalizeComposerSessionControls(value: Partial<ComposerSessionControlS
     permissionMode: normalizeComposerPermissionMode(value?.permissionMode, fallback.permissionMode),
     model,
     effort: composerEffortOptions.find((item) => item.value === value?.effort)?.value ?? fallback.effort,
+    voiceDraftMode: voiceDraftModeOptions.find((item) => item.value === value?.voiceDraftMode)?.value ?? fallback.voiceDraftMode,
     fastModeEnabled,
     fastModeTogglePending,
   };
@@ -5752,6 +5764,7 @@ function persistComposerSessionControls() {
         permissionMode: activeComposerPermissionMode,
         model: activeComposerModel,
         effort: activeComposerEffort,
+        voiceDraftMode: activeVoiceDraftMode,
         fastModeEnabled: activeComposerFastModeEnabled,
         fastModeTogglePending: activeComposerFastModeTogglePending,
       }),
@@ -7145,6 +7158,61 @@ async function stopNativeVoiceInput(cancelled: boolean) {
   renderVoiceCaptureStatus();
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeVoiceDraftWhitespace(value: string) {
+  return value
+    .replace(/[ \t\r\n]+/g, " ")
+    .replace(/\s+([、。,.!?])/g, "$1")
+    .trim();
+}
+
+function removeVoiceFillers(value: string) {
+  let text = value;
+  for (const filler of ["えー", "えっと", "あの", "あのー", "その", "そのー", "まあ", "なんか"]) {
+    text = text.replace(new RegExp(`(^|[\\s、。,.!?])${escapeRegExp(filler)}(?=$|[\\s、。,.!?])`, "g"), "$1");
+  }
+  text = text.replace(/\b(?:um|uh|erm|like)\b[,\s]*/gi, "");
+  return normalizeVoiceDraftWhitespace(text);
+}
+
+function removeRepeatedVoicePhrases(value: string) {
+  return normalizeVoiceDraftWhitespace(value
+    .replace(/\b([A-Za-z0-9][\w'-]{1,})(?:\s+\1\b)+/gi, "$1")
+    .replace(/([^\s、。,.!?]{2,12})(?:[、,]\s*\1)+/g, "$1"));
+}
+
+function removeVoiceSelfCorrectionMarkers(value: string) {
+  return normalizeVoiceDraftWhitespace(value
+    .replace(/(^|[、。,.!?]\s*)(?:いや|違う|訂正)[、,\s]*/g, "$1")
+    .replace(/\b(?:sorry|correction|rather)\b[:,]?\s*/gi, ""));
+}
+
+function cleanVoiceTranscript(transcript: string) {
+  return removeVoiceSelfCorrectionMarkers(removeRepeatedVoicePhrases(removeVoiceFillers(transcript)));
+}
+
+function shapeVoiceOperatorRequest(transcript: string) {
+  return normalizeVoiceDraftWhitespace(cleanVoiceTranscript(transcript)
+    .replace(/^(?:依頼です|お願い(?:したい(?:のですが|ですけど)?|です)?|やってほしいのは)[、,\s]*/u, "")
+    .replace(/(?:お願いします|お願い)[。.!?\s]*$/u, "")
+    .replace(/^(?:please|can you|could you)\s+/i, ""));
+}
+
+function shapeVoiceTranscript(transcript: string) {
+  switch (activeVoiceDraftMode) {
+    case "cleaned":
+      return cleanVoiceTranscript(transcript);
+    case "operator_request":
+      return shapeVoiceOperatorRequest(transcript);
+    case "raw":
+    default:
+      return transcript;
+  }
+}
+
 function startVoiceInput(composerInput: HTMLTextAreaElement) {
   const SpeechRecognition = getSpeechRecognitionConstructor();
   if (!SpeechRecognition) {
@@ -7202,6 +7270,7 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
     for (let index = event.resultIndex; index < event.results.length; index += 1) {
       transcript += event.results[index]?.[0]?.transcript ?? "";
     }
+    transcript = shapeVoiceTranscript(transcript);
     const separator = voiceTranscriptBase && transcript ? " " : "";
     composerInput.value = `${voiceTranscriptBase}${separator}${transcript}`.trimStart();
     syncComposerInputHeight(composerInput);
@@ -7554,6 +7623,10 @@ function getComposerEffortOption(effort: ComposerEffortLevel = activeComposerEff
   return composerEffortOptions.find((item) => item.value === effort) ?? composerEffortOptions[0];
 }
 
+function getVoiceDraftModeOption(mode: VoiceDraftMode = activeVoiceDraftMode) {
+  return voiceDraftModeOptions.find((item) => item.value === mode) ?? voiceDraftModeOptions[0];
+}
+
 function setComposerPermissionMode(mode: ComposerPermissionMode) {
   activeComposerPermissionMode = mode;
   persistComposerSessionControls();
@@ -7587,6 +7660,13 @@ function setComposerFastMode(enabled: boolean) {
   renderComposerSessionControls();
 }
 
+function setVoiceDraftMode(mode: VoiceDraftMode) {
+  activeVoiceDraftMode = mode;
+  persistComposerSessionControls();
+  openComposerSessionMenu = null;
+  renderComposerSessionControls();
+}
+
 function stepComposerPermissionMode(delta: 1 | -1) {
   const currentIndex = composerPermissionModeOptions.findIndex((item) => item.value === activeComposerPermissionMode);
   const index = currentIndex === -1 ? 0 : currentIndex;
@@ -7601,7 +7681,7 @@ function createComposerShortcut(label: string) {
   return shortcut;
 }
 
-function createComposerSessionControl(kind: "permission" | "model", selectedLabel: string) {
+function createComposerSessionControl(kind: "permission" | "model" | "voice", selectedLabel: string) {
   const group = document.createElement("div");
   group.className = `composer-session-control composer-session-control-${kind}`;
 
@@ -7697,6 +7777,22 @@ function createComposerPermissionMenu() {
   return group;
 }
 
+function createComposerVoiceDraftMenu() {
+  const selected = getVoiceDraftModeOption();
+  const group = createComposerSessionControl("voice", themeState.language === "ja" ? selected.labelJa : selected.label);
+  if (openComposerSessionMenu !== "voice") {
+    return group;
+  }
+
+  const menu = createComposerMenu("composer-voice-menu", "composer-session-menu-voice");
+  appendComposerMenuHeading(menu, themeState.language === "ja" ? "音声下書き" : "Voice draft");
+  for (const option of voiceDraftModeOptions) {
+    appendComposerOptionButton(menu, option, activeVoiceDraftMode, setVoiceDraftMode);
+  }
+  group.appendChild(menu);
+  return group;
+}
+
 function createComposerModelMenu() {
   const modelOption = getComposerModelOption();
   const effortOption = getComposerEffortOption();
@@ -7761,6 +7857,7 @@ function renderComposerSessionControls() {
     modelRoot.innerHTML = "";
   }
   root.appendChild(createComposerPermissionMenu());
+  root.appendChild(createComposerVoiceDraftMenu());
   (modelRoot ?? root).appendChild(createComposerModelMenu());
 }
 

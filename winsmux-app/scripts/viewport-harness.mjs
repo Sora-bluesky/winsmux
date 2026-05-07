@@ -468,6 +468,74 @@ async function assertDesktopVoiceInputCoverage(page) {
   });
 }
 
+async function selectVoiceDraftMode(page, label) {
+  await page.click(".composer-session-trigger-voice");
+  await page.locator("#composer-voice-menu", { hasText: label }).waitFor({ state: "visible" });
+  await page.locator("#composer-voice-menu .composer-session-option", { hasText: label }).click();
+  await page.locator(".composer-session-trigger-voice", { hasText: label }).waitFor();
+}
+
+async function assertDesktopVoiceDraftShaping(page) {
+  const composer = page.locator("#composer-input");
+  await page.locator(".composer-session-trigger-voice", { hasText: "Raw" }).waitFor();
+  await selectVoiceDraftMode(page, "Clean draft");
+  await composer.fill("");
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "true";
+  });
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("えっと テスト、テスト、いや 実行"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "テスト、実行";
+  });
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "false";
+  });
+
+  await selectVoiceDraftMode(page, "Operator request");
+  await composer.fill("");
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "true";
+  });
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("お願いしたいのですが、えっと 調査してくださいお願いします"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "調査してください";
+  });
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "false";
+  });
+
+  await selectVoiceDraftMode(page, "Raw");
+  await composer.fill("");
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "true";
+  });
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("えっと そのまま"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    const preferences = JSON.parse(window.localStorage.getItem("winsmux.composer-session.v1") ?? "{}");
+    return input instanceof HTMLTextAreaElement &&
+      input.value === "えっと そのまま" &&
+      preferences.voiceDraftMode === "raw";
+  });
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "false";
+  });
+}
+
 async function installSpeechRecognitionStub(page) {
   await page.addInitScript(() => {
     const speechRecognitionState = {
@@ -1225,6 +1293,10 @@ async function verifyDesktopViewport(page, previewUrl) {
     await assertDesktopVoiceInputCoverage(page);
   });
 
+  await runStep("desktop voice draft shaping", async () => {
+    await assertDesktopVoiceDraftShaping(page);
+  });
+
   await runStep("desktop composer autosizes without resize grabber", async () => {
     const initialHeight = await page.locator("#composer-input").evaluate((input) => input.getBoundingClientRect().height);
     await page.locator("#composer-input").fill(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"));
@@ -1490,6 +1562,7 @@ async function run() {
             "desktop-operator-chat-contract",
             "desktop-1440x900",
             "desktop-voice-input-a11y",
+            "desktop-voice-draft-shaping",
             "desktop-composer-autosize",
             "desktop-command-bar",
             "desktop-composer-model-controls",
