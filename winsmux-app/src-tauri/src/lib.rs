@@ -58,6 +58,7 @@ struct DesktopSummaryStreamManager {
 struct VoiceCaptureSession {
     generation: u64,
     stop_requested: Arc<AtomicBool>,
+    cleanup_complete: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Debug)]
@@ -129,6 +130,17 @@ fn update_voice_capture_snapshot(
     }
 }
 
+fn wait_voice_capture_cleanup(session: &VoiceCaptureSession, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while !session.cleanup_complete.load(Ordering::SeqCst) {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
 fn desktop_voice_capture_status_from_snapshot(
     snapshot: VoiceCaptureRuntimeSnapshot,
 ) -> DesktopVoiceCaptureStatus {
@@ -197,14 +209,22 @@ async fn desktop_voice_capture_start(app: AppHandle) -> Result<DesktopVoiceCaptu
     let manager = app.state::<VoiceCaptureManager>();
     let generation = manager.next_generation.fetch_add(1, Ordering::SeqCst);
     let stop_requested = Arc::new(AtomicBool::new(false));
+    let cleanup_complete = Arc::new(AtomicBool::new(false));
     {
         let mut session = manager.session.lock().map_err(|e| e.to_string())?;
         if let Some(existing) = session.take() {
             existing.stop_requested.store(true, Ordering::SeqCst);
+            if !wait_voice_capture_cleanup(&existing, Duration::from_secs(3)) {
+                *session = Some(existing);
+                return Err(
+                    "Previous native microphone capture is still releasing the device.".to_string(),
+                );
+            }
         }
         *session = Some(VoiceCaptureSession {
             generation,
             stop_requested: stop_requested.clone(),
+            cleanup_complete: cleanup_complete.clone(),
         });
     }
     {
@@ -222,7 +242,7 @@ async fn desktop_voice_capture_start(app: AppHandle) -> Result<DesktopVoiceCaptu
 
     let snapshot = manager.snapshot.clone();
     std::thread::spawn(move || {
-        run_voice_capture_worker(snapshot, generation, stop_requested);
+        run_voice_capture_worker(snapshot, generation, stop_requested, cleanup_complete);
     });
 
     Ok(get_voice_capture_status(&app))
@@ -239,6 +259,12 @@ async fn desktop_voice_capture_stop(
         match session.take() {
             Some(existing) => {
                 existing.stop_requested.store(true, Ordering::SeqCst);
+                if !wait_voice_capture_cleanup(&existing, Duration::from_secs(3)) {
+                    *session = Some(existing);
+                    return Err(
+                        "Native microphone capture is still releasing the device.".to_string()
+                    );
+                }
                 existing.generation
             }
             None => 0,
@@ -270,9 +296,15 @@ fn run_voice_capture_worker(
     snapshot: Arc<Mutex<VoiceCaptureRuntimeSnapshot>>,
     generation: u64,
     stop_requested: Arc<AtomicBool>,
+    cleanup_complete: Arc<AtomicBool>,
 ) {
     #[cfg(windows)]
-    run_windows_voice_capture_worker(snapshot, generation, stop_requested);
+    run_windows_voice_capture_worker(
+        snapshot,
+        generation,
+        stop_requested,
+        cleanup_complete.clone(),
+    );
 
     #[cfg(not(windows))]
     {
@@ -285,6 +317,7 @@ fn run_voice_capture_worker(
             current.native_available = false;
             current.meter_level = 0.0;
         });
+        cleanup_complete.store(true, Ordering::SeqCst);
     }
 }
 
@@ -293,6 +326,7 @@ fn run_windows_voice_capture_worker(
     snapshot: Arc<Mutex<VoiceCaptureRuntimeSnapshot>>,
     generation: u64,
     stop_requested: Arc<AtomicBool>,
+    cleanup_complete: Arc<AtomicBool>,
 ) {
     const SAMPLE_RATE: u32 = 16_000;
     const CHANNELS: u16 = 1;
@@ -321,6 +355,7 @@ fn run_windows_voice_capture_worker(
             current.native_available = native_available;
             current.meter_level = 0.0;
         });
+        cleanup_complete.store(true, Ordering::SeqCst);
         return;
     }
 
@@ -374,6 +409,7 @@ fn run_windows_voice_capture_worker(
             let _ = unsafe { waveInUnprepareHeader(handle, header, header_size) };
         }
         let _ = unsafe { waveInClose(handle) };
+        cleanup_complete.store(true, Ordering::SeqCst);
         return;
     }
 
@@ -436,6 +472,7 @@ fn run_windows_voice_capture_worker(
         let _ = unsafe { waveInUnprepareHeader(handle, header, header_size) };
     }
     let _ = unsafe { waveInClose(handle) };
+    cleanup_complete.store(true, Ordering::SeqCst);
     update_voice_capture_snapshot(&snapshot, generation, |current| {
         if current.running {
             current.state = "stopped".to_string();
@@ -1008,5 +1045,33 @@ mod tests {
 
         assert!(level > 0.99);
         assert!(level <= 1.0);
+    }
+
+    #[test]
+    fn wait_voice_capture_cleanup_observes_completed_session() {
+        let session = VoiceCaptureSession {
+            generation: 1,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            cleanup_complete: Arc::new(AtomicBool::new(true)),
+        };
+
+        assert!(wait_voice_capture_cleanup(
+            &session,
+            Duration::from_millis(1)
+        ));
+    }
+
+    #[test]
+    fn wait_voice_capture_cleanup_times_out_for_busy_session() {
+        let session = VoiceCaptureSession {
+            generation: 1,
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            cleanup_complete: Arc::new(AtomicBool::new(false)),
+        };
+
+        assert!(!wait_voice_capture_cleanup(
+            &session,
+            Duration::from_millis(1)
+        ));
     }
 }
