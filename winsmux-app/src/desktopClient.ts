@@ -8,6 +8,7 @@ type DesktopCommandName =
   | "desktop_run_promote"
   | "desktop_run_pick_winner"
   | "desktop_runtime_roles_apply"
+  | "desktop_voice_capture_status"
   | "desktop_dogfood_event"
   | "desktop_editor_read"
   | "desktop_explorer_list";
@@ -18,6 +19,7 @@ type DesktopJsonRpcMethod =
   | "desktop.run.promote"
   | "desktop.run.pick_winner"
   | "desktop.runtime.roles.apply"
+  | "desktop.voice.capture_status"
   | "desktop.dogfood.event"
   | "desktop.editor.read"
   | "desktop.explorer.list";
@@ -51,6 +53,39 @@ export interface DesktopCommandTransport {
     command: DesktopCommandName,
     payload?: Record<string, unknown>,
   ): Promise<TResponse>;
+}
+
+export type DesktopVoiceCaptureState =
+  | "unavailable"
+  | "permission_denied"
+  | "no_microphone"
+  | "silence"
+  | "cancelled"
+  | "restarting"
+  | "recording"
+  | "stopped";
+
+export interface DesktopVoiceCaptureNativeStatus {
+  available: boolean;
+  state: DesktopVoiceCaptureState;
+  permission: string;
+  device: string;
+  meter_supported: boolean;
+  restart_supported: boolean;
+  reason: string;
+}
+
+export interface DesktopVoiceCaptureBrowserFallbackStatus {
+  expected: boolean;
+  reason: string;
+}
+
+export interface DesktopVoiceCaptureStatus {
+  version: number;
+  capture_mode: "native" | "browser_fallback" | "unavailable";
+  native: DesktopVoiceCaptureNativeStatus;
+  browser_fallback: DesktopVoiceCaptureBrowserFallbackStatus;
+  state_contract: DesktopVoiceCaptureState[];
 }
 
 export interface DesktopBoardSummary {
@@ -534,6 +569,8 @@ function getDesktopJsonRpcMethod(command: DesktopCommandName): DesktopJsonRpcMet
       return "desktop.run.pick_winner";
     case "desktop_runtime_roles_apply":
       return "desktop.runtime.roles.apply";
+    case "desktop_voice_capture_status":
+      return "desktop.voice.capture_status";
     case "desktop_dogfood_event":
       return "desktop.dogfood.event";
     case "desktop_editor_read":
@@ -701,6 +738,17 @@ export async function applyDesktopRuntimeRolePreferences(
     );
   } catch (error) {
     throw normalizeDesktopError("desktop_runtime_roles_apply", error);
+  }
+}
+
+export async function getDesktopVoiceCaptureStatus(projectDir?: string | null) {
+  try {
+    return await desktopCommandTransport.request<DesktopVoiceCaptureStatus>(
+      "desktop_voice_capture_status",
+      buildProjectDirPayload(projectDir),
+    );
+  } catch (error) {
+    throw normalizeDesktopError("desktop_voice_capture_status", error);
   }
 }
 

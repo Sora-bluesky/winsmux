@@ -10,6 +10,7 @@ import {
   getDesktopRunExplain,
   getDesktopExplorerEntries,
   getDesktopSummarySnapshot,
+  getDesktopVoiceCaptureStatus,
   pickDesktopRunWinner,
   promoteDesktopRunTactic,
   recordDesktopDogfoodEvent,
@@ -23,6 +24,7 @@ import {
   type DesktopRunProjection,
   type DesktopSummarySnapshot,
   type DesktopRuntimeRolePreference,
+  type DesktopVoiceCaptureStatus,
 } from "./desktopClient";
 import { getEditorFileKey, getSourceChangeKey, pickEditorPathCandidate, pickSourceChangeKeyCandidate } from "./editorTargets";
 import {
@@ -491,6 +493,9 @@ let operatorOutputFlushTimer: number | null = null;
 let voiceRecognition: SpeechRecognitionLike | null = null;
 let voiceListening = false;
 let voiceTranscriptBase = "";
+let voiceCaptureStatus: DesktopVoiceCaptureStatus | null = null;
+let voiceCaptureStatusError = "";
+let voiceCaptureStatusRefreshStarted = false;
 const detectedPreviewTargets = new Map<string, PreviewTarget>();
 const PREVIEW_FRESHNESS_WINDOW_MS = 30_000;
 const PANE_META_REFRESH_INTERVAL_MS = 30_000;
@@ -6890,24 +6895,110 @@ function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null 
   return speechWindow.SpeechRecognition ?? speechWindow.webkitSpeechRecognition ?? null;
 }
 
+function isBrowserVoiceInputSupported() {
+  return Boolean(getSpeechRecognitionConstructor());
+}
+
+function getVoiceCaptureStatusMessage() {
+  if (!isTauri()) {
+    return "";
+  }
+
+  if (voiceCaptureStatusError) {
+    return getLanguageText(
+      `Native microphone status failed: ${voiceCaptureStatusError}`,
+      `ネイティブのマイク状態を取得できません: ${voiceCaptureStatusError}`,
+    );
+  }
+
+  if (!voiceCaptureStatus) {
+    return getLanguageText(
+      "Checking native microphone status...",
+      "ネイティブのマイク状態を確認中...",
+    );
+  }
+
+  if (voiceCaptureStatus.native.available) {
+    return getLanguageText(
+      "Native microphone capture is available.",
+      "ネイティブのマイク入力を利用できます。",
+    );
+  }
+
+  if (isBrowserVoiceInputSupported()) {
+    return getLanguageText(
+      "Native microphone capture is not ready; browser voice input is active.",
+      "ネイティブのマイク入力は準備中です。ブラウザーの音声入力を使います。",
+    );
+  }
+
+  return getLanguageText(
+    "Native microphone capture is not ready, and browser voice input is unavailable.",
+    "ネイティブのマイク入力は準備中です。この環境ではブラウザーの音声入力も使えません。",
+  );
+}
+
+function renderVoiceCaptureStatus() {
+  const status = document.getElementById("voice-input-status") as HTMLElement | null;
+  if (!status) {
+    return;
+  }
+
+  const message = getVoiceCaptureStatusMessage();
+  status.hidden = !message;
+  status.textContent = message;
+  status.dataset.state = voiceCaptureStatus?.native.state ?? (voiceCaptureStatusError ? "error" : "unknown");
+}
+
+async function refreshVoiceCaptureStatus() {
+  if (!isTauri()) {
+    renderVoiceCaptureStatus();
+    return;
+  }
+
+  try {
+    voiceCaptureStatus = await getDesktopVoiceCaptureStatus();
+    voiceCaptureStatusError = "";
+  } catch (error) {
+    voiceCaptureStatus = null;
+    voiceCaptureStatusError = error instanceof Error ? error.message : String(error);
+  }
+  updateVoiceInputButton();
+  renderVoiceCaptureStatus();
+}
+
+function ensureVoiceCaptureStatusRefresh() {
+  if (voiceCaptureStatusRefreshStarted) {
+    return;
+  }
+  voiceCaptureStatusRefreshStarted = true;
+  void refreshVoiceCaptureStatus();
+}
+
 function updateVoiceInputButton() {
   const button = document.getElementById("voice-input-btn") as HTMLButtonElement | null;
   if (!button) {
     return;
   }
 
-  const supported = Boolean(getSpeechRecognitionConstructor());
+  const supported = isBrowserVoiceInputSupported();
   button.disabled = !supported;
   button.classList.toggle("is-recording", voiceListening);
   button.setAttribute("aria-pressed", voiceListening ? "true" : "false");
   const label = !supported
-    ? getLanguageText("Voice input is not available in this browser", "このブラウザーでは音声入力を利用できません")
+    ? isTauri()
+      ? getLanguageText(
+        "Voice input is unavailable until native microphone capture is ready",
+        "ネイティブのマイク入力が準備できるまで音声入力は使えません",
+      )
+      : getLanguageText("Voice input is not available in this browser", "このブラウザーでは音声入力を利用できません")
     : voiceListening
       ? getLanguageText("Stop voice input", "音声入力を停止")
       : getLanguageText("Start voice input", "音声入力を開始");
   const labelWithShortcut = supported ? `${label} (${normalizeVoiceShortcut(themeState.voiceShortcut)})` : label;
   button.setAttribute("aria-label", labelWithShortcut);
   button.setAttribute("title", labelWithShortcut);
+  renderVoiceCaptureStatus();
 }
 
 function stopVoiceInput() {
@@ -6924,6 +7015,7 @@ function stopVoiceInput() {
 function startVoiceInput(composerInput: HTMLTextAreaElement) {
   const SpeechRecognition = getSpeechRecognitionConstructor();
   if (!SpeechRecognition) {
+    ensureVoiceCaptureStatusRefresh();
     updateVoiceInputButton();
     return;
   }
@@ -11858,6 +11950,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   const voiceInputButton = document.getElementById("voice-input-btn") as HTMLButtonElement | null;
   const interruptOperatorButton = document.getElementById("interrupt-operator-btn") as HTMLButtonElement | null;
   if (composer && composerInput) {
+    ensureVoiceCaptureStatusRefresh();
+
     voiceInputButton?.addEventListener("click", () => {
       toggleVoiceInput(composerInput);
     });
