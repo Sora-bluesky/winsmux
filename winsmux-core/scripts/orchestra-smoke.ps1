@@ -221,6 +221,47 @@ function Test-OrchestraSmokeWarmProcess {
     return ($commandLine.IndexOf('__warm__', [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
 }
 
+function Test-OrchestraSmokeGeneratedPaneShell {
+    param(
+        [AllowNull()]$Process,
+        [AllowNull()]$Snapshot
+    )
+
+    if ($null -eq $Process) {
+        return $false
+    }
+
+    $processName = [string](Get-OrchestraSmokeObjectPropertyValue -InputObject $Process -Name 'Name' -Default '')
+    $processName = [System.IO.Path]::GetFileNameWithoutExtension($processName).ToLowerInvariant()
+    if ($processName -notin @('pwsh', 'powershell')) {
+        return $false
+    }
+
+    $commandLine = [string](Get-OrchestraSmokeObjectPropertyValue -InputObject $Process -Name 'CommandLine' -Default '')
+    if ([string]::IsNullOrWhiteSpace($commandLine)) {
+        return $false
+    }
+
+    $hasWinsmuxMarker = $false
+    foreach ($marker in @('__psmux_cwd_hook', 'PSMUX_CLAUDE_TEAMMATE_MODE')) {
+        if ($commandLine.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            $hasWinsmuxMarker = $true
+            break
+        }
+    }
+
+    if (-not $hasWinsmuxMarker) {
+        return $false
+    }
+
+    $parentProcessId = ConvertTo-OrchestraSmokeInt -Value (Get-OrchestraSmokeObjectPropertyValue -InputObject $Process -Name 'ParentProcessId')
+    if ($parentProcessId -gt 0 -and $null -ne $Snapshot -and $null -ne $Snapshot.ById -and $Snapshot.ById.ContainsKey($parentProcessId)) {
+        return $false
+    }
+
+    return $true
+}
+
 function Get-OrchestraSmokeProcessContract {
     param(
         [AllowNull()]$Manifest,
@@ -235,6 +276,7 @@ function Get-OrchestraSmokeProcessContract {
     $pidMap = Get-OrchestraSmokeManagedProcessPidMap -Manifest $Manifest
     $backgroundHelpers = [System.Collections.Generic.List[object]]::new()
     $staleProcesses = [System.Collections.Generic.List[object]]::new()
+    $staleProcessIds = [System.Collections.Generic.HashSet[int]]::new()
 
     foreach ($entry in $pidMap.GetEnumerator()) {
         $managedProcessId = ConvertTo-OrchestraSmokeInt -Value $entry.Key
@@ -245,6 +287,7 @@ function Get-OrchestraSmokeProcessContract {
 
         if (-not $snapshot.ById.ContainsKey($managedProcessId)) {
             $staleProcesses.Add([ordered]@{ pid = $managedProcessId; label = $label; reason = 'missing' }) | Out-Null
+            $staleProcessIds.Add($managedProcessId) | Out-Null
             continue
         }
 
@@ -252,6 +295,7 @@ function Get-OrchestraSmokeProcessContract {
         $scriptName = Get-OrchestraSmokeManagedScriptName -ProcessLabel $label
         if (-not (Test-OrchestraSmokeProcessCommandLineMarker -Process $process -Marker $scriptName)) {
             $staleProcesses.Add([ordered]@{ pid = $managedProcessId; label = $label; reason = 'command_line_mismatch' }) | Out-Null
+            $staleProcessIds.Add($managedProcessId) | Out-Null
             continue
         }
 
@@ -265,6 +309,7 @@ function Get-OrchestraSmokeProcessContract {
             $attachHostCount = 1
         } elseif ($AttachedClientCount -lt 1) {
             $staleProcesses.Add([ordered]@{ pid = $attachPid; label = 'visible_attach_host'; reason = 'missing' }) | Out-Null
+            $staleProcessIds.Add($attachPid) | Out-Null
         }
     }
 
@@ -272,6 +317,12 @@ function Get-OrchestraSmokeProcessContract {
     foreach ($process in @($snapshot.Processes)) {
         if (Test-OrchestraSmokeWarmProcess -Process $process) {
             $warmProcessCount++
+        }
+
+        $processId = ConvertTo-OrchestraSmokeInt -Value (Get-OrchestraSmokeObjectPropertyValue -InputObject $process -Name 'ProcessId')
+        if ($processId -gt 0 -and -not $staleProcessIds.Contains($processId) -and (Test-OrchestraSmokeGeneratedPaneShell -Process $process -Snapshot $snapshot)) {
+            $staleProcesses.Add([ordered]@{ pid = $processId; label = 'worker_shell'; reason = 'parent_missing_winsmux_shell' }) | Out-Null
+            $staleProcessIds.Add($processId) | Out-Null
         }
     }
 

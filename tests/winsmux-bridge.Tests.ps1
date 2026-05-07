@@ -13281,6 +13281,53 @@ Describe 'winsmux orchestra-smoke command' {
         $contract.stale_process_count | Should -Be 0
     }
 
+    It 'reports parentless winsmux-generated pane shells as stale processes' {
+        $parent = [pscustomobject]@{ ProcessId = 900; ParentProcessId = 0; Name = 'WindowsTerminal.exe'; CommandLine = 'wt' }
+        $staleShell = [pscustomobject]@{
+            ProcessId       = 801
+            ParentProcessId = 700
+            Name            = 'pwsh.exe'
+            CommandLine     = 'pwsh -NoLogo -NoProfile -NoExit -Command "if (-not (Test-Path variable:Global:__psmux_cwd_hook)) { $Global:__psmux_cwd_hook = $true }"'
+        }
+        $vscodeShell = [pscustomobject]@{
+            ProcessId       = 802
+            ParentProcessId = 0
+            Name            = 'pwsh.exe'
+            CommandLine     = 'pwsh -NoExit -Command ". C:\Users\test\AppData\Local\Programs\Microsoft VS Code\shellIntegration.ps1"'
+        }
+        $activeShell = [pscustomobject]@{
+            ProcessId       = 901
+            ParentProcessId = 900
+            Name            = 'pwsh.exe'
+            CommandLine     = 'pwsh -NoLogo -NoProfile -NoExit -Command "$Global:__psmux_cwd_hook = $true"'
+        }
+        $snapshot = [pscustomobject]@{
+            Processes = @($parent, $staleShell, $vscodeShell, $activeShell)
+            ById = @{
+                801 = $staleShell
+                802 = $vscodeShell
+                900 = $parent
+                901 = $activeShell
+            }
+            SupportsCommandLine = $true
+        }
+
+        $contract = Invoke-TestOrchestraProcessContract `
+            -Manifest $null `
+            -AttachState $null `
+            -PaneCount 6 `
+            -ExpectedPaneCount 6 `
+            -AttachedClientCount 0 `
+            -ProcessSnapshot $snapshot
+
+        $contract.ok | Should -Be $false
+        $contract.stale_process_count | Should -Be 1
+        $contract.stale_processes[0].pid | Should -Be 801
+        $contract.stale_processes[0].label | Should -Be 'worker_shell'
+        $contract.stale_processes[0].reason | Should -Be 'parent_missing_winsmux_shell'
+        $contract.warnings | Should -Contain 'stale managed process count 1 exceeds budget 0.'
+    }
+
     It 'treats the orchestra supervisor as one background helper' {
         $snapshot = [pscustomobject]@{
             Processes = @(
