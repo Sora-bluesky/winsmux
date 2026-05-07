@@ -269,7 +269,8 @@ function Get-OrchestraSmokeProcessContract {
         [Parameter(Mandatory = $true)][int]$PaneCount,
         [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
         [Parameter(Mandatory = $true)][int]$AttachedClientCount,
-        [AllowNull()]$ProcessSnapshot = $null
+        [AllowNull()]$ProcessSnapshot = $null,
+        [bool]$CountMissingProcessReferences = $true
     )
 
     $snapshot = if ($null -ne $ProcessSnapshot) { $ProcessSnapshot } else { Get-OrchestraSmokeProcessSnapshot }
@@ -286,8 +287,10 @@ function Get-OrchestraSmokeProcessContract {
         }
 
         if (-not $snapshot.ById.ContainsKey($managedProcessId)) {
-            $staleProcesses.Add([ordered]@{ pid = $managedProcessId; label = $label; reason = 'missing' }) | Out-Null
-            $staleProcessIds.Add($managedProcessId) | Out-Null
+            if ($CountMissingProcessReferences) {
+                $staleProcesses.Add([ordered]@{ pid = $managedProcessId; label = $label; reason = 'missing' }) | Out-Null
+                $staleProcessIds.Add($managedProcessId) | Out-Null
+            }
             continue
         }
 
@@ -307,7 +310,7 @@ function Get-OrchestraSmokeProcessContract {
     if ($attachPid -gt 0) {
         if ($snapshot.ById.ContainsKey($attachPid)) {
             $attachHostCount = 1
-        } elseif ($AttachedClientCount -lt 1) {
+        } elseif ($CountMissingProcessReferences -and $AttachedClientCount -lt 1) {
             $staleProcesses.Add([ordered]@{ pid = $attachPid; label = 'visible_attach_host'; reason = 'missing' }) | Out-Null
             $staleProcessIds.Add($attachPid) | Out-Null
         }
@@ -844,7 +847,8 @@ $processContract = Get-OrchestraSmokeProcessContract `
     -AttachState $attachState `
     -PaneCount $paneCount `
     -ExpectedPaneCount $expectedPaneCount `
-    -AttachedClientCount $attachedClientCount
+    -AttachedClientCount $attachedClientCount `
+    -CountMissingProcessReferences $paneProbeOk
 if (-not [bool]$processContract.ok) {
     foreach ($warning in @($processContract.warnings)) {
         $smokeErrors.Add("process contract: $warning") | Out-Null
