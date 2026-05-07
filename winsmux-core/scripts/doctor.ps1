@@ -472,6 +472,25 @@ function Get-DoctorPowerShellProcessWarnThreshold {
     return $threshold
 }
 
+function Get-DoctorPowerShellStartupLowCountWarnThreshold {
+    $threshold = 8
+    $rawValue = [string]$env:WINSMUX_DOCTOR_POWERSHELL_STARTUP_LOW_COUNT_WARN_THRESHOLD
+    if ([string]::IsNullOrWhiteSpace($rawValue)) {
+        return $threshold
+    }
+
+    try {
+        $parsed = [int]$rawValue
+        if ($parsed -gt 0) {
+            return $parsed
+        }
+    } catch {
+        return $threshold
+    }
+
+    return $threshold
+}
+
 function New-PowerShellProcessPressureResult {
     param(
         [Parameter(Mandatory = $true)]$Snapshot,
@@ -541,6 +560,7 @@ function New-PowerShellStartupEvidenceResult {
         [Parameter(Mandatory = $true)]$Snapshot,
         [Parameter(Mandatory = $true)]$ProtectedIds,
         [Parameter(Mandatory = $true)][int]$WarnThreshold,
+        [int]$LowCountWarnThreshold = 8,
         [Parameter(Mandatory = $true)][ValidateSet('pass', 'fail')][string]$SmokeStatus,
         [Parameter(Mandatory = $true)][string]$SmokeDetail
     )
@@ -572,8 +592,16 @@ function New-PowerShellStartupEvidenceResult {
     }
 
     $countState = if ($count -ge $WarnThreshold) { 'at_or_above_threshold' } else { 'below_threshold' }
-    $status = if ($SmokeStatus -eq 'fail') { 'warn' } else { 'pass' }
-    $detail = "pwsh_count=$count; count_state=$countState; parent_categories=$categoryText; bare_pwsh=$SmokeStatus; smoke_detail=$SmokeDetail; scoped_cleanup=close related VS Code, Windows Terminal, or Codex shells first; command_lines=omitted"
+    $startupRisk = 'normal'
+    if ($SmokeStatus -eq 'fail') {
+        $startupRisk = 'smoke_failed'
+    } elseif ($count -ge $WarnThreshold) {
+        $startupRisk = 'high_count'
+    } elseif ($count -ge $LowCountWarnThreshold) {
+        $startupRisk = 'low_count_risk'
+    }
+    $status = if ($startupRisk -eq 'normal') { 'pass' } else { 'warn' }
+    $detail = "pwsh_count=$count; count_state=$countState; low_count_threshold=$LowCountWarnThreshold; startup_risk=$startupRisk; parent_categories=$categoryText; bare_pwsh=$SmokeStatus; smoke_detail=$SmokeDetail; scoped_cleanup=close related VS Code, Windows Terminal, or Codex shells first; command_lines=omitted"
 
     return New-DoctorResult -Status $status -Label 'PowerShell startup evidence' -Detail $detail
 }
@@ -646,9 +674,10 @@ function Test-PowerShellStartupEvidenceCheck {
     $snapshot = Get-DoctorProcessSnapshot
     $protectedIds = @(Get-DoctorAncestorProcessIds -Snapshot $snapshot -ProcessId $PID)
     $warnThreshold = Get-DoctorPowerShellProcessWarnThreshold
+    $lowCountWarnThreshold = Get-DoctorPowerShellStartupLowCountWarnThreshold
     $smoke = Invoke-DoctorPowerShellStartupSmoke
 
-    return New-PowerShellStartupEvidenceResult -Snapshot $snapshot -ProtectedIds $protectedIds -WarnThreshold $warnThreshold -SmokeStatus $smoke.Status -SmokeDetail $smoke.Detail
+    return New-PowerShellStartupEvidenceResult -Snapshot $snapshot -ProtectedIds $protectedIds -WarnThreshold $warnThreshold -LowCountWarnThreshold $lowCountWarnThreshold -SmokeStatus $smoke.Status -SmokeDetail $smoke.Detail
 }
 
 function Invoke-DoctorOrchestraSmokeJson {

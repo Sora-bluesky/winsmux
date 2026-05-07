@@ -475,6 +475,13 @@ async function selectVoiceDraftMode(page, label) {
   await page.locator(".composer-session-trigger-voice", { hasText: label }).waitFor();
 }
 
+async function selectVoiceVocabularyMode(page, label) {
+  await page.click(".composer-session-trigger-voice");
+  await page.locator("#composer-voice-menu", { hasText: "Vocabulary" }).waitFor({ state: "visible" });
+  await page.locator("#composer-voice-menu .composer-session-option", { hasText: label }).click();
+  await page.locator(".composer-session-trigger-voice", { hasText: label }).waitFor();
+}
+
 async function assertDesktopVoiceDraftShaping(page) {
   const composer = page.locator("#composer-input");
   await page.locator(".composer-session-trigger-voice", { hasText: "Raw" }).waitFor();
@@ -534,6 +541,44 @@ async function assertDesktopVoiceDraftShaping(page) {
     const button = document.querySelector("#voice-input-btn");
     return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "false";
   });
+}
+
+async function assertDesktopVoiceVocabularyDictionary(page) {
+  const composer = page.locator("#composer-input");
+  await page.locator(".composer-session-trigger-voice", { hasText: "Project terms" }).waitFor();
+  await selectVoiceDraftMode(page, "Raw");
+  await selectVoiceVocabularyMode(page, "Project terms");
+  await composer.fill("");
+  await startBrowserVoiceInput(page);
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("wins mux task four two four read me dot md main dot ts"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    const preferences = JSON.parse(window.localStorage.getItem("winsmux.composer-session.v1") ?? "{}");
+    return input instanceof HTMLTextAreaElement &&
+      input.value === "winsmux TASK-424 README.md main.ts" &&
+      preferences.voiceVocabularyMode === "project";
+  });
+  await stopBrowserVoiceInput(page);
+
+  await page.evaluate(() => {
+    window.localStorage.setItem(
+      "winsmux.voice-vocabulary.v1",
+      JSON.stringify([{ spoken: "internal memo", replacement: "internal-note.md" }]),
+    );
+  });
+  await selectVoiceVocabularyMode(page, "Project + custom");
+  await composer.fill("");
+  await startBrowserVoiceInput(page);
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("internal memo wins mux"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    const preferences = JSON.parse(window.localStorage.getItem("winsmux.composer-session.v1") ?? "{}");
+    return input instanceof HTMLTextAreaElement &&
+      input.value === "internal-note.md winsmux" &&
+      preferences.voiceVocabularyMode === "project_custom";
+  });
+  await stopBrowserVoiceInput(page);
+  await selectVoiceVocabularyMode(page, "Project terms");
 }
 
 async function startBrowserVoiceInput(page) {
@@ -1371,6 +1416,10 @@ async function verifyDesktopViewport(page, previewUrl) {
     await assertDesktopVoiceDraftShaping(page);
   });
 
+  await runStep("desktop voice vocabulary dictionary", async () => {
+    await assertDesktopVoiceVocabularyDictionary(page);
+  });
+
   await runStep("desktop slash-aware voice draft", async () => {
     await assertDesktopSlashAwareVoiceDraft(page);
   });
@@ -1641,6 +1690,7 @@ async function run() {
             "desktop-1440x900",
             "desktop-voice-input-a11y",
             "desktop-voice-draft-shaping",
+            "desktop-voice-vocabulary-dictionary",
             "desktop-slash-aware-voice-draft",
             "desktop-composer-autosize",
             "desktop-command-bar",
