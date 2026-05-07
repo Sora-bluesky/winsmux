@@ -6886,6 +6886,8 @@ Describe 'doctor bridge config metadata check' {
         $result.Label | Should -Be 'PowerShell startup evidence'
         $result.Detail | Should -Match 'pwsh_count=3'
         $result.Detail | Should -Match 'count_state=below_threshold'
+        $result.Detail | Should -Match 'low_count_threshold=8'
+        $result.Detail | Should -Match 'startup_risk=normal'
         $result.Detail | Should -Match 'bare_pwsh=pass'
         $result.Detail | Should -Match 'codex=1'
         $result.Detail | Should -Match 'vscode=1'
@@ -6893,6 +6895,37 @@ Describe 'doctor bridge config metadata check' {
         $result.Detail | Should -Match 'command_lines=omitted'
         $result.Detail | Should -Not -Match 'secret-value'
         $result.Detail | Should -Not -Match '2201'
+    }
+
+    It 'warns for low-count PowerShell startup recurrence risk below the high process threshold' {
+        $protectedIds = [System.Collections.Generic.HashSet[int]]::new()
+        $processes = @()
+        $byId = @{}
+        for ($index = 1; $index -le 12; $index++) {
+            $process = [pscustomobject]@{
+                ProcessId       = 3000 + $index
+                ParentProcessId = 0
+                Name            = 'pwsh.exe'
+                CommandLine     = "pwsh -NoProfile -Command redacted-$index"
+            }
+            $processes += $process
+            $byId[$process.ProcessId] = $process
+        }
+        $snapshot = [pscustomobject]@{
+            Processes = $processes
+            ById = $byId
+            SupportsCommandLine = $true
+        }
+
+        $result = New-PowerShellStartupEvidenceResult -Snapshot $snapshot -ProtectedIds $protectedIds -WarnThreshold 100 -LowCountWarnThreshold 8 -SmokeStatus pass -SmokeDetail '7.5.4'
+
+        $result.Status | Should -Be 'warn'
+        $result.Label | Should -Be 'PowerShell startup evidence'
+        $result.Detail | Should -Match 'pwsh_count=12'
+        $result.Detail | Should -Match 'count_state=below_threshold'
+        $result.Detail | Should -Match 'startup_risk=low_count_risk'
+        $result.Detail | Should -Match 'command_lines=omitted'
+        $result.Detail | Should -Not -Match 'redacted-'
     }
 
     It 'warns in startup evidence when the bare PowerShell smoke check fails' {
@@ -6909,6 +6942,7 @@ Describe 'doctor bridge config metadata check' {
         $result.Label | Should -Be 'PowerShell startup evidence'
         $result.Detail | Should -Match 'pwsh_count=0'
         $result.Detail | Should -Match 'bare_pwsh=fail'
+        $result.Detail | Should -Match 'startup_risk=smoke_failed'
         $result.Detail | Should -Match '3221225794'
     }
 }

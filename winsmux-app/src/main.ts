@@ -299,6 +299,7 @@ type ComposerPermissionMode = "auto" | "default" | "acceptEdits" | "plan";
 type ComposerEffortLevel = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
 type ComposerModelId = "opus-4.7" | "opus-4.7-1m" | "opus-4.6" | "sonnet-4.6" | "haiku-4.5";
 type VoiceDraftMode = "raw" | "cleaned" | "operator_request";
+type VoiceVocabularyMode = "off" | "project" | "project_custom";
 
 interface ThemeState {
   theme: ThemeMode;
@@ -363,6 +364,7 @@ interface ComposerSessionControlState {
   model: ComposerModelId;
   effort: ComposerEffortLevel;
   voiceDraftMode: VoiceDraftMode;
+  voiceVocabularyMode: VoiceVocabularyMode;
   fastModeEnabled: boolean;
   fastModeTogglePending: boolean;
 }
@@ -499,6 +501,7 @@ let voiceRecognition: SpeechRecognitionLike | null = null;
 let voiceListening = false;
 let voiceInputMode: "browser" | "native" | null = null;
 let voiceTranscriptBase = "";
+let activeVoiceVocabularyMode: VoiceVocabularyMode = "project";
 let voiceCaptureStatus: DesktopVoiceCaptureStatus | null = null;
 let voiceCaptureStatusError = "";
 let voiceCaptureStatusRefreshStarted = false;
@@ -580,6 +583,7 @@ let preferredWideContextOpen = false;
 const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
 const RUNTIME_ROLE_PREFERENCES_STORAGE_KEY = "winsmux.runtime-role.preferences.v1";
 const COMPOSER_SESSION_STORAGE_KEY = "winsmux.composer-session.v1";
+const VOICE_VOCABULARY_STORAGE_NAME = "winsmux.voice-vocabulary.v1";
 const POPOUT_SURFACE_STORAGE_KEY_PREFIX = "winsmux.popout-surface.";
 const PROJECT_SESSIONS_STORAGE_KEY = "winsmux.project-sessions.v1";
 const ACTIVE_PROJECT_STORAGE_KEY = "winsmux.active-project.v1";
@@ -960,6 +964,31 @@ const voiceDraftModeOptions: Array<{ value: VoiceDraftMode; label: string; label
   { value: "operator_request", label: "Operator request", labelJa: "依頼文", description: "Shape spoken intent into an editable operator request.", descriptionJa: "話した意図を編集可能な依頼文として整えます。" },
 ];
 
+const voiceVocabularyModeOptions: Array<{ value: VoiceVocabularyMode; label: string; labelJa: string; description: string; descriptionJa: string }> = [
+  { value: "off", label: "Vocabulary off", labelJa: "語彙なし", description: "Use speech recognition text exactly as received.", descriptionJa: "音声認識の結果をそのまま使います。" },
+  { value: "project", label: "Project terms", labelJa: "プロジェクト語彙", description: "Correct common project terms before shaping the draft.", descriptionJa: "下書きを整える前に、よく使うプロジェクト語彙へ直します。" },
+  { value: "project_custom", label: "Project + custom", labelJa: "語彙と追加辞書", description: "Also apply local custom readings stored on this device.", descriptionJa: "この端末に保存した追加の読みも使います。" },
+];
+
+const projectVoiceVocabularyEntries = [
+  { spoken: "wins mux", replacement: "winsmux" },
+  { spoken: "win smux", replacement: "winsmux" },
+  { spoken: "ウィンズ マックス", replacement: "winsmux" },
+  { spoken: "ウィンズマックス", replacement: "winsmux" },
+  { spoken: "task four two four", replacement: "TASK-424" },
+  { spoken: "task four twenty four", replacement: "TASK-424" },
+  { spoken: "task 424", replacement: "TASK-424" },
+  { spoken: "タスク 四 二 四", replacement: "TASK-424" },
+  { spoken: "タスク よん に よん", replacement: "TASK-424" },
+  { spoken: "read me dot md", replacement: "README.md" },
+  { spoken: "readme dot md", replacement: "README.md" },
+  { spoken: "road map dot md", replacement: "ROADMAP.md" },
+  { spoken: "main dot ts", replacement: "main.ts" },
+  { spoken: "viewport harness", replacement: "viewport-harness.mjs" },
+  { spoken: "slash review", replacement: "slash review" },
+  { spoken: "slash dispatch", replacement: "slash dispatch" },
+];
+
 const runtimeRoleOptions: Array<{ value: RuntimeRoleId; label: string; labelJa: string; description: string; descriptionJa: string }> = [
   { value: "operator", label: "Operator", labelJa: "オペレーター", description: "Owns approvals and session control.", descriptionJa: "承認とセッション制御を担当します。" },
   { value: "worker", label: "Worker", labelJa: "ワーカー", description: "Handles implementation and verification work.", descriptionJa: "実装と検証を担当します。" },
@@ -1013,6 +1042,7 @@ runtimeRolePreferences = readStoredRuntimeRolePreferences();
   activeComposerModel = storedComposerControls.model;
   activeComposerEffort = storedComposerControls.effort;
   activeVoiceDraftMode = storedComposerControls.voiceDraftMode;
+  activeVoiceVocabularyMode = storedComposerControls.voiceVocabularyMode;
   activeComposerFastModeEnabled = storedComposerControls.fastModeEnabled;
   activeComposerFastModeTogglePending = storedComposerControls.fastModeTogglePending;
 }
@@ -5709,6 +5739,7 @@ function defaultComposerSessionControls(): ComposerSessionControlState {
     model: "opus-4.7-1m",
     effort: "xhigh",
     voiceDraftMode: "raw",
+    voiceVocabularyMode: "project",
     fastModeEnabled: false,
     fastModeTogglePending: false,
   };
@@ -5732,6 +5763,7 @@ function normalizeComposerSessionControls(value: Partial<ComposerSessionControlS
     model,
     effort: composerEffortOptions.find((item) => item.value === value?.effort)?.value ?? fallback.effort,
     voiceDraftMode: voiceDraftModeOptions.find((item) => item.value === value?.voiceDraftMode)?.value ?? fallback.voiceDraftMode,
+    voiceVocabularyMode: voiceVocabularyModeOptions.find((item) => item.value === value?.voiceVocabularyMode)?.value ?? fallback.voiceVocabularyMode,
     fastModeEnabled,
     fastModeTogglePending,
   };
@@ -5766,6 +5798,7 @@ function persistComposerSessionControls() {
         model: activeComposerModel,
         effort: activeComposerEffort,
         voiceDraftMode: activeVoiceDraftMode,
+        voiceVocabularyMode: activeVoiceVocabularyMode,
         fastModeEnabled: activeComposerFastModeEnabled,
         fastModeTogglePending: activeComposerFastModeTogglePending,
       }),
@@ -7170,6 +7203,63 @@ function normalizeVoiceDraftWhitespace(value: string) {
     .trim();
 }
 
+function isVoiceVocabularyModeEnabled() {
+  return activeVoiceVocabularyMode === "project" || activeVoiceVocabularyMode === "project_custom";
+}
+
+function readStoredCustomVoiceVocabularyEntries() {
+  try {
+    const rawValue = window.localStorage.getItem(VOICE_VOCABULARY_STORAGE_NAME);
+    if (!rawValue) {
+      return [];
+    }
+    const parsed = JSON.parse(rawValue);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .map((entry) => ({
+        spoken: typeof entry?.spoken === "string" ? normalizeVoiceDraftWhitespace(entry.spoken).slice(0, 80) : "",
+        replacement: typeof entry?.replacement === "string" ? normalizeVoiceDraftWhitespace(entry.replacement).slice(0, 120) : "",
+      }))
+      .filter((entry) => entry.spoken.length >= 2 && entry.replacement.length >= 1)
+      .slice(0, 40);
+  } catch {
+    return [];
+  }
+}
+
+function getVoiceVocabularyEntries() {
+  if (!isVoiceVocabularyModeEnabled()) {
+    return [];
+  }
+  const entries = [...projectVoiceVocabularyEntries];
+  if (activeVoiceVocabularyMode === "project_custom") {
+    entries.push(...readStoredCustomVoiceVocabularyEntries());
+  }
+  return entries;
+}
+
+function replaceVoiceVocabularyPhrase(value: string, spoken: string, replacement: string) {
+  const phrase = normalizeVoiceDraftWhitespace(spoken);
+  if (!phrase) {
+    return value;
+  }
+  const pattern = phrase
+    .split(" ")
+    .map((part) => escapeRegExp(part))
+    .join("\\s+");
+  return value.replace(new RegExp(`(^|[\\s、。,.!?])${pattern}(?=$|[\\s、。,.!?])`, "gi"), `$1${replacement}`);
+}
+
+function applyVoiceVocabulary(transcript: string) {
+  let nextTranscript = transcript;
+  for (const entry of getVoiceVocabularyEntries()) {
+    nextTranscript = replaceVoiceVocabularyPhrase(nextTranscript, entry.spoken, entry.replacement);
+  }
+  return normalizeVoiceDraftWhitespace(nextTranscript);
+}
+
 function removeVoiceFillers(value: string) {
   let text = value;
   for (const filler of ["えー", "えっと", "あの", "あのー", "その", "そのー", "まあ", "なんか"]) {
@@ -7275,20 +7365,21 @@ function shapeVoiceTranscript(transcript: string) {
 function shapeVoiceComposerDraft(base: string, transcript: string) {
   const trimmedBase = base.trim();
   const slashBaseCommand = getVoiceSlashBaseCommand(base);
+  const vocabularyTranscript = applyVoiceVocabulary(transcript);
   if (slashBaseCommand) {
-    const shapedTranscript = shapeVoiceTranscript(transcript);
+    const shapedTranscript = shapeVoiceTranscript(vocabularyTranscript);
     const separator = shapedTranscript ? " " : "";
     return `${base.trimEnd()}${separator}${shapedTranscript}`.trimStart();
   }
 
   if (!trimmedBase || /^\/[^\s]*$/.test(trimmedBase)) {
-    const slashDraft = parseVoiceSlashCommand(transcript);
+    const slashDraft = parseVoiceSlashCommand(vocabularyTranscript);
     if (slashDraft) {
       return `/${slashDraft.command}${slashDraft.body ? ` ${slashDraft.body}` : ""}`;
     }
   }
 
-  const shapedTranscript = shapeVoiceTranscript(transcript);
+  const shapedTranscript = shapeVoiceTranscript(vocabularyTranscript);
   const separator = base && shapedTranscript ? " " : "";
   return `${base}${separator}${shapedTranscript}`.trimStart();
 }
@@ -7705,6 +7796,10 @@ function getVoiceDraftModeOption(mode: VoiceDraftMode = activeVoiceDraftMode) {
   return voiceDraftModeOptions.find((item) => item.value === mode) ?? voiceDraftModeOptions[0];
 }
 
+function getVoiceVocabularyModeOption(mode: VoiceVocabularyMode = activeVoiceVocabularyMode) {
+  return voiceVocabularyModeOptions.find((item) => item.value === mode) ?? voiceVocabularyModeOptions[1];
+}
+
 function setComposerPermissionMode(mode: ComposerPermissionMode) {
   activeComposerPermissionMode = mode;
   persistComposerSessionControls();
@@ -7740,6 +7835,13 @@ function setComposerFastMode(enabled: boolean) {
 
 function setVoiceDraftMode(mode: VoiceDraftMode) {
   activeVoiceDraftMode = mode;
+  persistComposerSessionControls();
+  openComposerSessionMenu = null;
+  renderComposerSessionControls();
+}
+
+function setVoiceVocabularyMode(mode: VoiceVocabularyMode) {
+  activeVoiceVocabularyMode = mode;
   persistComposerSessionControls();
   openComposerSessionMenu = null;
   renderComposerSessionControls();
@@ -7857,7 +7959,11 @@ function createComposerPermissionMenu() {
 
 function createComposerVoiceDraftMenu() {
   const selected = getVoiceDraftModeOption();
-  const group = createComposerSessionControl("voice", themeState.language === "ja" ? selected.labelJa : selected.label);
+  const vocabulary = getVoiceVocabularyModeOption();
+  const selectedLabel = themeState.language === "ja"
+    ? `${selected.labelJa}・${vocabulary.labelJa}`
+    : `${selected.label} · ${vocabulary.label}`;
+  const group = createComposerSessionControl("voice", selectedLabel);
   if (openComposerSessionMenu !== "voice") {
     return group;
   }
@@ -7866,6 +7972,11 @@ function createComposerVoiceDraftMenu() {
   appendComposerMenuHeading(menu, themeState.language === "ja" ? "音声下書き" : "Voice draft");
   for (const option of voiceDraftModeOptions) {
     appendComposerOptionButton(menu, option, activeVoiceDraftMode, setVoiceDraftMode);
+  }
+  appendComposerMenuSeparator(menu);
+  appendComposerMenuHeading(menu, themeState.language === "ja" ? "語彙辞書" : "Vocabulary");
+  for (const option of voiceVocabularyModeOptions) {
+    appendComposerOptionButton(menu, option, activeVoiceVocabularyMode, setVoiceVocabularyMode);
   }
   group.appendChild(menu);
   return group;
