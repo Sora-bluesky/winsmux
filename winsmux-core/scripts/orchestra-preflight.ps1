@@ -290,6 +290,76 @@ function Remove-OrchestraZombieProcesses {
     }
 }
 
+function Test-OrchestraWarmProcess {
+    param([AllowNull()]$Process)
+
+    if ($null -eq $Process) {
+        return $false
+    }
+
+    $processName = Get-OrchestraManagedProcessName -Name ([string]$Process.Name)
+    if ($processName -ne 'winsmux') {
+        return $false
+    }
+
+    $commandLine = [string]$Process.CommandLine
+    if ([string]::IsNullOrWhiteSpace($commandLine)) {
+        return $false
+    }
+
+    return (
+        $commandLine.IndexOf('__warm__', [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+        $commandLine.IndexOf('server', [System.StringComparison]::OrdinalIgnoreCase) -ge 0
+    )
+}
+
+function Remove-OrchestraExcessWarmProcesses {
+    param(
+        [int]$MaxWarmProcesses = 1,
+        [AllowNull()]$ProcessSnapshot = $null
+    )
+
+    $snapshot = if ($null -ne $ProcessSnapshot) { $ProcessSnapshot } else { Get-ProcessSnapshot }
+    $protectedIds = Get-AncestorProcessIds -Snapshot $snapshot -ProcessId $PID
+    if ($null -eq $protectedIds) {
+        $protectedIds = [System.Collections.Generic.HashSet[int]]::new()
+    }
+    $warmProcesses = @(
+        $snapshot.Processes |
+            Where-Object { Test-OrchestraWarmProcess -Process $_ } |
+            Sort-Object -Property ProcessId
+    )
+
+    $maxAllowed = [Math]::Max(0, $MaxWarmProcesses)
+    $victims = @($warmProcesses | Select-Object -Skip $maxAllowed)
+    $killed = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($victim in $victims) {
+        $victimProcessId = [int]$victim.ProcessId
+        if ($protectedIds.Contains($victimProcessId)) {
+            continue
+        }
+
+        try {
+            Stop-Process -Id $victimProcessId -Force -ErrorAction Stop
+            $killed.Add($victim) | Out-Null
+            Write-Host ("Preflight: killed excess warm server {0} ({1})" -f $victim.Name, $victimProcessId)
+            if (Get-Command Write-WinsmuxLog -ErrorAction SilentlyContinue) {
+                Write-WinsmuxLog -Level INFO -Event 'preflight.warm_process.killed' -Message ("Killed excess warm server {0} ({1})." -f $victim.Name, $victimProcessId) -Data @{ process_name = $victim.Name; process_id = $victimProcessId } | Out-Null
+            }
+        } catch {
+            Write-Warning ("Preflight: failed to kill excess warm server {0} ({1}): {2}" -f $victim.Name, $victimProcessId, $_.Exception.Message)
+        }
+    }
+
+    return [PSCustomObject]@{
+        WarmProcesses    = @($warmProcesses)
+        Victims          = @($victims)
+        Killed           = @($killed)
+        MaxWarmProcesses = $maxAllowed
+    }
+}
+
 function Get-OrchestraSessionRegistryDir {
     $homeDir = $env:USERPROFILE
     if ([string]::IsNullOrWhiteSpace($homeDir)) {

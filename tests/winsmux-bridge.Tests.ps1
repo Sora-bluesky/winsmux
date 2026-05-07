@@ -4742,6 +4742,29 @@ Describe 'orchestra-preflight health contract' {
 
         $health | Should -Be 'Unhealthy'
     }
+
+    It 'removes excess warm servers while keeping the budgeted warm process' {
+        $snapshot = [pscustomobject]@{
+            Processes = @(
+                [pscustomobject]@{ ProcessId = 11; ParentProcessId = 0; Name = 'winsmux.exe'; CommandLine = 'winsmux server -s __warm__ -x 120 -y 30' },
+                [pscustomobject]@{ ProcessId = 22; ParentProcessId = 0; Name = 'winsmux.exe'; CommandLine = 'winsmux server -s __warm__ -x 120 -y 30' },
+                [pscustomobject]@{ ProcessId = 33; ParentProcessId = 0; Name = 'winsmux.exe'; CommandLine = 'winsmux server -s __warm__ -x 120 -y 30' },
+                [pscustomobject]@{ ProcessId = 44; ParentProcessId = 0; Name = 'pwsh.exe'; CommandLine = 'pwsh -NoProfile' }
+            )
+            ById = @{}
+            ChildrenByParent = @{}
+        }
+
+        Mock Stop-Process { }
+
+        $cleanup = Remove-OrchestraExcessWarmProcesses -MaxWarmProcesses 1 -ProcessSnapshot $snapshot
+
+        @($cleanup.WarmProcesses).Count | Should -Be 3
+        @($cleanup.Victims).Count | Should -Be 2
+        @($cleanup.Killed).Count | Should -Be 2
+        Should -Invoke Stop-Process -Times 1 -Exactly -ParameterFilter { $Id -eq 22 -and $Force }
+        Should -Invoke Stop-Process -Times 1 -Exactly -ParameterFilter { $Id -eq 33 -and $Force }
+    }
 }
 
 Describe 'orchestra-start watchdog contract' {
@@ -6116,6 +6139,23 @@ Describe 'orchestra-start session reuse contract' {
         $sessionExistsIndex | Should -BeLessThan $manifestCleanupIndex
         $manifestCleanupIndex | Should -BeLessThan $clearManifestIndex
         $clearManifestIndex | Should -BeLessThan $zombieCleanupIndex
+    }
+
+    It 'suppresses warm servers and trims excess warm processes during managed startup' {
+        $script:orchestraStartContent | Should -Match 'function Enable-OrchestraManagedWarmSuppression'
+        $script:orchestraStartContent | Should -Match 'Set-Item -Path "Env:\$name" -Value ''1'''
+        $script:orchestraStartContent | Should -Match 'Remove-OrchestraExcessWarmProcesses -MaxWarmProcesses 1'
+
+        $warmSuppressionIndex = $script:orchestraStartContent.IndexOf('        Enable-OrchestraManagedWarmSuppression')
+        $winsmuxResolveIndex = $script:orchestraStartContent.IndexOf('$script:winsmuxBin = Get-WinsmuxBin')
+        $zombieCleanupIndex = $script:orchestraStartContent.IndexOf('$zombieCleanup = Remove-OrchestraZombieProcesses -SessionName $sessionName -ProjectDir $projectDir -GitWorktreeDir $gitWorktreeDir -BridgeScript $bridgeScript -WinsmuxBin $winsmuxBin')
+        $warmCleanupIndex = $script:orchestraStartContent.IndexOf('$warmCleanup = Remove-OrchestraExcessWarmProcesses -MaxWarmProcesses 1')
+        $ensureSessionIndex = $script:orchestraStartContent.IndexOf('$orchestraServer = Ensure-OrchestraBootstrapSession -SessionName $sessionName -TimeoutSeconds 60')
+
+        $warmSuppressionIndex | Should -BeGreaterThan -1
+        $winsmuxResolveIndex | Should -BeGreaterThan $warmSuppressionIndex
+        $warmCleanupIndex | Should -BeGreaterThan $zombieCleanupIndex
+        $ensureSessionIndex | Should -BeGreaterThan $warmCleanupIndex
     }
 
     It 'requires the bootstrap pane topology before considering a fresh session ready' {
