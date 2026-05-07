@@ -210,6 +210,7 @@ declare global {
       setContextPanel: (open: boolean) => void;
       setTerminalDrawer: (open: boolean) => void;
       getOperatorStartupInput: () => string;
+      setVoiceNow: (timestamp: number | null) => void;
     };
   }
 }
@@ -309,6 +310,7 @@ interface ThemeState {
   codeFontFamily: string;
   editorFontSize: number;
   voiceShortcut: string;
+  persistVoiceDraftLocally: boolean;
   focusMode: FocusMode;
   language: LanguageMode;
 }
@@ -506,6 +508,9 @@ let voiceCaptureStatus: DesktopVoiceCaptureStatus | null = null;
 let voiceCaptureStatusError = "";
 let voiceCaptureStatusRefreshStarted = false;
 let voiceCapturePollTimer: number | null = null;
+let voiceSessionStartedAt = 0;
+let voiceSessionWarningTimer: number | null = null;
+let viewportHarnessVoiceNow: number | null = null;
 const detectedPreviewTargets = new Map<string, PreviewTarget>();
 const PREVIEW_FRESHNESS_WINDOW_MS = 30_000;
 const PANE_META_REFRESH_INTERVAL_MS = 30_000;
@@ -563,6 +568,8 @@ const MAX_EDITOR_FONT_SIZE = 32;
 const DEFAULT_CODE_FONT_FAMILY = "Consolas, 'Courier New', monospace";
 const DEFAULT_VOICE_SHORTCUT = "Ctrl+Alt+M";
 const RESERVED_VOICE_SHORTCUTS = new Set(["Win+H", "Ctrl+Space", "Ctrl+Shift+Space"]);
+const VOICE_LONG_SESSION_WARNING_MS = 5 * 60 * 1000;
+const VOICE_DRAFT_AUTO_SAVE_MS = 6 * 60 * 1000;
 const themeState: ThemeState = {
   theme: "codex-dark",
   density: "comfortable",
@@ -571,6 +578,7 @@ const themeState: ThemeState = {
   codeFontFamily: DEFAULT_CODE_FONT_FAMILY,
   editorFontSize: DEFAULT_EDITOR_FONT_SIZE,
   voiceShortcut: DEFAULT_VOICE_SHORTCUT,
+  persistVoiceDraftLocally: false,
   focusMode: "standard",
   language: "en",
 };
@@ -583,6 +591,7 @@ let preferredWideContextOpen = false;
 const SHELL_PREFERENCES_STORAGE_KEY = "winsmux.shell.preferences.v1";
 const RUNTIME_ROLE_PREFERENCES_STORAGE_KEY = "winsmux.runtime-role.preferences.v1";
 const COMPOSER_SESSION_STORAGE_KEY = "winsmux.composer-session.v1";
+const VOICE_DRAFT_RECOVERY_STORAGE_KEY = "winsmux.voice-draft-recovery.v1";
 const VOICE_VOCABULARY_STORAGE_NAME = "winsmux.voice-vocabulary.v1";
 const POPOUT_SURFACE_STORAGE_KEY_PREFIX = "winsmux.popout-surface.";
 const PROJECT_SESSIONS_STORAGE_KEY = "winsmux.project-sessions.v1";
@@ -5646,6 +5655,7 @@ function cloneThemeState(state: ThemeState): ThemeState {
     codeFontFamily: state.codeFontFamily,
     editorFontSize: state.editorFontSize,
     voiceShortcut: state.voiceShortcut,
+    persistVoiceDraftLocally: state.persistVoiceDraftLocally,
     focusMode: state.focusMode,
     language: state.language,
   };
@@ -5659,6 +5669,7 @@ function themeStatesEqual(left: ThemeState, right: ThemeState) {
     && left.codeFontFamily === right.codeFontFamily
     && left.editorFontSize === right.editorFontSize
     && left.voiceShortcut === right.voiceShortcut
+    && left.persistVoiceDraftLocally === right.persistVoiceDraftLocally
     && left.focusMode === right.focusMode
     && left.language === right.language;
 }
@@ -5871,6 +5882,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
     const codeFontFamily = normalizeCodeFontFamily(parsed.codeFontFamily, getCodeFontFamily(codeFont, ""));
     const editorFontSize = clampEditorFontSize(parsed.editorFontSize);
     const voiceShortcut = normalizeVoiceShortcut(parsed.voiceShortcut);
+    const persistVoiceDraftLocally = parsed.persistVoiceDraftLocally === true;
     const focusMode = focusModeOptions.find((item) => item.value === parsed.focusMode)?.value ?? "standard";
     const language = languageOptions.find((item) => item.value === parsed.language)?.value ?? "en";
     if (!theme || !density || !wrapMode) {
@@ -5895,6 +5907,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       codeFontFamily,
       editorFontSize,
       voiceShortcut,
+      persistVoiceDraftLocally,
       focusMode,
       language,
       sidebarWidth: Math.max(240, Math.min(380, Math.round(sidebarWidthValue))),
@@ -5920,6 +5933,7 @@ function persistThemeState() {
       codeFontFamily: themeState.codeFontFamily,
       editorFontSize: themeState.editorFontSize,
       voiceShortcut: normalizeVoiceShortcut(themeState.voiceShortcut),
+      persistVoiceDraftLocally: themeState.persistVoiceDraftLocally,
       focusMode: themeState.focusMode,
       language: themeState.language,
       sidebarWidth,
@@ -6162,6 +6176,14 @@ function applyLanguageChrome() {
       : "Starts or stops voice capture and writes recognized text into the operator composer as an editable draft.",
   );
   setElementText("voice-shortcut-reset-btn", japanese ? `既定値 ${DEFAULT_VOICE_SHORTCUT}` : `Default ${DEFAULT_VOICE_SHORTCUT}`);
+  setElementText("voice-draft-storage-label", japanese ? "音声下書きの復元" : "Voice Draft Recovery");
+  setElementText(
+    "voice-draft-storage-description",
+    japanese
+      ? "長時間の音声入力だけ、復元用のテキストをこの端末に保存します。音声データは保存しません。"
+      : "Keeps a text-only recovery copy for long voice drafts on this device. Raw audio is never stored.",
+  );
+  setElementText("voice-draft-storage-toggle-label", japanese ? "長時間の音声下書きをローカルに保存" : "Save long voice drafts locally");
   setSelectorText(".brand-block .sidebar-caption", japanese ? "オペレーターシェル" : "Operator shell");
   setSelectorText('[data-i18n="sessions-title"]', japanese ? "セッション" : "Sessions");
   setSelectorText('[data-i18n="files-title"]', japanese ? "ファイル" : "Files");
@@ -6243,6 +6265,10 @@ function applyThemeState(nextState: ThemeState) {
   themeState.codeFontFamily = normalizeCodeFontFamily(nextState.codeFontFamily);
   themeState.editorFontSize = clampEditorFontSize(nextState.editorFontSize);
   themeState.voiceShortcut = normalizeVoiceShortcut(nextState.voiceShortcut);
+  themeState.persistVoiceDraftLocally = nextState.persistVoiceDraftLocally === true;
+  if (!themeState.persistVoiceDraftLocally) {
+    clearVoiceDraftRecoveryStorage();
+  }
   themeState.focusMode = nextState.focusMode;
   themeState.language = nextState.language;
   applyShellPreferences();
@@ -6464,6 +6490,20 @@ function updateVoiceShortcutControl(activeState: ThemeState) {
     };
   }
   updateVoiceShortcutWarning(activeState);
+}
+
+function updateVoiceDraftStorageControl(activeState: ThemeState) {
+  const input = document.getElementById("voice-draft-storage-input") as HTMLInputElement | null;
+  if (!input) {
+    return;
+  }
+  input.checked = activeState.persistVoiceDraftLocally === true;
+  input.onchange = () => {
+    const draft = getSettingsDraftState();
+    draft.persistVoiceDraftLocally = input.checked;
+    updateSettingsApplyButton();
+    renderFooterLane();
+  };
 }
 
 function renderSettingsFontFamilyMenu(activeState: ThemeState) {
@@ -6719,6 +6759,7 @@ function renderSettingsControls() {
   updateEditorFontSizeControl(activeState);
   updateFontFamilyControl(activeState);
   updateVoiceShortcutControl(activeState);
+  updateVoiceDraftStorageControl(activeState);
   renderSettingsFontFamilyMenu(activeState);
 
   renderPreferenceOptions("theme-options", themeOptions, activeState.theme, (value) => {
@@ -6962,7 +7003,110 @@ function getVoiceCaptureMeterPercent() {
   return Math.round(Math.max(0, Math.min(1, voiceCaptureStatus?.native.meter_level ?? 0)) * 100);
 }
 
+function getVoiceNow() {
+  return viewportHarnessVoiceNow ?? Date.now();
+}
+
+function getVoiceSessionElapsedMs() {
+  return voiceSessionStartedAt ? Math.max(0, getVoiceNow() - voiceSessionStartedAt) : 0;
+}
+
+function clearVoiceSessionWarningTimer() {
+  if (voiceSessionWarningTimer !== null) {
+    window.clearTimeout(voiceSessionWarningTimer);
+    voiceSessionWarningTimer = null;
+  }
+}
+
+function scheduleVoiceSessionWarningTimer() {
+  clearVoiceSessionWarningTimer();
+  const elapsed = getVoiceSessionElapsedMs();
+  if (!voiceSessionStartedAt || elapsed >= VOICE_LONG_SESSION_WARNING_MS) {
+    return;
+  }
+  voiceSessionWarningTimer = window.setTimeout(() => {
+    voiceSessionWarningTimer = null;
+    updateVoiceInputButton();
+  }, VOICE_LONG_SESSION_WARNING_MS - elapsed);
+}
+
+function beginVoiceSession() {
+  voiceSessionStartedAt = getVoiceNow();
+  clearVoiceDraftRecoveryStorage();
+  scheduleVoiceSessionWarningTimer();
+}
+
+function finishVoiceSession() {
+  voiceSessionStartedAt = 0;
+  clearVoiceSessionWarningTimer();
+}
+
+function getLongVoiceSessionMessage() {
+  if (!voiceListening || getVoiceSessionElapsedMs() < VOICE_LONG_SESSION_WARNING_MS) {
+    return "";
+  }
+  return getLanguageText(
+    "Voice input has been active for 5 minutes. Review or send the draft soon; local recovery stays off unless enabled in Settings.",
+    "音声入力が5分続いています。下書きを確認するか送信してください。設定で有効にしない限り、復元用の保存は行いません。",
+  );
+}
+
+function clearVoiceDraftRecoveryStorage() {
+  try {
+    window.localStorage.removeItem(VOICE_DRAFT_RECOVERY_STORAGE_KEY);
+  } catch {
+    // Local storage can be unavailable in hardened webviews.
+  }
+}
+
+function persistVoiceDraftRecovery(value: string) {
+  if (!themeState.persistVoiceDraftLocally || getVoiceSessionElapsedMs() < VOICE_DRAFT_AUTO_SAVE_MS || !value.trim()) {
+    return;
+  }
+  try {
+    window.localStorage.setItem(VOICE_DRAFT_RECOVERY_STORAGE_KEY, JSON.stringify({
+      value,
+      saved_at: getVoiceNow(),
+      elapsed_ms: getVoiceSessionElapsedMs(),
+      source: "voice",
+      draft_mode: activeVoiceDraftMode,
+      vocabulary_mode: activeVoiceVocabularyMode,
+      language: themeState.language,
+    }));
+  } catch (error) {
+    console.warn("Failed to persist voice draft recovery", error);
+  }
+}
+
+function restoreVoiceDraftRecovery(composerInput: HTMLTextAreaElement) {
+  if (!themeState.persistVoiceDraftLocally || composerInput.value.trim()) {
+    return;
+  }
+  try {
+    const rawValue = window.localStorage.getItem(VOICE_DRAFT_RECOVERY_STORAGE_KEY);
+    if (!rawValue) {
+      return;
+    }
+    const parsed = JSON.parse(rawValue) as { value?: unknown };
+    if (typeof parsed.value !== "string" || !parsed.value.trim()) {
+      clearVoiceDraftRecoveryStorage();
+      return;
+    }
+    composerInput.value = parsed.value;
+    syncComposerInputHeight(composerInput);
+    syncComposerDraftState(composerInput.value);
+    syncComposerSlashState(composerInput.value);
+  } catch {
+    clearVoiceDraftRecoveryStorage();
+  }
+}
+
 function getVoiceCaptureStatusMessage() {
+  const longSessionMessage = getLongVoiceSessionMessage();
+  if (longSessionMessage) {
+    return longSessionMessage;
+  }
+
   if (!isTauri()) {
     return "";
   }
@@ -7061,7 +7205,9 @@ function renderVoiceCaptureStatus() {
   const message = getVoiceCaptureStatusMessage();
   status.hidden = !message;
   status.textContent = message;
-  status.dataset.state = voiceCaptureStatus?.native.state ?? (voiceCaptureStatusError ? "error" : "unknown");
+  status.dataset.state = getLongVoiceSessionMessage()
+    ? "long-session"
+    : voiceCaptureStatus?.native.state ?? (voiceCaptureStatusError ? "error" : "unknown");
   status.style.setProperty("--voice-meter", `${getVoiceCaptureMeterPercent()}%`);
 }
 
@@ -7142,6 +7288,10 @@ function updateVoiceInputButton() {
 
 function stopVoiceInput() {
   if (voiceInputMode === "native") {
+    const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+    if (composerInput) {
+      persistVoiceDraftRecovery(composerInput.value);
+    }
     void stopNativeVoiceInput(true);
     return;
   }
@@ -7162,6 +7312,7 @@ async function startNativeVoiceInput(composerInput: HTMLTextAreaElement) {
     voiceCaptureStatusError = "";
     voiceInputMode = "native";
     voiceListening = true;
+    beginVoiceSession();
     markComposerInputSource("voice");
     startVoiceCapturePolling();
     updateVoiceInputButton();
@@ -7172,6 +7323,7 @@ async function startNativeVoiceInput(composerInput: HTMLTextAreaElement) {
     voiceCaptureStatusError = error instanceof Error ? error.message : String(error);
     voiceInputMode = null;
     voiceListening = false;
+    finishVoiceSession();
     stopVoiceCapturePolling();
     updateVoiceInputButton();
     renderVoiceCaptureStatus();
@@ -7187,6 +7339,7 @@ async function stopNativeVoiceInput(cancelled: boolean) {
   }
   voiceInputMode = null;
   voiceListening = false;
+  finishVoiceSession();
   stopVoiceCapturePolling();
   updateVoiceInputButton();
   renderVoiceCaptureStatus();
@@ -7418,20 +7571,25 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
   recognition.onstart = () => {
     voiceListening = true;
     voiceInputMode = "browser";
+    beginVoiceSession();
     updateVoiceInputButton();
   };
   recognition.onend = () => {
+    persistVoiceDraftRecovery(composerInput.value);
     voiceListening = false;
     voiceRecognition = null;
     voiceInputMode = null;
     voiceTranscriptBase = "";
+    finishVoiceSession();
     updateVoiceInputButton();
     exitComposerHistoryToDraft(composerInput.value);
     syncComposerSlashState(composerInput.value);
   };
   recognition.onerror = (event) => {
+    persistVoiceDraftRecovery(composerInput.value);
     voiceListening = false;
     voiceInputMode = null;
+    finishVoiceSession();
     updateVoiceInputButton();
     if (event.error && event.error !== "no-speech" && event.error !== "aborted") {
       appendRuntimeConversation({
@@ -7459,6 +7617,8 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
     composerInput.setSelectionRange(length, length);
     syncComposerDraftState(composerInput.value);
     syncComposerSlashState(composerInput.value);
+    persistVoiceDraftRecovery(composerInput.value);
+    updateVoiceInputButton();
   };
 
   voiceRecognition = recognition;
@@ -11013,6 +11173,10 @@ function installViewportHarnessHooks() {
       setTerminalDrawer(open);
     },
     getOperatorStartupInput: () => getOperatorStartupInput(),
+    setVoiceNow: (timestamp: number | null) => {
+      viewportHarnessVoiceNow = typeof timestamp === "number" && Number.isFinite(timestamp) ? timestamp : null;
+      updateVoiceInputButton();
+    },
   };
 }
 
@@ -12387,6 +12551,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   const interruptOperatorButton = document.getElementById("interrupt-operator-btn") as HTMLButtonElement | null;
   if (composer && composerInput) {
     ensureVoiceCaptureStatusRefresh();
+    restoreVoiceDraftRecovery(composerInput);
 
     voiceInputButton?.addEventListener("click", () => {
       toggleVoiceInput(composerInput);
@@ -12539,6 +12704,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       appendUserMessage(rawValue, submittedAttachments);
       pushComposerHistoryEntry(historyEntry);
       composerInput.value = "";
+      clearVoiceDraftRecoveryStorage();
       syncComposerInputHeight(composerInput);
       syncComposerSlashState(composerInput.value);
       clearPendingAttachments();

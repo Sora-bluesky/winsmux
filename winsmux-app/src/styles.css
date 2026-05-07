@@ -1766,7 +1766,8 @@ body[data-popout-surface="1"] #editor-surface {
 }
 
 .voice-input-status[data-state="unavailable"],
-.voice-input-status[data-state="error"] {
+.voice-input-status[data-state="error"],
+.voice-input-status[data-state="long-session"] {
   color: var(--status-warning);
 }
 
@@ -3673,6 +3674,26 @@ body.is-resizing-workbench {
 .settings-shortcut-input {
   width: 240px;
   font-family: var(--font-code);
+}
+
+.settings-checkbox-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  min-height: 30px;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.settings-checkbox-control input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
 }
 
 .settings-popover-menu {
