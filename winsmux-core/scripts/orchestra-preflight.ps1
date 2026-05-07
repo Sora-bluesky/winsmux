@@ -298,7 +298,7 @@ function Test-OrchestraWarmProcess {
     }
 
     $processName = Get-OrchestraManagedProcessName -Name ([string]$Process.Name)
-    if ($processName -ne 'winsmux') {
+    if ($processName -notin @('winsmux', 'psmux', 'pmux', 'tmux')) {
         return $false
     }
 

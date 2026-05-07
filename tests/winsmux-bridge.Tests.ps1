@@ -4747,9 +4747,11 @@ Describe 'orchestra-preflight health contract' {
         $snapshot = [pscustomobject]@{
             Processes = @(
                 [pscustomobject]@{ ProcessId = 11; ParentProcessId = 0; Name = 'winsmux.exe'; CommandLine = 'winsmux server -s __warm__ -x 120 -y 30' },
-                [pscustomobject]@{ ProcessId = 22; ParentProcessId = 0; Name = 'winsmux.exe'; CommandLine = 'winsmux server -s __warm__ -x 120 -y 30' },
-                [pscustomobject]@{ ProcessId = 33; ParentProcessId = 0; Name = 'winsmux.exe'; CommandLine = 'winsmux server -s __warm__ -x 120 -y 30' },
-                [pscustomobject]@{ ProcessId = 44; ParentProcessId = 0; Name = 'pwsh.exe'; CommandLine = 'pwsh -NoProfile' }
+                [pscustomobject]@{ ProcessId = 22; ParentProcessId = 0; Name = 'pmux.exe'; CommandLine = 'pmux server -s __warm__ -x 120 -y 30' },
+                [pscustomobject]@{ ProcessId = 33; ParentProcessId = 0; Name = 'tmux.exe'; CommandLine = 'tmux server -s __warm__ -x 120 -y 30' },
+                [pscustomobject]@{ ProcessId = 44; ParentProcessId = 0; Name = 'psmux.exe'; CommandLine = 'psmux server -s __warm__ -x 120 -y 30' },
+                [pscustomobject]@{ ProcessId = 55; ParentProcessId = 0; Name = 'pwsh.exe'; CommandLine = 'pwsh -NoProfile' },
+                [pscustomobject]@{ ProcessId = 66; ParentProcessId = 0; Name = 'winsmux.exe'; CommandLine = 'winsmux attach-session -t winsmux-orchestra' }
             )
             ById = @{}
             ChildrenByParent = @{}
@@ -4759,11 +4761,13 @@ Describe 'orchestra-preflight health contract' {
 
         $cleanup = Remove-OrchestraExcessWarmProcesses -MaxWarmProcesses 1 -ProcessSnapshot $snapshot
 
-        @($cleanup.WarmProcesses).Count | Should -Be 3
-        @($cleanup.Victims).Count | Should -Be 2
-        @($cleanup.Killed).Count | Should -Be 2
+        @($cleanup.WarmProcesses).Count | Should -Be 4
+        @($cleanup.Victims).Count | Should -Be 3
+        @($cleanup.Killed).Count | Should -Be 3
         Should -Invoke Stop-Process -Times 1 -Exactly -ParameterFilter { $Id -eq 22 -and $Force }
         Should -Invoke Stop-Process -Times 1 -Exactly -ParameterFilter { $Id -eq 33 -and $Force }
+        Should -Invoke Stop-Process -Times 1 -Exactly -ParameterFilter { $Id -eq 44 -and $Force }
+        Should -Invoke Stop-Process -Times 0 -Exactly -ParameterFilter { $Id -eq 66 }
     }
 }
 
