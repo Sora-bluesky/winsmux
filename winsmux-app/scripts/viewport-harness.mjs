@@ -1050,6 +1050,41 @@ async function verifyDesktopViewport(page, previewUrl) {
     await assertFullyVisible(page, "#workspace-footer");
     await assertNoOverlap(page, "#workspace-body", "#workspace-footer");
   });
+
+  await runStep("desktop composer autosizes without resize grabber", async () => {
+    const initialHeight = await page.locator("#composer-input").evaluate((input) => input.getBoundingClientRect().height);
+    await page.locator("#composer-input").fill(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"));
+    await page.waitForFunction(
+      (baselineHeight) => {
+        const input = document.querySelector("#composer-input");
+        if (!(input instanceof HTMLTextAreaElement)) {
+          return false;
+        }
+        const styles = getComputedStyle(input);
+        const rect = input.getBoundingClientRect();
+        const maxHeight = Number.parseFloat(styles.maxHeight);
+        return styles.resize === "none" &&
+          rect.height > baselineHeight + 20 &&
+          rect.height <= maxHeight + 1 &&
+          input.scrollHeight > input.clientHeight &&
+          styles.overflowY === "auto";
+      },
+      initialHeight,
+    );
+    await page.locator("#composer-input").fill("");
+    await page.waitForFunction(
+      (baselineHeight) => {
+        const input = document.querySelector("#composer-input");
+        if (!(input instanceof HTMLTextAreaElement)) {
+          return false;
+        }
+        const rect = input.getBoundingClientRect();
+        return rect.height <= baselineHeight + 1 && getComputedStyle(input).overflowY === "hidden";
+      },
+      initialHeight,
+    );
+  });
+
   await assertComposerSessionControls(page, previewUrl);
 
   await runStep("desktop command bar", async () => {
@@ -1280,6 +1315,7 @@ async function run() {
           checks: [
             "desktop-operator-chat-contract",
             "desktop-1440x900",
+            "desktop-composer-autosize",
             "desktop-command-bar",
             "desktop-composer-model-controls",
             "desktop-composer-japanese-controls",

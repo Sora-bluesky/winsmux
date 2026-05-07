@@ -6874,6 +6874,7 @@ function applyComposerSlashCommand(command: ComposerSlashCommand) {
   } else {
     composerInput.value = `/${command.command}${command.command ? " " : ""}`;
   }
+  syncComposerInputHeight(composerInput);
   syncComposerSlashState(composerInput.value);
   exitComposerHistoryToDraft(composerInput.value);
   composerInput.focus();
@@ -6972,6 +6973,7 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
     }
     const separator = voiceTranscriptBase && transcript ? " " : "";
     composerInput.value = `${voiceTranscriptBase}${separator}${transcript}`.trimStart();
+    syncComposerInputHeight(composerInput);
     composerInput.focus();
     const length = composerInput.value.length;
     composerInput.setSelectionRange(length, length);
@@ -7149,6 +7151,21 @@ function isCaretOnLastLine(composerInput: HTMLTextAreaElement) {
   return !composerInput.value.slice(composerInput.selectionEnd).includes("\n");
 }
 
+function syncComposerInputHeight(composerInput?: HTMLTextAreaElement | null) {
+  const input = composerInput ?? (document.getElementById("composer-input") as HTMLTextAreaElement | null);
+  if (!input) {
+    return;
+  }
+
+  input.style.height = "auto";
+  const computed = window.getComputedStyle(input);
+  const minHeight = Number.parseFloat(computed.minHeight) || 0;
+  const maxHeight = Number.parseFloat(computed.maxHeight) || input.scrollHeight;
+  const targetHeight = Math.min(Math.max(input.scrollHeight, minHeight), maxHeight);
+  input.style.height = `${Math.ceil(targetHeight)}px`;
+  input.style.overflowY = input.scrollHeight > maxHeight + 1 ? "auto" : "hidden";
+}
+
 function setComposerValue(value: string) {
   const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
   if (!composerInput) {
@@ -7156,6 +7173,7 @@ function setComposerValue(value: string) {
   }
 
   composerInput.value = value;
+  syncComposerInputHeight(composerInput);
   syncComposerSlashState(value);
   const length = value.length;
   composerInput.setSelectionRange(length, length);
@@ -11920,6 +11938,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       if (composerHistoryIndex !== -1) {
         composerHistoryIndex = -1;
       }
+      syncComposerInputHeight(composerInput);
       syncComposerDraftState(composerInput.value);
       syncComposerSlashState(composerInput.value);
     });
@@ -11990,6 +12009,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       appendUserMessage(rawValue, submittedAttachments);
       pushComposerHistoryEntry(historyEntry);
       composerInput.value = "";
+      syncComposerInputHeight(composerInput);
       syncComposerSlashState(composerInput.value);
       clearPendingAttachments();
       selectedComposerRemoteReferenceIds.clear();
@@ -11997,6 +12017,8 @@ window.addEventListener("DOMContentLoaded", async () => {
       renderAttachmentTray();
       requestDesktopSummaryRefresh(undefined, 750);
     });
+
+    syncComposerInputHeight(composerInput);
   }
 
   attachButton?.addEventListener("click", () => {
@@ -12084,6 +12106,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   window.addEventListener("resize", () => {
     syncResponsiveShell();
+    syncComposerInputHeight();
     fitVisibleWorkbenchPanes();
   });
 

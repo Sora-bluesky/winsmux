@@ -1737,7 +1737,9 @@ body[data-popout-surface="1"] #editor-surface {
 #composer-input {
   width: 100%;
   min-height: 54px;
-  resize: vertical;
+  max-height: min(40vh, 360px);
+  resize: none;
+  overflow-y: hidden;
   border: 1px solid #6a6a6a;
   border-radius: 4px;
   background: #1e1e1e;
