@@ -13582,6 +13582,11 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'ManifestReadable'
         $script:orchestraSmokeContent | Should -Match 'manifest read failed during startup convergence'
     }
+
+    It 'refreshes the attached client snapshot after startup convergence before resolving attach state' {
+        $script:orchestraSmokeContent | Should -Match 'function Get-OrchestraSmokeClientProbe'
+        $script:orchestraSmokeContent | Should -Match '(?s)Wait-OrchestraSmokeConvergence -ProjectDir \$ProjectDir -SessionName \$SessionName.*?\$clientSnapshot = Get-OrchestraSmokeClientProbe -WinsmuxBin \$winsmuxBin -SessionName \$SessionName.*?Resolve-OrchestraSmokeAttachState'
+    }
 }
 
 Describe 'operator startup restore contract docs' {
