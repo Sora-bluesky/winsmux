@@ -3086,6 +3086,24 @@ function Start-DeferredPaneFromManifestEntry {
         Stop-WithError "deferred pane '$label' is missing pane id"
     }
 
+    $status = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'Status' -Default '')
+    $normalizedStatus = $status.Trim().ToLowerInvariant()
+    $readinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'CapabilityAdapter' -Default ''))
+    if ([string]::IsNullOrWhiteSpace($readinessAgent)) {
+        $readinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'ProviderTarget' -Default ''))
+    }
+
+    if ($normalizedStatus -eq 'deferred_start_failed') {
+        try {
+            if (Test-AgentReadyPrompt -PaneId $paneId -Agent $readinessAgent) {
+                Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'ready'
+                return $true
+            }
+        } catch {
+            # Fall through to the bootstrap retry path when the pane cannot be probed.
+        }
+    }
+
     $planPath = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'BootstrapPlanPath' -Default '')
     if ([string]::IsNullOrWhiteSpace($planPath)) {
         Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_start_failed'
@@ -3101,9 +3119,8 @@ function Start-DeferredPaneFromManifestEntry {
 
     $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 8
     $markerPath = [string](Get-SendConfigValue -InputObject $plan -Name 'ready_marker_path' -Default '')
-    $status = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'Status' -Default '')
 
-    if (@('deferred_start', 'deferred_start_failed') -contains $status.Trim().ToLowerInvariant()) {
+    if (@('deferred_start', 'deferred_start_failed') -contains $normalizedStatus) {
         Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_starting' -MarkerPath $markerPath
         $bootstrapScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-pane-bootstrap.ps1'))
         $bootstrapCommand = "pwsh -NoProfile -File {0} -PlanFile {1}" -f `
@@ -3114,10 +3131,6 @@ function Start-DeferredPaneFromManifestEntry {
         Send-TextToPane -PaneId $paneId -CommandText $bootstrapCommand | Out-Null
     }
 
-    $readinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'CapabilityAdapter' -Default ''))
-    if ([string]::IsNullOrWhiteSpace($readinessAgent)) {
-        $readinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'ProviderTarget' -Default ''))
-    }
     if ([string]::IsNullOrWhiteSpace($readinessAgent)) {
         $readinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $plan -Name 'agent' -Default ''))
     }

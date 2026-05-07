@@ -804,6 +804,17 @@ function Test-OrchestraPaneDeferredStart {
     return ([int]$Matches[1] -gt 1)
 }
 
+function Test-OrchestraPaneBootstrapVerificationDeferred {
+    param([AllowNull()]$PaneSummary)
+
+    $status = [string](Get-OrchestraObjectPropertyValue -InputObject $PaneSummary -Name 'Status' -Default '')
+    if ([string]::IsNullOrWhiteSpace($status)) {
+        return $false
+    }
+
+    return @('deferred_start', 'deferred_starting') -contains $status.Trim().ToLowerInvariant()
+}
+
 function Get-AgentLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Agent,
@@ -2280,7 +2291,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
 
     foreach ($paneSummary in $paneSummaries) {
-        if ([string](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'Status' -Default '') -eq 'deferred_start') {
+        if (Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary $paneSummary) {
             continue
         }
 
@@ -2297,6 +2308,11 @@ if ($MyInvocation.InvocationName -ne '.') {
     $validPaneSummaries = [System.Collections.Generic.List[object]]::new()
     $invalidCount = 0
     foreach ($paneSummary in $paneSummaries) {
+        if (Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary $paneSummary) {
+            $validPaneSummaries.Add($paneSummary)
+            continue
+        }
+
         $failures = @(Test-PaneBootstrapInvariants `
             -PaneId $paneSummary.PaneId `
             -Label $paneSummary.Label `

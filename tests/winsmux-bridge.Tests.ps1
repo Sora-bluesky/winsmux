@@ -6159,6 +6159,15 @@ Describe 'orchestra-start session reuse contract' {
         $script:orchestraStartContent | Should -Match 'Wait-AgentReady -PaneId \$paneSummary\.PaneId -Agent \$readinessAgent'
     }
 
+    It 'skips bootstrap readiness and cwd verification for deferred worker panes' {
+        Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'deferred_start' }) | Should -Be $true
+        Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'deferred_starting' }) | Should -Be $true
+        Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary ([pscustomobject]@{ Status = 'ready' }) | Should -Be $false
+
+        $script:orchestraStartContent | Should -Match 'Test-OrchestraPaneBootstrapVerificationDeferred -PaneSummary \$paneSummary'
+        $script:orchestraStartContent | Should -Match '\$validPaneSummaries\.Add\(\$paneSummary\)'
+    }
+
     It 'uses the capability adapter for startup exec-mode labels' {
         $script:orchestraStartContent | Should -Match '\$execModeAgent = \[string\]\$slotAgentConfig\.CapabilityAdapter'
         $script:orchestraStartContent | Should -Match '\$execMode = \$execModeAgent\.Trim\(\)\.ToLowerInvariant\(\) -eq ''codex'''
@@ -15724,6 +15733,9 @@ Describe 'deferred worker startup' {
         } | ConvertTo-Json -Depth 6) | Set-Content -Path $script:deferredPlanPath -Encoding UTF8
         $script:deferredSendCommands = [System.Collections.Generic.List[string]]::new()
         $script:deferredStatusWrites = [System.Collections.Generic.List[string]]::new()
+        $script:deferredReadyProbeCount = 0
+        $script:deferredPreRetryProbeApplies = $false
+        $script:deferredPreRetryReady = $false
 
         Mock Wait-PaneShellReady { }
         Mock Send-TextToPane {
@@ -15731,7 +15743,14 @@ Describe 'deferred worker startup' {
             $script:deferredSendCommands.Add($CommandText) | Out-Null
             return "sent to $PaneId"
         }
-        Mock Test-AgentReadyPrompt { return $true }
+        Mock Test-AgentReadyPrompt {
+            $script:deferredReadyProbeCount++
+            if ($script:deferredReadyProbeCount -eq 1 -and $script:deferredPreRetryProbeApplies) {
+                return [bool]$script:deferredPreRetryReady
+            }
+
+            return $true
+        }
         Mock Set-PaneControlManifestPaneProperties {
             param([string]$ManifestPath, [string]$PaneId, [System.Collections.IDictionary]$Properties)
             $script:deferredStatusWrites.Add([string]$Properties['status']) | Out-Null
@@ -15784,6 +15803,8 @@ Describe 'deferred worker startup' {
     }
 
     It 'retries a previously failed deferred pane instead of sending task text to the shell' {
+        $script:deferredPreRetryProbeApplies = $true
+        $script:deferredPreRetryReady = $false
         $entry = [PSCustomObject]@{
             Label             = 'worker-2'
             PaneId            = '%3'
@@ -15802,7 +15823,30 @@ Describe 'deferred worker startup' {
         $script:deferredStatusWrites | Should -Be @('deferred_starting', 'ready')
     }
 
+    It 'marks a previously failed deferred pane ready when the delayed bootstrap already reached an agent prompt' {
+        $script:deferredPreRetryProbeApplies = $true
+        $script:deferredPreRetryReady = $true
+        $entry = [PSCustomObject]@{
+            Label             = 'worker-2'
+            PaneId            = '%3'
+            Status            = 'deferred_start_failed'
+            BootstrapPlanPath = $script:deferredPlanPath
+            CapabilityAdapter = 'codex'
+            ProviderTarget    = ''
+        }
+
+        $started = Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry
+
+        $started | Should -Be $true
+        Should -Invoke Wait-PaneShellReady -Times 0 -Exactly
+        $script:deferredSendCommands.Count | Should -Be 0
+        $script:deferredReadyProbeCount | Should -Be 1
+        $script:deferredStatusWrites | Should -Be @('ready')
+    }
+
     It 'blocks a previously failed deferred pane when the bootstrap plan is still missing' {
+        $script:deferredPreRetryProbeApplies = $true
+        $script:deferredPreRetryReady = $false
         $missingPlan = Join-Path $script:deferredTempRoot 'missing-worker-2.json'
         $entry = [PSCustomObject]@{
             Label             = 'worker-2'
