@@ -83,6 +83,7 @@
         "tests/OrchestraPreflight.Tests.ps1",
         "winsmux-core/scripts/operator-poll.ps1",
         "winsmux-core/scripts/orchestra-preflight.ps1",
+        "winsmux-core/scripts/orchestra-smoke.ps1",
         "winsmux-core/scripts/orchestra-start.ps1",
         "winsmux-core/scripts/settings.ps1",
         "winsmux-core/scripts/setup-wizard.ps1"
