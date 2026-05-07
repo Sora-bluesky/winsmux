@@ -763,6 +763,20 @@ impl AppState {
     }
 }
 
+impl Drop for AppState {
+    fn drop(&mut self) {
+        crate::tree::kill_all_children_batch(&mut self.windows);
+        if let Some(warm_pane) = self.warm_pane.as_mut() {
+            crate::platform::process_kill::kill_process_tree(&mut warm_pane.child);
+        }
+        for pipe in self.pipe_panes.iter_mut() {
+            if let Some(process) = pipe.process.as_mut() {
+                let _ = process.kill();
+            }
+        }
+    }
+}
+
 pub struct DragState {
     pub split_path: Vec<usize>,
     pub kind: LayoutKind,
