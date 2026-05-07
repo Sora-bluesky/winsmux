@@ -692,6 +692,82 @@ async function assertDesktopSlashAwareVoiceDraft(page) {
   await selectVoiceDraftMode(page, "Raw");
 }
 
+async function assertDesktopVoiceLongSessionPrivacy(page) {
+  const recoveryKey = "winsmux.voice-draft-recovery.v1";
+  const preferencesKey = "winsmux.shell.preferences.v1";
+  const composer = page.locator("#composer-input");
+  const baseNow = 1_900_000_000_000;
+
+  await page.evaluate((key) => {
+    window.localStorage.removeItem(key);
+    window.__winsmuxViewportHarness.setVoiceNow(null);
+  }, recoveryKey);
+
+  await composer.fill("");
+  await page.evaluate((timestamp) => window.__winsmuxViewportHarness.setVoiceNow(timestamp), baseNow);
+  await startBrowserVoiceInput(page);
+  await page.evaluate((timestamp) => window.__winsmuxViewportHarness.setVoiceNow(timestamp), baseNow + (5 * 60 * 1000) + 1000);
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("long session draft"));
+  await page.locator("#voice-input-status", { hasText: "5 minutes" }).waitFor({ state: "visible" });
+  await page.evaluate((timestamp) => window.__winsmuxViewportHarness.setVoiceNow(timestamp), baseNow + (6 * 60 * 1000) + 1000);
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("long session draft continues"));
+  await page.waitForFunction((key) => window.localStorage.getItem(key) === null, recoveryKey);
+  await stopBrowserVoiceInput(page);
+
+  await page.click("#activity-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "visible" });
+  await page.locator("#voice-draft-storage-input").scrollIntoViewIfNeeded();
+  await page.locator("#voice-draft-storage-input").check();
+  await page.click("#apply-settings-btn");
+  await page.waitForFunction((key) => {
+    const preferences = JSON.parse(window.localStorage.getItem(key) ?? "{}");
+    return preferences.persistVoiceDraftLocally === true;
+  }, preferencesKey);
+  await page.click("#close-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "hidden" });
+
+  await composer.fill("");
+  await page.evaluate((timestamp) => window.__winsmuxViewportHarness.setVoiceNow(timestamp), baseNow + 10_000);
+  await startBrowserVoiceInput(page);
+  await page.evaluate((timestamp) => window.__winsmuxViewportHarness.setVoiceNow(timestamp), baseNow + (6 * 60 * 1000) + 20_000);
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("recover this long voice draft"));
+  await page.waitForFunction((key) => {
+    const rawValue = window.localStorage.getItem(key);
+    if (!rawValue) {
+      return false;
+    }
+    const entry = JSON.parse(rawValue);
+    return entry.value === "recover this long voice draft" &&
+      entry.source === "voice" &&
+      entry.elapsed_ms >= 6 * 60 * 1000 &&
+      !("audio" in entry);
+  }, recoveryKey);
+  await stopBrowserVoiceInput(page);
+
+  await composer.fill("");
+  await page.reload();
+  await page.locator("#composer-input").waitFor();
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "recover this long voice draft";
+  });
+  await page.click("#send-btn");
+  await page.waitForFunction((key) => window.localStorage.getItem(key) === null, recoveryKey);
+
+  await page.click("#activity-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "visible" });
+  await page.locator("#voice-draft-storage-input").scrollIntoViewIfNeeded();
+  await page.locator("#voice-draft-storage-input").uncheck();
+  await page.click("#apply-settings-btn");
+  await page.waitForFunction((key) => {
+    const preferences = JSON.parse(window.localStorage.getItem(key) ?? "{}");
+    return preferences.persistVoiceDraftLocally !== true;
+  }, preferencesKey);
+  await page.click("#close-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "hidden" });
+  await page.evaluate(() => window.__winsmuxViewportHarness.setVoiceNow(null));
+}
+
 async function installSpeechRecognitionStub(page) {
   await page.addInitScript(() => {
     const speechRecognitionState = {
@@ -1461,6 +1537,10 @@ async function verifyDesktopViewport(page, previewUrl) {
     await assertDesktopSlashAwareVoiceDraft(page);
   });
 
+  await runStep("desktop voice long-session privacy", async () => {
+    await assertDesktopVoiceLongSessionPrivacy(page);
+  });
+
   await runStep("desktop composer autosizes without resize grabber", async () => {
     const initialHeight = await page.locator("#composer-input").evaluate((input) => input.getBoundingClientRect().height);
     await page.locator("#composer-input").fill(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"));
@@ -1729,6 +1809,7 @@ async function run() {
             "desktop-voice-draft-shaping",
             "desktop-voice-vocabulary-dictionary",
             "desktop-slash-aware-voice-draft",
+            "desktop-voice-long-session-privacy",
             "desktop-composer-autosize",
             "desktop-command-bar",
             "desktop-composer-model-controls",
