@@ -65,7 +65,7 @@ function Test-WinsmuxFileLockStale {
                         return $true
                     }
                 } catch {
-                    return $false
+                    return $true
                 }
             }
 

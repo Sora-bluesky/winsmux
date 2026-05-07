@@ -164,12 +164,6 @@ function Test-OrchestraZombieProcessMatch {
     }
 
     if ($processName -in @('pwsh', 'powershell')) {
-        foreach ($marker in @('__psmux_cwd_hook', 'PSMUX_CLAUDE_TEAMMATE_MODE')) {
-            if ($commandLine.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
-                return $true
-            }
-        }
-
         return $matchesSharedMarker
     }
 

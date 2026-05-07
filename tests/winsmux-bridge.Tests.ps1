@@ -2974,7 +2974,7 @@ param(
         (Test-Path -LiteralPath $lockDir -PathType Container) | Should -Be $false
     }
 
-    It 'keeps live file locks when owner start time cannot be verified' {
+    It 'treats live file locks with malformed owner start time as stale' {
         $logPath = Join-Path $script:loggerTempRoot '.winsmux\logs\live-unverified.jsonl'
         $lockDir = "$logPath.lock"
         $metadataPath = Join-Path $lockDir 'owner.json'
@@ -2984,7 +2984,7 @@ param(
 {"pid":$PID,"started_at":"2000-01-01T00:00:00Z","process_started_at":"not-a-date"}
 "@ | Set-Content -Path $metadataPath -Encoding UTF8
 
-        Test-WinsmuxFileLockStale -Path $logPath -StaleAfterSeconds 0 | Should -Be $false
+        Test-WinsmuxFileLockStale -Path $logPath -StaleAfterSeconds 0 | Should -Be $true
     }
 
     It 'keeps CLM-safe writes on cmd-based lock and replace primitives' {
@@ -13166,7 +13166,8 @@ Describe 'winsmux orchestra-smoke command' {
                 [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
                 [Parameter(Mandatory = $true)][int]$AttachedClientCount,
                 [AllowNull()]$ProcessSnapshot,
-                [bool]$CountMissingProcessReferences = $true
+                [bool]$CountMissingProcessReferences = $true,
+                [string]$ProjectDir = 'C:\repo'
             )
 
             $contractSource = [regex]::Match(
@@ -13192,8 +13193,9 @@ Describe 'winsmux orchestra-smoke command' {
                     -ExpectedPaneCount $ExpectedPaneCount `
                     -AttachedClientCount $AttachedClientCount `
                     -ProcessSnapshot $ProcessSnapshot `
-                    -CountMissingProcessReferences $CountMissingProcessReferences
-            } $Manifest $AttachState $PaneCount $ExpectedPaneCount $AttachedClientCount $ProcessSnapshot $CountMissingProcessReferences
+                    -CountMissingProcessReferences $CountMissingProcessReferences `
+                    -ProjectDir $ProjectDir
+            } $Manifest $AttachState $PaneCount $ExpectedPaneCount $AttachedClientCount $ProcessSnapshot $CountMissingProcessReferences $ProjectDir
         }
     }
 
@@ -13289,7 +13291,13 @@ Describe 'winsmux orchestra-smoke command' {
             ProcessId       = 801
             ParentProcessId = 700
             Name            = 'pwsh.exe'
-            CommandLine     = 'pwsh -NoLogo -NoProfile -NoExit -Command "if (-not (Test-Path variable:Global:__psmux_cwd_hook)) { $Global:__psmux_cwd_hook = $true }"'
+            CommandLine     = 'pwsh -NoLogo -NoProfile -NoExit -Command "Set-Location C:\repo\.worktrees\builder-1; if (-not (Test-Path variable:Global:__psmux_cwd_hook)) { $Global:__psmux_cwd_hook = $true }"'
+        }
+        $unscopedShell = [pscustomobject]@{
+            ProcessId       = 803
+            ParentProcessId = 701
+            Name            = 'pwsh.exe'
+            CommandLine     = 'pwsh -NoLogo -NoProfile -NoExit -Command "$Global:__psmux_cwd_hook = $true"'
         }
         $vscodeShell = [pscustomobject]@{
             ProcessId       = 802
@@ -13304,10 +13312,11 @@ Describe 'winsmux orchestra-smoke command' {
             CommandLine     = 'pwsh -NoLogo -NoProfile -NoExit -Command "$Global:__psmux_cwd_hook = $true"'
         }
         $snapshot = [pscustomobject]@{
-            Processes = @($parent, $staleShell, $vscodeShell, $activeShell)
+            Processes = @($parent, $staleShell, $vscodeShell, $unscopedShell, $activeShell)
             ById = @{
                 801 = $staleShell
                 802 = $vscodeShell
+                803 = $unscopedShell
                 900 = $parent
                 901 = $activeShell
             }

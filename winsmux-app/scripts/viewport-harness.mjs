@@ -503,6 +503,23 @@ async function assertDesktopVoiceDraftShaping(page) {
     return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "false";
   });
 
+  await composer.fill("");
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "true";
+  });
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("add a like button"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "add a like button";
+  });
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "false";
+  });
+
   await selectVoiceDraftMode(page, "Operator request");
   await composer.fill("");
   await page.keyboard.press("Control+Alt+M");
@@ -541,6 +558,26 @@ async function assertDesktopVoiceDraftShaping(page) {
     const button = document.querySelector("#voice-input-btn");
     return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "false";
   });
+
+  await selectVoiceVocabularyMode(page, "Vocabulary off");
+  await composer.fill("");
+  await startBrowserVoiceInput(page);
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("question   about   logs"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "question   about   logs";
+  });
+  await stopBrowserVoiceInput(page);
+
+  await composer.fill("");
+  await startBrowserVoiceInput(page);
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("add a like button"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "add a like button";
+  });
+  await stopBrowserVoiceInput(page);
+  await selectVoiceVocabularyMode(page, "Project terms");
 }
 
 async function assertDesktopVoiceVocabularyDictionary(page) {

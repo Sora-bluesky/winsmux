@@ -7253,11 +7253,15 @@ function replaceVoiceVocabularyPhrase(value: string, spoken: string, replacement
 }
 
 function applyVoiceVocabulary(transcript: string) {
+  const entries = getVoiceVocabularyEntries();
+  if (entries.length === 0) {
+    return transcript;
+  }
   let nextTranscript = transcript;
-  for (const entry of getVoiceVocabularyEntries()) {
+  for (const entry of entries) {
     nextTranscript = replaceVoiceVocabularyPhrase(nextTranscript, entry.spoken, entry.replacement);
   }
-  return normalizeVoiceDraftWhitespace(nextTranscript);
+  return nextTranscript === transcript ? transcript : normalizeVoiceDraftWhitespace(nextTranscript);
 }
 
 function removeVoiceFillers(value: string) {
@@ -7265,7 +7269,7 @@ function removeVoiceFillers(value: string) {
   for (const filler of ["えー", "えっと", "あの", "あのー", "その", "そのー", "まあ", "なんか"]) {
     text = text.replace(new RegExp(`(^|[\\s、。,.!?])${escapeRegExp(filler)}(?=$|[\\s、。,.!?])`, "g"), "$1");
   }
-  text = text.replace(/\b(?:um|uh|erm|like)\b[,\s]*/gi, "");
+  text = text.replace(/\b(?:um|uh|erm)\b[,\s]*/gi, "");
   return normalizeVoiceDraftWhitespace(text);
 }
 
@@ -7366,6 +7370,13 @@ function shapeVoiceComposerDraft(base: string, transcript: string) {
   const trimmedBase = base.trim();
   const slashBaseCommand = getVoiceSlashBaseCommand(base);
   const vocabularyTranscript = applyVoiceVocabulary(transcript);
+  if (activeVoiceDraftMode === "raw") {
+    if (!base) {
+      return vocabularyTranscript;
+    }
+    const separator = vocabularyTranscript ? " " : "";
+    return `${base.trimEnd()}${separator}${vocabularyTranscript}`;
+  }
   if (slashBaseCommand) {
     const shapedTranscript = shapeVoiceTranscript(vocabularyTranscript);
     const separator = shapedTranscript ? " " : "";

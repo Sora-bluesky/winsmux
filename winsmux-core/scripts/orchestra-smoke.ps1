@@ -224,7 +224,8 @@ function Test-OrchestraSmokeWarmProcess {
 function Test-OrchestraSmokeGeneratedPaneShell {
     param(
         [AllowNull()]$Process,
-        [AllowNull()]$Snapshot
+        [AllowNull()]$Snapshot,
+        [AllowEmptyString()][string]$ProjectDir = ''
     )
 
     if ($null -eq $Process) {
@@ -254,6 +255,23 @@ function Test-OrchestraSmokeGeneratedPaneShell {
         return $false
     }
 
+    $scopedMarkers = @()
+    if (-not [string]::IsNullOrWhiteSpace($ProjectDir)) {
+        $scopedMarkers += $ProjectDir
+        $scopedMarkers += (Join-Path $ProjectDir '.worktrees')
+    }
+    $scopedMarkers += 'worktree-builder-'
+    $matchesScopedMarker = $false
+    foreach ($marker in @($scopedMarkers | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        if ($commandLine.IndexOf($marker, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            $matchesScopedMarker = $true
+            break
+        }
+    }
+    if (-not $matchesScopedMarker) {
+        return $false
+    }
+
     $parentProcessId = ConvertTo-OrchestraSmokeInt -Value (Get-OrchestraSmokeObjectPropertyValue -InputObject $Process -Name 'ParentProcessId')
     if ($parentProcessId -gt 0 -and $null -ne $Snapshot -and $null -ne $Snapshot.ById -and $Snapshot.ById.ContainsKey($parentProcessId)) {
         return $false
@@ -270,7 +288,8 @@ function Get-OrchestraSmokeProcessContract {
         [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
         [Parameter(Mandatory = $true)][int]$AttachedClientCount,
         [AllowNull()]$ProcessSnapshot = $null,
-        [bool]$CountMissingProcessReferences = $true
+        [bool]$CountMissingProcessReferences = $true,
+        [AllowEmptyString()][string]$ProjectDir = ''
     )
 
     $snapshot = if ($null -ne $ProcessSnapshot) { $ProcessSnapshot } else { Get-OrchestraSmokeProcessSnapshot }
@@ -323,7 +342,7 @@ function Get-OrchestraSmokeProcessContract {
         }
 
         $processId = ConvertTo-OrchestraSmokeInt -Value (Get-OrchestraSmokeObjectPropertyValue -InputObject $process -Name 'ProcessId')
-        if ($processId -gt 0 -and -not $staleProcessIds.Contains($processId) -and (Test-OrchestraSmokeGeneratedPaneShell -Process $process -Snapshot $snapshot)) {
+        if ($processId -gt 0 -and -not $staleProcessIds.Contains($processId) -and (Test-OrchestraSmokeGeneratedPaneShell -Process $process -Snapshot $snapshot -ProjectDir $ProjectDir)) {
             $staleProcesses.Add([ordered]@{ pid = $processId; label = 'worker_shell'; reason = 'parent_missing_winsmux_shell' }) | Out-Null
             $staleProcessIds.Add($processId) | Out-Null
         }
@@ -862,7 +881,8 @@ $processContract = Get-OrchestraSmokeProcessContract `
     -PaneCount $paneCount `
     -ExpectedPaneCount $expectedPaneCount `
     -AttachedClientCount $attachedClientCount `
-    -CountMissingProcessReferences $paneProbeOk
+    -CountMissingProcessReferences $paneProbeOk `
+    -ProjectDir $ProjectDir
 if (-not [bool]$processContract.ok) {
     foreach ($warning in @($processContract.warnings)) {
         $smokeErrors.Add("process contract: $warning") | Out-Null

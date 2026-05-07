@@ -77,19 +77,25 @@ Describe 'orchestra preflight zombie detection' {
         @($victims).Count | Should -Be 0
     }
 
-    It 'detects parentless winsmux-generated pwsh pane shells without worktree paths' {
+    It 'detects parentless winsmux-generated pwsh pane shells only when scoped to this project' {
         $snapshot = & $script:NewPreflightSnapshot -Processes @(
             [PSCustomObject]@{
                 ProcessId       = 351
                 ParentProcessId = 0
                 Name            = 'pwsh.exe'
-                CommandLine     = 'pwsh -NoLogo -NoProfile -NoExit -Command "if (-not (Test-Path variable:Global:__psmux_cwd_hook)) { $Global:__psmux_cwd_hook = $true }"'
+                CommandLine     = 'pwsh -NoLogo -NoProfile -NoExit -Command "Set-Location C:\repo\.worktrees\builder-1; if (-not (Test-Path variable:Global:__psmux_cwd_hook)) { $Global:__psmux_cwd_hook = $true }"'
             }
             [PSCustomObject]@{
                 ProcessId       = 352
                 ParentProcessId = 0
                 Name            = 'pwsh.exe'
                 CommandLine     = 'pwsh -noexit -command "try { . C:\Users\test\AppData\Local\Programs\Microsoft VS Code\shellIntegration.ps1 } catch {}"'
+            }
+            [PSCustomObject]@{
+                ProcessId       = 353
+                ParentProcessId = 0
+                Name            = 'pwsh.exe'
+                CommandLine     = 'pwsh -NoLogo -NoProfile -NoExit -Command "if (-not (Test-Path variable:Global:__psmux_cwd_hook)) { $Global:__psmux_cwd_hook = $true }"'
             }
         )
 
