@@ -2974,6 +2974,19 @@ param(
         (Test-Path -LiteralPath $lockDir -PathType Container) | Should -Be $false
     }
 
+    It 'keeps live file locks when owner start time cannot be verified' {
+        $logPath = Join-Path $script:loggerTempRoot '.winsmux\logs\live-unverified.jsonl'
+        $lockDir = "$logPath.lock"
+        $metadataPath = Join-Path $lockDir 'owner.json'
+
+        New-Item -ItemType Directory -Path $lockDir -Force | Out-Null
+        @"
+{"pid":$PID,"started_at":"2000-01-01T00:00:00Z","process_started_at":"not-a-date"}
+"@ | Set-Content -Path $metadataPath -Encoding UTF8
+
+        Test-WinsmuxFileLockStale -Path $logPath -StaleAfterSeconds 0 | Should -Be $false
+    }
+
     It 'keeps CLM-safe writes on cmd-based lock and replace primitives' {
         $script:clmSafeIoContent | Should -Match 'function Get-WinsmuxFileLockDir'
         $script:clmSafeIoContent | Should -Match 'function Test-WinsmuxFileLockStale'
