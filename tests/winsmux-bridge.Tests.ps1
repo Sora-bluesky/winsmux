@@ -13165,7 +13165,8 @@ Describe 'winsmux orchestra-smoke command' {
                 [Parameter(Mandatory = $true)][int]$PaneCount,
                 [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
                 [Parameter(Mandatory = $true)][int]$AttachedClientCount,
-                [AllowNull()]$ProcessSnapshot
+                [AllowNull()]$ProcessSnapshot,
+                [bool]$CountMissingProcessReferences = $true
             )
 
             $contractSource = [regex]::Match(
@@ -13180,7 +13181,7 @@ Describe 'winsmux orchestra-smoke command' {
             $contractSource = $contractSource -replace '\r?\n\r?\nfunction Get-OrchestraAttachedClientSnapshot$', ''
 
             & {
-                param($Manifest, $AttachState, $PaneCount, $ExpectedPaneCount, $AttachedClientCount, $ProcessSnapshot)
+                param($Manifest, $AttachState, $PaneCount, $ExpectedPaneCount, $AttachedClientCount, $ProcessSnapshot, $CountMissingProcessReferences)
 
                 Set-StrictMode -Version Latest
                 Invoke-Expression $contractSource
@@ -13190,8 +13191,9 @@ Describe 'winsmux orchestra-smoke command' {
                     -PaneCount $PaneCount `
                     -ExpectedPaneCount $ExpectedPaneCount `
                     -AttachedClientCount $AttachedClientCount `
-                    -ProcessSnapshot $ProcessSnapshot
-            } $Manifest $AttachState $PaneCount $ExpectedPaneCount $AttachedClientCount $ProcessSnapshot
+                    -ProcessSnapshot $ProcessSnapshot `
+                    -CountMissingProcessReferences $CountMissingProcessReferences
+            } $Manifest $AttachState $PaneCount $ExpectedPaneCount $AttachedClientCount $ProcessSnapshot $CountMissingProcessReferences
         }
     }
 
@@ -13381,6 +13383,31 @@ Describe 'winsmux orchestra-smoke command' {
         $contract.warnings | Should -Contain 'worker shell count 7 exceeds budget 6.'
         $contract.warnings | Should -Contain 'stale managed process count 1 exceeds budget 0.'
         $script:orchestraSmokeContent | Should -Match 'process contract: \$warning'
+    }
+
+    It 'keeps missing manifest process references out of pressure counts when no session is present' {
+        $snapshot = [pscustomobject]@{
+            Processes = @()
+            ById = @{}
+            SupportsCommandLine = $true
+        }
+
+        $contract = Invoke-TestOrchestraProcessContract `
+            -Manifest ([pscustomobject]@{
+                session = [pscustomobject]@{
+                    supervisor_pid = 101
+                }
+            }) `
+            -AttachState ([pscustomobject]@{ attach_process_id = 404 }) `
+            -PaneCount 6 `
+            -ExpectedPaneCount 6 `
+            -AttachedClientCount 0 `
+            -ProcessSnapshot $snapshot `
+            -CountMissingProcessReferences $false
+
+        $contract.ok | Should -Be $true
+        $contract.stale_process_count | Should -Be 0
+        $contract.stale_processes | Should -Be @()
     }
 
     It 'keeps ready-with-ui-warning fail-closed only for external operator mode' {
