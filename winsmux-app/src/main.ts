@@ -744,6 +744,7 @@ const officialClaudeSlashCommandEntries: Array<Omit<ComposerSlashCommand, "kind"
   { command: "exit", label: "Exit", labelJa: "終了", description: "Exit the CLI.", descriptionJa: "CLI を終了します。" },
   { command: "quit", label: "Quit", labelJa: "終了", description: "Alias for exit.", descriptionJa: "終了の別名です。" },
   { command: "export", label: "Export", labelJa: "書き出し", description: "Export the conversation.", descriptionJa: "会話を書き出します。" },
+  { command: "goal", label: "Goal", labelJa: "ゴール", description: "Create or update a session goal.", descriptionJa: "セッションの目標を作成または更新します。" },
   { command: "extra-usage", label: "Extra usage", labelJa: "追加利用", description: "Configure extra usage.", descriptionJa: "追加利用を設定します。" },
   { command: "fast", label: "Fast", labelJa: "高速", description: "Toggle fast mode.", descriptionJa: "高速モードを切り替えます。" },
   { command: "feedback", label: "Feedback", labelJa: "フィードバック", description: "Submit feedback.", descriptionJa: "フィードバックを送信します。" },
@@ -7201,6 +7202,64 @@ function shapeVoiceOperatorRequest(transcript: string) {
     .replace(/^(?:please|can you|could you)\s+/i, ""));
 }
 
+type VoiceSlashCommand = "ask" | "dispatch" | "review" | "goal";
+
+const voiceSlashCommandAliases: Record<string, VoiceSlashCommand> = {
+  ask: "ask",
+  question: "ask",
+  "質問": "ask",
+  dispatch: "dispatch",
+  request: "dispatch",
+  task: "dispatch",
+  "依頼": "dispatch",
+  "タスク": "dispatch",
+  review: "review",
+  audit: "review",
+  "レビュー": "review",
+  "確認": "review",
+  goal: "goal",
+  objective: "goal",
+  "ゴール": "goal",
+  "目標": "goal",
+};
+
+function normalizeVoiceSlashCommandName(value: string): VoiceSlashCommand | null {
+  const normalized = value
+    .replace(/^\/+/, "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  return voiceSlashCommandAliases[normalized] ?? null;
+}
+
+function getVoiceSlashBaseCommand(value: string): VoiceSlashCommand | null {
+  const command = value.trim().match(/^\/([^\s]+)(?:\s+.*)?$/)?.[1] ?? "";
+  return normalizeVoiceSlashCommandName(command);
+}
+
+function parseVoiceSlashCommand(transcript: string): { command: VoiceSlashCommand; body: string } | null {
+  const cleaned = normalizeVoiceDraftWhitespace(cleanVoiceTranscript(transcript));
+  const explicit = cleaned.match(/^(?:\/|slash|スラッシュ)\s*([^\s、。,.!?]+)(?:[\s、。,.!?]+(.*))?$/i);
+  if (explicit) {
+    const command = normalizeVoiceSlashCommandName(explicit[1]);
+    if (command) {
+      return { command, body: normalizeVoiceDraftWhitespace(explicit[2] ?? "") };
+    }
+  }
+
+  const leading = cleaned.match(/^([^\s、。,.!?]+)(?:[\s、。,.!?]+(.*))?$/i);
+  if (!leading) {
+    return null;
+  }
+  const command = normalizeVoiceSlashCommandName(leading[1]);
+  if (!command) {
+    return null;
+  }
+  return { command, body: normalizeVoiceDraftWhitespace(leading[2] ?? "") };
+}
+
 function shapeVoiceTranscript(transcript: string) {
   switch (activeVoiceDraftMode) {
     case "cleaned":
@@ -7211,6 +7270,27 @@ function shapeVoiceTranscript(transcript: string) {
     default:
       return transcript;
   }
+}
+
+function shapeVoiceComposerDraft(base: string, transcript: string) {
+  const trimmedBase = base.trim();
+  const slashBaseCommand = getVoiceSlashBaseCommand(base);
+  if (slashBaseCommand) {
+    const shapedTranscript = shapeVoiceTranscript(transcript);
+    const separator = shapedTranscript ? " " : "";
+    return `${base.trimEnd()}${separator}${shapedTranscript}`.trimStart();
+  }
+
+  if (!trimmedBase || /^\/[^\s]*$/.test(trimmedBase)) {
+    const slashDraft = parseVoiceSlashCommand(transcript);
+    if (slashDraft) {
+      return `/${slashDraft.command}${slashDraft.body ? ` ${slashDraft.body}` : ""}`;
+    }
+  }
+
+  const shapedTranscript = shapeVoiceTranscript(transcript);
+  const separator = base && shapedTranscript ? " " : "";
+  return `${base}${separator}${shapedTranscript}`.trimStart();
 }
 
 function startVoiceInput(composerInput: HTMLTextAreaElement) {
@@ -7270,9 +7350,7 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
     for (let index = event.resultIndex; index < event.results.length; index += 1) {
       transcript += event.results[index]?.[0]?.transcript ?? "";
     }
-    transcript = shapeVoiceTranscript(transcript);
-    const separator = voiceTranscriptBase && transcript ? " " : "";
-    composerInput.value = `${voiceTranscriptBase}${separator}${transcript}`.trimStart();
+    composerInput.value = shapeVoiceComposerDraft(voiceTranscriptBase, transcript);
     syncComposerInputHeight(composerInput);
     composerInput.focus();
     const length = composerInput.value.length;
