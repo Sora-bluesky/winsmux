@@ -420,6 +420,24 @@ function Get-OrchestraAttachedClientSnapshot {
     }
 }
 
+function Get-OrchestraSmokeClientProbe {
+    param(
+        [AllowEmptyString()][string]$WinsmuxBin = '',
+        [Parameter(Mandatory = $true)][string]$SessionName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($WinsmuxBin)) {
+        return [PSCustomObject][ordered]@{
+            Ok      = $false
+            Count   = 0
+            Error   = 'winsmux executable could not be resolved.'
+            Clients = @()
+        }
+    }
+
+    Get-OrchestraAttachedClientSnapshot -WinsmuxBin $WinsmuxBin -SessionName $SessionName
+}
+
 function Get-OrchestraOperatorContract {
     param(
         [Parameter(Mandatory = $true)][bool]$SmokeOk,
@@ -752,16 +770,7 @@ $paneCount = [int]$probeState.PaneCount
 $paneProbeOk = [bool]$probeState.PaneProbeOk
 $paneProbeError = [string]$probeState.PaneProbeError
 
-$clientSnapshot = if ([string]::IsNullOrWhiteSpace($winsmuxBin)) {
-    [PSCustomObject][ordered]@{
-        Ok      = $false
-        Count   = 0
-        Error   = 'winsmux executable could not be resolved.'
-        Clients = @()
-    }
-} else {
-    Get-OrchestraAttachedClientSnapshot -WinsmuxBin $winsmuxBin -SessionName $SessionName
-}
+$clientSnapshot = Get-OrchestraSmokeClientProbe -WinsmuxBin $winsmuxBin -SessionName $SessionName
 $clientProbeOk = [bool]$clientSnapshot.Ok
 $clientProbeError = [string]$clientSnapshot.Error
 $attachedClientCount = [int]$clientSnapshot.Count
@@ -785,6 +794,11 @@ if ($sessionAlreadyHealthy) {
 } else {
     $startOutput = 'Skipped orchestra-start; run orchestra-start.ps1 when operator_contract.requires_startup is true.'
 }
+
+$clientSnapshot = Get-OrchestraSmokeClientProbe -WinsmuxBin $winsmuxBin -SessionName $SessionName
+$clientProbeOk = [bool]$clientSnapshot.Ok
+$clientProbeError = [string]$clientSnapshot.Error
+$attachedClientCount = [int]$clientSnapshot.Count
 
 $sessionReady = [bool]$probeState.SessionReady
 $uiAttachLaunched = [bool]$probeState.UiAttachLaunched
