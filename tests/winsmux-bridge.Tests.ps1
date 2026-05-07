@@ -4750,23 +4750,19 @@ Describe 'orchestra-start watchdog contract' {
         $script:orchestraStartContent = Get-Content -Path $script:orchestraStartPath -Raw -Encoding UTF8
     }
 
-    It 'launches operator-poll with Start-Process before the watchdog' {
-        $script:orchestraStartContent | Should -Match 'function Start-OperatorPollJob \{'
-        $script:orchestraStartContent | Should -Match 'operator-poll\.ps1'
-        $script:orchestraStartContent | Should -Match "'-Interval'"
-        $script:orchestraStartContent | Should -Match '-Interval 20'
-        $script:orchestraStartContent | Should -Match '-OperatorPollPid \$operatorPollProcess\.Id'
-
-        $operatorPollIndex = $script:orchestraStartContent.IndexOf('$operatorPollProcess = Start-OperatorPollJob')
-        $watchdogIndex = $script:orchestraStartContent.IndexOf('$watchdogProcess = Start-AgentWatchdogJob')
-        $operatorPollIndex | Should -BeGreaterThan -1
-        $watchdogIndex | Should -BeGreaterThan -1
-        $operatorPollIndex | Should -BeLessThan $watchdogIndex
+    It 'launches a single orchestra supervisor process for operator and watchdog loops' {
+        $script:orchestraStartContent | Should -Match 'function Start-OrchestraSupervisorJob \{'
+        $script:orchestraStartContent | Should -Match 'orchestra-supervisor\.ps1'
+        $script:orchestraStartContent | Should -Match "'-OperatorPollInterval'"
+        $script:orchestraStartContent | Should -Match "'-AgentWatchdogInterval'"
+        $script:orchestraStartContent | Should -Match "'-ServerWatchdogInterval'"
+        $script:orchestraStartContent | Should -Match '-SupervisorPid \$supervisorProcess\.Id'
+        $script:orchestraStartContent | Should -Not -Match '\$operatorPollProcess = Start-OperatorPollJob'
+        $script:orchestraStartContent | Should -Not -Match '\$watchdogProcess = Start-AgentWatchdogJob'
+        $script:orchestraStartContent | Should -Not -Match '\$serverWatchdogProcess = Start-ServerWatchdogJob'
     }
 
-    It 'launches the watchdog with Start-Process so it survives script exit' {
-        $script:orchestraStartContent | Should -Match 'function Start-AgentWatchdogJob \{'
-        $script:orchestraStartContent | Should -Match 'function Start-ServerWatchdogJob \{'
+    It 'launches the supervisor with Start-Process so it survives script exit' {
         $script:orchestraStartContent | Should -Match 'Start-Process\s+-FilePath\s+''pwsh'''
         $script:orchestraStartContent | Should -Match "'-NoProfile'"
         $script:orchestraStartContent | Should -Match "'-File'"
@@ -4774,16 +4770,10 @@ Describe 'orchestra-start watchdog contract' {
         $script:orchestraStartContent | Should -Not -Match 'Start-Job\s+-Name\s+\("winsmux-watchdog-'
     }
 
-    It 'persists both process pids and prints cleanup guidance' {
-        $script:orchestraStartContent | Should -Match 'operator_poll_pid\s*=\s*\$OperatorPollPid'
-        $script:orchestraStartContent | Should -Match 'Operator Poll PID: \$\(\$operatorPollProcess\.Id\)'
-        $script:orchestraStartContent | Should -Match 'watchdog_pid\s*=\s*\$WatchdogPid'
-        $script:orchestraStartContent | Should -Match 'server_watchdog_pid\s*=\s*\$ServerWatchdogPid'
-        $script:orchestraStartContent | Should -Match '-WatchdogPid \$watchdogProcess\.Id'
-        $script:orchestraStartContent | Should -Match '-ServerWatchdogPid \$serverWatchdogProcess\.Id'
-        $script:orchestraStartContent | Should -Match 'Watchdog PID: \$\(\$watchdogProcess\.Id\)'
-        $script:orchestraStartContent | Should -Match 'Server Watchdog PID: \$\(\$serverWatchdogProcess\.Id\)'
-        $script:orchestraStartContent | Should -Match 'Stop-Process -Id \{0\},\{1\}'
+    It 'persists the supervisor pid and prints cleanup guidance' {
+        $script:orchestraStartContent | Should -Match 'supervisor_pid\s*=\s*\$SupervisorPid'
+        $script:orchestraStartContent | Should -Match 'Supervisor PID: \$\(\$supervisorProcess\.Id\)'
+        $script:orchestraStartContent | Should -Match 'Stop-Process -Id \{0\}'
     }
 }
 
@@ -5200,9 +5190,63 @@ Describe 'orchestra-start server bootstrap' {
         $script:startProcessCalls.Count | Should -Be 0
     }
 
+    It 'reuses attached-client registry confirmation even when the visible host process is gone' {
+        $script:startProcessCalls = @()
+        $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
+        $script:attachStateStore = $null
+
+        Mock Get-OrchestraAttachedClientSnapshot {
+            [PSCustomObject]@{ Ok = $true; Count = 1; Error = ''; Clients = @('client-1') }
+        }
+        Mock Read-OrchestraAttachState {
+            [pscustomobject]@{
+                session_name              = 'winsmux-orchestra'
+                attach_status             = 'attach_confirmed'
+                ui_attach_source          = 'attached-client-registry'
+                attach_process_id         = 4242
+                attached_client_count     = 1
+                attached_client_snapshot  = @('client-1')
+            }
+        }
+        Mock Test-OrchestraLiveVisibleAttachState { $false }
+        Mock Write-OrchestraAttachState {
+            param([string]$SessionName, [hashtable]$Properties)
+            $merged = [ordered]@{}
+            if ($null -ne $script:attachStateStore) {
+                foreach ($property in $script:attachStateStore.PSObject.Properties) {
+                    $merged[$property.Name] = $property.Value
+                }
+            }
+            foreach ($key in $Properties.Keys) {
+                $merged[$key] = $Properties[$key]
+            }
+            $script:attachStateStore = [pscustomobject]$merged
+            return $script:attachStateStore
+        }
+
+        function Start-Process {
+            param([string]$FilePath, [object[]]$ArgumentList, [switch]$PassThru)
+            $script:startProcessCalls += ,([PSCustomObject]@{
+                FilePath     = $FilePath
+                ArgumentList = @($ArgumentList)
+            })
+            return [PSCustomObject]@{ HasExited = $false }
+        }
+
+        $result = Try-StartOrchestraUiAttach -SessionName 'winsmux-orchestra'
+
+        $result.Attempted | Should -Be $false
+        $result.Launched | Should -Be $false
+        $result.Attached | Should -Be $true
+        $result.Status | Should -Be 'attach_already_present'
+        $result.Source | Should -Be 'attached-client-registry'
+        $script:startProcessCalls.Count | Should -Be 0
+    }
+
     It 'does not suppress attach from client-probe alone when no live visible attach state exists' {
         $script:startProcessCalls = @()
         $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
+        $script:attachStateStore = $null
 
         Mock Get-OrchestraAttachedClientSnapshot {
             [PSCustomObject]@{ Ok = $true; Count = 1; Error = ''; Clients = @('client-1') }
@@ -6005,9 +6049,11 @@ Describe 'orchestra-start session reuse contract' {
         $script:orchestraStartContent | Should -Match 'attach_adapter_trace'
     }
 
-    It 'does not mark session_ready true in the manifest until watchdog processes are started' {
+    It 'does not mark session_ready true in the manifest until the supervisor process is started' {
         $script:orchestraStartContent | Should -Match 'Save-OrchestraSessionState[^\r\n]+SessionReady \$false'
-        $script:orchestraStartContent | Should -Match 'Save-OrchestraSessionState[^\r\n]+OperatorPollPid \$operatorPollProcess\.Id[^\r\n]+SessionReady \$true'
+        $script:orchestraStartContent | Should -Match 'Start-OrchestraSupervisorJob[^\r\n]+-StartupToken \$startupToken'
+        $script:orchestraStartContent | Should -Match 'Assert-OrchestraBackgroundProcessStarted -Process \$supervisorProcess -Name ''Orchestra supervisor job'''
+        $script:orchestraStartContent | Should -Match 'Save-OrchestraSessionState[^\r\n]+SupervisorPid \$supervisorProcess\.Id[^\r\n]+SessionReady \$true'
     }
 
     It 'keeps detached startup on the session-ready path even when visible attach still needs retry' {
@@ -6636,6 +6682,114 @@ Describe 'doctor bridge config metadata check' {
         } finally {
             $env:WINSMUX_DOCTOR_POWERSHELL_PROCESS_WARN_THRESHOLD = $originalValue
         }
+    }
+
+    It 'passes the orchestra process contract when smoke reports counts within budget' {
+        Mock Invoke-DoctorOrchestraSmokeJson {
+            [pscustomobject]@{
+                Ok       = $true
+                ExitCode = 0
+                Error    = ''
+                Data     = [pscustomobject]@{
+                    process_contract = [pscustomobject]@{
+                        ok                      = $true
+                        worker_shell_count      = 6
+                        background_helper_count = 3
+                        attach_host_count       = 1
+                        warm_process_count      = 1
+                        stale_process_count     = 0
+                        budgets                 = [pscustomobject]@{
+                            max_worker_shells      = 6
+                            max_background_helpers = 3
+                            max_attach_hosts       = 1
+                            max_warm_processes     = 1
+                            max_stale_processes    = 0
+                        }
+                        warnings                = @()
+                    }
+                }
+            }
+        }
+
+        $result = Test-OrchestraProcessContractCheck
+
+        $result.Status | Should -Be 'pass'
+        $result.Label | Should -Be 'Orchestra process contract'
+        $result.Detail | Should -Be 'workers=6/6; background_helpers=3/3; attach_hosts=1/1; warm_processes=1/1; stale_processes=0/0'
+    }
+
+    It 'fails the orchestra process contract when smoke reports process pressure over budget' {
+        Mock Invoke-DoctorOrchestraSmokeJson {
+            [pscustomobject]@{
+                Ok       = $true
+                ExitCode = 1
+                Error    = ''
+                Data     = [pscustomobject]@{
+                    process_contract = [pscustomobject]@{
+                        ok                      = $false
+                        worker_shell_count      = 7
+                        background_helper_count = 3
+                        attach_host_count       = 1
+                        warm_process_count      = 1
+                        stale_process_count     = 1
+                        budgets                 = [pscustomobject]@{
+                            max_worker_shells      = 6
+                            max_background_helpers = 3
+                            max_attach_hosts       = 1
+                            max_warm_processes     = 1
+                            max_stale_processes    = 0
+                        }
+                        warnings                = @(
+                            'worker shell count 7 exceeds budget 6.'
+                            'stale managed process count 1 exceeds budget 0.'
+                        )
+                    }
+                }
+            }
+        }
+
+        $result = Test-OrchestraProcessContractCheck
+
+        $result.Status | Should -Be 'fail'
+        $result.Label | Should -Be 'Orchestra process contract'
+        $result.Detail | Should -Match 'workers=7/6'
+        $result.Detail | Should -Match 'stale_processes=1/0'
+        $result.Detail | Should -Match 'worker shell count 7 exceeds budget 6'
+        $result.Detail | Should -Match 'stale managed process count 1 exceeds budget 0'
+    }
+
+    It 'handles a single orchestra process contract warning from smoke' {
+        Mock Invoke-DoctorOrchestraSmokeJson {
+            [pscustomobject]@{
+                Ok       = $true
+                ExitCode = 1
+                Error    = ''
+                Data     = [pscustomobject]@{
+                    process_contract = [pscustomobject]@{
+                        ok                      = $false
+                        worker_shell_count      = 6
+                        background_helper_count = 1
+                        attach_host_count       = 1
+                        warm_process_count      = 2
+                        stale_process_count     = 0
+                        budgets                 = [pscustomobject]@{
+                            max_worker_shells      = 6
+                            max_background_helpers = 1
+                            max_attach_hosts       = 1
+                            max_warm_processes     = 1
+                            max_stale_processes    = 0
+                        }
+                        warnings                = 'warm process count 2 exceeds budget 1.'
+                    }
+                }
+            }
+        }
+
+        $result = Test-OrchestraProcessContractCheck
+
+        $result.Status | Should -Be 'fail'
+        $result.Detail | Should -Match 'warm_processes=2/1'
+        $result.Detail | Should -Match 'warm process count 2 exceeds budget 1'
     }
 
     It 'summarizes low-count PowerShell startup evidence without leaking command lines or process ids' {
@@ -12903,6 +13057,42 @@ Describe 'winsmux orchestra-smoke command' {
                 Resolve-OrchestraSmokeAttachState -ProbeState $ProbeState -AttachState $AttachState -ClientProbeOk $ClientProbeOk -ClientSnapshot $ClientSnapshot
             } $ProbeState $AttachState $ClientProbeOk $ClientSnapshot $LiveVisibleAttach
         }
+
+        function Invoke-TestOrchestraProcessContract {
+            param(
+                [AllowNull()]$Manifest,
+                [AllowNull()]$AttachState,
+                [Parameter(Mandatory = $true)][int]$PaneCount,
+                [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
+                [Parameter(Mandatory = $true)][int]$AttachedClientCount,
+                [AllowNull()]$ProcessSnapshot
+            )
+
+            $contractSource = [regex]::Match(
+                $script:orchestraSmokeContent,
+                '(?s)function ConvertTo-OrchestraSmokeInt \{.*?\r?\n\}\r?\n\r?\nfunction Get-OrchestraAttachedClientSnapshot'
+            ).Value
+
+            if ([string]::IsNullOrWhiteSpace($contractSource)) {
+                throw 'Failed to extract process contract helpers from orchestra-smoke.ps1.'
+            }
+
+            $contractSource = $contractSource -replace '\r?\n\r?\nfunction Get-OrchestraAttachedClientSnapshot$', ''
+
+            & {
+                param($Manifest, $AttachState, $PaneCount, $ExpectedPaneCount, $AttachedClientCount, $ProcessSnapshot)
+
+                Set-StrictMode -Version Latest
+                Invoke-Expression $contractSource
+                Get-OrchestraSmokeProcessContract `
+                    -Manifest $Manifest `
+                    -AttachState $AttachState `
+                    -PaneCount $PaneCount `
+                    -ExpectedPaneCount $ExpectedPaneCount `
+                    -AttachedClientCount $AttachedClientCount `
+                    -ProcessSnapshot $ProcessSnapshot
+            } $Manifest $AttachState $PaneCount $ExpectedPaneCount $AttachedClientCount $ProcessSnapshot
+        }
     }
 
     It 'documents orchestra-smoke and dispatches it through the dedicated startup smoke script' {
@@ -12942,6 +13132,108 @@ Describe 'winsmux orchestra-smoke command' {
         $script:orchestraSmokeContent | Should -Match 'requires_startup'
         $script:orchestraSmokeContent | Should -Match 'worker_isolation'
         $script:orchestraSmokeContent | Should -Match 'worker isolation drift'
+        $script:orchestraSmokeContent | Should -Match 'process_contract'
+        $script:orchestraSmokeContent | Should -Match 'worker_shell_count'
+        $script:orchestraSmokeContent | Should -Match 'background_helper_count'
+        $script:orchestraSmokeContent | Should -Match 'attach_host_count'
+        $script:orchestraSmokeContent | Should -Match 'warm_process_count'
+        $script:orchestraSmokeContent | Should -Match 'stale_process_count'
+    }
+
+    It 'reports process contract counts for worker shells background helpers attach hosts and warm processes' {
+        $snapshot = [pscustomobject]@{
+            Processes = @(
+                [pscustomobject]@{ ProcessId = 101; Name = 'pwsh.exe'; CommandLine = 'pwsh operator-poll.ps1 C:\repo\.winsmux\manifest.yaml' },
+                [pscustomobject]@{ ProcessId = 202; Name = 'pwsh.exe'; CommandLine = 'pwsh agent-watchdog.ps1 C:\repo\.winsmux\manifest.yaml' },
+                [pscustomobject]@{ ProcessId = 303; Name = 'pwsh.exe'; CommandLine = 'pwsh server-watchdog.ps1 C:\repo\.winsmux\manifest.yaml' },
+                [pscustomobject]@{ ProcessId = 404; Name = 'pwsh.exe'; CommandLine = 'pwsh -NoLogo -NoExit -File orchestra-attach-entry.ps1' },
+                [pscustomobject]@{ ProcessId = 505; Name = 'winsmux.exe'; CommandLine = 'winsmux server __warm__' }
+            )
+            ById = @{
+                101 = [pscustomobject]@{ ProcessId = 101; Name = 'pwsh.exe'; CommandLine = 'pwsh operator-poll.ps1 C:\repo\.winsmux\manifest.yaml' }
+                202 = [pscustomobject]@{ ProcessId = 202; Name = 'pwsh.exe'; CommandLine = 'pwsh agent-watchdog.ps1 C:\repo\.winsmux\manifest.yaml' }
+                303 = [pscustomobject]@{ ProcessId = 303; Name = 'pwsh.exe'; CommandLine = 'pwsh server-watchdog.ps1 C:\repo\.winsmux\manifest.yaml' }
+                404 = [pscustomobject]@{ ProcessId = 404; Name = 'pwsh.exe'; CommandLine = 'pwsh -NoLogo -NoExit -File orchestra-attach-entry.ps1' }
+                505 = [pscustomobject]@{ ProcessId = 505; Name = 'winsmux.exe'; CommandLine = 'winsmux server __warm__' }
+            }
+            SupportsCommandLine = $true
+        }
+
+        $contract = Invoke-TestOrchestraProcessContract `
+            -Manifest ([pscustomobject]@{
+                session = [pscustomobject]@{
+                    operator_poll_pid = 101
+                    watchdog_pid = 202
+                    server_watchdog_pid = 303
+                }
+            }) `
+            -AttachState ([pscustomobject]@{ attach_process_id = 404 }) `
+            -PaneCount 6 `
+            -ExpectedPaneCount 6 `
+            -AttachedClientCount 1 `
+            -ProcessSnapshot $snapshot
+
+        $contract.ok | Should -Be $true
+        $contract.worker_shell_count | Should -Be 6
+        $contract.background_helper_count | Should -Be 3
+        $contract.attach_host_count | Should -Be 1
+        $contract.warm_process_count | Should -Be 1
+        $contract.stale_process_count | Should -Be 0
+    }
+
+    It 'treats the orchestra supervisor as one background helper' {
+        $snapshot = [pscustomobject]@{
+            Processes = @(
+                [pscustomobject]@{ ProcessId = 707; Name = 'pwsh.exe'; CommandLine = 'pwsh -NoProfile -File orchestra-supervisor.ps1 -ManifestPath C:\repo\.winsmux\manifest.yaml' }
+            )
+            ById = @{
+                707 = [pscustomobject]@{ ProcessId = 707; Name = 'pwsh.exe'; CommandLine = 'pwsh -NoProfile -File orchestra-supervisor.ps1 -ManifestPath C:\repo\.winsmux\manifest.yaml' }
+            }
+            SupportsCommandLine = $true
+        }
+
+        $contract = Invoke-TestOrchestraProcessContract `
+            -Manifest ([pscustomobject]@{
+                session = [pscustomobject]@{
+                    supervisor_pid = 707
+                }
+            }) `
+            -AttachState $null `
+            -PaneCount 6 `
+            -ExpectedPaneCount 6 `
+            -AttachedClientCount 0 `
+            -ProcessSnapshot $snapshot
+
+        $contract.ok | Should -Be $true
+        $contract.background_helper_count | Should -Be 1
+        $contract.budgets.max_background_helpers | Should -Be 1
+        $contract.background_helpers[0].label | Should -Be 'supervisor_pid'
+    }
+
+    It 'blocks smoke when managed process budget is exceeded' {
+        $snapshot = [pscustomobject]@{
+            Processes = @()
+            ById = @{}
+            SupportsCommandLine = $true
+        }
+
+        $contract = Invoke-TestOrchestraProcessContract `
+            -Manifest ([pscustomobject]@{
+                session = [pscustomobject]@{
+                    operator_poll_pid = 101
+                }
+            }) `
+            -AttachState $null `
+            -PaneCount 7 `
+            -ExpectedPaneCount 6 `
+            -AttachedClientCount 0 `
+            -ProcessSnapshot $snapshot
+
+        $contract.ok | Should -Be $false
+        $contract.stale_process_count | Should -Be 1
+        $contract.warnings | Should -Contain 'worker shell count 7 exceeds budget 6.'
+        $contract.warnings | Should -Contain 'stale managed process count 1 exceeds budget 0.'
+        $script:orchestraSmokeContent | Should -Match 'process contract: \$warning'
     }
 
     It 'keeps ready-with-ui-warning fail-closed only for external operator mode' {

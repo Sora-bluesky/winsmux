@@ -80,6 +80,249 @@ function ConvertTo-OrchestraSmokeBoolean {
     }
 }
 
+function ConvertTo-OrchestraSmokeInt {
+    param([AllowNull()]$Value)
+
+    $parsed = 0
+    if ($null -eq $Value) {
+        return 0
+    }
+
+    if ([int]::TryParse(([string]$Value), [ref]$parsed)) {
+        return $parsed
+    }
+
+    return 0
+}
+
+function Get-OrchestraSmokeObjectPropertyValue {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Default = $null
+    )
+
+    if ($null -eq $InputObject) {
+        return $Default
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary] -and $InputObject.Contains($Name)) {
+        return $InputObject[$Name]
+    }
+
+    if ($null -ne $InputObject.PSObject -and $InputObject.PSObject.Properties.Name -contains $Name) {
+        return $InputObject.PSObject.Properties[$Name].Value
+    }
+
+    return $Default
+}
+
+function Get-OrchestraSmokeProcessSnapshot {
+    try {
+        $processes = @(Get-CimInstance Win32_Process -OperationTimeoutSec 10)
+        $supportsCommandLine = $true
+    } catch {
+        $processes = @(Get-Process | ForEach-Object {
+            [PSCustomObject]@{
+                ProcessId       = $_.Id
+                ParentProcessId = 0
+                CommandLine     = ''
+                Name            = $_.ProcessName
+            }
+        })
+        $supportsCommandLine = $false
+    }
+
+    $byId = @{}
+    foreach ($process in $processes) {
+        $processId = ConvertTo-OrchestraSmokeInt -Value $process.ProcessId
+        if ($processId -gt 0) {
+            $byId[$processId] = $process
+        }
+    }
+
+    return [PSCustomObject][ordered]@{
+        Processes           = @($processes)
+        ById                = $byId
+        SupportsCommandLine = $supportsCommandLine
+    }
+}
+
+function Test-OrchestraSmokeProcessCommandLineMarker {
+    param(
+        [AllowNull()]$Process,
+        [AllowEmptyString()][string]$Marker = ''
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Marker)) {
+        return $true
+    }
+
+    if ($null -eq $Process) {
+        return $false
+    }
+
+    $commandLine = [string](Get-OrchestraSmokeObjectPropertyValue -InputObject $Process -Name 'CommandLine' -Default '')
+    if ([string]::IsNullOrWhiteSpace($commandLine)) {
+        return $true
+    }
+
+    return ($commandLine.IndexOf($Marker, [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+}
+
+function Get-OrchestraSmokeManagedProcessPidMap {
+    param([AllowNull()]$Manifest)
+
+    $pidMap = [ordered]@{}
+    $session = Get-OrchestraSmokeObjectPropertyValue -InputObject $Manifest -Name 'session'
+    if ($null -eq $session) {
+        return $pidMap
+    }
+
+    foreach ($propertyName in @('supervisor_pid', 'operator_poll_pid', 'commander_poll_pid', 'watchdog_pid', 'server_watchdog_pid')) {
+        $managedProcessId = ConvertTo-OrchestraSmokeInt -Value (Get-OrchestraSmokeObjectPropertyValue -InputObject $session -Name $propertyName)
+        if ($managedProcessId -lt 1) {
+            continue
+        }
+
+        $normalizedName = if ($propertyName -eq 'commander_poll_pid') { 'operator_poll_pid' } else { $propertyName }
+        if (-not $pidMap.Contains([string]$managedProcessId)) {
+            $pidMap[([string]$managedProcessId)] = $normalizedName
+        }
+    }
+
+    return $pidMap
+}
+
+function Get-OrchestraSmokeManagedScriptName {
+    param([Parameter(Mandatory = $true)][string]$ProcessLabel)
+
+    switch ($ProcessLabel) {
+        'operator_poll_pid' { return 'operator-poll.ps1' }
+        'watchdog_pid' { return 'agent-watchdog.ps1' }
+        'server_watchdog_pid' { return 'server-watchdog.ps1' }
+        'supervisor_pid' { return 'orchestra-supervisor.ps1' }
+        default { return '' }
+    }
+}
+
+function Test-OrchestraSmokeWarmProcess {
+    param([AllowNull()]$Process)
+
+    if ($null -eq $Process) {
+        return $false
+    }
+
+    $commandLine = [string](Get-OrchestraSmokeObjectPropertyValue -InputObject $Process -Name 'CommandLine' -Default '')
+    if ([string]::IsNullOrWhiteSpace($commandLine)) {
+        return $false
+    }
+
+    return ($commandLine.IndexOf('__warm__', [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+}
+
+function Get-OrchestraSmokeProcessContract {
+    param(
+        [AllowNull()]$Manifest,
+        [AllowNull()]$AttachState,
+        [Parameter(Mandatory = $true)][int]$PaneCount,
+        [Parameter(Mandatory = $true)][int]$ExpectedPaneCount,
+        [Parameter(Mandatory = $true)][int]$AttachedClientCount,
+        [AllowNull()]$ProcessSnapshot = $null
+    )
+
+    $snapshot = if ($null -ne $ProcessSnapshot) { $ProcessSnapshot } else { Get-OrchestraSmokeProcessSnapshot }
+    $pidMap = Get-OrchestraSmokeManagedProcessPidMap -Manifest $Manifest
+    $backgroundHelpers = [System.Collections.Generic.List[object]]::new()
+    $staleProcesses = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($entry in $pidMap.GetEnumerator()) {
+        $managedProcessId = ConvertTo-OrchestraSmokeInt -Value $entry.Key
+        $label = [string]$entry.Value
+        if ($managedProcessId -lt 1) {
+            continue
+        }
+
+        if (-not $snapshot.ById.ContainsKey($managedProcessId)) {
+            $staleProcesses.Add([ordered]@{ pid = $managedProcessId; label = $label; reason = 'missing' }) | Out-Null
+            continue
+        }
+
+        $process = $snapshot.ById[$managedProcessId]
+        $scriptName = Get-OrchestraSmokeManagedScriptName -ProcessLabel $label
+        if (-not (Test-OrchestraSmokeProcessCommandLineMarker -Process $process -Marker $scriptName)) {
+            $staleProcesses.Add([ordered]@{ pid = $managedProcessId; label = $label; reason = 'command_line_mismatch' }) | Out-Null
+            continue
+        }
+
+        $backgroundHelpers.Add([ordered]@{ pid = $managedProcessId; label = $label }) | Out-Null
+    }
+
+    $attachHostCount = 0
+    $attachPid = ConvertTo-OrchestraSmokeInt -Value (Get-OrchestraSmokeObjectPropertyValue -InputObject $AttachState -Name 'attach_process_id')
+    if ($attachPid -gt 0) {
+        if ($snapshot.ById.ContainsKey($attachPid)) {
+            $attachHostCount = 1
+        } elseif ($AttachedClientCount -lt 1) {
+            $staleProcesses.Add([ordered]@{ pid = $attachPid; label = 'visible_attach_host'; reason = 'missing' }) | Out-Null
+        }
+    }
+
+    $warmProcessCount = 0
+    foreach ($process in @($snapshot.Processes)) {
+        if (Test-OrchestraSmokeWarmProcess -Process $process) {
+            $warmProcessCount++
+        }
+    }
+
+    $hasSupervisor = $false
+    foreach ($helper in @($backgroundHelpers)) {
+        if ([string](Get-OrchestraSmokeObjectPropertyValue -InputObject $helper -Name 'label' -Default '') -eq 'supervisor_pid') {
+            $hasSupervisor = $true
+            break
+        }
+    }
+
+    $budgets = [ordered]@{
+        max_worker_shells      = [Math]::Max($ExpectedPaneCount, 0)
+        max_background_helpers = if ($hasSupervisor) { 1 } else { 3 }
+        max_attach_hosts       = 1
+        max_warm_processes     = 1
+        max_stale_processes    = 0
+    }
+
+    $warnings = [System.Collections.Generic.List[string]]::new()
+    if ($PaneCount -gt [int]$budgets.max_worker_shells) {
+        $warnings.Add("worker shell count $PaneCount exceeds budget $($budgets.max_worker_shells).") | Out-Null
+    }
+    if ($backgroundHelpers.Count -gt [int]$budgets.max_background_helpers) {
+        $warnings.Add("background helper count $($backgroundHelpers.Count) exceeds budget $($budgets.max_background_helpers).") | Out-Null
+    }
+    if ($attachHostCount -gt [int]$budgets.max_attach_hosts) {
+        $warnings.Add("attach host count $attachHostCount exceeds budget $($budgets.max_attach_hosts).") | Out-Null
+    }
+    if ($warmProcessCount -gt [int]$budgets.max_warm_processes) {
+        $warnings.Add("warm process count $warmProcessCount exceeds budget $($budgets.max_warm_processes).") | Out-Null
+    }
+    if ($staleProcesses.Count -gt [int]$budgets.max_stale_processes) {
+        $warnings.Add("stale managed process count $($staleProcesses.Count) exceeds budget $($budgets.max_stale_processes).") | Out-Null
+    }
+
+    return [ordered]@{
+        contract_version        = 1
+        ok                      = ($warnings.Count -eq 0)
+        worker_shell_count      = $PaneCount
+        background_helper_count = $backgroundHelpers.Count
+        attach_host_count       = $attachHostCount
+        warm_process_count      = $warmProcessCount
+        stale_process_count     = $staleProcesses.Count
+        budgets                 = $budgets
+        background_helpers      = @($backgroundHelpers)
+        stale_processes         = @($staleProcesses)
+        warnings                = @($warnings)
+    }
+}
+
 function Get-OrchestraAttachedClientSnapshot {
     param(
         [Parameter(Mandatory = $true)][string]$WinsmuxBin,
@@ -544,6 +787,18 @@ if (-not [bool]$workerIsolation.ok) {
         $smokeErrors.Add("worker isolation drift: $($finding.label): $($finding.message)") | Out-Null
     }
 }
+
+$processContract = Get-OrchestraSmokeProcessContract `
+    -Manifest $manifestObject `
+    -AttachState $attachState `
+    -PaneCount $paneCount `
+    -ExpectedPaneCount $expectedPaneCount `
+    -AttachedClientCount $attachedClientCount
+if (-not [bool]$processContract.ok) {
+    foreach ($warning in @($processContract.warnings)) {
+        $smokeErrors.Add("process contract: $warning") | Out-Null
+    }
+}
 $operatorContract = Get-OrchestraOperatorContract `
     -SmokeOk ($smokeErrors.Count -eq 0) `
     -SessionReady $sessionReady `
@@ -582,6 +837,7 @@ $result = [ordered]@{
     ui_attach_source    = $uiAttachSource
     ui_host_kind        = $uiHostKind
     worker_isolation    = $workerIsolation
+    process_contract    = $processContract
     smoke_ok            = ($smokeErrors.Count -eq 0)
     smoke_errors        = @($smokeErrors)
     operator_contract   = $operatorContract

@@ -105,6 +105,28 @@ function Get-DoctorNormalizedProcessName {
     return $normalized
 }
 
+function Get-DoctorObjectPropertyValue {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Default = $null
+    )
+
+    if ($null -eq $InputObject) {
+        return $Default
+    }
+
+    if ($InputObject -is [System.Collections.IDictionary] -and $InputObject.Contains($Name)) {
+        return $InputObject[$Name]
+    }
+
+    if ($null -ne $InputObject.PSObject -and $InputObject.PSObject.Properties.Name -contains $Name) {
+        return $InputObject.PSObject.Properties[$Name].Value
+    }
+
+    return $Default
+}
+
 function Test-BasicYamlContent {
     param([Parameter(Mandatory = $true)][string]$Content)
 
@@ -629,6 +651,117 @@ function Test-PowerShellStartupEvidenceCheck {
     return New-PowerShellStartupEvidenceResult -Snapshot $snapshot -ProtectedIds $protectedIds -WarnThreshold $warnThreshold -SmokeStatus $smoke.Status -SmokeDetail $smoke.Detail
 }
 
+function Invoke-DoctorOrchestraSmokeJson {
+    $repoRoot = Get-DoctorRepoRoot
+    $smokePath = Join-Path $PSScriptRoot 'orchestra-smoke.ps1'
+    if (-not (Test-Path -LiteralPath $smokePath -PathType Leaf)) {
+        return [PSCustomObject]@{
+            Ok       = $false
+            ExitCode = 1
+            Data     = $null
+            Error    = 'orchestra-smoke.ps1 not found'
+        }
+    }
+
+    $command = Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $command) {
+        return [PSCustomObject]@{
+            Ok       = $false
+            ExitCode = 1
+            Data     = $null
+            Error    = 'pwsh was not found on PATH'
+        }
+    }
+
+    $pwshPath = if ($command.Path) { $command.Path } else { $command.Source }
+    try {
+        $output = & $pwshPath -NoProfile -NoLogo -File $smokePath -ProjectDir $repoRoot -AsJson 2>&1
+        $exitCode = $LASTEXITCODE
+    } catch {
+        return [PSCustomObject]@{
+            Ok       = $false
+            ExitCode = 1
+            Data     = $null
+            Error    = $_.Exception.Message
+        }
+    }
+
+    $text = (@($output) | ForEach-Object { $_.ToString() }) -join [Environment]::NewLine
+    $jsonMatch = [regex]::Match($text, '(?s)\{.*\}')
+    if (-not $jsonMatch.Success) {
+        return [PSCustomObject]@{
+            Ok       = $false
+            ExitCode = $exitCode
+            Data     = $null
+            Error    = 'orchestra-smoke did not return JSON'
+        }
+    }
+
+    try {
+        $data = $jsonMatch.Value | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return [PSCustomObject]@{
+            Ok       = $false
+            ExitCode = $exitCode
+            Data     = $null
+            Error    = $_.Exception.Message
+        }
+    }
+
+    return [PSCustomObject]@{
+        Ok       = $true
+        ExitCode = $exitCode
+        Data     = $data
+        Error    = ''
+    }
+}
+
+function New-OrchestraProcessContractDoctorResult {
+    param([Parameter(Mandatory = $true)]$Contract)
+
+    $budgets = Get-DoctorObjectPropertyValue -InputObject $Contract -Name 'budgets'
+    $workerCount = [int](Get-DoctorObjectPropertyValue -InputObject $Contract -Name 'worker_shell_count' -Default 0)
+    $helperCount = [int](Get-DoctorObjectPropertyValue -InputObject $Contract -Name 'background_helper_count' -Default 0)
+    $attachHostCount = [int](Get-DoctorObjectPropertyValue -InputObject $Contract -Name 'attach_host_count' -Default 0)
+    $warmProcessCount = [int](Get-DoctorObjectPropertyValue -InputObject $Contract -Name 'warm_process_count' -Default 0)
+    $staleProcessCount = [int](Get-DoctorObjectPropertyValue -InputObject $Contract -Name 'stale_process_count' -Default 0)
+    $workerBudget = [int](Get-DoctorObjectPropertyValue -InputObject $budgets -Name 'max_worker_shells' -Default 0)
+    $helperBudget = [int](Get-DoctorObjectPropertyValue -InputObject $budgets -Name 'max_background_helpers' -Default 0)
+    $attachHostBudget = [int](Get-DoctorObjectPropertyValue -InputObject $budgets -Name 'max_attach_hosts' -Default 0)
+    $warmProcessBudget = [int](Get-DoctorObjectPropertyValue -InputObject $budgets -Name 'max_warm_processes' -Default 0)
+    $staleProcessBudget = [int](Get-DoctorObjectPropertyValue -InputObject $budgets -Name 'max_stale_processes' -Default 0)
+
+    $detail = "workers=$workerCount/$workerBudget; background_helpers=$helperCount/$helperBudget; attach_hosts=$attachHostCount/$attachHostBudget; warm_processes=$warmProcessCount/$warmProcessBudget; stale_processes=$staleProcessCount/$staleProcessBudget"
+    if ([bool](Get-DoctorObjectPropertyValue -InputObject $Contract -Name 'ok' -Default $false)) {
+        return New-DoctorResult -Status pass -Label 'Orchestra process contract' -Detail $detail
+    }
+
+    $warnings = @(
+        @(Get-DoctorObjectPropertyValue -InputObject $Contract -Name 'warnings' -Default @()) |
+            ForEach-Object { [string]$_ } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    if ($warnings.Count -gt 0) {
+        $detail = "$detail; $($warnings -join '; ')"
+    }
+
+    return New-DoctorResult -Status fail -Label 'Orchestra process contract' -Detail $detail
+}
+
+function Test-OrchestraProcessContractCheck {
+    $smoke = Invoke-DoctorOrchestraSmokeJson
+    if (-not [bool]$smoke.Ok) {
+        return New-DoctorResult -Status warn -Label 'Orchestra process contract' -Detail "unavailable; $($smoke.Error)"
+    }
+
+    $contract = Get-DoctorObjectPropertyValue -InputObject $smoke.Data -Name 'process_contract'
+    if ($null -eq $contract) {
+        return New-DoctorResult -Status warn -Label 'Orchestra process contract' -Detail 'unavailable; orchestra-smoke did not include process_contract'
+    }
+
+    return New-OrchestraProcessContractDoctorResult -Contract $contract
+}
+
 function Test-BridgeConfigCheck {
     $repoRoot = Get-DoctorRepoRoot
     $configPath = Join-Path $repoRoot '.winsmux.yaml'
@@ -721,6 +854,7 @@ if (-not $functionsOnly) {
         Test-PowerShellProcessPressureCheck
         Test-PowerShellStartupHealthCheck
         Test-PowerShellStartupEvidenceCheck
+        Test-OrchestraProcessContractCheck
         Test-BridgeConfigCheck
         Test-BridgeConfigMetadataCheck
         Test-HookProfileCheck

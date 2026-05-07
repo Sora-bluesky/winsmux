@@ -881,6 +881,37 @@ function Invoke-OrchestraVisibleAttachRequest {
         }
     }
 
+    $existingAttachStatus = if ($null -eq $existingAttachState) { '' } else { [string](Get-OrchestraAttachStateString -State $existingAttachState -Name 'attach_status') }
+    $existingAttachedClientSnapshot = if ($null -eq $existingAttachState) { @() } else { @(Get-OrchestraAttachStateStringArray -State $existingAttachState -Name 'attached_client_snapshot') }
+    if ($existingAttachStatus -eq 'attach_confirmed' -and [bool]$clientSnapshot.Ok -and (Test-OrchestraAttachClientSnapshotMatch -ExpectedClients $existingAttachedClientSnapshot -CurrentClients @($clientSnapshot.Clients))) {
+        $existingAttachState = Write-OrchestraAttachState -SessionName $SessionName -Properties @{
+            session_name        = $SessionName
+            winsmux_path        = $resolvedWinsmuxPath
+            attach_status       = 'attach_confirmed'
+            attach_confirmed_at = (Get-Date).ToString('o')
+            client_count_seen   = $baselineClientCount
+            attached_client_count = $baselineClientCount
+            attached_client_snapshot = @($clientSnapshot.Clients)
+            ui_attach_source    = 'attached-client-registry'
+            error               = "Detected existing attached-client registry confirmation for session '$SessionName'."
+        }
+
+        return [PSCustomObject][ordered]@{
+            Attempted                = $false
+            Launched                 = $false
+            Attached                 = $true
+            AttachedClientCount      = $baselineClientCount
+            Status                   = 'attach_already_present'
+            Reason                   = "Detected an existing attached-client confirmation for session '$SessionName'; skipped spawning another visible attach window."
+            Path                     = ''
+            Source                   = 'attached-client-registry'
+            attach_request_id        = (Get-OrchestraAttachRequestId -State $existingAttachState)
+            attached_client_snapshot = @(Get-OrchestraAttachStateStringArray -State $existingAttachState -Name 'attached_client_snapshot')
+            ui_host_kind             = (Get-OrchestraAttachStateString -State $existingAttachState -Name 'ui_host_kind')
+            attach_adapter_trace     = @(Get-OrchestraAttachTraceEntries -State $existingAttachState)
+        }
+    }
+
     $attachRequestId = [guid]::NewGuid().ToString('N')
     $state = Write-OrchestraAttachState -SessionName $SessionName -Properties @{
         session_name          = $SessionName
