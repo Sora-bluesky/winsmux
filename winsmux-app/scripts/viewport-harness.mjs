@@ -536,6 +536,80 @@ async function assertDesktopVoiceDraftShaping(page) {
   });
 }
 
+async function startBrowserVoiceInput(page) {
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "true";
+  });
+}
+
+async function stopBrowserVoiceInput(page) {
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "false";
+  });
+}
+
+async function assertDesktopSlashAwareVoiceDraft(page) {
+  const composer = page.locator("#composer-input");
+  await page.locator(".composer-session-trigger-voice", { hasText: "Raw" }).waitFor();
+  await selectVoiceDraftMode(page, "Clean draft");
+
+  await composer.fill("/ask");
+  await startBrowserVoiceInput(page);
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("えっと 状態を確認してください"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "/ask 状態を確認してください";
+  });
+  await stopBrowserVoiceInput(page);
+
+  await composer.fill("");
+  await startBrowserVoiceInput(page);
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("スラッシュ review 変更を確認して"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "/review 変更を確認して";
+  });
+  await stopBrowserVoiceInput(page);
+
+  await composer.fill("既存の下書き");
+  await startBrowserVoiceInput(page);
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("review 変更を確認して"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "既存の下書き review 変更を確認して";
+  });
+  await stopBrowserVoiceInput(page);
+
+  await composer.fill("");
+  await startBrowserVoiceInput(page);
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("スラッシュ dispatch"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    const row = document.querySelector("#composer-slash-row");
+    return input instanceof HTMLTextAreaElement &&
+      input.value === "/dispatch" &&
+      row instanceof HTMLElement &&
+      !row.hidden &&
+      row.textContent?.includes("/dispatch");
+  });
+  await stopBrowserVoiceInput(page);
+
+  await composer.fill("/goal");
+  await startBrowserVoiceInput(page);
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("v0.25.4 を完了する"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement && input.value === "/goal v0.25.4 を完了する";
+  });
+  await stopBrowserVoiceInput(page);
+
+  await selectVoiceDraftMode(page, "Raw");
+}
+
 async function installSpeechRecognitionStub(page) {
   await page.addInitScript(() => {
     const speechRecognitionState = {
@@ -1297,6 +1371,10 @@ async function verifyDesktopViewport(page, previewUrl) {
     await assertDesktopVoiceDraftShaping(page);
   });
 
+  await runStep("desktop slash-aware voice draft", async () => {
+    await assertDesktopSlashAwareVoiceDraft(page);
+  });
+
   await runStep("desktop composer autosizes without resize grabber", async () => {
     const initialHeight = await page.locator("#composer-input").evaluate((input) => input.getBoundingClientRect().height);
     await page.locator("#composer-input").fill(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"));
@@ -1563,6 +1641,7 @@ async function run() {
             "desktop-1440x900",
             "desktop-voice-input-a11y",
             "desktop-voice-draft-shaping",
+            "desktop-slash-aware-voice-draft",
             "desktop-composer-autosize",
             "desktop-command-bar",
             "desktop-composer-model-controls",
