@@ -3025,7 +3025,7 @@ function Test-DeferredPaneStartManifestEntry {
         return $false
     }
 
-    return @('deferred_start', 'deferred_starting') -contains $status.Trim().ToLowerInvariant()
+    return @('deferred_start', 'deferred_starting', 'deferred_start_failed') -contains $status.Trim().ToLowerInvariant()
 }
 
 function Set-DeferredPaneStartStatus {
@@ -3103,7 +3103,7 @@ function Start-DeferredPaneFromManifestEntry {
     $markerPath = [string](Get-SendConfigValue -InputObject $plan -Name 'ready_marker_path' -Default '')
     $status = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'Status' -Default '')
 
-    if ($status.Trim().ToLowerInvariant() -eq 'deferred_start') {
+    if (@('deferred_start', 'deferred_start_failed') -contains $status.Trim().ToLowerInvariant()) {
         Set-DeferredPaneStartStatus -ProjectDir $ProjectDir -PaneId $paneId -Status 'deferred_starting' -MarkerPath $markerPath
         $bootstrapScriptPath = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\winsmux-core\scripts\orchestra-pane-bootstrap.ps1'))
         $bootstrapCommand = "pwsh -NoProfile -File {0} -PlanFile {1}" -f `
