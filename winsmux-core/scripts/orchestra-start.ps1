@@ -18,6 +18,12 @@ $bridgeScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir '..\..\scrip
 $layoutScript = [System.IO.Path]::GetFullPath((Join-Path $scriptDir 'orchestra-layout.ps1'))
 $script:winsmuxBin = $null
 
+function Enable-OrchestraManagedWarmSuppression {
+    foreach ($name in @('PSMUX_NO_WARM', 'WINSMUX_NO_WARM')) {
+        Set-Item -Path "Env:$name" -Value '1'
+    }
+}
+
 function Write-OrchestraTextFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -1919,6 +1925,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     $bootstrapPaneId = $null
     $createdWorktrees = @()
     try {
+        Enable-OrchestraManagedWarmSuppression
         $script:winsmuxBin = Get-WinsmuxBin
         $winsmuxBin = $script:winsmuxBin
         if (-not $winsmuxBin) {
@@ -2008,6 +2015,15 @@ if ($MyInvocation.InvocationName -ne '.') {
         if (@($zombieCleanup.Killed).Count -gt 0) {
             Write-WinsmuxLog -Level INFO -Event 'preflight.git_worktree.prune_after_zombie_cleanup' -Message 'Pruning git worktree metadata after zombie cleanup.' -Data @{ killed_count = @($zombieCleanup.Killed).Count } | Out-Null
             Invoke-BuilderWorktreeGit -ProjectDir $projectDir -Arguments @('worktree', 'prune') | Out-Null
+        }
+
+        $warmCleanup = Remove-OrchestraExcessWarmProcesses -MaxWarmProcesses 1
+        if (@($warmCleanup.Killed).Count -gt 0) {
+            Write-WinsmuxLog -Level INFO -Event 'preflight.warm_process.cleanup' -Message 'Removed excess warm servers before orchestra startup.' -Data ([ordered]@{
+                killed_count       = @($warmCleanup.Killed).Count
+                warm_process_count = @($warmCleanup.WarmProcesses).Count
+                max_warm_processes = [int]$warmCleanup.MaxWarmProcesses
+            }) | Out-Null
         }
 
         $orchestraServer = Ensure-OrchestraBootstrapSession -SessionName $sessionName -TimeoutSeconds 60
