@@ -9464,9 +9464,9 @@ fn print_explain_follow_header(payload: &Value) -> io::Result<()> {
 
 fn stream_explain_follow(project_dir: &Path, payload: Value, json_output: bool) -> io::Result<()> {
     let run = payload.get("run").cloned().unwrap_or(Value::Null);
-    let mut cursor = read_desktop_summary_events(project_dir)?.len();
+    let mut cursor = read_desktop_summary_events_for_stream(project_dir)?.len();
     loop {
-        let events = read_desktop_summary_events(project_dir)?;
+        let events = read_desktop_summary_events_for_stream(project_dir)?;
         if events.len() < cursor {
             cursor = 0;
         }
@@ -9741,9 +9741,9 @@ fn short_head_sha(head_sha: &str) -> String {
 }
 
 fn stream_desktop_summary(options: &DesktopSummaryOptions) -> io::Result<()> {
-    let mut cursor = read_desktop_summary_events(&options.project_dir)?.len();
+    let mut cursor = read_desktop_summary_events_for_stream(&options.project_dir)?.len();
     loop {
-        let events = read_desktop_summary_events(&options.project_dir)?;
+        let events = read_desktop_summary_events_for_stream(&options.project_dir)?;
         if events.len() < cursor {
             cursor = 0;
         }
@@ -9774,6 +9774,34 @@ fn read_desktop_summary_events(project_dir: &Path) -> io::Result<Vec<EventRecord
             format!("failed to parse desktop-summary events: {err}"),
         )
     })
+}
+
+fn read_desktop_summary_events_for_stream(project_dir: &Path) -> io::Result<Vec<EventRecord>> {
+    let events_path = project_dir.join(".winsmux").join("events.jsonl");
+    if !events_path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(&events_path)?;
+    match parse_event_jsonl(&content) {
+        Ok(events) => Ok(events),
+        Err(err) if !content.ends_with('\n') => {
+            let Some(last_newline) = content.rfind('\n') else {
+                return Ok(Vec::new());
+            };
+            parse_event_jsonl(&content[..=last_newline]).map_err(|prefix_err| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "failed to parse desktop-summary events before partial tail: {prefix_err}; original error: {err}"
+                    ),
+                )
+            })
+        }
+        Err(err) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to parse desktop-summary events: {err}"),
+        )),
+    }
 }
 
 fn desktop_summary_refresh_item(event: &EventRecord) -> Option<Value> {
@@ -10001,6 +10029,28 @@ mod tests {
             std::env::temp_dir().join(format!("winsmux-{name}-{}-{suffix}", std::process::id()));
         std::fs::create_dir_all(path.join(".winsmux")).expect("create test project");
         path
+    }
+
+    #[test]
+    fn stream_event_reader_ignores_partial_tail_line() {
+        let project_dir = test_project_dir("stream-partial-tail");
+        let events_path = project_dir.join(".winsmux").join("events.jsonl");
+        std::fs::write(
+            &events_path,
+            concat!(
+                r#"{"timestamp":"2026-04-24T12:00:01+09:00","event":"operator.followup","data":{"run_id":"task:TASK-1"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-04-24T12:00:02+09:00","event":"#
+            ),
+        )
+        .expect("write partial event log");
+
+        let events =
+            read_desktop_summary_events_for_stream(&project_dir).expect("stream reader succeeds");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event, "operator.followup");
+        assert!(read_desktop_summary_events(&project_dir).is_err());
     }
 
     fn meta_plan_role(provider: &str, plan_mode: &str) -> MetaPlanRole {
