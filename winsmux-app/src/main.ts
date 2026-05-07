@@ -6925,6 +6925,13 @@ function getVoiceCaptureStatusMessage() {
     );
   }
 
+  if (voiceCaptureStatus.native.state === "no_microphone") {
+    return getLanguageText(
+      "No microphone was found for native capture.",
+      "ネイティブのマイク入力に使えるマイクが見つかりません。",
+    );
+  }
+
   if (isBrowserVoiceInputSupported()) {
     return getLanguageText(
       "Native microphone capture is not ready; browser voice input is active.",
