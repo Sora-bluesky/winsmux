@@ -15783,6 +15783,43 @@ Describe 'deferred worker startup' {
         $script:deferredStatusWrites | Should -Be @('ready')
     }
 
+    It 'retries a previously failed deferred pane instead of sending task text to the shell' {
+        $entry = [PSCustomObject]@{
+            Label             = 'worker-2'
+            PaneId            = '%3'
+            Status            = 'deferred_start_failed'
+            BootstrapPlanPath = $script:deferredPlanPath
+            CapabilityAdapter = 'codex'
+            ProviderTarget    = ''
+        }
+
+        $started = Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry
+
+        $started | Should -Be $true
+        Should -Invoke Wait-PaneShellReady -Times 1 -Exactly -ParameterFilter { $PaneId -eq '%3' }
+        $script:deferredSendCommands.Count | Should -Be 1
+        $script:deferredSendCommands[0] | Should -Match 'orchestra-pane-bootstrap\.ps1'
+        $script:deferredStatusWrites | Should -Be @('deferred_starting', 'ready')
+    }
+
+    It 'blocks a previously failed deferred pane when the bootstrap plan is still missing' {
+        $missingPlan = Join-Path $script:deferredTempRoot 'missing-worker-2.json'
+        $entry = [PSCustomObject]@{
+            Label             = 'worker-2'
+            PaneId            = '%3'
+            Status            = 'deferred_start_failed'
+            BootstrapPlanPath = $missingPlan
+            CapabilityAdapter = 'codex'
+            ProviderTarget    = ''
+        }
+
+        { Start-DeferredPaneFromManifestEntry -ProjectDir $script:deferredTempRoot -ManifestEntry $entry } |
+            Should -Throw "*bootstrap plan not found*"
+
+        $script:deferredSendCommands.Count | Should -Be 0
+        $script:deferredStatusWrites | Should -Be @('deferred_start_failed')
+    }
+
     It 'keeps send, dispatch-task, and monitor paths aware of deferred panes' {
         $script:deferredCoreContent | Should -Match 'function Start-DeferredPaneFromManifestEntry'
         $script:deferredCoreContent | Should -Match 'Start-DeferredPaneFromManifestEntry -ProjectDir \$projectDir -ManifestEntry \$context'
