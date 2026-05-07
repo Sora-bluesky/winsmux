@@ -609,6 +609,7 @@ pub struct DesktopVoiceCaptureNativeStatus {
     pub device: String,
     pub device_count: u32,
     pub meter_supported: bool,
+    pub meter_level: f64,
     pub restart_supported: bool,
     pub reason: String,
 }
@@ -710,6 +711,7 @@ pub fn build_desktop_voice_capture_status(
             device,
             device_count: probe.device_count,
             meter_supported: false,
+            meter_level: 0.0,
             restart_supported: false,
             reason,
         },

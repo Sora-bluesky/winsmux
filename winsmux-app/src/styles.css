@@ -1756,15 +1756,37 @@ body[data-popout-surface="1"] #editor-surface {
 }
 
 .voice-input-status {
+  position: relative;
   margin-top: 6px;
+  padding-bottom: 4px;
   color: var(--text-muted);
   font-size: var(--text-2xs);
   line-height: var(--leading-tight);
+  --voice-meter: 0%;
 }
 
 .voice-input-status[data-state="unavailable"],
 .voice-input-status[data-state="error"] {
   color: var(--status-warning);
+}
+
+.voice-input-status[data-state="recording"],
+.voice-input-status[data-state="silence"] {
+  color: var(--text-primary);
+}
+
+.voice-input-status[data-state="recording"]::after,
+.voice-input-status[data-state="silence"]::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: auto;
+  bottom: 0;
+  width: var(--voice-meter);
+  max-width: 100%;
+  height: 2px;
+  border-radius: 999px;
+  background: var(--accent-blue-hover);
 }
 
 #composer-mode-row {
