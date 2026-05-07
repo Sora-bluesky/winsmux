@@ -1887,7 +1887,7 @@ dependencies = [
 
 [[package]]
 name = "winsmux"
-version = "0.24.23"
+version = "0.25.1"
 dependencies = [
  "chrono",
  "crossterm",
