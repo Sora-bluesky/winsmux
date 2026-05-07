@@ -6501,9 +6501,6 @@ function updateVoiceDraftStorageControl(activeState: ThemeState) {
   input.onchange = () => {
     const draft = getSettingsDraftState();
     draft.persistVoiceDraftLocally = input.checked;
-    if (!input.checked) {
-      clearVoiceDraftRecoveryStorage();
-    }
     updateSettingsApplyButton();
     renderFooterLane();
   };

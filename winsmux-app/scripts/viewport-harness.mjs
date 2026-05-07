@@ -754,6 +754,26 @@ async function assertDesktopVoiceLongSessionPrivacy(page) {
   await page.click("#send-btn");
   await page.waitForFunction((key) => window.localStorage.getItem(key) === null, recoveryKey);
 
+  await page.evaluate((key) => {
+    window.localStorage.setItem(key, JSON.stringify({
+      value: "cancel must keep this recovery draft",
+      source: "voice",
+      elapsed_ms: 6 * 60 * 1000,
+    }));
+  }, recoveryKey);
+  await page.click("#activity-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "visible" });
+  await page.locator("#voice-draft-storage-input").scrollIntoViewIfNeeded();
+  await page.locator("#voice-draft-storage-input").uncheck();
+  await page.click("#close-settings-btn");
+  await page.locator("#settings-sheet").waitFor({ state: "hidden" });
+  await page.waitForFunction(({ recoveryStorageKey, shellPreferencesKey }) => {
+    const preferences = JSON.parse(window.localStorage.getItem(shellPreferencesKey) ?? "{}");
+    const recovery = JSON.parse(window.localStorage.getItem(recoveryStorageKey) ?? "{}");
+    return preferences.persistVoiceDraftLocally === true &&
+      recovery.value === "cancel must keep this recovery draft";
+  }, { recoveryStorageKey: recoveryKey, shellPreferencesKey: preferencesKey });
+
   await page.click("#activity-settings-btn");
   await page.locator("#settings-sheet").waitFor({ state: "visible" });
   await page.locator("#voice-draft-storage-input").scrollIntoViewIfNeeded();
