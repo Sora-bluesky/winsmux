@@ -77,6 +77,33 @@ Describe 'orchestra preflight zombie detection' {
         @($victims).Count | Should -Be 0
     }
 
+    It 'detects parentless winsmux-generated pwsh pane shells without worktree paths' {
+        $snapshot = & $script:NewPreflightSnapshot -Processes @(
+            [PSCustomObject]@{
+                ProcessId       = 351
+                ParentProcessId = 0
+                Name            = 'pwsh.exe'
+                CommandLine     = 'pwsh -NoLogo -NoProfile -NoExit -Command "if (-not (Test-Path variable:Global:__psmux_cwd_hook)) { $Global:__psmux_cwd_hook = $true }"'
+            }
+            [PSCustomObject]@{
+                ProcessId       = 352
+                ParentProcessId = 0
+                Name            = 'pwsh.exe'
+                CommandLine     = 'pwsh -noexit -command "try { . C:\Users\test\AppData\Local\Programs\Microsoft VS Code\shellIntegration.ps1 } catch {}"'
+            }
+        )
+
+        $victims = Get-OrchestraZombieVictims `
+            -Snapshot $snapshot `
+            -ProtectedIds ([System.Collections.Generic.HashSet[int]]::new()) `
+            -ProjectDir 'C:\repo' `
+            -GitWorktreeDir 'C:\repo\.git' `
+            -BridgeScript 'C:\repo\scripts\winsmux-core.ps1' `
+            -SessionName 'winsmux-orchestra'
+
+        @($victims | ForEach-Object { [int]$_.ProcessId }) | Should -Be @(351)
+    }
+
     It 'includes pwsh descendants of an existing orchestra session for cleanup' {
         $snapshot = & $script:NewPreflightSnapshot -Processes @(
             [PSCustomObject]@{
