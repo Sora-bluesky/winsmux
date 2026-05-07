@@ -782,6 +782,28 @@ function Get-OrchestraPaneBootstrapMarkerPath {
     return Join-Path $planDirectory ("{0}-{1}.ready.json" -f $planBaseName, $StartupToken)
 }
 
+function Test-OrchestraPaneDeferredStart {
+    param(
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)]$LayoutSettings
+    )
+
+    if (-not [bool](Get-OrchestraObjectPropertyValue -InputObject $LayoutSettings -Name 'ExternalOperator' -Default $false)) {
+        return $false
+    }
+
+    if (-not [string]::Equals($Role, 'Worker', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $false
+    }
+
+    if ($Label -notmatch '^worker-(\d+)$') {
+        return $false
+    }
+
+    return ([int]$Matches[1] -gt 1)
+}
+
 function Get-AgentLaunchCommand {
     param(
         [Parameter(Mandatory = $true)][string]$Agent,
@@ -1117,6 +1139,8 @@ function Save-OrchestraSessionState {
             supports_verification      = [bool]$paneSummary.SupportsVerification
             supports_consultation      = [bool]$paneSummary.SupportsConsultation
             supports_context_reset     = [bool](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'SupportsContextReset' -Default $false)
+            bootstrap_plan_path        = [string](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'BootstrapPlanPath' -Default '')
+            bootstrap_marker_path      = [string](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'BootstrapMarkerPath' -Default '')
             task                       = $null
             status                     = if ($paneSummary.Status) { $paneSummary.Status } else { 'ready' }
         }
@@ -2146,6 +2170,9 @@ if ($MyInvocation.InvocationName -ne '.') {
         $launchGitWorktreeDir = $gitWorktreeDir
         $builderBranch = $null
         $builderWorktreePath = $null
+        $bootstrapPlanPath = ''
+        $bootstrapMarkerPath = ''
+        $paneStatus = 'ready'
 
         if ($canonicalRole -in @('Builder', 'Worker')) {
             $builderIndex++
@@ -2168,6 +2195,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         $execMode = $execModeAgent.Trim().ToLowerInvariant() -eq 'codex'
         $launchCommand = Get-AgentLaunchCommand -Agent $slotAgentConfig.Agent -Model $slotAgentConfig.Model -ModelSource $slotAgentConfig.ModelSource -ReasoningEffort $slotAgentConfig.ReasoningEffort -ProjectDir $launchDir -GitWorktreeDir $launchGitWorktreeDir -RootPath $projectDir -ExecMode $false
         $supportsInterrupt = Test-OrchestraProviderInterruptAvailable -SlotAgentConfig $slotAgentConfig
+        $deferPaneStart = Test-OrchestraPaneDeferredStart -Label $label -Role $canonicalRole -LayoutSettings $layoutSettings
 
         Invoke-Bridge -Arguments @('name', $paneId, $label)
         try {
@@ -2194,7 +2222,17 @@ if ($MyInvocation.InvocationName -ne '.') {
                     -CleanPtyEnv $cleanPtyEnv `
                     -LaunchCommand $launchCommand `
                     -SupportsInterrupt $supportsInterrupt
-                Start-OrchestraPaneBootstrap -PaneId $paneId -PlanPath $bootstrapPlanPath
+                if ($deferPaneStart) {
+                    $paneStatus = 'deferred_start'
+                    Write-WinsmuxLog -Level INFO -Event 'preflight.worker.deferred_start' -Message "Deferred worker startup for $label." -Data ([ordered]@{
+                        label               = $label
+                        pane_id             = $paneId
+                        bootstrap_plan_path = $bootstrapPlanPath
+                    }) | Out-Null
+                } else {
+                    Start-OrchestraPaneBootstrap -PaneId $paneId -PlanPath $bootstrapPlanPath
+                    $bootstrapMarkerPath = Get-OrchestraPaneBootstrapMarkerPath -PlanPath $bootstrapPlanPath -StartupToken $startupToken
+                }
                 # TASK-231: verify pane exists after respawn
                 try {
                     Invoke-Winsmux -Arguments @('display-message', '-t', $paneId, '-p', '#{pane_id}') -CaptureOutput | Out-Null
@@ -2235,12 +2273,17 @@ if ($MyInvocation.InvocationName -ne '.') {
             BuilderWorktreePath = $builderWorktreePath
             WorktreeGitDir = $launchGitWorktreeDir
             ExpectedOrigin = $expectedOrigin
-            BootstrapMarkerPath = if ([string]::IsNullOrWhiteSpace($bootstrapPlanPath)) { '' } else { Get-OrchestraPaneBootstrapMarkerPath -PlanPath $bootstrapPlanPath -StartupToken $startupToken }
-            Status = 'ready'
+            BootstrapPlanPath = $bootstrapPlanPath
+            BootstrapMarkerPath = $bootstrapMarkerPath
+            Status = $paneStatus
         })
     }
 
     foreach ($paneSummary in $paneSummaries) {
+        if ([string](Get-OrchestraObjectPropertyValue -InputObject $paneSummary -Name 'Status' -Default '') -eq 'deferred_start') {
+            continue
+        }
+
         try {
             $readinessAgent = Get-OrchestraReadinessAgentName -PaneSummary $paneSummary
             Wait-AgentReady -PaneId $paneSummary.PaneId -Agent $readinessAgent -TimeoutSeconds 60

@@ -1243,6 +1243,25 @@ function Invoke-AgentMonitorCycle {
         $builderWorktreePath = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'builder_worktree_path' -Default '')
 
         $checkedCount++
+        $manifestPaneStatus = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'status' -Default '')
+        if (@('deferred_start', 'deferred_starting', 'deferred_start_failed') -contains $manifestPaneStatus) {
+            $currentResults[$paneId] = $manifestPaneStatus
+            $results.Add([ordered]@{
+                Label      = $label
+                PaneId     = $paneId
+                Role       = $role
+                Status     = $manifestPaneStatus
+                ExitReason = ''
+                Respawned  = $false
+                ContextReset = $false
+                ContextRemainingPercent = $null
+                IdleAlerted = $false
+                StallDetected = $false
+                Message    = ''
+            })
+            continue
+        }
+
         $status = Get-PaneAgentStatus -PaneId $paneId -Agent $statusAgentName -Role $role -ExecMode $paneExecMode -HungThreshold $IdleThreshold
         $statusName = [string](Get-MonitorPropertyValue -InputObject $status -Name 'Status' -Default '')
 
@@ -1463,7 +1482,6 @@ function Invoke-AgentMonitorCycle {
         }
 
         # TASK-240: do not respawn bootstrap_invalid panes
-        $manifestPaneStatus = [string](Get-MonitorPropertyValue -InputObject $pane -Name 'status' -Default '')
         if ($manifestPaneStatus -eq 'bootstrap_invalid') {
             $shouldRespawn = $false
         }
