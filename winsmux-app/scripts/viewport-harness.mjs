@@ -376,8 +376,126 @@ async function assertPreviewClosed(page) {
   }
 }
 
+async function assertDesktopVoiceInputCoverage(page) {
+  const composer = page.locator("#composer-input");
+  const voiceButton = page.locator("#voice-input-btn");
+  const initialTimelineItemCount = await page.locator("#conversation-timeline .timeline-item").count();
+
+  await composer.fill("既存の下書き");
+  await voiceButton.focus();
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement &&
+      button.getAttribute("aria-pressed") === "true" &&
+      button.getAttribute("aria-label")?.includes("Stop voice input");
+  });
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("音声テスト"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement &&
+      input.value === "既存の下書き 音声テスト" &&
+      document.activeElement === input;
+  });
+  const afterDraftTimelineItemCount = await page.locator("#conversation-timeline .timeline-item").count();
+  if (afterDraftTimelineItemCount !== initialTimelineItemCount) {
+    throw new Error("Voice input must update the composer draft without auto-sending to the operator timeline");
+  }
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "false";
+  });
+  await page.waitForFunction(() => window.__winsmuxSpeechRecognition.snapshot().stops >= 1);
+
+  const beforeImeSnapshot = await page.evaluate(() => window.__winsmuxSpeechRecognition.snapshot());
+  await composer.fill("");
+  await composer.focus();
+  await composer.evaluate((input) => input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+  await page.keyboard.press("Control+Alt+M");
+  const imeBlockedState = await page.evaluate(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return {
+      pressed: button instanceof HTMLButtonElement ? button.getAttribute("aria-pressed") : "",
+      starts: window.__winsmuxSpeechRecognition.snapshot().starts,
+    };
+  });
+  if (imeBlockedState.starts !== beforeImeSnapshot.starts || imeBlockedState.pressed !== "false") {
+    throw new Error("Voice shortcut must stay inactive while the composer IME composition is active");
+  }
+  await composer.evaluate((input) => input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true })));
+
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "true";
+  });
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitError("no-speech", "No speech was detected"));
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement &&
+      button.getAttribute("aria-pressed") === "false" &&
+      button.getAttribute("aria-label")?.includes("Start voice input");
+  });
+  const afterSilenceTimelineItemCount = await page.locator("#conversation-timeline .timeline-item").count();
+  if (afterSilenceTimelineItemCount !== initialTimelineItemCount) {
+    throw new Error("Silence must stop voice input without adding a warning timeline item");
+  }
+
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "true";
+  });
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitError("not-allowed", "Microphone permission denied"));
+  await page.locator("#conversation-timeline .timeline-item", { hasText: "Voice input stopped" }).last().waitFor();
+  await page.locator("#conversation-timeline .timeline-item", { hasText: "Microphone permission denied" }).last().waitFor();
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "false";
+  });
+
+  await page.keyboard.press("Control+Alt+M");
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "true";
+  });
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitError("audio-capture", "No microphone was found"));
+  await page.locator("#conversation-timeline .timeline-item", { hasText: "No microphone was found" }).last().waitFor();
+  await page.waitForFunction(() => {
+    const button = document.querySelector("#voice-input-btn");
+    return button instanceof HTMLButtonElement && button.getAttribute("aria-pressed") === "false";
+  });
+}
+
 async function installSpeechRecognitionStub(page) {
   await page.addInitScript(() => {
+    const speechRecognitionState = {
+      aborts: 0,
+      instances: [],
+      starts: 0,
+      stops: 0,
+      get active() {
+        return this.instances[this.instances.length - 1] ?? null;
+      },
+      emitError(error, message = error) {
+        this.active?.onerror?.({ error, message });
+      },
+      emitResult(transcript, isFinal = true) {
+        const result = [{ transcript, confidence: 1 }];
+        result.isFinal = isFinal;
+        this.active?.onresult?.({ resultIndex: 0, results: [result] });
+      },
+      snapshot() {
+        return {
+          aborts: this.aborts,
+          instances: this.instances.length,
+          starts: this.starts,
+          stops: this.stops,
+        };
+      },
+    };
+
     class MockSpeechRecognition {
       constructor() {
         this.continuous = false;
@@ -387,21 +505,26 @@ async function installSpeechRecognitionStub(page) {
         this.onend = null;
         this.onresult = null;
         this.onstart = null;
+        speechRecognitionState.instances.push(this);
       }
 
       start() {
+        speechRecognitionState.starts += 1;
         this.onstart?.();
       }
 
       stop() {
+        speechRecognitionState.stops += 1;
         this.onend?.();
       }
 
       abort() {
+        speechRecognitionState.aborts += 1;
         this.onend?.();
       }
     }
 
+    window.__winsmuxSpeechRecognition = speechRecognitionState;
     window.SpeechRecognition = MockSpeechRecognition;
     window.webkitSpeechRecognition = MockSpeechRecognition;
   });
@@ -483,6 +606,49 @@ async function assertSettingsRoundtrip(page, returnSelector) {
       input.value === "Ctrl+Alt+M" &&
       warning instanceof HTMLElement &&
       warning.hidden;
+  });
+  await page.click("#voice-shortcut-input");
+  await page.keyboard.press("Control+Shift+Y");
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#voice-shortcut-input");
+    const warning = document.querySelector("#voice-shortcut-warning");
+    const apply = document.querySelector("#apply-settings-btn");
+    return input instanceof HTMLInputElement &&
+      input.value === "Ctrl+Shift+Y" &&
+      warning instanceof HTMLElement &&
+      warning.hidden &&
+      apply instanceof HTMLButtonElement &&
+      !apply.disabled;
+  });
+  await page.click("#apply-settings-btn");
+  await page.waitForFunction(() => {
+    const preferences = JSON.parse(window.localStorage.getItem("winsmux.shell.preferences.v1") ?? "{}");
+    const voice = document.querySelector("#voice-input-btn");
+    return preferences.voiceShortcut === "Ctrl+Shift+Y" &&
+      voice instanceof HTMLButtonElement &&
+      voice.getAttribute("aria-label")?.includes("Ctrl+Shift+Y");
+  });
+  await page.click("#voice-shortcut-reset-btn");
+  await page.locator("#settings-font-family-input").fill("Consolas, 'Courier New', monospace");
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#voice-shortcut-input");
+    const fontInput = document.querySelector("#settings-font-family-input");
+    const apply = document.querySelector("#apply-settings-btn");
+    return input instanceof HTMLInputElement &&
+      input.value === "Ctrl+Alt+M" &&
+      fontInput instanceof HTMLInputElement &&
+      fontInput.value === "Consolas, 'Courier New', monospace" &&
+      apply instanceof HTMLButtonElement &&
+      !apply.disabled;
+  });
+  await page.click("#apply-settings-btn");
+  await page.waitForFunction(() => {
+    const preferences = JSON.parse(window.localStorage.getItem("winsmux.shell.preferences.v1") ?? "{}");
+    const voice = document.querySelector("#voice-input-btn");
+    return preferences.voiceShortcut === "Ctrl+Alt+M" &&
+      preferences.codeFontFamily === "Consolas, 'Courier New', monospace" &&
+      voice instanceof HTMLButtonElement &&
+      voice.getAttribute("aria-label")?.includes("Ctrl+Alt+M");
   });
   await page.keyboard.press("Escape");
   await page.locator("#settings-sheet").waitFor({ state: "visible" });
@@ -1055,6 +1221,10 @@ async function verifyDesktopViewport(page, previewUrl) {
     await assertNoOverlap(page, "#workspace-body", "#workspace-footer");
   });
 
+  await runStep("desktop voice input accessibility coverage", async () => {
+    await assertDesktopVoiceInputCoverage(page);
+  });
+
   await runStep("desktop composer autosizes without resize grabber", async () => {
     const initialHeight = await page.locator("#composer-input").evaluate((input) => input.getBoundingClientRect().height);
     await page.locator("#composer-input").fill(Array.from({ length: 40 }, (_, index) => `line ${index + 1}`).join("\n"));
@@ -1319,6 +1489,7 @@ async function run() {
           checks: [
             "desktop-operator-chat-contract",
             "desktop-1440x900",
+            "desktop-voice-input-a11y",
             "desktop-composer-autosize",
             "desktop-command-bar",
             "desktop-composer-model-controls",
