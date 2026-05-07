@@ -645,10 +645,10 @@ async function assertDesktopSlashAwareVoiceDraft(page) {
 
   await composer.fill("/goal");
   await startBrowserVoiceInput(page);
-  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("v0.25.4 を完了する"));
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("v0.25.5 を完了する"));
   await page.waitForFunction(() => {
     const input = document.querySelector("#composer-input");
-    return input instanceof HTMLTextAreaElement && input.value === "/goal v0.25.4 を完了する";
+    return input instanceof HTMLTextAreaElement && input.value === "/goal v0.25.5 を完了する";
   });
   await stopBrowserVoiceInput(page);
 

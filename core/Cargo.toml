@@ -1,6 +1,6 @@
 [package]
 name = "winsmux"
-version = "0.25.4"
+version = "0.25.5"
 edition = "2021"
 autobins = false
 description = "Windows-native terminal multiplexer and agent workspace runtime"
