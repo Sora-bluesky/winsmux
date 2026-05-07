@@ -596,6 +596,32 @@ pub enum DesktopJsonRpcResponse {
     },
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct DesktopVoiceCaptureNativeStatus {
+    pub available: bool,
+    pub state: String,
+    pub permission: String,
+    pub device: String,
+    pub meter_supported: bool,
+    pub restart_supported: bool,
+    pub reason: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopVoiceCaptureBrowserFallbackStatus {
+    pub expected: bool,
+    pub reason: String,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopVoiceCaptureStatus {
+    pub version: u16,
+    pub capture_mode: String,
+    pub native: DesktopVoiceCaptureNativeStatus,
+    pub browser_fallback: DesktopVoiceCaptureBrowserFallbackStatus,
+    pub state_contract: Vec<String>,
+}
+
 pub enum DesktopCommand {
     SummarySnapshot {
         project_dir: Option<String>,
@@ -633,6 +659,37 @@ pub enum DesktopCommand {
 
 pub enum DesktopStreamCommand {
     Summary { project_dir: Option<String> },
+}
+
+pub fn load_desktop_voice_capture_status() -> DesktopVoiceCaptureStatus {
+    DesktopVoiceCaptureStatus {
+        version: 1,
+        capture_mode: "browser_fallback".to_string(),
+        native: DesktopVoiceCaptureNativeStatus {
+            available: false,
+            state: "unavailable".to_string(),
+            permission: "unknown".to_string(),
+            device: "unknown".to_string(),
+            meter_supported: false,
+            restart_supported: false,
+            reason: "Native microphone capture is not implemented in this build.".to_string(),
+        },
+        browser_fallback: DesktopVoiceCaptureBrowserFallbackStatus {
+            expected: true,
+            reason: "Use browser speech recognition until the native capture backend is available."
+                .to_string(),
+        },
+        state_contract: vec![
+            "unavailable".to_string(),
+            "permission_denied".to_string(),
+            "no_microphone".to_string(),
+            "silence".to_string(),
+            "cancelled".to_string(),
+            "restarting".to_string(),
+            "recording".to_string(),
+            "stopped".to_string(),
+        ],
+    }
 }
 
 impl DesktopCommand {
@@ -1089,12 +1146,23 @@ pub fn handle_desktop_json_rpc(
                     "desktop.run.promote",
                     "desktop.run.pick_winner",
                     "desktop.runtime.roles.apply",
+                    "desktop.voice.capture_status",
                     "desktop.dogfood.event",
                     "desktop.explorer.list",
                     "desktop.editor.read",
                 ],
             }),
         ),
+        "desktop.voice.capture_status" => {
+            match serde_json::to_value(load_desktop_voice_capture_status()) {
+                Ok(result) => json_rpc_result(request_id, result),
+                Err(err) => json_rpc_error(
+                    request_id,
+                    JSON_RPC_INTERNAL_ERROR,
+                    format!("Failed to serialize desktop voice capture payload: {err}"),
+                ),
+            }
+        }
         "desktop.run.explain" => {
             let run_id = match get_required_string_param(params.as_ref(), &["runId", "run_id"]) {
                 Ok(value) => value,
@@ -4534,11 +4602,52 @@ mod tests {
                 assert!(methods
                     .iter()
                     .any(|method| { method.as_str() == Some("desktop.dogfood.event") }));
+                assert!(methods
+                    .iter()
+                    .any(|method| { method.as_str() == Some("desktop.voice.capture_status") }));
             }
             DesktopJsonRpcResponse::Error { error, .. } => {
                 panic!("expected success, got {:?}", error);
             }
         }
+    }
+
+    #[test]
+    fn handle_desktop_json_rpc_routes_voice_capture_status() {
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response: serde_json::json!({}),
+        };
+        let response = handle_desktop_json_rpc(
+            &transport,
+            DesktopJsonRpcRequest {
+                jsonrpc: "2.0".to_string(),
+                id: serde_json::json!("req-voice"),
+                method: "desktop.voice.capture_status".to_string(),
+                params: None,
+            },
+            None,
+        );
+
+        match response {
+            DesktopJsonRpcResponse::Success { id, result, .. } => {
+                assert_eq!(id, serde_json::json!("req-voice"));
+                assert_eq!(result["version"], 1);
+                assert_eq!(result["capture_mode"], "browser_fallback");
+                assert_eq!(result["native"]["available"], false);
+                assert_eq!(result["native"]["state"], "unavailable");
+                assert_eq!(result["browser_fallback"]["expected"], true);
+                assert!(result["state_contract"]
+                    .as_array()
+                    .expect("state_contract must be an array")
+                    .iter()
+                    .any(|state| state.as_str() == Some("permission_denied")));
+            }
+            DesktopJsonRpcResponse::Error { error, .. } => {
+                panic!("expected success, got {:?}", error);
+            }
+        }
+        assert!(transport.requests.borrow().is_empty());
     }
 
     #[test]

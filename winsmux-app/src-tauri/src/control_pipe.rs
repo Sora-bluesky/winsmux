@@ -19,6 +19,7 @@ const DESKTOP_CONTROL_PIPE_METHODS: &[&str] = &[
     "desktop.run.compare",
     "desktop.run.promote",
     "desktop.run.pick_winner",
+    "desktop.voice.capture_status",
 ];
 
 pub fn handle_control_pipe_payload(
@@ -354,6 +355,21 @@ mod tests {
         assert_eq!(value["result"]["pipe"], WINSMUX_CONTROL_PIPE_NAME);
         assert_eq!(value["result"]["localhost_http"], false);
         assert_eq!(value["result"]["websocket"], false);
+    }
+
+    #[test]
+    fn control_pipe_routes_voice_capture_status_to_desktop_handler() {
+        let payload = br#"{"jsonrpc":"2.0","id":1,"method":"desktop.voice.capture_status"}"#;
+        let pty_transport = StubPtyTransport::new();
+        let response =
+            handle_control_pipe_payload(&StubDesktopTransport, &pty_transport, payload, None);
+        let value: Value = serde_json::from_slice(&response).expect("response should be JSON");
+
+        assert_eq!(value["jsonrpc"], "2.0");
+        assert_eq!(value["id"], 1);
+        assert_eq!(value["result"]["capture_mode"], "browser_fallback");
+        assert_eq!(value["result"]["native"]["available"], false);
+        assert_eq!(value["result"]["browser_fallback"]["expected"], true);
     }
 
     #[test]

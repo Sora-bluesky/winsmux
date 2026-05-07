@@ -1755,6 +1755,18 @@ body[data-popout-surface="1"] #editor-surface {
   box-shadow: 0 0 0 3px rgba(90, 132, 245, 0.18);
 }
 
+.voice-input-status {
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: var(--text-2xs);
+  line-height: var(--leading-tight);
+}
+
+.voice-input-status[data-state="unavailable"],
+.voice-input-status[data-state="error"] {
+  color: var(--status-warning);
+}
+
 #composer-mode-row {
   margin-top: 8px;
   display: flex;

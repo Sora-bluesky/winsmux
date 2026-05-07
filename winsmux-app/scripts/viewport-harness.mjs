@@ -1021,6 +1021,10 @@ async function verifyDesktopViewport(page, previewUrl) {
         !voice.disabled &&
         voice.getAttribute("aria-label")?.includes("Ctrl+Alt+M");
     });
+    await page.waitForFunction(() => {
+      const status = document.querySelector("#voice-input-status");
+      return status instanceof HTMLElement && status.hidden;
+    });
     await page.keyboard.press("Control+Alt+M");
     await page.waitForFunction(() => {
       const voice = document.querySelector("#voice-input-btn");
