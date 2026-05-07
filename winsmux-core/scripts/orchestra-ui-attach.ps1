@@ -431,7 +431,6 @@ function Start-OrchestraWindowsTerminalVisibleAttach {
         [Parameter(Mandatory = $true)][string]$ProjectDir
     )
 
-    $pwshPath = Get-OrchestraPowerShellPath
     $argumentList = @(
         '-w',
         '-1',
@@ -440,7 +439,8 @@ function Start-OrchestraWindowsTerminalVisibleAttach {
         (ConvertTo-OrchestraQuotedArgument -Value $ProjectDir),
         '--title',
         'winsmux-orchestra',
-        (ConvertTo-OrchestraQuotedArgument -Value $pwshPath)
+        '--',
+        'pwsh.exe'
     ) + (Get-OrchestraAttachEntryArgumentList | ForEach-Object {
         if ([string]$_ -match '[\s"]') {
             ConvertTo-OrchestraQuotedArgument -Value ([string]$_)
@@ -562,6 +562,12 @@ function Get-OrchestraVisibleAttachHostCandidates {
     param([Parameter(Mandatory = $true)][string]$ProjectDir)
 
     $terminalInfo = Get-OrchestraWindowsTerminalInfo
+    $windowsTerminalAvailable = [bool]$terminalInfo.Available
+    $windowsTerminalReason = [string]$terminalInfo.Reason
+    if ([string]$terminalInfo.PathSource -eq 'appx') {
+        $windowsTerminalAvailable = $false
+        $windowsTerminalReason = 'wt_appx_direct_launch_unsupported'
+    }
 
     $powerShellPath = ''
     $powerShellReason = 'ready'
@@ -576,9 +582,9 @@ function Get-OrchestraVisibleAttachHostCandidates {
     return @(
         [PSCustomObject][ordered]@{
             HostKind            = 'windows-terminal'
-            Available           = [bool]$terminalInfo.Available
+            Available           = $windowsTerminalAvailable
             Path                = [string]$terminalInfo.Path
-            Reason              = [string]$terminalInfo.Reason
+            Reason              = $windowsTerminalReason
             PathSource          = [string]$terminalInfo.PathSource
             UseLaunchObservation = $true
             ProjectDir          = $ProjectDir

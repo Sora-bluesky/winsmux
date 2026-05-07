@@ -4977,7 +4977,6 @@ Describe 'orchestra-start server bootstrap' {
         Mock Wait-OrchestraAttachLaunchObservation {
             [PSCustomObject]@{ Observed = $true; Reason = 'launch observed' }
         }
-        Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
         Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
         Mock Wait-OrchestraAttachHandshake {
             [PSCustomObject][ordered]@{
@@ -5031,9 +5030,83 @@ Describe 'orchestra-start server bootstrap' {
         $script:startProcessCalls[0].ArgumentList | Should -Not -Contain '-p'
         $script:startProcessCalls[0].ArgumentList | Should -Contain '--title'
         $script:startProcessCalls[0].ArgumentList | Should -Contain 'winsmux-orchestra'
-        $script:startProcessCalls[0].ArgumentList | Should -Contain '"C:\Program Files\PowerShell\7\pwsh.exe"'
+        $script:startProcessCalls[0].ArgumentList | Should -Contain '--'
+        $script:startProcessCalls[0].ArgumentList | Should -Contain 'pwsh.exe'
         $script:startProcessCalls[0].ArgumentList | Should -Contain '-File'
         $script:startProcessCalls[0].ArgumentList | Should -Contain 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1'
+    }
+
+    It 'skips Appx-resolved Windows Terminal direct launch and uses PowerShell attach' {
+        $script:startProcessCalls = @()
+        $script:winsmuxBin = 'C:\winsmux\winsmux.exe'
+
+        Mock Get-OrchestraAttachedClientSnapshot {
+            [PSCustomObject]@{ Ok = $true; Count = 0; Error = ''; Clients = @() }
+        }
+        Mock Read-OrchestraAttachState { $script:attachStateStore }
+        Mock Test-OrchestraLiveVisibleAttachState { $false }
+        Mock Get-OrchestraWindowsTerminalInfo {
+            [PSCustomObject][ordered]@{
+                Available   = $true
+                Path        = 'C:\Program Files\WindowsApps\Microsoft.WindowsTerminal_1.24.10921.0_x64__8wekyb3d8bbwe\wt.exe'
+                AliasPath   = 'C:\Users\Example\AppData\Local\Microsoft\WindowsApps\wt.exe'
+                IsAliasStub = $true
+                PathSource  = 'appx'
+                Reason      = 'resolved_from_appx'
+            }
+        }
+        Mock Write-OrchestraAttachState {
+            param([string]$SessionName, [hashtable]$Properties)
+            $merged = [ordered]@{}
+            if ($null -ne $script:attachStateStore) {
+                foreach ($property in $script:attachStateStore.PSObject.Properties) {
+                    $merged[$property.Name] = $property.Value
+                }
+            }
+            foreach ($key in $Properties.Keys) {
+                $merged[$key] = $Properties[$key]
+            }
+            $script:attachStateStore = [pscustomobject]$merged
+            return $script:attachStateStore
+        }
+        Mock Get-OrchestraPowerShellPath { 'C:\Program Files\PowerShell\7\pwsh.exe' }
+        Mock Get-OrchestraAttachEntryArgumentList { @('-NoLogo', '-NoExit', '-File', 'C:\repo\winsmux-core\scripts\orchestra-attach-entry.ps1') }
+        Mock Wait-OrchestraAttachHandshake {
+            [PSCustomObject][ordered]@{
+                Confirmed           = $true
+                Source              = 'handshake'
+                Status              = 'attach_confirmed'
+                Reason              = 'Attach confirmed via PowerShell'
+                AttachedClientCount = 1
+                State               = [pscustomobject]@{}
+            }
+        }
+
+        function Start-Process {
+            param([string]$FilePath, [object[]]$ArgumentList, [switch]$PassThru)
+            $script:startProcessCalls += ,([PSCustomObject]@{
+                FilePath     = $FilePath
+                ArgumentList = @($ArgumentList)
+            })
+            return [PSCustomObject]@{ HasExited = $false }
+        }
+
+        $result = Try-StartOrchestraUiAttach -SessionName 'winsmux-orchestra'
+
+        $result.Attempted | Should -Be $true
+        $result.Launched | Should -Be $true
+        $result.Attached | Should -Be $true
+        $result.Status | Should -Be 'attach_confirmed'
+        $result.Path | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
+        $result.attach_adapter_trace.Count | Should -Be 2
+        $result.attach_adapter_trace[0].host_kind | Should -Be 'windows-terminal'
+        $result.attach_adapter_trace[0].available | Should -Be $false
+        $result.attach_adapter_trace[0].availability_reason | Should -Be 'wt_appx_direct_launch_unsupported'
+        $result.attach_adapter_trace[0].launch_result | Should -Be 'skipped_unavailable'
+        $result.attach_adapter_trace[1].host_kind | Should -Be 'powershell-window'
+        $result.attach_adapter_trace[1].launch_result | Should -Be 'attach_confirmed'
+        $script:startProcessCalls.Count | Should -Be 1
+        $script:startProcessCalls[0].FilePath | Should -Be 'C:\Program Files\PowerShell\7\pwsh.exe'
     }
 
     It 'returns attach_already_present only when a live visible attach state already exists' {
