@@ -62,6 +62,22 @@ interface ConversationChip {
 
 type TimelineFilter = "all" | "attention" | "review" | "activity";
 type ConversationCategory = "user" | "attention" | "review" | "activity";
+type WorkPipelineStage = "open" | "triaged" | "planning" | "implementing" | "reviewing" | "shipped";
+
+interface WorkDashboardRecord {
+  projection: DesktopRunProjection;
+  payload: DesktopExplainPayload | null;
+  stage: WorkPipelineStage;
+  issueRef: string;
+  taskRef: string;
+  prRef: string;
+  prUrl: string;
+  reviewRef: string;
+  evidenceRefs: string[];
+  traceRefs: string[];
+  summary: string;
+  tone: SurfaceTone;
+}
 
 interface ConversationDetail {
   label: string;
@@ -1956,6 +1972,193 @@ function getRunProjectionByRunId(runId: string | null) {
 function getPrimaryRunProjection() {
   const resolvedRunId = resolveSelectedRunId();
   return getRunProjectionByRunId(resolvedRunId) ?? getRunProjections()[0] ?? null;
+}
+
+const workPipelineStages: WorkPipelineStage[] = [
+  "open",
+  "triaged",
+  "planning",
+  "implementing",
+  "reviewing",
+  "shipped",
+];
+
+const workPipelineStageLabels: Record<WorkPipelineStage, string> = {
+  open: "Open",
+  triaged: "Triaged",
+  planning: "Planning",
+  implementing: "Implementing",
+  reviewing: "Reviewing",
+  shipped: "Shipped",
+};
+
+const workPipelineStageLabelsJa: Record<WorkPipelineStage, string> = {
+  open: "未着手",
+  triaged: "整理済み",
+  planning: "計画中",
+  implementing: "実装中",
+  reviewing: "レビュー中",
+  shipped: "出荷済み",
+};
+
+function getWorkStageLabel(stage: WorkPipelineStage) {
+  return themeState.language === "ja" ? workPipelineStageLabelsJa[stage] : workPipelineStageLabels[stage];
+}
+
+function getTaskRefForDashboard(projection: DesktopRunProjection, payload: DesktopExplainPayload | null) {
+  if (payload?.run.task_id) {
+    return payload.run.task_id;
+  }
+  if (projection.run_id.startsWith("task:")) {
+    return projection.run_id.slice("task:".length);
+  }
+  return projection.task || projection.run_id || "";
+}
+
+function getIssueRefForDashboard(payload: DesktopExplainPayload | null) {
+  return (
+    payload?.review_state?.request?.review_contract?.issue_ref ||
+    payload?.review_state?.request?.review_contract?.pathspec_policy?.issue_ref ||
+    ""
+  );
+}
+
+function getPrRefForDashboard(payload: DesktopExplainPayload | null) {
+  const gate = payload?.run.draft_pr_gate;
+  const url = gate?.draft_pr_url?.trim() || "";
+  if (url) {
+    const match = url.match(/\/pull\/(\d+)(?:$|[/?#])/);
+    return match ? `#${match[1]}` : url;
+  }
+  if (gate?.state) {
+    return `${gate.target || "draft_pr"} ${gate.state}`;
+  }
+  return "";
+}
+
+function isSafeDashboardFileRef(ref: string) {
+  const normalized = ref.trim().replace(/\\/g, "/");
+  if (
+    !normalized ||
+    normalized.startsWith("/") ||
+    normalized.startsWith("~") ||
+    normalized.startsWith("//") ||
+    normalized.includes("://") ||
+    normalized.split("/").includes("..") ||
+    /^[A-Za-z]:/.test(normalized)
+  ) {
+    return false;
+  }
+  return normalized.startsWith(".winsmux/") || normalized.startsWith("docs/") || normalized.startsWith("tasks/");
+}
+
+function normalizeSafeDashboardRefs(refs: string[]) {
+  const safeRefs: string[] = [];
+  for (const ref of refs) {
+    const normalized = ref.trim().replace(/\\/g, "/");
+    if (!isSafeDashboardFileRef(normalized) || safeRefs.includes(normalized)) {
+      continue;
+    }
+    safeRefs.push(normalized);
+  }
+  return safeRefs;
+}
+
+function getEvidenceRefsForDashboard(projection: DesktopRunProjection, payload: DesktopExplainPayload | null) {
+  return normalizeSafeDashboardRefs([
+    projection.observation_pack_ref,
+    projection.consultation_ref,
+    payload?.run.experiment_packet?.observation_pack_ref || "",
+    payload?.run.experiment_packet?.consultation_ref || "",
+    ...(payload?.evidence_digest.changed_files ?? []),
+  ]);
+}
+
+function getTraceRefsForDashboard(payload: DesktopExplainPayload | null) {
+  return normalizeSafeDashboardRefs([
+    ...(payload?.run.safe_trace_refs ?? []),
+    ...(payload?.run.handoff_refs ?? []),
+  ]);
+}
+
+function getReviewRefForDashboard(projection: DesktopRunProjection, payload: DesktopExplainPayload | null) {
+  const status = payload?.review_state?.status || projection.review_state || "";
+  const reviewer = payload?.review_state?.reviewer?.label || payload?.review_state?.request?.target_review_label || "";
+  return [status, reviewer ? `by ${reviewer}` : ""].filter((value) => value).join(" ");
+}
+
+function getDashboardStage(projection: DesktopRunProjection, payload: DesktopExplainPayload | null): WorkPipelineStage {
+  const phase = (payload?.run.phase || projection.phase || "").toLowerCase();
+  const taskState = (payload?.run.task_state || projection.task_state || "").toLowerCase();
+  const reviewState = (payload?.run.review_state || projection.review_state || "").toUpperCase();
+  const nextAction = (payload?.explanation.next_action || projection.next_action || "").toLowerCase();
+  const activity = (payload?.run.activity || projection.activity || "").toLowerCase();
+  const verification = (payload?.evidence_digest.verification_outcome || projection.verification_outcome || "").toUpperCase();
+  const prGateState = (payload?.run.draft_pr_gate?.state || "").toLowerCase();
+
+  if (
+    nextAction.includes("shipped") ||
+    nextAction.includes("release_done") ||
+    (reviewState === "PASS" && (verification === "PASS" || taskState === "completed" || taskState === "done"))
+  ) {
+    return "shipped";
+  }
+  if (reviewState || phase.includes("review") || nextAction.includes("review") || prGateState === "blocked") {
+    return "reviewing";
+  }
+  if (
+    taskState.includes("progress") ||
+    taskState.includes("commit") ||
+    activity.includes("running") ||
+    activity.includes("working") ||
+    phase.includes("implement")
+  ) {
+    return "implementing";
+  }
+  if (phase.includes("plan") || nextAction.includes("plan") || nextAction.includes("consult")) {
+    return "planning";
+  }
+  if (getIssueRefForDashboard(payload) || getTaskRefForDashboard(projection, payload)) {
+    return "triaged";
+  }
+  return "open";
+}
+
+function getDashboardTone(stage: WorkPipelineStage, projection: DesktopRunProjection, payload: DesktopExplainPayload | null): SurfaceTone {
+  const reviewState = (payload?.run.review_state || projection.review_state || "").toUpperCase();
+  const security = (payload?.evidence_digest.security_blocked || projection.security_blocked || "").toUpperCase();
+  if (security === "BLOCK" || security === "BLOCKED" || reviewState === "FAIL" || reviewState === "FAILED") {
+    return "danger";
+  }
+  if (stage === "shipped") {
+    return "success";
+  }
+  if (stage === "reviewing" || reviewState === "PENDING") {
+    return "warning";
+  }
+  return stage === "implementing" ? "focus" : "info";
+}
+
+function buildWorkDashboardRecords() {
+  return getRunProjections().map((projection): WorkDashboardRecord => {
+    const payload = desktopExplainCache.get(projection.run_id) ?? null;
+    const stage = getDashboardStage(projection, payload);
+    const prUrl = payload?.run.draft_pr_gate?.draft_pr_url?.trim() || "";
+    return {
+      projection,
+      payload,
+      stage,
+      issueRef: getIssueRefForDashboard(payload),
+      taskRef: getTaskRefForDashboard(projection, payload),
+      prRef: getPrRefForDashboard(payload),
+      prUrl,
+      reviewRef: getReviewRefForDashboard(projection, payload),
+      evidenceRefs: getEvidenceRefsForDashboard(projection, payload),
+      traceRefs: getTraceRefsForDashboard(payload),
+      summary: payload?.explanation.summary || projection.summary || projection.task || projection.run_id,
+      tone: getDashboardTone(stage, projection, payload),
+    };
+  });
 }
 
 function getComparePairKey(leftRunId: string, rightRunId: string) {
@@ -8620,6 +8823,143 @@ function renderRunSummary() {
   root.innerHTML = "";
 }
 
+function renderAgentWorkDashboard() {
+  const root = document.getElementById("agent-work-dashboard");
+  if (!root) {
+    return;
+  }
+
+  const records = buildWorkDashboardRecords();
+  if (records.length === 0) {
+    root.hidden = true;
+    root.innerHTML = "";
+    return;
+  }
+
+  const selected = getSelectedRunId();
+  const stageCounts = new Map<WorkPipelineStage, number>();
+  for (const stage of workPipelineStages) {
+    stageCounts.set(stage, 0);
+  }
+  for (const record of records) {
+    stageCounts.set(record.stage, (stageCounts.get(record.stage) ?? 0) + 1);
+  }
+
+  root.hidden = false;
+  root.innerHTML = "";
+
+  const shell = document.createElement("section");
+  shell.className = "work-dashboard";
+  shell.setAttribute("aria-label", getLanguageText("Agent work dashboard", "エージェント作業ダッシュボード"));
+
+  const header = document.createElement("div");
+  header.className = "work-dashboard-header";
+  const title = document.createElement("div");
+  title.innerHTML =
+    `<div class="timeline-eyebrow">${getLanguageText("Issue-to-run pipeline", "Issue から実行まで")}</div>` +
+    `<div class="work-dashboard-title">${getLanguageText("Agent work dashboard", "エージェント作業ダッシュボード")}</div>`;
+  const meta = document.createElement("div");
+  meta.className = "work-dashboard-meta";
+  meta.textContent = getLanguageText(
+    `${records.length} runs · safe evidence refs only`,
+    `${records.length} 件の実行・安全な証跡参照のみ`,
+  );
+  header.append(title, meta);
+  shell.appendChild(header);
+
+  const stageRow = document.createElement("div");
+  stageRow.className = "work-dashboard-stages";
+  for (const stage of workPipelineStages) {
+    const item = document.createElement("div");
+    item.className = "work-dashboard-stage";
+    item.dataset.active = (stageCounts.get(stage) ?? 0) > 0 ? "true" : "false";
+    const label = document.createElement("span");
+    label.textContent = getWorkStageLabel(stage);
+    const count = document.createElement("strong");
+    count.textContent = `${stageCounts.get(stage) ?? 0}`;
+    item.append(label, count);
+    stageRow.appendChild(item);
+  }
+  shell.appendChild(stageRow);
+
+  const list = document.createElement("div");
+  list.className = "work-dashboard-list";
+  for (const record of records.slice(0, 6)) {
+    const row = document.createElement("article");
+    row.className = `work-dashboard-row ${record.projection.run_id === selected ? "is-active" : ""}`;
+    row.dataset.tone = record.tone;
+
+    const rowHeader = document.createElement("div");
+    rowHeader.className = "work-dashboard-row-header";
+    const rowTitle = document.createElement("button");
+    rowTitle.type = "button";
+    rowTitle.className = "work-dashboard-run";
+    rowTitle.textContent = record.projection.run_id;
+    rowTitle.title = getLanguageText("Select run and load explain data", "実行を選択し、説明を読み込みます");
+    rowTitle.addEventListener("click", () => {
+      setSelectedRun(record.projection.run_id);
+      void openExplainForSelectedRun();
+      renderDesktopSurfaces();
+    });
+    const stage = document.createElement("span");
+    stage.className = "work-dashboard-stage-pill";
+    stage.textContent = getWorkStageLabel(record.stage);
+    rowHeader.append(rowTitle, stage);
+    row.appendChild(rowHeader);
+
+    const summary = document.createElement("div");
+    summary.className = "work-dashboard-summary";
+    summary.textContent = record.summary;
+    row.appendChild(summary);
+
+    const links = document.createElement("div");
+    links.className = "work-dashboard-links";
+    const linkItems = [
+      ["issue", record.issueRef || getLanguageText("not linked", "未連携")],
+      ["task", record.taskRef || getLanguageText("not linked", "未連携")],
+      ["PR", record.prRef || getLanguageText("not linked", "未連携")],
+      ["review", record.reviewRef || getLanguageText("not requested", "未依頼")],
+      ["evidence", record.evidenceRefs.length > 0 ? `${record.evidenceRefs.length}` : getLanguageText("none", "なし")],
+      ["trace", record.traceRefs.length > 0 ? `${record.traceRefs.length}` : getLanguageText("none", "なし")],
+    ];
+    for (const [label, value] of linkItems) {
+      const pill = document.createElement("span");
+      pill.className = "work-dashboard-link-pill";
+      const labelElement = document.createElement("span");
+      labelElement.textContent = label;
+      const valueElement = document.createElement("strong");
+      valueElement.textContent = value;
+      pill.append(labelElement, valueElement);
+      if (label === "PR" && record.prUrl) {
+        pill.title = record.prUrl;
+      }
+      links.appendChild(pill);
+    }
+    row.appendChild(links);
+
+    const refRow = document.createElement("div");
+    refRow.className = "work-dashboard-ref-row";
+    for (const ref of [...record.evidenceRefs, ...record.traceRefs].slice(0, 4)) {
+      const refButton = document.createElement("button");
+      refButton.type = "button";
+      refButton.className = "work-dashboard-ref";
+      refButton.textContent = summarizeArtifactRef(ref);
+      refButton.title = ref;
+      refButton.addEventListener("click", () => {
+        void openEditorPath(ref, "");
+      });
+      refRow.appendChild(refButton);
+    }
+    if (refRow.childElementCount > 0) {
+      row.appendChild(refRow);
+    }
+
+    list.appendChild(row);
+  }
+  shell.appendChild(list);
+  root.appendChild(shell);
+}
+
 function renderConversation(items: ConversationItem[]) {
   const timeline = document.getElementById("conversation-timeline");
   if (!timeline) {
@@ -8878,6 +9218,7 @@ async function openExplainForSelectedRun() {
       });
     }
     renderRunSummary();
+    renderAgentWorkDashboard();
     renderContextPanel();
     renderConversation(getConversationItems());
   } catch (error) {
@@ -11826,6 +12167,7 @@ function renderDesktopSurfaces() {
   renderContextPanel();
   renderOpenEditors();
   renderEditorSurface();
+  renderAgentWorkDashboard();
   renderConversation(getConversationItems());
 }
 
