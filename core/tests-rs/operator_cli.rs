@@ -1213,6 +1213,71 @@ fn operator_cli_skills_json_exposes_agent_readable_contracts() {
     assert_eq!(json["packet_type"], "progressive_skills_catalog");
     assert_eq!(json["private_skill_bodies_allowed"], false);
     assert_eq!(json["freeform_body_stored"], false);
+    let workflow_pack_ids: Vec<_> = json["workflow_pack_registry"]["packs"]
+        .as_array()
+        .expect("workflow packs should be an array")
+        .iter()
+        .map(|pack| pack["id"].as_str().expect("pack id should be a string"))
+        .collect();
+    let skill_ids: Vec<_> = json["skills"]
+        .as_array()
+        .expect("skills should be an array")
+        .iter()
+        .map(|skill| skill["id"].as_str().expect("skill id should be a string"))
+        .collect();
+    assert_eq!(workflow_pack_ids, skill_ids);
+    assert_eq!(
+        json["workflow_pack_registry"]["private_skill_bodies_allowed"],
+        false
+    );
+    assert_eq!(
+        json["workflow_pack_registry"]["local_absolute_paths_allowed"],
+        false
+    );
+    assert_eq!(
+        json["workflow_pack_registry"]["packs"][1]["id"],
+        "compare-and-promote"
+    );
+    assert_eq!(
+        json["workflow_pack_registry"]["packs"][1]["metadata"]["review_role"],
+        "reviewer"
+    );
+    assert_eq!(
+        json["workflow_pack_registry"]["packs"][1]["scope"][2],
+        "prepare follow-up candidate contracts"
+    );
+    assert_eq!(
+        json["workflow_pack_registry"]["packs"][1]["supporting_files"][0],
+        "docs/operator-model.md"
+    );
+    assert_eq!(
+        json["workflow_pack_registry"]["packs"][1]["provenance"]["private_material_referenced"],
+        false
+    );
+    assert_eq!(
+        json["workflow_pack_registry"]["packs"][1]["evidence_requirements"][1],
+        "playbook_template_contract"
+    );
+    assert_eq!(
+        json["workflow_execution_contract"]["entrypoint"],
+        "winsmux skills --json"
+    );
+    assert_eq!(
+        json["workflow_execution_contract"]["private_skill_bodies_allowed"],
+        false
+    );
+    assert_eq!(
+        json["workflow_execution_contract"]["local_absolute_paths_allowed"],
+        false
+    );
+    assert_eq!(
+        json["workflow_execution_contract"]["required_request_fields"][0],
+        "workflow_pack_id"
+    );
+    assert_eq!(
+        json["workflow_execution_contract"]["operator_judgement_boundaries"][1],
+        "operator keeps final merge and release decisions"
+    );
     assert_eq!(json["skills"][0]["id"], "run-read-models");
     assert_eq!(json["skills"][0]["commands"][0], "runs --json");
     assert_eq!(
@@ -1242,6 +1307,17 @@ fn operator_cli_skills_help_and_command_lists_are_discoverable() {
         .expect("winsmux command should run");
     assert!(output.status.success());
     assert!(String::from_utf8_lossy(&output.stdout).contains("skills"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .arg("skills")
+        .current_dir(&project_dir)
+        .output()
+        .expect("winsmux command should run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Workflow packs"));
+    assert!(stdout.contains("Skill contracts"));
+    assert!(stdout.contains("compare-and-promote"));
 }
 
 #[test]

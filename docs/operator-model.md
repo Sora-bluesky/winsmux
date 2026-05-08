@@ -144,6 +144,12 @@ Lifecycle presets are declarative workspace policy. They do not execute arbitrar
 `winsmux compare <runs|preflight|promote>` is the public compare coordination surface.
 It wraps run comparison, merge preflight, and follow-up candidate promotion behind one entrypoint.
 The desktop compare card surfaces shared changed files as hotspots and displays a risk badge before winner selection.
+`winsmux skills [--json]` exposes the public workflow pack registry and execution contract.
+Workflow packs are public-safe descriptors for supported operator workflows.
+They list pack metadata, scope, supporting repository documents, provenance, required evidence, and operator judgement boundaries.
+The catalog is contract-only: it does not expose private skill bodies, private guidance, or local absolute paths.
+Workflow execution remains operator-mediated.
+The contract can identify the workflow pack, required evidence, and expected result fields, but the operator keeps final decisions for task splitting, merge, release, and escalation.
 
 Repository-specific runtime contracts also exist for contributor flows, but they are maintained as contributor documents rather than primary public product docs.
 

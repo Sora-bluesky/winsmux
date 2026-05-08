@@ -12419,7 +12419,7 @@ Describe 'winsmux skills command' {
         Mock Invoke-WinsmuxRaw {
             param([string[]]$Arguments)
             $script:skillsArgs = @($Arguments)
-            return '{"packet_type":"progressive_skills_catalog","private_skill_bodies_allowed":false,"skills":[{"id":"compare-and-promote","required_evidence":["comparison_evidence","playbook_template_contract"],"private_skill_body_stored":false}]}'
+            return '{"packet_type":"progressive_skills_catalog","private_skill_bodies_allowed":false,"workflow_pack_registry":{"private_skill_bodies_allowed":false,"local_absolute_paths_allowed":false,"packs":[{"id":"compare-and-promote","metadata":{"review_role":"reviewer"},"scope":["compare run outputs"],"supporting_files":["docs/operator-model.md"],"provenance":{"private_material_referenced":false},"evidence_requirements":["comparison_evidence","playbook_template_contract"]}]},"workflow_execution_contract":{"entrypoint":"winsmux skills --json","private_skill_bodies_allowed":false,"local_absolute_paths_allowed":false,"required_request_fields":["workflow_pack_id"]},"skills":[{"id":"compare-and-promote","required_evidence":["comparison_evidence","playbook_template_contract"],"private_skill_body_stored":false}]}'
         }
 
         $output = Invoke-Skills -SkillsTarget '--json'
@@ -12427,6 +12427,14 @@ Describe 'winsmux skills command' {
         $script:skillsArgs | Should -Be @('skills', '--json')
         $json.packet_type | Should -Be 'progressive_skills_catalog'
         $json.private_skill_bodies_allowed | Should -Be $false
+        $json.workflow_pack_registry.private_skill_bodies_allowed | Should -Be $false
+        $json.workflow_pack_registry.local_absolute_paths_allowed | Should -Be $false
+        $json.workflow_pack_registry.packs[0].id | Should -Be 'compare-and-promote'
+        $json.workflow_pack_registry.packs[0].supporting_files | Should -Contain 'docs/operator-model.md'
+        $json.workflow_pack_registry.packs[0].provenance.private_material_referenced | Should -Be $false
+        $json.workflow_pack_registry.packs[0].evidence_requirements | Should -Contain 'playbook_template_contract'
+        $json.workflow_execution_contract.entrypoint | Should -Be 'winsmux skills --json'
+        $json.workflow_execution_contract.required_request_fields | Should -Contain 'workflow_pack_id'
         $json.skills[0].required_evidence | Should -Contain 'playbook_template_contract'
         $json.skills[0].private_skill_body_stored | Should -Be $false
     }
