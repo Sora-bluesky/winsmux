@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [string]$ReleaseNotesPath = ''
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -49,6 +51,15 @@ function Test-IsPublicDoc {
     )
 }
 
+function Test-IsExternalProductReferenceAuditSurface {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $normalized = $Path.Replace('\', '/')
+    if (Test-IsPublicDoc -Path $Path) { return $true }
+    if ($normalized -match '^docs/[^/]+\.md$') { return $true }
+    return $normalized -match '^core/docs/.+\.md$'
+}
+
 function Test-IsTrackedTextSurface {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -83,6 +94,62 @@ function Test-IsMaintainerIdentityScanSurface {
         return $false
     }
     return Test-IsTrackedTextSurface -Path $Path
+}
+
+function Get-ForbiddenExternalProductReferencePatterns {
+    return @(
+        [pscustomobject]@{ Name = 'Visual Studio Code'; Pattern = '(?i)(?<![A-Za-z0-9])Visual Studio Code(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'VS Code'; Pattern = '(?i)(?<![A-Za-z0-9])VS Code(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'vscode'; Pattern = '(?i)(?<![A-Za-z0-9])vscode(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Cursor'; Pattern = '(?i)(?<![A-Za-z0-9])Cursor(?:[- ](?:AI|agent|editor|IDE|workbench)| style workbench)(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Windsurf'; Pattern = '(?i)(?<![A-Za-z0-9])Windsurf(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'JetBrains'; Pattern = '(?i)(?<![A-Za-z0-9])JetBrains(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'IntelliJ'; Pattern = '(?i)(?<![A-Za-z0-9])IntelliJ(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'WebStorm'; Pattern = '(?i)(?<![A-Za-z0-9])WebStorm(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'PyCharm'; Pattern = '(?i)(?<![A-Za-z0-9])PyCharm(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Rider'; Pattern = '(?<![A-Za-z0-9])Rider(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'CLion'; Pattern = '(?i)(?<![A-Za-z0-9])CLion(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'GoLand'; Pattern = '(?i)(?<![A-Za-z0-9])GoLand(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'PhpStorm'; Pattern = '(?i)(?<![A-Za-z0-9])PhpStorm(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Android Studio'; Pattern = '(?i)(?<![A-Za-z0-9])Android Studio(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Eclipse'; Pattern = '(?<![A-Za-z0-9])Eclipse(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'NetBeans'; Pattern = '(?i)(?<![A-Za-z0-9])NetBeans(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Zed'; Pattern = '(?<![A-Za-z0-9])Zed(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Sublime Text'; Pattern = '(?i)(?<![A-Za-z0-9])Sublime Text(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Neovim'; Pattern = '(?i)(?<![A-Za-z0-9])Neovim(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Warp'; Pattern = '(?<![A-Za-z0-9])Warp(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'WezTerm'; Pattern = '(?i)(?<![A-Za-z0-9])WezTerm(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Alacritty'; Pattern = '(?i)(?<![A-Za-z0-9])Alacritty(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'iTerm2'; Pattern = '(?i)(?<![A-Za-z0-9])iTerm2(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Hyper terminal'; Pattern = '(?i)(?<![A-Za-z0-9])Hyper terminal(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Tabby'; Pattern = '(?i)(?<![A-Za-z0-9])Tabby(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'ConEmu'; Pattern = '(?i)(?<![A-Za-z0-9])ConEmu(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Cmder'; Pattern = '(?i)(?<![A-Za-z0-9])Cmder(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'OpenHands'; Pattern = '(?i)(?<![A-Za-z0-9])OpenHands(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Devin'; Pattern = '(?<![A-Za-z0-9])Devin(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Cline'; Pattern = '(?i)(?<![A-Za-z0-9])Cline(?![A-Za-z0-9])' },
+        [pscustomobject]@{ Name = 'Roo Code'; Pattern = '(?i)(?<![A-Za-z0-9])Roo Code(?![A-Za-z0-9])' }
+    )
+}
+
+function Add-ForbiddenExternalProductReferenceFailures {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Surface
+    )
+
+    $fullPath = if ([System.IO.Path]::IsPathRooted($Path)) { $Path } else { Join-Path $repoRoot $Path }
+    if (-not (Test-Path -LiteralPath $fullPath)) {
+        $failures.Add("$Surface path does not exist: $Path")
+        return
+    }
+
+    $content = Get-Content -LiteralPath $fullPath -Raw -ErrorAction Stop
+    foreach ($reference in Get-ForbiddenExternalProductReferencePatterns) {
+        if ($content -match $reference.Pattern) {
+            $failures.Add("$Surface contains forbidden external product/reference name '$($reference.Name)': $Path")
+        }
+    }
 }
 
 $failures = New-Object System.Collections.Generic.List[string]
@@ -195,6 +262,15 @@ foreach ($file in ($trackedFiles | Where-Object { Test-IsPublicDoc -Path $_ })) 
             $failures.Add("public doc exposes repository-only startup wording '$fragment': $file")
         }
     }
+
+}
+
+foreach ($file in ($trackedFiles | Where-Object { Test-IsExternalProductReferenceAuditSurface -Path $_ })) {
+    Add-ForbiddenExternalProductReferenceFailures -Path $file -Surface 'public doc'
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ReleaseNotesPath)) {
+    Add-ForbiddenExternalProductReferenceFailures -Path $ReleaseNotesPath -Surface 'release notes'
 }
 
 $claudeContractPath = Join-Path $repoRoot '.claude/CLAUDE.md'

@@ -40,6 +40,9 @@ jobs:
         with:
           fetch-depth: 0
       - uses: actions/download-artifact@v8
+      - name: Bootstrap repo hooks
+        shell: pwsh
+        run: ./scripts/bootstrap-git-guard.ps1
       - name: Create Release Assets
         run: |
           mkdir -p release
@@ -49,6 +52,9 @@ jobs:
       - name: Generate Release Body
         shell: pwsh
         run: ./scripts/generate-release-notes.ps1 -Version "${{ github.ref_name }}" -OutputPath "release/release-body.md"
+      - name: Audit Release Public Surface
+        shell: pwsh
+        run: ./scripts/audit-public-surface.ps1 -ReleaseNotesPath "release/release-body.md"
       - uses: softprops/action-gh-release@v3
         with:
           body_path: release/release-body.md
