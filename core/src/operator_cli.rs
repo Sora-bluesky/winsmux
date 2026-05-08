@@ -1992,136 +1992,134 @@ fn operator_jobs_create(options: &OperatorJobsOptions) -> io::Result<Value> {
         }
     }
 
-    let mut state = read_operator_jobs_state(&options.project_dir)?;
-    if state.jobs.iter().any(|job| job.job_id == job_id) {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            format!("operator job already exists: {job_id}"),
-        ));
-    }
+    let (job, total_jobs) = mutate_operator_jobs_state(&options.project_dir, |state| {
+        if state.jobs.iter().any(|job| job.job_id == job_id) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("operator job already exists: {job_id}"),
+            ));
+        }
 
-    let now = generated_at();
-    let evidence_requirements = operator_job_evidence_requirements(&kind, &options.evidence);
-    let job = OperatorJobRecord {
-        job_id: job_id.to_string(),
-        kind: kind.clone(),
-        title: options
-            .title
-            .clone()
-            .unwrap_or_else(|| operator_job_default_title(&kind).to_string()),
-        status: "scheduled".to_string(),
-        schedule: OperatorJobSchedule {
-            schedule_type,
-            every: options.every.clone(),
-        },
-        evidence_requirements,
-        command_plan: OperatorJobCommandPlan {
-            workflow_kind: kind,
-            execution_backend: "operator_managed".to_string(),
-            destructive_change_possible: options.destructive,
-            side_effect_policy: if options.destructive {
-                "record_pending_approval_only".to_string()
-            } else {
-                "evidence_only".to_string()
+        let now = generated_at();
+        let evidence_requirements = operator_job_evidence_requirements(&kind, &options.evidence);
+        let job = OperatorJobRecord {
+            job_id: job_id.to_string(),
+            kind: kind.clone(),
+            title: options
+                .title
+                .clone()
+                .unwrap_or_else(|| operator_job_default_title(&kind).to_string()),
+            status: "scheduled".to_string(),
+            schedule: OperatorJobSchedule {
+                schedule_type,
+                every: options.every.clone(),
             },
-        },
-        approval_policy: OperatorJobApprovalPolicy {
-            destructive_changes_require_explicit_approval: true,
-            auto_execute_destructive_changes: false,
-        },
-        created_at: now.clone(),
-        updated_at: now,
-        pending_update: None,
-        runs: Vec::new(),
-    };
-    state.jobs.push(job.clone());
-    write_operator_jobs_state(&options.project_dir, &mut state)?;
+            evidence_requirements,
+            command_plan: OperatorJobCommandPlan {
+                workflow_kind: kind,
+                execution_backend: "operator_managed".to_string(),
+                destructive_change_possible: options.destructive,
+                side_effect_policy: if options.destructive {
+                    "record_pending_approval_only".to_string()
+                } else {
+                    "evidence_only".to_string()
+                },
+            },
+            approval_policy: OperatorJobApprovalPolicy {
+                destructive_changes_require_explicit_approval: true,
+                auto_execute_destructive_changes: false,
+            },
+            created_at: now.clone(),
+            updated_at: now,
+            pending_update: None,
+            runs: Vec::new(),
+        };
+        state.jobs.push(job.clone());
+        Ok((job, state.jobs.len()))
+    })?;
 
     Ok(operator_jobs_result_payload(
         "create",
         format!("created operator job {job_id}"),
         Some(job),
         None,
-        state.jobs.len(),
+        total_jobs,
     ))
 }
 
 fn operator_jobs_start_run(options: &OperatorJobsOptions) -> io::Result<Value> {
     let job_id = required_option(options.job_id.as_deref(), "run requires <job_id>")?;
-    let mut state = read_operator_jobs_state(&options.project_dir)?;
-    let job = find_operator_job_mut(&mut state, job_id)?;
-    if job.status == "paused" || job.status == "delete_pending_approval" {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("operator job {job_id} is not runnable while status is {}", job.status),
-        ));
-    }
-    let run_number = job.runs.len() as u32 + 1;
-    let run_id = format!("operator-job:{job_id}:{run_number}");
-    let destructive = job.command_plan.destructive_change_possible || options.destructive;
-    let evidence = operator_job_run_evidence(job, &options.evidence);
-    let run = OperatorJobRunRecord {
-        run_id,
-        run_number,
-        status: if destructive {
-            "approval_pending".to_string()
-        } else {
-            "evidence_recorded".to_string()
-        },
-        started_at: generated_at(),
-        fresh_record: true,
-        evidence,
-        approval_gate: OperatorJobApprovalGate {
-            required: destructive,
-            state: if destructive {
-                "pending_operator_approval".to_string()
+    let (job, run, total_jobs) = mutate_operator_jobs_state(&options.project_dir, |state| {
+        let job = find_operator_job_mut(state, job_id)?;
+        if job.status == "paused" || job.status == "delete_pending_approval" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("operator job {job_id} is not runnable while status is {}", job.status),
+            ));
+        }
+        let run_number = job.runs.len() as u32 + 1;
+        let run_id = format!("operator-job:{job_id}:{run_number}");
+        let destructive = job.command_plan.destructive_change_possible || options.destructive;
+        let evidence = operator_job_run_evidence(job, &options.evidence);
+        let run = OperatorJobRunRecord {
+            run_id,
+            run_number,
+            status: if destructive {
+                "approval_pending".to_string()
             } else {
-                "not_required".to_string()
+                "evidence_recorded".to_string()
             },
-            destructive_change: destructive,
-            approved_by: None,
-            approved_at: None,
-            reason: options
-                .reason
-                .clone()
-                .unwrap_or_else(|| "destructive changes are represented only as pending approval".to_string()),
-        },
-    };
-    job.updated_at = generated_at();
-    job.runs.push(run.clone());
-    let job = job.clone();
-    write_operator_jobs_state(&options.project_dir, &mut state)?;
+            started_at: generated_at(),
+            fresh_record: true,
+            evidence,
+            approval_gate: OperatorJobApprovalGate {
+                required: destructive,
+                state: if destructive {
+                    "pending_operator_approval".to_string()
+                } else {
+                    "not_required".to_string()
+                },
+                destructive_change: destructive,
+                approved_by: None,
+                approved_at: None,
+                reason: options.reason.clone().unwrap_or_else(|| {
+                    "destructive changes are represented only as pending approval".to_string()
+                }),
+            },
+        };
+        job.updated_at = generated_at();
+        job.runs.push(run.clone());
+        Ok((job.clone(), run, state.jobs.len()))
+    })?;
 
     Ok(operator_jobs_result_payload(
         "run",
         format!("started fresh run record for {job_id}"),
         Some(job),
         Some(run),
-        state.jobs.len(),
+        total_jobs,
     ))
 }
 
 fn operator_jobs_pause(options: &OperatorJobsOptions) -> io::Result<Value> {
     let job_id = required_option(options.job_id.as_deref(), "pause requires <job_id>")?;
-    let mut state = read_operator_jobs_state(&options.project_dir)?;
-    let job = find_operator_job_mut(&mut state, job_id)?;
-    job.status = "paused".to_string();
-    job.updated_at = generated_at();
-    let job = job.clone();
-    write_operator_jobs_state(&options.project_dir, &mut state)?;
+    let (job, total_jobs) = mutate_operator_jobs_state(&options.project_dir, |state| {
+        let job = find_operator_job_mut(state, job_id)?;
+        job.status = "paused".to_string();
+        job.updated_at = generated_at();
+        Ok((job.clone(), state.jobs.len()))
+    })?;
     Ok(operator_jobs_result_payload(
         "pause",
         format!("paused operator job {job_id}"),
         Some(job),
         None,
-        state.jobs.len(),
+        total_jobs,
     ))
 }
 
 fn operator_jobs_update(options: &OperatorJobsOptions) -> io::Result<Value> {
     let job_id = required_option(options.job_id.as_deref(), "update requires <job_id>")?;
-    let mut state = read_operator_jobs_state(&options.project_dir)?;
-    let job = find_operator_job_mut(&mut state, job_id)?;
     let mut update = Map::new();
     if let Some(title) = options.title.as_deref() {
         update.insert("title".to_string(), json!(title));
@@ -2139,66 +2137,72 @@ fn operator_jobs_update(options: &OperatorJobsOptions) -> io::Result<Value> {
         ));
     }
 
-    if options.destructive {
-        job.status = "update_pending_approval".to_string();
+    let (job, total_jobs) = mutate_operator_jobs_state(&options.project_dir, |state| {
+        let job = find_operator_job_mut(state, job_id)?;
+        if options.destructive {
+            job.status = "update_pending_approval".to_string();
+            job.pending_update = Some(json!({
+                "requested_at": generated_at(),
+                "changes": update,
+                "approval_gate": {
+                    "required": true,
+                    "state": "pending_operator_approval",
+                    "destructive_change": true,
+                    "approved_by": null,
+                    "approved_at": null,
+                    "reason": options.reason.clone().unwrap_or_else(|| "destructive job update requires explicit approval".to_string())
+                }
+            }));
+        } else {
+            apply_operator_job_update(job, &update)?;
+        }
+        job.updated_at = generated_at();
+        Ok((job.clone(), state.jobs.len()))
+    })?;
+    Ok(operator_jobs_result_payload(
+        "update",
+        format!("updated operator job {job_id}"),
+        Some(job),
+        None,
+        total_jobs,
+    ))
+}
+
+fn operator_jobs_delete(options: &OperatorJobsOptions) -> io::Result<Value> {
+    let job_id = required_option(options.job_id.as_deref(), "delete requires <job_id>")?;
+    let (job, total_jobs) = mutate_operator_jobs_state(&options.project_dir, |state| {
+        let job = find_operator_job_mut(state, job_id)?;
+        job.status = "delete_pending_approval".to_string();
         job.pending_update = Some(json!({
             "requested_at": generated_at(),
-            "changes": update,
+            "delete_requested": true,
             "approval_gate": {
                 "required": true,
                 "state": "pending_operator_approval",
                 "destructive_change": true,
                 "approved_by": null,
                 "approved_at": null,
-                "reason": options.reason.clone().unwrap_or_else(|| "destructive job update requires explicit approval".to_string())
+                "reason": options.reason.clone().unwrap_or_else(|| "operator job delete is soft pending approval".to_string())
             }
         }));
-    } else {
-        apply_operator_job_update(job, &update)?;
-    }
-    job.updated_at = generated_at();
-    let job = job.clone();
-    write_operator_jobs_state(&options.project_dir, &mut state)?;
-    Ok(operator_jobs_result_payload(
-        "update",
-        format!("updated operator job {job_id}"),
-        Some(job),
-        None,
-        state.jobs.len(),
-    ))
-}
-
-fn operator_jobs_delete(options: &OperatorJobsOptions) -> io::Result<Value> {
-    let job_id = required_option(options.job_id.as_deref(), "delete requires <job_id>")?;
-    let mut state = read_operator_jobs_state(&options.project_dir)?;
-    let job = find_operator_job_mut(&mut state, job_id)?;
-    job.status = "delete_pending_approval".to_string();
-    job.pending_update = Some(json!({
-        "requested_at": generated_at(),
-        "delete_requested": true,
-        "approval_gate": {
-            "required": true,
-            "state": "pending_operator_approval",
-            "destructive_change": true,
-            "approved_by": null,
-            "approved_at": null,
-            "reason": options.reason.clone().unwrap_or_else(|| "operator job delete is soft pending approval".to_string())
-        }
-    }));
-    job.updated_at = generated_at();
-    let job = job.clone();
-    write_operator_jobs_state(&options.project_dir, &mut state)?;
+        job.updated_at = generated_at();
+        Ok((job.clone(), state.jobs.len()))
+    })?;
     Ok(operator_jobs_result_payload(
         "delete",
         format!("recorded delete approval request for {job_id}"),
         Some(job),
         None,
-        state.jobs.len(),
+        total_jobs,
     ))
 }
 
 fn read_operator_jobs_state(project_dir: &Path) -> io::Result<OperatorJobsState> {
     let path = operator_jobs_state_path(project_dir);
+    read_operator_jobs_state_from_path(&path)
+}
+
+fn read_operator_jobs_state_from_path(path: &Path) -> io::Result<OperatorJobsState> {
     if !path.exists() {
         return Ok(default_operator_jobs_state());
     }
@@ -2222,7 +2226,23 @@ fn read_operator_jobs_state(project_dir: &Path) -> io::Result<OperatorJobsState>
     Ok(state)
 }
 
-fn write_operator_jobs_state(project_dir: &Path, state: &mut OperatorJobsState) -> io::Result<()> {
+fn mutate_operator_jobs_state<T>(
+    project_dir: &Path,
+    action: impl FnOnce(&mut OperatorJobsState) -> io::Result<T>,
+) -> io::Result<T> {
+    let path = operator_jobs_state_path(project_dir);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    with_file_lock(&path, || {
+        let mut state = read_operator_jobs_state_from_path(&path)?;
+        let result = action(&mut state)?;
+        write_operator_jobs_state_locked(&path, &mut state)?;
+        Ok(result)
+    })
+}
+
+fn write_operator_jobs_state_locked(path: &Path, state: &mut OperatorJobsState) -> io::Result<()> {
     state.updated_at = generated_at();
     let content = serde_json::to_string_pretty(state).map_err(|err| {
         io::Error::new(
@@ -2230,7 +2250,7 @@ fn write_operator_jobs_state(project_dir: &Path, state: &mut OperatorJobsState) 
             format!("failed to serialize operator jobs state: {err}"),
         )
     })?;
-    write_text_file_with_lock(&operator_jobs_state_path(project_dir), &format!("{content}\n"))
+    write_text_file_locked(path, &format!("{content}\n"))
 }
 
 fn default_operator_jobs_state() -> OperatorJobsState {

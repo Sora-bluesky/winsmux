@@ -419,7 +419,11 @@ pub struct DesktopPhaseGate {
     #[serde(default)]
     pub stage: String,
     #[serde(default)]
+    pub current_stage: String,
+    #[serde(default)]
     pub status: String,
+    #[serde(default)]
+    pub order: Vec<String>,
     #[serde(default)]
     pub stop_required: bool,
     #[serde(default)]
@@ -1000,8 +1004,14 @@ fn collect_safe_desktop_trace_refs(payload: &Value) -> Vec<String> {
     let mut refs = Vec::new();
     if let Some(run) = payload.get("run") {
         collect_string_array_refs(run.pointer("/handoff_refs"), &mut refs);
-        collect_string_ref(run.pointer("/experiment_packet/observation_pack_ref"), &mut refs);
-        collect_string_ref(run.pointer("/experiment_packet/consultation_ref"), &mut refs);
+        collect_string_ref(
+            run.pointer("/experiment_packet/observation_pack_ref"),
+            &mut refs,
+        );
+        collect_string_ref(
+            run.pointer("/experiment_packet/consultation_ref"),
+            &mut refs,
+        );
         collect_string_ref(
             run.pointer("/checkpoint_package/end_of_run_snapshot/terminal/summary_ref"),
             &mut refs,
@@ -2977,13 +2987,28 @@ mod tests {
             payload.run.phase_gate.as_ref().unwrap().stages[0].stage,
             "plan"
         );
+        assert_eq!(
+            payload.run.phase_gate.as_ref().unwrap().current_stage,
+            "review"
+        );
+        assert_eq!(
+            payload.run.phase_gate.as_ref().unwrap().order,
+            vec![
+                "plan".to_string(),
+                "build".to_string(),
+                "test".to_string(),
+                "review".to_string(),
+                "package".to_string()
+            ]
+        );
         assert!(payload
             .run
             .safe_trace_refs
             .contains(&"docs/handoff.md".to_string()));
-        assert!(payload.run.safe_trace_refs.contains(
-            &".winsmux/observation-packs/observation-pack-__ID__.json".to_string()
-        ));
+        assert!(payload
+            .run
+            .safe_trace_refs
+            .contains(&".winsmux/observation-packs/observation-pack-__ID__.json".to_string()));
         assert_eq!(payload.run.experiment_packet.hypothesis, "");
         assert!(payload.run.experiment_packet.test_plan.is_empty());
         assert_eq!(payload.run.experiment_packet.result, "consult before work");
@@ -3133,7 +3158,10 @@ mod tests {
         let payload =
             load_desktop_run_explain(&transport, "task:task-256".to_string(), None).unwrap();
 
-        assert_eq!(payload.run.handoff_refs, vec!["docs/handoff.md".to_string()]);
+        assert_eq!(
+            payload.run.handoff_refs,
+            vec!["docs/handoff.md".to_string()]
+        );
         assert!(payload
             .run
             .safe_trace_refs
@@ -3316,11 +3344,12 @@ mod tests {
                 assert!(result["run"]["verification_contract"].is_null());
                 assert!(result["run"]["verification_result"].is_null());
                 assert_eq!(result["run"]["draft_pr_gate"]["state"], "blocked");
-                assert!(result["run"]["draft_pr_gate"].get("handoff_package").is_none());
-                assert_eq!(
-                    result["run"]["phase_gate"]["stages"][0]["stage"],
-                    "plan"
-                );
+                assert!(result["run"]["draft_pr_gate"]
+                    .get("handoff_package")
+                    .is_none());
+                assert_eq!(result["run"]["phase_gate"]["stages"][0]["stage"], "plan");
+                assert_eq!(result["run"]["phase_gate"]["current_stage"], "review");
+                assert_eq!(result["run"]["phase_gate"]["order"][3], "review");
                 assert!(result["run"]["safe_trace_refs"]
                     .as_array()
                     .expect("safe trace refs should be an array")
