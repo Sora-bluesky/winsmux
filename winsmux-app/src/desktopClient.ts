@@ -276,6 +276,28 @@ export interface DesktopExplainPayload {
     review_required: boolean;
     timeout_policy: string;
     handoff_refs: string[];
+    draft_pr_gate?: {
+      kind?: string;
+      target?: string;
+      state?: string;
+      trigger?: string;
+      draft_pr_url?: string;
+      auto_merge_allowed?: boolean;
+      merge_requires_human?: boolean;
+    } | null;
+    phase_gate?: {
+      stage?: string;
+      status?: string;
+      stop_required?: boolean;
+      stop_reason?: string;
+      stages?: Array<{
+        stage?: string;
+        status?: string;
+        reason?: string;
+        event?: string;
+      }>;
+    } | null;
+    safe_trace_refs?: string[];
     experiment_packet: {
       hypothesis: string;
       test_plan: string[];

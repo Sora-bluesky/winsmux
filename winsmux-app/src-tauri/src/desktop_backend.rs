@@ -379,6 +379,12 @@ pub struct DesktopExplainRun {
     pub review_required: bool,
     pub timeout_policy: String,
     pub handoff_refs: Vec<String>,
+    #[serde(default)]
+    pub draft_pr_gate: Option<DesktopDraftPrGate>,
+    #[serde(default)]
+    pub phase_gate: Option<DesktopPhaseGate>,
+    #[serde(default)]
+    pub safe_trace_refs: Vec<String>,
     pub experiment_packet: DesktopExplainExperimentPacket,
     pub security_policy: Value,
     pub security_verdict: Value,
@@ -388,6 +394,50 @@ pub struct DesktopExplainRun {
     pub changed_files: Vec<String>,
     #[serde(default)]
     pub action_items: Vec<DesktopExplainActionItem>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopDraftPrGate {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub target: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub trigger: String,
+    #[serde(default)]
+    pub draft_pr_url: String,
+    #[serde(default)]
+    pub auto_merge_allowed: bool,
+    #[serde(default)]
+    pub merge_requires_human: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopPhaseGate {
+    #[serde(default)]
+    pub stage: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub stop_required: bool,
+    #[serde(default)]
+    pub stop_reason: String,
+    #[serde(default)]
+    pub stages: Vec<DesktopPhaseGateStage>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DesktopPhaseGateStage {
+    #[serde(default)]
+    pub stage: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub event: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -930,17 +980,87 @@ pub fn load_desktop_run_explain(
     run_id: String,
     project_dir: Option<String>,
 ) -> Result<DesktopExplainPayload, String> {
-    let payload = transport.request_json(&DesktopCommand::RunExplain {
+    let payload_value = transport.request_json(&DesktopCommand::RunExplain {
         run_id,
         project_dir,
     })?;
-    let payload: DesktopExplainPayload = serde_json::from_value(payload)
+    let safe_trace_refs = collect_safe_desktop_trace_refs(&payload_value);
+    let mut payload: DesktopExplainPayload = serde_json::from_value(payload_value)
         .map_err(|err| format!("Failed to parse desktop explain payload: {err}"))?;
+    payload.run.handoff_refs = filter_safe_desktop_refs(payload.run.handoff_refs);
+    payload.run.safe_trace_refs = safe_trace_refs;
     if let Some(review_state) = payload.review_state.as_ref() {
         validate_desktop_review_state_record(review_state)
             .map_err(|err| format!("Failed to parse desktop explain payload: {err}"))?;
     }
     Ok(payload)
+}
+
+fn collect_safe_desktop_trace_refs(payload: &Value) -> Vec<String> {
+    let mut refs = Vec::new();
+    if let Some(run) = payload.get("run") {
+        collect_string_array_refs(run.pointer("/handoff_refs"), &mut refs);
+        collect_string_ref(run.pointer("/experiment_packet/observation_pack_ref"), &mut refs);
+        collect_string_ref(run.pointer("/experiment_packet/consultation_ref"), &mut refs);
+        collect_string_ref(
+            run.pointer("/checkpoint_package/end_of_run_snapshot/terminal/summary_ref"),
+            &mut refs,
+        );
+        collect_string_array_refs(
+            run.pointer("/checkpoint_package/end_of_run_snapshot/artifacts/summary_refs"),
+            &mut refs,
+        );
+        collect_string_array_refs(
+            run.pointer("/checkpoint_package/end_of_run_snapshot/artifacts/artifact_refs"),
+            &mut refs,
+        );
+        collect_string_array_refs(run.pointer("/team_memory/evidence_note_refs"), &mut refs);
+    }
+
+    filter_safe_desktop_refs(refs)
+}
+
+fn collect_string_array_refs(value: Option<&Value>, refs: &mut Vec<String>) {
+    if let Some(values) = value.and_then(Value::as_array) {
+        for value in values {
+            collect_string_ref(Some(value), refs);
+        }
+    }
+}
+
+fn collect_string_ref(value: Option<&Value>, refs: &mut Vec<String>) {
+    if let Some(value) = value.and_then(Value::as_str) {
+        refs.push(value.to_string());
+    }
+}
+
+fn filter_safe_desktop_refs(refs: Vec<String>) -> Vec<String> {
+    let mut safe_refs = Vec::new();
+    for raw_ref in refs {
+        let normalized = raw_ref.trim().replace('\\', "/");
+        if !is_safe_desktop_ref(&normalized) || safe_refs.contains(&normalized) {
+            continue;
+        }
+        safe_refs.push(normalized);
+    }
+    safe_refs
+}
+
+fn is_safe_desktop_ref(value: &str) -> bool {
+    if value.is_empty()
+        || value.starts_with('/')
+        || value.starts_with('~')
+        || value.starts_with("//")
+        || value.contains("://")
+        || value.contains('\0')
+        || value.split('/').any(|part| part == "..")
+    {
+        return false;
+    }
+    if value.len() >= 2 && value.as_bytes()[1] == b':' {
+        return false;
+    }
+    value.starts_with(".winsmux/") || value.starts_with("docs/") || value.starts_with("tasks/")
 }
 
 #[allow(dead_code)]
@@ -2852,6 +2972,18 @@ mod tests {
             payload.run.handoff_refs,
             vec!["docs/handoff.md".to_string()]
         );
+        assert_eq!(payload.run.draft_pr_gate.as_ref().unwrap().state, "blocked");
+        assert_eq!(
+            payload.run.phase_gate.as_ref().unwrap().stages[0].stage,
+            "plan"
+        );
+        assert!(payload
+            .run
+            .safe_trace_refs
+            .contains(&"docs/handoff.md".to_string()));
+        assert!(payload.run.safe_trace_refs.contains(
+            &".winsmux/observation-packs/observation-pack-__ID__.json".to_string()
+        ));
         assert_eq!(payload.run.experiment_packet.hypothesis, "");
         assert!(payload.run.experiment_packet.test_plan.is_empty());
         assert_eq!(payload.run.experiment_packet.result, "consult before work");
@@ -2975,6 +3107,46 @@ mod tests {
             transport.requests.borrow().as_slice(),
             ["explain task:task-256 --json"]
         );
+    }
+
+    #[test]
+    fn load_desktop_run_explain_scrubs_trace_refs() {
+        let mut response = rust_parity_explain_payload_with_review_state();
+        response["run"]["handoff_refs"] = serde_json::json!([
+            "docs/handoff.md",
+            "C:/Users/example/private.md",
+            "../outside.md"
+        ]);
+        response["run"]["checkpoint_package"]["end_of_run_snapshot"]["terminal"]["summary_ref"] =
+            serde_json::json!(".winsmux/traces/session-summary.md");
+        response["run"]["checkpoint_package"]["end_of_run_snapshot"]["artifacts"]["summary_refs"] =
+            serde_json::json!([
+                ".winsmux/evidence/run-summary.md",
+                "https://example.invalid/private"
+            ]);
+
+        let transport = FakeTransport {
+            requests: RefCell::new(Vec::new()),
+            response,
+        };
+
+        let payload =
+            load_desktop_run_explain(&transport, "task:task-256".to_string(), None).unwrap();
+
+        assert_eq!(payload.run.handoff_refs, vec!["docs/handoff.md".to_string()]);
+        assert!(payload
+            .run
+            .safe_trace_refs
+            .contains(&".winsmux/traces/session-summary.md".to_string()));
+        assert!(payload
+            .run
+            .safe_trace_refs
+            .contains(&".winsmux/evidence/run-summary.md".to_string()));
+        assert!(!payload
+            .run
+            .safe_trace_refs
+            .iter()
+            .any(|value| value.contains("Users") || value.contains("://") || value.contains("..")));
     }
 
     #[test]
@@ -3143,6 +3315,17 @@ mod tests {
                 assert!(result["run"]["security_verdict"].is_null());
                 assert!(result["run"]["verification_contract"].is_null());
                 assert!(result["run"]["verification_result"].is_null());
+                assert_eq!(result["run"]["draft_pr_gate"]["state"], "blocked");
+                assert!(result["run"]["draft_pr_gate"].get("handoff_package").is_none());
+                assert_eq!(
+                    result["run"]["phase_gate"]["stages"][0]["stage"],
+                    "plan"
+                );
+                assert!(result["run"]["safe_trace_refs"]
+                    .as_array()
+                    .expect("safe trace refs should be an array")
+                    .iter()
+                    .any(|value| value.as_str() == Some("docs/handoff.md")));
                 assert_eq!(result["explanation"]["current_state"]["state"], "idle");
                 assert_eq!(
                     result["explanation"]["current_state"]["task_state"],
