@@ -339,6 +339,101 @@ fn operator_cli_operator_jobs_create_and_run_records_fresh_approval_pending() {
 }
 
 #[test]
+fn operator_cli_operator_jobs_run_reads_state_under_the_write_lock() {
+    let project_dir = make_temp_project_dir("operator-jobs-run-lock");
+
+    run_json(
+        &project_dir,
+        &[
+            "operator-jobs",
+            "create",
+            "deps-weekly",
+            "--kind",
+            "dependency-check",
+            "--schedule",
+            "recurring",
+            "--every",
+            "weekly",
+            "--json",
+        ],
+    );
+
+    let state_path = project_dir.join(".winsmux").join("operator-jobs.json");
+    let mut lock_os = state_path.as_os_str().to_os_string();
+    lock_os.push(".lock");
+    let lock_path = std::path::PathBuf::from(lock_os);
+    fs::create_dir_all(&lock_path).expect("test should hold operator jobs lock");
+    fs::write(
+        lock_path.join("owner.json"),
+        format!(
+            r#"{{"pid":{},"started_at":"2026-01-01T00:00:00Z"}}"#,
+            std::process::id()
+        ),
+    )
+    .expect("test should write lock owner");
+
+    let child = Command::new(env!("CARGO_BIN_EXE_winsmux"))
+        .args(["operator-jobs", "run", "deps-weekly", "--json"])
+        .current_dir(&project_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("winsmux command should start while lock is held");
+
+    std::thread::sleep(Duration::from_millis(250));
+
+    let mut state = read_json_file(&state_path);
+    state["jobs"][0]["runs"]
+        .as_array_mut()
+        .expect("runs should be an array")
+        .push(serde_json::json!({
+            "run_id": "operator-job:deps-weekly:1",
+            "run_number": 1,
+            "status": "evidence_recorded",
+            "started_at": "2026-01-01T00:00:01Z",
+            "fresh_record": true,
+            "evidence": [],
+            "approval_gate": {
+                "required": false,
+                "state": "not_required",
+                "destructive_change": false,
+                "approved_by": null,
+                "approved_at": null,
+                "reason": "manual concurrent state update"
+            }
+        }));
+    fs::write(
+        &state_path,
+        format!(
+            "{}\n",
+            serde_json::to_string_pretty(&state).expect("state should serialize")
+        ),
+    )
+    .expect("test should update operator jobs state while lock is held");
+    fs::remove_dir_all(&lock_path).expect("test should release operator jobs lock");
+
+    let output = child
+        .wait_with_output()
+        .expect("winsmux command should finish");
+    assert!(
+        output.status.success(),
+        "winsmux command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let run: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout should be JSON");
+    assert_eq!(run["run"]["run_number"], 2);
+
+    let state = read_json_file(&state_path);
+    let runs = state["jobs"][0]["runs"]
+        .as_array()
+        .expect("runs should be an array");
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0]["run_number"], 1);
+    assert_eq!(runs[1]["run_number"], 2);
+}
+
+#[test]
 fn operator_cli_operator_jobs_pause_update_delete_keeps_destructive_delete_pending() {
     let project_dir = make_temp_project_dir("operator-jobs-update-delete");
 
@@ -1401,8 +1496,12 @@ fn operator_cli_skills_json_exposes_agent_readable_contracts() {
         json["workflow_pack_registry"]["discovery"]["sources"][1]["private_skill_bodies_allowed"],
         false
     );
-    assert!(json["workflow_pack_registry"].get("selected_pack").is_none());
-    assert!(json["workflow_pack_registry"].get("scoped_loading_plan").is_none());
+    assert!(json["workflow_pack_registry"]
+        .get("selected_pack")
+        .is_none());
+    assert!(json["workflow_pack_registry"]
+        .get("scoped_loading_plan")
+        .is_none());
     assert_eq!(
         json["workflow_pack_registry"]["packs"][1]["id"],
         "compare-and-promote"
