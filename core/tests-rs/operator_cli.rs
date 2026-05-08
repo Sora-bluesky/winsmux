@@ -252,6 +252,157 @@ Write-Output ("bridge:" + ($Rest -join "|"))
 }
 
 #[test]
+fn operator_cli_operator_jobs_catalog_reports_maintenance_contract() {
+    let project_dir = make_temp_project_dir("operator-jobs-catalog");
+
+    let json = run_json(&project_dir, &["operator-jobs", "catalog", "--json"]);
+
+    assert_eq!(json["packet_type"], "operator_job_catalog");
+    assert_eq!(json["public_state_ref"], ".winsmux/operator-jobs.json");
+    assert_eq!(
+        json["approval_contract"]["destructive_changes_require_explicit_approval"],
+        true
+    );
+    assert_eq!(json["schedule_contract"]["supported_types"][0], "one-time");
+    assert!(json["supported_jobs"]
+        .as_array()
+        .expect("supported jobs should be an array")
+        .iter()
+        .any(|job| job["kind"] == "repository-hygiene"));
+}
+
+#[test]
+fn operator_cli_operator_jobs_create_and_run_records_fresh_approval_pending() {
+    let project_dir = make_temp_project_dir("operator-jobs-run");
+
+    let created = run_json(
+        &project_dir,
+        &[
+            "operator-jobs",
+            "create",
+            "deps-weekly",
+            "--kind",
+            "dependency-check",
+            "--schedule",
+            "recurring",
+            "--every",
+            "weekly",
+            "--destructive",
+            "--json",
+        ],
+    );
+    assert_eq!(created["job"]["job_id"], "deps-weekly");
+    assert_eq!(
+        created["job"]["command_plan"]["side_effect_policy"],
+        "record_pending_approval_only"
+    );
+
+    let first_run = run_json(
+        &project_dir,
+        &[
+            "operator-jobs",
+            "run",
+            "deps-weekly",
+            "--evidence",
+            "dependency report collected",
+            "--json",
+        ],
+    );
+    assert_eq!(first_run["run"]["run_number"], 1);
+    assert_eq!(first_run["run"]["fresh_record"], true);
+    assert_eq!(first_run["run"]["status"], "approval_pending");
+    assert_eq!(first_run["run"]["approval_gate"]["required"], true);
+    assert_eq!(
+        first_run["run"]["approval_gate"]["state"],
+        "pending_operator_approval"
+    );
+    assert_eq!(
+        first_run["run"]["evidence"][0]["reference"],
+        ".winsmux/operator-jobs.json"
+    );
+
+    let second_run = run_json(
+        &project_dir,
+        &["operator-jobs", "run", "deps-weekly", "--json"],
+    );
+    assert_eq!(second_run["run"]["run_number"], 2);
+    assert_ne!(first_run["run"]["run_id"], second_run["run"]["run_id"]);
+
+    let state_path = project_dir.join(".winsmux").join("operator-jobs.json");
+    let state = read_json_file(&state_path);
+    assert_eq!(state["jobs"][0]["runs"].as_array().unwrap().len(), 2);
+    let raw_state = fs::read_to_string(state_path).expect("test should read operator jobs state");
+    assert!(
+        !raw_state.contains(project_dir.to_str().expect("temp path should be utf-8")),
+        "operator jobs state should not store local absolute paths"
+    );
+}
+
+#[test]
+fn operator_cli_operator_jobs_pause_update_delete_keeps_destructive_delete_pending() {
+    let project_dir = make_temp_project_dir("operator-jobs-update-delete");
+
+    run_json(
+        &project_dir,
+        &[
+            "operator-jobs",
+            "create",
+            "docs-refresh",
+            "--kind",
+            "documentation-refresh",
+            "--schedule",
+            "one-time",
+            "--json",
+        ],
+    );
+
+    let paused = run_json(
+        &project_dir,
+        &["operator-jobs", "pause", "docs-refresh", "--json"],
+    );
+    assert_eq!(paused["job"]["status"], "paused");
+
+    let updated = run_json(
+        &project_dir,
+        &[
+            "operator-jobs",
+            "update",
+            "docs-refresh",
+            "--title",
+            "Public docs refresh",
+            "--json",
+        ],
+    );
+    assert_eq!(updated["job"]["title"], "Public docs refresh");
+    assert_eq!(updated["job"]["pending_update"], serde_json::Value::Null);
+
+    let deleted = run_json(
+        &project_dir,
+        &[
+            "operator-jobs",
+            "delete",
+            "docs-refresh",
+            "--reason",
+            "replace with monthly docs job",
+            "--json",
+        ],
+    );
+    assert_eq!(deleted["job"]["status"], "delete_pending_approval");
+    assert_eq!(
+        deleted["job"]["pending_update"]["approval_gate"]["required"],
+        true
+    );
+    assert_eq!(
+        deleted["job"]["pending_update"]["approval_gate"]["state"],
+        "pending_operator_approval"
+    );
+
+    let listed = run_json(&project_dir, &["operator-jobs", "list", "--json"]);
+    assert_eq!(listed["jobs"][0]["job_id"], "docs-refresh");
+    assert_eq!(listed["jobs"][0]["status"], "delete_pending_approval");
+}
+
+#[test]
 fn operator_cli_board_text_reads_live_winsmux_manifest() {
     let project_dir = make_temp_project_dir("board-text");
     write_manifest(&project_dir);
@@ -5270,7 +5421,9 @@ fn operator_cli_restart_rejects_malformed_provider_registry() {
     let project_dir = make_temp_project_dir("restart-malformed-capability-registry");
     write_manifest(&project_dir);
     fs::write(
-        project_dir.join(".winsmux").join("provider-capabilities.json"),
+        project_dir
+            .join(".winsmux")
+            .join("provider-capabilities.json"),
         "{",
     )
     .expect("test should write malformed provider capability registry");

@@ -613,6 +613,7 @@ fn run_main() -> io::Result<()> {
         "desktop-summary" => return operator_cli::run_desktop_summary_command(&cmd_args[1..]),
         "meta-plan" => return operator_cli::run_meta_plan_command(&cmd_args[1..]),
         "provider-capabilities" => return operator_cli::run_provider_capabilities_command(&cmd_args[1..]),
+        "operator-jobs" => return operator_cli::run_operator_jobs_command(&cmd_args[1..]),
         "skills" => return operator_cli::run_skills_command(&cmd_args[1..]),
         "dogfood" => return dogfood::run_dogfood_command(&cmd_args[1..]),
         "machine-contract" => return operator_cli::run_machine_contract_command(&cmd_args[1..]),
