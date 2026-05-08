@@ -518,6 +518,136 @@ fn progressive_skills_catalog() -> Value {
                     },
                     "evidence_requirements": ["workflow_pack_registry", "discovery_source_metadata", "scoped_loading_plan"],
                     "operator_judgement_boundary": "operator decides whether discovered packs are sufficient for the current task"
+                },
+                {
+                    "id": "documentation-refresh",
+                    "metadata": {
+                        "display_name": "Documentation refresh",
+                        "purpose": "refresh public documentation from observed product behavior",
+                        "status": "template",
+                        "review_role": "writer"
+                    },
+                    "scope": [
+                        "identify public documentation surfaces",
+                        "compare documented behavior with current commands",
+                        "report wording or coverage gaps"
+                    ],
+                    "commands": ["skills --json", "guard --json"],
+                    "supporting_files": ["README.md", "docs/operator-model.md"],
+                    "provenance": {
+                        "source": "winsmux workflow pack registry contract",
+                        "public_contract_only": true,
+                        "private_skill_body_stored": false,
+                        "private_material_referenced": false
+                    },
+                    "evidence_requirements": ["doc_surface_list", "behavior_evidence", "public_safety_review"],
+                    "required_evidence_fields": ["changed_docs", "source_commands", "public_safety_notes", "open_questions"],
+                    "expected_result_fields": ["workflow_pack_id", "status", "evidence", "doc_update_summary", "operator_decision"],
+                    "operator_judgement_boundary": "operator decides whether documentation gaps block release or become follow-up work"
+                },
+                {
+                    "id": "ci-diagnosis",
+                    "metadata": {
+                        "display_name": "CI diagnosis",
+                        "purpose": "diagnose failing automation without treating reruns as proof",
+                        "status": "template",
+                        "review_role": "tester"
+                    },
+                    "scope": [
+                        "collect failing job evidence",
+                        "separate environment failures from code failures",
+                        "recommend the next verification command"
+                    ],
+                    "commands": ["runs --json", "explain <run_id> --json", "guard --json"],
+                    "supporting_files": ["docs/operator-model.md"],
+                    "provenance": {
+                        "source": "winsmux workflow pack registry contract",
+                        "public_contract_only": true,
+                        "private_skill_body_stored": false,
+                        "private_material_referenced": false
+                    },
+                    "evidence_requirements": ["failing_check", "log_excerpt", "reproduction_command", "rerun_evidence"],
+                    "required_evidence_fields": ["check_name", "failure_summary", "first_bad_signal", "local_reproduction", "next_verification"],
+                    "expected_result_fields": ["workflow_pack_id", "status", "evidence", "diagnosis", "operator_decision"],
+                    "operator_judgement_boundary": "operator decides whether the diagnosis is enough to merge, retry, or escalate"
+                },
+                {
+                    "id": "issue-dedupe",
+                    "metadata": {
+                        "display_name": "Issue dedupe",
+                        "purpose": "compare a new problem report with existing tracked work",
+                        "status": "template",
+                        "review_role": "triager"
+                    },
+                    "scope": [
+                        "summarize the observed problem",
+                        "compare symptoms and root-cause evidence",
+                        "recommend reuse or new tracking"
+                    ],
+                    "commands": ["skills --json", "runs --json", "explain <run_id> --json"],
+                    "supporting_files": ["docs/operator-model.md"],
+                    "provenance": {
+                        "source": "winsmux workflow pack registry contract",
+                        "public_contract_only": true,
+                        "private_skill_body_stored": false,
+                        "private_material_referenced": false
+                    },
+                    "evidence_requirements": ["problem_statement", "candidate_issue_refs", "matching_symptoms", "difference_summary"],
+                    "required_evidence_fields": ["new_symptom", "candidate_refs", "match_reason", "non_match_reason", "recommended_tracking"],
+                    "expected_result_fields": ["workflow_pack_id", "status", "evidence", "dedupe_recommendation", "operator_decision"],
+                    "operator_judgement_boundary": "operator decides whether to reuse existing tracking or create a new issue"
+                },
+                {
+                    "id": "web-quality-check",
+                    "metadata": {
+                        "display_name": "Web quality check",
+                        "purpose": "check web accessibility and performance evidence before accepting UI work",
+                        "status": "template",
+                        "review_role": "tester"
+                    },
+                    "scope": [
+                        "collect accessibility findings",
+                        "collect responsive viewport evidence",
+                        "collect performance budget evidence"
+                    ],
+                    "commands": ["skills --json", "guard --json"],
+                    "supporting_files": ["docs/operator-model.md"],
+                    "provenance": {
+                        "source": "winsmux workflow pack registry contract",
+                        "public_contract_only": true,
+                        "private_skill_body_stored": false,
+                        "private_material_referenced": false
+                    },
+                    "evidence_requirements": ["accessibility_report", "viewport_evidence", "performance_budget", "interaction_risk"],
+                    "required_evidence_fields": ["tested_routes", "viewport_matrix", "accessibility_findings", "performance_findings", "blocking_risks"],
+                    "expected_result_fields": ["workflow_pack_id", "status", "evidence", "quality_verdict", "operator_decision"],
+                    "operator_judgement_boundary": "operator decides whether remaining web quality risks block acceptance"
+                },
+                {
+                    "id": "mcp-tool-builder",
+                    "metadata": {
+                        "display_name": "MCP tool builder",
+                        "purpose": "define and validate a Model Context Protocol tool contract",
+                        "status": "template",
+                        "review_role": "builder"
+                    },
+                    "scope": [
+                        "define tool input and output schema",
+                        "document side effects and safety boundaries",
+                        "collect smoke-test evidence"
+                    ],
+                    "commands": ["provider-capabilities --json", "skills --json", "guard --json"],
+                    "supporting_files": ["docs/operator-model.md"],
+                    "provenance": {
+                        "source": "winsmux workflow pack registry contract",
+                        "public_contract_only": true,
+                        "private_skill_body_stored": false,
+                        "private_material_referenced": false
+                    },
+                    "evidence_requirements": ["tool_schema", "transport_contract", "safety_boundary", "smoke_test"],
+                    "required_evidence_fields": ["tool_name", "input_schema", "output_schema", "side_effects", "smoke_result"],
+                    "expected_result_fields": ["workflow_pack_id", "status", "evidence", "tool_contract_summary", "operator_decision"],
+                    "operator_judgement_boundary": "operator decides whether the tool contract is safe enough to enable"
                 }
             ]
         },
@@ -606,6 +736,61 @@ fn progressive_skills_catalog() -> Value {
                 "required_evidence": ["workflow_pack_registry", "discovery_source_metadata", "scoped_loading_plan"],
                 "review_role": "operator",
                 "operator_judgement_boundary": "operator decides whether discovered packs are sufficient for the current task",
+                "public_contract_only": true,
+                "private_skill_body_stored": false
+            },
+            {
+                "id": "documentation-refresh",
+                "purpose": "refresh public documentation from observed product behavior",
+                "commands": ["skills --json", "guard --json"],
+                "required_evidence": ["doc_surface_list", "behavior_evidence", "public_safety_review"],
+                "required_evidence_fields": ["changed_docs", "source_commands", "public_safety_notes", "open_questions"],
+                "review_role": "writer",
+                "operator_judgement_boundary": "operator decides whether documentation gaps block release or become follow-up work",
+                "public_contract_only": true,
+                "private_skill_body_stored": false
+            },
+            {
+                "id": "ci-diagnosis",
+                "purpose": "diagnose failing automation without treating reruns as proof",
+                "commands": ["runs --json", "explain <run_id> --json", "guard --json"],
+                "required_evidence": ["failing_check", "log_excerpt", "reproduction_command", "rerun_evidence"],
+                "required_evidence_fields": ["check_name", "failure_summary", "first_bad_signal", "local_reproduction", "next_verification"],
+                "review_role": "tester",
+                "operator_judgement_boundary": "operator decides whether the diagnosis is enough to merge, retry, or escalate",
+                "public_contract_only": true,
+                "private_skill_body_stored": false
+            },
+            {
+                "id": "issue-dedupe",
+                "purpose": "compare a new problem report with existing tracked work",
+                "commands": ["skills --json", "runs --json", "explain <run_id> --json"],
+                "required_evidence": ["problem_statement", "candidate_issue_refs", "matching_symptoms", "difference_summary"],
+                "required_evidence_fields": ["new_symptom", "candidate_refs", "match_reason", "non_match_reason", "recommended_tracking"],
+                "review_role": "triager",
+                "operator_judgement_boundary": "operator decides whether to reuse existing tracking or create a new issue",
+                "public_contract_only": true,
+                "private_skill_body_stored": false
+            },
+            {
+                "id": "web-quality-check",
+                "purpose": "check web accessibility and performance evidence before accepting UI work",
+                "commands": ["skills --json", "guard --json"],
+                "required_evidence": ["accessibility_report", "viewport_evidence", "performance_budget", "interaction_risk"],
+                "required_evidence_fields": ["tested_routes", "viewport_matrix", "accessibility_findings", "performance_findings", "blocking_risks"],
+                "review_role": "tester",
+                "operator_judgement_boundary": "operator decides whether remaining web quality risks block acceptance",
+                "public_contract_only": true,
+                "private_skill_body_stored": false
+            },
+            {
+                "id": "mcp-tool-builder",
+                "purpose": "define and validate a Model Context Protocol tool contract",
+                "commands": ["provider-capabilities --json", "skills --json", "guard --json"],
+                "required_evidence": ["tool_schema", "transport_contract", "safety_boundary", "smoke_test"],
+                "required_evidence_fields": ["tool_name", "input_schema", "output_schema", "side_effects", "smoke_result"],
+                "review_role": "builder",
+                "operator_judgement_boundary": "operator decides whether the tool contract is safe enough to enable",
                 "public_contract_only": true,
                 "private_skill_body_stored": false
             }
