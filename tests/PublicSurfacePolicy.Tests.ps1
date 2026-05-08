@@ -22,6 +22,13 @@ Describe 'Public surface policy' {
         $syncRoadmap = Get-Content (Join-Path $repoRoot 'winsmux-core/scripts/sync-roadmap.ps1') -Raw
         $syncInternalDocs = Get-Content (Join-Path $repoRoot 'winsmux-core/scripts/sync-internal-docs.ps1') -Raw
         $installer = Get-Content (Join-Path $repoRoot 'install.ps1') -Raw
+        $auditPublicSurface = Join-Path $repoRoot 'scripts/audit-public-surface.ps1'
+        $previousHooksPath = (& git config --get core.hooksPath 2>$null | Out-String).Trim()
+        $hadHooksPath = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($previousHooksPath)
+        & git config core.hooksPath .githooks
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Failed to configure core.hooksPath for public surface audit tests.'
+        }
         $publicDocs = @(
             $readme,
             $readmeJa,
@@ -39,6 +46,14 @@ Describe 'Public surface policy' {
             (Get-Content (Join-Path $repoRoot 'docs/TROUBLESHOOTING.ja.md') -Raw),
             (Get-Content (Join-Path $repoRoot 'packages/winsmux/README.md') -Raw)
         )
+    }
+
+    AfterAll {
+        if ($hadHooksPath) {
+            & git config core.hooksPath $previousHooksPath
+        } else {
+            & git config --unset core.hooksPath
+        }
     }
 
     It 'keeps public docs free of contributor/private direct links' {
@@ -219,6 +234,61 @@ Describe 'Public surface policy' {
         $authSupportJa | Should -Match '設定された `auth_mode`'
         $authSupportJa | Should -Match 'token-broker'
         $authSupportJa | Should -Match 'provider-api-proxy'
+    }
+
+    It 'passes the public docs external product reference audit' {
+        $output = @(& pwsh -NoProfile -File $auditPublicSurface 2>&1)
+
+        $LASTEXITCODE | Should -Be 0
+        ($output -join "`n") | Should -Match 'audit-public-surface passed'
+    }
+
+    It 'allows terminal cursor wording in generated release notes' {
+        $releaseBody = Join-Path $TestDrive 'cursor-release-body.md'
+        Set-Content -LiteralPath $releaseBody -Value @'
+## Bug Fixes
+
+- Cursor movement now preserves position after pane redraws.
+'@ -Encoding UTF8
+
+        $output = @(& pwsh -NoProfile -File $auditPublicSurface -ReleaseNotesPath $releaseBody 2>&1)
+
+        $LASTEXITCODE | Should -Be 0
+        ($output -join "`n") | Should -Match 'audit-public-surface passed'
+    }
+
+    It 'blocks forbidden external product names in linked top-level public docs' {
+        $linkedPublicDoc = Join-Path $repoRoot 'docs/authentication-support.md'
+        $original = [System.IO.File]::ReadAllText($linkedPublicDoc)
+        try {
+            [System.IO.File]::WriteAllText(
+                $linkedPublicDoc,
+                $original + "`nThis public page must not compare winsmux to VS Code.`n",
+                [System.Text.UTF8Encoding]::new($false)
+            )
+
+            $output = @(& pwsh -NoProfile -File $auditPublicSurface 2>&1)
+
+            $LASTEXITCODE | Should -Be 1
+            ($output -join "`n") | Should -Match "public doc contains forbidden external product/reference name 'VS Code'"
+            ($output -join "`n") | Should -Match 'docs/authentication-support\.md'
+        } finally {
+            [System.IO.File]::WriteAllText($linkedPublicDoc, $original, [System.Text.UTF8Encoding]::new($false))
+        }
+    }
+
+    It 'blocks forbidden external product names in generated release notes' {
+        $releaseBody = Join-Path $TestDrive 'release-body.md'
+        Set-Content -LiteralPath $releaseBody -Value @'
+## New Features
+
+- Keeps the operator flow separate from VS Code-style workbench assumptions.
+'@ -Encoding UTF8
+
+        $output = @(& pwsh -NoProfile -File $auditPublicSurface -ReleaseNotesPath $releaseBody 2>&1)
+
+        $LASTEXITCODE | Should -Be 1
+        ($output -join "`n") | Should -Match "release notes contains forbidden external product/reference name 'VS Code'"
     }
 
     It 'uses recorded-baseline gitleaks scans for routine push and CI checks' {

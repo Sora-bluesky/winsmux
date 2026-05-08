@@ -4,7 +4,7 @@
 A: No. winsmux is built exclusively for Windows using the Windows ConPTY API. For Linux/macOS, use tmux. winsmux is the Windows counterpart.
 
 **Q: Does winsmux work with Windows Terminal?**
-A: Yes! winsmux works great with Windows Terminal, PowerShell, cmd.exe, ConEmu, and other Windows terminal emulators.
+A: Yes! winsmux works great with Windows Terminal, PowerShell, cmd.exe, and other Windows terminal emulators.
 
 **Q: Why use winsmux instead of Windows Terminal tabs?**
 A: winsmux offers session persistence (detach/reattach), synchronized input to multiple panes, full tmux command scripting, hooks, format engine, and tmux-compatible keybindings. Windows Terminal tabs can't do any of that.

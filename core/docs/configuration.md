@@ -47,7 +47,7 @@ set -g cursor-blink on
 # Scrollback history
 set -g history-limit 5000
 
-# Prediction dimming (disable for apps like Neovim)
+# Prediction dimming (disable for full-screen terminal editors)
 set -g prediction-dimming off
 
 # Key bindings
