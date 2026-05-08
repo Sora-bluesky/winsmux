@@ -207,6 +207,8 @@ declare global {
       registerPreviewTarget: (sourceLabel: string, url: string) => void;
       openPreviewTarget: (url: string) => void;
       openEditorPreview: (path: string, content: string, worktree?: string) => void;
+      getComposerHistoryValuesForTest: () => string[];
+      pushComposerHistoryForTest: (value: string) => void;
       setContextPanel: (open: boolean) => void;
       setTerminalDrawer: (open: boolean) => void;
       getOperatorStartupInput: () => string;
@@ -7061,7 +7063,14 @@ function clearVoiceDraftRecoveryStorage() {
 }
 
 function persistVoiceDraftRecovery(value: string) {
-  if (!themeState.persistVoiceDraftLocally || getVoiceSessionElapsedMs() < VOICE_DRAFT_AUTO_SAVE_MS || !value.trim()) {
+  if (!themeState.persistVoiceDraftLocally) {
+    return;
+  }
+  if (!value.trim()) {
+    clearVoiceDraftRecoveryStorage();
+    return;
+  }
+  if (getVoiceSessionElapsedMs() < VOICE_DRAFT_AUTO_SAVE_MS) {
     return;
   }
   try {
@@ -7572,7 +7581,7 @@ function applyVoiceSelectionEdit(composerInput: HTMLTextAreaElement, transcript:
   }
 
   if (!voiceSelectionEditState.historyCaptured) {
-    pushComposerHistoryEntry(captureComposerHistoryEntry(voiceSelectionEditState.base));
+    pushComposerImmediateHistoryEntry(captureComposerHistoryEntry(voiceSelectionEditState.base));
     voiceSelectionEditState.historyCaptured = true;
   }
 
@@ -7946,6 +7955,16 @@ function pushComposerHistoryEntry(entry: ComposerHistoryEntry) {
   }
 
   composerHistory = [entry, ...composerHistory].slice(0, 20);
+  composerHistoryIndex = -1;
+  composerDraftState = { value: "", remoteReferenceIds: [], attachments: [] };
+}
+
+function pushComposerImmediateHistoryEntry(entry: ComposerHistoryEntry) {
+  if (!entry.value && entry.remoteReferenceIds.length === 0 && entry.attachments.length === 0) {
+    return;
+  }
+
+  composerHistory = [...composerHistory.slice(0, 19), entry];
   composerHistoryIndex = -1;
   composerDraftState = { value: "", remoteReferenceIds: [], attachments: [] };
 }
@@ -11208,6 +11227,10 @@ function installViewportHarnessHooks() {
     },
     openEditorPreview: (path: string, content: string, worktree?: string) => {
       openEditorPreviewForHarness(path, content, worktree);
+    },
+    getComposerHistoryValuesForTest: () => composerHistory.map((entry) => entry.value),
+    pushComposerHistoryForTest: (value: string) => {
+      pushComposerHistoryEntry(captureComposerHistoryEntry(value));
     },
     setContextPanel: (open: boolean) => {
       setContextPanel(open);
