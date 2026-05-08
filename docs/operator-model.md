@@ -156,6 +156,11 @@ For repository-level skill discovery, the candidate plan loads only `docs/operat
 Workflow execution remains operator-mediated.
 The contract can identify the workflow pack, required evidence, and expected result fields, but the operator keeps final decisions for task splitting, merge, release, and escalation.
 
+The registry also includes workflow-specific quality templates for documentation refresh, CI diagnosis, issue dedupe, web quality checks, and Model Context Protocol tool building.
+These templates describe evidence fields and result fields only.
+They do not store private skill bodies, local paths, or vendor-specific product guidance.
+The operator uses the evidence to decide whether the work is accepted, retried, escalated, or tracked as follow-up.
+
 Repository-specific runtime contracts also exist for contributor flows, but they are maintained as contributor documents rather than primary public product docs.
 
 ## 5. Public docs vs contributor docs

@@ -1589,6 +1589,86 @@ fn operator_cli_skills_json_exposes_agent_readable_contracts() {
 }
 
 #[test]
+fn operator_cli_skills_json_exposes_quality_workflow_templates() {
+    let project_dir = make_temp_project_dir("skills-quality-templates");
+
+    let json = run_json(&project_dir, &["skills", "--json"]);
+    let packs = json["workflow_pack_registry"]["packs"]
+        .as_array()
+        .expect("workflow packs should be an array");
+    let find_pack = |id: &str| {
+        packs
+            .iter()
+            .find(|pack| pack["id"] == id)
+            .unwrap_or_else(|| panic!("missing workflow pack {id}"))
+    };
+
+    let docs_pack = find_pack("documentation-refresh");
+    assert_eq!(docs_pack["metadata"]["status"], "template");
+    assert_eq!(docs_pack["metadata"]["review_role"], "writer");
+    assert_eq!(docs_pack["required_evidence_fields"][0], "changed_docs");
+    assert_eq!(
+        docs_pack["expected_result_fields"][3],
+        "doc_update_summary"
+    );
+
+    let ci_pack = find_pack("ci-diagnosis");
+    assert_eq!(ci_pack["evidence_requirements"][0], "failing_check");
+    assert_eq!(
+        ci_pack["required_evidence_fields"][4],
+        "next_verification"
+    );
+
+    let issue_pack = find_pack("issue-dedupe");
+    assert_eq!(
+        issue_pack["expected_result_fields"][3],
+        "dedupe_recommendation"
+    );
+    assert_eq!(
+        issue_pack["operator_judgement_boundary"],
+        "operator decides whether to reuse existing tracking or create a new issue"
+    );
+
+    let web_pack = find_pack("web-quality-check");
+    assert_eq!(web_pack["evidence_requirements"][0], "accessibility_report");
+    assert_eq!(web_pack["required_evidence_fields"][1], "viewport_matrix");
+
+    let mcp_pack = find_pack("mcp-tool-builder");
+    assert_eq!(mcp_pack["evidence_requirements"][0], "tool_schema");
+    assert_eq!(mcp_pack["required_evidence_fields"][4], "smoke_result");
+
+    let skill_ids: Vec<_> = json["skills"]
+        .as_array()
+        .expect("skills should be an array")
+        .iter()
+        .map(|skill| skill["id"].as_str().expect("skill id should be a string"))
+        .collect();
+    for id in [
+        "documentation-refresh",
+        "ci-diagnosis",
+        "issue-dedupe",
+        "web-quality-check",
+        "mcp-tool-builder",
+    ] {
+        assert!(skill_ids.contains(&id), "missing skill contract {id}");
+    }
+
+    let catalog = serde_json::to_string(&json).expect("catalog should serialize");
+    for forbidden in [
+        "Visual Studio Code",
+        "VS Code",
+        "Cursor",
+        "C:\\",
+        "/Users/",
+    ] {
+        assert!(
+            !catalog.contains(forbidden),
+            "quality workflow templates should stay public-safe: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn operator_cli_skills_help_and_command_lists_are_discoverable() {
     let project_dir = make_temp_project_dir("skills-help");
 
