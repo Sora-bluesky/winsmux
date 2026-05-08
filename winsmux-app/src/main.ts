@@ -1769,8 +1769,15 @@ function captureProjectRequestKey() {
   return normalizeProjectDirInput(getActiveProjectDirPayload()) || "";
 }
 
-function isProjectRequestCurrent(projectKey: string) {
-  return (normalizeProjectDirInput(getActiveProjectDirPayload()) || "") === projectKey;
+function isProjectRequestCurrent(projectKey: string, resolvedProjectKey?: string | null) {
+  const currentProjectKey = normalizeProjectDirInput(getActiveProjectDirPayload()) || "";
+  const requestProjectKey = normalizeProjectDirInput(projectKey) || "";
+  if (currentProjectKey === requestProjectKey) {
+    return true;
+  }
+
+  const responseProjectKey = normalizeProjectDirInput(resolvedProjectKey) || "";
+  return !requestProjectKey && Boolean(responseProjectKey) && currentProjectKey === responseProjectKey;
 }
 
 function rememberProjectSession(projectDir: string) {
@@ -2450,10 +2457,13 @@ async function refreshProjectExplorerEntries() {
   projectExplorerRefreshInFlight = (async () => {
     try {
       const projectDir = getActiveProjectDirPayload();
-      const entries = isTauri()
-        ? normalizeExplorerEntries((await getDesktopExplorerEntries(undefined, projectDir)).entries)
+      const explorerPayload = isTauri()
+        ? await getDesktopExplorerEntries(undefined, projectDir)
+        : null;
+      const entries = explorerPayload
+        ? normalizeExplorerEntries(explorerPayload.entries)
         : await loadBrowserProjectExplorerEntries();
-      if (!isProjectRequestCurrent(requestKey)) {
+      if (!isProjectRequestCurrent(requestKey, explorerPayload?.project_dir)) {
         return;
       }
       projectExplorerEntries = entries;
