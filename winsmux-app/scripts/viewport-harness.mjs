@@ -578,7 +578,11 @@ async function assertDesktopVoiceDraftShaping(page) {
   });
   await stopBrowserVoiceInput(page);
 
-  await page.evaluate(() => window.__winsmuxViewportHarness.pushComposerHistoryForTest("older submitted prompt"));
+  await page.evaluate(() => {
+    for (let index = 0; index < 20; index += 1) {
+      window.__winsmuxViewportHarness.pushComposerHistoryForTest(`submitted prompt ${index}`);
+    }
+  });
   await composer.fill("/review TASK-426 unclear text README.md");
   await composer.evaluate((input) => {
     const value = input.value;
@@ -592,6 +596,13 @@ async function assertDesktopVoiceDraftShaping(page) {
     const input = document.querySelector("#composer-input");
     return input instanceof HTMLTextAreaElement &&
       input.value === "/review TASK-426 clear selected wording README.md";
+  });
+  await page.waitForFunction(() => {
+    const values = window.__winsmuxViewportHarness.getComposerHistoryValuesForTest();
+    return values.length === 20 &&
+      values[values.length - 1] === "/review TASK-426 unclear text README.md" &&
+      values.includes("submitted prompt 19") &&
+      !values.includes("submitted prompt 0");
   });
   await stopBrowserVoiceInput(page);
   await page.keyboard.press("ArrowUp");

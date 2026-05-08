@@ -207,6 +207,7 @@ declare global {
       registerPreviewTarget: (sourceLabel: string, url: string) => void;
       openPreviewTarget: (url: string) => void;
       openEditorPreview: (path: string, content: string, worktree?: string) => void;
+      getComposerHistoryValuesForTest: () => string[];
       pushComposerHistoryForTest: (value: string) => void;
       setContextPanel: (open: boolean) => void;
       setTerminalDrawer: (open: boolean) => void;
@@ -7963,7 +7964,7 @@ function pushComposerImmediateHistoryEntry(entry: ComposerHistoryEntry) {
     return;
   }
 
-  composerHistory = [...composerHistory, entry].slice(-20);
+  composerHistory = [...composerHistory.slice(0, 19), entry];
   composerHistoryIndex = -1;
   composerDraftState = { value: "", remoteReferenceIds: [], attachments: [] };
 }
@@ -11227,6 +11228,7 @@ function installViewportHarnessHooks() {
     openEditorPreview: (path: string, content: string, worktree?: string) => {
       openEditorPreviewForHarness(path, content, worktree);
     },
+    getComposerHistoryValuesForTest: () => composerHistory.map((entry) => entry.value),
     pushComposerHistoryForTest: (value: string) => {
       pushComposerHistoryEntry(captureComposerHistoryEntry(value));
     },
