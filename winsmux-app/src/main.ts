@@ -2,6 +2,7 @@ import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "xterm/css/xterm.css";
 import { isTauri } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { WebviewWindow, getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   applyDesktopRuntimeRolePreferences,
@@ -36,6 +37,7 @@ import {
   subscribeToPtyOutput,
   writePtyData,
 } from "./ptyClient";
+import { isComposerCommandText, normalizeComposerPlainTextPaste } from "./composerText";
 
 interface PaneEntry {
   terminal: Terminal;
@@ -562,6 +564,7 @@ const expandedExplorerFolders = new Set<string>();
 let projectExplorerEntries: DesktopExplorerEntry[] = [];
 let projectExplorerLoaded = false;
 let projectExplorerRefreshInFlight: Promise<void> | null = null;
+let projectExplorerRefreshGeneration = 0;
 const projectExplorerLoadedFolderPaths = new Set<string>();
 const projectExplorerFolderLoads = new Map<string, Promise<void>>();
 let explorerContextMenu: HTMLDivElement | null = null;
@@ -581,6 +584,7 @@ const MAX_RUNTIME_CONVERSATION_ITEMS = 80;
 const OPERATOR_PTY_ID = "operator";
 const OPERATOR_PTY_COLS = 120;
 const OPERATOR_PTY_ROWS = 32;
+const OPERATOR_PTY_ACTION_TIMEOUT_MS = 15_000;
 const DEFAULT_EDITOR_FONT_SIZE = 14;
 const MIN_EDITOR_FONT_SIZE = 8;
 const MAX_EDITOR_FONT_SIZE = 32;
@@ -987,14 +991,14 @@ const languageOptions: Array<{ value: LanguageMode; label: string; description: 
 ];
 
 const voiceDraftModeOptions: Array<{ value: VoiceDraftMode; label: string; labelJa: string; description: string; descriptionJa: string }> = [
-  { value: "raw", label: "Raw", labelJa: "そのまま", description: "Insert the recognized transcript without cleanup.", descriptionJa: "認識結果を整形せず下書きへ入れます。" },
+  { value: "raw", label: "Raw", labelJa: "原文", description: "Insert the recognized transcript without cleanup.", descriptionJa: "認識結果を整形せず下書きへ入れます。" },
   { value: "cleaned", label: "Clean draft", labelJa: "整える", description: "Remove fillers and repeated phrases conservatively.", descriptionJa: "不要な言いよどみや繰り返しだけを控えめに整えます。" },
   { value: "operator_request", label: "Operator request", labelJa: "依頼文", description: "Shape spoken intent into an editable operator request.", descriptionJa: "話した意図を編集可能な依頼文として整えます。" },
 ];
 
 const voiceVocabularyModeOptions: Array<{ value: VoiceVocabularyMode; label: string; labelJa: string; description: string; descriptionJa: string }> = [
   { value: "off", label: "Vocabulary off", labelJa: "語彙なし", description: "Use speech recognition text exactly as received.", descriptionJa: "音声認識の結果をそのまま使います。" },
-  { value: "project", label: "Project terms", labelJa: "プロジェクト語彙", description: "Correct common project terms before shaping the draft.", descriptionJa: "下書きを整える前に、よく使うプロジェクト語彙へ直します。" },
+  { value: "project", label: "Project terms", labelJa: "用語補正", description: "Correct common project terms before shaping the draft.", descriptionJa: "下書きを整える前に、よく使うプロジェクト語彙へ直します。" },
   { value: "project_custom", label: "Project + custom", labelJa: "語彙と追加辞書", description: "Also apply local custom readings stored on this device.", descriptionJa: "この端末に保存した追加の読みも使います。" },
 ];
 
@@ -1831,9 +1835,26 @@ function setActiveProjectDir(projectDir: string | null) {
   requestDesktopSummaryRefresh(undefined, 0);
 }
 
-function promptAndAddProjectSession() {
-  const value = window.prompt(getLanguageText("Project path", "プロジェクトのパス"));
-  const projectDir = normalizeProjectDirInput(value);
+async function promptAndAddProjectSession() {
+  let selectedPath: string | null = null;
+  if (isTauri()) {
+    try {
+      const result = await openDialog({
+        directory: true,
+        multiple: false,
+        title: getLanguageText("Select project folder", "プロジェクトフォルダを選択"),
+      });
+      selectedPath = Array.isArray(result) ? result[0] ?? null : result;
+    } catch (error) {
+      console.warn("Failed to open project folder picker", error);
+      window.alert(getLanguageText("Could not open the folder picker.", "フォルダ選択を開けませんでした。"));
+      return;
+    }
+  } else {
+    selectedPath = window.prompt(getLanguageText("Project path", "プロジェクトのパス"));
+  }
+
+  const projectDir = normalizeProjectDirInput(selectedPath);
   if (!projectDir) {
     return;
   }
@@ -1887,8 +1908,8 @@ function getSessionItems() {
       });
     }
     items.push({
-      name: getLanguageText("Add project", "プロジェクトを追加"),
-      meta: getLanguageText("Paste a local project path", "ローカルプロジェクトのパスを貼り付け"),
+      name: getLanguageText("Select project", "プロジェクトを選択"),
+      meta: getLanguageText("Choose a local project folder", "ローカルプロジェクトのフォルダを選択"),
       action: "add-project",
     });
     return items;
@@ -1925,8 +1946,8 @@ function getSessionItems() {
   }
 
   items.push({
-    name: getLanguageText("Add project", "プロジェクトを追加"),
-    meta: getLanguageText("Paste a local project path", "ローカルプロジェクトのパスを貼り付け"),
+    name: getLanguageText("Select project", "プロジェクトを選択"),
+    meta: getLanguageText("Choose a local project folder", "ローカルプロジェクトのフォルダを選択"),
     action: "add-project",
   });
 
@@ -2424,11 +2445,17 @@ async function refreshProjectExplorerEntries() {
     return projectExplorerRefreshInFlight;
   }
 
+  const requestKey = captureProjectRequestKey();
+  const refreshGeneration = ++projectExplorerRefreshGeneration;
   projectExplorerRefreshInFlight = (async () => {
     try {
+      const projectDir = getActiveProjectDirPayload();
       const entries = isTauri()
-        ? normalizeExplorerEntries((await getDesktopExplorerEntries(undefined, getActiveProjectDirPayload())).entries)
+        ? normalizeExplorerEntries((await getDesktopExplorerEntries(undefined, projectDir)).entries)
         : await loadBrowserProjectExplorerEntries();
+      if (!isProjectRequestCurrent(requestKey)) {
+        return;
+      }
       projectExplorerEntries = entries;
       projectExplorerLoaded = true;
       projectExplorerLoadedFolderPaths.clear();
@@ -2437,11 +2464,16 @@ async function refreshProjectExplorerEntries() {
       expandedExplorerFolders.clear();
       renderExplorer();
     } catch (error) {
+      if (!isProjectRequestCurrent(requestKey)) {
+        return;
+      }
       projectExplorerLoaded = true;
       console.warn("Failed to load project explorer entries", error);
       renderExplorer();
     } finally {
-      projectExplorerRefreshInFlight = null;
+      if (projectExplorerRefreshGeneration === refreshGeneration) {
+        projectExplorerRefreshInFlight = null;
+      }
     }
   })();
 
@@ -2738,7 +2770,7 @@ function getFilesystemExplorerItems() {
 }
 
 function getExplorerItems() {
-  if (projectExplorerEntries.length > 0) {
+  if (projectExplorerLoaded || projectExplorerEntries.length > 0) {
     return getFilesystemExplorerItems();
   }
 
@@ -8052,6 +8084,13 @@ function syncComposerInputHeight(composerInput?: HTMLTextAreaElement | null) {
     return;
   }
 
+  const commandMode = isComposerCommandText(input.value);
+  input.dataset.inputMode = commandMode ? "command" : "prose";
+  input.setAttribute("wrap", commandMode ? "off" : "soft");
+  if (!commandMode) {
+    input.scrollLeft = 0;
+  }
+
   input.style.height = "auto";
   const computed = window.getComputedStyle(input);
   const minHeight = Number.parseFloat(computed.minHeight) || 0;
@@ -8397,8 +8436,8 @@ function createComposerVoiceDraftMenu() {
   const selected = getVoiceDraftModeOption();
   const vocabulary = getVoiceVocabularyModeOption();
   const selectedLabel = themeState.language === "ja"
-    ? `${selected.labelJa}・${vocabulary.labelJa}`
-    : `${selected.label} · ${vocabulary.label}`;
+    ? `音声: ${selected.labelJa} / ${vocabulary.labelJa}`
+    : `Voice: ${selected.label} / ${vocabulary.label}`;
   const group = createComposerSessionControl("voice", selectedLabel);
   if (openComposerSessionMenu !== "voice") {
     return group;
@@ -8993,9 +9032,8 @@ function renderConversation(items: ConversationItem[]) {
     meta.className = "timeline-meta-row";
     meta.innerHTML =
       `<span class="timeline-actor">${item.actor}</span>` +
-      `<span class="timeline-meta-separator">·</span>` +
       `<span>${item.timestamp}</span>` +
-      (item.runId ? `<span class="timeline-meta-separator">·</span><span>${item.runId}</span>` : "") +
+      (item.runId ? `<span>${item.runId}</span>` : "") +
       (item.statusLabel ? `<span class="timeline-status-pill">${item.statusLabel}</span>` : "");
     article.appendChild(meta);
 
@@ -9775,7 +9813,7 @@ function getTopMenuItems(menuId: string): TopMenuItem[] {
   switch (menuId) {
     case "menu-file-btn":
       return [
-        { label: getLanguageText("Add project", "プロジェクトを追加"), action: promptAndAddProjectSession },
+        { label: getLanguageText("Select project", "プロジェクトを選択"), action: promptAndAddProjectSession },
         { label: getLanguageText("Settings", "設定"), action: () => setSettingsSheet(true) },
       ];
     case "menu-edit-btn":
@@ -11712,6 +11750,24 @@ function isCurrentOperatorRequest(generation: number) {
   return operatorRequestActive && operatorRequestGeneration === generation;
 }
 
+async function withOperatorTimeout<T>(operation: Promise<T>, label: string): Promise<T> {
+  let timeoutId: number | null = null;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<T>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          reject(new Error(`${label} timed out after ${Math.round(OPERATOR_PTY_ACTION_TIMEOUT_MS / 1000)}s`));
+        }, OPERATOR_PTY_ACTION_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  }
+}
+
 async function interruptOperatorRequest() {
   if (!operatorRequestActive || operatorInterruptInFlight) {
     return;
@@ -11724,11 +11780,11 @@ async function interruptOperatorRequest() {
   setOperatorRequestActive(false);
   updateOperatorInterruptButton();
   try {
-    await ensureOperatorPtyStarted();
+    await withOperatorTimeout(ensureOperatorPtyStarted(), "operator PTY startup");
     if (operatorRequestGeneration !== canceledGeneration || operatorRequestActive) {
       return;
     }
-    await writePtyData(OPERATOR_PTY_ID, "\x03");
+    await withOperatorTimeout(writePtyData(OPERATOR_PTY_ID, "\x03"), "operator interrupt");
     appendRuntimeConversation({
       type: "system",
       category: "attention",
@@ -11791,11 +11847,11 @@ async function forwardComposerMessageToOperatorPane(
 
   const requestGeneration = beginOperatorRequest();
   try {
-    await ensureOperatorPtyStarted();
+    await withOperatorTimeout(ensureOperatorPtyStarted(), "operator PTY startup");
     if (!isCurrentOperatorRequest(requestGeneration)) {
       return;
     }
-    await writePtyData(OPERATOR_PTY_ID, encodePtySubmission(payload));
+    await withOperatorTimeout(writePtyData(OPERATOR_PTY_ID, encodePtySubmission(payload)), "operator request write");
     if (!isCurrentOperatorRequest(requestGeneration)) {
       return;
     }
@@ -13057,6 +13113,20 @@ window.addEventListener("DOMContentLoaded", async () => {
       }
 
       if (event.clipboardData?.types.includes("text/plain")) {
+        const text = event.clipboardData.getData("text/plain");
+        const normalized = normalizeComposerPlainTextPaste(text);
+        if (normalized !== text) {
+          event.preventDefault();
+          composerInput.setRangeText(
+            normalized,
+            composerInput.selectionStart,
+            composerInput.selectionEnd,
+            "end",
+          );
+          syncComposerInputHeight(composerInput);
+          syncComposerDraftState(composerInput.value);
+          syncComposerSlashState(composerInput.value);
+        }
         return;
       }
 
