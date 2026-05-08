@@ -11,7 +11,7 @@ This separation is the main contract of the product. winsmux is positioned as a 
 
 The standard winsmux operating model is:
 
-`User -> Claude Code (operator) -> pane agents`
+`User -> external operator -> managed pane agents`
 
 That model means:
 
@@ -35,12 +35,8 @@ The operator layer is where:
 
 happen.
 
-The recommended operator is **Claude Code**.
-winsmux is designed to work well with:
-
-- Claude Code Channels
-- Claude Code remote control
-- other external user-to-operator channel surfaces
+The operator can be Claude Code, Codex CLI, Gemini CLI, or another external
+user-to-operator channel surface.
 
 The important abstraction is the **channel boundary**, not Telegram, Discord, or another single product.
 
@@ -137,29 +133,17 @@ The public first-run entrypoints now converge on:
 
 That direction is public product behavior.
 Repository-specific startup flows are kept in contributor documents, not in the primary public UX.
-`winsmux launcher presets [--json]` reports the launcher presets, pair templates, and slot capabilities that should exist before a launch or compare-oriented run.
+`winsmux launcher presets [--json]` reports launcher presets, pair templates, and slot capabilities before a launch or compare-oriented run.
 `winsmux launcher lifecycle [preset|--clear] [--json]` reports or stores the local workspace lifecycle override.
 `winsmux launcher save <name>` stores that launcher template in the project `.winsmux` directory for later reuse.
 Lifecycle presets are declarative workspace policy. They do not execute arbitrary setup or teardown scripts from project configuration.
 `winsmux compare <runs|preflight|promote>` is the public compare coordination surface.
 It wraps run comparison, merge preflight, and follow-up candidate promotion behind one entrypoint.
 The desktop compare card surfaces shared changed files as hotspots and displays a risk badge before winner selection.
-`winsmux skills [--json]` exposes the public workflow pack registry and execution contract.
-Workflow packs are public-safe descriptors for supported operator workflows.
-They list pack metadata, scope, supporting repository documents, provenance, required evidence, and operator judgement boundaries.
-The catalog is contract-only: it does not expose private skill bodies, private guidance, or local absolute paths.
-The registry also reports public-safe discovery metadata for built-in, user-level, and repository-level workflow pack sources.
-Those source records use stable `source_ref` values rather than local filesystem paths.
-Each workflow pack can report source level metadata and a selection reason for use after an explicit operator or workflow request.
-The pack-level loading plan lists the minimum supporting files needed for that contract.
-For repository-level skill discovery, the candidate plan loads only `docs/operator-model.md` and explicitly excludes private skill bodies, local absolute paths, and generated runtime artifacts.
+`winsmux skills [--json]` lists supported workflow packs and their public evidence expectations.
+The catalog is contract-only: it must not expose private skill bodies, private guidance, generated runtime artifacts, or local absolute paths.
 Workflow execution remains operator-mediated.
 The contract can identify the workflow pack, required evidence, and expected result fields, but the operator keeps final decisions for task splitting, merge, release, and escalation.
-
-The registry also includes workflow-specific quality templates for documentation refresh, CI diagnosis, issue dedupe, web quality checks, and Model Context Protocol tool building.
-These templates describe evidence fields and result fields only.
-They do not store private skill bodies, local paths, or vendor-specific product guidance.
-The operator uses the evidence to decide whether the work is accepted, retried, escalated, or tracked as follow-up.
 
 Repository-specific runtime contracts also exist for contributor flows, but they are maintained as contributor documents rather than primary public product docs.
 
@@ -196,7 +180,7 @@ The roadmap groups these desktop surfaces into three UX layers:
 - **Fast Start + Launcher + Coordination Guard** for quick entry, multi-agent launch, and conflict preflight
 - **Managed Team Intelligence** for durable memory, playbooks, and diversity-aware follow-up runs
 
-`TASK-286` aligns the timeline grammar with the docs contract:
+The desktop timeline grammar follows the docs contract:
 
 - user message
 - operator update

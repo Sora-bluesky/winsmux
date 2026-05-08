@@ -77,7 +77,7 @@ Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddH
 sandbox = "unelevated"
 ```
 
-### Codex pane 内で file write や git command が失敗する
+### Codex ペイン内でファイル書き込みや git コマンドが失敗する
 
 症状:
 
@@ -87,15 +87,15 @@ sandbox = "unelevated"
 
 対処:
 
-- pane 内では編集と限定的な確認を続ける
-- repository-level の `git add`、`git commit`、`git push` は通常の shell から実行する
-- pane 内の file write は `apply_patch` または `cmd /c` を使う
+- ペイン内では編集と限定的な確認に留める。
+- リポジトリ単位の `git add`、`git commit`、`git push` は通常のシェルから実行する。
+- ペイン内でのファイル書き込みは `apply_patch` または `cmd /c` を使う。
 
 ## 資格情報の問題
 
-### vault key が見つからない
+### vault のキーが見つからない
 
-原因: Windows Credential Manager に key が保存されていません。
+原因: Windows Credential Manager にキーが保存されていません。
 
 対処:
 
