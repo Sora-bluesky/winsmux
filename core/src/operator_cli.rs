@@ -238,6 +238,17 @@ pub fn run_skills_command(args: &[&String]) -> io::Result<()> {
     }
 
     println!("Progressive skills catalog");
+    if let Some(packs) = payload["workflow_pack_registry"]["packs"].as_array() {
+        println!("Workflow packs");
+        for pack in packs {
+            println!(
+                "- {}: {}",
+                pack["id"].as_str().unwrap_or_default(),
+                pack["metadata"]["purpose"].as_str().unwrap_or_default()
+            );
+        }
+    }
+    println!("Skill contracts");
     for skill in payload["skills"].as_array().into_iter().flatten() {
         println!(
             "- {}: {}",
@@ -269,6 +280,135 @@ fn progressive_skills_catalog() -> Value {
         "private_guidance_stored": false,
         "local_reference_paths_stored": false,
         "operator_judgement_boundary": "operator keeps final task split, merge, release, and human-escalation decisions",
+        "workflow_pack_registry": {
+            "contract_version": 1,
+            "public_contract_only": true,
+            "private_skill_bodies_allowed": false,
+            "local_absolute_paths_allowed": false,
+            "packs": [
+                {
+                    "id": "run-read-models",
+                    "metadata": {
+                        "display_name": "Run read models",
+                        "purpose": "inspect current runs before assigning follow-up work",
+                        "status": "available",
+                        "review_role": "operator"
+                    },
+                    "scope": [
+                        "read run summaries",
+                        "inspect run evidence",
+                        "prepare follow-up context"
+                    ],
+                    "commands": ["runs --json", "explain <run_id> --json"],
+                    "supporting_files": ["README.md", "docs/operator-model.md"],
+                    "provenance": {
+                        "source": "winsmux public operator contract",
+                        "public_contract_only": true,
+                        "private_skill_body_stored": false,
+                        "private_material_referenced": false
+                    },
+                    "evidence_requirements": ["context_contract", "knowledge_layer", "run_insights"],
+                    "operator_judgement_boundary": "use read models as evidence, not as automatic merge permission"
+                },
+                {
+                    "id": "compare-and-promote",
+                    "metadata": {
+                        "display_name": "Compare and promote",
+                        "purpose": "compare runs and export a reusable follow-up input",
+                        "status": "available",
+                        "review_role": "reviewer"
+                    },
+                    "scope": [
+                        "compare run outputs",
+                        "surface winner evidence",
+                        "prepare follow-up candidate contracts"
+                    ],
+                    "commands": ["compare runs <left_run_id> <right_run_id> --json", "compare promote <run_id> --json"],
+                    "supporting_files": ["docs/operator-model.md"],
+                    "provenance": {
+                        "source": "winsmux compare coordination contract",
+                        "public_contract_only": true,
+                        "private_skill_body_stored": false,
+                        "private_material_referenced": false
+                    },
+                    "evidence_requirements": ["comparison_evidence", "playbook_template_contract", "security_verdict"],
+                    "operator_judgement_boundary": "operator chooses whether the exported candidate should become work"
+                },
+                {
+                    "id": "guarded-release",
+                    "metadata": {
+                        "display_name": "Guarded release",
+                        "purpose": "check release gates before tag or merge automation",
+                        "status": "available",
+                        "review_role": "tester"
+                    },
+                    "scope": [
+                        "collect release gate evidence",
+                        "check public surface safety",
+                        "report publish blockers"
+                    ],
+                    "commands": ["guard --json", "manual-checklist --json", "legacy-compat-gate --json"],
+                    "supporting_files": ["docs/operator-model.md"],
+                    "provenance": {
+                        "source": "winsmux release gate contract",
+                        "public_contract_only": true,
+                        "private_skill_body_stored": false,
+                        "private_material_referenced": false
+                    },
+                    "evidence_requirements": ["git_guard", "public_surface_audit", "manual_validation"],
+                    "operator_judgement_boundary": "operator resolves failed gates before publishing"
+                },
+                {
+                    "id": "provider-routing",
+                    "metadata": {
+                        "display_name": "Provider routing",
+                        "purpose": "inspect provider capability and dry-run assignment decisions",
+                        "status": "available",
+                        "review_role": "operator"
+                    },
+                    "scope": [
+                        "read provider capability",
+                        "check task routing policy",
+                        "explain assignment constraints"
+                    ],
+                    "commands": ["provider-capabilities --json", "assign --task <TASK-ID> --json"],
+                    "supporting_files": ["docs/operator-model.md"],
+                    "provenance": {
+                        "source": "winsmux provider capability contract",
+                        "public_contract_only": true,
+                        "private_skill_body_stored": false,
+                        "private_material_referenced": false
+                    },
+                    "evidence_requirements": ["provider_capability", "task_policy", "approval_policy"],
+                    "operator_judgement_boundary": "operator may override routing when task risk or budget requires it"
+                }
+            ]
+        },
+        "workflow_execution_contract": {
+            "contract_version": 1,
+            "entrypoint": "winsmux skills --json",
+            "execution_model": "operator-mediated workflow pack execution",
+            "private_skill_bodies_allowed": false,
+            "local_absolute_paths_allowed": false,
+            "required_request_fields": ["workflow_pack_id", "task_summary", "evidence_references"],
+            "required_result_fields": ["workflow_pack_id", "status", "evidence", "operator_decision"],
+            "execution_steps": [
+                "select a workflow pack by public id",
+                "collect required evidence from public commands or repository docs",
+                "return a result contract without private bodies or local absolute paths",
+                "leave task split, merge, release, and escalation decisions to the operator"
+            ],
+            "operator_judgement_boundaries": [
+                "operator keeps final task split decisions",
+                "operator keeps final merge and release decisions",
+                "operator keeps human escalation decisions"
+            ],
+            "forbidden_payloads": [
+                "private skill bodies",
+                "local absolute paths",
+                "freeform private guidance"
+            ]
+        },
         "skills": [
             {
                 "id": "run-read-models",
