@@ -1922,6 +1922,13 @@ body[data-popout-surface="1"] #editor-surface {
   line-height: var(--leading-normal);
 }
 
+#composer-input[data-input-mode="command"] {
+  overflow-x: auto;
+  overflow-wrap: normal;
+  white-space: pre;
+  word-break: normal;
+}
+
 #composer-input:focus {
   border-color: var(--accent-blue-hover);
   box-shadow: 0 0 0 3px rgba(90, 132, 245, 0.18);
@@ -1971,7 +1978,7 @@ body[data-popout-surface="1"] #editor-surface {
 
 #composer-session-row {
   display: flex;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
   justify-content: flex-start;
@@ -1984,7 +1991,7 @@ body[data-popout-surface="1"] #editor-surface {
 
 .composer-session-trigger {
   min-height: 26px;
-  max-width: min(44vw, 240px);
+  max-width: min(44vw, 280px);
   border: 0;
   border-radius: 4px;
   background: transparent;
@@ -2275,6 +2282,7 @@ body[data-popout-surface="1"] #editor-surface {
   justify-content: space-between;
   gap: 12px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .composer-operator-status {
@@ -2282,7 +2290,7 @@ body[data-popout-surface="1"] #editor-surface {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   color: var(--text-muted);
   font-size: var(--text-xs);
   white-space: nowrap;

@@ -7,6 +7,7 @@
     "dev": "vite",
     "dev:browser": "node ./scripts/open-dev-browser.mjs",
     "build": "tsc && vite build",
+    "test:composer-text": "node ./scripts/composer-text-check.mjs",
     "test:editor-targets": "node ./scripts/editor-targets-check.mjs",
     "test:source-graph": "node ./scripts/source-graph-check.mjs",
     "test:viewport-harness": "npm run build && node ./scripts/viewport-harness.mjs",
@@ -15,6 +16,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-opener": "^2",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
