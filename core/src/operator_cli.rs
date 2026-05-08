@@ -226,6 +226,41 @@ pub fn run_provider_capabilities_command(args: &[&String]) -> io::Result<()> {
     Ok(())
 }
 
+pub fn run_operator_jobs_command(args: &[&String]) -> io::Result<()> {
+    if should_print_help(args) {
+        println!("{}", usage_for("operator-jobs"));
+        return Ok(());
+    }
+
+    let options = parse_operator_jobs_options(args)?;
+    let payload = match options.action.as_str() {
+        "catalog" => operator_jobs_catalog_payload(),
+        "list" => operator_jobs_list_payload(&options.project_dir)?,
+        "create" => operator_jobs_create(&options)?,
+        "run" => operator_jobs_start_run(&options)?,
+        "pause" => operator_jobs_pause(&options)?,
+        "update" => operator_jobs_update(&options)?,
+        "delete" => operator_jobs_delete(&options)?,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                usage_for("operator-jobs"),
+            ))
+        }
+    };
+
+    if options.json {
+        return write_json(&payload);
+    }
+
+    println!(
+        "operator-jobs {}: {}",
+        options.action,
+        payload["summary"]["message"].as_str().unwrap_or("ok")
+    );
+    Ok(())
+}
+
 pub fn run_skills_command(args: &[&String]) -> io::Result<()> {
     if should_print_help(args) {
         println!("{}", usage_for("skills"));
@@ -400,6 +435,30 @@ fn progressive_skills_catalog() -> Value {
                     "operator_judgement_boundary": "operator resolves failed gates before publishing"
                 },
                 {
+                    "id": "scheduled-operator-jobs",
+                    "metadata": {
+                        "display_name": "Scheduled operator jobs",
+                        "purpose": "record one-time or recurring maintenance jobs with evidence and approval gates",
+                        "status": "available",
+                        "review_role": "operator"
+                    },
+                    "scope": [
+                        "record maintenance job contracts",
+                        "start fresh run records",
+                        "keep destructive changes pending approval"
+                    ],
+                    "commands": ["operator-jobs catalog --json", "operator-jobs create <job_id> --kind <kind> --json", "operator-jobs run <job_id> --json"],
+                    "supporting_files": ["docs/operator-model.md"],
+                    "provenance": {
+                        "source": "winsmux scheduled operator job contract",
+                        "public_contract_only": true,
+                        "private_skill_body_stored": false,
+                        "private_material_referenced": false
+                    },
+                    "evidence_requirements": ["fresh_run_record", "evidence_records", "approval_gate"],
+                    "operator_judgement_boundary": "destructive maintenance changes remain pending until explicit operator approval"
+                },
+                {
                     "id": "provider-routing",
                     "metadata": {
                         "display_name": "Provider routing",
@@ -517,6 +576,16 @@ fn progressive_skills_catalog() -> Value {
                 "required_evidence": ["git_guard", "public_surface_audit", "manual_validation"],
                 "review_role": "tester",
                 "operator_judgement_boundary": "operator resolves failed gates before publishing",
+                "public_contract_only": true,
+                "private_skill_body_stored": false
+            },
+            {
+                "id": "scheduled-operator-jobs",
+                "purpose": "record scheduled maintenance job contracts, fresh runs, evidence, and approval gates",
+                "commands": ["operator-jobs catalog --json", "operator-jobs list --json", "operator-jobs run <job_id> --json"],
+                "required_evidence": ["fresh_run_record", "evidence_records", "approval_gate"],
+                "review_role": "operator",
+                "operator_judgement_boundary": "destructive maintenance changes remain pending until explicit operator approval",
                 "public_contract_only": true,
                 "private_skill_body_stored": false
             },
@@ -1313,6 +1382,94 @@ struct ProviderCapabilitiesOptions {
 }
 
 #[derive(Debug)]
+struct OperatorJobsOptions {
+    project_dir: PathBuf,
+    action: String,
+    job_id: Option<String>,
+    kind: Option<String>,
+    title: Option<String>,
+    schedule_type: Option<String>,
+    every: Option<String>,
+    evidence: Vec<String>,
+    destructive: bool,
+    reason: Option<String>,
+    json: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct OperatorJobsState {
+    contract_version: u8,
+    packet_type: String,
+    updated_at: String,
+    jobs: Vec<OperatorJobRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct OperatorJobRecord {
+    job_id: String,
+    kind: String,
+    title: String,
+    status: String,
+    schedule: OperatorJobSchedule,
+    evidence_requirements: Vec<String>,
+    command_plan: OperatorJobCommandPlan,
+    approval_policy: OperatorJobApprovalPolicy,
+    created_at: String,
+    updated_at: String,
+    pending_update: Option<Value>,
+    runs: Vec<OperatorJobRunRecord>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct OperatorJobSchedule {
+    schedule_type: String,
+    every: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct OperatorJobCommandPlan {
+    workflow_kind: String,
+    execution_backend: String,
+    destructive_change_possible: bool,
+    side_effect_policy: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct OperatorJobApprovalPolicy {
+    destructive_changes_require_explicit_approval: bool,
+    auto_execute_destructive_changes: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct OperatorJobRunRecord {
+    run_id: String,
+    run_number: u32,
+    status: String,
+    started_at: String,
+    fresh_record: bool,
+    evidence: Vec<OperatorJobEvidenceRecord>,
+    approval_gate: OperatorJobApprovalGate,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct OperatorJobEvidenceRecord {
+    evidence_id: String,
+    kind: String,
+    summary: String,
+    reference: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct OperatorJobApprovalGate {
+    required: bool,
+    state: String,
+    destructive_change: bool,
+    approved_by: Option<String>,
+    approved_at: Option<String>,
+    reason: String,
+}
+
+#[derive(Debug)]
 struct ProviderCapabilityRegistry {
     version: u64,
     providers: Map<String, Value>,
@@ -1458,6 +1615,116 @@ fn parse_provider_capabilities_options(
     })
 }
 
+fn parse_operator_jobs_options(args: &[&String]) -> io::Result<OperatorJobsOptions> {
+    let mut project_dir = env::current_dir()?;
+    let mut action: Option<String> = None;
+    let mut job_id = None;
+    let mut kind = None;
+    let mut title = None;
+    let mut schedule_type = None;
+    let mut every = None;
+    let mut evidence = Vec::new();
+    let mut destructive = false;
+    let mut reason = None;
+    let mut json = false;
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json = true;
+                index += 1;
+            }
+            "--project-dir" => {
+                project_dir = PathBuf::from(required_option_value(args, index, "--project-dir")?);
+                index += 2;
+            }
+            "--job-id" => {
+                job_id = Some(required_operator_job_id(&required_option_value(
+                    args, index, "--job-id",
+                )?)?);
+                index += 2;
+            }
+            "--kind" => {
+                kind = Some(validate_operator_job_kind(&required_option_value(
+                    args, index, "--kind",
+                )?)?);
+                index += 2;
+            }
+            "--title" => {
+                title = trim_text(required_option_value(args, index, "--title")?);
+                index += 2;
+            }
+            "--schedule" => {
+                schedule_type = Some(validate_operator_job_schedule_type(
+                    &required_option_value(args, index, "--schedule")?,
+                )?);
+                index += 2;
+            }
+            "--every" => {
+                every = trim_text(required_option_value(args, index, "--every")?);
+                index += 2;
+            }
+            "--evidence" => {
+                evidence.push(required_option_value(args, index, "--evidence")?);
+                index += 2;
+            }
+            "--destructive" => {
+                destructive = true;
+                index += 1;
+            }
+            "--reason" => {
+                reason = trim_text(required_option_value(args, index, "--reason")?);
+                index += 2;
+            }
+            value if value.starts_with('-') => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unknown argument for winsmux operator-jobs: {value}"),
+                ));
+            }
+            value => {
+                if action.is_none() {
+                    action = Some(value.to_string());
+                } else if job_id.is_none() {
+                    job_id = Some(required_operator_job_id(value)?);
+                } else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        usage_for("operator-jobs"),
+                    ));
+                }
+                index += 1;
+            }
+        }
+    }
+
+    let action = action.unwrap_or_else(|| "list".to_string());
+    if !matches!(
+        action.as_str(),
+        "catalog" | "list" | "create" | "run" | "pause" | "update" | "delete"
+    ) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            usage_for("operator-jobs"),
+        ));
+    }
+
+    Ok(OperatorJobsOptions {
+        project_dir,
+        action,
+        job_id,
+        kind,
+        title,
+        schedule_type,
+        every,
+        evidence,
+        destructive,
+        reason,
+        json,
+    })
+}
+
 fn parse_provider_switch_options(args: &[&String]) -> io::Result<ProviderSwitchOptions> {
     if args.is_empty() {
         return Err(io::Error::new(
@@ -1594,6 +1861,502 @@ fn trim_optional(value: Option<String>) -> Option<String> {
     value
         .map(|text| text.trim().to_string())
         .filter(|text| !text.is_empty())
+}
+
+fn trim_text(value: String) -> Option<String> {
+    let trimmed = value.trim().to_string();
+    (!trimmed.is_empty()).then_some(trimmed)
+}
+
+fn required_operator_job_id(value: &str) -> io::Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 80
+        || !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "operator job id must use only ASCII letters, digits, dash, underscore, or dot",
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn validate_operator_job_kind(value: &str) -> io::Result<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if matches!(
+        normalized.as_str(),
+        "dependency-check" | "issue-triage" | "documentation-refresh" | "repository-hygiene"
+    ) {
+        Ok(normalized)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "operator job kind must be dependency-check, issue-triage, documentation-refresh, or repository-hygiene",
+        ))
+    }
+}
+
+fn validate_operator_job_schedule_type(value: &str) -> io::Result<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if matches!(normalized.as_str(), "one-time" | "recurring") {
+        Ok(normalized)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "operator job schedule must be one-time or recurring",
+        ))
+    }
+}
+
+fn operator_jobs_catalog_payload() -> Value {
+    json!({
+        "contract_version": 1,
+        "packet_type": "operator_job_catalog",
+        "command": "operator-jobs",
+        "public_state_ref": ".winsmux/operator-jobs.json",
+        "supported_jobs": [
+            {
+                "kind": "dependency-check",
+                "purpose": "collect dependency status and update recommendations",
+                "default_evidence": ["dependency_report", "risk_summary", "proposed_change_summary"]
+            },
+            {
+                "kind": "issue-triage",
+                "purpose": "collect issue status, labels, duplicates, and planning links",
+                "default_evidence": ["issue_query", "triage_summary", "planning_mapping"]
+            },
+            {
+                "kind": "documentation-refresh",
+                "purpose": "collect stale public documentation signals and proposed edits",
+                "default_evidence": ["doc_inventory", "staleness_reason", "validation_plan"]
+            },
+            {
+                "kind": "repository-hygiene",
+                "purpose": "collect public-surface, guard, and cleanup evidence",
+                "default_evidence": ["git_guard", "public_surface_audit", "cleanup_candidate"]
+            }
+        ],
+        "schedule_contract": {
+            "supported_types": ["one-time", "recurring"],
+            "recurring_every_values": ["daily", "weekly", "monthly"],
+            "daemon_included": false,
+            "run_model": "operator starts a fresh run record when invoking operator-jobs run"
+        },
+        "approval_contract": {
+            "destructive_changes_require_explicit_approval": true,
+            "delete_is_soft_pending_approval": true,
+            "auto_execute_destructive_changes": false
+        },
+        "summary": {
+            "message": "catalog lists public-safe scheduled operator job contracts"
+        }
+    })
+}
+
+fn operator_jobs_list_payload(project_dir: &Path) -> io::Result<Value> {
+    let state = read_operator_jobs_state(project_dir)?;
+    Ok(json!({
+        "contract_version": 1,
+        "packet_type": "operator_job_registry_view",
+        "command": "operator-jobs list",
+        "public_state_ref": operator_jobs_state_ref(),
+        "updated_at": state.updated_at,
+        "jobs": state.jobs,
+        "summary": {
+            "message": "listed operator jobs",
+            "job_count": state.jobs.len()
+        }
+    }))
+}
+
+fn operator_jobs_create(options: &OperatorJobsOptions) -> io::Result<Value> {
+    let job_id = required_option(options.job_id.as_deref(), "create requires <job_id>")?;
+    let kind = options
+        .kind
+        .clone()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "create requires --kind"))?;
+    let schedule_type = options
+        .schedule_type
+        .clone()
+        .unwrap_or_else(|| "one-time".to_string());
+    if schedule_type == "recurring" {
+        let every = options.every.as_deref().unwrap_or_default();
+        if !matches!(every, "daily" | "weekly" | "monthly") {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "recurring operator jobs require --every daily, weekly, or monthly",
+            ));
+        }
+    }
+
+    let mut state = read_operator_jobs_state(&options.project_dir)?;
+    if state.jobs.iter().any(|job| job.job_id == job_id) {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("operator job already exists: {job_id}"),
+        ));
+    }
+
+    let now = generated_at();
+    let evidence_requirements = operator_job_evidence_requirements(&kind, &options.evidence);
+    let job = OperatorJobRecord {
+        job_id: job_id.to_string(),
+        kind: kind.clone(),
+        title: options
+            .title
+            .clone()
+            .unwrap_or_else(|| operator_job_default_title(&kind).to_string()),
+        status: "scheduled".to_string(),
+        schedule: OperatorJobSchedule {
+            schedule_type,
+            every: options.every.clone(),
+        },
+        evidence_requirements,
+        command_plan: OperatorJobCommandPlan {
+            workflow_kind: kind,
+            execution_backend: "operator_managed".to_string(),
+            destructive_change_possible: options.destructive,
+            side_effect_policy: if options.destructive {
+                "record_pending_approval_only".to_string()
+            } else {
+                "evidence_only".to_string()
+            },
+        },
+        approval_policy: OperatorJobApprovalPolicy {
+            destructive_changes_require_explicit_approval: true,
+            auto_execute_destructive_changes: false,
+        },
+        created_at: now.clone(),
+        updated_at: now,
+        pending_update: None,
+        runs: Vec::new(),
+    };
+    state.jobs.push(job.clone());
+    write_operator_jobs_state(&options.project_dir, &mut state)?;
+
+    Ok(operator_jobs_result_payload(
+        "create",
+        format!("created operator job {job_id}"),
+        Some(job),
+        None,
+        state.jobs.len(),
+    ))
+}
+
+fn operator_jobs_start_run(options: &OperatorJobsOptions) -> io::Result<Value> {
+    let job_id = required_option(options.job_id.as_deref(), "run requires <job_id>")?;
+    let mut state = read_operator_jobs_state(&options.project_dir)?;
+    let job = find_operator_job_mut(&mut state, job_id)?;
+    if job.status == "paused" || job.status == "delete_pending_approval" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("operator job {job_id} is not runnable while status is {}", job.status),
+        ));
+    }
+    let run_number = job.runs.len() as u32 + 1;
+    let run_id = format!("operator-job:{job_id}:{run_number}");
+    let destructive = job.command_plan.destructive_change_possible || options.destructive;
+    let evidence = operator_job_run_evidence(job, &options.evidence);
+    let run = OperatorJobRunRecord {
+        run_id,
+        run_number,
+        status: if destructive {
+            "approval_pending".to_string()
+        } else {
+            "evidence_recorded".to_string()
+        },
+        started_at: generated_at(),
+        fresh_record: true,
+        evidence,
+        approval_gate: OperatorJobApprovalGate {
+            required: destructive,
+            state: if destructive {
+                "pending_operator_approval".to_string()
+            } else {
+                "not_required".to_string()
+            },
+            destructive_change: destructive,
+            approved_by: None,
+            approved_at: None,
+            reason: options
+                .reason
+                .clone()
+                .unwrap_or_else(|| "destructive changes are represented only as pending approval".to_string()),
+        },
+    };
+    job.updated_at = generated_at();
+    job.runs.push(run.clone());
+    let job = job.clone();
+    write_operator_jobs_state(&options.project_dir, &mut state)?;
+
+    Ok(operator_jobs_result_payload(
+        "run",
+        format!("started fresh run record for {job_id}"),
+        Some(job),
+        Some(run),
+        state.jobs.len(),
+    ))
+}
+
+fn operator_jobs_pause(options: &OperatorJobsOptions) -> io::Result<Value> {
+    let job_id = required_option(options.job_id.as_deref(), "pause requires <job_id>")?;
+    let mut state = read_operator_jobs_state(&options.project_dir)?;
+    let job = find_operator_job_mut(&mut state, job_id)?;
+    job.status = "paused".to_string();
+    job.updated_at = generated_at();
+    let job = job.clone();
+    write_operator_jobs_state(&options.project_dir, &mut state)?;
+    Ok(operator_jobs_result_payload(
+        "pause",
+        format!("paused operator job {job_id}"),
+        Some(job),
+        None,
+        state.jobs.len(),
+    ))
+}
+
+fn operator_jobs_update(options: &OperatorJobsOptions) -> io::Result<Value> {
+    let job_id = required_option(options.job_id.as_deref(), "update requires <job_id>")?;
+    let mut state = read_operator_jobs_state(&options.project_dir)?;
+    let job = find_operator_job_mut(&mut state, job_id)?;
+    let mut update = Map::new();
+    if let Some(title) = options.title.as_deref() {
+        update.insert("title".to_string(), json!(title));
+    }
+    if let Some(schedule_type) = options.schedule_type.as_deref() {
+        update.insert("schedule_type".to_string(), json!(schedule_type));
+    }
+    if let Some(every) = options.every.as_deref() {
+        update.insert("every".to_string(), json!(every));
+    }
+    if update.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "update requires --title, --schedule, or --every",
+        ));
+    }
+
+    if options.destructive {
+        job.status = "update_pending_approval".to_string();
+        job.pending_update = Some(json!({
+            "requested_at": generated_at(),
+            "changes": update,
+            "approval_gate": {
+                "required": true,
+                "state": "pending_operator_approval",
+                "destructive_change": true,
+                "approved_by": null,
+                "approved_at": null,
+                "reason": options.reason.clone().unwrap_or_else(|| "destructive job update requires explicit approval".to_string())
+            }
+        }));
+    } else {
+        apply_operator_job_update(job, &update)?;
+    }
+    job.updated_at = generated_at();
+    let job = job.clone();
+    write_operator_jobs_state(&options.project_dir, &mut state)?;
+    Ok(operator_jobs_result_payload(
+        "update",
+        format!("updated operator job {job_id}"),
+        Some(job),
+        None,
+        state.jobs.len(),
+    ))
+}
+
+fn operator_jobs_delete(options: &OperatorJobsOptions) -> io::Result<Value> {
+    let job_id = required_option(options.job_id.as_deref(), "delete requires <job_id>")?;
+    let mut state = read_operator_jobs_state(&options.project_dir)?;
+    let job = find_operator_job_mut(&mut state, job_id)?;
+    job.status = "delete_pending_approval".to_string();
+    job.pending_update = Some(json!({
+        "requested_at": generated_at(),
+        "delete_requested": true,
+        "approval_gate": {
+            "required": true,
+            "state": "pending_operator_approval",
+            "destructive_change": true,
+            "approved_by": null,
+            "approved_at": null,
+            "reason": options.reason.clone().unwrap_or_else(|| "operator job delete is soft pending approval".to_string())
+        }
+    }));
+    job.updated_at = generated_at();
+    let job = job.clone();
+    write_operator_jobs_state(&options.project_dir, &mut state)?;
+    Ok(operator_jobs_result_payload(
+        "delete",
+        format!("recorded delete approval request for {job_id}"),
+        Some(job),
+        None,
+        state.jobs.len(),
+    ))
+}
+
+fn read_operator_jobs_state(project_dir: &Path) -> io::Result<OperatorJobsState> {
+    let path = operator_jobs_state_path(project_dir);
+    if !path.exists() {
+        return Ok(default_operator_jobs_state());
+    }
+    let raw = fs::read_to_string(&path)?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(default_operator_jobs_state());
+    }
+    let state = serde_json::from_str::<OperatorJobsState>(trimmed).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid operator jobs state: {}: {err}", path.display()),
+        )
+    })?;
+    if state.contract_version != 1 || state.packet_type != "operator_job_registry" {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "operator jobs state must be contract_version 1 operator_job_registry",
+        ));
+    }
+    Ok(state)
+}
+
+fn write_operator_jobs_state(project_dir: &Path, state: &mut OperatorJobsState) -> io::Result<()> {
+    state.updated_at = generated_at();
+    let content = serde_json::to_string_pretty(state).map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("failed to serialize operator jobs state: {err}"),
+        )
+    })?;
+    write_text_file_with_lock(&operator_jobs_state_path(project_dir), &format!("{content}\n"))
+}
+
+fn default_operator_jobs_state() -> OperatorJobsState {
+    OperatorJobsState {
+        contract_version: 1,
+        packet_type: "operator_job_registry".to_string(),
+        updated_at: generated_at(),
+        jobs: Vec::new(),
+    }
+}
+
+fn operator_jobs_state_path(project_dir: &Path) -> PathBuf {
+    project_dir.join(".winsmux").join("operator-jobs.json")
+}
+
+fn operator_jobs_state_ref() -> &'static str {
+    ".winsmux/operator-jobs.json"
+}
+
+fn operator_jobs_result_payload(
+    action: &str,
+    message: String,
+    job: Option<OperatorJobRecord>,
+    run: Option<OperatorJobRunRecord>,
+    job_count: usize,
+) -> Value {
+    json!({
+        "contract_version": 1,
+        "packet_type": "operator_job_result",
+        "command": format!("operator-jobs {action}"),
+        "public_state_ref": operator_jobs_state_ref(),
+        "job": job,
+        "run": run,
+        "summary": {
+            "message": message,
+            "job_count": job_count
+        }
+    })
+}
+
+fn required_option<'a>(value: Option<&'a str>, message: &str) -> io::Result<&'a str> {
+    value
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, message))
+}
+
+fn find_operator_job_mut<'a>(
+    state: &'a mut OperatorJobsState,
+    job_id: &str,
+) -> io::Result<&'a mut OperatorJobRecord> {
+    state
+        .jobs
+        .iter_mut()
+        .find(|job| job.job_id == job_id)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("operator job not found: {job_id}")))
+}
+
+fn operator_job_evidence_requirements(kind: &str, explicit: &[String]) -> Vec<String> {
+    if !explicit.is_empty() {
+        return explicit
+            .iter()
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect();
+    }
+    match kind {
+        "dependency-check" => vec!["dependency_report", "risk_summary", "proposed_change_summary"],
+        "issue-triage" => vec!["issue_query", "triage_summary", "planning_mapping"],
+        "documentation-refresh" => vec!["doc_inventory", "staleness_reason", "validation_plan"],
+        "repository-hygiene" => vec!["git_guard", "public_surface_audit", "cleanup_candidate"],
+        _ => vec!["operator_evidence"],
+    }
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn operator_job_run_evidence(
+    job: &OperatorJobRecord,
+    explicit: &[String],
+) -> Vec<OperatorJobEvidenceRecord> {
+    let source = if explicit.is_empty() {
+        job.evidence_requirements.clone()
+    } else {
+        explicit
+            .iter()
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect()
+    };
+    source
+        .into_iter()
+        .enumerate()
+        .map(|(index, summary)| OperatorJobEvidenceRecord {
+            evidence_id: format!("evidence-{}", index + 1),
+            kind: summary.clone(),
+            summary,
+            reference: operator_jobs_state_ref().to_string(),
+        })
+        .collect()
+}
+
+fn operator_job_default_title(kind: &str) -> &'static str {
+    match kind {
+        "dependency-check" => "Dependency check",
+        "issue-triage" => "Issue triage",
+        "documentation-refresh" => "Documentation refresh",
+        "repository-hygiene" => "Repository hygiene",
+        _ => "Operator job",
+    }
+}
+
+fn apply_operator_job_update(job: &mut OperatorJobRecord, update: &Map<String, Value>) -> io::Result<()> {
+    if let Some(title) = update.get("title").and_then(Value::as_str) {
+        job.title = title.to_string();
+    }
+    if let Some(schedule_type) = update.get("schedule_type").and_then(Value::as_str) {
+        let schedule_type = validate_operator_job_schedule_type(schedule_type)?;
+        job.schedule.schedule_type = schedule_type;
+    }
+    if let Some(every) = update.get("every").and_then(Value::as_str) {
+        job.schedule.every = Some(every.to_string());
+    }
+    job.pending_update = None;
+    Ok(())
 }
 
 fn validate_model_source(value: &str) -> io::Result<()> {
@@ -5450,6 +6213,9 @@ fn usage_for(command: &str) -> &'static str {
             "usage: winsmux provider-capabilities [provider] [--json] [--project-dir <path>]"
         }
         "skills" => "usage: winsmux skills [--json]",
+        "operator-jobs" => {
+            "usage: winsmux operator-jobs <catalog|list|create|run|pause|update|delete> [job_id] [--kind <dependency-check|issue-triage|documentation-refresh|repository-hygiene>] [--schedule <one-time|recurring>] [--every <daily|weekly|monthly>] [--title <text>] [--evidence <text>] [--destructive] [--reason <text>] [--json] [--project-dir <path>]"
+        },
         "machine-contract" => "usage: winsmux machine-contract --json",
         "rust-canary" => "usage: winsmux rust-canary [--json] [--project-dir <path>]",
         "manual-checklist" => {
