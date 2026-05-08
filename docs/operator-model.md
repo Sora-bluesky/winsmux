@@ -148,6 +148,11 @@ The desktop compare card surfaces shared changed files as hotspots and displays 
 Workflow packs are public-safe descriptors for supported operator workflows.
 They list pack metadata, scope, supporting repository documents, provenance, required evidence, and operator judgement boundaries.
 The catalog is contract-only: it does not expose private skill bodies, private guidance, or local absolute paths.
+The registry also reports public-safe discovery metadata for built-in, user-level, and repository-level workflow pack sources.
+Those source records use stable `source_ref` values rather than local filesystem paths.
+Each workflow pack can report source level metadata and a selection reason for use after an explicit operator or workflow request.
+The pack-level loading plan lists the minimum supporting files needed for that contract.
+For repository-level skill discovery, the candidate plan loads only `docs/operator-model.md` and explicitly excludes private skill bodies, local absolute paths, and generated runtime artifacts.
 Workflow execution remains operator-mediated.
 The contract can identify the workflow pack, required evidence, and expected result fields, but the operator keeps final decisions for task splitting, merge, release, and escalation.
 

@@ -285,6 +285,47 @@ fn progressive_skills_catalog() -> Value {
             "public_contract_only": true,
             "private_skill_bodies_allowed": false,
             "local_absolute_paths_allowed": false,
+            "discovery": {
+                "contract_version": 1,
+                "supported_levels": ["builtin", "user", "repository"],
+                "sources": [
+                    {
+                        "level": "builtin",
+                        "source_ref": "winsmux:operator-contract",
+                        "selection_reason": "built in public workflow packs are always available",
+                        "public_contract_only": true,
+                        "private_skill_bodies_allowed": false,
+                        "local_absolute_paths_allowed": false
+                    },
+                    {
+                        "level": "user",
+                        "source_ref": "user-workflow-packs",
+                        "selection_reason": "user-level workflow packs may extend public contracts without exposing local paths or private bodies",
+                        "public_contract_only": true,
+                        "private_skill_bodies_allowed": false,
+                        "local_absolute_paths_allowed": false
+                    },
+                    {
+                        "level": "repository",
+                        "source_ref": "repository-workflow-packs",
+                        "selection_reason": "repository-level workflow packs may describe task-local contracts from tracked contributor or public docs",
+                        "public_contract_only": true,
+                        "private_skill_bodies_allowed": false,
+                        "local_absolute_paths_allowed": false
+                    }
+                ],
+                "selection_policy": [
+                    "prefer repository packs when the task references repository contracts or tracked docs",
+                    "fall back to user packs when no repository pack matches",
+                    "fall back to builtin packs when no user or repository pack matches",
+                    "derive selected_pack_id, selected_level, and selection_reason only after an explicit operator or workflow request"
+                ],
+                "privacy_guards": [
+                    "do not publish private skill bodies",
+                    "do not publish user home paths or repository absolute paths",
+                    "publish only stable source_ref values and tracked relative supporting files"
+                ]
+            },
             "packs": [
                 {
                     "id": "run-read-models",
@@ -381,6 +422,43 @@ fn progressive_skills_catalog() -> Value {
                     },
                     "evidence_requirements": ["provider_capability", "task_policy", "approval_policy"],
                     "operator_judgement_boundary": "operator may override routing when task risk or budget requires it"
+                },
+                {
+                    "id": "repository-skill-discovery",
+                    "metadata": {
+                        "display_name": "Repository skill discovery",
+                        "purpose": "discover user-level and repository-level workflow packs without exposing private material",
+                        "status": "available",
+                        "review_role": "operator"
+                    },
+                    "scope": [
+                        "discover workflow pack source levels",
+                        "select the narrowest matching public contract",
+                        "prepare scoped supporting-file load plans"
+                    ],
+                    "commands": ["skills --json"],
+                    "supporting_files": ["docs/operator-model.md"],
+                    "provenance": {
+                        "source": "winsmux workflow pack discovery contract",
+                        "source_level": "repository",
+                        "source_ref": "repository-workflow-packs",
+                        "public_contract_only": true,
+                        "private_skill_body_stored": false,
+                        "private_material_referenced": false,
+                        "local_absolute_path_stored": false
+                    },
+                    "discovery": {
+                        "available_source_levels": ["user", "repository"],
+                        "selected_level": "repository",
+                        "selection_reason": "repository contracts take precedence when tracked docs define the workflow pack boundary"
+                    },
+                    "loading_plan": {
+                        "minimum_supporting_files": ["docs/operator-model.md"],
+                        "excluded": ["private skill bodies", "local absolute paths", "generated runtime artifacts"],
+                        "public_contract_only": true
+                    },
+                    "evidence_requirements": ["workflow_pack_registry", "discovery_source_metadata", "scoped_loading_plan"],
+                    "operator_judgement_boundary": "operator decides whether discovered packs are sufficient for the current task"
                 }
             ]
         },
@@ -398,6 +476,8 @@ fn progressive_skills_catalog() -> Value {
                 "return a result contract without private bodies or local absolute paths",
                 "leave task split, merge, release, and escalation decisions to the operator"
             ],
+            "selection_result_fields": ["selected_pack_id", "selected_level", "selection_reason", "source_ref"],
+            "scoped_loading_plan_fields": ["selected_pack_id", "minimum_supporting_files", "load_order", "excluded"],
             "operator_judgement_boundaries": [
                 "operator keeps final task split decisions",
                 "operator keeps final merge and release decisions",
@@ -447,6 +527,16 @@ fn progressive_skills_catalog() -> Value {
                 "required_evidence": ["provider_capability", "task_policy", "approval_policy"],
                 "review_role": "operator",
                 "operator_judgement_boundary": "operator may override routing when task risk or budget requires it",
+                "public_contract_only": true,
+                "private_skill_body_stored": false
+            },
+            {
+                "id": "repository-skill-discovery",
+                "purpose": "discover user-level and repository-level workflow packs without exposing private material",
+                "commands": ["skills --json"],
+                "required_evidence": ["workflow_pack_registry", "discovery_source_metadata", "scoped_loading_plan"],
+                "review_role": "operator",
+                "operator_judgement_boundary": "operator decides whether discovered packs are sufficient for the current task",
                 "public_contract_only": true,
                 "private_skill_body_stored": false
             }
