@@ -12419,7 +12419,7 @@ Describe 'winsmux skills command' {
         Mock Invoke-WinsmuxRaw {
             param([string[]]$Arguments)
             $script:skillsArgs = @($Arguments)
-            return '{"packet_type":"progressive_skills_catalog","private_skill_bodies_allowed":false,"workflow_pack_registry":{"private_skill_bodies_allowed":false,"local_absolute_paths_allowed":false,"packs":[{"id":"compare-and-promote","metadata":{"review_role":"reviewer"},"scope":["compare run outputs"],"supporting_files":["docs/operator-model.md"],"provenance":{"private_material_referenced":false},"evidence_requirements":["comparison_evidence","playbook_template_contract"]}]},"workflow_execution_contract":{"entrypoint":"winsmux skills --json","private_skill_bodies_allowed":false,"local_absolute_paths_allowed":false,"required_request_fields":["workflow_pack_id"]},"skills":[{"id":"compare-and-promote","required_evidence":["comparison_evidence","playbook_template_contract"],"private_skill_body_stored":false}]}'
+            return '{"packet_type":"progressive_skills_catalog","private_skill_bodies_allowed":false,"workflow_pack_registry":{"private_skill_bodies_allowed":false,"local_absolute_paths_allowed":false,"discovery":{"supported_levels":["builtin","user","repository"],"sources":[{"level":"user","source_ref":"user-workflow-packs","private_skill_bodies_allowed":false,"local_absolute_paths_allowed":false},{"level":"repository","source_ref":"repository-workflow-packs","private_skill_bodies_allowed":false,"local_absolute_paths_allowed":false}]},"packs":[{"id":"compare-and-promote","metadata":{"review_role":"reviewer"},"scope":["compare run outputs"],"supporting_files":["docs/operator-model.md"],"provenance":{"private_material_referenced":false},"evidence_requirements":["comparison_evidence","playbook_template_contract"]},{"id":"repository-skill-discovery","metadata":{"review_role":"operator"},"scope":["discover workflow pack source levels"],"supporting_files":["docs/operator-model.md"],"provenance":{"private_material_referenced":false,"local_absolute_path_stored":false},"discovery":{"available_source_levels":["user","repository"],"selected_level":"repository","selection_reason":"repository contracts take precedence when tracked docs define the workflow pack boundary"},"loading_plan":{"minimum_supporting_files":["docs/operator-model.md"],"public_contract_only":true},"evidence_requirements":["workflow_pack_registry","discovery_source_metadata","scoped_loading_plan"]}]},"workflow_execution_contract":{"entrypoint":"winsmux skills --json","private_skill_bodies_allowed":false,"local_absolute_paths_allowed":false,"required_request_fields":["workflow_pack_id"],"selection_result_fields":["selected_pack_id","selected_level","selection_reason","source_ref"],"scoped_loading_plan_fields":["selected_pack_id","minimum_supporting_files","load_order","excluded"]},"skills":[{"id":"compare-and-promote","required_evidence":["comparison_evidence","playbook_template_contract"],"private_skill_body_stored":false},{"id":"repository-skill-discovery","required_evidence":["workflow_pack_registry","discovery_source_metadata","scoped_loading_plan"],"private_skill_body_stored":false}]}'
         }
 
         $output = Invoke-Skills -SkillsTarget '--json'
@@ -12429,14 +12429,29 @@ Describe 'winsmux skills command' {
         $json.private_skill_bodies_allowed | Should -Be $false
         $json.workflow_pack_registry.private_skill_bodies_allowed | Should -Be $false
         $json.workflow_pack_registry.local_absolute_paths_allowed | Should -Be $false
+        $json.workflow_pack_registry.discovery.supported_levels | Should -Contain 'user'
+        $json.workflow_pack_registry.discovery.supported_levels | Should -Contain 'repository'
+        $json.workflow_pack_registry.discovery.sources[1].source_ref | Should -Be 'repository-workflow-packs'
+        $json.workflow_pack_registry.PSObject.Properties.Name | Should -Not -Contain 'selected_pack'
+        $json.workflow_pack_registry.PSObject.Properties.Name | Should -Not -Contain 'scoped_loading_plan'
         $json.workflow_pack_registry.packs[0].id | Should -Be 'compare-and-promote'
         $json.workflow_pack_registry.packs[0].supporting_files | Should -Contain 'docs/operator-model.md'
         $json.workflow_pack_registry.packs[0].provenance.private_material_referenced | Should -Be $false
         $json.workflow_pack_registry.packs[0].evidence_requirements | Should -Contain 'playbook_template_contract'
+        $json.workflow_pack_registry.packs[1].id | Should -Be 'repository-skill-discovery'
+        $json.workflow_pack_registry.packs[1].discovery.selection_reason | Should -Match 'repository contracts'
+        $json.workflow_pack_registry.packs[1].loading_plan.minimum_supporting_files | Should -Be @('docs/operator-model.md')
+        $json.workflow_pack_registry.packs[1].provenance.local_absolute_path_stored | Should -Be $false
         $json.workflow_execution_contract.entrypoint | Should -Be 'winsmux skills --json'
         $json.workflow_execution_contract.required_request_fields | Should -Contain 'workflow_pack_id'
+        $json.workflow_execution_contract.selection_result_fields | Should -Contain 'selection_reason'
+        $json.workflow_execution_contract.scoped_loading_plan_fields | Should -Contain 'minimum_supporting_files'
         $json.skills[0].required_evidence | Should -Contain 'playbook_template_contract'
         $json.skills[0].private_skill_body_stored | Should -Be $false
+        $json.skills[1].required_evidence | Should -Contain 'scoped_loading_plan'
+        ($output -join "`n") | Should -Not -Match 'C:\\'
+        ($output -join "`n") | Should -Not -Match 'C:/'
+        ($output -join "`n") | Should -Not -Match '\\Users\\'
     }
 
     It 'rejects unknown skills arguments' {

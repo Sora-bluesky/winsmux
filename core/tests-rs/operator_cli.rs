@@ -1235,6 +1235,24 @@ fn operator_cli_skills_json_exposes_agent_readable_contracts() {
         false
     );
     assert_eq!(
+        json["workflow_pack_registry"]["discovery"]["supported_levels"][1],
+        "user"
+    );
+    assert_eq!(
+        json["workflow_pack_registry"]["discovery"]["sources"][2]["level"],
+        "repository"
+    );
+    assert_eq!(
+        json["workflow_pack_registry"]["discovery"]["sources"][2]["source_ref"],
+        "repository-workflow-packs"
+    );
+    assert_eq!(
+        json["workflow_pack_registry"]["discovery"]["sources"][1]["private_skill_bodies_allowed"],
+        false
+    );
+    assert!(json["workflow_pack_registry"].get("selected_pack").is_none());
+    assert!(json["workflow_pack_registry"].get("scoped_loading_plan").is_none());
+    assert_eq!(
         json["workflow_pack_registry"]["packs"][1]["id"],
         "compare-and-promote"
     );
@@ -1286,6 +1304,38 @@ fn operator_cli_skills_json_exposes_agent_readable_contracts() {
     );
     assert_eq!(json["skills"][1]["private_skill_body_stored"], false);
     assert_eq!(json["skills"][2]["review_role"], "tester");
+    let discovery_pack = json["workflow_pack_registry"]["packs"]
+        .as_array()
+        .expect("workflow packs should be an array")
+        .iter()
+        .find(|pack| pack["id"] == "repository-skill-discovery")
+        .expect("repository discovery pack should exist");
+    assert_eq!(
+        discovery_pack["discovery"]["available_source_levels"][0],
+        "user"
+    );
+    assert_eq!(
+        discovery_pack["discovery"]["selection_reason"],
+        "repository contracts take precedence when tracked docs define the workflow pack boundary"
+    );
+    assert_eq!(
+        discovery_pack["provenance"]["local_absolute_path_stored"],
+        false
+    );
+    assert_eq!(
+        discovery_pack["loading_plan"]["minimum_supporting_files"][0],
+        "docs/operator-model.md"
+    );
+    assert_eq!(
+        discovery_pack["evidence_requirements"][2],
+        "scoped_loading_plan"
+    );
+    let catalog_text = serde_json::to_string(&json).expect("catalog should serialize");
+    assert!(!catalog_text.contains("private skill body:"));
+    assert!(!catalog_text.contains("C:\\"));
+    assert!(!catalog_text.contains("C:/"));
+    assert!(!catalog_text.contains("\\Users\\"));
+    assert!(!catalog_text.contains("/Users/"));
 }
 
 #[test]
@@ -5270,7 +5320,9 @@ fn operator_cli_restart_rejects_malformed_provider_registry() {
     let project_dir = make_temp_project_dir("restart-malformed-capability-registry");
     write_manifest(&project_dir);
     fs::write(
-        project_dir.join(".winsmux").join("provider-capabilities.json"),
+        project_dir
+            .join(".winsmux")
+            .join("provider-capabilities.json"),
         "{",
     )
     .expect("test should write malformed provider capability registry");
