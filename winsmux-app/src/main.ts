@@ -503,6 +503,7 @@ let voiceRecognition: SpeechRecognitionLike | null = null;
 let voiceListening = false;
 let voiceInputMode: "browser" | "native" | null = null;
 let voiceTranscriptBase = "";
+let voiceSelectionEditState: { base: string; start: number; end: number; historyCaptured: boolean } | null = null;
 let activeVoiceVocabularyMode: VoiceVocabularyMode = "project";
 let voiceCaptureStatus: DesktopVoiceCaptureStatus | null = null;
 let voiceCaptureStatusError = "";
@@ -7548,6 +7549,40 @@ function shapeVoiceComposerDraft(base: string, transcript: string) {
   return `${base}${separator}${shapedTranscript}`.trimStart();
 }
 
+function captureVoiceSelectionEditState(composerInput: HTMLTextAreaElement) {
+  if (composerInput.selectionStart === composerInput.selectionEnd) {
+    return null;
+  }
+  return {
+    base: composerInput.value,
+    start: composerInput.selectionStart,
+    end: composerInput.selectionEnd,
+    historyCaptured: false,
+  };
+}
+
+function shapeVoiceSelectionReplacement(transcript: string) {
+  const vocabularyTranscript = applyVoiceVocabulary(transcript);
+  return shapeVoiceTranscript(vocabularyTranscript);
+}
+
+function applyVoiceSelectionEdit(composerInput: HTMLTextAreaElement, transcript: string) {
+  if (!voiceSelectionEditState) {
+    return false;
+  }
+
+  if (!voiceSelectionEditState.historyCaptured) {
+    pushComposerHistoryEntry(captureComposerHistoryEntry(voiceSelectionEditState.base));
+    voiceSelectionEditState.historyCaptured = true;
+  }
+
+  const replacement = shapeVoiceSelectionReplacement(transcript);
+  composerInput.value = `${voiceSelectionEditState.base.slice(0, voiceSelectionEditState.start)}${replacement}${voiceSelectionEditState.base.slice(voiceSelectionEditState.end)}`;
+  const cursor = voiceSelectionEditState.start + replacement.length;
+  composerInput.setSelectionRange(cursor, cursor);
+  return true;
+}
+
 function startVoiceInput(composerInput: HTMLTextAreaElement) {
   const SpeechRecognition = getSpeechRecognitionConstructor();
   if (!SpeechRecognition) {
@@ -7564,6 +7599,7 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
   }
 
   voiceTranscriptBase = composerInput.value.trimEnd();
+  voiceSelectionEditState = captureVoiceSelectionEditState(composerInput);
   const recognition = new SpeechRecognition();
   recognition.continuous = true;
   recognition.interimResults = true;
@@ -7580,6 +7616,7 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
     voiceRecognition = null;
     voiceInputMode = null;
     voiceTranscriptBase = "";
+    voiceSelectionEditState = null;
     finishVoiceSession();
     updateVoiceInputButton();
     exitComposerHistoryToDraft(composerInput.value);
@@ -7589,6 +7626,7 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
     persistVoiceDraftRecovery(composerInput.value);
     voiceListening = false;
     voiceInputMode = null;
+    voiceSelectionEditState = null;
     finishVoiceSession();
     updateVoiceInputButton();
     if (event.error && event.error !== "no-speech" && event.error !== "aborted") {
@@ -7610,11 +7648,16 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
     for (let index = event.resultIndex; index < event.results.length; index += 1) {
       transcript += event.results[index]?.[0]?.transcript ?? "";
     }
-    composerInput.value = shapeVoiceComposerDraft(voiceTranscriptBase, transcript);
+    const selectionEditApplied = applyVoiceSelectionEdit(composerInput, transcript);
+    if (!selectionEditApplied) {
+      composerInput.value = shapeVoiceComposerDraft(voiceTranscriptBase, transcript);
+    }
     syncComposerInputHeight(composerInput);
     composerInput.focus();
-    const length = composerInput.value.length;
-    composerInput.setSelectionRange(length, length);
+    if (!selectionEditApplied) {
+      const length = composerInput.value.length;
+      composerInput.setSelectionRange(length, length);
+    }
     syncComposerDraftState(composerInput.value);
     syncComposerSlashState(composerInput.value);
     persistVoiceDraftRecovery(composerInput.value);

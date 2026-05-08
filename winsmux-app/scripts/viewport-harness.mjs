@@ -577,6 +577,28 @@ async function assertDesktopVoiceDraftShaping(page) {
     return input instanceof HTMLTextAreaElement && input.value === "add a like button";
   });
   await stopBrowserVoiceInput(page);
+
+  await composer.fill("/review TASK-426 unclear text README.md");
+  await composer.evaluate((input) => {
+    const value = input.value;
+    const start = value.indexOf("unclear text");
+    input.focus();
+    input.setSelectionRange(start, start + "unclear text".length);
+  });
+  await startBrowserVoiceInput(page);
+  await page.evaluate(() => window.__winsmuxSpeechRecognition.emitResult("clear selected wording"));
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement &&
+      input.value === "/review TASK-426 clear selected wording README.md";
+  });
+  await stopBrowserVoiceInput(page);
+  await page.keyboard.press("ArrowUp");
+  await page.waitForFunction(() => {
+    const input = document.querySelector("#composer-input");
+    return input instanceof HTMLTextAreaElement &&
+      input.value === "/review TASK-426 unclear text README.md";
+  });
   await selectVoiceVocabularyMode(page, "Project terms");
 }
 
