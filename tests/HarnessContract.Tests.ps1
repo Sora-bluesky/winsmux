@@ -8,6 +8,8 @@ Describe 'harness-check contract' {
         $script:PowerShellDeescalationPath = Join-Path $script:RepoRoot 'winsmux-core\scripts\powershell-deescalation.ps1'
         $script:WinsmuxCorePath = Join-Path $script:RepoRoot 'scripts\winsmux-core.ps1'
         $script:InternalDocsMetaPath = Join-Path $script:RepoRoot 'winsmux-core\scripts\internal-docs-meta.psd1'
+        $script:DesktopMainPath = Join-Path $script:RepoRoot 'winsmux-app\src\main.ts'
+        $script:TauriLibPath = Join-Path $script:RepoRoot 'winsmux-app\src-tauri\src\lib.rs'
         $script:SettingsLocalPath = Join-Path $script:RepoRoot '.claude\settings.local.json'
 
         $pwshCommand = Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -305,6 +307,17 @@ tasks:
         $voiceEntry[0].Focus | Should -Match '音声入力'
         $voiceEntry[0].Example | Should -Match 'フォールバック'
         $voiceEntry[0].Memo | Should -Match 'TASK-468'
+    }
+
+    It 'does not treat native microphone metering as composer dictation' {
+        $desktopMain = Get-Content -LiteralPath $script:DesktopMainPath -Raw -Encoding UTF8
+        $tauriLib = Get-Content -LiteralPath $script:TauriLibPath -Raw -Encoding UTF8
+
+        $desktopMain | Should -Match 'const supported = browserSupported;'
+        $desktopMain | Should -Not -Match 'if \(!SpeechRecognition\)[\s\S]{0,300}startNativeVoiceInput'
+        $desktopMain | Should -Match 'does not convert native audio into composer text'
+        $tauriLib | Should -Match 'Native microphone capture does not transcribe audio into text'
+        $tauriLib | Should -Match 'capture_mode = "browser_fallback"'
     }
 
     It 'documents and dispatches the legacy compatibility gate command' {

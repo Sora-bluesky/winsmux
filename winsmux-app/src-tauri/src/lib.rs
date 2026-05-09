@@ -33,6 +33,10 @@ use windows_sys::Win32::Media::{
 
 const DESKTOP_SUMMARY_REFRESH_EVENT: &str = "desktop-summary-refresh";
 const PTY_CAPTURE_LIMIT: usize = 64 * 1024;
+const NATIVE_VOICE_METER_ONLY_REASON: &str =
+    "Native microphone capture is available for metering only; desktop dictation still uses the documented text fallback.";
+const NATIVE_VOICE_DICTATION_FALLBACK_REASON: &str =
+    "Use browser speech recognition for composer dictation. Native microphone capture does not transcribe audio into text.";
 
 struct SinglePty {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -144,19 +148,23 @@ fn wait_voice_capture_cleanup(session: &VoiceCaptureSession, timeout: Duration) 
 fn desktop_voice_capture_status_from_snapshot(
     snapshot: VoiceCaptureRuntimeSnapshot,
 ) -> DesktopVoiceCaptureStatus {
-    let mut status = load_desktop_summary_voice_capture_status();
+    let status = load_desktop_summary_voice_capture_status();
+    desktop_voice_capture_status_from_base(status, snapshot)
+}
+
+fn desktop_voice_capture_status_from_base(
+    mut status: DesktopVoiceCaptureStatus,
+    snapshot: VoiceCaptureRuntimeSnapshot,
+) -> DesktopVoiceCaptureStatus {
     if status.native.device_count > 0 && snapshot.generation == 0 {
-        status.capture_mode = "native".to_string();
+        apply_native_voice_dictation_fallback_contract(&mut status);
         status.native.available = true;
         status.native.state = "stopped".to_string();
         status.native.permission = "unknown".to_string();
         status.native.meter_supported = true;
         status.native.meter_level = 0.0;
         status.native.restart_supported = true;
-        status.native.reason = "Native microphone capture is ready.".to_string();
-        status.browser_fallback.expected = false;
-        status.browser_fallback.reason =
-            "Native microphone capture is available in the desktop runtime.".to_string();
+        status.native.reason = NATIVE_VOICE_METER_ONLY_REASON.to_string();
         return status;
     }
 
@@ -165,7 +173,7 @@ fn desktop_voice_capture_status_from_snapshot(
     }
 
     status.capture_mode = if snapshot.native_available {
-        "native".to_string()
+        "browser_fallback".to_string()
     } else {
         "unavailable".to_string()
     };
@@ -176,13 +184,19 @@ fn desktop_voice_capture_status_from_snapshot(
     status.native.meter_level = snapshot.meter_level.clamp(0.0, 1.0);
     status.native.restart_supported = true;
     status.native.reason = snapshot.reason;
-    status.browser_fallback.expected = !snapshot.native_available;
+    status.browser_fallback.expected = true;
     status.browser_fallback.reason = if snapshot.native_available {
-        "Native microphone capture is running in the desktop runtime.".to_string()
+        NATIVE_VOICE_DICTATION_FALLBACK_REASON.to_string()
     } else {
         "Use browser speech recognition until the native capture backend is available.".to_string()
     };
     status
+}
+
+fn apply_native_voice_dictation_fallback_contract(status: &mut DesktopVoiceCaptureStatus) {
+    status.capture_mode = "browser_fallback".to_string();
+    status.browser_fallback.expected = true;
+    status.browser_fallback.reason = NATIVE_VOICE_DICTATION_FALLBACK_REASON.to_string();
 }
 
 fn load_desktop_summary_voice_capture_status() -> DesktopVoiceCaptureStatus {
@@ -1074,5 +1088,62 @@ mod tests {
             &session,
             Duration::from_millis(1)
         ));
+    }
+
+    #[test]
+    fn native_voice_status_keeps_dictation_on_text_fallback_contract() {
+        let mut status = desktop_backend::build_desktop_voice_capture_status(
+            desktop_backend::DesktopVoiceDeviceProbe {
+                device_count: 1,
+                first_device_name: Some("USB Microphone".to_string()),
+                error: None,
+            },
+        );
+
+        status.native.available = true;
+        status.native.meter_supported = true;
+        apply_native_voice_dictation_fallback_contract(&mut status);
+
+        assert_eq!(status.capture_mode, "browser_fallback");
+        assert!(status.native.available);
+        assert!(status.native.meter_supported);
+        assert!(status.browser_fallback.expected);
+        assert!(status
+            .browser_fallback
+            .reason
+            .contains("does not transcribe audio into text"));
+    }
+
+    #[test]
+    fn native_voice_snapshot_status_keeps_dictation_on_text_fallback_contract() {
+        let base_status = desktop_backend::build_desktop_voice_capture_status(
+            desktop_backend::DesktopVoiceDeviceProbe {
+                device_count: 1,
+                first_device_name: Some("USB Microphone".to_string()),
+                error: None,
+            },
+        );
+        let status = desktop_voice_capture_status_from_base(
+            base_status,
+            VoiceCaptureRuntimeSnapshot {
+                generation: 7,
+                state: "recording".to_string(),
+                permission: "granted".to_string(),
+                reason: "Native microphone capture is recording.".to_string(),
+                meter_level: 1.5,
+                running: true,
+                native_available: true,
+            },
+        );
+
+        assert_eq!(status.capture_mode, "browser_fallback");
+        assert!(status.native.available);
+        assert_eq!(status.native.state, "recording");
+        assert_eq!(status.native.meter_level, 1.0);
+        assert!(status.browser_fallback.expected);
+        assert!(status
+            .browser_fallback
+            .reason
+            .contains("does not transcribe audio into text"));
     }
 }
