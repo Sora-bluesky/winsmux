@@ -23,6 +23,32 @@ const VALID_ACTION_TYPES: &[&str] = &[
     "input",
 ];
 const VALID_RUN_MODES: &[&str] = &["codex_direct", "winsmux_desktop"];
+const DESKTOP_MANUAL_EVIDENCE_TASK_CLASSES: &[(&str, &str)] = &[
+    (
+        "first_launch_project_selection",
+        "First launch project folder selection",
+    ),
+    (
+        "project_explorer_accuracy",
+        "Project explorer loaded for the selected folder",
+    ),
+    (
+        "operator_composer_editing",
+        "Operator composer editing and command submission",
+    ),
+    (
+        "meta_plan_multi_pane_flow",
+        "meta-plan command submitted for multi-pane consultation",
+    ),
+    (
+        "clipboard_image_input",
+        "Clipboard or file image input submitted through the composer",
+    ),
+    (
+        "settings_language_control",
+        "Settings language control applied",
+    ),
+];
 
 #[derive(Debug, Clone, Default, Deserialize)]
 struct DogfoodEventInput {
@@ -107,6 +133,7 @@ struct StoredEvent {
     input_source: String,
     action_type: String,
     task_ref: String,
+    task_class: String,
 }
 
 #[derive(Debug)]
@@ -629,6 +656,9 @@ fn create_schema(connection: &Connection) -> io::Result<()> {
                 task_ref TEXT NOT NULL DEFAULT '',
                 duration_ms INTEGER,
                 payload_hash TEXT NOT NULL DEFAULT '',
+                task_class TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                reasoning_effort TEXT NOT NULL DEFAULT '',
                 created_at_utc TEXT NOT NULL
             );
 
@@ -640,7 +670,49 @@ fn create_schema(connection: &Connection) -> io::Result<()> {
                 ON dogfood_runs(mode, task_ref, task_class);
             ",
         )
-        .map_err(sql_err)
+        .map_err(sql_err)?;
+    ensure_text_column(
+        connection,
+        "dogfood_events",
+        "task_class",
+        "task_class TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_text_column(
+        connection,
+        "dogfood_events",
+        "model",
+        "model TEXT NOT NULL DEFAULT ''",
+    )?;
+    ensure_text_column(
+        connection,
+        "dogfood_events",
+        "reasoning_effort",
+        "reasoning_effort TEXT NOT NULL DEFAULT ''",
+    )?;
+    Ok(())
+}
+
+fn ensure_text_column(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    column_definition: &str,
+) -> io::Result<()> {
+    let mut statement = connection
+        .prepare(&format!("PRAGMA table_info({table})"))
+        .map_err(sql_err)?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(sql_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sql_err)?;
+    if columns.iter().any(|existing| existing == column) {
+        return Ok(());
+    }
+    connection
+        .execute(&format!("ALTER TABLE {table} ADD COLUMN {column_definition}"), [])
+        .map_err(sql_err)?;
+    Ok(())
 }
 
 fn record_event(connection: &Connection, event: &NormalizedDogfoodEvent) -> io::Result<()> {
@@ -658,8 +730,11 @@ fn record_event(connection: &Connection, event: &NormalizedDogfoodEvent) -> io::
                 task_ref,
                 duration_ms,
                 payload_hash,
+                task_class,
+                model,
+                reasoning_effort,
                 created_at_utc
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
             ",
             params![
                 &event.event_id,
@@ -672,6 +747,9 @@ fn record_event(connection: &Connection, event: &NormalizedDogfoodEvent) -> io::
                 &event.task_ref,
                 event.duration_ms,
                 &event.payload_hash,
+                &event.task_class,
+                &event.model,
+                &event.reasoning_effort,
                 generated_at(),
             ],
         )
@@ -770,6 +848,12 @@ fn build_stats_payload(
             .map(|event| event.action_type.as_str())
             .collect::<Vec<_>>(),
     );
+    let task_classes = counted_share_map(
+        events
+            .iter()
+            .map(|event| event.task_class.as_str())
+            .collect::<Vec<_>>(),
+    );
     let task_refs = task_ref_counts(&events);
     let run_modes = counted_share_map(runs.iter().map(|run| run.mode.as_str()).collect::<Vec<_>>());
     let comparison_ready_pairs = comparison_ready_pairs(&runs);
@@ -777,6 +861,7 @@ fn build_stats_payload(
     let durations = run_duration_stats(&runs);
     let quality = quality_totals(&runs);
     let daily_command_counts = daily_command_counts(&events);
+    let desktop_manual_evidence = desktop_manual_evidence(&events);
 
     Ok(json!({
         "generated_at": generated_at(),
@@ -794,7 +879,9 @@ fn build_stats_payload(
         },
         "input_sources": input_sources,
         "action_types": action_types,
+        "task_classes": task_classes,
         "task_refs": task_refs,
+        "desktop_manual_evidence": desktop_manual_evidence,
         "daily_command_counts": daily_command_counts,
         "runs": {
             "by_mode": run_modes,
@@ -810,7 +897,7 @@ fn load_events_since(connection: &Connection, since_ms: i64) -> io::Result<Vec<S
     let mut statement = connection
         .prepare(
             "
-            SELECT timestamp, run_id, session_id, input_source, action_type, task_ref
+            SELECT timestamp, run_id, session_id, input_source, action_type, task_ref, task_class
             FROM dogfood_events
             WHERE timestamp >= ?1
             ORDER BY timestamp ASC
@@ -826,6 +913,7 @@ fn load_events_since(connection: &Connection, since_ms: i64) -> io::Result<Vec<S
                 input_source: row.get(3)?,
                 action_type: row.get(4)?,
                 task_ref: row.get(5)?,
+                task_class: row.get(6)?,
             })
         })
         .map_err(sql_err)?;
@@ -917,6 +1005,40 @@ fn task_ref_counts(events: &[StoredEvent]) -> Vec<Value> {
         .into_iter()
         .map(|(task_ref, count)| json!({ "task_ref": task_ref, "event_count": count }))
         .collect()
+}
+
+fn desktop_manual_evidence(events: &[StoredEvent]) -> Value {
+    let recorded: BTreeSet<String> = events
+        .iter()
+        .filter(|event| !event.task_class.trim().is_empty())
+        .map(|event| event.task_class.clone())
+        .collect();
+    let required = DESKTOP_MANUAL_EVIDENCE_TASK_CLASSES
+        .iter()
+        .map(|(task_class, description)| {
+            json!({
+                "task_class": task_class,
+                "description": description,
+            })
+        })
+        .collect::<Vec<_>>();
+    let missing = DESKTOP_MANUAL_EVIDENCE_TASK_CLASSES
+        .iter()
+        .filter(|(task_class, _)| !recorded.contains(*task_class))
+        .map(|(task_class, description)| {
+            json!({
+                "task_class": task_class,
+                "description": description,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    json!({
+        "complete": missing.is_empty(),
+        "required_task_classes": required,
+        "recorded_task_classes": recorded.into_iter().collect::<Vec<_>>(),
+        "missing_task_classes": missing,
+    })
 }
 
 fn comparison_ready_pairs(runs: &[StoredRun]) -> Vec<Value> {
@@ -1295,9 +1417,60 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("privacy query should run");
+        let stored_task_class: String = connection
+            .query_row(
+                "SELECT task_class FROM dogfood_events WHERE event_id = ?1",
+                params![&event.event_id],
+                |row| row.get(0),
+            )
+            .expect("task class query should run");
 
         assert_eq!(stored_hash, hash_payload("do not store this raw command"));
         assert_eq!(raw_text_count, 0);
+        assert_eq!(stored_task_class, "ui");
+        let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn schema_migrates_existing_event_metadata_columns() {
+        let db_path = temp_db("event-migration");
+        let connection = Connection::open(&db_path).expect("database should open");
+        connection
+            .execute_batch(
+                "
+                CREATE TABLE dogfood_events (
+                    event_id TEXT PRIMARY KEY,
+                    timestamp INTEGER NOT NULL,
+                    run_id TEXT NOT NULL DEFAULT '',
+                    session_id TEXT NOT NULL,
+                    pane_id TEXT NOT NULL,
+                    input_source TEXT NOT NULL,
+                    action_type TEXT NOT NULL,
+                    task_ref TEXT NOT NULL DEFAULT '',
+                    duration_ms INTEGER,
+                    payload_hash TEXT NOT NULL DEFAULT '',
+                    created_at_utc TEXT NOT NULL
+                );
+                ",
+            )
+            .expect("legacy event table should be created");
+
+        create_schema(&connection).expect("schema migration should run");
+        record_event(
+            &connection,
+            &sample_event("run-1", "keyboard", 1_700_000_000_000),
+        )
+        .expect("event should record after migration");
+
+        let stored_task_class: String = connection
+            .query_row(
+                "SELECT task_class FROM dogfood_events WHERE task_ref = 'TASK-500'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("migrated column should be readable");
+
+        assert_eq!(stored_task_class, "ui");
         let _ = fs::remove_file(db_path);
     }
 
@@ -1354,6 +1527,11 @@ mod tests {
             1
         );
         assert_eq!(payload["input_sources"]["voice"]["count"], 1);
+        assert_eq!(payload["task_classes"]["ui"]["count"], 2);
+        assert_eq!(
+            payload["desktop_manual_evidence"]["complete"],
+            serde_json::json!(false)
+        );
         assert_eq!(payload["daily_command_counts"][0]["date"], "2023-11-14");
         assert_eq!(
             payload["daily_command_counts"][0]["command_count"],
@@ -1405,6 +1583,7 @@ mod tests {
                 input_source: "voice".to_string(),
                 action_type: "command".to_string(),
                 task_ref: String::new(),
+                task_class: String::new(),
             },
             StoredEvent {
                 timestamp: 2,
@@ -1413,6 +1592,7 @@ mod tests {
                 input_source: "keyboard".to_string(),
                 action_type: "command".to_string(),
                 task_ref: String::new(),
+                task_class: String::new(),
             },
         ];
 
@@ -1432,6 +1612,7 @@ mod tests {
                 input_source: "voice".to_string(),
                 action_type: "input".to_string(),
                 task_ref: "desktop-command-1".to_string(),
+                task_class: "operator_composer_editing".to_string(),
             },
             StoredEvent {
                 timestamp: 2,
@@ -1440,6 +1621,7 @@ mod tests {
                 input_source: "keyboard".to_string(),
                 action_type: "input".to_string(),
                 task_ref: "desktop-command-1".to_string(),
+                task_class: "operator_composer_editing".to_string(),
             },
             StoredEvent {
                 timestamp: 3,
@@ -1448,6 +1630,7 @@ mod tests {
                 input_source: "keyboard".to_string(),
                 action_type: "command".to_string(),
                 task_ref: "desktop-command-1".to_string(),
+                task_class: "operator_composer_editing".to_string(),
             },
         ];
 
