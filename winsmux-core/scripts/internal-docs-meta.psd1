@@ -237,6 +237,14 @@
             Memo = 'TASK-416 を使う'
         }
         @{
+            Order = 105
+            Version = 'v1.0.0'
+            TaskIds = @('TASK-468')
+            Focus = 'デスクトップ音声入力の認識契約'
+            Example = 'ネイティブ音声入力で下書きへ文字が入るか、またはマイクメーターとは別に対応済みフォールバック契約を確認'
+            Memo = 'TASK-468 を使う'
+        }
+        @{
             Order = 110
             Version = 'v1.1.0'
             TaskIds = @('TASK-311', 'TASK-317', 'TASK-318', 'TASK-319')

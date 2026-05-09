@@ -1839,10 +1839,18 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
         "first_launch_project_selection_recorded"
     );
     assert_eq!(
+        json["release_gates"][7],
+        "native_voice_dictation_or_fallback_contract_recorded"
+    );
+    assert_eq!(
         json["v1_desktop_focus"][0],
         "desktop_installer_distribution"
     );
     assert_eq!(json["v1_desktop_focus"][4], "meta_plan_multi_pane_flow");
+    assert_eq!(
+        json["v1_desktop_focus"][8],
+        "native_voice_dictation_or_fallback_contract"
+    );
     assert_eq!(json["desktop_manual_items"][0]["id"], "installer_artifacts");
     assert_eq!(
         json["desktop_manual_items"][1]["id"],
@@ -1857,12 +1865,20 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
         "clipboard_image_input"
     );
     assert_eq!(
+        json["desktop_manual_items"][7]["id"],
+        "native_voice_dictation_or_fallback_contract"
+    );
+    assert_eq!(
         json["blocking_conditions"][0],
         "missing_manual_checklist_document"
     );
     assert_eq!(
         json["blocking_conditions"][4],
         "missing_desktop_artifact_evidence"
+    );
+    assert_eq!(
+        json["blocking_conditions"][6],
+        "missing_native_voice_dictation_contract"
     );
 }
 
