@@ -37,7 +37,7 @@
   --editor-font-size: 13px;
   --workbench-text-size: var(--editor-font-size);
   --workbench-meta-size: 11px;
-  --workbench-line-height: 22px;
+  --workbench-line-height: max(22px, calc(var(--editor-font-size) + 8px));
   --text-3xs: 10px;
   --text-2xs: 11px;
   --text-xs: 12px;
