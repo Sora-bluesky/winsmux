@@ -500,6 +500,7 @@ let composerVoiceStartedAt = 0;
 let composerKeyboardAfterVoiceAt = 0;
 const dogfoodSessionId = `desktop-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 let dogfoodRunCounter = 0;
+const projectExplorerDogfoodRecordedFor = new Set<string>();
 let activeSourceFilter: SourceFilter = "all";
 let activeTimelineFilter: TimelineFilter = "all";
 let commandBarOpen = false;
@@ -1867,6 +1868,16 @@ async function promptAndAddProjectSession() {
   }
 
   setActiveProjectDir(projectDir);
+  void recordOperatorDogfoodEvent({
+    actionType: "input",
+    inputSource: "shortcut",
+    taskRef: "desktop-project-selection",
+    taskClass: "first_launch_project_selection",
+    payload: {
+      selected: true,
+      projectName: getProjectDisplayName(projectDir),
+    },
+  });
 }
 
 function renderSessions() {
@@ -2473,6 +2484,21 @@ async function refreshProjectExplorerEntries() {
       projectExplorerFolderLoads.clear();
       expandedExplorerFolders.clear();
       renderExplorer();
+      const evidenceKey = explorerPayload?.project_dir || projectDir || activeProjectDir || "";
+      if (evidenceKey && !projectExplorerDogfoodRecordedFor.has(evidenceKey)) {
+        projectExplorerDogfoodRecordedFor.add(evidenceKey);
+        void recordOperatorDogfoodEvent({
+          actionType: "input",
+          inputSource: "shortcut",
+          taskRef: "desktop-project-explorer",
+          taskClass: "project_explorer_accuracy",
+          payload: {
+            entryCount: entries.length,
+            directoryCount: entries.filter((entry) => entry.kind === "directory").length,
+            fileCount: entries.filter((entry) => entry.kind === "file").length,
+          },
+        });
+      }
     } catch (error) {
       if (!isProjectRequestCurrent(requestKey)) {
         return;
@@ -7978,6 +8004,14 @@ async function sha256Hex(value: string) {
     .join("");
 }
 
+function getComposerDogfoodTaskClass(message: string) {
+  const normalized = message.trim().replace(/\s+/g, " ");
+  if (normalized.startsWith("winsmux meta-plan")) {
+    return "meta_plan_multi_pane_flow";
+  }
+  return "operator_composer_editing";
+}
+
 async function recordComposerDogfoodEvent(
   message: string,
   attachments: ComposerAttachment[],
@@ -8007,12 +8041,25 @@ async function recordComposerDogfoodEvent(
       payload: { phase: "draft-input", source: "keyboard" },
     });
   }
+  const imageAttachments = attachments.filter((attachment) => attachment.kind === "image");
+  if (imageAttachments.length > 0) {
+    await recordOperatorDogfoodEvent({
+      actionType: "input",
+      inputSource,
+      startedAt,
+      taskRef: draft.taskRef,
+      taskClass: "clipboard_image_input",
+      payload: {
+        imageCount: imageAttachments.length,
+      },
+    });
+  }
   await recordOperatorDogfoodEvent({
     actionType: "command",
     inputSource,
     startedAt,
     taskRef: draft.taskRef,
-    taskClass: activeComposerMode,
+    taskClass: getComposerDogfoodTaskClass(message),
     payload: {
       message,
       attachments: attachments.map((attachment) => ({
@@ -11547,6 +11594,8 @@ function setSettingsSheet(open: boolean) {
 }
 
 async function applySettingsDraft() {
+  const appliedThemeDraft = settingsDraftState ? cloneThemeState(settingsDraftState) : null;
+  const languageChanged = Boolean(appliedThemeDraft && appliedThemeDraft.language !== themeState.language);
   if (settingsDraftState) {
     const validation = getVoiceShortcutValidation(settingsDraftState.voiceShortcut, settingsDraftState.language === "ja");
     if (!validation.valid) {
@@ -11581,6 +11630,17 @@ async function applySettingsDraft() {
   if (settingsSheetOpen) {
     renderSettingsControls();
     renderFooterLane();
+  }
+  if (languageChanged) {
+    void recordOperatorDogfoodEvent({
+      actionType: "input",
+      inputSource: "shortcut",
+      taskRef: "desktop-settings-language",
+      taskClass: "settings_language_control",
+      payload: {
+        language: appliedThemeDraft?.language,
+      },
+    });
   }
   renderConversation(getConversationItems());
 }
