@@ -1869,6 +1869,47 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
         "native_voice_dictation_or_fallback_contract"
     );
     assert_eq!(
+        json["native_voice_fallback_contract"]["task_id"],
+        "TASK-468"
+    );
+    assert_eq!(json["native_voice_fallback_contract"]["issue"], "#885");
+    assert_eq!(
+        json["native_voice_fallback_contract"]["release_gate"],
+        "native_voice_dictation_or_fallback_contract_recorded"
+    );
+    assert_eq!(
+        json["native_voice_fallback_contract"]["status"],
+        "recorded_for_v1"
+    );
+    assert_eq!(
+        json["native_voice_fallback_contract"]["native_speech_to_text"],
+        "not_implemented"
+    );
+    assert_eq!(
+        json["native_voice_fallback_contract"]["metering_is_dictation"],
+        false
+    );
+    assert_eq!(
+        json["native_voice_fallback_contract"]["accepted_fallbacks"],
+        serde_json::json!([
+            "browser_speech_recognition",
+            "windows_voice_typing",
+            "keyboard_input"
+        ])
+    );
+    assert_eq!(
+        json["native_voice_fallback_contract"]["required_evidence"],
+        serde_json::json!([
+            "desktop_voice_status_reports_browser_fallback_when_native_metering_exists",
+            "composer_voice_button_does_not_start_native_metering_as_dictation",
+            "manual_checklist_records_supported_fallback_contract"
+        ])
+    );
+    assert!(json["native_voice_fallback_contract"]["decision"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("native microphone capture is metering only"));
+    assert_eq!(
         json["blocking_conditions"][0],
         "missing_manual_checklist_document"
     );
@@ -1878,7 +1919,7 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
     );
     assert_eq!(
         json["blocking_conditions"][6],
-        "missing_native_voice_dictation_contract"
+        "missing_native_voice_dictation_or_fallback_contract"
     );
 }
 

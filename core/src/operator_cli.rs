@@ -956,6 +956,25 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
                 "required_evidence": "Long processing and notification text remains visible or intentionally truncated at common desktop widths."
             }
         ],
+        "native_voice_fallback_contract": {
+            "task_id": "TASK-468",
+            "issue": "#885",
+            "release_gate": "native_voice_dictation_or_fallback_contract_recorded",
+            "status": "recorded_for_v1",
+            "native_speech_to_text": "not_implemented",
+            "metering_is_dictation": false,
+            "accepted_fallbacks": [
+                "browser_speech_recognition",
+                "windows_voice_typing",
+                "keyboard_input"
+            ],
+            "required_evidence": [
+                "desktop_voice_status_reports_browser_fallback_when_native_metering_exists",
+                "composer_voice_button_does_not_start_native_metering_as_dictation",
+                "manual_checklist_records_supported_fallback_contract"
+            ],
+            "decision": "For v1.0.0, native microphone capture is metering only. Composer dictation uses browser speech recognition when available; otherwise Windows voice typing or keyboard input is the supported fallback."
+        },
         "blocking_conditions": [
             "missing_manual_checklist_document",
             "unchecked_critical_item",
@@ -963,7 +982,7 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
             "blocked_result_without_owner",
             "missing_desktop_artifact_evidence",
             "missing_desktop_dogfood_evidence",
-            "missing_native_voice_dictation_contract",
+            "missing_native_voice_dictation_or_fallback_contract",
             "public_surface_drift"
         ],
         "next_action": "Record v1.0.0 desktop manual validation results before the v1.0.0 release and feed any failed or blocked item back into backlog."
