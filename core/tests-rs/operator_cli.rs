@@ -1815,8 +1815,8 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
     let json = run_json(&project_dir, &["manual-checklist", "--json"]);
 
     assert_eq!(json["contract_version"], 1);
-    assert_eq!(json["task_id"], "TASK-316");
-    assert_eq!(json["target_version"], "v0.24.5");
+    assert_eq!(json["task_id"], "TASK-416");
+    assert_eq!(json["target_version"], "v1.0.0");
     assert_eq!(
         json["document"]["path"],
         "docs/internal/winsmux-manual-checklist-by-version.md"
@@ -1830,10 +1830,39 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
         json["release_gates"][0],
         "version_by_version_results_recorded"
     );
-    assert_eq!(json["v0_24_5_focus"][0], "legacy_alias_sunset");
+    assert_eq!(
+        json["release_gates"][1],
+        "desktop_bundle_artifacts_verified"
+    );
+    assert_eq!(
+        json["release_gates"][3],
+        "first_launch_project_selection_recorded"
+    );
+    assert_eq!(
+        json["v1_desktop_focus"][0],
+        "desktop_installer_distribution"
+    );
+    assert_eq!(json["v1_desktop_focus"][4], "meta_plan_multi_pane_flow");
+    assert_eq!(json["desktop_manual_items"][0]["id"], "installer_artifacts");
+    assert_eq!(
+        json["desktop_manual_items"][1]["id"],
+        "first_launch_project_selection"
+    );
+    assert_eq!(
+        json["desktop_manual_items"][3]["id"],
+        "operator_composer_editing"
+    );
+    assert_eq!(
+        json["desktop_manual_items"][5]["id"],
+        "clipboard_image_input"
+    );
     assert_eq!(
         json["blocking_conditions"][0],
         "missing_manual_checklist_document"
+    );
+    assert_eq!(
+        json["blocking_conditions"][4],
+        "missing_desktop_artifact_evidence"
     );
 }
 
@@ -1856,7 +1885,7 @@ fn operator_cli_manual_checklist_text_reports_next_action() {
     assert!(
         stdout.contains("Manual checklist: docs/internal/winsmux-manual-checklist-by-version.md")
     );
-    assert!(stdout.contains("Record v0.24.5 manual validation results"));
+    assert!(stdout.contains("Record v1.0.0 desktop manual validation results"));
     assert!(!stdout.trim_start().starts_with('{'));
 }
 
