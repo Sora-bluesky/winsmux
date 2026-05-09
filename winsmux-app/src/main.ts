@@ -15,8 +15,6 @@ import {
   pickDesktopRunWinner,
   promoteDesktopRunTactic,
   recordDesktopDogfoodEvent,
-  startDesktopVoiceCapture,
-  stopDesktopVoiceCapture,
   subscribeToDesktopSummaryRefresh,
   type DesktopCompareRunsResult,
   type DesktopBoardPane,
@@ -525,14 +523,12 @@ let operatorOutputBuffer = "";
 let operatorOutputFlushTimer: number | null = null;
 let voiceRecognition: SpeechRecognitionLike | null = null;
 let voiceListening = false;
-let voiceInputMode: "browser" | "native" | null = null;
 let voiceTranscriptBase = "";
 let voiceSelectionEditState: { base: string; start: number; end: number; historyCaptured: boolean } | null = null;
 let activeVoiceVocabularyMode: VoiceVocabularyMode = "project";
 let voiceCaptureStatus: DesktopVoiceCaptureStatus | null = null;
 let voiceCaptureStatusError = "";
 let voiceCaptureStatusRefreshStarted = false;
-let voiceCapturePollTimer: number | null = null;
 let voiceSessionStartedAt = 0;
 let voiceSessionWarningTimer: number | null = null;
 let viewportHarnessVoiceNow: number | null = null;
@@ -6493,8 +6489,8 @@ function applyLanguageChrome() {
   setElementText(
     "voice-shortcut-description",
     japanese
-      ? "音声入力の開始と停止に使います。認識した文字は送信せず、オペレーター入力欄の下書きに入れます。"
-      : "Starts or stops voice capture and writes recognized text into the operator composer as an editable draft.",
+      ? "ブラウザーの音声認識の開始と停止に使います。認識した文字は送信せず、オペレーター入力欄の下書きに入れます。"
+      : "Starts or stops browser speech recognition and writes recognized text into the operator composer as an editable draft.",
   );
   setElementText("voice-shortcut-reset-btn", japanese ? `既定値 ${DEFAULT_VOICE_SHORTCUT}` : `Default ${DEFAULT_VOICE_SHORTCUT}`);
   setElementText("voice-draft-storage-label", japanese ? "音声下書きの復元" : "Voice Draft Recovery");
@@ -7410,8 +7406,11 @@ function isNativeVoiceCaptureAvailable() {
   return isTauri() && voiceCaptureStatus?.native.available === true;
 }
 
-function isNativeVoiceCaptureTerminalState(state: string | undefined) {
-  return state === "stopped" || state === "cancelled" || state === "permission_denied" || state === "no_microphone";
+function getNativeVoiceMeterOnlyMessage() {
+  return getLanguageText(
+    "Native microphone metering is available, but this build does not convert native audio into composer text. Use browser voice input, Windows voice typing, or keyboard input for dictation.",
+    "ネイティブのマイクメーターは使えますが、このビルドではネイティブ音声を入力欄の文字に変換しません。音声入力にはブラウザーの音声認識、Windows 音声入力、またはキーボード入力を使ってください。",
+  );
 }
 
 function getVoiceCaptureMeterPercent() {
@@ -7550,16 +7549,16 @@ function getVoiceCaptureStatusMessage() {
   if (voiceCaptureStatus.native.state === "recording") {
     const meter = getVoiceCaptureMeterPercent();
     return getLanguageText(
-      `Native microphone capture is recording. Meter ${meter}%.`,
-      `ネイティブのマイク入力で録音中です。メーターは ${meter}% です。`,
+      `Native microphone metering is running. Meter ${meter}%. It does not write text into the composer.`,
+      `ネイティブのマイクメーターは動作中です。メーターは ${meter}% です。入力欄へ文字は入りません。`,
     );
   }
 
   if (voiceCaptureStatus.native.state === "silence") {
     const meter = getVoiceCaptureMeterPercent();
     return getLanguageText(
-      `Native microphone capture is running, but speech is not detected. Meter ${meter}%.`,
-      `ネイティブのマイク入力は動作中ですが、発話を検出していません。メーターは ${meter}% です。`,
+      `Native microphone metering is running, but speech is not detected. Meter ${meter}%. It does not write text into the composer.`,
+      `ネイティブのマイクメーターは動作中ですが、発話を検出していません。メーターは ${meter}% です。入力欄へ文字は入りません。`,
     );
   }
 
@@ -7578,10 +7577,12 @@ function getVoiceCaptureStatusMessage() {
   }
 
   if (voiceCaptureStatus.native.state === "stopped") {
-    return getLanguageText(
-      "Native microphone capture is ready.",
-      "ネイティブのマイク入力を開始できます。",
-    );
+    return isNativeVoiceCaptureAvailable()
+      ? getNativeVoiceMeterOnlyMessage()
+      : getLanguageText(
+        "Browser voice input is the supported dictation fallback.",
+        "音声入力の対応済みフォールバックはブラウザーの音声認識です。",
+      );
   }
 
   if (voiceCaptureStatus.native.state === "permission_denied") {
@@ -7592,10 +7593,7 @@ function getVoiceCaptureStatusMessage() {
   }
 
   if (voiceCaptureStatus.native.available) {
-    return getLanguageText(
-      "Native microphone capture is available.",
-      "ネイティブのマイク入力を利用できます。",
-    );
+    return getNativeVoiceMeterOnlyMessage();
   }
 
   if (voiceCaptureStatus.native.state === "no_microphone") {
@@ -7648,12 +7646,6 @@ async function refreshVoiceCaptureStatus() {
   }
   updateVoiceInputButton();
   renderVoiceCaptureStatus();
-  if (voiceInputMode === "native" && isNativeVoiceCaptureTerminalState(voiceCaptureStatus?.native.state)) {
-    voiceListening = false;
-    voiceInputMode = null;
-    stopVoiceCapturePolling();
-    updateVoiceInputButton();
-  }
 }
 
 function ensureVoiceCaptureStatusRefresh() {
@@ -7664,23 +7656,6 @@ function ensureVoiceCaptureStatusRefresh() {
   void refreshVoiceCaptureStatus();
 }
 
-function startVoiceCapturePolling() {
-  if (voiceCapturePollTimer !== null) {
-    return;
-  }
-  voiceCapturePollTimer = window.setInterval(() => {
-    void refreshVoiceCaptureStatus();
-  }, 250);
-}
-
-function stopVoiceCapturePolling() {
-  if (voiceCapturePollTimer === null) {
-    return;
-  }
-  window.clearInterval(voiceCapturePollTimer);
-  voiceCapturePollTimer = null;
-}
-
 function updateVoiceInputButton() {
   const button = document.getElementById("voice-input-btn") as HTMLButtonElement | null;
   if (!button) {
@@ -7688,15 +7663,15 @@ function updateVoiceInputButton() {
   }
 
   const browserSupported = isBrowserVoiceInputSupported();
-  const supported = browserSupported || isNativeVoiceCaptureAvailable();
+  const supported = browserSupported;
   button.disabled = !supported;
   button.classList.toggle("is-recording", voiceListening);
   button.setAttribute("aria-pressed", voiceListening ? "true" : "false");
   const label = !supported
     ? isTauri()
       ? getLanguageText(
-        "Voice input is unavailable until native microphone capture is ready",
-        "ネイティブのマイク入力が準備できるまで音声入力は使えません",
+        "Voice input is unavailable because browser speech recognition is missing. Use Windows voice typing or keyboard input instead.",
+        "ブラウザーの音声認識がないため、音声入力は使えません。Windows 音声入力またはキーボード入力を使ってください",
       )
       : getLanguageText("Voice input is not available in this browser", "このブラウザーでは音声入力を利用できません")
     : voiceListening
@@ -7709,15 +7684,6 @@ function updateVoiceInputButton() {
 }
 
 function stopVoiceInput() {
-  if (voiceInputMode === "native") {
-    const composerInput = document.getElementById("composer-input") as HTMLTextAreaElement | null;
-    if (composerInput) {
-      persistVoiceDraftRecovery(composerInput.value);
-    }
-    void stopNativeVoiceInput(true);
-    return;
-  }
-
   if (!voiceRecognition) {
     return;
   }
@@ -7726,45 +7692,6 @@ function stopVoiceInput() {
   } catch {
     voiceRecognition.abort();
   }
-}
-
-async function startNativeVoiceInput(composerInput: HTMLTextAreaElement) {
-  try {
-    voiceCaptureStatus = await startDesktopVoiceCapture();
-    voiceCaptureStatusError = "";
-    voiceInputMode = "native";
-    voiceListening = true;
-    beginVoiceSession();
-    markComposerInputSource("voice");
-    startVoiceCapturePolling();
-    updateVoiceInputButton();
-    renderVoiceCaptureStatus();
-    composerInput.focus();
-  } catch (error) {
-    voiceCaptureStatus = null;
-    voiceCaptureStatusError = error instanceof Error ? error.message : String(error);
-    voiceInputMode = null;
-    voiceListening = false;
-    finishVoiceSession();
-    stopVoiceCapturePolling();
-    updateVoiceInputButton();
-    renderVoiceCaptureStatus();
-  }
-}
-
-async function stopNativeVoiceInput(cancelled: boolean) {
-  try {
-    voiceCaptureStatus = await stopDesktopVoiceCapture(cancelled);
-    voiceCaptureStatusError = "";
-  } catch (error) {
-    voiceCaptureStatusError = error instanceof Error ? error.message : String(error);
-  }
-  voiceInputMode = null;
-  voiceListening = false;
-  finishVoiceSession();
-  stopVoiceCapturePolling();
-  updateVoiceInputButton();
-  renderVoiceCaptureStatus();
 }
 
 function escapeRegExp(value: string) {
@@ -8008,9 +7935,6 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
   const SpeechRecognition = getSpeechRecognitionConstructor();
   if (!SpeechRecognition) {
     ensureVoiceCaptureStatusRefresh();
-    if (isNativeVoiceCaptureAvailable()) {
-      void startNativeVoiceInput(composerInput);
-    }
     updateVoiceInputButton();
     return;
   }
@@ -8027,7 +7951,6 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
   recognition.lang = themeState.language === "ja" ? "ja-JP" : "en-US";
   recognition.onstart = () => {
     voiceListening = true;
-    voiceInputMode = "browser";
     beginVoiceSession();
     updateVoiceInputButton();
   };
@@ -8035,7 +7958,6 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
     persistVoiceDraftRecovery(composerInput.value);
     voiceListening = false;
     voiceRecognition = null;
-    voiceInputMode = null;
     voiceTranscriptBase = "";
     voiceSelectionEditState = null;
     finishVoiceSession();
@@ -8046,7 +7968,6 @@ function startVoiceInput(composerInput: HTMLTextAreaElement) {
   recognition.onerror = (event) => {
     persistVoiceDraftRecovery(composerInput.value);
     voiceListening = false;
-    voiceInputMode = null;
     voiceSelectionEditState = null;
     finishVoiceSession();
     updateVoiceInputButton();
