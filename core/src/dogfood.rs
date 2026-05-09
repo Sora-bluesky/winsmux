@@ -48,6 +48,10 @@ const DESKTOP_MANUAL_EVIDENCE_TASK_CLASSES: &[(&str, &str)] = &[
         "settings_language_control",
         "Settings language control applied",
     ),
+    (
+        "status_bar_fit",
+        "Status bar text fit measured at the rendered desktop width",
+    ),
 ];
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -133,6 +137,7 @@ struct StoredEvent {
     input_source: String,
     action_type: String,
     task_ref: String,
+    mode: String,
     task_class: String,
 }
 
@@ -656,6 +661,7 @@ fn create_schema(connection: &Connection) -> io::Result<()> {
                 task_ref TEXT NOT NULL DEFAULT '',
                 duration_ms INTEGER,
                 payload_hash TEXT NOT NULL DEFAULT '',
+                mode TEXT NOT NULL DEFAULT '',
                 task_class TEXT NOT NULL DEFAULT '',
                 model TEXT NOT NULL DEFAULT '',
                 reasoning_effort TEXT NOT NULL DEFAULT '',
@@ -671,6 +677,12 @@ fn create_schema(connection: &Connection) -> io::Result<()> {
             ",
         )
         .map_err(sql_err)?;
+    ensure_text_column(
+        connection,
+        "dogfood_events",
+        "mode",
+        "mode TEXT NOT NULL DEFAULT ''",
+    )?;
     ensure_text_column(
         connection,
         "dogfood_events",
@@ -730,11 +742,12 @@ fn record_event(connection: &Connection, event: &NormalizedDogfoodEvent) -> io::
                 task_ref,
                 duration_ms,
                 payload_hash,
+                mode,
                 task_class,
                 model,
                 reasoning_effort,
                 created_at_utc
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
             ",
             params![
                 &event.event_id,
@@ -747,6 +760,7 @@ fn record_event(connection: &Connection, event: &NormalizedDogfoodEvent) -> io::
                 &event.task_ref,
                 event.duration_ms,
                 &event.payload_hash,
+                &event.mode,
                 &event.task_class,
                 &event.model,
                 &event.reasoning_effort,
@@ -897,7 +911,7 @@ fn load_events_since(connection: &Connection, since_ms: i64) -> io::Result<Vec<S
     let mut statement = connection
         .prepare(
             "
-            SELECT timestamp, run_id, session_id, input_source, action_type, task_ref, task_class
+            SELECT timestamp, run_id, session_id, input_source, action_type, task_ref, mode, task_class
             FROM dogfood_events
             WHERE timestamp >= ?1
             ORDER BY timestamp ASC
@@ -913,7 +927,8 @@ fn load_events_since(connection: &Connection, since_ms: i64) -> io::Result<Vec<S
                 input_source: row.get(3)?,
                 action_type: row.get(4)?,
                 task_ref: row.get(5)?,
-                task_class: row.get(6)?,
+                mode: row.get(6)?,
+                task_class: row.get(7)?,
             })
         })
         .map_err(sql_err)?;
@@ -1010,7 +1025,7 @@ fn task_ref_counts(events: &[StoredEvent]) -> Vec<Value> {
 fn desktop_manual_evidence(events: &[StoredEvent]) -> Value {
     let recorded: BTreeSet<String> = events
         .iter()
-        .filter(|event| !event.task_class.trim().is_empty())
+        .filter(|event| is_desktop_manual_evidence_event(event))
         .map(|event| event.task_class.clone())
         .collect();
     let required = DESKTOP_MANUAL_EVIDENCE_TASK_CLASSES
@@ -1039,6 +1054,17 @@ fn desktop_manual_evidence(events: &[StoredEvent]) -> Value {
         "recorded_task_classes": recorded.into_iter().collect::<Vec<_>>(),
         "missing_task_classes": missing,
     })
+}
+
+fn is_desktop_manual_evidence_event(event: &StoredEvent) -> bool {
+    if event.task_class.trim().is_empty() {
+        return false;
+    }
+    if event.mode == "winsmux_desktop" {
+        return true;
+    }
+    event.mode.trim().is_empty()
+        && (event.session_id.starts_with("desktop-") || event.task_ref.starts_with("desktop-"))
 }
 
 fn comparison_ready_pairs(runs: &[StoredRun]) -> Vec<Value> {
@@ -1424,9 +1450,17 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("task class query should run");
+        let stored_mode: String = connection
+            .query_row(
+                "SELECT mode FROM dogfood_events WHERE event_id = ?1",
+                params![&event.event_id],
+                |row| row.get(0),
+            )
+            .expect("mode query should run");
 
         assert_eq!(stored_hash, hash_payload("do not store this raw command"));
         assert_eq!(raw_text_count, 0);
+        assert_eq!(stored_mode, "winsmux_desktop");
         assert_eq!(stored_task_class, "ui");
         let _ = fs::remove_file(db_path);
     }
@@ -1472,6 +1506,93 @@ mod tests {
 
         assert_eq!(stored_task_class, "ui");
         let _ = fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn desktop_manual_evidence_ignores_non_desktop_task_classes() {
+        let events = vec![
+            StoredEvent {
+                timestamp: 1,
+                run_id: "codex-run".to_string(),
+                session_id: "session-1".to_string(),
+                input_source: "keyboard".to_string(),
+                action_type: "input".to_string(),
+                task_ref: "desktop-project-explorer".to_string(),
+                mode: "codex_direct".to_string(),
+                task_class: "project_explorer_accuracy".to_string(),
+            },
+            StoredEvent {
+                timestamp: 2,
+                run_id: "desktop-run".to_string(),
+                session_id: "session-1".to_string(),
+                input_source: "keyboard".to_string(),
+                action_type: "input".to_string(),
+                task_ref: "desktop-project-selection".to_string(),
+                mode: "winsmux_desktop".to_string(),
+                task_class: "first_launch_project_selection".to_string(),
+            },
+        ];
+
+        let payload = desktop_manual_evidence(&events);
+
+        assert_eq!(payload["complete"], serde_json::json!(false));
+        assert!(
+            payload["recorded_task_classes"]
+                .as_array()
+                .expect("recorded task classes should be an array")
+                .iter()
+                .any(|item| item == "first_launch_project_selection")
+        );
+        assert!(
+            payload["missing_task_classes"]
+                .as_array()
+                .expect("missing task classes should be an array")
+                .iter()
+                .any(|item| item["task_class"] == "project_explorer_accuracy")
+        );
+    }
+
+    #[test]
+    fn desktop_manual_evidence_preserves_legacy_desktop_events_without_mode() {
+        let events = vec![
+            StoredEvent {
+                timestamp: 1,
+                run_id: String::new(),
+                session_id: "desktop-legacy-session".to_string(),
+                input_source: "keyboard".to_string(),
+                action_type: "input".to_string(),
+                task_ref: "desktop-project-explorer".to_string(),
+                mode: String::new(),
+                task_class: "project_explorer_accuracy".to_string(),
+            },
+            StoredEvent {
+                timestamp: 2,
+                run_id: String::new(),
+                session_id: "session-1".to_string(),
+                input_source: "keyboard".to_string(),
+                action_type: "input".to_string(),
+                task_ref: "TASK-500".to_string(),
+                mode: String::new(),
+                task_class: "clipboard_image_input".to_string(),
+            },
+        ];
+
+        let payload = desktop_manual_evidence(&events);
+
+        assert!(
+            payload["recorded_task_classes"]
+                .as_array()
+                .expect("recorded task classes should be an array")
+                .iter()
+                .any(|item| item == "project_explorer_accuracy")
+        );
+        assert!(
+            payload["missing_task_classes"]
+                .as_array()
+                .expect("missing task classes should be an array")
+                .iter()
+                .any(|item| item["task_class"] == "clipboard_image_input")
+        );
     }
 
     #[test]
@@ -1532,6 +1653,13 @@ mod tests {
             payload["desktop_manual_evidence"]["complete"],
             serde_json::json!(false)
         );
+        assert!(
+            payload["desktop_manual_evidence"]["missing_task_classes"]
+                .as_array()
+                .expect("missing task classes should be an array")
+                .iter()
+                .any(|item| item["task_class"] == "status_bar_fit")
+        );
         assert_eq!(payload["daily_command_counts"][0]["date"], "2023-11-14");
         assert_eq!(
             payload["daily_command_counts"][0]["command_count"],
@@ -1583,6 +1711,7 @@ mod tests {
                 input_source: "voice".to_string(),
                 action_type: "command".to_string(),
                 task_ref: String::new(),
+                mode: String::new(),
                 task_class: String::new(),
             },
             StoredEvent {
@@ -1592,6 +1721,7 @@ mod tests {
                 input_source: "keyboard".to_string(),
                 action_type: "command".to_string(),
                 task_ref: String::new(),
+                mode: String::new(),
                 task_class: String::new(),
             },
         ];
@@ -1612,6 +1742,7 @@ mod tests {
                 input_source: "voice".to_string(),
                 action_type: "input".to_string(),
                 task_ref: "desktop-command-1".to_string(),
+                mode: "winsmux_desktop".to_string(),
                 task_class: "operator_composer_editing".to_string(),
             },
             StoredEvent {
@@ -1621,6 +1752,7 @@ mod tests {
                 input_source: "keyboard".to_string(),
                 action_type: "input".to_string(),
                 task_ref: "desktop-command-1".to_string(),
+                mode: "winsmux_desktop".to_string(),
                 task_class: "operator_composer_editing".to_string(),
             },
             StoredEvent {
@@ -1630,6 +1762,7 @@ mod tests {
                 input_source: "keyboard".to_string(),
                 action_type: "command".to_string(),
                 task_ref: "desktop-command-1".to_string(),
+                mode: "winsmux_desktop".to_string(),
                 task_class: "operator_composer_editing".to_string(),
             },
         ];

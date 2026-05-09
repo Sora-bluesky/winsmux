@@ -9345,10 +9345,11 @@ fn guard_report_payload(project_dir: &Path) -> Value {
         guard_check(
             "pester_reduction_plan",
             "pwsh -NoProfile -File scripts/validate-pester-reduction-plan.ps1",
-            "docs/project/pester-suite-inventory.json",
+            "docs/project/pester-suite-reduction-plan.md",
             "TASK-407 Pester reduction plan covers tracked Pester files before release",
             file_exists(project_dir, "scripts/validate-pester-reduction-plan.ps1")
-                && file_exists(project_dir, "docs/project/pester-suite-inventory.json"),
+                && file_exists(project_dir, "docs/project/pester-suite-inventory.json")
+                && file_exists(project_dir, "docs/project/pester-suite-reduction-plan.md"),
         ),
         guard_check(
             "desktop_release_workflow",

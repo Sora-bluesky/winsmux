@@ -501,6 +501,8 @@ let composerKeyboardAfterVoiceAt = 0;
 const dogfoodSessionId = `desktop-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 let dogfoodRunCounter = 0;
 const projectExplorerDogfoodRecordedFor = new Set<string>();
+let statusBarDogfoodRecorded = false;
+let statusBarDogfoodRecording = false;
 let activeSourceFilter: SourceFilter = "all";
 let activeTimelineFilter: TimelineFilter = "all";
 let commandBarOpen = false;
@@ -7103,6 +7105,96 @@ function renderFooterLane() {
   for (const item of footerItems.right) {
     right.appendChild(buildPill(item));
   }
+
+  if (!statusBarDogfoodRecorded) {
+    requestAnimationFrame(() => {
+      recordStatusBarFitDogfoodEvent(left, right);
+    });
+  }
+}
+
+async function recordStatusBarFitDogfoodEvent(left: HTMLElement, right: HTMLElement) {
+  if (statusBarDogfoodRecorded || statusBarDogfoodRecording || !left.isConnected || !right.isConnected) {
+    return;
+  }
+  if (!desktopSummarySnapshot) {
+    return;
+  }
+  const selectedProjection = getPrimaryRunProjection();
+  if (!selectedProjection) {
+    return;
+  }
+  const pills = Array.from(document.querySelectorAll<HTMLElement>(".footer-pill"));
+  const overflowingPills = pills.filter((pill) => pill.scrollWidth > pill.clientWidth);
+  const runStatus = selectedProjection.label || selectedProjection.run_id || "No run selected";
+  const reviewStatus = selectedProjection.review_state || "No review";
+  const nextStatus = selectedProjection.next_action || "idle";
+  const inboxCount = desktopSummarySnapshot?.inbox.summary.item_count ?? 0;
+  const stressReasons = getStatusBarFitStressReasons({
+    runStatus,
+    reviewStatus,
+    nextStatus,
+    inboxCount,
+    overflowingPillCount: overflowingPills.length,
+  });
+  const hasRequiredStressState =
+    stressReasons.includes("notification_text") &&
+    (stressReasons.includes("long_run_status") || stressReasons.includes("long_next_status"));
+  if (!hasRequiredStressState) {
+    return;
+  }
+  statusBarDogfoodRecording = true;
+  try {
+    statusBarDogfoodRecorded = await recordOperatorDogfoodEvent({
+      actionType: "input",
+      inputSource: "shortcut",
+      taskRef: "desktop-status-bar-fit",
+      taskClass: "status_bar_fit",
+      payload: {
+        viewportWidth: window.innerWidth,
+        leftClientWidth: left.clientWidth,
+        leftScrollWidth: left.scrollWidth,
+        rightClientWidth: right.clientWidth,
+        rightScrollWidth: right.scrollWidth,
+        pillCount: pills.length,
+        overflowingPillCount: overflowingPills.length,
+        summaryLoaded: true,
+        stressReasons,
+        runStatus,
+        reviewStatus,
+        nextStatus,
+        notificationCount: inboxCount,
+      },
+    });
+  } finally {
+    statusBarDogfoodRecording = false;
+  }
+}
+
+function getStatusBarFitStressReasons(input: {
+  runStatus: string;
+  reviewStatus: string;
+  nextStatus: string;
+  inboxCount: number;
+  overflowingPillCount: number;
+}) {
+  const reasons: string[] = [];
+  if (input.runStatus.length >= 24) {
+    reasons.push("long_run_status");
+  }
+  if (input.reviewStatus.length >= 16 && input.reviewStatus !== "No review") {
+    reasons.push("long_review_status");
+  }
+  if (input.nextStatus.length >= 24 && input.nextStatus !== "idle") {
+    reasons.push("long_next_status");
+  }
+  if (input.inboxCount > 0) {
+    reasons.push("notification_text");
+  }
+  if (input.overflowingPillCount > 0) {
+    reasons.push("measured_overflow");
+  }
+  return reasons;
 }
 
 function setComposerMode(mode: ComposerMode) {
@@ -8082,7 +8174,7 @@ async function recordOperatorDogfoodEvent(input: {
   payload: unknown;
 }) {
   if (!isTauri()) {
-    return;
+    return false;
   }
   const timestamp = input.timestamp || Date.now();
   const startedAt = input.startedAt || timestamp;
@@ -8112,8 +8204,10 @@ async function recordOperatorDogfoodEvent(input: {
       },
       getActiveProjectDirPayload(),
     );
+    return true;
   } catch (error) {
     console.warn("Failed to record dogfood event", error);
+    return false;
   }
 }
 

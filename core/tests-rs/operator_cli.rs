@@ -2091,6 +2091,14 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
     .expect("test should write Pester reduction inventory");
     fs::write(
         project_dir
+            .join("docs")
+            .join("project")
+            .join("pester-suite-reduction-plan.md"),
+        "# Pester suite reduction plan\n",
+    )
+    .expect("test should write Pester reduction plan");
+    fs::write(
+        project_dir
             .join("scripts")
             .join("validate-pester-reduction-plan.ps1"),
         "",
@@ -2132,6 +2140,10 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
     assert_eq!(json["required_checks"][5]["id"], "manual_checklist_v1");
     assert_eq!(json["required_checks"][6]["id"], "legacy_compat_gate");
     assert_eq!(json["required_checks"][7]["id"], "pester_reduction_plan");
+    assert_eq!(
+        json["required_checks"][7]["source"],
+        "docs/project/pester-suite-reduction-plan.md"
+    );
     assert_eq!(json["required_checks"][8]["id"], "desktop_release_workflow");
     assert_eq!(
         json["evidence_contract"]["security_contract"]["provider_token_broker_allowed"],
@@ -2141,6 +2153,80 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
         json["public_safety"]["public_release_notes_language"],
         "English"
     );
+}
+
+#[test]
+fn operator_cli_guard_requires_pester_reduction_plan_document() {
+    let project_dir = make_temp_project_dir("guard-pester-plan-required");
+
+    fs::create_dir_all(project_dir.join("scripts")).expect("test should create scripts dir");
+    fs::write(project_dir.join("scripts").join("git-guard.ps1"), "")
+        .expect("test should write git guard");
+    fs::write(
+        project_dir.join("scripts").join("audit-public-surface.ps1"),
+        "",
+    )
+    .expect("test should write public surface audit");
+    fs::write(project_dir.join("scripts").join("gitleaks-history.ps1"), "")
+        .expect("test should write gitleaks history");
+    fs::write(
+        project_dir
+            .join("scripts")
+            .join("gitleaks-history-baseline.txt"),
+        "abc123\n",
+    )
+    .expect("test should write gitleaks baseline");
+    fs::write(
+        project_dir
+            .join("scripts")
+            .join("generate-release-notes.ps1"),
+        "",
+    )
+    .expect("test should write release notes script");
+    fs::write(
+        project_dir
+            .join("scripts")
+            .join("validate-pester-reduction-plan.ps1"),
+        "",
+    )
+    .expect("test should write Pester reduction validator");
+
+    fs::create_dir_all(project_dir.join("docs").join("project"))
+        .expect("test should create docs project dir");
+    fs::write(
+        project_dir
+            .join("docs")
+            .join("project")
+            .join("legacy-compat-surface-inventory.json"),
+        "{}\n",
+    )
+    .expect("test should write legacy compat inventory");
+    fs::write(
+        project_dir
+            .join("docs")
+            .join("project")
+            .join("pester-suite-inventory.json"),
+        "{}\n",
+    )
+    .expect("test should write Pester reduction inventory");
+
+    fs::create_dir_all(project_dir.join(".github").join("workflows"))
+        .expect("test should create workflows dir");
+    fs::write(
+        project_dir
+            .join(".github")
+            .join("workflows")
+            .join("release-desktop.yml"),
+        "name: Release Desktop App\n",
+    )
+    .expect("test should write desktop release workflow");
+
+    let json = run_json(&project_dir, &["guard", "--json"]);
+
+    assert_eq!(json["summary"]["required_check_count"], 9);
+    assert_eq!(json["summary"]["available_check_count"], 8);
+    assert_eq!(json["required_checks"][7]["id"], "pester_reduction_plan");
+    assert_eq!(json["required_checks"][7]["available"], false);
 }
 
 #[test]
