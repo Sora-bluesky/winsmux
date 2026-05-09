@@ -9325,6 +9325,30 @@ fn guard_report_payload(project_dir: &Path) -> Value {
             "English public release notes with traceable issue or PR references",
             file_exists(project_dir, "scripts/generate-release-notes.ps1"),
         ),
+        guard_check(
+            "manual_checklist_v1",
+            "winsmux manual-checklist --json",
+            "operator_cli:manual-checklist",
+            "v1.0.0 desktop manual validation evidence is required before release",
+            true,
+        ),
+        guard_check(
+            "legacy_compat_gate",
+            "winsmux legacy-compat-gate --json",
+            "docs/project/legacy-compat-surface-inventory.json",
+            "legacy alias and compatibility references are classified before release",
+            file_exists(
+                project_dir,
+                "docs/project/legacy-compat-surface-inventory.json",
+            ),
+        ),
+        guard_check(
+            "desktop_release_workflow",
+            "gh workflow run release-desktop.yml",
+            ".github/workflows/release-desktop.yml",
+            "desktop release workflow can produce MSI, NSIS, and SHA256 artifacts",
+            file_exists(project_dir, ".github/workflows/release-desktop.yml"),
+        ),
     ];
     let required_check_count = required_checks.len();
     let available_check_count = required_checks
@@ -9335,8 +9359,9 @@ fn guard_report_payload(project_dir: &Path) -> Value {
     json!({
         "contract_version": 1,
         "command": "guard",
-        "task_ids": ["TASK-362", "TASK-383", "TASK-384"],
-        "target_version": "v0.24.10",
+        "task_ids": [],
+        "issue_refs": ["#522", "#523", "#524", "#525"],
+        "target_version": "v1.0.0",
         "generated_at": generated_at(),
         "project_dir": project_dir_string(project_dir),
         "product_version": VERSION,
@@ -9360,6 +9385,7 @@ fn guard_report_payload(project_dir: &Path) -> Value {
             "required_fields": [
                 "verification_envelope",
                 "verification_evidence",
+                "architecture_contract",
                 "security_verdict",
                 "audit_chain",
                 "draft_pr_gate",
@@ -9384,6 +9410,12 @@ fn guard_report_payload(project_dir: &Path) -> Value {
             "release_decision": {
                 "automatic_merge_allowed": false,
                 "human_judgement_required": true
+            },
+            "security_contract": {
+                "provider_token_broker_allowed": false,
+                "provider_callback_proxy_allowed": false,
+                "cross_pane_credential_sharing_allowed": false,
+                "local_official_cli_login_allowed": true
             }
         },
         "public_safety": {

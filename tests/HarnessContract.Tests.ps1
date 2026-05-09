@@ -7,6 +7,7 @@ Describe 'harness-check contract' {
         $script:ShadowCutoverGatePath = Join-Path $script:RepoRoot 'winsmux-core\scripts\shadow-cutover-gate.ps1'
         $script:PowerShellDeescalationPath = Join-Path $script:RepoRoot 'winsmux-core\scripts\powershell-deescalation.ps1'
         $script:WinsmuxCorePath = Join-Path $script:RepoRoot 'scripts\winsmux-core.ps1'
+        $script:InternalDocsMetaPath = Join-Path $script:RepoRoot 'winsmux-core\scripts\internal-docs-meta.psd1'
         $script:SettingsLocalPath = Join-Path $script:RepoRoot '.claude\settings.local.json'
 
         $pwshCommand = Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -284,6 +285,19 @@ tasks:
         $bridge | Should -Match "'manual-checklist'\s+\{"
         $bridge | Should -Match 'manual-checklist'
         $bridge | Should -Match 'Invoke-WinsmuxRaw -Arguments \$rustArgs'
+    }
+
+    It 'keeps the generated v1 manual checklist aligned with desktop release evidence' {
+        $meta = Import-PowerShellDataFile -LiteralPath $script:InternalDocsMetaPath
+        $entry = @($meta.ManualChecklistEntries | Where-Object { $_.Version -eq 'v1.0.0' })
+
+        $entry.Count | Should -Be 1
+        @($entry[0].TaskIds) | Should -Contain 'TASK-416'
+        $entry[0].Focus | Should -Match 'デスクトップ'
+        $entry[0].Example | Should -Match 'インストーラー'
+        $entry[0].Example | Should -Match 'プロジェクト選択'
+        $entry[0].Example | Should -Match '画像貼り付け'
+        $entry[0].Memo | Should -Match 'TASK-416'
     }
 
     It 'documents and dispatches the legacy compatibility gate command' {
