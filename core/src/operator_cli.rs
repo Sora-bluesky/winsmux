@@ -881,8 +881,8 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
     let options = parse_options("manual-checklist", args, 0)?;
     let payload = json!({
         "contract_version": 1,
-        "task_id": "TASK-316",
-        "target_version": "v0.24.5",
+        "task_id": "TASK-416",
+        "target_version": "v1.0.0",
         "generated_at": generated_at(),
         "project_dir": project_dir_string(&options.project_dir),
         "product_version": VERSION,
@@ -894,26 +894,72 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
         "required_result_values": ["未", "合格", "不合格", "保留"],
         "release_gates": [
             "version_by_version_results_recorded",
+            "desktop_bundle_artifacts_verified",
+            "desktop_installer_smoke_recorded",
+            "first_launch_project_selection_recorded",
+            "operator_worker_flow_recorded",
+            "clipboard_image_flow_recorded",
+            "settings_language_flow_recorded",
+            "release_docs_and_checksums_verified",
             "no_critical_unchecked_items",
-            "pre_v1_fixups_taskified",
-            "reusable_screen_recording_candidates_recorded",
-            "task_220_can_reference_results"
+            "failed_or_blocked_items_taskified"
         ],
-        "v0_24_5_focus": [
-            "legacy_alias_sunset",
-            "rust_default_on_canary",
-            "windows_install_guidance",
-            "release_ci",
-            "public_surface_gate"
+        "v1_desktop_focus": [
+            "desktop_installer_distribution",
+            "first_launch_project_selection",
+            "project_explorer_accuracy",
+            "operator_composer_editing",
+            "meta_plan_multi_pane_flow",
+            "clipboard_image_input",
+            "status_bar_overflow",
+            "settings_language_control",
+            "startup_diagnostics",
+            "public_release_docs"
+        ],
+        "desktop_manual_items": [
+            {
+                "id": "installer_artifacts",
+                "required_evidence": "Release contains MSI, NSIS, and SHA256 artifacts from the desktop workflow."
+            },
+            {
+                "id": "first_launch_project_selection",
+                "required_evidence": "A new user can select a project folder without typing an absolute path."
+            },
+            {
+                "id": "project_explorer_accuracy",
+                "required_evidence": "The desktop explorer reflects the selected folder and does not show stale repository entries."
+            },
+            {
+                "id": "operator_composer_editing",
+                "required_evidence": "Pasted Japanese text can be edited across wrapped lines without deleting the wrong character."
+            },
+            {
+                "id": "meta_plan_multi_pane_flow",
+                "required_evidence": "A non-trivial meta-plan task shows operator and worker-pane activity with usable status feedback."
+            },
+            {
+                "id": "clipboard_image_input",
+                "required_evidence": "A screenshot can be selected or pasted without forcing the user to type a temp file path."
+            },
+            {
+                "id": "settings_language_control",
+                "required_evidence": "The language setting is visible, understandable, and persisted across desktop restarts."
+            },
+            {
+                "id": "status_bar_fit",
+                "required_evidence": "Long processing and notification text remains visible or intentionally truncated at common desktop widths."
+            }
         ],
         "blocking_conditions": [
             "missing_manual_checklist_document",
             "unchecked_critical_item",
             "failed_result_without_followup_task",
             "blocked_result_without_owner",
+            "missing_desktop_artifact_evidence",
+            "missing_desktop_dogfood_evidence",
             "public_surface_drift"
         ],
-        "next_action": "Record v0.24.5 manual validation results before the v0.24.5 release and feed any failed or blocked item back into backlog."
+        "next_action": "Record v1.0.0 desktop manual validation results before the v1.0.0 release and feed any failed or blocked item back into backlog."
     });
 
     if options.json {
