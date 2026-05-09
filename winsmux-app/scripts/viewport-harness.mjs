@@ -102,6 +102,9 @@ async function stopPreviewServer(child) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     await once(killer, "exit").catch(() => {});
+    child.stdout?.destroy();
+    child.stderr?.destroy();
+    child.unref();
     return;
   }
 
@@ -925,7 +928,7 @@ async function assertSettingsRoundtrip(page, returnSelector) {
   await page.locator("#focus-mode-options", { hasText: "Focus" }).waitFor();
   await page.waitForFunction(() => {
     const input = document.querySelector("#editor-font-size-input");
-    return input instanceof HTMLInputElement && input.value === "14";
+    return input instanceof HTMLInputElement && input.value === "13";
   });
   await page.waitForFunction(() => {
     const input = document.querySelector("#settings-font-family-input");
@@ -1100,9 +1103,10 @@ async function setShellLanguage(page, language) {
         wrapMode: "balanced",
         codeFont: "system",
         codeFontFamily: "Consolas, 'Courier New', monospace",
-        editorFontSize: 14,
+        uiVersion: 2,
+        editorFontSize: 13,
         focusMode: "standard",
-        sidebarWidth: 292,
+        sidebarWidth: 256,
         workbenchWidth: null,
         wideSidebarOpen: true,
         wideContextOpen: false,
@@ -1966,7 +1970,11 @@ async function run() {
   }
 }
 
-run().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+run()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
