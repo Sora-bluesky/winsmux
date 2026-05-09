@@ -336,6 +336,7 @@ interface ThemeState {
 }
 
 interface ShellPreferenceState extends ThemeState {
+  uiVersion: number;
   sidebarWidth: number;
   workbenchWidth: number | null;
   wideSidebarOpen: boolean;
@@ -466,7 +467,7 @@ let sidebarMode: SidebarMode = "explorer";
 let workbenchLayout: WorkbenchLayoutMode = "2x2";
 let focusedWorkbenchPaneId: string | null = null;
 let composerImeActive = false;
-let sidebarWidth = 292;
+let sidebarWidth = 256;
 let workbenchWidth: number | null = null;
 let selectedEditorKey = "";
 let selectedPreviewUrl = "";
@@ -588,10 +589,40 @@ const OPERATOR_PTY_ID = "operator";
 const OPERATOR_PTY_COLS = 120;
 const OPERATOR_PTY_ROWS = 32;
 const OPERATOR_PTY_ACTION_TIMEOUT_MS = 15_000;
-const DEFAULT_EDITOR_FONT_SIZE = 14;
+const DEFAULT_EDITOR_FONT_SIZE = 13;
 const MIN_EDITOR_FONT_SIZE = 8;
 const MAX_EDITOR_FONT_SIZE = 32;
 const DEFAULT_CODE_FONT_FAMILY = "Consolas, 'Courier New', monospace";
+const DEFAULT_SIDEBAR_WIDTH = 256;
+const MIN_SIDEBAR_WIDTH = 220;
+const MAX_SIDEBAR_WIDTH = 380;
+const SHELL_PREFERENCES_UI_VERSION = 2;
+const LEGACY_DEFAULT_EDITOR_FONT_SIZE = 14;
+const LEGACY_DEFAULT_SIDEBAR_WIDTH = 292;
+const VSCODE_DARK_TERMINAL_THEME = {
+  background: "#1e1e1e",
+  foreground: "#cccccc",
+  cursor: "#cccccc",
+  cursorAccent: "#1e1e1e",
+  selectionBackground: "#264f78",
+  selectionInactiveBackground: "rgba(38, 79, 120, 0.5)",
+  black: "#000000",
+  red: "#cd3131",
+  green: "#0dbc79",
+  yellow: "#e5e510",
+  blue: "#2472c8",
+  magenta: "#bc3fbc",
+  cyan: "#11a8cd",
+  white: "#e5e5e5",
+  brightBlack: "#666666",
+  brightRed: "#f14c4c",
+  brightGreen: "#23d18b",
+  brightYellow: "#f5f543",
+  brightBlue: "#3b8eea",
+  brightMagenta: "#d670d6",
+  brightCyan: "#29b8db",
+  brightWhite: "#e5e5e5",
+};
 const DEFAULT_VOICE_SHORTCUT = "Ctrl+Alt+M";
 const RESERVED_VOICE_SHORTCUTS = new Set(["Win+H", "Ctrl+Space", "Ctrl+Shift+Space"]);
 const VOICE_LONG_SESSION_WARNING_MS = 5 * 60 * 1000;
@@ -1404,14 +1435,19 @@ function createPane(paneId?: string): string {
   container.appendChild(paneDiv);
 
   const terminal = new Terminal({
-    cursorBlink: true,
+    allowProposedApi: true,
+    cursorBlink: false,
+    cursorStyle: "block",
+    cursorInactiveStyle: "outline",
     fontSize: themeState.editorFontSize,
     fontFamily: getCodeFontFamily(),
-    theme: {
-      background: "#131722",
-      foreground: "#c7d2e6",
-      cursor: "#c7d2e6",
-    },
+    fontWeight: "normal",
+    fontWeightBold: "bold",
+    letterSpacing: 0,
+    lineHeight: 1,
+    minimumContrastRatio: 4.5,
+    scrollback: 1000,
+    theme: VSCODE_DARK_TERMINAL_THEME,
   });
 
   const fitAddon = new FitAddon();
@@ -6156,7 +6192,11 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
     const wrapMode = wrapOptions.find((item) => item.value === parsed.wrapMode)?.value;
     const codeFont = codeFontOptions.find((item) => item.value === parsed.codeFont)?.value ?? "system";
     const codeFontFamily = normalizeCodeFontFamily(parsed.codeFontFamily, getCodeFontFamily(codeFont, ""));
-    const editorFontSize = clampEditorFontSize(parsed.editorFontSize);
+    const uiVersion = typeof parsed.uiVersion === "number" ? parsed.uiVersion : 1;
+    const parsedEditorFontSize = uiVersion < SHELL_PREFERENCES_UI_VERSION && parsed.editorFontSize === LEGACY_DEFAULT_EDITOR_FONT_SIZE
+      ? DEFAULT_EDITOR_FONT_SIZE
+      : parsed.editorFontSize;
+    const editorFontSize = clampEditorFontSize(parsedEditorFontSize);
     const voiceShortcut = normalizeVoiceShortcut(parsed.voiceShortcut);
     const persistVoiceDraftLocally = parsed.persistVoiceDraftLocally === true;
     const focusMode = focusModeOptions.find((item) => item.value === parsed.focusMode)?.value ?? "standard";
@@ -6165,7 +6205,10 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       return null;
     }
 
-    const sidebarWidthValue = typeof parsed.sidebarWidth === "number" ? parsed.sidebarWidth : 292;
+    const sidebarWidthValue = typeof parsed.sidebarWidth === "number" ? parsed.sidebarWidth : DEFAULT_SIDEBAR_WIDTH;
+    const normalizedSidebarWidth = uiVersion < SHELL_PREFERENCES_UI_VERSION && sidebarWidthValue === LEGACY_DEFAULT_SIDEBAR_WIDTH
+      ? DEFAULT_SIDEBAR_WIDTH
+      : sidebarWidthValue;
     const workbenchWidthValue = typeof parsed.workbenchWidth === "number" ? parsed.workbenchWidth : null;
     const wideSidebarOpen = typeof parsed.wideSidebarOpen === "boolean" ? parsed.wideSidebarOpen : true;
     const wideContextOpen = typeof parsed.wideContextOpen === "boolean" ? parsed.wideContextOpen : false;
@@ -6177,6 +6220,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
 
     return {
       theme,
+      uiVersion: SHELL_PREFERENCES_UI_VERSION,
       density,
       wrapMode,
       codeFont,
@@ -6186,7 +6230,7 @@ function readStoredShellPreferences(): ShellPreferenceState | null {
       persistVoiceDraftLocally,
       focusMode,
       language,
-      sidebarWidth: Math.max(240, Math.min(380, Math.round(sidebarWidthValue))),
+      sidebarWidth: Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, Math.round(normalizedSidebarWidth))),
       workbenchWidth: workbenchWidthValue === null ? null : Math.max(360, Math.min(1400, Math.round(workbenchWidthValue))),
       wideSidebarOpen,
       wideContextOpen,
@@ -6203,6 +6247,7 @@ function persistThemeState() {
   try {
     const nextState: ShellPreferenceState = {
       theme: themeState.theme,
+      uiVersion: SHELL_PREFERENCES_UI_VERSION,
       density: themeState.density,
       wrapMode: themeState.wrapMode,
       codeFont: themeState.codeFont,
@@ -6411,10 +6456,10 @@ function applyLanguageChrome() {
   setElementText(
     "editor-font-size-description",
     japanese
-      ? "エディター表示と端末ペインで使うフォントサイズです。既定値は 14 です。"
-      : "Controls the font size used in editor previews and terminal panes. The default is 14.",
+      ? `エディター表示と端末ペインで使うフォントサイズです。既定値は ${DEFAULT_EDITOR_FONT_SIZE} です。`
+      : `Controls the font size used in editor previews and terminal panes. The default is ${DEFAULT_EDITOR_FONT_SIZE}.`,
   );
-  setElementText("editor-font-size-reset-btn", japanese ? "既定値 14" : "Default 14");
+  setElementText("editor-font-size-reset-btn", japanese ? `既定値 ${DEFAULT_EDITOR_FONT_SIZE}` : `Default ${DEFAULT_EDITOR_FONT_SIZE}`);
   setElementText("settings-profile-label", japanese ? "実行環境" : "Runtime");
   setElementText(
     "settings-profile-value",
@@ -6578,6 +6623,10 @@ function applyCodeFontToPanes() {
   panes.forEach((pane) => {
     pane.terminal.options.fontFamily = fontFamily;
     pane.terminal.options.fontSize = fontSize;
+    pane.terminal.options.lineHeight = 1;
+    pane.terminal.options.letterSpacing = 0;
+    pane.terminal.options.minimumContrastRatio = 4.5;
+    pane.terminal.options.theme = VSCODE_DARK_TERMINAL_THEME;
   });
   fitVisibleWorkbenchPanes();
 }
@@ -12714,13 +12763,15 @@ function initializeSidebarResize() {
   handle.addEventListener("pointerdown", (event) => {
     const startX = event.clientX;
     const startWidth = sidebarWidth;
+    document.body.classList.add("is-resizing-sidebar");
     const onMove = (moveEvent: PointerEvent) => {
-      sidebarWidth = Math.max(240, Math.min(380, startWidth + (moveEvent.clientX - startX)));
+      sidebarWidth = Math.max(MIN_SIDEBAR_WIDTH, Math.min(MAX_SIDEBAR_WIDTH, startWidth + (moveEvent.clientX - startX)));
       appShell.style.setProperty("--sidebar-width", `${sidebarWidth}px`);
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("is-resizing-sidebar");
       void persistThemeState();
     };
     window.addEventListener("pointermove", onMove);

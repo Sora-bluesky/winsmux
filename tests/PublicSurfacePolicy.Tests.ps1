@@ -270,10 +270,29 @@ Describe 'Public surface policy' {
             $output = @(& pwsh -NoProfile -File $auditPublicSurface 2>&1)
 
             $LASTEXITCODE | Should -Be 1
-            ($output -join "`n") | Should -Match "public doc contains forbidden external product/reference name 'VS Code'"
+            ($output -join "`n") | Should -Match 'public doc contains forbidden external product/reference'
             ($output -join "`n") | Should -Match 'docs/authentication-support\.md'
         } finally {
             [System.IO.File]::WriteAllText($linkedPublicDoc, $original, [System.Text.UTF8Encoding]::new($false))
+        }
+    }
+
+    It 'allows upstream names in third-party notices for attribution' {
+        $noticePath = Join-Path $repoRoot 'THIRD_PARTY_NOTICES.md'
+        $original = [System.IO.File]::ReadAllText($noticePath)
+        try {
+            [System.IO.File]::WriteAllText(
+                $noticePath,
+                $original + "`nTemporary attribution line for VS Code provenance.`n",
+                [System.Text.UTF8Encoding]::new($false)
+            )
+
+            $output = @(& pwsh -NoProfile -File $auditPublicSurface 2>&1)
+
+            $LASTEXITCODE | Should -Be 0
+            ($output -join "`n") | Should -Match 'audit-public-surface passed'
+        } finally {
+            [System.IO.File]::WriteAllText($noticePath, $original, [System.Text.UTF8Encoding]::new($false))
         }
     }
 
@@ -288,7 +307,8 @@ Describe 'Public surface policy' {
         $output = @(& pwsh -NoProfile -File $auditPublicSurface -ReleaseNotesPath $releaseBody 2>&1)
 
         $LASTEXITCODE | Should -Be 1
-        ($output -join "`n") | Should -Match "release notes contains forbidden external product/reference name 'VS Code'"
+        ($output -join "`n") | Should -Match 'release notes contains forbidden external product/reference'
+        ($output -join "`n") | Should -Match "name 'VS Code'"
     }
 
     It 'uses recorded-baseline gitleaks scans for routine push and CI checks' {

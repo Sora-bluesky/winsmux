@@ -87,3 +87,48 @@ Public `openai/codex` TUI-derived UI reuse in winsmux follows the active release
 These are project adaptation guardrails, not additional license terms.
 
 This notice covers attribution and provenance tracking. It does not imply that winsmux reproduces Codex verbatim end-to-end, or that winsmux incorporates non-public Codex App desktop source code.
+
+## microsoft/vscode
+
+- Upstream: https://github.com/microsoft/vscode
+- Pinned snapshot: `98b4a731eefbb5358e44dcc7dea03651baee00aa`
+- License: MIT
+- Copyright: Microsoft Corporation
+
+### winsmux usage policy
+
+winsmux may closely adapt selected public Visual Studio Code workbench density and styling references for the Tauri operator shell, including:
+
+- workbench typography, spacing, and row-density direction
+- activity bar, side bar, status bar, and settings surface affordances
+- terminal colors, gutter behavior, selection, and cursor styling
+
+When code or UI definitions are directly copied or closely adapted from `microsoft/vscode`, the implementing change must:
+
+1. keep this notice file updated,
+2. record the upstream source path(s) in the pull request or handoff,
+3. preserve MIT attribution in the repository.
+
+### Current tracked source references
+
+These upstream areas are the current reference set for public `microsoft/vscode` workbench-derived UI work:
+
+- `src/vs/workbench/browser/parts/activitybar/media/activitybarpart.css`
+- `src/vs/workbench/browser/parts/activitybar/media/activityaction.css`
+- `src/vs/workbench/browser/parts/editor/media/editortitlecontrol.css`
+- `src/vs/workbench/browser/parts/statusbar/media/statusbarpart.css`
+- `src/vs/workbench/contrib/preferences/browser/media/settingsEditor2.css`
+- `src/vs/workbench/contrib/terminal/browser/media/terminal.css`
+- `src/vs/workbench/contrib/terminal/browser/media/xterm.css`
+
+### Current winsmux adaptation scope
+
+The current `winsmux-app` density work tracks these public `microsoft/vscode` areas most closely:
+
+- compact side-bar row heights and indentation
+- compact status bar layout
+- settings editor field and tab density
+- terminal header density and dark terminal colors
+- terminal left gutter and scrollbar behavior
+
+This notice covers attribution and provenance tracking. It does not imply that winsmux reproduces Visual Studio Code verbatim end-to-end.

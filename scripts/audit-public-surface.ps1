@@ -55,6 +55,7 @@ function Test-IsExternalProductReferenceAuditSurface {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $normalized = $Path.Replace('\', '/')
+    if ($normalized -eq 'THIRD_PARTY_NOTICES.md') { return $false }
     if (Test-IsPublicDoc -Path $Path) { return $true }
     if ($normalized -match '^docs/[^/]+\.md$') { return $true }
     return $normalized -match '^core/docs/.+\.md$'
