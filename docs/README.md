@@ -4,8 +4,8 @@ Use this page as the public map for winsmux setup and operation.
 
 ## Start here
 
-- [Quickstart](quickstart.md) - install winsmux, create project settings, launch a managed workspace, and send the first pane instruction.
-- [Installation](installation.md) - requirements, installer profiles, updates, uninstall steps, and package behavior.
+- [Quickstart](quickstart.md) - install the desktop app or CLI package, create project settings, launch a managed workspace, and send the first pane instruction.
+- [Installation](installation.md) - requirements, desktop installers, CLI profiles, updates, uninstall steps, and package behavior.
 - [Customization](customization.md) - launcher presets, workspace lifecycle, agent slots, credentials, and desktop preferences.
 
 ## Understand the model
@@ -19,4 +19,4 @@ Use this page as the public map for winsmux setup and operation.
 - [Troubleshooting](TROUBLESHOOTING.md) - startup, PowerShell, pane, credential, and release problems.
 - [Runtime features](../core/docs/features.md) - terminal runtime feature reference.
 - [Runtime configuration](../core/docs/configuration.md) - tmux-compatible runtime configuration.
-- [tmux compatibility](../core/docs/compatibility.md) - legacy compatibility and alias sunset behavior.
+- [tmux compatibility](../core/docs/compatibility.md) - tmux-compatible runtime behavior and removed legacy binary aliases.

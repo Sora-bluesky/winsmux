@@ -1,0 +1,48 @@
+name: Build Desktop App
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'winsmux-app/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build-desktop.yml'
+  pull_request:
+    paths:
+      - 'winsmux-app/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build-desktop.yml'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: winsmux-app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        working-directory: winsmux-app
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: winsmux-app
+        run: npm run build
+
+      - name: Test Tauri backend
+        run: cargo test --manifest-path winsmux-app/src-tauri/Cargo.toml
+
+      - name: Build desktop binary without bundling
+        working-directory: winsmux-app
+        run: npm run tauri -- build --no-bundle

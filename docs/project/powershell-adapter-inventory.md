@@ -10,7 +10,7 @@ This document classifies PowerShell and hook entrypoints before the `v0.24.4` ru
 - Treat startup, attach, state, watchdog, and rollback as separate responsibilities.
 - Do not remove a script only because repo-wide references are low. First prove it is outside public docs, hooks, install output, and operator startup paths.
 - `TASK-282` should introduce measured dual-run comparison before `TASK-270` removes or thins runtime scripts.
-- `TASK-296` tracks the legacy alias sunset: `psmux`, `pmux`, and `tmux` aliases still run with a deprecation warning, but new docs and scripts must use `winsmux`, and the alias contract must be removed before `v1.0.0`.
+- `TASK-296` tracks the legacy alias sunset: `psmux`, `pmux`, and `tmux` binary aliases are no longer shipped, and new docs and scripts must use `winsmux`.
 - `TASK-407` expands the PowerShell reduction plan to the legacy Pester suites. The goal is to keep release-blocking coverage while moving core runtime behavior checks to Rust tests or typed fixtures before `v1.0.0`.
 
 ## Classification rules

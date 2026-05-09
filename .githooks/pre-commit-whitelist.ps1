@@ -91,6 +91,10 @@ $whitelistPatterns = @(
     '.claude/CLAUDE.md',
     '.claude/hooks/**',
     '.claude/settings.json',
+    '.github/workflows/build-core.yml',
+    '.github/workflows/build-desktop.yml',
+    '.github/workflows/release-core.yml',
+    '.github/workflows/release-desktop.yml',
     '.github/workflows/release-npm.yml',
     '.github/workflows/test.yml',
     'tasks/roadmap-title-ja.example.psd1'

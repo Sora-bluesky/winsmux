@@ -1,0 +1,67 @@
+name: Release Desktop App
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Existing release tag to upload to; leave blank for artifact-only verification'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: winsmux-app/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        working-directory: winsmux-app
+        run: npm ci
+
+      - name: Build desktop bundles
+        working-directory: winsmux-app
+        run: npm run tauri -- build
+
+      - name: Collect desktop release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path output/desktop-release | Out-Null
+          Copy-Item target/release/bundle/msi/*.msi output/desktop-release/
+          Copy-Item target/release/bundle/nsis/*.exe output/desktop-release/
+          Push-Location output/desktop-release
+          Get-ChildItem -File |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = (Get-FileHash -Algorithm SHA256 -Path $_.FullName).Hash.ToLowerInvariant()
+              "$hash  $($_.Name)"
+            } | Set-Content -Encoding ascii SHA256SUMS-desktop
+          Pop-Location
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: winsmux-desktop-bundles
+          path: output/desktop-release/*
+
+      - name: Upload desktop bundles to release
+        if: github.event_name == 'push' || inputs.release_tag != ''
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || inputs.release_tag }}
+          files: output/desktop-release/*

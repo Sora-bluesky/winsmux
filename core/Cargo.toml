@@ -65,18 +65,6 @@ windows-sys = { version = "0.61", features = [
 name = "winsmux"
 path = "src/bin/winsmux.rs"
 
-[[bin]]
-name = "psmux"
-path = "src/bin/psmux.rs"
-
-[[bin]]
-name = "pmux"
-path = "src/bin/pmux.rs"
-
-[[bin]]
-name = "tmux"
-path = "src/bin/tmux.rs"
-
 [dependencies]
 ratatui = "0.30"
 crossterm = "0.29"

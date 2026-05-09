@@ -63,7 +63,9 @@ Rust is only needed when you build the runtime from source.
 
 ## Get Started
 
-The fastest path is:
+For the desktop app, download `winsmux_<version>_x64-setup.exe` from the matching GitHub Release, run it, and choose the project folder you want agents to work in.
+
+For CLI-first setups, the fastest path is:
 
 ```powershell
 npm install -g winsmux
@@ -73,7 +75,7 @@ winsmux launch
 ```
 
 See [Quickstart](docs/quickstart.md) for a guided first run.
-See [Installation](docs/installation.md) for profiles, updates, and uninstall steps.
+See [Installation](docs/installation.md) for desktop installers, CLI profiles, updates, and uninstall steps.
 See [Customization](docs/customization.md) for launcher presets, worktree policy, slots, credentials, and desktop settings.
 
 ## Main Commands
@@ -109,8 +111,8 @@ winsmux skills --json
 
 `winsmux conflict-preflight` remains available as a compatibility command behind `winsmux compare preflight`.
 
-Compatibility aliases `psmux`, `pmux`, and `tmux` still run with a deprecation warning.
-Use `winsmux` for new scripts and docs; the alias contract will be removed before `v1.0.0`.
+Legacy binary aliases `psmux`, `pmux`, and `tmux` are no longer shipped.
+Use `winsmux` for scripts and docs. This does not remove tmux-compatible configuration, targets, or commands where documented.
 
 ## Git Graph CLI
 

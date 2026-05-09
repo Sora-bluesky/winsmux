@@ -14,6 +14,10 @@ Install these first:
 
 ## 2. Install winsmux
 
+For the desktop app, download `winsmux_<version>_x64-setup.exe` from the matching GitHub Release and run it. After launch, choose the project folder you want agents to work in.
+
+For CLI-first setups, install the npm package:
+
 ```powershell
 npm install -g winsmux
 winsmux install --profile full
@@ -37,7 +41,7 @@ The default workspace lifecycle is `managed-worktree`, which keeps worker file c
 winsmux launch
 ```
 
-This starts the managed Windows Terminal workspace. The operator remains responsible for reading pane output and deciding what to accept.
+This starts the managed Windows Terminal workspace. In the desktop app, use the project selector to open the same project and inspect the operator and worker panes from the control plane. The operator remains responsible for reading pane output and deciding what to accept.
 
 ## 5. Read and send
 
