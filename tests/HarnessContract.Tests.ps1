@@ -300,6 +300,8 @@ tasks:
         $entry[0].Memo | Should -Match 'TASK-416'
         $voiceEntry = @($entry | Where-Object { @($_.TaskIds) -contains 'TASK-468' })
         $voiceEntry.Count | Should -Be 1
+        @($voiceEntry[0].TaskIds).Count | Should -Be 1
+        @($voiceEntry[0].TaskIds)[0] | Should -Be 'TASK-468'
         $voiceEntry[0].Focus | Should -Match '音声入力'
         $voiceEntry[0].Example | Should -Match 'フォールバック'
         $voiceEntry[0].Memo | Should -Match 'TASK-468'
