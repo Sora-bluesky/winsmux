@@ -10,30 +10,19 @@ This repository may reuse selected UI/UX assets and implementation patterns from
 
 ### winsmux usage policy
 
-winsmux currently retains selected legacy compatibility surfaces that still expose or reference `psmux`, `pmux`, or `tmux` names through the MIT-licensed core upstream.
-The legacy binary aliases are deprecated but still run with a deprecation warning;
-operators should migrate scripts and docs to `winsmux`.
-The legacy alias contract will be removed before `v1.0.0`.
+winsmux retains selected MIT-derived compatibility implementation from the original terminal runtime, but it no longer ships the legacy binary aliases `psmux`, `pmux`, or `tmux`.
+Operators should use `winsmux` in scripts and docs.
 
 This includes:
 
-- legacy binary aliases
-- legacy CLI/help compatibility
 - legacy data-path and terminal-multiplexer compatibility behavior
+- tmux-compatible command, target, format, and configuration behavior
 
 MIT does not require a separate NOTICE file in the same way Apache-2.0 often does, but winsmux keeps this entry anyway for provenance, auditability, and rename-debt tracking.
 
 ### Sunset policy
 
-This section is tied to the active compatibility contract.
-
-- While legacy `psmux` compatibility remains in the public product surface, keep this notice entry and keep the tracked source references current.
-- When the compatibility sunset is completed before `v1.0.0`, update this section to reflect the post-sunset reality:
-  - remove references that no longer ship in the public surface,
-  - keep attribution only for code or assets that still remain in-repo,
-  - or remove this section entirely if no MIT-derived `psmux` compatibility surface remains.
-
-In other words, this entry is not permanent. It should evolve with the compatibility contract and be reduced or removed once the sunset work is complete.
+This section remains because MIT-derived runtime code and compatibility behavior still remain in the repository. It no longer describes shipped legacy binary aliases.
 
 ### Current tracked source references
 

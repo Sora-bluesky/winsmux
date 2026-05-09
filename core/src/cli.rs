@@ -3,36 +3,8 @@ use crate::types::{ParsedTarget, VERSION};
 fn canonical_program_name_for_display(name: &str) -> String {
     let normalized = name.to_lowercase().replace(".exe", "");
     match normalized.as_str() {
-        "" | "winsmux" | "psmux" | "pmux" | "tmux" => "winsmux".to_string(),
+        "" | "winsmux" => "winsmux".to_string(),
         other => other.to_string(),
-    }
-}
-
-fn normalized_executable_name(name: &str) -> String {
-    name.to_lowercase().replace(".exe", "")
-}
-
-pub fn legacy_alias_warning_for_program(name: &str) -> Option<String> {
-    let normalized = normalized_executable_name(name);
-    if !matches!(normalized.as_str(), "psmux" | "pmux" | "tmux") {
-        return None;
-    }
-
-    Some(format!(
-        "winsmux: compatibility alias '{normalized}' is deprecated; use 'winsmux' instead. The legacy alias contract will be removed before v1.0.0."
-    ))
-}
-
-pub fn warn_if_legacy_alias_invocation() {
-    let Some(executable_name) = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.file_stem().map(|stem| stem.to_string_lossy().to_string()))
-    else {
-        return;
-    };
-
-    if let Some(message) = legacy_alias_warning_for_program(&executable_name) {
-        eprintln!("{message}");
     }
 }
 
@@ -429,8 +401,8 @@ EXAMPLES:
     {prog} set -g default-shell cmd Use cmd.exe as default shell
     {prog} source-file ~/.psmux.conf Reload config
 
-NOTE: winsmux preserves compatibility aliases 'psmux', 'pmux', and 'tmux' where supported.
-These aliases are deprecated and will be removed before v1.0.0.
+NOTE: winsmux no longer ships the legacy binary aliases 'psmux', 'pmux', or 'tmux'.
+Use the 'winsmux' command name while keeping tmux-compatible config, targets, and commands where documented.
 
 For more information: https://github.com/Sora-bluesky/winsmux
 "#, prog = prog, ver = VERSION)
@@ -615,14 +587,11 @@ pub fn parse_target(target: &str) -> ParsedTarget {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        canonical_program_name_for_display, commands_text, help_text,
-        legacy_alias_warning_for_program,
-    };
+    use super::{canonical_program_name_for_display, commands_text, help_text};
 
     #[test]
-    fn canonical_program_name_prefers_winsmux_for_legacy_aliases() {
-        for alias in ["winsmux", "winsmux.exe", "psmux", "pmux.exe", "tmux"] {
+    fn canonical_program_name_prefers_winsmux_for_empty_and_real_binary() {
+        for alias in ["", "winsmux", "winsmux.exe"] {
             assert_eq!(canonical_program_name_for_display(alias), "winsmux");
         }
         assert_eq!(canonical_program_name_for_display("custom-tool.exe"), "custom-tool");
@@ -637,22 +606,11 @@ mod tests {
         assert!(text.contains("rust-canary             Print the Rust default-on canary gate JSON"));
         assert!(text.contains("manual-checklist        Print the versioned manual validation checklist gate"));
         assert!(text.contains("legacy-compat-gate      Print the legacy compatibility removal inventory gate"));
-        assert!(text.contains("winsmux preserves compatibility aliases 'psmux', 'pmux', and 'tmux' where supported."));
-        assert!(text.contains("These aliases are deprecated and will be removed before v1.0.0."));
+        assert!(text.contains("winsmux no longer ships the legacy binary aliases 'psmux', 'pmux', or 'tmux'."));
+        assert!(text.contains("Use the 'winsmux' command name while keeping tmux-compatible config"));
         assert!(text.contains("For more information: https://github.com/Sora-bluesky/winsmux"));
         assert!(!text.contains("psmux reads config on startup from the first file found:"));
         assert!(!text.contains("psmux launches PowerShell 7 (pwsh) by default."));
-    }
-
-    #[test]
-    fn legacy_alias_warning_is_only_for_compatibility_aliases() {
-        let warning = legacy_alias_warning_for_program("psmux.exe").expect("warning");
-
-        assert!(warning.contains("compatibility alias 'psmux' is deprecated"));
-        assert!(warning.contains("use 'winsmux' instead"));
-        assert!(warning.contains("removed before v1.0.0"));
-        assert!(legacy_alias_warning_for_program("winsmux").is_none());
-        assert!(legacy_alias_warning_for_program("custom").is_none());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-// Shared CLI implementation used by the winsmux binary and legacy aliases.
+// Shared CLI implementation used by the winsmux binary.
 
 mod types;
 mod platform;
@@ -390,8 +390,6 @@ mod tests {
 }
 
 fn run_main() -> io::Result<()> {
-    cli::warn_if_legacy_alias_invocation();
-
     let args: Vec<String> = env::args().collect();
     
     // Clean up any stale port files at startup

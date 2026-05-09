@@ -1,7 +1,7 @@
 {
   "task": "TASK-408",
   "version": 1,
-  "description": "Machine-readable inventory for legacy psmux, pmux, and tmux compatibility surfaces before the v1.0.0 alias removal gate.",
+  "description": "Machine-readable inventory for legacy psmux, pmux, and tmux references after the binary alias removal gate.",
   "terms": [
     "psmux",
     "pmux",
@@ -18,7 +18,7 @@
       "owner": "operator startup safety",
       "surface": "legacy probe denial rules and tests",
       "reason": "These references block old psmux startup probes and keep operators on winsmux startup checks.",
-      "target": "keep until alias removal is complete, then narrow the denied examples if obsolete",
+      "target": "keep as stale-runbook denial examples while older local installs may still exist",
       "paths": [
         ".claude/CLAUDE.md",
         ".claude/hooks/sh-orchestra-gate.js",
@@ -97,30 +97,19 @@
       "target": "keep until operator state readers no longer need legacy field fallbacks and the gate is retired",
       "paths": [
         "scripts/winsmux-core.ps1",
-        "winsmux-core/scripts/agent-monitor.ps1"
+        "winsmux-core/psmux-bridge.ps1",
+        "winsmux-core/scripts/agent-monitor.ps1",
+        "winsmux-core/scripts/powershell-deescalation.ps1"
       ]
     },
     {
       "class": "removal-candidate",
-      "owner": "legacy binary alias sunset",
-      "surface": "legacy package, installer, and binary alias names",
-      "reason": "These surfaces publish or install psmux, pmux, or tmux binary names and must be removed or replaced before v1.0.0.",
-      "target": "remove aliases or replace outputs with winsmux-only names before v1.0.0",
+      "owner": "completed legacy binary alias sunset",
+      "surface": "legacy Rust package alias names",
+      "reason": "The shipped Rust package no longer defines psmux, pmux, or tmux binary outputs. This entry keeps the completed sunset visible to the gate.",
+      "target": "keep removal_candidate_files at zero; rework any future matched file before v1.0.0 release",
       "paths": [
-        "core/Cargo.toml",
-        "core/.github/ASSETS.md",
-        "core/.github/social-card.svg",
-        "core/.github/workflows/release.yml",
-        "core/.gitignore",
-        "core/scripts/build.ps1",
-        "core/scripts/install.ps1",
-        "core/scripts/pmux-title.ps1",
-        "core/scripts/pmux-title.sh",
-        "core/scripts/publish-choco.ps1",
-        "core/scripts/test_scroll_inject.ps1",
-        "core/scripts/uninstall.ps1",
-        "winsmux-core/psmux-bridge.ps1",
-        "winsmux-core/scripts/powershell-deescalation.ps1"
+        "core/Cargo.toml"
       ]
     },
     {
@@ -142,7 +131,7 @@
       "owner": "TASK-408 gate",
       "surface": "compatibility inventory and validator",
       "reason": "The gate must name the legacy terms it detects so future changes cannot add unclassified compatibility surfaces.",
-      "target": "keep until the v1.0.0 alias removal gate is complete",
+      "target": "keep while the repository still contains classified compatibility references",
       "paths": [
         "docs/project/legacy-compat-surface-inventory.json",
         "docs/project/legacy-compat-surface-inventory.md",

@@ -14,6 +14,10 @@
 
 ## 2. winsmux をインストールする
 
+デスクトップアプリを使う場合は、対象の GitHub Release から `winsmux_<version>_x64-setup.exe` を取得し、実行します。起動後は、エージェントに作業させたいプロジェクトフォルダーを選択します。
+
+CLI 中心で使う場合は、npm パッケージから入れます。
+
 ```powershell
 npm install -g winsmux
 winsmux install --profile full
@@ -37,7 +41,7 @@ winsmux init
 winsmux launch
 ```
 
-管理された Windows Terminal ワークスペースが起動します。ペイン出力を読み、採用するかどうかを決める責任はオペレーターに残ります。
+管理された Windows Terminal ワークスペースが起動します。デスクトップアプリでは、同じプロジェクトをプロジェクト選択から開き、オペレーターとワーカーのペインを管制面から確認します。ペイン出力を読み、採用するかどうかを決める責任はオペレーターに残ります。
 
 ## 5. 読み取りと送信を試す
 

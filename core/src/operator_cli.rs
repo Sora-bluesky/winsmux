@@ -1168,6 +1168,15 @@ fn legacy_compat_gate_report(project_dir: &Path) -> io::Result<Value> {
     }
 
     let passed = unclassified.is_empty() && private_reference_files.is_empty();
+    let removal_candidate_files = class_counts
+        .get("removal-candidate")
+        .copied()
+        .unwrap_or(0);
+    let next_action = if removal_candidate_files == 0 {
+        "Legacy binary alias removal is complete; keep remaining tmux-compatible product behavior classified and covered."
+    } else {
+        "Before v1.0.0, remove or replace removal-candidate alias surfaces while keeping intentional tmux-compatible product behavior covered."
+    };
     Ok(json!({
         "contract_version": 1,
         "task_id": "TASK-408",
@@ -1184,7 +1193,7 @@ fn legacy_compat_gate_report(project_dir: &Path) -> io::Result<Value> {
             "passed": passed,
             "matched_file_count": matched_files.len(),
             "intentional_shim_files": class_counts.get("intentional-shim").copied().unwrap_or(0),
-            "removal_candidate_files": class_counts.get("removal-candidate").copied().unwrap_or(0),
+            "removal_candidate_files": removal_candidate_files,
             "unclassified_count": unclassified.len(),
             "private_reference_count": private_reference_files.len(),
         },
@@ -1198,7 +1207,7 @@ fn legacy_compat_gate_report(project_dir: &Path) -> io::Result<Value> {
             "inventory_path_or_glob_without_file",
             "private_local_reference_in_inventory"
         ],
-        "next_action": "Before v1.0.0, remove or replace removal-candidate alias surfaces while keeping intentional tmux-compatible product behavior covered."
+        "next_action": next_action
     }))
 }
 

@@ -1,8 +1,8 @@
 # Legacy Compatibility Surface Inventory
 
-Purpose: contributor-facing `TASK-408` inventory and gate for removing legacy `psmux`, `pmux`, and `tmux` alias surfaces before `v1.0.0`.
+Purpose: contributor-facing `TASK-408` inventory and gate for keeping legacy `psmux`, `pmux`, and `tmux` references classified after the binary alias sunset.
 
-This does not remove aliases. It makes the remaining compatibility surface explicit so release work can distinguish intentional shims from removal candidates.
+The binary alias sunset has removed the shipped `psmux`, `pmux`, and `tmux` executable names from the Rust package. This inventory keeps the remaining compatibility surface explicit so release work can distinguish intentional tmux-compatible behavior from stale legacy references.
 
 The machine-readable inventory is `docs/project/legacy-compat-surface-inventory.json`.
 Validate it with either command:
@@ -20,9 +20,9 @@ Validate it with either command:
 ## Current conclusion
 
 - Public `tmux` command, configuration, target, pane environment, and control-mode compatibility remains product behavior.
-- Legacy `psmux`, `pmux`, and `tmux` binary aliases remain a removal candidate for `v1.0.0`.
+- Legacy `psmux`, `pmux`, and `tmux` binary aliases are no longer shipped.
 - Legacy upstream tests remain governed by `TASK-407`; this task only prevents unclassified compatibility references from being added.
-- Operator startup guidance that forbids `psmux` probes is an intentional safety shim until the alias removal is complete.
+- Operator startup guidance that forbids `psmux` probes is an intentional safety shim for older local installs and stale runbooks.
 
 ## Gate contract
 
@@ -34,4 +34,4 @@ The gate fails when:
 - an inventory path or glob matches no repository file,
 - or the inventory/documentation introduces private local paths or maintainer-only skill references.
 
-The gate can pass while removal candidates remain. That is intentional for this task: `TASK-408` creates the release-sized inventory and validation surface, not the unsafe broad deletion.
+The gate can pass while reference-cleanup candidates remain. That is intentional for this task: `TASK-408` keeps the inventory and validation surface so stale legacy references do not re-enter public release artifacts unnoticed.
