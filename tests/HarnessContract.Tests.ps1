@@ -291,16 +291,18 @@ tasks:
         $meta = Import-PowerShellDataFile -LiteralPath $script:InternalDocsMetaPath
         $entry = @($meta.ManualChecklistEntries | Where-Object { $_.Version -eq 'v1.0.0' })
 
-        $entry.Count | Should -Be 1
+        $entry.Count | Should -BeGreaterOrEqual 2
         @($entry[0].TaskIds) | Should -Contain 'TASK-416'
-        @($entry[0].TaskIds) | Should -Contain 'TASK-468'
         $entry[0].Focus | Should -Match 'デスクトップ'
         $entry[0].Example | Should -Match 'インストーラー'
         $entry[0].Example | Should -Match 'プロジェクト選択'
         $entry[0].Example | Should -Match '画像貼り付け'
-        $entry[0].Example | Should -Match '音声入力'
         $entry[0].Memo | Should -Match 'TASK-416'
-        $entry[0].Memo | Should -Match 'TASK-468'
+        $voiceEntry = @($entry | Where-Object { @($_.TaskIds) -contains 'TASK-468' })
+        $voiceEntry.Count | Should -Be 1
+        $voiceEntry[0].Focus | Should -Match '音声入力'
+        $voiceEntry[0].Example | Should -Match 'フォールバック'
+        $voiceEntry[0].Memo | Should -Match 'TASK-468'
     }
 
     It 'documents and dispatches the legacy compatibility gate command' {
