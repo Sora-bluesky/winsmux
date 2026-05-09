@@ -2071,23 +2071,54 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
         "",
     )
     .expect("test should write release notes script");
+    fs::create_dir_all(project_dir.join("docs").join("project"))
+        .expect("test should create docs project dir");
+    fs::write(
+        project_dir
+            .join("docs")
+            .join("project")
+            .join("legacy-compat-surface-inventory.json"),
+        "{}\n",
+    )
+    .expect("test should write legacy compat inventory");
+    fs::create_dir_all(project_dir.join(".github").join("workflows"))
+        .expect("test should create workflows dir");
+    fs::write(
+        project_dir
+            .join(".github")
+            .join("workflows")
+            .join("release-desktop.yml"),
+        "name: Release Desktop App\n",
+    )
+    .expect("test should write desktop release workflow");
 
     let json = run_json(&project_dir, &["guard", "--json"]);
 
     assert_eq!(json["command"], "guard");
-    assert_eq!(json["task_ids"][0], "TASK-362");
-    assert_eq!(json["task_ids"][1], "TASK-383");
-    assert_eq!(json["task_ids"][2], "TASK-384");
-    assert_eq!(json["target_version"], "v0.24.10");
-    assert_eq!(json["summary"]["required_check_count"], 5);
-    assert_eq!(json["summary"]["available_check_count"], 5);
+    assert_eq!(json["task_ids"].as_array().unwrap().len(), 0);
+    assert_eq!(json["issue_refs"][0], "#522");
+    assert_eq!(json["issue_refs"][3], "#525");
+    assert_eq!(json["target_version"], "v1.0.0");
+    assert_eq!(json["summary"]["required_check_count"], 8);
+    assert_eq!(json["summary"]["available_check_count"], 8);
     assert_eq!(
         json["observed_state"]["gitleaks_baseline_file"],
         "scripts/gitleaks-history-baseline.txt"
     );
     assert_eq!(
-        json["evidence_contract"]["required_fields"][3],
+        json["evidence_contract"]["required_fields"][2],
+        "architecture_contract"
+    );
+    assert_eq!(
+        json["evidence_contract"]["required_fields"][4],
         "audit_chain"
+    );
+    assert_eq!(json["required_checks"][5]["id"], "manual_checklist_v1");
+    assert_eq!(json["required_checks"][6]["id"], "legacy_compat_gate");
+    assert_eq!(json["required_checks"][7]["id"], "desktop_release_workflow");
+    assert_eq!(
+        json["evidence_contract"]["security_contract"]["provider_token_broker_allowed"],
+        false
     );
     assert_eq!(
         json["public_safety"]["public_release_notes_language"],
@@ -2111,7 +2142,7 @@ fn operator_cli_guard_text_summarizes_contract() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Guard baseline: 5 checks for v0.24.10"));
+    assert!(stdout.contains("Guard baseline: 8 checks for v1.0.0"));
     assert!(stdout.contains("Run the listed guard commands before release tagging"));
     assert!(!stdout.trim_start().starts_with('{'));
 }
