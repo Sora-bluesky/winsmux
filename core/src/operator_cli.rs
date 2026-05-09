@@ -900,6 +900,7 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
             "operator_worker_flow_recorded",
             "clipboard_image_flow_recorded",
             "settings_language_flow_recorded",
+            "native_voice_dictation_or_fallback_contract_recorded",
             "release_docs_and_checksums_verified",
             "no_critical_unchecked_items",
             "failed_or_blocked_items_taskified"
@@ -913,6 +914,7 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
             "clipboard_image_input",
             "status_bar_overflow",
             "settings_language_control",
+            "native_voice_dictation_or_fallback_contract",
             "startup_diagnostics",
             "public_release_docs"
         ],
@@ -946,6 +948,10 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
                 "required_evidence": "The language setting is visible, understandable, and persisted across desktop restarts."
             },
             {
+                "id": "native_voice_dictation_or_fallback_contract",
+                "required_evidence": "Native Windows microphone capture either produces editable composer text, or the release evidence records the supported fallback contract separately from microphone metering."
+            },
+            {
                 "id": "status_bar_fit",
                 "required_evidence": "Long processing and notification text remains visible or intentionally truncated at common desktop widths."
             }
@@ -957,6 +963,7 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
             "blocked_result_without_owner",
             "missing_desktop_artifact_evidence",
             "missing_desktop_dogfood_evidence",
+            "missing_native_voice_dictation_contract",
             "public_surface_drift"
         ],
         "next_action": "Record v1.0.0 desktop manual validation results before the v1.0.0 release and feed any failed or blocked item back into backlog."

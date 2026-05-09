@@ -293,11 +293,14 @@ tasks:
 
         $entry.Count | Should -Be 1
         @($entry[0].TaskIds) | Should -Contain 'TASK-416'
+        @($entry[0].TaskIds) | Should -Contain 'TASK-468'
         $entry[0].Focus | Should -Match 'デスクトップ'
         $entry[0].Example | Should -Match 'インストーラー'
         $entry[0].Example | Should -Match 'プロジェクト選択'
         $entry[0].Example | Should -Match '画像貼り付け'
+        $entry[0].Example | Should -Match '音声入力'
         $entry[0].Memo | Should -Match 'TASK-416'
+        $entry[0].Memo | Should -Match 'TASK-468'
     }
 
     It 'documents and dispatches the legacy compatibility gate command' {
