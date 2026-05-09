@@ -1091,6 +1091,46 @@ async function assertWorkbenchPaneGrid(page, expectedMin = 4) {
   }, expectedMin);
 }
 
+async function assertWorkbenchFontSizeScaling(page) {
+  const key = "winsmux.shell.preferences.v1";
+  const originalPreferences = await page.evaluate((storageKey) => window.localStorage.getItem(storageKey), key);
+
+  try {
+    await page.evaluate((storageKey) => {
+      const current = JSON.parse(window.localStorage.getItem(storageKey) ?? "{}");
+      window.localStorage.setItem(
+        storageKey,
+        JSON.stringify({
+          ...current,
+          uiVersion: 2,
+          editorFontSize: 32,
+        }),
+      );
+    }, key);
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForFunction(() => {
+      const title = document.querySelector("#session-list .sidebar-row-title");
+      if (!(title instanceof HTMLElement)) {
+        return false;
+      }
+      const styles = getComputedStyle(title);
+      return parseFloat(styles.fontSize) >= 32 && parseFloat(styles.lineHeight) >= 40;
+    });
+  } finally {
+    await page.evaluate(
+      ({ storageKey, value }) => {
+        if (value === null) {
+          window.localStorage.removeItem(storageKey);
+        } else {
+          window.localStorage.setItem(storageKey, value);
+        }
+      },
+      { storageKey: key, value: originalPreferences },
+    );
+    await page.reload({ waitUntil: "networkidle" });
+  }
+}
+
 async function setShellLanguage(page, language) {
   await page.evaluate((nextLanguage) => {
     const key = "winsmux.shell.preferences.v1";
@@ -1595,6 +1635,10 @@ async function verifyDesktopViewport(page, previewUrl) {
     await assertNoOverlap(page, "#workspace-body", "#workspace-footer");
   });
 
+  await runStep("desktop workbench font size scaling", async () => {
+    await assertWorkbenchFontSizeScaling(page);
+  });
+
   await runStep("desktop voice input accessibility coverage", async () => {
     await assertDesktopVoiceInputCoverage(page);
   });
@@ -1879,6 +1923,7 @@ async function run() {
           checks: [
             "desktop-operator-chat-contract",
             "desktop-1440x900",
+            "desktop-workbench-font-size-scaling",
             "desktop-voice-input-a11y",
             "desktop-voice-draft-shaping",
             "desktop-voice-vocabulary-dictionary",
