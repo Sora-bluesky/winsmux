@@ -2653,7 +2653,7 @@ body[data-popout-surface="1"] #editor-surface {
 
 .footer-pill[data-tone="accent"] .footer-pill-label,
 .footer-pill[data-tone="focus"] .footer-pill-label {
-  color: rgba(255, 255, 255, 0.82);
+  color: #ffffff;
 }
 
 .footer-pill[data-tone="success"] {
