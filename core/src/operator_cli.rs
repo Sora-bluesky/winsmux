@@ -9343,6 +9343,14 @@ fn guard_report_payload(project_dir: &Path) -> Value {
             ),
         ),
         guard_check(
+            "pester_reduction_plan",
+            "pwsh -NoProfile -File scripts/validate-pester-reduction-plan.ps1",
+            "docs/project/pester-suite-inventory.json",
+            "TASK-407 Pester reduction plan covers tracked Pester files before release",
+            file_exists(project_dir, "scripts/validate-pester-reduction-plan.ps1")
+                && file_exists(project_dir, "docs/project/pester-suite-inventory.json"),
+        ),
+        guard_check(
             "desktop_release_workflow",
             "gh workflow run release-desktop.yml",
             ".github/workflows/release-desktop.yml",
@@ -9360,7 +9368,7 @@ fn guard_report_payload(project_dir: &Path) -> Value {
         "contract_version": 1,
         "command": "guard",
         "task_ids": [],
-        "issue_refs": ["#522", "#523", "#524", "#525"],
+        "issue_refs": ["#522", "#523", "#524", "#525", "#685"],
         "target_version": "v1.0.0",
         "generated_at": generated_at(),
         "project_dir": project_dir_string(project_dir),

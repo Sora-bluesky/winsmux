@@ -2081,6 +2081,21 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
         "{}\n",
     )
     .expect("test should write legacy compat inventory");
+    fs::write(
+        project_dir
+            .join("docs")
+            .join("project")
+            .join("pester-suite-inventory.json"),
+        "{}\n",
+    )
+    .expect("test should write Pester reduction inventory");
+    fs::write(
+        project_dir
+            .join("scripts")
+            .join("validate-pester-reduction-plan.ps1"),
+        "",
+    )
+    .expect("test should write Pester reduction validator");
     fs::create_dir_all(project_dir.join(".github").join("workflows"))
         .expect("test should create workflows dir");
     fs::write(
@@ -2098,9 +2113,10 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
     assert_eq!(json["task_ids"].as_array().unwrap().len(), 0);
     assert_eq!(json["issue_refs"][0], "#522");
     assert_eq!(json["issue_refs"][3], "#525");
+    assert_eq!(json["issue_refs"][4], "#685");
     assert_eq!(json["target_version"], "v1.0.0");
-    assert_eq!(json["summary"]["required_check_count"], 8);
-    assert_eq!(json["summary"]["available_check_count"], 8);
+    assert_eq!(json["summary"]["required_check_count"], 9);
+    assert_eq!(json["summary"]["available_check_count"], 9);
     assert_eq!(
         json["observed_state"]["gitleaks_baseline_file"],
         "scripts/gitleaks-history-baseline.txt"
@@ -2115,7 +2131,8 @@ fn operator_cli_guard_json_reports_release_guard_baseline() {
     );
     assert_eq!(json["required_checks"][5]["id"], "manual_checklist_v1");
     assert_eq!(json["required_checks"][6]["id"], "legacy_compat_gate");
-    assert_eq!(json["required_checks"][7]["id"], "desktop_release_workflow");
+    assert_eq!(json["required_checks"][7]["id"], "pester_reduction_plan");
+    assert_eq!(json["required_checks"][8]["id"], "desktop_release_workflow");
     assert_eq!(
         json["evidence_contract"]["security_contract"]["provider_token_broker_allowed"],
         false
@@ -2142,7 +2159,7 @@ fn operator_cli_guard_text_summarizes_contract() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Guard baseline: 8 checks for v1.0.0"));
+    assert!(stdout.contains("Guard baseline: 9 checks for v1.0.0"));
     assert!(stdout.contains("Run the listed guard commands before release tagging"));
     assert!(!stdout.trim_start().starts_with('{'));
 }
