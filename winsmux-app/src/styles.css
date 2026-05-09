@@ -157,8 +157,6 @@ textarea {
 }
 
 #app-shell {
-  --workbench-text-size: var(--editor-font-size);
-  --workbench-line-height: max(22px, calc(var(--editor-font-size) + 8px));
   --sidebar-width: 256px;
   --editor-width: 340px;
   --context-width: 276px;
@@ -497,6 +495,8 @@ textarea {
 }
 
 .sidebar-list {
+  --workbench-text-size: var(--editor-font-size);
+  --workbench-line-height: max(22px, calc(var(--editor-font-size) + 8px));
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -952,6 +952,8 @@ textarea {
 }
 
 #source-control-changes-list {
+  --workbench-text-size: var(--editor-font-size);
+  --workbench-line-height: max(22px, calc(var(--editor-font-size) + 8px));
   flex: 0 0 var(--source-control-changes-height, 320px);
   min-height: 96px;
   max-height: calc(100vh - 280px);
@@ -960,6 +962,8 @@ textarea {
 }
 
 #source-control-graph-list {
+  --workbench-text-size: var(--editor-font-size);
+  --workbench-line-height: max(22px, calc(var(--editor-font-size) + 8px));
   position: relative;
   flex: 1 1 auto;
   min-height: 140px;
