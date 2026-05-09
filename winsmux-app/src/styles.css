@@ -2651,6 +2651,11 @@ body[data-popout-surface="1"] #editor-surface {
   color: #ffffff;
 }
 
+.footer-pill[data-tone="accent"] .footer-pill-label,
+.footer-pill[data-tone="focus"] .footer-pill-label {
+  color: rgba(255, 255, 255, 0.82);
+}
+
 .footer-pill[data-tone="success"] {
   color: var(--status-success);
   background: transparent;
