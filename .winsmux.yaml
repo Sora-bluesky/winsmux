@@ -1,24 +1,31 @@
 # Public-safe project defaults.
 # Provider/model pinning belongs in local overrides or operator instructions.
 external-operator: true
+worker-backend: local
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
+    worker-backend: local
     worktree-mode: managed
   - slot-id: worker-2
     runtime-role: worker
+    worker-backend: local
     worktree-mode: managed
   - slot-id: worker-3
     runtime-role: worker
+    worker-backend: local
     worktree-mode: managed
   - slot-id: worker-4
     runtime-role: worker
+    worker-backend: local
     worktree-mode: managed
   - slot-id: worker-5
     runtime-role: worker
+    worker-backend: local
     worktree-mode: managed
   - slot-id: worker-6
     runtime-role: worker
+    worker-backend: local
     worktree-mode: managed
 
 roles: {}

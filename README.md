@@ -30,6 +30,8 @@ Most tools solve only one part of this workflow.
 
 - Starts a managed Windows Terminal workspace for multiple CLI agents.
 - Lets an operator read, send, interrupt, and check pane health.
+- Initializes six managed worker slots by default, with a worker backend
+  contract for local, Codex, future Colab CLI, and placeholder workers.
 - Keeps worker agents in separate git worktrees when isolation is enabled.
 - Compares recorded runs and highlights shared changed files before you choose a winner.
 - Shows review, verification, architecture, checkpoint, and follow-up evidence for recorded runs.

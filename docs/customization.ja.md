@@ -27,6 +27,42 @@ winsmux launcher lifecycle --json
 
 winsmux はベンダーごとに固定された役割ではなく、スロットと能力で構成を表します。スロットは、作業、レビュー、相談などの能力を示せます。どのペインに何を任せるかはオペレーターが決めます。
 
+`winsmux init` は既定で 6 つの管理ワーカースロットを作ります。
+`agent-slots` がある場合は、その一覧が正本です。`worker_count` は
+一覧の件数から決まります。トップレベルの `worker-backend` は既定で
+`local` です。各スロットでは、次の値で上書きできます。
+
+- `local`: 現在のローカル管理ペイン
+- `codex`: Codex レビュー用、またはワーカー用のメタデータ
+- `colab_cli`: 将来の `google-colab-cli` ワーカー用メタデータ
+- `noop`: 無効化または仮置きのワーカー用メタデータ
+
+`v0.32.0` では、この契約の保存と検証だけを行います。Colab セッションの起動や、ペイン起動処理の変更は行いません。
+
+契約のみを記述したスロット設定の例（抜粋）です。`winsmux init` では 6 スロットが作成されます。
+
+```yaml
+external-operator: true
+worker-backend: local
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: codex
+    worker-role: reviewer
+    fallback-model: gpt-5.4
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    worker-role: impl
+    session-name: "{{project_slug}}_w2_impl"
+    gpu-preference: [H100, A100, L4]
+    packages: [torch, transformers, accelerate]
+    bootstrap: workers/colab/bootstrap_impl.py
+    task-script: workers/colab/impl_worker.py
+    worktree-mode: managed
+```
+
 割り当て時は次の考え方を使います。
 
 - 実装は作業を担当できるスロットに送る

@@ -62,6 +62,9 @@ Describe 'Get-BridgeSettings defaults' {
         $settings.legacy_role_layout | Should -Be $false
         $settings.operators | Should -Be 0
         $settings.worker_count | Should -Be 6
+        $settings.worker_backend | Should -Be 'local'
+        $settings.agent_slots.Count | Should -Be 6
+        $settings.agent_slots[0].worker_backend | Should -Be 'local'
         $settings.builders | Should -Be 0
         $settings.researchers | Should -Be 0
         $settings.reviewers | Should -Be 0

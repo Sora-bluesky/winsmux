@@ -17,6 +17,26 @@ $script:BridgeSettingsFileName = '.winsmux.yaml'
 $script:BridgeProviderRegistryFileName = 'provider-registry.json'
 $script:BridgeProviderCapabilityRegistryFileName = 'provider-capabilities.json'
 $script:BridgeRuntimeRolePreferencesFileName = 'runtime-role-preferences.json'
+$script:BridgeWorkerBackendKinds = @('local', 'codex', 'colab_cli', 'noop')
+$script:BridgeSlotScalarKeys = @(
+    'slot_id',
+    'runtime_role',
+    'agent',
+    'model',
+    'model_source',
+    'reasoning_effort',
+    'prompt_transport',
+    'auth_mode',
+    'worktree_mode',
+    'worker_backend',
+    'worker_role',
+    'pane_title',
+    'session_name',
+    'fallback_model',
+    'bootstrap',
+    'task_script'
+)
+$script:BridgeSlotListKeys = @('gpu_preference', 'packages')
 $script:BridgeSettingsSchema = [ordered]@{
     config_version      = @{ Type = 'int';      Default = 1;             Option = $null }
     agent               = @{ Type = 'string';   Default = 'codex';       Option = '@bridge-agent' }
@@ -27,6 +47,7 @@ $script:BridgeSettingsSchema = [ordered]@{
     auth_mode           = @{ Type = 'string';   Default = '';            Option = $null }
     external_operator  = @{ Type = 'bool';     Default = $true;         Option = '@bridge-external-operator' }
     worker_count        = @{ Type = 'int';      Default = 6;             Option = '@bridge-worker-count' }
+    worker_backend      = @{ Type = 'workerbackend'; Default = 'local';  Option = $null }
     agent_slots         = @{ Type = 'slotlist'; Default = @();           Option = $null }
     legacy_role_layout  = @{ Type = 'bool';     Default = $false;        Option = '@bridge-legacy-role-layout' }
     operators          = @{ Type = 'int';      Default = 0;             Option = '@bridge-operators' }
@@ -281,6 +302,69 @@ function ConvertFrom-BridgeInlineList {
     )
 }
 
+function ConvertFrom-BridgeYamlValue {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) {
+        return $null
+    }
+
+    $text = $Value.ToString()
+    $inlineList = ConvertFrom-BridgeInlineList $text
+    if ($null -ne $inlineList) {
+        return @($inlineList)
+    }
+
+    return ConvertFrom-BridgeYamlScalar $Value
+}
+
+function ConvertTo-BridgeStringArray {
+    param([AllowNull()]$Value)
+
+    $items = @()
+    if ($Value -is [System.Collections.IEnumerable] -and $Value -isnot [string]) {
+        foreach ($item in $Value) {
+            $text = ConvertFrom-BridgeYamlScalar $item
+            if (-not [string]::IsNullOrWhiteSpace($text)) {
+                $items += $text
+            }
+        }
+        return @($items)
+    }
+
+    $textValue = ConvertFrom-BridgeYamlScalar $Value
+    if ([string]::IsNullOrWhiteSpace($textValue)) {
+        return @()
+    }
+
+    return @(
+        $textValue -split '[,;]' |
+        ForEach-Object { ConvertFrom-BridgeYamlScalar $_ } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+}
+
+function Test-BridgeWorkerBackendKind {
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+
+    return ($Value.Trim().ToLowerInvariant() -in $script:BridgeWorkerBackendKinds)
+}
+
+function ConvertTo-BridgeSlotKey {
+    param([Parameter(Mandatory = $true)][string]$Key)
+
+    $normalizedKey = $Key -replace '-', '_'
+    switch ($normalizedKey) {
+        'backend' { return 'worker_backend' }
+        'role' { return 'worker_role' }
+        default { return $normalizedKey }
+    }
+}
+
 function ConvertTo-BridgeSlotEntry {
     param([AllowNull()]$Value)
 
@@ -304,17 +388,24 @@ function ConvertTo-BridgeSlotEntry {
 
     $slot = [ordered]@{}
     foreach ($pair in $pairs) {
-        $key = $pair.Key.ToString() -replace '-', '_'
-        if ($key -notin @('slot_id', 'runtime_role', 'agent', 'model', 'model_source', 'reasoning_effort', 'prompt_transport', 'auth_mode', 'worktree_mode')) {
+        $key = ConvertTo-BridgeSlotKey $pair.Key.ToString()
+        if ($key -notin @($script:BridgeSlotScalarKeys + $script:BridgeSlotListKeys)) {
             continue
         }
 
-        $text = ConvertFrom-BridgeYamlScalar $pair.Value
-        if ([string]::IsNullOrWhiteSpace($text)) {
-            continue
-        }
+        if ($key -in $script:BridgeSlotListKeys) {
+            $items = @(ConvertTo-BridgeStringArray $pair.Value)
+            if ($items.Count -gt 0) {
+                $slot[$key] = @($items)
+            }
+        } else {
+            $text = ConvertFrom-BridgeYamlScalar $pair.Value
+            if ([string]::IsNullOrWhiteSpace($text)) {
+                continue
+            }
 
-        $slot[$key] = $text
+            $slot[$key] = $text
+        }
     }
 
     if (-not $slot.Contains('slot_id')) {
@@ -345,10 +436,11 @@ function New-BridgeManagedAgentSlots {
     $slots = @()
     for ($index = 1; $index -le $Count; $index++) {
         $slot = [ordered]@{
-            slot_id       = "worker-$index"
-            runtime_role  = 'worker'
-            agent         = $Agent
-            worktree_mode = 'managed'
+            slot_id        = "worker-$index"
+            runtime_role   = 'worker'
+            agent          = $Agent
+            worktree_mode  = 'managed'
+            worker_backend = 'local'
         }
         if (-not [string]::IsNullOrWhiteSpace($Model)) {
             $slot.model = $Model
@@ -1577,16 +1669,16 @@ function ConvertFrom-BridgeManualYaml {
 
         if ($null -ne $currentSlotListKey -and $line -match '^\s*-\s*([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$') {
             $slotEntry = [ordered]@{}
-            $slotKey = $Matches[1] -replace '-', '_'
-            $slotEntry[$slotKey] = ConvertFrom-BridgeYamlScalar $Matches[2]
+            $slotKey = ConvertTo-BridgeSlotKey $Matches[1]
+            $slotEntry[$slotKey] = ConvertFrom-BridgeYamlValue $Matches[2]
             $settings[$currentSlotListKey] += @($slotEntry)
             $currentSlotEntry = $slotEntry
             continue
         }
 
         if ($null -ne $currentSlotListKey -and $null -ne $currentSlotEntry -and $line -match '^\s{4}([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$') {
-            $slotKey = $Matches[1] -replace '-', '_'
-            $currentSlotEntry[$slotKey] = ConvertFrom-BridgeYamlScalar $Matches[2]
+            $slotKey = ConvertTo-BridgeSlotKey $Matches[1]
+            $currentSlotEntry[$slotKey] = ConvertFrom-BridgeYamlValue $Matches[2]
             continue
         }
 
@@ -1777,6 +1869,15 @@ function Test-BridgeSettingValue {
                     return $false
                 }
             }
+        }
+        'workerbackend' {
+            $text = ConvertFrom-BridgeYamlScalar $Value
+            if (-not (Test-BridgeWorkerBackendKind -Value $text)) {
+                return $false
+            }
+
+            $NormalizedValue.Value = $text.Trim().ToLowerInvariant()
+            return $true
         }
         'lifecycle' {
             $text = ConvertFrom-BridgeYamlScalar $Value
@@ -2033,6 +2134,11 @@ function Get-BridgeSettings {
         throw "Invalid workspace_lifecycle_preset configuration: unsupported value '$rawLifecyclePreset'."
     }
 
+    if ($rawProjectSettings -is [System.Collections.IDictionary] -and ($rawProjectSettings.Contains('worker_backend') -or $rawProjectSettings.Contains('worker-backend')) -and -not $projectSettings.Contains('worker_backend')) {
+        $rawWorkerBackend = if ($rawProjectSettings.Contains('worker_backend')) { $rawProjectSettings['worker_backend'] } else { $rawProjectSettings['worker-backend'] }
+        throw "Invalid worker_backend configuration: unsupported value '$rawWorkerBackend'. Supported values: $($script:BridgeWorkerBackendKinds -join ', ')."
+    }
+
     if ($rawProjectSettings -is [System.Collections.IDictionary] -and $rawProjectSettings.Contains('agent_slots')) {
         $rawSlotEntries = @()
         $rawSlotValue = $rawProjectSettings['agent_slots']
@@ -2080,6 +2186,15 @@ function Get-BridgeSettings {
         if ([string]::IsNullOrWhiteSpace([string]$slot.slot_id)) {
             throw 'Invalid agent_slots configuration: slot_id must not be empty.'
         }
+
+        if (-not $slot.Contains('worker_backend')) {
+            $slot.worker_backend = [string]$settings.worker_backend
+        }
+
+        if (-not (Test-BridgeWorkerBackendKind -Value ([string]$slot.worker_backend))) {
+            throw "Invalid agent_slots configuration: unsupported worker_backend '$($slot.worker_backend)' for slot '$($slot.slot_id)'. Supported values: $($script:BridgeWorkerBackendKinds -join ', ')."
+        }
+        $slot.worker_backend = ([string]$slot.worker_backend).Trim().ToLowerInvariant()
 
         $slotId = [string]$slot.slot_id
         if ($slotIds.ContainsKey($slotId)) {
@@ -2304,6 +2419,25 @@ function Get-SlotAgentConfig {
     $reasoningEffort = [string]$roleAgentConfig.ReasoningEffort
     $promptTransport = [string]$roleAgentConfig.PromptTransport
     $authMode = [string]$roleAgentConfig.AuthMode
+    $workerBackend = ''
+    if ($Settings -is [System.Collections.IDictionary]) {
+        if ($Settings.Contains('worker_backend')) {
+            $workerBackend = [string]$Settings['worker_backend']
+        }
+    } elseif ($null -ne $Settings.PSObject -and $Settings.PSObject.Properties.Name -contains 'worker_backend') {
+        $workerBackend = [string]$Settings.worker_backend
+    }
+    if ([string]::IsNullOrWhiteSpace($workerBackend)) {
+        $workerBackend = 'local'
+    }
+    $workerRole = ''
+    $paneTitle = ''
+    $sessionName = ''
+    $fallbackModel = ''
+    $bootstrap = ''
+    $taskScript = ''
+    $gpuPreference = @()
+    $packages = @()
     $source = 'role'
 
     if (-not [string]::IsNullOrWhiteSpace($SlotId)) {
@@ -2328,6 +2462,15 @@ function Get-SlotAgentConfig {
             $slotReasoningEffort = ''
             $slotPromptTransport = ''
             $slotAuthMode = ''
+            $slotWorkerBackend = ''
+            $slotWorkerRole = ''
+            $slotPaneTitle = ''
+            $slotSessionName = ''
+            $slotFallbackModel = ''
+            $slotBootstrap = ''
+            $slotTaskScript = ''
+            $slotGpuPreference = @()
+            $slotPackages = @()
             $slotModelSet = $false
             $slotModelSourceSet = $false
 
@@ -2355,6 +2498,33 @@ function Get-SlotAgentConfig {
                 if ($slot.Contains('auth_mode')) {
                     $slotAuthMode = [string]$slot['auth_mode']
                 }
+                if ($slot.Contains('worker_backend')) {
+                    $slotWorkerBackend = [string]$slot['worker_backend']
+                }
+                if ($slot.Contains('worker_role')) {
+                    $slotWorkerRole = [string]$slot['worker_role']
+                }
+                if ($slot.Contains('pane_title')) {
+                    $slotPaneTitle = [string]$slot['pane_title']
+                }
+                if ($slot.Contains('session_name')) {
+                    $slotSessionName = [string]$slot['session_name']
+                }
+                if ($slot.Contains('fallback_model')) {
+                    $slotFallbackModel = [string]$slot['fallback_model']
+                }
+                if ($slot.Contains('bootstrap')) {
+                    $slotBootstrap = [string]$slot['bootstrap']
+                }
+                if ($slot.Contains('task_script')) {
+                    $slotTaskScript = [string]$slot['task_script']
+                }
+                if ($slot.Contains('gpu_preference')) {
+                    $slotGpuPreference = @(ConvertTo-BridgeStringArray $slot['gpu_preference'])
+                }
+                if ($slot.Contains('packages')) {
+                    $slotPackages = @(ConvertTo-BridgeStringArray $slot['packages'])
+                }
             } elseif ($null -ne $slot.PSObject) {
                 if ($slot.PSObject.Properties.Name -contains 'slot_id') {
                     $candidateSlotId = [string]$slot.slot_id
@@ -2378,6 +2548,33 @@ function Get-SlotAgentConfig {
                 }
                 if ($slot.PSObject.Properties.Name -contains 'auth_mode') {
                     $slotAuthMode = [string]$slot.auth_mode
+                }
+                if ($slot.PSObject.Properties.Name -contains 'worker_backend') {
+                    $slotWorkerBackend = [string]$slot.worker_backend
+                }
+                if ($slot.PSObject.Properties.Name -contains 'worker_role') {
+                    $slotWorkerRole = [string]$slot.worker_role
+                }
+                if ($slot.PSObject.Properties.Name -contains 'pane_title') {
+                    $slotPaneTitle = [string]$slot.pane_title
+                }
+                if ($slot.PSObject.Properties.Name -contains 'session_name') {
+                    $slotSessionName = [string]$slot.session_name
+                }
+                if ($slot.PSObject.Properties.Name -contains 'fallback_model') {
+                    $slotFallbackModel = [string]$slot.fallback_model
+                }
+                if ($slot.PSObject.Properties.Name -contains 'bootstrap') {
+                    $slotBootstrap = [string]$slot.bootstrap
+                }
+                if ($slot.PSObject.Properties.Name -contains 'task_script') {
+                    $slotTaskScript = [string]$slot.task_script
+                }
+                if ($slot.PSObject.Properties.Name -contains 'gpu_preference') {
+                    $slotGpuPreference = @(ConvertTo-BridgeStringArray $slot.gpu_preference)
+                }
+                if ($slot.PSObject.Properties.Name -contains 'packages') {
+                    $slotPackages = @(ConvertTo-BridgeStringArray $slot.packages)
                 }
             }
 
@@ -2417,6 +2614,34 @@ function Get-SlotAgentConfig {
             if (-not [string]::IsNullOrWhiteSpace($slotAuthMode)) {
                 $authMode = $slotAuthMode
                 $source = 'slot'
+            }
+
+            if (-not [string]::IsNullOrWhiteSpace($slotWorkerBackend)) {
+                $workerBackend = $slotWorkerBackend
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotWorkerRole)) {
+                $workerRole = $slotWorkerRole
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotPaneTitle)) {
+                $paneTitle = $slotPaneTitle
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotSessionName)) {
+                $sessionName = $slotSessionName
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotFallbackModel)) {
+                $fallbackModel = $slotFallbackModel
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotBootstrap)) {
+                $bootstrap = $slotBootstrap
+            }
+            if (-not [string]::IsNullOrWhiteSpace($slotTaskScript)) {
+                $taskScript = $slotTaskScript
+            }
+            if ($slotGpuPreference.Count -gt 0) {
+                $gpuPreference = @($slotGpuPreference)
+            }
+            if ($slotPackages.Count -gt 0) {
+                $packages = @($slotPackages)
             }
 
             break
@@ -2468,6 +2693,15 @@ function Get-SlotAgentConfig {
 
     return [PSCustomObject]@{
         SlotId                   = [string]$SlotId
+        WorkerBackend            = [string]$workerBackend
+        WorkerRole               = [string]$workerRole
+        PaneTitle                = [string]$paneTitle
+        SessionName              = [string]$sessionName
+        FallbackModel            = [string]$fallbackModel
+        GpuPreference            = @($gpuPreference)
+        Packages                 = @($packages)
+        Bootstrap                = [string]$bootstrap
+        TaskScript               = [string]$taskScript
         Agent                    = [string]$agent
         Model                    = [string]$model
         ModelSource              = [string]$modelSource
@@ -2524,6 +2758,13 @@ function ConvertTo-BridgeYamlScalar {
     return "'" + ($text -replace "'", "''") + "'"
 }
 
+function ConvertTo-BridgeYamlInlineList {
+    param([AllowNull()]$Value)
+
+    $items = @(ConvertTo-BridgeStringArray $Value)
+    return '[' + (($items | ForEach-Object { ConvertTo-BridgeYamlScalar $_ }) -join ', ') + ']'
+}
+
 function Save-BridgeSettings {
     param(
         [Parameter(Mandatory = $true)][ValidateSet('project', 'global')][string]$Scope,
@@ -2559,13 +2800,19 @@ function Save-BridgeSettings {
 
                         $firstProperty = $true
                         foreach ($slotEntry in $slot.GetEnumerator()) {
+                            $slotValue = if ($slotEntry.Key -in $script:BridgeSlotListKeys) {
+                                ConvertTo-BridgeYamlInlineList $slotEntry.Value
+                            } else {
+                                ConvertTo-BridgeYamlScalar $slotEntry.Value
+                            }
+
                             if ($firstProperty) {
-                                $lines.Add("  - $($slotEntry.Key): $(ConvertTo-BridgeYamlScalar $slotEntry.Value)")
+                                $lines.Add("  - $($slotEntry.Key): $slotValue")
                                 $firstProperty = $false
                                 continue
                             }
 
-                            $lines.Add("    $($slotEntry.Key): $(ConvertTo-BridgeYamlScalar $slotEntry.Value)")
+                            $lines.Add("    $($slotEntry.Key): $slotValue")
                         }
                     }
                 } else {
