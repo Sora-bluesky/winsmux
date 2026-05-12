@@ -28,17 +28,12 @@ $PROFILE_MATRIX = @{
     security = "Core profile plus vault, redaction, and audit-oriented scripts."
     full = "Core, orchestra, and security profile contents."
 }
-$EffectiveReleaseTag = if ([string]::IsNullOrWhiteSpace($ReleaseTag)) { $env:WINSMUX_RELEASE_TAG } else { $ReleaseTag }
-if ([string]::IsNullOrWhiteSpace($EffectiveReleaseTag)) {
-    $BASE_URL = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/main"
-    $RELEASE_API_URL = "https://api.github.com/repos/Sora-bluesky/winsmux/releases/latest"
-    $RELEASE_LABEL = "latest"
-} else {
-    $BASE_URL = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$EffectiveReleaseTag"
-    $escapedTag = [Uri]::EscapeDataString($EffectiveReleaseTag)
-    $RELEASE_API_URL = "https://api.github.com/repos/Sora-bluesky/winsmux/releases/tags/$escapedTag"
-    $RELEASE_LABEL = $EffectiveReleaseTag
-}
+$requestedReleaseTag = if ([string]::IsNullOrWhiteSpace($ReleaseTag)) { $env:WINSMUX_RELEASE_TAG } else { $ReleaseTag }
+$EffectiveReleaseTag = if ([string]::IsNullOrWhiteSpace($requestedReleaseTag)) { "v$VERSION" } else { $requestedReleaseTag.Trim() }
+$BASE_URL = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$EffectiveReleaseTag"
+$escapedTag = [Uri]::EscapeDataString($EffectiveReleaseTag)
+$RELEASE_API_URL = "https://api.github.com/repos/Sora-bluesky/winsmux/releases/tags/$escapedTag"
+$RELEASE_LABEL = $EffectiveReleaseTag
 
 # ---------------------------------------------------------------------------
 # Helpers
