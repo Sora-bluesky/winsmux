@@ -8744,6 +8744,10 @@ function New-DesktopRunProjection {
     } else {
         'Projected run'
     }
+    $reasons = @()
+    if ($null -ne $explanation) {
+        $reasons = @($explanation.reasons)
+    }
 
     return [ordered]@{
         run_id               = $runId
@@ -8768,7 +8772,7 @@ function New-DesktopRunProjection {
         changed_files        = @($changedFiles)
         next_action          = if ($null -ne $explanation -and -not [string]::IsNullOrWhiteSpace([string]$explanation.next_action)) { [string]$explanation.next_action } else { [string]$DigestItem.next_action }
         summary              = $summary
-        reasons              = if ($null -ne $explanation) { @($explanation.reasons) } else { @() }
+        reasons              = @($reasons)
         hypothesis           = [string]$DigestItem.hypothesis
         confidence           = $DigestItem.confidence
         observation_pack_ref = [string]$DigestItem.observation_pack_ref
@@ -8785,17 +8789,7 @@ function Get-DesktopSummaryPayload {
     $runProjections = @()
 
     foreach ($digestItem in @($digest.items)) {
-        $explainPayload = $null
-        $runId = [string]$digestItem.run_id
-        if (-not [string]::IsNullOrWhiteSpace($runId)) {
-            try {
-                $explainPayload = Get-ExplainPayload -ProjectDir $ProjectDir -RunId $runId
-            } catch {
-                $explainPayload = $null
-            }
-        }
-
-        $runProjections += @(New-DesktopRunProjection -DigestItem $digestItem -ExplainPayload $explainPayload)
+        $runProjections += @(New-DesktopRunProjection -DigestItem $digestItem -ExplainPayload $null)
     }
 
     return [ordered]@{

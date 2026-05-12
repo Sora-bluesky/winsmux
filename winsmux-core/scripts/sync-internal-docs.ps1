@@ -190,6 +190,8 @@ function Get-PlanningState {
     foreach ($taskId in $TaskIds) {
         if ($TasksById.ContainsKey($taskId)) {
             $statuses += ($TasksById[$taskId].Status ?? '')
+        } else {
+            $statuses += ''
         }
     }
 
@@ -197,16 +199,20 @@ function Get-PlanningState {
         return '今後予定'
     }
 
-    foreach ($status in $statuses) {
-        if ($status -eq 'done') {
-            return '公開済み'
-        }
+    $nonEmptyStatuses = @($statuses | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $doneStatuses = @($nonEmptyStatuses | Where-Object { $_ -eq 'done' })
+    if ($nonEmptyStatuses.Count -eq $TaskIds.Count -and $doneStatuses.Count -eq $TaskIds.Count) {
+        return '公開済み'
     }
 
     foreach ($status in $statuses) {
         if ($status -in @('active', 'review', 'in-progress', 'in_progress', 'doing')) {
             return '進行中'
         }
+    }
+
+    if ($doneStatuses.Count -gt 0) {
+        return '進行中'
     }
 
     return '今後予定'

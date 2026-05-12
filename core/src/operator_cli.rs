@@ -879,6 +879,12 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
     }
 
     let options = parse_options("manual-checklist", args, 0)?;
+    let manual_checklist_document = options
+        .project_dir
+        .join("docs")
+        .join("internal")
+        .join("winsmux-manual-checklist-by-version.md");
+    let manual_checklist_document_exists = manual_checklist_document.is_file();
     let payload = json!({
         "contract_version": 1,
         "task_id": "TASK-416",
@@ -890,6 +896,8 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
             "path": "docs/internal/winsmux-manual-checklist-by-version.md",
             "source": "winsmux-core/scripts/sync-internal-docs.ps1",
             "tracked": false,
+            "exists": manual_checklist_document_exists,
+            "storage_policy": "internal_untracked",
         },
         "required_result_values": ["未", "合格", "不合格", "保留"],
         "release_gates": [
@@ -897,9 +905,13 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
             "desktop_bundle_artifacts_verified",
             "desktop_installer_smoke_recorded",
             "first_launch_project_selection_recorded",
+            "project_explorer_accuracy_recorded",
+            "operator_composer_editing_recorded",
+            "meta_plan_multi_pane_flow_recorded",
             "operator_worker_flow_recorded",
             "clipboard_image_flow_recorded",
             "settings_language_flow_recorded",
+            "status_bar_fit_recorded",
             "native_voice_dictation_or_fallback_contract_recorded",
             "release_docs_and_checksums_verified",
             "no_critical_unchecked_items",
@@ -912,7 +924,7 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
             "operator_composer_editing",
             "meta_plan_multi_pane_flow",
             "clipboard_image_input",
-            "status_bar_overflow",
+            "status_bar_fit",
             "settings_language_control",
             "native_voice_dictation_or_fallback_contract",
             "startup_diagnostics",
@@ -921,38 +933,54 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
         "desktop_manual_items": [
             {
                 "id": "installer_artifacts",
+                "evidence_source": "release_artifact",
                 "required_evidence": "Release contains MSI, NSIS, and SHA256 artifacts from the desktop workflow."
             },
             {
                 "id": "first_launch_project_selection",
+                "evidence_source": "dogfood_task_class",
+                "dogfood_task_class": "first_launch_project_selection",
                 "required_evidence": "A new user can select a project folder without typing an absolute path."
             },
             {
                 "id": "project_explorer_accuracy",
+                "evidence_source": "dogfood_task_class",
+                "dogfood_task_class": "project_explorer_accuracy",
                 "required_evidence": "The desktop explorer reflects the selected folder and does not show stale repository entries."
             },
             {
                 "id": "operator_composer_editing",
+                "evidence_source": "dogfood_task_class",
+                "dogfood_task_class": "operator_composer_editing",
                 "required_evidence": "Pasted Japanese text can be edited across wrapped lines without deleting the wrong character."
             },
             {
                 "id": "meta_plan_multi_pane_flow",
+                "evidence_source": "dogfood_task_class",
+                "dogfood_task_class": "meta_plan_multi_pane_flow",
                 "required_evidence": "A non-trivial meta-plan task shows operator and worker-pane activity with usable status feedback."
             },
             {
                 "id": "clipboard_image_input",
+                "evidence_source": "dogfood_task_class",
+                "dogfood_task_class": "clipboard_image_input",
                 "required_evidence": "A screenshot can be selected or pasted without forcing the user to type a temp file path."
             },
             {
                 "id": "settings_language_control",
+                "evidence_source": "dogfood_task_class",
+                "dogfood_task_class": "settings_language_control",
                 "required_evidence": "The language setting is visible, understandable, and persisted across desktop restarts."
             },
             {
                 "id": "native_voice_dictation_or_fallback_contract",
+                "evidence_source": "fallback_contract",
                 "required_evidence": "Native Windows microphone capture either produces editable composer text, or the release evidence records the supported fallback contract separately from microphone metering."
             },
             {
                 "id": "status_bar_fit",
+                "evidence_source": "dogfood_task_class",
+                "dogfood_task_class": "status_bar_fit",
                 "required_evidence": "Long processing and notification text remains visible or intentionally truncated at common desktop widths."
             }
         ],
@@ -985,6 +1013,8 @@ pub fn run_manual_checklist_command(args: &[&String]) -> io::Result<()> {
             "missing_native_voice_dictation_or_fallback_contract",
             "public_surface_drift"
         ],
+        "blocking_condition_scope": "release_blocker_classes",
+        "blocking_condition_note": "blocking_conditions lists release gate classes to evaluate; document.exists reports the current local document availability.",
         "next_action": "Record v1.0.0 desktop manual validation results before the v1.0.0 release and feed any failed or blocked item back into backlog."
     });
 

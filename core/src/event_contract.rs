@@ -56,6 +56,11 @@ pub fn parse_event_jsonl(content: &str) -> Result<Vec<EventRecord>, String> {
             continue;
         }
 
+        let line = if index == 0 {
+            line.trim_start_matches('\u{feff}')
+        } else {
+            line
+        };
         let record: EventRecord = serde_json::from_str(line)
             .map_err(|err| format!("failed to parse event line {}: {}", index + 1, err))?;
         record

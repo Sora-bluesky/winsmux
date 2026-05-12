@@ -165,7 +165,7 @@
             Memo = ''
         }
         @{
-            Order = 20
+            Order = 160
             Version = 'v1.6.1'
             TaskIds = @('TASK-315')
             Focus = '自己進化'
