@@ -29,11 +29,21 @@ $PROFILE_MATRIX = @{
     full = "Core, orchestra, and security profile contents."
 }
 $requestedReleaseTag = if ([string]::IsNullOrWhiteSpace($ReleaseTag)) { $env:WINSMUX_RELEASE_TAG } else { $ReleaseTag }
-$EffectiveReleaseTag = if ([string]::IsNullOrWhiteSpace($requestedReleaseTag)) { "v$VERSION" } else { $requestedReleaseTag.Trim() }
-$BASE_URL = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$EffectiveReleaseTag"
-$escapedTag = [Uri]::EscapeDataString($EffectiveReleaseTag)
-$RELEASE_API_URL = "https://api.github.com/repos/Sora-bluesky/winsmux/releases/tags/$escapedTag"
-$RELEASE_LABEL = $EffectiveReleaseTag
+$UseLatestRelease = [string]::IsNullOrWhiteSpace($requestedReleaseTag) -and $Action.Trim().ToLowerInvariant() -eq 'update'
+if ($UseLatestRelease) {
+    $EffectiveReleaseTag = ''
+    $BASE_URL = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/main"
+    $RELEASE_API_URL = "https://api.github.com/repos/Sora-bluesky/winsmux/releases/latest"
+    $RELEASE_LABEL = "latest"
+} else {
+    $EffectiveReleaseTag = if ([string]::IsNullOrWhiteSpace($requestedReleaseTag)) { "v$VERSION" } else { $requestedReleaseTag.Trim() }
+    $BASE_URL = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$EffectiveReleaseTag"
+    $escapedTag = [Uri]::EscapeDataString($EffectiveReleaseTag)
+    $RELEASE_API_URL = "https://api.github.com/repos/Sora-bluesky/winsmux/releases/tags/$escapedTag"
+    $RELEASE_LABEL = $EffectiveReleaseTag
+}
+$ResolvedReleaseTag = $EffectiveReleaseTag
+$ResolvedVersion = $VERSION
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -89,9 +99,9 @@ function Write-InstallProfileManifest {
     )
 
     $manifest = [ordered]@{
-        version = $VERSION
+        version = $ResolvedVersion
         profile = $Profile
-        release_tag = $EffectiveReleaseTag
+        release_tag = $ResolvedReleaseTag
         mode = if ($IsUpdate) { "update" } else { "install" }
         contents = @(Get-InstallProfileContents -Profile $Profile)
         recorded_at = (Get-Date).ToUniversalTime().ToString("o")
@@ -266,23 +276,6 @@ function Get-WinsmuxCommandVersion {
 }
 
 function Install-WinsmuxBinary {
-    $existing = Get-Command winsmux -ErrorAction SilentlyContinue
-    if ($existing) {
-        $detected = Get-WinsmuxCommandVersion -CommandInfo $existing
-        if ($detected -and $detected.Version -eq $VERSION) {
-            Write-Status "winsmux found: $($detected.Output)"
-            return
-        }
-
-        if ($detected) {
-            Write-Warning "[winsmux] Existing winsmux version '$($detected.Version)' does not match installer version '$VERSION'. Reinstalling release binary."
-        } else {
-            Write-Warning "[winsmux] Existing winsmux command did not return a compatible version. Reinstalling release binary."
-        }
-    } else {
-        Write-Status "winsmux binary not found. Downloading winsmux-core..."
-    }
-
     $localBin = Join-Path $HOME ".local/bin"
     $winsmuxExe = Join-Path $localBin "winsmux.exe"
     $headers = @{ "User-Agent" = "winsmux-installer/$VERSION" }
@@ -295,6 +288,32 @@ function Install-WinsmuxBinary {
 
         Write-Status "Fetching winsmux-core release ($RELEASE_LABEL)..."
         $release = Invoke-RestMethod -Uri $RELEASE_API_URL -Headers $headers -ErrorAction Stop
+        if ([string]::IsNullOrWhiteSpace([string]$release.tag_name)) {
+            throw "Release response did not include tag_name."
+        }
+        $script:ResolvedReleaseTag = [string]$release.tag_name
+        $script:ResolvedVersion = $script:ResolvedReleaseTag.TrimStart('v', 'V')
+        $script:EffectiveReleaseTag = $script:ResolvedReleaseTag
+        $script:BASE_URL = "https://raw.githubusercontent.com/Sora-bluesky/winsmux/$script:ResolvedReleaseTag"
+        $script:RELEASE_LABEL = $script:ResolvedReleaseTag
+
+        $existing = Get-Command winsmux -ErrorAction SilentlyContinue
+        if ($existing) {
+            $detected = Get-WinsmuxCommandVersion -CommandInfo $existing
+            if ($detected -and $detected.Version -eq $script:ResolvedVersion) {
+                Write-Status "winsmux found: $($detected.Output)"
+                return
+            }
+
+            if ($detected) {
+                Write-Warning "[winsmux] Existing winsmux version '$($detected.Version)' does not match release version '$script:ResolvedVersion'. Reinstalling release binary."
+            } else {
+                Write-Warning "[winsmux] Existing winsmux command did not return a compatible version. Reinstalling release binary."
+            }
+        } else {
+            Write-Status "winsmux binary not found. Downloading winsmux-core..."
+        }
+
         $asset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
         if (-not $asset -and $assetName -eq "winsmux-arm64.exe") {
             Write-Warning "[winsmux] ARM64 asset not found in release $($release.tag_name). Falling back to winsmux-x64.exe."
@@ -406,7 +425,7 @@ function Invoke-Install {
     param([switch]$IsUpdate)
     $label = if ($IsUpdate) { "Updating" } else { "Installing" }
     $resolvedInstallProfile = Resolve-InstallProfile -PreferExisting:$IsUpdate
-    Write-Status "$label winsmux v$VERSION with profile '$resolvedInstallProfile' ..."
+    Write-Status "$label winsmux with profile '$resolvedInstallProfile' ..."
 
     # 1. PowerShell version check
     if ($PSVersionTable.PSVersion.Major -lt 7) {
@@ -482,20 +501,20 @@ pwsh -NoProfile -File "%USERPROFILE%\.winsmux\bin\winsmux.ps1" %*
     $env:PATH = "$BIN_DIR;$env:PATH"
 
     # 9. Record version
-    $VERSION | Set-Content $VERSION_FILE
+    $ResolvedVersion | Set-Content $VERSION_FILE
     $resolvedInstallProfile | Set-Content $PROFILE_FILE
     Write-InstallProfileManifest -Profile $resolvedInstallProfile -IsUpdate:$IsUpdate
 
     # 10. Completion message
     if ($IsUpdate) {
         Write-Host ""
-        Write-Status "Updated to v$VERSION!"
+        Write-Status "Updated to v$ResolvedVersion!"
         Write-Host "  winsmux: $(Join-Path $BIN_DIR 'winsmux-core.ps1')"
         Write-Host "  winsmux config:  $confDest"
         Write-Host "  install profile: $resolvedInstallProfile"
     } else {
         Write-Host ""
-        Write-Status "Installed successfully! (v$VERSION)"
+        Write-Status "Installed successfully! (v$ResolvedVersion)"
         Write-Host "  winsmux: $(Join-Path $BIN_DIR 'winsmux-core.ps1')"
         Write-Host "  winsmux config:  $confDest"
         Write-Host "  install profile: $resolvedInstallProfile"

@@ -21,11 +21,14 @@ Describe 'winsmux version surface' {
         $coreLock = Get-Content -LiteralPath (Join-Path $script:RepoRoot 'core\Cargo.lock') -Raw -Encoding UTF8
 
         $installScript | Should -Match ('\$VERSION\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
+        $installScript | Should -Match '\$UseLatestRelease\s*=\s*\[string\]::IsNullOrWhiteSpace\(\$requestedReleaseTag\) -and \$Action\.Trim\(\)\.ToLowerInvariant\(\) -eq ''update'''
         $installScript | Should -Match '\$EffectiveReleaseTag\s*=\s*if \(\[string\]::IsNullOrWhiteSpace\(\$requestedReleaseTag\)\) \{ "v\$VERSION" \}'
+        $installScript | Should -Match 'releases/latest'
         $installScript | Should -Match 'releases/tags/\$escapedTag'
-        $installScript | Should -Not -Match 'releases/latest'
+        $installScript | Should -Match 'version = \$ResolvedVersion'
+        $installScript | Should -Match '\$ResolvedVersion \| Set-Content \$VERSION_FILE'
         $installScript | Should -Match 'function Get-WinsmuxCommandVersion'
-        $installScript | Should -Match 'does not match installer version'
+        $installScript | Should -Match 'does not match release version'
         $installScript | Should -Match 'Reinstalling release binary'
         $bridgeScript | Should -Match ('\$VERSION\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
         $workspaceLock | Should -Match ('(?ms)^name\s*=\s*"winsmux"\s*\r?\nversion\s*=\s*"{0}"' -f [regex]::Escape($script:ProductVersion))
