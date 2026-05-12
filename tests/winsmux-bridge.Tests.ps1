@@ -420,6 +420,29 @@ agent-slots:
         $impl.Packages | Should -Be @('torch', 'transformers', 'accelerate')
     }
 
+    It 'parses block-style slot metadata lists in the manual YAML fallback' {
+        $parsed = ConvertFrom-BridgeManualYaml -Content @'
+agent-slots:
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    gpu-preference:
+      - H100
+      - A100
+      - L4
+    packages:
+      - torch
+      - transformers
+      - accelerate
+'@
+
+        $parsed['agent_slots'].Count | Should -Be 1
+        $parsed['agent_slots'][0]['slot_id'] | Should -Be 'worker-2'
+        $parsed['agent_slots'][0]['worker_backend'] | Should -Be 'colab_cli'
+        $parsed['agent_slots'][0]['gpu_preference'] | Should -Be @('H100', 'A100', 'L4')
+        $parsed['agent_slots'][0]['packages'] | Should -Be @('torch', 'transformers', 'accelerate')
+    }
+
     It 'parses per-role agent and model overrides and falls back to global settings' {
         @'
 agent: codex
