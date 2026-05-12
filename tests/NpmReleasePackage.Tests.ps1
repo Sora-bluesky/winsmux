@@ -170,6 +170,10 @@ Describe 'winsmux npm release package contract' {
         $releaseWorkflow | Should -Match 'tags:\s*\r?\n\s*-\s*"v\*"'
         $releaseWorkflow | Should -Match 'name:\s+Verify Windows entrypoint'
         $releaseWorkflow | Should -Match 'if:\s+steps\.stage\.outputs\.publish_ready == ''true'''
+        $releaseWorkflow | Should -Match 'name:\s+Check whether npm version already exists'
+        $releaseWorkflow | Should -Match 'npm view "winsmux@\$\{\{\s*needs\.verify\.outputs\.version\s*\}\}" version'
+        $releaseWorkflow | Should -Match 'name:\s+Skip existing npm version'
+        $releaseWorkflow | Should -Match 'if:\s+steps\.npm-version\.outputs\.exists != ''true'''
         $releaseWorkflow | Should -Match 'NODE_AUTH_TOKEN:\s+\$\{\{\s*secrets\.NPM_TOKEN\s*\}\}'
     }
 
