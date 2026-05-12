@@ -7,7 +7,7 @@ use machine_contract::{canonical_role_for, machine_contract_catalog};
 fn machine_contract_exposes_version_and_canonical_roles() {
     let catalog = machine_contract_catalog();
 
-    assert_eq!(catalog.version, "0.24.2");
+    assert_eq!(catalog.version, "0.32.0");
     assert_eq!(
         catalog
             .roles
@@ -21,6 +21,44 @@ fn machine_contract_exposes_version_and_canonical_roles() {
     assert_eq!(canonical_role_for("Reviewer"), Some("reviewer"));
     assert_eq!(canonical_role_for("Builder"), Some("builder"));
     assert_eq!(canonical_role_for("unknown"), None);
+}
+
+#[test]
+fn machine_contract_exposes_worker_backend_contracts() {
+    let catalog = machine_contract_catalog();
+
+    assert_eq!(
+        catalog
+            .worker_backends
+            .iter()
+            .map(|backend| backend.id)
+            .collect::<Vec<_>>(),
+        vec!["local", "codex", "colab_cli", "noop"]
+    );
+
+    let local = catalog
+        .worker_backends
+        .iter()
+        .find(|backend| backend.id == "local")
+        .expect("local backend should exist");
+    assert!(local.runtime_available);
+
+    let colab = catalog
+        .worker_backends
+        .iter()
+        .find(|backend| backend.id == "colab_cli")
+        .expect("colab_cli backend should exist");
+    assert!(!colab.runtime_available);
+    assert!(colab.config_fields.contains(&"session_name"));
+    assert!(colab.config_fields.contains(&"gpu_preference"));
+    assert!(colab.config_fields.contains(&"task_script"));
+
+    let noop = catalog
+        .worker_backends
+        .iter()
+        .find(|backend| backend.id == "noop")
+        .expect("noop backend should exist");
+    assert!(!noop.runtime_available);
 }
 
 #[test]
@@ -254,10 +292,14 @@ fn machine_contract_serializes_to_json() {
     let value = serde_json::to_value(machine_contract_catalog())
         .expect("machine contract should serialize to JSON");
 
-    assert_eq!(value["version"], "0.24.2");
+    assert_eq!(value["version"], "0.32.0");
     assert_eq!(value["roles"][3]["canonical"], "builder");
     assert_eq!(value["roles"][3]["legacy_aliases"][0], "Builder");
     assert_eq!(value["organization"]["terms"][1]["name"], "agent");
+    assert_eq!(value["worker_backends"][2]["id"], "colab_cli");
+    assert_eq!(value["worker_backends"][2]["runtime_available"], false);
+    assert_eq!(value["worker_backends"][3]["id"], "noop");
+    assert_eq!(value["worker_backends"][3]["runtime_available"], false);
     assert_eq!(
         value["organization"]["manifest_fields"][4]["field"],
         "budget_monthly_cents"

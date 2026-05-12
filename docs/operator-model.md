@@ -103,11 +103,25 @@ Panes may differ by:
 
 - provider
 - model
+- worker backend
 - review capability
 - worktree assignment
 - runtime role
 
 The current direction is **slot/capability-based orchestration**, not hard-coded vendor roles.
+
+The worker backend is a slot-level contract that says how a worker will
+eventually be hosted. The current public values are:
+
+- `local`
+- `codex`
+- `colab_cli`
+- `noop`
+
+`local` preserves the existing managed pane behavior. `codex`, `colab_cli`, and
+`noop` are contract metadata until their later release lanes add execution
+behavior. A standard initialized project keeps six managed worker slots, and
+`agent-slots` remains the source of truth when present.
 
 Review is handled by any **review-capable slot**, not by a permanently dedicated reviewer pane.
 Meta-planning follows the same rule: the current Claude/Codex role pair is an

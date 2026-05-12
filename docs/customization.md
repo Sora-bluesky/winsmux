@@ -27,6 +27,43 @@ Presets describe the intended workspace shape. They should not execute arbitrary
 
 winsmux uses slot and capability concepts rather than permanent vendor roles. A slot may advertise work, review, or consultation capability. The operator chooses which pane receives each task.
 
+`winsmux init` creates six managed worker slots by default. When `agent-slots`
+is present, that list is the source of truth and `worker_count` is derived from
+the number of entries. The top-level `worker-backend` value defaults to `local`,
+and each slot can override it with one of the contract values:
+
+- `local`: current local managed pane behavior
+- `codex`: Codex reviewer or worker metadata
+- `colab_cli`: future `google-colab-cli` worker metadata
+- `noop`: disabled or placeholder worker metadata
+
+`v0.32.0` only records and validates the contract. It does not start Colab
+sessions or change pane launch behavior.
+
+Example slot entries (excerpt; `winsmux init` creates six slots):
+
+```yaml
+external-operator: true
+worker-backend: local
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: codex
+    worker-role: reviewer
+    fallback-model: gpt-5.4
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: colab_cli
+    worker-role: impl
+    session-name: "{{project_slug}}_w2_impl"
+    gpu-preference: [H100, A100, L4]
+    packages: [torch, transformers, accelerate]
+    bootstrap: workers/colab/bootstrap_impl.py
+    task-script: workers/colab/impl_worker.py
+    worktree-mode: managed
+```
+
 Use this model when assigning work:
 
 - send implementation tasks to work-capable slots

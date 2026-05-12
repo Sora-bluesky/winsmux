@@ -1,12 +1,13 @@
 use serde::Serialize;
 
-pub const MACHINE_CONTRACT_VERSION: &str = "0.24.2";
+pub const MACHINE_CONTRACT_VERSION: &str = "0.32.0";
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub struct MachineContractCatalog<'a> {
     pub version: &'a str,
     pub roles: &'a [RoleContract<'a>],
     pub organization: OrganizationContract<'a>,
+    pub worker_backends: &'a [WorkerBackendContract<'a>],
     pub projection_surfaces: &'a [ProjectionSurfaceContract<'a>],
     pub review_state_file: ReviewStateFileContract<'a>,
     pub event_taxonomy: &'a [EventTaxonomyGroup<'a>],
@@ -26,6 +27,14 @@ pub struct ProjectionSurfaceContract<'a> {
     pub command: &'a str,
     pub shape: &'a str,
     pub rust_type: &'a str,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct WorkerBackendContract<'a> {
+    pub id: &'a str,
+    pub description: &'a str,
+    pub runtime_available: bool,
+    pub config_fields: &'a [&'a str],
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -73,6 +82,7 @@ pub fn machine_contract_catalog() -> MachineContractCatalog<'static> {
         version: MACHINE_CONTRACT_VERSION,
         roles: ROLES,
         organization: ORGANIZATION,
+        worker_backends: WORKER_BACKENDS,
         projection_surfaces: PROJECTION_SURFACES,
         review_state_file: REVIEW_STATE_FILE,
         event_taxonomy: EVENT_TAXONOMY,
@@ -197,6 +207,41 @@ const ORGANIZATION_MANIFEST_FIELDS: &[ManifestFieldContract<'static>] = &[
         field: "cost_hard_limit_pct",
         shape: "u32 number or numeric string from 0 to 100; greater than or equal to cost_soft_limit_pct when both are set",
         required: false,
+    },
+];
+
+const WORKER_BACKENDS: &[WorkerBackendContract<'static>] = &[
+    WorkerBackendContract {
+        id: "local",
+        description: "default local worker pane backend; uses existing managed worktree and CLI process behavior",
+        runtime_available: true,
+        config_fields: &["worker_backend", "worker_role", "pane_title"],
+    },
+    WorkerBackendContract {
+        id: "codex",
+        description: "Codex reviewer or worker slot metadata; v0.32.0 records the contract without changing launch behavior",
+        runtime_available: false,
+        config_fields: &["worker_backend", "model", "fallback_model", "pane_title"],
+    },
+    WorkerBackendContract {
+        id: "colab_cli",
+        description: "future google-colab-cli worker backend; v0.32.0 records schema only and does not start Colab sessions",
+        runtime_available: false,
+        config_fields: &[
+            "worker_backend",
+            "worker_role",
+            "session_name",
+            "gpu_preference",
+            "packages",
+            "bootstrap",
+            "task_script",
+        ],
+    },
+    WorkerBackendContract {
+        id: "noop",
+        description: "placeholder backend for disabled or unavailable workers",
+        runtime_available: false,
+        config_fields: &["worker_backend", "worker_role", "pane_title"],
     },
 ];
 

@@ -253,9 +253,11 @@ Describe 'Get-BridgeSettings' {
         $settings.legacy_role_layout | Should -Be $false
         $settings.operators | Should -Be 0
         $settings.worker_count | Should -Be 6
+        $settings.worker_backend | Should -Be 'local'
         $settings.agent_slots.Count | Should -Be 6
         $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
         $settings.agent_slots[0].runtime_role | Should -Be 'worker'
+        $settings.agent_slots[0].worker_backend | Should -Be 'local'
         $settings.builders | Should -Be 0
         $settings.researchers | Should -Be 0
         $settings.reviewers | Should -Be 0
@@ -338,6 +340,65 @@ agent-slots:
         $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
         $settings.agent_slots[1].agent | Should -Be 'claude'
         $settings.agent_slots[2].model | Should -Be 'gemini-2.5-pro'
+    }
+
+    It 'parses WorkerBackend metadata for six-slot worker configs without runtime dispatch' {
+@'
+agent: codex
+model: provider-default
+worker-backend: LOCAL
+external-operator: true
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: Codex
+    worker-role: reviewer
+    agent: codex
+    model: gpt-5.5
+    fallback-model: gpt-5.4
+    pane-title: W1 Codex Reviewer
+    worktree-mode: managed
+  - slot-id: worker-2
+    runtime-role: worker
+    worker-backend: COLAB_CLI
+    worker-role: impl
+    agent: codex
+    session-name: '{{project_slug}}_w2_impl'
+    gpu-preference: [H100, A100, L4]
+    packages: [torch, transformers, accelerate]
+    bootstrap: workers/colab/bootstrap_impl.py
+    task-script: workers/colab/impl_worker.py
+    worktree-mode: managed
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+
+        $settings.worker_backend | Should -Be 'local'
+        $settings.worker_count | Should -Be 2
+        $settings.agent_slots[0].worker_backend | Should -Be 'codex'
+        $settings.agent_slots[0].worker_role | Should -Be 'reviewer'
+        $settings.agent_slots[0].fallback_model | Should -Be 'gpt-5.4'
+        $settings.agent_slots[0].pane_title | Should -Be 'W1 Codex Reviewer'
+        $settings.agent_slots[1].worker_backend | Should -Be 'colab_cli'
+        $settings.agent_slots[1].worker_role | Should -Be 'impl'
+        $settings.agent_slots[1].session_name | Should -Be '{{project_slug}}_w2_impl'
+        $settings.agent_slots[1].gpu_preference | Should -Be @('H100', 'A100', 'L4')
+        $settings.agent_slots[1].packages | Should -Be @('torch', 'transformers', 'accelerate')
+        $settings.agent_slots[1].bootstrap | Should -Be 'workers/colab/bootstrap_impl.py'
+        $settings.agent_slots[1].task_script | Should -Be 'workers/colab/impl_worker.py'
+
+        $reviewer = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-1' -Settings $settings
+        $reviewer.WorkerBackend | Should -Be 'codex'
+        $reviewer.WorkerRole | Should -Be 'reviewer'
+        $reviewer.FallbackModel | Should -Be 'gpt-5.4'
+
+        $impl = Get-SlotAgentConfig -Role 'Worker' -SlotId 'worker-2' -Settings $settings
+        $impl.WorkerBackend | Should -Be 'colab_cli'
+        $impl.WorkerRole | Should -Be 'impl'
+        $impl.GpuPreference | Should -Be @('H100', 'A100', 'L4')
+        $impl.Packages | Should -Be @('torch', 'transformers', 'accelerate')
     }
 
     It 'parses per-role agent and model overrides and falls back to global settings' {
@@ -1401,6 +1462,29 @@ agent-slots:
         { Get-BridgeSettings } | Should -Throw '*duplicate slot_id*'
     }
 
+    It 'fails closed when worker backend values are unsupported' {
+@'
+worker-backend: unsupported
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        { Get-BridgeSettings } | Should -Throw '*Invalid worker_backend configuration*'
+    }
+
+    It 'fails closed when slot-level worker backend values are unsupported' {
+@'
+agent-slots:
+  - slot-id: worker-1
+    runtime-role: worker
+    worker-backend: unsupported
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        { Get-BridgeSettings } | Should -Throw '*unsupported worker_backend*'
+    }
+
     It 'rejects legacy role counts unless legacy_role_layout is explicitly enabled' {
 @'
 agent: codex
@@ -1546,26 +1630,48 @@ Describe 'Get-OrchestraLayoutSettings' {
     }
 
     It 'writes project settings to an explicit root path and omits worker_count when agent slots are present' {
-        $projectRoot = Join-Path $script:settingsTempRoot 'repo-root'
-        New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
+        $saveSettingsTempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-save-settings-tests-' + [guid]::NewGuid().ToString('N'))
+        $projectRoot = Join-Path $saveSettingsTempRoot 'repo-root'
 
-        Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{
-            agent              = 'codex'
-            model              = 'gpt-5.4'
-            external_operator = $true
-            worker_count       = 2
-            agent_slots        = @(
-                [ordered]@{ slot_id = 'worker-1'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worktree_mode = 'managed' },
-                [ordered]@{ slot_id = 'worker-2'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worktree_mode = 'managed' }
-            )
-            vault_keys         = @('GH_TOKEN')
-        })
+        try {
+            New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
 
-        $projectConfigPath = Join-Path $projectRoot '.winsmux.yaml'
-        Test-Path $projectConfigPath | Should -Be $true
-        $projectConfig = Get-Content -Raw -Path $projectConfigPath -Encoding UTF8
-        $projectConfig | Should -Match 'agent_slots:'
-        $projectConfig | Should -Not -Match 'worker_count:'
+            Save-BridgeSettings -Scope project -RootPath $projectRoot -Settings ([ordered]@{
+                agent              = 'codex'
+                model              = 'gpt-5.4'
+                external_operator = $true
+                worker_backend     = 'local'
+                worker_count       = 2
+                agent_slots        = @(
+                    [ordered]@{ slot_id = 'worker-1'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worker_backend = 'codex'; worker_role = 'reviewer'; fallback_model = 'gpt-5.4'; worktree_mode = 'managed' },
+                    [ordered]@{ slot_id = 'worker-2'; runtime_role = 'worker'; agent = 'codex'; model = 'gpt-5.4'; worker_backend = 'colab_cli'; worker_role = 'impl'; gpu_preference = @('H100', 'A100', 'L4'); packages = @('torch', 'transformers'); worktree_mode = 'managed' }
+                )
+                vault_keys         = @('GH_TOKEN')
+            })
+
+            $projectConfigPath = Join-Path $projectRoot '.winsmux.yaml'
+            Test-Path $projectConfigPath | Should -Be $true
+            $projectConfig = Get-Content -Raw -Path $projectConfigPath -Encoding UTF8
+            $projectConfig | Should -Match 'agent_slots:'
+            $projectConfig | Should -Not -Match 'worker_count:'
+            $projectConfig | Should -Match 'worker_backend: colab_cli'
+            $projectConfig | Should -Match 'gpu_preference: \[H100, A100, L4\]'
+            $projectConfig | Should -Match 'packages: \[torch, transformers\]'
+
+            Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+            $roundTrip = Get-BridgeSettings -RootPath $projectRoot
+            $roundTrip.worker_backend | Should -Be 'local'
+            $roundTrip.worker_count | Should -Be 2
+            $roundTrip.agent_slots[0].worker_backend | Should -Be 'codex'
+            $roundTrip.agent_slots[0].worker_role | Should -Be 'reviewer'
+            $roundTrip.agent_slots[1].worker_backend | Should -Be 'colab_cli'
+            $roundTrip.agent_slots[1].worker_role | Should -Be 'impl'
+            $roundTrip.agent_slots[1].gpu_preference | Should -Be @('H100', 'A100', 'L4')
+            $roundTrip.agent_slots[1].packages | Should -Be @('torch', 'transformers')
+        } finally {
+            Remove-Item -LiteralPath $saveSettingsTempRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     It 'preserves legacy role layouts only when explicit opt-in is enabled' {
@@ -2019,33 +2125,42 @@ NEXT_ACTION: rerun focused verification
     }
 
     It 'treats generated default file edit flags without capability identity as unknown' {
-        $manifest = [PSCustomObject]@{
-            Session = [PSCustomObject]@{
-                name        = 'winsmux-orchestra'
-                project_dir = 'C:\repo'
+        $projectDir = Join-Path ([System.IO.Path]::GetTempPath()) ('winsmux-team-pipeline-tests-' + [guid]::NewGuid().ToString('N'))
+        $builderWorktreePath = Join-Path $projectDir '.worktrees\builder-1'
+
+        try {
+            New-Item -ItemType Directory -Path $builderWorktreePath -Force | Out-Null
+
+            $manifest = [PSCustomObject]@{
+                Session = [PSCustomObject]@{
+                    name        = 'winsmux-orchestra'
+                    project_dir = $projectDir
+                }
+                Panes = [ordered]@{
+                    'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = $builderWorktreePath; supports_file_edit = 'false' }
+                }
             }
-            Panes = [ordered]@{
-                'builder-1' = [PSCustomObject]@{ pane_id = '%2'; role = 'Builder'; builder_worktree_path = 'C:\repo\.worktrees\builder-1'; supports_file_edit = 'false' }
+
+            $script:teamPipelineBridgeCalls = @()
+
+            Mock Read-TeamPipelineManifest { $manifest }
+            Mock Invoke-TeamPipelineBridge {
+                param([string[]]$Arguments, [switch]$AllowFailure)
+                $script:teamPipelineBridgeCalls += ,@($Arguments)
+                [PSCustomObject]@{ ExitCode = 0; Output = '' }
             }
+            Mock Wait-TeamPipelineStage {
+                [PSCustomObject]@{ Stage = 'EXEC'; Target = 'builder-1'; Status = 'EXEC_DONE'; Summary = 'build summary'; Transcript = '' }
+            }
+
+            $result = Invoke-TeamPipeline -Task 'Investigate cache drift' -Builder 'builder-1' -SkipPlan -SkipVerify
+
+            $result.Success | Should -Be $true
+            $result.FinalStatus | Should -Be 'EXEC_DONE'
+            @($script:teamPipelineBridgeCalls | Where-Object { $_[0] -eq 'send' -and $_[1] -eq 'builder-1' }).Count | Should -Be 1
+        } finally {
+            Remove-Item -LiteralPath $projectDir -Recurse -Force -ErrorAction SilentlyContinue
         }
-
-        $script:teamPipelineBridgeCalls = @()
-
-        Mock Read-TeamPipelineManifest { $manifest }
-        Mock Invoke-TeamPipelineBridge {
-            param([string[]]$Arguments, [switch]$AllowFailure)
-            $script:teamPipelineBridgeCalls += ,@($Arguments)
-            [PSCustomObject]@{ ExitCode = 0; Output = '' }
-        }
-        Mock Wait-TeamPipelineStage {
-            [PSCustomObject]@{ Stage = 'EXEC'; Target = 'builder-1'; Status = 'EXEC_DONE'; Summary = 'build summary'; Transcript = '' }
-        }
-
-        $result = Invoke-TeamPipeline -Task 'Investigate cache drift' -Builder 'builder-1' -SkipPlan -SkipVerify
-
-        $result.Success | Should -Be $true
-        $result.FinalStatus | Should -Be 'EXEC_DONE'
-        @($script:teamPipelineBridgeCalls | Where-Object { $_[0] -eq 'send' -and $_[1] -eq 'builder-1' }).Count | Should -Be 1
     }
 
     It 'prefers reviewer then researcher for consult targets and skips builder-only runs' {
@@ -12016,8 +12131,10 @@ Describe 'public first-run helper' {
         $settings = Get-BridgeSettings -RootPath $script:publicFirstRunTempRoot
         $settings.external_operator | Should -Be $true
         $settings.worker_count | Should -Be 6
+        $settings.worker_backend | Should -Be 'local'
         $settings.agent_slots.Count | Should -Be 6
         $settings.agent_slots[0].slot_id | Should -Be 'worker-1'
+        $settings.agent_slots[0].worker_backend | Should -Be 'local'
         $slotKeys = if ($settings.agent_slots[0] -is [System.Collections.IDictionary]) {
             @($settings.agent_slots[0].Keys)
         } else {
