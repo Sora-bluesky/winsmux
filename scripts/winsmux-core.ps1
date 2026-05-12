@@ -17,7 +17,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
 }
 
 # --- Config ---
-$VERSION = "0.31.0"
+$VERSION = "0.32.0"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
