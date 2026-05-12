@@ -1822,6 +1822,8 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
         "docs/internal/winsmux-manual-checklist-by-version.md"
     );
     assert_eq!(json["document"]["tracked"], false);
+    assert_eq!(json["document"]["exists"], false);
+    assert_eq!(json["document"]["storage_policy"], "internal_untracked");
     assert_eq!(json["required_result_values"][0], "未");
     assert_eq!(json["required_result_values"][1], "合格");
     assert_eq!(json["required_result_values"][2], "不合格");
@@ -1838,15 +1840,136 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
         json["release_gates"][3],
         "first_launch_project_selection_recorded"
     );
-    assert_eq!(
-        json["release_gates"][7],
-        "native_voice_dictation_or_fallback_contract_recorded"
-    );
+    let release_gates = json["release_gates"]
+        .as_array()
+        .expect("release_gates should be an array");
+    for gate in [
+        "project_explorer_accuracy_recorded",
+        "operator_composer_editing_recorded",
+        "meta_plan_multi_pane_flow_recorded",
+        "status_bar_fit_recorded",
+        "native_voice_dictation_or_fallback_contract_recorded",
+    ] {
+        assert!(
+            release_gates.iter().any(|item| item == gate),
+            "release_gates should contain {gate}"
+        );
+    }
+    let focus_items = json["v1_desktop_focus"]
+        .as_array()
+        .expect("v1_desktop_focus should be an array");
+    for item_id in [
+        "first_launch_project_selection",
+        "project_explorer_accuracy",
+        "operator_composer_editing",
+        "meta_plan_multi_pane_flow",
+        "clipboard_image_input",
+        "settings_language_control",
+        "status_bar_fit",
+        "native_voice_dictation_or_fallback_contract",
+    ] {
+        assert!(
+            focus_items.iter().any(|item| item == item_id),
+            "v1_desktop_focus should contain {item_id}"
+        );
+    }
+    for (item_id, gate) in [
+        ("installer_artifacts", "desktop_bundle_artifacts_verified"),
+        (
+            "first_launch_project_selection",
+            "first_launch_project_selection_recorded",
+        ),
+        (
+            "project_explorer_accuracy",
+            "project_explorer_accuracy_recorded",
+        ),
+        (
+            "operator_composer_editing",
+            "operator_composer_editing_recorded",
+        ),
+        (
+            "meta_plan_multi_pane_flow",
+            "meta_plan_multi_pane_flow_recorded",
+        ),
+        ("clipboard_image_input", "clipboard_image_flow_recorded"),
+        ("settings_language_control", "settings_language_flow_recorded"),
+        ("status_bar_fit", "status_bar_fit_recorded"),
+        (
+            "native_voice_dictation_or_fallback_contract",
+            "native_voice_dictation_or_fallback_contract_recorded",
+        ),
+    ] {
+        assert!(
+            json["desktop_manual_items"]
+                .as_array()
+                .expect("desktop_manual_items should be an array")
+                .iter()
+                .any(|item| item["id"] == item_id),
+            "desktop_manual_items should contain {item_id}"
+        );
+        assert!(
+            release_gates.iter().any(|item| item == gate),
+            "release_gates should contain gate {gate} for {item_id}"
+        );
+    }
+    for (item_id, evidence_source, dogfood_task_class) in [
+        ("installer_artifacts", "release_artifact", None),
+        (
+            "first_launch_project_selection",
+            "dogfood_task_class",
+            Some("first_launch_project_selection"),
+        ),
+        (
+            "project_explorer_accuracy",
+            "dogfood_task_class",
+            Some("project_explorer_accuracy"),
+        ),
+        (
+            "operator_composer_editing",
+            "dogfood_task_class",
+            Some("operator_composer_editing"),
+        ),
+        (
+            "meta_plan_multi_pane_flow",
+            "dogfood_task_class",
+            Some("meta_plan_multi_pane_flow"),
+        ),
+        (
+            "clipboard_image_input",
+            "dogfood_task_class",
+            Some("clipboard_image_input"),
+        ),
+        (
+            "settings_language_control",
+            "dogfood_task_class",
+            Some("settings_language_control"),
+        ),
+        (
+            "native_voice_dictation_or_fallback_contract",
+            "fallback_contract",
+            None,
+        ),
+        ("status_bar_fit", "dogfood_task_class", Some("status_bar_fit")),
+    ] {
+        let item = json["desktop_manual_items"]
+            .as_array()
+            .expect("desktop_manual_items should be an array")
+            .iter()
+            .find(|item| item["id"] == item_id)
+            .unwrap_or_else(|| panic!("desktop_manual_items should contain {item_id}"));
+        assert_eq!(item["evidence_source"], evidence_source);
+        if let Some(expected_task_class) = dogfood_task_class {
+            assert_eq!(item["dogfood_task_class"], expected_task_class);
+        } else {
+            assert!(item["dogfood_task_class"].is_null());
+        }
+    }
     assert_eq!(
         json["v1_desktop_focus"][0],
         "desktop_installer_distribution"
     );
     assert_eq!(json["v1_desktop_focus"][4], "meta_plan_multi_pane_flow");
+    assert_eq!(json["v1_desktop_focus"][6], "status_bar_fit");
     assert_eq!(
         json["v1_desktop_focus"][8],
         "native_voice_dictation_or_fallback_contract"
@@ -1921,6 +2044,32 @@ fn operator_cli_manual_checklist_json_reports_release_gate() {
         json["blocking_conditions"][6],
         "missing_native_voice_dictation_or_fallback_contract"
     );
+    assert_eq!(
+        json["blocking_condition_scope"],
+        "release_blocker_classes"
+    );
+    assert!(json["blocking_condition_note"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("document.exists"));
+}
+
+#[test]
+fn operator_cli_manual_checklist_json_reports_existing_internal_document() {
+    let project_dir = make_temp_project_dir("manual-checklist-existing-document");
+    let document_dir = project_dir.join("docs").join("internal");
+    fs::create_dir_all(&document_dir).expect("test should create manual checklist directory");
+    fs::write(
+        document_dir.join("winsmux-manual-checklist-by-version.md"),
+        "# manual checklist\n",
+    )
+    .expect("test should write manual checklist document");
+
+    let json = run_json(&project_dir, &["manual-checklist", "--json"]);
+
+    assert_eq!(json["document"]["tracked"], false);
+    assert_eq!(json["document"]["exists"], true);
+    assert_eq!(json["document"]["storage_policy"], "internal_untracked");
 }
 
 #[test]

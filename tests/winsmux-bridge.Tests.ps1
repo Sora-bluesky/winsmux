@@ -10426,6 +10426,8 @@ Set-Location '__DIGEST_TEMP_ROOT__'
         @($result.run_projections).Count | Should -Be 1
         $result.run_projections[0].run_id | Should -Be 'task:task-246'
         $result.run_projections[0].worktree | Should -Be '.worktrees/builder-1'
+        $result.run_projections[0].Contains('reasons') | Should -Be $true
+        @($result.run_projections[0]['reasons']).Count | Should -Be 0
     }
 
     It 'converts event records into desktop summary refresh items' {

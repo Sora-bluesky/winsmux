@@ -8,6 +8,7 @@ Describe 'harness-check contract' {
         $script:PowerShellDeescalationPath = Join-Path $script:RepoRoot 'winsmux-core\scripts\powershell-deescalation.ps1'
         $script:WinsmuxCorePath = Join-Path $script:RepoRoot 'scripts\winsmux-core.ps1'
         $script:InternalDocsMetaPath = Join-Path $script:RepoRoot 'winsmux-core\scripts\internal-docs-meta.psd1'
+        $script:SyncInternalDocsPath = Join-Path $script:RepoRoot 'winsmux-core\scripts\sync-internal-docs.ps1'
         $script:DesktopMainPath = Join-Path $script:RepoRoot 'winsmux-app\src\main.ts'
         $script:TauriLibPath = Join-Path $script:RepoRoot 'winsmux-app\src-tauri\src\lib.rs'
         $script:SettingsLocalPath = Join-Path $script:RepoRoot '.claude\settings.local.json'
@@ -309,6 +310,129 @@ tasks:
         $voiceEntry[0].Memo | Should -Match 'TASK-468'
     }
 
+    It 'keeps future manual checklist metadata after earlier release lanes' {
+        $meta = Import-PowerShellDataFile -LiteralPath $script:InternalDocsMetaPath
+        $orders = @($meta.ManualChecklistEntries | ForEach-Object { $_.Order })
+        $uniqueOrders = @($orders | Select-Object -Unique)
+        $v160Entry = @($meta.ManualChecklistEntries | Where-Object { $_.Version -eq 'v1.6.0' })
+        $v161Entry = @($meta.ManualChecklistEntries | Where-Object { $_.Version -eq 'v1.6.1' })
+
+        $uniqueOrders.Count | Should -Be $orders.Count
+        $v160Entry.Count | Should -Be 1
+        $v161Entry.Count | Should -Be 1
+        $v161Entry[0].Order | Should -BeGreaterThan $v160Entry[0].Order
+    }
+
+    It 'keeps generated internal docs from marking partial task groups as published' {
+        $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("winsmux-internal-docs-" + [guid]::NewGuid().ToString('N'))
+        try {
+            $backlogPath = Join-Path $fixtureRoot 'backlog.yaml'
+            $roadmapTitlePath = Join-Path $fixtureRoot 'roadmap-title-ja.psd1'
+            $featureInventoryPath = Join-Path $fixtureRoot 'feature-inventory.md'
+            $manualChecklistPath = Join-Path $fixtureRoot 'manual-checklist.md'
+            $metaPath = Join-Path $fixtureRoot 'internal-docs-meta.psd1'
+
+            Write-TestFileWithCmd -Path $backlogPath -Content @'
+# === v1.0.0: Release gate ===
+tasks:
+  - id: TASK-DONE
+    title: Done task
+    status: done
+    target_version: v1.0.0
+  - id: TASK-ACTIVE
+    title: Active task
+    status: active
+    target_version: v1.0.0
+  - id: TASK-DONE2
+    title: Another done task
+    status: done
+    target_version: v1.0.1
+'@
+            Write-TestFileWithCmd -Path $roadmapTitlePath -Content '@{ VersionTitles = @{}; TaskTitles = @{} }'
+            Write-TestFileWithCmd -Path $featureInventoryPath -Content @'
+# Feature Inventory
+
+更新日: 2026-01-01
+
+## 進行中（未公開）
+
+old active
+
+## 今後実装予定
+
+old planned
+
+## 付録
+
+appendix
+'@
+            Write-TestFileWithCmd -Path $manualChecklistPath -Content @'
+# Manual Checklist
+
+更新日: 2026-01-01
+
+## 進行中・今後予定の確認表
+
+old checklist
+
+## 総合確認の進め方
+
+manual flow
+'@
+            Write-TestFileWithCmd -Path $metaPath -Content @'
+@{
+    FeatureInventoryEntries = @(
+        @{
+            Order = 10
+            Category = 'fixture category'
+            Title = 'fixture feature'
+            UserValue = 'fixture user value'
+            UseCase = 'fixture use case'
+            ImplementationVersion = 'v1.0.0'
+            TaskIds = @('TASK-ACTIVE')
+            AppendixName = 'fixture appendix'
+            TestFocus = 'fixture focus'
+        }
+    )
+    ManualChecklistEntries = @(
+        @{
+            Order = 10
+            Version = 'v1.0.0'
+            TaskIds = @('TASK-DONE', 'TASK-ACTIVE')
+            Focus = 'partial release gate'
+            Example = 'mixed task states'
+            Memo = 'partial'
+        }
+        @{
+            Order = 20
+            Version = 'v1.0.1'
+            TaskIds = @('TASK-DONE', 'TASK-DONE2')
+            Focus = 'complete release gate'
+            Example = 'all task states are done'
+            Memo = 'complete'
+        }
+    )
+}
+'@
+
+            $output = & $script:PwshPath -NoProfile -File $script:SyncInternalDocsPath `
+                -BacklogPath $backlogPath `
+                -RoadmapTitleJaPath $roadmapTitlePath `
+                -FeatureInventoryPath $featureInventoryPath `
+                -ManualChecklistPath $manualChecklistPath `
+                -MetaPath $metaPath
+
+            $LASTEXITCODE | Should -Be 0
+            ($output | Out-String) | Should -Match 'Generated internal docs'
+
+            $manualChecklist = Get-Content -LiteralPath $manualChecklistPath -Raw -Encoding UTF8
+            $manualChecklist | Should -Match '\| v1\.0\.0: Release gate \| 進行中 \| partial release gate \| mixed task states \| \[ \] 未 \| \[ \] \| partial \|'
+            $manualChecklist | Should -Match '\| v1\.0\.1 \| 公開済み \| complete release gate \| all task states are done \| \[ \] 未 \| \[ \] \| complete \|'
+        } finally {
+            Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'does not treat native microphone metering as composer dictation' {
         $desktopMain = Get-Content -LiteralPath $script:DesktopMainPath -Raw -Encoding UTF8
         $tauriLib = Get-Content -LiteralPath $script:TauriLibPath -Raw -Encoding UTF8
@@ -316,6 +440,8 @@ tasks:
         $desktopMain | Should -Match 'const supported = browserSupported;'
         $desktopMain | Should -Not -Match 'if \(!SpeechRecognition\)[\s\S]{0,300}startNativeVoiceInput'
         $desktopMain | Should -Match 'does not convert native audio into composer text'
+        $desktopMain | Should -Not -Match 'voiceCaptureStatus\.native\.state === "stopped"[\s\S]{0,300}getNativeVoiceMeterOnlyMessage'
+        $desktopMain | Should -Match 'button\.setAttribute\("title", title\);'
         $tauriLib | Should -Match 'Native microphone capture does not transcribe audio into text'
         $tauriLib | Should -Match 'capture_mode = "browser_fallback"'
     }

@@ -351,6 +351,33 @@ panes:
         $traceEntries[1].host_kind | Should -Be 'powershell-window'
         $traceEntries[1].launch_result | Should -Be 'attach_confirmed'
     }
+
+    It 'keeps multiline session scalar values on one YAML line' {
+        $manifest = [PSCustomObject]@{
+            version  = 1
+            saved_at = '2026-05-12T20:50:00+09:00'
+            session  = [PSCustomObject]@{
+                name             = 'winsmux-orchestra'
+                status           = 'running'
+                ui_attach_reason = "Visible attach confirmed`nafter client identity changed."
+            }
+            panes = [ordered]@{}
+            tasks = [PSCustomObject]@{
+                queued      = @()
+                in_progress = @()
+                completed   = @()
+            }
+            worktrees = [ordered]@{}
+        }
+
+        Save-WinsmuxManifest -ProjectDir $script:manifestTempRoot -Manifest $manifest
+        $content = Get-Content -Path (Get-ManifestPath -ProjectDir $script:manifestTempRoot) -Raw -Encoding UTF8
+        $loaded = Get-WinsmuxManifest -ProjectDir $script:manifestTempRoot
+
+        $content | Should -Match "ui_attach_reason: 'Visible attach confirmed after client identity changed\.'"
+        $content | Should -Not -Match "ui_attach_reason: .*`r?`nafter client identity changed"
+        $loaded.session.ui_attach_reason | Should -Be 'Visible attach confirmed after client identity changed.'
+    }
 }
 
 Describe 'orchestra state model' {

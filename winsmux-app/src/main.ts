@@ -7540,25 +7540,22 @@ function getVoiceCaptureStatusMessage() {
   }
 
   if (!voiceCaptureStatus) {
-    return getLanguageText(
-      "Checking native microphone status...",
-      "ネイティブのマイク状態を確認中...",
-    );
+    return "";
   }
 
   if (voiceCaptureStatus.native.state === "recording") {
     const meter = getVoiceCaptureMeterPercent();
     return getLanguageText(
-      `Native microphone metering is running. Meter ${meter}%. It does not write text into the composer.`,
-      `ネイティブのマイクメーターは動作中です。メーターは ${meter}% です。入力欄へ文字は入りません。`,
+      `Mic meter ${meter}%`,
+      `マイクメーター ${meter}%`,
     );
   }
 
   if (voiceCaptureStatus.native.state === "silence") {
     const meter = getVoiceCaptureMeterPercent();
     return getLanguageText(
-      `Native microphone metering is running, but speech is not detected. Meter ${meter}%. It does not write text into the composer.`,
-      `ネイティブのマイクメーターは動作中ですが、発話を検出していません。メーターは ${meter}% です。入力欄へ文字は入りません。`,
+      `Mic meter ${meter}%`,
+      `マイクメーター ${meter}%`,
     );
   }
 
@@ -7577,12 +7574,7 @@ function getVoiceCaptureStatusMessage() {
   }
 
   if (voiceCaptureStatus.native.state === "stopped") {
-    return isNativeVoiceCaptureAvailable()
-      ? getNativeVoiceMeterOnlyMessage()
-      : getLanguageText(
-        "Browser voice input is the supported dictation fallback.",
-        "音声入力の対応済みフォールバックはブラウザーの音声認識です。",
-      );
+    return "";
   }
 
   if (voiceCaptureStatus.native.state === "permission_denied") {
@@ -7593,7 +7585,7 @@ function getVoiceCaptureStatusMessage() {
   }
 
   if (voiceCaptureStatus.native.available) {
-    return getNativeVoiceMeterOnlyMessage();
+    return "";
   }
 
   if (voiceCaptureStatus.native.state === "no_microphone") {
@@ -7604,16 +7596,10 @@ function getVoiceCaptureStatusMessage() {
   }
 
   if (isBrowserVoiceInputSupported()) {
-    return getLanguageText(
-      "Native microphone capture is not ready; browser voice input is active.",
-      "ネイティブのマイク入力は準備中です。ブラウザーの音声入力を使います。",
-    );
+    return "";
   }
 
-  return getLanguageText(
-    "Native microphone capture is not ready, and browser voice input is unavailable.",
-    "ネイティブのマイク入力は準備中です。この環境ではブラウザーの音声入力も使えません。",
-  );
+  return "";
 }
 
 function renderVoiceCaptureStatus() {
@@ -7678,8 +7664,11 @@ function updateVoiceInputButton() {
       ? getLanguageText("Stop voice input", "音声入力を停止")
       : getLanguageText("Start voice input", "音声入力を開始");
   const labelWithShortcut = supported ? `${label} (${normalizeVoiceShortcut(themeState.voiceShortcut)})` : label;
+  const title = !supported && isTauri() && isNativeVoiceCaptureAvailable()
+    ? getNativeVoiceMeterOnlyMessage()
+    : labelWithShortcut;
   button.setAttribute("aria-label", labelWithShortcut);
-  button.setAttribute("title", labelWithShortcut);
+  button.setAttribute("title", title);
   renderVoiceCaptureStatus();
 }
 

@@ -80,6 +80,17 @@ fn event_fixture_deserializes_and_validates() {
 }
 
 #[test]
+fn event_accepts_utf8_bom_on_first_line() {
+    let records = parse_event_jsonl(
+        "\u{feff}{\"timestamp\":\"2026-05-12T20:58:00+09:00\",\"event\":\"pane.completed\"}",
+    )
+    .expect("BOM-prefixed event stream should parse");
+
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].event, "pane.completed");
+}
+
+#[test]
 fn event_accepts_sparse_legacy_poll_event_shape() {
     let record = parse_single_record(
         r#"{"timestamp":"2026-04-07T09:00:00.0000000+09:00","event":"pane.completed","pane_id":"%2","label":"builder-1"}"#,

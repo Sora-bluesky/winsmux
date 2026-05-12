@@ -2319,6 +2319,19 @@ fn ledger_contract_loads_live_winsmux_files() {
 }
 
 #[test]
+fn ledger_contract_accepts_bom_prefixed_live_events_file() {
+    let fixture = TempProject::new("bom-events");
+    fixture.write_winsmux_file("manifest.yaml", MANIFEST_FIXTURE);
+    fixture.write_winsmux_file("events.jsonl", &format!("\u{feff}{EVENTS_FIXTURE}"));
+
+    let snapshot = ledger::LedgerSnapshot::from_project_dir(fixture.path())
+        .expect("BOM-prefixed events.jsonl should load");
+
+    assert_eq!(snapshot.event_count(), 5);
+    assert_eq!(snapshot.evidence_chain_projection().summary.entry_count, 5);
+}
+
+#[test]
 fn ledger_contract_allows_missing_live_events_file() {
     let fixture = TempProject::new("missing-events");
     fixture.write_winsmux_file("manifest.yaml", MANIFEST_FIXTURE);

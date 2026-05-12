@@ -3568,6 +3568,11 @@ fn build_evidence_chain(
         .filter(|line| !line.trim().is_empty())
         .enumerate()
     {
+        let line = if index == 0 {
+            line.trim_start_matches('\u{feff}')
+        } else {
+            line
+        };
         let event_value: Value = serde_json::from_str(line)
             .map_err(|err| format!("failed to parse event line {}: {}", index + 1, err))?;
         let event = events

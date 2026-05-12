@@ -27,6 +27,7 @@ function ConvertTo-ManifestYamlScalar {
     }
 
     $text = [string]$Value
+    $text = $text -replace "(\r\n|\r|\n)+", ' '
     if ($text.Length -eq 0) {
         return "''"
     }
