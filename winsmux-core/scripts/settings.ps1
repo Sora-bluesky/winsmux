@@ -430,8 +430,15 @@ function New-BridgeManagedAgentSlots {
     param(
         [Parameter(Mandatory = $true)][int]$Count,
         [Parameter(Mandatory = $true)][string]$Agent,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Model,
+        [string]$WorkerBackend = 'local'
     )
+
+    $normalizedWorkerBackend = if (Test-BridgeWorkerBackendKind -Value $WorkerBackend) {
+        $WorkerBackend.Trim().ToLowerInvariant()
+    } else {
+        'local'
+    }
 
     $slots = @()
     for ($index = 1; $index -le $Count; $index++) {
@@ -440,7 +447,7 @@ function New-BridgeManagedAgentSlots {
             runtime_role   = 'worker'
             agent          = $Agent
             worktree_mode  = 'managed'
-            worker_backend = 'local'
+            worker_backend = $normalizedWorkerBackend
         }
         if (-not [string]::IsNullOrWhiteSpace($Model)) {
             $slot.model = $Model
@@ -2212,7 +2219,7 @@ function Get-BridgeSettings {
     }
 
     if (@($settings.agent_slots).Count -eq 0 -and -not $useLegacyLayout -and [bool]$settings.external_operator -and [int]$settings.worker_count -gt 0) {
-        $settings.agent_slots = New-BridgeManagedAgentSlots -Count ([int]$settings.worker_count) -Agent ([string]$settings.agent) -Model ([string]$settings.model)
+        $settings.agent_slots = New-BridgeManagedAgentSlots -Count ([int]$settings.worker_count) -Agent ([string]$settings.agent) -Model ([string]$settings.model) -WorkerBackend ([string]$settings.worker_backend)
     }
 
     if (@($settings.agent_slots).Count -gt 0 -and -not $useLegacyLayout) {

@@ -342,6 +342,25 @@ agent-slots:
         $settings.agent_slots[2].model | Should -Be 'gemini-2.5-pro'
     }
 
+    It 'propagates top-level worker backend into generated managed slots' {
+@'
+agent: codex
+model: provider-default
+worker-backend: Codex
+worker_count: 2
+'@ | Set-Content -Path (Join-Path $script:settingsTempRoot '.winsmux.yaml') -Encoding UTF8
+
+        Mock Get-WinsmuxOption { param($Name, $Default) return $null }
+
+        $settings = Get-BridgeSettings
+
+        $settings.worker_backend | Should -Be 'codex'
+        $settings.worker_count | Should -Be 2
+        $settings.agent_slots.Count | Should -Be 2
+        $settings.agent_slots[0].worker_backend | Should -Be 'codex'
+        $settings.agent_slots[1].worker_backend | Should -Be 'codex'
+    }
+
     It 'parses WorkerBackend metadata for six-slot worker configs without runtime dispatch' {
 @'
 agent: codex
