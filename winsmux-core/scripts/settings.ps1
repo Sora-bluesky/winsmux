@@ -1663,6 +1663,7 @@ function ConvertFrom-BridgeManualYaml {
     $currentListKey = $null
     $currentSlotListKey = $null
     $currentSlotEntry = $null
+    $currentSlotEntryListKey = $null
     $currentMapKey = $null
     $currentMapEntryKey = $null
     $lineNumber = 0
@@ -1680,12 +1681,28 @@ function ConvertFrom-BridgeManualYaml {
             $slotEntry[$slotKey] = ConvertFrom-BridgeYamlValue $Matches[2]
             $settings[$currentSlotListKey] += @($slotEntry)
             $currentSlotEntry = $slotEntry
+            $currentSlotEntryListKey = $null
+            continue
+        }
+
+        if ($null -ne $currentSlotListKey -and $null -ne $currentSlotEntry -and $null -ne $currentSlotEntryListKey -and $line -match '^\s{6,}-\s*(.+?)\s*$') {
+            $listValue = ConvertFrom-BridgeYamlScalar $Matches[1]
+            if (-not [string]::IsNullOrWhiteSpace($listValue)) {
+                $currentSlotEntry[$currentSlotEntryListKey] += @($listValue)
+            }
             continue
         }
 
         if ($null -ne $currentSlotListKey -and $null -ne $currentSlotEntry -and $line -match '^\s{4}([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$') {
             $slotKey = ConvertTo-BridgeSlotKey $Matches[1]
-            $currentSlotEntry[$slotKey] = ConvertFrom-BridgeYamlValue $Matches[2]
+            $slotValue = $Matches[2]
+            $currentSlotEntryListKey = $null
+            if ([string]::IsNullOrWhiteSpace($slotValue) -and $slotKey -in $script:BridgeSlotListKeys) {
+                $currentSlotEntry[$slotKey] = @()
+                $currentSlotEntryListKey = $slotKey
+            } else {
+                $currentSlotEntry[$slotKey] = ConvertFrom-BridgeYamlValue $slotValue
+            }
             continue
         }
 
@@ -1701,6 +1718,7 @@ function ConvertFrom-BridgeManualYaml {
         $currentListKey = $null
         $currentSlotListKey = $null
         $currentSlotEntry = $null
+        $currentSlotEntryListKey = $null
         if ($null -ne $currentMapKey -and $line -match '^\s{2}([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*$') {
             $currentMapEntryKey = $Matches[1] -replace '-', '_'
             if (-not $settings[$currentMapKey].Contains($currentMapEntryKey)) {
