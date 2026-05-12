@@ -76,13 +76,28 @@ jobs:
 
           node scripts/stage-npm-release.mjs --version $version --out output/npm-release/winsmux
 
+      - name: Check whether npm version already exists
+        id: npm-version
+        run: |
+          if npm view "winsmux@${{ needs.verify.outputs.version }}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip existing npm version
+        if: steps.npm-version.outputs.exists == 'true'
+        run: echo "winsmux@${{ needs.verify.outputs.version }} is already published; skipping npm publish."
+
       - name: Verify staged package
+        if: steps.npm-version.outputs.exists != 'true'
         working-directory: output/npm-release/winsmux
         run: |
           node --version
           npm pack --dry-run
 
       - name: Publish to npm
+        if: steps.npm-version.outputs.exists != 'true'
         working-directory: output/npm-release/winsmux
         run: npm publish --access public
         env:
