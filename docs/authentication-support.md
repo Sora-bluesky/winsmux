@@ -19,7 +19,7 @@ Within that model, winsmux does **not** broker OAuth logins or extract and relay
 | Codex | API key through the official agent CLI | Supported |
 | Codex | ChatGPT OAuth through the official agent CLI | This PC only, interactive use |
 | Gemini | Gemini API key through the official agent CLI | Supported |
-| Gemini | Gemini API in Vertex AI through the official agent CLI | Supported |
+| Gemini | Gemini API through Gemini Enterprise Agent Platform and the official agent CLI | Supported |
 | Gemini | Google OAuth through the official agent CLI | This PC only, interactive use |
 
 Model families such as Gemma, Llama, Mistral, Qwen, DeepSeek, and Kimi are not

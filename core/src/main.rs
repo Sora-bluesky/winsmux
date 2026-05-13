@@ -112,6 +112,7 @@ fn is_winsmux_core_bridge_command(command: &str) -> bool {
             | "control-rpc"
             | "watch"
             | "profile"
+            | "workers"
             | "doctor"
             | "monitor"
             | "role"
@@ -286,7 +287,15 @@ fn bare_session_headless_server_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{bare_session_headless_server_config, resolve_attach_session_name_from_parts};
+    use super::{
+        bare_session_headless_server_config, is_winsmux_core_bridge_command,
+        resolve_attach_session_name_from_parts,
+    };
+
+    #[test]
+    fn workers_command_is_forwarded_to_core_bridge() {
+        assert!(is_winsmux_core_bridge_command("workers"));
+    }
 
     #[test]
     fn resolve_attach_session_name_prefers_namespaced_target() {

@@ -220,9 +220,9 @@ Describe 'Public surface policy' {
         $readmeJa | Should -Match 'npm install -g winsmux'
 
         $readme | Should -Match 'Claude Code \| Pro / Max OAuth \| This PC only, interactive use'
-        $readme | Should -Match 'Gemini CLI \| Google OAuth \| This PC only, interactive use'
+        $readme | Should -Match 'Gemini \| Google OAuth \| This PC only, interactive use'
         $readmeJa | Should -Match 'Claude Code \| Pro / Max OAuth \| 当該 PC での対話利用のみ'
-        $readmeJa | Should -Match 'Gemini CLI \| Google OAuth \| 当該 PC での対話利用のみ'
+        $readmeJa | Should -Match 'Gemini \| Google OAuth \| 当該 PC での対話利用のみ'
 
         $authSupport | Should -Match 'claude-pro-max-oauth.*interactive use on that same PC'
         $authSupport | Should -Match 'gemini-google-oauth.*interactive use on that same PC'
