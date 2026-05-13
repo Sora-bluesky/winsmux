@@ -108,6 +108,10 @@ function ConvertTo-ManifestYamlValue {
         return '[' + ($encodedItems -join ', ') + ']'
     }
 
+    if ($Value -is [System.Collections.IDictionary] -or (($null -ne $Value.PSObject) -and -not ($Value -is [System.ValueType]))) {
+        return ConvertTo-ManifestYamlScalar -Value ($Value | ConvertTo-Json -Compress -Depth 8)
+    }
+
     return ConvertTo-ManifestYamlScalar -Value $Value
 }
 

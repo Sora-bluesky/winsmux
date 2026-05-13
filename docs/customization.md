@@ -34,11 +34,15 @@ and each slot can override it with one of the contract values:
 
 - `local`: current local managed pane behavior
 - `codex`: Codex reviewer or worker metadata
-- `colab_cli`: future `google-colab-cli` worker metadata
+- `colab_cli`: `google-colab-cli` worker state metadata
 - `noop`: disabled or placeholder worker metadata
 
-`v0.32.0` only records and validates the contract. It does not start Colab
-sessions or change pane launch behavior.
+`v0.32.1` records Colab backend availability under
+`.winsmux/state/colab_sessions.json`. Missing `google-colab-cli`, missing auth,
+and unavailable GPUs are recorded as degraded worker state. Renamed sessions are
+marked stale, and GPU preference falls back from the configured order to CPU.
+Worker lifecycle and one-shot execution commands are handled by later release
+lanes.
 
 Example slot entries (excerpt; `winsmux init` creates six slots):
 

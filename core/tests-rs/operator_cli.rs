@@ -1421,12 +1421,12 @@ fn operator_cli_machine_contract_json_exposes_hook_facing_catalog() {
 
     let json = run_json(&project_dir, &["machine-contract", "--json"]);
 
-    assert_eq!(json["version"], "0.32.0");
+    assert_eq!(json["version"], "0.32.1");
     assert_eq!(json["roles"][0]["canonical"], "operator");
     assert_eq!(json["roles"][1]["canonical"], "worker");
     assert_eq!(json["worker_backends"][0]["id"], "local");
     assert_eq!(json["worker_backends"][2]["id"], "colab_cli");
-    assert_eq!(json["worker_backends"][2]["runtime_available"], false);
+    assert_eq!(json["worker_backends"][2]["runtime_available"], true);
     assert_eq!(json["worker_backends"][3]["id"], "noop");
     assert_eq!(json["worker_backends"][3]["runtime_available"], false);
     assert_eq!(json["projection_surfaces"][1]["name"], "board");

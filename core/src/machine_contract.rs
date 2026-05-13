@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-pub const MACHINE_CONTRACT_VERSION: &str = "0.32.0";
+pub const MACHINE_CONTRACT_VERSION: &str = "0.32.1";
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub struct MachineContractCatalog<'a> {
@@ -219,14 +219,14 @@ const WORKER_BACKENDS: &[WorkerBackendContract<'static>] = &[
     },
     WorkerBackendContract {
         id: "codex",
-        description: "Codex reviewer or worker slot metadata; v0.32.0 records the contract without changing launch behavior",
+        description: "Codex reviewer or worker slot metadata recorded without changing launch behavior",
         runtime_available: false,
         config_fields: &["worker_backend", "model", "fallback_model", "pane_title"],
     },
     WorkerBackendContract {
         id: "colab_cli",
-        description: "future google-colab-cli worker backend; v0.32.0 records schema only and does not start Colab sessions",
-        runtime_available: false,
+        description: "google-colab-cli worker backend state layer with install detection, session reuse metadata, GPU fallback, and degraded-state reporting",
+        runtime_available: true,
         config_fields: &[
             "worker_backend",
             "worker_role",

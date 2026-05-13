@@ -17,7 +17,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
 }
 
 # --- Config ---
-$VERSION = "0.32.0"
+$VERSION = "0.32.1"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -3025,7 +3025,7 @@ function Test-DeferredPaneStartManifestEntry {
         return $false
     }
 
-    return @('deferred_start', 'deferred_starting', 'deferred_start_failed') -contains $status.Trim().ToLowerInvariant()
+    return @('deferred_start', 'deferred_starting', 'deferred_start_failed', 'backend_degraded') -contains $status.Trim().ToLowerInvariant()
 }
 
 function Set-DeferredPaneStartStatus {
@@ -3088,6 +3088,15 @@ function Start-DeferredPaneFromManifestEntry {
 
     $status = [string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'Status' -Default '')
     $normalizedStatus = $status.Trim().ToLowerInvariant()
+    if ($normalizedStatus -eq 'backend_degraded') {
+        $colabSession = Get-SendConfigValue -InputObject $ManifestEntry -Name 'ColabSession' -Default $null
+        $reason = [string](Get-SendConfigValue -InputObject $colabSession -Name 'degraded_reason' -Default '')
+        if ([string]::IsNullOrWhiteSpace($reason)) {
+            $reason = 'backend_degraded'
+        }
+        Stop-WithError "worker backend for '$label' is degraded: $reason"
+    }
+
     $readinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'CapabilityAdapter' -Default ''))
     if ([string]::IsNullOrWhiteSpace($readinessAgent)) {
         $readinessAgent = ConvertTo-ReadinessAgentName ([string](Get-SendConfigValue -InputObject $ManifestEntry -Name 'ProviderTarget' -Default ''))
