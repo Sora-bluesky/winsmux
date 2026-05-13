@@ -17,7 +17,7 @@ if (-not [string]::IsNullOrWhiteSpace($env:WINSMUX_RAW_EXE)) {
 }
 
 # --- Config ---
-$VERSION = "0.32.4"
+$VERSION = "0.32.5"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Stop'
 $BridgeScriptPath = $PSCommandPath
@@ -428,6 +428,12 @@ function Get-PlaybookCandidateDirectory {
     return Join-Path $ProjectDir '.winsmux\playbook-candidates'
 }
 
+function Get-ReviewPackDirectory {
+    param([string]$ProjectDir = (Get-Location).Path)
+
+    return Join-Path $ProjectDir '.winsmux\review-packs'
+}
+
 function Get-WinsmuxArtifactReference {
     param(
         [Parameter(Mandatory = $true)][string]$ArtifactPath,
@@ -555,6 +561,30 @@ function New-PlaybookCandidateFile {
     }
 
     return Write-WinsmuxArtifactFile -DirectoryPath (Get-PlaybookCandidateDirectory -ProjectDir $ProjectDir) -Prefix 'playbook-candidate' -Data $packet -ProjectDir $ProjectDir
+}
+
+function New-ReviewPackFile {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()]$ReviewPack,
+        [string]$ProjectDir = (Get-Location).Path
+    )
+
+    $packet = ConvertTo-WinsmuxArtifactData -Data $ReviewPack
+    if (-not (Test-WinsmuxArtifactHasCorrelation -Data $packet)) {
+        throw 'Review pack requires run_id or task_id with pane_id/slot.'
+    }
+
+    if (-not $packet.Contains('packet_type')) {
+        $packet['packet_type'] = 'review_pack'
+    }
+    if (-not $packet.Contains('schema_version')) {
+        $packet['schema_version'] = 1
+    }
+    if (-not $packet.Contains('generated_at')) {
+        $packet['generated_at'] = (Get-Date).ToString('o')
+    }
+
+    return Write-WinsmuxArtifactFile -DirectoryPath (Get-ReviewPackDirectory -ProjectDir $ProjectDir) -Prefix 'review-pack' -Data $packet -ProjectDir $ProjectDir
 }
 
 function Read-WinsmuxArtifactJson {
@@ -10724,6 +10754,517 @@ function Get-ExplainPayload {
     }
 }
 
+function ConvertTo-ReviewPackSafeString {
+    param(
+        [AllowNull()]$Value = $null,
+        [int]$MaxLength = 240
+    )
+
+    if ($null -eq $Value) {
+        return ''
+    }
+
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return ''
+    }
+
+    $text = $text -replace '[\r\n]+', ' '
+    $text = [Regex]::Replace($text, '[A-Za-z]:\\[^\s''",;)]+' , '[LOCAL_PATH]')
+    $text = [Regex]::Replace($text, '\\\\[^\s''",;)]+' , '[LOCAL_PATH]')
+    $text = [Regex]::Replace($text, '(?i)(?<![\w:/.-])/(?!/)(?:[A-Za-z0-9._-]+/)+[^\s''",;)]+' , '[LOCAL_PATH]')
+    $text = [Regex]::Replace($text, '(?i)\b(token|secret|password|api[_-]?key)\s*=\s*\S+', '$1=[REDACTED]')
+    $text = [Regex]::Replace($text, '(?i)\b(token|secret|password|api[_-]?key)\s*:\s*\S+', '$1:[REDACTED]')
+    $text = [Regex]::Replace($text, 'github_pat_[A-Za-z0-9_]+', '[REDACTED]')
+    $text = [Regex]::Replace($text, 'gh[pousr]_[A-Za-z0-9_]{20,}', '[REDACTED]')
+    $text = [Regex]::Replace($text, 'sk-[A-Za-z0-9_-]{20,}', '[REDACTED]')
+    $text = [Regex]::Replace($text, 'AIza[0-9A-Za-z_-]{20,}', '[REDACTED]')
+    $text = [Regex]::Replace($text, 'AKIA[0-9A-Z]{16}', '[REDACTED]')
+    $text = $text.Trim()
+
+    if ($MaxLength -gt 0 -and $text.Length -gt $MaxLength) {
+        return ($text.Substring(0, $MaxLength) + '...')
+    }
+
+    return $text
+}
+
+function Test-ReviewPackSafeRelativePath {
+    param([AllowNull()][string]$Path = '')
+
+    $candidate = ([string]$Path).Replace('\', '/').Trim()
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        return $false
+    }
+    if (
+        $candidate.Length -gt 256 -or
+        $candidate.Contains("`n") -or
+        $candidate.Contains("`r") -or
+        $candidate.Contains('://') -or
+        $candidate.StartsWith('/') -or
+        $candidate.StartsWith('..') -or
+        $candidate.Contains('/../') -or
+        ($candidate.Length -ge 2 -and $candidate[1] -eq ':')
+    ) {
+        return $false
+    }
+
+    if (@($candidate.Trim('/') -split '/') -contains '..') {
+        return $false
+    }
+
+    $normalized = $candidate.Trim('/')
+    $exclusionReason = Get-WorkersPathExclusionReason -RelativePath $normalized
+    if (-not [string]::IsNullOrWhiteSpace($exclusionReason)) {
+        return $false
+    }
+
+    $leaf = @($normalized -split '/')[-1].ToLowerInvariant()
+    if ($leaf -match '\.(7z|bin|bmp|dll|docx|exe|gif|gz|ico|jpeg|jpg|msi|pdf|png|pptx|tar|wasm|webp|xlsx|zip)$') {
+        return $false
+    }
+
+    return $true
+}
+
+function Get-ReviewPackSafePathList {
+    param(
+        [AllowNull()]$Value = $null,
+        [int]$MaxCount = 50
+    )
+
+    $items = [System.Collections.Generic.List[string]]::new()
+    foreach ($item in @(ConvertTo-RunStringArray -Value $Value)) {
+        if ($items.Count -ge $MaxCount) {
+            break
+        }
+        $candidate = ([string]$item).Replace('\', '/').Trim()
+        $normalized = $candidate.Trim('/')
+        if ((Test-ReviewPackSafeRelativePath -Path $candidate) -and -not $items.Contains($normalized)) {
+            $items.Add($normalized) | Out-Null
+        }
+    }
+
+    return @($items)
+}
+
+function Add-ReviewPackString {
+    param(
+        [Parameter(Mandatory = $true)]$List,
+        [AllowNull()]$Value = $null,
+        [int]$MaxCount = 20,
+        [int]$MaxLength = 240
+    )
+
+    if ($List.Count -ge $MaxCount) {
+        return
+    }
+
+    $text = ConvertTo-ReviewPackSafeString -Value $Value -MaxLength $MaxLength
+    if (-not [string]::IsNullOrWhiteSpace($text) -and -not $List.Contains($text)) {
+        $List.Add($text) | Out-Null
+    }
+}
+
+function Add-ReviewPackStrings {
+    param(
+        [Parameter(Mandatory = $true)]$List,
+        [AllowNull()]$Value = $null,
+        [int]$MaxCount = 20,
+        [int]$MaxLength = 240
+    )
+
+    foreach ($item in @(ConvertTo-RunStringArray -Value $Value)) {
+        Add-ReviewPackString -List $List -Value $item -MaxCount $MaxCount -MaxLength $MaxLength
+    }
+}
+
+function Get-ReviewPackArtifactRefPrefixes {
+    return @(
+        '.winsmux/',
+        'artifacts/',
+        'context-packs/',
+        'knowledge/',
+        'docs/',
+        'README',
+        'AGENTS.md',
+        'ADR-',
+        'context:',
+        'evidence:',
+        'evidence-note:',
+        'guidance:',
+        'knowledge:',
+        'rationale:',
+        'team-memory:'
+    )
+}
+
+function Add-ReviewPackArtifactRef {
+    param(
+        [Parameter(Mandatory = $true)]$List,
+        [AllowNull()]$Value = $null,
+        [int]$MaxCount = 40
+    )
+
+    if ($List.Count -ge $MaxCount) {
+        return
+    }
+
+    $text = ConvertTo-ReviewPackSafeString -Value $Value -MaxLength 256
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return
+    }
+    $text = $text.Replace('\', '/')
+
+    if ((Test-RunDurableRef -Value $text -Prefixes (Get-ReviewPackArtifactRefPrefixes)) -and -not $List.Contains($text)) {
+        $List.Add($text) | Out-Null
+    }
+}
+
+function Add-ReviewPackArtifactRefsFromData {
+    param(
+        [Parameter(Mandatory = $true)]$List,
+        [AllowNull()]$Data = $null,
+        [int]$Depth = 0,
+        [int]$MaxCount = 40
+    )
+
+    if ($null -eq $Data -or $Depth -gt 4 -or $List.Count -ge $MaxCount) {
+        return
+    }
+
+    if ($Data -is [string]) {
+        Add-ReviewPackArtifactRef -List $List -Value $Data -MaxCount $MaxCount
+        return
+    }
+
+    if ($Data -is [System.Collections.IDictionary]) {
+        foreach ($entry in $Data.GetEnumerator()) {
+            $key = [string]$entry.Key
+            if ($key -match '(?i)(^|_)(ref|refs|artifact_ref|evidence_refs|source_refs|rationale_refs|observation_pack_ref|consultation_ref)$') {
+                Add-ReviewPackArtifactRefsFromData -List $List -Data $entry.Value -Depth ($Depth + 1) -MaxCount $MaxCount
+            } elseif ($entry.Value -is [System.Collections.IDictionary]) {
+                Add-ReviewPackArtifactRefsFromData -List $List -Data $entry.Value -Depth ($Depth + 1) -MaxCount $MaxCount
+            }
+        }
+        return
+    }
+
+    if ($Data -is [System.Collections.IEnumerable]) {
+        foreach ($item in $Data) {
+            Add-ReviewPackArtifactRefsFromData -List $List -Data $item -Depth ($Depth + 1) -MaxCount $MaxCount
+            if ($List.Count -ge $MaxCount) {
+                break
+            }
+        }
+    }
+}
+
+function Add-ReviewPackCommandsFromData {
+    param(
+        [Parameter(Mandatory = $true)]$List,
+        [AllowNull()]$Data = $null,
+        [int]$MaxCount = 20
+    )
+
+    if ($null -eq $Data -or $List.Count -ge $MaxCount) {
+        return
+    }
+
+    Add-ReviewPackString -List $List -Value (Get-RunContractField -InputObject $Data -Name 'command') -MaxCount $MaxCount -MaxLength 200
+    Add-ReviewPackString -List $List -Value (Get-RunContractField -InputObject $Data -Name 'failing_command') -MaxCount $MaxCount -MaxLength 200
+    Add-ReviewPackStrings -List $List -Value (Get-RunContractField -InputObject $Data -Name 'commands') -MaxCount $MaxCount -MaxLength 200
+}
+
+function New-ReviewPackVerificationItems {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $items = [System.Collections.Generic.List[object]]::new()
+    $verificationEvidence = Get-RunContractField -InputObject $Run -Name 'verification_evidence'
+    foreach ($name in @('build', 'test', 'browser', 'screenshot', 'recording')) {
+        $data = Get-RunContractField -InputObject $verificationEvidence -Name $name
+        if ($null -eq $data) {
+            continue
+        }
+
+        $items.Add([ordered]@{
+            kind         = $name
+            command      = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $data -Name 'command') -MaxLength 200
+            outcome      = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $data -Name 'outcome') -MaxLength 80
+            summary      = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $data -Name 'summary') -MaxLength 200
+            artifact_ref = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $data -Name 'artifact_ref') -MaxLength 256
+            required     = Get-RunContractField -InputObject $data -Name 'required'
+        }) | Out-Null
+    }
+
+    $verificationResult = Get-RunContractField -InputObject $Run -Name 'verification_result'
+    if ($null -ne $verificationResult) {
+        $items.Insert(0, [ordered]@{
+            kind         = 'verification'
+            command      = ''
+            outcome      = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $verificationResult -Name 'outcome') -MaxLength 80
+            summary      = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $verificationResult -Name 'summary') -MaxLength 200
+            artifact_ref = ''
+            required     = $null
+        })
+    }
+
+    return @($items)
+}
+
+function New-ReviewPackReviewRequest {
+    param([AllowNull()]$ReviewState = $null)
+
+    if ($null -eq $ReviewState) {
+        return $null
+    }
+
+    $request = Get-RunContractField -InputObject $ReviewState -Name 'request'
+    $reviewContract = Get-RunContractField -InputObject $request -Name 'review_contract'
+    return [ordered]@{
+        status          = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $ReviewState -Name 'status') -MaxLength 80
+        reviewer_label  = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject (Get-RunContractField -InputObject $ReviewState -Name 'reviewer') -Name 'label') -MaxLength 80
+        source_task     = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $reviewContract -Name 'source_task') -MaxLength 80
+        issue_ref       = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $reviewContract -Name 'issue_ref') -MaxLength 80
+        style           = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $reviewContract -Name 'style') -MaxLength 80
+        required_scope  = @(
+            ConvertTo-RunStringArray -Value (Get-RunContractField -InputObject $reviewContract -Name 'required_scope') |
+                ForEach-Object { ConvertTo-ReviewPackSafeString -Value $_ -MaxLength 120 } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+                Select-Object -First 12
+        )
+    }
+}
+
+function Get-ReviewPackPayload {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectDir,
+        [Parameter(Mandatory = $true)][string]$RunId
+    )
+
+    $explainPayload = Get-ExplainPayload -ProjectDir $ProjectDir -RunId $RunId
+    $run = $explainPayload.run
+    $observationPack = $explainPayload.observation_pack
+    $consultationPacket = $explainPayload.consultation_packet
+    $recentEvents = @($explainPayload.recent_events)
+
+    $changedFiles = @(Get-ReviewPackSafePathList -Value $run.changed_files -MaxCount 50)
+    $commands = [System.Collections.Generic.List[string]]::new()
+    $artifactRefs = [System.Collections.Generic.List[string]]::new()
+    $criticObjections = [System.Collections.Generic.List[string]]::new()
+    $unresolvedRisks = [System.Collections.Generic.List[string]]::new()
+
+    $verificationEvidence = Get-RunContractField -InputObject $run -Name 'verification_evidence'
+    foreach ($name in @('build', 'test', 'browser', 'screenshot', 'recording')) {
+        Add-ReviewPackCommandsFromData -List $commands -Data (Get-RunContractField -InputObject $verificationEvidence -Name $name) -MaxCount 20
+    }
+    Add-ReviewPackCommandsFromData -List $commands -Data $observationPack -MaxCount 20
+    foreach ($event in $recentEvents) {
+        Add-ReviewPackCommandsFromData -List $commands -Data $event -MaxCount 20
+        Add-ReviewPackCommandsFromData -List $commands -Data (Get-RunContractField -InputObject $event -Name 'data') -MaxCount 20
+    }
+
+    Add-ReviewPackArtifactRefsFromData -List $artifactRefs -Data $run -MaxCount 40
+    Add-ReviewPackArtifactRefsFromData -List $artifactRefs -Data $observationPack -MaxCount 40
+    Add-ReviewPackArtifactRefsFromData -List $artifactRefs -Data $consultationPacket -MaxCount 40
+    foreach ($event in $recentEvents) {
+        Add-ReviewPackArtifactRefsFromData -List $artifactRefs -Data $event -MaxCount 40
+    }
+
+    Add-ReviewPackStrings -List $criticObjections -Value (Get-RunContractField -InputObject $consultationPacket -Name 'risks') -MaxCount 20 -MaxLength 200
+    $recommendation = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $consultationPacket -Name 'recommendation') -MaxLength 200
+    if (-not [string]::IsNullOrWhiteSpace($recommendation)) {
+        Add-ReviewPackString -List $criticObjections -Value ("consultation: $recommendation") -MaxCount 20 -MaxLength 220
+    }
+    foreach ($item in @($run.action_items)) {
+        $kind = [string](Get-RunContractField -InputObject $item -Name 'kind')
+        if ($kind -match '(?i)(blocked|review_failed|needs_user_decision|security)') {
+            Add-ReviewPackString -List $criticObjections -Value (Get-RunContractField -InputObject $item -Name 'message') -MaxCount 20 -MaxLength 200
+        }
+    }
+
+    $draftPrGate = Get-RunContractField -InputObject $run -Name 'draft_pr_gate'
+    $handoffPackage = Get-RunContractField -InputObject $draftPrGate -Name 'handoff_package'
+    Add-ReviewPackStrings -List $unresolvedRisks -Value (Get-RunContractField -InputObject $handoffPackage -Name 'remaining_risks') -MaxCount 24 -MaxLength 200
+    Add-ReviewPackStrings -List $unresolvedRisks -Value (Get-RunContractField -InputObject $handoffPackage -Name 'blocked_reasons') -MaxCount 24 -MaxLength 200
+    Add-ReviewPackString -List $unresolvedRisks -Value (Get-RunContractField -InputObject (Get-RunContractField -InputObject $run -Name 'phase_gate') -Name 'stop_reason') -MaxCount 24 -MaxLength 200
+    Add-ReviewPackString -List $unresolvedRisks -Value (Get-RunContractField -InputObject (Get-RunContractField -InputObject $run -Name 'outcome') -Name 'reason') -MaxCount 24 -MaxLength 200
+    Add-ReviewPackStrings -List $unresolvedRisks -Value (Get-RunContractField -InputObject $consultationPacket -Name 'risks') -MaxCount 24 -MaxLength 200
+
+    $workerSummaries = [System.Collections.Generic.List[object]]::new()
+    $workerSummaries.Add([ordered]@{
+        label        = ConvertTo-ReviewPackSafeString -Value $run.primary_label -MaxLength 80
+        role         = ConvertTo-ReviewPackSafeString -Value $run.primary_role -MaxLength 80
+        task_state   = ConvertTo-ReviewPackSafeString -Value $run.task_state -MaxLength 80
+        review_state = ConvertTo-ReviewPackSafeString -Value $run.review_state -MaxLength 80
+        last_event   = ConvertTo-ReviewPackSafeString -Value $run.last_event -MaxLength 120
+        hypothesis   = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $observationPack -Name 'hypothesis') -MaxLength 200
+        result       = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $observationPack -Name 'result') -MaxLength 200
+        confidence   = Get-RunContractField -InputObject $observationPack -Name 'confidence'
+        next_action  = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $observationPack -Name 'next_action') -MaxLength 160
+    }) | Out-Null
+
+    $eventSummaries = @(
+        foreach ($event in @($recentEvents | Select-Object -First 12)) {
+            [ordered]@{
+                timestamp = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $event -Name 'timestamp') -MaxLength 80
+                event     = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $event -Name 'event') -MaxLength 120
+                label     = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $event -Name 'label') -MaxLength 80
+                role      = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $event -Name 'role') -MaxLength 80
+                status    = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $event -Name 'status') -MaxLength 80
+                message   = ConvertTo-ReviewPackSafeString -Value (Get-RunContractField -InputObject $event -Name 'message') -MaxLength 180
+            }
+        }
+    )
+
+    $worktreeCandidate = ([string]$run.worktree).Replace('\', '/').Trim()
+    $worktree = $worktreeCandidate.Trim('/')
+    if (-not (Test-ReviewPackSafeRelativePath -Path $worktreeCandidate)) {
+        $worktree = ''
+    }
+
+    return [ordered]@{
+        packet_type    = 'review_pack'
+        schema_version = 1
+        generated_at   = (Get-Date).ToString('o')
+        run_id         = [string]$run.run_id
+        task_id        = [string]$run.task_id
+        task_summary   = [ordered]@{
+            task            = ConvertTo-ReviewPackSafeString -Value $run.task -MaxLength 240
+            goal            = ConvertTo-ReviewPackSafeString -Value $run.goal -MaxLength 240
+            task_type       = ConvertTo-ReviewPackSafeString -Value $run.task_type -MaxLength 80
+            priority        = ConvertTo-ReviewPackSafeString -Value $run.priority -MaxLength 40
+            branch          = ConvertTo-ReviewPackSafeString -Value $run.branch -MaxLength 120
+            head_sha        = ConvertTo-ReviewPackSafeString -Value $run.head_sha -MaxLength 80
+            worktree        = $worktree
+            expected_output = ConvertTo-ReviewPackSafeString -Value $run.expected_output -MaxLength 240
+        }
+        review_target = [ordered]@{
+            label           = ConvertTo-ReviewPackSafeString -Value $run.primary_label -MaxLength 80
+            role            = ConvertTo-ReviewPackSafeString -Value $run.primary_role -MaxLength 80
+            provider_target = ConvertTo-ReviewPackSafeString -Value $run.provider_target -MaxLength 120
+            agent_role      = ConvertTo-ReviewPackSafeString -Value $run.agent_role -MaxLength 80
+            review_required = [bool]$run.review_required
+        }
+        review_request    = New-ReviewPackReviewRequest -ReviewState $explainPayload.review_state
+        changed_files     = @($changedFiles)
+        diff_summary      = [ordered]@{
+            source             = 'manifest_changed_files'
+            changed_file_count = [int]$run.changed_file_count
+            included_files     = @($changedFiles | Select-Object -First 20)
+            raw_diff_included  = $false
+            raw_diff_reason    = 'Raw diff is omitted; the pack includes bounded changed-file refs and verification evidence.'
+        }
+        worker_summaries  = @($workerSummaries)
+        test_results      = @(New-ReviewPackVerificationItems -Run $run)
+        critic_objections = @($criticObjections)
+        unresolved_risks  = @($unresolvedRisks)
+        commands_run      = @($commands)
+        artifact_refs     = @($artifactRefs)
+        recent_events     = @($eventSummaries)
+        limits            = [ordered]@{
+            changed_files       = 50
+            diff_files          = 20
+            commands_run        = 20
+            artifact_refs       = 40
+            recent_events       = 12
+            max_string_chars    = 240
+            raw_diff_chars      = 0
+        }
+        excluded_content  = @(
+            'repository_dumps',
+            'long_logs',
+            'secret_values',
+            'binary_artifacts',
+            'vendor_directories',
+            'full_conversation_history',
+            'local_absolute_paths'
+        )
+        storage_policy    = [ordered]@{
+            repository_dump_stored          = $false
+            long_logs_stored                = $false
+            secret_values_stored            = $false
+            binary_artifacts_stored         = $false
+            vendor_directories_stored       = $false
+            full_conversation_history_stored = $false
+            local_reference_paths_stored    = $false
+            freeform_body_stored            = $false
+        }
+    }
+}
+
+function Invoke-ReviewPack {
+    param(
+        [AllowNull()][string]$ReviewPackTarget = $Target,
+        [AllowNull()][string[]]$ReviewPackRest = $Rest
+    )
+
+    $tokens = @()
+    if (-not [string]::IsNullOrWhiteSpace($ReviewPackTarget)) {
+        $tokens += $ReviewPackTarget
+    }
+    if ($ReviewPackRest) {
+        $tokens += @($ReviewPackRest)
+    }
+
+    $jsonOutput = $false
+    $runId = ''
+    $projectDir = (Get-Location).Path
+
+    for ($index = 0; $index -lt $tokens.Count; $index++) {
+        $token = [string]$tokens[$index]
+        switch ($token) {
+            '--json' {
+                $jsonOutput = $true
+            }
+            '--run-id' {
+                if ($index + 1 -ge $tokens.Count) {
+                    Stop-WithError '--run-id requires a value'
+                }
+                $runId = [string]$tokens[$index + 1]
+                $index++
+            }
+            '--project-dir' {
+                if ($index + 1 -ge $tokens.Count) {
+                    Stop-WithError '--project-dir requires a value'
+                }
+                $projectDir = [System.IO.Path]::GetFullPath([string]$tokens[$index + 1])
+                $index++
+            }
+            default {
+                if ([string]::IsNullOrWhiteSpace($runId)) {
+                    $runId = $token
+                } else {
+                    Stop-WithError 'usage: winsmux review-pack <run_id> [--json] [--project-dir <path>]'
+                }
+            }
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($runId)) {
+        Stop-WithError 'usage: winsmux review-pack <run_id> [--json] [--project-dir <path>]'
+    }
+
+    $reviewPack = Get-ReviewPackPayload -ProjectDir $projectDir -RunId $runId
+    $artifact = New-ReviewPackFile -ProjectDir $projectDir -ReviewPack $reviewPack
+    $result = [ordered]@{
+        generated_at     = (Get-Date).ToString('o')
+        run_id           = [string]$runId
+        review_pack_ref  = [string]$artifact.reference
+        review_pack      = $reviewPack
+    }
+
+    if ($jsonOutput) {
+        $result | ConvertTo-Json -Compress -Depth 12 | Write-Output
+        return
+    }
+
+    Write-Output ("review pack: {0} -> {1}" -f [string]$runId, [string]$artifact.reference)
+    Write-Output ("changed files: {0}" -f @($reviewPack.changed_files).Count)
+    Write-Output ("commands: {0}" -f @($reviewPack.commands_run).Count)
+    Write-Output ("risks: {0}" -f @($reviewPack.unresolved_risks).Count)
+}
+
 function Invoke-DesktopSummary {
     param(
         [AllowNull()][string]$DesktopSummaryTarget = $Target,
@@ -12084,6 +12625,50 @@ function Get-DispatchTaskManifestEntry {
     return $null
 }
 
+function Test-DispatchTaskReviewerManifestEntry {
+    param([AllowNull()]$Entry = $null)
+
+    if ($null -eq $Entry) {
+        return $false
+    }
+
+    $role = [string](Get-SendConfigValue -InputObject $Entry -Name 'Role' -Default '')
+    $workerRole = [string](Get-SendConfigValue -InputObject $Entry -Name 'WorkerRole' -Default '')
+    $agentRole = [string](Get-SendConfigValue -InputObject $Entry -Name 'AgentRole' -Default '')
+
+    return (
+        [string]::Equals($role, 'Reviewer', [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($workerRole, 'reviewer', [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]::Equals($agentRole, 'reviewer', [System.StringComparison]::OrdinalIgnoreCase)
+    )
+}
+
+function Get-DispatchTaskAvailableTargets {
+    param([Parameter(Mandatory = $true)][string]$ProjectDir)
+
+    $availableTargets = @()
+    $manifestTargetsResolved = $false
+    if (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) {
+        try {
+            $manifestEntries = @(Get-PaneControlManifestEntries -ProjectDir $ProjectDir)
+            $manifestTargetsResolved = $true
+            $availableTargets = @(
+                $manifestEntries |
+                    Where-Object { -not (Test-DispatchTaskReviewerManifestEntry -Entry $_) } |
+                    ForEach-Object { [string]$_.Label } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+        } catch {
+            $manifestTargetsResolved = $false
+        }
+    }
+    if (-not $manifestTargetsResolved -and $availableTargets.Count -eq 0) {
+        $availableTargets = @((Get-Labels).Keys | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+
+    return @($availableTargets)
+}
+
 function Invoke-DispatchTask {
     $parts = @(
         @($Target) + @($Rest) |
@@ -12104,17 +12689,7 @@ function Invoke-DispatchTask {
 
     . $routerScript
 
-    $availableTargets = @()
-    if (Get-Command Get-PaneControlManifestEntries -ErrorAction SilentlyContinue) {
-        $availableTargets = @(
-            Get-PaneControlManifestEntries -ProjectDir $projectDir |
-                ForEach-Object { [string]$_.Label } |
-                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-        )
-    }
-    if ($availableTargets.Count -eq 0) {
-        $availableTargets = @((Get-Labels).Keys | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    }
+    $availableTargets = @(Get-DispatchTaskAvailableTargets -ProjectDir $projectDir)
 
     $route = Get-DispatchRoute -Text $taskText -AvailableTargets $availableTargets -DefaultRole 'Worker'
     if ($route.HandleLocally) {
@@ -12975,6 +13550,7 @@ inbox [--json] [--stream] Report actionable approvals/review/blockers
 runs [--json]             Report run-oriented session view
 digest [--json] [--stream] [--events] Report high-signal evidence digest per run or actionable event summaries
 explain <run_id> [--json] [--follow]  Explain one run and optionally follow new events
+review-pack <run_id> [--json] [--project-dir <path>]  Export a bounded reviewer packet for one run
 compare-runs <left_run_id> <right_run_id> [--json]  Compare two runs and surface evidence/confidence deltas
 compare <runs|preflight|promote> ... [--json]  Public compare entrypoint for run comparison, preflight, and promotion
 conflict-preflight <left_ref> <right_ref> [--json]  Run git merge-tree preflight before compare UI or merge review
@@ -13651,6 +14227,7 @@ switch ($Command) {
     'runs'            { Invoke-Runs }
     'digest'          { Invoke-Digest }
     'explain'         { Invoke-Explain }
+    'review-pack'     { Invoke-ReviewPack }
     'compare'         { Invoke-Compare }
     'compare-runs'    { Invoke-CompareRuns }
     'conflict-preflight' { Invoke-ConflictPreflight }

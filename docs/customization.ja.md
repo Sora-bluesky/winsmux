@@ -37,7 +37,7 @@ winsmux はベンダーごとに固定された役割ではなく、スロット
 - `colab_cli`: `google-colab-cli` ワーカー用の状態メタデータ
 - `noop`: 無効化または仮置きのワーカー用メタデータ
 
-`v0.32.4` では、Colab バックエンドの状態を
+`v0.32.4` 以降では、Colab バックエンドの状態を
 `.winsmux/state/colab_sessions.json` に保存します。`google-colab-cli` の
 不在、認証を確認できない状態、`H100` / `A100` GPU を使えない状態のいずれかが発生した場合は、
 ワーカーを `degraded` 状態として記録します。セッション名が変わった既存記録は
@@ -64,6 +64,13 @@ manifest では、`.git`、秘密情報らしいファイル、`node_modules`、
 `colab repl` や `colab console` のような自動対話ループは対象外です。設定された
 `google-colab-cli` 互換 adapter に対して、1 回ずつコマンドを実行します。
 
+ワーカーの結果を Codex レビュースロットへ渡す前に、
+`winsmux review-pack <run_id> --json` を使います。このコマンドは
+`.winsmux/review-packs` に、変更ファイル、テスト結果、レビュー上の懸念、
+残っているリスク、実行コマンド、成果物参照だけを含む小さなパケットを書き出します。
+リポジトリ全体のダンプ、長いログ、秘密情報、バイナリ成果物、外部依存ディレクトリ、
+ローカル絶対パス、会話履歴全体は含めません。
+
 契約のみを記述したスロット設定の例（抜粋）です。`winsmux init` では 6 スロットが作成されます。
 
 ```yaml
@@ -72,9 +79,13 @@ worker-backend: local
 agent-slots:
   - slot-id: worker-1
     runtime-role: worker
+    agent: codex
+    model: provider-default
+    model-source: provider-default
     worker-backend: codex
     worker-role: reviewer
-    fallback-model: gpt-5.4
+    fallback-model: gpt-5.3-codex-spark
+    pane-title: W1 Codex Reviewer
     worktree-mode: managed
   - slot-id: worker-2
     runtime-role: worker

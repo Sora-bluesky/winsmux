@@ -336,10 +336,15 @@ Automated GitHub `Codex Review` comments are useful, but they must not become an
 Codex must follow these rules:
 
 1. Default to the initial `Codex Review` plus at most two fix-and-recheck rounds per PR.
-2. After the budget is exhausted, continue only for `P0`, `P1`, security, data loss, release-blocking CI, or feature-unusable findings.
-3. Do not keep chasing `P2` or lower suggestions one by one after the budget is exhausted.
-4. If a lower-priority finding is still worth preserving, open or update a follow-up issue or task and continue the main workflow.
-5. Record the budget cutoff in `.claude/local/operator-handoff.md` or the PR summary when review comments remain intentionally deferred.
+2. Before starting a review-response loop, inspect the current PR review threads and classify each actionable finding by severity.
+3. Count a fix-and-recheck round only when Codex changes code or docs in response to review feedback and pushes the PR branch again.
+4. After the budget is exhausted, continue only for `P0`, `P1`, security, data loss, release-blocking CI, or feature-unusable findings.
+5. Do not keep chasing `P2` or lower suggestions one by one after the budget is exhausted.
+6. If a lower-priority finding is still worth preserving, open or update a follow-up issue or task and continue the main workflow.
+7. Record the review round count and budget cutoff in `.claude/local/operator-handoff.md` or the PR summary when review comments remain intentionally deferred.
+8. After the budget cutoff, do not request, wait for, or trigger another automated `Codex Review` only to clear `P2` or lower comments.
+9. If a delayed or new automated review arrives after the cutoff, inspect it only for the blocking categories in rule 4; treat lower-priority comments as non-blocking follow-up material.
+10. When responding to lower-priority review comments would delay the current milestone without changing correctness, document the deferral and continue merge or release work after local validation and manual diff review pass.
 
 ## Public Surface Gate
 

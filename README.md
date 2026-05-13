@@ -31,7 +31,9 @@ Most tools solve only one part of this workflow.
 - Starts a managed Windows Terminal workspace for multiple CLI agents.
 - Lets an operator read, send, interrupt, and check pane health.
 - Initializes six managed worker slots by default, with a worker backend
-  contract for local, Codex, Google Colab, and placeholder workers.
+  contract for local, Codex, Google Colab, and placeholder workers. The first
+  generated slot is a Codex reviewer slot; the remaining slots keep the selected
+  worker backend.
 - Keeps worker agents in separate git worktrees when isolation is enabled.
 - Compares recorded runs and highlights shared changed files before you choose a winner.
 - Shows review, verification, architecture, checkpoint, and follow-up evidence for recorded runs.
@@ -92,6 +94,7 @@ winsmux workers doctor
 winsmux workers exec w2 --script workers/colab/impl_worker.py
 winsmux workers upload w2 data/input.json --remote /content/input.json
 winsmux workers download w2 /content/output.json
+winsmux review-pack <run_id> --json
 winsmux compare runs <left_run_id> <right_run_id>
 winsmux compare preflight <left_ref> <right_ref>
 winsmux compare promote <run_id>
@@ -113,6 +116,7 @@ winsmux skills --json
 | `winsmux workers logs` | Read the stored log for a worker run, or ask the Colab CLI for it |
 | `winsmux workers upload` | Upload explicit files or allowlisted directories while excluding unsafe paths |
 | `winsmux workers download` | Download a remote artifact into a project-local output directory |
+| `winsmux review-pack` | Write a bounded reviewer packet with changed files, test results, risks, commands, and artifact refs |
 | `winsmux compare runs` | Compare evidence and confidence between two recorded runs |
 | `winsmux compare preflight` | Check two refs before merge or compare review |
 | `winsmux compare promote` | Export a successful run as input for the next run |
