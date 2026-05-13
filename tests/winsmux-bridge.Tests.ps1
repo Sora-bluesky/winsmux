@@ -9175,8 +9175,17 @@ worker-backend: colab_cli
         Test-Path -LiteralPath (Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\unsafe-task') | Should -Be $false
     }
 
+    It 'classifies JSON-formatted Colab secret task fields' {
+        $fileFinding = Get-WorkersColabSafetyFinding -Values @('{"task_id":"secret-file","token":"abcdefghijklmnopqrstuvwxyz123456"}')
+        $inlineFinding = Get-WorkersColabSafetyFinding -Values @('{"task_id":"secret-inline","api_key":"abcdefghijklmnop"}')
+
+        $fileFinding.Code | Should -Be 'secret_like_input'
+        $inlineFinding.Code | Should -Be 'secret_like_input'
+    }
+
     It 'redacts secrets and Drive paths from stored Colab logs and payload arguments' {
-        New-WorkersFakeColabCli -OutputLine 'fake-colab token=ghp_abcdefghijklmnopqrstuvwxyz123456 /content/drive/MyDrive/private/model.bin C:\Users\Example\secret.txt %*' | Out-Null
+        $outsideLocalPath = 'D:\work\repo\secret.txt'
+        New-WorkersFakeColabCli -OutputLine 'fake-colab token=ghp_abcdefghijklmnopqrstuvwxyz123456 /content/drive/MyDrive/private/model.bin C:\Users\Example\secret.txt D:\work\repo\secret.txt %*' | Out-Null
         Write-WorkersColabProjectConfig
         New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
         'print("hello")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\task.py') -Encoding UTF8
@@ -9186,17 +9195,23 @@ worker-backend: colab_cli
         $logPath = Join-Path $script:workersTempRoot ($payload.stdout_log -replace '/', '\')
         $logText = Get-Content -LiteralPath $logPath -Raw -Encoding UTF8
         $argumentText = @($payload.cli_arguments) -join ' '
+        $outsideArgumentText = @(ConvertTo-WorkersSafeArgumentArray -Arguments @('run', '--script', $outsideLocalPath)) -join ' '
 
         ($output | Out-String) | Should -Not -Match 'ghp_abcdefghijklmnopqrstuvwxyz123456'
         ($output | Out-String) | Should -Not -Match '/content/drive/MyDrive/private/model.bin'
+        ($output | Out-String) | Should -Not -Match ([regex]::Escape($outsideLocalPath))
         $logText | Should -Not -Match 'ghp_abcdefghijklmnopqrstuvwxyz123456'
         $logText | Should -Not -Match '/content/drive/MyDrive/private/model.bin'
+        $logText | Should -Not -Match ([regex]::Escape($outsideLocalPath))
         $logText | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
         $logText | Should -Match '\[REDACTED\]'
         $logText | Should -Match '\[DRIVE_PATH_REDACTED\]'
         $logText | Should -Match '\[LOCAL_PATH_REDACTED\]'
         $argumentText | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
+        $argumentText | Should -Not -Match ([regex]::Escape($outsideLocalPath))
         $argumentText | Should -Match '\[LOCAL_PATH_REDACTED\]'
+        $outsideArgumentText | Should -Not -Match ([regex]::Escape($outsideLocalPath))
+        $outsideArgumentText | Should -Match '\[LOCAL_PATH_REDACTED\]'
     }
 
     It 'uploads only allowed files and excludes unsafe directory contents' {

@@ -5527,9 +5527,9 @@ function ConvertTo-WorkersSafeLogText {
     $safe = [string]$Text
     $safe = [regex]::Replace($safe, '(?is)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----', '[PRIVATE_KEY_REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+', '$1[REDACTED]')
-    $safe = [regex]::Replace($safe, '(?i)\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|password|passwd|secret|credential|credentials)\s*[:=]\s*["'']?)[^\s"'',;}]+', '$1[REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9_])(["'']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|password|passwd|secret|credential|credentials)["'']?\s*[:=]\s*["'']?)[^\s"'',;}]+', '$1[REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)/content/drive/(?:MyDrive|Shareddrives)(?:/[^\s"'']*)?', '[DRIVE_PATH_REDACTED]')
-    $safe = [regex]::Replace($safe, '(?i)\b[A-Z]:\\Users\\[^ \r\n"'']+', '[LOCAL_PATH_REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)\b[A-Z]:\\[^ \r\n"'']+', '[LOCAL_PATH_REDACTED]')
     return $safe
 }
 
@@ -5570,7 +5570,7 @@ function Get-WorkersColabSafetyFinding {
         if ($text -match '(?i)authorization\s*:\s*bearer\s+\S+') {
             return [PSCustomObject]@{ Code = 'secret_like_input'; Source = 'colab_task_input' }
         }
-        if ($text -match '(?i)\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|password|passwd|secret|credential|credentials)\s*[:=]\s*["'']?[A-Za-z0-9_./+=-]{8,}') {
+        if ($text -match '(?i)(?<![A-Za-z0-9_])["'']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|password|passwd|secret|credential|credentials)["'']?\s*[:=]\s*["'']?[A-Za-z0-9_./+=-]{8,}') {
             return [PSCustomObject]@{ Code = 'secret_like_input'; Source = 'colab_task_input' }
         }
 
