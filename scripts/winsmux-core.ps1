@@ -6300,7 +6300,11 @@ function Invoke-WorkersDownload {
         $safeSlotId = Assert-WorkersPathSegment -Value ([string]$worker.Row.SlotId) -Name 'slot id'
         $outputPath = Join-Path (Join-Path (Join-Path (Join-Path $options.ProjectDir '.winsmux') 'worker-downloads') $safeSlotId) $runId
     }
-    $outputInfo = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path $outputPath -AllowDirectory -AllowFile -AllowRuntimePath
+    $outputInfo = if ($explicitOutput) {
+        Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path $outputPath -AllowDirectory -AllowFile
+    } else {
+        Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path $outputPath -AllowDirectory -AllowFile -AllowRuntimePath
+    }
     $trimmedOutputPath = ([string]$outputPath).TrimEnd()
     $explicitOutputLooksLikeDirectory = $explicitOutput -and ($trimmedOutputPath.EndsWith('\') -or $trimmedOutputPath.EndsWith('/'))
     $downloadToDirectory = (-not $explicitOutput) -or [bool]$outputInfo.IsDirectory -or $explicitOutputLooksLikeDirectory

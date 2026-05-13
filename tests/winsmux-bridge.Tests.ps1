@@ -9261,6 +9261,17 @@ agent-slots:
         Test-Path -LiteralPath $expectedOutput -PathType Container | Should -Be $false
     }
 
+    It 'rejects explicit download outputs under the winsmux runtime directory' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers download w2 /content/out/result.json --output .winsmux/manifest.yaml --run-id blocked-runtime-output --json --project-dir $script:workersTempRoot 2>&1
+
+        $LASTEXITCODE | Should -Be 1
+        ($output | Out-String) | Should -Match 'unsafe path rejected'
+        ($output | Out-String) | Should -Match 'excluded_segment:.winsmux'
+    }
+
     It 'returns failing process exit codes when the Colab adapter fails' {
         New-WorkersFakeColabCli -ExitCode 7 | Out-Null
         Write-WorkersColabProjectConfig
