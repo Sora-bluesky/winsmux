@@ -63,9 +63,14 @@ winsmux workers doctor
 For Colab-backed worker slots, run one file-backed task and inspect its log:
 
 ```powershell
-winsmux workers exec w2 --script workers/colab/impl_worker.py
+winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"Implement this change"}' --worker-id worker-2 --run-id demo-1
 winsmux workers logs w2
 ```
+
+The tracked templates in `workers/colab/` cover implementation, critique,
+repository scouting, test execution planning, and heavy second-opinion work.
+They emit structured JSON and write artifacts under
+`/content/winsmux_artifacts/<worker_id>/<run_id>/` by default.
 
 Uploads are intentionally constrained. Explicit files are allowed, while
 directory uploads require `--allow-dir` and still exclude `.git`, secrets,

@@ -15,6 +15,7 @@ Examples:
 - `docs/operator-model.md`
 - `docs/TROUBLESHOOTING.md`
 - `core/docs/*`
+- `workers/colab/*.py`
 - product code and public release assets
 
 Rules:

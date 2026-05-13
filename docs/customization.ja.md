@@ -51,12 +51,27 @@ winsmux はベンダーごとに固定された役割ではなく、スロット
 Colab 対応スロットでは、ファイルを指定した単発実行と成果物の受け渡しも使えます。
 
 ```powershell
-winsmux workers exec w2 --script workers/colab/impl_worker.py
+winsmux workers exec w2 --script workers/colab/impl_worker.py --run-id demo-1 -- --task-json-inline '{"task_id":"demo-1","title":"この変更を実装する"}' --worker-id worker-2 --run-id demo-1
 winsmux workers logs w2 --run-id <run_id>
 winsmux workers upload w2 data/input.json --remote /content/input.json
 winsmux workers upload w2 data --remote /content/data --allow-dir data
 winsmux workers download w2 /content/output.json --output artifacts/worker-output
 ```
+
+`workers/colab/` には次の追跡済みテンプレートがあります。
+
+- `impl_worker.py`
+- `critic_worker.py`
+- `scout_worker.py`
+- `test_worker.py`
+- `heavy_judge_worker.py`
+
+各テンプレートは `--task-json`、`--task-json-inline`、または
+`WINSMUX_TASK_JSON` からタスク JSON を受け取ります。既定では
+`/content/winsmux_artifacts/<worker_id>/<run_id>/` にロール別の成果物を書き込み、
+構造化 JSON を出力します。リモート成果物と winsmux 側の実行メタデータを揃えるため、
+スクリプト引数の区切りの後にも同じ `--run-id` を渡してください。入力が不正な場合は
+非ゼロで終了し、`status: failed` と `errors` 配列を返します。
 
 ディレクトリをアップロードする場合は `--allow-dir` が必要です。アップロード用の
 manifest では、`.git`、秘密情報らしいファイル、`node_modules`、仮想環境、
