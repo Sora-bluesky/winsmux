@@ -9176,16 +9176,23 @@ worker-backend: colab_cli
     }
 
     It 'classifies JSON-formatted Colab secret task fields' {
+        '{"task_id":"secret-equals","token":"abcdefghijklmnopqrstuvwxyz123456"}' | Set-Content -Path (Join-Path $script:workersTempRoot 'task-equals.json') -Encoding UTF8
+
         $fileFinding = Get-WorkersColabSafetyFinding -Values @('{"task_id":"secret-file","token":"abcdefghijklmnopqrstuvwxyz123456"}')
         $inlineFinding = Get-WorkersColabSafetyFinding -Values @('{"task_id":"secret-inline","api_key":"abcdefghijklmnop"}')
+        $equalsValues = Get-WorkersExecSafetyInputValues -ProjectDir $script:workersTempRoot -ScriptArgs @('--task-json=task-equals.json')
+        $equalsFinding = Get-WorkersColabSafetyFinding -Values @($equalsValues)
 
         $fileFinding.Code | Should -Be 'secret_like_input'
         $inlineFinding.Code | Should -Be 'secret_like_input'
+        ($equalsValues -join ' ') | Should -Match 'secret-equals'
+        $equalsFinding.Code | Should -Be 'secret_like_input'
     }
 
     It 'redacts secrets and Drive paths from stored Colab logs and payload arguments' {
         $outsideLocalPath = 'D:\work\repo\secret.txt'
-        New-WorkersFakeColabCli -OutputLine 'fake-colab token=ghp_abcdefghijklmnopqrstuvwxyz123456 /content/drive/MyDrive/private/model.bin C:\Users\Example\secret.txt D:\work\repo\secret.txt %*' | Out-Null
+        $spacedLocalPath = 'C:\Users\Jane Doe\repo\secret.txt'
+        New-WorkersFakeColabCli -OutputLine 'fake-colab token=ghp_abcdefghijklmnopqrstuvwxyz123456 /content/drive/MyDrive/private/model.bin C:\Users\Example\secret.txt D:\work\repo\secret.txt C:\Users\Jane Doe\repo\secret.txt %*' | Out-Null
         Write-WorkersColabProjectConfig
         New-Item -ItemType Directory -Path (Join-Path $script:workersTempRoot 'workers\colab') -Force | Out-Null
         'print("hello")' | Set-Content -Path (Join-Path $script:workersTempRoot 'workers\colab\task.py') -Encoding UTF8
@@ -9195,14 +9202,16 @@ worker-backend: colab_cli
         $logPath = Join-Path $script:workersTempRoot ($payload.stdout_log -replace '/', '\')
         $logText = Get-Content -LiteralPath $logPath -Raw -Encoding UTF8
         $argumentText = @($payload.cli_arguments) -join ' '
-        $outsideArgumentText = @(ConvertTo-WorkersSafeArgumentArray -Arguments @('run', '--script', $outsideLocalPath)) -join ' '
+        $outsideArgumentText = @(ConvertTo-WorkersSafeArgumentArray -Arguments @('run', '--script', $outsideLocalPath, '--output-dir', $spacedLocalPath)) -join ' '
 
         ($output | Out-String) | Should -Not -Match 'ghp_abcdefghijklmnopqrstuvwxyz123456'
         ($output | Out-String) | Should -Not -Match '/content/drive/MyDrive/private/model.bin'
         ($output | Out-String) | Should -Not -Match ([regex]::Escape($outsideLocalPath))
+        ($output | Out-String) | Should -Not -Match 'Jane Doe'
         $logText | Should -Not -Match 'ghp_abcdefghijklmnopqrstuvwxyz123456'
         $logText | Should -Not -Match '/content/drive/MyDrive/private/model.bin'
         $logText | Should -Not -Match ([regex]::Escape($outsideLocalPath))
+        $logText | Should -Not -Match 'Jane Doe'
         $logText | Should -Not -Match ([regex]::Escape($script:workersTempRoot))
         $logText | Should -Match '\[REDACTED\]'
         $logText | Should -Match '\[DRIVE_PATH_REDACTED\]'
@@ -9211,6 +9220,7 @@ worker-backend: colab_cli
         $argumentText | Should -Not -Match ([regex]::Escape($outsideLocalPath))
         $argumentText | Should -Match '\[LOCAL_PATH_REDACTED\]'
         $outsideArgumentText | Should -Not -Match ([regex]::Escape($outsideLocalPath))
+        $outsideArgumentText | Should -Not -Match 'Jane Doe'
         $outsideArgumentText | Should -Match '\[LOCAL_PATH_REDACTED\]'
     }
 

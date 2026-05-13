@@ -5529,7 +5529,7 @@ function ConvertTo-WorkersSafeLogText {
     $safe = [regex]::Replace($safe, '(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+', '$1[REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)(?<![A-Za-z0-9_])(["'']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|oauth[_-]?token|token|password|passwd|secret|credential|credentials)["'']?\s*[:=]\s*["'']?)[^\s"'',;}]+', '$1[REDACTED]')
     $safe = [regex]::Replace($safe, '(?i)/content/drive/(?:MyDrive|Shareddrives)(?:/[^\s"'']*)?', '[DRIVE_PATH_REDACTED]')
-    $safe = [regex]::Replace($safe, '(?i)\b[A-Z]:\\[^ \r\n"'']+', '[LOCAL_PATH_REDACTED]')
+    $safe = [regex]::Replace($safe, '(?i)\b[A-Z]:\\[^"'',;}\r\n]+', '[LOCAL_PATH_REDACTED]')
     return $safe
 }
 
@@ -5610,8 +5610,14 @@ function Get-WorkersExecSafetyInputValues {
             $values.Add($value) | Out-Null
         }
 
+        $taskJsonPath = ''
         if ($value -eq '--task-json' -and $index + 1 -lt $items.Count) {
             $taskJsonPath = [string]$items[$index + 1]
+        } elseif ($value.StartsWith('--task-json=', [System.StringComparison]::Ordinal)) {
+            $taskJsonPath = $value.Substring('--task-json='.Length)
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($taskJsonPath)) {
             $taskJsonInfo = Resolve-WorkersProjectPath -ProjectDir $ProjectDir -Path $taskJsonPath -MustExist -AllowFile -MaxBytes (Get-WorkersUploadMaxBytes)
             $taskJsonContent = Get-Content -LiteralPath ([string]$taskJsonInfo.FullPath) -Raw -Encoding UTF8
             if (-not [string]::IsNullOrWhiteSpace($taskJsonContent)) {
