@@ -9026,6 +9026,27 @@ worker-backend: colab_cli
         $logsPayload.log | Should -Be ''
     }
 
+    It 'propagates stored failed run status from local logs' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        $runDir = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2\failed-run'
+        New-Item -ItemType Directory -Path $runDir -Force | Out-Null
+        'failed log body' | Set-Content -Path (Join-Path $runDir 'stdout.log') -Encoding UTF8
+        @{
+            status    = 'failed'
+            exit_code = 7
+        } | ConvertTo-Json | Set-Content -Path (Join-Path $runDir 'run.json') -Encoding UTF8
+
+        $logsOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers logs worker-2 --run-id failed-run --json --project-dir $script:workersTempRoot 2>&1
+        $logsPayload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $LASTEXITCODE | Should -Be 7
+        $logsPayload.source | Should -Be 'local'
+        $logsPayload.status | Should -Be 'failed'
+        $logsPayload.exit_code | Should -Be 7
+        $logsPayload.log | Should -Match 'failed log body'
+    }
+
     It 'rejects unsafe run ids, remote paths, output paths, and slot ids' {
         New-WorkersFakeColabCli | Out-Null
         Write-WorkersColabProjectConfig
@@ -9104,6 +9125,21 @@ agent-slots:
         $payload.remote | Should -Be '/content/out/result.json'
         $payload.output | Should -Match '^\.winsmux/worker-downloads/worker-2/download-1$'
         $payload.cli_arguments[0] | Should -Be 'download'
+    }
+
+    It 'treats a new explicit download output as a file path' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+
+        $output = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers download w2 /content/out/result.json --output results/result.json --run-id download-file --json --project-dir $script:workersTempRoot
+        $payload = ($output | Select-Object -Last 1) | ConvertFrom-Json
+        $expectedOutput = Join-Path $script:workersTempRoot 'results\result.json'
+
+        $payload.status | Should -Be 'succeeded'
+        $payload.output | Should -Be 'results/result.json'
+        $payload.cli_arguments | Should -Contain $expectedOutput
+        Test-Path -LiteralPath (Split-Path -Parent $expectedOutput) -PathType Container | Should -Be $true
+        Test-Path -LiteralPath $expectedOutput -PathType Container | Should -Be $false
     }
 
     It 'returns failing process exit codes when the Colab adapter fails' {

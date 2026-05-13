@@ -6100,12 +6100,35 @@ function Invoke-WorkersLogs {
     $source = 'local'
     $cli = $null
     $hasLocalLog = $false
+    $localStatus = 'succeeded'
+    $localExitCode = 0
     if (-not [string]::IsNullOrWhiteSpace($runDir)) {
         $logPath = Join-Path $runDir 'stdout.log'
         if (Test-Path -LiteralPath $logPath -PathType Leaf) {
             $hasLocalLog = $true
             $rawLog = Get-Content -LiteralPath $logPath -Raw -Encoding UTF8
             $content = if ($null -eq $rawLog) { '' } else { [string]$rawLog }
+            $runJsonPath = Join-Path $runDir 'run.json'
+            if (Test-Path -LiteralPath $runJsonPath -PathType Leaf) {
+                try {
+                    $runJson = Get-Content -LiteralPath $runJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                    $storedStatus = [string](Get-SendConfigValue -InputObject $runJson -Name 'status' -Default '')
+                    if (-not [string]::IsNullOrWhiteSpace($storedStatus)) {
+                        $localStatus = $storedStatus
+                    }
+                    $storedExitCode = 0
+                    $rawStoredExitCode = Get-SendConfigValue -InputObject $runJson -Name 'exit_code' -Default 0
+                    if ([int]::TryParse(([string]$rawStoredExitCode), [ref]$storedExitCode)) {
+                        $localExitCode = $storedExitCode
+                    }
+                    if ($localExitCode -ne 0 -and [string]::Equals($localStatus, 'succeeded', [System.StringComparison]::OrdinalIgnoreCase)) {
+                        $localStatus = 'failed'
+                    }
+                } catch {
+                    $localStatus = 'succeeded'
+                    $localExitCode = 0
+                }
+            }
         }
     }
     if (-not $hasLocalLog) {
@@ -6120,6 +6143,8 @@ function Invoke-WorkersLogs {
     $status = 'succeeded'
     if ($null -ne $cli -and [int]$cli.ExitCode -ne 0) {
         $status = 'failed'
+    } elseif ($hasLocalLog) {
+        $status = $localStatus
     }
 
     $payload = [ordered]@{
@@ -6133,7 +6158,7 @@ function Invoke-WorkersLogs {
         run_id       = $runId
         source       = $source
         log          = $content
-        exit_code    = if ($null -ne $cli) { [int]$cli.ExitCode } else { 0 }
+        exit_code    = if ($null -ne $cli) { [int]$cli.ExitCode } else { [int]$localExitCode }
         cli_command  = if ($null -ne $cli) { [string]$cli.Command } else { '' }
         cli_arguments = if ($null -ne $cli) { @($cli.Arguments) } else { @() }
     }
@@ -6222,12 +6247,16 @@ function Invoke-WorkersDownload {
     }
 
     $outputPath = [string]$options.Output
-    if ([string]::IsNullOrWhiteSpace($outputPath)) {
+    $explicitOutput = -not [string]::IsNullOrWhiteSpace($outputPath)
+    if (-not $explicitOutput) {
         $safeSlotId = Assert-WorkersPathSegment -Value ([string]$worker.Row.SlotId) -Name 'slot id'
         $outputPath = Join-Path (Join-Path (Join-Path (Join-Path $options.ProjectDir '.winsmux') 'worker-downloads') $safeSlotId) $runId
     }
     $outputInfo = Resolve-WorkersProjectPath -ProjectDir $options.ProjectDir -Path $outputPath -AllowDirectory -AllowFile -AllowRuntimePath
-    if ($outputInfo.IsFile) {
+    $trimmedOutputPath = ([string]$outputPath).TrimEnd()
+    $explicitOutputLooksLikeDirectory = $explicitOutput -and ($trimmedOutputPath.EndsWith('\') -or $trimmedOutputPath.EndsWith('/'))
+    $downloadToDirectory = (-not $explicitOutput) -or [bool]$outputInfo.IsDirectory -or $explicitOutputLooksLikeDirectory
+    if (-not $downloadToDirectory) {
         $parent = Split-Path -Parent $outputInfo.FullPath
         if (-not (Test-Path -LiteralPath $parent -PathType Container)) {
             New-Item -ItemType Directory -Path $parent -Force | Out-Null
