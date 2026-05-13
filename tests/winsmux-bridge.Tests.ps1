@@ -9026,6 +9026,33 @@ worker-backend: colab_cli
         $logsPayload.log | Should -Be ''
     }
 
+    It 'ignores transfer artifacts when selecting the latest stored worker log' {
+        New-WorkersFakeColabCli | Out-Null
+        Write-WorkersColabProjectConfig
+        $runRoot = Join-Path $script:workersTempRoot '.winsmux\worker-runs\worker-2'
+        $execDir = Join-Path $runRoot 'exec-run'
+        $uploadDir = Join-Path $runRoot 'upload-run'
+        New-Item -ItemType Directory -Path $execDir -Force | Out-Null
+        'exec log body' | Set-Content -Path (Join-Path $execDir 'stdout.log') -Encoding UTF8
+        @{
+            status    = 'succeeded'
+            exit_code = 0
+        } | ConvertTo-Json | Set-Content -Path (Join-Path $execDir 'run.json') -Encoding UTF8
+        Start-Sleep -Milliseconds 50
+        New-Item -ItemType Directory -Path $uploadDir -Force | Out-Null
+        @{
+            command = 'workers.upload'
+            status  = 'succeeded'
+        } | ConvertTo-Json | Set-Content -Path (Join-Path $uploadDir 'upload.json') -Encoding UTF8
+
+        $logsOutput = & pwsh -NoProfile -File $script:winsmuxWorkersCorePath workers logs worker-2 --json --project-dir $script:workersTempRoot
+        $logsPayload = ($logsOutput | Select-Object -Last 1) | ConvertFrom-Json
+
+        $logsPayload.source | Should -Be 'local'
+        $logsPayload.run_id | Should -Be 'exec-run'
+        $logsPayload.log | Should -Match 'exec log body'
+    }
+
     It 'propagates stored failed run status from local logs' {
         New-WorkersFakeColabCli | Out-Null
         Write-WorkersColabProjectConfig

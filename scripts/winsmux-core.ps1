@@ -6117,7 +6117,15 @@ function Get-WorkersLatestRunDirectory {
         return $null
     }
 
-    return @(Get-ChildItem -LiteralPath $root -Directory | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1)[0]
+    $runs = @(Get-ChildItem -LiteralPath $root -Directory | Where-Object {
+        (Test-Path -LiteralPath (Join-Path $_.FullName 'stdout.log') -PathType Leaf) -or
+        (Test-Path -LiteralPath (Join-Path $_.FullName 'run.json') -PathType Leaf)
+    } | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1)
+    if ($runs.Count -eq 0) {
+        return $null
+    }
+
+    return $runs[0]
 }
 
 function Invoke-WorkersLogs {
